@@ -166,6 +166,7 @@ function preflightFailureParts(kind: PreflightFailure, t: MeshTarget, pruned: bo
   const recordedRetry = recordedAddress === undefined ? undefined : `check that address, or drop --server and retry with ${codeSpan(`--space ${shellPath(t.space)}`)} to reach its recorded broker at ${recordedAddress}`;
   switch (kind) {
     case "non-nats-listener":
+      if (pid !== undefined) return parts(`the broker address ${server} is held by stopped process ${pid}, which is not a NATS server`, "check which program holds that address and free it before restarting the broker, or use another broker address");
       return parts(`another non-NATS listener holds ${server} while this folder's broker is stopped`, `stop the listener at ${server} and run \`cotal up\` in ${t.root}, or start on another port with \`cotal up --server nats://127.0.0.1:<port>\` there`);
     case "auth-unsupported":
       return parts(`the NATS server at ${server} does not have Cotal authentication enabled for the recorded static-auth space "${t.space}"`, "stop that server and start this space's authenticated broker, or select the correct broker with --server");

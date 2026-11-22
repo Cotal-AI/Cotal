@@ -34,8 +34,6 @@ export interface EndpointCredentialsDeps {
   setAuthExpiryReconnectTimer: (value: NodeJS.Timeout | undefined) => void;
   credsTxnsRunning: () => number;
   setCredsTxnsRunning: (value: number) => void;
-  credsTxn: () => Promise<unknown>;
-  setCredsTxn: (value: Promise<unknown>) => void;
   reconnecting: () => boolean;
   reestablishing: () => boolean;
   requestsAwaitingReply: () => Map<NatsConnection, Set<(error: Error) => void>>;
@@ -43,7 +41,6 @@ export interface EndpointCredentialsDeps {
   setResidentSwap: (value: Promise<void> | undefined) => void;
   emitRecoverable: (err: Error) => void;
   kickBackoff: () => void;
-  armCredsRefresh: (delayMs: number) => void;
   reconnect: () => Promise<void>;
   emit: (event: string, ...args: unknown[]) => boolean;
   on: (event: "transport", listener: (state: TransportState) => void) => void;
@@ -52,8 +49,16 @@ export interface EndpointCredentialsDeps {
 
 /** One endpoint's bearer and credential renewal: the checked getters every connect attempt presents,
  *  the timed and explicit prove-then-adopt transactions, and the controlled reconnect onto adopted
- *  material. Internal: `CotalEndpoint` keeps the fields and the public methods and forwards to it. */
+ *  material. Internal: it owns its transaction chain and the standing-renewal timer, and `CotalEndpoint`
+ *  keeps the shared fields and the public methods and forwards to it. */
 export class EndpointCredentials {
+  /** Serializes every prove-then-adopt transaction (the 75% timer and the explicit reload) so a timer
+   *  tick and an explicit reload can never interleave their fetch/preflight/commit — the design's
+   *  single-flight requirement. Runs `fn` after any in-flight transaction settles, whatever its
+   *  outcome; the internal chain never rejects. */
+  private credsTxn: Promise<unknown> = Promise.resolve();
+  private credsTimer?: NodeJS.Timeout;
+
   constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly deps: EndpointCredentialsDeps) {}
 
   private get nc() { return this.deps.nc(); }
@@ -75,8 +80,6 @@ export class EndpointCredentials {
   private set authExpiryReconnectTimer(value: NodeJS.Timeout | undefined) { this.deps.setAuthExpiryReconnectTimer(value); }
   private get credsTxnsRunning() { return this.deps.credsTxnsRunning(); }
   private set credsTxnsRunning(value: number) { this.deps.setCredsTxnsRunning(value); }
-  private get credsTxn() { return this.deps.credsTxn(); }
-  private set credsTxn(value: Promise<unknown>) { this.deps.setCredsTxn(value); }
   private get reconnecting() { return this.deps.reconnecting(); }
   private get reestablishing() { return this.deps.reestablishing(); }
   private get requestsAwaitingReply() { return this.deps.requestsAwaitingReply(); }
@@ -84,7 +87,6 @@ export class EndpointCredentials {
   private set residentSwap(value: Promise<void> | undefined) { this.deps.setResidentSwap(value); }
   private emitRecoverable(err: Error) { void this.deps.emitRecoverable(err); }
   private kickBackoff() { void this.deps.kickBackoff(); }
-  private armCredsRefresh(delayMs: number) { void this.deps.armCredsRefresh(delayMs); }
   private reconnect() { return this.deps.reconnect(); }
   private emit(event: string, ...args: unknown[]) { return this.deps.emit(event, ...args); }
   private on(event: "transport", listener: (state: TransportState) => void) { void this.deps.on(event, listener); }
@@ -509,6 +511,24 @@ export class EndpointCredentials {
     this.armCredsRefresh(delay);
     this.emit("creds-adopted", credsClaims(candidate));
     return credsClaims(candidate);
+  }
+
+  private armCredsRefresh(delayMs: number): void {
+    if (this.stopped) return;
+    clearTimeout(this.credsTimer);
+    // 1s floor (vs the bearer's 5s): standing-renewal smokes exercise second-scale TTLs; production
+    // lifetimes are hours+ so the floor never engages there. Node fires a delay above 2^31-1 ms after
+    // 1 ms, and a terminal seat's credential can run to 2106, so a later renewal waits in steps of
+    // that bound.
+    this.credsTimer = delayMs > MAX_TIMER_MS
+      ? setTimeout(() => this.armCredsRefresh(delayMs - MAX_TIMER_MS), MAX_TIMER_MS)
+      : setTimeout(() => void this.renewCredsOnTimer(), Math.max(1_000, delayMs));
+    this.credsTimer.unref?.();
+  }
+
+  /** Clears the armed standing-renewal timer; stop calls it. */
+  cancelCredsRefresh(): void {
+    if (this.credsTimer) clearTimeout(this.credsTimer);
   }
 
   /** The 75%-of-lifetime renewal timer tick: prove + adopt + swap the LIVE connection. Preflights (it

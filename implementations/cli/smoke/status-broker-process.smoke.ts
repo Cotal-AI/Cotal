@@ -5,7 +5,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
-import { MANAGER_PIDFILE, canonicalLocalProcessPath } from "@cotal-ai/workspace";
+import { MANAGER_PIDFILE, canonicalLocalProcessPath, processStopped } from "@cotal-ai/workspace";
 import { assertSmokeSandboxDown, createSuite, freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
 import type { StatusResult } from "../src/commands/status.js";
 import { observeOwnedChild, waitForOwnedChild } from "./_foreground-owned-child.js";
@@ -59,6 +59,7 @@ function status(...args: string[]) {
 }
 const nats = (report: ReturnType<typeof status>) => report.result.folder.processes?.find((row) => row.name === "nats");
 const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+const server = `nats://127.0.0.1:${await freePort()}`;
 let brokerPid: number | undefined;
 try {
   const created = run("space", "create", "status-broker", "--json");
@@ -67,7 +68,7 @@ try {
   const prepared = status();
   check("a prepared space without a controller journal retains the legacy observation",
     prepared.exit === 0 && nats(prepared)?.source === "legacy-pidfile" && nats(prepared)?.state === "stopped" && nats(prepared)?.ownedService === null, prepared);
-  const started = run("up", "--no-manager", "--server", `nats://127.0.0.1:${await freePort()}`, "--json");
+  const started = run("up", "--no-manager", "--server", server, "--json");
   check("isolated controller stack starts without a manager", started.status === 0, started.stdout);
   if (started.status !== 0) throw new Error("up failed");
   const running = status();
@@ -226,6 +227,17 @@ try {
   check("the controller journal still exists after down", existsSync(journal));
   const bytes = readFileSync(journal);
   try {
+    writeFileSync(journal, '{"schemaVersion":1,"kind":\n');
+    const implicit = run("ps", "--space", "status-broker", "--json");
+    const matching = run("ps", "--space", "status-broker", "--server", server, "--json");
+    const different = run("ps", "--space", "status-broker", "--server", `nats://127.0.0.1:${await freePort()}`, "--json");
+    const expected = JSON.parse(implicit.stdout).error, actual = JSON.parse(matching.stdout).error;
+    check("ps with the saved address reports the same truncated journal and recovery as ps without it",
+      implicit.status === 1 && expected.code === "SCHEMA_INVALID" && expected.message.includes(journal) && matching.status === 1 && JSON.stringify(actual) === JSON.stringify(expected), matching.stdout);
+    check("ps with a different address does not diagnose the local journal",
+      different.status === 2 && JSON.parse(different.stdout).error?.code === "TARGET_UNAVAILABLE" && !different.stdout.includes(journal), different.stdout);
+  } finally { writeFileSync(journal, bytes, { mode: 0o600 }); }
+  try {
     rmSync(journal);
     const legacy = status();
     check("legacy-only nats summaries retain their state and name the pidfile source",
@@ -311,6 +323,59 @@ if (process.platform === "linux") {
     foreground.kill("SIGTERM");
     const timeout = setTimeout(() => foreground.kill("SIGKILL"), 10_000);
     try { await finished; } finally { clearTimeout(timeout); }
+  }
+}
+if (process.platform === "linux") {
+  const project = join(scratch, "foreign-listener");
+  mkdirSync(project);
+  const port = await freePort(), address = `nats://127.0.0.1:${port}`;
+  const brokerOwner = spawn(process.execPath, ["--import", import.meta.resolve("tsx"), cli,
+    "up", "--foreground", "--open", "--no-manager", "--space", "foreign-listener", "--server", address], { cwd: project, env, stdio: ["ignore", "pipe", "pipe"] });
+  const brokerState = observeOwnedChild(brokerOwner);
+  let startup = "";
+  for (const stream of [brokerOwner.stdout, brokerOwner.stderr]) stream.on("data", (chunk) => { startup += String(chunk); });
+  try {
+    await waitForOwnedChild(() => {
+      if (brokerState.exited || brokerState.error) throw brokerState.error ?? new Error(startup);
+      return /automatically selected "foreign-listener"|"foreign-listener" up;/.test(startup);
+    }, 60_000, "the legacy broker-only stack registered");
+    const pid = Number(readFileSync(join(project, ".cotal", "nats.pid"), "utf8"));
+    if (!Number.isSafeInteger(pid) || pid <= 0 || !brokerOwner.pid || Number(readFileSync(`/proc/${pid}/stat`, "utf8").split(") ").at(-1)?.split(" ")[1]) !== brokerOwner.pid)
+      throw new Error("the recorded broker is not a child of the foreground CLI");
+    process.kill(pid, "SIGSTOP");
+    try {
+      await waitForOwnedChild(() => processStopped(pid), 5_000, "the identified broker is stopped");
+      const stopped = runFrom(project, "ps", "--space", "foreign-listener", "--plain");
+      check("ps offers resume for the identified stopped broker", stopped.status === 2 && (stopped.stdout + stopped.stderr).includes(`kill -CONT ${pid}`), stopped.stdout + stopped.stderr);
+    } finally { process.kill(pid, "SIGCONT"); }
+    process.kill(pid, "SIGKILL");
+    await waitForOwnedChild(() => brokerState.closed, 60_000, "foreground up observed its broker exit");
+    const listener = spawn(process.execPath, ["-e", `require('node:net').createServer(s => { s.on('error', () => {}); s.end('HTTP/1.1 400 Bad Request\\r\\n\\r\\n'); }).listen(${port}, '127.0.0.1', () => console.log('listening'))`], { stdio: ["ignore", "pipe", "inherit"] });
+    const listenerState = observeOwnedChild(listener);
+    let listening = false;
+    listener.stdout.on("data", (chunk) => { listening ||= String(chunk).includes("listening"); });
+    try {
+      await waitForOwnedChild(() => listening && listener.pid !== undefined, 5_000, "the unrelated HTTP listener is listening");
+      listener.kill("SIGSTOP");
+      await waitForOwnedChild(() => processStopped(listener.pid!), 5_000, "the unrelated HTTP listener is stopped");
+      for (const command of ["status", "ps"]) {
+        const result = runFrom(project, command, "--space", "foreign-listener", "--plain");
+        const text = result.stdout + result.stderr;
+        check(`${command} reports the occupied broker address without recommending a signal`, result.status === (command === "status" ? 0 : 2) &&
+          text.includes(`the broker address ${address} is held by stopped process ${listener.pid}, which is not a NATS server`) && !text.includes("kill -CONT"), text);
+      }
+      const json = runFrom(project, "status", "--space", "foreign-listener", "--json");
+      const selection = JSON.parse(json.stdout).result?.selected;
+      check("status JSON uses the existing non-NATS connection state without attributing a broker PID",
+        json.status === 0 && selection?.connection === "non-nats-listener" && selection.brokerPid === undefined, json.stdout);
+      check("both reads leave the unrelated process stopped", processStopped(listener.pid!));
+    } finally {
+      if (!listenerState.closed) { listener.kill("SIGTERM"); listener.kill("SIGCONT"); }
+      await waitForOwnedChild(() => listenerState.closed, 5_000, "the HTTP listener exited");
+    }
+  } finally {
+    if (!brokerState.closed) brokerOwner.kill("SIGTERM");
+    await waitForOwnedChild(() => brokerState.closed, 60_000, "the legacy foreground CLI exited");
   }
 }
 finish();

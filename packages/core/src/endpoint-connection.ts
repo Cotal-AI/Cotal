@@ -1,8 +1,9 @@
 // The connection bind and teardown of CotalEndpoint, as an internal component: open a connection and bind
 // everything that hangs off it, clear the connection-scoped state, close a failed bind, tear down a bind
 // that lost a race with stop, stop the endpoint, and report its native connections. Moved verbatim from
-// endpoint.ts; the endpoint keeps connectAndBind, the supervisor and the retry loop and forwards to these.
-// Not re-exported by the index.
+// endpoint.ts. It owns its timers, the taps, the record of its own watch consumers and the subscription
+// denials it reported; the endpoint keeps connectAndBind, the supervisor and the retry loop and forwards to
+// these. Not re-exported by the index.
 import type { EndpointIdentity } from "./endpoint-identity.js";
 import { requireBrokerFloor } from "./broker-floor.js";
 import { openChannelRegistry } from "./channels.js";
@@ -10,7 +11,7 @@ import { drainAndClose } from "./connection-cleanup.js";
 import { withDeadline } from "./deadline.js";
 import type { EndpointDeliveryLease } from "./endpoint-delivery-lease.js";
 import type { EndpointDeliveryPlane } from "./endpoint-delivery-plane.js";
-import { bearerRenewalDeadlineMs, RepeatedRefusal, dialerFor, authOpts } from "./endpoint-dial.js";
+import { bearerRenewalDeadlineMs, RepeatedRefusal, dialerFor, authOpts, describeStatusError } from "./endpoint-dial.js";
 import type { DmOnlyOptions, PrincipalServeIntent, TransportState } from "./endpoint-options.js";
 import type { EndpointPresence } from "./endpoint-presence.js";
 import type { MembershipFeedWatch } from "./endpoint-subscriptions.js";
@@ -21,11 +22,12 @@ import type { LivenessPlane, ResponderState } from "./liveness.js";
 import { type NativeConnectionBinding, nativeConnectionBinding } from "./native-connection.js";
 import { nextHeartbeat } from "./presence-heartbeat.js";
 import { PRESENCE_STORAGE } from "./streams.js";
-import { presenceBucket, dmStream, dmDurable } from "./subjects.js";
+import { presenceBucket, dmStream, dmDurable, parseSubject } from "./subjects.js";
+import { isFromSubjectSender, authenticatedMessage, isReadableMessagePart } from "./endpoint-messages.js";
 import type { CotalMessage, ChannelConfig, ChannelDefaults } from "./types.js";
 import { type JetStreamClient, type JetStreamManager, type ConsumerMessages, type ConsumerInfo, jetstream, jetstreamManager } from "@nats-io/jetstream";
 import { type KV, Kvm } from "@nats-io/kv";
-import type { NatsConnection, Subscription } from "@nats-io/transport-node";
+import { type NatsConnection, type Subscription, PermissionViolationError } from "@nats-io/transport-node";
 
 /** A Direct Get cannot distinguish a missing bucket from an unanswered read. Ask for the
  *  bucket's status and accept only a broker-confirmed absence. */
@@ -47,8 +49,6 @@ export interface EndpointConnectionDeps {
   bearerRenewalFailures: () => number;
   bearerAdoptedAtMs: () => number;
   currentCreds: () => string | undefined;
-  bearerRefusalSurfaced: () => boolean;
-  setBearerRefusalSurfaced: (value: boolean) => void;
   nc: () => NatsConnection | undefined;
   setNc: (value: NatsConnection | undefined) => void;
   watchDeletePermissions: () => WeakMap<object, () => IssuedSubjectPermission | undefined>;
@@ -62,18 +62,13 @@ export interface EndpointConnectionDeps {
   kv: () => KV | undefined;
   setKv: (value: KV | undefined) => void;
   authed: () => boolean;
-  sweepTimer: () => ReturnType<typeof setInterval> | undefined;
-  setSweepTimer: (value: ReturnType<typeof setInterval> | undefined) => void;
   channelKv: () => KV | undefined;
   setChannelKv: (value: KV | undefined) => void;
   readsChannelsOnDemand: () => boolean;
   deliveryLease: () => EndpointDeliveryLease;
   jsm: () => JetStreamManager | undefined;
   setJsm: (value: JetStreamManager | undefined) => void;
-  heartbeatTimer: () => ReturnType<typeof setInterval> | undefined;
-  setHeartbeatTimer: (value: ReturnType<typeof setInterval> | undefined) => void;
   livenessResponders: () => Map<LivenessPlane, { readState: () => Promise<ResponderState> | ResponderState; sub?: Subscription }>;
-  taps: () => { readonly handler: (subject: string, msg: CotalMessage | undefined) => void; readonly subject: string }[];
   activeGoalFollowers: () => Set<{ cancel: () => void; reconnected: (nc: NatsConnection) => void; }>;
   authExpiryReconnectTimer: () => NodeJS.Timeout | undefined;
   setAuthExpiryReconnectTimer: (value: NodeJS.Timeout | undefined) => void;
@@ -85,7 +80,6 @@ export interface EndpointConnectionDeps {
   setChannelWatchIter: (value: Awaited<ReturnType<KV["watch"]>> | undefined) => void;
   chatSubs: () => Map<string, Subscription>;
   chatSubDenied: () => Set<string>;
-  ownWatchDeletePrefixes: () => Set<string>;
   channelConfigs: () => Map<string, ChannelConfig>;
   channelDefaults: () => ChannelDefaults;
   setChannelDefaults: (value: ChannelDefaults) => void;
@@ -111,7 +105,6 @@ export interface EndpointConnectionDeps {
   principalServes: () => Map<string, PrincipalServeIntent>;
   membershipPauses: () => Set<() => void>;
   cancelBearerRenewal: () => (() => void) | undefined;
-  credsTimer: () => NodeJS.Timeout | undefined;
   dmOnlyInFlight: () => Promise<void> | undefined;
   rebuildPromise: () => Promise<void> | undefined;
   startPromise: () => Promise<void> | undefined;
@@ -121,6 +114,7 @@ export interface EndpointConnectionDeps {
   nativeBound: () => boolean;
   refreshBearer: (initial?: boolean) => Promise<void>;
   refreshCreds: (initial?: boolean) => Promise<void>;
+  cancelCredsRefresh: () => void;
   bearerForWire: () => string;
   presentCreds: () => string;
   presentBearer: () => string;
@@ -143,7 +137,6 @@ export interface EndpointConnectionDeps {
   armPlane3: () => Promise<void>;
   bindLiveness: (plane: LivenessPlane) => void;
   rebindPrincipalServes: (reconnected: boolean) => void;
-  bindTap: (tap: { readonly handler: (subject: string, msg: CotalMessage | undefined) => void; readonly subject: string }) => void;
   retireKvWatch: (iter: Awaited<ReturnType<KV["watch"]>>) => void;
   stopDeliveryLeaseWatch: () => void;
   disarmMembershipWatch: (watch: MembershipFeedWatch) => Promise<void>;
@@ -159,17 +152,31 @@ export interface EndpointConnectionDeps {
   emit: (event: string, ...args: unknown[]) => boolean;
 }
 
-/** One endpoint's connection bind and teardown. Internal: `CotalEndpoint` keeps the fields, connectAndBind,
- *  the supervisor and the retry loop, and forwards to it. */
+/** One endpoint's connection bind and teardown. Internal: it owns its timers, taps and watch-consumer
+ *  records, and `CotalEndpoint` keeps the shared fields, connectAndBind, the supervisor and the retry loop,
+ *  and forwards to it. */
 export class EndpointConnection {
+  /** Whether the expired-bearer refusal has been surfaced for this outage. */
+  private bearerRefusalSurfaced = false;
+  private heartbeatTimer?: ReturnType<typeof setInterval>;
+  private sweepTimer?: ReturnType<typeof setInterval>;
+  /** The observer feeds {@link tap} was asked for. This is INTENT, re-subscribed by {@link bindTap}
+   *  on every (re)connect: a rebuild after an outage the library could not ride out closes the old
+   *  connection and every subscription on it, so a tap bound once went silent while the endpoint
+   *  reported itself connected again. */
+  private readonly taps: { readonly handler: (subject: string, msg: CotalMessage | undefined) => void; readonly subject: string }[] = [];
+  /** `$JS.API.CONSUMER.DELETE.<stream>.<prefix>_` for each of this connection's own KV watches and
+   *  running membership scans (see {@link recordOwnWatchConsumer}). */
+  private readonly ownWatchDeletePrefixes = new Set<string>();
+  /** Service iterators and connection status can receive the same subscription denial. */
+  private readonly reportedSubRefusals = new WeakSet<PermissionViolationError>();
+
   constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly deps: EndpointConnectionDeps) {}
 
   private get currentBearer() { return this.deps.currentBearer(); }
   private get bearerRenewalFailures() { return this.deps.bearerRenewalFailures(); }
   private get bearerAdoptedAtMs() { return this.deps.bearerAdoptedAtMs(); }
   private get currentCreds() { return this.deps.currentCreds(); }
-  private get bearerRefusalSurfaced() { return this.deps.bearerRefusalSurfaced(); }
-  private set bearerRefusalSurfaced(value: boolean) { this.deps.setBearerRefusalSurfaced(value); }
   private get nc() { return this.deps.nc(); }
   private set nc(value: NatsConnection | undefined) { this.deps.setNc(value); }
   private get watchDeletePermissions() { return this.deps.watchDeletePermissions(); }
@@ -183,18 +190,13 @@ export class EndpointConnection {
   private get kv() { return this.deps.kv(); }
   private set kv(value: KV | undefined) { this.deps.setKv(value); }
   private get authed() { return this.deps.authed(); }
-  private get sweepTimer() { return this.deps.sweepTimer(); }
-  private set sweepTimer(value: ReturnType<typeof setInterval> | undefined) { this.deps.setSweepTimer(value); }
   private get channelKv() { return this.deps.channelKv(); }
   private set channelKv(value: KV | undefined) { this.deps.setChannelKv(value); }
   private get readsChannelsOnDemand() { return this.deps.readsChannelsOnDemand(); }
   private get deliveryLease() { return this.deps.deliveryLease(); }
   private get jsm() { return this.deps.jsm(); }
   private set jsm(value: JetStreamManager | undefined) { this.deps.setJsm(value); }
-  private get heartbeatTimer() { return this.deps.heartbeatTimer(); }
-  private set heartbeatTimer(value: ReturnType<typeof setInterval> | undefined) { this.deps.setHeartbeatTimer(value); }
   private get livenessResponders() { return this.deps.livenessResponders(); }
-  private get taps() { return this.deps.taps(); }
   private get activeGoalFollowers() { return this.deps.activeGoalFollowers(); }
   private get authExpiryReconnectTimer() { return this.deps.authExpiryReconnectTimer(); }
   private set authExpiryReconnectTimer(value: NodeJS.Timeout | undefined) { this.deps.setAuthExpiryReconnectTimer(value); }
@@ -206,7 +208,6 @@ export class EndpointConnection {
   private set channelWatchIter(value: Awaited<ReturnType<KV["watch"]>> | undefined) { this.deps.setChannelWatchIter(value); }
   private get chatSubs() { return this.deps.chatSubs(); }
   private get chatSubDenied() { return this.deps.chatSubDenied(); }
-  private get ownWatchDeletePrefixes() { return this.deps.ownWatchDeletePrefixes(); }
   private get channelConfigs() { return this.deps.channelConfigs(); }
   private get channelDefaults() { return this.deps.channelDefaults(); }
   private set channelDefaults(value: ChannelDefaults) { this.deps.setChannelDefaults(value); }
@@ -232,7 +233,6 @@ export class EndpointConnection {
   private get principalServes() { return this.deps.principalServes(); }
   private get membershipPauses() { return this.deps.membershipPauses(); }
   private get cancelBearerRenewal() { return this.deps.cancelBearerRenewal(); }
-  private get credsTimer() { return this.deps.credsTimer(); }
   private get dmOnlyInFlight() { return this.deps.dmOnlyInFlight(); }
   private get rebuildPromise() { return this.deps.rebuildPromise(); }
   private get startPromise() { return this.deps.startPromise(); }
@@ -242,6 +242,7 @@ export class EndpointConnection {
   private get nativeBound() { return this.deps.nativeBound(); }
   private refreshBearer(initial?: boolean): Promise<void> { return this.deps.refreshBearer(initial); }
   private refreshCreds(initial?: boolean): Promise<void> { return this.deps.refreshCreds(initial); }
+  private cancelCredsRefresh(): void { this.deps.cancelCredsRefresh(); }
   private bearerForWire(): string { return this.deps.bearerForWire(); }
   private presentCreds(): string { return this.deps.presentCreds(); }
   private presentBearer(): string { return this.deps.presentBearer(); }
@@ -264,7 +265,6 @@ export class EndpointConnection {
   private armPlane3(): Promise<void> { return this.deps.armPlane3(); }
   private bindLiveness(plane: LivenessPlane): void { return this.deps.bindLiveness(plane); }
   private rebindPrincipalServes(reconnected: boolean): void { return this.deps.rebindPrincipalServes(reconnected); }
-  private bindTap(tap: { readonly handler: (subject: string, msg: CotalMessage | undefined) => void; readonly subject: string }): void { return this.deps.bindTap(tap); }
   private retireKvWatch(iter: Awaited<ReturnType<KV["watch"]>>): void { return this.deps.retireKvWatch(iter); }
   private stopDeliveryLeaseWatch(): void { return this.deps.stopDeliveryLeaseWatch(); }
   private disarmMembershipWatch(watch: MembershipFeedWatch): Promise<void> { return this.deps.disarmMembershipWatch(watch); }
@@ -562,6 +562,74 @@ export class EndpointConnection {
     }
   }
 
+  /** Keep `tap` as intent and subscribe it on the current connection. */
+  addTap(tap: (typeof this.taps)[number]): void {
+    this.taps.push(tap);
+    this.bindTap(tap);
+  }
+
+  /** Subscribe one {@link tap} on the current connection; with none, the next bind subscribes it. */
+  private bindTap(tap: (typeof this.taps)[number]): void {
+    if (!this.nc) return;
+    const sub = this.nc.subscribe(tap.subject);
+    this.subs.push(sub);
+    void (async () => {
+      for await (const m of sub) {
+        let decoded: CotalMessage | undefined;
+        try {
+          decoded = m.json<CotalMessage>();
+        } catch {
+          decoded = undefined;
+        }
+        const parsed = parseSubject(m.subject);
+        if (decoded !== undefined && (parsed?.kind === "chat" || parsed?.kind === "evp" || parsed?.kind === "inst" || parsed?.kind === "svc")) {
+          if (!isFromSubjectSender(decoded, parsed)) continue;
+          // A message whose parts cannot be read is dropped, as history drops it (#7060).
+          if (parsed.kind !== "evp" && (!Array.isArray(decoded.parts) || !decoded.parts.every(isReadableMessagePart))) continue;
+          decoded = authenticatedMessage(decoded, parsed);
+        }
+        // A handler that throws is reported and the feed goes on. Leaving this loop would stop every
+        // later frame while the process keeps running (#7060).
+        try {
+          tap.handler(m.subject, decoded);
+        } catch (e) {
+          this.emit("error", e as Error);
+        }
+      }
+    })().catch((e) => this.emit("error", e as Error));
+  }
+
+  /** Record the consumer behind one of this connection's own KV watches or membership scans, and
+   *  return the delete-subject prefix it recorded. nats.js names it `<prefix>_<serial>` and,
+   *  rebuilding it after a stall or a sequence gap, deletes the predecessor itself with no hook before
+   *  the send, so a profile without the delete row (#691) has that delete refused. A stalled link can
+   *  time that delete out before its refusal arrives, and nats.js then hands the refusal to no request,
+   *  so {@link trackRequestDenials} cannot own it and the consumer's name has to. A watch's prefix
+   *  stays recorded for the connection because a retired watch's last rebuild can be refused after
+   *  the watch has stopped; {@link readMembership} retires its scan's after its own last delete,
+   *  which goes out once nats.js has stopped the consumer and so is answered after every predecessor
+   *  delete. */
+  recordOwnWatchConsumer({ stream_name, name }: ConsumerInfo): string {
+    const prefix = `$JS.API.CONSUMER.DELETE.${stream_name}.${name.slice(0, name.lastIndexOf("_") + 1)}`;
+    this.ownWatchDeletePrefixes.add(prefix);
+    return prefix;
+  }
+
+  /** Whether `subject` deletes `<prefix>_<serial>` of a consumer {@link recordOwnWatchConsumer} recorded. */
+  isOwnWatchDelete(subject: string): boolean {
+    const cut = subject.lastIndexOf("_") + 1;
+    return /^\d+$/.test(subject.slice(cut)) && this.ownWatchDeletePrefixes.has(subject.slice(0, cut));
+  }
+
+  /** Report a subscription denial once by error identity, whichever reporting path receives it first. */
+  reportSubscriptionDenial(error: unknown): boolean {
+    if (!(error instanceof PermissionViolationError) || error.operation !== "subscription") return false;
+    if (!this.reportedSubRefusals.has(error)) {
+      this.reportedSubRefusals.add(error);
+      this.emit("error", describeStatusError(error));
+    }
+    return true;
+  }
   /** Tear down everything {@link connectAndBind} (re)creates, so a rebind can't leak a
    *  second heartbeat, double-pump a consumer, or keep stale roster ghosts. Caller-owned
    *  subs (tap/serve) are left alone — they aren't rebuilt here. */
@@ -746,7 +814,7 @@ export class EndpointConnection {
     if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
     if (this.sweepTimer) clearInterval(this.sweepTimer);
     this.cancelBearerRenewal?.();
-    if (this.credsTimer) clearTimeout(this.credsTimer);
+    this.cancelCredsRefresh();
     if (this.authExpiryReconnectTimer) clearTimeout(this.authExpiryReconnectTimer);
     for (const watch of this.membershipFeedWatches) {
       watch.stopped = true;

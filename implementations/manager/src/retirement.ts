@@ -6,7 +6,7 @@ import {
   resolveAuthProvider, AUTH_ENDPOINT, EP_CMD_RETIRE_LIFECYCLE, resolveService, invokeCommand,
   rejectionText, attemptCleanup, describeCleanupFailures,
   type CleanupFailure, type DeprovisionResourceAccounting, type Identity, type RuntimeReference,
-  type SecretStore, type SpaceAuth, type dialerFor,
+  type SpaceAuth, type dialerFor,
 } from "@cotal-ai/core";
 import { agentLifecycleSecretFilePaths, agentSecretKeyForFile, userAuthStateDir } from "@cotal-ai/workspace";
 import { MANAGER_ENDPOINT } from "./manager-service-contract.js";
@@ -15,6 +15,7 @@ import type { AgentHandle } from "./runtime/index.js";
 import type { Manager } from "./manager.js";
 import { DEPROVISION_TIMEOUT_MS } from "./seat-stop.js";
 import { withTimeout } from "./manager-timeout.js";
+import type { ManagerConfig } from "./manager-config.js";
 
 /** What the teardown chain (trackDeprovision → deprovision → driveDeprovision →
  *  driveStaticRetirement) needs to tear one incarnation down. Each hop passes the value on as a
@@ -58,12 +59,7 @@ export interface RetirementDeps {
   auth(): SpaceAuth | undefined;
   remoteAuthority(): Pick<NonNullable<ManagerOptions["remoteAuthority"]>, "owner" | "actors" | "prepareAgentRetirement" | "mintRetirementRequester"> | undefined;
   userMode(): boolean;
-  workspaceRoot(): string;
-  space(): string;
-  servers(): string | undefined;
-  secrets(): SecretStore;
   serveIdentity(): Identity | undefined;
-  lifecycleUid(): string;
   instanceId(): string;
   serveEpoch(): number | undefined;
   dial(opts: Parameters<ReturnType<typeof dialerFor>>[0]): Promise<NatsConnection>;
@@ -85,12 +81,7 @@ export function retirementDeps(m: Manager): RetirementDeps {
     auth: () => m["auth"],
     remoteAuthority: () => m["remoteAuthority"],
     userMode: () => m["userMode"],
-    workspaceRoot: () => m["workspaceRoot"],
-    space: () => m["space"],
-    servers: () => m["servers"],
-    secrets: () => m["secrets"],
     serveIdentity: () => m["managerServeIdentity"],
-    lifecycleUid: () => m["managerLifecycleUid"],
     instanceId: () => m["managerInstanceId"],
     serveEpoch: () => m["serviceServe"]?.grant.epoch,
     dial: (opts) => m["dial"](opts),
@@ -144,17 +135,12 @@ export class Retirement {
    *  gets its own flight; a fresh trigger after settle re-drives only if the hold still stands. */
   private deprovisioningFlight = new Map<string, Promise<void>>();
 
-  constructor(private readonly deps: RetirementDeps) {}
+  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: RetirementDeps) {}
 
   private get auth() { return this.deps.auth(); }
   private get remoteAuthority() { return this.deps.remoteAuthority(); }
   private get userMode() { return this.deps.userMode(); }
-  private get workspaceRoot() { return this.deps.workspaceRoot(); }
-  private get space() { return this.deps.space(); }
-  private get servers() { return this.deps.servers(); }
-  private get secrets() { return this.deps.secrets(); }
   private get managerServeIdentity() { return this.deps.serveIdentity(); }
-  private get managerLifecycleUid() { return this.deps.lifecycleUid(); }
   private get managerInstanceId() { return this.deps.instanceId(); }
   private dial(opts: Parameters<ReturnType<typeof dialerFor>>[0]) { return this.deps.dial(opts); }
   private withRetirementSlot<T>(run: () => Promise<T>) { return this.deps.withRetirementSlot(run); }
@@ -254,7 +240,7 @@ export class Retirement {
       // grant is released and the child is gone, by the same rule as the local arm below: every
       // removal is attempted, and a failure keeps the name held instead of reaching the terminal.
       const unshredded: CleanupFailure[] = [];
-      await this.shredUserSecrets(unshredded, a.secretPaths ?? agentLifecycleSecretFilePaths(this.workspaceRoot, this.space, a.name, a.lifecycleUid));
+      await this.shredUserSecrets(unshredded, a.secretPaths ?? agentLifecycleSecretFilePaths(this.config.workspaceRoot, this.config.space, a.name, a.lifecycleUid));
       if (unshredded.length) throw new Error(`could not shred "${a.name}": ${describeCleanupFailures(unshredded)}`);
       await this.requestRetirement(a);
       return;
@@ -280,14 +266,14 @@ export class Retirement {
     // uses. It deliberately CANNOT remove a name-keyed family it holds no record of (an operator's
     // standing `cotal mint` cred, a seeded workstation cred, a pre-split leftover): deleting an
     // unowned same-name file is the exact successor-clobber this ownership discipline removes.
-    const secrets = this.secrets;
-    const files = a.secretPaths ?? agentLifecycleSecretFilePaths(this.workspaceRoot, this.space, a.name, a.lifecycleUid);
+    const secrets = this.config.secrets;
+    const files = a.secretPaths ?? agentLifecycleSecretFilePaths(this.config.workspaceRoot, this.config.space, a.name, a.lifecycleUid);
     // Every removal is attempted, and a failed one is thrown only after the broker teardown below,
     // so a file fault cannot strand the agent's durables and ACL row on the broker.
     const unshredded: CleanupFailure[] = [];
     if (files.creds) {
       const creds = files.creds;
-      await attemptCleanup(unshredded, `secret ${creds}`, () => secrets.delete(agentSecretKeyForFile(creds, this.space)));
+      await attemptCleanup(unshredded, `secret ${creds}`, () => secrets.delete(agentSecretKeyForFile(creds, this.config.space)));
       await attemptCleanup(unshredded, `file ${creds}`, () => rmSync(creds, { force: true }));
     }
     if (a.userOwner) {
@@ -307,7 +293,7 @@ export class Retirement {
       if (holdRevoke && holdRevoke.target.lifecycleUid === a.lifecycleUid) holdRevoke.standingAuthorityLive = true;
       try {
         await resolveAuthProvider().revokeAgent({
-          dir: userAuthStateDir(this.workspaceRoot, this.space),
+          dir: userAuthStateDir(this.config.workspaceRoot, this.config.space),
           owner: a.userOwner,
           actor: a.name,
         });
@@ -422,8 +408,8 @@ export class Retirement {
       // also the more honest attribution: the authority being exercised is "I am the registered
       // serving instance", which is exactly what the gate records.
       const caller = this.remoteAuthority
-        ? { owner: this.remoteAuthority.owner, actor: this.remoteAuthority.actors.serve, uid: this.managerLifecycleUid }
-        : { owner: DEV_OWNER, actor: serveIdentity.id, uid: this.managerLifecycleUid };
+        ? { owner: this.remoteAuthority.owner, actor: this.remoteAuthority.actors.serve, uid: this.config.managerLifecycleUid }
+        : { owner: DEV_OWNER, actor: serveIdentity.id, uid: this.config.managerLifecycleUid };
       const requestIdentity = newIdentity();
       const retirementTarget = { owner: target.owner, actor: target.actor, lifecycleUid: a.lifecycleUid };
       const opId = managedRetirementOpId(a.lifecycleUid);
@@ -440,10 +426,10 @@ export class Retirement {
         // The service resolves FRESH on every attempt (never cached on `this`): a plane restart
         // mid-despawn then lands on the new epoch through an ordinary resolve, rather than a
         // caller pinned to a now-superseded incarnation.
-        const service = await resolveService(nc, this.space, AUTH_ENDPOINT, caller, { deadlineMs: 10_000, commands: [EP_CMD_RETIRE_LIFECYCLE] });
+        const service = await resolveService(nc, this.config.space, AUTH_ENDPOINT, caller, { deadlineMs: 10_000, commands: [EP_CMD_RETIRE_LIFECYCLE] });
         // The TARGET rides the invoke's own target (authz mode `exact`, arity 3) - broker-enforced,
         // and pinned by the grant minted above, so it is not a body claim the caller can vary.
-        const attributed = await invokeCommand(nc, this.space, service, EP_CMD_RETIRE_LIFECYCLE, {
+        const attributed = await invokeCommand(nc, this.config.space, service, EP_CMD_RETIRE_LIFECYCLE, {
           opId,
           serveEndpoint: MANAGER_ENDPOINT, serveInstanceId: this.managerInstanceId, serveEpoch,
         }, {
@@ -539,8 +525,8 @@ export class Retirement {
     // helper's own fail-fast connect). The durables/ACL row still fall to space teardown as a backstop.
     const accounting = await this.deps.brokerTeardown(
       deprovisionAgent({
-        servers: this.servers ?? DEFAULT_SERVER,
-        space: this.space,
+        servers: this.config.servers ?? DEFAULT_SERVER,
+        space: this.config.space,
         targetId: a.id,
         lifecycleUid: a.lifecycleUid,
         memberChannels: [...memberChannels],

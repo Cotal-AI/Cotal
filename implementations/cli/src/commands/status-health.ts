@@ -21,6 +21,7 @@ import {
 } from "@cotal-ai/core";
 import { join } from "node:path";
 import {
+  hasNonNatsExecutable,
   stoppedLoopbackListener,
   isCommandFailure,
   brokerAddressForDisplay,
@@ -306,7 +307,7 @@ async function componentEp(
  *  and status could then never exit. */
 async function requireGreeting(target: MeshTarget): Promise<void> {
   const stopped = stoppedLoopbackListener(target.server);
-  if (stopped !== undefined) throw new Error(`the broker at ${brokerAddressForDisplay(target.server) ?? "an invalid broker address"} is served by process ${stopped}, which is stopped`);
+  if (stopped !== undefined) throw new Error(hasNonNatsExecutable(stopped) ? `stopped process ${stopped} holds the broker address and is not a NATS server` : `the broker at ${brokerAddressForDisplay(target.server) ?? "an invalid broker address"} is served by process ${stopped}, which is stopped`);
   if (!(await isReachable(target.server, { ...(target.tlsRequired ? { tls: true } : {}), timeoutMs: 3_000 })))
     throw new Error(`the broker at ${brokerAddressForDisplay(target.server) ?? "an invalid broker address"} is not answering`);
 }
