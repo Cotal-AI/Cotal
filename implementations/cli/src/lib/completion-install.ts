@@ -229,10 +229,30 @@ export function readCompletionText(path: string): string | undefined {
   return text(read(path));
 }
 
+async function bashCommentLines(startup: string, lines: string[], rc: string): Promise<Set<number>> {
+  // A line that starts with # may still be inside a quote, heredoc or continued word.
+  const { parse, ParseError, walk } = await import("sh-syntax");
+  const comments = new Set<number>();
+  try {
+    walk(await parse(startup, { keepComments: true }), (node) => {
+      if (node.type !== "Comment") return;
+      const { line, column } = node.hash;
+      const source = lines[line - 1];
+      if (source?.search(/[^\t ]/) === column && source[column] === "#") comments.add(line - 1);
+    });
+  } catch (error) {
+    if (!(error instanceof ParseError)) throw error;
+    throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `${rc} could not be parsed as Bash to check for references to this stub; nothing was changed`, {
+      target: { shell: "bash", path: rc }, remedy: `review the Bash syntax and any references to the stub in ${rc}, then run \`cotal completion uninstall bash\` again`,
+    });
+  }
+  return comments;
+}
+
 /** Hold one writer lock and change only the recorded stub and unchanged owned startup block. With
  *  `force`, a modified recorded stub and the complete marked blocks are rewritten or removed too, and
  *  startup content outside the markers is still kept. */
-export function changeCompletion(operation: "install" | "uninstall", shell: string, paths: Paths, script: string, force = false) {
+export async function changeCompletion(operation: "install" | "uninstall", shell: string, paths: Paths, script: string, force = false) {
   supported();
   // Every unsafe file or folder this change reads or writes is named in one refusal before anything is
   // created. A linked startup file is left to its own refusal below, which names the line to add.
@@ -314,8 +334,12 @@ export function changeCompletion(operation: "install" | "uninstall", shell: stri
     const readOnly = () => paths.rc !== undefined && nextStartup !== current && startup !== undefined && (startup.mode & 0o200) === 0;
     if (operation === "uninstall") {
       if (paths.rc && nextStartup.includes(paths.stub)) {
-        const line = nextStartup.split("\n").find((text) => text.includes(paths.stub))!.trim();
-        throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `${paths.rc} still names this stub outside the cotal block, in ${JSON.stringify(line)}; removing the stub would break that line`, { target: { shell, path: paths.rc }, remedy: `remove that line from ${paths.rc} yourself, then run \`cotal completion uninstall ${shell}\` again` });
+        const lines = nextStartup.split("\n");
+        const first = lines.find((line) => line.includes(paths.stub))!;
+        const comments = shell === "bash" && /^[\t ]*#/.test(first) ? await bashCommentLines(nextStartup, lines, paths.rc) : undefined;
+        const line = comments ? lines.find((line, i) => line.includes(paths.stub) && !comments.has(i)) : first;
+        if (line) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `${paths.rc} still names this stub outside the cotal block, in ${JSON.stringify(line.trim())}; removing the stub would break that line`, { target: { shell, path: paths.rc }, remedy: `remove that line from ${paths.rc} yourself, then run \`cotal completion uninstall ${shell}\` again` });
+        if (nextStartup === current) same(paths.rc, startup);
       }
       if (readOnly()) throw new CommandFailure("refused", "PERMISSION_DENIED", `${paths.rc} is read-only, so its completion line was not removed; nothing was changed`, { target: { shell, path: paths.rc }, remedy: `remove the line ${completionSourceLine(paths.stub, shell)} from ${paths.rc} yourself, then run \`cotal completion uninstall ${shell}\` again` });
       if (paths.rc && nextStartup !== current) {

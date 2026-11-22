@@ -705,10 +705,34 @@ if (process.platform !== "win32" && process.getuid?.() !== 0) {
   s.run(["completion", "install", "bash"]);
   const again = s.run(["completion", "install", "bash", "--plain"]);
   check("a repeated install says nothing needed changing, not that material was changed", again.status === 0 && /Nothing needed changing/.test(again.stdout) && !/material was changed/.test(again.stdout), shown(again));
-  writeFileSync(rc, readFileSync(rc, "utf8") + `source '${stub}'\n`);
+  writeFileSync(rc, readFileSync(rc, "utf8") + `# Completion script: ${stub}\nsource '${stub}'\n`);
   const blocked = s.run(["completion", "uninstall", "bash"]);
-  check("uninstall refuses a hand-added line that sources the stub, naming the file, the line and what to do",
+  check("uninstall names the hand-added source line even with a comment naming the stub above it",
     blocked.status === 2 && blocked.stderr.includes(`${rc} still names this stub outside the cotal block, in "source '${stub}'"`) && blocked.stderr.includes(`remove that line from ${rc} yourself`) && existsSync(stub), shown(blocked));
+}
+
+// ── Only standalone Bash comments are exempt from the startup reference guard ────────────────────
+{
+  const s = sandbox();
+  const rc = join(s.home, ".bashrc"), stub = join(s.xdg, "cotal", "completion.bash"), record = `${stub}.ownership.json`;
+  const installed = s.run(["completion", "install", "bash", "--plain"]);
+  check("control: Bash completion installs before comment checks", installed.status === 0, shown(installed));
+  const block = readFileSync(rc, "utf8"), script = readFileSync(stub, "utf8"), ownership = readFileSync(record, "utf8");
+  const comment = `# Completion script: ${stub}\n`;
+  for (const [name, text, detail] of [
+    ["heredoc", `cat <<EOF\n# $(source '${stub}')\nEOF\n`, "still names this stub outside the cotal block"],
+    ["unparseable startup text", `if\n${comment}`, "could not be parsed as Bash"],
+  ] as const) {
+    writeFileSync(rc, block + text);
+    const removed = s.run(["completion", "uninstall", "bash", "--plain"]);
+    check(`uninstall refuses ${name} and changes no files`, removed.status === 2 && removed.stderr.includes(detail) && removed.stderr.includes("LIFECYCLE_BLOCKED") &&
+      readFileSync(rc, "utf8") === block + text && readFileSync(stub, "utf8") === script && readFileSync(record, "utf8") === ownership, shown(removed));
+  }
+  const comments = Buffer.from(`${comment}\t # Script location (é): ${stub}\r\n`);
+  writeFileSync(rc, Buffer.concat([Buffer.from(block), comments]));
+  const removed = s.run(["completion", "uninstall", "bash", "--plain"]);
+  check("uninstall keeps Bash comments naming the stub byte for byte and removes the owned block, stub and record",
+    removed.status === 0 && readFileSync(rc).equals(comments) && !existsSync(stub) && !existsSync(record), shown(removed));
 }
 
 // ── A startup file install created goes with the integration ───────────────────────────────────────
