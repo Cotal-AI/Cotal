@@ -32,7 +32,7 @@
  */
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
@@ -269,6 +269,12 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
   refused("help of a hidden internal subcommand is a usage error", cotal(["help", "ext", "__update-add"]), /cotal ext has no subcommand "__update-add"/);
   check("command help does not list a hidden subcommand", !cotal(["help", "ext"]).stdout.includes("__update-add"));
   refused("help of a hidden internal command is a usage error", cotal(["help", "__complete"]), /unknown command: __complete/);
+  const serviceHelp = cotal(["service", "--help"]);
+  const serviceListHelp = cotal(["help", "service", "list"]);
+  check("both help forms for service list show the parent help without listing the hidden mode",
+    serviceHelp.status === 0 && serviceHelp.stderr === "" && /^cotal service$/m.test(serviceHelp.stdout)
+    && /^Commands$/m.test(serviceHelp.stdout) && !/^  list\s/m.test(serviceHelp.stdout)
+    && same(serviceHelp, serviceListHelp) && same(serviceHelp, cotal(["service", "list", "--help"])), shown(serviceListHelp));
   // An official extension's command, before the extension is added, names the package to add.
   const linearAdd = /^✗ no installed extension provides command "linear" - install it with `cotal ext add @cotal-ai\/linear`$/m;
   refused("help linear without its extension names cotal ext add @cotal-ai/linear", cotal(["help", "linear"]), linearAdd);
@@ -903,7 +909,7 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
     persona(home);
     writeFileSync(join(home, "..", ".cotal", "agents", "bad.md"), "---\nname: bad\nsubscribe: [\n---\nbody\n");
   };
-  for (const [what, name, status, reason] of [["missing", "nosuch", 2, "TARGET_NOT_FOUND"], ["malformed", "bad", 1, "SCHEMA_INVALID"], ["badly named", "a b", 1, "persona names use letters"]] as const) {
+  for (const [what, name, status, reason] of [["missing", "nosuch", 2, "TARGET_NOT_FOUND"], ["malformed", "bad", 1, "SCHEMA_INVALID"], ["badly named", "a/b", 1, "persona names use letters"]] as const) {
     const legacy = cotal(["personas", "show", name], malformed, noSeed);
     const current = cotal(["persona", "show", name], malformed, noSeed);
     check(`personas show refuses a ${what} persona as persona show does`,
@@ -973,6 +979,24 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
       check(`${argv.join(" ")} refuses a linked persona with the file it links to as Next`,
         r.status === 2 && r.stderr.includes("PERMISSION_DENIED") && r.stderr.includes(`is a link to ${real}; replace the link with a copy of that file`) && lstatSync(link).isSymbolicLink(), shown(r));
     }
+    const absentTarget = "../../../stubs/missing.md";
+    for (const command of ["persona", "personas"]) {
+      const r = cotal([command, "show", "dangling"], (home) => {
+        persona(home);
+        link = join(home, "..", ".cotal", "agents", "dangling.md");
+        symlinkSync(absentTarget, link);
+      }, noSeed);
+      check(`${command} show names a missing link target and suggests restoring it or replacing the link`,
+        r.status === 2 && r.stderr.includes("PERMISSION_DENIED") && r.stderr.includes(`is a link to ${absentTarget}, but its target is missing`)
+        && r.stderr.includes("Restore the target if you still need it, or move the broken link aside and put a regular persona file in its place")
+        && !r.stderr.includes("with a copy") && !existsSync(link) && readlinkSync(link) === absentTarget, shown(r));
+    }
+    const folderLink = cotal(["persona", "show", "linked"], (home) => {
+      persona(home);
+      symlinkSync(outside, join(home, "..", ".cotal", "agents", "linked.md"), "dir");
+    }, noSeed);
+    check("persona show does not suggest copying a link's directory target",
+      folderLink.status === 2 && folderLink.stderr.includes("PERMISSION_DENIED") && folderLink.stderr.includes("its target is not a readable regular file") && !folderLink.stderr.includes("with a copy"), shown(folderLink));
   }
   // A catalog folder that is a file or a link to itself holds no personas: every catalog command
   // refuses CONFLICT naming it and what it is, and the listing is not shown as empty.

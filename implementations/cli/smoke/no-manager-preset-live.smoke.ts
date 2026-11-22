@@ -22,7 +22,8 @@ import { existsSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SMOKE_BROKER_TOKEN, assertSmokeSandboxDown, createSuite, freePort, recordSmokeSandbox, skipSuite, type SmokeSandboxAnchor } from "@cotal-ai/smoke-kit";
-import { readManagerSeatCap } from "@cotal-ai/workspace";
+import { codeSpan, readManagerSeatCap } from "@cotal-ai/workspace";
+import { shellWord } from "../src/lib/endpoint-errors.js";
 
 if (process.platform !== "linux") skipSuite("the native manager child is Linux-only");
 const BIN = join(import.meta.dirname, "..", "..", "..", "bin", "dist", "cotal.js");
@@ -47,14 +48,15 @@ const server = `nats://127.0.0.1:${await freePort()}`;
 const HOST_ENV = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("COTAL_") && k !== "FORCE_COLOR" && k !== "NO_COLOR"));
 const env = { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config"), COTAL_HOME: join(home, ".cotal"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" };
 let anchor: SmokeSandboxAnchor | undefined;
-const cotal = (...words: string[]) => {
-  const options = { cwd: root, env, encoding: "utf8" as const, timeout: 120_000 };
+const from = (cwd: string, ...words: string[]) => {
+  const options = { cwd, env, encoding: "utf8" as const, timeout: 120_000 };
   assertSmokeSandboxDown(anchor, words, options);
   const r = spawnSync(process.execPath, [BIN, ...words], options);
   let parsed: Envelope | undefined;
   try { parsed = JSON.parse(r.stdout) as Envelope; } catch { parsed = undefined; }
   return { status: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? "", env: parsed };
 };
+const cotal = (...words: string[]) => from(root, ...words);
 const shown = (r: ReturnType<typeof cotal>) => ({ status: r.status, error: r.env?.error, stdout: r.stdout.slice(0, 1500), stderr: r.stderr.slice(0, 800) });
 const instances = (): Instance[] => (cotal("service", "--space", space, "--json").env?.result?.instances as Instance[] | undefined) ?? [];
 const running = (definition: string) => instances().find((row) => row.definition === definition && row.observedProcess === "running");
@@ -94,6 +96,10 @@ try {
       && refused.env.error.message.startsWith(`the mgr service of this space runs this root's manager (pid ${mgr?.pid}, instance ${id})`)
       && launcher !== undefined && refused.env.error.remedy === `${stop}, then run \`${launcher} up\` again`
       && JSON.stringify(refused.env.target?.services) === JSON.stringify([{ definition: "mgr", instanceId: id }]), shown(refused));
+  const rooted = from(home, "up", "--root", root, "--space", space, "--json");
+  check("an ordinary retry from another folder names the requested stack",
+    rooted.status === 2 && rooted.env?.error?.code === "LIFECYCLE_BLOCKED" && launcher !== undefined
+      && rooted.env.error.remedy === `${stop}, then run ${codeSpan(`${launcher} up --space ${space} --root ${shellWord(root)}`)} again`, shown(rooted));
   const brokerOnly = cotal("up", "--no-manager", "--json");
   const retry = /then run `([^`]+)` again$/.exec(brokerOnly.env?.error?.remedy ?? "")?.[1];
   const expectedRetry = `${launcher} up --space ${space} --no-manager`;

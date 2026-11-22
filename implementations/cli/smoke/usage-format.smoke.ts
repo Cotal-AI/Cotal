@@ -90,6 +90,9 @@ const usageShape = (r: ReturnType<typeof run>, message: RegExp) =>
 
 const parser = run(["status", "--bogus"]);
 check("control: a parser usage error has the documented shape", usageShape(parser, /Unknown option '--bogus'/), shown(parser));
+const dottedOperand = run(["version", "release.3"]);
+check("an unexpected positional keeps the full value in its refusal",
+  usageShape(dottedOperand, /^✗ Unexpected argument 'release\.3'\n/m) && dottedOperand.stderr.includes("\ncotal version\n"), shown(dottedOperand));
 
 // The linear extension declares one usage form per line.
 const LINEAR = join(import.meta.dirname, "..", "..", "linear", "dist", "index.js");
@@ -129,6 +132,13 @@ const noValue = run(["history", "--limit"]);
 check("an option given last with no value is refused naming it and its placeholder", usageShape(noValue, /--limit needs a value/) && /write --limit <n>/.test(noValue.stderr) && !/argument missing/.test(noValue.stderr), shown(noValue));
 const flagValue = run(["history", "--limit", "--from", "bob"]);
 check("an option followed by another of the command's options is refused as missing its value", usageShape(flagValue, /--limit needs a value/) && /write --limit <n>/.test(flagValue.stderr), shown(flagValue));
+const groupedServer = run(["status", "--server", "-jv"]);
+const separateServer = run(["status", "--server", "-j", "-v"]);
+const groupedError = JSON.parse(groupedServer.stdout).error;
+check("a short option group after --server gets the same missing-value refusal as separate options",
+  groupedServer.status === 1 && separateServer.status === 1 && groupedServer.stderr === "" && separateServer.stderr === ""
+  && groupedServer.stdout === separateServer.stdout && groupedError.code === "USAGE_INVALID"
+  && groupedError.message === "--server needs a value" && groupedError.remedy === "write --server <url>", shown(groupedServer));
 const separatorValue = run(["history", "--json", "--limit", "--", "general"]);
 const separatorError = JSON.parse(separatorValue.stdout).error;
 check("an option followed by the separator asks for its value before the separator", separatorValue.status === 1 && separatorValue.stderr === ""
@@ -143,6 +153,17 @@ for (const args of [["--search", "-1"], ["--search=-1"], ["--search", "first"]])
 const numericQuery = run(["docs", "--json", "--search", "-1"]);
 check("one search accepts a dash and digit without an equals sign", numericQuery.status === 0 && numericQuery.stderr === ""
   && JSON.parse(numericQuery.stdout).result.query === "-1", shown(numericQuery));
+const noHitQuery = "zzq-cotal-help-probe-nohit";
+const searchTypo = run(["docs", "--json", "--serch", noHitQuery]);
+const searchError = JSON.parse(searchTypo.stdout).error;
+const searchCorrection = /^use (--[\w-]+)$/.exec(searchError.remedy)?.[1];
+const searchRetry = searchCorrection && run(["docs", "--json", searchCorrection, noHitQuery]);
+check("a typo in --search names a replacement option that searches for the same query",
+  searchTypo.status === 1 && searchTypo.stderr === "" && searchError.code === "USAGE_INVALID"
+  && searchError.message === "Unknown option '--serch' - did you mean --search?" && searchCorrection === "--search"
+  && !!searchRetry && searchRetry.status === 0 && searchRetry.stderr === ""
+  && JSON.parse(searchRetry.stdout).result.kind === "docs-search" && JSON.parse(searchRetry.stdout).result.query === noHitQuery,
+  { refused: shown(searchTypo), retry: searchRetry && shown(searchRetry) });
 const shortEquals = run(["send", "-c=general", "hello"]);
 check("-c=value is refused naming the value it would give", usageShape(shortEquals, /-c=general gives -c the value "=general"/) && /write -c general or --channel=general/.test(shortEquals.stderr), shown(shortEquals));
 for (const typed of ["\u2014json", "\u2212\u2212json", "\u2013json"]) {
@@ -206,12 +227,21 @@ if (process.platform !== "win32") {
   check("endpoint init does not replace scaffold files", conflict.status === 2 && JSON.parse(conflict.stdout).error?.code === "CONFLICT"
     && readFileSync(files[0]!, "utf8") === original, shown(conflict));
 
-  symlinkSync(directories[0]!, join(cwd, "linked-parent"), "dir");
-  for (const blocked of ["linked-parent", `${dir}/contract.json`]) {
-    const rejected = run(["endpoint", "init", "scratch", "--dir", `${blocked}/missing/scratch`, "--json"], {}, cwd);
-    check("endpoint init refuses a parent symlink or non-directory", rejected.status === 2 && JSON.parse(rejected.stdout).error?.code === "PERMISSION_DENIED"
-      && !existsSync(join(directories[0]!, "missing")), shown(rejected));
+  symlinkSync(directories[0]!, join(cwd, dir, "linked-parent"), "dir");
+  for (const blocked of [`${dir}/linked-parent`, `${dir}/contract.json`]) {
+    const args = ["endpoint", "init", "scratch", "--dir", `${blocked}/missing/scratch`];
+    const rejected = run([...args, "--json"], {}, cwd);
+    const plain = run([...args, "--plain"], {}, cwd);
+    const { target, error } = JSON.parse(rejected.stdout);
+    check("endpoint init names a blocked parent and advises using a real directory",
+      rejected.status === 2 && rejected.stderr === "" && error?.code === "PERMISSION_DENIED" && target?.path === join(cwd, blocked)
+      && /real directory path/.test(error.remedy) && plain.status === 2 && plain.stdout === ""
+      && plain.stderr.includes(join(cwd, blocked).replace(/'/g, `'\\''`)) && plain.stderr.includes("Next") && plain.stderr.includes(error.remedy)
+      && !existsSync(join(directories[0]!, "missing")), { json: shown(rejected), plain: shown(plain) });
   }
+  const physical = run(["endpoint", "init", "scratch", "--dir", join(directories[0]!, "missing/scratch"), "--json"], {}, cwd);
+  check("endpoint init succeeds with a real directory instead of the symlink", physical.status === 0
+    && existsSync(join(directories[0]!, "missing/scratch/contract.json")), shown(physical));
 
   const partial = run(["endpoint", "init", "scratch", "--dir", `partial-parent/${"x".repeat(256)}/scratch`, "--json"], {}, cwd);
   const partialReceipt = JSON.parse(partial.stdout);
@@ -232,6 +262,24 @@ if (process.platform !== "win32") {
     && text.every((r) => r.status === 2 && r.stdout === "" && r.stderr.includes(path) && r.stderr.includes(envelope.error.remedy))
     && corrected.status === 0 && JSON.parse(corrected.stdout).outcome === "ok", { text: text.map(shown), json: shown(json), corrected: shown(corrected) });
 }
+
+const referenceProject = join(home, "endpoint-reference");
+mkdirSync(referenceProject);
+const addReference = (path: string) => run(["endpoint", "add", "example", "--file", path, "--space", "usage-examples", "--json"], {}, referenceProject);
+const beforePreparation = addReference("");
+const prepared = run(["space", "create", "usage-examples", "--root", referenceProject, "--json"], {}, referenceProject);
+const afterPreparation = addReference("");
+for (const r of [beforePreparation, afterPreparation]) {
+  const envelope = JSON.parse(r.stdout);
+  check("endpoint add rejects empty --file before resolving the space or path", r.status === 1 && r.stderr === ""
+    && envelope.target === null && envelope.error?.code === "USAGE_INVALID" && envelope.error.message === "--file is empty"
+    && /reference JSON file/.test(envelope.error.remedy), shown(r));
+}
+const reference = { schemaVersion: 1, space: "usage-examples", endpoint: "com.example.reviews" };
+writeFileSync(join(referenceProject, "reference.json"), JSON.stringify(reference), { mode: 0o600 });
+const added = addReference("reference.json");
+check("endpoint add saves the reference after retrying with a file path", prepared.status === 0 && added.status === 0
+  && JSON.parse(added.stdout).result?.reference?.endpoint === reference.endpoint, { prepared: shown(prepared), added: shown(added) });
 
 const conflict = run(["up", "--foreground", "--detach"]);
 check("two conflicting flags have the same shape", usageShape(conflict, /--foreground or --detach/), shown(conflict));
@@ -893,6 +941,14 @@ if (process.platform !== "win32") {
   const helpSvcStartMgr = run(["help", "service", "start", "manager"]);
   const svcStartMgrHelp = run(["service", "start", "manager", "--help"]);
   check("help service start manager prints the same preset-augmented help as service start manager --help", helpSvcStartMgr.status === 0 && helpSvcStartMgr.stdout === svcStartMgrHelp.stdout && /--runtime/.test(helpSvcStartMgr.stdout), shown(helpSvcStartMgr));
+  const serviceList = run(["service", "list", "--space", "presetspace", "--json"], {}, presetSpace);
+  const helpService = run(["service", "--help"]);
+  const helpServiceList = run(["help", "service", "list"]);
+  const serviceListHelp = run(["service", "list", "--help"]);
+  check("both help forms for the hidden service list mode print parent help without listing the mode",
+    serviceList.status === 0 && JSON.parse(serviceList.stdout).result.kind === "service-inventory"
+    && [helpService, helpServiceList, serviceListHelp].every((r) => r.status === 0 && r.stderr === "" && r.stdout === helpService.stdout)
+    && /^Commands\n/m.test(helpService.stdout) && !/^  list\s/m.test(helpService.stdout), shown(helpServiceList));
   const svcAddPresetMissingHelp = run(["service", "add", "--preset", "--help"]);
   const svcAddPresetBogusHelp = run(["service", "add", "x", "--preset", "bogus", "--help"]);
   const svcAddHelp = run(["service", "add", "--help"]);

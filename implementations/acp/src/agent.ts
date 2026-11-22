@@ -55,6 +55,8 @@ export interface CotalAgentOptions {
   readonly hidden: HiddenSessions;
   readonly log: (line: string) => void;
   readonly version: string;
+  /** Whether the terminal action can sign in to the selected space or set one up. */
+  readonly canSignIn?: () => Promise<boolean>;
   /** Mints a new session's id, which becomes its seat's name. */
   readonly newName?: () => string;
   /** Overrides `START_MS` and `SETTLE_MS`. */
@@ -388,6 +390,7 @@ function slashCommands(b: Bridge) {
     const say = (line: string) => send(session, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: line } });
     switch (match[1]) {
       case "despawn": {
+        if (text !== "/despawn") return undefined;
         if (!session.seat) {
           await say("This session has no agent running.");
           return "end_turn";
@@ -421,7 +424,11 @@ function threadHandlers(b: Bridge, offers: Offers, runTurn: ReturnType<typeof tu
   return {
     newSession: async (params: NewSessionRequest, client: AgentContext) => {
       const m = await mesh();
-      const offer = await offerFor(m);
+      const offer = await offerFor(m).catch((e: unknown) => {
+        // ACP clients display the message, not necessarily the error data.
+        if (e instanceof NoLaunchManager) throw new RequestError(-32603, e.message);
+        throw e;
+      });
       const id = newName();
       const session: Session = { id, cwd: params.cwd, offer, selection: initialSelection(offer), mapper: new FrameMapper(), open: new Map(), client };
       sessions.set(id, session);
@@ -587,7 +594,7 @@ export function cotalAgent(options: CotalAgentOptions): AgentApp {
   const threads = threadHandlers(b, offers, turnRunner(b, options.waits?.startMs ?? START_MS, options.waits?.settleMs ?? SETTLE_MS), slashCommands(b), options.newName ?? defaultName);
   const history = historyHandlers(b, offers);
   const app = agent({ name: "cotal" })
-    .onRequest(methods.agent.initialize, ({ params }) => ({
+    .onRequest(methods.agent.initialize, async ({ params }) => ({
       protocolVersion: PROTOCOL_VERSION,
       agentInfo: { name: "cotal", title: "Cotal", version: options.version },
       agentCapabilities: {
@@ -595,7 +602,7 @@ export function cotalAgent(options: CotalAgentOptions): AgentApp {
         promptCapabilities: { image: false, audio: false, embeddedContext: false },
         sessionCapabilities: { list: {}, delete: {} },
       },
-      authMethods: params.clientCapabilities?.auth?.terminal
+      authMethods: params.clientCapabilities?.auth?.terminal && (await options.canSignIn?.() ?? true)
         ? [{ type: "terminal" as const, id: "cotal-sign-in", name: "Sign in to Cotal", description: "Signs in to a hosted space, or sets up a local one.", args: ["--auth"] }]
         : [],
     }))

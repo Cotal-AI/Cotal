@@ -738,7 +738,9 @@ read as another option.
 `clean history` refuses `--store-dir` with `USAGE_INVALID` (exit 1) and purges nothing, even with `--force`.
 Use `--store-dir` with `clean store` or `clean all` to name a stopped store.
 `clean history` also refuses `--attempt` with `USAGE_INVALID` (exit 1) and purges nothing, even with `--force`.
-`--attempt` selects a restore for `clean restore-attempt` or `clean restore-fallback`. It does not narrow a history purge.
+`clean store` and `clean all` refuse `--attempt` with `USAGE_INVALID` (exit 1) and remove nothing,
+in both `--dry-run` and `--force` modes. `--attempt` selects a restore only for `clean restore-attempt`
+or `clean restore-fallback`.
 `clean restore-attempt` and `clean restore-fallback` also refuse `--store-dir` with `USAGE_INVALID`
 (exit 1) and change nothing. Remove the option and its value only to act on the restore named by `--attempt`.
 Only `history` takes `--space` (or `-s`), `--server` or `--creds`. Local cleanup uses the project found

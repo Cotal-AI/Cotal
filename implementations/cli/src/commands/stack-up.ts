@@ -74,6 +74,7 @@ import { listLedgerFiles } from "../lib/manifest/ledger.js";
 import { listAdditiveTeamAttempts, retainedAdditiveTeamAttempts, type AdditiveTeamAttempt } from "../lib/team-additive-attempt.js";
 import { freshTeamAttemptSettled, listFreshTeamAttempts, listFreshTeamSummaries } from "../lib/team-fresh.js";
 import { foreignLocalProcesses, newStackOperation, readStackJournal, removeStaleLocalRecords, runningStackRoles, serviceHeldRecords, settleRetainedStackStops, settleStackOperation, STACK_ADAPTER, STACK_DEFINITION, STACK_ROLES, stackDefinitionsAt, stackMaintenanceFence, stackNeverStarted, stackRecoveryHost, stackOperationUnsettled, stackRoleApplies, stackSettlementNotice, staleRecordWarning, withSettledMembers, writeStackJournal, type LocalRecord, type StackJournal, type StackJournalSnapshot, type StackMember, type StackMode, type StackRole, type StackSettlement } from "../lib/stack-journal.js";
+import { retryStackAddress } from "../lib/up-broker-address.js";
 import { NATS_DEFAULT_MAX_PAYLOAD, natsServerLabel, type NatsServer } from "../lib/nats-bin.js";
 import { sharedStoreAtStart, sharedStoreWarning, type StoreTenant } from "../lib/store-dir.js";
 import { readStoreIdentity, stackStoreWarnings } from "../lib/store-identity.js";
@@ -373,7 +374,7 @@ function stackPreflight({ root, space, noManager, invokedRoot, manifest }: Stack
   if (held.length && held.length === legacy.length) {
     const cmd = displayCmd();
     const retryRoot = invokedRoot !== undefined && invokedRoot !== root ? ` --root ${shellWord(root)}` : "";
-    const retry = noManager ? `${cmd} up --space ${shellWord(space)} --no-manager${retryRoot}` : `${cmd} up`;
+    const retry = noManager || retryRoot ? `${cmd} up --space ${shellWord(space)}${noManager ? " --no-manager" : ""}${retryRoot}` : `${cmd} up`;
     throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `${held.map((row) => `the ${row.definition} service of this space runs this root's ${row.record.name} (pid ${row.record.pid}, instance ${row.instanceId})`).join("; ")}, outside the controller stack, which neither adopts nor replaces it`, {
       target: { root, space, processes: legacy, services: held.map((row) => ({ definition: row.definition, instanceId: row.instanceId })) },
       remedy: `stop ${held.length === 1 ? "it" : "each"} with ${held.map((row) => codeSpan(`${cmd} svc stop ${row.definition} --instance ${row.instanceId} --space ${shellWord(space)} --yes`)).join(", ")}, then run ${codeSpan(retry)} again`,
@@ -588,7 +589,7 @@ function reusedWithoutJetStream(caught: unknown, brokerReused: boolean, root: st
   return jetStreamDisabledRefusal(disabled, root, space, "up cannot check the space's streams on it", "its running members were left as they are", { root, space }, manager?.process?.pid);
 }
 
-/** What holds a stopped stack's recorded broker address, as bare up's own bind check finds it, with
+/** What holds a stack's recorded broker address, as bare up's own bind check finds it, with
  *  the listening processes of this account named. Undefined while the address is free, could not be
  *  checked, or this stack's broker runs there. */
 async function recordedAddressHeld(space: string, server: string, bindHost?: string): Promise<{ says: string; frees: string } | undefined> {
@@ -606,18 +607,22 @@ async function recordedAddressHeld(space: string, server: string, bindHost?: str
   return holders.length ? { says: `${held.says}, where process ${holders.join(", ")} of this account listens`, frees: held.frees } : held;
 }
 
-/** The live address blocker for a stopped controller stack, when the requested server matches its recorded broker. */
-export async function stoppedStackAddressProblem(root: string, space: string, server?: string): Promise<{ message: string; remedy: string } | undefined> {
+/** The live address blocker for a stopped stack or refused first start at its recorded broker address. */
+export async function stackStartAddressProblem(root: string, space: string, server?: string): Promise<{ message: string; remedy: string } | undefined> {
   try {
     const journal = readStackJournal(root)?.journal;
     if (journal?.space !== space || (server !== undefined && brokerUrlKey(server) !== brokerUrlKey(journal.server))) return undefined;
     const { kind, phase } = journal.operation;
     const cleanStop = kind === "down" && phase === "completed";
-    const refusedRestart = kind === "up" && phase === "refused" && !stackNeverStarted(journal)
+    const refusedStart = kind === "up" && phase === "refused"
       && journal.members.some((row) => row.role === "broker" && row.state === "refused");
-    if (!cleanStop && !refusedRestart) return undefined;
+    if (!cleanStop && !refusedStart) return undefined;
     const held = await recordedAddressHeld(space, journal.server, journal.broker?.host);
     if (!held) return undefined;
+    if (refusedStart && stackNeverStarted(journal)) {
+      const retry = await retryStackAddress(["--foreground"], root, journal.server, journal.broker?.host ?? brokerListenAddress(journal.server).host);
+      return { message: held.says, remedy: `${retry ? `${retry}, or ` : ""}${held.frees}, then run ${codeSpan(`${displayCmd()} up`)} in ${root}` };
+    }
     const noManager = journal.members.some((row) => row.role === "manager" && row.state === "not-attempted" && (cleanStop || row.instanceId === null));
     const restart = `${displayCmd()} up${noManager ? " --no-manager" : ""}`;
     return { message: held.says, remedy: `${held.frees}, then run ${codeSpan(restart)} in ${root}; this stack keeps its recorded address` };
@@ -921,7 +926,7 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
   // evidence under the held maintenance lock. Only a preserve or resume can remain unsettled here.
   // A member stop an earlier down could not confirm in time is settled from its own receipt first.
   if (previous) await settleRetainedStackStops(previous.journal);
-  const { snapshot: current, settled } = previous ? settleStackOperation(request.maintenanceLock, previous) : { snapshot: undefined, settled: undefined };
+  const { snapshot: current, settled } = previous ? settleStackOperation(request.maintenanceLock, previous, request.invokedRoot) : { snapshot: undefined, settled: undefined };
   if (current && stackOperationUnsettled(current.journal))
     throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "an earlier preserve or resume on this root has no settled outcome; it is decided by its own maintenance attempt and no member was started", { target: { root, space, operation: current.journal.operation }, remedy: `inspect the root's maintenance attempt and the stack's members with \`cotal service --space ${space}\` before another whole-stack operation` });
   const server = previous?.journal.server ?? request.server;

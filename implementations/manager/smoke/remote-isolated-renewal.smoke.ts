@@ -76,12 +76,12 @@ const sign = (n: Name, ttl?: number) => {
 };
 
 type Internals = {
-  ep: { nc?: NatsConnection };
+  ep: { conn: { nc?: NatsConnection } };
   serviceServe?: { nc: NatsConnection; creds?: string; grant: { epoch: number } };
   goalWriter?: { nc: NatsConnection; creds?: string };
-  sessionLedgerConn?: { nc: NatsConnection; creds?: string };
   managerInstanceId: string;
   credentialRenewal: { remoteSupervisorCreds?: string; remoteExecutorCreds?: string; remoteRenewalDebt?: { processEpoch: number; reason: string; unadoptedSubjects: string[] }; };
+  servePlane: { sessionLedgerConn?: { nc: NatsConnection; creds?: string }; };
 };
 
 let manager: Manager | undefined;
@@ -163,14 +163,14 @@ try {
   const m = manager as unknown as Internals;
   await manager.start();
   const epoch = m.serviceServe!.grant.epoch;
-  const conns = () => [m.ep.nc, m.serviceServe?.nc, m.goalWriter?.nc, m.sessionLedgerConn?.nc];
+  const conns = () => [m.ep.conn.nc, m.serviceServe?.nc, m.goalWriter?.nc, m.servePlane.sessionLedgerConn?.nc];
 
   await cell("Manager.start() brings up supervisor, serve, goal-writer and session-ledger on the initial family", async () => {
     assert.deepEqual(await Promise.all(conns().map(flushes)), [true, true, true, true]);
     assert.equal(calls, 0);
     assert.equal(m.managerInstanceId, instanceId);
   });
-  const baseline = [m.ep.nc, m.serviceServe?.nc, m.goalWriter?.nc, m.sessionLedgerConn?.nc];
+  const baseline = [m.ep.conn.nc, m.serviceServe?.nc, m.goalWriter?.nc, m.servePlane.sessionLedgerConn?.nc];
   await cell("only the selected credential expires while the executor and sibling rails stay healthy", async () => {
     assert.ok(await until(() => inspectCredHealth(initial[target]).state === "expired", (TTL + 15) * 1000));
     for (const n of names) if (n !== target) assert.equal(inspectCredHealth(initial[n]).state, "healthy", `${n} must remain healthy`);

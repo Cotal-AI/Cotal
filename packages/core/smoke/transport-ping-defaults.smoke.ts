@@ -66,7 +66,7 @@ try {
   override.on("transport", (event: { connected: boolean }) => { if (!event.connected) overrideDown ??= Date.now(); });
   await ordinary.start();
   await override.start();
-  const native = (ep: CotalEndpoint) => (ep as unknown as { nc: { options: { pingInterval: number; maxPingOut: number } } }).nc.options;
+  const native = (ep: CotalEndpoint) => (ep as unknown as { conn: { nc: { options: { pingInterval: number; maxPingOut: number } } } }).conn.nc.options;
   check("default reaches native NATS as 10 seconds and two outstanding pings", native(ordinary).pingInterval === 10_000 && native(ordinary).maxPingOut === 2);
   check("explicit delivery-style override reaches native NATS unchanged", native(override).pingInterval === 2500 && native(override).maxPingOut === 2);
   for (const invalid of [0, -1, 0.5, Number.NaN]) {

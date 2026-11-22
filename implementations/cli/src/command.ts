@@ -1,6 +1,6 @@
 import { existsSync, writeSync } from "node:fs";
 import { homedir } from "node:os";
-import { isAbsolute, join, parse, resolve } from "node:path";
+import { delimiter, isAbsolute, join, parse, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { commandDeclarationProblems, findCommand, findSubcommand, parseCommandArgs, type Command, type FlagSpec, type ParsedArgs, type Registry, type Subcommand } from "@cotal-ai/core";
 import {
@@ -33,10 +33,12 @@ import {
   paintFor,
   preferencesFolderWarning,
   recordOperationWarning,
+  reportLostOutput,
   renderReport,
   renderWorkspaceError,
   runOperation,
   workspaceErrorParts,
+  writeAllSync,
   spaceRootTarget,
   targetErrorCode,
   targetErrorSpace,
@@ -72,12 +74,11 @@ import { chooseMeshTarget, spaceChoiceRemedy } from "./lib/choose-target.js";
 import { registryFailure } from "./lib/registry-errors.js";
 import { FlagValueRefusal } from "./lib/flag-value-refusal.js";
 import { workingFolderRemoved } from "./lib/paths.js";
-import { reportLostOutput, writeAllSync } from "./lib/stdout-owner.js";
 import { shellWord } from "./lib/endpoint-errors.js";
 import { displayRemedy } from "./lib/self-exec.js";
 import { GLOBAL_FLAG_WORDS, OUTPUT_FLAG_WORDS } from "./lib/leading-flags.js";
 import { takeManagedHandoffCustody } from "./managed-handoff.js";
-import { didYouMean, LEADING_FLAGS, unknownCommandMessage, unknownSubcommandMessage } from "./lib/nearest-word.js";
+import { nearestWords, LEADING_FLAGS, unknownCommandMessage, unknownSubcommandMessage } from "./lib/nearest-word.js";
 import { UnusableFile } from "./lib/unusable-file.js";
 import { armTelemetry, recordTelemetryError, recordTelemetryFailure } from "./telemetry.js";
 
@@ -459,21 +460,24 @@ function misspelledOption(cmd: Command, rest: readonly string[], flagNames: read
   return undefined;
 }
 
-/** A parse error as a refusal. Node's own usage guidance is replaced with this CLI's remedies:
- *  a word that starts with `-` goes after `--` only where the command takes operands,
- *  an option value that starts with `-` is written `--name=value`, and an option given with no value,
+/** A parse error as a refusal. A mistyped option names its spelling. A word that starts with `-`
+ *  goes after `--` only where the command takes operands and there is no spelling suggestion.
+ *  An option value that starts with `-` is written `--name=value`, and an option given with no value,
  *  last, before `--`, or before another of the command's options, is named with its placeholder. */
 function parseRefusal(error: Error & { code?: string }, cmd: Command, rest: readonly string[], flagNames: readonly string[] | undefined, takesOperands: boolean): { message: string; remedy?: string } {
   if (error.code === "ERR_PARSE_ARGS_UNKNOWN_OPTION") {
     const reason = error.message.replace(/'\. To specify a positional argument starting with a '-', place it at the end of the command after '--', as in '-- "(?:[^"\\]|\\.)*"$/u, "'");
     const option = /^Unknown option '(--.+)'$/su.exec(reason)?.[1];
-    const hint = option ? didYouMean(option, [...(flagNames ?? (cmd.flags ?? []).map((flag) => flag.name)).map((name) => `--${name}`), "--no-color", "--no-input", "--help"]) : "";
-    const message = hint ? `${reason} - ${hint}` : reason;
+    const nearest = option ? nearestWords(option, [...(flagNames ?? (cmd.flags ?? []).map((flag) => flag.name)).map((name) => `--${name}`), "--no-color", "--no-input", "--help"]) : [];
+    const spellings = nearest.join(" or ");
+    const message = spellings ? `${reason} - did you mean ${spellings}?` : reason;
     const remedy = cmd.name === "completion" ? "drop the unknown option"
-      : takesOperands ? "to pass a word that starts with \"-\", put -- before it" : undefined;
+      : !takesOperands ? undefined : spellings ? `use ${spellings}` : "to pass a word that starts with \"-\", put -- before it";
     return { message, remedy };
   }
-  const message = error.message.split(".")[0]!;
+  if (error.code === "ERR_PARSE_ARGS_UNEXPECTED_POSITIONAL") {
+    return { message: error.message.replace(/\. This command does not take positional arguments\.?$/u, "") };
+  }
   const missingValue = (flag: FlagSpec, beforeSeparator = false) => ({ message: `--${flag.name} needs a value`, remedy: `write --${flag.name} ${flag.value ?? "<value>"}${beforeSeparator ? " before --" : ""}` });
   const bare = /^Option '(?:-[^,']+, )?--([^ ']+) <value>' argument missing/.exec(error.message)?.[1];
   const last = bare === undefined ? undefined : cmd.flags?.find((item) => item.name === bare);
@@ -492,14 +496,15 @@ function parseRefusal(error: Error & { code?: string }, cmd: Command, rest: read
       if (token.inlineValue === false && !numeric && value?.startsWith("-") && value !== "-") {
         if (seen && !flag.multiple) return { message: `--${flag.name} cannot be repeated`, remedy: `use --${flag.name} once` };
         if (value === "--") return missingValue(flag, true);
-        if (cmd.flags?.some((item) => value === `--${item.name}` || value.startsWith(`--${item.name}=`) || (item.short !== undefined && value === `-${item.short}`)))
+        const next = parseArgs({ args: [value], options, strict: false, allowPositionals: true, tokens: true });
+        if (next.tokens.every((item) => item.kind === "option" && Object.hasOwn(options, item.name)))
           return missingValue(flag);
         return { message: `the value of --${flag.name} starts with "-", so it reads as an option`, remedy: `write it as --${flag.name}=${shellWord(value)}` };
       }
       seen = true;
     }
   }
-  return { message };
+  return { message: error.message };
 }
 
 /** `rest` parsed against `cmd`'s declared flags, positionals and subcommands, or a usage exit. */
@@ -538,7 +543,7 @@ function parseOrExit(cmd: Command, rest: string[]): ParsedArgs {
   // whose variable is unset would act on whichever space is selected.
   const spaceFlag = cmd.flags?.find((flag) => flag.name === "space");
   if (spaceFlag && typeof parsed.values.space === "string" && !parsed.values.space.trim())
-    failureExit(cmd, new CommandFailure("refused", "USAGE_INVALID", `--space${spaceFlag.short ? `/-${spaceFlag.short}` : ""} is empty; name one space`, { remedy: "name the space; `cotal space` lists the spaces this machine knows" }), json, parsed.values.plain === true, undefined, rest);
+    failureExit(cmd, new CommandFailure("refused", "USAGE_INVALID", `--space${spaceFlag.short ? `/-${spaceFlag.short}` : ""} is empty; name one space`, { remedy: "name the space; `cotal space` lists the spaces this machine knows" }), json, parsed.values.plain === true, undefined, rest, parsed);
   // An empty --store-dir reads as no value and opens the default store, and a ~ no shell expanded
   // names a folder called ~ in the working folder.
   const storeDir = parsed.values["store-dir"];
@@ -566,7 +571,7 @@ function parseOrExit(cmd: Command, rest: string[]): ParsedArgs {
     for (const server of servers) {
       const checked = checkServer(server, "--server");
       if (!checked.ok)
-        failureExit(cmd, new CommandFailure("refused", "USAGE_INVALID", `${checked.message.replace(/^✗ /, "")}; the command did not run`, { remedy: checked.remedy, selfContained: true }), json, canonical.values.plain === true, undefined, rest);
+        failureExit(cmd, new CommandFailure("refused", "USAGE_INVALID", `${checked.message.replace(/^✗ /, "")}; the command did not run`, { remedy: checked.remedy, selfContained: true }), json, canonical.values.plain === true, undefined, rest, canonical);
     }
   }
   return canonical;
@@ -588,11 +593,13 @@ const FOLDERLESS = new Set(["help", "version", "completion", "docs", "telemetry"
 function refuseRemovedFolder(cmd: Command, parsed: ParsedArgs, rest: readonly string[]): void {
   if (cmd.name === "update") {
     // Global maintenance must not inherit an unrelated disposable working folder. Keep the
-    // project's root when one exists and resolve a relative credential before changing folders.
+    // project's root when one exists and preserve relative credentials and tool paths.
     const removed = workingFolderRemoved();
     const root = removed ? undefined : findCotalRoot();
     if (typeof parsed.values.creds === "string" && !isAbsolute(parsed.values.creds) && !removed)
       parsed.values.creds = resolve(parsed.values.creds);
+    if (!removed && process.env.PATH !== undefined)
+      process.env.PATH = process.env.PATH.split(delimiter).map(dir => dir && !isAbsolute(dir) ? resolve(dir) : dir).join(delimiter);
     process.chdir(root && existsSync(join(root, ".cotal")) ? root : parse(homedir()).root);
     return;
   }
@@ -968,8 +975,8 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
       if (isConnectRefusal(e)) {
         const failure = e.failure(renderRemedy), cause = e.cause;
         if (isWorkspaceTargetError(cause) && cause.code === "not-started" && cause.details.stopped && !cause.details.unsettled && cause.details.root && cause.details.space) {
-          const { stoppedStackAddressProblem } = await import("./commands/stack-up.js");
-          const held = await stoppedStackAddressProblem(cause.details.root, cause.details.space);
+          const { stackStartAddressProblem } = await import("./commands/stack-up.js");
+          const held = await stackStartAddressProblem(cause.details.root, cause.details.space);
           if (held) failureExit(cmd, inOperationSpace(new CommandFailure("refused", failure.code, `${failure.message}; ${held.message}`, { remedy: held.remedy, target: failure.target }), scope.space), json, parsed.values.plain === true, scope, rest);
         }
         failureExit(cmd, inOperationSpace(await choice(failure), scope.space), json, parsed.values.plain === true, scope, rest);

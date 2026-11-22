@@ -177,6 +177,8 @@ export async function serviceAction(args: ParsedArgs, space: string, root: strin
   if (mode === "start" || mode === "restart" || mode === "install") assertDefinitionRoot(definition, space, root, mode);
   const rows = serviceInstances(space, name);
   let id = values.instance;
+  if (mode === "restart" && id === undefined && rows.length === 0)
+    throw new CommandFailure("refused", "TARGET_NOT_FOUND", "no instance is recorded for this service definition", { target: { space, name }, remedy: `cotal service start ${shellWord(name)} --space ${shellWord(space)}`, remedyIsCommand: true });
   if (!id && rows.length > 1 && !values["new-instance"] && canPrompt() && presentation !== "json") {
     const selected = await prompts.select({ message: `Choose the full owned instance of ${oneLine(name)}`, options: rows.map((row) => ({ value: row.name, label: row.name, hint: `${row.record.value.host.name} · ${observeServiceProcess(row.record.value)}` })) });
     if (prompts.isCancel(selected)) return cancelled();
@@ -288,13 +290,13 @@ export async function serviceAction(args: ParsedArgs, space: string, root: strin
       return;
     }
     if (definition.record.value.launch.type === "adapter") {
-      const launch = definition.record.value.launch, adapter = resolveServiceAdapter(launch.adapter, launch.options);
+      const launch = definition.record.value.launch, adapter = resolveServiceAdapter(launch.adapter, launch.options, false);
       if (!controlsRecordedAdapter(selected!.record.value, adapter) || !adapter.declaration.capabilities.logs) throw new CommandFailure("refused", "UNSUPPORTED", "the pinned adapter does not declare log access through this controller, or its declaration changed; no different provider was loaded", { target });
     }
     const tail = values.tail === undefined ? 100 : Number(values.tail);
     if (values.follow) return followServiceLog(selected!, presentation, tail);
     // A tail that returned every line asked for is complete, even when earlier bytes were not read.
-    const row = instanceProjection(selected!), log = readServiceLog(space, selected!.name, tail);
+    const row = instanceProjection(selected!), log = readServiceLog(space, selected!.name, tail, !row.foreground);
     writeResult(presentation, { command: commandName, target, result: { kind: "service-logs", instance: row, ...log, encoding: "utf8-with-replacement", collection: row.foreground ? "foreground output is not captured in this log" : "owned background stdout/stderr" }, ...(log.omittedBytes && log.lines.length < tail ? { completeness: "partial", partial: { message: "The 16 MiB bounded read holds fewer lines than the requested tail; earlier bytes were omitted." } } : {}) }, (result): Report => ({ sections: [{ title: "Service log tail", blocks: [{ kind: "fields", rows: [["Definition", name], ["Instance", row.instanceId], ["Host", row.executionHost], ["Collection", result.collection], ["Encoding", result.encoding]] }, { kind: "lines", lines: result.lines.length ? result.lines : ["No captured log lines in this bounded read."] }, { kind: "lines", lines: [{ text: "Service-produced output may contain secrets. This is a local authorized read, not a secret-redacted log or an upload.", tone: "hint" }] }] }] }));
     return;
   }

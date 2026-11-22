@@ -3,6 +3,9 @@
 // the consumer and stream reads. Moved verbatim from endpoint.ts. It owns the task epoch, the first-connect
 // flag and the chat subscription refusals; the endpoint keeps the shared fields and chatFrontier and forwards
 // to these. Not re-exported by the index.
+import type { DeliveryState } from "./endpoint-delivery-state.js";
+import type { LifecycleState } from "./endpoint-lifecycle-state.js";
+import type { ConnectionState } from "./endpoint-connection-state.js";
 import type { EndpointIdentity } from "./endpoint-identity.js";
 import { withDeadline } from "./deadline.js";
 import { ackWaitOf, durableDelivery, isRecord } from "./endpoint-inbound.js";
@@ -12,25 +15,14 @@ import { isConsumerNotFound, isJetStreamMissing, isStreamNotFound } from "./jets
 import { taskDurableConfig } from "./streams.js";
 import { dmDurable, dmStream, taskStream, taskDurable, type ParsedSubject, parseSubject, chatSubject } from "./subjects.js";
 import type { AnycastTakeOutcome, MessageMeta, CotalMessage, Delivery } from "./types.js";
-import { type JetStreamManager, type JetStreamClient, type ConsumerMessages, jetstreamManager, type Consumer, type JsMsg, JetStreamApiCodes, type ConsumerInfo } from "@nats-io/jetstream";
-import { type NatsConnection, type Subscription, PermissionViolationError } from "@nats-io/transport-node";
+import { type JetStreamManager, type ConsumerMessages, jetstreamManager, type Consumer, type JsMsg, JetStreamApiCodes, type ConsumerInfo } from "@nats-io/jetstream";
+import { PermissionViolationError } from "@nats-io/transport-node";
 
 /** What the consumers component reads from its endpoint. State is read when it is used, never copied, a
  *  field it reassigns is written back through its setter, and every method is looked up on the endpoint
  *  at call time, so a member a caller replaced on the endpoint is the one that runs. */
 export interface EndpointConsumersDeps {
-  nc: () => NatsConnection | undefined;
-  jsm: () => JetStreamManager | undefined;
-  setJsm: (value: JetStreamManager | undefined) => void;
-  js: () => JetStreamClient | undefined;
   authed: () => boolean;
-  streamMsgs: () => ConsumerMessages[];
-  stopped: () => boolean;
-  dmOnlyInFlight: () => Promise<void> | undefined;
-  setDmOnlyInFlight: (value: Promise<void> | undefined) => void;
-  chatSubs: () => Map<string, Subscription>;
-  chatSubDenied: () => Set<string>;
-  plane3Channels: () => Map<string, number>;
   notLiveMsg: () => string;
   requireLifecycleUid: (what: string) => string;
   ensureDmDurable: (owner: string, actor: string, lifecycleUid: string, opts: { ackWaitMs?: number; inactiveThresholdMs?: number }) => Promise<void>;
@@ -60,20 +52,9 @@ export class EndpointConsumers {
    *  connection status, so the callback owns it (see {@link EndpointConsumers.subscribeChat}) and watchStatus skips it. */
   private readonly chatSubRefusals = new WeakSet<PermissionViolationError>();
 
-  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly deps: EndpointConsumersDeps) {}
+  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly conn: ConnectionState, private readonly lifecycle: Readonly<LifecycleState>, private readonly delivery: DeliveryState, private readonly deps: EndpointConsumersDeps) {}
 
-  private get nc() { return this.deps.nc(); }
-  private get jsm() { return this.deps.jsm(); }
-  private set jsm(value: JetStreamManager | undefined) { this.deps.setJsm(value); }
-  private get js() { return this.deps.js(); }
   private get authed() { return this.deps.authed(); }
-  private get streamMsgs() { return this.deps.streamMsgs(); }
-  private get stopped() { return this.deps.stopped(); }
-  private get dmOnlyInFlight() { return this.deps.dmOnlyInFlight(); }
-  private set dmOnlyInFlight(value: Promise<void> | undefined) { this.deps.setDmOnlyInFlight(value); }
-  private get chatSubs() { return this.deps.chatSubs(); }
-  private get chatSubDenied() { return this.deps.chatSubDenied(); }
-  private get plane3Channels() { return this.deps.plane3Channels(); }
   private notLiveMsg(): string { return this.deps.notLiveMsg(); }
   private requireLifecycleUid(what: string): string { return this.deps.requireLifecycleUid(what); }
   private ensureDmDurable(owner: string, actor: string, lifecycleUid: string, opts: { ackWaitMs?: number; inactiveThresholdMs?: number }): Promise<void> { return this.deps.ensureDmDurable(owner, actor, lifecycleUid, opts); }
@@ -94,14 +75,14 @@ export class EndpointConsumers {
   /** Lazily obtain a JetStream manager — so a non-consuming endpoint (e.g. the supervisor,
    *  consume:false) can still pre-create others' durables. */
   async manager(): Promise<JetStreamManager> {
-    if (!this.nc) throw new Error(this.notLiveMsg());
-    this.jsm ??= await jetstreamManager(this.nc);
-    return this.jsm;
+    if (!this.conn.nc) throw new Error(this.notLiveMsg());
+    this.conn.jsm ??= await jetstreamManager(this.conn.nc);
+    return this.conn.jsm;
   }
 
   /** Bind this endpoint's durable consumers: DM inbox, chat, and (if a role) the task queue. */
   async startConsumers(): Promise<void> {
-    if (!this.jsm) throw new Error(this.notLiveMsg());
+    if (!this.conn.jsm) throw new Error(this.notLiveMsg());
 
     // Unicast: this instance's private DM inbox, keyed on this endpoint's owner+actor principal. Open
     // mode self-creates; auth mode BINDS a durable the provisioner pre-created (agents are denied
@@ -160,7 +141,7 @@ export class EndpointConsumers {
     // filter is the cross-role-drain attack surface — see provisionTaskQueue).
     if (this.identity.card.role) {
       if (!this.authed) {
-        await this.jsm.consumers.add(
+        await this.conn.jsm.consumers.add(
           taskStream(this.identity.space),
           taskDurableConfig(this.identity.space, this.identity.card.role, { ackWaitMs: this.identity.ackWaitMs }),
         );
@@ -173,13 +154,13 @@ export class EndpointConsumers {
    *  delivered too: on the DM inbox and the role queue they were addressed to us, so none is an echo,
    *  and acking one unseen on the work queue would delete the only copy of the request. */
   private async pump(stream: string, durable: string, opts: { inbox?: boolean; takeRole?: string } = {}): Promise<void> {
-    if (!this.js) throw new Error(this.notLiveMsg());
+    if (!this.conn.js) throw new Error(this.notLiveMsg());
     const consumer = opts.takeRole === undefined
-      ? await this.js.consumers.get(stream, durable)
+      ? await this.conn.js.consumers.get(stream, durable)
       : await this.bindTaskConsumer(stream, durable);
     const ackWaitMs = await ackWaitOf(consumer);
     const msgs = await consumer.consume();
-    this.streamMsgs.push(msgs);
+    this.delivery.streamMsgs.push(msgs);
     if (opts.inbox) this.watchInbox(msgs, stream, durable);
     void (async () => {
       for await (const m of msgs) {
@@ -201,7 +182,7 @@ export class EndpointConsumers {
         } satisfies MessageMeta);
       }
     })().catch((e) => {
-      if (!this.stopped) this.emit("error", e as Error);
+      if (!this.lifecycle.stopped) this.emit("error", e as Error);
     });
   }
 
@@ -210,7 +191,7 @@ export class EndpointConsumers {
   private async bindTaskConsumer(stream: string, durable: string): Promise<Consumer> {
     for (let attempt = 0; attempt < 3; attempt++) {
       const before = await this.readTaskEpoch();
-      const consumer = await this.js!.consumers.get(stream, durable);
+      const consumer = await this.conn.js!.consumers.get(stream, durable);
       if (before === (await this.readTaskEpoch())) return consumer;
     }
     throw new Error(`the ${stream} stream was recreated while its role consumer was binding; reconnect to bind it again`);
@@ -232,12 +213,12 @@ export class EndpointConsumers {
    *  re-arms the warning. The loop ends when the consumer is stopped, by `stop()` or by a rebuild
    *  replacing this connection. */
   private watchInbox(msgs: ConsumerMessages, stream: string, durable: string): void {
-    const boundNc = this.nc;
+    const boundNc = this.conn.nc;
     void (async () => {
       let absences = 0;
       let deleted = false;
       for await (const s of msgs.status()) {
-        if (this.stopped || this.nc !== boundNc) break;
+        if (this.lifecycle.stopped || this.conn.nc !== boundNc) break;
         if (s.type === "next") {
           absences = 0;
           deleted = false;
@@ -256,7 +237,7 @@ export class EndpointConsumers {
           ));
       }
     })().catch((e) => {
-      if (!this.stopped) this.emit("error", e as Error);
+      if (!this.lifecycle.stopped) this.emit("error", e as Error);
     });
   }
 
@@ -298,12 +279,12 @@ export class EndpointConsumers {
    *  The bind is one CONSUMER.INFO on `dm_<owner>-<actor>-<uid>`; reading is MSG.NEXT with a batch
    *  of one, and the next copy reaches the handler only after the previous handler settles. */
   async bindDmOnly(mode: DmOnlyOptions): Promise<void> {
-    if (!this.js) throw new Error(this.notLiveMsg());
+    if (!this.conn.js) throw new Error(this.notLiveMsg());
     const stream = dmStream(this.identity.space);
     const durable = dmDurable(this.identity.owner, this.identity.actor, this.requireLifecycleUid("consuming the DM inbox"));
     let consumer: Consumer;
     try {
-      consumer = await this.js.consumers.get(stream, durable);
+      consumer = await this.conn.js.consumers.get(stream, durable);
     } catch (e) {
       if (isJetStreamMissing(e, JetStreamApiCodes.ConsumerNotFound)) throw new DmDurableMissingError(stream, durable);
       throw new DmBindRefusedError(stream, durable, e);
@@ -311,20 +292,20 @@ export class EndpointConsumers {
     const ackWaitMs = await ackWaitOf(consumer); // cached by the bind's own CONSUMER.INFO, no request
     // A rebind after reconnect must not overlap the previous epoch's running handler. A handler that
     // does not settle within the stop bound fails this bind; the retry loop tries again.
-    if (this.dmOnlyInFlight) {
+    if (this.delivery.dmOnlyInFlight) {
       const settleMs = mode.settleTimeoutMs ?? 30_000;
-      await withDeadline(this.dmOnlyInFlight, settleMs, () =>
+      await withDeadline(this.delivery.dmOnlyInFlight, settleMs, () =>
         new Error(`DM-only rebind waited ${settleMs}ms for the previous handler to settle; not reading the next DM yet`));
     }
     const msgs = await consumer.consume({ max_messages: 1 });
-    this.streamMsgs.push(msgs);
+    this.delivery.streamMsgs.push(msgs);
     // The epoch this loop belongs to. nats.js can yield copies it already received after stop() began
     // or after a rebuild replaced the connection (a stacked pull after a missed-heartbeat reset hands
     // over several at once). Such a copy never reaches the handler and is neither acked nor nak'd:
     // the connection is closing or closed, so any reply could be lost, and the broker redelivers an
     // unacked copy after the durable's ack_wait to whichever epoch binds next.
-    const boundNc = this.nc;
-    const retired = (): boolean => this.stopped || this.nc !== boundNc || !boundNc || boundNc.isClosed();
+    const boundNc = this.conn.nc;
+    const retired = (): boolean => this.lifecycle.stopped || this.conn.nc !== boundNc || !boundNc || boundNc.isClosed();
     void (async () => {
       for await (const m of msgs) {
         if (retired()) break;
@@ -339,17 +320,17 @@ export class EndpointConsumers {
           kind: "dm",
         } satisfies MessageMeta));
         const flight = run.then(() => {}, () => {});
-        this.dmOnlyInFlight = flight;
+        this.delivery.dmOnlyInFlight = flight;
         try {
           await run;
         } catch (e) {
           this.emit("error", e instanceof Error ? e : new Error(String(e)));
         } finally {
-          if (this.dmOnlyInFlight === flight) this.dmOnlyInFlight = undefined;
+          if (this.delivery.dmOnlyInFlight === flight) this.delivery.dmOnlyInFlight = undefined;
         }
       }
     })().catch((e) => {
-      if (!this.stopped) this.emit("error", e as Error);
+      if (!this.lifecycle.stopped) this.emit("error", e as Error);
     });
   }
 
@@ -359,10 +340,10 @@ export class EndpointConsumers {
    *  alongside the Plane-3 durable copy, coalesced by the receiver's id-dedup. Drops our own echo +
    *  spoofed senders. */
   subscribeChat(channel: string): void {
-    if (!this.nc || this.chatSubs.has(channel)) return;
-    this.chatSubDenied.delete(channel);
+    if (!this.conn.nc || this.delivery.chatSubs.has(channel)) return;
+    this.delivery.chatSubDenied.delete(channel);
     const subject = chatSubject(this.identity.space, "*", "*", channel);
-    const sub = this.nc.subscribe(subject, {
+    const sub = this.conn.nc.subscribe(subject, {
       callback: (err, m) => {
         if (err) {
           // async sub.allow refusal (or sub error): the live feed for this channel is dead — never a
@@ -372,8 +353,8 @@ export class EndpointConsumers {
           // this fires nothing then; joinChannel reads `chatSubDenied` and throws cleanly.) Either way
           // the refusal is reported from here, by that throw or the leave below, so watchStatus skips it.
           if (err instanceof PermissionViolationError) this.chatSubRefusals.add(err);
-          this.chatSubDenied.add(channel);
-          this.chatSubs.delete(channel);
+          this.delivery.chatSubDenied.add(channel);
+          this.delivery.chatSubs.delete(channel);
           const i = this.identity.channels.indexOf(channel);
           if (i >= 0) {
             this.identity.channels.splice(i, 1);
@@ -382,7 +363,7 @@ export class EndpointConsumers {
             // callback can't await, so a fail-closed async helper RETRIES the tombstone (backoff) UNTIL it
             // succeeds, clearing the mirror only then; while pending it is surfaced via cotal_channels —
             // never a silent drop, never lost retry state.
-            const gen = this.plane3Channels.get(channel);
+            const gen = this.delivery.plane3Channels.get(channel);
             if (gen !== undefined) void this.closeRefusedMembership(channel, gen);
             this.emit(
               "error",
@@ -410,42 +391,42 @@ export class EndpointConsumers {
         } satisfies MessageMeta);
       },
     });
-    this.chatSubs.set(channel, sub);
+    this.delivery.chatSubs.set(channel, sub);
   }
 
   /** Close a channel's core subscription (manager-free leave). */
   unsubscribeChat(channel: string): void {
-    const sub = this.chatSubs.get(channel);
+    const sub = this.delivery.chatSubs.get(channel);
     if (sub) {
       try {
         sub.unsubscribe();
       } catch {
         /* closing with the connection */
       }
-      this.chatSubs.delete(channel);
+      this.delivery.chatSubs.delete(channel);
     }
-    this.chatSubDenied.delete(channel);
+    this.delivery.chatSubDenied.delete(channel);
   }
 
   /** Confirm a just-opened core subscription was accepted by the broker. A `sub.allow` violation is
    *  async in NATS, so flush (round-trips the SUB) then settle briefly to let the refusal land — a
    *  denied subscribe must not read as a successful join (SPEC conformance #13). */
   async confirmChatSub(): Promise<void> {
-    if (!this.nc) throw new Error("connection not established");
+    if (!this.conn.nc) throw new Error("connection not established");
     // flush() is the deterministic boundary: the broker's -ERR for an out-of-ACL SUB arrives BEFORE the
     // PONG, so once flush resolves the subscribe callback has already recorded any denial. A flush
     // FAILURE means the connection drained/closed mid-join — we have no confirmation, so let it throw
     // (joinChannel fails closed) instead of swallowing it and continuing as if confirmed.
-    await this.nc.flush();
+    await this.conn.nc.flush();
     await new Promise((r) => setTimeout(r, 50));
   }
 
   /** The durable's info (rebind) or null (fresh — 404). Gates create/backfill to the join event
    *  and exposes the current `filter_subjects` for restart reconciliation. */
   async consumerInfo(stream: string, durable: string): Promise<ConsumerInfo | null> {
-    if (!this.jsm) throw new Error(this.notLiveMsg());
+    if (!this.conn.jsm) throw new Error(this.notLiveMsg());
     try {
-      return await this.jsm.consumers.info(stream, durable);
+      return await this.conn.jsm.consumers.info(stream, durable);
     } catch (e) {
       if (isJetStreamMissing(e, JetStreamApiCodes.ConsumerNotFound))
         return null; // structured absence — fresh durable
@@ -455,9 +436,9 @@ export class EndpointConsumers {
 
   /** Delete one named consumer, swallowing ONLY structured consumer/stream absence. */
   async deleteConsumerIfPresent(stream: string, durable: string): Promise<void> {
-    if (!this.jsm) throw new Error(this.notLiveMsg());
+    if (!this.conn.jsm) throw new Error(this.notLiveMsg());
     try {
-      await this.jsm.consumers.delete(stream, durable);
+      await this.conn.jsm.consumers.delete(stream, durable);
     } catch (e) {
       if (!isJetStreamMissing(e, JetStreamApiCodes.ConsumerNotFound, JetStreamApiCodes.StreamNotFound)) throw e;
     }
