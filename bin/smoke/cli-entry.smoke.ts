@@ -400,6 +400,23 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
       return [];
     }
   };
+  for (const [argv, option, placeholder] of [
+    [["history", "--json", "--limit", "--no-input", "abc"], "--limit", "<n>"],
+    [["history", "--json", "--limit", "--no-color", "1"], "--limit", "<n>"],
+    [["history", "--json", "--limit", "1", "--limit", "--no-input", "abc"], "--limit", "<n>"],
+    [["send", "--json", "-c", "--no-input", "hello"], "--channel", "<channel>"],
+    [["send", "--json", "-vc", "--no-color", "hello"], "--channel", "<channel>"],
+  ] as const) {
+    const result = cotal([...argv]);
+    const reports = envelopes(result);
+    const { error, outcome, target } = reports[0] ?? {};
+    check(`${argv.join(" ")} refuses the missing option value before using the operand`,
+      result.status === 1 && result.stderr === "" && result.wrote.length === 0 && reports.length === 1 && outcome === "refused" && target === null
+      && error?.code === "USAGE_INVALID" && error.message === `${option} needs a value` && error.remedy === `write ${option} ${placeholder}`, shown(result));
+  }
+  const literal = cotal(["docs", "--json", "--search=--no-input", "--no-input"]);
+  check("an attached value that looks like a global flag is still a value",
+    literal.status === 0 && literal.stderr === "" && envelopes(literal)[0]?.result?.query === "--no-input", shown(literal));
   const text = cotal(["version"]);
   const json = cotal(["version", "--json"]);
   local("version --json writes nothing", json);
