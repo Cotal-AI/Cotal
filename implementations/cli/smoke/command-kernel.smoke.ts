@@ -14,11 +14,14 @@ import type { InstalledExtension } from "@cotal-ai/workspace";
 import "../src/index.js"; // self-register the CLI commands (for the completion check)
 import { complete } from "../src/commands/completion.js";
 import { EXT_UPDATE_PARENT_ENV, ext } from "../src/commands/ext.js";
-import { hostPackageDir, isCommandFailure, MeshTargetError, seededCommandsMismatch, writeUpdateRecovery, readUpdateRecovery, clearUpdateRecovery } from "@cotal-ai/workspace";
+import { hostPackageDir, isCommandFailure, MeshTargetError, seededCommandsMismatch, telemetrySettingsPath, writeUpdateRecovery, readUpdateRecovery, clearUpdateRecovery } from "@cotal-ai/workspace";
 import { executeUpdate, installedUpdatePrefix, parseNpmVersion, printLegacyReport, reportRunningManagers, update, validateUpdateArguments, verifyCurrentExtension, verifyGlobalEntry, type UpdateRuntime } from "../src/commands/update.js";
 import { supervisorMayServe } from "../src/lib/manager-proc.js";
 import { claimExtensionMutation, claimExtensionUpdatePass } from "../src/lib/ext-mutation.js";
 import { compareSemver } from "../src/seed/reconcile.js";
+
+// The probe children strip COTAL_* from their environment; this opt-out survives that filter.
+process.env.DO_NOT_TRACK = "1";
 
 const noop = async (): Promise<void> => {};
 
@@ -2391,4 +2394,5 @@ if (process.platform !== "win32") {
   }
 }
 
+assert.ok(!existsSync(telemetrySettingsPath()), "kernel smoke commands must not create a telemetry install record");
 console.log("✓ command-kernel smoke passed");
