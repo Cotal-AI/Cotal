@@ -1,7 +1,7 @@
 import * as prompts from "../lib/prompts.js";
 import { chatStream, dmStream, dialerFor, isPublishPermissionDenied, isStreamNotFound, standaloneConnectOpts } from "@cotal-ai/core";
 import { jetstreamManager } from "@nats-io/jetstream";
-import { ConfirmationRequired, CommandFailure, recordOperationSpace, brokerAddressForDisplay, connectOrThrow, credentialRefusalMessage, findCotalRoot, findMesh, hasUserAuthState, isConnectRefusal, isWorkspaceTargetError, oneLine, presentationOf, resolveMeshTarget, userViewAuth, writeResult, type Report } from "@cotal-ai/workspace";
+import { ConfirmationRequired, CommandFailure, recordOperationSpace, brokerAddressForDisplay, codeSpan, connectOrThrow, credentialRefusalMessage, findCotalRoot, findMesh, hasUserAuthState, isConnectRefusal, isWorkspaceTargetError, oneLine, presentationOf, resolveMeshTarget, userViewAuth, writeResult, type Report } from "@cotal-ai/workspace";
 import { canPrompt } from "./meshes-wizard.js";
 import { targetWords, yesRequired } from "../lib/confirmation-required.js";
 import { noticeOnInterrupt } from "../lib/interrupt-notice.js";
@@ -36,7 +36,13 @@ export async function historyClear(values: Values): Promise<void> {
     writeResult(presentation, { command: "history", target: { space: selected.space, broker: brokerLabel(selected.server) }, result: { kind: "history-clear-preview", dryRun: true, streams, includeDms: values.dms === true, authorization: "not-checked", retainedCounts: "not-checked", purged: false } }, (result): Report => ({ sections: [{ title: "History clear preview", blocks: [{ kind: "fields", rows: [["Space", selected.space], ["Broker", brokerLabel(selected.server)], ["Scope", "all retained channel history"], ["DM history", result.includeDms ? "included" : "not included"], ["Streams", result.streams.join(", ")], ["Authorization and counts", "not checked"]] }, { kind: "lines", lines: ["Offline target preview only. No connection, purge, agent stop, identity reset or caller issuance was attempted."] }] }] }));
     return;
   }
-  if (!values.yes && (!canPrompt() || presentation === "json")) throw new ConfirmationRequired(yesRequired("history clear", presentation === "json"), { remedy: `preview the space-wide scope with \`cotal history clear${targetWords(values)}${values.dms ? " --dms" : ""} --dry-run\`, then confirm it with \`cotal history clear${targetWords(values)}${values.dms ? " --dms" : ""} --yes\`` });
+  if (!values.yes && (!canPrompt() || presentation === "json")) {
+    const command = `cotal history clear${targetWords(values)}${values.dms ? " --dms" : ""}`;
+    const format = presentation === "rich" ? "" : ` --${presentation}`;
+    throw new ConfirmationRequired(yesRequired("history clear", presentation === "json"), {
+      remedy: `preview the space-wide scope with ${codeSpan(`${command} --dry-run${format}`)}, then confirm it with ${codeSpan(`${command} --yes${format}`)}`,
+    });
+  }
   const acknowledged: PurgeReceipt[] = [];
   let submitted: string | undefined;
   // A signal from the confirmed clear on ends it where it is, and says what was purged.

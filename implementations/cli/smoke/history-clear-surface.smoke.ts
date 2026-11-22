@@ -34,7 +34,7 @@ if (!existsSync(BIN)) {
 interface Envelope {
   outcome: string;
   target: { space?: string; broker?: string } | null;
-  result: { kind?: string; streams?: string[]; items?: { channel: string; text: string }[]; purged?: boolean; authorization?: string; retainedCounts?: string } | null;
+  result: { kind?: string; streams?: string[]; items?: { channel: string; text: string }[]; purged?: boolean; acknowledged?: { stream: string; purged: number }[]; authorization?: string; retainedCounts?: string } | null;
   error?: { code: string; message: string; remedy?: string };
 }
 
@@ -44,12 +44,13 @@ const root = realpathSync(mkdtempSync(join(home, "project-")));
 const otherRoot = realpathSync(mkdtempSync(join(home, "other-")));
 mkdirSync(join(otherRoot, ".cotal"), { mode: 0o700 });
 mkdirSync(join(home, ".cotal"), { mode: 0o700 });
+mkdirSync(join(home, "runtime"), { mode: 0o700 });
 process.on("exit", () => rmSync(home, { recursive: true, force: true }));
 // Set before recordMesh: the registry is written under COTAL_HOME, never under ~/.cotal.
 process.env.COTAL_HOME = join(home, ".cotal");
 
 const HOST_ENV = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("COTAL_") && k !== "FORCE_COLOR" && k !== "NO_COLOR"));
-const env = { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config"), COTAL_HOME: join(home, ".cotal"), COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1", NO_COLOR: "1" };
+const env = { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config"), XDG_RUNTIME_DIR: join(home, "runtime"), COTAL_HOME: join(home, ".cotal"), COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1", NO_COLOR: "1" };
 const run = (args: string[]) => {
   const r = spawnSync(process.execPath, [BIN, ...args], { cwd: root, env, encoding: "utf8", timeout: 120_000 });
   let envelope: Envelope | undefined;
@@ -57,6 +58,35 @@ const run = (args: string[]) => {
   return { status: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? "", envelope };
 };
 const shown = (r: ReturnType<typeof run>) => ({ status: r.status, stdout: r.stdout.slice(0, 900), stderr: r.stderr.slice(0, 600) });
+
+function checkJsonClearRemedy(server: string): void {
+  const target = ["--space", "hcdry", "--server", server];
+  const clear = ["history", "clear", ...target];
+  const count = (expected: number): void => {
+    const read = run(["history", "general", ...target, "--json"]);
+    check(`history read finds ${expected} retained posts`, read.status === 0 && read.envelope?.result?.items?.length === expected, shown(read));
+  };
+  count(1);
+  const refusal = run([...clear, "--json"]);
+  check("unconfirmed JSON clear refuses without prompting", refusal.status === 1 && refusal.stderr === ""
+    && refusal.envelope?.outcome === "refused" && refusal.envelope.error?.code === "USAGE_INVALID", shown(refusal));
+  count(1);
+  const preview = [...clear, "--dry-run", "--json"];
+  const confirm = [...clear, "--yes", "--json"];
+  const printed = [...(refusal.envelope?.error?.remedy ?? "").matchAll(/`([^`]+)`/g)].map((match) => match[1]);
+  const matches = printed.length === 2 && printed[0] === `cotal ${preview.join(" ")}` && printed[1] === `cotal ${confirm.join(" ")}`;
+  check("both suggested commands keep the broker target and JSON format", matches, shown(refusal));
+  if (!matches) return;
+  const plan = run(preview);
+  check("the suggested preview writes JSON without purging", plan.status === 0 && plan.envelope?.outcome === "ok"
+    && plan.envelope.result?.kind === "history-clear-preview" && plan.envelope.result.purged === false, shown(plan));
+  count(1);
+  const receipt = run(confirm);
+  const ack = receipt.envelope?.result?.acknowledged;
+  check("the first confirmed purge writes the JSON acknowledgement and count", receipt.status === 0 && receipt.envelope?.outcome === "ok"
+    && receipt.envelope.result?.kind === "history-clear" && ack?.length === 1 && ack[0]?.stream === chatStream("hcdry") && ack[0].purged === 1, shown(receipt));
+  count(0);
+}
 
 const prepared = run(["space", "create", "hcdry", "--root", "."]);
 check("fixture: the space is prepared and not started", prepared.status === 0, shown(prepared));
@@ -102,6 +132,7 @@ try {
   const read = run(["history", "general", "--space", "hcdry", "--limit", "10", "--grep", "hello", "--json"]);
   check("omitting only --force reads the requested channel with its filters intact", read.status === 0
     && read.envelope?.result?.items?.some((item) => item.channel === "general" && item.text === "hello retained history") === true, shown(read));
+  checkJsonClearRemedy(server);
   const down = stop();
   check("fixture: down completes the stop", down.status === 0 && down.envelope?.outcome === "ok", shown(down));
   for (const args of [[], ["--space", "hcdry"], ["--space", "hcdry", "--server", server]]) {
@@ -124,6 +155,11 @@ check("control: a registered space previews without a broker, exit 0", preview.s
 check("control: the preview names its space and chat stream and purges nothing", preview.envelope?.target?.space === "hcother" && (preview.envelope.result?.streams ?? []).includes(chatStream("hcother")) && preview.envelope.result?.purged === false, preview.envelope);
 const previewPlain = run(["history", "clear", "--dry-run", "--space", "hcother", "--plain"]);
 check("control: the plain preview begins with Mesh: <space>", previewPlain.status === 0 && previewPlain.stdout.split("\n")[0] === "Mesh: hcother", shown(previewPlain));
+const plainClear = run(["history", "clear", "--space", "hcother", "--creds", "unused purger.creds", "--dms", "--plain"]);
+const plainCommand = "cotal history clear --space hcother --creds 'unused purger.creds' --dms";
+check("both plain suggestions keep the quoted credential path, DM scope and plain format", plainClear.status === 1
+  && plainClear.stderr.includes(`\`${plainCommand} --dry-run --plain\``)
+  && plainClear.stderr.includes(`\`${plainCommand} --yes --plain\``), shown(plainClear));
 const offlineExplicit = run(["history", "clear", "--dry-run", "--space", "hcoffline", "--server", `nats://127.0.0.1:${port}`, "--dms", "--json"]);
 check("an unregistered explicit target previews both streams without a reachable broker", offlineExplicit.status === 0
   && offlineExplicit.envelope?.result?.streams?.join(",") === [chatStream("hcoffline"), dmStream("hcoffline")].join(",")
