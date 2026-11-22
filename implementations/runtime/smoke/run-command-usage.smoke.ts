@@ -126,6 +126,14 @@ const gate = (positionals: string[], values: Record<string, string | boolean> = 
     const got = gate([verb, "run-0", "/checkpoint:probe#0"], { artifact });
     c(`${verb} --artifact ${JSON.stringify(artifact)} is refused USAGE_INVALID naming --artifact`, usageRefusal(got, "--artifact names the artifact the answer cites, so it cannot be empty"), got);
   }
+  // A results file is named by --handler, so an empty or blank one is refused before the file is read.
+  for (const handler of ["", "   "]) {
+    const got = gate(["simulate", "p.cotal.js"], { handler });
+    c(`simulate --handler ${JSON.stringify(handler)} is refused USAGE_INVALID naming --handler`,
+      usageRefusal(got, "--handler names the simulation results file, so it cannot be empty") && isCommandFailure(got) && (got.remedy ?? "").includes("omit `--handler`"), got);
+  }
+  const handlerFine = gate(["simulate", "p.cotal.js"], { handler: "results.json" });
+  c("and a named results file passes the gate", !(handlerFine instanceof Error) && handlerFine.verb === "simulate", handlerFine);
   const fine = answerWith('{"a":1,"b":[1e300,"a"]}');
   const deepest = answerWith("[".repeat(1000) + "]".repeat(1000));
   c("and a value JSON carries as typed, 1000 levels deep at most, passes the gate",
