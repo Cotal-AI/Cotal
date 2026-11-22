@@ -489,7 +489,8 @@ const composed: Command = { ...command, async run(args) {
       console.log("hosted Manager continuity: daemon verified prepared fences and zero seats");
       return "none";
     }
-    if (staged && args.values.self === true && !hasUpdateDaemonLifetime())
+    const installedChild = process.env.COTAL_UPDATE_PARENT === String(process.ppid) && process.env.COTAL_UPDATE_TARGET_VERSION === updateRuntime.version();
+    if (staged && (args.values.self === true || installedChild) && !hasUpdateDaemonLifetime())
       return reportsRetainedExecution() ? retainedReport(flags) : updateRuntime.reportRunningManager(flags);
     let managers;
     try {

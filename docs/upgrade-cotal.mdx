@@ -95,7 +95,7 @@ Releases before 0.167.1 still use their own checks on the first hop. Downloading
 refusal in 0.159.1 through 0.160.7 and the Manager-selection refusal before 0.163.1.
 For an npm installation, install once with `npm install -g cotal-ai@latest`, then run `cotal update`.
 For a shell installation, rerun its installer as described under [Reconcile the installation](#reconcile-the-installation).
-When this Cotal home has neither a live daemon nor a recorded service, `cotal update --self` does not contact a daemon at the shared endpoint.
+When this Cotal home has neither a live daemon nor a recorded service, `cotal update --self` and its installed reconciliation child do not contact a daemon at the shared endpoint.
 An unwritable installation refuses before staging and names the owning install command.
 If this first check refuses, `cotal update --self` exits 2 and reports that the installation
 cannot update itself from this account and no changes were made. The original reason and owning

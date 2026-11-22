@@ -169,6 +169,19 @@ console.log('LEGACY_READS=' + legacyReads);
         assert.match(plain, /connectors reconciled/, plain);
         assert.doesNotMatch(self + plain, /legacy manager custody|manual cold update/);
       } finally { await new Promise<void>((resolve, reject) => registry.close(error => error ? reject(error) : resolve())); }
+      const foreignChildArgs = [join(other, "dist/cotal.js"), "update"];
+      const installedChild = spawnSync(process.execPath, foreignChildArgs, {
+        cwd: otherHome, encoding: "utf8", timeout: 120_000,
+        env: { ...env, HOME: otherHome, COTAL_HOME: join(otherHome, "state"), XDG_CONFIG_HOME: config, TMPDIR: otherHome,
+          COTAL_UPDATE_PARENT: String(process.pid), COTAL_UPDATE_TARGET_VERSION: version },
+      });
+      assert.equal(installedChild.status, 0, installedChild.stdout + installedChild.stderr);
+      assert.match(installedChild.stdout, /connector integrations refreshed/);
+      const daemonAfterChild = cli("daemon", "status", "--json");
+      assert.equal(daemonAfterChild.status, 0, daemonAfterChild.stdout + daemonAfterChild.stderr);
+      assert.equal(JSON.parse(daemonAfterChild.stdout).result.pid, JSON.parse(status.stdout).result.pid);
+      console.log("installed update child reconciles without a daemon in its home and leaves the foreign daemon running");
+
       const unchanged = cli("ps", "--json");
       assert.equal(unchanged.status, 0, unchanged.stdout + unchanged.stderr);
       assert.deepEqual(JSON.parse(unchanged.stdout).result.managers.map((manager: { instanceId: string }) => manager.instanceId), initialManagers.map((manager: { instanceId: string }) => manager.instanceId), "updates from the other prefix leave the selected Manager answering");
