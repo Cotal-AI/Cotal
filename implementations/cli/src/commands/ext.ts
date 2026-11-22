@@ -13,8 +13,8 @@ import { claimExtensionMutation, extensionUpdatePassOwnedBy } from "../lib/ext-m
 import { withInstallUmask } from "../lib/install-umask.js";
 import { runSeed } from "../seed/reconcile.js";
 import { assertStageVerifier, stageExtensions } from "../lib/extension-stage.js";
-import { connectorConfigDir, extensionEntry } from "@cotal-ai/workspace";
-import { codeSpan, CorruptExtensionPackageError, inspectLock, extensionNpmMutationPath, oneLine, type OutputWarning } from "@cotal-ai/workspace";
+import { connectorConfigDir, extensionEntry, extensionReinstallAdvice, isExtensionPathSpec as isPathSpec } from "@cotal-ai/workspace";
+import { CorruptExtensionPackageError, inspectLock, extensionNpmMutationPath, oneLine, type OutputWarning } from "@cotal-ai/workspace";
 import { selfArgv } from "../lib/self-exec.js";
 import { spawnSync } from "node:child_process";
 import { isAuthenticSeedChild, markSeedChildLive, clearChildMarker } from "../seed/lock.js";
@@ -34,14 +34,7 @@ const EXT_USAGE = "usage: cotal ext [list] [--json|--plain] | ext add <npm-packa
 /** Parent binding for update's internal isolated re-add. Ordinary `ext add` never reads it. */
 export const EXT_UPDATE_PARENT_ENV = "COTAL_EXT_UPDATE_PARENT";
 
-/** Classify a `cotal ext add` spec as a local path (vs a registry name). A path is a relative `.`/`./`/
- *  `.\` spec or an absolute one on the NATIVE platform — POSIX `/…`, Windows drive `C:\…` / `C:/…`, or
- *  UNC `\\…`. A POSIX-only test misclassified a Windows absolute path (it starts with a drive letter,
- *  not `/`) as a registry name, which broke first-run seeding on Windows (the seed-store spec is always
- *  absolute). `absolute` is injectable so the classification is unit-testable for both platforms. */
-export function isPathSpec(spec: string, absolute: (p: string) => boolean = isAbsolute): boolean {
-  return spec.startsWith(".") || absolute(spec);
-}
+export { isPathSpec };
 
 /** A first-party package named without a version installs this cotal's own version, as setup and
  *  `update` install it: the official packages release in lockstep with the core they link to, so the
@@ -794,8 +787,10 @@ function list(presentation: Presentation): void {
     const path = join(dir, "package.json");
     let problem: string;
     try {
-      if (installedExtensionPackage(entry.pkg)) return [];
-      problem = lstatSync(dir, { throwIfNoEntry: false })
+      const installed = installedExtensionPackage(entry.pkg);
+      if (installed && installed.version === entry.version) return [];
+      if (installed) problem = `is ${oneLine(installed.version)} on disk at ${dir}, but the manifest pins ${oneLine(entry.version)}`;
+      else problem = lstatSync(dir, { throwIfNoEntry: false })
         ? `has a corrupt package at ${dir}: ${path} is missing`
         : `is not installed at ${dir}`;
     } catch (error) {
@@ -803,12 +798,7 @@ function list(presentation: Presentation): void {
         ? `has a corrupt package.json at ${path}`
         : `could not be checked: ${path} is unreadable`;
     }
-    // Do not echo a registry spec containing a URL or opaque selector in a text warning.
-    const recovery = entry.source === "seeded" ? "Run `cotal ext seed --repair` to reinstall it."
-      : isPathSpec(entry.spec) || /^(?:@[a-z0-9._~-]+\/)?[a-z0-9._~-]+(?:@[a-z0-9._~^*<>=|+ -]+)?$/i.test(entry.spec)
-        ? `Run ${codeSpan(`cotal ext add ${shellWord(entry.spec)}`)} to reinstall it.`
-        : `Run ${codeSpan(`cotal ext remove ${shellWord(entry.pkg)}`)} to drop the record, or reinstall with the original spec.`;
-    return [{ code: "DEPENDENCY_UNAVAILABLE", target: { pkg: entry.pkg }, message: `Extension ${entry.pkg} ${problem}. ${recovery}` }];
+    return [{ code: "DEPENDENCY_UNAVAILABLE", target: { pkg: entry.pkg }, message: `Extension ${entry.pkg} ${problem}. ${extensionReinstallAdvice(entry)}` }];
   });
   writeResult(presentation, {
     command: "ext", target: null, result: { kind: "extensions", root: extensionsDir(), items: entries.map(extensionRow) },

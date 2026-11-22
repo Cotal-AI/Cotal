@@ -789,8 +789,9 @@ without color. The other `ext` subcommands refuse `--json` and `--plain` with `U
 
 `ext list` checks package metadata without loading or repairing extensions. It keeps each recorded
 row and reports a missing package directory as not installed. A package with a missing or invalid
-`package.json`, including one with no `version`, is reported as corrupt. When metadata cannot be
-verified, the listing exits 4 with a partial report. The warnings name the package, the affected
+`package.json`, including one with no `version`, is reported as corrupt. If the installed version
+differs from the recorded pin, the warning names both versions and gives the reinstall step.
+Either a mismatch or unverifiable metadata makes the listing partial (exit 4). The warnings name the package, the affected
 path and a recovery step. JSON includes them in `warnings`, and the text report writes them to stderr.
 
 `add`, `remove` and each built-in seed relink the shared peers of every installed package after npm
