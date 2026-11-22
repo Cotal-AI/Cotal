@@ -117,6 +117,19 @@ const noop = async (): Promise<void> => {};
     for (const url of ["https://example.test/auth", "http://127.0.0.1:1234/auth", "http://[::1]:1234/auth"])
       assert.doesNotThrow(() => findCommand(registry.all<Command>("command"), "sync")!.validate!({ values: { idp: url }, positionals: [], raw: [] }));
 
+    for (const verb of ["answer", "amend"]) {
+      const invalid = run(["run", verb, "auditrun", "paused", "--local", "--server", "nats://127.0.0.1:1", "--value", "true", "--by", "  ", "--json"],
+        { COTAL_SKIP_CONNECTOR_SEED: "1" });
+      assert.equal(invalid.status, 1, invalid.stdout + invalid.stderr);
+      assert.equal(invalid.stderr, "");
+      const report = JSON.parse(invalid.stdout);
+      assert.equal(report.outcome, "refused");
+      assert.equal(report.target, null);
+      assert.equal(report.error.code, "USAGE_INVALID");
+      assert.match(report.error.message, /requires --by <who>/);
+      assert.equal(report.error.remedy, "add --by <who> to name the local answerer");
+    }
+
     writeFileSync(join(root, "workflow.cotal.js"), 'const ok = await checkpoint("approve-plan", "Approve the plan?");\nlog(ok.status);\n');
     for (const words of [["start", "workflow.cotal.js"], ["resume", "run_sample"]]) {
       for (const timeout of ["9007199254740992ms", "9007199254740991s"]) {
