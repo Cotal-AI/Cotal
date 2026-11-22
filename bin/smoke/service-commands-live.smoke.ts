@@ -42,7 +42,7 @@ const SPACE = "servicecommandslive";
 const SERVER = `nats://127.0.0.1:${await freePort()}`;
 const env: NodeJS.ProcessEnv = { ...process.env };
 for (const key of Object.keys(env)) if (key.startsWith("COTAL_") || key === "INVOCATION_ID") delete env[key];
-Object.assign(env, { HOME: home, USERPROFILE: home, COTAL_HOME: join(home, ".cotal"), XDG_CONFIG_HOME: xdg, COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1", COLUMNS: "200" });
+Object.assign(env, { HOME: home, USERPROFILE: home, COTAL_HOME: join(home, ".cotal"), XDG_CONFIG_HOME: xdg, COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1", NO_COLOR: "1", COLUMNS: "200" });
 function cotal(args: string[], timeout = 180_000, at = { root, env, anchor }) {
   const options = { cwd: at.root, env: at.env, encoding: "utf8" as const, timeout };
   assertSmokeSandboxDown(at.anchor, args, options);
@@ -544,6 +544,7 @@ try {
     const down = cotal(["down", "--yes"]);
     check("cotal down stops the sandboxed stack", down.status === 0, out(down));
   }
+  check("service commands leave both test homes without telemetry state", [home, upHome].every((dir) => !existsSync(join(dir, ".cotal", "telemetry.json"))));
   for (const dir of [home, root, upHome, upRoot, presetRoot]) rmSync(dir, { recursive: true, force: true });
   finish();
   process.exit(process.exitCode ?? 0);
