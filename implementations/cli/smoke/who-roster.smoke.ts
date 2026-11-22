@@ -265,7 +265,9 @@ try {
   const plain = await run(["who", "--plain"], { FORCE_COLOR: "1" });
   const rich = await run(["who"], { FORCE_COLOR: "1" });
   check("the plain report is a table with every state word and no ANSI", plain.status === 0 && !/\x1b\[/.test(plain.stdout) && new RegExp(`^Who's here - ${space}\\n {2}Agent\\s+State\\s+Attention`, "m").test(plain.stdout) && /bob\/reviewer\s+waiting/.test(plain.stdout) && /idle \(auth for/.test(plain.stdout), shown(plain));
-  check("the plain report says the hidden endpoint is listed by --all", /1 infrastructure endpoint is not listed; `cotal who --all` lists them/.test(plain.stdout), plain.stdout);
+  check("the plain report adds --all to the same read", plain.stdout.includes("1 infrastructure endpoint is not listed; repeat this command with `--all` to list them"), plain.stdout);
+  const waitingPlain = await run(["who", "--space", space, "--server", servers, "--waiting", "--plain"]);
+  check("the targeted waiting report replaces the filter without dropping the target", waitingPlain.status === 0 && waitingPlain.stdout.includes("repeat this command with `--all` instead of `--waiting` to list them"), shown(waitingPlain));
   const richText = rich.stdout.replace(/\x1b\[[0-9;]*m/g, "");
   check(
     "the rich report is colored, marks each state and keeps every state word",
