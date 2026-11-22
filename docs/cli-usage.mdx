@@ -84,8 +84,10 @@ or in this folder, it names `cotal use <name>` and `cotal space` instead. When t
 space, its Start here section shows `cotal space` to list spaces and `cotal use <name>` to switch.
 Every command generates its own help, usage, and shell completion from its declared flags.
 `cotal <command> --help` prints the same help as `cotal help <command>`.
-Both forms accept operands after the final subcommand. For example, `cotal help service status manager`
-and `cotal service status manager --help` both show the usage for `service status`.
+Both forms accept operands after the command or its final subcommand. For example,
+`cotal help docs cli` and `cotal docs cli --help` both show the usage for `docs`.
+`cotal help service status manager` and `cotal service status manager --help` both show the usage
+for `service status`.
 Both forms also accept a channel for `history`: `cotal help history general` and
 `cotal history general --help` show the usage for `history`. The words `clear` and `limit` select
 their own help. Both forms refuse a misspelled word where a subcommand is required and exit 1.
@@ -181,8 +183,10 @@ An option value that starts with `-` is written `--limit=-1`,
 which the refusal gives. The refusal quotes values that a POSIX shell would split or expand, as in
 `--search='-help usage'`. An option given with no value at the end of the command or just before
 another option or `--` is refused with the option and its placeholder. Put the value before `--`
-and leave the operands after it. A short option takes its value after a space, so `-c=general` is refused
-rather than read as the value `=general`. An option typed with a typographic dash, as pasted from
+and leave the operands after it. Before another option or `--`, a missing value on an option
+that cannot be repeated can also report the duplicate and ask you to use the option once.
+A short option takes its value after a space, so `-c=general` is refused rather than read as the
+value `=general`. An option typed with a typographic dash, as pasted from
 typeset text, is refused rather than read as a positional. The correction keeps any attached value
 the option accepts, as in `--limit=10`. Before the
 command word the same holds for the leading flags, so `cotal ––json status` names `--json`.

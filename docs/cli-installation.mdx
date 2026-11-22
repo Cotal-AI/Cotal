@@ -1067,8 +1067,9 @@ cotal completion script fish | source
 cotal completion script powershell | Out-String | Invoke-Expression
 ```
 
-`completion script` writes raw shell code and takes no `--json` or `--plain`. Generation is
-offline. The stable hidden `__complete` entry reads registered command specifications, the spaces
+`completion script` writes raw shell code and takes one supported shell name, without `--json` or
+`--plain`. Remove an unknown option instead of passing it after `--`. Generation is offline.
+The stable hidden `__complete` entry reads registered command specifications, the spaces
 registered or prepared on this machine, the extension manifest, the bundled docs index and local
 persona files. It does not contact the mesh or refresh extensions. Every `--space` offers the spaces
 `cotal use` offers, and every `--creds` lets the shell complete a file name. `space show`, `forget`

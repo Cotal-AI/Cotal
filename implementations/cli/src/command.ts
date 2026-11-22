@@ -1,6 +1,7 @@
 import { existsSync, writeSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join, parse, resolve } from "node:path";
+import { parseArgs } from "node:util";
 import { commandDeclarationProblems, findCommand, findSubcommand, parseCommandArgs, type Command, type FlagSpec, type ParsedArgs, type Registry, type Subcommand } from "@cotal-ai/core";
 import {
   CommandFailure,
@@ -453,7 +454,9 @@ function parseRefusal(error: Error & { code?: string }, cmd: Command, rest: read
     const option = /^Unknown option '(--.+)'$/su.exec(reason)?.[1];
     const hint = option ? didYouMean(option, [...(flagNames ?? (cmd.flags ?? []).map((flag) => flag.name)).map((name) => `--${name}`), "--no-color", "--no-input", "--help"]) : "";
     const message = hint ? `${reason} - ${hint}` : reason;
-    return takesOperands ? { message, remedy: "to pass a word that starts with \"-\", put -- before it" } : { message };
+    const remedy = cmd.name === "completion" ? "drop the unknown option"
+      : takesOperands ? "to pass a word that starts with \"-\", put -- before it" : undefined;
+    return { message, remedy };
   }
   const message = error.message.split(".")[0]!;
   const missingValue = (flag: FlagSpec, beforeSeparator = false) => ({ message: `--${flag.name} needs a value`, remedy: `write --${flag.name} ${flag.value ?? "<value>"}${beforeSeparator ? " before --" : ""}` });
@@ -463,12 +466,23 @@ function parseRefusal(error: Error & { code?: string }, cmd: Command, rest: read
   const long = /use '--([^=']+)=-XYZ'/.exec(error.message)?.[1];
   const flag = long === undefined ? undefined : cmd.flags?.find((item) => item.name === long);
   if (error.code === "ERR_PARSE_ARGS_INVALID_OPTION_VALUE" && flag) {
-    const at = rest.findIndex((word) => word === `--${flag.name}` || (flag.short !== undefined && word === `-${flag.short}`));
-    const value = at < 0 ? undefined : rest[at + 1];
-    if (value === "--") return missingValue(flag, true);
-    if (value !== undefined && cmd.flags?.some((item) => value === `--${item.name}` || value.startsWith(`--${item.name}=`) || (item.short !== undefined && value === `-${item.short}`)))
-      return missingValue(flag);
-    if (value?.startsWith("-")) return { message: `the value of --${flag.name} starts with "-", so it reads as an option`, remedy: `write it as --${flag.name}=${shellWord(value)}` };
+    const options = Object.fromEntries((cmd.flags ?? []).map(({ name, type, short }) => [name, { type, ...(short ? { short } : {}) }]));
+    const { tokens } = parseArgs({ args: [...rest], options, strict: false, allowPositionals: true, tokens: true });
+    let seen = false;
+    for (const token of tokens) {
+      if (token.kind !== "option" || token.name !== flag.name) continue;
+      const value = token.value;
+      // The strict parser accepts a dash and digit after a standalone string option.
+      const numeric = rest[token.index] === token.rawName && /^-\d/.test(value ?? "");
+      if (token.inlineValue === false && !numeric && value?.startsWith("-") && value !== "-") {
+        if (seen && !flag.multiple) return { message: `--${flag.name} cannot be repeated`, remedy: `use --${flag.name} once` };
+        if (value === "--") return missingValue(flag, true);
+        if (cmd.flags?.some((item) => value === `--${item.name}` || value.startsWith(`--${item.name}=`) || (item.short !== undefined && value === `-${item.short}`)))
+          return missingValue(flag);
+        return { message: `the value of --${flag.name} starts with "-", so it reads as an option`, remedy: `write it as --${flag.name}=${shellWord(value)}` };
+      }
+      seen = true;
+    }
   }
   return { message };
 }
