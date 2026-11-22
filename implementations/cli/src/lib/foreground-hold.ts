@@ -75,6 +75,7 @@ export function foregroundStackEnd(root: string, held: string | undefined): numb
   // A whole-stack stop or replacement can begin between reading the journal and observing the PID.
   const latest = journal()?.operation;
   if (latest?.id !== operation.id || latest.phase !== operation.phase) return;
-  process.stderr.write(`nats-server exited unexpectedly (pid ${pid}). The stack records were kept. Run \`${displayCmd()} up --foreground --root ${shellPath(root)}\` to repair the stack.\n`);
+  const brokerOnly = current.members.some((member) => member.role === "manager" && member.state === "not-attempted" && member.code === undefined);
+  process.stderr.write(`nats-server exited unexpectedly (pid ${pid}). The stack records were kept. Run \`${displayCmd()} up --foreground${brokerOnly ? " --no-manager" : ""} --root ${shellPath(root)}\` to repair the stack.\n`);
   return exitCode("failed", "OPERATION_FAILED");
 }

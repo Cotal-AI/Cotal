@@ -317,6 +317,7 @@ import {
   parseMaxFileStore,
   parseAuthTimeout,
   parseMaxPayload,
+  assertManagerPayload,
   parseAccountResolver,
   authTimeoutArgs,
   loadChannelsFile,
@@ -526,11 +527,7 @@ export function validateUpArguments(args: ParsedArgs): void {
     // anything starts and a broker that comes up without its auth plane.
     if (args.values["service-endpoints"] === true && requestedPayload < SERVICE_CALLER_PAYLOAD_FLOOR)
       throw new CommandFailure("refused", "USAGE_INVALID", `--max-payload ${requestedPayload} is below ${SERVICE_CALLER_PAYLOAD_FLOOR} bytes, the least a space with --service-endpoints starts on: a caller policy row may grow to ${SERVICE_AUTHORITY_MAX_BYTES} bytes and its write needs ${SERVICE_CALLER_PAYLOAD_FLOOR - SERVICE_AUTHORITY_MAX_BYTES} more, so the auth host refuses to open; nothing was started`, { remedy: `pass --max-payload ${SERVICE_CALLER_PAYLOAD_FLOOR} or more, or drop --service-endpoints` });
-    // The manager publishes its contract artifacts, one message each, before it is ready. A limit
-    // below that publish is recorded and then every later start exits the same way. A broker-only
-    // start does not publish them, so it keeps the positive-integer check alone.
-    if (args.values["no-manager"] !== true && requestedPayload < MANAGER_START_PAYLOAD_FLOOR)
-      throw new CommandFailure("refused", "USAGE_INVALID", `--max-payload ${requestedPayload} is below ${MANAGER_START_PAYLOAD_FLOOR} bytes, the least the space's manager starts on: it publishes its contract artifacts, one message each, and the largest is bounded at ${CONTRACT_ARTIFACT_MAX_BYTES} bytes with ${MANAGER_START_PAYLOAD_FLOOR - CONTRACT_ARTIFACT_MAX_BYTES} more for the publish; nothing was started`, { remedy: `pass --max-payload ${MANAGER_START_PAYLOAD_FLOOR} or more, or pass --no-manager to start the broker without a manager` });
+    if (args.values["no-manager"] !== true) assertManagerPayload(requestedPayload);
   }
   // The account resolver belongs to the auth-mode broker configuration as well: the open broker has
   // no operator and so no accounts to resolve, and a manifest or a restore starts the broker its own
@@ -2253,6 +2250,8 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
       process.exit(1);
     }
   }
+  const openMaxPayload = values.open ? maxPayload ?? readBrokerPolicy(cotalRoot())?.maxPayload : undefined;
+  if (!noManager) assertManagerPayload(openMaxPayload);
   if (stoppedStart) console.log(c.dim(stoppedStart));
 
   if (!resumeAttempt) {
@@ -2304,7 +2303,7 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
       logfileSizeLimit,
       logfileMaxNum,
       authTimeout,
-      maxPayload,
+      maxPayload: openMaxPayload ?? maxPayload,
       accountResolver,
       space: values.space,
       open: values.open,
@@ -2391,7 +2390,7 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
   // the server, and the hostname is what the certificate has to match).
   assertServesDialHost(transport, new URL(server).hostname);
   const brokerSetup = useAuth ? await authSetup(storeDir, server, space, host, wantUser ? { idpUrl: values.idp } : undefined, transport, values["rotate-sys"], maxFileStore, false, { authTimeout, maxPayload, accountResolver, manager: values["no-manager"] !== true, logFile, logfileSizeLimit, logfileMaxNum }) : undefined;
-  const brokerMaxPayload = brokerSetup?.maxPayload ?? maxPayload ?? readBrokerPolicy(cotalRoot())?.maxPayload;
+  const brokerMaxPayload = brokerSetup?.maxPayload ?? openMaxPayload;
   const port = Number(new URL(server).port) || 4222;
   // Both modes go through a RENDERER, never bare CLI flags. Open mode used to start from
   // `-js -sd … -p … -a …`, which never called a renderer at all — so the required transport union
@@ -5443,10 +5442,7 @@ async function authSetup(
   const recorded = readBrokerPolicy(cotalRoot());
   const authTimeout = requested.authTimeout ?? recorded?.authTimeout;
   const maxPayload = requested.maxPayload ?? recorded?.maxPayload;
-  // The same floor an explicit --max-payload already met. A later bare up reads the recorded limit
-  // and would otherwise render it again, then die the same way. A broker-only start does not publish.
-  if (requested.manager === true && maxPayload !== undefined && maxPayload < MANAGER_START_PAYLOAD_FLOOR)
-    throw new CommandFailure("refused", "USAGE_INVALID", `--max-payload ${maxPayload} is below ${MANAGER_START_PAYLOAD_FLOOR} bytes, the least the space's manager starts on: it publishes its contract artifacts, one message each, and the largest is bounded at ${CONTRACT_ARTIFACT_MAX_BYTES} bytes with ${MANAGER_START_PAYLOAD_FLOOR - CONTRACT_ARTIFACT_MAX_BYTES} more for the publish; nothing was started`, { remedy: `pass --max-payload ${MANAGER_START_PAYLOAD_FLOOR} or more, or pass --no-manager to start the broker without a manager` });
+  if (requested.manager === true) assertManagerPayload(maxPayload);
   const resolverChoice = requested.accountResolver ?? recorded?.accountResolver ?? "memory";
   const accountResolver = brokerAccountResolver(cotalRoot(), resolverChoice === "full" ? "full" : undefined);
   // Owner-private like the auth dir: nats-server writes each pushed claim here.
