@@ -123,7 +123,7 @@ A refused stop leaves the stack running. Use `cotal down --with-agents` when you
 
 ## Watching [#watching]
 
-`cotal console` opens the terminal view. It prints a line stream when piped.
+`cotal console` opens the terminal view by default. It prints a passive line stream when piped or run with `--no-input` or `--plain`.
 The separately configured web service provides the browser dashboard.
 Both observe the mesh without starting dependencies.
 Follow [Watch a mesh](watch-a-mesh.mdx) for either view.
