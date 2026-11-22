@@ -23,6 +23,7 @@ import { chatStream, dmStream } from "@cotal-ai/core";
 import { assertSmokeSandboxDown, createSuite, freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
 import { recordMesh } from "@cotal-ai/workspace";
 import { readDocument } from "@cotal-ai/docs-content";
+import { execWords } from "../src/lib/exec-words.js";
 
 const REPO = join(import.meta.dirname, "..", "..", "..");
 const BIN = join(REPO, "bin", "dist", "cotal.js");
@@ -160,6 +161,19 @@ const plainCommand = "cotal history clear --space hcother --creds 'unused purger
 check("both plain suggestions keep the quoted credential path, DM scope and plain format", plainClear.status === 1
   && plainClear.stderr.includes(`\`${plainCommand} --dry-run --plain\``)
   && plainClear.stderr.includes(`\`${plainCommand} --yes --plain\``), shown(plainClear));
+const dashTarget = ["--space", "hcother", "--creds=-unused purger.creds", "--dms"];
+const dashClear = run(["history", "clear", ...dashTarget, "--json"]);
+const dashCommands = [...(dashClear.envelope?.error?.remedy ?? "").matchAll(/`([^`]+)`/g)].map((match) => execWords(match[1]!));
+const dashPreview = dashCommands[0];
+const dashExpected = JSON.stringify(["--dry-run", "--yes"].map((action) => ["cotal", "history", "clear", ...dashTarget, action, "--json"]));
+const dashMatches = dashClear.status === 1 && dashClear.envelope?.error?.code === "USAGE_INVALID" && JSON.stringify(dashCommands) === dashExpected;
+check("both JSON suggestions keep a quoted dash-prefixed credential path attached", dashMatches, shown(dashClear));
+if (dashMatches && dashPreview) {
+  const plan = run(dashPreview.slice(1));
+  check("the printed preview round-trips through the CLI parser", plan.status === 0 && plan.envelope?.outcome === "ok"
+    && plan.envelope.target?.space === "hcother" && plan.envelope.result?.kind === "history-clear-preview"
+    && plan.envelope.result.streams?.join(",") === [chatStream("hcother"), dmStream("hcother")].join(","), shown(plan));
+}
 const offlineExplicit = run(["history", "clear", "--dry-run", "--space", "hcoffline", "--server", `nats://127.0.0.1:${port}`, "--dms", "--json"]);
 check("an unregistered explicit target previews both streams without a reachable broker", offlineExplicit.status === 0
   && offlineExplicit.envelope?.result?.streams?.join(",") === [chatStream("hcoffline"), dmStream("hcoffline")].join(",")
