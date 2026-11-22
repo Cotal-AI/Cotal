@@ -3,6 +3,7 @@
 // and cancel) and the holder side (take a request, read or cancel one of this endpoint's own). Moved
 // verbatim from endpoint.ts; the rail owns its take responder state, reads the endpoint's identity and
 // remaining shared fields through its dependencies, and the endpoint forwards to it. Not re-exported by the index.
+import type { DeliveryState } from "./endpoint-delivery-state.js";
 import type { ConnectionState } from "./endpoint-connection-state.js";
 import type { EndpointIdentity } from "./endpoint-identity.js";
 import { AnycastRequestAuthority, ANYCAST_RECORDS_CREDENTIAL_OUTDATED, type AnycastTakeReply, type AnycastTakeRequest, isAnycastSeq, type AnycastNotice, ANYCAST_NOTICE_KEY, ANYCAST_CANCEL_OP, type AnycastStatus, ANYCAST_TAKES_OP, ANYCAST_STATUS_OP } from "./anycast-requests.js";
@@ -13,7 +14,7 @@ import { anycastStoreDefinition } from "./streams.js";
 import { taskStream, takeServeFilter, TAKE_ROUTE, parseTakeSubject, isPrincipalOwnerToken, parsePrincipalKey, unicastSubject, MENTION_NOTICE_KEY, takeSubject } from "./subjects.js";
 import type { EndpointRef, ControlReply, CotalMessage, AnycastTakeOutcome } from "./types.js";
 import { type KV, Kvm } from "@nats-io/kv";
-import { type NatsConnection, type Subscription, type Msg, NoRespondersError, RequestError } from "@nats-io/transport-node";
+import { type NatsConnection, type Msg, NoRespondersError, RequestError } from "@nats-io/transport-node";
 import { randomUUID } from "node:crypto";
 
 /** What the anycast component reads from its endpoint. State is read when it is used, never copied, a
@@ -21,9 +22,6 @@ import { randomUUID } from "node:crypto";
  *  at call time, so a member a caller replaced on the endpoint is the one that runs. */
 export interface EndpointAnycastDeps {
   authed: () => boolean;
-  subs: () => Subscription[];
-  anycastUnavailable: () => string | undefined;
-  setAnycastUnavailable: (value: string | undefined) => void;
   emitRecoverable: (err: Error) => void;
   plane3MayAct: () => boolean;
   notLiveMsg: () => string;
@@ -42,12 +40,9 @@ export class EndpointAnycast {
   private anycastSweep?: ReturnType<typeof setInterval>;
   private takesInFlight = 0;
 
-  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly conn: Readonly<ConnectionState>, private readonly deps: EndpointAnycastDeps) {}
+  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly conn: Readonly<ConnectionState>, private readonly delivery: DeliveryState, private readonly deps: EndpointAnycastDeps) {}
 
   private get authed() { return this.deps.authed(); }
-  private get subs() { return this.deps.subs(); }
-  private get anycastUnavailable() { return this.deps.anycastUnavailable(); }
-  private set anycastUnavailable(value: string | undefined) { this.deps.setAnycastUnavailable(value); }
   private emitRecoverable(err: Error): void { return this.deps.emitRecoverable(err); }
   private plane3MayAct(): boolean { return this.deps.plane3MayAct(); }
   private notLiveMsg(): string { return this.deps.notLiveMsg(); }
@@ -70,11 +65,11 @@ export class EndpointAnycast {
       // A credential minted before the records existed cannot open them. That costs the records and
       // nothing else: the rest of Plane-3 still serves, and every anycast op answers with the cause.
       if (!isPermissionDenied(e)) throw e;
-      this.anycastUnavailable = ANYCAST_RECORDS_CREDENTIAL_OUTDATED;
+      this.delivery.anycastUnavailable = ANYCAST_RECORDS_CREDENTIAL_OUTDATED;
       this.emitRecoverable(new Error(`delivery: ${ANYCAST_RECORDS_CREDENTIAL_OUTDATED}`));
       return;
     }
-    this.anycastUnavailable = undefined;
+    this.delivery.anycastUnavailable = undefined;
     const authority = new AnycastRequestAuthority({
       jsm: this.conn.jsm,
       kv,
@@ -94,8 +89,8 @@ export class EndpointAnycast {
   dropAnycastRequests(): void {
     if (this.takeServeSub) {
       try { this.takeServeSub.unsubscribe(); } catch { /* dead with the old connection */ }
-      const i = this.subs.indexOf(this.takeServeSub);
-      if (i >= 0) this.subs.splice(i, 1);
+      const i = this.delivery.subs.indexOf(this.takeServeSub);
+      if (i >= 0) this.delivery.subs.splice(i, 1);
       this.takeServeSub = undefined;
     }
     clearInterval(this.anycastSweep);
@@ -108,7 +103,7 @@ export class EndpointAnycast {
    *  request subtree, as `serveControl`'s `boundReply` binds it. */
   private serveTakes(authority: AnycastRequestAuthority): import("@nats-io/transport-node").Subscription {
     const sub = this.conn.nc!.subscribe(takeServeFilter(this.identity.space), { queue: TAKE_ROUTE });
-    this.subs.push(sub);
+    this.delivery.subs.push(sub);
     void (async () => {
       for await (const m of sub) {
         if (!m.reply || !m.reply.startsWith(`${m.subject}.reply.`)) {
@@ -201,7 +196,7 @@ export class EndpointAnycast {
   async deliveryAnycast(op: string, caller: string, args: Record<string, unknown>): Promise<ControlReply> {
     const authority = this.anycastAuthority;
     if (!authority)
-      return { ok: false, error: `delivery: ${this.anycastUnavailable ?? "the anycast request records are not open on this daemon; retry"}` };
+      return { ok: false, error: `delivery: ${this.delivery.anycastUnavailable ?? "the anycast request records are not open on this daemon; retry"}` };
     if (!isAnycastSeq(args.seq)) return { ok: false, error: `${op}: seq must be a whole number of at least 1` };
     if (args.id !== undefined && (typeof args.id !== "string" || args.id.length > 256)) return { ok: false, error: `${op}: id must be a request id` };
     const q = { seq: args.seq, ...(typeof args.id === "string" ? { id: args.id } : {}) };

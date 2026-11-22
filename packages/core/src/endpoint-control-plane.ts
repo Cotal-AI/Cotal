@@ -1,12 +1,13 @@
 // The control plane and service-invocation region of CotalEndpoint, as an internal component. Moved
 // verbatim from endpoint.ts; the endpoint keeps the public methods and forwards to them. Not
 // re-exported by the index.
+import type { DeliveryState } from "./endpoint-delivery-state.js";
 import type { LifecycleState } from "./endpoint-lifecycle-state.js";
 import type { CredentialState } from "./endpoint-credential-state.js";
 import type { ConnectionState } from "./endpoint-connection-state.js";
 import type { EndpointIdentity } from "./endpoint-identity.js";
 import { randomUUID } from "node:crypto";
-import { ClosedConnectionError, type Msg, type NatsConnection, type Subscription } from "@nats-io/transport-node";
+import { ClosedConnectionError, type Msg, type NatsConnection } from "@nats-io/transport-node";
 import { withDeadline } from "./deadline.js";
 import type { CotalEndpoint } from "./endpoint.js";
 import { isFromSubjectSender } from "./endpoint-messages.js";
@@ -21,15 +22,10 @@ import type { EpVerbTarget, EpAttributedReply } from "./endpoint-verbs.js";
 import { controlServiceSubject, parseSubject } from "./subjects.js";
 import type { ControlReply, ControlRequest, ControlRequestInit, EndpointRef } from "./types.js";
 
-/** One goal follower {@link EndpointControlPlane.followServiceGoal} registers with its endpoint. */
-type GoalFollower = { cancel: () => void; reconnected: (nc: NatsConnection) => void };
-
 /** What the control plane reads from its endpoint. State is read when it is used, never copied, and
  *  every method is looked up on the endpoint at call time. */
 export interface EndpointControlPlaneDeps {
   authed: () => boolean;
-  subs: () => Subscription[];
-  activeGoalFollowers: () => Set<GoalFollower>;
   notLiveMsg: () => string;
   requireLifecycleUid: (what: string) => string;
   reportSubscriptionDenial: (error: unknown) => boolean;
@@ -60,11 +56,9 @@ export class EndpointControlPlane {
    *  enable is not there when the thing you needed it for happened. */
   private splitsRecovered = 0;
 
-  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly conn: Readonly<ConnectionState>, private readonly lifecycle: Readonly<LifecycleState>, private readonly cred: Readonly<CredentialState>, private readonly deps: EndpointControlPlaneDeps) {}
+  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly conn: Readonly<ConnectionState>, private readonly lifecycle: Readonly<LifecycleState>, private readonly cred: Readonly<CredentialState>, private readonly delivery: Readonly<DeliveryState>, private readonly deps: EndpointControlPlaneDeps) {}
 
   private get authed() { return this.deps.authed(); }
-  private get subs() { return this.deps.subs(); }
-  private get activeGoalFollowers() { return this.deps.activeGoalFollowers(); }
   private notLiveMsg() { return this.deps.notLiveMsg(); }
   private requireLifecycleUid(what: string) { return this.deps.requireLifecycleUid(what); }
   private reportSubscriptionDenial(error: unknown) { return this.deps.reportSubscriptionDenial(error); }
@@ -99,7 +93,7 @@ export class EndpointControlPlane {
     const sub = this.conn.nc.subscribe(controlServiceSubject(this.identity.space, service, "*", "*"), {
       queue: service,
     });
-    this.subs.push(sub);
+    this.delivery.subs.push(sub);
     const inOwnTime = opts.concurrent;
     // With `concurrent`, the in-order requests are answered one after another on this chain, and the
     // reading below never waits on it, so a request answered in its own time is read and answered
@@ -265,7 +259,7 @@ export class EndpointControlPlane {
       cancel: () => abortController.abort(),
       reconnected: (nc: NatsConnection) => reconnectHandler?.(nc),
     };
-    this.activeGoalFollowers.add(entry);
+    this.delivery.activeGoalFollowers.add(entry);
     try {
       const reconcile: NonNullable<SubmitAndFollowGoalOptions["reconcile"]> = opts.reconcile ?? (async (goalId, _attributed, context) => {
         const current = this.serviceCaller();
@@ -290,7 +284,7 @@ export class EndpointControlPlane {
       });
     } finally {
       opts.signal?.removeEventListener("abort", onAbort);
-      this.activeGoalFollowers.delete(entry);
+      this.delivery.activeGoalFollowers.delete(entry);
     }
   }
 

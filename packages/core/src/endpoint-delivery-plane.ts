@@ -1,5 +1,6 @@
 // The plane-3 delivery region of CotalEndpoint, as an internal component. Moved verbatim from
 // endpoint.ts; the endpoint keeps the public methods and forwards to it. Not re-exported by the index.
+import type { DeliveryState } from "./endpoint-delivery-state.js";
 import type { LifecycleState } from "./endpoint-lifecycle-state.js";
 import type { CredentialState } from "./endpoint-credential-state.js";
 import type { ConnectionState } from "./endpoint-connection-state.js";
@@ -21,9 +22,9 @@ import { parseSecretStoreIdentity, type SecretStoreIdentity } from "./secret-sto
 import { fanoutDurableConfig, inboxReaderConfig } from "./streams.js";
 import { CONTROL_DELIVERY, CONTROL_DELIVERY_ADMIN, FANOUT_DURABLE, INBOX_READER_DURABLE, assertLifecycleToken, assertValidChannel, channelInAllow, chatStream, dlvDurable, dlvStream, dlvSubject, familiesCovering, inboxStream, isChannelFamily, isConcreteChannel, membershipInAllow, parseDinboxPrincipal, parsePrincipalKey, parseSubject } from "./subjects.js";
 import type { ControlReply, ControlRequest, CotalMessage, MessageMeta, Plane3Entry } from "./types.js";
-import { JetStreamApiCodes, type ConsumerConfig, type ConsumerMessages, type JetStreamManager, type JetStreamPublishOptions, type JsMsg } from "@nats-io/jetstream";
+import { JetStreamApiCodes, type ConsumerConfig, type JetStreamManager, type JetStreamPublishOptions, type JsMsg } from "@nats-io/jetstream";
 import type { KV } from "@nats-io/kv";
-import { headers, type Subscription } from "@nats-io/transport-node";
+import { headers } from "@nats-io/transport-node";
 
 const PLANE3_FRAME_HEADER = "Cotal-Delivery-Frame";
 
@@ -102,9 +103,6 @@ function isMessagePart(value: unknown): boolean {
 /** What the delivery plane reads from its endpoint. State is read when it is used, never copied, and
  *  every method is looked up on the endpoint at call time. */
 export interface EndpointDeliveryPlaneDeps {
-  anycastUnavailable: () => string | undefined;
-  streamMsgs: () => ConsumerMessages[];
-  subs: () => Subscription[];
   maxPayload: () => number;
   aclForAlias: CotalEndpoint["aclForAlias"];
   channelHistory: CotalEndpoint["channelHistory"];
@@ -218,7 +216,7 @@ export class EndpointDeliveryPlane {
   private readonly sendMentionNotice: EndpointDeliveryPlaneDeps["sendMentionNotice"];
   private readonly emit: EndpointDeliveryPlaneDeps["emit"];
 
-  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly conn: Readonly<ConnectionState>, private readonly lifecycle: Readonly<LifecycleState>, private readonly cred: Readonly<CredentialState>, private readonly deps: EndpointDeliveryPlaneDeps) {
+  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly conn: Readonly<ConnectionState>, private readonly lifecycle: Readonly<LifecycleState>, private readonly cred: Readonly<CredentialState>, private readonly delivery: Readonly<DeliveryState>, private readonly deps: EndpointDeliveryPlaneDeps) {
     this.aclForAlias = deps.aclForAlias;
     this.channelHistory = deps.channelHistory;
     this.deliveryClassFresh = deps.deliveryClassFresh;
@@ -245,9 +243,6 @@ export class EndpointDeliveryPlane {
     this.emit = deps.emit;
   }
 
-  private get anycastUnavailable() { return this.deps.anycastUnavailable(); }
-  private get streamMsgs() { return this.deps.streamMsgs(); }
-  private get subs() { return this.deps.subs(); }
   private get maxPayload() { return this.deps.maxPayload(); }
 
   /** Start the Plane-3 fan-out writer + trusted reader on THIS (privileged, server-side delivery-daemon)
@@ -298,7 +293,7 @@ export class EndpointDeliveryPlane {
     if (req.op === "durableLeave") return this.deliveryLeave(caller, args);
     if (req.op === "readHistory") return this.deliveryReadHistory(caller, args);
     if (req.op === ANYCAST_TAKES_OP)
-      return this.anycastUnavailable ? { ok: false, error: `delivery: ${this.anycastUnavailable}` } : { ok: true, data: { takes: true } };
+      return this.delivery.anycastUnavailable ? { ok: false, error: `delivery: ${this.delivery.anycastUnavailable}` } : { ok: true, data: { takes: true } };
     if (req.op === ANYCAST_STATUS_OP || req.op === ANYCAST_CANCEL_OP) return this.deliveryAnycast(req.op, caller, args);
     if (req.op === "listMemberships") {
       if (typeof args.lifecycleUid !== "string")
@@ -554,7 +549,7 @@ export class EndpointDeliveryPlane {
     // Stopping the consumers ends the `for await` loops that drive fan-out and the reader. In-flight
     // messages are NOT acked by a stopped consumer, so they redeliver to whoever holds the shard
     // next: quiescing loses no message, it only stops this process from claiming them.
-    for (const msgs of this.streamMsgs.splice(0)) {
+    for (const msgs of this.delivery.streamMsgs.splice(0)) {
       try { msgs.stop(); } catch { /* already draining */ }
     }
   }
@@ -620,8 +615,8 @@ export class EndpointDeliveryPlane {
   private armDeliveryControl(): void {
     if (this.deliveryServeSub) {
       try { this.deliveryServeSub.unsubscribe(); } catch { /* dead with the old connection */ }
-      const i = this.subs.indexOf(this.deliveryServeSub);
-      if (i >= 0) this.subs.splice(i, 1);
+      const i = this.delivery.subs.indexOf(this.deliveryServeSub);
+      if (i >= 0) this.delivery.subs.splice(i, 1);
     }
     // A request's status and cancel touch only the TASK queue and the anycast records, so they do
     // not wait behind a channel join on the in-order chain.
@@ -631,8 +626,8 @@ export class EndpointDeliveryPlane {
     });
     if (this.deliveryAdminServeSub) {
       try { this.deliveryAdminServeSub.unsubscribe(); } catch { /* dead with the old connection */ }
-      const i = this.subs.indexOf(this.deliveryAdminServeSub);
-      if (i >= 0) this.subs.splice(i, 1);
+      const i = this.delivery.subs.indexOf(this.deliveryAdminServeSub);
+      if (i >= 0) this.delivery.subs.splice(i, 1);
     }
     // The membership inventory is read-only and shares nothing with the other admin commands, so it
     // does not queue behind them. In a mass stop each retirement's inventory followed every other
@@ -848,7 +843,7 @@ export class EndpointDeliveryPlane {
     await this.addPlane3Durable(chatStream(this.identity.space), fanoutDurableConfig(this.identity.space, { ackWaitMs: this.identity.ackWaitMs }));
     const consumer = await this.conn.js.consumers.get(chatStream(this.identity.space), FANOUT_DURABLE);
     const msgs = await consumer.consume();
-    this.streamMsgs.push(msgs);
+    this.delivery.streamMsgs.push(msgs);
     void (async () => {
       for await (const m of msgs) {
         try { await this.fanOutMessage(m); }
@@ -955,7 +950,7 @@ export class EndpointDeliveryPlane {
     await this.addPlane3Durable(inboxStream(this.identity.space), inboxReaderConfig(this.identity.space, { ackWaitMs: this.identity.ackWaitMs }));
     const consumer = await this.conn.js.consumers.get(inboxStream(this.identity.space), INBOX_READER_DURABLE);
     const msgs = await consumer.consume();
-    this.streamMsgs.push(msgs);
+    this.delivery.streamMsgs.push(msgs);
     void (async () => {
       for await (const m of msgs) {
         try { await this.readerHandle(m); }
@@ -1149,7 +1144,7 @@ export class EndpointDeliveryPlane {
     ));
     const ackWaitMs = await ackWaitOf(consumer);
     const msgs = await consumer.consume();
-    this.streamMsgs.push(msgs);
+    this.delivery.streamMsgs.push(msgs);
     void (async () => {
       for await (const m of msgs) {
         // A copy with a full store behind it means the store held its count, so older copies may have
