@@ -171,7 +171,8 @@ const QUESTION = "Which one?";
     const args = ["who", ...serverFlags, format, "--all"];
     const refused = run(args);
     const error = envelope(refused)?.error;
-    const next = error?.remedy ?? refused.stderr.split("\nNext\n")[1] ?? "";
+    const remedy: unknown = error?.remedy;
+    const next = typeof remedy === "string" ? remedy : refused.stderr.split("\nNext\n")[1] ?? "";
     const commands = Array.from(next.matchAll(/`([^`]+)`/g), (match) => match[1]!);
     const expected = format === "-j" ? `who '--server=${A}/' -j --all` : `who --server ${A} --plain --all`;
     check(`who ${format} on a shared broker refuses and keeps the broker and flags in each exact choice`,
