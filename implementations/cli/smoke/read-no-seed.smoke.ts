@@ -218,6 +218,37 @@ channels:
     !existsSync(join(xdg, "cotal", "extensions")) && !existsSync(join(home, ".cotal", "current-mesh")));
 }
 
+{
+  const { xdg, run } = sandbox();
+  const env = { COTAL_TELEMETRY: "off", LC_ALL: "C.UTF-8" };
+  for (const [command, group, typo, correction, canonical] of [
+    ["auth", "handle", "inspec", "inspect", "auth"],
+    ["ep", "work", "commti", "commit", "endpoint"],
+  ]) {
+    const args = [command, group, typo];
+    const parent = `${canonical} ${group}`;
+    const remedy = `run \`cotal help ${parent}\``;
+    const message = `cotal ${parent} has no subcommand "${typo}" - did you mean ${correction}? Or ${remedy}`;
+    const text = run(args, env);
+    const help = run([...args, "--help"], env);
+    check(`${args.join(" ")} names the nested typo and prints its parent help on stderr`,
+      text.status === 1 && text.stdout === "" && text.stderr.startsWith(`✗ ${message}\n`)
+        && text.stderr.includes(`\ncotal ${parent}\n`) && text.stderr === help.stderr, { text: shown(text), help: shown(help) });
+
+    const json = run([...args, "--json"], env);
+    const receipt = json.stdout ? JSON.parse(json.stdout) : undefined;
+    check(`${args.join(" ")} --json returns one scoped usage refusal on stdout`,
+      json.status === 1 && json.stderr === "" && receipt?.command === canonical && receipt.outcome === "refused"
+        && isDeepStrictEqual(receipt.error, { code: "USAGE_INVALID", message, remedy }), shown(json));
+  }
+  const missing = run(["auth", "handle", "inspect", "--json"], env);
+  const missingError = missing.stdout ? JSON.parse(missing.stdout).error : undefined;
+  check("a valid nested verb without an operand still gets its own refusal",
+    missing.status === 1 && missing.stderr === "" && missingError?.code === "USAGE_INVALID"
+      && missingError.message === "use auth handle inspect <private-file>", shown(missing));
+  check("nested usage refusals do not seed extensions", !existsSync(join(xdg, "cotal", "extensions")));
+}
+
 // ── A command that is not a read still meets the gate ───────────────────────────────────────────────
 {
   const { run } = sandbox();

@@ -160,8 +160,9 @@ An undeclared flag is a usage error, and so is a flag given more than once unles
 repeatable, as `--opt` and `down --session-store` are. A word that starts with a dash and a digit,
 as `-1` does, after a flag that takes a value is that flag's value, so `--limit -1` gets the
 command's own check of `--limit`. An unknown command or a word that does not name a required
-subcommand is also a usage error. So is input a command checks before it acts, such as a missing
-argument, an invalid flag value or two flags that conflict, and `cotal help` with a subcommand that
+subcommand is also a usage error. If you mistype `cotal auth handle inspec`, the refusal names
+`auth handle` and suggests `inspect`. Other usage errors include a missing
+argument, an invalid flag value, conflicting flags, and `cotal help` with a subcommand that
 does not exist. So is a word that starts with an en dash, an em
 dash or a minus sign followed by one of the command's flag names, as an autocorrecting editor writes
 `--`: the refusal names the dash and the flag to type. After `--` such a word is an argument as
