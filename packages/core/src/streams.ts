@@ -45,7 +45,6 @@ import {
   fanoutDurable,
   readerDurable,
 } from "./subjects.js";
-import type { KV } from "@nats-io/kv";
 import { requireBrokerFloor } from "./broker-floor.js";
 import { isStreamNotFound } from "./jetstream-missing.js";
 import { createEndpointStreams } from "./endpoint-binding.js";
