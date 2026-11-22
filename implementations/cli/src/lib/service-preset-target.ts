@@ -56,10 +56,11 @@ function stoppedManagerLog(space: string, root: string, requested: string, prese
   const path = managerLogPath(space, root), record = presetPidRecord(space, root, preset);
   if (!existsSync(path)) {
     const target = { space, name: requested, path };
-    if (record?.liveness === "dead" || loadManagerInstanceIdentity(root, space)) throw new CommandFailure("refused", "TARGET_NOT_FOUND", `the manager log at ${path} is no longer there; nothing was read`, { target, remedy: "start the stack again with `cotal up`" });
+    const stack = codeSpan(`cotal up --root ${shellWord(root)} --space ${shellWord(space)}`);
+    if (record?.liveness === "dead" || loadManagerInstanceIdentity(root, space)) throw new CommandFailure("refused", "TARGET_NOT_FOUND", `the manager log at ${path} is no longer there; nothing was read`, { target, remedy: `start the stack again with ${stack}` });
     throw new CommandFailure("refused", "TARGET_NOT_FOUND", `no manager has been started in space ${oneLine(space)}: there is no manager log at ${path}; nothing was read`, {
       target,
-      remedy: "start the stack with `cotal up`, or the manager alone with `cotal manager start`",
+      remedy: `start the stack with ${stack}, or the manager alone with ${codeSpan(`cotal manager start --space ${shellWord(space)}`)}`,
     });
   }
   return { requested, name: requested, preset: preset.name, saved: null, stopped: { pid: record?.liveness === "dead" ? record.pid : null, label: record?.label ?? preset.name } };

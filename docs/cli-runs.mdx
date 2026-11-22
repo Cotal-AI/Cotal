@@ -169,8 +169,9 @@ An unreadable revocation marker makes the result partial, exit 4, with a `REVOCA
 warning naming the run. A `run --endpoint <endpoint>` that matches no run lists nothing and says so,
 naming the endpoints runs are recorded under, with an `ENDPOINT_HAS_NO_RUNS` warning. The text view is presentation and is not a stable parsing target. With
 `--local`, only the list, `show`, `answer` and `amend` take `--json` or `--plain`. Any other local form
-refuses either flag `USAGE_INVALID`, exit 1: `start --local` and `resume --local` name the
-manager's form, which takes it. `revoke` and `check` have no other form. For `check`, the retry
+refuses either flag with `USAGE_INVALID`, exit 1. For `start --local` and `resume --local`, remove
+the output flag to drive the run locally, or use the suggested manager command, which keeps your
+explicit target and output flag. `revoke` and `check` have no other form. For `check`, the retry
 keeps the candidate file and explicit target and omits the output flag. If the broker URL cannot
 be displayed safely, the refusal asks you to remove the output flag from your original command.
 `run --page`, which is not in release 0.88.0 or earlier, asks one manager for a single bounded
