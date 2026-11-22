@@ -107,8 +107,10 @@ and opens a fresh single-use link in the default browser for a loopback listener
 start reuses the process and refreshes the link in that record even without a display or with `--no-open`.
 Existing browser sessions stay valid. The local launch capability is separate from readiness authority
 and is never printed. Use `--no-open` to retain the manual private-file route, including for remote listeners.
-Foreground starts remain manual. The existing cookie and origin gates remain in use. Confirmed close
-removes only this child's unchanged session/PID records; uncertainty retains custody.
+Foreground starts print the session file path in the original terminal. Repeating a loopback start
+for a foreground dashboard prints the refreshed session file path instead of a log command.
+The existing cookie and origin gates remain in use. Confirmed close removes only this child's
+unchanged session/PID records; uncertainty retains custody.
 
 Foreground service start uses the shared terminal lifetime. OS installation and full native caller
 parity are not supported. An old cached `command:web` descriptor is hidden and refuses with the matching
