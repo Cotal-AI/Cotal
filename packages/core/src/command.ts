@@ -72,7 +72,7 @@ export type CommandExample = string | { readonly command: string; readonly note:
  *  another first word is a usage error. */
 export interface Subcommand {
   readonly name: string;
-  /** Literal nested modes, for scoped help/completion. The command still owns input validation. */
+  /** Literal nested modes. The CLI resolves these before the command validates its operands. */
   readonly subcommands?: readonly Subcommand[];
   /** Names from the command's shared flags to display in this mode's help. Omit to show all. */
   readonly flagNames?: readonly string[];

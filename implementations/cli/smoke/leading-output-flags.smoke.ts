@@ -6,6 +6,7 @@
  * refuses it as it does after the command word. A command that takes its words raw has no flags to
  * read it as: `cotal --json __complete status` used to hand `__complete` the words `--json status`,
  * and it is now a usage error.
+ * Leading and trailing JSON flags both preserve nested subcommand spelling refusals.
  *
  * Driven through the built binary in a sandboxed HOME, XDG_CONFIG_HOME and COTAL_HOME. No broker is
  * started.
@@ -24,7 +25,7 @@ if (!existsSync(BIN)) {
   process.exit(1);
 }
 
-interface Envelope { command?: string; outcome?: string; error?: { code?: string; message?: string }; warnings?: { code?: string }[] }
+interface Envelope { command?: string; outcome?: string; error?: { code?: string; message?: string; remedy?: string }; warnings?: { code?: string }[] }
 
 const { check, finish } = createSuite();
 const home = mkdtempSync(join(tmpdir(), "cotal-leading-flags-"));
@@ -33,7 +34,7 @@ mkdirSync(neutral);
 process.on("exit", () => rmSync(home, { recursive: true, force: true }));
 
 const HOST_ENV = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("COTAL_") && k !== "FORCE_COLOR" && k !== "NO_COLOR"));
-const env = { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config"), COTAL_HOME: join(home, ".cotal"), COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1", NO_COLOR: "1" };
+const env = { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config"), XDG_RUNTIME_DIR: home, COTAL_HOME: join(home, ".cotal"), COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1", NO_COLOR: "1", LC_ALL: "C.UTF-8" };
 const run = (args: string[], config = env.XDG_CONFIG_HOME) => {
   const r = spawnSync(process.execPath, [BIN, ...args], { cwd: neutral, env: { ...env, XDG_CONFIG_HOME: config }, encoding: "utf8", timeout: 120_000 });
   let envelope: Envelope | undefined;
@@ -44,6 +45,34 @@ const shown = (r: ReturnType<typeof run>) => ({ status: r.status, stdout: r.stdo
 
 const after = run(["version", "--json"]);
 check("control: version --json writes one envelope", after.status === 0 && after.envelope?.command === "version", shown(after));
+
+for (const [command, group, typo, suggestion, missingOperand] of [
+  ["auth", "handle", "inspec", "inspect", "use auth handle inspect <private-file>"],
+  ["endpoint", "work", "commti", "commit", "endpoint work needs a target and declared pool"],
+] as const) {
+  const parent = `${command} ${group}`;
+  const argv = [command, group, typo];
+  const message = `cotal ${parent} has no subcommand "${typo}" - did you mean ${suggestion}?`;
+  for (const args of [["--json", ...argv], [...argv, "--json"]]) {
+    const r = run(args);
+    check(`${args.join(" ")} writes one refusal naming the nested typo and parent help`, r.status === 1 && r.stderr === ""
+      && r.envelope?.command === command && r.envelope.outcome === "refused" && r.envelope.error?.code === "USAGE_INVALID"
+      && r.envelope.error.message === `${message} Or run \`cotal help ${parent}\``
+      && r.envelope.error.remedy === `run \`cotal help ${parent}\``, shown(r));
+  }
+  const text = run(argv);
+  check(`${argv.join(" ")} names the nested typo on stderr and shows parent help`, text.status === 1 && text.stdout === ""
+    && text.stderr.includes(message) && text.stderr.includes(`\ncotal ${parent}\n`), shown(text));
+  const help = run([...argv, "--help"]);
+  check(`${argv.join(" ")} --help gives the same diagnosis`, help.status === 1 && help.stdout === "" && help.stderr.includes(message), shown(help));
+  const missing = run([command, group, suggestion, "--json"]);
+  check(`${parent} ${suggestion} still reports its missing operands`, missing.status === 1 && missing.stderr === ""
+    && missing.envelope?.error?.code === "USAGE_INVALID" && missing.envelope.error.message === missingOperand, shown(missing));
+}
+
+const withValue = run(["--json", "ep", "work", "--server", "commit", "commti"]);
+check("a flag value is not a nested subcommand, including through a command alias", withValue.status === 1 && withValue.stderr === ""
+  && withValue.envelope?.error?.message?.startsWith('cotal endpoint work has no subcommand "commti" - did you mean commit?') === true, shown(withValue));
 
 const duplicateInput = "Option '--no-input' cannot be repeated";
 const jsonDuplicate = (r: ReturnType<typeof run>, command: string) => r.status === 1 && r.stderr === "" &&

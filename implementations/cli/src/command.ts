@@ -520,24 +520,20 @@ function parseOrExit(cmd: Command, rest: string[]): ParsedArgs {
   } catch (e) {
     if (isArgError(e)) {
       const { positionals } = metadataPositionals(cmd, rest);
-      const first = positionals[0]?.value;
-      let selected: Command | Subcommand = cmd;
-      for (const { value } of positionals) {
-        const sub = findSubcommand(selected, value);
-        if (!sub) break;
-        selected = sub;
-      }
+      const { path, parent } = subcommandPath(cmd, positionals.map(({ value }) => value));
       const takesOperands = !seed && cmd.positionals !== undefined &&
-        (!cmd.subcommands?.length || cmd.name === "history" || (first !== undefined && findSubcommand(cmd, first) !== undefined));
-      const refusal = parseRefusal(e as Error & { code?: string }, cmd, rest, seed?.flagNames ?? selected.flagNames, takesOperands);
+        (!cmd.subcommands?.length || cmd.name === "history" || path.length > 0);
+      const refusal = parseRefusal(e as Error & { code?: string }, cmd, rest, seed?.flagNames ?? parent.flagNames, takesOperands);
       usageExit(refusal.message, cmd, json, plain, refusal.remedy, rest);
     }
     throw e;
   }
   const first = parsed.positionals[0];
-  // History also accepts a root channel positional; only its reserved clear token is a mode.
-  if (cmd.subcommands?.length && first !== undefined && cmd.name !== "history" && !findSubcommand(cmd, first))
-    usageExit(unknownSubcommandMessage(cmd.name, cmd, first), cmd, json, plain);
+  const { path, parent, unknown } = subcommandPath(cmd, parsed.positionals);
+  if (unknown !== undefined) {
+    const name = [cmd.name, ...path].join(" ");
+    usageExit(unknownSubcommandMessage(name, parent, unknown), cmd, json, plain, json ? `run \`cotal help ${name}\`` : undefined, rest);
+  }
   // Target resolution reads an empty space as no space and falls back to the selected one, so a script
   // whose variable is unset would act on whichever space is selected.
   const spaceFlag = cmd.flags?.find((flag) => flag.name === "space");
@@ -550,7 +546,8 @@ function parseOrExit(cmd: Command, rest: string[]): ParsedArgs {
     failureExit(cmd, storeDirRefusal(storeDir), json, parsed.values.plain === true);
   // `--json` implies `--no-input`: a script reading one document cannot answer a prompt.
   if (structured(cmd, first) && parsed.values.json === true) disableInput();
-  const canonical = canonicalSubcommand(cmd, parsed);
+  const canonical = path.some((name, index) => name !== parsed.positionals[index])
+    ? { ...parsed, positionals: [...path, ...parsed.positionals.slice(path.length)] } : parsed;
   refuseRemovedFolder(cmd, canonical, rest);
   try {
     cmd.validate?.(canonical);
@@ -604,37 +601,28 @@ function refuseRemovedFolder(cmd: Command, parsed: ParsedArgs, rest: readonly st
   failureExit(cmd, new CommandFailure("refused", "USAGE_INVALID", "this folder no longer exists", { remedy: "cd to an existing folder and run the command again", selfContained: true }), structured(cmd, parsed.positionals[0]) && parsed.values.json === true, parsed.values.plain === true, undefined, rest);
 }
 
-/** The parsed args with a subcommand alias in the first positional replaced by its name, so `run`
- *  only ever sees canonical subcommands. */
-function canonicalSubcommand(cmd: Command, parsed: ParsedArgs): ParsedArgs {
-  const positionals = [...parsed.positionals];
-  let surface: Pick<Command, "subcommands"> = cmd;
-  let changed = false;
-  for (let index = 0; index < positionals.length; index++) {
-    const sub = findSubcommand(surface, positionals[index]);
-    if (!sub) break;
-    changed ||= sub.name !== positionals[index]; positionals[index] = sub.name;
-    surface = sub;
-    if (!sub.subcommands?.length) break;
-  }
-  return changed ? { ...parsed, positionals } : parsed;
-}
-
-/** The subcommand path the words in `rest` name under `cmd`, and the first word where a subcommand
- *  belongs that names none. Read from the declared specs, so a stub's help never imports its package. */
-function helpPath(cmd: Command, rest: readonly string[]): { path: string[]; unknown?: string } {
-  const words = metadataPositionals(cmd, rest).positionals.map((item) => item.value);
-  let surface: Pick<Command, "subcommands"> = cmd;
+/** The canonical subcommand path and any unknown word encountered before reaching a leaf. */
+function subcommandPath(cmd: Command, words: readonly string[], visibleOnly = false): { path: string[]; parent: Command | Subcommand; unknown?: string } {
+  let parent: Command | Subcommand = cmd;
   const path: string[] = [];
   for (const word of words) {
-    const sub: Subcommand | undefined = findSubcommand(surface, word);
-    // History's own first word may be a channel.
-    if (!sub && surface.subcommands?.length && !(surface === cmd && cmd.name === "history")) return { path, unknown: word };
-    if (!sub || sub.hidden) break;
-    path.push(sub.name); surface = sub;
-    if (!sub.subcommands?.length) break;
+    if (!parent.subcommands?.length) break;
+    const sub = findSubcommand(parent, word);
+    if (!sub) {
+      // History's own first word may be a channel.
+      if (parent === cmd && cmd.name === "history") break;
+      return { path, parent, unknown: word };
+    }
+    if (visibleOnly && sub.hidden) break;
+    path.push(sub.name);
+    parent = sub;
   }
-  return { path };
+  return { path, parent };
+}
+
+/** Resolve help from metadata only, without importing the package behind an extension stub. */
+function helpPath(cmd: Command, rest: readonly string[]) {
+  return subcommandPath(cmd, metadataPositionals(cmd, rest).positionals.map(({ value }) => value), true);
 }
 
 /** `-h`/`--help` anywhere after a command: that command's help, or its subcommand's when the first

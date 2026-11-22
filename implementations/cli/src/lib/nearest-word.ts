@@ -68,7 +68,7 @@ export function unknownCommandMessage(commands: readonly Command[], word: string
   return `unknown command: ${oneLine(boundedValue(word, SHOWN_VALUE_MAX))} - ${suggestThen(word, words, "run `cotal help` to list commands")}`;
 }
 
-/** The usage line for a first word that names none of `surface`'s subcommands: the nearest, or the
+/** The usage line for a word that names none of `surface`'s subcommands: the nearest, or the
  *  subcommands it takes when none is near, as `telemetry bogus` names the levels. */
 export function unknownSubcommandMessage(path: string, surface: Pick<Command, "subcommands">, word: string): string {
   const visible = (surface.subcommands ?? []).filter((sub) => !sub.hidden);
