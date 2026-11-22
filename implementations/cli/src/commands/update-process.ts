@@ -2,7 +2,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, realpathSync, rmSync, watch, writeFileSync, type FSWatcher } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, parse, relative, resolve, sep } from "node:path";
-import { cmdSpawnSpec, beginGlobalUpdateChild, processGroupMembers, processStartToken } from "@cotal-ai/workspace";
+import { boundedValue, cmdSpawnSpec, beginGlobalUpdateChild, oneLine, processGroupMembers, processStartToken } from "@cotal-ai/workspace";
 import { withInstallUmask } from "../lib/install-umask.js";
 import { npmInvocation } from "../lib/npm-invocation.js";
 import { compareSemver } from "../seed/reconcile.js";
@@ -14,9 +14,11 @@ export interface CommandResult {
   readonly stderr: string;
   readonly error?: string;
   readonly errorCode?: string;
+  readonly npmRuntimeError?: string;
 }
 
 export class RegistryUnavailable extends Error {}
+export const NPM_NODE_REMEDY = "Select a compatible Node and npm on PATH, then retry.";
 
 export function parseNpmVersion(output: string): string {
   const parsed: unknown = JSON.parse(output.trim());
@@ -76,8 +78,8 @@ export function verifyGlobalEntry(root: string, expectedVersion: string): string
 
 export async function runNpmAsync(args: string[], archiveCache?: string): Promise<CommandResult> {
   try {
-    const npm = npmInvocation(process.env);
-    const { file, args: spawnArgs, windowsVerbatimArguments } = cmdSpawnSpec(npm.file, args);
+    const npm = npmInvocation(process.env, args);
+    const { file, args: spawnArgs, windowsVerbatimArguments } = cmdSpawnSpec(npm.file, npm.args);
     const gated = archiveCache !== undefined && (process.platform === "linux" || process.platform === "darwin");
     const gate = 'IFS= read -r permit <&3 && [ "$permit" = run ] || exit 1; exec 3<&-; exec "$@"';
     const child = spawn(gated ? "/bin/sh" : file, gated ? ["-c", gate, "cotal-release-check", file, ...spawnArgs] : spawnArgs, {
@@ -108,19 +110,25 @@ export async function runNpmAsync(args: string[], archiveCache?: string): Promis
 
 export function runNpm(args: string[], inherit = false): CommandResult {
   try {
-    const npm = npmInvocation(process.env);
-    const { file, args: spawnArgs, windowsVerbatimArguments } = cmdSpawnSpec(npm.file, args);
+    const npm = npmInvocation(process.env, args);
+    const { file, args: spawnArgs, windowsVerbatimArguments } = cmdSpawnSpec(npm.file, npm.args);
     const result = spawnSync(file, spawnArgs, {
       cwd: npm.cwd, env: npm.env, windowsVerbatimArguments,
       ...(inherit ? { stdio: "inherit" as const } : { encoding: "utf8" as const }),
     });
+    const stderr = `${result.stderr ?? ""}`;
+    const npmRuntimeError = npm.unsupportedNode && result.status !== null && result.status !== 0 &&
+      /^(?:npm (?:error|ERR!) code ERR_REQUIRE_ESM\s*$|ERROR: npm v[^\n]+ is known not to run on Node\.js )/m.test(stderr)
+      ? `npm failed on Node.js ${process.version}. Its declared Node.js range is ${oneLine(JSON.stringify(boundedValue(npm.unsupportedNode, 160)))} and the installation did not supply a compatible Node.`
+      : undefined;
     return {
       status: result.status,
       signal: result.signal,
       stdout: `${result.stdout ?? ""}`,
-      stderr: `${result.stderr ?? ""}`,
+      stderr,
       error: result.error?.message,
       errorCode: (result.error as NodeJS.ErrnoException | undefined)?.code,
+      ...(npmRuntimeError ? { npmRuntimeError } : {}),
     };
   } catch (e) {
     return { status: null, stdout: "", stderr: "", error: message(e), errorCode: (e as NodeJS.ErrnoException)?.code };
@@ -157,8 +165,9 @@ export async function runGlobalProcess(
   let idle: ReturnType<typeof setTimeout> | undefined;
   let stopping: Promise<void> | undefined;
   try {
-    const npm = operation === "install" && file === "npm" ? npmInvocation(env) : undefined;
+    const npm = operation === "install" && file === "npm" ? npmInvocation(env, args) : undefined;
     file = npm?.file ?? file;
+    args = npm?.args ?? args;
     cache = mkdtempSync(join(tmpdir(), "cotal-update-npm-"));
     const recordCache = gated && staging !== undefined;
     if (recordCache) {

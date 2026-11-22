@@ -604,7 +604,7 @@ async function runUnderLocks(mode: Mode, generation: string, nonce: string, refr
 
   if (mode === "verify") {
     const { installExtensionSet } = await import("../commands/ext.js");
-    await installExtensionSet([...staged, ...operators]);
+    await installExtensionSet([...staged, ...operators], console.error, { updating: true });
     for (const entry of staged) verifyInstalled(entry.name, generation);
     for (const entry of operators) verifyOperatorInstalled(entry.pkg, generation);
   } else if (operators.length) {

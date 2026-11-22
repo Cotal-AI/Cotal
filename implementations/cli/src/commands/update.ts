@@ -67,6 +67,7 @@ import { onFlag } from "../lib/control.js";
 import {
   type CommandResult,
   RegistryUnavailable,
+  NPM_NODE_REMEDY,
   STRICT_SEMVER,
   installedUpdatePrefix,
   verifyGlobalEntry,
@@ -539,8 +540,10 @@ function checkUpdate(args: ParsedArgs, rt: UpdateRuntime): void {
   }
   const latest = latestVersion(rt);
   const missingNpm = !latest.ok && latest.missingNpm;
+  const npmRuntimeError = !latest.ok ? latest.npmResult?.npmRuntimeError : undefined;
   if (!latest.ok) warnings.push(missingNpm
     ? { code: "NPM_UNAVAILABLE", target: null, message: "npm is not on PATH. Update availability is unknown." }
+    : npmRuntimeError ? { code: "NPM_RUNTIME_UNAVAILABLE", target: null, message: npmRuntimeError }
     : { code: "LATEST_VERSION_UNAVAILABLE", target: null, message: "The registry did not return a valid latest version. Update availability is unknown." });
   const comparison = latest.ok ? compareSemver(latest.version, current) : null;
   let reconciliation: ReturnType<typeof readUpdatePending>
@@ -562,7 +565,7 @@ function checkUpdate(args: ParsedArgs, rt: UpdateRuntime): void {
     command: "update", target: null, result, warnings,
     ...(warnings.length ? { completeness: "partial" as const, partial: {
       message: reconciliation.kind === "seed" ? "Connector seeding needs reconciliation." : "Some update information could not be established.",
-      remedy: reconciliation.kind === "seed" || reconciliation.kind === "unreadable" && reconciliation.source !== "receipt" ? reconciliation.instruction : missingNpm ? MISSING_NPM_REMEDY : "Check registry access or the unreadable inventory and repeat update --check.",
+      remedy: npmRuntimeError ? NPM_NODE_REMEDY : reconciliation.kind === "seed" || reconciliation.kind === "unreadable" && reconciliation.source !== "receipt" ? reconciliation.instruction : missingNpm ? MISSING_NPM_REMEDY : "Check registry access or the unreadable inventory and repeat update --check.",
     } } : {}),
   }, (r) => ({ sections: [
     ...(r.reconciliation.kind === "none" ? [] : [{ title: "Reconciliation", blocks: [{ kind: "lines" as const, lines: [r.reconciliation.instruction] }] }]),
@@ -620,6 +623,11 @@ export async function executeUpdate(self: boolean, rt: UpdateRuntime = updateRun
       if (latest.missingNpm) {
         if (rt.env.COTAL_AUTO_UPDATE === "1") recordUpdateDeferral(current, "waiting for npm availability", true);
         rt.err(c.red(`✗ cotal-ai version check failed: ${latest.error}. ${MISSING_NPM_REMEDY}`));
+        return 1;
+      }
+      const runtime = latest.npmResult?.npmRuntimeError;
+      if (runtime) {
+        rt.err(c.red(`✗ cotal-ai version check failed: ${runtime} ${NPM_NODE_REMEDY}`));
         return 1;
       }
       if (!latest.npmResult || !(releaseReadError(latest.npmResult, "cotal-ai version check failed") instanceof RegistryUnavailable)) {

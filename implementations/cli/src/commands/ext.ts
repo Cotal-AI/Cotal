@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { closeSync, copyFileSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
-import { dirname, isAbsolute, join, resolve, relative, sep } from "node:path";
+import { homedir } from "node:os";
+import { dirname, isAbsolute, join, parse, resolve, relative, sep } from "node:path";
 import { registry, type Command, type Connector, type FlagSpec, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
 import { CommandFailure, RESERVED_CONNECTOR_NAMES, beginExtensionNpmMutation, bindExtensionPeers, cacheExtensionServiceMetadata, cacheServicePreset, cacheCommand, cacheConnector, cacheExtension, cacheLocalProcess, cmdSpawnSpec, extensionLocalProcesses, extensionPackageDir, extensionProvides, extensionsDir, extensionsManifestPath, importExtensionEntry, installedExtensionPackage, loadExtensionsManifest, loadMeshes, localProcessPath, parsePid, probeLiveness, providedWords, jsonFlag, plainFlag, presentationOf, provenance, saveExtensionsManifest, seededCommandsMismatch, writeResult, type InstalledExtension, type InstalledExtensionPackage, type LocalProcess, type LocalProcessContext, type Presentation, type Report, type ServicePreset } from "@cotal-ai/workspace";
 import { c } from "../ui.js";
@@ -118,7 +119,7 @@ export async function ext(args: ParsedArgs): Promise<void> {
   throw usage(EXT_USAGE);
 }
 
-async function npm(args: string[], prefix: string, seeding = false): Promise<{ status: number | null; output: string }> {
+async function npm(args: string[], prefix: string, seeding = false, updating = false): Promise<{ status: number | null; output: string }> {
   // On Windows `npm` is `npm.cmd`; Node refuses to spawn a `.cmd` without a shell (CVE-2024-27980),
   // and a naive shell re-parses cmd metachars, so run it through cmd.exe with a byte-for-byte command
   // line (shared with the manager's PtyRuntime launch).
@@ -129,15 +130,18 @@ async function npm(args: string[], prefix: string, seeding = false): Promise<{ s
   // Select the extension prefix explicitly so Corepack never treats its ancestors as a project.
   const env = { ...process.env };
   delete env[EXT_UPDATE_PARENT_ENV];
-  const invocation = npmInvocation(env, { pinOpaque: false });
-  const { file, args: spawnArgs, windowsVerbatimArguments } = cmdSpawnSpec(invocation.file, [...args, "--prefix", prefix, "--include=optional", "--legacy-peer-deps"]);
+  const npmArgs = [...args, "--prefix", prefix, "--include=optional", "--legacy-peer-deps"];
+  const invocation = updating ? npmInvocation(env, npmArgs, { pinCurrent: false }) : undefined;
+  const { file, args: spawnArgs, windowsVerbatimArguments } = cmdSpawnSpec(invocation?.file ?? "npm", invocation?.args ?? npmArgs);
   const seedGroup = seeding && process.platform === "linux";
   const mutation = beginExtensionNpmMutation(undefined, seedGroup);
   let published = false;
   let preservePending = false;
   let stopForwarding = () => {};
   try {
-    const child = withInstallUmask(() => spawn(file, spawnArgs, { cwd: invocation.cwd, env: invocation.env, windowsVerbatimArguments, detached: seedGroup }));
+    const child = withInstallUmask(() => spawn(file, spawnArgs, {
+      cwd: invocation?.cwd ?? parse(homedir()).root, env: invocation?.env ?? env, windowsVerbatimArguments, detached: seedGroup,
+    }));
     if (seedGroup && child.pid !== undefined) {
       const pid = child.pid;
       const forward = (signal: NodeJS.Signals) => {
@@ -243,7 +247,7 @@ export async function addExtension(spec: string, expectedPkg?: string, borrowMut
       provenance.wrote("extensions prefix", join(dir, "package.json"));
     }
     if (seeding) await addTransaction(pkg, resolved, expectedPkg, true, announce);
-    else await installExtensionSet([{ pkg, spec: resolved }], announce);
+    else await installExtensionSet([{ pkg, spec: resolved }], announce, { updating: borrowMutation });
   } finally {
     if (seeding) clearChildMarker();
     releaseMutation();
@@ -268,7 +272,7 @@ function dropForeignLockEntries(lock: { packages?: Record<string, { extraneous?:
 export async function installExtensionSet(
   requests: readonly ExtensionInstallRequest[],
   announce: (line: string) => void = console.error,
-  opts?: { isolate?: boolean },
+  opts?: { isolate?: boolean; updating?: boolean },
 ): Promise<void> {
   if (!requests.length) return;
   const ownerConfig = connectorConfigDir();
@@ -318,7 +322,7 @@ export async function installExtensionSet(
     }
     const mutationPath = extensionNpmMutationPath();
     const specs = requests.map(({ spec }) => isPathSpec(spec) ? realpathSync(spec) : spec);
-    const result = await npm(["install", "--save", "--no-audit", "--no-fund", "--install-links", ...specs], npmPrefix);
+    const result = await npm(["install", "--save", "--no-audit", "--no-fund", "--install-links", ...specs], npmPrefix, false, opts?.updating);
     if (existsSync(mutationPath)) stage.retain();
     if (interrupted) throw new ExtensionAddInterrupted(requests[0]!.pkg);
     if (result.status !== 0) throw new Error(`extension set npm install failed: ${npmInstallFailure(result.output)}`);
