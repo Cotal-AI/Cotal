@@ -119,6 +119,10 @@ function outFolderRefusal(target: object, out: string, error: unknown): CommandF
   return new CommandFailure("refused", "PERMISSION_DENIED", `the --out folder ${parent} could not be reached or made by this account (${code}); no credential was written`, { target: { ...target, folder: parent }, remedy: "name an --out file in a folder you own, or make that folder first" });
 }
 
+function personaCommand(verb: "show" | "edit", name: string, space: string): string {
+  return `cotal persona ${verb} ${shellWord(name)} --space${space.startsWith("-") ? "=" : " "}${shellWord(space)}`;
+}
+
 /** Native static profiles only. Labels, files and broker provisioning share one resolved authority. */
 export async function mint(args: ParsedArgs): Promise<void> {
   validateCredentialMintArguments(args);
@@ -195,7 +199,7 @@ export async function mint(args: ParsedArgs): Promise<void> {
       const unusable = (problem: string, remedy: string) => new CommandFailure("refused", "SCHEMA_INVALID", `the persona file ${path} for this label ${problem}, so no credential was minted; file values and secret material were not printed`, { target: { ...target, persona: path }, remedy });
       let definition;
       try { definition = !values["no-persona"] && existsSync(path) ? loadAgentFile(path, { deferRoleValidation: true }) : undefined; }
-      catch { throw unusable("could not be read as a persona", `see what is wrong with it with \`cotal persona show ${name}\`, then fix it and mint again`); }
+      catch { throw unusable("could not be read as a persona", `see what is wrong with it with \`${personaCommand("show", name, space)}\`, then fix it and mint again`); }
       // A flag wins, then the grants of the --identity credential, then the persona.
       const readFlag = parseCommaList(values["allow-subscribe"]);
       allowSubscribe = readFlag === undefined && carried ? carried.read : resolveReadAcl(definition?.subscribe ?? [], readFlag ?? definition?.allowSubscribe);
@@ -203,7 +207,7 @@ export async function mint(args: ParsedArgs): Promise<void> {
       role = values.role ?? (carried ? carried.role ?? undefined : definition?.role);
       if (values.role === undefined && !carried && role !== undefined) {
         try { assertValidRole(role); }
-        catch { throw unusable("sets a role that is not one word of letters, digits, _ or -", `give it such a role with \`cotal persona edit ${name}\`, then mint again`); }
+        catch { throw unusable("sets a role that is not one word of letters, digits, _ or -", `give it such a role with \`${personaCommand("edit", name, space)}\`, then mint again`); }
       }
       lifecycleUid = mintLifecycleUid();
     }
