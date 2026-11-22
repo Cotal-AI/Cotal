@@ -976,7 +976,7 @@ export function acquireMaintenanceLock(
   const owner = options.owner ?? defaultOwner();
   parseOwner(owner, "requested lock");
   const token = randomUUID();
-  const identity = options.owner === undefined && (options.operation === "up" || options.operation === "foreground up" || options.operation === "team boot") ? identityRecord(process.pid) : undefined;
+  const identity = options.owner === undefined ? identityRecord(process.pid) : undefined;
   const body = `${JSON.stringify({ token, owner, ...(options.operation ? { operation: options.operation } : {}), ...(identity && "token" in identity ? { processToken: identity.token } : {}) }, null, 2)}\n`;
 
   try {
