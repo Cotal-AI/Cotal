@@ -749,7 +749,7 @@ try {
       const refused = native([...args, "--space", "alpha", "--json", "--", "-created"], MESH, childEnv, bytes);
       const { error } = JSON.parse(refused.stdout);
       check("persona create refuses an invalid default name before writing", refused.status === 1 && error?.code === "USAGE_INVALID" &&
-        error.message.includes('cannot start with "-"') && error.remedy.includes("such as reviewer") &&
+        error.message.includes('cannot start with "-"') && error.remedy.includes("--name") &&
         !existsSync(agentFilePath(ALPHA, "-created")), refused.stdout);
     }
     const path = agentFilePath(ALPHA, "created");
@@ -769,6 +769,29 @@ try {
     }
   }
   checkHyphenCreate();
+
+  function checkExplicitAgentName() {
+    const path = agentFilePath(ALPHA, "-created");
+    const body = ["persona", "create", "--prompt", "Review changes.", "--subscribe", ""];
+    const bad = native([...body, "--space", "alpha", "--json", "--name=-invalid", "--", "-created"], MESH);
+    check("persona create refuses an invalid explicit agent name without writing", bad.status === 1 &&
+      JSON.parse(bad.stdout).error?.code === "USAGE_INVALID" && !existsSync(path), bad.stdout);
+    const created = native([...body, "--space", "alpha", "-n", "reviewer", "--plain", "--", "-created"], MESH);
+    const next = [...created.stdout.matchAll(/^\s+(cotal .+?) {2,}\S.*$/gm)].map(match => match[1]!);
+    check("an explicit agent name permits a hyphen-leading catalog name with copyable follow-ups", created.status === 0 &&
+      JSON.stringify(next) === JSON.stringify(["cotal spawn --space alpha -- -created", "cotal p show --space alpha -- -created"]), created.stdout + created.stderr);
+    const preview = native(["spawn", "--dry-run", "--json", ...next[0]!.split(" ").slice(2)], MESH);
+    const result = JSON.parse(preview.stdout).result;
+    check("spawn previews the explicit agent name without a launch-time override", preview.status === 0 &&
+      result?.persona?.path === path && result.requestedName === "reviewer", preview.stdout);
+    unlinkSync(path);
+    const bytes = Buffer.from("---\r\nname: imported\r\n---\r\nReview changes.\r\n");
+    const imported = native(["persona", "create", "--file", "-", "--name", "imported", "--space", "alpha", "--json", "--", "-created"], MESH, childEnv, bytes);
+    check("a complete file supplies the explicit agent name without changing its bytes", imported.status === 0 &&
+      readFileSync(path).equals(bytes), imported.stdout + imported.stderr);
+    unlinkSync(path);
+  }
+  checkExplicitAgentName();
 
   {
     const path = agentFilePath(MESH, "-reviewer");

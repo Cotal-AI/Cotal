@@ -31,6 +31,7 @@ export function validateRemotePersonaArguments(args: ParsedArgs): void {
   const values = args.values as PersonaValues;
   const [mode, name, ...extra] = args.positionals;
   onInstance(values.on!, personaVerb(mode, name));
+  if (values.name !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", "--name is only supported by local persona create");
   if (mode !== undefined && !["list", "show", "create"].includes(mode)) throw new CommandFailure("refused", "UNSUPPORTED", "remote persona operations support list, show and create only; no local edit or removal was substituted");
   if (extra.length || (mode === undefined || mode === "list" ? name !== undefined : !name)) throw new CommandFailure("refused", "USAGE_INVALID", "use persona --on <full-manager-instance>, persona show <name> --on <id>, or persona create <name> --on <id>");
   if (name !== undefined) {
