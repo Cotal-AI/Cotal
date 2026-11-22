@@ -94,4 +94,6 @@ completeFileWrites();
 // roots keep the explicit-import model.
 // The bundled app uses only stock daemon operations, never operator extension discovery or seeding.
 const desktopBridge = argv.length === 2 && argv[0] === "daemon" && argv[1] === "desktop";
-await runCli(registry, argv, { extensions: !desktopBridge, startupNotice: { release: releaseStartupInterrupt, handOver: handOverStartupInterrupt } });
+// The bundled reference must open even when the extension inventory needs repair.
+const extensions = !desktopBridge && word !== "docs";
+await runCli(registry, argv, { extensions, startupNotice: { release: releaseStartupInterrupt, handOver: handOverStartupInterrupt } });
