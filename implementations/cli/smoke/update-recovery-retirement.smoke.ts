@@ -15,7 +15,7 @@ const fixture = join(import.meta.dirname, "update-recovery.fixture.ts");
 const now = Date.now();
 function cell(name: string) {
   const base = join(root, name);
-  const env = { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))), HOME: join(base, "home"), COTAL_HOME: join(base, "cotal"), XDG_CONFIG_HOME: join(base, "config"), TMPDIR: join(base, "tmp"), COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_NO_UPDATE_CHECK: "1", RECOVERY_TEST_NOW: String(now) };
+  const env = { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))), HOME: join(base, "home"), COTAL_HOME: join(base, "cotal"), XDG_CONFIG_HOME: join(base, "config"), TMPDIR: join(base, "tmp"), DO_NOT_TRACK: "1", COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_NO_UPDATE_CHECK: "1", RECOVERY_TEST_NOW: String(now) };
   for (const path of [env.HOME, env.COTAL_HOME, env.TMPDIR, join(env.XDG_CONFIG_HOME, "cotal"), join(base, "foreign/.update-snapshot-old")]) mkdirSync(path, { recursive: true, mode: 0o700 });
   const foreign = join(base, "foreign/.update-snapshot-old");
   writeFileSync(join(foreign, "untouched"), "foreign snapshot bytes\n");
