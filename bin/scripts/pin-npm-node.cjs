@@ -10,19 +10,30 @@ if (major < minMajor || (major === minMajor && (minor < minMinor || (minor === m
 } else if (process.platform === "linux" || process.platform === "darwin") {
   // Leave Windows shims, local installs and script-disabled npm installs alone. The JavaScript
   // entry remains the declared bin and the stable entry for daemons and retained generations.
-  const { existsSync, mkdtempSync, readlinkSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } = require("fs");
-  const { basename, dirname, join, relative, resolve } = require("path");
-  const root = realpathSync(join(__dirname, ".."));
+  const { existsSync, lstatSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } = require("fs");
+  const { basename, dirname, isAbsolute, join, relative, resolve } = require("path");
+  const refreshing = process.argv[2] === "--refresh";
+  const root = realpathSync(refreshing ? process.argv[3] : join(__dirname, ".."));
   const modules = dirname(root);
   if (basename(root) === "cotal-ai" && basename(modules) === "node_modules" && basename(dirname(modules)) === "lib") {
     const link = join(dirname(dirname(modules)), "bin", "cotal");
     let target;
     try { target = resolve(dirname(link), readlinkSync(link)); }
     catch (error) { if (error.code !== "ENOENT" && error.code !== "EINVAL") throw error; }
-    if (target === join(root, "dist", "cotal.js")) {
-      const launcher = join(root, "dist", "cotal-npm");
+    const launcher = join(root, "dist", "cotal-npm");
+    if (target === (refreshing ? launcher : join(root, "dist", "cotal.js"))) {
       const quote = value => "'" + value.replaceAll("'", "'\\''") + "'";
-      const node = realpathSync(process.execPath);
+      let node = realpathSync(process.execPath);
+      let previous;
+      if (refreshing) {
+        const info = lstatSync(launcher);
+        if (!info.isFile() || info.uid !== process.getuid() || (info.mode & 0o022) !== 0) throw new Error("unsafe npm launcher");
+        previous = readFileSync(launcher, "utf8");
+        const pin = previous.match(/^  node=('(?:[^'\n]|'\\'')*')$/m);
+        if (!pin) throw new Error("cannot read the recorded Node executable from the npm launcher");
+        node = pin[1].slice(1, -1).replaceAll("'\\''", "'");
+        if (!isAbsolute(node)) throw new Error("the npm launcher has no absolute Node executable");
+      }
       // Linux's cwd link names the current inode even after its directory entry is removed.
       // Give it to sh before startup, then restore the caller's PWD without changing directories.
       const split = 'COTAL_NPM_PWD=${PWD} PWD=/proc/self/cwd /bin/sh';
@@ -39,7 +50,7 @@ else
 fi
 unset COTAL_NPM_PWD`
         : "#!/bin/sh";
-      writeFileSync(launcher, `${shell}
+      const contents = `${shell}
 node_supported() {
   version=$("$1" --version 2>/dev/null) || return 1
   major=\${version%%.*}
@@ -84,7 +95,20 @@ entry=$(resolve_entry "$0") || {
   exit 1
 }
 exec "$node" "$entry" "$@"
-`, { flag: "wx", mode: 0o755 });
+`;
+      if (refreshing) {
+        if (previous !== contents) {
+          const temporary = mkdtempSync(join(dirname(launcher), ".cotal-node-"));
+          try {
+            const pending = join(temporary, "cotal-npm");
+            writeFileSync(pending, contents, { flag: "wx", mode: 0o755 });
+            if (resolve(dirname(link), readlinkSync(link)) !== target) throw new Error("npm launcher link changed during update");
+            renameSync(pending, launcher);
+          } finally { rmSync(temporary, { recursive: true, force: true }); }
+        }
+        return;
+      }
+      writeFileSync(launcher, contents, { flag: "wx", mode: 0o755 });
       const temporary = mkdtempSync(join(dirname(link), ".cotal-node-"));
       try {
         const pending = join(temporary, "cotal");

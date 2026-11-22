@@ -115,12 +115,13 @@ An older transaction without a completion marker stays with a warning until a la
 publication explicitly supersedes its validated history for the same installation.
 A source checkout keeps the separate global-install route and does not stage its checkout tree.
 
-Publication changes only the canonical bootstrap. A protected descriptor in the retained store
+Publication changes the canonical bootstrap. A protected descriptor in the retained store
 selects the execution generation and binds to the installed package identity and bootstrap hash.
 The package manifest and original dependencies stay as npm or pnpm installed them. A manual
 package-manager install therefore sees its own original record, replaces the package normally,
 and retires the superseded active descriptor.
-This also works when npm replaces the launcher with its Node-pinning wrapper.
+On Linux and macOS, self-update refreshes an existing npm launcher with the target release's Node selection logic and preserves its recorded Node path.
+Update subprocesses that invoke npm use the Node executable running Cotal without changing which npm the shell selects.
 A timestamp-only change to the npm package manifest keeps the verified release in use.
 After a staged update, npm's listing can be behind; `cotal --version` is the version in use, and
 `cotal status --verbose` and `cotal status --json` report both (`npm lists <old>; in use <new>`).

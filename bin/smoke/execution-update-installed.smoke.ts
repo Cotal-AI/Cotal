@@ -18,9 +18,12 @@ function inventory(root: string): { path: string; hash?: string; link?: string }
   return rows;
 }
 
+const mutableExecutionFiles = new Set(["dist/cotal.js", "dist/cotal-npm"]);
+
 /** Installed-mode acceptance is driven with normal packed candidates by the existing upgrade matrix. */
 export async function installedExecutionUpdate(input: { cli: string; installed: string; current: string; target: string; cwd: string; env: NodeJS.ProcessEnv }): Promise<void> {
-  const before = inventory(input.installed).filter(row => !["dist/cotal.js"].includes(row.path));
+  const before = inventory(input.installed).filter(row => !mutableExecutionFiles.has(row.path));
+  const link = lstatSync(input.cli).isSymbolicLink() ? readlinkSync(input.cli) : undefined;
   const records: { args: string[]; status: number | null; stdout: string; stderr: string }[] = [];
   const run = (args: string[]) => new Promise<typeof records[number]>((resolve, reject) => {
     const child = spawn(input.cli, args, { cwd: input.cwd, env: input.env, stdio: ["ignore", "pipe", "pipe"] });
@@ -64,7 +67,8 @@ export async function installedExecutionUpdate(input: { cli: string; installed: 
   const verboseStatus = await run(["status", "--verbose"]);
   assert.equal(verboseStatus.status, 0, verboseStatus.stderr);
   assert.ok(verboseStatus.stdout.includes(`npm lists ${input.current}; in use ${input.target}`));
-  assert.deepEqual(inventory(input.installed).filter(row => !["dist/cotal.js"].includes(row.path)), before);
+  assert.deepEqual(inventory(input.installed).filter(row => !mutableExecutionFiles.has(row.path)), before);
+  if (link !== undefined) assert.equal(readlinkSync(input.cli), link, "self-update keeps the original npm bin link");
   const output = process.env.COTAL_EXECUTION_ACCEPTANCE_OUTPUT;
   if (output) writeFileSync(output, JSON.stringify({ records, probes: probes.length, canonicalProductUnchanged: true }, null, 2));
   console.log(`installed execution update: ${input.current} to ${input.target}, ${probes.length} overlapping starts, canonical product unchanged`);

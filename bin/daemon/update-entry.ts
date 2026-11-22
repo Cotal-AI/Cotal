@@ -603,6 +603,13 @@ const composed: Command = { ...command, async run(args) {
   await update(args, runtime);
   if (args.values.check === true || args.values.auto || args.values.notify || process.exitCode) return;
   if (!currentPackages) await collectConnectorSets();
+  if (admission && recoveryAdmission?.execution && recoveryAdmission.phase !== "restoring" && process.env.COTAL_UPDATE_PARENT === String(process.ppid)) {
+    const installed = executionInstallRoot();
+    if (existsSync(join(installed, "dist/cotal-npm"))) {
+      const selected = selectExecutionProgram(installed);
+      if (selected.retained) execFileSync(process.execPath, [join(selected.root, "scripts/pin-npm-node.cjs"), "--refresh", installed], { stdio: "inherit", timeout: 15_000 });
+    }
+  }
   // The daemon started this update and restarts itself once this process has exited. A restart
   // asked for from here would stop this process with the rest of the service.
   if (admission?.disposition === "deferred") {
