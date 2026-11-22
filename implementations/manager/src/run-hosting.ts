@@ -769,7 +769,7 @@ export class RunHosting {
       admission: found.admission,
       epoch: Math.max(found.status?.epoch ?? 0, found.activation?.epoch ?? 0) + 1,
       fencingToken: Math.max(found.status?.fencingToken ?? 0, found.activation?.fencingToken ?? 0) + 1,
-      timeout: args.timeout ?? DEFAULT_CHECKPOINT_TIMEOUT,
+      timeout: args.timeout ?? found.program.defaultCheckpointTimeout ?? DEFAULT_CHECKPOINT_TIMEOUT,
       ...(served !== undefined ? { served } : {}),
     }, slot);
     return { runId: args.runId };
@@ -910,7 +910,7 @@ export class RunHosting {
   /** Retry the inventory read, not individual launch failures. No drive is launched until the
    *  scan completes, so repeating a failed scan cannot repeat a partial set of launches. */
   private async takeBack(retrying = false): Promise<boolean> {
-    let inherited: { runId: string; revision: number; epoch: number; fencingToken: number; source: string; file?: string; admission: RunAdmissionView }[] = [];
+    let inherited: { runId: string; revision: number; epoch: number; fencingToken: number; program: RunProgramValue; admission: RunAdmissionView }[] = [];
     try {
       inherited = await this.withOperator({}, async (planes, kv) => {
         const out: typeof inherited = [];
@@ -942,7 +942,7 @@ export class RunHosting {
           }
           const activation = await this.withOperator({ runId }, async (reader, _kv, takeoverId) =>
             lastActivation((await replayRunJournal(reader.js, reader.jsm, this.ctx.space, runId, takeoverId)).records));
-          out.push({ runId, revision: note.revision, epoch: Math.max(status.epoch, activation?.epoch ?? 0) + 1, fencingToken: Math.max(status.fencingToken, activation?.fencingToken ?? 0) + 1, source: program.source, ...(program.file !== undefined ? { file: program.file } : {}), admission });
+          out.push({ runId, revision: note.revision, epoch: Math.max(status.epoch, activation?.epoch ?? 0) + 1, fencingToken: Math.max(status.fencingToken, activation?.fencingToken ?? 0) + 1, program, admission });
         }
         return out;
       });
@@ -956,10 +956,11 @@ export class RunHosting {
     for (const r of inherited) {
       if (this.stopping) break;
       try {
-        const verdict = host.validate(r.source, r.file);
+        const { source, file, defaultCheckpointTimeout } = r.program;
+        const verdict = host.validate(source, file);
         if (!verdict.ok) throw new Error("the recorded program no longer validates on this host");
         if ((verdict.placements?.length ?? 0) > 1) throw new Error("its placed spawns name more than one manager instance");
-        await this.launch(host, { mode: "existing", runId: r.runId, source: r.source, ...(r.file !== undefined ? { file: r.file } : {}), epoch: r.epoch, fencingToken: r.fencingToken, timeout: DEFAULT_CHECKPOINT_TIMEOUT, admission: r.admission, placements: verdict.placements ?? [], ...(retrying ? { inheritedRevision: r.revision } : {}) });
+        await this.launch(host, { mode: "existing", runId: r.runId, source, ...(file !== undefined ? { file } : {}), epoch: r.epoch, fencingToken: r.fencingToken, timeout: defaultCheckpointTimeout ?? DEFAULT_CHECKPOINT_TIMEOUT, admission: r.admission, placements: verdict.placements ?? [], ...(retrying ? { inheritedRevision: r.revision } : {}) });
         takenBack++;
       } catch (e) {
         this.ctx.log(`! run ${r.runId} could not be taken back: ${rejectionText(e)}`);

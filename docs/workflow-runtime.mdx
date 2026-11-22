@@ -154,7 +154,7 @@ The run's wire footprint is [SPEC §14](../SPEC.md#14-workflow-runs-v05):
 | Thing | Where | What it is |
 | --- | --- | --- |
 | the run | `run.<endpoint>.<runId>` record | the resolved **pins** (seed, logical epoch, budgets, language version) on the immutable half; holder, lease and `journalHigh` on the status half |
-| the program | `program.<endpoint>.<runId>` record | the source the run was started from, verbatim, written once by the driver that pinned the run; what a resume reads and what a migration is measured against |
+| the program | `program.<endpoint>.<runId>` record | the original source, verbatim, and the default pause timeout for a hosted start. The driver records them once. A hosted resume reads them, and a migration is measured against the source |
 | the step journal | `WFJ_<space>` stream, one subject per run | append-only, no age eviction, no Direct Get; every append fenced by the run subject's own sequence; takeover is replay-then-activate |
 | a checkpoint answer | `answer.<endpoint>.<token>.<answerId>` | the payload beside the one-use settle fact; the settle names the answer it accepted |
 | a notice | `notice.<endpoint>.<runId>.<addresseeId>.<noticeId>` | one bounded decision told to one agent, rendered ahead of its next turn |

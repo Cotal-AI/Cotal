@@ -7145,6 +7145,13 @@ split, mediated, written by the driver's commit path only.
   journal's tail, which nothing inside the journal can see, and the driver MUST refuse to resume it.
   Interior loss is the journal's own ordinal chain's.
 
+**Program.** The create-only record `program.<endpoint>.<runId>` carries
+`{ v: 1, run, source, file?, at, defaultCheckpointTimeout? }`. A hosted start records its chosen
+default pause timeout as a duration string in `defaultCheckpointTimeout`. A hosted takeover uses
+that value for new pauses, or the host default if the field is absent. An explicit hosted resume
+timeout overrides that value for the resumed attempt. The journal still supplies any deadline
+already recorded for a pause. A reader that predates the field refuses records that carry it.
+
 **Inventory reads.** The list-only run-operator credential additionally permits
 `$JS.API.DIRECT.GET.KV_cotal_records_<space>` for non-fencing inventory reads. This permission
 MUST NOT be added to single-run read or checkpoint-answer credentials. It grants no consumer

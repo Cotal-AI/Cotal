@@ -652,7 +652,8 @@ try {
     return x.ok ? x.data as RunStatusViewT : undefined;
   };
   {
-    const r = await call("run-start", { source: CHECKPOINT, file: "cp2.cotal.js" });
+    const source = 'await checkpoint("approve", "Ship it?", { timeout: "10m" });\nawait checkpoint("after", "Continue?", { onExpiry: "proceed" });\n';
+    const r = await call("run-start", { source, file: "cp2.cotal.js", timeout: "30s" });
     const runId = (r.data as { runId?: string } | undefined)?.runId ?? "";
     const parked = await until(async () => { const v = await status(runId); return pending(v, "Ship it?") ? v : undefined; }, 15_000);
     c("a second checkpoint program parks under epoch 1", parked?.status?.epoch === 1 && stateOf(parked) === "running", parked?.status);
@@ -692,6 +693,9 @@ try {
     const taken = await until(async () => { const v = await statusB(runId); return v?.status?.epoch === 3 ? v : undefined; }, 15_000);
     c("the successor takes the parked run back beyond an unnoted activation: epoch 3, the pause still open",
       taken?.status?.epoch === 3 && stateOf(taken) === "running" && pending(taken, "Ship it?") !== undefined, { status: taken?.status, ms: Date.now() - t0 });
+    const firstDeadline = pending(parked, "Ship it?")?.deadlineAt;
+    c("takeover leaves the already open checkpoint's deadline intact",
+      firstDeadline !== undefined && pending(taken, "Ship it?")?.deadlineAt === firstDeadline);
     const busy = await callB("run-resume", { runId });
     c("and holds it: a resume is a conflict on the successor too", busy.ok === false && busy.error?.code === "conflict", busy.error);
     const activations = (taken?.journal ?? []).filter((row): row is Extract<RunJournalRowT, { kind: "activation" }> => row.kind === "activation");
@@ -700,6 +704,12 @@ try {
       activations.length === 3 && new Set(holders).size === 3 && holders.every((h) => /\.[0-9a-f]{16}$/.test(h)), holders);
     const answered = await callB("run-answer", { runId, stepKey: "/checkpoint:approve#0", value: "go" });
     c("the answer lands on the taken-back run", answered.ok === true, answered);
+    const after = await until(async () => pending(await statusB(runId), "Continue?"), 15_000);
+    const windowMs = (after?.deadlineAt ?? 0) - (after?.startedAt ?? 0);
+    c("a new checkpoint opened by the successor inherits the 30s start timeout",
+      windowMs >= 30_000 && windowMs < 35_000, after);
+    const continued = await callB("run-answer", { runId, stepKey: "/checkpoint:after#0", value: "go" });
+    c("the successor accepts the new checkpoint's answer", continued.ok === true, continued);
     const done = await until(async () => { const v = await statusB(runId); return stateOf(v) === "completed" ? v : undefined; }, 15_000);
     c("and it completes under the successor", stateOf(done) === "completed" && done?.status?.epoch === 3, done?.status);
     const ps = await callB("run-ps");
@@ -1217,7 +1227,7 @@ try { await delivery?.stop(); } catch { /* teardown */ }
   if (stillUp.running.length) console.log(`  ! seat processes still running after SIGKILL: ${stillUp.running.join(", ")}`);
 }
 
-const EXPECTED_CELLS = 108;
+const EXPECTED_CELLS = 111;
 if (pass + fail !== EXPECTED_CELLS) {
   console.log(`SUITE INCOMPLETE — ran ${pass + fail} of ${EXPECTED_CELLS} cells; a partial run is not a pass`);
   fail += 1;

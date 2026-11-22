@@ -285,6 +285,7 @@ export interface DriveRequest {
   readonly statusConnection?: Pick<NatsConnection, "isClosed">;
   readonly seed?: string;
   readonly file?: string;
+  readonly defaultCheckpointTimeout?: string;
   readonly effectCeiling?: number;
   readonly stepBudget?: number;
   /**
@@ -672,6 +673,7 @@ async function drive(
       run: req.runId,
       source: req.source,
       ...(req.file !== undefined ? { file: req.file } : {}),
+      ...(req.defaultCheckpointTimeout !== undefined ? { defaultCheckpointTimeout: req.defaultCheckpointTimeout } : {}),
       at: pins.startedAt,
     });
   }
