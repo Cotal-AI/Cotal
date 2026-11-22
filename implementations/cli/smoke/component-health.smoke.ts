@@ -489,7 +489,8 @@ try {
   // it runs on its own stack in `webRoot`, which these cells stop before the open-mesh cells below.
   const extAdd = cli("ext", "add", join(WT, "implementations", "web"));
   check("the web extension installs into this isolated config", extAdd.status === 0, `${extAdd.stdout}${extAdd.stderr}`);
-  const webUp = cliIn(webRoot, ["up", "--detach", "--space", WEB_SPACE, "--server", `nats://127.0.0.1:${await freePort()}`], 120_000);
+  const webServer = `nats://127.0.0.1:${await freePort()}`;
+  const webUp = cliIn(webRoot, ["up", "--detach", "--space", WEB_SPACE, "--server", webServer], 120_000);
   webStack = webUp.status === 0;
   check("the dashboard's static-auth stack starts", webStack, `${webUp.stdout}${webUp.stderr}`);
   const notStarted = cliIn(webRoot, ["status", "--components", "--space", WEB_SPACE]);
@@ -514,19 +515,22 @@ try {
     const resumed = cliIn(webRoot, ["status", "--components", "--space", WEB_SPACE]);
     check("resuming that broker restores serving health", resumed.status === 0 && /broker\s+serving/.test(resumed.stdout), `${resumed.stdout}${resumed.stderr}`);
   }
-  const managerGuidance = (cwd: string, openMesh: boolean) => {
-    const roster = cliIn(cwd, ["ps", "--json"]);
+  const managerGuidance = (cwd: string, openMesh: boolean, space: string, server: string) => {
+    const roster = cliIn(cwd, ["ps", "--space", space, "--json"]);
     const manager = (JSON.parse(roster.stdout) as { result: { managers: { instanceId: string }[] } }).result.managers[0]!.instanceId;
-    for (const name of ["manager", manager]) {
-      const read = cliIn(cwd, ["status", name, "--json"]);
+    for (const name of ["manager", manager]) for (const flags of [[], ["--space", space, "--server", server]]) {
+      const from = flags.length && openMesh ? webRoot : cwd;
+      const read = cliIn(from, ["status", name, ...flags, "--json"]);
       const error = (JSON.parse(read.stdout) as { error?: { code: string; remedy?: string } }).error;
-      check(`status ${name === "manager" ? "manager" : "manager instance"} explains the answering manager is not an agent`,
+      const target = flags.length ? ` ${flags.join(" ")}` : "";
+      check(`status ${name === "manager" ? "manager" : "manager instance"} keeps its ${flags.length ? "explicit" : "implicit"} target in Manager guidance`,
         read.status === 2 && error?.code === "TARGET_NOT_FOUND" && error.remedy !== undefined
           && error.remedy.includes(`${name} is this space's manager, which is answering, not an agent it runs`)
-          && error.remedy.includes("`cotal status`") && error.remedy.includes("`cotal endpoint describe manager`") === !openMesh, `${read.stdout}${read.stderr}`);
+          && error.remedy.includes(`\`cotal status${target}\``) && error.remedy.includes("cotal endpoint describe manager") === !openMesh
+          && (openMesh || error.remedy.includes(`\`cotal endpoint describe manager${target}\``)), `${read.stdout}${read.stderr}`);
     }
   };
-  managerGuidance(webRoot, false);
+  managerGuidance(webRoot, false, WEB_SPACE, webServer);
   if (process.platform !== "win32") {
     const deliveryCreds = join(webRoot, ".cotal", deliveryCredsKey(WEB_SPACE, { injected: false, root: webRoot }));
     chmodSync(deliveryCreds, 0o644);
@@ -560,7 +564,7 @@ try {
   const openHealth = cliIn(openRoot, ["status", "--components"]);
   const openText = `${openHealth.stdout}${openHealth.stderr}`;
   check("a healthy open stack needs no delivery daemon and exits zero", openHealth.status === 0 && /delivery\s+not-started.*not used on an open mesh/.test(openText) && /broker\s+serving/.test(openText) && /manager\s+serving/.test(openText), openText);
-  managerGuidance(openRoot, true);
+  managerGuidance(openRoot, true, openSpace, openServer);
   const openDown = cliIn(openRoot, ["down", "--yes"], 120_000);
   openStack = openDown.status !== 0;
   check("the open controller stack stops", openDown.status === 0, `${openDown.stdout}${openDown.stderr}`);

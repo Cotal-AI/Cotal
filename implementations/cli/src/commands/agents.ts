@@ -313,7 +313,7 @@ async function pinForTarget(v: FlagValues<typeof stopFlags>, verb: string, rest:
   if (loc.space !== undefined) recordOperationSpace(loc.space);
   const agent = String(v.name), message = seatMissRefusal(agent, named, loc);
   if (loc.kind === "absent" && verb === "cotal status" && loc.instances.includes(agent))
-    throw new CommandFailure("refused", "TARGET_NOT_FOUND", "the answering managers report no agent with that name or identity", { target: { space: loc.space ?? null, name: agent }, remedy: managerItselfRemedy(agent, options.openMesh === true) });
+    throw new CommandFailure("refused", "TARGET_NOT_FOUND", "the answering managers report no agent with that name or identity", { target: { space: loc.space ?? null, name: agent }, remedy: managerItselfRemedy(agent, options.openMesh === true, v) });
   if (loc.kind === "absent")
     throw new CommandFailure("refused", "TARGET_NOT_FOUND", message, { target: { space: loc.space ?? null, agent, managerInstanceIds: loc.instances }, remedy: `run ${codeSpan(onRerun("cotal ps", v))} to see the agents each manager runs` });
   const shown = oneLine(agent);
@@ -717,9 +717,13 @@ async function readNamedSeat(values: FlagValues<typeof psFlags>, name: string): 
 }
 
 /** Where the state of an answering manager, rather than one of its agents, is read. */
-function managerItselfRemedy(name: string, openMesh: boolean): string {
-  const status = `${name} is this space's manager, which is answering, not an agent it runs. \`cotal status\` shows the manager's state.`;
-  return openMesh ? status : status + " `cotal endpoint describe manager` reads its commands.";
+function managerItselfRemedy(name: string, openMesh: boolean, { space, server }: Pick<ConnectFlags, "space" | "server">): string {
+  const at = space === undefined ? "" : ` --space${space.startsWith("-") ? "=" : " "}${shellWord(space)}`;
+  const read = (verb: string) => server !== undefined && brokerAddressForDisplay(server) !== server
+    ? `${verb} with your original space and broker options`
+    : codeSpan(onRerun(verb + at, { server }));
+  const status = `${name} is this space's manager, which is answering, not an agent it runs. ${read("cotal status")} shows the manager's state.`;
+  return openMesh ? status : `${status} ${read("cotal endpoint describe manager")} reads its commands.`;
 }
 
 /** A named-agent detail uses its holding manager's inspect read and checks the selected lifecycle. */
@@ -740,7 +744,7 @@ export async function agentStatus(args: ParsedArgs): Promise<void> {
   // `manager` and an answering manager's instance id name the manager itself, which runs no row of
   // its own, so the refusal says where its state is read.
   const managerItself = name === "manager" || census.managers.some((manager) => manager.state === "answered" && manager.instanceId === name);
-  if (!matches.length && !census.partial) throw new CommandFailure("refused", "TARGET_NOT_FOUND", "the answering managers report no agent with that name or identity", { target: { ...census.target, name }, ...(managerItself ? { remedy: managerItselfRemedy(name, census.mode === "open") } : {}) });
+  if (!matches.length && !census.partial) throw new CommandFailure("refused", "TARGET_NOT_FOUND", "the answering managers report no agent with that name or identity", { target: { ...census.target, name }, ...(managerItself ? { remedy: managerItselfRemedy(name, census.mode === "open", values) } : {}) });
   const item = matches[0] ?? null;
   const managerInstanceId = item ? [...census.rowsOf].find(([, rows]) => rows.includes(item))?.[0] ?? census.target.managerInstanceId ?? item.instanceId ?? null : null;
   let managerHint = "";
