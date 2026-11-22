@@ -88,6 +88,11 @@ function scriptOf(file: string | undefined): SimScript {
   const start = clock?.start;
   if (start !== undefined && (typeof start !== "number" || !Number.isFinite(start)))
     throw new CommandFailure("refused", "SCHEMA_INVALID", "clock.start must be a finite number in milliseconds", { target: { file } });
+  // A start the clock cannot step from by whole milliseconds reports a successful simulation
+  // with the delay lost: 9007199254740992 + 1ms rounds back to the start, so elapsedMs is 0.
+  // Refuse it before simulation, naming the supported range.
+  if (start !== undefined && typeof start === "number" && Number.isFinite(start) && !Number.isSafeInteger(start))
+    throw new CommandFailure("refused", "SCHEMA_INVALID", `clock.start must be a safe integer in milliseconds so the clock can advance by whole milliseconds; ${start} cannot represent a one-millisecond step`, { target: { file }, remedy: `use a clock.start between -9007199254740991 and 9007199254740991 in ${file}, then rerun the simulation` });
   // A misspelled clock key is silently ignored: the simulator falls back to the 1m default,
   // so `clock.checkpoints` measures a delay the author never asked for. Refuse it before
   // simulation, naming the singular key when the typo is a plural of one.
