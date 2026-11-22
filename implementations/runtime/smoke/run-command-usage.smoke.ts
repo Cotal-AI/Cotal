@@ -305,13 +305,13 @@ const VERBS = ["start", "resume", "ps", "journal", "answer", "amend", "revoke", 
 // malformed one would simulate as an answer. The results file is refused before the simulation,
 // and a simulation that stops names why.
 {
-  const dir = mkdtempSync(join(tmpdir(), "run-simulate-script-"));
-  const program = join(dir, "timed workflow.cotal.js");
+  const dir = mkdtempSync(join(tmpdir(), "run simulate script-"));
+  const program = join(dir, "results.json");
+  const handler = join(dir, "handler.json");
   writeFileSync(program, 'await checkpoint("go", "Proceed?", { timeout: "4s", onExpiry: "proceed" });\n');
   const simulateFile = (values: Record<string, string | boolean> = {}) =>
     runWorkflow({ values, positionals: ["simulate", program], raw: [] }).then(() => undefined, (e: Error) => e);
   const simulateText = (text: string, values: Record<string, string | boolean> = {}) => {
-    const handler = join(dir, "results.json");
     writeFileSync(handler, text);
     return simulateFile({ handler, ...values });
   };
@@ -324,7 +324,6 @@ const VERBS = ["start", "resume", "ps", "journal", "answer", "amend", "revoke", 
   const at = await simulate({ checkpoints: { go: { status: "resolved", at: 5 } } });
   c("a scripted checkpoint at is refused, since the simulator stamps it from virtual time",
     scriptRefusal(at, "at is stamped from virtual time"), at);
-  const handler = join(dir, "results.json");
   const invalidList = await simulate({ checkpoints: { go: [{ status: "resolved" }, { status: "done" }] } });
   c("a wrong checkpoint status in a list names the results file and indexes the result to correct",
     isCommandFailure(invalidList) && scriptRefusal(invalidList, `in ${handler}: status must be "resolved" or "expired"`)
@@ -442,10 +441,10 @@ const VERBS = ["start", "resume", "ps", "journal", "answer", "amend", "revoke", 
   }
   writeFileSync(program, 'await checkpoint("go", "Proceed?", { timeout: "4s", onExpiry: "proceed" });\n');
   const noHandler = await simulateFile();
-  c("without a handler, an unscripted effect says to save and pass a JSON results file",
+  c("a workflow named results.json gets a separate results-file remedy without choosing its path",
     isCommandFailure(noHandler) && noHandler.native?.code === "L6001" && exitCode(noHandler.outcome, noHandler.code) === 5
-      && noHandler.remedy !== undefined && noHandler.remedy.includes("save a JSON results file with the missing entry")
-      && noHandler.remedy.includes(`cotal run simulate '${program.replaceAll("'", "'\\''")}' --handler results.json`)
+      && noHandler.remedy !== undefined && noHandler.remedy.includes("save the missing entry in a separate JSON results file")
+      && noHandler.remedy.includes(`cotal run simulate '${program.replaceAll("'", "'\\''")}' --handler <results-file>`)
       && !noHandler.remedy.includes("<result>"), noHandler);
   // A simulation that stops says why and where: a missing entry is the script's gap, named with the
   // entry to add. An expired gate under the default onExpiry is a completed simulation whose program
@@ -469,12 +468,11 @@ const VERBS = ["start", "resume", "ps", "journal", "answer", "amend", "revoke", 
       && envelope.result.failure.step === "/checkpoint:go#0" && envelope.result.failure.stepOutcome === "expired" && envelope.result.effects?.some((e) => e.step === "/checkpoint:go#0") === true, { expired, envelope });
   // A log line the program writes is printed: the language journals none, so this is where it is read.
   writeFileSync(program, 'log("hello", 42);\n');
-  writeFileSync(join(dir, "results.json"), "{}");
   const written: string[] = [];
   const origWrite = process.stdout.write.bind(process.stdout);
   process.stdout.write = ((chunk: string | Uint8Array) => { written.push(String(chunk)); return true; }) as typeof process.stdout.write;
   let logged: unknown;
-  try { logged = await runWorkflow({ values: { handler: join(dir, "results.json"), json: true }, positionals: ["simulate", program], raw: [] }).then(() => undefined, (e: Error) => e); }
+  try { logged = await simulate({}, { json: true }); }
   finally { process.stdout.write = origWrite; }
   let logEnvelope: { result?: { log?: unknown } } | undefined;
   try { logEnvelope = JSON.parse(written.join("")) as typeof logEnvelope; } catch { logEnvelope = undefined; }
