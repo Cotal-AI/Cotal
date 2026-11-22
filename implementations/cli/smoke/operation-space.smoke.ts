@@ -281,8 +281,9 @@ check("spawn --dry-run with no default persona previews the shipped default with
 const dottedCatalog = join(dirname(agentFilePath(root, "default")), "review.md.md");
 const dottedFile = join(root, "review.md");
 const dottedSource = "---\nname: reviewer\n---\nReview this change.\n";
+const projectSource = "---\nname: other\n---\n";
 writeFileSync(dottedCatalog, dottedSource);
-writeFileSync(dottedFile, "---\nname: other\n---\n");
+writeFileSync(dottedFile, projectSource);
 try {
   const listed = cotal("persona", "--space", "opsp", "--plain");
   check("persona lists the dotted name", listed.status === 0 && /^  review\.md\s/m.test(listed.stdout), shown(listed));
@@ -300,9 +301,17 @@ try {
   const preview = cotal("spawn", "review.md", "--dry-run", "--plain");
   check("spawn --dry-run previews the dotted catalog name instead of the project file",
     preview.status === 0 && preview.stdout.includes(dottedCatalog) && preview.stdout.includes("reviewer"), shown(preview));
+  const remove = cotal("personas", "rm", "review.md", "--space", "opsp");
+  check("legacy personas rm asks for confirmation without changing either file",
+    remove.status === 1 && remove.stderr.includes("cotal personas rm review.md --space opsp --force") &&
+    readFileSync(dottedCatalog, "utf8") === dottedSource && readFileSync(dottedFile, "utf8") === projectSource, shown(remove));
+  const forced = cotal("personas", "rm", "review.md", "--space", "opsp", "--force");
+  check("legacy personas rm --force removes only the dotted catalog entry",
+    forced.status === 0 && !existsSync(dottedCatalog) && existsSync(dottedFile) &&
+    readFileSync(dottedFile, "utf8") === projectSource, shown(forced));
 } finally {
-  rmSync(dottedCatalog);
-  rmSync(dottedFile);
+  rmSync(dottedCatalog, { force: true });
+  rmSync(dottedFile, { force: true });
 }
 
 // #7526: spawning or previewing an invalid native persona preserves the field/position error without

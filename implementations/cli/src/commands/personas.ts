@@ -286,7 +286,7 @@ async function create(name: string | undefined, v: { role?: string; model?: stri
 
 function remove(name: string | undefined, force: boolean, values: { space?: string; server?: string }): void {
   if (!name) return usage();
-  const path = agentFilePath(targetRoot(values), name);
+  const path = personaPath(targetRoot(values), name, "show");
   const expected = requirePersonaSource(path);
   if (!force) {
     console.error(c.red(`refusing to delete "${name}" without --force`));
