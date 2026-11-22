@@ -5,6 +5,9 @@ import type { LivenessPlane, ResponderState } from "./liveness.js";
 import type { NatsConnection, Subscription } from "@nats-io/transport-node";
 import type { PrincipalServeIntent } from "./endpoint-options.js";
 
+/** One goal follower {@link EndpointControlPlane.followServiceGoal} registers with its endpoint. */
+export type GoalFollower = { cancel: () => void; reconnected: (nc: NatsConnection) => void };
+
 /** Created by the `CotalEndpoint` before its parts. The consumers part owns it; the parts that open or
  *  drop a subscription, consumer or responder change its collections in place, and anycast sets
  *  {@link anycastUnavailable}. Every other part takes it as `Readonly` and reads a field when it uses it. */
@@ -40,7 +43,7 @@ export interface DeliveryState {
   readonly plane3Channels: Map<string, number>;
   /** Active goal followers awaiting outcome, tracked so endpoint stop can cancel them immediately
    *  and connection replacement / reconnect can trigger reconciliation. */
-  readonly activeGoalFollowers: Set<{ cancel: () => void; reconnected: (nc: NatsConnection) => void }>;
+  readonly activeGoalFollowers: Set<GoalFollower>;
 }
 
 /** The state before the endpoint subscribes or consumes anything. */
@@ -53,6 +56,6 @@ export function newDeliveryState(): DeliveryState {
     chatSubs: new Map<string, Subscription>(),
     chatSubDenied: new Set<string>(),
     plane3Channels: new Map<string, number>(),
-    activeGoalFollowers: new Set<{ cancel: () => void; reconnected: (nc: NatsConnection) => void }>(),
+    activeGoalFollowers: new Set<GoalFollower>(),
   };
 }

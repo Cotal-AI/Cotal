@@ -22,9 +22,6 @@ import type { EpVerbTarget, EpAttributedReply } from "./endpoint-verbs.js";
 import { controlServiceSubject, parseSubject } from "./subjects.js";
 import type { ControlReply, ControlRequest, ControlRequestInit, EndpointRef } from "./types.js";
 
-/** One goal follower {@link EndpointControlPlane.followServiceGoal} registers with its endpoint. */
-type GoalFollower = { cancel: () => void; reconnected: (nc: NatsConnection) => void };
-
 /** What the control plane reads from its endpoint. State is read when it is used, never copied, and
  *  every method is looked up on the endpoint at call time. */
 export interface EndpointControlPlaneDeps {
