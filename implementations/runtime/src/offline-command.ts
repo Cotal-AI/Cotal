@@ -2,6 +2,7 @@ import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, sta
 import { hasDuplicateNames, hasOutOfRangeNumber } from "@cotal-ai/core";
 import { dryRunOutcome, DurationError, Journal, journalEntryKeyString, LangErrors, parseDuration, SimClockStartError, validate, type SimScript } from "@cotal-ai/lang";
 import { CommandFailure, isCommandFailure, oneLine, presentationOf, recordOperationWarning, writeResult, type Report } from "@cotal-ai/workspace";
+import { clockStartSource } from "./clock-start-source.js";
 import { logLineText } from "./log-line.js";
 
 interface OfflineValues {
@@ -70,14 +71,7 @@ function scriptOf(file: string | undefined): SimScript {
   try { text = new TextDecoder("utf-8", { fatal: true }).decode(bytes); }
   catch { throw new CommandFailure("refused", "SCHEMA_INVALID", "the simulation results script is not valid UTF-8, so it was not simulated", { target: { file }, remedy: `save ${file} as UTF-8 text` }); }
   let value: unknown;
-  // The reviver sees the literal even when JSON.parse rounded it to a safe integer.
-  const startSources = new WeakMap<object, string>();
-  try {
-    value = JSON.parse(text, function (this: object, key: string, item: unknown, context?: { source?: string }) {
-      if (key === "start" && typeof item === "number" && context?.source !== undefined) startSources.set(this, context.source);
-      return item;
-    });
-  }
+  try { value = JSON.parse(text); }
   catch { throw new CommandFailure("refused", "SCHEMA_INVALID", `the simulation results script ${file} is not valid JSON`, { target: { file }, remedy: `save a JSON results object in ${file}` }); }
   const duplicate = hasDuplicateNames(text);
   if (duplicate.duplicate) throw new CommandFailure("refused", "SCHEMA_INVALID", `the simulation results script ${file} names ${JSON.stringify(duplicate.name)} twice in one object`, {
@@ -93,7 +87,7 @@ function scriptOf(file: string | undefined): SimScript {
   }
   const clock = script.clock as Record<string, unknown> | undefined;
   if (clock !== undefined && Number.isSafeInteger(clock.start)) {
-    const source = startSources.get(clock);
+    const source = clockStartSource(text);
     if (source === undefined || hasOutOfRangeNumber(source).outOfRange) throw clockStartRefusal(file, new SimClockStartError());
   }
   // A misspelled clock key is silently ignored: the simulator falls back to the 1m default,

@@ -380,6 +380,12 @@ const VERBS = ["start", "resume", "ps", "journal", "answer", "amend", "revoke", 
         c(`clock.start accepts an exact whole millisecond (${literal}) without checking unrelated start fields`,
           error === undefined && result?.elapsedMs === 1 && result.log[0]?.values[0] === start, { error, result });
       }
+      const nested = "[".repeat(5_000) + String.raw`{"clock":{"start":1e-324},"text":"\"} ], : \\"}` + "]".repeat(5_000);
+      shown.length = 0;
+      const deep = await simulateText(`{"events":{"unused":${nested}},"clock":{"start":10}}`, { json: true });
+      const result = shown.length === 0 ? undefined : JSON.parse(shown.join("")).result;
+      c("a deep unused event before the clock does not prevent simulation",
+        deep === undefined && result?.elapsedMs === 1 && result.log[0]?.values[0] === 10, { deep, result });
     } finally {
       process.stdout.write = write;
       writeFileSync(program, 'await checkpoint("go", "Proceed?", { timeout: "4s", onExpiry: "proceed" });\n');
