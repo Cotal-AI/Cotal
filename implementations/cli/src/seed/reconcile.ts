@@ -943,8 +943,13 @@ function verifyOperatorInstalled(pkg: string, generation: string): void {
  *  detect a torn install where package.json survived a partial npm copy but the built dist did not. */
 function entryPresent(pkg: string, installed: InstalledExtensionPackage): boolean {
   const dir = extensionPackageDir(pkg);
-  const entry = join(dir, extensionEntry(installed, dir));
-  return statSync(entry, { throwIfNoEntry: false })?.isFile() ?? false;
+  try {
+    const entry = join(dir, extensionEntry(installed, dir));
+    return statSync(entry, { throwIfNoEntry: false })?.isFile() ?? false;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ELOOP") return false;
+    throw error;
+  }
 }
 
 /** A seeded built-in's install on disk. It is intact only with a package.json carrying a version AND

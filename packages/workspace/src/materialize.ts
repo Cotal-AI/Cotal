@@ -85,21 +85,56 @@ function importFailure(pkg: string, version: string, e: unknown, remedy: string,
   }
 }
 
-/** Select the package-relative entry, resolving a directory main when given the on-disk root. */
+function rootExport(exports: unknown): string {
+  if (typeof exports === "string") return exportTarget(exports);
+  if (exports && typeof exports === "object" && !Array.isArray(exports)) {
+    const map = exports as Record<string, unknown>;
+    const keys = Object.keys(map);
+    if (keys.every((key) => key.startsWith("."))) {
+      if (Object.hasOwn(map, ".")) return exportTarget(map["."]);
+    } else if (keys.every((key) => !key.startsWith("."))) {
+      return exportTarget(map);
+    }
+  }
+  throw new Error('extension "exports" must declare a root file or an import/default condition');
+}
+
+function exportTarget(target: unknown): string {
+  let entry = target;
+  if (target && typeof target === "object" && !Array.isArray(target)) {
+    const first = Object.entries(target).find(([key]) => key !== "types" && key !== "require");
+    if (first && (first[0] === "import" || first[0] === "default")) {
+      entry = first[1];
+    }
+  }
+  if (typeof entry === "string" && entry.startsWith("./") && !/[%\\?#]/.test(entry) &&
+      !entry.slice(2).split("/").some((part) => part === "." || part === ".." || part.toLowerCase() === "node_modules")) return entry;
+  throw new Error('extension root export must select a file through a package-relative string, import, or default target');
+}
+
+/** Select the package-relative entry from the same metadata used for peer binding. */
 export function extensionEntry(meta: InstalledExtensionPackage, dir?: string): string {
-  if (typeof meta.exports === "string") return meta.exports;
-  const dot = (meta.exports as Record<string, unknown> | undefined)?.["."];
-  if (typeof dot === "string") return dot;
-  if (dot && typeof dot === "object") {
-    const d = dot as Record<string, string | null | undefined>;
-    const entry = d.import ?? d.default;
-    if (entry !== undefined && entry !== null) return entry;
+  if (meta.exports !== undefined && meta.exports !== null) return rootExport(meta.exports);
+  const main = meta.main;
+  if (main === undefined) return "index.js";
+  if (dir === undefined) return main;
+  const declared = statSync(join(dir, main), { throwIfNoEntry: false });
+  if (declared && !declared.isDirectory()) return main;
+  const js = `${main}.js`;
+  const implicit = statSync(join(dir, js), { throwIfNoEntry: false });
+  if (implicit && !implicit.isDirectory()) return js;
+  if (declared) {
+    // Do not choose the index if Node would resolve an earlier non-JavaScript entry.
+    for (const suffix of [".json", ".node"]) {
+      const entry = `${main}${suffix}`;
+      const candidate = statSync(join(dir, entry), { throwIfNoEntry: false });
+      if (candidate && !candidate.isDirectory()) {
+        throw new Error(`extension main resolves to ${entry}; specify a JavaScript entry file`);
+      }
+    }
+    return join(main, "index.js");
   }
-  if (meta.main === undefined) return "index.js";
-  if (dir !== undefined && statSync(join(dir, meta.main), { throwIfNoEntry: false })?.isDirectory()) {
-    return join(meta.main, "index.js");
-  }
-  return meta.main;
+  return main;
 }
 
 /**

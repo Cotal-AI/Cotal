@@ -1,4 +1,4 @@
-import { chmodSync, existsSync, readFileSync, rmSync, writeFileSync, join, check, cotal, freshCfg, seedDir, writeJson, listNames, track, finishScenario } from "./harness.js";
+import { chmodSync, existsSync, readFileSync, rmSync, symlinkSync, writeFileSync, join, check, cotal, freshCfg, seedDir, writeJson, listNames, track, finishScenario } from "./harness.js";
 
 try {
   // ── 2b. a `{}` cursor with a missing on-disk package is repaired, not falsely reported success ────
@@ -11,11 +11,18 @@ try {
     const pkgDir = join(cfg, "cotal", "extensions", "node_modules", "@cotal-ai", "connector-hermes");
     const mainEntry = join(pkgDir, "dist", "index.js");
     if (existsSync(mainEntry)) {
+      const original = readFileSync(mainEntry);
       rmSync(mainEntry, { force: true }); // package.json survives; the built entry does not
       writeJson(join(seedDir(cfg), "reconcile.cursor.json"), {}); // parses, but names no package
       const rep = cotal(cfg, ["ext", "seed", "--repair"]);
       check("partial tear: --repair exits 0", rep.status === 0, rep.stderr);
       check("partial tear: the torn connector's entry file is actually restored", existsSync(mainEntry));
+      if (process.platform !== "win32" && rep.status === 0 && existsSync(mainEntry)) {
+        rmSync(mainEntry);
+        symlinkSync("index.js", mainEntry);
+        const repaired = cotal(cfg, ["ext", "seed", "--repair"]);
+        check("partial tear: --repair replaces a looping entry symlink", repaired.status === 0 && existsSync(mainEntry) && readFileSync(mainEntry).equals(original), repaired.stderr);
+      }
     } else {
       check("partial tear: hermes main entry present to tear", false, mainEntry);
     }

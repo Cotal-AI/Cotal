@@ -17,35 +17,62 @@ function checkDirectoryMain(dir: string, prefix: string, cli: (args: string[]) =
   const name = "cotal-directory-entry-test";
   const meta = { name, version: "1.0.0", type: "module", main: "./dist", peerDependencies: { "@cotal-ai/core": "*" } };
   const metadata = join(source, "package.json");
-  writeFileSync(metadata, JSON.stringify(meta));
-  writeFileSync(join(source, "dist", "index.js"), `import { registry } from "@cotal-ai/core";
+  const write = (path: string, message: string) => writeFileSync(join(source, path), `import { registry } from "@cotal-ai/core";
 await Promise.resolve();
-registry.register({ kind: "command", name: "directory-entry-example", summary: "Print a greeting", run() { console.log("Hello"); } });
+registry.register({ kind: "command", name: "directory-entry-example", summary: "Print a greeting", run() { console.log(${JSON.stringify(message)}); } });
 `);
-  const add = () => cli(["ext", "add", "./example-extension"]);
-  const greet = () => {
-    const result = cli(["directory-entry-example"]);
-    return result.status === 0 && result.stdout.trim() === "Hello";
+  const add = (overrides: Record<string, unknown> = {}) => {
+    writeFileSync(metadata, JSON.stringify({ ...meta, ...overrides }));
+    return cli(["ext", "add", "./example-extension"]);
   };
+  const greet = (message: string) => {
+    const result = cli(["directory-entry-example"]);
+    return result.status === 0 && result.stdout.trim() === message;
+  };
+  write("dist/index.js", "Hello from the index");
   const added = add();
   assert.equal(added.status, 0, `directory main ext add failed: ${added.stderr}`);
-  check("a fresh CLI runs a command from the directory main's index", greet());
+  check("a fresh CLI runs a command from the directory main's index", greet("Hello from the index"));
+
+  write("dist.js", "Hello from the file");
+  const preferred = add({ version: "1.1.0" });
+  check("an implicit .js main wins over the directory index", preferred.status === 0 && greet("Hello from the file"));
+  const trailing = add({ version: "1.2.0", main: "./dist/" });
+  check("a trailing slash keeps directory lookup inside that directory", trailing.status === 0 && greet("Hello from the index"));
+  const implicit = add({ version: "1.3.0", main: "./file-only" });
+  check("a missing main path reports no entry", implicit.status === 1 && implicit.stderr.includes("file-only"));
+  write("file-only.js", "Hello from an extensionless main");
+  const file = add({ version: "1.3.0", main: "./file-only" });
+  check("an extensionless main loads its .js file", file.status === 0 && greet("Hello from an extensionless main"));
+
+  write("explicit.mjs", "Hello from the export");
+  const conditional = add({ version: "1.4.0", exports: { default: "./explicit.mjs", import: "./dist.js" } });
+  check("top-level export conditions precede main and respect declaration order", conditional.status === 0 && greet("Hello from the export"));
 
   const manifest = join(prefix, "extensions.json");
   const before = readFileSync(manifest, "utf8");
   mkdirSync(join(source, "broken"));
   writeFileSync(join(source, "broken", "keep.txt"), "Include this directory in the npm package.\n");
-  writeFileSync(join(source, "broken.js"), readFileSync(join(source, "dist", "index.js")));
-  writeFileSync(metadata, JSON.stringify({ ...meta, version: "2.0.0", main: "./broken" }));
-  const missing = add();
+  write("index.js", "Wrong package-root index");
+  const missing = add({ version: "2.0.0", main: "./broken" });
   check("a directory main with no index is refused", missing.status === 1 && missing.stderr.includes(join("broken", "index.js")));
 
-  writeFileSync(metadata, JSON.stringify({ ...meta, version: "2.0.0", exports: { ".": "./dist" } }));
-  const exported = add();
-  const refused = exported.status === 1 && exported.stderr.includes(`extension set installed no entry for ${name}`);
-  if (!refused) console.error(exported.stderr.trim());
-  check("a root export to a directory is refused even if main would work", refused);
-  check("both refusals preserve the working extension", readFileSync(manifest, "utf8") === before && greet());
+  writeFileSync(join(source, "dist.json"), "{}\n");
+  rmSync(join(source, "dist.js"));
+  const json = add({ version: "2.0.0" });
+  check("a non-JavaScript candidate ahead of a directory index is refused", json.status === 1 && json.stderr.includes("main resolves to ./dist.json"));
+
+  for (const exports of [{ ".": "./dist" }, { import: "./dist" }]) {
+    const exported = add({ version: "2.0.0", exports });
+    const refused = exported.status === 1 && exported.stderr.includes(`extension set installed no entry for ${name}`);
+    if (!refused) console.error(exported.stderr.trim());
+    check(`a directory root export (${Object.keys(exports)[0]}) is refused even if main would work`, refused);
+  }
+  const unexported = add({ version: "2.0.0", exports: { "./feature": "./explicit.mjs" } });
+  check("a subpath-only map cannot fall back to main", unexported.status === 1 && unexported.stderr.includes('"exports" must declare a root'));
+  const blocked = add({ version: "2.0.0", exports: { import: null, default: "./explicit.mjs" } });
+  check("a blocked import condition cannot fall through to default or main", blocked.status === 1 && blocked.stderr.includes("root export must select a file"));
+  check("entry refusals preserve the working extension", readFileSync(manifest, "utf8") === before && greet("Hello from the export"));
 }
 
 function main(): void {
@@ -247,7 +274,7 @@ registry.register({ kind: "command", name: "greet-example", summary: "Print a gr
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
-  assert.equal(passed + failed, process.platform === "linux" || process.platform === "darwin" ? 40 : 37, "all expected copy/rollback checks ran");
+  assert.equal(passed + failed, process.platform === "linux" || process.platform === "darwin" ? 49 : 46, "all expected copy/rollback checks ran");
   console.log(`ext-install-copies smoke: ${passed} passed, ${failed} failed`);
   emitSentinel({ passed, failed });
   process.exit(failed ? 1 : 0);

@@ -730,10 +730,13 @@ cotal ext seed [--repair|--reset|--force]
 `add` and `remove` each take one operand. Missing or extra operands are usage errors and
 leave the extension inventory unchanged.
 Give `add` a package name or a local package path such as `./example-extension`.
-A package can declare its entry through a root `exports` entry such as
-`"exports": { ".": { "import": "./greet.mjs" } }` without also declaring `main`.
-A `main` that points to a directory, such as `"main": "./dist"`, uses that directory's
-`index.js`. A root export must point to a file.
+A package can declare its entry through a root `exports` string or an `import` or `default`
+condition, either at the top level or under `"."`. Cotal checks conditions in declaration order,
+skipping `types` and `require`. The selected export must point to a package-relative file.
+An unsupported or missing root export does not fall back to `main`.
+Without `exports`, `"main": "./dist"` checks the declared path, then `dist.js`, then
+`dist/index.js` if `dist` is a directory. Cotal refuses if Node would select `dist.json` or
+`dist.node` ahead of that index. A missing directory index does not fall back to the package root.
 Give `remove` the package name as listed by `cotal ext list`, without a version.
 If the package is already absent, `remove` reports that nothing was removed and exits 0.
 
