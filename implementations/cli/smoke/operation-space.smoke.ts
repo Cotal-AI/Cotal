@@ -466,8 +466,8 @@ for (const [space, mode] of instanceOnlySpaces) {
   check(`the ${space} managed preview refuses a malformed pin and keeps --dry-run in the retry`,
     invalid.status === 1 && invalid.stderr === "" && invalid.envelope?.outcome === "refused"
       && invalid.envelope.target?.on === "not-a-pin" && invalid.envelope.error?.code === "USAGE_INVALID"
-      && invalid.envelope.error.message.includes('instanceId "not-a-pin" is not a valid lifecycle token')
-      && invalid.envelope.error.remedy?.includes(`cotal ps prints each manager's instance id; rerun it as \`cotal spawn minimal -d --space ${space} --json --dry-run --on <instance>\``), shown(invalid));
+      && invalid.envelope.error.message?.includes('instanceId "not-a-pin" is not a valid lifecycle token') === true
+      && invalid.envelope.error.remedy?.includes(`cotal ps prints each manager's instance id; rerun it as \`cotal spawn minimal -d --space ${space} --json --dry-run --on <instance>\``) === true, shown(invalid));
   const pin = "a".repeat(26);
   const valid = previewPin(space, pin);
   const result = (valid.envelope as { result?: Preview } | undefined)?.result;
