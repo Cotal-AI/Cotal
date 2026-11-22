@@ -299,15 +299,15 @@ export async function offlineWorkflow(mode: "validate" | "plan" | "simulate", fi
     ] }));
     return;
   }
+  const script = scriptOf(values.handler);
   const journal = new Journal({ run: "dry-run" });
   let report: Awaited<ReturnType<typeof dryRunOutcome>>;
   // A simulation that throws never reaches the report, so the validation warnings go into the
   // run's recorded warnings first: the failure envelope carries them, and text mode prints them
   // with the failure.
-  try { report = await dryRunOutcome(source, scriptOf(values.handler), { file, journal }); }
+  try { report = await dryRunOutcome(source, script, { file, journal }); }
   catch (error) {
     for (const warning of warnings) recordOperationWarning(warning, { echo: presentation !== "json" });
-    if (error instanceof CommandFailure) throw error;
     throw simulationFailure(error, file, journal);
   }
   // A program that fails under its script is a completed simulation, and the failure is its outcome.

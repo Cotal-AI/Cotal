@@ -33,12 +33,10 @@ import {
   paintFor,
   preferencesFolderWarning,
   recordOperationWarning,
-  reportLostOutput,
   renderReport,
   renderWorkspaceError,
   runOperation,
   workspaceErrorParts,
-  writeAllSync,
   spaceRootTarget,
   targetErrorCode,
   targetErrorSpace,
@@ -74,6 +72,7 @@ import { chooseMeshTarget, spaceChoiceRemedy } from "./lib/choose-target.js";
 import { registryFailure } from "./lib/registry-errors.js";
 import { FlagValueRefusal } from "./lib/flag-value-refusal.js";
 import { workingFolderRemoved } from "./lib/paths.js";
+import { reportLostOutput, writeAllSync } from "./lib/stdout-owner.js";
 import { shellWord } from "./lib/endpoint-errors.js";
 import { displayRemedy } from "./lib/self-exec.js";
 import { GLOBAL_FLAG_WORDS, OUTPUT_FLAG_WORDS } from "./lib/leading-flags.js";
