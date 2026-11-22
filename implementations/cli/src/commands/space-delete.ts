@@ -1,4 +1,3 @@
-import { existsSync } from "node:fs";
 import * as prompts from "../lib/prompts.js";
 import { Kvm } from "@nats-io/kv";
 import { JetStreamApiCodes, jetstreamManager, type JetStreamManager } from "@nats-io/jetstream";
@@ -12,7 +11,7 @@ import {
 } from "@cotal-ai/core";
 import {
   ConfirmationRequired,
-  brokerAddressForDisplay, brokerAddressKey, canonicalRoot, codeSpan, CommandFailure, cotalDirLink, findCotalRoot, findMesh, findPreparedSpace, getSpaceAuth, isMeshRegistryError, loadMeshes, oneLine, presentationOf, renderReport, resolveNativeServiceTarget, shellPath, stackElsewhereRemedy, workspaceSecretStore, writeResult, type MeshEntry, type Report, type Block,
+  brokerAddressForDisplay, brokerAddressKey, canonicalRoot, codeSpan, CommandFailure, cotalDirLink, findCotalRoot, findMesh, findPreparedSpace, getSpaceAuth, isMeshRegistryError, loadMeshes, oneLine, prepareAgainRemedy, preparedRootProblem, preparedRootProblemText, presentationOf, renderReport, resolveNativeServiceTarget, shellPath, stackElsewhereRemedy, workspaceSecretStore, writeResult, type MeshEntry, type Report, type Block,
 } from "@cotal-ai/workspace";
 import { runningStackMembers } from "../lib/stack-members.js";
 import { journalRecordedElsewhere, readStackJournal } from "../lib/stack-journal.js";
@@ -125,10 +124,15 @@ function resolveSpaceDeletionEntry(name: string, dryRun = false): MeshEntry {
     }
     if (prepared) {
       const target = { space: name, root: prepared.root };
+      const problem = preparedRootProblem(prepared.root);
+      if (problem !== undefined && problem !== "missing")
+        throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `the recorded project path ${oneLine(prepared.root)} for "${oneLine(name)}" ${preparedRootProblemText[problem]}, so its stored streams could not be checked; no broker was contacted`, {
+          target, remedy: displayRemedy(prepareAgainRemedy(name, problem)),
+        });
       const resetFlag = dryRun ? "--dry-run" : "--yes";
       const reset = codeSpan(name.startsWith("-") ? `cotal reset store ${resetFlag} -- ${shellPath(name)}` : `cotal reset store ${shellPath(name)} ${resetFlag}`);
       const forget = codeSpan(spaceForgetCommand(name));
-      if (!existsSync(prepared.root)) {
+      if (problem === "missing") {
         const project = canonicalRoot(findCotalRoot());
         let moved: ReturnType<typeof journalRecordedElsewhere>;
         if (cotalDirLink(project) === undefined) {

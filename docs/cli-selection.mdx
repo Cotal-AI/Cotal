@@ -88,6 +88,8 @@ If a file occupies the recorded path, the listing, `space show` and commands tha
 preparation identify the file. Restore the original project folder, or run `cotal space forget <name>`
 and `cotal space create <name> --root <dir>` for its new location. Inspecting the space leaves both
 the file and the prepared record in place.
+The same recovery applies when a file blocks a parent of the recorded path. If Cotal cannot inspect
+the path, restore access or repair a circular link before forgetting the preparation.
 
 `space add` registers a space that runs elsewhere, so `--space` and `use` can reach it. A name
 `space create` refuses, such as one that starts with `-` or holds a `*`, given or named by a bundle,
@@ -240,11 +242,11 @@ finishes or settles it. `cotal up --space <name>` in a folder
 that is already another local space's root refuses with `CONFLICT`, exit 2. `space add` refuses a
 prepared name. A registration for another broker in the same folder does not prevent a prepared
 local space from starting there. A prepared space records its folder by path, and moving the folder
-leaves nothing in it that names the space. A bare `cotal up` in a folder that names no space, while the selected space is
-prepared in a folder that no longer exists, refuses `TARGET_UNAVAILABLE`, exit 2, rather than start a
-space named after the folder there. Forget the space with `cotal space forget <name>`, prepare it again in its new
-folder with `cotal space create <name>`, then run `cotal up`. Until then, `space create` of that name
-says its recorded folder no longer exists.
+leaves nothing in it that names the space. In a folder that names no space, a bare `cotal up`
+refuses with `TARGET_UNAVAILABLE`, exit 2, if the selected space's recorded path does not resolve
+to a project folder. It does not start a space named after the current folder. After a move,
+forget the space with `cotal space forget <name>`, prepare it again in its new folder with
+`cotal space create <name>`, then run `cotal up`.
 
 
 An explicit empty or whitespace-only `--root` on `space create` or `space add` refuses

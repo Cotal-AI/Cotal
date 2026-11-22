@@ -33,7 +33,8 @@ export function preparedRootProblem(root: string): PreparedRootProblem | undefin
     return stat.isDirectory() ? undefined : stat.isFile() ? "file" : "not-directory";
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
-    return code === "ENOENT" || code === "ENOTDIR" ? "missing" : "unavailable";
+    if (code === "ENOENT") return "missing";
+    return code === "ENOTDIR" ? "not-directory" : "unavailable";
   }
 }
 

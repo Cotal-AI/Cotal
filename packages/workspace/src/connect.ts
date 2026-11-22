@@ -43,11 +43,11 @@ import { agentGrants, grantMintFlags } from "./agent-grants.js";
 import { workspaceSecretStore } from "./secret-store-fs.js";
 import { brokerUrlKey, canonicalRoot, findMesh, loadMeshes, movedProject, pruneMesh, type MeshEntry, type UserAuthInfo } from "./mesh-registry.js";
 import { isWorkspaceTargetError, MeshTargetError, preparedLifecycle, recordsElsewhereError, resolveMeshTarget, resolveReadsLiveness, retainedLegacyBroker, stoppedStack, targetErrorSpace, type MeshTarget, type ResolveFlags, credsSpace } from "./mesh-target.js";
-import { findPreparedSpace } from "./prepared-spaces.js";
+import { findPreparedSpace, preparedRootProblem } from "./prepared-spaces.js";
 import { shellPath } from "./local-record-source.js";
 import { codeSpan } from "./text-wrap.js";
 import { PREFLIGHT_CONFIRM_TIMEOUT_MS, preflightTarget, pruneStaleMeshes } from "./preflight.js";
-import { renderWorkspaceError, workspaceErrorParts, type WorkspaceError, type WorkspaceErrorParts } from "./render.js";
+import { prepareAgainRemedy, preparedRootProblemText, renderWorkspaceError, workspaceErrorParts, type WorkspaceError, type WorkspaceErrorParts } from "./render.js";
 import { CommandFailure, type NativeCause, type RefusalCode } from "./output.js";
 import { credentialFileExposure, localRecordAccess, protectedLocalDirectory } from "./protected-records.js";
 import { localStackRoot, spaceStreamsAbsent, spaceStreamsExpected } from "./space-streams.js";
@@ -708,19 +708,22 @@ export async function connectOrThrow(flags: ConnectFlags, role: Profile, opts: C
       if (!isConnectRefusal(error) || error.code !== "TARGET_UNAVAILABLE") throw error;
       // Preparation can guide recovery, but it must not affect which broker we dial.
       const prepared = findPreparedSpace(flags.space);
+      const problem = prepared && preparedRootProblem(prepared.root);
       const at = checkServer(flags.server, "--server").ok && !flags.server.includes(",") ? new URL(flags.server) : undefined;
-      if (prepared && at) {
+      if (prepared && problem === undefined && at) {
         const stopped = stoppedStack(prepared.root, flags.space, flags.server);
         if (stopped) {
           const target = new MeshTargetError("not-started", `"${flags.space}" is stopped; its last operation, ${stopped.operation}, ${stopped.outcome}`, { space: flags.space, root: prepared.root, stopped }, { cause: error });
           throw workspaceRefusal({ kind: "target", error: target }, { cause: target, kind: error.kind, code: error.code });
         }
       }
-      const local = prepared && existsSync(prepared.root) && at?.protocol === "nats:" && at.hostname === "127.0.0.1" && at.port && at.port !== "0"
+      const local = prepared && problem === undefined && at?.protocol === "nats:" && at.hostname === "127.0.0.1" && at.port && at.port !== "0"
         && preparedLifecycle(prepared.root, flags.space).state === "prepared";
       const command = local && codeSpan(`cotal up --root ${shellPath(prepared.root)} --space ${shellPath(flags.space)} --server ${shellPath(flags.server)}`);
-      const remedy = command ? `if you meant to start the prepared space here, run ${command}. Otherwise, check that address and that a broker runs there` : "check that address and that a broker runs there";
-      const message = error.failure().message;
+      const brokerRemedy = "check that address and that a broker runs there";
+      const remedy = command ? `if you meant to start the prepared space here, run ${command}. Otherwise, ${brokerRemedy}`
+        : problem === undefined ? brokerRemedy : `${brokerRemedy}. For the local preparation, ${prepareAgainRemedy(flags.space, problem)}`;
+      const message = `${error.failure().message}${prepared && problem !== undefined ? `. The recorded project path ${prepared.root} ${preparedRootProblemText[problem]}` : ""}`;
       throw new ConnectRefusal(`✗ ${message} - ${remedy}`, undefined, {
         cause: error, kind: error.kind, code: error.code, parts: { message, remedy },
         target: { space: flags.space, ...(prepared ? { root: prepared.root } : {}) },

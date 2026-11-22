@@ -176,8 +176,13 @@ const refuse = (code: RefusalCode, message: string, target: unknown, remedy?: st
  *  space, or a registration this machine started or a catalog lists, is never replaced that way, with
  *  or without `--force`: it is forgotten or stopped first. `space add` and `meshes add` share this. */
 export function handAddedRegistration(name: string, force: boolean, target: unknown): MeshEntry | undefined {
-  if (findPreparedSpace(name))
+  const prepared = findPreparedSpace(name);
+  if (prepared) {
+    const problem = preparedRootProblem(prepared.root);
+    if (problem !== undefined)
+      throw refuse("CONFLICT", `"${name}" is prepared in ${prepared.root}, which ${preparedRootProblemText[problem]}`, target, displayRemedy(prepareAgainRemedy(name, problem)));
     throw refuse("CONFLICT", `"${name}" is a space prepared on this machine`, target, `start it with \`cotal up\` in its root, or forget it with \`cotal space forget ${name}\``);
+  }
   const existing = findMesh(name);
   // `--force` replaces only a registration added by hand, so the refusal offers it only for one.
   if (existing && existing.origin !== "manual") {
@@ -654,8 +659,10 @@ export async function spaceForget(rest: readonly string[], presentation: Present
       removeMesh(name);
       return forgotten(presentation, { space: name, server: null, root: null, origin: null, releasedDefinitions: [], keptServices: savedServicesLeft(name, undefined) }, preferencesRevision, damagedWarnings);
     }
-    // A file cannot hold local process records. The home-scoped member check above still applies.
     const problem = preparedRootProblem(p.root);
+    if (problem === "unavailable")
+      throw refuse("TARGET_UNAVAILABLE", `the recorded path ${p.root} could not be inspected for running stack records; nothing was forgotten`, { space: name, root: p.root }, prepareAgainRemedy(name, problem));
+    // A non-directory cannot hold local process records. The home-scoped member check above still applies.
     const occupied = problem === "file" || problem === "not-directory";
     const runningOwner = occupied ? undefined : liveMeshOwner(p.root, name);
     if (runningOwner) throw refuse("LIFECYCLE_BLOCKED", `"${name}" is running from ${p.root} (${runningOwner}); nothing was forgotten`, target, `stop it with \`cotal down\` in ${p.root}, then run \`cotal space forget ${name}\` again`);

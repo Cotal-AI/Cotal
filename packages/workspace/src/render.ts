@@ -40,15 +40,15 @@ const parts = (message: string, remedy?: string): WorkspaceErrorParts => (remedy
 export const preparedRootProblemText: Readonly<Record<PreparedRootProblem, string>> = {
   missing: "no longer exists",
   file: "is a file, not a project folder",
-  "not-directory": "is not a project folder",
+  "not-directory": "does not resolve to a project folder",
   unavailable: "could not be inspected",
 };
 
 export function prepareAgainRemedy(space: string, problem: PreparedRootProblem): string {
+  if (problem === "unavailable") return "restore access to the original project folder by checking directory permissions and repairing any circular links along the recorded path";
   const name = shellPath(space);
   const forget = `forget it with ${codeSpan(`cotal space forget ${name}`)}, then prepare it again with ${codeSpan(`cotal space create ${name} --root <dir>`)}`;
-  if (problem === "missing") return forget;
-  return `${problem === "unavailable" ? "restore access to" : "restore"} the original project folder, or ${forget}`;
+  return problem === "missing" ? forget : `restore the original project folder, or ${forget}`;
 }
 
 /** A workspace failure as its message and remedy, for a caller that reports them apart, such as a

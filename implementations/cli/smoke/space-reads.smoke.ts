@@ -12,7 +12,7 @@
  * Run: pnpm smoke:space-reads
  */
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -84,6 +84,60 @@ const shown = (r: { status: number | null; stdout: string; stderr: string }) => 
 const itemOf = (env: Record<string, any> | undefined, name: string) => (env?.result?.items as { space: string }[] | undefined)?.find((s) => s.space === name) as Record<string, unknown> | undefined;
 const registryFiles = () => readdirSync(meshesDir()).sort().map((f) => `${f}:${readFileSync(join(meshesDir(), f), "utf8")}`);
 
+function occupiedRootRefusals(space: string, project: string, outside: string): void {
+  for (const [args, code] of [
+    [["who", "--space", space, "--server", DEAD], "TARGET_UNAVAILABLE"],
+    [["space", "delete", space, "--dry-run"], "TARGET_UNAVAILABLE"],
+    [["space", "add", space, "--server", DEAD, "--root", ".", "--mode", "open", "--force"], "CONFLICT"],
+  ] as const) {
+    const result = json([...args], outside);
+    check(`${args.slice(0, 2).join(" ")} refuses the file with a usable recovery step`,
+      result.status === 2 && result.env?.error?.code === code && result.env.error.message.includes(project) &&
+      result.env.error.message.includes("is a file, not a project folder") && result.env.error.remedy.includes(`space forget ${space}`) &&
+      !/\b(?:up|reset store)\b/.test(result.env.error.remedy), shown(result));
+  }
+  const select = json(["use", space], outside);
+  const up = run(["up", "--foreground", "--runtime", "unavailable-prepared-root-smoke"], {}, outside);
+  check("bare up refuses the selected file root before runtime preflight and writes no stack records",
+    select.status === 0 && up.status === 2 && up.stderr.includes("TARGET_UNAVAILABLE") &&
+    up.stderr.includes("is a file, not a project folder") && !up.stderr.includes("runtime did not pass preflight") &&
+    readdirSync(join(outside, ".cotal")).length === 0, shown(up));
+}
+
+function obstructedPreparedPaths(outside: string): void {
+  const parent = realpathSync.native(mkdtempSync(join(home, "prepared-parent-")));
+  const project = join(parent, "project"), space = "obstructed";
+  mkdirSync(project);
+  const created = json(["space", "create", space, "--root", project], outside);
+  renameSync(parent, `${parent}.saved`);
+  const replacement = "parent replacement\n";
+  writeFileSync(parent, replacement, { flag: "wx" });
+  const show = json(["space", "show", space], outside);
+  const forgot = json(["space", "forget", space], outside);
+  check("a file blocking the prepared path is a non-directory and forget preserves it",
+    created.status === 0 && show.status === 0 && show.env?.result?.rootProblem === "not-directory" &&
+    forgot.status === 0 && readFileSync(parent, "utf8") === replacement, { show: shown(show), forget: shown(forgot) });
+}
+
+function uninspectablePreparedPath(outside: string): void {
+  if (process.platform === "win32") return;
+  const project = realpathSync.native(mkdtempSync(join(home, "prepared-loop-"))), space = "looped";
+  const made = json(["space", "create", space, "--root", project], outside);
+  const record = join(preparedSpacesDir(), `${spaceSegment(space)}.json`), original = readFileSync(record);
+  renameSync(project, `${project}.saved`);
+  symlinkSync(project, project);
+  const who = json(["who", "--space", space], outside);
+  const refused = json(["space", "forget", space], outside);
+  check("an uninspectable path calls for repairing the link before forgetting the space",
+    made.status === 0 && who.status === 2 && who.env?.error?.remedy.includes("circular links") &&
+    !who.env.error.remedy.includes("space forget") && refused.status === 2 && refused.env?.error?.code === "TARGET_UNAVAILABLE" &&
+    refused.env.error.message.includes("nothing was forgotten") && readlinkSync(project) === project && readFileSync(record).equals(original),
+    { who: shown(who), forget: shown(refused) });
+  rmSync(project);
+  renameSync(`${project}.saved`, project);
+  check("forget works once the original project is accessible", json(["space", "forget", space], outside).status === 0);
+}
+
 for (let i = 0; i < 50; i++) {
   const { isReachable } = await import("@cotal-ai/core");
   if (await isReachable(LIVE)) break;
@@ -102,7 +156,7 @@ for (let i = 0; i < 50; i++) {
 
 const ts = new Date().toISOString();
 {
-  const space = "moved", project = mkdtempSync(join(home, "moved-project-"));
+  const space = "moved", project = realpathSync.native(mkdtempSync(join(home, "moved-project-")));
   const outside = mkdtempSync(join(home, "elsewhere-"));
   mkdirSync(join(outside, ".cotal"));
   const made = json(["space", "create", space, "--root", project], outside);
@@ -136,6 +190,7 @@ const ts = new Date().toISOString();
     who.status === 2 && who.env?.error?.code === "TARGET_UNAVAILABLE" &&
     who.env.error.message.includes(`${project}, which is a file, not a project folder`) &&
     who.env.error.remedy.includes(`cotal space forget ${space}`) && !who.env.error.remedy.includes("cotal up"), shown(who));
+  occupiedRootRefusals(space, project, outside);
   check("prepared-root reads leave the replacement file and registration unchanged",
     readFileSync(project, "utf8") === replacement && readFileSync(record).equals(original));
   const forgot = json(["space", "forget", space], outside);
@@ -146,6 +201,8 @@ const ts = new Date().toISOString();
   check("the same space can be prepared at the moved project",
     created.status === 0 && relocated.status === 0 && relocated.env?.result?.root === `${project}.saved`, shown(created));
   json(["space", "forget", space], outside);
+  obstructedPreparedPaths(outside);
+  uninspectablePreparedPath(outside);
 }
 
 const root = mkdtempSync(join(home, "root-"));
