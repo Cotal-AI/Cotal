@@ -632,8 +632,9 @@ cotal history limit [--max-age <age|none>] [--per-sender <n|none>] [--inbox-max-
 | `--dm-per-sender <n\|none>` | none | `limit`: keep this many of each sender's newest DMs to each recipient, at least 1, or `none` |
 
 Reads the newest retained messages in the selected space, newest last. Name a channel to read
-only that channel. Without a channel, `history` reads every accessible channel, and `--dms` also
-includes accessible DMs. Do not combine a channel name with `--dms`.
+only that channel. Without a channel, `history` reads every accessible channel, including names
+such as `events.team.standup`. Add `--dms` to also include accessible DMs. Do not combine a channel
+name with `--dms`.
 To read a channel named `clear`, use `cotal history '#clear'`.
 Use the same quoted `#` form for `limit`. `channel show` uses this form for every channel in its
 history recommendation. A name holding `*` or `>` is refused with
@@ -791,7 +792,8 @@ connection is one `TARGET_UNAVAILABLE` error. A
 `gap` record says the connection was re-established and messages sent while it was down are not
 shown. If the follow refuses invalid read arguments, cannot open its target or cannot read the
 snapshot, it writes an `error` with the code and any remedy, then an `end` with
-`reason: "setup-failed"`, without a snapshot. An `end` record closes
+`reason: "setup-failed"`, without a snapshot. Both targets include the requested `channel` (`null`
+if none) and `dms` flag, along with any known space or project root. An `end` record closes
 the stream. The exit code is the snapshot's, the failure's when setup or the credential ends the
 follow, or 130 or 143 when SIGINT or SIGTERM ends it.
 

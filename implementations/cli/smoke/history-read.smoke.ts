@@ -178,6 +178,46 @@ async function checkMembershipSetupRefusal(targetSpace: string, channel: string,
     { finite: shown(finite), stream: shown(stream) });
 }
 
+async function checkUnreachableHistoryFollow(server: string): Promise<void> {
+  const finite = await run(["history", "review", "--server", server, "--json"]);
+  const error = finite.envelope?.error;
+  for (const [scope, channel, dms] of [["review", "review", false], ["--dms", null, true]] as const) {
+    const stream = await run(["history", scope, "--follow", "--server", server, "--json"]);
+    const records = stream.stdout.trim().split("\n").filter(Boolean).map((line) => JSON.parse(line) as {
+      schemaVersion: number; stream: string; type: string;
+      target: { space: string; root?: string; channel: string | null; dms: boolean };
+      data: { code?: string; message?: string; remedy?: string; reason?: string };
+    });
+    check(`unreachable history ${scope} follow retains its requested scope and connection target, exit 2`,
+      finite.status === 2 && error?.code === "TARGET_UNAVAILABLE" && stream.status === 2 && stream.stderr === ""
+        && records.map((record) => record.type).join() === "error,end"
+        && records.every((record) => record.schemaVersion === 1 && record.stream === "history"
+          && record.target?.space === "main" && record.target?.root === shell
+          && record.target?.channel === channel && record.target?.dms === dms)
+        && records[0]?.data.code === error.code && records[0]?.data.message === error.message && records[0]?.data.remedy === error.remedy
+        && records[1]?.data.reason === "setup-failed", shown(stream));
+  }
+}
+
+async function checkEventShapedChannelHistory(): Promise<void> {
+  const channel = "events.team.standup";
+  const text = "Standup marker";
+  const target = ["--space", openSpace, "--server", openServers, "--json"];
+  const saved = await run(["channel", "set", channel, "--desc", "Ordinary team chat", ...target]);
+  const sent = await run(["send", "-c", channel, text, ...target]);
+  check("fixture: an ordinary channel with an event-shaped name accepts a post", saved.status === 0 && sent.status === 0,
+    { saved: shown(saved), sent: shown(sent) });
+  for (const args of [[channel, "--limit", "1"], ["--limit", "2200"]]) {
+    const history = await run(["history", ...args, "--grep", text, ...target]);
+    const { envelope } = history;
+    check(`history ${args.join(" ")} reads ordinary chat from an event-shaped channel`,
+      history.status === 0 && history.stderr === "" && envelope?.completeness === "complete" && envelope.warnings.length === 0
+        && envelope.result !== null && envelope.result.channels.includes(channel) && envelope.result.window.olderRetained === false
+        && envelope.result.items.length === 1 && envelope.result.items[0]?.channel === channel && envelope.result.items[0]?.text === text,
+      shown(history));
+  }
+}
+
 /** A follow child: its stdout lines as they arrive, and a way to wait for one. */
 function follow(args: string[]) {
   const child = spawn(process.execPath, [BIN, ...args], { cwd: shell, env: isolatedEnv, stdio: ["ignore", "pipe", "pipe"] });
@@ -401,6 +441,7 @@ try {
   await checkHistoryFollowValidation();
 
   const unavailable = `nats://127.0.0.1:${await pickFreePort()}`;
+  await checkUnreachableHistoryFollow(unavailable);
   const tooOld = await run(["history", "--since", "999999999999999999999999999999999999999999999999d", "--server", unavailable, "--json"]);
   check("an unrepresentable --since age is a usage error before connecting", tooOld.status === 1 && tooOld.envelope?.error?.code === "USAGE_INVALID", shown(tooOld));
   // A value that starts with a dash used to be refused by the parser as "ambiguous", and a channel
@@ -1349,6 +1390,7 @@ try {
       && stoppedRecords[0]?.data?.remedy === stoppedError.remedy && stoppedRecords[1]?.data?.reason === "setup-failed",
     { read: shown(stoppedRead), follow: shown(stoppedFollow) });
   await checkMembershipSetupRefusal(space, "updates", "TARGET_UNAVAILABLE", "--server", servers);
+  await checkEventShapedChannelHistory();
 } finally {
   for (const ep of endpoints) await ep.stop().catch(() => {});
   await provisioner?.stop().catch(() => {});
