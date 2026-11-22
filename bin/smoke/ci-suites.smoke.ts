@@ -24,18 +24,9 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseCiSuites, readCiSuites, CI_SUITES_PATH } from "./ci-suites.mjs";
+import { createSuite } from "@cotal-ai/smoke-kit";
 
-let pass = 0;
-let fail = 0;
-const check = (name: string, cond: boolean, extra?: unknown) => {
-  if (cond) {
-    pass++;
-    console.log(`  ✓ ${name}`);
-  } else {
-    fail++;
-    console.log(`  ✗ FAIL: ${name}`, extra ?? "");
-  }
-};
+const { check, finish, passed, failed } = createSuite();
 const parse = (raw: string): string[] | string => {
   try {
     return parseCiSuites(raw, "<fixture>") as string[];
@@ -177,9 +168,10 @@ check(
 const EXPECTED = 24;
 check(
   `every cell ran - ${EXPECTED} expected, so a cell that stops existing is not mistaken for one that passed`,
-  pass + fail === EXPECTED,
-  `${pass + fail} cells reported`,
+  passed() + failed() === EXPECTED,
+  `${passed() + failed()} cells reported`,
 );
 
-console.log(`SUITE COMPLETE: ${pass} passed, ${fail} failed`);
-process.exit(fail === 0 ? 0 : 1);
+console.log(`SUITE COMPLETE: ${passed()} passed, ${failed()} failed`);
+finish();
+process.exit(failed() === 0 ? 0 : 1);
