@@ -81,6 +81,10 @@ registration, `ps` still checks its channel seed and saved broker address. If an
 the address and blocks the start, the refusal says to stop that listener or start on another port.
 `ps` does not change the store or the file, and it does not stop the listener.
 
+On a stopped local stack, `ps` reports an unreadable or invalid stack journal and its recovery step
+when no `--server` is passed or when it matches the saved broker address. A different address does
+not use the local journal to diagnose the refusal.
+
 A raw `--creds` file is refused as `UNSUPPORTED` before dialing by `status <agent>`, `ps`, `stop`, `attach`, `input` and `models`, because
 that route mints no endpoint-caller triple. Run the command without `--creds` from the project folder, or pass `--space` against its registry
 entry, so the CLI mints the one-shot caller itself.

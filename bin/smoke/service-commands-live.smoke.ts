@@ -277,11 +277,14 @@ try {
     const brokerOnlyDown = cotal(["down", "--yes"]);
     const stackRestart = cotal(["up", "--detach", "--open", "--space", SPACE, "--server", SERVER]);
     const liveStatus = cotal(["manager", "status", "--json"]);
-    const live = JSON.parse(liveStatus.stdout).result?.recordedProcess;
+    const liveResult = JSON.parse(liveStatus.stdout).result;
+    const live = liveResult?.recordedProcess;
     check("manager status reports the running stack manager over a stopped saved manager",
       previous.recordedState === "stopped" && typeof previous.pid === "number" && brokerOnlyDown.status === 0 && stackRestart.status === 0
       && liveStatus.status === 0 && live?.savedService === false && typeof live.pid === "number" && live.pid !== previous.pid,
       { previous, down: out(brokerOnlyDown), up: out(stackRestart), status: out(liveStatus) });
+    check("manager status JSON reports the observed running state of the PID-only stack manager",
+      liveStatus.status === 0 && liveResult?.kind === "service-status" && liveResult.observedProcess === "running", out(liveStatus));
     if (typeof previous.instanceId === "string") {
       const pinned = cotal(["manager", "status", "--instance", previous.instanceId, "--json"]);
       const owned = JSON.parse(pinned.stdout).result;

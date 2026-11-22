@@ -30,6 +30,7 @@ import {
   type UserAuthStatus,
 } from "@cotal-ai/core";
 import {
+  hasNonNatsExecutable,
   stoppedLoopbackListener,
   UnreadableConnectorSelection,
   stackRunsUnderOtherHome,
@@ -321,9 +322,9 @@ export async function status(args: ParsedArgs): Promise<void> {
   const recovery = backupRecovery(maintenance, sourceMissing);
   const selectedHints: string[] = [];
   const target = await readSelected(selected, responder, folder, gaps, selectedHints, preflight, Boolean(values.all));
-  // Do not offer the conditional store reset when this folder needs a channel seed repair first,
-  // while a maintenance journal holds the store, or if the store is unwritable.
-  if ((target.resolved || target.code !== "SCHEMA_INVALID") && folder.storedState && folder.processSpace !== null && maintenance === null && !(target.channelSeedBlocksRestart && target.root === root) && !rootStoreProblem(root)) {
+  const stoppedForeignListener = preflight?.ok === false && preflight.kind === "non-nats-listener" && preflight.pid !== undefined;
+  // Address, journal, channel seed, and store problems can block the conditional store reset.
+  if (!stoppedForeignListener && (target.resolved || target.code !== "SCHEMA_INVALID") && folder.storedState && folder.processSpace !== null && maintenance === null && !(target.channelSeedBlocksRestart && target.root === root) && !rootStoreProblem(root)) {
     const reset = storeResetTarget(root, folder.processSpace);
     // An explicit address is not evidence about a different broker's store.
     if (values.server === undefined || (reset && selected.ok && selected.target.space === reset.space
@@ -391,7 +392,7 @@ export async function status(args: ParsedArgs): Promise<void> {
       preparedHarness: !selected.ok && isWorkspaceTargetError(selected.error) && selected.error.code === "not-started" && preparedNeverStarted(selected.error.details)
         ? preferences.spaces[selected.error.details.space]?.harness : undefined,
       seed,
-      recovery,
+      recovery, stoppedForeignListener,
     }),
   );
   if (values.components) await printComponentHealth(selected, store, target.resolved && target.connection === "unreachable");
@@ -1400,10 +1401,10 @@ async function readSelected(selected: Selected, responder: { state: DeliveryResp
       else hints.push(remedy === undefined ? message : `${message}; ${displayRemedy(remedy, cmd)}`);
     }
     if (preflight.kind === "non-nats-listener" || preflight.kind === "auth-unsupported" || preflight.kind === "jetstream-unsupported") {
-      const { message, remedy } = workspaceErrorParts({ kind: "preflight", failure: preflight.kind, target, pruned: false });
+      const { message, remedy } = workspaceErrorParts({ kind: "preflight", failure: preflight.kind, target, pruned: false, pid: preflight.pid });
       hints.push(remedy === undefined ? message : `${message}; ${displayRemedy(remedy, cmd)}`);
     }
-    return { ...base, connection: preflight.kind, ...(seedBlock ? { channelSeedBlocksRestart: true as const } : {}), ...(preflight.pid === undefined ? {} : { brokerPid: preflight.pid }), staleRecord: preflight.prune && !offline, snapshot: { state: "skipped", reason: "broker not connected" } };
+    return { ...base, connection: preflight.kind, ...(seedBlock ? { channelSeedBlocksRestart: true as const } : {}), ...(preflight.kind === "broker-stopped" ? { brokerPid: preflight.pid } : {}), staleRecord: preflight.prune && !offline, snapshot: { state: "skipped", reason: "broker not connected" } };
   }
   // The mesh-level statement of the same axis (#1576). The folder section says what this machine's
   // delivery PROCESS is doing; this says whether the SPACE currently has a bound responder, which is
@@ -1804,10 +1805,7 @@ function connectionCell(s: Extract<SelectedResult, { resolved: true }>): Cell {
   return stateCell(`${states[s.connection] ?? s.connection.replaceAll("-", " ")}${s.staleRecord ? " · saved registration needs attention" : ""}`, "failed");
 }
 
-/** How a space signs a connection in, and what else a reader acts on about it: a mode the record
- *  states but no broker was seen to enforce says so, a TLS requirement is named, and an account
- *  catalog that could not be refreshed is named on each of its spaces. The broker address is not
- *  here: `cotal space show <name>` names it. */
+/** Show recorded mode, TLS, and catalog problems. `cotal space show <name>` names the address. */
 function signsInText(entry: StatusResult["meshes"]["items"][number], wide: boolean): string {
   return [
     `${entry.mode === "user" ? "user sign-in" : entry.mode === "auth" ? "static auth" : "open"}${entry.modeChecked ? "" : ", not checked"}`,
@@ -1988,7 +1986,7 @@ function backupRecovery(maintenance: StatusResult["maintenance"], sourceMissing 
   return maintenance && (maintenance.state === "claimed" || maintenance.state === "restore-ready" || sourceMissing) ? maintenance.next : null;
 }
 
-function nextActions(r: StatusResult, seedFailed: boolean, interactive: boolean, recovery: string | null, preparedHarness?: string): Section {
+function nextActions(r: StatusResult, seedFailed: boolean, interactive: boolean, recovery: string | null, preparedHarness?: string, stoppedForeignListener = false): Section {
   if (seedFailed) return {
     title: "Next",
     blocks: [{ kind: "lines", lines: r.hints.flatMap(hint => hint.split("\n").map(line => cell(line, "hint"))) }],
@@ -2055,6 +2053,7 @@ function nextActions(r: StatusResult, seedFailed: boolean, interactive: boolean,
   const exited = legacy ? (r.folder.processes ?? []).filter((row) => (row.name === "nats" || row.name === "manager") && row.state === "stopped" && (row.pid !== null || row.detail === "stopped")).map((row) => row.name) : [];
   const storeBlocked = !elsewhere && r.selected.resolved && r.selected.connection === "unreachable" && rootStoreProblem(r.selected.root) !== undefined;
   if (r.selected.resolved && r.selected.connection === "broker-stopped") items.unshift({ command: `kill -CONT ${r.selected.brokerPid}`, description: "Resume the stopped broker process so it answers again" });
+  else if (stoppedForeignListener) { /* The address remedy in hints takes precedence over a restart. */ }
   else if (block && blocked) {
     const inspect = { command: `${cmd} service status ${block.definition} --instance ${block.instanceId} --space ${shellWord(blocked.space)}`, description: block.route.kind === "inspect" ? "Inspect the member that keeps up and down from settling" : "Inspect that member" };
     items.unshift(...(block.route.kind === "abandon" ? [{ command: `${cmd} down --abandon-stop ${block.route.requestId} --yes`, description: `Abandon the unconfirmed stop of ${block.definition}; up and down refuse until then` }, inspect] : [inspect]));
@@ -2204,7 +2203,7 @@ function maintenanceOverview(maintenance: StatusResult["maintenance"]): Section 
 
 /** The approved screen hierarchy; record-level diagnostics are opt-in. `wide` reports every row in
  *  full, as `--all` and `--wide` ask. */
-export function statusView(r: StatusResult, verbose = false, wide = false, { interactive = false, preparedHarness, seed, recovery = backupRecovery(r.maintenance) }: { interactive?: boolean; preparedHarness?: string; seed?: ReturnType<typeof readCursor>; recovery?: string | null } = {}): Report {
+export function statusView(r: StatusResult, verbose = false, wide = false, { interactive = false, preparedHarness, seed, recovery = backupRecovery(r.maintenance), stoppedForeignListener = false }: { interactive?: boolean; preparedHarness?: string; seed?: ReturnType<typeof readCursor>; recovery?: string | null; stoppedForeignListener?: boolean } = {}): Report {
   const selected = selectedOverview(r);
   // This folder's own stack under another selection, with the lines it has when it is selected.
   const held = folderStack(r.folder, r.selected), heldLines = held ? stackLines(r.folder) : [];
@@ -2214,7 +2213,7 @@ export function statusView(r: StatusResult, verbose = false, wide = false, { int
   const maintenance = maintenanceOverview(r.maintenance);
   const sections = [machineOverview(r, wide, interactive, seed), spacesOverview(r, wide, Boolean(seed)), ...(selected ? [selected] : []), ...(heldSection ? [heldSection] : []), ...(maintenance ? [maintenance] : []), ...(attempts ? [attempts] : []), ...(owned ? [owned] : [])];
   if (verbose) sections.push(machineSection(r.machine), extensionsSection(r.extensions), folderSection(r.folder, r.selected), ...meshesSections(r.meshes), selectedSection(r.selected, r.folder, stackDeliveryPid(r), r.store?.state === "full"));
-  sections.push(nextActions(r, Boolean(seed), interactive, recovery, preparedHarness));
+  sections.push(nextActions(r, Boolean(seed), interactive, recovery, preparedHarness, stoppedForeignListener));
   return { sections };
 }
 
@@ -2371,7 +2370,7 @@ async function componentEp(
  *  and status could then never exit. */
 async function requireGreeting(target: MeshTarget): Promise<void> {
   const stopped = stoppedLoopbackListener(target.server);
-  if (stopped !== undefined) throw new Error(`the broker at ${brokerAddressForDisplay(target.server) ?? "an invalid broker address"} is served by process ${stopped}, which is stopped`);
+  if (stopped !== undefined) throw new Error(hasNonNatsExecutable(stopped) ? `stopped process ${stopped} holds the broker address and is not a NATS server` : `the broker at ${brokerAddressForDisplay(target.server) ?? "an invalid broker address"} is served by process ${stopped}, which is stopped`);
   if (!(await isReachable(target.server, { ...(target.tlsRequired ? { tls: true } : {}), timeoutMs: 3_000 })))
     throw new Error(`the broker at ${brokerAddressForDisplay(target.server) ?? "an invalid broker address"} is not answering`);
 }
