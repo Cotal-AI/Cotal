@@ -24,7 +24,8 @@ argument, `--file/-f <path>`, or explicit `--stdin`; `--file -` reads stdin as `
 are no implicit stdin reads. Files and stdin must contain nonempty UTF-8 text; their content is
 preserved and never printed in the receipt. A file that cannot be used is refused with its path:
 `TARGET_NOT_FOUND` when it does not exist, `PERMISSION_DENIED` when this account may not read it,
-and `USAGE_INVALID` (exit 1, without the command's help) for a directory or text that is not UTF-8.
+and `USAGE_INVALID` (exit 1, without the command's help) for a directory, invalid UTF-8, or a file
+that is empty or contains only whitespace.
 The refusal names the mesh the send was aimed at when this machine's records name one. The retry
 uses a quoted body and keeps the destination and any `--space`, `--server` and `--creds` options.
 No destination, several destinations, several body sources or an empty message is refused. A lone
@@ -670,6 +671,9 @@ reads the newest 2000 retained messages before applying filters. `result.window`
 messages exist that the window did not reach, and whether the window goes back to `--since`.
 For a sequence cutoff, posts on other channels do not leave a gap in a named channel's window.
 The window can reach the cutoff even when it leaves out retained posts at or before it.
+For a time cutoff, `reachesSince` is `true` only when no retained messages remain outside the
+window. Sender timestamps can differ from storage order, so unread rows may match the cutoff.
+When the read cannot tell whether any rows remain, `reachesSince` is `null`.
 With `--dms`, channel posts keep their broker sequence order even when sender timestamps disagree.
 To fill the window, the command works from the newest end of each stream and compares sender
 timestamps across the two sources. A full window alone does not prove that it left out older messages.
@@ -815,7 +819,7 @@ time. For example, if the saved time is `2026-11-21T17:14:49.666Z`, pass
 `--since 2026-11-21T17:14:49.665Z`. A time cutoff is exclusive, so passing the saved time itself
 skips every message at that time. The overlap replays those messages. Skip only IDs you already
 processed, comparing `id` in the snapshot's `data.items` and `data.id` in live events.
-Raise `--limit` if the snapshot's window does not reach back to the cutoff.
+Raise `--limit` if the snapshot's window may omit retained messages after the cutoff.
 
 `history clear` purges retained history from every channel in the space it targets; `--dms` extends
 it to direct-message history. It refuses extra channel names, read filters and `--follow` before
