@@ -17,7 +17,7 @@ export function StatusBar({
 }: {
   status: MeshState["status"];
   rates: MeshState["rates"];
-  activeChannel: string;
+  activeChannel: string | null;
   agentCount: number;
   mode: "normal" | "dm" | "topo";
   canBack?: boolean;
@@ -42,7 +42,7 @@ export function StatusBar({
       <Text wrap="truncate-end">
         <Text color={status.connected ? "green" : "red"}>{status.connected ? "● " : "⨯ "}</Text>
         <Text dimColor>
-          {status.space + " · #" + activeChannel + " · " + agentCount + " agents · " +
+          {status.space + " · " + (activeChannel === null ? "all" : "#" + activeChannel) + " · " + agentCount + " agents · " +
             rates.msgsPerSec.toFixed(1) + " msg/s "}
         </Text>
         <Sparkline values={rates.activity} />

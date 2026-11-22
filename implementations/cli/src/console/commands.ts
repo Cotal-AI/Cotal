@@ -13,7 +13,7 @@ import type { ManagerReply, ControlOp, ManagedRow, PsReply } from "@cotal-ai/wor
 export interface CommandCtx {
   ep: CotalEndpoint;
   snapshot: MeshSnapshot;
-  activeChannel: string;
+  activeChannel: string | null;
   setMode: (m: "normal" | "dm" | "topo") => void;
   setActiveChannel: (c: string) => void;
   toggleRail: () => void;
@@ -98,7 +98,7 @@ export const COMMANDS: ConsoleCommand[] = [
     usage: "msg [#channel] <text>",
     write: true,
     run: async (ctx, rest) => {
-      let channel = ctx.activeChannel === "all" ? "general" : ctx.activeChannel;
+      let channel = ctx.activeChannel ?? "general";
       let text = rest;
       const m = rest.match(/^#(\S+)(?:\s+([\s\S]*))?$/);
       if (m) {
