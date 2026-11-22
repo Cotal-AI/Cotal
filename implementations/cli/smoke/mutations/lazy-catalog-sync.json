@@ -36,7 +36,7 @@
     },
     {
       "name": "drop the manual-remedy locality branch",
-      "file": "implementations/cli/src/commands/up.ts",
+      "file": "implementations/cli/src/commands/up-detach.ts",
       "find": "  if (!loopback)\n    return `\\`cotal supervise --space ${space} --server ${server}\\` to run its control plane from here (and \\`cotal deliver --space ${space} --server ${server}\\` for the daemon)`;",
       "replace": "  if (false)\n    return `\\`cotal supervise --space ${space} --server ${server}\\` to run its control plane from here (and \\`cotal deliver --space ${space} --server ${server}\\` for the daemon)`;",
       "afterRestore": "pnpm --filter @cotal-ai/cli build",
