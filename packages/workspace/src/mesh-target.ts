@@ -707,14 +707,15 @@ function stackRecord(root: string): { server?: string; stackSpace?: string; home
   }
 }
 
-/** The `host:` and `port:` a rendered broker configuration names, as a broker URL. */
+/** The listener address and transport in a Cotal-rendered broker configuration. */
 function renderedServer(path: string): string | undefined {
   try {
     const file = lstatSync(path);
     if (!file.isFile() || file.size > 64 * 1024) return undefined;
     const text = readFileSync(path, "utf8");
     const host = /^host:\s*(\S+)\s*$/m.exec(text)?.[1], port = /^port:\s*(\d+)\s*$/m.exec(text)?.[1];
-    return host && port ? `nats://${host.includes(":") ? `[${host}]` : host}:${port}` : undefined;
+    const scheme = /^tls \{$/m.test(text) ? "tls" : "nats";
+    return host && port ? `${scheme}://${host.includes(":") ? `[${host}]` : host}:${port}` : undefined;
   } catch { return undefined; }
 }
 

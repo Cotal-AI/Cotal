@@ -44,15 +44,16 @@
  * Every cell dispatches real argv through `runCli` (the binary's entry: spec parsing, then the
  * registered runner), never a hand-built ParsedArgs. It runs in a child, because the kernel writes a
  * refusal straight to the stderr descriptor and exits.
- * OS-assigned loopback port; needs `nats-server` on PATH. No cell dials the default broker address,
+ * OS-assigned loopback ports; needs `nats-server` and `openssl` on PATH. No cell dials the default broker address,
  * 127.0.0.1:4222: a root with no registration resolves to it, and on a shared host another broker can
  * be listening there and accept a provisioning attempt. The cell that mints from such a root names a
  * port this suite holds instead.
  * Run: pnpm smoke:mint-provision:auth
  */
 import { strict as assert } from "node:assert";
-import { spawn } from "node:child_process";
-import { createServer, type AddressInfo } from "node:net";
+import { execFileSync, spawn } from "node:child_process";
+import { once } from "node:events";
+import { createConnection, createServer, type AddressInfo } from "node:net";
 import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -114,6 +115,61 @@ async function runCotal(words: string[]): Promise<{ out: string; code: number }>
   return { out: Buffer.concat(chunks).toString("utf8").replace(/\x1b\[[0-9;]*m/g, ""), code };
 }
 const runMint = (argv: string[]) => runCotal(["auth", "mint", ...argv]);
+
+async function assertPortClosed(port: number): Promise<void> {
+  const socket = createConnection(port, "127.0.0.1");
+  try {
+    await assert.rejects(once(socket, "connect", { signal: AbortSignal.timeout(3000) }), { code: "ECONNREFUSED" });
+  } finally {
+    socket.destroy();
+  }
+}
+
+async function withForegroundStaticBroker(
+  space: string,
+  server: string,
+  exercise: (fixture: {
+    stoppedRoot: string;
+    exports: string;
+    down: () => ReturnType<typeof runCotal>;
+    exited: Promise<number | null>;
+  }) => Promise<void>,
+  tls?: { cert: string; key: string },
+): Promise<void> {
+  const stoppedRoot = mkdtempSync(join(tmpdir(), "cotal-offline-signing-"));
+  const exports = mkdtempSync(join(tmpdir(), "cotal-offline-exports-"));
+  mkdirSync(join(stoppedRoot, ".cotal"), { mode: 0o700 });
+  const anchor = recordSmokeSandbox({ root: stoppedRoot, cotalHome: home, xdgConfigHome: process.env.XDG_CONFIG_HOME! });
+  const previous = process.cwd();
+  process.chdir(stoppedRoot);
+  const up = spawn(process.execPath, [join(import.meta.dirname, "../../../bin/dist/cotal.js"), "up", "--foreground", "--no-manager", "--space", space, "--server", server,
+    ...(tls ? ["--tls-cert", tls.cert, "--tls-key", tls.key] : [])], {
+    env: { ...process.env, COTAL_SKIP_CONNECTOR_SEED: "1", ...(tls ? { NODE_EXTRA_CA_CERTS: tls.cert } : {}) }, stdio: ["ignore", "pipe", "pipe"],
+  });
+  let output = "";
+  up.stdout.on("data", (chunk: Buffer) => { output += chunk.toString(); });
+  up.stderr.on("data", (chunk: Buffer) => { output += chunk.toString(); });
+  const exited = new Promise<number | null>((resolve, reject) => { up.on("close", resolve); up.on("error", reject); });
+  const down = async () => {
+    const args = ["down", "--yes"];
+    assertSmokeSandboxDown(anchor, args, { cwd: stoppedRoot, env: process.env });
+    return runCotal(args);
+  };
+  try {
+    check(`offline rig: foreground static up at ${server} completes`, await until(() => output.includes("--no-manager starts no local"), 30_000), output);
+    await exercise({ stoppedRoot, exports, down, exited });
+  } finally {
+    try {
+      await down();
+    } finally {
+      if (up.exitCode === null && up.signalCode === null) up.kill("SIGTERM");
+      process.chdir(previous);
+      await exited;
+      rmSync(stoppedRoot, { recursive: true, force: true });
+      rmSync(exports, { recursive: true, force: true });
+    }
+  }
+}
 
 async function hasDurableMember(space: string, principal: string): Promise<boolean> {
   for (const deadline = Date.now() + 15_000; Date.now() < deadline; await wait(500)) {
@@ -823,24 +879,8 @@ try {
   // A legacy down removes a registration unless the space is named after its folder.
   // File-only signing still belongs to the retained local authority, not the default broker.
   {
-    const stoppedRoot = mkdtempSync(join(tmpdir(), "cotal-offline-signing-"));
-    const exports = mkdtempSync(join(tmpdir(), "cotal-offline-exports-"));
-    mkdirSync(join(stoppedRoot, ".cotal"), { mode: 0o700 });
-    const anchor = recordSmokeSandbox({ root: stoppedRoot, cotalHome: home, xdgConfigHome: process.env.XDG_CONFIG_HOME! });
     const server = `nats://127.0.0.1:${await freePort()}`;
-    process.chdir(stoppedRoot);
-    const up = spawn(process.execPath, [join(import.meta.dirname, "../../../bin/dist/cotal.js"), "up", "--foreground", "--no-manager", "--space", "offlinecheck", "--server", server], { env: { ...process.env, COTAL_SKIP_CONNECTOR_SEED: "1" }, stdio: ["ignore", "pipe", "pipe"] });
-    let output = "";
-    up.stdout.on("data", (chunk: Buffer) => { output += chunk.toString(); });
-    up.stderr.on("data", (chunk: Buffer) => { output += chunk.toString(); });
-    const exited = new Promise<number | null>((resolve, reject) => { up.on("close", resolve); up.on("error", reject); });
-    const down = async () => {
-      const args = ["down", "--yes"];
-      assertSmokeSandboxDown(anchor, args, { cwd: stoppedRoot, env: process.env });
-      return runCotal(args);
-    };
-    try {
-      check("offline rig: foreground static up completes", await until(() => output.includes("--no-manager starts no local"), 30_000), output);
+    await withForegroundStaticBroker("offlinecheck", server, async ({ stoppedRoot, exports, down, exited }) => {
       const live = await runMint(["live", "--provision", "--allow-subscribe", "test", "--allow-publish", "test"]);
       check("offline rig: live provisioned mint succeeds", live.code === 0, live.out);
 
@@ -1015,14 +1055,39 @@ try {
       check("stopped root still refuses named endpoint discovery and publishes no caller",
         endpoint.code === 2 && endpoint.out.includes("TARGET_UNAVAILABLE") && !existsSync(join(exports, "caller.creds")) && !endpoint.out.includes("omit --provision"), endpoint.out);
       check("offline signing started no stack process", !(await down()).out.includes("✓ stopped"));
-    } finally {
-      await down();
-      if (up.exitCode === null) up.kill("SIGTERM");
-      await exited;
-      process.chdir(root);
-      rmSync(stoppedRoot, { recursive: true, force: true });
-      rmSync(exports, { recursive: true, force: true });
-    }
+    });
+  }
+
+  {
+    const cert = join(home, "offline-tls.crt"), key = join(home, "offline-tls.key");
+    execFileSync("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1", "-subj", "/CN=127.0.0.1",
+      "-addext", "subjectAltName=IP:127.0.0.1", "-keyout", key, "-out", cert], { stdio: "ignore" });
+    const port = await freePort();
+    const server = `tls://127.0.0.1:${port}`;
+    const space = "offline_tls";
+    await withForegroundStaticBroker(space, server, async ({ exports, down, exited }) => {
+      const stopped = await down();
+      check("TLS offline rig: down and foreground up exit successfully", stopped.code === 0 && await exited === 0, stopped.out);
+      await assertPortClosed(port);
+
+      const out = join(exports, "tls.creds");
+      const matched = await runMint(["tls_mint", "--space", space, "--server", server, "--out", out, "--plain"]);
+      check("the recorded TLS URL mints a private file without provisioning",
+        matched.code === 0 && existsSync(out) && (statSync(out).mode & 0o777) === 0o600 && /Broker footprint:\s+not provisioned by this command/.test(matched.out), matched.out);
+
+      const wrongOut = join(exports, "wrong.creds");
+      const wrong = await runMint(["wrong_transport", "--space", space, "--server", server.replace("tls:", "nats:"), "--out", wrongOut, "--plain"]);
+      check("a plaintext URL cannot select the stopped TLS signing authority",
+        wrong.code === 2 && wrong.out.includes("TARGET_NOT_FOUND") && !existsSync(wrongOut), wrong.out);
+
+      const provisionOut = join(exports, "provision.creds");
+      const provision = await runMint(["tls_provision", "--space", space, "--server", server, "--provision", "--out", provisionOut, "--plain"]);
+      check("provisioning refuses and names the stopped TLS broker and file-only alternative",
+        provision.code === 2 && provision.out.includes("TARGET_UNAVAILABLE") && provision.out.includes(server) &&
+        provision.out.includes("start it again with `cotal up`") && provision.out.includes("omit --provision to mint only the private credential file") &&
+        !existsSync(provisionOut), provision.out);
+      await assertPortClosed(port);
+    }, { cert, key });
   }
 
   console.log(`\nMINT-PROVISION SMOKE OK ✅  (${pass} passed)`);

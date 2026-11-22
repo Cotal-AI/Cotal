@@ -90,7 +90,8 @@ Conflicting current-folder and selected-root accounts refuse before issuance.
 After a local static space is stopped, its retained broker configuration and validated signing
 trust still resolve file-only fixed-profile minting from its project folder, including when you
 name that space with `--space <space>`. The broker does not need to be running. If you also pass
-`--server <url>`, it must match the broker URL recorded in that project.
+`--server <url>`, it must match the broker URL recorded in that project, including the `nats://`
+or `tls://` scheme.
 Provisioning and endpoint discovery still require the selected broker.
 
 A label takes letters, digits and `_`, since `-` separates the parts of a principal's name. `--role`
