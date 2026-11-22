@@ -1,6 +1,6 @@
 import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, statSync, type Stats } from "node:fs";
 import { hasDuplicateNames } from "@cotal-ai/core";
-import { dryRunOutcome, DurationError, Journal, journalEntryKeyString, LangErrors, parseDuration, simFaultStepKind, validate, type SimFault, type SimScript } from "@cotal-ai/lang";
+import { dryRunOutcome, DurationError, isDryRunFaultCode, Journal, journalEntryKeyString, LangErrors, parseDuration, simFaultStepKind, validate, type SimFault, type SimScript } from "@cotal-ai/lang";
 import { CommandFailure, isCommandFailure, oneLine, presentationOf, writeResult, type Report } from "@cotal-ai/workspace";
 import { logLineText } from "./log-line.js";
 
@@ -151,8 +151,10 @@ function faultEntryOf(entry: unknown, file: string, index: number): SimFault {
   const at = fields.at;
   const stepKind = typeof at === "string" ? simFaultStepKind(at) : undefined;
   if (stepKind === undefined) return invalid("at must be a full or short step key such as /sleep#0 or sleep#0");
-  for (const key of ["kind", "code", "message"] as const) {
-    if (fields[key] !== undefined && typeof fields[key] !== "string") return invalid(`${key} must be a string`);
+  if (fields.code !== undefined && !isDryRunFaultCode(fields.code)) return invalid("code must be an L3xxx or L4xxx code");
+  for (const key of ["kind", "message"] as const) {
+    const text = fields[key];
+    if (text !== undefined && (typeof text !== "string" || text.trim() === "")) return invalid(`${key} must be a nonblank string`);
   }
   const fault = fields as Omit<SimFault, "kind"> & { kind?: string };
   return { ...fault, kind: fault.kind ?? stepKind };

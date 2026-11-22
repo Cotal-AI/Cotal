@@ -33,8 +33,7 @@ import type {
 } from "./effects.js";
 import { Cancelled, EffectError, askSchemaShape, conformsToAskSchema } from "./effects.js";
 import { parseDuration } from "./duration.js";
-import { scopeTraits, stepKeyString } from "./keys.js";
-import { EFFECT_KINDS } from "./primitives.js";
+import { stepKeyString } from "./keys.js";
 
 /** A scripted outcome: one value used for every occurrence, or one per occurrence in order. */
 export type Scripted<T> = T | readonly T[];
@@ -45,25 +44,6 @@ export interface SimFault {
   readonly kind: string;
   readonly code?: string;
   readonly message?: string;
-}
-
-const keySegment = /^([^#:]+)(?::([^#:]*))?#(?:0|[1-9][0-9]*)(?![\s\S])/;
-const effectKinds: ReadonlySet<string> = new Set(EFFECT_KINDS);
-
-/** The effect kind in a full or short fault key, or undefined for invalid syntax. */
-export function simFaultStepKind(key: string): string | undefined {
-  const parts = key.split("/");
-  const step = keySegment.exec(parts.pop()!);
-  const kind = step?.[1];
-  if (kind === undefined || !effectKinds.has(kind) || step?.[2] === "") return undefined;
-  if (parts.length === 0) return kind;
-  if (parts[0] !== "" || parts.length % 2 !== 1) return undefined;
-  for (let i = 1; i < parts.length; i += 2) {
-    const scope = keySegment.exec(parts[i]!)?.[1];
-    if (scope === undefined || (scope !== "waitUntil" && !scopeTraits(scope))) return undefined;
-    if (!/^b:[^#:]*$/.test(parts[i + 1]!)) return undefined;
-  }
-  return kind;
 }
 
 export interface SimScript {

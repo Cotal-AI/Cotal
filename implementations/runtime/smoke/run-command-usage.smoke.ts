@@ -473,6 +473,7 @@ log([].filter(() => true), [].find(() => true) === undefined, [].findLast(() => 
   try {
     writeFileSync(program, 'await sleep("1s");\n');
     const badKey = "at must be a full or short step key such as /sleep#0 or sleep#0";
+    const badCode = "code must be an L3xxx or L4xxx code";
     for (const [entry, problem] of [
       [{ att: "/sleep#0" }, 'unknown field "att"'],
       [{ ...fault, misspelled: true }, 'unknown field "misspelled"'],
@@ -481,11 +482,13 @@ log([].filter(() => true), [].find(() => true) === undefined, [].findLast(() => 
       ["sleep#0", "an entry must be an object"],
       [{ kind: "unreachable" }, badKey],
       ...["", " ", 0, "/", "/sleep", "/sleep:#0", "/sleep#00", "/sleep#0\n", "/slep#0",
-        "/parallel:build#0/sleep#0", "parallel:build#0/b:one/sleep#0", "/sleep#0/b:one/sleep#0"]
+        "/parallel:build#0/sleep#0", "parallel:build#0/b:one/sleep#0", "/sleep#0/b:one/sleep#0",
+        "/conclave:room#0/b:inn/sleep#0", "/once:guard#0/b:else/ask:plan#0",
+        "/waitUntil:checks#0/b:zero/sleep#0", "/waitUntil:checks#0/b:00/sleep#0", "/waitUntil#0/b:0/sleep#0"]
         .map((at) => [{ ...fault, at }, badKey] as const),
-      [{ ...fault, kind: false }, "kind must be a string"],
-      [{ ...fault, code: null }, "code must be a string"],
-      [{ ...fault, message: 42 }, "message must be a string"],
+      ...[null, "", "hello", "l4002", "L9999", "L6001"].map((code) => [{ ...fault, code }, badCode] as const),
+      ...[false, "", " \t"].map((kind) => [{ ...fault, kind }, "kind must be a nonblank string"] as const),
+      ...[42, "", " \t"].map((message) => [{ ...fault, message }, "message must be a nonblank string"] as const),
     ] as const) {
       const { error, output } = await simulate([fault, entry]);
       c(`simulate refuses faults[1] ${JSON.stringify(entry)} even when faults[0] matches`,
@@ -496,6 +499,7 @@ log([].filter(() => true), [].find(() => true) === undefined, [].findLast(() => 
     }
     for (const [entry, code, title] of [
       [{ at: "/sleep#0" }, "L4002", "simulated sleep at /sleep#0"],
+      [{ ...fault, code: "L3022" }, "L3022", "simulated unreachable at /sleep#0"],
       [{ ...fault, code: "L4001", message: "custom fault" }, "L4001", "custom fault"],
     ] as const) {
       const { error, output } = await simulate([entry]);

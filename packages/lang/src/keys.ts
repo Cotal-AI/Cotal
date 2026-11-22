@@ -22,6 +22,8 @@ import { RuntimeFault } from "./errors.js";
 /** The concurrency combinators that open a scope. */
 export type ScopeKind = "parallel" | "race" | "fanOut" | "conclave" | "once";
 
+export const SINGLE_BODY_BRANCH = "in";
+
 /**
  * The spec's §7 scope traits that readers branch on, one row per kind. Keyed by `ScopeKind`, so a
  * kind added to the union does not compile until it has a row: a list per trait let a new kind

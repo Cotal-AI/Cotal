@@ -223,6 +223,11 @@ export async function dryRun(
   return outcome;
 }
 
+/** Whether a code is reported as a program fault by {@link dryRunOutcome}. */
+export function isDryRunFaultCode(code: unknown): code is string {
+  return typeof code === "string" && /^L[34][0-9]{3}$/.test(code);
+}
+
 /**
  * {@link dryRun}, except that a program which fails under its script is a completed simulation:
  * the report of what ran up to the fault is returned with the fault. An unscripted effect (L6xxx)
@@ -255,7 +260,7 @@ export async function dryRunOutcome(
     }));
   } catch (e) {
     const code = (e as { code?: unknown }).code;
-    if (!(e instanceof Error) || typeof code !== "string" || !/^L[34][0-9]{3}$/.test(code)) throw e;
+    if (!(e instanceof Error) || !isDryRunFaultCode(code)) throw e;
     fault = e as DryRunFailure["fault"];
   }
 

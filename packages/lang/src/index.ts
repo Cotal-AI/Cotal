@@ -128,6 +128,7 @@ export {
   RecordingHandler,
   dryRun,
   dryRunOutcome,
+  isDryRunFaultCode,
   renderReport,
   type DryRunFailure,
   type DryRunOptions,
@@ -141,11 +142,11 @@ export {
 export {
   SimHandler,
   SimUnscriptedError,
-  simFaultStepKind,
   type Scripted,
   type SimFault,
   type SimScript,
 } from "./sim.js";
+export { simFaultStepKind } from "./sim-fault-key.js";
 
 export { notifyFactViolation } from "./notify-fact.js";
 

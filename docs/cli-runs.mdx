@@ -373,7 +373,12 @@ moves the virtual clock forward.
 | `checkpoints` | `checkpoint` results: `{status, value, by, artifact}`, where `status` is `resolved` or `expired` |
 | `events` | `wait` results. `null` is a timeout |
 | `clock` | `{start, turn, ask, checkpoint, wait}`: `start` is a finite number in milliseconds. Effect durations take values such as `"5m"`. A turn takes 5 minutes and the others 1 minute unless set |
-| `faults` | A list of faults to inject at selected steps. Each needs a full or short step key `at`, such as `/sleep#0` or `turn:build#1`. Optional strings `kind`, `code` and `message` override the step's kind, the default `L4002` code and the generated message, respectively. |
+| `faults` | A list of faults to inject at selected steps. Each needs a full or short step key `at`, such as `/sleep#0` or `turn:build#1`. |
+
+Optional nonblank strings `kind` and `message` override the step's kind and the generated message.
+An optional `code` overrides `L4002` and must be an `L3xxx` or `L4xxx` code.
+In a full key, `once` and `conclave` use branch `b:in`. A `waitUntil` branch uses a decimal
+observation index without leading zeros, such as `b:0` or `b:7`.
 
 A malformed fault entry, including one with an unknown field, is refused before simulation with
 `SCHEMA_INVALID`, exit 1. The refusal names the results file and the entry's zero-based index.

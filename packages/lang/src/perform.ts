@@ -9,7 +9,7 @@
  * divergence the differential suite could only find program-by-program.
  */
 import { InterpreterDefect, RunDivergence, RuntimeFault, ScopeBranchMissing, UnwalkableScope, isStackExhaustion, messageOf, stackOf } from "./errors.js";
-import { atMostOnce, digest, holdRequestId, requestId, scopePathString, scopeTraits, stepKeyString, type JournalKind, type KeyScope, type PathKind, type ScopeFrame, type ScopeKind, type StepKey } from "./keys.js";
+import { atMostOnce, digest, holdRequestId, requestId, scopePathString, scopeTraits, SINGLE_BODY_BRANCH, stepKeyString, type JournalKind, type KeyScope, type PathKind, type ScopeFrame, type ScopeKind, type StepKey } from "./keys.js";
 import { Journal, JournalAppendRejected, RunClock, type EntryError, type JournalEntry, type LookupVerdict } from "./journal.js";
 import { NotCrossable, assertCrossable, assertScopeValueCrossable, deepFreeze } from "./values.js";
 import { type EffectKind } from "./primitives.js";
@@ -1335,8 +1335,7 @@ export async function runScope(
     // that wrote it, which is the one thing the effect seam exists to prevent.
     // ONE constant, used for both the namespace and the recorded branch list, so the entry cannot
     // claim a key the body's steps were not actually filed under.
-    const branchKey = "in";
-    const branch = frame.branch(scopeKind, scopeName, occurrence, branchKey);
+    const branch = frame.branch(scopeKind, scopeName, occurrence, SINGLE_BODY_BRANCH);
 
     // The body's outcome is decided FIRST, alone. The close is a separate act with a separate
     // failure mode, and folding it into this try is what made a close rejection retry itself and
@@ -1385,15 +1384,15 @@ export async function runScope(
     }
 
     if (threw) throw new ScopeFailed(bodyError, { closed: true });
-    return { branches: [branchKey], value, closed: true };
+    return { branches: [SINGLE_BODY_BRANCH], value, closed: true };
   }
 
   if (scopeKind === "once") {
     // One body, the fixed branch `in`, as `conclave`'s, with no open and no close. `only` is
     // ignored: a migration's walk always enters `in`, because one branch is never a loser.
-    const branch = frame.branch(scopeKind, scopeName, occurrence, "in");
+    const branch = frame.branch(scopeKind, scopeName, occurrence, SINGLE_BODY_BRANCH);
     try {
-      return { branches: ["in"], value: await (first as (f: Frame, a: unknown[]) => Promise<unknown>)(branch, []) };
+      return { branches: [SINGLE_BODY_BRANCH], value: await (first as (f: Frame, a: unknown[]) => Promise<unknown>)(branch, []) };
     } finally {
       frame.clock.join([branch.clock]);
     }
