@@ -272,12 +272,14 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
     [["add", "widget", "--preset="], "--preset needs one declared preset name"],
     [["add", "widget", "--preset", "manager", "--preset", "broker"], "--preset cannot be supplied more than once"],
     [["--runtime", "pty", "add", "widget", "--preset="], "--preset needs one declared preset name"],
+    [["--preset", "--runtime", "pty", "add", "widget"], "--preset needs one declared preset name"],
+    [["--preset", "--preset=manager", "add", "widget"], "--preset cannot be supplied more than once"],
   ] as const) {
     const r = cotal(["service", ...words]);
     check(`service ${words.join(" ")} refuses with the same help as --help`, r.status === 1 && r.stdout === ""
       && r.stderr === `✗ ${message}\n${serviceAddHelp.stdout}` && r.wrote.length === 0, shown(r));
   }
-  const serviceHelpWithMissingPreset = cotal(["service", "--runtime", "pty", "add", "widget", "--preset=", "--help"]);
+  const serviceHelpWithMissingPreset = cotal(["service", "--preset", "--runtime", "pty", "add", "widget", "-h"]);
   check("service --help keeps add scoped even before preset selection succeeds", same(serviceAddHelp, serviceHelpWithMissingPreset), shown(serviceHelpWithMissingPreset));
   refused("help of an unknown command is a usage error", cotal(["help", "nope"]), /unknown command: nope/);
   refused("help of an unknown subcommand is a usage error", cotal(["help", "ext", "nope"]), /cotal ext has no subcommand "nope"/);

@@ -283,30 +283,16 @@ export function serviceDiscoveryFlags(cmd: Command): FlagSpec[] {
 /** The preset a service invocation names: `--preset <name>` on add, or the name a start gives when
  *  that name is a preset's, so `service start web --creds <file>` takes the web preset's flags. */
 function requestedPreset(flags: readonly FlagSpec[], argv: readonly string[]): { name: string; verb: "add" | "start" } | undefined {
-  const [mode, service] = metadataPositionals({ flags }, argv).positionals.map((item) => item.value);
-  let name: string | undefined;
-  let presetCount = 0;
-  let missingPreset = false;
-  for (let index = 0; index < argv.length; index++) {
-    const word = argv[index]!;
-    if (word === "--") break;
-    if (word === "--preset" || word.startsWith("--preset=")) {
-      presetCount++;
-      const value = word === "--preset" ? argv[++index] : word.slice("--preset=".length);
-      if (!value || value.startsWith("-")) missingPreset = true;
-      else name = value;
-      continue;
-    }
-    const flag = flags.find((item) => word === `--${item.name}` || (item.short && word === `-${item.short}`));
-    if (flag?.type === "string") index++;
-  }
-  if (presetCount > 0) {
-    if (mode !== "add") return undefined;
-    if (presetCount > 1) throw new CommandFailure("refused", "USAGE_INVALID", "--preset cannot be supplied more than once");
-    if (missingPreset || !name) throw new CommandFailure("refused", "USAGE_INVALID", "--preset needs one declared preset name");
+  const { positionals: [mode, service], stringOptions } = metadataPositionals({ flags }, argv);
+  const presets = stringOptions.filter(({ name }) => name === "preset");
+  if (presets.length > 0) {
+    if (mode?.value !== "add") return undefined;
+    if (presets.length > 1) throw new CommandFailure("refused", "USAGE_INVALID", "--preset cannot be supplied more than once");
+    const name = presets[0]?.value;
+    if (!name || name.startsWith("-")) throw new CommandFailure("refused", "USAGE_INVALID", "--preset needs one declared preset name");
     return { name, verb: "add" };
   }
-  return mode === "start" && service !== undefined && findServicePreset(service) ? { name: service, verb: "start" } : undefined;
+  return mode?.value === "start" && service && findServicePreset(service.value) ? { name: service.value, verb: "start" } : undefined;
 }
 
 /** The service command's selected preset contributes metadata-only flags before strict parsing.
