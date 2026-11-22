@@ -1,7 +1,7 @@
 import * as prompts from "../lib/prompts.js";
 import { chatStream, dmStream, dialerFor, isPublishPermissionDenied, isStreamNotFound, standaloneConnectOpts } from "@cotal-ai/core";
 import { jetstreamManager } from "@nats-io/jetstream";
-import { ConfirmationRequired, CommandFailure, recordOperationSpace, brokerAddressForDisplay, codeSpan, connectOrThrow, credentialRefusalMessage, findCotalRoot, findMesh, hasUserAuthState, isConnectRefusal, isWorkspaceTargetError, oneLine, presentationOf, resolveMeshTarget, userViewAuth, writeResult, type Report } from "@cotal-ai/workspace";
+import { ConfirmationRequired, CommandFailure, recordOperationSpace, brokerAddressForDisplay, codeSpan, connectOrThrow, credentialRefusalMessage, findCotalRoot, findMesh, hasUserAuthState, isConnectRefusal, isWorkspaceTargetError, oneLine, presentationOf, resolveMeshTarget, userViewAuth, writeResult, type Presentation, type Report } from "@cotal-ai/workspace";
 import { canPrompt } from "./meshes-wizard.js";
 import { targetWords, yesRequired } from "../lib/confirmation-required.js";
 import { noticeOnInterrupt } from "../lib/interrupt-notice.js";
@@ -12,6 +12,15 @@ interface Values { space?: string; server?: string; creds?: string; dms?: boolea
 interface PurgeReceipt { stream: string; purged: number }
 
 const brokerLabel = (server: string): string => brokerAddressForDisplay(server) ?? "selected broker (address unavailable)";
+
+function clearRemedy(values: Values, presentation: Presentation): string {
+  const command = `cotal history clear${targetWords(values)}${values.dms ? " --dms" : ""}`;
+  if (presentation !== "json" && oneLine(command) !== command) {
+    return "keep all arguments in your original command. Add `--dry-run` to preview the space-wide scope, then use `--yes` instead to confirm. Put the new flag before `--` if present";
+  }
+  const format = presentation === "rich" ? "" : ` --${presentation}`;
+  return `preview the space-wide scope with ${codeSpan(`${command} --dry-run${format}`)}, then confirm it with ${codeSpan(`${command} --yes${format}`)}`;
+}
 
 /** Explicit space-wide purge, using only the existing purger instrument or user purger view. */
 export async function historyClear(values: Values): Promise<void> {
@@ -37,10 +46,8 @@ export async function historyClear(values: Values): Promise<void> {
     return;
   }
   if (!values.yes && (!canPrompt() || presentation === "json")) {
-    const command = `cotal history clear${targetWords(values)}${values.dms ? " --dms" : ""}`;
-    const format = presentation === "rich" ? "" : ` --${presentation}`;
     throw new ConfirmationRequired(yesRequired("history clear", presentation === "json"), {
-      remedy: `preview the space-wide scope with ${codeSpan(`${command} --dry-run${format}`)}, then confirm it with ${codeSpan(`${command} --yes${format}`)}`,
+      remedy: clearRemedy(values, presentation),
     });
   }
   const acknowledged: PurgeReceipt[] = [];

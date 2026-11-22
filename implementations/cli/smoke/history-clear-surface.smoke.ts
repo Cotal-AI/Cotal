@@ -161,18 +161,29 @@ const plainCommand = "cotal history clear --space hcother --creds 'unused purger
 check("both plain suggestions keep the quoted credential path, DM scope and plain format", plainClear.status === 1
   && plainClear.stderr.includes(`\`${plainCommand} --dry-run --plain\``)
   && plainClear.stderr.includes(`\`${plainCommand} --yes --plain\``), shown(plainClear));
-const dashTarget = ["--space", "hcother", "--creds=-unused purger.creds", "--dms"];
-const dashClear = run(["history", "clear", ...dashTarget, "--json"]);
-const dashCommands = [...(dashClear.envelope?.error?.remedy ?? "").matchAll(/`([^`]+)`/g)].map((match) => execWords(match[1]!));
-const dashPreview = dashCommands[0];
-const dashExpected = JSON.stringify(["--dry-run", "--yes"].map((action) => ["cotal", "history", "clear", ...dashTarget, action, "--json"]));
-const dashMatches = dashClear.status === 1 && dashClear.envelope?.error?.code === "USAGE_INVALID" && JSON.stringify(dashCommands) === dashExpected;
-check("both JSON suggestions keep a quoted dash-prefixed credential path attached", dashMatches, shown(dashClear));
-if (dashMatches && dashPreview) {
-  const plan = run(dashPreview.slice(1));
-  check("the printed preview round-trips through the CLI parser", plan.status === 0 && plan.envelope?.outcome === "ok"
-    && plan.envelope.target?.space === "hcother" && plan.envelope.result?.kind === "history-clear-preview"
-    && plan.envelope.result.streams?.join(",") === [chatStream("hcother"), dmStream("hcother")].join(","), shown(plan));
+for (const [separator, label] of [[" ", "space"], ["\t", "tab"]] as const) {
+  const clear = ["history", "clear", "--space", "hcother", `--creds=-unused${separator}purger.creds`, "--dms"];
+  const refusal = run([...clear, "--json"]);
+  const commands = [...(refusal.envelope?.error?.remedy ?? "").matchAll(/`([^`]+)`/g)].map((match) => execWords(match[1]!));
+  const expected = ["--dry-run", "--yes"].map((action) => ["cotal", ...clear, action, "--json"]);
+  const matches = refusal.status === 1 && refusal.envelope?.error?.code === "USAGE_INVALID" && JSON.stringify(commands) === JSON.stringify(expected);
+  check(`both JSON suggestions preserve a dash-prefixed credential path with a ${label}`, matches, shown(refusal));
+  if (matches && commands[0]) {
+    const plan = run(commands[0].slice(1));
+    check(`the printed preview with a ${label} in its credential path round-trips`, plan.status === 0 && plan.envelope?.outcome === "ok"
+      && plan.envelope.target?.space === "hcother" && plan.envelope.result?.kind === "history-clear-preview"
+      && plan.envelope.result.streams?.join(",") === [chatStream("hcother"), dmStream("hcother")].join(","), shown(plan));
+  }
+}
+
+for (const [separator, label] of [["\t", "tab"], ["\u2028", "line separator"]] as const) {
+  for (const format of [[], ["--plain"]]) {
+    const refusal = run(["history", "clear", "--space", "hcother", `--creds=-unused${separator}purger.creds`, "--dms", ...format]);
+    check(`${format[0] ?? "rich"} refusal with a ${label} keeps the original arguments without printing an altered command`,
+      refusal.status === 1 && refusal.stdout === "" && refusal.stderr.includes("keep all arguments in your original command")
+      && refusal.stderr.includes("`--dry-run` to preview") && refusal.stderr.includes("`--yes` instead to confirm")
+      && !refusal.stderr.includes("purger.creds") && !refusal.stderr.includes(separator), shown(refusal));
+  }
 }
 const offlineExplicit = run(["history", "clear", "--dry-run", "--space", "hcoffline", "--server", `nats://127.0.0.1:${port}`, "--dms", "--json"]);
 check("an unregistered explicit target previews both streams without a reachable broker", offlineExplicit.status === 0
