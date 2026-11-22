@@ -4,7 +4,9 @@ import { dirname, isAbsolute, join, parse, relative, resolve } from "node:path";
 import { clearSpaceHistory, isReachable, registry, resolveAuthProvider, type AuthProvider, type CompletionResult, type ParsedArgs, type SecretStore } from "@cotal-ai/core";
 import {
   CommandFailure,
+  canonicalLocalProcessPath,
   DELIVERY_CREDS_KIND,
+  LIVE_MANAGER_NAME_RECORD,
   MEMBERSHIP_CONFIG_KIND,
   MEMBERSHIP_RW_CREDS_KIND,
   WEB_CREDS_KIND,
@@ -441,7 +443,7 @@ export function localIdentityCleanupTargets(root: string, space: string) {
   return {
     material: spaceMaterialDir(root, space), renewal: renewalRecordPath(root, space),
     legacy: [...SYSTEM_CREDS_FILES, MEMBERSHIP_CONFIG_KIND, "renewal.json"].map((name) => join(control, name)),
-    runtime: pidfileTargets(space, root).flatMap(([path]) => [path, `${path}.identity`]),
+    runtime: [...pidfileTargets(space, root).flatMap(([path]) => [path, `${path}.identity`]), canonicalLocalProcessPath(LIVE_MANAGER_NAME_RECORD, { root, space })],
     run: join(control, "run"), auth: authDir(root),
   };
 }

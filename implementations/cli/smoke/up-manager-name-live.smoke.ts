@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmdirSync, writeFileSync } from "node:fs";
 import { createConnection, createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { assertSmokeSandboxDown, createSuite, freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
-import { canonicalLocalProcessPath, MANAGER_NAME_RECORD, MANAGER_SPARE_CAPABILITY, readManagerName } from "@cotal-ai/workspace";
+import { canonicalLocalProcessPath, LIVE_MANAGER_NAME_RECORD, MANAGER_NAME_RECORD, MANAGER_SPARE_CAPABILITY, readManagerName, recordManagerName } from "@cotal-ai/workspace";
 import { finishOwnedChild, observeOwnedChild, waitForOwnedChild } from "./_foreground-owned-child.js";
 
 const bin = join(import.meta.dirname, "../../../bin/dist/cotal.js");
@@ -136,7 +136,27 @@ async function retainedLauncher() {
     await checkLiveName(target, name);
     const saved = readManagerName(target);
     check("a retained-launcher manager records the requested name", saved === name, saved);
+    const same = await cli(target, ...args);
+    check("the retained launcher accepts a refresh naming the live manager", same.code === 0, same);
+    const different = await cli(target, "up", "--open", "--server", server, "--manager-name", "Different");
+    check("the retained launcher refuses a refresh naming a different manager", different.code === 2 && /keeps the name it started with/.test(different.err), different);
   } finally { await stop(target); }
+}
+
+async function checkUnverifiedName(target: ReturnType<typeof project>, args: string[]) {
+  const liveRecord = canonicalLocalProcessPath(LIVE_MANAGER_NAME_RECORD, target);
+  const held = `${liveRecord}.held`;
+  const originally = JSON.parse(readFileSync(liveRecord, "utf8")) as { pid: number; token: string; name: string; version: number };
+  renameSync(liveRecord, held);
+  try {
+    const missing = await cli(target, ...args, "--manager-name", "NotSaved");
+    check("a named refresh refuses without live-name evidence", missing.code === 2 && /its live name cannot be confirmed/.test(missing.out), missing);
+    writeFileSync(liveRecord, JSON.stringify({ ...originally, token: `${originally.token}0` }), { mode: 0o600 });
+    const stale = await cli(target, ...args, "--manager-name", "NotSaved");
+    check("a live-name record with a stale creation token does not authorize reuse", stale.code === 2 && /its live name cannot be confirmed/.test(stale.out), stale);
+    const unnamed = await cli(target, ...args);
+    check("an unnamed refresh does not require live-name evidence", unnamed.code === 0 && JSON.parse(unnamed.out).outcome === "no-op", unnamed);
+  } finally { renameSync(held, liveRecord); }
 }
 
 async function nameWriteFailures() {
@@ -155,6 +175,7 @@ async function nameWriteFailures() {
       check("a manager that fails to publish its spare capability leaves no saved name", readManagerName(target) === undefined);
     } finally { rmdirSync(capability); }
 
+    recordManagerName(target, "PreviouslySaved");
     const preload = join(scratch, "name-write-fault.cjs");
     writeFileSync(preload, `const fs = require("node:fs");
 const rename = fs.renameSync;
@@ -165,11 +186,22 @@ fs.renameSync = (from, to) => {
 require("node:module").syncBuiltinESMExports();\n`, { mode: 0o600 });
     const started = await runCli(target, [...args, "--manager-name", "NotSaved"], preload);
     assert.equal(started.code, 4, started.out + started.err);
-    const receipt = JSON.parse(started.out) as { outcome: string; warnings: { code: string; message: string }[] };
+    const receipt = JSON.parse(started.out) as { outcome: string; warnings: { code: string; message: string }[]; result: { members: { role: string; process?: { pid: number; token: string } }[] } };
     check("the partial startup receipt names the failed save", receipt.outcome === "partial" && receipt.warnings.some((warning) =>
       warning.code === "MANAGER_NAME_NOT_RECORDED" && warning.message.includes("NotSaved") && warning.message.includes("name record is read-only")), receipt.warnings);
     await checkLiveName(target, "NotSaved");
-    check("a reported name write failure leaves no saved name", readManagerName(target) === undefined);
+    check("a reported name write failure keeps the previous name", readManagerName(target) === "PreviouslySaved");
+
+    const wrongName = await cli(target, ...args, "--manager-name", "PreviouslySaved");
+    check("refresh with the saved name refuses when the live name differs", wrongName.code === 2 && /LIFECYCLE_BLOCKED/.test(wrongName.out), wrongName);
+    const liveName = await cli(target, ...args, "--manager-name", "NotSaved");
+    const refreshed = JSON.parse(liveName.out) as typeof receipt;
+    const before = receipt.result.members.find((row) => row.role === "manager")?.process;
+    const after = refreshed.result?.members.find((row) => row.role === "manager")?.process;
+    check("refresh with the live name reuses the exact manager", liveName.code === 0 && refreshed.outcome === "no-op" && before !== undefined && before.pid === after?.pid && before.token === after?.token, liveName);
+    await checkUnverifiedName(target, args);
+    await checkLiveName(target, "NotSaved");
+    check("neither refresh writes a name", readManagerName(target) === "PreviouslySaved");
   } finally { await stop(target); }
 }
 

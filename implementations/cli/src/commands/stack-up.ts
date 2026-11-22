@@ -11,6 +11,7 @@ import { randomUUID } from "node:crypto";
 import { closeSync, existsSync, lstatSync, readFileSync, realpathSync } from "node:fs";
 import { displayCmd } from "../lib/self-exec.js";
 import { saveStartedManagerName } from "../lib/manager-proc.js";
+import { assertLiveManagerName } from "../lib/live-manager-name.js";
 import { homedir } from "node:os";
 import { isIP } from "node:net";
 import { basename, join, resolve } from "node:path";
@@ -826,6 +827,9 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
   const savedManager = managerDefinition?.record.value.launch;
   const savedSessions = savedManager?.type === "adapter" && savedManager.options.root === root ? savedManager.options["max-sessions"] : undefined;
   const maxSessions = request.maxSessions ?? (typeof savedSessions === "number" ? savedSessions : undefined);
+  if (request.managerName !== undefined)
+    for (const { record: { value } } of serviceInstances(space, STACK_DEFINITION.manager))
+      if (observeServiceProcess(value) === "running") assertLiveManagerName({ root, space }, request.managerName, value.process);
   if (request.maxSessions !== undefined) {
     for (const row of serviceInstances(space, STACK_DEFINITION.manager).filter((row) => observeServiceProcess(row.record.value) === "running")) {
       const applied = row.record.value.definitionRevision === managerDefinition?.record.revision && savedManager?.type === "adapter" && savedManager.adapter === STACK_ADAPTER.manager && savedManager.options.root === root

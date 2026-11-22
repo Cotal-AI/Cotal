@@ -17,6 +17,7 @@ import { maintenanceStackView, STACK_DEFINITION, stackMemberRecord } from "./sta
 import { askCustodian, custodiedPlatform, custodyLog, removeCustodyCapability, startCustodiedService } from "./service-custody-win32.js";
 import { seedBeforeLaunch } from "../seed/launch.js";
 import { lastLoggedLine, privateLog } from "./private-log.js";
+import { assertLiveManagerName } from "./live-manager-name.js";
 
 export const PROCESS_SERVICE_CAPABILITIES = Object.freeze({ multiInstance: true, foreground: true, logs: true, install: false });
 const delay = (ms: number) => new Promise<void>((done) => setTimeout(done, ms));
@@ -608,6 +609,11 @@ export async function startProcessService(definition: ServiceDefinitionSnapshot,
       const state = observeServiceProcess(selected.record.value);
       if (state === "running") {
         if (options.foreground) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "an existing live instance cannot be converted into this terminal's foreground process; stop it explicitly before a foreground start", { target: instanceProjection(selected) });
+        if (options.managerName !== undefined) {
+          if (value.launch.type !== "adapter" || value.launch.adapter !== "manager-service" || typeof value.launch.options.root !== "string")
+            throw new CommandFailure("refused", "USAGE_INVALID", "a manager name requires a root-bound manager service");
+          assertLiveManagerName({ root: value.launch.options.root, space: value.space }, options.managerName, selected.record.value.process);
+        }
         const adapter = declaredAdapter && value.launch.type === "adapter" ? { provider: await loadServiceAdapter(declaredAdapter, value.launch.options), context: adapterContext(definition, selected.record.value, cliInvocation) } : undefined;
         return { instance: await serviceReadiness(selected, value, adapter), noOp: true, child: undefined, exit: undefined };
       }

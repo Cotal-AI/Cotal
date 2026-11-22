@@ -7,10 +7,10 @@ import { entryScript } from "../seed/paths.js";
 import { resolveRuntimeSpace } from "./status.js";
 import { cotalRoot } from "./paths.js";
 import {
-  assertManagerCanSpare, armManagerShutdownIntent, assertRecordIdentity, codeSpan, CommandFailure, disarmManagerShutdownIntent,
+  assertManagerCanSpare, armManagerShutdownIntent, assertRecordIdentity, disarmManagerShutdownIntent,
   canonicalLocalProcessPath, commandIsCotalSupervisor, identityRecord, localProcessPath, parsePid, probeLiveness,
   readManagerName, readPidfile, readProcessCommand, readProcessRecord, reclaimDeadPreUpgradeRecord, recordManagerName, recordOperationWarning,
-  MANAGER_DELIVERY_AWARE_MARKER, MANAGER_LOGFILE, MANAGER_PIDFILE, MANAGER_SHUTDOWN_INTENT, MANAGER_SPARE_CAPABILITY,
+  LIVE_MANAGER_NAME_RECORD, MANAGER_DELIVERY_AWARE_MARKER, MANAGER_LOGFILE, MANAGER_PIDFILE, MANAGER_SHUTDOWN_INTENT, MANAGER_SPARE_CAPABILITY,
   type CommandReader, type LivenessProbe, type LocalProcess, type LocalProcessContext, type ManagerSpareSeats, type ProcessIdentityRecord,
   type OutputWarning, type ProcessRecord, type ProcessRecordState, type SeatCap,
   parsePositiveIntegerFlag, seatCapText, verifyIdentityPin, writePidPair,
@@ -20,7 +20,7 @@ import { stopLocalProcess } from "./local-process-stop.js";
 import { listManagerSeatsForSpare, printLegacyManagerSpareUncertainty, printSparedAgents, type SpareSeatRow } from "./teardown-spare.js";
 import { seedBeforeLaunch } from "../seed/launch.js";
 import { lastLoggedLine, type LogStart } from "./private-log.js";
-import { shellWord } from "./endpoint-errors.js";
+import { assertLiveManagerName } from "./live-manager-name.js";
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -126,8 +126,13 @@ export function managerLiveness(
 /** A running manager keeps its launch name. The new name travels only to a fresh manager. */
 export function assertManagerNameChange(root: string, space: string, name: string | undefined): void {
   if (name === undefined) return;
-  if (readManagerName({ root, space }) !== name && managerLiveness(space, root) === "alive")
-    throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `a manager already runs for space ${space}, and it keeps the name it started with`, { target: { root, space }, remedy: `stop it with \`cotal down\`, then run ${codeSpan(`cotal up --manager-name=${shellWord(name)}`)}` });
+  assertRecordedManagerName({ root, space }, name, managerRecordState(space, root));
+}
+
+function assertRecordedManagerName(context: LocalProcessContext, name: string, manager: ProcessRecord): void {
+  if (manager.state !== "alive") return;
+  const pin = verifyIdentityPin(manager.path);
+  assertLiveManagerName(context, name, pin.kind === "match" && pin.record.pid === manager.pid ? pin.record : undefined);
 }
 
 /** Save the launch-only name after the caller has proved its new manager is serving. */
@@ -489,8 +494,11 @@ export async function ensureManager(
 ): Promise<{ running: boolean; started: boolean; pid?: number }> {
   const space = o.space ?? folderSpace();
   const root = cotalRoot();
-  const state = managerLiveness(space, root, seams);
-  if (state === "alive") return { running: true, started: false };
+  const manager = managerRecordState(space, root, seams);
+  if (manager.state === "alive") {
+    if (o.managerName !== undefined) assertRecordedManagerName({ root, space }, o.managerName, manager);
+    return { running: true, started: false };
+  }
   assertManagerRecordReplaceable(space, root, seams); // refuses on unknown / unattributable, reports foreign
   await seedBeforeLaunch();
   let logStart: LogStart | undefined;
@@ -514,7 +522,7 @@ export const MANAGER_PROCESS = {
   order: 10,
   pidFile: MANAGER_PIDFILE,
   cooperativeStop: true,
-  artifacts: [MANAGER_DELIVERY_AWARE_MARKER, MANAGER_SHUTDOWN_INTENT, MANAGER_SPARE_CAPABILITY],
+  artifacts: [MANAGER_DELIVERY_AWARE_MARKER, MANAGER_SHUTDOWN_INTENT, MANAGER_SPARE_CAPABILITY, LIVE_MANAGER_NAME_RECORD],
   isOwnCommand: commandIsCotalSupervisor,
 } satisfies LocalProcess;
 

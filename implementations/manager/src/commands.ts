@@ -35,6 +35,7 @@ import {
   refreshRegistrationPolicy, publishServiceStartup, serviceStartupPath, publishServiceStopReceipt, publishServedContract, protectedCredentialReference, readLocalRecordSource, type NativeServiceStopRequest,
   ConfirmationRequired, findMesh, folderSpace, folderSpaceHeld, getCurrent, targetErrorCode, targetErrorSpace, workspaceErrorParts, type MeshEntry, type MeshTargetError, type SeatCap,
   deprecatedDaemonEntry, DEPRECATED_MANAGER_ENTRY,
+  DEFAULT_MANAGER_NAME, publishLiveManagerName,
 } from "@cotal-ai/workspace";
 import { Manager } from "./manager.js";
 import { acceptManagerServiceStop, armManagerServiceObserver, bindManagerServiceIdentity, managerServiceChild, managerServiceStopRequested, type ManagerServiceChild } from "./service-child.js";
@@ -691,6 +692,7 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
     console.error(c.red(`✗ ${(e as Error).message}`));
     process.exit(1);
   }
+  const launchName = name ?? DEFAULT_MANAGER_NAME;
   // Construction resolves the runtime (createRuntime) — which fails loud on an unusable env, e.g. the
   // pty runtime under Bun. Render that as one actionable line, not a raw stack (this also lands in
   // `.cotal/manager.log` for a detached `cotal up` daemon).
@@ -711,7 +713,7 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
       attachHost,
       maxSessions,
       ...(seatCap !== undefined ? { seatCap } : {}),
-      ...(name !== undefined ? { name } : {}),
+      name: launchName,
       installedExtensions: true,
       ...(args.values["machine-parent"] === true && process.connected === true ? { machineSetupCommand: v["machine-setup-command"] } : {}),
       ...(typeof v["expected-connector-generation"] === "string" ? { expectedConnectorGeneration: v["expected-connector-generation"] } : {}),
@@ -855,6 +857,7 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
   // before its cooperative endpoint exists. A failed start still publishes no pid record. A
   // managed child already owns its exact starting PID slot; it settles that same process here.
   releaseSettledRecord = recordManagerPid(managerRoot, space);
+  publishLiveManagerName(managerContext, launchName);
   publishManagerSpareCapability(managerContext, mgr.spareSeats);
   if (v.name !== undefined && name !== undefined) {
     try { if (readManagerName(managerContext) !== name) recordManagerName(managerContext, name); }
