@@ -849,7 +849,11 @@ try {
       check("#7565: bare join --expires-in 2 exits 0 cleanly without AUTH_REQUIRED or doctor auth advice",
         timedJoin.code === 0 && /leaving/.test(timedJoin.out) && !/AUTH_REQUIRED|doctor auth|re-mint/i.test(timedJoin.out), timedJoin);
 
-      const absoluteJoin = await runCotal(["join", "--space", "offlinecheck", "--name", "absolute", "--expires-at", String(Math.floor(Date.now() / 1000) + 4)]);
+      const displayedJoin = await runCotal(["join", "--space", "offlinecheck", "--name", "displayed", "--channel", "#general", "--expires-in", "3"]);
+      check("bare static join accepts the displayed channel name and retires cleanly",
+        displayedJoin.code === 0 && /holding presence/.test(displayedJoin.out) && /leaving/.test(displayedJoin.out) && !/was not retired/.test(displayedJoin.out), displayedJoin);
+
+      const absoluteJoin = await runCotal(["join", "--space", "offlinecheck", "--name", "absolute", "--expires-at", String(Math.floor(Date.now() / 1000) + 15)]);
       check("#7565: bare join --expires-at exits 0 without an authentication refusal",
         absoluteJoin.code === 0 && /leaving/.test(absoluteJoin.out) && !/AUTH_REQUIRED|doctor auth|re-mint/i.test(absoluteJoin.out), absoluteJoin);
       const longJoin = spawn(process.execPath, [...process.execArgv, process.argv[1]!, "cotal-child", "join", "--space", "offlinecheck", "--name", "long_join", "--expires-in", "3000000"], { stdio: ["ignore", "pipe", "pipe"] });
