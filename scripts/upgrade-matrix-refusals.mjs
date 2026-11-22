@@ -19,6 +19,13 @@ export const knownRefusals = Object.freeze([
       'no paused recovery record', 'no manual step or refusal'],
     requiredAssertions: [...commonSafety, 'foreign snapshot bytes remain untouched',
       'every recorded extension is at target', 'recorded extension package versions match target']},
+  {id: 'linux-npm-foreign-config-recovery', phases: Object.freeze(['candidate', 'published']), sourceVersion: '0.174.0',
+    issue: 'https://github.com/Cotal-AI/Cotal/issues/8919', exit: 2, stdout: '',
+    stderr: "Request refused\n  Cannot inspect the interrupted update snapshot: ENOENT: no such file or directory, lstat '/home/runner/work/_temp/cell-{{cell}}/home/config'. Correct access, then run `cotal update --self`.\n  Outcome:     refused\n  Code:        DEPENDENCY_UNAVAILABLE\n  Native code: UPDATE_RECOVERY_INSPECTION_FAILED\n\nNext\n  follow the recovery instruction above, then run `cotal update --self`\n",
+    failedAssertions: ['upgrade exits successfully', 'CLI version is target', 'selected CLI reports target',
+      'no paused recovery record', 'no manual step or refusal'],
+    requiredAssertions: [...commonSafety, 'foreign snapshot bytes remain untouched',
+      'every recorded extension is at target', 'recorded extension package versions match target']},
 ].map(entry => Object.freeze({...entry, failedAssertions: Object.freeze([...entry.failedAssertions]),
   requiredAssertions: Object.freeze([...entry.requiredAssertions])})));
 
@@ -42,7 +49,7 @@ export function knownRefusalFor(cell, entries = knownRefusals) {
   return matches[0] ?? null;
 }
 const normalize = value => value.replace(/\r\n/g, '\n');
-const types = {space: '[a-zA-Z0-9_-]+', manager: '[a-z0-9]{26,31}', pid: '[1-9][0-9]*', owner: 'u_[a-z0-9]+'};
+const types = {space: '[a-zA-Z0-9_-]+', manager: '[a-z0-9]{26,31}', pid: '[1-9][0-9]*', owner: 'u_[a-z0-9]+', cell: '[A-Za-z0-9]{6}'};
 function templateMatches(template, actual) {
   const seen = new Set();
   const escaped = normalize(template).split(/(\{\{\w+\}\})/).map(part => {

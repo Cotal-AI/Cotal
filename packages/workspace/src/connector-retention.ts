@@ -215,7 +215,7 @@ function sameConfigPath(saved: string, expected: string): boolean {
   const suffix = expected.slice(config.length);
   if (!isAbsolute(saved) || !saved.endsWith(suffix)) return false;
   const base = saved.slice(0, saved.length - suffix.length);
-  if (!base || resolve(base) !== base || !existsSync(base)) return false;
+  if (!base || resolve(base) !== base || !existsSync(base) || !existsSync(config)) return false;
   return protectedResolvedDirectory(base, "the connector config folder") === protectedResolvedDirectory(config, "the connector config folder");
 }
 

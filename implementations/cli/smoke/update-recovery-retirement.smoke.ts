@@ -35,8 +35,10 @@ function cell(name: string) {
   return { env, record, receipt, attempt, observation, foreign, save, run, retained };
 }
 
-for (const automatic of [false, true]) {
-  const c = cell(automatic ? "dead-auto" : "dead-manual");
+for (const mode of ["manual", "auto", "no-config"] as const) {
+  const c = cell(`dead-${mode}`);
+  // A config home that does not exist yet cannot own the foreign snapshot, and is no reason to stop the update.
+  if (mode === "no-config") rmSync(c.env.XDG_CONFIG_HOME, { recursive: true });
   const before = [readFileSync(c.receipt), readFileSync(c.attempt)];
   const foreignBefore = readFileSync(join(c.foreign, "untouched"));
   const check = c.run({}, ["update", "--check"]);
@@ -44,7 +46,7 @@ for (const automatic of [false, true]) {
   assert.match(check.output, /retain these unusable records and continue/);
   assert.deepEqual(readFileSync(c.receipt), before[0], "check does not rewrite recovery");
   assert.equal(existsSync(c.observation), false, "check never starts observation");
-  const result = c.run(automatic ? { COTAL_AUTO_UPDATE: "1" } : {});
+  const result = c.run(mode === "auto" ? { COTAL_AUTO_UPDATE: "1" } : {});
   assert.equal(result.code, 0, result.output);
   assert.match(result.output, /Retained unusable interrupted-update records in .*; continuing the update/);
   assert.match(result.output, /ordinary reconciliation completed/);
