@@ -441,7 +441,7 @@ cotal down -f <cotal.yaml> | --run <id> [--dry-run]
 | `--abandon-stop <request-id>` | none | Controller stack, with `--yes`: abandon a member's stop that no receipt settles, then stop the stack. See the settlement rules under [up](cli-startup.mdx#up) |
 | `--abandon-launch <instance-id>` | none | Controller stack, with `--yes`: record failed a member launch whose record names no process, then stop the stack. See the settlement rules under [up](cli-startup.mdx#up) |
 | `--preserve-state` | off | Bare whole stack only: fence the manager, retain principals and durable state, stop and prove the stack down, then publish `ready` |
-| `--store-dir <dir>` | the recorded store, else `.cotal/nats` | With `--preserve-state`: the store to cut. The mesh record names the store the broker runs on, such as a `backup restore --store-dir` target, and a different path refuses `CONFLICT` before anything stops |
+| `--store-dir <dir>` | the recorded store, else `.cotal/nats` | With `--preserve-state`: the store to cut. A different path refuses `CONFLICT` before anything stops. Omit the flag or use the suggested shell-quoted option to name the recorded store |
 | `--session-store <dir>` | none | With `--preserve-state`: a harness transcript store directory to capture with every continuation-capable retained seat. Repeatable. No default and never inferred from a connector name; a path that does not exist or is not a directory is refused before anything stops |
 
 A legacy ledger preview selects the saved ledger by the manifest's source hash. It does not
@@ -925,9 +925,9 @@ recorded broker address. A match blocks store apply, while no match does not
 exclude aliases, remote tenants or live attachments. A negative credless probe
 cannot prove absence for TLS-first listeners. A custom store path must be
 absolute and one real directory. A recorded store path that is a link refuses `CONFLICT` in the
-preview and the apply of both resets, naming the path and the directory it points to, and nothing
-is removed. Replace the link with that directory to reset it. A selected root whose `.cotal` is a
-link refuses both resets and their previews `CONFLICT`, exit 2, before anything reads through it,
+preview and the apply of both resets, even if its target is missing. The refusal names the link and
+its target. Nothing is removed. Replace the link with the store directory to reset it. A selected
+root whose `.cotal` is a link refuses both resets and their previews `CONFLICT`, exit 2, before anything reads through it,
 naming the link, and nothing is removed; when the records were moved away and linked back, the Next
 names moving them back. A store in the project folder itself
 refuses both resets `CONFLICT` as it refuses `clean store`, naming the store's own entries to remove
