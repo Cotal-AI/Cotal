@@ -70,7 +70,7 @@ export async function spawnLaunchPreview(args: Pick<ParsedArgs, "positionals"> &
   // A folder whose records name no space is refused above, so a preview never names an assumed space.
   const target = { space, broker, authMode: targetMode };
   if (spawnUsesManager(values)) {
-    if (selected && values.on !== undefined) validateManagerPin(values.on, selected.mode, spawnRerun(values, args.positionals));
+    if (values.on !== undefined) validateManagerPin(values.on, selected?.mode, spawnRerun(values, args.positionals));
     if (values.name !== undefined) refuseUnmintableName(values.name, targetMode === "user");
     // The manager resolves the persona, harness and working directory on its own host at launch, so
     // the preview shows the request and says what it did not read.

@@ -461,7 +461,7 @@ try {
   else process.env.COTAL_HOME = priorHome;
 }
 const previewPin = (space: string, on: string) => cotal("spawn", "minimal", "-d", "--space", space, "--on", on, "--dry-run", "--json");
-for (const [space, mode] of instanceOnlySpaces) {
+for (const [space, mode] of [...instanceOnlySpaces, ["opsp", null]] as const) {
   const invalid = previewPin(space, "not-a-pin");
   check(`the ${space} managed preview refuses a malformed pin and keeps --dry-run in the retry`,
     invalid.status === 1 && invalid.stderr === "" && invalid.envelope?.outcome === "refused"
