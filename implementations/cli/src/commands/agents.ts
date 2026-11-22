@@ -537,8 +537,9 @@ export interface PsResult {
 /** `rowsOf` is each answered instance's rows as the census received them, so a row that names no
  *  instance of its own is still listed under the manager that returned it. `noApplication` is
  *  `status`'s reading that no agent application is set up here, so an empty list's Next agrees with
- *  the one `status` gives. */
-function psView(result: PsResult, wide: boolean, rowsOf: ReadonlyMap<string, readonly unknown[]> = new Map(), noApplication = false, mode?: string): Report {
+ *  the one `status` gives. `interactive` is whether a terminal is there to answer `setup`'s
+ *  questions, as `status` reads it: without one, the Next points at `setup --help` instead. */
+export function psView(result: PsResult, wide: boolean, rowsOf: ReadonlyMap<string, readonly unknown[]> = new Map(), noApplication = false, mode?: string, interactive = true): Report {
   const empty = result.kind === "slots" ? "No active static slots." : "No managed agents.";
   const blocksFor = (rows: readonly unknown[]): Block[] =>
     !rows.length ? [{ kind: "lines", lines: [{ text: empty, tone: "hint" }] }]
@@ -552,7 +553,7 @@ function psView(result: PsResult, wide: boolean, rowsOf: ReadonlyMap<string, rea
     { title: "Next", blocks: [{ kind: "commands", items: result.items.length ? [
       { command: `${displayCmd()} attach <name>`, description: "Return to an agent's terminal" },
       { command: `${displayCmd()} stop <name>`, description: "Stop one agent" },
-    ] : [noApplication ? { command: `${displayCmd()} setup`, description: "Set up an agent application" } : { command: `${displayCmd()} spawn`, description: "Launch your default agent" }] }] },
+    ] : [noApplication ? (interactive ? { command: `${displayCmd()} setup`, description: "Set up an agent application" } : { command: `${displayCmd()} setup --help`, description: "See setup flags for scripts. Bare setup needs a terminal." }) : { command: `${displayCmd()} spawn`, description: "Launch your default agent" }] }] },
   ] };
   // Several managers: one section each, named by the FULL instance id, since `--on` takes nothing
   // shorter and this is precisely where it becomes the one way to address a manager. Silent and
@@ -629,7 +630,7 @@ export async function ps(args: ParsedArgs): Promise<void> {
     if (slots || on !== undefined || !failure || !(failure instanceof NoManagerAnswered || noLiveManager(failure))) throw e;
     return psFromPresence(v, presentation);
   }
-  const view = (result: PsResult): Report => psView(result, wide, census.rowsOf, !result.items.length && noApplicationHere(), census.mode);
+  const view = (result: PsResult): Report => psView(result, wide, census.rowsOf, !result.items.length && noApplicationHere(), census.mode, presentation === "rich" && canPrompt());
   writeResult(
     presentation,
     {
