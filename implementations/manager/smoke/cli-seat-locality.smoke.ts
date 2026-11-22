@@ -245,6 +245,17 @@ try {
   check("another prepared space is selected and bare ps cannot list its agents", prepared.status === 0 && selected.status === 0 && wrongRoster.status === 2 && /Mesh: otheraudit/.test(wrongRoster.out), wrongRoster);
   const route = ["--space", space, "--server", SERVERS];
   const roster = `cotal ps ${route.join(" ")}`;
+  const noName = await cotal(["attach", ...route], other);
+  const [suggestedRoster, suggestedAttach] = [...noName.out.matchAll(/`([^`]+)`/g)].map((match) => match[1]);
+  check("noninteractive attach without a name keeps the target in both commands",
+    noName.status === 1 && noName.out.includes("name the agent to attach without an interactive terminal")
+    && suggestedRoster === roster && suggestedAttach === `cotal attach <name> ${route.join(" ")}`, noName);
+  const pinnedNoName = await cotal(["attach", "--on", IID1, ...route, "--no-reconnect"], other);
+  check("noninteractive attach keeps the manager pin in both commands and the session option in the retry",
+    pinnedNoName.status === 1 && pinnedNoName.out.includes(`run \`cotal ps --on ${IID1} ${route.join(" ")}\`, then \`cotal attach <name> --on ${IID1} --no-reconnect ${route.join(" ")}\``), pinnedNoName);
+  const privateServer = await cotal(["attach", "--space", space, "--server", SERVERS.replace("://", "://user:sensitive-value@")], other);
+  check("a broker URL with userinfo is refused without echoing it", privateServer.status === 1
+    && privateServer.out.includes("--server must not embed credentials") && !privateServer.out.includes("sensitive-value"), privateServer);
   const ghost = await cotal(["stop", "--name", "no-such-seat", ...route], other);
   check("stop on a nonexistent name exits non-zero", ghost.status !== 0, { status: ghost.status, out: ghost.out.slice(-300) });
   check("...and the error names both managers searched",
@@ -260,8 +271,8 @@ try {
   check("stop --json and input --json print the refusal envelope, and attach refuses the same way, each exit 2",
     misses.every((r) => r.status === 2 && /TARGET_NOT_FOUND/.test(r.out)) && misses.slice(0, 2).every((r) => r.out.includes('"outcome":"refused"')), misses.map((r) => ({ status: r.status, out: r.out.slice(-400) })));
   check("attach names the same roster read as stop", misses[2]!.out.includes(`run \`${roster}\` to see the agents each manager runs`), misses[2]);
-  const follow = await cotal(["ps", ...route], other);
-  check("the suggested roster lists both managers instead of the selected space", follow.status === 0 && follow.out.includes(IID1) && follow.out.includes(IID2), follow);
+  const follow = suggestedRoster === roster ? await cotal(suggestedRoster.split(" ").slice(1), other) : undefined;
+  check("the suggested roster lists both managers instead of the selected space", follow?.status === 0 && follow.out.includes(IID1) && follow.out.includes(IID2), follow ?? noName);
   const pinned = await cotal(["attach", "no-such-seat", "--on", IID1, ...route], other);
   const pinnedRoster = pinned.out.match(/run `([^`]+)` to see the agents the manager runs/)?.[1];
   // The quoted broker URL is one shell argument. Compare the command before following its argv.

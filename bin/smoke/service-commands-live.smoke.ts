@@ -257,8 +257,11 @@ try {
     const invalidHost = cotal(["manager", "start", "--space", SPACE, "--console-host", "127.0.0.1 junk", "--plain"]);
     check("an invalid console host is refused without saving a replacement",
       invalidHost.status === 1 && out(invalidHost).includes("USAGE_INVALID") && out(invalidHost).includes("--console-host contains whitespace or controls") && !out(invalidHost).includes("saved manager again"), out(invalidHost));
+    const invalidName = cotal(["manager", "start", "--foreground", "--space", SPACE, "--name", "abcdefghijklmnopqrstuvwxyz", "--plain"]);
+    check("an instance-shaped manager name is refused without saving a replacement",
+      invalidName.status === 1 && out(invalidName).includes("USAGE_INVALID") && out(invalidName).includes("has the shape of an instance id") && !out(invalidName).includes("saved manager again"), out(invalidName));
     const kept = showManager(), stoppedAfter = stoppedManager();
-    check("the refused override leaves the definition and stopped instance unchanged",
+    check("the refused overrides leave the definition and stopped instance unchanged",
       saved.status === 0 && kept.status === 0 && saved.stdout === kept.stdout
       && stoppedBefore.status === 0 && stoppedAfter.status === 0 && stoppedBefore.recordedState === "stopped"
       && typeof stoppedBefore.instanceId === "string" && typeof stoppedBefore.revision === "string" && JSON.stringify(stoppedBefore) === JSON.stringify(stoppedAfter),

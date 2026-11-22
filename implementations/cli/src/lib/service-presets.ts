@@ -1,7 +1,7 @@
 import { brokerUrlHasUserinfo, registry, type Command, type FlagSpec, type ParsedArgs } from "@cotal-ai/core";
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { brokerUrlCredentialRefusal, cacheServicePreset, CommandFailure, extensionProvides, findMesh, hasUserAuthState, installedExtensionPackage, isCommandFailure, loadExtensionsManifest, oneLine, resolveNativeServiceTarget, runtimeInstallHint, segmentedKey, serviceMetadataDigest, spaceMaterialKey, validateServiceAdapterOptions, validateServiceAdapterPaths, verifiedExtensionServicePresets, WEB_SERVICE_ADAPTER, type ServiceDefinitionInput, type ServicePreset, type ServicePresetDefault } from "@cotal-ai/workspace";
+import { assertManagerName, brokerUrlCredentialRefusal, cacheServicePreset, CommandFailure, extensionProvides, findMesh, hasUserAuthState, installedExtensionPackage, isCommandFailure, loadExtensionsManifest, oneLine, resolveNativeServiceTarget, runtimeInstallHint, segmentedKey, serviceMetadataDigest, spaceMaterialKey, validateServiceAdapterOptions, validateServiceAdapterPaths, verifiedExtensionServicePresets, WEB_SERVICE_ADAPTER, type ServiceDefinitionInput, type ServicePreset, type ServicePresetDefault } from "@cotal-ai/workspace";
 import { installedExtensionsEnabled } from "../ext-loader.js";
 import { metadataPositionals } from "./command-path.js";
 import { shellWord } from "./endpoint-errors.js";
@@ -9,11 +9,12 @@ import { resolveServiceAdapter } from "./service-adapters.js";
 import { STACK_ADAPTER } from "./stack-journal.js";
 import { cliVersion } from "./version.js";
 
-/** Check the manager's local launch coordinates and runtime metadata without importing a provider. */
+/** Check the manager's launch coordinates, name and runtime metadata without importing a provider. */
 export function assertManagerStartOptions(space: string, options: Record<string, unknown>): void {
   const server = options.server as string | undefined;
   if (server !== undefined && brokerUrlHasUserinfo(server)) throw brokerUrlCredentialRefusal("--server");
   if (server !== undefined || findMesh(space)) resolveNativeServiceTarget(String(options.root), space, server);
+  if (options.name !== undefined) assertManagerName(String(options.name));
 
   const runtime = String(options.runtime);
   if (runtime === "pty" || registry.has("runtime", runtime)) return;
