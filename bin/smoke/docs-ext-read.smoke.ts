@@ -145,6 +145,28 @@ let specBody = "";
 }
 
 {
+  const docs = run(["docs", "cli-agent-control", "--json"]);
+  const body = docs.envelope?.result?.body;
+  const seats = typeof body === "string" ? /^## Managed seats\n([\s\S]*?)^### Control credentials$/m.exec(body)?.[1] : undefined;
+  check("the bundled managed-seat flag table lists space and server without raw credentials",
+    docs.status === 0 && seats !== undefined && /^\| `--space <s>` /m.test(seats) && /^\| `--server <url>` /m.test(seats) && !seats.includes("--creds"),
+    seats?.slice(0, 650) ?? shown(docs));
+
+  const help = run(["ps", "--help"]);
+  check("ps help tells authenticated callers how to select their mesh without offering raw credentials",
+    help.status === 0 && help.stdout.replace(/\s+/g, " ").includes("run from its project folder or name the registered space with --space") &&
+    /--space <s>/.test(help.stdout) && /--server <url>/.test(help.stdout) && !help.stdout.includes("--creds"), shown(help));
+  const completion = run(["__complete", "ps", "--"]);
+  check("ps completion offers both selectors without raw credentials",
+    completion.status === 0 && /^--space\t/m.test(completion.stdout) && /^--server\t/m.test(completion.stdout) && !/^--creds\t/m.test(completion.stdout), shown(completion));
+
+  const refused = run(["ps", "--plain", "--server", "nats://127.0.0.1:1", "--creds", join(home, "missing.creds")]);
+  check("ps still refuses explicit raw credentials before dialing and gives the supported route",
+    refused.status === 2 && refused.stdout === "" && /Code:\s+UNSUPPORTED/.test(refused.stderr) &&
+    /Next\s+run the command again without --creds:[\s\S]*project folder,[\s\S]*--space naming its registry entry/.test(refused.stderr), shown(refused));
+}
+
+{
   const docs = run(["docs", "cli-maintenance", "--json"]);
   const body = docs.envelope?.result?.body;
   const start = typeof body === "string" ? /^cotal manager start \[.*$/m.exec(body)?.[0] ?? "" : "";

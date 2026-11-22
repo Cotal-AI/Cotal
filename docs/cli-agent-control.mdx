@@ -21,7 +21,8 @@ cotal attach [<name>] [--on <instance>] [--no-reconnect] [--space <s>]
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--space <s>` / `--server <url>` / `--creds <path>` | resolved mesh | Which manager to reach |
+| `--space <s>` | resolved mesh | Which space to query. For an authenticated mesh, name its registered space or run from its project folder |
+| `--server <url>` | resolved broker | Override the broker URL. For an unregistered open mesh, pass both `--space` and `--server` |
 | `<name>` / `--name <n>` | none | Managed agent to stop or attach, named positionally or with `--name`. `stop` needs one unless `--self` is given. `attach` without one lists your agents to choose from on a terminal, and refuses `USAGE_INVALID` where it cannot ask. A name that is missing or only whitespace is shown as that agent's id |
 | `--self` (`stop`) | off | Stop only the verified managed seat running this command (see [Stopping an agent](#stopping-an-agent)) |
 | `--force` (`stop`) | off | Request the native hard despawn (`graceful:false`); it does not bypass authority |

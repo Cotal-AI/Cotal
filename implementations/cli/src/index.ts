@@ -693,9 +693,11 @@ const baseCommands: Command[] = [
     kind: "command",
     name: "ps",
     group: "Agents",
-    summary: "list managed agents + their mesh status",
+    summary: "List managed agents and their mesh status. For an authenticated mesh, run from its project folder or name the registered space with --space.",
     usage: "cotal ps [--json|--plain] [--wide | --slots] [--on <instance>]",
     flags: psFlags,
+    // Keep parsing --creds to give explicit callers the refusal and remedy.
+    flagNames: psFlags.filter((flag) => flag.name !== "creds").map((flag) => flag.name),
     outputs: ["json", "plain"],
     examples: [{ command: "cotal ps", note: "list your managed agents" }, { command: "cotal ps --wide", note: "add each agent's folder, process and host" }, { command: "cotal ps --json", note: "the same as one JSON document" }],
     reads: true,
