@@ -910,6 +910,7 @@ async function userAuthRestartCell(): Promise<void> {
   const home = join(base, "user-auth-home"), mesh = join(base, "user-auth-project");
   for (const p of [home, mesh]) mkdirSync(p, { mode: 0o700 });
   const env = { ...cleanEnv, HOME: home, COTAL_HOME: join(home, "machine"), XDG_CONFIG_HOME: join(home, "xdg"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" };
+  const sandbox = recordSmokeSandbox({ root: mesh, cotalHome: env.COTAL_HOME, xdgConfigHome: env.XDG_CONFIG_HOME });
   const key = generateKeyPairSync("ed25519").publicKey.export({ format: "jwk" });
   const idp = createHttpServer((req, res) => {
     if (req.url !== "/auth/jwks") { res.writeHead(404).end(); return; }
@@ -922,7 +923,7 @@ async function userAuthRestartCell(): Promise<void> {
     const space = "restart-user-auth", port = await freePort(), server = `nats://127.0.0.1:${port}`;
     const restart = ["--user-auth", "--space", space, "--server", server];
     const bootAndStop = async (args: string[]) => {
-      const child = spawn(process.execPath, ["--import", tsx, cliEntry, "up", ...args, "--foreground", "--no-manager"], { cwd: mesh, env, stdio: ["ignore", "pipe", "pipe"] });
+      const child = spawn(process.execPath, ["--import", tsx, cliEntry, "up", ...args], { cwd: mesh, env, stdio: ["ignore", "pipe", "pipe"] });
       const state = observeOwnedChild(child);
       let output = "";
       for (const stream of [child.stdout, child.stderr]) stream.on("data", (chunk: Buffer) => { output += chunk.toString(); });
@@ -939,14 +940,21 @@ async function userAuthRestartCell(): Promise<void> {
       assert.equal(state.code, 143, output);
       assert.equal(await portOpen(port), false, output);
     };
-    await bootAndStop([...restart, "--idp", `http://127.0.0.1:${(idp.address() as AddressInfo).port}/auth`]);
+    await bootAndStop(["--foreground", "--no-manager", ...restart, "--idp", `http://127.0.0.1:${(idp.address() as AddressInfo).port}/auth`]);
     for (const args of [["whoami"], ["send", "--server", server, "-c", "general", "test message"]]) {
       const r = await foregroundCliProbe(cliEntry, tsx, mesh, env, [...args, "--space", space, "--plain"]);
       const text = (r.out + r.err).replace(/\s+/g, " ");
       assert.equal(r.code, 2, text);
       assert.ok(text.includes(`cotal up --user-auth --space ${shellPath(space)} --server ${shellPath(server)}`), text);
     }
-    await bootAndStop(restart);
+    const downArgs = ["down", "--yes", "--plain"];
+    assertSmokeSandboxDown(sandbox, downArgs, { cwd: mesh, env });
+    const down = await foregroundCliProbe(cliEntry, tsx, mesh, env, downArgs);
+    assert.equal(down.code, 0, down.out + down.err);
+    assert.ok(down.out.includes("Nothing was stopped."), down.out);
+    const command = / up (.+?)\s+Start it with user auth/.exec(down.out)?.[1];
+    assert.equal(command, `--foreground --no-manager --user-auth --space ${space} --server ${server}`, down.out);
+    await bootAndStop(command.split(" "));
     passed++;
     console.log("PASS foreground-up-signals stopped user-auth guidance keeps the space and broker address");
   } finally {
