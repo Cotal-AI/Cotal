@@ -39,7 +39,8 @@ Without an agent name or an interactive terminal, `attach` refuses and suggests 
 and an attach command with a name. Both keep the explicit `--space` and `--server`, and the attach
 retry keeps `--no-reconnect`. Both commands keep a valid `--on` selector. On an open or static-auth
 space, if the manager ID is malformed, the roster command omits `--on` so you can find the full ID
-to put in the attach retry.
+to put in the attach retry. When you name the agent and mistype the manager ID, the attach retry
+also keeps `--no-reconnect`.
 
 On a controller stack started with `--no-manager`, `ps` refuses `TARGET_UNAVAILABLE`: no manager
 runs, so there are no managed agents to list. Bare `cotal up` adds the manager. A `manager` preset
