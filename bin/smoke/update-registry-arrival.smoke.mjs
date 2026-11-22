@@ -497,6 +497,7 @@ exec npm "$@"
         .flatMap(name => readdirSync(join(scratch, name)).filter(cache => cache.startsWith('cotal-update-npm-')).map(cache => join(scratch, name, cache)));
       assert.equal(caches.length, 1, 'found the staging worker’s private npm cache');
       abandonedStagingCache = caches[0];
+      mkdirSync(join(dirname(abandonedStagingCache), 'node-compile-cache'), { recursive: true });
       const ownerExited = new Promise(done => owner.once('exit', (_code, signal) => done(signal)));
       owner.kill('SIGKILL');
       assert.equal(await ownerExited, 'SIGKILL');
@@ -519,6 +520,7 @@ exec npm "$@"
       const cache = readdirSync(join(scratch, outer)).find(name => name.startsWith('cotal-release-check-'));
       assert(cache, 'the running updater made a release archive cache');
       abandonedCache = join(scratch, outer, cache);
+      mkdirSync(join(scratch, outer, 'node-compile-cache'), { recursive: true });
       const workers = readdirSync(abandonedCache).filter(name => name.startsWith('.worker-'));
       assert(workers.length > 0, 'the real npm worker has recorded custody');
       pausedArchive = Number(workers.find(name => {
@@ -534,6 +536,7 @@ exec npm "$@"
       const whileActive = await run(process.execPath, [entry, 'update', '--self'], 60000);
       assert.equal(whileActive.code, 0, whileActive.output);
       assert(existsSync(abandonedCache), 'retry leaves the surviving npm worker cache alone');
+      assert(existsSync(join(scratch, outer, 'node-compile-cache')), 'retry leaves compile cache with the surviving worker');
       heldArchive.end(archives.get(target));
       process.kill(pausedArchive, 'SIGCONT');
       pausedArchive = undefined;
@@ -641,6 +644,7 @@ exec npm "$@"
       assert.equal(existsSync(marker), false);
       assert.equal(existsSync(join(root, 'bus-called')), false, 'exact child custody needs no native user manager query');
       assert(!existsSync(abandonedStagingCache), 'the successful retry removes the abandoned staging cache');
+      assert(!existsSync(dirname(abandonedStagingCache)), 'the successful retry removes the abandoned staging scratch');
       assert(existsSync(unrecordedStagingCache), 'the successful retry leaves unrecorded staging caches alone');
       const current = await run(process.execPath, [entry, '--version'], 60000);
       assert.match(current.output, /cotal-ai 99\.0\.0/);
@@ -710,6 +714,7 @@ exec npm "$@"
       } else if (scenario === 'archive-interrupted') {
         assert.equal(selected, target, update.output);
         assert.equal(existsSync(abandonedCache), false, 'retry removes the recorded orphan cache');
+        assert(!existsSync(dirname(abandonedCache)), 'retry removes the abandoned scratch and its compile cache');
         assert(existsSync(unrecordedCache), 'retry does not infer custody from a directory name');
       } else if (['orphan', 'pending', 'reconcile-killed'].includes(scenario)) {
         assert.equal(selected, target, update.output);

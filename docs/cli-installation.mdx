@@ -252,6 +252,8 @@ recording the failed attempt. macOS and Windows retain their separate activation
 On Linux, rerun `cotal update --self` after an interruption. The update resumes when it can prove
 the previous updater died before its child was allowed to start, or that the recorded child and
 its process group are gone. A live writer or unreadable evidence leaves the record intact.
+A successful retry also removes private update scratch when it can confirm that the updater and
+its workers have exited.
 For an older record without child custody, manual repair still requires this account's other
 application processes to exit. It stops only this installation's service after confirming its
 hosted Managers have no seats, and starts the enabled service again after the attempt.
