@@ -1,5 +1,20 @@
 # @cotal-ai/workspace
 
+## 0.174.3
+
+### Patch Changes
+
+- ab010b5: Chat refuses messages that exceed the broker's byte limit and confirms nothing was stored, so you can shorten or split the message.
+- f2158ba: Show runnable `who` commands for spaces on a shared broker, explain which space `whoami` reports after `space forget`, and tell users how to start a prepared space before describing or invoking an endpoint.
+- 52c5b11: The CRLF repair hint for a credential file now quotes the file path, so a path with spaces pastes as one argument to dos2unix.
+- 61b02ca: Finish an interrupted self-update after switching config folders without touching the original snapshot.
+- 43963e8: Save preferences for spaces named `__proto__` and make setup suggest usable local space names and report saved preparation when its log cannot open.
+- 4697bab: `cotal status` recommends restoring an exited manager without stopping its broker, and `status` and `ps` name an occupied port or invalid channel seed before suggesting a foreground stack restart.
+- b8c54dd: Keep the intended space in CLI retry and follow-up commands and name it in membership stream errors when local records identify it.
+- Updated dependencies [8a7bd4b]
+- Updated dependencies [ff4cd00]
+  - @cotal-ai/core@0.174.3
+
 ## 0.174.2
 
 ### Patch Changes

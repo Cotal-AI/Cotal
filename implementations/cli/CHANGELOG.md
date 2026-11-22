@@ -1,5 +1,59 @@
 # @cotal-ai/cli
 
+## 0.174.3
+
+### Patch Changes
+
+- cf70dcc: The CLI identifies incomplete duplicate options, shows explicit help with command operands, and tells you to remove unknown completion options instead of suggesting `--`.
+- 9a796e0: When `cotal backup create` cannot search the destination's parent folder, it reports the permission problem and suggests how to fix it without changing the preserved cut.
+- 976dec2: Open bundled CLI documentation even when the installed extension inventory is damaged. `cotal docs` skips extension loading and repair, and leaves inventory collection for the daily telemetry event to another command.
+- c45b4a5: `cotal personas rm` removes the named catalog entry and leaves any same-named project file untouched.
+- ab010b5: Chat refuses messages that exceed the broker's byte limit and confirms nothing was stored, so you can shorten or split the message.
+- 5878ac6: Reject `--store-dir` on restore cleanup commands so they cannot silently act on a different store.
+- 9fb78fc: When `cotal who --waiting` finds no matches, say that no participants match the filter instead of implying nobody is present.
+- affcbdd: `run show` rejects diagnostic paging flags even with a journal limit, and `watch --json` reports an invalid view with stream error and end records.
+- f2158ba: Show runnable `who` commands for spaces on a shared broker, explain which space `whoami` reports after `space forget`, and tell users how to start a prepared space before describing or invoking an endpoint.
+- 7235a9d: The CLI refuses typographic help flags instead of sending them as messages, keeps JSON error output for grouped options such as `-js`, and retains `--yes` in the retry when a foreground stop refuses JSON output.
+- 1f65fed: Write JSON refusals in full or print the text refusal on stderr when stdout cannot accept the rest, without changing the exit code.
+- 462988d: Completion uninstall no longer refuses when a shell startup file only names the stub in a comment. The managed block and stub are removed and the comment is kept.
+- b584806: `cotal console --no-input` shows a passive line stream and does not accept console commands, even on an interactive terminal.
+- a02eab3: Keep the explicit daemon home in the start suggestion when `cotal daemon name` or `cotal daemon spaces` finds that daemon stopped.
+- 61b02ca: Finish an interrupted self-update after switching config folders without touching the original snapshot.
+- 13094dc: Return one JSON preview for `cotal service start <name> --foreground --dry-run --json` without starting the service.
+- 54540c4: Keep broker-only foreground repairs broker-only, check saved payload limits before starting an open stack with a manager, and wait for TIME-WAIT to clear on a controller stack's recorded broker address.
+- 012a37b: History includes posts on channels with event-shaped names and keeps the requested channel or DM scope in JSON follow errors.
+- 8dd65f4: Validate the landing `--channel` (or join-link channel) grammar before dialing in `cotal join`, rejecting invalid names such as empty segments with `USAGE_INVALID` instead of reporting missing mesh provisioning.
+- 7b4ce5a: Keep the selected application, refresh request and explicit broker when the model catalog report suggests asking another manager.
+- 43963e8: Save preferences for spaces named `__proto__` and make setup suggest usable local space names and report saved preparation when its log cannot open.
+- dd6e21b: A manager service definition needs both its launch spec and its full digest. Saving either flag alone is refused with the paired command to run instead.
+- 8a8eca1: Include the resolved `--space` in the `cotal persona show` and `cotal persona edit` commands suggested by `cotal auth mint` when a persona definition fails validation.
+- 8a7bd4b: Persona show prints commands you can copy for names starting with a hyphen, and persona files reject a blank or null endpoints declaration instead of ignoring it.
+- ff4cd00: Persona retries keep the selected catalog and explain when to pipe input again, malformed closing fences are rejected, and blank connector pins use the default unless a harness is specified.
+- b445f00: `ps` without a terminal now points at `setup --help` instead of bare `setup`, as `status` already does. On a terminal the bare `setup` suggestion is unchanged.
+- 957b80e: Channel history no longer reports a missing post after a sequence cutoff just because another channel posted in between.
+- b171623: Show the private session file when reusing a foreground dashboard and return `405` for unsupported methods on dashboard read endpoints.
+- 22f7fa9: Reject invalid manager names without overwriting saved settings, and keep the selected space, broker and manager in noninteractive attach guidance.
+- 4697bab: `cotal status` recommends restoring an exited manager without stopping its broker, and `status` and `ps` name an occupied port or invalid channel seed before suggesting a foreground stack restart.
+- 734d0b5: The first `cotal update --self` that runs more than an hour after an interrupted update of 0.174.1 or older reclaims private scratch that contains only the Node compile cache.
+- f85c211: Local `cotal run answer` and `cotal run amend` reject a whitespace-only `--by` before contacting the broker.
+- 2260410: Report a no-op when stopping a saved service with no recorded instance, and ask for a definition path when `service add --file` is blank.
+- 20afd30: When `cotal up` refuses because the project directory or `.cotal` lacks write or search access, it suggests `chmod u+wx` to restore both permissions.
+- b8c54dd: Keep the intended space in CLI retry and follow-up commands and name it in membership stream errors when local records identify it.
+- eb5320b: Stop the newly started local broker when startup cannot finish writing its registration.
+- 15fb4c2: Self-updating an npm installation refreshes its launcher and uses Cotal’s running Node for npm even when an older Node is first on PATH.
+- 7a4f20f: Keep the requested space in the suggested start command when manager status or stop finds no manager there.
+- Updated dependencies [ab010b5]
+- Updated dependencies [f2158ba]
+- Updated dependencies [52c5b11]
+- Updated dependencies [61b02ca]
+- Updated dependencies [43963e8]
+- Updated dependencies [8a7bd4b]
+- Updated dependencies [ff4cd00]
+- Updated dependencies [4697bab]
+- Updated dependencies [b8c54dd]
+  - @cotal-ai/workspace@0.174.3
+  - @cotal-ai/core@0.174.3
+
 ## 0.174.2
 
 ### Patch Changes

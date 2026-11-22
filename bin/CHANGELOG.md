@@ -1,5 +1,74 @@
 # cotal-ai
 
+## 0.174.3
+
+### Patch Changes
+
+- 976dec2: Open bundled CLI documentation even when the installed extension inventory is damaged. `cotal docs` skips extension loading and repair, and leaves inventory collection for the daily telemetry event to another command.
+- 5878ac6: Reject `--store-dir` on restore cleanup commands so they cannot silently act on a different store.
+- 1f65fed: Write JSON refusals in full or print the text refusal on stderr when stdout cannot accept the rest, without changing the exit code.
+- 13094dc: Return one JSON preview for `cotal service start <name> --foreground --dry-run --json` without starting the service.
+- 8dd65f4: Validate the landing `--channel` (or join-link channel) grammar before dialing in `cotal join`, rejecting invalid names such as empty segments with `USAGE_INVALID` instead of reporting missing mesh provisioning.
+- 8a8eca1: Include the resolved `--space` in the `cotal persona show` and `cotal persona edit` commands suggested by `cotal auth mint` when a persona definition fails validation.
+- 22f7fa9: Reject invalid manager names without overwriting saved settings, and keep the selected space, broker and manager in noninteractive attach guidance.
+- 7d5aaab: Allow shell installer re-runs and `cotal update` to reconcile a Cotal home without contacting a daemon that belongs to another home.
+- 15fb4c2: Self-updating an npm installation refreshes its launcher and uses Cotal’s running Node for npm even when an older Node is first on PATH.
+- 7a4f20f: Keep the requested space in the suggested start command when manager status or stop finds no manager there.
+- f98cece: Workflow commands offer offline simulation on open meshes, keep the selected route in checkpoint and receipt follow-ups, and ship a working simulation example.
+- Updated dependencies [cf70dcc]
+- Updated dependencies [9a796e0]
+- Updated dependencies [976dec2]
+- Updated dependencies [c45b4a5]
+- Updated dependencies [ab010b5]
+- Updated dependencies [5878ac6]
+- Updated dependencies [9fb78fc]
+- Updated dependencies [affcbdd]
+- Updated dependencies [f2158ba]
+- Updated dependencies [7235a9d]
+- Updated dependencies [1f65fed]
+- Updated dependencies [462988d]
+- Updated dependencies [b584806]
+- Updated dependencies [52c5b11]
+- Updated dependencies [a02eab3]
+- Updated dependencies [61b02ca]
+- Updated dependencies [e8dfc55]
+- Updated dependencies [13094dc]
+- Updated dependencies [54540c4]
+- Updated dependencies [012a37b]
+- Updated dependencies [8dd65f4]
+- Updated dependencies [7b4ce5a]
+- Updated dependencies [43963e8]
+- Updated dependencies [dd6e21b]
+- Updated dependencies [8a8eca1]
+- Updated dependencies [8a7bd4b]
+- Updated dependencies [ff4cd00]
+- Updated dependencies [b445f00]
+- Updated dependencies [957b80e]
+- Updated dependencies [b171623]
+- Updated dependencies [22f7fa9]
+- Updated dependencies [4697bab]
+- Updated dependencies [734d0b5]
+- Updated dependencies [f85c211]
+- Updated dependencies [2260410]
+- Updated dependencies [23c283e]
+- Updated dependencies [c42b757]
+- Updated dependencies [20afd30]
+- Updated dependencies [b8c54dd]
+- Updated dependencies [eb5320b]
+- Updated dependencies [15fb4c2]
+- Updated dependencies [7a4f20f]
+- Updated dependencies [f98cece]
+  - @cotal-ai/cli@0.174.3
+  - @cotal-ai/workspace@0.174.3
+  - @cotal-ai/runtime@0.174.3
+  - @cotal-ai/manager@0.174.3
+  - @cotal-ai/core@0.174.3
+  - @cotal-ai/auth@0.174.3
+  - @cotal-ai/delivery@0.174.3
+  - @cotal-ai/connector-core@0.174.3
+  - @cotal-ai/registry@0.174.3
+  - @cotal-ai/seat@0.174.3
+
 ## 0.174.2
 
 ### Patch Changes

@@ -1,5 +1,12 @@
 # @cotal-ai/core
 
+## 0.174.3
+
+### Patch Changes
+
+- 8a7bd4b: Persona show prints commands you can copy for names starting with a hyphen, and persona files reject a blank or null endpoints declaration instead of ignoring it.
+- ff4cd00: Persona retries keep the selected catalog and explain when to pipe input again, malformed closing fences are rejected, and blank connector pins use the default unless a harness is specified.
+
 ## 0.174.2
 
 ### Patch Changes
