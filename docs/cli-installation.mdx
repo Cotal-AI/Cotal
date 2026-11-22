@@ -1086,8 +1086,10 @@ cotal completion script powershell | Out-String | Invoke-Expression
 The stable hidden `__complete` entry reads registered command specifications, the spaces
 registered or prepared on this machine, the extension manifest, the bundled docs index and local
 persona files. It does not contact the mesh or refresh extensions. Every `--space` offers the spaces
-`cotal use` offers, and every `--creds` lets the shell complete a file name. `space show`, `forget`
-and `delete` offer the spaces registered or prepared here. `config` offers its keys, and `config set color` and `config set harness` the
+`cotal use` offers. Bash and zsh complete filenames for commands that offer `--creds` in help.
+A hidden `--creds` option does not offer filenames, even when the command still parses it to explain
+a refusal. `space show`, `forget` and `delete` offer the spaces registered or prepared here.
+`config` offers its keys, and `config set color` and `config set harness` the
 values a write accepts. `docs` offers its pages, `watch --view` its views and `space add --mode` its
 modes. A channel name for `send -c`, `history` or `channel show`, `members`, `set` and `remove` comes
 from the channels the target space's personas declare, as `spawn` reads them, so a space prepared
@@ -1106,7 +1108,7 @@ and zsh stubs complete file names where a value takes a path. The fish stub offe
 candidates.
 
 In bash and zsh, a file argument such as `team check <file>`, `up -f <file>`, `--channels <path>`,
-`--creds <path>`, `run start --file <program>` or `auth mint --out <private-file>` completes from the
+`who --creds <path>`, `run start --file <program>` or `auth mint --out <private-file>` completes from the
 shell's own file names, and so does a folder such as `space add --root <dir>`.
 A value with a fixed set of choices, a duration or free text does not offer files.
 A stub installed by an earlier release offers no files. `cotal completion` reports it as differing

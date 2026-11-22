@@ -84,6 +84,8 @@ export interface ConnectOpts {
   staticOperator?: boolean;
   /** A read must not sweep or prune the local registry as a hidden prelude. */
   readOnly?: boolean;
+  /** The supported auth route to name when an off-registry broker refuses a bare connection. */
+  offRegistryAuth?: Extract<WorkspaceError, { kind: "reachable" }>["offRegistryAuth"];
 }
 
 /** Raw NATS auth for an off-registry connection — a join link / --token / --user+--pass / --creds.
@@ -652,7 +654,7 @@ export async function connectOrThrow(flags: ConnectFlags, role: Profile, opts: C
     }
     const tls = tlsIntent(flags.server, false);
     try {
-      await reachableOrThrow(flags.server, { tls });
+      await reachableOrThrow(flags.server, { tls }, undefined, opts.offRegistryAuth);
     } catch (error) {
       if (!isConnectRefusal(error) || error.code !== "TARGET_UNAVAILABLE") throw error;
       // Preparation can guide recovery, but it must not affect which broker we dial.
@@ -1040,7 +1042,7 @@ async function rejectCredential(e: ConnectRefusal, server: string, creds: string
 }
 
 /** Check reachability without pruning. With credential context, diagnose a broker-rejected file. */
-export async function reachableOrThrow(server: string, auth: RawAuth = {}, credential?: CredentialContext): Promise<void> {
+export async function reachableOrThrow(server: string, auth: RawAuth = {}, credential?: CredentialContext, offRegistryAuth?: ConnectOpts["offRegistryAuth"]): Promise<void> {
   // A credential past its own expiry is dead, and no endpoint presents it, but the broker still
   // accepts it until its last second ends. So it is refused without a dial.
   let probe: ProbeResult = auth.creds !== undefined && inspectCredHealth(auth.creds).state === "expired" ? { ok: false, reason: "stale-auth" } : await probeConnect(server, auth);
@@ -1058,7 +1060,7 @@ export async function reachableOrThrow(server: string, auth: RawAuth = {}, crede
   const kind = probe.reason === "timeout" || probe.reason === "unreachable" ? "transient" : "permanent";
   const code: RefusalCode =
     kind === "transient" ? "TARGET_UNAVAILABLE" : probe.reason === "tls-unsupported" ? "DEPENDENCY_UNAVAILABLE" : probe.reason === "auth-required" && hasAuth ? "PERMISSION_DENIED" : "AUTH_REQUIRED";
-  const refusal = workspaceRefusal({ kind: "reachable", reason: probe.reason, server, hasAuth }, { kind, code, ...(probe.reason === "auth-required" && !hasAuth ? { native: { code: "CREDENTIALS_MISSING" } } : {}) });
+  const refusal = workspaceRefusal({ kind: "reachable", reason: probe.reason, server, hasAuth, offRegistryAuth }, { kind, code, ...(probe.reason === "auth-required" && !hasAuth ? { native: { code: "CREDENTIALS_MISSING" } } : {}) });
   if (credential && auth.creds !== undefined && code === "PERMISSION_DENIED")
     return rejectCredential(refusal, server, auth.creds, credential);
   throw refusal;

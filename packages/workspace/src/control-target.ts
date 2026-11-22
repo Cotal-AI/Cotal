@@ -144,6 +144,10 @@ export async function resolveControlTarget(
     ...(instanceId !== undefined ? { instanceId } : {}),
     ...(opts.operatorActor !== undefined ? { operatorActor: opts.operatorActor } : {}),
     ...(opts.staticOperator === true ? { staticOperator: true } : {}),
+    ...((opts.endpoint === undefined || opts.endpoint === "manager") &&
+      (profile === "control-caller-privileged" || profile === "control-caller-admin")
+      ? { offRegistryAuth: "project-or-registry" }
+      : {}),
     readOnly: opts.readOnly,
   });
   return {

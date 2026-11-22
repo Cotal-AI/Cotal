@@ -24,7 +24,7 @@ import { PREFLIGHT_CONFIRM_TIMEOUT_MS } from "./preflight.js";
 export type WorkspaceError =
   | { kind: "target"; error: MeshTargetError }
   | { kind: "preflight"; failure: PreflightFailure; target: MeshTarget; pruned: boolean; pid?: number; heldBy?: string }
-  | { kind: "reachable"; reason: "auth-required" | "stale-auth" | "unreachable" | "timeout" | "tls-unsupported"; server: string; hasAuth: boolean };
+  | { kind: "reachable"; reason: "auth-required" | "stale-auth" | "unreachable" | "timeout" | "tls-unsupported"; server: string; hasAuth: boolean; offRegistryAuth?: "project-or-registry" };
 
 /** A workspace failure in two parts: what happened, and what to run next when there is something. */
 export interface WorkspaceErrorParts {
@@ -45,7 +45,7 @@ export function workspaceErrorParts(e: WorkspaceError): WorkspaceErrorParts {
     case "preflight":
       return preflightFailureParts(e.failure, e.target, e.pruned, e.pid, e.heldBy);
     case "reachable":
-      return reachableParts(e.reason, e.server, e.hasAuth);
+      return reachableParts(e);
   }
 }
 
@@ -254,11 +254,7 @@ function preflightFailureParts(kind: PreflightFailure, t: MeshTarget, pruned: bo
 
 /** Plain reachability for a RAW (off-registry) probe — the `--creds` / `--server`+unregistered-`--space`
  *  escape hatch, which never touches the registry (no prune, no stale-entry wording). */
-function reachableParts(
-  reason: "auth-required" | "stale-auth" | "unreachable" | "timeout" | "tls-unsupported",
-  rawServer: string,
-  hasAuth: boolean,
-): WorkspaceErrorParts {
+function reachableParts({ reason, server: rawServer, hasAuth, offRegistryAuth }: Extract<WorkspaceError, { kind: "reachable" }>): WorkspaceErrorParts {
   const server = brokerAddressForDisplay(rawServer) ?? "an invalid broker address";
   if (reason === "stale-auth")
     return parts(`credential EXPIRED at ${server}; bounded lifetime reached (credential death)`, "run `cotal doctor auth` where the mesh runs, or re-mint the credential");
@@ -273,5 +269,7 @@ function reachableParts(
   // next step is to obtain some.
   return hasAuth
     ? parts(`credentials rejected at ${server}`, "check your creds, or the broker wants different auth")
-    : parts(`broker at ${server} requires auth, but no credentials were supplied`, "pass `--creds <file>`, or `cotal join` with a link/token");
+    : parts(`broker at ${server} requires auth, but no credentials were supplied`, offRegistryAuth === "project-or-registry"
+      ? "retry from the mesh's project folder without target flags, or select its registered entry with `--space <name>` instead of `--server`"
+      : "pass `--creds <file>`, or `cotal join` with a link/token");
 }

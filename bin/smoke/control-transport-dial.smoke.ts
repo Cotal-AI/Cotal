@@ -146,6 +146,23 @@ try {
   must("the authenticated broker is serving its TCP listener", serving, tcpServer);
   await setupSpaceStreams({ servers: tcpServer, space, creds: await mintCreds(auth, newIdentity(), "provisioner") });
 
+  const rawTarget = ["--plain", "--space", space, "--server", tcpServer];
+  const offRegistryPs = runCli(["ps", ...rawTarget]);
+  ok("off-registry ps points to the project or registry, without recommending raw credentials",
+    offRegistryPs.status === 2 && /Code:\s+AUTH_REQUIRED/.test(offRegistryPs.out) &&
+    /Native code:\s+CREDENTIALS_MISSING/.test(offRegistryPs.out) &&
+    /mesh's project folder[\s\S]*--space <name>/.test(offRegistryPs.out) && !offRegistryPs.out.includes("--creds"), offRegistryPs);
+  const jsonPs = runCli(["ps", "--json", "--space", space, "--server", tcpServer]);
+  const authRefusal = JSON.parse(jsonPs.out);
+  ok("off-registry ps preserves the structured auth refusal",
+    jsonPs.status === 2 && authRefusal.outcome === "refused" && authRefusal.error?.code === "AUTH_REQUIRED" &&
+    authRefusal.error?.cause?.code === "CREDENTIALS_MISSING" && authRefusal.error?.remedy?.includes("`--space <name>`") &&
+    !authRefusal.error?.remedy?.includes("--creds"), jsonPs);
+  const offRegistryWho = runCli(["who", ...rawTarget]);
+  ok("off-registry who retains its supported raw credential guidance",
+    offRegistryWho.status === 2 && /Code:\s+AUTH_REQUIRED/.test(offRegistryWho.out) &&
+    /pass `--creds <file>`/.test(offRegistryWho.out), offRegistryWho);
+
   recordMesh({ space, server: wsServer, root, mode: "auth", ts: new Date().toISOString() });
 
   const wsModels = runCli(["models", "--space", space]);

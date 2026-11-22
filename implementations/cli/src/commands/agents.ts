@@ -36,7 +36,7 @@ import {
 import * as prompts from "../lib/prompts.js";
 import { canPrompt } from "./meshes-wizard.js";
 import { presenceFacts } from "../ui.js";
-import { cliControl, onInstance, onFlag, onRerun, refuseControlCreds } from "../lib/control.js";
+import { cliControl, onInstance, onFlag, onRerun, refuseControlCreds, visibleControlFlags } from "../lib/control.js";
 import { AgentManagerUnsettled, managerPin, noLiveManager } from "../lib/manager-choice.js";
 import { openTransient } from "../lib/transient.js";
 import { attachSeat as attachSeatWith, detachKey, type AttachTarget, type AttachVerdict } from "@cotal-ai/workspace/attach";
@@ -89,12 +89,9 @@ export const inputFlags = [
   onFlag, jsonFlag, plainFlag,
 ] as const satisfies readonly FlagSpec[];
 
-export function managedAgentComplete(argv: string[]): CompletionResult {
-  const flag = completingFlagValue(argv, attachFlags);
-  if (flag?.name === "name") return { items: [], directive: "nofiles" };
-  if (argv.length <= 1)
-    return { items: attachFlags.map((f) => ({ value: `--${f.name}`, description: f.description })), directive: "nofiles" };
-  return { items: [], directive: "nofiles" };
+export function managedAgentComplete(flags: readonly FlagSpec[]): (argv: string[]) => CompletionResult {
+  const items = visibleControlFlags(flags).map((flag) => ({ value: `--${flag.name}`, description: flag.description }));
+  return (argv) => ({ items: argv.length <= 1 && !completingFlagValue(argv, flags) ? items : [], directive: "nofiles" });
 }
 
 /** The named target grammar, checked before any command preparation. */

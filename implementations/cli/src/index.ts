@@ -2,7 +2,7 @@
 import "./exec-endpoint/service-adapter.js";
 import "./lib/broker-service.js";
 import "./service-unit.js";
-import { registry, type Command } from "@cotal-ai/core";
+import { registry, type Command, type FlagSpec } from "@cotal-ai/core";
 import {
   CommandFailure, credentialMintFlags, jsonFlag, NATS_PIDFILE, plainFlag, presentationOf, spaceFlag, targetFlags, validateCredentialMintArguments, validateCredentialRevokeArguments,
   type CredentialAction, type LocalProcess,
@@ -54,6 +54,9 @@ import { update, updateFlags, validateUpdateArguments } from "./commands/update.
 import { service, serviceComplete, serviceFlags, validateServiceArguments } from "./commands/service-registry.js";
 import { sync, syncFlags, validateSyncArguments } from "./commands/sync.js";
 import { AUTH_PROCESS } from "./lib/auth-proc.js";
+import { visibleControlFlags } from "./lib/control.js";
+
+const controlFlagNames = (flags: readonly FlagSpec[]) => visibleControlFlags(flags).map((flag) => flag.name);
 
 /** The minimal mesh CLI: thin NATS clients (up/join/console), plus `spawn` — an agent launch
  *  (foreground or --detach) that reuses the connector's launch recipe. Self-registers on import;
@@ -635,8 +638,7 @@ const baseCommands: Command[] = [
     summary: "List connector model catalogs and variants from the manager. Authenticated meshes must be registered. Raw credential files are not accepted.",
     usage: "cotal models [--json|--plain] [-H|--harness <connector>] [--refresh] [--on <manager-instance>]",
     flags: modelsFlags,
-    // Keep parsing --creds so existing invocations still get the explicit refusal and remedy.
-    flagNames: modelsFlags.filter((flag) => flag.name !== "creds").map((flag) => flag.name),
+    flagNames: controlFlagNames(modelsFlags),
     validate: validateModelsArguments,
     outputs: ["json", "plain"],
     examples: [{ command: "cotal models", note: "list the models each application offers" }, { command: "cotal models -H claude", note: "list one application's models" }, { command: "cotal models --refresh", note: "ask the applications to read their catalogs again" }],
@@ -683,11 +685,12 @@ const baseCommands: Command[] = [
     usage: "cotal stop <name> [--force] | cotal stop --self [--force] [--json|--plain]",
     positionals: "[<name>] | --self",
     flags: stopFlags,
+    flagNames: controlFlagNames(stopFlags),
     outputs: ["json", "plain"],
     prepareMeshTarget: false,
     validate: validateStopArguments,
     run: stop,
-    complete: managedAgentComplete,
+    complete: managedAgentComplete(stopFlags),
   },
   {
     kind: "command",
@@ -696,8 +699,7 @@ const baseCommands: Command[] = [
     summary: "List managed agents and their mesh status. For an authenticated mesh, run from its project folder or name the registered space with --space.",
     usage: "cotal ps [--json|--plain] [--wide | --slots] [--on <instance>]",
     flags: psFlags,
-    // Keep parsing --creds to give explicit callers the refusal and remedy.
-    flagNames: psFlags.filter((flag) => flag.name !== "creds").map((flag) => flag.name),
+    flagNames: controlFlagNames(psFlags),
     outputs: ["json", "plain"],
     examples: [{ command: "cotal ps", note: "list your managed agents" }, { command: "cotal ps --wide", note: "add each agent's folder, process and host" }, { command: "cotal ps --json", note: "the same as one JSON document" }],
     reads: true,
@@ -713,9 +715,10 @@ const baseCommands: Command[] = [
     usage: "cotal attach [<name>] [--on <instance>] [--space <space>]",
     positionals: "[<name>]",
     flags: attachFlags,
+    flagNames: controlFlagNames(attachFlags),
     validate: (args) => { managedTarget(args, "attach", true); },
     run: attach,
-    complete: managedAgentComplete,
+    complete: managedAgentComplete(attachFlags),
   },
   {
     kind: "command",
@@ -726,10 +729,11 @@ const baseCommands: Command[] = [
     usage: "cotal input <agent> <text> [--no-enter] [--on <instance>] [--json|--plain]",
     positionals: "<agent> <text>",
     flags: inputFlags,
+    flagNames: controlFlagNames(inputFlags),
     outputs: ["json", "plain"],
     validate: (args) => { inputArguments(args); },
     run: input,
-    complete: managedAgentComplete,
+    complete: managedAgentComplete(inputFlags),
   },
   {
     kind: "command",

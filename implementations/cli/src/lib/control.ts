@@ -35,6 +35,9 @@ export const onFlag = { name: "on", type: "string", value: "<instance>", descrip
 export type ManagerRetry = string | { command: string };
 export const onRetry = (retry: ManagerRetry): string => codeSpan(typeof retry === "string" ? `${retry} --on <instance>` : retry.command);
 
+/** Keep parsing --creds on these commands so an explicit invocation gets the refusal and remedy. */
+export const visibleControlFlags = (flags: readonly FlagSpec[]): readonly FlagSpec[] => flags.filter((flag) => flag.name !== "creds");
+
 /** Read `--on` at the site that declares it. Absent stays absent (class rails). An EMPTY value
  *  (`--on=`, `--on ""`, or `--on "$INSTANCE"` with the variable unset) is refused here, up front:
  *  it is falsy, so every `if (on)` branch would treat it as absent and drop the pin (a `stop` would

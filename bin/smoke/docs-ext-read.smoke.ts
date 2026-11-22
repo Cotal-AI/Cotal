@@ -152,6 +152,10 @@ let specBody = "";
     docs.status === 0 && seats !== undefined && /^\| `--space <s>` /m.test(seats) && !seats.includes("--creds") &&
     /^\| `--server <url>` .*`--server` alone targets `main`/m.test(seats),
     seats?.slice(0, 650) ?? shown(docs));
+  const input = typeof body === "string" ? /^## input\n([\s\S]*?)^### Input quoting$/m.exec(body)?.[1] : undefined;
+  check("the bundled input flag table lists space and server without raw credentials",
+    docs.status === 0 && input !== undefined && /^\| `--space <s>` \/ `--server <url>` /m.test(input) && !input.includes("--creds"),
+    input?.slice(0, 650) ?? shown(docs));
 
   const help = run(["ps", "--help"]);
   check("ps help tells authenticated callers how to select their mesh without offering raw credentials",
@@ -173,6 +177,29 @@ let specBody = "";
   check("ps still refuses explicit raw credentials before dialing and gives the supported route",
     refused.status === 2 && refused.stdout === "" && /Code:\s+UNSUPPORTED/.test(refused.stderr) &&
     /Next\s+run the command again without --creds:[\s\S]*project folder,[\s\S]*--space naming its registry entry/.test(refused.stderr), shown(refused));
+
+  for (const args of [["stop", "demo"], ["attach", "demo"], ["input", "demo", "hello"]]) {
+    const name = args[0]!;
+    const help = run([name, "--help"]);
+    const bare = run(["__complete", name, ""]);
+    const path = run(["__complete", name, "--creds", ""]);
+    const refusal = run([...args, "--creds", join(home, "missing.creds")]);
+    check(`${name} hides raw credentials in help and completion but preserves the explicit refusal`,
+      help.status === 0 && /--space <s>/.test(help.stdout) && /--server <url>/.test(help.stdout) && !help.stdout.includes("--creds") &&
+      bare.status === 0 && /^--space\t/m.test(bare.stdout) && !/^--creds\t/m.test(bare.stdout) &&
+      path.status === 0 && path.stdout === ":nofiles\n" && refusal.status === 2 &&
+      /Code:\s+UNSUPPORTED/.test(refusal.stderr) && /without --creds/.test(refusal.stderr),
+      { help: shown(help), bare: shown(bare), path: shown(path), refusal: shown(refusal) });
+  }
+}
+
+{
+  const docs = run(["docs", "cli-installation", "--json"]);
+  const body = docs.envelope?.result?.body;
+  const completion = typeof body === "string" ? body.split(/^## completion$/m)[1]?.split(/^## /m)[0] ?? "" : "";
+  check("the bundled completion reference limits credential filename examples to supported commands",
+    docs.status === 0 && completion.includes("commands that offer `--creds` in help") &&
+    completion.includes("`who --creds <path>`") && !completion.includes("every `--creds`"));
 }
 
 {
