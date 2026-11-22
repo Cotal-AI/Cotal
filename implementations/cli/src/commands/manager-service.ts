@@ -41,7 +41,7 @@ export function managerServiceCommand(manager: Command, argv: readonly string[],
     usage: declared.usage, positionals: "<start | stop | restart | status | logs | install | uninstall>",
     subcommands: augmented.subcommands?.filter((sub) => sub.name === verb).map((sub) => ({
       ...sub, summary: declared.summary, usage: declared.usage, examples: declared.examples,
-      flagNames: sub.flagNames?.filter((flag) => flag !== "file" && flag !== "preset" && flag !== "new-instance" && flag !== "no-open"
+      flagNames: sub.flagNames?.filter((flag) => flag !== "file" && flag !== "preset" && flag !== "new-instance"
         && !(verb === "install" && flag === "dry-run")),
     })),
     validate: (args) => augmented.validate?.(withName(args)),

@@ -276,9 +276,7 @@ function knownPresetFlags(): FlagSpec[] {
 
 /** The preset a service invocation names: `--preset <name>` on add, or the name a start gives when
  *  that name is a preset's, so `service start web --creds <file>` takes the web preset's flags. */
-function requestedPreset(cmd: Command, argv: readonly string[]): { name: string; verb: "add" | "start" } | undefined {
-  const flags = [...(cmd.flags ?? []), ...knownPresetFlags()];
-  const [mode, service] = metadataPositionals({ flags }, argv).positionals.map((item) => item.value);
+function requestedPreset(flags: readonly FlagSpec[], argv: readonly string[], mode: string | undefined, service: string | undefined): string | undefined {
   let name: string | undefined;
   let presetCount = 0;
   let missingPreset = false;
@@ -299,25 +297,39 @@ function requestedPreset(cmd: Command, argv: readonly string[]): { name: string;
     if (mode !== "add") return undefined;
     if (presetCount > 1) throw new CommandFailure("refused", "USAGE_INVALID", "--preset cannot be supplied more than once");
     if (missingPreset || !name) throw new CommandFailure("refused", "USAGE_INVALID", "--preset needs one declared preset name");
-    return { name, verb: "add" };
+    return name;
   }
-  return mode === "start" && service !== undefined && findServicePreset(service) ? { name: service, verb: "start" } : undefined;
+  return mode === "start" && service !== undefined && findServicePreset(service) ? service : undefined;
 }
 
-/** The service command's selected preset contributes metadata-only flags before strict parsing.
- *  Library composition roots use their registered providers, never an implicit prefix install. */
+export function isWebServiceStart(mode: string | undefined, name: string | undefined): boolean {
+  return mode === "start" && name === "web";
+}
+
+/** Scope the service's options to the target and add the selected preset's flags without loading
+ *  its provider. The CLI owns `--no-open`, so web help lists it even without the extension. */
 export function servicePresetCommand(cmd: Command, argv: readonly string[]): Command {
   if (cmd.name !== "service") return cmd;
-  const requested = requestedPreset(cmd, argv);
-  if (requested === undefined) return cmd;
-  const { name, verb } = requested;
-  const preset = resolveServicePreset(name), flags = servicePresetFlags(preset);
+  const allFlags = [...(cmd.flags ?? []), ...knownPresetFlags()];
+  const [mode, service] = metadataPositionals({ flags: allFlags }, argv).positionals.map((item) => item.value);
+  const name = requestedPreset(allFlags, argv, mode, service);
+  const webStart = isWebServiceStart(mode, service);
+  if (name === undefined && !webStart) return cmd;
+  const preset = name === undefined ? undefined : resolveServicePreset(name);
+  const flags = preset ? servicePresetFlags(preset) : [];
+  const flagNames = [...(webStart ? ["no-open"] : []), ...flags.map((flag) => flag.name)];
+  const scoped: Command = {
+    ...cmd,
+    flags: [...(cmd.flags ?? []), ...flags],
+    subcommands: cmd.subcommands?.map((sub) => sub.name === mode ? { ...sub, flagNames: [...(sub.flagNames ?? []), ...flagNames] } : sub),
+  };
+  if (preset === undefined) return scoped;
   const metadata = serviceMetadataDigest({ preset, adapter: optionProperties(preset).adapter.pin });
   const check = () => {
-    const current = resolveServicePreset(name);
+    const current = resolveServicePreset(preset.name);
     if (serviceMetadataDigest({ preset: current, adapter: optionProperties(current).adapter.pin }) !== metadata) throw new CommandFailure("refused", "CONFLICT", "the selected preset or adapter metadata changed during parsing; no changed definition was silently substituted");
   };
-  return { ...cmd, flags: [...(cmd.flags ?? []), ...flags], subcommands: cmd.subcommands?.map((sub) => sub.name === verb ? { ...sub, flagNames: [...(sub.flagNames ?? []), ...flags.map((flag) => flag.name)] } : sub), validate(args) { check(); cmd.validate?.(args); }, async run(args) { check(); await cmd.run(args); } };
+  return { ...scoped, validate(args) { check(); cmd.validate?.(args); }, async run(args) { check(); await cmd.run(args); } };
 }
 
 /** The option flags a start of this preset-named service may carry, as `servicePresetCommand` adds them. */

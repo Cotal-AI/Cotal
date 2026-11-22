@@ -41,6 +41,7 @@ Every form takes `--json` except `start --foreground` without `--dry-run`.
 | `--instance <full-id>` | Select one instance by its full ID, not a prefix |
 | `--new-instance` | start: allocate another instance of a process definition |
 | `--foreground` | start: keep the process in this terminal |
+| `--no-open` | `start web` only: keep browser authentication manual |
 | `--with-agents` | stop, restart: request the manager's native agent-stop policy |
 | `--dry-run` | start, stop, restart: preview the effect. install, uninstall: inspect the unit |
 | `-y, --yes` | stop, restart, remove, uninstall: confirm in a script |
@@ -329,7 +330,8 @@ presets, and its process services run under a custodian as
 ## Service presets [#service-presets]
 
 Bare `service` lists declarative presets separately from definitions and process observations.
-Use `service add <name> --preset <preset> --help` for that preset's option flags. Parsing, scoped
+Use `cotal service start <name> --help` to see the options for a named service. Use
+`cotal service add <name> --preset <preset> --help` for a preset's add options. Parsing, scoped
 help and completion derive those flags from the adapter's closed schema. Boolean options have
 positive and negative forms; a pair refuses. A boolean whose schema admits only true, such as an
 explicit intent, has only the positive form. Numeric and complex options use JSON syntax.

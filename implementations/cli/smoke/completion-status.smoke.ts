@@ -611,6 +611,27 @@ if (process.platform !== "win32" && process.getuid?.() !== 0) {
   check("completion script offers the shells", ["bash", "zsh", "fish", "powershell"].every((shell) => new RegExp(`^${shell}$`, "m").test(shells.stdout)), shown(shells));
 }
 
+{
+  const { run } = sandbox();
+  const noOpen = /^  --no-open\b/m;
+  for (const name of [undefined, "broker", "web", "my-service"]) {
+    const path = ["service", "start", ...(name === undefined ? [] : [name])];
+    const expected = name === "web";
+    const flagHelp = run([...path, "--help"]);
+    const wordHelp = run(["help", ...path]);
+    check(`${path.join(" ")} help ${expected ? "lists" : "omits"} --no-open in both spellings`,
+      flagHelp.status === 0 && wordHelp.status === 0 && !flagHelp.stderr && !wordHelp.stderr && flagHelp.stdout === wordHelp.stdout &&
+      noOpen.test(flagHelp.stdout) === expected && (name !== "broker" || /^  --config <file> /m.test(flagHelp.stdout) && /^  --binary <file> /m.test(flagHelp.stdout)),
+      { flagHelp: shown(flagHelp), wordHelp: shown(wordHelp) });
+    const completed = run(["__complete", ...path, "--"]);
+    check(`${path.join(" ")} completion ${expected ? "offers" : "omits"} --no-open`,
+      completed.status === 0 && !completed.stderr && /^--dry-run\t/m.test(completed.stdout) && /^--no-open\t/m.test(completed.stdout) === expected, shown(completed));
+  }
+  const refused = run(["service", "start", "broker", "--no-open", "--dry-run"]);
+  check("broker rejects --no-open without listing it as a valid option in refusal help",
+    refused.status === 1 && !refused.stdout && /--no-open belongs to service start web/.test(refused.stderr) && /^Usage$/m.test(refused.stderr) && !noOpen.test(refused.stderr), shown(refused));
+}
+
 // A file value completes from the shell's file names on a command with no completer of its own, a
 // value that is not a file offers none, and spawn offers a prepared space's personas as persona show
 // does. `send -c` and `history` offer the channels those personas declare, and `space delete` offers
