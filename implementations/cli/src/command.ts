@@ -389,8 +389,7 @@ function usageRefusal(failure: CommandFailure, plain: boolean, cmd?: Command, wo
 function usageExit(message: string, cmd?: Command, json = false, plain = false, remedy?: string, words: readonly string[] = []): never {
   if (cmd && json) {
     // A strict parser refusal still has a requested presentation and target.
-    const history = cmd.name === "history" ? metadataPositionals(cmd, words, { forRefusal: true }) : undefined;
-    const setupArgs = history && { values: history.values, positionals: history.positionals.map(({ value }) => value) };
+    const setupArgs = cmd.name === "history" ? historyRefusalContext(cmd, words) : undefined;
     const failure = new CommandFailure("refused", "USAGE_INVALID", message, { remedy: remedy ?? `run \`cotal help ${cmd.name}\`` });
     failureExit(cmd, failure, true, false, undefined, words, setupArgs);
   }
@@ -416,6 +415,20 @@ function typographicOption(word: string, names: ReadonlySet<string>, flags: read
   return { message, remedy: `type the option with hyphens: --${flag.name}=${shellWord(value)}` };
 }
 
+function optionNames(cmd: Command, flagNames?: readonly string[]): ReadonlySet<string> {
+  return new Set([...(flagNames ?? (cmd.flags ?? []).map((flag) => flag.name)), ...GLOBAL_FLAGS]);
+}
+
+/** Keep malformed options out of the requested target, but keep operands after `--` literal. */
+function historyRefusalContext(cmd: Command, words: readonly string[]): Pick<ParsedArgs, "values" | "positionals"> {
+  const { values, positionals } = metadataPositionals(cmd, words, { forRefusal: true });
+  const names = optionNames(cmd);
+  const separator = words.indexOf("--");
+  return { values, positionals: positionals
+    .filter(({ value, index }) => (separator !== -1 && index > separator) || !typographicOption(value, names, cmd.flags))
+    .map(({ value }) => value) };
+}
+
 /** Identify seed before recovery, even when a typographic maintenance flag precedes it. */
 function extSeedSubcommand(cmd: Command, words: readonly string[]): Subcommand | undefined {
   if (cmd.name !== "ext") return undefined;
@@ -431,7 +444,7 @@ function extSeedSubcommand(cmd: Command, words: readonly string[]): Subcommand |
  *  takes `=value` as its value, or a declared option typed with a typographic dash pasted from typeset
  *  text, which is read as a positional. */
 function misspelledOption(cmd: Command, rest: readonly string[], flagNames: readonly string[] | undefined): { message: string; remedy?: string } | undefined {
-  const names = new Set<string>([...(flagNames ?? (cmd.flags ?? []).map((flag) => flag.name)), ...GLOBAL_FLAGS]);
+  const names = optionNames(cmd, flagNames);
   for (const [index, word] of rest.entries()) {
     if (word === "--") return undefined;
     const previous = rest[index - 1];
@@ -529,8 +542,9 @@ function parseOrExit(cmd: Command, rest: string[]): ParsedArgs {
   // Target resolution reads an empty space as no space and falls back to the selected one, so a script
   // whose variable is unset would act on whichever space is selected.
   const spaceFlag = cmd.flags?.find((flag) => flag.name === "space");
+  const historySetup = cmd.name === "history" ? parsed : undefined;
   if (spaceFlag && typeof parsed.values.space === "string" && !parsed.values.space.trim())
-    failureExit(cmd, new CommandFailure("refused", "USAGE_INVALID", `--space${spaceFlag.short ? `/-${spaceFlag.short}` : ""} is empty; name one space`, { remedy: "name the space; `cotal space` lists the spaces this machine knows" }), json, parsed.values.plain === true, undefined, rest);
+    failureExit(cmd, new CommandFailure("refused", "USAGE_INVALID", `--space${spaceFlag.short ? `/-${spaceFlag.short}` : ""} is empty; name one space`, { remedy: "name the space; `cotal space` lists the spaces this machine knows" }), json, parsed.values.plain === true, undefined, rest, historySetup);
   // An empty --store-dir reads as no value and opens the default store, and a ~ no shell expanded
   // names a folder called ~ in the working folder.
   const storeDir = parsed.values["store-dir"];
@@ -558,7 +572,7 @@ function parseOrExit(cmd: Command, rest: string[]): ParsedArgs {
     for (const server of servers) {
       const checked = checkServer(server, "--server");
       if (!checked.ok)
-        failureExit(cmd, new CommandFailure("refused", "USAGE_INVALID", `${checked.message.replace(/^✗ /, "")}; the command did not run`, { remedy: checked.remedy, selfContained: true }), json, canonical.values.plain === true, undefined, rest);
+        failureExit(cmd, new CommandFailure("refused", "USAGE_INVALID", `${checked.message.replace(/^✗ /, "")}; the command did not run`, { remedy: checked.remedy, selfContained: true }), json, canonical.values.plain === true, undefined, rest, historySetup);
     }
   }
   return canonical;

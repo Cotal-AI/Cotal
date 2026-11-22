@@ -154,25 +154,34 @@ async function checkHistoryFollowValidation(): Promise<void> {
         && records[0]?.data?.code === "USAGE_INVALID" && records[0]?.data?.message === finite.envelope?.error?.message
         && records[1]?.data?.reason === "setup-failed",
       { stream: shown(stream), finite: shown(finite), connections });
-    await checkHistoryFollowParserRefusals(server, () => connections);
+    await checkHistoryFollowArgumentRefusals(server, () => connections);
   } finally {
     await new Promise<void>((resolve) => listener.close(() => resolve()));
   }
 }
 
-async function checkHistoryFollowParserRefusals(server: string, connections: () => number): Promise<void> {
+async function checkHistoryFollowArgumentRefusals(server: string, connections: () => number): Promise<void> {
   const general = { space: null, channel: "general", dms: false };
+  const badServer = `${server}/unexpected`;
+  const typo = "\u2013\u2013limit";
   const streams = [
     { args: ["#general", "--follow", "--json", "--limit"], target: general, message: "--limit needs a value", remedy: "write --limit <n>" },
     { args: ["general", "--limit", "--follow", "--json"], target: general, message: "--limit needs a value", remedy: "write --limit <n>" },
     { args: ["general", "--follow", "-j", "--limit", "2", "--limit", "3"], target: general, message: "Option '--limit' cannot be repeated" },
     { args: ["-jstest-space", "--dms", "--follow", "--unknown-option"], target: { space: "test-space", channel: null, dms: true }, message: "Unknown option '--unknown-option'" },
     { args: ["--follow", "--json", "--unknown-option", "--", "--plain"], target: { ...general, channel: "--plain" }, message: "Unknown option '--unknown-option'" },
+    { args: ["--follow", "--json", typo, "#general"], target: general, message: `${typo} starts with a typographic dash, so it is not an option`, remedy: "type the option with hyphens: --limit" },
+    { args: ["--follow", "--json", "--unknown-option", "--", typo], target: { ...general, channel: typo }, message: "Unknown option '--unknown-option'" },
+    { args: ["#general", "--follow", "--json", "--space="], target: general, message: "--space/-s is empty; name one space" },
+    { args: ["#general", "--follow", "--json"], broker: badServer, target: general, message: "--server must be a bare broker URL - drop its path; the command did not run" },
+    { args: ["--dms", "-s", "test-space", "--follow", "--json"], broker: "", target: { space: "test-space", channel: null, dms: true }, message: "--server is not a valid URL (expected something like nats://127.0.0.1:4222); the command did not run" },
   ];
-  for (const { args, target, message, remedy } of streams) {
-    const result = await run(["history", "--server", server, ...args]);
+  const runHistory = (args: string[], broker = server) => run(["history", "--server", broker, ...args]);
+  for (const { args, broker, target, message, remedy } of streams) {
+    const result = await runHistory(args, broker);
     const records = result.stdout.trim().split("\n").filter(Boolean).map((line) => JSON.parse(line));
-    check(`history ${args.join(" ")} writes error and setup-failed end without connecting`,
+    const serverLabel = broker === undefined ? "" : broker === "" ? ' with --server ""' : " with a TCP URL path";
+    check(`history ${args.join(" ")}${serverLabel} writes error and setup-failed end without connecting`,
       result.status === 1 && result.stderr === "" && connections() === 0
         && records.map((r) => r.type).join() === "error,end"
         && records.every((r) => r.schemaVersion === 1 && r.stream === "history"
@@ -180,9 +189,11 @@ async function checkHistoryFollowParserRefusals(server: string, connections: () 
         && records[0]?.data?.code === "USAGE_INVALID" && records[0]?.data?.message === message
         && (remedy === undefined || records[0]?.data?.remedy === remedy) && records[1]?.data?.reason === "setup-failed", shown(result));
   }
-  for (const args of [["general", "--limit"], ["clear", "--follow", "--limit"], ["limit", "--follow", "--max-age"],
-    ["general", "--follow", "--plain", "--limit"], ["--limit", "--", "--follow"], ["--grep=--follow", "--limit"]]) {
-    const result = await run(["history", "--server", server, "--json", ...args]);
+  const receiptArgs = [["general", "--limit"], ["clear", "--follow", "--limit"], ["limit", "--follow", "--max-age"],
+    ["general", "--follow", "--plain", "--limit"], ["--limit", "--", "--follow"], ["--grep=--follow", "--limit"],
+    ["--follow", "\u2013\u2013grep", "limit"], ["clear", "--follow", "--space="]];
+  for (const { args, broker } of [...receiptArgs.map((args) => ({ args, broker: server })), { args: ["general"], broker: badServer }]) {
+    const result = await runHistory(["--json", ...args], broker);
     check(`history --json ${args.join(" ")} keeps one refusal receipt without connecting`,
       result.status === 1 && result.stderr === "" && connections() === 0 && result.envelope?.command === "history"
         && result.envelope.outcome === "refused" && result.envelope.error?.code === "USAGE_INVALID", shown(result));
