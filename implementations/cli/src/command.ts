@@ -167,6 +167,21 @@ function debugStacks(failure: Error): void {
   for (let depth = 0; error instanceof Error && depth < 8; error = error.cause, depth++) if (error.stack) console.error(c.dim(error.stack));
 }
 
+/** A direct process exit bypasses the dispatcher's finally block. */
+function keepDeferredWarningUntilExit(scope: OperationScope): () => void {
+  const flush = () => {
+    const text = scope.deferredWarningText;
+    if (!text) return;
+    delete scope.deferredWarningText;
+    try { writeSync(2, text); } catch { /* stderr failed too */ }
+  };
+  process.once("exit", flush);
+  return () => {
+    process.off("exit", flush);
+    flush();
+  };
+}
+
 /** A classified failure: its line and remedy on stderr, its envelope on stdout when one was asked
  *  for, and the exit code its outcome sets. A usage refusal is followed by the help of the command
  *  or subcommand `words` name. Structured output is written synchronously, because stdout to a pipe is
@@ -934,12 +949,6 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
   const scope: OperationScope = cmd.name === "__complete" && !debugFlag("COTAL_COMPLETE_DEBUG") ? { quiet: true } : {};
   const mode = parsed.positionals[0];
   const json = structured(cmd, mode) && parsed.values.json === true;
-  const flushWarning = () => {
-    const text = scope.deferredWarningText;
-    if (!text) return;
-    delete scope.deferredWarningText;
-    try { writeSync(2, text); } catch { /* stderr failed too */ }
-  };
   const execute = async () => {
     if (opts.extensions && cmd.requiredExtensions) {
       for (const ref of cmd.requiredExtensions(parsed)) await materializeExtension(ref);
@@ -958,7 +967,7 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
   };
   if (opts.startupNotice && cmd.keepsStartupNotice) keepStartupNotice(opts.startupNotice);
   else await opts.startupNotice?.release();
-  if (json) process.once("exit", flushWarning);
+  const finishWarnings = json ? keepDeferredWarningUntilExit(scope) : undefined;
   try {
     await execute();
   } catch (e) {
@@ -1034,7 +1043,6 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
     if (debugFlag("COTAL_DEBUG") && e instanceof Error && e.stack) console.error(c.dim(e.stack));
     process.exit(1);
   } finally {
-    process.off("exit", flushWarning);
-    flushWarning();
+    finishWarnings?.();
   }
 }
