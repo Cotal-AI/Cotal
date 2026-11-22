@@ -1929,12 +1929,21 @@ if (process.platform === "linux") {
   check("backup restore --store-dir in the root's .cotal is the same refusal",
     refused(restoreControl, 1, "USAGE_INVALID") && (restoreControl.env?.error?.message ?? "").includes(`is in the control directory ${control}`), shown(restoreControl));
   // A link would be recorded as the store path, which no reset removes: it refuses, naming its target.
-  const real = realpathSync(mkdtempSync(join(tmpdir(), "cotal-space-registration-real-")));
+  const real = join(realpathSync(home), "operator's store");
+  mkdirSync(real, { mode: 0o700 });
   const link = join(home, "store-link");
   symlinkSync(real, link);
   const asLink = await json(["up", "--server", DEAD, "--store-dir", link], storeRoot);
+  const storeRetry = asLink.env?.error?.remedy?.match(/^name the directory itself with (--store-dir .+)$/)?.[1];
   check("up --store-dir naming a link is USAGE_INVALID, exit 1, naming the directory it points to",
-    refused(asLink, 1, "USAGE_INVALID") && (asLink.env?.error?.message ?? "").includes(`the --store-dir path ${link} is a link to ${real}`) && asLink.env?.error?.remedy === `name the directory itself with --store-dir ${real}` && readdirSync(real).length === 0, shown(asLink));
+    refused(asLink, 1, "USAGE_INVALID") && (asLink.env?.error?.message ?? "").includes(`the --store-dir path ${link} is a link to ${real}`) && !!storeRetry && readdirSync(real).length === 0, shown(asLink));
+  if (process.platform !== "win32") {
+    // The next flag check proves the pasted path passes validation without starting a broker.
+    const pasted = storeRetry && spawnSync("sh", ["-c", `exec "$@" ${storeRetry}`, "sh", process.execPath, BIN, "up", "--server", DEAD, "--restore-only", "x"],
+      { cwd: storeRoot, env: runEnv, encoding: "utf8", timeout: 30_000 });
+    check("pasting the store retry passes store validation with a space and an apostrophe", !!pasted && pasted.status === 1 &&
+      pasted.stderr.includes("--restore-only takes registry"), pasted ? shown(pasted) : shown(asLink));
+  }
   const restoreLink = await json(["backup", "restore", join(home, "no-backup"), "--store-dir", link], storeRoot);
   check("backup restore --store-dir naming a link is the same refusal",
     refused(restoreLink, 1, "USAGE_INVALID") && (restoreLink.env?.error?.message ?? "").includes(`the --store-dir path ${link} is a link to ${real}`), shown(restoreLink));
@@ -1991,7 +2000,7 @@ if (process.platform === "linux") {
     const r = await json(args, folder);
     check(`${args.slice(0, 2).join(" ")} with a file at the prepared spaces folder refuses SCHEMA_INVALID, exit 1, saying it is a file and how to move it aside`,
       refused(r, 1, "SCHEMA_INVALID") && r.env?.target?.file === dir && r.env.error?.message === `${dir} is a file, not a folder` &&
-        r.env.error?.remedy === `move ${dir} aside, for example \`mv ${dir} ${dir}.old\`; Cotal makes the folder when it next prepares a space`, shown(r));
+        r.env.error?.remedy === `move ${dir} aside, for example \`mv -- ${shellPath(dir)} ${shellPath(`${dir}.old`)}\`; Cotal makes the folder when it next prepares a space`, shown(r));
   }
   check("...and none of them wrote: the folder is still the file, and the project has only its .cotal", readFileSync(dir, "utf8") === "not a folder" && readdirSync(folder).join() === ".cotal");
   // status names the folder and reports the rest, exit 4, with a space selected that is not registered.
@@ -2121,6 +2130,22 @@ if (process.platform === "linux") {
     check("the forgotten name can immediately be prepared in a different folder", reused.status === 0, shown(reused));
     removePreparedSpace(name);
   }
+}
+
+if (process.platform !== "win32") {
+  const recoveryHome = join(home, "operator's recovery");
+  mkdirSync(recoveryHome, { mode: 0o700 });
+  const file = join(recoveryHome, "prepared");
+  writeFileSync(file, "not a folder");
+  const env = { COTAL_HOME: recoveryHome, NO_COLOR: "1" };
+  const inventory = await run(["space", "--plain"], env);
+  const move = /for example `(mv [^`]+)`/.exec(inventory.stderr)?.[1];
+  const pasted = move && spawnSync("sh", ["-c", move], { cwd: home, env: { ...runEnv, ...env }, encoding: "utf8", timeout: 30_000 });
+  const recovered = await run(["space", "--plain"], env);
+  check("pasting the prepared folder repair preserves the file and allows inventory to run", inventory.status === 1 &&
+    inventory.stderr.includes(`${file} is a file, not a folder`) && !!pasted && pasted.status === 0 && !existsSync(file) &&
+    existsSync(`${file}.old`) && readFileSync(`${file}.old`, "utf8") === "not a folder" && recovered.status === 0,
+    { inventory: shown(inventory), move: pasted ? shown(pasted) : move, recovered: shown(recovered) });
 }
 
 // An open space registered by an earlier release must still start under its exact old name.
