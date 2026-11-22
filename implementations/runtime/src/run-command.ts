@@ -101,9 +101,9 @@ import {
   connectOrThrow,
   isConnectRefusal,
   SHOWN_VALUE_MAX,
-  shellPath,
 } from "@cotal-ai/workspace";
 import { offlineWorkflow, sourceOf } from "./offline-command.js";
+import { retryWord } from "./retry-command.js";
 import { seatTurnCommand } from "./seat-turn-command.js";
 import { openRequestKeys, printRunDetail, printRunList, runReceipt } from "./workflow-views.js";
 import { startRun, driveRun, type DriveOutcome } from "./run-driver.js";
@@ -1032,10 +1032,7 @@ async function hosted(values: RunValues, verb: string, a: string | undefined, b:
 /** Render a retry flag without splitting its argument or printing terminal control characters. */
 function retryFlag(flag: string, value: string | undefined): string {
   if (value === undefined) return "";
-  // Bash ANSI-C quoting keeps even multiline arguments copyable on one line.
-  const word = oneLine(value) === value ? shellPath(value)
-    : `$'${[...value].map((ch) => oneLine(ch) !== ch ? `\\U${ch.codePointAt(0)!.toString(16).padStart(8, "0")}` : ch.replace(/[\\']/g, "\\$&")).join("")}'`;
-  return ` --${flag}${value.startsWith("-") ? "=" : " "}${word}`;
+  return ` --${flag}${value.startsWith("-") ? "=" : " "}${retryWord(value)}`;
 }
 
 /** A step key the run has no open request at, answered with the open keys whose step name it matches,

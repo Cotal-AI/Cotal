@@ -1,8 +1,9 @@
 import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, statSync, type Stats } from "node:fs";
 import { hasDuplicateNames } from "@cotal-ai/core";
 import { dryRunOutcome, DurationError, Journal, journalEntryKeyString, LangErrors, parseDuration, validate, type SimScript } from "@cotal-ai/lang";
-import { CommandFailure, isCommandFailure, oneLine, presentationOf, recordOperationWarning, writeResult, type Report } from "@cotal-ai/workspace";
+import { codeSpan, CommandFailure, isCommandFailure, oneLine, presentationOf, recordOperationWarning, writeResult, type Report } from "@cotal-ai/workspace";
 import { logLineText } from "./log-line.js";
+import { retryWord } from "./retry-command.js";
 
 interface OfflineValues {
   json?: boolean;
@@ -229,14 +230,19 @@ function faultParts(error: unknown): { title: string; cause?: string; fix?: stri
 
 /** Why a simulation did not complete. An L6xxx code is the simulator's: the script does not cover
  *  the program, and `target.step` names the step it stopped at. */
-function simulationFailure(error: unknown, file: string, journal: Journal): CommandFailure {
+function simulationFailure(error: unknown, file: string, journal: Journal, handler: string | undefined): CommandFailure {
   const code = (error as { code?: unknown }).code;
   const native = typeof code === "string" && /^L[0-9]+$/.test(code) ? code : undefined;
   const failed = journal.entries().findLast((e) => e.state === "settled" && e.status === "failed" && e.error?.code === native);
   const step = failed === undefined ? undefined : journalEntryKeyString(failed);
   const { title, cause, fix } = faultParts(error);
   const why = (cause ?? title).replace(/\.$/, "");
-  const remedy = fix ?? (native?.startsWith("L6") ? "script a result for that step; unscripted effects are not invented" : undefined);
+  let remedy = fix ?? (native?.startsWith("L6") ? "script a result for that step; unscripted effects are not invented" : undefined);
+  if (native === "L6001" && handler === undefined) {
+    const source = retryWord(file.startsWith("-") ? `./${file}` : file);
+    const retry = codeSpan(`cotal run simulate ${source} --handler results.json`);
+    remedy = `save a JSON results file with the missing entry, then pass its path to the simulator, for example ${retry}`;
+  }
   return new CommandFailure("failed", "OPERATION_FAILED", `the offline simulation did not complete: ${why.charAt(0).toLowerCase()}${why.slice(1)}`, {
     target: { file, ...(step !== undefined ? { step } : {}) }, ...(native !== undefined ? { native: { code: native } } : {}), ...(remedy !== undefined ? { remedy } : {}),
   });
@@ -308,7 +314,7 @@ export async function offlineWorkflow(mode: "validate" | "plan" | "simulate", fi
   try { report = await dryRunOutcome(source, script, { file, journal }); }
   catch (error) {
     for (const warning of warnings) recordOperationWarning(warning, { echo: presentation !== "json" });
-    throw simulationFailure(error, file, journal);
+    throw simulationFailure(error, file, journal, values.handler);
   }
   // A program that fails under its script is a completed simulation, and the failure is its outcome.
   const failure = "fault" in report ? programFailure(report.fault, journal) : null;

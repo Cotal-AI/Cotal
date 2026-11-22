@@ -306,12 +306,14 @@ const VERBS = ["start", "resume", "ps", "journal", "answer", "amend", "revoke", 
 // and a simulation that stops names why.
 {
   const dir = mkdtempSync(join(tmpdir(), "run-simulate-script-"));
-  const program = join(dir, "p.cotal.js");
+  const program = join(dir, "timed workflow.cotal.js");
   writeFileSync(program, 'await checkpoint("go", "Proceed?", { timeout: "4s", onExpiry: "proceed" });\n');
+  const simulateFile = (values: Record<string, string | boolean> = {}) =>
+    runWorkflow({ values, positionals: ["simulate", program], raw: [] }).then(() => undefined, (e: Error) => e);
   const simulateText = (text: string, values: Record<string, string | boolean> = {}) => {
     const handler = join(dir, "results.json");
     writeFileSync(handler, text);
-    return runWorkflow({ values: { handler, ...values }, positionals: ["simulate", program], raw: [] }).then(() => undefined, (e: Error) => e);
+    return simulateFile({ handler, ...values });
   };
   const simulate = (script: unknown, values: Record<string, string | boolean> = {}) => simulateText(JSON.stringify(script), values);
   const scriptRefusal = (got: unknown, says: string) =>
@@ -439,13 +441,20 @@ const VERBS = ["start", "resume", "ps", "journal", "answer", "amend", "revoke", 
     c("a finite nonzero clock start still measures elapsed time from that start", clock === undefined && clockOut.result?.elapsedMs === 1, { clock, clockOut });
   }
   writeFileSync(program, 'await checkpoint("go", "Proceed?", { timeout: "4s", onExpiry: "proceed" });\n');
+  const noHandler = await simulateFile();
+  c("without a handler, an unscripted effect says to save and pass a JSON results file",
+    isCommandFailure(noHandler) && noHandler.native?.code === "L6001" && exitCode(noHandler.outcome, noHandler.code) === 5
+      && noHandler.remedy !== undefined && noHandler.remedy.includes("save a JSON results file with the missing entry")
+      && noHandler.remedy.includes(`cotal run simulate '${program.replaceAll("'", "'\\''")}' --handler results.json`)
+      && !noHandler.remedy.includes("<result>"), noHandler);
   // A simulation that stops says why and where: a missing entry is the script's gap, named with the
   // entry to add. An expired gate under the default onExpiry is a completed simulation whose program
   // failed with L4007 at that gate.
   const missing = await simulate({});
   c("a script with no result for an effect names the step and the entry to add",
     isCommandFailure(missing) && missing.code === "OPERATION_FAILED" && missing.message.includes('no checkpoints entry for "go" (step /checkpoint:go#0)')
-      && (missing.detail().remedy ?? "").includes('{ checkpoints: { "go": <result> } }') && (missing.target as { step?: string } | undefined)?.step === "/checkpoint:go#0", missing);
+      && missing.remedy !== undefined && missing.remedy.includes('{ checkpoints: { "go": <result> } }') && !missing.remedy.includes("--handler")
+      && (missing.target as { step?: string } | undefined)?.step === "/checkpoint:go#0", missing);
   writeFileSync(program, 'await checkpoint("go", "Proceed?", { timeout: "4s" });\n');
   const out: string[] = [];
   const write = process.stdout.write;
@@ -495,9 +504,10 @@ log([].filter(() => true), [].find(() => true) === undefined, [].findLast(() => 
       { scope: "", values: [[], true, true, null] },
     ]), { logged, output: written.join("") });
   writeFileSync(program, 'throw "boom";\n');
-  const thrown = await simulate({});
+  const thrown = await simulateFile();
   c("a program that throws fails naming what it threw, not an unscripted effect",
-    isCommandFailure(thrown) && thrown.code === "OPERATION_FAILED" && thrown.message.includes('boom') && !thrown.message.includes("unscripted"), thrown);
+    isCommandFailure(thrown) && thrown.code === "OPERATION_FAILED" && thrown.message.includes('boom') && !thrown.message.includes("unscripted")
+      && thrown.remedy === undefined, thrown);
   // A list one result short says which result the step needs, counted from 1. The step key keeps its
   // occurrence counted from 0.
   writeFileSync(program, 'await checkpoint("go", "Proceed?", { timeout: "4s" });\nawait checkpoint("go", "Again?", { timeout: "4s" });\n');
