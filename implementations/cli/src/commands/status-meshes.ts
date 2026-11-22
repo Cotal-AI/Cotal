@@ -240,6 +240,10 @@ export async function readSelected(selected: Selected, responder: { state: Deliv
       ...(e.code === "not-started" && d.space !== undefined && d.root !== undefined && !d.rootMissing ? { space: d.space, root: d.root } : {}),
       ...(elsewhere !== undefined ? { space: targetErrorSpace(d)!, recordedRoot: d.recordedRoot! } : {}),
     };
+    if (folder.stackStarting && servedStack(folder, result)) {
+      result.message = `"${result.space}" is prepared and its stack is starting`;
+      return result;
+    }
     // An unwritable store blocks a restart from this root.
     const store = e.code === "not-started" && d.root !== undefined && !d.rootMissing ? rootStoreProblem(d.root) : undefined;
     const journal = e.code === "not-started" && d.root !== undefined && !d.rootMissing ? unusableStackJournal(d.root) : undefined;

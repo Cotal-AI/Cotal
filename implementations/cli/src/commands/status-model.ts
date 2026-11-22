@@ -142,6 +142,8 @@ export interface StatusResult {
      *  with no recorded outcome, with why and the way out their refusal names. Null when none does;
      *  older inputs may omit it. */
     stackBlock?: StackOperationBlock | null;
+    /** This stack's exact startup writer still holds the root's maintenance lock. */
+    stackStarting?: boolean;
     /** That stack's last `up` or `down` when it ended with no recorded outcome part way, with the
      *  members left running and stopped. Null when there is none; older inputs may omit it. */
     stackUnfinished?: { kind: "up" | "down"; id: string; running: StackRole[]; stopped: StackRole[]; noManager: boolean } | null;

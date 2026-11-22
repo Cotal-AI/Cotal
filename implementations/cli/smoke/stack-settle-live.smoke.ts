@@ -2065,6 +2065,10 @@ try {
     const broker = pidOf(space, "stack-broker");
     if (broker !== null) process.kill(broker, "SIGSTOP");
     track(space);
+    const starting = cli(root, "status", "--components", "--space", space);
+    check(`${space}: status tells the operator to wait while the startup writer is alive`,
+      pinned && child.exitCode === null && starting.status === 1 && starting.stdout.includes("Startup in progress") && starting.stdout.includes("Wait for startup to finish, then check again")
+      && !starting.stdout.includes(" down --yes") && !starting.stdout.includes("last up ended"), { ...shown(starting), stdout: starting.stdout });
     child.kill("SIGKILL");
     await exited(child);
     if (broker !== null) process.kill(broker, "SIGCONT");

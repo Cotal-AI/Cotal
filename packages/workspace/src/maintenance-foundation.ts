@@ -25,6 +25,7 @@ import { hostname } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { randomUUID } from "node:crypto";
 import { hardenPrivate } from "@cotal-ai/core";
+import { identityRecord, type ProcessIdentityRecord } from "./pid.js";
 import { recordOperationWarning } from "./output.js";
 
 /** Version 1 lives in `<project>/.cotal/maintenance/v1`; the lock is shared across versions. */
@@ -913,7 +914,7 @@ export function parseOwner(value: unknown, label: string): ProcessOwner {
   return o;
 }
 
-function readLockFile(path: string): { token: string; owner: ProcessOwner; operation?: string } {
+function readLockFile(path: string): { token: string; owner: ProcessOwner; operation?: string; process?: ProcessIdentityRecord } {
   let parsed: unknown;
   try {
     const stat = lstatSync(path);
@@ -925,19 +926,21 @@ function readLockFile(path: string): { token: string; owner: ProcessOwner; opera
     if (errno(error) === "ENOENT") throw error;
     maintenanceError("journal-corrupt", "maintenance lock cannot be parsed", { paths: [path] });
   }
-  const lock = parsed as { token?: unknown; owner?: unknown; operation?: unknown };
+  const lock = parsed as { token?: unknown; owner?: unknown; operation?: unknown; processToken?: unknown };
   if (!lock || typeof lock !== "object" || typeof lock.token !== "string" || !lock.token)
     maintenanceError("journal-corrupt", "maintenance lock has no token", { paths: [path] });
   const operation = typeof lock.operation === "string" && /^[a-z][a-z -]{0,63}$/.test(lock.operation) ? lock.operation : undefined;
-  return { token: lock.token, owner: parseOwner(lock.owner, "lock"), ...(operation ? { operation } : {}) };
+  const owner = parseOwner(lock.owner, "lock");
+  const process = typeof lock.processToken === "string" && /^\d{1,20}$/.test(lock.processToken) ? { pid: owner.pid, token: lock.processToken } : undefined;
+  return { token: lock.token, owner, ...(operation ? { operation } : {}), ...(process ? { process } : {}) };
 }
 
 /** The process that holds this root's maintenance lock, and the operation it recorded, for a refused
  *  contender to name. Undefined when no lock is held or it cannot be read. */
-export function readMaintenanceLockHolder(root: string): { readonly owner: ProcessOwner; readonly operation?: string } | undefined {
+export function readMaintenanceLockHolder(root: string): { readonly owner: ProcessOwner; readonly operation?: string; readonly process?: ProcessIdentityRecord } | undefined {
   try {
-    const { owner, operation } = readLockFile(maintenancePaths(root).lock);
-    return { owner, ...(operation ? { operation } : {}) };
+    const { token: _token, ...holder } = readLockFile(maintenancePaths(root).lock);
+    return holder;
   } catch { return undefined; }
 }
 
@@ -973,7 +976,8 @@ export function acquireMaintenanceLock(
   const owner = options.owner ?? defaultOwner();
   parseOwner(owner, "requested lock");
   const token = randomUUID();
-  const body = `${JSON.stringify({ token, owner, ...(options.operation ? { operation: options.operation } : {}) }, null, 2)}\n`;
+  const identity = options.owner === undefined && (options.operation === "up" || options.operation === "foreground up" || options.operation === "team boot") ? identityRecord(process.pid) : undefined;
+  const body = `${JSON.stringify({ token, owner, ...(options.operation ? { operation: options.operation } : {}), ...(identity && "token" in identity ? { processToken: identity.token } : {}) }, null, 2)}\n`;
 
   try {
     writePrivateExclusive(paths.lock, body);

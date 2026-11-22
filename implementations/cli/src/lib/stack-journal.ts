@@ -15,7 +15,7 @@ import { abandonableSignalStop, abandonRetainedNativeStop, abandonRetainedSignal
 import { stackRunsRecord, type StackRuns } from "./stack-runs.js";
 import { shellWord } from "./endpoint-errors.js";
 import { readStoreIdentity, type StoreIdentity } from "./store-identity.js";
-import { readMaintenanceLockHolder } from "@cotal-ai/workspace";
+import { assertRecordIdentity, localProcessOwnerStatus, readMaintenanceLockHolder } from "@cotal-ai/workspace";
 import { displayCmd } from "./self-exec.js";
 
 export const STACK_ROLES = ["broker", "auth", "delivery", "manager"] as const;
@@ -702,6 +702,16 @@ export function previewStackSettlement(journal: StackJournal): StackSettlement |
 /** The members the journal's operation planned, as a `--no-manager` up plans no manager. */
 function attemptedRoles(journal: StackJournal): StackRole[] {
   return STACK_ROLES.filter((role) => stackRoleApplies(journal.mode, role) && journal.members.some((row) => row.role === role && row.state !== "not-attempted"));
+}
+
+/** A planned or applying start belongs to this lock owner only when the operation ID and the
+ *  local process birth both match. A later operation or a reused PID is not this startup. */
+export function stackUpInProgress(journal: StackJournal): boolean {
+  const { kind, phase, id } = journal.operation;
+  if (kind !== "up" || phase !== "planned" && phase !== "applying") return false;
+  const holder = readMaintenanceLockHolder(journal.root);
+  return holder?.owner.id === id && holder.process !== undefined && localProcessOwnerStatus(holder.owner) === "alive"
+    && assertRecordIdentity(holder.process).kind === "match";
 }
 
 /** An earlier `up` that ended with no recorded outcome before every member it planned started, or

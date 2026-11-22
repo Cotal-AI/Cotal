@@ -212,12 +212,16 @@ export async function addressHolder(what: string, host: string, port: number): P
 }
 
 /** An occupied legacy broker bind and the two ways to start without that conflict. */
-export async function brokerAddressConflict(server: string, command: string, bindHost?: string): Promise<{ message: string; remedy: string } | undefined> {
+export async function brokerAddressConflict(server: string, command: string | ((server: string, host: string) => Promise<{ original: string; alternate?: string }>), bindHost?: string): Promise<{ message: string; remedy: string } | undefined> {
   const error = await listenerBindError(server, bindHost);
   if (error === undefined || error === "timeout" || error.code !== "EADDRINUSE") return undefined;
   const { host, port } = brokerListenAddress(server), address = new URL(server);
   const { says, frees } = await addressHolder("the broker address", bindHost ?? host, port);
-  return { message: says, remedy: `start it at another address with ${codeSpan(`${command} --server ${address.protocol}//${address.hostname}:<port>`)}, or ${frees} and run ${codeSpan(command)} again` };
+  const { original, alternate } = typeof command === "string"
+    ? { original: command, alternate: `${command} --server ${address.protocol}//${address.hostname}:<port>` }
+    : await command(server, bindHost ?? host);
+  const retry = `${frees} and run ${codeSpan(original)} again`;
+  return { message: says, remedy: alternate ? `start it at another address with ${codeSpan(alternate)}, or ${retry}` : retry };
 }
 
 /** Bare legacy up binds on loopback. A NATS listener can send that start down its reuse or port-selection path. */

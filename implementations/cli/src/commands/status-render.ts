@@ -487,6 +487,7 @@ export function folderStack(folder: StatusResult["folder"], s: SelectedResult): 
 /** The lines that name this folder's stack operation cut off with no recorded outcome: one that keeps
  *  `up` and `down` from settling it, or one that left the stack part way. */
 function stackLines(folder: StatusResult["folder"]): Section["blocks"][number][] {
+  if (folder.stackStarting) return [{ kind: "lines", lines: [stateCell("Startup in progress", "waiting")] }];
   const blocks: Section["blocks"][number][] = [];
   if (folder.stackBlock) blocks.push({ kind: "lines", lines: [stateCell(`Stack blocked · ${folder.stackBlock.reason}`, "waiting")] });
   const part = folder.stackUnfinished;
@@ -574,7 +575,9 @@ function nextActions(r: StatusResult, seedFailed: boolean, interactive: boolean,
   const storeBlocked = !elsewhere && r.selected.resolved && r.selected.connection === "unreachable" && rootStoreProblem(r.selected.root) !== undefined;
   if (r.selected.resolved && r.selected.connection === "broker-stopped") items.unshift({ command: `kill -CONT ${r.selected.brokerPid}`, description: "Resume the stopped broker process so it answers again" });
   else if (stoppedForeignListener) { /* The address remedy in hints takes precedence over a restart. */ }
-  else if (block && blocked) {
+  else if (r.folder.stackStarting && blocked) {
+    items.unshift({ command: `${cmd} status --space ${shellWord(blocked.space)}`, description: "Wait for startup to finish, then check again" });
+  } else if (block && blocked) {
     const inspect = { command: `${cmd} service status ${block.definition} --instance ${block.instanceId} --space ${shellWord(blocked.space)}`, description: block.route.kind === "inspect" ? "Inspect the member that keeps up and down from settling" : "Inspect that member" };
     items.unshift(...(block.route.kind === "abandon" ? [{ command: `${cmd} down --abandon-stop ${block.route.requestId} --yes`, description: `Abandon the unconfirmed stop of ${block.definition}; up and down refuse until then` }, inspect] : [inspect]));
   } else if (stack && r.folder.stackUnfinished) {

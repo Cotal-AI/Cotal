@@ -132,8 +132,10 @@ with `CONFLICT` and asks for `--space`. With no
 reserved by another registered space, including one whose broker is stopped. It saves the chosen
 address. A later `cotal up` of
 the same space from the same folder starts from the URL that mesh recorded; an explicit `--server`
-stays fail-loud on collision. An address that a space registered for another folder keeps while it
-is stopped refuses `CONFLICT`, exit 2, naming that space and folder, and nothing starts, unless this
+stays fail-loud on collision. When another program holds the port on an unprepared first start,
+the refusal keeps the launch options in both retries. Use the suggested alternate port, or free
+the original port and retry at the original address. An address that a space registered for another
+folder keeps while it is stopped refuses `CONFLICT`, exit 2, naming that space and folder, unless this
 `up` takes that space's name over. `up -f` reads its address from the manifest's `broker.servers`
 and is refused there by the same rule, with the field to point at another address in place of the
 `--server` to pass. Each refusal also names `cotal space forget <space>`, which frees that address
@@ -236,8 +238,9 @@ runs no stop. The command prints that the stack is still running and names `cota
 starting lets the start settle, prints the same line and exits 129, and leaves what the start left.
 While a foreground `up` holds the stack, it records its process in `.cotal/stack-foreground.hold`,
 and a second foreground `up` on that stack refuses `CONFLICT`, exit 2, names that process, and
-starts nothing. If the journal records a different launching `COTAL_HOME`, the suggested stop and
-retry commands set it explicitly. Run them from the stack's folder. The holding process removes
+starts nothing. The suggested restart keeps `--no-manager` when you requested it. If the journal
+records a different launching `COTAL_HOME`, the suggested stop and retry commands set it explicitly.
+Run them from the stack's folder. The holding process removes
 that record as it exits, a hangup included. A holder that was killed leaves it, and the next
 `cotal down` removes it once that process is gone. A
 foreground `up` on a stack that is already running without such a holder, because a background `up`

@@ -93,7 +93,7 @@ import {
   STACK_DEFINITION,
   stackStartedWithoutManager,
   stackOperationBlock,
-  unfinishedStackOperation,
+  unfinishedStackOperation, stackUpInProgress,
   type StackJournal,
   type StackOperationBlock,
 } from "../lib/stack-journal.js";
@@ -282,7 +282,7 @@ export async function status(args: ParsedArgs): Promise<void> {
   // that neither blocks nor stays part way settles from its members' processes when it starts.
   const held = folderStack(folder, target);
   if (held && folder.stackBlock) withdrawOperationNote("FOLDER_SPACE_NOT_RUNNING", held.space);
-  if (!recovery && held && !folder.stackBlock && !folder.stackUnfinished && unsettledStackOperation(held.root, held.space)) hints.push(`start it with \`cotal up\` in ${held.root}`);
+  if (!recovery && held && !folder.stackStarting && !folder.stackBlock && !folder.stackUnfinished && unsettledStackOperation(held.root, held.space)) hints.push(`start it with \`cotal up\` in ${held.root}`);
   const services = readOwnedServices(selected, gaps);
   const bootAttempts: StatusResult["bootAttempts"] = blocked ? { root, state: "partial", observedAt: new Date().toISOString(), unsettled: [], additive: [], unreadable: [], elsewhere: [] } : readBootAttempts(root, gaps);
   const logged = selected.ok ? brokerStoreWrite(selected.target.root, selected.target.space) : undefined;
@@ -327,7 +327,7 @@ export async function status(args: ParsedArgs): Promise<void> {
       recovery, stoppedForeignListener,
     }),
   );
-  if (values.components) await printComponentHealth(selected, store, target.resolved && target.connection === "unreachable");
+  if (values.components) await printComponentHealth(selected, store, target.resolved && target.connection === "unreachable", !target.resolved && folder.stackStarting && servedStack(folder, target) ? target.message : undefined);
 }
 
 /** Why this account cannot list or search `root`, or undefined when it can. */
@@ -756,13 +756,13 @@ async function readFolder(root: string, selected: Selected, values: FlagValues<t
   if (managerIndex !== -1 && legacyManagerStopped(root, space, localManagerInstanceId(root, space)))
     processes[managerIndex] = { ...processes[managerIndex]!, detail: "stopped" };
   const noManager = journal !== undefined && controllerStack && stackStartedWithoutManager(journal);
-  // An operation cut off with no recorded outcome can keep up and down from settling it; status names
-  // why and the way out their refusal names. A refusal of another kind is left to them.
+  const stackStarting = journal !== undefined && controllerStack && stackUpInProgress(journal);
+  // Name settlement blocks only when no active startup writer holds the stack.
   let stackBlock: StackOperationBlock | null = null;
-  if (journal && controllerStack) try { stackBlock = stackOperationBlock(journal) ?? null; } catch { stackBlock = null; }
+  if (journal && controllerStack && !stackStarting) try { stackBlock = stackOperationBlock(journal) ?? null; } catch { stackBlock = null; }
   // One that left the stack part way is named with the command that finishes it.
   let stackUnfinished: StatusResult["folder"]["stackUnfinished"] = null;
-  if (journal && controllerStack && !stackBlock) try { stackUnfinished = unfinishedStackOperation(journal) ?? null; } catch { stackUnfinished = null; }
+  if (journal && controllerStack && !stackStarting && !stackBlock) try { stackUnfinished = unfinishedStackOperation(journal) ?? null; } catch { stackUnfinished = null; }
   // A copy or a moved folder keeps the stack journal another folder recorded, and its store is that
   // stack's. Clean store refuses there with the step the journal's refusal names.
   let copiedStack = false;
@@ -781,7 +781,7 @@ async function readFolder(root: string, selected: Selected, values: FlagValues<t
   if (controllerStack && journal) try {
     heldServices = serviceHeldRecords(root, journal.space).map((row) => ({ definition: row.definition, instanceId: row.instanceId, record: row.record.name, pid: row.record.pid! }));
   } catch { heldServices = null; }
-  return { ...folder({ state: auth ? "space" : "none", spaces: auth ? [auth.space] : [], userAuth: userDisk, error: null }, processes, storedState, space, controllerStack, noManager, stackBlock, stackUnfinished), managerService, heldServices };
+  return { ...folder({ state: auth ? "space" : "none", spaces: auth ? [auth.space] : [], userAuth: userDisk, error: null }, processes, storedState, space, controllerStack, noManager, stackBlock, stackUnfinished), ...(stackStarting ? { stackStarting } : {}), managerService, heldServices };
 }
 
 /** The folder's persona catalog, which must never let a catalog imply a `spawn` the operator does

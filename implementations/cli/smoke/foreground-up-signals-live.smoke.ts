@@ -822,6 +822,11 @@ async function controllerHoldCell(kind: "takeover" | "other-home" | "broker-cras
       return;
     }
     if (kind === "broker-crash" || brokerOnly) {
+      if (brokerOnly) {
+        const conflict = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["up", "--foreground", "--open", "--no-manager", "--server", `nats://127.0.0.1:${port}`, "--max-payload", "131072"]);
+        assert.equal(conflict.code, 2, conflict.out + conflict.err);
+        assert.match(conflict.err, /run `cotal up --foreground --no-manager` again/); passed++;
+      }
       const broker = controllerBroker(space, machine);
       assert.ok(broker?.process && observeServiceProcess(broker) === "running", "the isolated stack owns this broker process");
       process.kill(broker.process.pid, "SIGKILL");

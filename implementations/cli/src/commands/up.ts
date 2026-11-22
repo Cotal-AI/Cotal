@@ -268,7 +268,7 @@ import {
 import { attemptProcessesGone } from "../lib/isolated-broker.js";
 import { assertEndpointUnreachable } from "../lib/endpoint-cut.js";
 import { brokerAddressConflict } from "../lib/broker-service.js";
-import { freshStackServer, retryStackAddress, serverWithFreePort } from "../lib/up-broker-address.js";
+import { freshStackServer, legacyUpRetry, retryStackAddress, serverWithFreePort } from "../lib/up-broker-address.js";
 import { askManager } from "@cotal-ai/workspace/control";
 import { cliControl } from "../lib/control.js";
 import { pendingRestores, type PendingOrdinaryResume, pendingOrdinaryResumes } from "./up-pending.js";
@@ -1546,7 +1546,7 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
     // one, it takes that stack's lifetime over and says so before it blocks.
     const holder = values.foreground ? foregroundHolder(meshRoot) : undefined;
     if (holder !== undefined)
-      refuseForegroundStackHolder(meshRoot, stackSpace, holder);
+      refuseForegroundStackHolder(meshRoot, stackSpace, holder, noManager);
     const takeover = values.foreground === true && STACK_ROLES.some((role) => serviceInstances(stackSpace, STACK_DEFINITION[role]).some((row) => observeServiceProcess(row.record.value) === "running"));
     // A signal ends a detached start where it is, after it records a launch it had not yet pinned to
     // its child, and the notice names what it left running. It is installed before the lock, so no
@@ -1558,7 +1558,7 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
       return `${failure.message} ${failure.remedy}`;
     });
     try {
-      const stackLock = acquireStackOperationLock(meshRoot, values.foreground ? "foreground up" : undefined);
+      const stackLock = acquireStackOperationLock(meshRoot, values.foreground ? "foreground up" : "up");
       const native = controllerStackNative();
       // A foreground terminal holds the start as well, so a signal during it stops what it started.
       const start = async () => {
@@ -2236,7 +2236,7 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
     }
     refuseRegisteredAddress(server, space, `start this one at another address with \`cotal up --server nats://${host}:<port>\``);
   }
-  await assertBrokerAddressFree(server, `${displayCmd()} up${values.host === undefined ? "" : ` --host ${shellWord(host)}`}`, host);
+  await assertBrokerAddressFree(server, legacyUpRetry(args.raw), host);
   // A repair keeps its own store rules above, and a resume or restore names its store.
   if (!resumeAttempt && !repairing) {
     if (values["store-dir"] === undefined) values["store-dir"] = reopenLastStore(cotalPath("nats"));
@@ -4435,7 +4435,7 @@ export async function startMeshDetached(
 /** Refuse a broker address another program holds without answering NATS, such as a web server, as
  *  the controller stack refuses it. nats-server would exit on its bind with only a log line, and the
  *  readiness probe would wait on that program instead. `command` is the start the remedy reruns. */
-async function assertBrokerAddressFree(server: string, command: string, bindHost?: string): Promise<void> {
+async function assertBrokerAddressFree(server: string, command: Parameters<typeof brokerAddressConflict>[1], bindHost?: string): Promise<void> {
   const conflict = await brokerAddressConflict(server, command, bindHost);
   if (!conflict) return;
   throw new CommandFailure("refused", "CONFLICT", `${conflict.message} (bind failed: address already in use); no broker was launched`, {

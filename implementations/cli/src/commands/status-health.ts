@@ -666,7 +666,7 @@ async function brokerHealth(target: MeshTarget, store: StoreWriteObservation | u
   }
 }
 
-export async function printComponentHealth(selected: Selected, store: StoreWriteObservation | undefined, brokerUnreachable: boolean): Promise<void> {
+export async function printComponentHealth(selected: Selected, store: StoreWriteObservation | undefined, brokerUnreachable: boolean, starting?: string): Promise<void> {
   section("Component Health");
   if (!selected.ok) {
     const error = selected.error;
@@ -685,7 +685,7 @@ export async function printComponentHealth(selected: Selected, store: StoreWrite
     if (isWorkspaceTargetError(e)) {
       const verdict = e.code === "not-started" ? "absent" : "refused";
       const { message, remedy } = workspaceErrorParts({ kind: "target", error: e });
-      printComponent({ name: "target", verdict, facts: [e.code, remedy === undefined ? message : `${message} - ${displayRemedy(remedy)}`] });
+      printComponent({ name: "target", verdict, facts: [e.code, starting ?? (remedy === undefined ? message : `${message} - ${displayRemedy(remedy)}`)] });
       process.exitCode = COMPONENT_EXIT[verdict];
       return;
     }
