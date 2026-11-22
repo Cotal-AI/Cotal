@@ -6,7 +6,9 @@ import {
   isJetStreamMissing, liveKvEntries, presenceBucket, standaloneConnectOpts,
   type ChannelRegistryFile, type Presence,
 } from "@cotal-ai/core";
-import { canonicalRoot, CommandFailure, connectOrThrow, serviceMetadataDigest, userViewAuth, type MeshEntry } from "@cotal-ai/workspace";
+import { canonicalRoot, codeSpan, CommandFailure, connectOrThrow, serviceMetadataDigest, userViewAuth, type MeshEntry, type PreparedSpace } from "@cotal-ai/workspace";
+import { canonicalServer } from "./broker-service.js";
+import { readStackJournal } from "./stack-journal.js";
 import { hashManifestSource, listLedgers } from "./manifest/ledger.js";
 import { classifyAgents, classifyChannels, detectUnmanagedActors } from "./manifest/spawn-plan.js";
 import { loadManifest, type PreparedManifest } from "./manifest/index.js";
@@ -96,6 +98,19 @@ export function liveDeliveryRemedy(mode: MeshEntry["mode"]): string {
     : `${live}, or create a durable channel with \`cotal channel set <name> --delivery durable\``;
 }
 
+/** A prepared record permits restart guidance only for its exact, cleanly stopped stack. */
+export function stoppedTeamDeploy(prepared: PreparedSpace | undefined, root?: string): CommandFailure | undefined {
+  if (!prepared || root !== undefined && canonicalRoot(prepared.root) !== root) return undefined;
+  let journal: ReturnType<typeof readStackJournal>;
+  try { journal = readStackJournal(prepared.root); } catch { return undefined; }
+  const stack = journal?.journal;
+  if (stack?.space !== prepared.space || stack.operation.kind !== "down" || stack.operation.phase !== "completed" || !stack.members.some((member) => member.instanceId !== null)) return undefined;
+  const noManager = stack.members.some((member) => member.role === "manager" && member.state === "not-attempted");
+  return new CommandFailure("refused", "TARGET_UNAVAILABLE", "the selected local stack is stopped; additive deploy requires it to be running", {
+    target: { root: stack.root, space: stack.space }, remedy: `start it again with ${codeSpan(noManager ? "cotal up --no-manager" : "cotal up")} in ${stack.root}`,
+  });
+}
+
 /** Read-only additive classification. The membership feed is display-only and never grants apply. */
 export async function inspectTeamDeployment(root: string, path: string, prepared: PreparedManifest, runtime: string) {
   const space = prepared.manifest.space;
@@ -103,7 +118,7 @@ export async function inspectTeamDeployment(root: string, path: string, prepared
   const conn = await connectOrThrow({ space }, "deployer", { readOnly: true });
   if (!conn.root || canonicalRoot(conn.root) !== canonicalRoot(root))
     throw new CommandFailure("refused", "CONFLICT", "the registered broker belongs to another root; no additive deployment was classified", { target });
-  if (prepared.manifest.broker?.servers && prepared.manifest.broker.servers !== conn.server)
+  if (prepared.manifest.broker?.servers && canonicalServer(prepared.manifest.broker.servers) !== canonicalServer(conn.server))
     throw new CommandFailure("refused", "CONFLICT", "the manifest broker differs from the registered connection; no alternate broker was adopted", { target });
   let user: Awaited<ReturnType<typeof userViewAuth>> | undefined;
   if (conn.mode === "user") {

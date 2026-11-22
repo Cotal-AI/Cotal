@@ -84,7 +84,6 @@ import {
   type SeatCap,
   CommandFailure,
   codeSpan,
-  commandFailureReport,
   failureEnvelope,
   writeEnvelope,
   isCommandFailure,
@@ -242,7 +241,6 @@ import { checkNewUpSpace, checkPublicExchangePort, preparedUpRoot } from "./up-t
 import { cleanedManifestStart, interruptedStartBroker, namedOpenConfig, retainedOpenSpace } from "../lib/legacy-start.js";
 import {
   bindReaches,
-  canonicalServer,
   controllerStackApplies,
   recheckExistingStore,
   requestedStackMode, refuseForegroundStackHolder,
@@ -260,7 +258,7 @@ import { exitInterrupted, handOverStartupNotice, noticeOnInterrupt, releaseStart
 import { claimForegroundHold, foregroundHolder, foregroundStackEnd, releaseForegroundHold } from "../lib/foreground-hold.js";
 import { settleInterruptedLaunches } from "../lib/service-process.js";
 import { assertUserStackTransport, preflightUserStack } from "./stack-user-auth.js";
-import { stackDown } from "./stack-down.js";
+import { stopForegroundStack } from "./stack-down.js";
 import {
   assertControllerCoupling, assertControllerMembersLive, assertControllerResumeEligible, beginControllerResume, bindControllerBroker, controllerAttemptBrokerInstance,
   currentControllerAttempt, managerResumeAttempt, relaunchCommittedManager, settleControllerResume, startControllerMember, startControllerMembers,
@@ -308,7 +306,7 @@ import {
 } from "../lib/restore.js";
 import { attemptProcessesGone } from "../lib/isolated-broker.js";
 import { assertEndpointUnreachable } from "../lib/endpoint-cut.js";
-import { brokerAddressConflict } from "../lib/broker-service.js";
+import { brokerAddressConflict, canonicalServer } from "../lib/broker-service.js";
 import { freePort, freshStackServer, retryStackAddress, serverWithFreePort } from "../lib/up-broker-address.js";
 import { askManager } from "@cotal-ai/workspace/control";
 import { cliControl } from "../lib/control.js";
@@ -779,14 +777,6 @@ function assertFreshTeamBootOwnership(root: string, space: string, mode?: "open"
     throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "a prior fresh boot attempt lacks a matching readable summary, or an attempt/summary is unreadable; its outcome was not treated as absent", { target: { root, space, unsettledIds: unsettled.map((attempt) => attempt.deploymentId), unreadable: [...bootAttempts.refused, ...summaries.refused].map(({ path }) => path) }, remedy: "inspect each full boot attempt and its original listener before another fresh start; do not retry an unknown boot" });
 }
 
-/** The guarded whole-stack stop a foreground signal runs, acknowledged by that signal's exit code. A
- *  failed or unknown stop is reported with its retained members; nothing is force-killed. */
-function stopForegroundStack(root: string, signal: "SIGINT" | "SIGTERM"): Promise<void> {
-  return stackDown(root, { yes: true }).catch((error) => {
-    process.stderr.write(`${renderReport(commandFailureReport(isCommandFailure(error) ? error : new CommandFailure("unknown", "OPERATION_UNKNOWN", "the foreground stack stop did not confirm its outcome; its members were retained")), "rich", process.stderr)}\n`);
-  }).finally(() => { process.exitCode = signal === "SIGINT" ? 130 : 143; });
-}
-
 /** A hangup, such as a closed terminal, is not a stop. The stack keeps running and the notice names
  *  the command that stops it. Release this process's hold before the immediate exit, which does not
  *  unwind the surrounding finally, so a later foreground `up` can take the running stack over. */
@@ -832,7 +822,7 @@ async function holdStack(root: string, start?: () => Promise<void>, releaseResto
     releaseStart = () => { process.off("SIGINT", interrupt); process.off("SIGTERM", terminate); process.off("SIGHUP", hangup); };
     if (requested || failure) releaseStart();
     if (requested === "SIGHUP") hangupForegroundStack(root);
-    if (requested) await stopForegroundStack(root, requested);
+    if (requested) await stopForegroundStack(root, requested, true);
     if (failure) throw failure.error;
     if (requested) return;
   }

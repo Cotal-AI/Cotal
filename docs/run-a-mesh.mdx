@@ -119,6 +119,7 @@ Stop an older manager's managed agents explicitly before whole-stack shutdown wh
 
 On POSIX, a foreground broker has its own session and process group.
 Ctrl-C reaches the CLI owner first, which uses the same stop procedure and report as bare `cotal down`.
+If you interrupt startup, the terminal waits for startup to settle and gives pending agent launches time to finish before stopping the stack.
 A refused stop leaves the stack running. Use `cotal down --with-agents` when you intend to stop its agents too.
 
 ## Watching [#watching]

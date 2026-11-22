@@ -60,7 +60,7 @@ import {
   processStopped,
 } from "@cotal-ai/workspace";
 import { liveMeshProcesses } from "./clean.js";
-import { addressHolder, brokerListenAddress, listenerBindError } from "../lib/broker-service.js";
+import { addressHolder, brokerListenAddress, canonicalServer, listenerBindError } from "../lib/broker-service.js";
 import { brokerStoreWrite, jetStreamDisabled, jetStreamDisabledRefusal, readStoredBytes, storeDamageNotice, storeFull } from "../lib/broker-store-health.js";
 import { shellWord } from "../lib/endpoint-errors.js";
 import { seedDefaultPersona } from "../lib/default-persona.js";
@@ -243,15 +243,6 @@ const CONTROLLER_UNSUPPORTED = ["file", "dry-run", "restore", "restore-only", "a
 const TLS_INPUTS: readonly string[] = ["tls-cert", "tls-key", "server tls://"];
 
 const namesTlsServer = (values: ParsedArgs["values"]): boolean => typeof values.server === "string" && /^tls:\/\//i.test(values.server);
-
-/** A `--server` broker URL as `up` records and compares it: the scheme in lower case, with no bare
- *  trailing `/`. Any other value comes back as given, for the address checks to refuse. */
-export function canonicalServer(server: string): string {
-  let url: URL;
-  try { url = new URL(server); } catch { return server; }
-  if ((url.protocol !== "nats:" && url.protocol !== "tls:") || url.username || url.password || url.search || url.hash || (url.pathname !== "" && url.pathname !== "/") || server.includes(",")) return server;
-  return `${url.protocol}//${url.host}`;
-}
 
 /** Whether an `up` invocation asks for a TLS broker. */
 export function requestsTls(values: ParsedArgs["values"]): boolean {
