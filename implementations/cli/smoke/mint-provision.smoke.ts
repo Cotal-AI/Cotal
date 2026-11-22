@@ -102,8 +102,8 @@ const until = async (cond: () => boolean, timeoutMs = 8000, stepMs = 50): Promis
 /** Run `cotal <words…>` THROUGH THE BINARY'S DISPATCH (`runCli`: the command's declared flag specs
  *  parse the argv, then its registered runner runs) in a child from the current folder: its stdout
  *  and stderr together, and the exit code the operator would get. */
-async function runCotal(words: string[]): Promise<{ out: string; code: number }> {
-  const child = spawn(process.execPath, [...process.execArgv, process.argv[1]!, "cotal-child", ...words], { stdio: ["ignore", "pipe", "pipe"] });
+async function runCotal(words: string[], env = process.env): Promise<{ out: string; code: number }> {
+  const child = spawn(process.execPath, [...process.execArgv, process.argv[1]!, "cotal-child", ...words], { env, stdio: ["ignore", "pipe", "pipe"] });
   const chunks: Buffer[] = [];
   child.stdout.on("data", (chunk: Buffer) => void chunks.push(chunk));
   child.stderr.on("data", (chunk: Buffer) => void chunks.push(chunk));
@@ -142,9 +142,10 @@ async function withForegroundStaticBroker(
   const anchor = recordSmokeSandbox({ root: stoppedRoot, cotalHome: home, xdgConfigHome: process.env.XDG_CONFIG_HOME! });
   const previous = process.cwd();
   process.chdir(stoppedRoot);
+  const env = { ...process.env, ...(tls ? { NODE_EXTRA_CA_CERTS: tls.cert } : {}) };
   const up = spawn(process.execPath, [join(import.meta.dirname, "../../../bin/dist/cotal.js"), "up", "--foreground", "--no-manager", "--space", space, "--server", server,
     ...(tls ? ["--tls-cert", tls.cert, "--tls-key", tls.key] : [])], {
-    env: { ...process.env, COTAL_SKIP_CONNECTOR_SEED: "1", ...(tls ? { NODE_EXTRA_CA_CERTS: tls.cert } : {}) }, stdio: ["ignore", "pipe", "pipe"],
+    env: { ...env, COTAL_SKIP_CONNECTOR_SEED: "1" }, stdio: ["ignore", "pipe", "pipe"],
   });
   let output = "";
   up.stdout.on("data", (chunk: Buffer) => { output += chunk.toString(); });
@@ -152,8 +153,8 @@ async function withForegroundStaticBroker(
   const exited = new Promise<number | null>((resolve, reject) => { up.on("close", resolve); up.on("error", reject); });
   const down = async () => {
     const args = ["down", "--yes"];
-    assertSmokeSandboxDown(anchor, args, { cwd: stoppedRoot, env: process.env });
-    return runCotal(args);
+    assertSmokeSandboxDown(anchor, args, { cwd: stoppedRoot, env });
+    return runCotal(args, env);
   };
   try {
     check(`offline rig: foreground static up at ${server} completes`, await until(() => output.includes("--no-manager starts no local"), 30_000), output);
