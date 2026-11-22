@@ -312,7 +312,7 @@ and an unconfirmed native stop cannot be forgotten just because its process disa
 ## manager [#manager]
 
 ```bash
-cotal manager start [--runtime <name>] [--roster <file>] [--name <name>] [--foreground|--dry-run] [--space <s>]
+cotal manager start [--runtime <name>] [--roster <file>] [--name <name>] [--launch <file> --launch-sha256 <digest>] [--foreground|--dry-run] [--space <s>]
 cotal manager stop [--with-agents] [--yes|--dry-run] [--space <s>]
 cotal manager restart [--with-agents] [--yes|--dry-run] [--space <s>]
 cotal manager status [--instance <full-id>] [--space <s>]
@@ -330,7 +330,10 @@ first, and no other service is started for it. `mgr` is an alias.
 
 `cotal manager <verb>` is `cotal service <verb> manager`: every [`service`](cli-services.mdx#service) rule applies,
 and its flags and the manager preset's options (`--runtime`, `--roster`, `--name`, `--server`,
-`--console-port`, `--console-host`, `--ws-port`, `--max-sessions`) are taken on the line.
+`--console-port`, `--console-host`, `--ws-port`, `--max-sessions`, `--launch`, `--launch-sha256`) are
+taken on the line. Pass both launch flags together: `--launch` takes the absolute path to an
+existing private resolved launch spec for the selected space, and `--launch-sha256` takes the full
+SHA-256 of those file bytes. See [Native manager service definition](#native-manager-service-definition).
 `cotal help manager <verb>` and `cotal manager <verb> --help` print the verb's help with those
 options. The first
 start saves the space's `manager` service from the preset's defaults and says so on stderr; `cotal

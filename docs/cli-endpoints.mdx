@@ -146,10 +146,11 @@ permissions name no single space, `space`, `read`, `post` and `dms` are `null`, 
 `partial` (exit 4) with `CREDENTIAL_SPACE_UNKNOWN`. `--creds` takes no `--space` or `--server`.
 An unregistered `--space` is refused even with `--server`. Server addresses in the identity report
 and connection refusals omit URL user information, query strings and fragments, and escape terminal
-controls. Addresses need a host and a supported broker scheme. TCP addresses cannot have a path;
-WebSocket routes and bare host addresses remain supported. Invalid addresses make `whoami` refuse
-rather than print the raw value. Recovery instructions use a `<url>` placeholder rather than a
-secret-stripped connection address.
+controls. `--server` requires a host and a `nats://`, `tls://`, `ws://` or `wss://` scheme, as in
+`nats://127.0.0.1:4222`. Bare host addresses are refused. TCP addresses cannot have a path.
+WebSocket paths are allowed for proxy routes. Invalid addresses make `whoami` refuse rather than
+print the raw value. Recovery instructions use a `<url>` placeholder rather than a secret-stripped
+connection address.
 
 
 ### Local registry failures
