@@ -79,7 +79,7 @@ const sign = (n: Name, ttl?: number) => {
 };
 
 type Internals = {
-  ep: { nc?: NatsConnection };
+  ep: { conn: { nc?: NatsConnection } };
   serviceServe?: { nc: NatsConnection; creds?: string; grant: { epoch: number } };
   goalWriter?: { nc: NatsConnection; creds?: string };
   managerInstanceId: string;
@@ -177,7 +177,7 @@ try {
   const m = manager as unknown as Internals;
   await manager.start();
   const epoch = m.serviceServe!.grant.epoch;
-  const conns = () => [m.ep.nc, m.serviceServe?.nc, m.goalWriter?.nc, m.servePlane.sessionLedgerConn?.nc];
+  const conns = () => [m.ep.conn.nc, m.serviceServe?.nc, m.goalWriter?.nc, m.servePlane.sessionLedgerConn?.nc];
   const firstConns = conns();
 
   await cell("Manager.start() brings up supervisor, serve, goal-writer and session-ledger on the initial family", async () => {

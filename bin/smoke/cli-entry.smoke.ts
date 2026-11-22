@@ -269,6 +269,12 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
   refused("help of a hidden internal subcommand is a usage error", cotal(["help", "ext", "__update-add"]), /cotal ext has no subcommand "__update-add"/);
   check("command help does not list a hidden subcommand", !cotal(["help", "ext"]).stdout.includes("__update-add"));
   refused("help of a hidden internal command is a usage error", cotal(["help", "__complete"]), /unknown command: __complete/);
+  const serviceHelp = cotal(["service", "--help"]);
+  const serviceListHelp = cotal(["help", "service", "list"]);
+  check("both help forms for service list show the parent help without listing the hidden mode",
+    serviceHelp.status === 0 && serviceHelp.stderr === "" && /^cotal service$/m.test(serviceHelp.stdout)
+    && /^Commands$/m.test(serviceHelp.stdout) && !/^  list\s/m.test(serviceHelp.stdout)
+    && same(serviceHelp, serviceListHelp) && same(serviceHelp, cotal(["service", "list", "--help"])), shown(serviceListHelp));
   // An official extension's command, before the extension is added, names the package to add.
   const linearAdd = /^✗ no installed extension provides command "linear" - install it with `cotal ext add @cotal-ai\/linear`$/m;
   refused("help linear without its extension names cotal ext add @cotal-ai/linear", cotal(["help", "linear"]), linearAdd);

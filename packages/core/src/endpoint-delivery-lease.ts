@@ -1,7 +1,7 @@
+import type { ConnectionState } from "./endpoint-connection-state.js";
 import type { EndpointIdentity } from "./endpoint-identity.js";
 import { randomUUID } from "node:crypto";
 import type { KV } from "@nats-io/kv";
-import type { NatsConnection } from "@nats-io/transport-node";
 import { openDeliveryRegistry, type DeliveryLeaseInfo } from "./lease.js";
 import { leaseKey } from "./subjects.js";
 
@@ -9,7 +9,6 @@ type LeaseWatch = Awaited<ReturnType<KV["watch"]>>;
 
 /** Connection and consumer custody shared with the endpoint's other broker readers. */
 export interface EndpointDeliveryLeaseDeps {
-  connection: () => NatsConnection | undefined;
   epoch: () => number;
   notLiveMsg: () => string;
   deleteWatchConsumer: (iter: LeaseWatch) => Promise<void>;
@@ -50,9 +49,8 @@ export class EndpointDeliveryLease {
    *  these first. Each is bounded by the JetStream request timeout. */
   private readonly leaseWatchBinds = new Set<Promise<void>>();
 
-  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly deps: EndpointDeliveryLeaseDeps) {}
+  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly conn: Readonly<ConnectionState>, private readonly deps: EndpointDeliveryLeaseDeps) {}
 
-  private get nc() { return this.deps.connection(); }
   private get presenceEpoch() { return this.deps.epoch(); }
   private notLiveMsg() { return this.deps.notLiveMsg(); }
   private emitRecoverable(error: Error) { this.deps.recoverable(error); }
@@ -65,8 +63,8 @@ export class EndpointDeliveryLease {
 
   /** Lazily open the delivery lease/readiness KV (pre-created at `cotal up`; bind, never create). */
   private async deliveryRegistry(): Promise<KV> {
-    if (!this.nc) throw new Error(this.notLiveMsg());
-    this.deliveryKv ??= await openDeliveryRegistry(this.nc, this.identity.space);
+    if (!this.conn.nc) throw new Error(this.notLiveMsg());
+    this.deliveryKv ??= await openDeliveryRegistry(this.conn.nc, this.identity.space);
     return this.deliveryKv;
   }
 
@@ -212,7 +210,7 @@ export class EndpointDeliveryLease {
    *  reject. */
   private retireDeliveryLeaseWatch(iter: Awaited<ReturnType<KV["watch"]>>): void {
     try { iter.stop(); } catch { /* already closed with its connection */ }
-    if (!this.nc || this.nc.isClosed()) return;
+    if (!this.conn.nc || this.conn.nc.isClosed()) return;
     const deleting = this.deps.deleteWatchConsumer(iter).catch((e: Error) => this.emitRecoverable(
       new Error(`a retired delivery lease watch consumer was not deleted (${e.message}); the broker reaps it at its inactive threshold`),
     ));

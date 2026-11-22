@@ -26,7 +26,7 @@ The output schemas below describe successful command results, not the protocol e
 
 ## manager
 
-Cluster `ai.cotal.manager`, revision 52. 44 commands.
+Cluster `ai.cotal.manager`, revision 53. 45 commands.
 
 | Command                                                   | Capability          | Class     | Target modes |
 | --------------------------------------------------------- | ------------------- | --------- | ------------ |
@@ -43,6 +43,7 @@ Cluster `ai.cotal.manager`, revision 52. 44 commands.
 | [`despawn`](#manager-despawn)                             | `manager.lifecycle` | ephemeral | owner, any   |
 | [`attach`](#manager-attach)                               | `manager.lifecycle` | ephemeral | owner, any   |
 | [`input`](#manager-input)                                 | `manager.lifecycle` | ephemeral | owner, any   |
+| [`interrupt`](#manager-interrupt)                         | `manager.lifecycle` | ephemeral | owner, any   |
 | [`turn`](#manager-turn)                                   | `manager.lifecycle` | ephemeral | owner, any   |
 | [`turn-participate`](#manager-turn-participate)           | `manager.self`      | ephemeral | self         |
 | [`turn-pending`](#manager-turn-pending)                   | `manager.self`      | ephemeral | self         |
@@ -1924,6 +1925,50 @@ Output schema:
     "bytes": {
       "type": "integer",
       "minimum": 0
+    }
+  }
+}
+```
+
+### manager interrupt
+
+Registered declaration:
+
+```json
+{
+  "name": "interrupt",
+  "class": "ephemeral",
+  "targeted": true,
+  "modes": [
+    "owner",
+    "any"
+  ],
+  "capability": "manager.lifecycle",
+  "inputDigest": "sha256:1db0472aaee8e6b9d8d3d430ee021a1b6efc559ab7c0b99186898c972c53dd2d",
+  "outputDigest": "sha256:e1786e14b9f948f90ccd31cae7b7b535f77a5d86e88f5ccea0030347f660e7f7"
+}
+```
+
+Input schema:
+
+```json
+{
+  "type": "null"
+}
+```
+
+Output schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "name"
+  ],
+  "properties": {
+    "name": {
+      "type": "string"
     }
   }
 }

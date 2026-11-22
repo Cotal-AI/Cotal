@@ -1,6 +1,7 @@
 // The peer-readable liveness responder and probe of CotalEndpoint, as an internal component. Moved
 // verbatim from endpoint.ts; the endpoint keeps the public methods and forwards to them. Not
 // re-exported by the index.
+import type { ConnectionState } from "./endpoint-connection-state.js";
 import type { EndpointIdentity } from "./endpoint-identity.js";
 import { randomUUID } from "node:crypto";
 import { AuthorizationError, PermissionViolationError, TimeoutError, type Msg, type NatsConnection, type Subscription } from "@nats-io/transport-node";
@@ -19,7 +20,6 @@ import { livenessServeFilter, livenessSubject } from "./subjects.js";
 /** What the liveness component reads from its endpoint. State is read when it is used, never
  *  copied, and every method is looked up on the endpoint at call time. */
 export interface EndpointLivenessDeps {
-  nc: () => NatsConnection | undefined;
   subs: () => Subscription[];
   livenessResponders: () => Map<LivenessPlane, { readState: () => Promise<ResponderState> | ResponderState; sub?: Subscription }>;
   notLiveMsg: () => string;
@@ -33,9 +33,8 @@ export interface EndpointLivenessDeps {
  *  every connection, and the probe that grades another responder. Internal: `CotalEndpoint` keeps
  *  the public methods and forwards to it. */
 export class EndpointLiveness {
-  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly deps: EndpointLivenessDeps) {}
+  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly conn: Readonly<ConnectionState>, private readonly deps: EndpointLivenessDeps) {}
 
-  private get nc() { return this.deps.nc(); }
   private get subs() { return this.deps.subs(); }
   private get livenessResponders() { return this.deps.livenessResponders(); }
   private notLiveMsg() { return this.deps.notLiveMsg(); }
@@ -86,7 +85,7 @@ export class EndpointLiveness {
    *  the plane answered by the broker's no-responders status while this endpoint is serving. A second
    *  call for the same plane replaces the first. */
   serveLiveness(plane: LivenessPlane, readState: () => Promise<ResponderState> | ResponderState): void {
-    if (!this.nc) throw new Error(this.notLiveMsg());
+    if (!this.conn.nc) throw new Error(this.notLiveMsg());
     const held = this.livenessResponders.get(plane);
     if (held) held.readState = readState;
     else this.livenessResponders.set(plane, { readState });
@@ -97,14 +96,14 @@ export class EndpointLiveness {
    *  as {@link armDeliveryControl} does. */
   bindLiveness(plane: LivenessPlane): void {
     const held = this.livenessResponders.get(plane);
-    if (!held || !this.nc) return;
+    if (!held || !this.conn.nc) return;
     if (held.sub) {
       try { held.sub.unsubscribe(); } catch { /* dead with the old connection */ }
       const i = this.subs.indexOf(held.sub);
       if (i >= 0) this.subs.splice(i, 1);
     }
     const { readState } = held;
-    const sub = this.nc.subscribe(livenessServeFilter(this.identity.space, plane), { queue: `live.${plane}` });
+    const sub = this.conn.nc.subscribe(livenessServeFilter(this.identity.space, plane), { queue: `live.${plane}` });
     held.sub = sub;
     this.subs.push(sub);
     // The responder token this bind answers under: AN OPAQUE VALUE MINTED HERE, and deliberately
@@ -183,14 +182,14 @@ export class EndpointLiveness {
       // that returns something for every input, which is indistinguishable from one that is not
       // measuring anything.
       throw new Error(`liveness: "${plane}" is not a plane this surface answers for (${[...LIVENESS_PLANES].join(", ")})`);
-    if (!this.nc) throw new Error(this.notLiveMsg());
+    if (!this.conn.nc) throw new Error(this.notLiveMsg());
     const reqSubject = livenessSubject(this.identity.space, plane, this.identity.owner, this.identity.actor);
     const reply = `${reqSubject}.reply.${randomUUID()}`;
     let outcome: ProbeOutcome;
     let answered: ResponderState | undefined;
     let instance: string | undefined;
     try {
-      const m = await this.requestBoundReply(this.nc, reqSubject, "", reply, timeoutMs);
+      const m = await this.requestBoundReply(this.conn.nc, reqSubject, "", reply, timeoutMs);
       let body: unknown;
       try { body = m.json(); } catch { body = undefined; }
       const parsed = parseLivenessAnswer(body, plane);
