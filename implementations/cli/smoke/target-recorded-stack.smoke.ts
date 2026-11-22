@@ -589,7 +589,44 @@ function checkDoctorOpenRecords(config: string, nameless: string, record: string
   checkDoctorOpenRecordProblems(config, named, space, doctor);
 }
 
+function checkDoctorRenderedFields(config: string, named: string, space: string, doctor: (...args: string[]) => ReturnType<typeof run>): void {
+  const key = (value: string) => `# space key: ${Buffer.from(value).toString("hex")}\n`;
+  for (const [label, text] of [
+    ["opaque hostname", named.replace(/^host: .*$/m, "host: localhost%")],
+    ["conflicting port", `${named}port: 0\n`],
+    ["second host with alternate assignment syntax", `${named}  host = 127.0.0.2\n`],
+    ["inline listener override", `${named}max_payload: 4096; port: 0\n`],
+    ["alternate listen directive", `${named}listen: 127.0.0.2:4222\n`],
+  ] as const) {
+    writeFileSync(config, text, { mode: 0o600 });
+    const r = doctor("--space", space, "--fix");
+    check(`doctor refuses a rendered config with ${label} and names its address record`, r.status === 2 &&
+      r.envelope?.error?.code === "AUTH_REQUIRED" && (r.envelope.error.remedy ?? "").includes(`broker address in ${config}`), shown(r));
+  }
+  for (const [label, text, targets] of [
+    ["two space keys", `${named}${key("otheropen")}`, [space, "otheropen"]],
+    ["a duplicate malformed space key", `${named}# space key: not-hex\n`, [space]],
+    ["a non-native space name", named.replace(key(space), key("review.open")), ["review.open"]],
+    ["an overlong space name", named.replace(key(space), key("a".repeat(65))), ["a".repeat(65)]],
+  ] as const) {
+    writeFileSync(config, text, { mode: 0o600 });
+    for (const target of targets) {
+      const r = doctor("--space", target);
+      check(`doctor refuses ${label} with guidance specific to the saved key`, r.status === 2 &&
+        r.envelope?.error?.code === "AUTH_REQUIRED" && (r.envelope.error.remedy ?? "").includes(`space key in ${config}`), shown(r));
+    }
+  }
+  const mixed = "Truth_Open-2";
+  const crlf = named.replace(/^host: .*$/m, "host: localhost").replace(key(space), `jetstream { store_dir: "store;dir" }\n${key(mixed)}`).replaceAll("\n", "\r\n");
+  writeFileSync(config, crlf, { mode: 0o600 });
+  const valid = doctor("--space", mixed, "--fix");
+  check("a rendered CRLF config with a valid hostname, mixed-case name and quoted path still diagnoses offline",
+    valid.status === 0 && valid.envelope?.outcome === "no-op" && valid.envelope.target?.space === mixed &&
+    valid.envelope.result?.brokerAuthorization === "not-checked" && valid.envelope.result.repair?.attempted === false && readFileSync(config, "utf8") === crlf, shown(valid));
+}
+
 function checkDoctorOpenRecordProblems(config: string, named: string, space: string, doctor: (...args: string[]) => ReturnType<typeof run>): void {
+  checkDoctorRenderedFields(config, named, space, doctor);
   const addressRemedy = `broker address in ${config}`;
   for (const port of ["0", "65536", "70000"]) {
     writeFileSync(config, named.replace(/^port: .*$/m, `port: ${port}`), { mode: 0o600 });

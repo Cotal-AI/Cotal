@@ -453,10 +453,10 @@ If `space add --force` recorded the mode without checking it, `doctor auth` warn
 `MODE_NOT_CHECKED` and points to `cotal space show <name>` for verification. It makes no claim
 about what that broker enforces. A checked open space has no credentials to inspect. The same applies after
 `cotal down` when this root's stack journal or retained `.cotal/server-open.conf` records the space as
-open, including with `--space` naming it. The retained configuration must name the space and a
-usable broker address. The command does not start or contact the broker. If a legacy stack's local
-records are incomplete or conflict with local auth records, the diagnostic names what to inspect
-or restore without assuming the broker ran open. With `--space` naming
+open, including with `--space` naming it. The retained configuration must contain one valid local
+space key and one usable broker host and port. The command does not start or contact the broker.
+If a legacy stack's local records are incomplete or conflict with local auth records, the
+diagnostic names what to inspect or restore without assuming the broker ran open. With `--space` naming
 a space whose signing trust this root does not hold, it refuses `AUTH_REQUIRED` (exit 2) and reads
 no other root. If no local record applies and the name is neither registered nor prepared, the
 next step identifies it as unknown and points to `cotal space` to check the name. To start a new local space, run

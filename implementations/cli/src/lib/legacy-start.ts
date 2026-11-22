@@ -2,14 +2,11 @@
  *  registration that kept the root's broker address, and `clean all` also removes the broker
  *  configuration a start rendered there, so a bare `up` would otherwise start on the default
  *  address, in static auth, under the folder's default space. */
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { DEFAULT_SERVER } from "@cotal-ai/core";
-import { authDir, legacyStackElsewhere, meshesForRoot, NATS_PIDFILE, retainedLegacyBroker, rootHoldsAccount, soleSpaceOf, spaceFromKey, spaceKey, verifyIdentityPin } from "@cotal-ai/workspace";
+import { authDir, legacyStackElsewhere, meshesForRoot, NATS_PIDFILE, retainedLegacyBroker, retainedOpenConfig, rootHoldsAccount, soleSpaceOf, spaceKey, verifyIdentityPin } from "@cotal-ai/workspace";
 import { listFreshTeamSummaries } from "./team-fresh.js";
-
-/** The line an open broker configuration names its space on, by its {@link spaceKey}. */
-const OPEN_SPACE_LINE = /^# space key: ([0-9a-f]+)$/m;
 
 /** An open broker configuration that names `space`. An open root holds no account to name it, and
  *  `down` drops its registration, so this line in `server-open.conf` names it for the next `up`. */
@@ -37,11 +34,10 @@ export function cleanedManifestStart(root: string, space: string, open: boolean)
  *  configuration from a release that wrote no such line leaves the newest open fresh team summary,
  *  while that configuration still serves the summary's address. */
 export function retainedOpenSpace(root: string): string | undefined {
-  const retained = retainedLegacyBroker(root);
-  if (!retained?.open) return undefined;
-  let key: string | undefined;
-  try { key = OPEN_SPACE_LINE.exec(readFileSync(join(root, ".cotal", "server-open.conf"), "utf8"))?.[1]; } catch { return undefined; }
-  if (key !== undefined) return spaceFromKey(key);
+  if (rootHoldsAccount(root)) return undefined;
+  const retained = retainedOpenConfig(root);
+  if (!retained?.server) return undefined;
+  if (retained.space !== undefined) return retained.space ?? undefined;
   let summaries: ReturnType<typeof listFreshTeamSummaries>["valid"];
   try { summaries = listFreshTeamSummaries(root).valid; } catch { return undefined; }
   const last = summaries.filter((summary) => summary.authMode === "open").sort((a, b) => a.recordedAt.localeCompare(b.recordedAt)).at(-1);

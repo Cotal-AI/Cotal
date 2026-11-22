@@ -150,7 +150,8 @@ function retainedOpenScope(root: string, requested?: string): OpenScope | undefi
   const config = join(root, ".cotal", "server-open.conf");
   const hasConfig = lstatSync(config, { throwIfNoEntry: false }) !== undefined;
   const retained = hasConfig ? retainedOpenConfig(root) : undefined;
-  const space = retained?.space;
+  const recorded = retained?.space;
+  const space = recorded && checkSpaceName(recorded).ok && !spaceNameTooLong(recorded) ? recorded : undefined;
   if (requested !== undefined && space !== undefined && requested !== space) return undefined;
   if (space !== undefined && requested === undefined && findMesh(space)) return undefined;
   const prepared = preparedSpaceAt(root);
@@ -177,7 +178,9 @@ function retainedOpenScope(root: string, requested?: string): OpenScope | undefi
   if (!hasConfig) return { remedy: `restore ${config} if this stack ran open, or restore its local signing records in ${dir}, then retry` };
   if (!retained) return { remedy: `restore a readable regular broker configuration at ${config} from this stack's records, then retry` };
   if (!retained.server) return { remedy: `restore the rendered broker address in ${config} from this stack's records, then retry` };
-  if (space === undefined) return { remedy: `restore the space key in ${config} from this stack's records, then retry` };
+  if (space === undefined) {
+    return { remedy: `restore the space key in ${config} from this stack's records so it names one valid local space, then retry` };
+  }
   return { space, source: "broker-config" };
 }
 

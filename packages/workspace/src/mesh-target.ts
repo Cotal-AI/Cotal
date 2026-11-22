@@ -1,4 +1,5 @@
 import { accessSync, closeSync, constants, existsSync, lstatSync, openSync, readFileSync, readdirSync, readSync, realpathSync, type Stats } from "node:fs";
+import { isIP } from "node:net";
 import { join } from "node:path";
 import { boundedValue, DEFAULT_SERVER, DEFAULT_SPACE, MANAGER_START_PAYLOAD_FLOOR, personaDir, type SpaceAuth } from "@cotal-ai/core";
 import { isLoopbackLiteral } from "@cotal-ai/core/loopback";
@@ -25,7 +26,7 @@ import {
 import { decodeLocalJson, ProtectedRecordStore, shellPath, unsearchableFolder } from "./protected-records.js";
 import { rootNamesNoSpace } from "./space.js";
 import { codeSpan } from "./text-wrap.js";
-import { checkServer, tlsIntent } from "./broker-url.js";
+import { tlsIntent } from "./broker-url.js";
 import { spaceFromKey } from "./auth-paths.js";
 import { readLocalRecordSource } from "./local-record-source.js";
 
@@ -707,12 +708,30 @@ function stackRecord(root: string): { server?: string; stackSpace?: string; home
   }
 }
 
-/** The `host:` and `port:` a rendered broker configuration names, as a broker URL. */
-function renderedServer(text: string): string | undefined {
-  const host = /^host:[ \t]*(\S+)[ \t]*\r?$/m.exec(text)?.[1], port = /^port:[ \t]*(\d+)[ \t]*\r?$/m.exec(text)?.[1];
-  if (!host || !port || Number(port) === 0 || host.includes(",")) return undefined;
-  const server = `nats://${host.includes(":") ? `[${host}]` : host}:${port}`;
-  return checkServer(server, "rendered broker configuration").ok ? server : undefined;
+function renderedHost(host: string): string | undefined {
+  const ip = host.startsWith("[") && host.endsWith("]") ? host.slice(1, -1) : host;
+  if (!ip.includes("%") && isIP(ip) === 6) return `[${ip}]`;
+  if (isIP(host) === 4) return host;
+  const dns = host.endsWith(".") ? host.slice(0, -1) : host;
+  if (dns.length > 253 || /^[0-9.]+$/.test(dns)) return undefined;
+  return dns.split(".").every((label) => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i.test(label)) ? host : undefined;
+}
+
+/** Read the renderer's listener fields, not the full NATS configuration language. The static
+ *  renderer can also emit indented WebSocket listener fields, distinct from the client listener. */
+function renderedServer(text: string, open: boolean): string | undefined {
+  const lines = text.split(/\r?\n/);
+  const listener = lines.filter((line) => (open || !/^[ \t]/.test(line)) && /^[ \t]*["']?(?:host|port|listen|include)(?=["' \t:=]|$)/i.test(line));
+  if (listener.length !== 2) return undefined;
+  // The renderer never uses native statement separators. Ignore them only in its quoted paths
+  // and comments, where they carry no listener meaning.
+  if (open && lines.some((line) => !/^[ \t]*(?:#|\/\/)/.test(line) && line.replace(/"(?:[^"\\]|\\.)*"/g, '""').includes(";"))) return undefined;
+  const fields = listener.join("\n");
+  const host = /^host:[ \t]*(\S+)[ \t]*$/m.exec(fields)?.[1];
+  const port = /^port:[ \t]*(\d+)[ \t]*$/m.exec(fields)?.[1];
+  if (!host || !port || Number(port) < 1 || Number(port) > 65535) return undefined;
+  const address = renderedHost(host);
+  return address === undefined ? undefined : `nats://${address}:${port}`;
 }
 
 function renderedConfig(path: string): string | undefined {
@@ -728,24 +747,26 @@ export function rootHoldsAccount(root: string): boolean {
   catch { return true; }
 }
 
-/** The address and identity in a single read of the rendered open config. Either may be missing. */
-export function retainedOpenConfig(root: string): { server: string | undefined; space: string | undefined } | undefined {
+/** The address and identity in one read of the rendered open config. A null space means that a
+ *  key is present but cannot uniquely name a space, unlike a legacy config with no key. */
+export function retainedOpenConfig(root: string): { server: string | undefined; space: string | null | undefined } | undefined {
   const text = renderedConfig(join(root, ".cotal", "server-open.conf"));
   if (text === undefined) return undefined;
-  const key = /^# space key: ([0-9a-f]+)\r?$/m.exec(text)?.[1];
-  return { server: renderedServer(text), space: key === undefined ? undefined : spaceFromKey(key) };
+  const keys = [...text.matchAll(/^[ \t]*#[ \t]*space[ \t]+key\b[^\r\n]*/gmi)];
+  const key = keys.length === 1 ? /^# space key: ([0-9a-f]+)$/.exec(keys[0]![0])?.[1] : undefined;
+  return { server: renderedServer(text, true), space: keys.length === 0 ? undefined : key === undefined ? null : spaceFromKey(key) ?? null };
 }
 
 /** The space identity recorded by an open broker's rendered configuration. */
 export function retainedOpenSpace(root: string): string | undefined {
-  return retainedOpenConfig(root)?.space;
+  return retainedOpenConfig(root)?.space ?? undefined;
 }
 
 /** The broker address and mode retained in this root's rendered configuration. */
 export function retainedLegacyBroker(root: string): { server: string; open: boolean } | undefined {
   if (rootHoldsAccount(root)) {
     const text = renderedConfig(join(authDir(root), "server.conf"));
-    const server = text === undefined ? undefined : renderedServer(text);
+    const server = text === undefined ? undefined : renderedServer(text, false);
     return server ? { server, open: false } : undefined;
   }
   const server = retainedOpenConfig(root)?.server;
