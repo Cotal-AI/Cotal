@@ -174,15 +174,49 @@ async function checkFollowValidation(): Promise<void> {
     const unknown = await run(["channel", "members", "volume.posts", "--follow", "--json", "--bogus", "--server", server]);
     check("an unknown membership option prevents parsing and keeps the one-shot refusal",
       unknown.status === 1 && unknown.stderr === "" && unknown.envelope?.command === "channel" && unknown.envelope.error?.code === "USAGE_INVALID", shown(unknown));
+    const target = { space, channel: "volume.posts" };
+    const replayArgs = ["channel", "members", "#volume.posts", "--space", space, "--json", "--replay", "off", "--server"];
+    const { stream: validServer } = await checkMembershipSetupRefusal([...replayArgs, server], target, "USAGE_INVALID", 1);
+    check("a replay correction preserves a valid broker URL", validServer.stdout.includes(`--server ${server}`), shown(validServer));
+    const { finite: combinedFinite, stream: combinedFollow } = await checkMembershipSetupRefusal(
+      [...replayArgs, `nats://${userinfo}@127.0.0.1:${address.port}`], target, "USAGE_INVALID", 1);
+    check("a replay refusal with an invalid broker URL gives safe guidance",
+      [combinedFinite, combinedFollow].every(({ stdout }) => stdout.includes("name the broker URL without") && !stdout.includes(userinfo)));
+    await checkMembershipLocalSetupRefusals(server);
     check("invalid membership arguments open no connection", connections === 0, connections);
   } finally {
     await new Promise<void>((resolve) => listener.close(() => resolve()));
   }
 }
 
-async function checkMembershipSetupRefusal(args: string[], target: { space: string | null; channel: string | null }, code: string, exit = 2) {
-  const finite = await run(args);
-  const stream = await run([...args, "--follow"]);
+async function checkMembershipLocalSetupRefusals(server: string): Promise<void> {
+  const target = { space, channel: "volume.posts" };
+  const args = ["-j", "ch", "members", "#volume.posts", "-s", space, "--server", server];
+  await checkMembershipSetupRefusal(args, target, "USAGE_INVALID", 1, { env: { COTAL_HOME: "relative-cotal-home" } });
+
+  const brokenProject = join(home, "broken-project");
+  mkdirSync(brokenProject);
+  const marker = join(brokenProject, ".cotal");
+  writeFileSync(marker, "not a directory\n");
+  await checkMembershipSetupRefusal(args, target, "CONFLICT", 2, { cwd: brokenProject });
+  await checkMembershipSetupRefusal(args, target, "SCHEMA_INVALID", 1, { env: { COTAL_HOME: marker } });
+
+  const brokenConfig = join(home, "broken-config");
+  mkdirSync(join(brokenConfig, "cotal"), { recursive: true });
+  const env = { XDG_CONFIG_HOME: brokenConfig };
+  writeFileSync(join(brokenConfig, "cotal", "preferences.json"), "not JSON\n");
+  await checkMembershipSetupRefusal(args, target, "SCHEMA_INVALID", 1, { env });
+
+  const blockedConfig = join(home, "blocked-config");
+  mkdirSync(blockedConfig);
+  writeFileSync(join(blockedConfig, "cotal"), "not a directory\n");
+  await checkMembershipSetupRefusal(args, target, "SCHEMA_INVALID", 1, { env: { XDG_CONFIG_HOME: blockedConfig } });
+}
+
+async function checkMembershipSetupRefusal(args: string[], target: { space: string | null; channel: string | null }, code: string, exit = 2,
+  { cwd, env }: { cwd?: string; env?: NodeJS.ProcessEnv } = {}) {
+  const finite = await run(args, cwd, env);
+  const stream = await run([...args, "--follow"], cwd, env);
   const records = stream.stdout.trim().split("\n").filter(Boolean).map((line) => JSON.parse(line) as {
     schemaVersion?: number; stream?: string; type?: string; target?: { space: string | null; channel: string | null };
     data?: { code?: string; message?: string; remedy?: string; reason?: string; lastAsOf?: number | null };

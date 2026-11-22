@@ -9,7 +9,7 @@ import {
 } from "@cotal-ai/core";
 import {
   ConfirmationRequired,
-  codeSpan, CommandFailure, findMesh, jsonFlag, plainFlag, presentationOf, recordOperationWarning, targetFlags, writeResult,
+  checkServer, codeSpan, CommandFailure, findMesh, jsonFlag, plainFlag, presentationOf, recordOperationWarning, targetFlags, writeResult,
   type Presentation, type Report,
 } from "@cotal-ai/workspace";
 import { connectOrThrow, userViewAuthOrExit } from "../lib/connect.js";
@@ -80,9 +80,12 @@ export function channelArguments(args: ParsedArgs): { action: string; name?: str
   // `--replay` takes no value, so `--replay off` left `off` behind as a second channel name.
   const stray = named ? (extra.length === 1 ? extra[0] : undefined) : rawName;
   if ((values.replay !== undefined || values["no-replay"] !== undefined) && stray !== undefined && /^(on|off|true|false|yes|no)$/i.test(stray)) {
+    const server = values.server === undefined ? undefined : checkServer(values.server, "--server");
     const flag = /^(off|false|no)$/i.test(stray) ? "--no-replay" : "--replay";
     const word = named && rawName ? ` ${shellWord(rawName.startsWith("-") ? `#${rawName}` : rawName)}` : "";
-    throw new CommandFailure("refused", "USAGE_INVALID", `--replay takes no value, so "${stray}" was read as a channel name; --replay turns replay on and --no-replay turns it off`, { remedy: `run ${codeSpan(`cotal channel ${action}${word} ${flag}${targetWords(values)}`)}` });
+    const remedy = server && !server.ok ? server.remedy ?? server.message.replace(/^✗ /, "")
+      : `run ${codeSpan(`cotal channel ${action}${word} ${flag}${targetWords(values)}`)}`;
+    throw new CommandFailure("refused", "USAGE_INVALID", `--replay takes no value, so "${stray}" was read as a channel name; --replay turns replay on and --no-replay turns it off`, { remedy });
   }
   if (extra.length || (named ? !rawName : rawName !== undefined))
     throw usage(named ? `cotal channel ${action} takes one channel name` : `cotal channel ${action} takes no channel name`);

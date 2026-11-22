@@ -158,11 +158,14 @@ function debugStacks(failure: Error): void {
   for (let depth = 0; error instanceof Error && depth < 8; error = error.cause, depth++) if (error.stack) console.error(c.dim(error.stack));
 }
 
-/** A validator can refuse before the selected follow writes its first record. */
-function validationFollowFailureRecords(cmd: Command, args: ParsedArgs, failure: CommandFailure) {
+type FollowSetup = { args: ParsedArgs; commandValidation?: true };
+
+/** Only refusals known to precede the reader can close a follow without a snapshot. */
+function followSetupFailureRecords(cmd: Command, { args, commandValidation }: FollowSetup, failure: CommandFailure) {
   if (args.values.follow !== true || args.values.plain === true) return;
   const [first, name] = args.positionals;
-  if (cmd.name === "history" && !findSubcommand(cmd, first)) return historySetupFailureRecords(args, failure);
+  // History's command validator already writes stream records. Its shared setup output is unchanged.
+  if (commandValidation && cmd.name === "history" && !findSubcommand(cmd, first)) return historySetupFailureRecords(args, failure);
   if (cmd.name === "channel" && first === "members") {
     const space = typeof args.values.space === "string" && args.values.space.trim() ? args.values.space : null;
     return membershipSetupFailureRecords({ space, channel: name?.replace(/^#/, "") || null }, failure);
@@ -173,7 +176,7 @@ function validationFollowFailureRecords(cmd: Command, args: ParsedArgs, failure:
  *  and the exit code its outcome sets. A usage refusal is followed by the help of the command
  *  or subcommand `words` name. Structured output is written synchronously, because stdout to a pipe is
  *  asynchronous on some platforms and `exit` would cut it short. */
-function failureExit(cmd: Command, failure: CommandFailure, json: boolean, plain = false, scope?: OperationScope, words: readonly string[] = [], validationArgs?: ParsedArgs): never {
+function failureExit(cmd: Command, failure: CommandFailure, json: boolean, plain = false, scope?: OperationScope, words: readonly string[] = [], setup?: FollowSetup): never {
   const warnings = scope ? scope.warnings ?? [] : operationWarnings();
   recordTelemetryFailure(failure.outcome, failure.code, failure);
   // A command's own usage refusal reads as the parser's: the error, its remedy, then the help. A
@@ -196,7 +199,7 @@ function failureExit(cmd: Command, failure: CommandFailure, json: boolean, plain
     // Mint receipts identify the operation, not the auth namespace used by account reports.
     const command = cmd.name === "auth" && findSubcommand(cmd, metadataPositionals(cmd, words).positionals[0]?.value)?.name === "mint"
       ? "auth mint" : cmd.name;
-    const records = validationArgs && validationFollowFailureRecords(cmd, validationArgs, failure);
+    const records = setup && followSetupFailureRecords(cmd, setup, failure);
     const lines = records ? records.map((record) => `${JSON.stringify(record)}\n`).join("")
       : envelopeLine(failureEnvelope(command, failure, warnings, scope));
     writeSync(1, lines);
@@ -517,9 +520,8 @@ function parseOrExit(cmd: Command, rest: string[]): ParsedArgs {
   if (cmd.subcommands?.length && first !== undefined && cmd.name !== "history" && !findSubcommand(cmd, first))
     usageExit(unknownSubcommandMessage(cmd.name, cmd, first), cmd, json, plain);
   const canonical = canonicalSubcommand(cmd, parsed);
-  // Shared option refusals keep their existing output outside the membership follow.
   const refuseOption = (failure: CommandFailure): never => failureExit(cmd, failure, json, canonical.values.plain === true,
-    undefined, rest, cmd.name === "channel" ? canonical : undefined);
+    undefined, rest, { args: canonical });
   // Target resolution reads an empty space as no space and falls back to the selected one, so a script
   // whose variable is unset would act on whichever space is selected.
   const spaceFlag = cmd.flags?.find((flag) => flag.name === "space");
@@ -536,7 +538,7 @@ function parseOrExit(cmd: Command, rest: string[]): ParsedArgs {
   try {
     cmd.validate?.(canonical);
   } catch (error) {
-    if (isCommandFailure(error)) failureExit(cmd, error, json, canonical.values.plain === true, undefined, rest, canonical);
+    if (isCommandFailure(error)) failureExit(cmd, error, json, canonical.values.plain === true, undefined, rest, { args: canonical, commandValidation: true });
     if (isArgError(error)) usageExit((error as Error).message.split(".")[0]!, cmd, json, plain, undefined, rest);
     throw error;
   }
@@ -582,7 +584,12 @@ function refuseRemovedFolder(cmd: Command, parsed: ParsedArgs, rest: readonly st
     return;
   }
   if (cmd.name.startsWith("__") || FOLDERLESS.has(cmd.name) || !workingFolderRemoved()) return;
-  failureExit(cmd, new CommandFailure("refused", "USAGE_INVALID", "this folder no longer exists", { remedy: "cd to an existing folder and run the command again", selfContained: true }), structured(cmd, parsed.positionals[0]) && parsed.values.json === true, parsed.values.plain === true, undefined, rest);
+  preRunFailureExit(cmd, parsed, rest, new CommandFailure("refused", "USAGE_INVALID", "this folder no longer exists", { remedy: "cd to an existing folder and run the command again", selfContained: true }));
+}
+
+function preRunFailureExit(cmd: Command, args: ParsedArgs, words: readonly string[], failure: CommandFailure): never {
+  return failureExit(cmd, failure, structured(cmd, args.positionals[0]) && args.values.json === true,
+    args.values.plain === true, undefined, words, { args });
 }
 
 /** The parsed args with a subcommand alias in the first positional replaced by its name, so `run`
@@ -820,7 +827,7 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
   // the extensions, so a command that could use them stops here, before the seed would write there.
   // Help, shell completion, version and docs use none of them.
   if (configFolder && cmd && parsed && !cmd.name.startsWith("__") && !["help", "completion", "version", "docs"].includes(cmd.name))
-    failureExit(cmd, configFolderRefusal(configFolder), structured(cmd, parsed.positionals[0]) && parsed.values.json === true, parsed.values.plain === true, undefined, rest);
+    preRunFailureExit(cmd, parsed, rest, configFolderRefusal(configFolder));
   // The seed can install or upgrade an extension package, so the surface is read again after it and
   // an extension stub resolves against the manifest the seed left.
   const controlOnlyManager = parsed?.values.execution === "none" && (cmd?.name === "supervise" || cmd?.name === "__daemon-manager");
@@ -885,20 +892,20 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
     // COTAL_HOME that cannot be a directory can hold no record: both stop them before any command
     // reads it.
     const home = process.env.COTAL_HOME;
-    if (home && !isAbsolute(home)) failureExit(cmd, new CommandFailure("refused", "USAGE_INVALID", `COTAL_HOME ${JSON.stringify(home)} is a relative path, so each folder a command runs in would have its own Cotal home; the command did not run`, { remedy: `set COTAL_HOME to an absolute path, or unset it to use ${userCotalDir()}` }), structured(cmd, parsed.positionals[0]) && parsed.values.json === true, parsed.values.plain === true, undefined, rest);
+    if (home && !isAbsolute(home)) preRunFailureExit(cmd, parsed, rest, new CommandFailure("refused", "USAGE_INVALID", `COTAL_HOME ${JSON.stringify(home)} is a relative path, so each folder a command runs in would have its own Cotal home; the command did not run`, { remedy: `set COTAL_HOME to an absolute path, or unset it to use ${userCotalDir()}` }));
     const homeProblem = cotalHomeProblem();
-    if (homeProblem) failureExit(cmd, new CommandFailure("refused", "SCHEMA_INVALID", `${homeProblem}; the command did not run`, { remedy: `point COTAL_HOME at a directory, or unset it to use ${userCotalDir()}` }), structured(cmd, parsed.positionals[0]) && parsed.values.json === true, parsed.values.plain === true, undefined, rest);
+    if (homeProblem) preRunFailureExit(cmd, parsed, rest, new CommandFailure("refused", "SCHEMA_INVALID", `${homeProblem}; the command did not run`, { remedy: `point COTAL_HOME at a directory, or unset it to use ${userCotalDir()}` }));
     // A `.cotal` that is a file in the folder the command uses, such as someone's notes, holds no
     // records, and every reader would otherwise report a different wrong cause. The machine daemon
     // uses its selected home, not the invoking project's records.
     const dirProblem = cmd.name === "version" || cmd.name === "daemon" || workingFolderRemoved() ? undefined : cotalDirProblem(typeof parsed.values.root === "string" ? resolve(parsed.values.root) : findCotalRoot());
-    if (dirProblem) failureExit(cmd, new CommandFailure("refused", "CONFLICT", `${dirProblem}; the command did not run`, { remedy: "rename or move that file, then run the command again" }), structured(cmd, parsed.positionals[0]) && parsed.values.json === true, parsed.values.plain === true, undefined, rest);
+    if (dirProblem) preRunFailureExit(cmd, parsed, rest, new CommandFailure("refused", "CONFLICT", `${dirProblem}; the command did not run`, { remedy: "rename or move that file, then run the command again" }));
     if (!["version", "docs", "status", "daemon"].includes(cmd.name)) {
       try {
         cachedPreferences();
       } catch (e) {
         if (!isCommandFailure(e)) throw e;
-        failureExit(cmd, e, structured(cmd, parsed.positionals[0]) && parsed.values.json === true, parsed.values.plain === true, undefined, rest);
+        preRunFailureExit(cmd, parsed, rest, e);
       }
     }
   }
