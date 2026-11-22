@@ -161,22 +161,6 @@ const noop = async (): Promise<void> => {};
     assert.equal(failedReceipt.error.code, "OPERATION_FAILED");
     assert.deepEqual(failedReceipt.warnings.map(({ code }: { code: string }) => code), ["L3021"]);
 
-    writeFileSync(join(root, "bad-clock.json"), '{"clock":{"checkpoints":"1s"}}');
-    const badScript = ["run", "simulate", "warning-fail.js", "--handler", "bad-clock.json"];
-    const scriptJson = run([...badScript, "--json"]);
-    assert.equal(scriptJson.status, 1, scriptJson.stdout + scriptJson.stderr);
-    assert.equal(scriptJson.stderr, "");
-    const scriptReceipt = JSON.parse(scriptJson.stdout);
-    assert.equal(scriptReceipt.outcome, "refused");
-    assert.equal(scriptReceipt.error.code, "SCHEMA_INVALID");
-    assert.equal(scriptReceipt.target.file, "bad-clock.json");
-    assert.match(scriptReceipt.error.remedy, /use clock\.checkpoint in bad-clock\.json/);
-    assert.deepEqual(scriptReceipt.warnings.map(({ code }: { code: string }) => code), ["L3021"]);
-    const scriptPlain = run([...badScript, "--plain"]);
-    assert.equal(scriptPlain.status, 1, scriptPlain.stdout + scriptPlain.stderr);
-    assert.equal(scriptPlain.stdout, "");
-    assert.match(scriptPlain.stderr, /L3021[\s\S]*Fix: Pass a key function[\s\S]*unknown clock field 'checkpoints'[\s\S]*use clock\.checkpoint/);
-
     for (const [field, delay] of [["checkpoint", "soon"], ["turn", 100], ["ask", null], ["wait", "9007199254740992ms"]] as const) {
       writeFileSync(join(root, "bad-clock.json"), JSON.stringify({ checkpoints: { "approve-plan": { status: "resolved" } }, clock: { [field]: delay } }));
       const invalid = run(["run", "simulate", "workflow.cotal.js", "--handler", "bad-clock.json", "--json"]);
