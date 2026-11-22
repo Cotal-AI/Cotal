@@ -89,7 +89,9 @@ export async function endpoint(args: ParsedArgs): Promise<void> {
     if (args.values.live) {
       try { live = await readEndpointInventory({ ...args.values, space } as { space?: string; server?: string; creds?: string }); }
       catch (error) {
-        const failure = isCommandFailure(error) ? error : isConnectRefusal(error) ? error.failure() : undefined;
+        const failure = isCommandFailure(error) ? error : isConnectRefusal(error) ? error.failure()
+          : isWorkspaceTargetError(error) ? { code: targetErrorCode(error.code), ...workspaceErrorParts({ kind: "target", error }) }
+          : undefined;
         unavailable = { code: failure?.code ?? "TARGET_UNAVAILABLE", message: failure?.message ?? "Authorized native registration reads were unavailable. The live inventory is not an empty complete result." };
         remedy = failure?.remedy;
       }
@@ -118,7 +120,8 @@ export async function endpoint(args: ParsedArgs): Promise<void> {
     const row = readEndpointReference(space, suppliedName!);
     if (!row) throw new CommandFailure("refused", "TARGET_NOT_FOUND", "no saved reference has this full name in the selected space");
     if (!args.values.yes) {
-      if (!canPrompt() || presentation === "json") throw new ConfirmationRequired("forgetting a saved reference outside interactive input requires --yes", { target: { space, name: row.name }, remedy: `confirm with \`cotal endpoint remove ${row.name}${targetWords(args.values)} --yes\`` });
+      const format = presentation === "rich" ? "" : ` --${presentation}`;
+      if (!canPrompt() || presentation === "json") throw new ConfirmationRequired("forgetting a saved reference outside interactive input requires --yes", { target: { space, name: row.name }, remedy: `confirm with \`cotal endpoint remove ${row.name}${targetWords(args.values)} --yes${format}\`` });
       const answer = await prompts.confirm({ message: `Forget ${oneLine(row.name)} in ${oneLine(space)}? No endpoint, process or credential will be removed.`, initialValue: false });
       if (prompts.isCancel(answer) || !answer) { writeResult(presentation, { command: "endpoint", target: { space, name: row.name }, result: { kind: "reference-removal", removed: false }, noOp: true }, () => ({ sections: [{ title: "Reference kept", blocks: [{ kind: "lines", lines: ["No local record or remote resource was changed."] }] }] })); return; }
     }

@@ -498,6 +498,7 @@ Existing names are not silently overwritten.
 `endpoint remove <name>` defaults to cancel, or takes `--yes` for scripted confirmation. It
 compares the held revision and content under the private writer lock before forgetting metadata.
 It never deregisters a native endpoint, stops a process, removes credential files or revokes grants.
+The confirmation command keeps `--json` or `--plain` if you passed it.
 
 Protected no-follow/nonblocking file access supports POSIX hosts. Windows uses its access-list
 model for local records instead: a credential reference there must be a regular file, and its
@@ -527,12 +528,15 @@ instance does not fall back to the class queue. Unknown native effects are not b
 Both read the endpoint's contract first, and so do `describe`, `invoke` and `auth mint --endpoint`.
 `endpoint invoke` and `invoke` give that read their `--timeout` (default 10000 ms), the one deadline
 for the whole call. `endpoint describe`, `describe` and `auth mint --endpoint` have no `--timeout`
-and give it 10 seconds. When no instance answers that read within its deadline, the command refuses
+and give it 10 seconds. When no instance answers an unpinned read within its deadline, the command refuses
 with `TARGET_UNAVAILABLE`: nothing is serving the endpoint, or nothing could reach this caller. Its
 Next says to start the service that serves the endpoint. When you set `--timeout`, the refusal
 names it, because a deadline that short can also end before a served endpoint answers, and its Next
 suggests rerunning the original command with a longer `--timeout` and all other arguments and
 flags unchanged. Nothing was invoked or issued.
+If a pinned instance does not answer an invocation's contract read, the refusal names that instance
+and says no invocation was sent. Check the full instance ID with `cotal endpoint list --live --space <space>`
+on the same broker. Use a longer `--timeout` only if you expect that instance to answer.
 
 A reference's file credential uses the [paired native caller adapter](cli-auth.mdx#endpoint-caller-credentials).
 It must match the selected registered static root, space, endpoint and signed native scope. A
@@ -577,7 +581,8 @@ the leader. The list can lag concurrent changes and is not an atomic whole-space
 The snapshot reads at most 1000 registration keys. Omitted keys, unreadable records or unavailable
 registry access make the requested live portion partial and return exit 4, while preserving the
 local references. If a broker connection fails, the report shows the diagnostic and any recovery
-step. For example, if an explicit `--server` does not answer and the selected space has a recorded
+step. If the selected local space was stopped, the report names the completed stop and the project
+folder where you can restart it. If an explicit `--server` does not answer and the selected space has a recorded
 broker, the report suggests dropping `--server` and using the named `--space` on the retry.
 That keeps the inventory on the same space even if you selected a different one with `cotal use`.
 Status projection, reported state, process ownership and a serving response are separate.
