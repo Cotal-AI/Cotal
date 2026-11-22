@@ -1,7 +1,8 @@
 // The durable consumers of CotalEndpoint, as an internal component: the JetStream manager, binding the DM
 // inbox, chat and task consumers and pumping them, the DM-only bind, the per-channel chat subscriptions, and
-// the consumer and stream reads. Moved verbatim from endpoint.ts; the endpoint keeps the fields and
-// chatFrontier and forwards to these. Not re-exported by the index.
+// the consumer and stream reads. Moved verbatim from endpoint.ts. It owns the task epoch, the first-connect
+// flag and the chat subscription refusals; the endpoint keeps the shared fields and chatFrontier and forwards
+// to these. Not re-exported by the index.
 import type { EndpointIdentity } from "./endpoint-identity.js";
 import { withDeadline } from "./deadline.js";
 import { ackWaitOf, durableDelivery, isRecord } from "./endpoint-inbound.js";
@@ -23,17 +24,12 @@ export interface EndpointConsumersDeps {
   setJsm: (value: JetStreamManager | undefined) => void;
   js: () => JetStreamClient | undefined;
   authed: () => boolean;
-  firstConnect: () => boolean;
-  setFirstConnect: (value: boolean) => void;
   streamMsgs: () => ConsumerMessages[];
-  taskEpoch: () => string | undefined;
-  setTaskEpoch: (value: string | undefined) => void;
   stopped: () => boolean;
   dmOnlyInFlight: () => Promise<void> | undefined;
   setDmOnlyInFlight: (value: Promise<void> | undefined) => void;
   chatSubs: () => Map<string, Subscription>;
   chatSubDenied: () => Set<string>;
-  chatSubRefusals: () => WeakSet<PermissionViolationError>;
   plane3Channels: () => Map<string, number>;
   notLiveMsg: () => string;
   requireLifecycleUid: (what: string) => string;
@@ -48,8 +44,22 @@ export interface EndpointConsumersDeps {
   emit: (event: string, ...args: unknown[]) => boolean;
 }
 
-/** One endpoint's durable consumers. Internal: `CotalEndpoint` keeps the fields and forwards to it. */
+/** One endpoint's durable consumers. Internal: it owns its task epoch, first-connect flag and chat
+ *  subscription refusals, and `CotalEndpoint` keeps the shared fields and forwards to it. */
 export class EndpointConsumers {
+  /** The TASK stream's creation time for the role consumer this endpoint pumps, stamped on each copy
+   *  it delivers and carried by that copy's take (SPEC §8.1). */
+  private taskEpoch?: string;
+  /** True until the first successful connect completes its boot backfill — distinguishes first-connect
+   *  (backfill the boot channels' history) from a reconnect (reopen the core-subs, no re-backfill).
+   *  Persists across reconnect (NOT connection-scoped). Replaces the legacy chat-durable consumed-cursor
+   *  signal now that there is no per-instance chat durable. */
+  private firstConnect = true;
+  /** The refusals a channel's live subscription callback received. nats.js hands a subscription
+   *  refusal to the refused subscription's callback and then dispatches that same instance on the
+   *  connection status, so the callback owns it (see {@link EndpointConsumers.subscribeChat}) and watchStatus skips it. */
+  private readonly chatSubRefusals = new WeakSet<PermissionViolationError>();
+
   constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly deps: EndpointConsumersDeps) {}
 
   private get nc() { return this.deps.nc(); }
@@ -57,17 +67,12 @@ export class EndpointConsumers {
   private set jsm(value: JetStreamManager | undefined) { this.deps.setJsm(value); }
   private get js() { return this.deps.js(); }
   private get authed() { return this.deps.authed(); }
-  private get firstConnect() { return this.deps.firstConnect(); }
-  private set firstConnect(value: boolean) { this.deps.setFirstConnect(value); }
   private get streamMsgs() { return this.deps.streamMsgs(); }
-  private get taskEpoch() { return this.deps.taskEpoch(); }
-  private set taskEpoch(value: string | undefined) { this.deps.setTaskEpoch(value); }
   private get stopped() { return this.deps.stopped(); }
   private get dmOnlyInFlight() { return this.deps.dmOnlyInFlight(); }
   private set dmOnlyInFlight(value: Promise<void> | undefined) { this.deps.setDmOnlyInFlight(value); }
   private get chatSubs() { return this.deps.chatSubs(); }
   private get chatSubDenied() { return this.deps.chatSubDenied(); }
-  private get chatSubRefusals() { return this.deps.chatSubRefusals(); }
   private get plane3Channels() { return this.deps.plane3Channels(); }
   private notLiveMsg(): string { return this.deps.notLiveMsg(); }
   private requireLifecycleUid(what: string): string { return this.deps.requireLifecycleUid(what); }
@@ -80,6 +85,11 @@ export class EndpointConsumers {
   private emitRecoverable(err: Error): void { return this.deps.emitRecoverable(err); }
   private closeRefusedMembership(channel: string, generation: number): Promise<void> { return this.deps.closeRefusedMembership(channel, generation); }
   private emit(event: string, ...args: unknown[]) { return this.deps.emit(event, ...args); }
+
+  /** Whether a live chat subscription's own callback already received this refusal. */
+  ownsChatSubRefusal(err: PermissionViolationError): boolean {
+    return this.chatSubRefusals.has(err);
+  }
 
   /** Lazily obtain a JetStream manager — so a non-consuming endpoint (e.g. the supervisor,
    *  consume:false) can still pre-create others' durables. */
