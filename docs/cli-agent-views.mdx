@@ -155,6 +155,8 @@ It takes no `--all`, `--components`, `--wide` or `--verbose`.
 `cotal status manager` keeps its manager diagnostic census. When a manager answers but runs
 no agent named `manager`, the refusal names the manager and points to `cotal status`.
 On an authenticated space it also points to `cotal endpoint describe manager`.
+Both reads keep the space and broker options you supplied. If the broker address cannot be shown,
+the refusal tells you to reuse those options without printing the address.
 Passing an answering manager's own instance ID gives the same guidance on static and open spaces.
 A requested model is not provider-confirmed. Connector-reported provider
 information is labeled exact or name-matched under the same proof. A new manager
