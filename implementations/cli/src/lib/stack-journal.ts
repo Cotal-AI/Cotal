@@ -282,9 +282,12 @@ export function adoptionRefusal(root: string, found: { journal: StackJournal; re
  *  up refused before any member started, as a stack that never ran here. Returns the recorded root. */
 export function adoptStackJournal(root: string, space: string): string {
   const canonical = canonicalRoot(root), path = stackJournalPath(canonical);
-  const lock = acquireLock(`${path}.lock`, { label: "stack journal", onTimeout: () => new CommandFailure("refused", "CONFLICT", "another writer holds the stack journal") });
+  // Only lock a candidate journal; acquiring a lock can create its parent directory.
+  const lock = journalRecordedElsewhere(canonical)
+    ? acquireLock(`${path}.lock`, { label: "stack journal", onTimeout: () => new CommandFailure("refused", "CONFLICT", "another writer holds the stack journal") })
+    : undefined;
   try {
-    const found = journalRecordedElsewhere(canonical);
+    const found = lock && journalRecordedElsewhere(canonical);
     if (!found) throw new CommandFailure("refused", "TARGET_NOT_FOUND", `${canonical} holds no stack journal another folder recorded, so there is nothing to adopt; nothing was written`, { target: { root: canonical, space }, remedy: `run ${codeSpan(`cotal space create ${space} --root ${shellWord(canonical)}`)} without --adopt` });
     if (found.journal.space !== space) throw new CommandFailure("refused", "CONFLICT", `the stack journal in ${canonical} is for "${found.journal.space}", not "${space}"; nothing was written`, { target: { root: canonical, space, journalSpace: found.journal.space }, remedy: `adopt it with \`cotal space create ${found.journal.space} --adopt --root ${canonical}\`` });
     const block = stackAdoptionBlock(canonical, found.recordedRoot, space, found.journal.members);
@@ -319,7 +322,7 @@ export function adoptStackJournal(root: string, space: string): string {
     validate(next, canonical);
     writeSecretFileAtomic(path, JSON.stringify(next, null, 2) + "\n");
     return found.recordedRoot;
-  } finally { lock.release(); }
+  } finally { lock?.release(); }
 }
 
 /** A controller-owned stack cannot be preserved in this release, so its preserve, and the backup and

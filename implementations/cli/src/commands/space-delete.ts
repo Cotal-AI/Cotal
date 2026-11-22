@@ -118,7 +118,11 @@ function resolveSpaceDeletionEntry(name: string): MeshEntry {
     // A prepared space has a name and a root but no running broker whose streams could be deleted.
     let prepared: ReturnType<typeof findPreparedSpace>;
     try { prepared = findPreparedSpace(name); }
-    catch { throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the local prepared-space records could not be read; no live space deletion target was inferred", { target: { space: name } }); }
+    catch (error) {
+      if (!isMeshRegistryError(error)) throw error;
+      const { code, message, remedy } = registryFailure(error);
+      throw new CommandFailure("refused", code, `${message}; no broker was contacted`, { target: { space: name, file: error.file }, remedy });
+    }
     if (prepared) {
       const target = { space: name, root: prepared.root };
       const reset = codeSpan(name.startsWith("-") ? `cotal reset store --yes -- ${shellPath(name)}` : `cotal reset store ${shellPath(name)} --yes`);

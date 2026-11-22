@@ -227,9 +227,10 @@ and so does `cotal up --space <name>` run from another folder. Its Next names
 was cut off before it recorded an outcome, as an `up` interrupted before it registered the space
 leaves it, the refusal says so and names `cotal status` in that root, which names the step that
 finishes or settles it. `cotal up --space <name>` in a folder
-that is already another space's root refuses with `CONFLICT`, exit 2. `space add` refuses a prepared
-name. A prepared space records its folder by path, and moving the folder leaves nothing in it that
-names the space. A bare `cotal up` in a folder that names no space, while the selected space is
+that is already another local space's root refuses with `CONFLICT`, exit 2. `space add` refuses a
+prepared name. A registration for another broker in the same folder does not prevent a prepared
+local space from starting there. A prepared space records its folder by path, and moving the folder
+leaves nothing in it that names the space. A bare `cotal up` in a folder that names no space, while the selected space is
 prepared in a folder that no longer exists, refuses `TARGET_UNAVAILABLE`, exit 2, rather than start a
 space named after the folder there. Forget the space with `cotal space forget <name>`, prepare it again in its new
 folder with `cotal space create <name>`, then run `cotal up`. Until then, `space create` of that name
@@ -360,9 +361,11 @@ names how to move the project back before resetting the store. When it offers ad
 stop the adopted stack in its new root before resetting its store. If the project cannot be
 located, the refusal says that stored streams could not be checked.
 
-If a damaged registry record prevents the lookup, `space delete` refuses with `TARGET_UNAVAILABLE`,
+If a damaged mesh registration prevents the lookup, `space delete` refuses with `TARGET_UNAVAILABLE`,
 exit 2, before contacting a broker. It names the file and advises restoring it from backup or, if
 the file is named for a space, removing the local registration with `cotal space forget <space>`.
+If the named space's prepared record is damaged, both preview and apply refuse with `SCHEMA_INVALID`,
+exit 1. They name the file and show how to remove the local record with `cotal space forget <space>`.
 
 The dry run also reads the space's workflow runs from its records bucket and lists each run that
 has not finished, with its recorded state. Deleting the streams removes those runs, and a run still
@@ -579,6 +582,8 @@ If another home still holds the records, use that home instead.
 A copied or moved project folder keeps a stack journal that names the folder it was recorded in.
 `space create <name>` there refuses `CONFLICT`, exit 2. If the record was already forgotten and the
 journal can be adopted, the refusal prints the exact `space create --adopt` command to run.
+If the folder holds no journal recorded in another folder, `space create --adopt` refuses with
+`TARGET_NOT_FOUND`, exit 2, and leaves the folder untouched.
 `cotal status` lists the applicable recovery options. `--adopt` takes the journal over: it rewrites it
 to name this folder, moves a broker store that lay under the recorded folder to the same place under
 this one, and records a stack that never ran here. Bare `cotal up` starts it from this folder with

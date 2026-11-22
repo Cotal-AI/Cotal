@@ -1433,9 +1433,16 @@ if (process.platform === "linux") {
   const seedFifo = join(home, "channels-seed.fifo");
   spawnSync("mkfifo", ["-m", "600", seedFifo]);
   const feeder = spawn("sh", ["-c", 'printf %s "$1" > "$2"', "sh", '{"channels":{"news":{"description":"Neuigkeiten"}}}', seedFifo], { stdio: "ignore" });
+  const coRooted = await json(["space", "add", "co-rooted-remote", "--server", DEAD, "--root", fresh, "--mode", "open", "--force"], fresh);
+  check("a manual connection can register at the prepared root", coRooted.status === 0 && findMesh("co-rooted-remote")?.root === fresh, shown(coRooted));
   const up = await run(["up", "--detach", "--open", "--no-manager", "--server", server], {}, fresh);
   const started = findMesh("demo");
-  check("up in its root starts it under its name, and the prepared record goes", up.status === 0 && started?.root === fresh && started.server === server && started.origin === "up" && findPreparedSpace("demo") === undefined, shown(up));
+  check("up starts the prepared space and consumes its record despite the co-rooted manual connection",
+    up.status === 0 && started?.root === fresh && started.server === server && started.origin === "up" && findPreparedSpace("demo") === undefined, shown(up));
+  const who = await json(["who", "--space", "demo"], fresh);
+  check("the local broker answers and the manual connection is unchanged", who.status === 0 && findMesh("co-rooted-remote")?.server === DEAD, shown(who));
+  const forgetRemote = await json(["space", "forget", "co-rooted-remote"], fresh);
+  check("forget the manual connection independently of the running local stack", forgetRemote.status === 0, shown(forgetRemote));
   const bomSeeded = await json(["channel", "show", "bomseed", "--space", "demo"]);
   // An explicit --channels replaces the default file, and only a start seeds, so the FIFO seed is
   // read by the next start after a down.
