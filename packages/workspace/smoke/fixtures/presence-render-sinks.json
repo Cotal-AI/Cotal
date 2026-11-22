@@ -6673,7 +6673,7 @@
     {
       "path": "implementations/cli/src/commands/agents.ts",
       "kind": "derived-output",
-      "anchor": "status + \" `cotal endpoint describe manager` reads its commands.\"",
+      "anchor": "`${status} ${read(\"cotal endpoint describe manager\")} reads its commands.`",
       "class": "non-render/control",
       "rationale": "The status variable holds command guidance for inspecting the manager, not an agent's presence or reported progress."
     },

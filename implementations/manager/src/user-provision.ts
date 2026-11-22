@@ -6,7 +6,7 @@ import {
   type CleanupFailure, type CotalEndpoint, type EpCaller, type EpErrorCode, type EpErrorDetail,
   type ManagedLifecycleHandoff, type RemoteManagedAgentEnrollmentRequest, type RemoteManagedAgentEnrollmentResult,
   type RemoteDelegatedUserIntentExecutionRequest, type RemoteDelegatedUserIntentExecutionResult,
-  type SecretStore, type UserAuthLaunch,
+  type UserAuthLaunch,
 } from "@cotal-ai/core";
 import {
   agentLifecycleSecretFilePaths, agentSecretKeyForFile, loadMeshes, materializeSecretToFile, userAuthStateDir,
@@ -18,6 +18,7 @@ import type { RunHosting } from "./run-hosting.js";
 import type { TeardownTarget } from "./retirement.js";
 import type { Manager } from "./manager.js";
 import { bearerEntryArgv } from "./preserved-resume.js";
+import type { ManagerConfig } from "./manager-config.js";
 
 type EnrollManagedAgent = (args: {
   requestId?: string;
@@ -77,9 +78,6 @@ export interface UserAgentRefusal {
 
 /** Reads are live at each original use, including authority assigned or replaced after construction. */
 export interface UserProvisionDeps {
-  space(): string;
-  workspaceRoot(): string;
-  secrets(): SecretStore;
   managerInstanceId(): string;
   runHosting(): Pick<RunHosting, "runAdmission"> | undefined;
   remoteAuthority(): {
@@ -101,9 +99,6 @@ export interface UserProvisionDeps {
  *  field the Manager assigns later is current and a member a test replaces on the instance is the one that runs. */
 export function userProvisionDeps(m: Manager): UserProvisionDeps {
   return {
-    space: () => m["space"],
-    workspaceRoot: () => m["workspaceRoot"],
-    secrets: () => m["secrets"],
     managerInstanceId: () => m["managerInstanceId"],
     runHosting: () => m["runHosting"],
     remoteAuthority: () => m["remoteAuthority"],
@@ -116,11 +111,8 @@ export function userProvisionDeps(m: Manager): UserProvisionDeps {
 
 /** User-mode local grants, hosted enrollment and delegated lifecycle handoff composition. */
 export class UserProvision {
-  constructor(private readonly deps: UserProvisionDeps) {}
+  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: UserProvisionDeps) {}
 
-  private get space() { return this.deps.space(); }
-  private get workspaceRoot() { return this.deps.workspaceRoot(); }
-  private get secrets() { return this.deps.secrets(); }
   private get managerInstanceId() { return this.deps.managerInstanceId(); }
   private get runHosting() { return this.deps.runHosting(); }
   private get remoteAuthority() { return this.deps.remoteAuthority(); }
@@ -159,7 +151,7 @@ export class UserProvision {
     const owner = opts.specOwner ?? (spawnerPr && spawnerPr.owner.startsWith("u_") ? spawnerPr.owner : undefined);
     if (!owner)
       return {
-        error: `user-auth space "${this.space}": no owner for this spawn - call it from a user-mode session (\`cotal login\` then \`cotal spawn\`), or apply a manifest as a logged-in operator`,
+        error: `user-auth space "${this.config.space}": no owner for this spawn - call it from a user-mode session (\`cotal login\` then \`cotal spawn\`), or apply a manifest as a logged-in operator`,
       };
     let provider;
     try {
@@ -167,7 +159,7 @@ export class UserProvision {
     } catch (e) {
       return { error: rejectionText(e) };
     }
-    const dir = userAuthStateDir(this.workspaceRoot, this.space);
+    const dir = userAuthStateDir(this.config.workspaceRoot, this.config.space);
     // The agent's capability scope rides its ledger row (act.scope in every bearer) — same
     // vocabulary as static capabilities; the broker maps them to the ctl tiers. `role:<r>` tokens
     // pass through too (a persona may hold delegable roles) — the ledger's envelope walk still
@@ -176,10 +168,10 @@ export class UserProvision {
     // The manager's ONE store (injected for a hosted composition, workstation FS locally). A hosted
     // user-mode spawn reads the callout material from it — the same store the auth-store kinds
     // (callout/issuer/…) were migrated onto — so this is no longer a local-only path.
-    const secrets = this.secrets;
+    const secrets = this.config.secrets;
     // LIFECYCLE-KEYED family (SPEC 13.1 name-disjointness on the FS): this incarnation's files
     // embed its uid, so no teardown addressed to another incarnation can ever reach them.
-    const files = agentLifecycleSecretFilePaths(this.workspaceRoot, this.space, name, opts.lifecycleUid);
+    const files = agentLifecycleSecretFilePaths(this.config.workspaceRoot, this.config.space, name, opts.lifecycleUid);
     const { actorToken: tokenPath, sentinelCreds: sentinelPath, health: healthPath } = files;
     try {
       // The GRANT first — it is the envelope-rule enforcement point (a delegation must sit within
@@ -188,7 +180,7 @@ export class UserProvision {
       const grant = await provider.grantAgent({
         store: secrets,
         dir,
-        space: this.space,
+        space: this.config.space,
         owner,
         actor: name,
         scope,
@@ -216,10 +208,10 @@ export class UserProvision {
       // The store holds the source of truth; the bearer re-exec (`--token-file`) and the launch's
       // sentinel handoff read FILES, so materialize both at the canonical paths (under the local
       // FS composition, a byte-identical rewrite of the keys' own locations).
-      await secrets.put(agentSecretKeyForFile(tokenPath, this.space), grant.actorToken);
-      await secrets.put(agentSecretKeyForFile(sentinelPath, this.space), grant.sentinelCreds);
-      await materializeSecretToFile(secrets, agentSecretKeyForFile(tokenPath, this.space), tokenPath);
-      await materializeSecretToFile(secrets, agentSecretKeyForFile(sentinelPath, this.space), sentinelPath);
+      await secrets.put(agentSecretKeyForFile(tokenPath, this.config.space), grant.actorToken);
+      await secrets.put(agentSecretKeyForFile(sentinelPath, this.config.space), grant.sentinelCreds);
+      await materializeSecretToFile(secrets, agentSecretKeyForFile(tokenPath, this.config.space), tokenPath);
+      await materializeSecretToFile(secrets, agentSecretKeyForFile(sentinelPath, this.config.space), sentinelPath);
       rmSync(healthPath, { force: true }); // a fresh start opens a fresh health window
       const bearerCmd = [
         // The manager's own invocation prefix (node + loader flags + the cotal entry) — the agent
@@ -229,7 +221,7 @@ export class UserProvision {
         ...this.deps.bearerEntryArgv(),
         provider.agentBearerCommand,
         "--dir", dir,
-        "--space", this.space,
+        "--space", this.config.space,
         "--owner", owner,
         "--actor", name,
         "--token-file", tokenPath,
@@ -283,7 +275,7 @@ export class UserProvision {
     } catch (e) {
       return { error: rejectionText(e) };
     }
-    const secrets = this.secrets;
+    const secrets = this.config.secrets;
     const input = {
       target: {
         actor: name,
@@ -302,7 +294,7 @@ export class UserProvision {
     let pending: Awaited<ReturnType<typeof pendingEnrollment<typeof input>>> | undefined;
     if (!opts.delegatedIntent) {
       try {
-        pending = await pendingEnrollment({ store: secrets, space: this.space,
+        pending = await pendingEnrollment({ store: secrets, space: this.config.space,
           instanceId: this.managerInstanceId, actor: name, input,
           authority: { target: input.target, owner: this.remoteAuthority!.owner,
             managerLifecycleUid: this.remoteAuthority!.lifecycleUid, specOwner: opts.specOwner, spawner: opts.spawner,
@@ -317,13 +309,13 @@ export class UserProvision {
     // request (a host that granted against a digest whose plaintext was lost would leave an agent
     // that can never exchange), and the host's uid is not known until the request answers. The
     // family is re-keyed to the host's uid below.
-    const staged = agentLifecycleSecretFilePaths(this.workspaceRoot, this.space, name, pending?.record.lifecycleUid ?? opts.lifecycleUid);
+    const staged = agentLifecycleSecretFilePaths(this.config.workspaceRoot, this.config.space, name, pending?.record.lifecycleUid ?? opts.lifecycleUid);
     let files = staged;
     let material: Awaited<ReturnType<typeof enroll>> | undefined;
     let sent = false;
     try {
-      await secrets.put(agentSecretKeyForFile(staged.actorToken, this.space), actorToken);
-      await materializeSecretToFile(secrets, agentSecretKeyForFile(staged.actorToken, this.space), staged.actorToken);
+      await secrets.put(agentSecretKeyForFile(staged.actorToken, this.config.space), actorToken);
+      await materializeSecretToFile(secrets, agentSecretKeyForFile(staged.actorToken, this.config.space), staged.actorToken);
       const saved = pending?.record.input ?? input;
       if (canonicalJson(saved.target) !== canonicalJson(input.target))
         throw new Error(`pending enrollment for "${name}" names different target authority`);
@@ -340,24 +332,24 @@ export class UserProvision {
       assertLifecycleToken(material.lifecycleUid, "host-enrolled managed agent lifecycleUid");
       // Re-key the family onto the HOST's uid (SPEC 13.1 name-disjointness on the FS): the child's
       // credential paths must embed the uid its broker footprint carries, never the provisional one.
-      files = agentLifecycleSecretFilePaths(this.workspaceRoot, this.space, name, material.lifecycleUid);
+      files = agentLifecycleSecretFilePaths(this.config.workspaceRoot, this.config.space, name, material.lifecycleUid);
       // From here the host holds a grant at that uid.
       opts.onEnrolled?.({ owner: material.owner, lifecycleUid: material.lifecycleUid, files });
       if (files.actorToken !== staged.actorToken) {
-        await secrets.put(agentSecretKeyForFile(files.actorToken, this.space), actorToken);
-        await materializeSecretToFile(secrets, agentSecretKeyForFile(files.actorToken, this.space), files.actorToken);
-        await secrets.delete(agentSecretKeyForFile(staged.actorToken, this.space));
+        await secrets.put(agentSecretKeyForFile(files.actorToken, this.config.space), actorToken);
+        await materializeSecretToFile(secrets, agentSecretKeyForFile(files.actorToken, this.config.space), files.actorToken);
+        await secrets.delete(agentSecretKeyForFile(staged.actorToken, this.config.space));
         rmSync(staged.actorToken, { force: true });
       }
-      await secrets.put(agentSecretKeyForFile(files.sentinelCreds, this.space), material.sentinelCreds);
-      await materializeSecretToFile(secrets, agentSecretKeyForFile(files.sentinelCreds, this.space), files.sentinelCreds);
+      await secrets.put(agentSecretKeyForFile(files.sentinelCreds, this.config.space), material.sentinelCreds);
+      await materializeSecretToFile(secrets, agentSecretKeyForFile(files.sentinelCreds, this.config.space), files.sentinelCreds);
       rmSync(files.health, { force: true }); // a fresh start opens a fresh health window
       const bearerCmd = [
         ...this.deps.bearerEntryArgv(),
         provider.agentBearerCommand,
         // The signerless arm: the pinned public exchange, never a local state dir.
         "--exchange-url", material.agentBearerExchangeUrl,
-        "--space", this.space,
+        "--space", this.config.space,
         "--owner", material.owner,
         "--actor", name,
         "--token-file", files.actorToken,
@@ -403,11 +395,11 @@ export class UserProvision {
    *  handoff carries. It must pin the exchange the host enrolls against, or the child would register
    *  a mesh whose bearers come from somewhere else. */
   delegatedMeshRecord(): MeshEntry & { userAuth: UserAuthInfo } {
-    const record = loadMeshes().find((m) => m.space === this.space);
+    const record = loadMeshes().find((m) => m.space === this.config.space);
     if (!record?.userAuth)
-      throw new Error(`a delegated seat needs this manager's user-mode registry record for space "${this.space}", and there is none`);
+      throw new Error(`a delegated seat needs this manager's user-mode registry record for space "${this.config.space}", and there is none`);
     if (record.userAuth.endpoints?.url !== this.remoteAuthority?.agentBearerExchangeUrl)
-      throw new Error(`the registry record for space "${this.space}" pins a different exchange than the host's agentBearerExchangeUrl`);
+      throw new Error(`the registry record for space "${this.config.space}" pins a different exchange than the host's agentBearerExchangeUrl`);
     return record as MeshEntry & { userAuth: UserAuthInfo };
   }
 
@@ -420,7 +412,7 @@ export class UserProvision {
     const { url, issuer, audience } = record.userAuth.idp;
     return {
       kind: MANAGED_HANDOFF_KIND,
-      space: this.space,
+      space: this.config.space,
       owner: enrolled.owner,
       actor: enrolled.actor,
       lifecycleUid: enrolled.lifecycleUid,

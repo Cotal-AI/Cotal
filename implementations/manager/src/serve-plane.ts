@@ -25,6 +25,7 @@ import { caughtEnvelope } from "./turn-relay.js";
 import { lifecycleBlocked, lifecycleBlockedFrom } from "@cotal-ai/core";
 import { REMOTE_STANDING_BUDGET_MS, remoteStandingTimeLeft } from "./credential-renewal.js";
 import { withTimeout } from "./manager-timeout.js";
+import type { ManagerConfig } from "./manager-config.js";
 
 type ServiceServe = { handle: EpServeHandle; nc: NatsConnection; identity: Identity; grant: EpServeGrant; creds?: string };
 type SessionLedgerConnection = { nc: NatsConnection; creds?: string };
@@ -57,14 +58,10 @@ function openMeshFrozenGateRefusal(e: unknown, instanceId: string): unknown {
 export interface ServePlaneDeps {
   auth(): SpaceAuth | undefined;
   remoteAuthority(): Pick<NonNullable<ManagerOptions["remoteAuthority"]>, "identities" | "goalWriterCreds" | "sessionLedgerCreds" | "serveCreds" | "serveGrant" | "mintSessionServing"> | undefined;
-  space(): string;
-  servers(): string | undefined;
-  workspaceRoot(): string;
   managerInstanceId(): string;
   managerServeIdentity(): Identity;
   leaseStopping(): boolean;
   remoteBundleRenewal(): Promise<void> | undefined;
-  maxSessions(): number | undefined;
   serviceServe(): ServiceServe | undefined;
   setServiceServe(value: ServiceServe | undefined): void;
   sessionLedgerIdentity(): Identity | undefined;
@@ -109,14 +106,10 @@ export function servePlaneDeps(m: Manager): ServePlaneDeps {
   return {
     auth: () => m["auth"],
     remoteAuthority: () => m["remoteAuthority"],
-    space: () => m["space"],
-    servers: () => m["servers"],
-    workspaceRoot: () => m["workspaceRoot"],
     managerInstanceId: () => m["managerInstanceId"],
     managerServeIdentity: () => m["managerServeIdentity"],
     leaseStopping: () => m["leaseStopping"],
     remoteBundleRenewal: () => m["remoteBundleRenewal"],
-    maxSessions: () => m["maxSessions"],
     serviceServe: () => m["serviceServe"],
     setServiceServe: (value) => { m["serviceServe"] = value; },
     sessionLedgerIdentity: () => m["sessionLedgerIdentity"],
@@ -164,18 +157,14 @@ export class ServePlane {
    *  revoke; a session that never staged drops its entry when the manager exits. */
   private readonly sessionServingKeys = new Map<string, string>();
 
-  constructor(private readonly deps: ServePlaneDeps, private readonly parts: Pick<ManagerParts, "connectorInventory">) {}
+  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: ServePlaneDeps, private readonly parts: Pick<ManagerParts, "connectorInventory">) {}
 
   private get auth(): SpaceAuth | undefined { return this.deps.auth(); }
   private get remoteAuthority(): Pick<NonNullable<ManagerOptions["remoteAuthority"]>, "identities" | "goalWriterCreds" | "sessionLedgerCreds" | "serveCreds" | "serveGrant" | "mintSessionServing"> | undefined { return this.deps.remoteAuthority(); }
-  private get space(): string { return this.deps.space(); }
-  private get servers(): string | undefined { return this.deps.servers(); }
-  private get workspaceRoot(): string { return this.deps.workspaceRoot(); }
   private get managerInstanceId(): string { return this.deps.managerInstanceId(); }
   private get managerServeIdentity(): Identity { return this.deps.managerServeIdentity(); }
   private get leaseStopping(): boolean { return this.deps.leaseStopping(); }
   private get remoteBundleRenewal(): Promise<void> | undefined { return this.deps.remoteBundleRenewal(); }
-  private get maxSessions(): number | undefined { return this.deps.maxSessions(); }
   private get serviceServe(): ServiceServe | undefined { return this.deps.serviceServe(); }
   private set serviceServe(value: ServiceServe | undefined) { this.deps.setServiceServe(value); }
   private get sessionLedgerIdentity(): Identity | undefined { return this.deps.sessionLedgerIdentity(); }
@@ -240,7 +229,7 @@ export class ServePlane {
   }
 
   private serveOnConnection(nc: NatsConnection, grant: EpServeGrant): EpServeHandle {
-    return serveEndpoint(nc, this.space, grant, this.deps.managerServiceDefs(), { public: true }, {
+    return serveEndpoint(nc, this.config.space, grant, this.deps.managerServiceDefs(), { public: true }, {
       resolveTarget: (t) => this.deps.resolveTarget(t),
       omitClassCommands: this.deps.omitClassCommands(),
     });
@@ -266,7 +255,7 @@ export class ServePlane {
     const authRef = this.auth!;
     return this.deps.withEndpointServeExecutor(({ authKv }) =>
       mintCreds(authRef, s.identity, "endpoint-serve", {
-        serveIssuance: serveIssuanceGateKv(authKv, this.space, { endpoint: MANAGER_ENDPOINT, instanceId: this.managerInstanceId }),
+        serveIssuance: serveIssuanceGateKv(authKv, this.config.space, { endpoint: MANAGER_ENDPOINT, instanceId: this.managerInstanceId }),
         endpointServe: s.grant,
       }));
   }
@@ -314,7 +303,7 @@ export class ServePlane {
     });
     if (this.leaseStopping || recovered) return;
     console.error(
-      `! manager service endpoint could not be restored for ${this.space}/${MANAGER_ENDPOINT}/${this.managerInstanceId}: releasing the lease and exiting`,
+      `! manager service endpoint could not be restored for ${this.config.space}/${MANAGER_ENDPOINT}/${this.managerInstanceId}: releasing the lease and exiting`,
     );
     await this.deps.stop();
     process.exit(1);
@@ -371,7 +360,7 @@ export class ServePlane {
         // wrote to EPF/EPE), so the manager ensures the full set here over the provisioner (whose
         // STREAM.CREATE now covers them), idempotently - createEndpointStreams is a superset of
         // ensureContractStore + ensureAuthorityStores, fail-loud on drift. Auth + open both run this.
-        await createEndpointStreams(await jetstreamManager(provNc), new Kvm(provNc), this.space);
+        await createEndpointStreams(await jetstreamManager(provNc), new Kvm(provNc), this.config.space);
       } finally {
         await drainAndClose(provNc);
       }
@@ -400,7 +389,7 @@ export class ServePlane {
     const serveIdentity = this.managerServeIdentity;
     const servePrincipal = principalKey(DEV_OWNER, serveIdentity.id).key;
     // An open mesh mints no credentials, so it has no family for a fresh pair to grow.
-    const siblings = auth ? claimManagerSiblingIdentities(this.workspaceRoot, this.space) : { goalWriter: newIdentity(), sessionLedger: newIdentity() };
+    const siblings = auth ? claimManagerSiblingIdentities(this.config.workspaceRoot, this.config.space) : { goalWriter: newIdentity(), sessionLedger: newIdentity() };
     // The STABLE goal-writer identity - a SIBLING credential in the same §13.1 family
     // (not the gate's bound serving principal), so the run block can family-stage it.
     this.deps.setGoalWriterIdentity(siblings.goalWriter);
@@ -431,7 +420,7 @@ export class ServePlane {
       // digest (the generic-invoke read path). Create-only + content-addressed: a retry
       // or a same-artifact republish is an idempotent lost-CAS. The registration itself still
       // verifies against the in-memory copies (the manager is the author).
-      const storeCtx = await contractStoreContext(execNc, this.space);
+      const storeCtx = await contractStoreContext(execNc, this.config.space);
       for (const value of [...managerContractArtifactValues(), artifacts.document, artifacts.manifest])
         await publishContractArtifact(storeCtx, contractArtifactCanonicalBytes(value));
       // §13.1 pre-registration: the issuance gate, born open@gen0 bound to the serve
@@ -441,7 +430,7 @@ export class ServePlane {
       // registerServiceInstance below freezes + re-registers the EXISTING gate (advancing the epoch
       // after it verify-evicts the superseded family). The serve principal is the SAME persisted one,
       // so the gate's principal binding is unchanged either way.
-      if ((await serveIssuanceGateKv(authKv, this.space, { endpoint: MANAGER_ENDPOINT, instanceId: iid }).observe()) === null)
+      if ((await serveIssuanceGateKv(authKv, this.config.space, { endpoint: MANAGER_ENDPOINT, instanceId: iid }).observe()) === null)
         await provisionEndpointGateOpen(authKv, { endpoint: MANAGER_ENDPOINT, instanceId: iid, principal: servePrincipal });
     };
     const completeRegistration = async (
@@ -456,13 +445,13 @@ export class ServePlane {
       // ({@link openMeshUnverifiedEviction}). NO-ORACLE = LOUD: with no reachable delivery daemon the
       // evictor THROWS naming the cure, so PHASE 2 fails closed with the delivery-daemon fix in the
       // error text - a crash-restart never silently skips eviction (no-fallbacks).
-      const barrier = endpointRegistrationBarrier(authKv, this.space, {
+      const barrier = endpointRegistrationBarrier(authKv, this.config.space, {
         endpoint: MANAGER_ENDPOINT, instanceId: iid, opId: registrationOpId,
-        evict: auth ? makeManagerEndpointHolderEvictor({ space: this.space, servers: this.servers ?? DEFAULT_SERVER, auth, log: (line) => console.error(line), unreachableWaitMs: DELIVERY_ADMIN_BOOT_WAIT_MS }) : this.deps.openMeshUnverifiedEviction,
+        evict: auth ? makeManagerEndpointHolderEvictor({ space: this.config.space, servers: this.config.servers ?? DEFAULT_SERVER, auth, log: (line) => console.error(line), unreachableWaitMs: DELIVERY_ADMIN_BOOT_WAIT_MS }) : this.deps.openMeshUnverifiedEviction,
       });
       const spec = { endpoint: MANAGER_ENDPOINT, owner: DEV_OWNER, clusterDigests: [artifacts.closureDigest], protocol: { v: 1 as const } };
       const { grant } = await registerServingInstance(recordsKv, {
-        space: this.space, spec, instanceId: iid, registrant: { owner: DEV_OWNER }, authority, barrier, readClusterArtifact,
+        space: this.config.space, spec, instanceId: iid, registrant: { owner: DEV_OWNER }, authority, barrier, readClusterArtifact,
         // #1393: when a FOREIGN instance holds the endpoint governance slot, let core tell an
         // in-flight registration from one abandoned by a predecessor that died between its
         // slot-take and its spec publish. The read rides THIS executor's existing auth-bucket read
@@ -472,7 +461,7 @@ export class ServePlane {
           readEndpointGateGeneration(authKv, { endpoint: MANAGER_ENDPOINT, instanceId: holderInstanceId }),
         status: { connectors: [...this.connectorStatuses] },
       });
-      const fence = serveIssuanceGateKv(authKv, this.space, { endpoint: MANAGER_ENDPOINT, instanceId: iid });
+      const fence = serveIssuanceGateKv(authKv, this.config.space, { endpoint: MANAGER_ENDPOINT, instanceId: iid });
       // Open mesh: NO mint - the §13.1 fence is issuance-only and nothing is ever issued, so the
       // gate keeps an empty `epcred` family; the serve connection below stays bare.
       const creds = auth ? await mintCreds(auth, serveIdentity, "endpoint-serve", { serveIssuance: fence, endpointServe: grant }) : undefined;
@@ -547,7 +536,7 @@ export class ServePlane {
     // Registration instanceId (the persisted logical id), not the per-process lifecycleUid:
     // the barrier enumerates `epcred.<e>.<managerInstanceId>`, so the ledger cred joins that family.
     const iid = this.managerInstanceId;
-    const fence = serveIssuanceGateKv(authKv, this.space, { endpoint: MANAGER_ENDPOINT, instanceId: iid });
+    const fence = serveIssuanceGateKv(authKv, this.config.space, { endpoint: MANAGER_ENDPOINT, instanceId: iid });
     const observed = await fence.observe();
     if (observed === null)
       throw new Error(`the issuance gate for ${MANAGER_ENDPOINT}/${iid} vanished; the session-ledger cred cannot join its §13.1 revocation family`);
@@ -635,7 +624,7 @@ export class ServePlane {
     const serveEpoch = this.serviceServe?.grant.epoch;
     if (serveEpoch === undefined)
       throw new Error("the manager session plane needs the serve grant epoch; registerManagerService must run first");
-    const ledgerKv = await openSessionLedgerKv(nc, sessionsBucket(this.space));
+    const ledgerKv = await openSessionLedgerKv(nc, sessionsBucket(this.config.space));
     // The session signing key ROTATES. It used to be minted once here with a flat 24h window and
     // handed back frozen forever, so a manager that stayed up past 24h lost its session plane
     // permanently: every attach failed closed with "outside its validity window", and the only
@@ -662,7 +651,7 @@ export class ServePlane {
       };
     }, Date.now());
     this.sessionPlane = new ManagerSessionPlane({
-      space: this.space,
+      space: this.config.space,
       // The session's serving identity is the persisted REGISTRATION instanceId, not the
       // per-process lifecycleUid: a restarted manager re-registers the SAME logical instanceId with
       // an ADVANCED epoch, so a client re-attaches by the same instance while the epoch fences the
@@ -678,7 +667,7 @@ export class ServePlane {
       resolveAnchor: (id) => rotating.resolve(id),
       ledgerKv, ttlMs: SESSION_GRANT_MAX_TTL_MS,
       servingCredential: this.sessionServingCredentials(),
-      ...(this.maxSessions !== undefined ? { maxSessions: this.maxSessions } : {}),
+      ...(this.config.maxSessions !== undefined ? { maxSessions: this.config.maxSessions } : {}),
     });
     this.sessionLedgerConn = sw;
     // The belt to the signing path's braces: renew on a timer as well, so a plane that sits idle
@@ -753,7 +742,7 @@ export class ServePlane {
         // ServingGatePin.gate - the stage refuses loudly if this is ever missing on an auth mesh).
         if (!this.auth && !this.remoteAuthority) return { key: epgateKey(MANAGER_ENDPOINT, instanceId), revision: 0 };
         return gate(async (authKv) => {
-          const observed = await serveIssuanceGateKv(authKv, this.space, { endpoint: MANAGER_ENDPOINT, instanceId }).observe();
+          const observed = await serveIssuanceGateKv(authKv, this.config.space, { endpoint: MANAGER_ENDPOINT, instanceId }).observe();
           if (observed === null)
             throw new Error(`the issuance gate for ${MANAGER_ENDPOINT}/${instanceId} vanished; a session credential never stages against a missing gate (SPEC 13.1)`);
           // The WHOLE observation rides the pin: the stage's fence compares every field of it, which
@@ -777,7 +766,7 @@ export class ServePlane {
         if (observed === undefined)
           throw new Error(`the redemption of session ${grant.sessionId} carries no gate observation for ${MANAGER_ENDPOINT}/${iid}; a session credential never stages unfenced (SPEC 13.1)`);
         await gate(async (authKv) => {
-          const fence = serveIssuanceGateKv(authKv, this.space, { endpoint: MANAGER_ENDPOINT, instanceId: iid });
+          const fence = serveIssuanceGateKv(authKv, this.config.space, { endpoint: MANAGER_ENDPOINT, instanceId: iid });
           await commitSiblingIssuance(fence, observed, {
             credentialId: cred.id,
             credentialKey: key,

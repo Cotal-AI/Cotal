@@ -1123,7 +1123,7 @@ try {
   await backoffAgent.start(100);
   const boEp = backoffAgent.ep as unknown as {
     nc?: { close(): Promise<void>; isClosed(): boolean };
-    retryAttempt: number; reestablishing: boolean; rebuildPromise?: Promise<void>;
+    reconnection: { retryAttempt: number }; reestablishing: boolean; rebuildPromise?: Promise<void>;
   };
   boBroker.kill("SIGKILL");
   await awaitExit(boBroker);
@@ -1139,7 +1139,7 @@ try {
   // terminal close, so the endpoint's own rebuild loop starts now.
   await reconnectingNc!.close();
   // After four failed rebuilds the loop sleeps 12 to 24 s, longer than the send's 10 s wait.
-  const backedOff = await until(() => boEp.retryAttempt >= 4 && boEp.reestablishing && !boEp.rebuildPromise, 40_000);
+  const backedOff = await until(() => boEp.reconnection.retryAttempt >= 4 && boEp.reestablishing && !boEp.rebuildPromise, 40_000);
   boBroker = startBroker(boConfig);
   releases.push(teardownOnSignal(boBroker, dir));
   for (let i = 0; i < 80; i++) { if (await isReachable(boServers)) break; await sleep(50); }
@@ -1149,7 +1149,7 @@ try {
   check(
     "a send made while the endpoint sleeps out a long rebuild backoff reconnects and goes out at once",
     backedOff && sent === "sent" && took < 5_000,
-    { backedOff, sent, took, retryAttempt: boEp.retryAttempt },
+    { backedOff, sent, took, retryAttempt: boEp.reconnection.retryAttempt },
   );
 } finally {
   await jsClient?.close().catch(() => {});

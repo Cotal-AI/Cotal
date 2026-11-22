@@ -159,8 +159,8 @@ try {
   recordMesh({ space: SPACE, server: SERVER, root: workspaceRoot, mode: "open", ts: new Date().toISOString() });
 
   mgr = new Manager({ space: SPACE, servers: SERVER, runtime: "pty", workspaceRoot });
-  (mgr as unknown as { readinessTimeoutMs: number }).readinessTimeoutMs = 2_000; // short window for a fast uncertain
-  (mgr as unknown as { goalAcceptanceRetentionMs: number }).goalAcceptanceRetentionMs = 1_000; // M9 waits past it
+  (mgr as unknown as { config: { readinessTimeoutMs: number } }).config.readinessTimeoutMs = 2_000; // short window for a fast uncertain
+  (mgr as unknown as { config: { goalAcceptanceRetentionMs: number } }).config.goalAcceptanceRetentionMs = 1_000; // M9 waits past it
   await mgr.start();
   // P2 item 3: the goal's executor coordinate is the PERSISTED logical instanceId (the fence key),
   // not the per-process managerLifecycleUid.
@@ -372,7 +372,7 @@ try {
     const floor = (d: Record<string, unknown>) => JSON.stringify([d.name, d.owner, d.actor, d.uid, d.goalId, d.fingerprint]);
     // A loaded host can miss a 2s presence join, and this needs a real `succeeded`; the same long
     // window keeps r3 in flight across the wait below.
-    const readinessWindow = (ms: number) => { (mgr as unknown as { readinessTimeoutMs: number }).readinessTimeoutMs = ms; };
+    const readinessWindow = (ms: number) => { (mgr as unknown as { config: { readinessTimeoutMs: number } }).config.readinessTimeoutMs = ms; };
     readinessWindow(10_000);
     const ok = acc(await callSpawn({ name: "r1", agent: "join" }));
     readinessWindow(2_000);
@@ -428,10 +428,10 @@ try {
     await wait(2200); // past the 2s readiness deadline, so the successor's sweep settles uncertain at once
     // The SUCCESSOR: same space + workspace, a FRESH instanceId — its boot reconcile settles the orphan.
     const mgr2 = new Manager({ space: SPACE, servers: SERVER, runtime: "pty", workspaceRoot });
-    (mgr2 as unknown as { readinessTimeoutMs: number }).readinessTimeoutMs = 2_000;
+    (mgr2 as unknown as { config: { readinessTimeoutMs: number } }).config.readinessTimeoutMs = 2_000;
     await mgr2.start();
     mgr = mgr2;
-    const successorIid = (mgr2 as unknown as { managerLifecycleUid: string }).managerLifecycleUid;
+    const successorIid = (mgr2 as unknown as { config: { managerLifecycleUid: string } }).config.managerLifecycleUid;
     check("M5 the successor is a FRESH incarnation (a new process, advanced epoch)", successorIid !== managerIid, { successorIid, managerIid });
     const after = await pollResult(ref, 4_000);
     check("M5 the successor reconciled the inherited goal to a terminal, never dropped (uncertain)", after?.state === "uncertain", after);

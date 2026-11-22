@@ -987,7 +987,7 @@ let openInventory: ManagerResumeAgent;
 {
   const handle = fakeHandle("worker");
   const manager = managerWith(() => handle, { resumeAttemptId: "late_presence" });
-  (manager as unknown as { readinessTimeoutMs: number }).readinessTimeoutMs = 5;
+  (manager as unknown as { config: { readinessTimeoutMs: number } }).config.readinessTimeoutMs = 5;
   let roster: Array<{ card: { id: string; name: string }; status: string }> = [];
   const presenceListeners = new Set<() => void>();
   (manager as unknown as { ep: unknown }).ep = {
@@ -1024,7 +1024,7 @@ let openInventory: ManagerResumeAgent;
 {
   const handle = fakeHandle("worker");
   const manager = managerWith(() => handle);
-  (manager as unknown as { readinessTimeoutMs: number }).readinessTimeoutMs = 5;
+  (manager as unknown as { config: { readinessTimeoutMs: number } }).config.readinessTimeoutMs = 5;
   let roster: Array<{ card: { id: string; name: string }; lifecycleUid?: string; status: string }> = [];
   const presenceListeners = new Set<() => void>();
   (manager as unknown as { ep: unknown }).ep = {

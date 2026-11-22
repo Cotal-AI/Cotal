@@ -1,11 +1,12 @@
 import { rmSync } from "node:fs";
 import { DEV_OWNER, firstFreeName, managedRetirementOpId, parsePrincipalKey, seatCapRefused, spawnNameError, type EpEnvelopeError, type Presence } from "@cotal-ai/core";
-import { SEAT_CAP_UNLIMITED, type SeatCap } from "@cotal-ai/workspace";
+import { SEAT_CAP_UNLIMITED } from "@cotal-ai/workspace";
 import { MAX_AGENTS } from "./resume.js";
 import type { ManagedAgent, FreeSlotCause, StartAgentOpts } from "./manager.js";
 import type { RetirementHold, TeardownTarget } from "./retirement.js";
 import type { AttachEndReason } from "./session/index.js";
 import type { Manager } from "./manager.js";
+import type { ManagerConfig } from "./manager-config.js";
 
 type FreeSlotStopCause = Extract<FreeSlotCause, { kind: string }>;
 /** Minimum slot lifetime for rate-flooring (P4c). A slot freed (by despawn OR natural exit/reap)
@@ -37,7 +38,6 @@ const FREE_SLOT_ATTACH_END: Record<Exclude<FreeSlotCause, FreeSlotStopCause>, At
 /** Current manager-owned lifecycle operations used while allocating and releasing names. */
 export interface NamesCapacityDeps {
   userMode(): boolean;
-  seatCap(): SeatCap;
   managerInstanceId(): string;
   agents(): Iterable<ManagedAgent>;
   authEnabled(): boolean;
@@ -66,7 +66,6 @@ export interface NamesCapacityDeps {
 export function namesCapacityDeps(m: Manager): NamesCapacityDeps {
   return {
     userMode: () => m["userMode"],
-    seatCap: () => m["seatCap"],
     managerInstanceId: () => m["managerInstanceId"],
     agents: () => m["agents"].values(),
     authEnabled: () => m["auth"] !== undefined,
@@ -113,7 +112,7 @@ export class NamesCapacity {
    *  count-only, lazily-pruned recycle floor (P4c). Pruned + summed into the ceiling gate. */
   private cooling: number[] = [];
 
-  constructor(private readonly deps: NamesCapacityDeps) {}
+  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: NamesCapacityDeps) {}
 
   reserve(name: string, owner: string): void { this.reserved.set(name, owner); }
   placed(name: string): void { this.reservedLive.add(name); }
@@ -344,7 +343,7 @@ export class NamesCapacity {
    * owner stops one of its own, or the operator raises the cap, so they cannot share a sentence.
    */
   seatCapRefusal(owner: string): EpEnvelopeError | undefined {
-    const cap = this.deps.seatCap();
+    const cap = this.config.seatCap;
     if (cap === SEAT_CAP_UNLIMITED) return undefined;
     const seats = this.ownerSeats(owner);
     if (seats < cap) return undefined;

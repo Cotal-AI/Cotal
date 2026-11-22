@@ -1,8 +1,8 @@
 // The principal serve and prompts of CotalEndpoint, as an internal component: binding and arming each
 // principal-route serve, confirming it, re-binding it on a new connection, ending and stopping it, the
-// `prompts` presence field and its `seq`, and calling a principal. Moved verbatim from endpoint.ts; the
-// endpoint keeps servePrincipal, which a smoke replaces, and the fields, and forwards to these. Not
-// re-exported by the index.
+// `prompts` presence field and its `seq`, and calling a principal. Moved verbatim from endpoint.ts. The
+// component owns the `prompts` presence field; the endpoint keeps servePrincipal, which a smoke replaces,
+// and the shared fields, and forwards to these. Not re-exported by the index.
 import type { EndpointIdentity } from "./endpoint-identity.js";
 import { AGENT_CONTRACTS, AGENT_ENDPOINT } from "./agent-endpoint.js";
 import { epPrincipalCall } from "./endpoint-call.js";
@@ -28,23 +28,24 @@ export interface EndpointPrincipalServeDeps {
   nc: () => NatsConnection | undefined;
   principalServes: () => Map<string, PrincipalServeIntent>;
   principalServers: () => Map<string, PrincipalServeIntent>;
-  promptsPresence: () => PresencePrompts | undefined;
-  setPromptsPresence: (value: PresencePrompts | undefined) => void;
   publishPresence: () => Promise<void>;
   emitRecoverable: (err: Error) => void;
   requireLifecycleUid: (what: string) => string;
   notLiveMsg: () => string;
 }
 
-/** One endpoint's principal serve and prompts. Internal: `CotalEndpoint` keeps the fields and forwards to it. */
+/** One endpoint's principal serve and prompts. Internal: it owns the `prompts` presence field, and
+ *  `CotalEndpoint` keeps the shared fields and forwards to it. */
 export class EndpointPrincipalServe {
+  /** The `prompts` presence field {@link setPromptsPresence} last set. Shown only while the `agent`
+   *  endpoint is served and its subscription was accepted on the current connection. */
+  private promptsPresence?: PresencePrompts;
+
   constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly deps: EndpointPrincipalServeDeps) {}
 
   private get nc() { return this.deps.nc(); }
   private get principalServes() { return this.deps.principalServes(); }
   private get principalServers() { return this.deps.principalServers(); }
-  private get promptsPresence() { return this.deps.promptsPresence(); }
-  private set promptsPresence(value: PresencePrompts | undefined) { this.deps.setPromptsPresence(value); }
   private publishPresence(): Promise<void> { return this.deps.publishPresence(); }
   private emitRecoverable(err: Error): void { return this.deps.emitRecoverable(err); }
   private requireLifecycleUid(what: string): string { return this.deps.requireLifecycleUid(what); }
@@ -191,6 +192,11 @@ export class EndpointPrincipalServe {
     promptsSeqs.set(intent.self.runtimeId, prompts.seq);
     this.promptsPresence = { open: prompts.open, seq: prompts.seq };
     await this.publishPresence();
+  }
+
+  /** Show `open: 0` with a fresh `seq` for a new serve of the `agent` endpoint. */
+  openPrompts(): void {
+    this.promptsPresence = { open: 0, seq: this.nextPromptsSeq() };
   }
 
   /**
