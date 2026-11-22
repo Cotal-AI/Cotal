@@ -26,7 +26,7 @@
  * which is itself part of the claim. Run: pnpm smoke:persona-root
  */
 import { strict as assert } from "node:assert";
-import { spawnSync } from "node:child_process";
+import { spawnSync, type SpawnSyncReturns } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -101,6 +101,38 @@ function project(label: string, personas: { name: string; role: string; channel:
       `---\nname: ${p.name}\nrole: ${p.role}\nsubscribe: [${p.channel}]\n---\n\nI am ${p.name}.\n`,
     );
   return root;
+}
+
+function checkCreateInputGuidance(run: (args: string[], input?: Buffer) => SpawnSyncReturns<string>, root: string): void {
+  for (const [flag, extra] of [["--from", ["--subscribe", ""]], ["--file", []]] as const) {
+    const source = join(root, "missing-input.md");
+    const args = ["persona", "create", "input-check", flag, source, ...extra, "--plain"];
+    const missing = run(args);
+    const destination = agentFilePath(root, "input-check");
+    check(`persona create ${flag} names a missing file and offers stdin without writing a persona`,
+      missing.status === 2 && missing.stderr.includes("TARGET_NOT_FOUND") && missing.stderr.includes(source) &&
+      missing.stderr.includes(`with ${flag} -`) && !existsSync(destination), missing.stderr);
+    if (process.platform !== "win32" && process.getuid?.() !== 0) {
+      writeFileSync(source, "not readable", { mode: 0o000 });
+      try {
+        const denied = run(args);
+        check(`persona create ${flag} distinguishes an access denial from an absent file`,
+          denied.status === 2 && denied.stderr.includes("PERMISSION_DENIED") && !existsSync(destination), denied.stderr);
+      } finally { unlinkSync(source); }
+    }
+  }
+  const body = "private retry definition";
+  for (const [on, source] of [["short", "--prompt"], ["", "--file"], ["local.Uexample", "--from"], ["short", "--from"]] as const) {
+    const piped = source !== "--prompt";
+    const refused = run(["persona", "create", "retry-input", source, piped ? "-" : body, "--subscribe", "",
+      "--space", "meshspace", `--on=${on}`, "--plain"], piped ? Buffer.from(body) : undefined);
+    check(`persona create ${source} with --on=${on} preserves the original command in its guidance`,
+      refused.status === 1 && refused.stderr.includes("USAGE_INVALID") &&
+      refused.stderr.includes("replace only the --on value in the original command") &&
+      refused.stderr.includes("pipe the original input into the command again") === piped &&
+      !refused.stderr.includes("cotal persona create retry-input --on") && !refused.stderr.includes(body) &&
+      !existsSync(agentFilePath(root, "retry-input")), refused.stderr);
+  }
 }
 
 const sorted = (r: { items: { value: string }[] }) => r.items.map((i) => i.value).sort();
@@ -479,6 +511,7 @@ try {
   const native = (args: string[], cwd = MESH, env = childEnv, input?: Buffer) => spawnSync(process.execPath, [binary, ...args], {
     cwd, env, input, encoding: "utf8", timeout: 30_000,
   });
+  checkCreateInputGuidance((args, input) => native(args, MESH, childEnv, input), MESH);
   if (process.platform !== "win32") {
     const server = "nats://[::1]:43002";
     recordMesh(entry("beta", BETA, server));

@@ -134,9 +134,16 @@ export async function persona(args: ParsedArgs): Promise<void> {
   throw usage(`unknown persona action '${sub}'`);
 }
 
-async function readInput(path: string): Promise<Buffer> {
+async function readInput(path: string, flag: "file" | "from"): Promise<Buffer> {
   try { return path === "-" ? await buffer(process.stdin) : readFileSync(path); }
-  catch { throw new CommandFailure("refused", "PERMISSION_DENIED", `cannot read persona input: ${path}`); }
+  catch (error) {
+    if (path !== "-" && (error as NodeJS.ErrnoException).code === "ENOENT") {
+      throw new CommandFailure("refused", "TARGET_NOT_FOUND", `no persona input file at ${path}`, {
+        remedy: `check the path or pipe the original input into the same command with --${flag} -`,
+      });
+    }
+    throw new CommandFailure("refused", "PERMISSION_DENIED", `cannot read persona input: ${path}`);
+  }
 }
 
 async function createSource(name: string, path: string, values: Values): Promise<Buffer> {
@@ -144,7 +151,7 @@ async function createSource(name: string, path: string, values: Values): Promise
   if (sources.length !== 1) throw usage("provide one of --file, --prompt or --from");
   if (values.file !== undefined) {
     if ([values.role, values.model, values.subscribe, values.harness, values["allow-subscribe"], values["allow-publish"]].some(value => value !== undefined)) throw usage("--file cannot be combined with definition flags");
-    const bytes = await readInput(values.file);
+    const bytes = await readInput(values.file, "file");
     const source = values.file === "-" ? "standard input" : values.file;
     const def = validatePersona(bytes, source);
     if (def.name !== name) {
@@ -173,7 +180,7 @@ async function createSource(name: string, path: string, values: Values): Promise
   let body = values.prompt;
   if (body === undefined) {
     const from = values.from!;
-    const bytes = await readInput(from);
+    const bytes = await readInput(from, "from");
     if (!isUtf8(bytes)) {
       const source = from === "-" ? "standard input" : oneLine(from);
       throw new CommandFailure("refused", "SCHEMA_INVALID", `invalid persona body: ${source} is not valid UTF-8`, { remedy: "convert the input to UTF-8 and retry" });
