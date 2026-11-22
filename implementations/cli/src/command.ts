@@ -187,6 +187,11 @@ function failureExit(cmd: Command, failure: CommandFailure, json: boolean, plain
   const report = () => renderReport(commandFailureReport(failure), plain ? "plain" : "rich", process.stderr);
   const writeReport = () => writeSync(2, `${scope ? runOperation(scope, report) : report()}
 `);
+  const warningText = scope?.deferredWarningText;
+  const writeWarning = () => {
+    if (!warningText) return;
+    try { writeSync(2, warningText); } catch { /* stderr failed too */ }
+  };
   // Under --json the envelope alone reports the failure. Its text report goes to stderr only when the
   // envelope cannot be written for a reason other than a closed pipe. The exit status stands either way.
   if (!json) writeReport();
@@ -200,10 +205,12 @@ function failureExit(cmd: Command, failure: CommandFailure, json: boolean, plain
       : cmd.name === "watch" && validationArgs && !plain ? watchSetupFailureRecords(validationArgs, failure) : undefined;
     const lines = records ? records.map((record) => `${JSON.stringify(record)}\n`).join("") : envelopeLine(failureEnvelope(command, failure, warnings, scope));
     writeAllSync(1, Buffer.from(lines));
+    if (records) writeWarning();
   } catch (error) {
     const writeError = error as NodeJS.ErrnoException;
     if (writeError.code !== "EPIPE") {
       reportLostOutput(writeError);
+      writeWarning();
       try { writeReport(); } catch { /* stderr failed too; the exit status still says so */ }
     }
   }
@@ -396,10 +403,10 @@ function usageRefusal(failure: CommandFailure, plain: boolean, cmd?: Command, wo
 
 /** A usage error, written by {@link usageRefusal} with the help of the command or subcommand `words`
  *  name when there is one, and with `remedy` under the message when the parser can name one. Exit 1. */
-function usageExit(message: string, cmd?: Command, json = false, plain = false, remedy?: string, words: readonly string[] = []): never {
+function usageExit(message: string, cmd?: Command, json = false, plain = false, remedy?: string, words: readonly string[] = [], scope?: OperationScope): never {
   // A JSON caller gets the refusal as an envelope, so stdout stays one document and the help text
   // the remedy names stays out of it.
-  if (cmd && json) failureExit(cmd, new CommandFailure("refused", "USAGE_INVALID", message, { remedy: remedy ?? `run \`cotal help ${cmd.name}\`` }), true, false, undefined, words);
+  if (cmd && json) failureExit(cmd, new CommandFailure("refused", "USAGE_INVALID", message, { remedy: remedy ?? `run \`cotal help ${cmd.name}\`` }), true, false, scope, words);
   recordTelemetryFailure("refused", "USAGE_INVALID", message);
   // The help goes to stderr with the reason, so a refused run leaves stdout empty and a script that
   // sources or parses it gets nothing.
@@ -936,12 +943,15 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
       // them says so, with the change that protects their folder.
       if (!cmd.name.startsWith("__") && !["help", "completion", "version", "docs"].includes(cmd.name)) {
         const folder = preferencesFolderWarning();
-        // Config writes to an unsafe folder refuse. Their JSON receipt already carries the warning.
-        const jsonPreferenceWrite = json && cmd.name === "config" && (mode === "set" || mode === "unset");
-        if (folder) recordOperationWarning(folder.warning, { echo: !jsonPreferenceWrite });
+        if (folder) recordOperationWarning(folder.warning, { echo: json ? "defer" : true });
       }
       if (cmd.prepare) await cmd.prepare(parsed);
       await cmd.run(parsed);
+      if (scope.deferredWarningText) {
+        const text = scope.deferredWarningText;
+        delete scope.deferredWarningText;
+        process.stderr.write(text);
+      }
     });
   };
   if (opts.startupNotice && cmd.keepsStartupNotice) keepStartupNotice(opts.startupNotice);
@@ -956,7 +966,7 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
     }
     recordTelemetryError(e);
     // A usage error a command raises from its own checks prints the command's help, not a stack trace.
-    if (isArgError(e)) usageExit((e as Error).message.split(".")[0]!, cmd, json, parsed.values.plain === true, undefined, rest);
+    if (isArgError(e)) usageExit((e as Error).message.split(".")[0]!, cmd, json, parsed.values.plain === true, undefined, rest, scope);
     // A refused manager selection among several live managers becomes the choice: each manager
     // and the command again with `--on` for it. A space whose stack folder is gone names its stop.
     const target = { space: typeof parsed.values.space === "string" ? parsed.values.space : undefined, server: typeof parsed.values.server === "string" ? parsed.values.server : undefined };

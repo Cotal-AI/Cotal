@@ -10,7 +10,7 @@
  * Run: pnpm smoke:setup-no-connector
  */
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createSuite } from "@cotal-ai/smoke-kit";
@@ -21,7 +21,7 @@ if (!existsSync(BIN)) {
   process.exit(1);
 }
 
-interface Envelope { outcome?: string; error?: { code?: string; message?: string; remedy?: string } }
+interface Envelope { outcome?: string; error?: { code?: string; message?: string; remedy?: string }; warnings?: { code: string }[] }
 
 const { check, finish } = createSuite();
 const home = mkdtempSync(join(tmpdir(), "cotal-setup-noconn-"));
@@ -57,6 +57,22 @@ check("nothing was written to the project", !existsSync(join(project, ".cotal"))
 const seededEnv = { ...env, COTAL_SKIP_CONNECTOR_SEED: "0", COTAL_ALLOW_CHECKOUT_SEED: "1" };
 const command = (...args: string[]) => spawnSync(process.execPath, [BIN, ...args], { cwd: project, env: seededEnv, encoding: "utf8", timeout: 180_000 });
 check("seed the built-ins", command("ext", "seed").status === 0);
+if (process.platform !== "win32") {
+  const folder = join(env.XDG_CONFIG_HOME, "cotal");
+  const file = join(folder, "preferences.json");
+  const saved = '{"schemaVersion":1,"revision":1,"defaults":{"persona":"reporting"},"spaces":{}}\n';
+  writeFileSync(file, saved, { flag: "wx", mode: 0o600 });
+  chmodSync(folder, 0o702);
+  try {
+    const unsafe = setup("claude");
+    check("setup refuses before writing preferences or the project and reports the unsafe folder only in JSON",
+      unsafe.status === 2 && unsafe.envelope?.outcome === "refused" && unsafe.envelope.error?.code === "PERMISSION_DENIED"
+        && unsafe.envelope.warnings?.filter((w) => w.code === "PREFERENCES_FOLDER_UNPROTECTED").length === 1
+        && unsafe.stderr === "" && readFileSync(file, "utf8") === saved && !existsSync(join(project, ".cotal")), shown(unsafe));
+  } finally {
+    chmodSync(folder, 0o700);
+  }
+}
 const removedClaude = command("ext", "remove", "@cotal-ai/connector-claude-code");
 check("remove connector-claude-code", removedClaude.status === 0, removedClaude.stderr);
 const withSiblings = setup("claude", seededEnv);

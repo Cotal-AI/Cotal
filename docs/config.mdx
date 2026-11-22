@@ -212,7 +212,8 @@ The preferences folder and each ancestor must be writable only by you or root.
 Group write is accepted only for your private group without an extended ACL; world write is refused.
 An unsafe folder permits reads with `PREFERENCES_FOLDER_UNPROTECTED`, naming the path and corrective `chmod`.
 Writes, including setup and `space forget`, refuse `PERMISSION_DENIED` before any change.
-For a refused `cotal config set` or `cotal config unset`, `--json` puts this warning only in the JSON receipt. Text mode prints it on stderr.
+When a command reports an error in a JSON receipt, the receipt carries this warning without repeating it on stderr.
+Text mode, and the text report when a refusal receipt cannot be written, include the warning on stderr.
 When the folder does not exist, Cotal checks its nearest existing ancestor.
 
 ## Environment variables

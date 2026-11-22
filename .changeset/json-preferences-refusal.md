@@ -1,5 +1,6 @@
 ---
 "@cotal-ai/cli": patch
+"@cotal-ai/workspace": patch
 ---
 
-Refused JSON preferences writes report the unsafe-folder warning only in the receipt.
+JSON error receipts report the unsafe preferences folder warning without repeating it on stderr. If a refusal receipt cannot be written for a reason other than a closed pipe, the text report includes the warning.

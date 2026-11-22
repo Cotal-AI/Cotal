@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import { writeSync } from "node:fs";
 import type { FlagSpec, OutputMode } from "@cotal-ai/core";
 import { terminalWidth, wrapWords } from "./text-wrap.js";
 
@@ -188,8 +189,9 @@ export function isCommandFailure(e: unknown): e is CommandFailure {
 /** The space one command run resolved, as {@link recordOperationSpace} set it, the note
  *  {@link recordOperationSpaceNote} recorded on how it was chosen, and the warnings
  *  {@link recordOperationWarning} recorded. {@link recordOperationContext} names the selected command
- *  and its resolved target. `quiet` keeps warnings off stderr. */
-export interface OperationScope { command?: string; target?: unknown; space?: string; spaceNote?: { space: string; text: string }; warnings?: OutputWarning[]; quiet?: boolean }
+ *  and its resolved target. `quiet` keeps warnings off stderr. `deferredWarningText` holds warnings
+ *  that a finite JSON error receipt can report without echoing them on stderr. */
+export interface OperationScope { command?: string; target?: unknown; space?: string; spaceNote?: { space: string; text: string }; warnings?: OutputWarning[]; quiet?: boolean; deferredWarningText?: string }
 
 // Kept on a global key so two copies of this module share one scope, as the failure brand does.
 const operationScope = ((globalThis as { [key: symbol]: unknown })[Symbol.for("cotal.operationScope")] ??= new AsyncLocalStorage<OperationScope>()) as AsyncLocalStorage<OperationScope>;
@@ -230,16 +232,19 @@ export function operationSpaceNote(space: string): string | undefined {
 
 /** Record a warning about what this command's operation resolved. It is printed on stderr at once,
  *  before the command acts on it, unless the scope is quiet or `echo` is false, as for a note its
- *  `Mesh:` heading already shows, and every envelope of the run carries it. A warning already
- *  recorded in this run is not repeated. Outside {@link runOperation} it does nothing. */
-export function recordOperationWarning(warning: OutputWarning, { echo = true }: { echo?: boolean } = {}): void {
+ *  `Mesh:` heading already shows. `echo: "defer"` holds its text until the output can tell whether
+ *  a JSON error receipt will carry it. Every envelope carries the warning once. Outside
+ *  {@link runOperation} this does nothing. */
+export function recordOperationWarning(warning: OutputWarning, { echo = true }: { echo?: boolean | "defer" } = {}): void {
   const scope = operationScope.getStore();
   if (!scope || scope.warnings?.some((w) => w.code === warning.code && w.message === warning.message)) return;
   (scope.warnings ??= []).push(warning);
   if (scope.quiet || !echo) return;
   // Wrapped to the terminal like the report it precedes, each continuation line under the text.
   const lines = wrapWords(warning.message, terminalWidth(process.stderr) - 2);
-  process.stderr.write(`${lines.map((line, i) => `${i === 0 ? "!" : " "} ${line}`).join("\n")}\n`);
+  const text = `${lines.map((line, i) => `${i === 0 ? "!" : " "} ${line}`).join("\n")}\n`;
+  if (echo === "defer") scope.deferredWarningText = (scope.deferredWarningText ?? "") + text;
+  else process.stderr.write(text);
 }
 
 /** The warnings this command run recorded so far, none outside {@link runOperation}. */
@@ -295,7 +300,26 @@ export function envelopeLine(envelope: Envelope): string {
 
 /** Write one envelope as the whole of stdout. */
 export function writeEnvelope(envelope: Envelope): void {
-  process.stdout.write(envelopeLine(envelope));
+  const line = envelopeLine(envelope);
+  const warning = takeDeferredWarningText();
+  if (warning && envelope.error) {
+    process.stdout.write(line, (error?: NodeJS.ErrnoException | null) => {
+      if (error && error.code !== "EPIPE") {
+        try { writeSync(2, warning); } catch { /* stderr failed too */ }
+      }
+    });
+    return;
+  }
+  if (warning) process.stderr.write(warning);
+  process.stdout.write(line);
+}
+
+function takeDeferredWarningText(): string | undefined {
+  const scope = operationScope.getStore();
+  if (!scope) return undefined;
+  const text = scope.deferredWarningText;
+  delete scope.deferredWarningText;
+  return text;
 }
 
 /** The follow streams, by what they follow. `goal` is an action followed with `--wait`. */
@@ -319,6 +343,8 @@ export function streamRecord<D>(stream: StreamName, type: RecordType, target: un
 
 /** Write one record as one line of stdout. */
 export function writeStreamRecord(record: StreamRecord): void {
+  const warning = takeDeferredWarningText();
+  if (warning) process.stderr.write(warning);
   process.stdout.write(`${JSON.stringify(record)}\n`);
 }
 

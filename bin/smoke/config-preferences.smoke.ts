@@ -18,7 +18,7 @@
  * Run: pnpm smoke:config-preferences
  */
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createSuite } from "@cotal-ai/smoke-kit";
@@ -53,12 +53,22 @@ type Envelope = {
   error?: { code: string; message: string; remedy?: string };
 };
 const sandboxEnv = (extra: NodeJS.ProcessEnv) => ({ ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: xdg, COTAL_HOME: cotalHome, COTAL_SKIP_CONNECTOR_SEED: "1", ...extra });
-function run(args: string[], extra: NodeJS.ProcessEnv = {}, cwd = home) {
-  const r = spawnSync(process.execPath, [BIN, ...args], { cwd, env: sandboxEnv(extra), encoding: "utf8", timeout: 60_000 });
+function run(args: string[], extra: NodeJS.ProcessEnv = {}, cwd = home, stdoutFd?: number) {
+  const r = spawnSync(process.execPath, [BIN, ...args], { cwd, env: sandboxEnv(extra), encoding: "utf8", timeout: 60_000, stdio: ["ignore", stdoutFd ?? "pipe", "pipe"] });
   const stdout = r.stdout ?? "";
   const lines = stdout.split("\n").filter(Boolean);
   const envelope = lines.length === 1 && lines[0]!.startsWith("{") ? (JSON.parse(lines[0]!) as Envelope) : undefined;
   return { status: r.status, stdout, stderr: r.stderr ?? "", envelope };
+}
+async function runWithClosedStdout(args: string[]): Promise<{ status: number | null; stderr: string }> {
+  const child = spawn(process.execPath, [BIN, ...args], { cwd: home, env: sandboxEnv({}), stdio: ["ignore", "pipe", "pipe"], timeout: 60_000 });
+  child.stdout.destroy();
+  let stderr = "";
+  child.stderr.setEncoding("utf8").on("data", (text: string) => { stderr += text; });
+  return new Promise((resolve, reject) => {
+    child.once("error", reject);
+    child.once("close", (status) => resolve({ status, stderr }));
+  });
 }
 const shown = (r: { status: number | null; stdout: string; stderr: string }) => ({ status: r.status, stdout: r.stdout.slice(0, 700), stderr: r.stderr.slice(0, 400) });
 const settingOf = (r: ReturnType<typeof run>, key: string) => ((r.envelope?.result as { settings?: Setting[] } | null)?.settings ?? []).find((s) => s.key === key);
@@ -504,6 +514,13 @@ if (process.platform !== "win32" && process.getuid?.() !== 0) {
 if (process.platform !== "win32") {
   const dir = join(xdg, "cotal");
   run(["config", "set", "editor", "vi"]);
+  for (const space of ["unsafe-prefs", "unsafe-prefs-lost"]) {
+    const root = join(home, space);
+    mkdirSync(root);
+    const prepared = run(["space", "create", space, "--root", root, "--json"]);
+    check(`fixture: ${space} is prepared and has preferences to remove`, prepared.status === 0
+      && run(["config", "set", "persona", "reporting", "--space", space, "--json"]).status === 0, shown(prepared));
+  }
   const before = fileText();
   const unprotected = (w: { code: string; message: string; target?: unknown }) =>
     w.code === "PREFERENCES_FOLDER_UNPROTECTED" && (w.target as { path?: string } | undefined)?.path === dir && w.message.includes(`${dir} is writable by every local account`) && w.message.endsWith(`chmod o-w ${dir}`);
@@ -522,6 +539,31 @@ if (process.platform !== "win32") {
     check("the plain refusal still writes the unsafe-folder warning and the refusal to stderr",
       plain.status === 2 && plain.stdout === "" && plain.stderr.startsWith("! the preferences folder is not protected")
       && /Code:\s+PERMISSION_DENIED/.test(plain.stderr), shown(plain));
+    const missingSpace = ["config", "get", "persona", "--space", "never-registered", "--json"];
+    const readRefusal = run(missingSpace);
+    check("a JSON read refusal keeps the unsafe-folder warning in the receipt too",
+      readRefusal.status === 2 && readRefusal.envelope?.error?.code === "TARGET_NOT_FOUND"
+      && readRefusal.envelope.warnings.filter(unprotected).length === 1 && readRefusal.stderr === "", shown(readRefusal));
+    const unsetMissing = ["config", "unset", "persona", "--space", "never-registered", "--json"];
+    const fd = openSync(file, "r");
+    try {
+      const lost = run(unsetMissing, {}, home, fd);
+      check("when stdout is read-only, the text refusal includes the independent folder warning once",
+        lost.status === 2 && lost.stderr.includes("could not write to stdout") && /Code:\s+TARGET_NOT_FOUND/.test(lost.stderr)
+        && lost.stderr.split("! the preferences folder is not protected").length === 2 && lost.stderr.includes(`chmod o-w ${dir}`), shown(lost));
+      const lostPartial = run(["space", "forget", "unsafe-prefs-lost", "--json"], {}, home, fd);
+      check("a partial result that cannot write its receipt still exposes the warning and keeps exit 4",
+        lostPartial.status === 4 && lostPartial.stderr.includes("could not write to stdout")
+        && lostPartial.stderr.split("! the preferences folder is not protected").length === 2 && lostPartial.stderr.includes(`chmod o-w ${dir}`), shown(lostPartial));
+    } finally {
+      closeSync(fd);
+    }
+    const closed = await runWithClosedStdout(unsetMissing);
+    check("a closed stdout pipe keeps the refusal exit and writes nothing on stderr", closed.status === 2 && closed.stderr === "", closed);
+    const forgotten = run(["space", "forget", "unsafe-prefs", "--json"]);
+    check("a partial JSON forget carries the folder warning only in its receipt",
+      forgotten.status === 4 && forgotten.envelope?.outcome === "partial" && forgotten.envelope.error?.code === "OPERATION_PARTIAL"
+      && forgotten.envelope.warnings.filter(unprotected).length === 1 && forgotten.stderr === "", shown(forgotten));
     check("and the file is left as it was", fileText() === before);
     const read = run(["config", "--json"]);
     check("a read applies the saved values with a PREFERENCES_FOLDER_UNPROTECTED warning naming the folder and its chmod",
