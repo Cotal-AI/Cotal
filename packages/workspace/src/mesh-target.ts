@@ -140,7 +140,7 @@ export interface MeshTargetErrorDetails {
   available?: string[];
   /** The same meshes by SPACE NAME, in `available`'s order — set where the ambiguity is a set of
    *  RECORDED meshes a caller can select by name: the running meshes of the bare fallback, or the
-   *  registrations one folder's broker hosts, so a caller that must act on each (rather than print
+   *  registrations at one folder or broker, so a caller that must act on each (rather than print
    *  them) reads each by name and decides for it. Absent for every other ambiguity: several tenants
    *  on one root's disk name no registration to act on, and there the refusal stands. */
   spaces?: string[];
@@ -1159,7 +1159,7 @@ export function resolveMeshTarget(cwd: string, flags: ResolveFlags = {}): MeshTa
       throw new MeshTargetError(
         "ambiguous-target",
         `${onServer.length} spaces are recorded at ${flags.server} (${onServer.map((e) => e.space).join(", ")}) - name one with --space`,
-        { server: flags.server, available: onServer.map((e) => `${e.space} (${e.root})`) },
+        { server: flags.server, available: onServer.map((e) => `${e.space} (${e.root})`), spaces: onServer.map((e) => e.space) },
       );
     if (onServer[0]) {
       // `--server` names a BROKER, not a tenant. One registry row at that server does not prove the
