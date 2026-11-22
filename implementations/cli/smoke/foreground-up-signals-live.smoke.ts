@@ -1,12 +1,13 @@
 /** Actual CLI foreground signal regression. Uses a private home/root and an allocated loopback
- * port, starts no agents, and retains the sandbox and logs. No source or process identity guard
- * is replaced. POSIX process-group signals model terminal Ctrl-C, unlike CLI-only kill().
+ * port and retains the sandbox and logs. The pending-launch cell uses a local application stub.
+ * No source or process identity guard is replaced. POSIX process-group signals model terminal Ctrl-C.
  * Ready static stacks are probed through public status/ps. A bounded startup-refusal cell suspends
  * only its pinned manager before natural capability publication and always resumes it for cleanup.
  * A manager killed before readiness, without a stop request, must still report a degraded startup.
  * A controller-route cell checks the refusal from a competing `up` while the foreground start holds
  * the startup lock, then interrupts the start. Another interrupts it as it writes its start receipt.
  * A foreground `team boot` gets SIGTERM at the broker's readiness announcement.
+ * A static foreground `team boot` gets SIGINT while delivery is starting, then waits for a pending launch.
  * Another cell cuts a ready stack's stop as a closed terminal
  * does. A third shows that a second foreground `up` refuses while one holds the stack, and that one
  * over a stack whose holder was killed says it takes the running stack over before a signal stops it.
@@ -540,35 +541,37 @@ async function restoreStartupCell(): Promise<void> {
  *  stop completed for every member, and the broker listener closed. With `receipt`, the CLI sends
  *  itself SIGTERM while it writes its start receipt. A team boot gets SIGTERM as it starts the
  *  broker. Both run the same stop and exit 143. */
-async function controllerStartupCell(kind: "up" | "receipt" | "team" = "up"): Promise<void> {
+async function controllerStartupCell(kind: "up" | "receipt" | "team" | "team-launch" = "up"): Promise<void> {
   const name = kind === "up" ? "controller-startup" : `controller-${kind}`;
   const root = join(base, name), home = join(root, "home"), mesh = join(root, "mesh");
   for (const p of [root, home, mesh, join(home, "xdg"), join(home, "machine")]) mkdirSync(p, { recursive: true, mode: 0o700 });
-  recordSmokeSandbox({ root: mesh, cotalHome: join(home, "machine"), xdgConfigHome: join(home, "xdg") });
+  const sandbox = recordSmokeSandbox({ root: mesh, cotalHome: join(home, "machine"), xdgConfigHome: join(home, "xdg") });
   const port = await freePort(); assert.notEqual(port, 4222);
   const space = `foreground-${name}`;
   const env = { ...cleanEnv, HOME: home, COTAL_HOME: join(home, "machine"), XDG_CONFIG_HOME: join(home, "xdg"), XDG_DATA_HOME: join(home, "data"), XDG_CACHE_HOME: join(home, "cache"), XDG_STATE_HOME: join(home, "state"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" };
   const created = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["space", "create", space, "--root", mesh]);
   assert.equal(created.code, 0, `space create prepares the controller root: ${created.err}`); passed++;
   const server = `nats://127.0.0.1:${port}`;
+  const launch = kind === "team-launch", team = launch || kind === "team";
+  const launchEnv = launch ? await preparePendingLaunch(mesh, env, space, server) : env;
   if (kind === "team") writeFileSync(join(mesh, "mesh.yaml"), `apiVersion: cotal/v1\nkind: Mesh\nspace: ${space}\nbroker: {servers: "${server}", auth: false}\nchannels:\n  general: {deliveryClass: live}\n`);
   const preload = kind === "receipt" ? ["--import", join(import.meta.dirname, "_foreground-receipt-signal.ts")] : [];
-  const args = kind === "team" ? ["team", "boot", "mesh.yaml", "--foreground"] : ["up", "--foreground", "--server", server];
-  const child: ChildProcess = spawn(process.execPath, ["--import", tsx, ...preload, cliEntry, ...args], { cwd: mesh, env, detached: true, stdio: ["ignore", "pipe", "pipe"] });
+  const args = team ? ["team", "boot", "mesh.yaml", "--foreground"] : ["up", "--foreground", "--server", server];
+  const child: ChildProcess = spawn(process.execPath, ["--import", tsx, ...preload, cliEntry, ...args], { cwd: mesh, env: launchEnv, detached: true, stdio: ["ignore", "pipe", "pipe"] });
   let out = "", err = "";
   child.stdout?.on("data", (b: Buffer) => { out += b.toString(); });
   child.stderr?.on("data", (b: Buffer) => { err += b.toString(); });
   const state = observeOwnedChild(child);
   try {
     if (kind !== "receipt") {
-      const member = kind === "team" ? "broker" : "manager";
+      const member = launch ? "delivery" : team ? "broker" : "manager";
       await until(() => {
         if (state.error) throw state.error;
         if (state.exited) throw new Error(`CLI exited before the ${member} start: ${err}`);
         return err.includes(`Starting stack-${member}; waiting`);
       }, 90_000, () => err.slice(-3000));
       assert.ok(child.pid);
-      if (kind === "team") process.kill(child.pid, "SIGTERM");
+      if (team) process.kill(child.pid, launch ? "SIGINT" : "SIGTERM");
       else {
         // Pause only our launcher so the competing start can reach the live lock before release.
         process.kill(child.pid, "SIGSTOP");
@@ -584,13 +587,21 @@ async function controllerStartupCell(kind: "up" | "receipt" | "team" = "up"): Pr
         }
       }
     }
+    if (launch) {
+      await until(() => state.exited || err.includes("Waiting for pending agent launches before stopping the stack"), 90_000, () => err);
+      assert.equal(state.exited, false, err);
+      assert.equal(await portOpen(port), true, "the foreground process keeps the broker running while the launch is blocked");
+      writeFileSync(join(mesh, "release-launch"), "");
+      passed++;
+    }
     await until(() => { if (state.error) throw state.error; return state.exited; }, 120_000, () => err.slice(-3000));
     await waitForOwnedChild(() => state.closed, 3_000, `${root}: startup-interrupt owner streams drained`);
-    const exit = kind === "up" ? 130 : 143;
+    const exit = kind === "up" || launch ? 130 : 143;
     assert.equal(state.code, exit, `a signal during startup exits ${exit} after the stop: ${err}`); passed++;
     if (kind !== "receipt") { assert.match(err, /Stop requested; the whole-stack stop runs once the start settles/, "the interrupt is acknowledged while the start runs"); passed++; }
-    const started = kind === "team" ? "Fresh team boot started" : "Controller stack started";
-    assert.ok(out.includes(started) && out.indexOf(started) < out.indexOf("Controller stack stopped"), `the start settles before the guarded stop: ${out.slice(-2000)}`); passed++;
+    if (launch) { assert.match(err, /Waiting for pending agent launches before stopping the stack/); passed++; }
+    const started = team ? "Fresh team boot started" : "Controller stack started";
+    assert.ok(out.includes(started) && out.indexOf(started) < out.indexOf("Controller stack stopped"), `the start settles before the guarded stop: ${out.slice(-2000)}\n${err}`); passed++;
     // A member the mode has no role for, such as a static stack's auth service, has no instance.
     const journal = JSON.parse(readFileSync(join(mesh, ".cotal", "stack-controller.json"), "utf8")) as { operation: { kind: string; phase: string }; members: { instanceId: string | null; state: string }[] };
     assert.ok(journal.operation.kind === "down" && journal.operation.phase === "completed" && journal.members.every((member) => member.instanceId === null ? member.state === "not-attempted" : member.state === "stopped"), `the stop completed for every member: ${JSON.stringify(journal)}`); passed++;
@@ -598,15 +609,35 @@ async function controllerStartupCell(kind: "up" | "receipt" | "team" = "up"): Pr
     console.log(`PASS foreground-up-signals ${name}`);
   } finally {
     try {
+      if (launch) writeFileSync(join(mesh, "release-launch"), "");
       if (!state.exited && child.pid) process.kill(-child.pid, "SIGKILL");
       // A failed cell still stops what its start left, through the product's own down.
-      if (await portOpen(port)) await foregroundCliProbe(cliEntry, tsx, mesh, env, ["down", "--yes"]);
+      if (await portOpen(port)) {
+        const stop = () => {
+          const down = ["down", "--yes"];
+          assertSmokeSandboxDown(sandbox, down, { cwd: mesh, env: launchEnv });
+          return foregroundCliProbe(cliEntry, tsx, mesh, launchEnv, down, 60_000);
+        };
+        if (launch) await until(async () => (await stop()).code === 0, 45_000, () => err, 500);
+        else await stop();
+      }
     } finally {
       writeFileSync(join(root, "stdout.log"), out, { mode: 0o600 });
       writeFileSync(join(root, "stderr.log"), err, { mode: 0o600 });
       writeFileSync(join(root, "exit.json"), JSON.stringify({ code: state.code, signal: state.signal, closed: state.closed, port }), { mode: 0o600 });
     }
   }
+}
+
+async function preparePendingLaunch(mesh: string, env: NodeJS.ProcessEnv, space: string, server: string): Promise<NodeJS.ProcessEnv> {
+  const installed = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["ext", "add", join(wt, "extensions", "connector-claude-code")], 120_000);
+  assert.equal(installed.code, 0, installed.out + installed.err);
+  const apps = join(mesh, "apps");
+  mkdirSync(apps, { mode: 0o700 });
+  writeFileSync(join(apps, "claude"), `#!/bin/sh\nif [ "$1" = --version ]; then echo "2.5.0 (Claude Code)"; exit; fi\nwhile [ ! -f ${shellPath(join(mesh, "release-launch"))} ]; do sleep 0.1; done\n`, { mode: 0o700 });
+  writeFileSync(join(mesh, ".mcp.json"), JSON.stringify({ mcpServers: { cotal: { type: "stdio", command: "/bin/true" } } }));
+  writeFileSync(join(mesh, "mesh.yaml"), `apiVersion: cotal/v1\nkind: Mesh\nspace: ${space}\nbroker: {servers: "${server}", auth: static}\nagent: claude\nagents:\n  planner: {instructions: Wait locally., events: false, model: claude-opus-5-5}\nchannels:\n  control: {deliveryClass: live, subscribe: [planner]}\n`);
+  return { ...env, PATH: `${apps}:${env.PATH ?? ""}` };
 }
 
 /** Terminal loss on a ready foreground controller stack. `script` answers a hangup by sending the
@@ -1024,6 +1055,7 @@ await restoreStartupCell();
 await controllerStartupCell();
 await controllerStartupCell("receipt");
 await controllerStartupCell("team");
+await controllerStartupCell("team-launch");
 await controllerHangupCell();
 await controllerSighupCell();
 await controllerHoldCell();

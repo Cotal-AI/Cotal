@@ -78,6 +78,7 @@ const manifest = (name: string, space: string, channels: Record<string, string>,
   writeFileSync(join(dir, name), `apiVersion: cotal/v1\nkind: Mesh\nspace: ${space}\nbroker:\n  servers: ${server}\n${open ? "  auth: false\n" : ""}${head}channels:\n${Object.entries(channels).map(([channel, extra]) => `  ${channel}:\n    description: The ${channel} channel.\n${extra}`).join("")}`);
 };
 manifest("live.yaml", SPACE, { live1: "    deliveryClass: live\n", live2: "    deliveryClass: live\n" });
+writeFileSync(join(s, "extra.yaml"), `apiVersion: cotal/v1\nkind: Mesh\nspace: ${SPACE}\nchannels:\n  extra: {deliveryClass: live}\n`);
 manifest("order.yaml", SPACE, Object.fromEntries(Array.from({ length: 11 }, (_, n) => [`order${n}`, "    deliveryClass: live\n"])));
 manifest("inherit.yaml", SPACE, { design: "", ops: "    replay: true\n", fine: "    deliveryClass: live\n" });
 const OTHER = `other-${process.pid}`, SERVER_OTHER = `nats://127.0.0.1:${await freePort()}`;
@@ -300,6 +301,13 @@ try {
 
   console.log("\nJ. the stack that took a team deploy, after a clean down");
   const stoppedS = cotal(s, "down", "--yes");
+  for (const flags of [["--dry-run"], []]) {
+    const run = cotal(s, "team", "deploy", "extra.yaml", ...flags, "--json");
+    const refusal = envelope(run.stdout);
+    check(`team deploy ${flags[0] ?? "apply"} names the stopped stack and its restart command`,
+      run.status === 2 && refusal?.error?.code === "TARGET_UNAVAILABLE" && refusal.error.message?.includes("local stack is stopped") === true &&
+      refusal.target?.root === realpathSync(s) && refusal.error.remedy === `start it again with \`cotal up\` in ${realpathSync(s)}`, run.out);
+  }
   const legacyPreview = ["up", "-f", "live.yaml", "--dry-run"];
   const previewRemedy = `cotal team boot ${join(realpathSync(s), "live.yaml")} --dry-run`;
   const blockedPreview = cotal(s, ...legacyPreview, "--json");
@@ -324,6 +332,7 @@ try {
   const kept = cotal(s, "team", "show", deployment);
   check("a bare up starts that stack again and keeps the deployment's records as they are",
     restartedS.status === 0 && /Controller stack started/.test(restartedS.stdout) && /Recorded state:\s+channels created\n/.test(kept.stdout), { up: restartedS.out.slice(-800), kept: kept.out.slice(-800) });
+  check("team deploy succeeds after restarting the recorded stack", cotal(s, "team", "deploy", "extra.yaml", "--json").status === 0);
   const edited = cotal(s, "channel", "set", "live1", "--desc", "Edited by hand.");
   const removeEdited = envelope(cotal(s, "team", "remove", deployment, "--dry-run", "--json").stdout)?.error;
   check("team remove after a card was edited refuses CONFLICT naming that card",
@@ -380,10 +389,19 @@ try {
   check("the refused apply did not create the durable card",
     shownCard.status === 0 && shownRegistry?.channels !== undefined && !Object.hasOwn(shownRegistry.channels, "audit-team"), shownCard.out);
 
-  manifest("audit.yaml", OTHER, { "audit-team": "    deliveryClass: live\n" }, openOptions);
+  for (const server of [SERVER, SERVER_OTHER.replace("nats:", "tls:")]) {
+    manifest("audit.yaml", OTHER, { "audit-team": "    deliveryClass: live\n" }, { ...openOptions, server });
+    for (const flags of [["--dry-run"], []]) {
+      const run = cotal(c, "team", "deploy", "audit.yaml", ...flags, "--json");
+      check(`team deploy ${flags[0] ?? "apply"} refuses a different port or transport (${server})`,
+        run.status === 2 && envelope(run.stdout)?.error?.code === "CONFLICT", run.out);
+    }
+  }
+  manifest("audit.yaml", OTHER, { "audit-team": "    deliveryClass: live\n" }, { ...openOptions, server: SERVER_OTHER.replace("nats:", "NATS:") + "/" });
+  check("team deploy preview accepts an equivalent broker URL", answered(cotal(c, "team", "deploy", "audit.yaml", "--dry-run", "--json")));
   const openApplied = cotal(c, "team", "deploy", "audit.yaml", "--json");
   const openResult = envelope(openApplied.stdout);
-  check("setting deliveryClass: live creates the card on the open mesh",
+  check("team deploy accepts an equivalent broker URL and creates the live card on the open mesh",
     openApplied.status === 0 && openResult?.outcome === "ok" && Array.isArray(openResult.result?.createdChannels) &&
       openResult.result.createdChannels.some((card) => card.name === "audit-team"), openApplied.out);
 } finally {

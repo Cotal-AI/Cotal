@@ -44,7 +44,6 @@ import {
   seatCapText,
   CommandFailure,
   codeSpan,
-  commandFailureReport,
   failureEnvelope,
   writeEnvelope,
   isCommandFailure,
@@ -142,8 +141,8 @@ import { clearManagerArtifacts, liveManagerWouldApplyMaxSessions, managerHasDeli
 import { loadManifest } from "../lib/manifest/index.js";
 import { checkNewUpSpace, preparedUpRoot } from "./up-target.js";
 import { cleanedManifestStart, interruptedStartBroker } from "../lib/legacy-start.js";
+import { canonicalServer } from "../lib/broker-service.js";
 import {
-  canonicalServer,
   controllerStackApplies,
   requestedStackMode, refuseForegroundStackHolder,
   stackUp,
@@ -154,7 +153,7 @@ import { exitInterrupted, handOverStartupNotice, noticeOnInterrupt, releaseStart
 import { claimForegroundHold, foregroundHolder, foregroundStackEnd, releaseForegroundHold } from "../lib/foreground-hold.js";
 import { settleInterruptedLaunches } from "../lib/service-process.js";
 import { assertUserStackTransport, preflightUserStack } from "./stack-user-auth.js";
-import { stackDown } from "./stack-down.js";
+import { stopForegroundStack } from "./stack-down.js";
 import {
   assertControllerCoupling, assertControllerMembersLive, assertControllerResumeEligible, beginControllerResume, bindControllerBroker, controllerAttemptBrokerInstance,
   currentControllerAttempt, managerResumeAttempt, relaunchCommittedManager, settleControllerResume, startControllerMember, startControllerMembers,
@@ -370,14 +369,6 @@ export function upComplete(argv: string[]): CompletionResult {
 
 export { preparedUpRoot } from "./up-target.js";
 
-/** The guarded whole-stack stop a foreground signal runs, acknowledged by that signal's exit code. A
- *  failed or unknown stop is reported with its retained members; nothing is force-killed. */
-function stopForegroundStack(root: string, signal: "SIGINT" | "SIGTERM"): Promise<void> {
-  return stackDown(root, { yes: true }).catch((error) => {
-    process.stderr.write(`${renderReport(commandFailureReport(isCommandFailure(error) ? error : new CommandFailure("unknown", "OPERATION_UNKNOWN", "the foreground stack stop did not confirm its outcome; its members were retained")), "rich", process.stderr)}\n`);
-  }).finally(() => { process.exitCode = signal === "SIGINT" ? 130 : 143; });
-}
-
 /** A hangup, such as a closed terminal, is not a stop. The stack keeps running and the notice names
  *  the command that stops it. Release this process's hold before the immediate exit, which does not
  *  unwind the surrounding finally, so a later foreground `up` can take the running stack over. */
@@ -423,7 +414,7 @@ async function holdStack(root: string, start?: () => Promise<void | StackJournal
     releaseStart = () => { process.off("SIGINT", interrupt); process.off("SIGTERM", terminate); process.off("SIGHUP", hangup); };
     if (requested || failure) releaseStart();
     if (requested === "SIGHUP") hangupForegroundStack(root);
-    if (requested) await stopForegroundStack(root, requested);
+    if (requested) await stopForegroundStack(root, requested, true);
     if (failure) throw failure.error;
     if (requested) return;
   }

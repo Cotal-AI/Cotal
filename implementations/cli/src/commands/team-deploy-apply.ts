@@ -7,7 +7,8 @@ import { verifyOriginalIncarnations } from "../lib/team-retained.js";
 import { hashManifestSource, listLedgerFiles } from "../lib/manifest/ledger.js";
 import { loadManifest } from "../lib/manifest/index.js";
 import { additiveChannelAttemptSettled, listAdditiveTeamAttempts, retainedAdditiveTeamAttempts, writeAdditiveChannelReceipt, writeAdditiveChannelStep, writeAdditiveTeamAttempt, type AdditiveChannelReceipt, type AdditiveTeamAttempt } from "../lib/team-additive-attempt.js";
-import { cardsWithoutLiveDelivery, liveDeliveryRemedy, readOwnedChannelRevisions } from "../lib/team-deploy-inspection.js";
+import { cardsWithoutLiveDelivery, liveDeliveryRemedy, readOwnedChannelRevisions, stoppedTeamDeploy } from "../lib/team-deploy-inspection.js";
+import { canonicalServer } from "../lib/broker-service.js";
 import { openAdditiveChannelWriter } from "../lib/team-additive-native.js";
 import { shellWord } from "../lib/endpoint-errors.js";
 import { retainedRemovalRemedy } from "../lib/team-text.js";
@@ -32,10 +33,10 @@ export async function applyChannelOnlyTeam(file: string, values: TeamValues): Pr
     throw new CommandFailure("refused", "UNSUPPORTED", "this channel-only route cannot apply a broker bind, space defaults or agent access edges; none was silently dropped", { target: { space } });
   const registered = findMesh(space), preparedSpace = findPreparedSpace(space), root = canonicalRoot(cotalRoot());
   if (!registered || canonicalRoot(registered.root) !== root || preparedSpace && canonicalRoot(preparedSpace.root) !== root)
-    throw new CommandFailure("refused", "CONFLICT", "additive creation needs an existing registered mesh in this checkout; no foreign root was adopted", { target: { root, space } });
+    throw (!registered ? stoppedTeamDeploy(preparedSpace, root) : undefined) ?? new CommandFailure("refused", "CONFLICT", "additive creation needs an existing registered mesh in this checkout; no foreign root was adopted", { target: { root, space } });
   if (registered.server.includes(","))
     throw new CommandFailure("refused", "UNSUPPORTED", "channel-only additive creation needs one registered broker address; a server list cannot pin one native target", { target: { root, space } });
-  if (manifest.broker?.servers !== undefined && manifest.broker.servers !== registered.server)
+  if (manifest.broker?.servers !== undefined && canonicalServer(manifest.broker.servers) !== canonicalServer(registered.server))
     throw new CommandFailure("refused", "CONFLICT", "the manifest broker differs from the registered target; no alternate server was selected", { target: { root, space } });
   const requestedMode = manifest.broker?.auth === false ? "open" : manifest.broker?.auth === "user" ? "user" : "auth";
   if (manifest.broker?.auth !== undefined && requestedMode !== registered.mode)
@@ -202,6 +203,10 @@ export async function applyRetainedTeam(file: string, values: TeamValues, previo
   if (matching.length !== 1 || JSON.stringify(matching[0]) !== JSON.stringify(previous) || !receipt || receipt.kind === "additive-channel-receipt")
     throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "the retained deployment for this manifest is unsettled or has no returned agent receipt; no uncertain launch was retried", { target });
   const selected = findMesh(space);
+  if (!selected && canonicalRoot(previous.root) === root) {
+    const stopped = stoppedTeamDeploy(findPreparedSpace(space), root);
+    if (stopped) throw stopped;
+  }
   if (!selected || canonicalRoot(selected.root) !== root || canonicalRoot(previous.root) !== root || selected.server !== previous.server || selected.mode !== previous.authMode || (selected.tlsRequired === true) !== previous.tlsRequired || !previous.managerInstanceId)
     throw new CommandFailure("refused", "CONFLICT", "the registered root, broker, auth mode or transport differs from the retained deployment; no target was substituted", { target });
   if (selected.mode === "user") throw new CommandFailure("refused", "UNSUPPORTED", "user-auth managers expose no durable static slot store to prove the original incarnations; the retained deployment was not verified or changed", { target });
