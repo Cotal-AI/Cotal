@@ -920,7 +920,7 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
   // evidence under the held maintenance lock. Only a preserve or resume can remain unsettled here.
   // A member stop an earlier down could not confirm in time is settled from its own receipt first.
   if (previous) await settleRetainedStackStops(previous.journal);
-  const { snapshot: current, settled } = previous ? settleStackOperation(request.maintenanceLock, previous) : { snapshot: undefined, settled: undefined };
+  const { snapshot: current, settled } = previous ? settleStackOperation(request.maintenanceLock, previous, request.invokedRoot) : { snapshot: undefined, settled: undefined };
   if (current && stackOperationUnsettled(current.journal))
     throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "an earlier preserve or resume on this root has no settled outcome; it is decided by its own maintenance attempt and no member was started", { target: { root, space, operation: current.journal.operation }, remedy: `inspect the root's maintenance attempt and the stack's members with \`cotal service --space ${space}\` before another whole-stack operation` });
   const server = previous?.journal.server ?? request.server;
