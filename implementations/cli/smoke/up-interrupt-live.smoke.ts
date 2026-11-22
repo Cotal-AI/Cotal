@@ -5,7 +5,7 @@
  *  Run: pnpm smoke:up-interrupt:live */
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmdirSync, writeFileSync } from "node:fs";
 import { assertRecordIdentity, canonicalLocalProcessPath, DELIVERY_PIDFILE, MANAGER_PIDFILE, MANAGER_SPARE_CAPABILITY, readPidfile, verifyIdentityPin } from "@cotal-ai/workspace";
 import { serviceInstances } from "../src/lib/service-instances.js";
 import { createConnection } from "node:net";
@@ -218,7 +218,26 @@ for (const [name, signal, code, format, noManager] of [
   let orphan: number | undefined;
   try {
     assert.equal(cli(...start).status, 0, "legacy broker-only start");
+    const registry = join(home, "meshes");
+    const records = readdirSync(registry).filter((name) => name.endsWith(".json"));
+    assert.equal(records.length, 1);
     assert.equal(cli("down", "--yes").status, 0, "legacy stop");
+    // A directory at this invocation's temporary filename makes the registration write fail.
+    const writer = spawn(process.execPath, ["--import", loader, entry, ...start], { cwd: root, env, stdio: ["ignore", "ignore", "pipe"] });
+    let diagnostic = "";
+    writer.stderr.setEncoding("utf8").on("data", (chunk: string) => { diagnostic += chunk; });
+    const exited = new Promise<number | null>((done) => writer.once("close", done));
+    const blocked = join(registry, `${records[0]}.${writer.pid}.tmp`);
+    mkdirSync(blocked, { mode: 0o700 });
+    const code = await exited;
+    const stillListening = await listening(port);
+    check("failed registration reports the write error and stops its broker", () => {
+      assert.ok(code !== null && code !== 0 && diagnostic.includes(blocked), diagnostic);
+      assert.equal(existsSync(join(registry, records[0]!)), false);
+      assert.equal(existsSync(pidPath), false);
+      assert.equal(stillListening, false);
+    });
+    rmdirSync(blocked);
     const child = spawn(process.execPath, ["--import", loader, entry, ...start], { cwd: root, env, stdio: "ignore" });
     const closed = new Promise<void>((done) => child.once("close", () => done()));
     const until = Date.now() + 90_000;

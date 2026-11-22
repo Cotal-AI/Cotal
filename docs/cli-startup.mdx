@@ -9,6 +9,7 @@ import { Callout } from 'fumadocs-ui/components/callout';
 
 `up` starts or refreshes a local broker and its control plane. Its default mode runs in the
 background. A prepared root uses the stack controller; existing legacy roots keep their launcher.
+If the native launcher cannot finish registering a broker it just started, it stops that broker and reports the error.
 
 
 ## up [#up]
