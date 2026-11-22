@@ -210,7 +210,7 @@ registry.register({ kind: "command", name: "greet-example", summary: "Print a gr
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
-  assert.equal(passed + failed, process.platform === "linux" || process.platform === "darwin" ? 43 : 40, "all expected copy/rollback checks ran");
+  assert.equal(passed + failed, process.platform === "linux" || process.platform === "darwin" ? 44 : 41, "all expected copy/rollback checks ran");
   console.log(`ext-install-copies smoke: ${passed} passed, ${failed} failed`);
   emitSentinel({ passed, failed });
   process.exit(failed ? 1 : 0);
@@ -248,6 +248,9 @@ registry.register({ kind: "command", name: "greet-directory", summary: "Print a 
 
   const manifestPath = join(prefix, "extensions.json");
   const before = readFileSync(manifestPath, "utf8");
+  writePackage("3.0.0", { exports: { ".": "./dist/index.js/" } });
+  const trailing = add();
+  check("directory main: an explicit file export with a trailing slash is refused", trailing.status === 1 && trailing.stderr.includes("index.js"));
   writePackage("3.0.0", { exports: { ".": "./dist" } });
   const exported = add();
   check("directory main: an explicit directory export is refused", exported.status === 1 && exported.stderr.includes("extension set installed no entry") && exported.stderr.includes("dist"));

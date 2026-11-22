@@ -118,7 +118,7 @@ export function extensionEntry(meta: InstalledExtensionPackage, dir?: string): s
   } else if (typeof meta.exports === "string") exported = meta.exports;
   const entry = exported ?? meta.main ?? "index.js";
   if (dir === undefined) return entry;
-  const path = resolve(join(dir, entry));
+  const path = join(resolve(dir), entry);
   const stat = statSync(path, { throwIfNoEntry: false });
   if (exported !== undefined || meta.main === undefined || !stat?.isDirectory()) {
     return { path, isFile: stat?.isFile() ?? false };
@@ -126,7 +126,7 @@ export function extensionEntry(meta: InstalledExtensionPackage, dir?: string): s
   const root = realpathSync(dir);
   const directory = checkedPackagePath(root, path);
   // A root-valued main has already declared the directory, so use its index without rereading it.
-  const file = resolve(directory, directory === root ? "index.js" : directoryMain(directory));
+  const file = join(directory, directory === root ? "index.js" : directoryMain(directory));
   const isFile = statSync(file, { throwIfNoEntry: false })?.isFile() ?? false;
   return { path: isFile ? checkedPackagePath(root, file) : file, isFile };
 }
