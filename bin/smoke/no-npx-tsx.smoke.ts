@@ -31,6 +31,7 @@
  */
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
+import { createSuite } from "@cotal-ai/smoke-kit";
 
 const ROOT = join(import.meta.dirname, "..", "..");
 // Any spawner name, any whitespace or newline between the tokens. The first version of this guard
@@ -75,11 +76,7 @@ const BANNED = new RegExp(
 const SELF = "bin/smoke/no-npx-tsx.smoke.ts";
 const SKIP = new Set(["node_modules", "dist", ".git", ".changeset", "coverage", "build", ".internal"]);
 
-let pass = 0, fail = 0;
-const check = (name: string, condition: boolean, detail?: unknown) => {
-  if (condition) { pass++; console.log(`  ✓ ${name}`); }
-  else { fail++; console.log(`  ✗ FAIL: ${name}`, detail ?? ""); }
-};
+const { check, finish, passed, failed } = createSuite();
 
 /** Every `.ts` file whose path has a `smoke/` segment, excluding this guard's own fixture directory. */
 function smokeSources(dir: string, out: string[] = []): string[] {
@@ -141,6 +138,7 @@ for (const [name, src] of negatives) check(`legitimate text is NOT matched: ${na
 
 check(`no smoke source launches the CLI via npx tsx (${files.length} files walked)`, hits.length === 0, hits);
 
-console.log(`\nNO-NPX-TSX ${fail === 0 ? "OK" : "FAILED"}  (${pass} passed, ${fail} failed)`);
-console.log(`SUITE COMPLETE: ${pass + fail} declared`);
-process.exit(fail === 0 ? 0 : 1);
+console.log(`\nNO-NPX-TSX ${failed() === 0 ? "OK" : "FAILED"}  (${passed()} passed, ${failed()} failed)`);
+console.log(`SUITE COMPLETE: ${passed() + failed()} declared`);
+finish();
+process.exit(failed() === 0 ? 0 : 1);
