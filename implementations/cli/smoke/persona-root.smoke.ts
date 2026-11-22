@@ -702,9 +702,80 @@ try {
   const validSpawn = native(["spawn", "typed-valid", "--foreground", "--dry-run", "--json"]);
   check("spawn dry-run accepts correctly typed file", validSpawn.status === 0 && validSpawn.stdout.includes('"42"'), validSpawn.stdout + validSpawn.stderr);
 
+  function checkBrokenCatalog() {
+    if (process.platform === "win32") return;
+    const dir = join(realpathSync(ALPHA), ".cotal", "agents");
+    const moved = `${dir}.saved`;
+    renameSync(dir, moved);
+    try {
+      const absent = native(["persona", "--space", "alpha", "--json"]);
+      check("an absent catalog is a complete empty listing", absent.status === 0 &&
+        JSON.parse(absent.stdout).completeness === "complete" && JSON.parse(absent.stdout).result?.items.length === 0, absent.stdout);
+      symlinkSync("missing-catalog", dir);
+      const modern = native(["persona", "--space", "alpha", "--json"]);
+      const legacy = native(["personas", "list", "--space", "alpha"]);
+      const { error, outcome } = JSON.parse(modern.stdout);
+      check("persona refuses a dangling catalog link and gives its target and remedy", modern.status === 2 && outcome === "refused" &&
+        error?.code === "CONFLICT" && error.message.includes(dir) && error.message.includes("missing-catalog") &&
+        error.remedy === "restore the link's target or move the broken link aside", modern.stdout + modern.stderr);
+      check("legacy listing refuses the same link without suggesting creation", legacy.status === 2 && !legacy.stdout.includes("create one") &&
+        legacy.stderr.includes(dir) && legacy.stderr.includes("missing-catalog") && legacy.stderr.includes(error.remedy), legacy.stdout + legacy.stderr);
+      unlinkSync(dir);
+      symlinkSync(moved, dir);
+      const linked = native(["persona", "--space", "alpha", "--json"]);
+      check("a working catalog link still lists its target", linked.status === 0 &&
+        JSON.parse(linked.stdout).result?.items.some((item: { name: string }) => item.name === "alpha-only"), linked.stdout);
+    } finally {
+      rmSync(dir, { force: true });
+      renameSync(moved, dir);
+    }
+  }
+  checkBrokenCatalog();
+
+  for (const field of ["subscribe", "allowSubscribe", "allowPublish", "quiet", "muted"]) {
+    const path = agentFilePath(MESH, "invalid-channel");
+    writeFileSync(path, `---\nname: invalid-channel\n${field}: ["#general"]\n---\nReview the project.\n`);
+    const shown = native(["persona", "show", "invalid-channel", "--json"]);
+    const { error } = JSON.parse(shown.stdout);
+    check(`invalid channel diagnostic names ${field} and the file`, shown.status === 1 && error?.code === "SCHEMA_INVALID" &&
+      error.message.includes(`${path}: "${field}": invalid channel`) && error.message.includes("NATS-safe token"), shown.stdout);
+    unlinkSync(path);
+  }
+
+  function checkHyphenCreate() {
+    const body = ["persona", "create", "--prompt", "Review changes.", "--subscribe", ""];
+    const bytes = Buffer.from("---\r\nname: -created\r\n---\r\nReview changes.\r\n");
+    for (const args of [body, ["persona", "create", "--file", "-"]]) {
+      const refused = native([...args, "--space", "alpha", "--json", "--", "-created"], MESH, childEnv, bytes);
+      const { error } = JSON.parse(refused.stdout);
+      check("persona create refuses an invalid default name before writing", refused.status === 1 && error?.code === "USAGE_INVALID" &&
+        error.message.includes('cannot start with "-"') && error.remedy.includes("such as reviewer") &&
+        !existsSync(agentFilePath(ALPHA, "-created")), refused.stdout);
+    }
+    const path = agentFilePath(ALPHA, "created");
+    for (const selector of [["--space", "alpha"], ["--server", "nats://127.0.0.1:4301"]]) {
+      const created = native([...body, ...selector, "--plain", "created"], MESH);
+      const next = [...created.stdout.matchAll(/^\s+(cotal .+?) {2,}\S.*$/gm)].map(match => match[1]!);
+      check(`the create receipt preserves ${selector[0]}`, created.status === 0 &&
+        JSON.stringify(next) === JSON.stringify([`cotal spawn created ${selector.join(" ")}`, `cotal p show created ${selector.join(" ")}`]), created.stdout + created.stderr);
+      const shown = native(next[1]!.split(" ").slice(1), MESH);
+      check("the printed show command reads the saved definition", shown.status === 0 &&
+        shown.stdout.includes("Review changes.") && shown.stdout.includes(path), shown.stdout + shown.stderr);
+      const spawn = native(["spawn", "--dry-run", "--json", ...next[0]!.split(" ").slice(2)], MESH);
+      const result = JSON.parse(spawn.stdout).result;
+      check("the printed spawn arguments select the saved persona and its valid default name", spawn.status === 0 &&
+        result?.persona?.path === path && result.requestedName === "created", spawn.stdout + spawn.stderr);
+      unlinkSync(path);
+    }
+  }
+  checkHyphenCreate();
+
   {
     const path = agentFilePath(MESH, "-reviewer");
     writeFileSync(path, "---\nname: reviewer\nagent: claude\n---\nReview the project.\n");
+    const listed = native(["persona", "--json"]);
+    check("persona lists a hyphen-leading catalog name", listed.status === 0 &&
+      JSON.parse(listed.stdout).result?.items.some((item: { name: string }) => item.name === "-reviewer"), listed.stdout);
     const shown = native(["persona", "show", "--plain", "--", "-reviewer"]);
     const next = [...shown.stdout.matchAll(/^\s+(cotal .+?) {2,}\S.*$/gm)].map(match => match[1]);
     check("persona show prints copyable follow-ups for a hyphen-leading catalog name", shown.status === 0 &&
@@ -719,7 +790,12 @@ try {
     const json = native(next[2]!.split(" ").slice(1));
     check("the printed JSON command returns the correct persona", json.status === 0 &&
       JSON.parse(json.stdout).result?.definition?.name === "reviewer", json.stdout + json.stderr);
-    unlinkSync(path);
+    const refused = native(["persona", "remove", "--json", "--", "-reviewer"]);
+    const remove = JSON.parse(refused.stdout).error?.remedy?.match(/`([^`]+)`/)?.[1];
+    check("persona remove prints copyable confirmation for a hyphen-leading catalog name",
+      refused.status !== 0 && remove === "cotal persona remove --yes -- -reviewer" && existsSync(path), refused.stdout);
+    const removed = native(remove.split(" ").slice(1));
+    check("the printed remove command removes the existing definition", removed.status === 0 && !existsSync(path), removed.stdout + removed.stderr);
   }
   {
     const path = agentFilePath(MESH, "nul-endpoints");
