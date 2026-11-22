@@ -1,6 +1,6 @@
 import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, statSync, type Stats } from "node:fs";
 import { hasDuplicateNames } from "@cotal-ai/core";
-import { dryRunOutcome, DurationError, Journal, journalEntryKeyString, LangErrors, parseDuration, validate, type SimScript } from "@cotal-ai/lang";
+import { dryRunOutcome, DurationError, Journal, journalEntryKeyString, LangErrors, parseDuration, validate, type SimFault, type SimScript } from "@cotal-ai/lang";
 import { CommandFailure, isCommandFailure, oneLine, presentationOf, writeResult, type Report } from "@cotal-ai/workspace";
 import { logLineText } from "./log-line.js";
 
@@ -131,7 +131,29 @@ function scriptOf(file: string | undefined): SimScript {
       if (problem) throw new CommandFailure("refused", "SCHEMA_INVALID", `invalid scripted turn '${name}': ${problem}`, { target: { file } });
     }
   }
+  const faults = script.faults as readonly unknown[] | undefined;
+  for (const [index, entry] of (faults ?? []).entries()) {
+    const problem = faultEntryProblem(entry);
+    if (problem) throw new CommandFailure("refused", "SCHEMA_INVALID", `invalid faults[${index}] in the simulation results script ${file}: ${problem}`, {
+      target: { file }, remedy: `correct faults[${index}] in ${file}, then rerun the simulation`,
+    });
+  }
   return script as SimScript;
+}
+
+const faultFields = { at: true, kind: true, code: true, message: true } satisfies Record<keyof SimFault, true>;
+
+function faultEntryProblem(entry: unknown): string | undefined {
+  if (!entry || typeof entry !== "object" || Array.isArray(entry)) return "an entry must be an object";
+  const fields = entry as Record<string, unknown>;
+  const unknown = Object.keys(fields).find((key) => !Object.hasOwn(faultFields, key));
+  if (unknown !== undefined) return `unknown field ${JSON.stringify(unknown)}`;
+  if (typeof fields.at !== "string" || fields.at.trim() === "") return "at must be a nonempty step key";
+  if (typeof fields.kind !== "string") return "kind must be a string";
+  for (const key of ["code", "message"] as const) {
+    if (fields[key] !== undefined && typeof fields[key] !== "string") return `${key} must be a string`;
+  }
+  return undefined;
 }
 
 /** Why a scripted checkpoint result is not one `checkpoint()` can return, or undefined. The

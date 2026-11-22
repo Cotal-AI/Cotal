@@ -455,6 +455,53 @@ log([].filter(() => true), [].find(() => true) === undefined, [].findLast(() => 
   rmSync(dir, { recursive: true, force: true });
 }
 
+{
+  const dir = mkdtempSync(join(tmpdir(), "run-simulate-faults-"));
+  const program = join(dir, "p.cotal.js"), handler = join(dir, "results.json");
+  const fault = { at: "sleep#0", kind: "unreachable" };
+  const simulate = async (faults: unknown[]) => {
+    writeFileSync(handler, JSON.stringify({ faults }));
+    const chunks: string[] = [];
+    const write = process.stdout.write;
+    process.stdout.write = ((chunk: string | Uint8Array) => { chunks.push(String(chunk)); return true; }) as typeof write;
+    try {
+      const error = await runWorkflow({ values: { handler, json: true }, positionals: ["simulate", program], raw: [] })
+        .then(() => undefined, (e: Error) => e);
+      return { error, output: chunks.join("") };
+    } finally { process.stdout.write = write; }
+  };
+  try {
+    writeFileSync(program, 'await sleep("1s");\n');
+    for (const [entry, problem] of [
+      [{ att: "/sleep#0", kind: "unreachable" }, 'unknown field "att"'],
+      [{ ...fault, misspelled: true }, 'unknown field "misspelled"'],
+      [null, "an entry must be an object"],
+      [[], "an entry must be an object"],
+      ["sleep#0", "an entry must be an object"],
+      [{ kind: "unreachable" }, "at must be a nonempty step key"],
+      [{ ...fault, at: " " }, "at must be a nonempty step key"],
+      [{ ...fault, at: 0 }, "at must be a nonempty step key"],
+      [{ at: "/sleep#0" }, "kind must be a string"],
+      [{ ...fault, kind: false }, "kind must be a string"],
+      [{ ...fault, code: null }, "code must be a string"],
+      [{ ...fault, message: 42 }, "message must be a string"],
+    ] as const) {
+      const { error, output } = await simulate([fault, entry]);
+      c(`simulate refuses faults[1] ${JSON.stringify(entry)} even when faults[0] matches`,
+        output === "" && isCommandFailure(error) && error.outcome === "refused" && error.code === "SCHEMA_INVALID"
+        && exitCode(error.outcome, error.code) === 1 && (error.target as { file?: string })?.file === handler
+        && error.message === `invalid faults[1] in the simulation results script ${handler}: ${problem}`
+        && error.remedy === `correct faults[1] in ${handler}, then rerun the simulation`, { error, output });
+    }
+    const { error, output } = await simulate([{ ...fault, code: "L4001", message: "custom fault" }]);
+    const envelope = JSON.parse(output);
+    c("a short fault key injects the supplied code and message at the step",
+      error === undefined && envelope?.outcome === "ok" && envelope.result?.outcome === "failed"
+      && envelope.result.elapsedMs === 0 && envelope.result.failure?.code === "L4001"
+      && envelope.result.failure.title === "custom fault" && envelope.result.failure.step === "/sleep#0", { error, envelope });
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+}
+
 // Handler bytes must reach the simulated program unchanged, just as source bytes do. Reject
 // malformed UTF-8 before parsing JSON, but accept Unicode and an intentionally encoded U+FFFD.
 {
