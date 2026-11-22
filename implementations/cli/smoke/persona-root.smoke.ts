@@ -475,6 +475,7 @@ try {
   const childEnv: NodeJS.ProcessEnv = { ...process.env, HOME: home, DO_NOT_TRACK: "1" };
   for (const key of Object.keys(childEnv)) if (key.startsWith("COTAL_")) delete childEnv[key];
   childEnv.COTAL_HOME = home;
+  childEnv.COTAL_SKIP_CONNECTOR_SEED = "1";
   const native = (args: string[], cwd = MESH, env = childEnv, input?: Buffer) => spawnSync(process.execPath, [binary, ...args], {
     cwd, env, input, encoding: "utf8", timeout: 30_000,
   });
@@ -700,6 +701,43 @@ try {
   check("persona create accepts correctly typed file", validCreate.status === 0, validCreate.stdout + validCreate.stderr);
   const validSpawn = native(["spawn", "typed-valid", "--foreground", "--dry-run", "--json"]);
   check("spawn dry-run accepts correctly typed file", validSpawn.status === 0 && validSpawn.stdout.includes('"42"'), validSpawn.stdout + validSpawn.stderr);
+
+  {
+    const path = agentFilePath(MESH, "-reviewer");
+    writeFileSync(path, "---\nname: reviewer\nagent: claude\n---\nReview the project.\n");
+    const shown = native(["persona", "show", "--plain", "--", "-reviewer"]);
+    const next = [...shown.stdout.matchAll(/^\s+(cotal .+?) {2,}\S.*$/gm)].map(match => match[1]);
+    check("persona show prints copyable follow-ups for a hyphen-leading catalog name", shown.status === 0 &&
+      JSON.stringify(next) === JSON.stringify(["cotal p edit -- -reviewer", "cotal spawn -- -reviewer", "cotal p show --json -- -reviewer"]), shown.stdout + shown.stderr);
+    if (process.platform !== "win32") {
+      const edit = native(next[0]!.split(" ").slice(1), MESH, { ...childEnv, VISUAL: "true" });
+      check("the printed edit command opens the local definition", edit.status === 0, edit.stdout + edit.stderr);
+    }
+    const spawn = native(["spawn", "--dry-run", "--json", ...next[1]!.split(" ").slice(2)]);
+    check("the printed spawn arguments select the correct file", spawn.status === 0 &&
+      JSON.parse(spawn.stdout).result?.persona?.path === path, spawn.stdout + spawn.stderr);
+    const json = native(next[2]!.split(" ").slice(1));
+    check("the printed JSON command returns the correct persona", json.status === 0 &&
+      JSON.parse(json.stdout).result?.definition?.name === "reviewer", json.stdout + json.stderr);
+    unlinkSync(path);
+  }
+  {
+    const path = agentFilePath(MESH, "nul-endpoints");
+    const card = "---\nname: nul-endpoints\nagent: claude\nendpoints:\n---\nReview the project.\n";
+    writeFileSync(path, card);
+    for (const args of [["persona", "show", "nul-endpoints"], ["spawn", "nul-endpoints", "--dry-run"]]) {
+      const refused = native([...args, "--json"]);
+      const { error } = JSON.parse(refused.stdout);
+      check(`${args[0]} refuses a blank endpoints declaration and explains how to fix it`, refused.status === 1 &&
+        error?.code === "SCHEMA_INVALID" && error.message.includes(path) && error.message.includes('"endpoints" must be a list, not null') &&
+        error.message.includes("Remove the key or supply a list"), refused.stdout + refused.stderr);
+    }
+    writeFileSync(path, card.replace("endpoints:", "endpoints: []"));
+    const shown = native(["persona", "show", "nul-endpoints", "--json"]);
+    check("persona show retains an explicit empty endpoints list", shown.status === 0 &&
+      JSON.stringify(JSON.parse(shown.stdout).result?.definition?.endpoints) === "[]", shown.stdout + shown.stderr);
+    unlinkSync(path);
+  }
 
   {
     const path = agentFilePath(MESH, "broken-fence");

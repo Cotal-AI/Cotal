@@ -71,6 +71,9 @@ export async function persona(args: ParsedArgs): Promise<void> {
   if (sub === "show") {
     const source = requirePersonaSource(path);
     const definition = validatePersona(source.bytes, path);
+    const needsSeparator = name!.startsWith("-");
+    const word = needsSeparator ? `-- ${name}` : name;
+    const jsonWords = needsSeparator ? `--json ${word}` : `${word} --json`;
     writeResult(presentation, { command: "persona", target: catalog, result: { kind: "persona", name, path, definition, source: source.bytes.toString("utf8") } }, result => ({ sections: [
       { title: `Persona · ${result.name}`, blocks: [{ kind: "fields", rows: [
         ["Role", result.definition.role ?? "not set"],
@@ -82,9 +85,9 @@ export async function persona(args: ParsedArgs): Promise<void> {
       ] }] },
       { title: "Instructions", blocks: [{ kind: "lines", lines: result.definition.persona?.trim() ? result.definition.persona.split(/\r?\n/) : [{ text: "No instructions in this definition.", tone: "hint" }] }] },
       { title: "Next", blocks: [{ kind: "commands", items: [
-        ...(personaNameProblem(result.name!) ? [] : [{ command: `cotal p edit ${result.name}`, description: "Edit this local definition" }]),
-        { command: `cotal spawn ${result.name}`, description: "Launch an agent from it" },
-        { command: `cotal p show ${result.name} --json`, description: "Read all fields and the complete source" },
+        ...(personaNameProblem(result.name!) ? [] : [{ command: `cotal p edit ${word}`, description: "Edit this local definition" }]),
+        { command: `cotal spawn ${word}`, description: "Launch an agent from it" },
+        { command: `cotal p show ${jsonWords}`, description: "Read all fields and the complete source" },
       ] }] },
     ] }));
     return;
