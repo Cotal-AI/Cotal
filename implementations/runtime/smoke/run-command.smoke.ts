@@ -569,6 +569,11 @@ const takeoverRun = startedId()!;
   c("...and its start fails OPERATION_FAILED with only the first line, so no newline reaches the one-line report",
     isCommandFailure(refused) && refused.code === "OPERATION_FAILED" && refused.message.endsWith("erste Zeile") && !refused.message.includes("\n") && !refused.message.includes("zweite"),
     refused?.message);
+  reset();
+  await wf(["show", tid], { plain: true });
+  c("a local read of a failure outside any step points to the driving process, not manager logs",
+    captured().includes("zweite Zeile") && captured().includes("check the driving process's output")
+      && !captured().includes("cotal service logs stack-manager"), captured());
   await checkTerminalResume(tid, "failed");
 }
 
@@ -1097,7 +1102,7 @@ const takeoverRun = startedId()!;
 
 // The sentinel: a skipped block above would exit green while running fewer cells than the suite
 // declares, and a count is the only reader that can see that.
-const DECLARED = 134;
+const DECLARED = 135;
 if (ok + fail !== DECLARED) {
   fail += 1;
   console.error(`  ✗ FAIL: the suite declares ${DECLARED} cells but ran ${ok + fail - 1}`);
