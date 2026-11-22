@@ -21,7 +21,7 @@ import assert from "node:assert/strict";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { generateKeyPairSync } from "node:crypto";
 import { once } from "node:events";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer as createHttpServer } from "node:http";
 import { createConnection, createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -770,7 +770,29 @@ with socket.socket() as connection:
   assert.ok(rows.some(([, , peer, state]) => peer === address && state === "06") && rows.every(([, , , state]) => state === "06"), JSON.stringify(rows)); passed++;
 }
 
-async function controllerHoldCell(kind: "takeover" | "other-home" | "broker-crash" | "broker-only-crash" | "time-wait" = "takeover"): Promise<void> {
+async function checkMovedRootStop(moved: string, home: string, env: NodeJS.ProcessEnv, space: string, port: number, holder: { state: ReturnType<typeof observeOwnedChild>; io: { out: string; err: string } }): Promise<void> {
+  const caller = recordSmokeSandbox({ root: home, cotalHome: env.COTAL_HOME!, xdgConfigHome: env.XDG_CONFIG_HOME! });
+  const holderLog = () => `exit=${holder.state.code}\n${holder.io.out}\n${holder.io.err}`;
+  await until(() => existsSync(moved) || holder.state.exited, 5_000, holderLog);
+  assert.ok(existsSync(moved), holderLog());
+  const previewArgs = ["down", "--space", space, "--dry-run"];
+  assertSmokeSandboxDown(caller, previewArgs, { cwd: home, env });
+  const preview = await foregroundCliProbe(cliEntry, tsx, home, env, previewArgs);
+  assert.equal(preview.code, 0, preview.out + preview.err); passed++;
+  await until(() => portOpen(port), 5_000, holderLog);
+  assert.equal(holder.state.exited, false, `a rename and a stop preview leave the holder running: ${holderLog()}`); passed++;
+  const downArgs = ["down", "--space", space, "--yes"];
+  assertSmokeSandboxDown(caller, downArgs, { cwd: home, env });
+  const down = await foregroundCliProbe(cliEntry, tsx, home, env, downArgs, 120_000);
+  assert.equal(down.code, 0, down.out + down.err); passed++;
+  assert.match(down.out, /Stack stopped; its folder was gone/); passed++;
+  await until(() => holder.state.closed, 10_000, () => holder.io.err.slice(-3000));
+  assert.equal(holder.state.code, 0, holder.io.err); passed++;
+  assert.match(holder.io.err, /Foreground stack released/); passed++;
+  assert.equal(await portOpen(port), false, "the stopped stack's broker is gone"); passed++;
+}
+
+async function controllerHoldCell(kind: "takeover" | "other-home" | "broker-crash" | "broker-only-crash" | "time-wait" | "moved-root" = "takeover"): Promise<void> {
   const otherHome = kind === "other-home";
   const brokerOnly = kind === "broker-only-crash" || kind === "time-wait";
   const name = kind === "takeover" ? "controller-hold" : `controller-hold-${kind}`;
@@ -783,8 +805,10 @@ async function controllerHoldCell(kind: "takeover" | "other-home" | "broker-cras
   const env = { ...cleanEnv, HOME: home, COTAL_HOME: machine, XDG_CONFIG_HOME: join(home, "xdg"), XDG_DATA_HOME: join(home, "data"), XDG_CACHE_HOME: join(home, "cache"), XDG_STATE_HOME: join(home, "state"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" };
   const created = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["space", "create", space, "--root", mesh]);
   assert.equal(created.code, 0, `space create prepares the controller root: ${created.err}`); passed++;
+  const moved = `${mesh}-moved`;
+  const preload = kind === "moved-root" ? ["--import", join(import.meta.dirname, "_foreground-receipt-signal.ts")] : [];
   const foreground = (args: string[]) => {
-    const child: ChildProcess = spawn(process.execPath, ["--import", tsx, cliEntry, "up", "--foreground", ...args], { cwd: mesh, env, detached: true, stdio: ["ignore", "pipe", "pipe"] });
+    const child: ChildProcess = spawn(process.execPath, ["--import", tsx, ...preload, cliEntry, "up", "--foreground", ...args], { cwd: mesh, env: kind === "moved-root" ? { ...env, COTAL_SMOKE_RENAME_AT_RECEIPT: moved } : env, detached: true, stdio: ["ignore", "pipe", "pipe"] });
     const io = { out: "", err: "" };
     child.stdout?.on("data", (b: Buffer) => { io.out += b.toString(); });
     child.stderr?.on("data", (b: Buffer) => { io.err += b.toString(); });
@@ -797,7 +821,7 @@ async function controllerHoldCell(kind: "takeover" | "other-home" | "broker-cras
     await until(() => {
       if (holder.state.error) throw holder.state.error;
       if (holder.state.exited) throw new Error(`CLI exited before the stack was ready: ${holder.io.err}`);
-      return holder.io.out.includes("Controller stack started");
+      return /Operation: +up completed/.test(holder.io.out);
     }, 120_000, () => holder.io.err.slice(-3000));
     assert.ok(holder.child.pid);
     if (kind === "time-wait") {
@@ -818,6 +842,11 @@ async function controllerHoldCell(kind: "takeover" | "other-home" | "broker-cras
         return /Operation: +up completed/.test(taker!.io.out);
       }, 85_000, () => taker!.io.out + taker!.io.err);
       assert.ok(await portOpen(port), "the foreground restart binds the recorded port"); passed++;
+      console.log(`PASS foreground-up-signals ${name}`);
+      return;
+    }
+    if (kind === "moved-root") {
+      await checkMovedRootStop(moved, home, env, space, port, holder);
       console.log(`PASS foreground-up-signals ${name}`);
       return;
     }
@@ -896,6 +925,10 @@ async function controllerHoldCell(kind: "takeover" | "other-home" | "broker-cras
     try {
       for (const run of [holder, taker]) if (run && !run.state.exited && run.child.pid) process.kill(-run.child.pid, "SIGKILL");
       // A failed cell still stops what its start left, through the product's own down.
+      if (existsSync(moved)) {
+        if (existsSync(mesh)) renameSync(mesh, `${mesh}-recreated`);
+        renameSync(moved, mesh);
+      }
       if (brokerKilled && !brokerOnly && !(await portOpen(port))) await foregroundCliProbe(cliEntry, tsx, mesh, env, ["up"], 120_000);
       assertSmokeSandboxDown(sandbox, ["down", "--yes"], { cwd: mesh, env });
       if (await portOpen(port)) await foregroundCliProbe(cliEntry, tsx, mesh, env, ["down", "--yes"], 120_000);
@@ -998,5 +1031,6 @@ await controllerHoldCell("other-home");
 await controllerHoldCell("broker-crash");
 await controllerHoldCell("broker-only-crash");
 if (process.platform === "linux") await controllerHoldCell("time-wait");
+await controllerHoldCell("moved-root");
 console.log(`foreground-up-signals: ${passed} passed, 0 failed`);
 emitSentinel({ cells: passed, passed, failed: 0 });
