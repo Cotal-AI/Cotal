@@ -306,8 +306,9 @@ unrecorded. Read the terminal output, then fix the file or take it off PATH and 
 The generated broker configuration is owner-private (`0600`) in open and authenticated modes,
 even with a group-writable umask. `up` creates `.cotal`, the broker store and the persona catalog
 `.cotal/agents` owner-private (`0700`) too, as do `space create` and `setup`. An existing directory
-keeps its mode. A `.cotal`, or a root without one, that this account cannot write refuses with
-`PERMISSION_DENIED` (exit 2), naming it and `chmod u+w`, before anything is started or written. A
+keeps its mode. If this account lacks write or search access to `.cotal`, or to the project root
+when `.cotal` is absent, `up` refuses with `PERMISSION_DENIED` (exit 2) before starting or writing
+anything. It names the directory and suggests `chmod u+wx` to restore both permissions. A
 broker store this account cannot write refuses the same way, naming the store's `jetstream` folder,
 or the store itself when its root is unwritable, before a broker has made `jetstream`, or when this account cannot open it, and
 `chmod -R u+w`. This check also runs for `up -f` and for a bare `up` reopening a recorded custom store.
