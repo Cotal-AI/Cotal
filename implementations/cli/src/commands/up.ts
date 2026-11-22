@@ -2398,7 +2398,7 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
   // open-mode `up` would have been accepted while the listener came up in cleartext.
   const renderingBinary = brokerSetup?.brokerBinary ?? await resolveNatsServer();
   if (!renderingBinary.version) throw unreadVersion(renderingBinary);
-  const confPath = brokerSetup ? brokerSetup.confPath : writeOpenBrokerConf(storeDir, space, { brokerVersion: renderingBinary.version, port, host, transport, maxFileStore, maxPayload: brokerMaxPayload, logFile, logfileSizeLimit, logfileMaxNum });
+  const confPath = brokerSetup ? brokerSetup.confPath : writeOpenBrokerConf(storeDir, space, server, { brokerVersion: renderingBinary.version, port, host, transport, maxFileStore, maxPayload: brokerMaxPayload, logFile, logfileSizeLimit, logfileMaxNum });
   const natsArgs = [
     "-c", confPath,
     ...(boundListener ? ["--name", boundListener.serverName] : []),
@@ -4396,7 +4396,7 @@ export async function prepareBrokerStart(opts: DetachOpts) {
   // `writeOpenBrokerConf`). Detach must not be the mode where the fence quietly does not apply.
   const renderingBinary = setup?.brokerBinary ?? await resolveNatsServer();
   if (!renderingBinary.version) throw unreadVersion(renderingBinary);
-  const confPath = setup ? setup.confPath : writeOpenBrokerConf(storeDir, space, { brokerVersion: renderingBinary.version, port, host, transport, maxFileStore: opts.maxFileStore, maxPayload, logFile, logfileSizeLimit: opts.logfileSizeLimit, logfileMaxNum: opts.logfileMaxNum });
+  const confPath = setup ? setup.confPath : writeOpenBrokerConf(storeDir, space, server, { brokerVersion: renderingBinary.version, port, host, transport, maxFileStore: opts.maxFileStore, maxPayload, logFile, logfileSizeLimit: opts.logfileSizeLimit, logfileMaxNum: opts.logfileMaxNum });
   // Trust preparation awaits; the pinned store is checked again before its config is handed back.
   if (opts.existingStore) recheckExistingStore(opts.existingStore, { space, storeDir });
   const args = [
@@ -5247,10 +5247,10 @@ async function recreateDeletedStreams(opts: { root: string; space: string; serve
  * mode through a renderer is what makes the union total: there is now no route to a listener that
  * does not state its transport.
  */
-function writeOpenBrokerConf(storeDir: string, space: string, opts: { brokerVersion: string; port: number; host: string; transport: BrokerTransport; maxFileStore?: number; maxPayload?: number; logFile?: string; logfileSizeLimit?: number; logfileMaxNum?: number }): string {
+function writeOpenBrokerConf(storeDir: string, space: string, server: string, opts: { brokerVersion: string; port: number; host: string; transport: BrokerTransport; maxFileStore?: number; maxPayload?: number; logFile?: string; logfileSizeLimit?: number; logfileMaxNum?: number }): string {
   const confPath = cotalPath("server-open.conf");
   writeBrokerConfig(
-    confPath,
+    confPath, server,
     namedOpenConfig(openServerConfig({ brokerVersion: opts.brokerVersion, port: opts.port, host: opts.host, storeDir: configuredStoreDir(cotalRoot(), storeDir), maxFileStore: opts.maxFileStore, maxPayload: opts.maxPayload, logFile: opts.logFile, logfileSizeLimit: opts.logfileSizeLimit, logfileMaxNum: opts.logfileMaxNum, transport: opts.transport }), space),
   );
   return confPath;
@@ -5260,8 +5260,10 @@ function writeOpenBrokerConf(storeDir: string, space: string, opts: { brokerVers
  *  account's own regular file at its path, such as a symlink or a folder, is refused by name and
  *  left as it is. Moving it aside loses nothing, because the next `up` writes the file again.
  *  Other write failures name the path and errno, and remain known failures before a launch. */
-function writeBrokerConfig(path: string, text: string): void {
-  try { writeSecretFile(path, text); }
+function writeBrokerConfig(path: string, server: string, text: string): void {
+  const dial = new URL(server);
+  if (dial.username || dial.password) throw new Error("broker config cannot record a URL with credentials");
+  try { writeSecretFile(path, `${text}# cotal dial URL: ${dial.href}\n`); }
   catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
     // A nonblocking write-only open can fail ENXIO for non-regular entries before the secure
@@ -5449,7 +5451,7 @@ async function authSetup(
   if (accountResolver.kind === "full") mkSecretDir(accountResolver.directory);
   const brokerBinary = await resolveNatsServer();
   if (!brokerBinary.version) throw unreadVersion(brokerBinary);
-  const render = (ws: number) => writeBrokerConfig(confPath, serverConfig(auth, spaces, { brokerVersion: brokerBinary.version!, transport, port, storeDir: configuredStoreDir(cotalRoot(), storeDir), maxFileStore, authTimeout, maxPayload, accountResolver, logFile: requested.logFile, logfileSizeLimit: requested.logfileSizeLimit, logfileMaxNum: requested.logfileMaxNum, host, wsPort: ws, wsHost: host, extraAccounts }));
+  const render = (ws: number) => writeBrokerConfig(confPath, server, serverConfig(auth, spaces, { brokerVersion: brokerBinary.version!, transport, port, storeDir: configuredStoreDir(cotalRoot(), storeDir), maxFileStore, authTimeout, maxPayload, accountResolver, logFile: requested.logFile, logfileSizeLimit: requested.logfileSizeLimit, logfileMaxNum: requested.logfileMaxNum, host, wsPort: ws, wsHost: host, extraAccounts }));
   render(wsPort);
   // The chosen port is free now, but nothing holds it until the broker binds it. When another process
   // takes it first, the broker exits before readiness, and a controller stack start renders this

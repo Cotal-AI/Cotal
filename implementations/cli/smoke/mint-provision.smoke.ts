@@ -134,7 +134,7 @@ async function withForegroundStaticBroker(
     down: () => ReturnType<typeof runCotal>;
     exited: Promise<number | null>;
   }) => Promise<void>,
-  tls?: { cert: string; key: string },
+  tls?: { cert: string; key: string; host?: string },
 ): Promise<void> {
   const stoppedRoot = mkdtempSync(join(tmpdir(), "cotal-offline-signing-"));
   const exports = mkdtempSync(join(tmpdir(), "cotal-offline-exports-"));
@@ -144,7 +144,7 @@ async function withForegroundStaticBroker(
   process.chdir(stoppedRoot);
   const env = { ...process.env, ...(tls ? { NODE_EXTRA_CA_CERTS: tls.cert } : {}) };
   const up = spawn(process.execPath, [join(import.meta.dirname, "../../../bin/dist/cotal.js"), "up", "--foreground", "--no-manager", "--space", space, "--server", server,
-    ...(tls ? ["--tls-cert", tls.cert, "--tls-key", tls.key] : [])], {
+    ...(tls?.host ? ["--host", tls.host] : []), ...(tls ? ["--tls-cert", tls.cert, "--tls-key", tls.key] : [])], {
     env: { ...env, COTAL_SKIP_CONNECTOR_SEED: "1" }, stdio: ["ignore", "pipe", "pipe"],
   });
   let output = "";
@@ -1081,6 +1081,11 @@ try {
       check("a plaintext URL cannot select the stopped TLS signing authority",
         wrong.code === 2 && wrong.out.includes("TARGET_NOT_FOUND") && !existsSync(wrongOut), wrong.out);
 
+      const bindOut = join(exports, "bind.creds");
+      const bind = await runMint(["bind_address", "--space", space, "--server", `tls://0.0.0.0:${port}`, "--out", bindOut, "--plain"]);
+      check("the wildcard bind address cannot select the stopped TLS signing authority",
+        bind.code === 2 && bind.out.includes("TARGET_NOT_FOUND") && !existsSync(bindOut), bind.out);
+
       const provisionOut = join(exports, "provision.creds");
       const provision = await runMint(["tls_provision", "--space", space, "--server", server, "--provision", "--out", provisionOut, "--plain"]);
       check("provisioning refuses and names the stopped TLS broker and file-only alternative",
@@ -1088,7 +1093,7 @@ try {
         provision.out.includes("start it again with `cotal up`") && provision.out.includes("omit --provision to mint only the private credential file") &&
         !existsSync(provisionOut), provision.out);
       await assertPortClosed(port);
-    }, { cert, key });
+    }, { cert, key, host: "0.0.0.0" });
   }
 
   console.log(`\nMINT-PROVISION SMOKE OK ✅  (${pass} passed)`);

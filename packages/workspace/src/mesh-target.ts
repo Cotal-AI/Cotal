@@ -25,7 +25,7 @@ import {
 import { decodeLocalJson, ProtectedRecordStore, shellPath, unsearchableFolder } from "./protected-records.js";
 import { rootNamesNoSpace } from "./space.js";
 import { codeSpan } from "./text-wrap.js";
-import { tlsIntent } from "./broker-url.js";
+import { checkServer, tlsIntent } from "./broker-url.js";
 import { spaceFromKey } from "./auth-paths.js";
 import { readLocalRecordSource } from "./local-record-source.js";
 
@@ -707,15 +707,26 @@ function stackRecord(root: string): { server?: string; stackSpace?: string; home
   }
 }
 
-/** The listener address and transport in a Cotal-rendered broker configuration. */
-function renderedServer(path: string): string | undefined {
+/** A rendered listener can exist without enough information to match an explicit client URL. */
+function renderedServer(path: string): { server: string; dialKnown: boolean } | undefined {
   try {
     const file = lstatSync(path);
     if (!file.isFile() || file.size > 64 * 1024) return undefined;
     const text = readFileSync(path, "utf8");
     const host = /^host:\s*(\S+)\s*$/m.exec(text)?.[1], port = /^port:\s*(\d+)\s*$/m.exec(text)?.[1];
+    if (!host || !port) return undefined;
     const scheme = /^tls \{$/m.test(text) ? "tls" : "nats";
-    return host && port ? `${scheme}://${host.includes(":") ? `[${host}]` : host}:${port}` : undefined;
+    const bind = new URL(`${scheme}://${host.includes(":") && !host.startsWith("[") ? `[${host}]` : host}:${port}`);
+    const wildcard = bind.hostname === "0.0.0.0" || bind.hostname === "[::]";
+    const recorded = /^# cotal dial URL:([^\r\n]*)/m.exec(text)?.[1]?.trim();
+    // Old configs with a concrete bind identify the client address. A wildcard bind never does.
+    if (recorded === undefined) return { server: bind.href, dialKnown: !wildcard };
+    if (!recorded.includes(",") && checkServer(recorded, "the retained dial URL").ok) {
+      const dial = new URL(recorded);
+      if (dial.protocol === bind.protocol && (dial.port || "4222") === bind.port && (wildcard || dial.hostname === bind.hostname))
+        return { server: dial.href, dialKnown: true };
+    }
+    return { server: bind.href, dialKnown: false };
   } catch { return undefined; }
 }
 
@@ -733,14 +744,11 @@ export function retainedOpenSpace(root: string): string | undefined {
   } catch { return undefined; }
 }
 
-/** The broker address and mode retained in this root's rendered configuration. */
-export function retainedLegacyBroker(root: string): { server: string; open: boolean } | undefined {
-  if (rootHoldsAccount(root)) {
-    const server = renderedServer(join(authDir(root), "server.conf"));
-    return server ? { server, open: false } : undefined;
-  }
-  const server = renderedServer(join(root, ".cotal", "server-open.conf"));
-  return server ? { server, open: true } : undefined;
+/** The retained broker and mode. With no known dial URL, the address describes only the bind. */
+export function retainedLegacyBroker(root: string): { server: string; dialKnown: boolean; open: boolean } | undefined {
+  const open = !rootHoldsAccount(root);
+  const broker = renderedServer(open ? join(root, ".cotal", "server-open.conf") : join(authDir(root), "server.conf"));
+  return broker && { ...broker, open };
 }
 
 /** Where `space` runs when this machine registered it for a folder that is not `root`, which is how
@@ -1128,7 +1136,7 @@ export function resolveMeshTarget(cwd: string, flags: ResolveFlags = {}): MeshTa
       if (isGenuineSpace(root) && !stackRecord(root) && !preparedSpaceAt(root)) {
         const retained = retainedLegacyBroker(root);
         if (retained && !retained.open &&
-          (flags.server === undefined || brokerUrlKey(flags.server) === brokerUrlKey(retained.server)) && !legacyStackOtherHome(root)) {
+          (flags.server === undefined || (retained.dialKnown && brokerUrlKey(flags.server) === brokerUrlKey(retained.server))) && !legacyStackOtherHome(root)) {
           const { spaces } = rootInventory(root);
           if (spaces.length === 1 && spaces[0] === flags.space && !loadMeshes().some(m => m.space === flags.space || canonicalRoot(m.root) === canonicalRoot(root))) {
             if (flags.allowStoppedLocal) return localTarget(root, retained.server, "local-space", flags.readOnly);
