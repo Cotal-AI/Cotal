@@ -512,6 +512,16 @@ if (process.platform !== "win32") {
     const write = run(["config", "set", "editor", "ed", "--json"]);
     check("a write into a world-writable preferences folder is refused with PERMISSION_DENIED, exit 2, naming the folder and its chmod",
       write.status === 2 && write.envelope?.error?.code === "PERMISSION_DENIED" && (write.envelope.error.message ?? "").includes(`the preferences folder is not protected against other local writers: ${dir} is writable by every local account`) && write.envelope.error.remedy === `chmod o-w ${dir}`, shown(write));
+    check("the JSON set refusal carries the unsafe-folder warning once and writes nothing on stderr",
+      write.envelope?.outcome === "refused" && write.envelope.warnings.filter(unprotected).length === 1 && write.stderr === "", shown(write));
+    const unset = run(["config", "unset", "editor", "-j"]);
+    check("the JSON unset refusal also keeps the unsafe-folder warning in the receipt",
+      unset.status === 2 && unset.envelope?.outcome === "refused" && unset.envelope.error?.code === "PERMISSION_DENIED"
+      && unset.envelope.warnings.filter(unprotected).length === 1 && unset.stderr === "", shown(unset));
+    const plain = run(["config", "set", "editor", "ed", "--plain"]);
+    check("the plain refusal still writes the unsafe-folder warning and the refusal to stderr",
+      plain.status === 2 && plain.stdout === "" && plain.stderr.startsWith("! the preferences folder is not protected")
+      && /Code:\s+PERMISSION_DENIED/.test(plain.stderr), shown(plain));
     check("and the file is left as it was", fileText() === before);
     const read = run(["config", "--json"]);
     check("a read applies the saved values with a PREFERENCES_FOLDER_UNPROTECTED warning naming the folder and its chmod",

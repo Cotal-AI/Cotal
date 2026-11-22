@@ -924,6 +924,8 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
   // A failure raised after the command recorded the space it resolved is reported in that space. A
   // completion writes its warnings, as its errors, only under COTAL_COMPLETE_DEBUG.
   const scope: OperationScope = cmd.name === "__complete" && !debugFlag("COTAL_COMPLETE_DEBUG") ? { quiet: true } : {};
+  const mode = parsed.positionals[0];
+  const json = structured(cmd, mode) && parsed.values.json === true;
   const execute = async () => {
     if (opts.extensions && cmd.requiredExtensions) {
       for (const ref of cmd.requiredExtensions(parsed)) await materializeExtension(ref);
@@ -934,7 +936,9 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
       // them says so, with the change that protects their folder.
       if (!cmd.name.startsWith("__") && !["help", "completion", "version", "docs"].includes(cmd.name)) {
         const folder = preferencesFolderWarning();
-        if (folder) recordOperationWarning(folder.warning);
+        // Config writes to an unsafe folder refuse. Their JSON receipt already carries the warning.
+        const jsonPreferenceWrite = json && cmd.name === "config" && (mode === "set" || mode === "unset");
+        if (folder) recordOperationWarning(folder.warning, { echo: !jsonPreferenceWrite });
       }
       if (cmd.prepare) await cmd.prepare(parsed);
       await cmd.run(parsed);
@@ -951,8 +955,6 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
       try { await execute(); return; } catch (again) { e = again; }
     }
     recordTelemetryError(e);
-    const mode = parsed.positionals[0];
-    const json = structured(cmd, mode) && parsed.values.json === true;
     // A usage error a command raises from its own checks prints the command's help, not a stack trace.
     if (isArgError(e)) usageExit((e as Error).message.split(".")[0]!, cmd, json, parsed.values.plain === true, undefined, rest);
     // A refused manager selection among several live managers becomes the choice: each manager
