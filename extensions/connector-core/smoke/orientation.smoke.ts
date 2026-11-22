@@ -40,14 +40,16 @@ function cfg(over: Partial<AgentConfig> = {}): AgentConfig {
   } as AgentConfig;
 }
 
-// A minimal MeshAgent stub — buildOrientation only reads id/status/attention/inboxCount and the
-// roster read it is handed; cotal_roster reads it through readRoster (since #1229 a failed read
+// A minimal MeshAgent stub — buildOrientation only reads id/displayName/status/attention/inboxCount
+// and the roster read it is handed; cotal_roster reads it through readRoster (since #1229 a failed read
 // is part of the rendering).
 function agentStub(
-  over: { id?: string; roster?: any[]; unread?: number; presenceWriteFailure?: unknown; readFailure?: Error; connected?: boolean; notes?: Record<string, string> } = {},
+  over: { id?: string; displayName?: string; roster?: any[]; unread?: number; presenceWriteFailure?: unknown; readFailure?: Error; connected?: boolean; notes?: Record<string, string> } = {},
 ): MeshAgent {
   return {
     id: over.id ?? "ALICEID0000000000000000000000000000000000000",
+    // A MeshAgent shows its launch name until `set-name` changes it; cfg() launches as alice.
+    displayName: over.displayName ?? "alice",
     status: "working",
     attention: "open",
     connected: over.connected ?? true,
@@ -151,6 +153,14 @@ const presence = (id: string, name: string, role?: string, status = "idle") => (
   assert.match(result.text, /bob/, "the last-known row is still shown — rendering never refuses (#1229)");
 }
 
+// A renamed agent (SPEC 13.22 `set-name`) reports the name it shows, while its launch name stays alice.
+{
+  const o = await orient(agentStub({ displayName: "Ada Reviewer" }), cfg({ creds: "CREDS" }), [], 1);
+  const identity = o.identity as unknown as { name: string; display: { name: string } };
+  assert.equal(identity.name, "Ada Reviewer", "orientation names the agent by the name it shows after a rename");
+  assert.equal(identity.display.name, "Ada Reviewer", "...in the display identity too");
+}
+
 // 4e — control: a read that succeeded renders exactly as before, with no preface.
 {
   const agent = agentStub({
@@ -248,7 +258,7 @@ const presence = (id: string, name: string, role?: string, status = "idle") => (
   });
 
   await cell("structured identity", async () => {
-    const orientation = await orient(agentStub({ id: "u_abcdefghijklmnopqrstuvwxyz.actor_name" }), identityCfg, [], 1);
+    const orientation = await orient(agentStub({ id: "u_abcdefghijklmnopqrstuvwxyz.actor_name", displayName: "display-name" }), identityCfg, [], 1);
     const identity = orientation.identity as unknown as Record<string, unknown>;
     assert.equal(identity.state, "bound", "a connected endpoint reports a bound identity state");
     assert.deepEqual(identity.display, { name: "display-name", role: "worker" }, "display identity is explicitly labelled");
