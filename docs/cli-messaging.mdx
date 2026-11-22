@@ -873,9 +873,12 @@ candidate IDs and refusals in one receipt. Without `--json`, it keeps its earlie
 `history clear` purges all retained channel history in the space it targets: `--space`, else this
 folder's space, else the selected one. It takes no channel argument. `--dms` also requests DM
 history under the existing purger authority. In a terminal, confirmation names the space, broker
-and space-wide scope and defaults to cancellation. Scripts
-and `--json` require `--yes`. If you passed `--force` to confirm a purge, replace it with `--yes` and
-keep the target and scope options. For a preview, omit `--force` and keep `--dry-run`.
+and space-wide scope and defaults to cancellation. Scripts and `--json` require `--yes`. The refusal
+for a missing `--yes` keeps your target, scope and output format in both suggested commands. If
+terminal output would escape characters in an argument, the refusal instead tells you to add
+`--dry-run` or `--yes` to your original command and keep its other arguments.
+If you passed `--force` to confirm a purge, replace it with `--yes` and keep the target and scope
+options. For a preview, omit `--force` and keep `--dry-run`.
 
 `history clear --dry-run` resolves the target and names the affected streams offline. It issues no
 caller credential, connects nowhere and does not check authorization or retained message counts.
