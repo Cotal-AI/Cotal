@@ -71,7 +71,7 @@ export async function installedExecutionUpdate(input: { cli: string; installed: 
 }
 
 /** Run against a seeded, stopped Linux npm installation and a reachable target release. */
-async function interruptedExecutionUpdate(input: Parameters<typeof installedExecutionUpdate>[0]): Promise<void> {
+async function interruptedExecutionUpdate(input: Parameters<typeof installedExecutionUpdate>[0], foreignConfig = false): Promise<void> {
   assert.equal(process.platform, "linux", "the live child is confirmed through /proc");
   const env: NodeJS.ProcessEnv = { ...input.env, COTAL_NO_UPDATE_CHECK: "1" };
   assert(input.env.COTAL_HOME, "the smoke needs a private COTAL_HOME");
@@ -123,22 +123,38 @@ async function interruptedExecutionUpdate(input: Parameters<typeof installedExec
   try {
     const address = offline.address();
     assert(address && typeof address === "object");
-    Object.assign(env, { npm_config_registry: `http://127.0.0.1:${address.port}/` });
-    const aside = `${record.snapshot}.saved`;
-    renameSync(record.snapshot, aside);
-    try {
-      const pending = await run(["update", "--self"]).done;
-      assert.notEqual(pending.code, 0, pending.output);
-      assert.match(pending.output, /is still pending/);
-      assert.deepEqual(JSON.parse(read(recovery) ?? "null"), record);
-      assert.equal(requests, 0);
-    } finally { renameSync(aside, record.snapshot); }
+    if (!foreignConfig) env.npm_config_registry = `http://127.0.0.1:${address.port}/`;
+    const beforeSnapshot = foreignConfig ? inventory(record.snapshot) : undefined;
+    if (foreignConfig) {
+      assert(input.env.HOME, "the smoke needs a private HOME");
+      env.XDG_CONFIG_HOME = join(input.env.HOME, "other-config");
+      assert.match((await run(["--version"]).done).output, /retain these unusable records/);
+    } else {
+      const aside = `${record.snapshot}.saved`;
+      renameSync(record.snapshot, aside);
+      try {
+        const pending = await run(["update", "--self"]).done;
+        assert.notEqual(pending.code, 0, pending.output);
+        assert.match(pending.output, /is still pending/);
+        assert.deepEqual(JSON.parse(read(recovery) ?? "null"), record);
+        assert.equal(requests, 0);
+      } finally { renameSync(aside, record.snapshot); }
+    }
     const retry = await run(["update", "--self"]).done;
     assert.equal(retry.code, 0, retry.output);
     assert.match(retry.output, /in use and reconciled/);
-    assert.equal(requests, 0, "the published update must reconcile before consulting a registry");
+    if (foreignConfig) assert.doesNotMatch(retry.output, /Checking cotal-ai@.* release archives|Switching to cotal-ai@/);
+    else assert.equal(requests, 0, "the published update must reconcile before consulting a registry");
     assert.equal(JSON.parse(read(recovery) ?? "null"), null);
-    assert.equal(readdirSync(input.env.COTAL_HOME).filter(name => name.startsWith("update-recovery-retained-")).length, 0);
+    const retained = readdirSync(input.env.COTAL_HOME).filter(name => name.startsWith("update-recovery-retained-"));
+    assert.equal(retained.length, foreignConfig ? 1 : 0);
+    if (foreignConfig) {
+      assert.match(retry.output, /Retained unusable interrupted-update records/);
+      const saved = JSON.parse(readFileSync(join(input.env.COTAL_HOME, retained[0]!, "update-recovery.json"), "utf8"));
+      assert.equal(saved.snapshot, record.snapshot);
+      assert.equal(saved.execution, record.execution);
+      assert.deepEqual(inventory(record.snapshot), beforeSnapshot);
+    }
     const after = await run(["--version"]).done;
     const extensions = after.output.split("\n").slice(1).filter(line => /^\s+\S.*\s+\d+\.\d+\.\d+\s*$/.test(line));
     assert.equal(extensions.length, 7, after.output);
@@ -149,12 +165,13 @@ async function interruptedExecutionUpdate(input: Parameters<typeof installedExec
   const plain = await run(["update"]).done;
   assert.equal(plain.code, 0, plain.output);
   assert.match(plain.output, /Registry latest:/);
-  console.log(`installed execution update: interrupted ${input.current} to ${input.target} reconciled all seven connectors offline`);
+  console.log(`installed execution update: interrupted ${input.current} to ${input.target} reconciled all seven connectors ${foreignConfig ? "in a different config folder" : "offline"}`);
 }
 
-if (process.argv[2] === "--installed" || process.argv[2] === "--interrupted") {
+if (["--installed", "--interrupted", "--interrupted-foreign-config"].includes(process.argv[2] ?? "")) {
   const [cli, installed, current, target, cwd] = process.argv.slice(3);
   if (!cli || !installed || !current || !target || !cwd) throw new Error("installed execution update needs CLI, package root, current, target and cwd");
-  const verify = process.argv[2] === "--interrupted" ? interruptedExecutionUpdate : installedExecutionUpdate;
-  await verify({ cli, installed, current, target, cwd, env: process.env });
+  const input = { cli, installed, current, target, cwd, env: process.env };
+  if (process.argv[2] === "--installed") await installedExecutionUpdate(input);
+  else await interruptedExecutionUpdate(input, process.argv[2] === "--interrupted-foreign-config");
 }
