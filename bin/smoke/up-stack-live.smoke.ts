@@ -1042,7 +1042,7 @@ process.report.getReport = () => {
     const noAppPs = plain(cliInEnv(recRoot, noAppEnv, "ps", "--plain").stdout);
     const noAppPsNext = noAppPs.split("\nNext\n")[1] ?? "";
     ok("with seeded connectors and no agent binary on PATH, empty ps recommends setup instead of spawn",
-      /setup\s+Set up an agent application/.test(noAppPsNext) && !/\bspawn\s+Launch your default agent/.test(noAppPsNext), noAppPs);
+      /setup --help\s+See setup flags for scripts/.test(noAppPsNext) && !/\bspawn\s+Launch your default agent/.test(noAppPsNext), noAppPs);
 
     for (const badArgs of [["status", "nosuch", "--json", "--plain"], ["status", "nosuch", "--wide", "--json"], ["status", "nosuch", "--verbose", "--json"]]) {
       const bad = cliIn(recRoot, ...badArgs);
