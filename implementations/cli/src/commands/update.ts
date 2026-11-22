@@ -428,7 +428,7 @@ export async function recoverInterruptedUpdate(rt: UpdateRuntime = updateRuntime
       catch (error) { throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `${decision.instruction} Cannot save the first observation: ${message(error)}`, { remedy: "correct access to the Cotal home, then run `cotal update --self`" }); }
       decision = recoveryDisposition(record, now, rt.recoveryOwnerStart ?? recoveryProcessStartToken);
     }
-    if (!startup && (decision.action === "restore" || decision.action === "retire") && record.execution && record.target === rt.version() && (record.phase === "replacing" || record.phase === "verified-ready")) return await resumePublishedUpdate(rt, record, flags);
+    if (!startup && (decision.action === "restore" || decision.action === "retire") && record.execution && record.target === rt.version() && (record.phase === "replacing" || record.phase === "verified-ready")) return await resumePublishedUpdate(rt, record, flags, decision.action === "retire" ? now : undefined);
     if (decision.action === "retire") {
       let retained;
       try { retained = retainUnusableRecovery(record, now); }

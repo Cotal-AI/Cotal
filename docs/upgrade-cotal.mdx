@@ -523,6 +523,11 @@ installation and finishes reconciliation before looking for another release. The
 can reconcile without a registry. If the command cannot finish, it reports the pending work and
 keeps the recovery record for the next retry.
 
+If you changed config folders after the target was selected, a retry can reconcile the verified
+installation in the current folder. A fresh folder may need registry access for connector
+dependencies. The updater retains the unusable recovery records and leaves the snapshot in the
+original folder untouched.
+
 For rollback, the updater accepts a plain snapshot directory in this configuration or the recorded
 previous connector generation of this installation. If a rollback snapshot is absent or invalid,
 a dead or reused owner lets the updater retain the unusable records and continue installation and
