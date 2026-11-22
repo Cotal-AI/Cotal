@@ -1,5 +1,16 @@
 # @cotal-ai/workspace
 
+## 0.174.4
+
+### Patch Changes
+
+- a2c9581: Report a running foreground manager in JSON, identify unrelated stopped listeners without suggesting a signal, and show a damaged stack journal when `ps` names the saved broker address.
+- a9413a5: Report a partial extension inventory when the installed version differs from the recorded pin. The inventory and the command that refuses to load the mismatched package both give the appropriate reinstall step, including for a local path containing spaces.
+- d4633a8: Restart advice keeps the stopped space's user-auth mode and broker address, `doctor auth` recognizes a named open space from its project subfolders, and credential revocation keeps the selected space and output format in its confirmation retry.
+- Updated dependencies [8aceac1]
+- Updated dependencies [bd76aab]
+  - @cotal-ai/core@0.174.4
+
 ## 0.174.3
 
 ### Patch Changes
