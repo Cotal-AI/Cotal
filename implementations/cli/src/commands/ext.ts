@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { closeSync, copyFileSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { closeSync, copyFileSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, parse, resolve, relative, sep } from "node:path";
 import { registry, type Command, type Connector, type FlagSpec, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
@@ -332,8 +332,9 @@ export async function installExtensionSet(
     for (const request of requests) {
       const meta = installedExtensionPackage(request.pkg);
       if (!meta || request.version !== undefined && meta.version !== request.version) throw new Error(`extension set installed an unexpected version of ${request.pkg}`);
-      const entry = join(extensionPackageDir(request.pkg), extensionEntry(meta));
-      if (!existsSync(entry)) throw new Error(`extension set installed no entry for ${request.pkg} at ${entry}`);
+      const dir = extensionPackageDir(request.pkg);
+      const entry = join(dir, extensionEntry(meta, dir));
+      if (!statSync(entry, { throwIfNoEntry: false })?.isFile()) throw new Error(`extension set installed no entry for ${request.pkg} at ${entry}`);
     }
     const invocation = requests.length > 1 || opts?.isolate ? selfArgv() : undefined;
     for (const request of requests) {

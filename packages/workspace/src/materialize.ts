@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { registry, type Extension, type ExtensionRef } from "@cotal-ai/core";
@@ -85,16 +85,21 @@ function importFailure(pkg: string, version: string, e: unknown, remedy: string,
   }
 }
 
-/** Select the same package-relative entry for on-disk checks and import. */
-export function extensionEntry(meta: InstalledExtensionPackage): string {
-  let entry = meta.main ?? "index.js";
+/** Select the package-relative entry, resolving a directory main when given the on-disk root. */
+export function extensionEntry(meta: InstalledExtensionPackage, dir?: string): string {
+  if (typeof meta.exports === "string") return meta.exports;
   const dot = (meta.exports as Record<string, unknown> | undefined)?.["."];
-  if (typeof dot === "string") entry = dot;
-  else if (dot && typeof dot === "object") {
-    const d = dot as Record<string, string>;
-    entry = d.import ?? d.default ?? entry;
-  } else if (typeof meta.exports === "string") entry = meta.exports;
-  return entry;
+  if (typeof dot === "string") return dot;
+  if (dot && typeof dot === "object") {
+    const d = dot as Record<string, string | null | undefined>;
+    const entry = d.import ?? d.default;
+    if (entry !== undefined && entry !== null) return entry;
+  }
+  if (meta.main === undefined) return "index.js";
+  if (dir !== undefined && statSync(join(dir, meta.main), { throwIfNoEntry: false })?.isDirectory()) {
+    return join(meta.main, "index.js");
+  }
+  return meta.main;
 }
 
 /**
@@ -109,8 +114,7 @@ export async function importExtensionEntry(pkg: string, version: string, remedy:
   const meta = metadata ?? installedExtensionPackage(pkg);
   if (!meta) throw new Error(`extension ${pkg} is not installed at ${dir} - ${remedy}`);
   try {
-    const entry = extensionEntry(meta);
-    await import(pathToFileURL(join(dir, entry)).href);
+    await import(pathToFileURL(join(dir, extensionEntry(meta, dir))).href);
   } catch (e) {
     throw importFailure(pkg, version, e, remedy, meta);
   }

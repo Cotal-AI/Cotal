@@ -4,12 +4,49 @@
  * Build the workspace first. Run: pnpm smoke:ext-install-copies
  */
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawnSync, type SpawnSyncReturns } from "node:child_process";
 import { createHash } from "node:crypto";
 import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { emitSentinel } from "@cotal-ai/smoke-kit";
+
+function checkDirectoryMain(dir: string, prefix: string, cli: (args: string[]) => SpawnSyncReturns<string>, check: (name: string, ok: boolean) => void): void {
+  const source = join(dir, "example-extension");
+  mkdirSync(join(source, "dist"), { recursive: true });
+  const name = "cotal-directory-entry-test";
+  const meta = { name, version: "1.0.0", type: "module", main: "./dist", peerDependencies: { "@cotal-ai/core": "*" } };
+  const metadata = join(source, "package.json");
+  writeFileSync(metadata, JSON.stringify(meta));
+  writeFileSync(join(source, "dist", "index.js"), `import { registry } from "@cotal-ai/core";
+await Promise.resolve();
+registry.register({ kind: "command", name: "directory-entry-example", summary: "Print a greeting", run() { console.log("Hello"); } });
+`);
+  const add = () => cli(["ext", "add", "./example-extension"]);
+  const greet = () => {
+    const result = cli(["directory-entry-example"]);
+    return result.status === 0 && result.stdout.trim() === "Hello";
+  };
+  const added = add();
+  assert.equal(added.status, 0, `directory main ext add failed: ${added.stderr}`);
+  check("a fresh CLI runs a command from the directory main's index", greet());
+
+  const manifest = join(prefix, "extensions.json");
+  const before = readFileSync(manifest, "utf8");
+  mkdirSync(join(source, "broken"));
+  writeFileSync(join(source, "broken", "keep.txt"), "Include this directory in the npm package.\n");
+  writeFileSync(join(source, "broken.js"), readFileSync(join(source, "dist", "index.js")));
+  writeFileSync(metadata, JSON.stringify({ ...meta, version: "2.0.0", main: "./broken" }));
+  const missing = add();
+  check("a directory main with no index is refused", missing.status === 1 && missing.stderr.includes(join("broken", "index.js")));
+
+  writeFileSync(metadata, JSON.stringify({ ...meta, version: "2.0.0", exports: { ".": "./dist" } }));
+  const exported = add();
+  const refused = exported.status === 1 && exported.stderr.includes(`extension set installed no entry for ${name}`);
+  if (!refused) console.error(exported.stderr.trim());
+  check("a root export to a directory is refused even if main would work", refused);
+  check("both refusals preserve the working extension", readFileSync(manifest, "utf8") === before && greet());
+}
 
 function main(): void {
   const repo = resolve(import.meta.dirname, "../../..");
@@ -158,6 +195,11 @@ registry.register({ kind: "command", name: "greet-example", summary: "Print a gr
       check("ext add refuses a missing root export even when main exists", refused.status === 1 && refused.stderr.includes("missing.mjs"));
       check("the refusal leaves the previous installation intact", readFileSync(manifestPath, "utf8") === before && cli(["greet-example"]).stdout.trim() === "Hello from the extension");
     }
+    {
+      const dir = join(root, "directory-main");
+      const { prefix, cli } = sandbox(dir);
+      checkDirectoryMain(dir, prefix, cli, check);
+    }
     // Two extensions that depend on one package with a bin. The second add's stage carries the bin
     // link the prefix already holds, so its promotion copies a link onto an existing one (#5669).
     {
@@ -205,7 +247,7 @@ registry.register({ kind: "command", name: "greet-example", summary: "Print a gr
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
-  assert.equal(passed + failed, process.platform === "linux" || process.platform === "darwin" ? 36 : 33, "all expected copy/rollback checks ran");
+  assert.equal(passed + failed, process.platform === "linux" || process.platform === "darwin" ? 40 : 37, "all expected copy/rollback checks ran");
   console.log(`ext-install-copies smoke: ${passed} passed, ${failed} failed`);
   emitSentinel({ passed, failed });
   process.exit(failed ? 1 : 0);
