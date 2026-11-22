@@ -169,7 +169,7 @@ for (const open of [false, true]) {
     assertSmokeSandboxDown(anchor, args, { cwd, env });
     if (cli(cwd, ...args).status !== 0) throw new Error("private stack did not stop");
   };
-  if (cli(project, "up", "--no-manager", "--server", server).status !== 0) throw new Error("private stack did not start");
+  if (cli(project, "up", "--open", "--no-manager", "--server", server).status !== 0) throw new Error("private stack did not start");
   try {
     check("store channel metadata before moving the project", cli(project, "channel", "set", "move.history", "--desc", "description before rename").status === 0);
     check("store a post before stopping and moving the project", cli(project, "send", "-c", "move.history", "retained after project rename").status === 0);
@@ -228,8 +228,12 @@ for (const open of [false, true]) {
   const printedAdopt = plainCreate.stderr.match(/\nNext\n  (.+)\n/)?.[1];
   check("plain create after forget refuses without rewriting the journal and prints a directly runnable adopt command",
     plainCreate.status === 2 && plainCreate.stderr.includes("CONFLICT") && printedAdopt === adopt && readFileSync(journal).equals(before));
-  check("following the printed adopt prepares the space in the renamed folder",
-    printedAdopt === adopt && shell(printedAdopt).status === 0 &&
+  const wrongName = cli(other, "space", "create", "wrong-name", "--adopt", "--root", renamed, "--plain");
+  const printedRetry = wrongName.stderr.match(/adopt it with (`+)(cotal space create .+?)\1$/m)?.[2];
+  check("adoption with the wrong name leaves the journal unchanged and quotes the retry",
+    wrongName.status === 2 && wrongName.stderr.includes("CONFLICT") && printedRetry === adopt && readFileSync(journal).equals(before));
+  check("following the printed retry prepares the space in the renamed folder",
+    printedRetry === adopt && shell(printedRetry).status === 0 &&
       cli(renamed, "space", "show", space, "--plain").stdout.includes(`root:     ${renamed}`));
   const restarted = cli(renamed, "up", "--no-manager");
   check("the adopted stack starts at the renamed root and recorded broker address", restarted.status === 0 && restarted.stdout.includes(server));
