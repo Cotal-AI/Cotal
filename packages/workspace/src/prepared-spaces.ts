@@ -2,7 +2,7 @@ import { basename, isAbsolute, join } from "node:path";
 import { readFileSync, readdirSync, rmSync, statSync, type Stats } from "node:fs";
 import { mkSecretDir, writeSecretFileAtomic } from "@cotal-ai/core";
 import { spaceFromSegment, spaceSegment } from "./auth-paths.js";
-import { MeshRegistryError, canonicalRoot, homeCotalDir, isMeshRegistryError } from "./mesh-registry.js";
+import { MeshRegistryError, canonicalRoot, homeCotalDir, isMeshRegistryError, registryRecordDirectory } from "./mesh-registry.js";
 import { recordOperationWarning, type OutputWarning } from "./output.js";
 import { prepareCotalHomeForWrite } from "./protected-records.js";
 import { localWriteFailure } from "./local-write.js";
@@ -120,6 +120,7 @@ function readPreparedFile(file: string): PreparedSpace | undefined {
   } catch (e) {
     const code = (e as NodeJS.ErrnoException).code;
     if (code === "ENOENT") return undefined;
+    if (code === "EISDIR") throw registryRecordDirectory(file, e);
     if (code === "EACCES" || code === "EPERM") throw deniedRecord(file, e);
     throw unusableRecord(file, `does not parse as a prepared space record (${(e as Error).message})`, e);
   }

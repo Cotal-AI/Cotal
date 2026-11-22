@@ -974,8 +974,8 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
       if (isConnectRefusal(e)) {
         const failure = e.failure(renderRemedy), cause = e.cause;
         if (isWorkspaceTargetError(cause) && cause.code === "not-started" && cause.details.stopped && !cause.details.unsettled && cause.details.root && cause.details.space) {
-          const { stoppedStackAddressProblem } = await import("./commands/stack-up.js");
-          const held = await stoppedStackAddressProblem(cause.details.root, cause.details.space);
+          const { stackStartAddressProblem } = await import("./commands/stack-up.js");
+          const held = await stackStartAddressProblem(cause.details.root, cause.details.space);
           if (held) failureExit(cmd, inOperationSpace(new CommandFailure("refused", failure.code, `${failure.message}; ${held.message}`, { remedy: held.remedy, target: failure.target }), scope.space), json, parsed.values.plain === true, scope, rest);
         }
         failureExit(cmd, inOperationSpace(await choice(failure), scope.space), json, parsed.values.plain === true, scope, rest);

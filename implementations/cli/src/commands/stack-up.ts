@@ -73,6 +73,7 @@ import { listLedgerFiles } from "../lib/manifest/ledger.js";
 import { listAdditiveTeamAttempts, retainedAdditiveTeamAttempts, type AdditiveTeamAttempt } from "../lib/team-additive-attempt.js";
 import { freshTeamAttemptSettled, listFreshTeamAttempts, listFreshTeamSummaries } from "../lib/team-fresh.js";
 import { foreignLocalProcesses, newStackOperation, readStackJournal, removeStaleLocalRecords, runningStackRoles, serviceHeldRecords, settleRetainedStackStops, settleStackOperation, STACK_ADAPTER, STACK_DEFINITION, STACK_ROLES, stackDefinitionsAt, stackMaintenanceFence, stackNeverStarted, stackRecoveryHost, stackOperationUnsettled, stackRoleApplies, stackSettlementNotice, staleRecordWarning, withSettledMembers, writeStackJournal, type LocalRecord, type StackJournal, type StackJournalSnapshot, type StackMember, type StackMode, type StackRole, type StackSettlement } from "../lib/stack-journal.js";
+import { retryStackAddress } from "../lib/up-broker-address.js";
 import { NATS_DEFAULT_MAX_PAYLOAD, natsServerLabel, type NatsServer } from "../lib/nats-bin.js";
 import { sharedStoreAtStart, sharedStoreWarning, type StoreTenant } from "../lib/store-dir.js";
 import { readStoreIdentity, stackStoreWarnings } from "../lib/store-identity.js";
@@ -587,7 +588,7 @@ function reusedWithoutJetStream(caught: unknown, brokerReused: boolean, root: st
   return jetStreamDisabledRefusal(disabled, root, space, "up cannot check the space's streams on it", "its running members were left as they are", { root, space }, manager?.process?.pid);
 }
 
-/** What holds a stopped stack's recorded broker address, as bare up's own bind check finds it, with
+/** What holds a stack's recorded broker address, as bare up's own bind check finds it, with
  *  the listening processes of this account named. Undefined while the address is free, could not be
  *  checked, or this stack's broker runs there. */
 async function recordedAddressHeld(space: string, server: string, bindHost?: string): Promise<{ says: string; frees: string } | undefined> {
@@ -605,18 +606,22 @@ async function recordedAddressHeld(space: string, server: string, bindHost?: str
   return holders.length ? { says: `${held.says}, where process ${holders.join(", ")} of this account listens`, frees: held.frees } : held;
 }
 
-/** The live address blocker for a stopped controller stack with a recorded broker. */
-export async function stoppedStackAddressProblem(root: string, space: string): Promise<{ message: string; remedy: string } | undefined> {
+/** The live address blocker for a stopped stack or a refused first start. */
+export async function stackStartAddressProblem(root: string, space: string): Promise<{ message: string; remedy: string } | undefined> {
   try {
     const journal = readStackJournal(root)?.journal;
     if (journal?.space !== space) return undefined;
     const { kind, phase } = journal.operation;
     const cleanStop = kind === "down" && phase === "completed";
-    const refusedRestart = kind === "up" && phase === "refused" && !stackNeverStarted(journal)
+    const refusedStart = kind === "up" && phase === "refused"
       && journal.members.some((row) => row.role === "broker" && row.state === "refused");
-    if (!cleanStop && !refusedRestart) return undefined;
+    if (!cleanStop && !refusedStart) return undefined;
     const held = await recordedAddressHeld(space, journal.server, journal.broker?.host);
     if (!held) return undefined;
+    if (refusedStart && stackNeverStarted(journal)) {
+      const retry = await retryStackAddress(["--foreground"], root, journal.server, journal.broker?.host ?? brokerListenAddress(journal.server).host);
+      return { message: held.says, remedy: `${retry ? `${retry}, or ` : ""}${held.frees}, then run ${codeSpan(`${displayCmd()} up`)} in ${root}` };
+    }
     const noManager = journal.members.some((row) => row.role === "manager" && row.state === "not-attempted" && (cleanStop || row.instanceId === null));
     const restart = `${displayCmd()} up${noManager ? " --no-manager" : ""}`;
     return { message: held.says, remedy: `${held.frees}, then run ${codeSpan(restart)} in ${root}; this stack keeps its recorded address` };

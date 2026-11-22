@@ -521,6 +521,27 @@ setCurrent("keep");
   check("forget of the second damaged space then succeeds, and the listing works again",
     forgetLima.status === 0 && forgetLima.env?.result.kind === "space-forgotten" && !existsSync(limaFile) && findMesh("lima") === undefined && listedClean.status === 0, shown(forgetLima));
 
+  recordMesh({ space: "dir-record", server: DEAD, root, mode: "open", origin: "manual", ts: new Date(0).toISOString() });
+  const directory = join(meshesDir(), `${spaceSegment("dir-record")}.json`), backup = `${directory}.saved`;
+  renameSync(directory, backup);
+  mkdirSync(directory, { mode: 0o700 });
+  const keptFile = join(directory, "keep.txt");
+  writeFileSync(keptFile, "keep this\n");
+  const listDirectory = await json(["space"]);
+  const forgetDirectory = await json(["space", "forget", "dir-record"]);
+  const moveAside = listDirectory.env?.error?.remedy;
+  check("a directory at a registry record path names the directory and advises moving it aside, not forgetting",
+    refused(listDirectory, 1, "SCHEMA_INVALID") && listDirectory.env?.error?.message.includes(`${directory} is a directory`) && moveAside?.includes(`move the directory ${directory} aside`) && !moveAside.includes("space forget"), shown(listDirectory));
+  check("forget refuses before changing a directory or its contents, with the same recovery",
+    refused(forgetDirectory, 1, "SCHEMA_INVALID") && forgetDirectory.env?.error?.message.includes("nothing was forgotten") && forgetDirectory.env.error.remedy === moveAside && readFileSync(keptFile, "utf8") === "keep this\n", shown(forgetDirectory));
+  const aside = join(home, "registration-directory-aside");
+  renameSync(directory, aside);
+  renameSync(backup, directory);
+  const restored = await json(["space"]);
+  check("moving the directory aside and restoring the record recovers the inventory",
+    restored.status === 0 && findMesh("dir-record") !== undefined && readFileSync(join(aside, "keep.txt"), "utf8") === "keep this\n", shown(restored));
+  check("the restored regular file can be forgotten", (await json(["space", "forget", "dir-record"])).status === 0);
+
   // A healthy registration is not a recovery target, even for a locally started space.
   const upServer = `nats://127.0.0.1:${await freePort()}`;
   recordMesh({ space: "up1", server: upServer, root, mode: "open", origin: "up", ts: new Date(0).toISOString() });
@@ -2022,6 +2043,13 @@ if (process.platform === "linux") {
     check(`space forget pf removes its damaged record (${label}), with no root`,
       forget.status === 0 && forget.env?.result?.kind === "space-forgotten" && forget.env.result.root === null && !existsSync(damaged), shown(forget));
   }
+  mkdirSync(damaged, { mode: 0o700 });
+  const preparedDirectory = await json(["space"], folder);
+  const forgetPreparedDirectory = await json(["space", "forget", "pf"], folder);
+  check("an occupied prepared record path warns with the same move-aside step that forget gives",
+    preparedDirectory.status === 0 && refused(forgetPreparedDirectory, 1, "SCHEMA_INVALID") && forgetPreparedDirectory.env?.error?.message.includes("nothing was forgotten") && statSync(damaged).isDirectory() &&
+      preparedDirectory.env?.warnings?.some((w: { code: string; message: string }) => w.code === "PREPARED_RECORD_SKIPPED" && w.message.includes(`${damaged} is a directory`) && w.message.endsWith(`so it is skipped; ${forgetPreparedDirectory.env?.error?.remedy}`) && !w.message.includes("space forget")), shown(forgetPreparedDirectory));
+  renameSync(damaged, join(home, "prepared-directory-aside"));
   const stray = join(dir, "stray.json");
   writeFileSync(stray, "{ not json");
   const strayList = await json(["space"], folder);
