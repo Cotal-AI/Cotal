@@ -37,7 +37,7 @@ type Envelope = {
 function run(args: string[], extraEnv: Record<string, string> = {}) {
   const r = spawnSync(process.execPath, [BIN, ...args], {
     cwd: home,
-    env: { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: xdg, COTAL_HOME: join(home, ".cotal-home"), COTAL_SKIP_CONNECTOR_SEED: "1", ...extraEnv },
+    env: { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: xdg, COTAL_HOME: join(home, ".cotal-home"), COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1", ...extraEnv },
     encoding: "utf8",
     timeout: 60_000,
   });
@@ -276,6 +276,16 @@ for (const [args, why] of [
   const plain = run(["ext", "--plain"]);
   check("the plain listing is a table with the source of each", plain.status === 0 && /^\s*Package\s+Version\s+Source\s+Provides$/m.test(plain.stdout) && /@acme\/fake-runtime\s+1\.2\.3\s+added\s+runtime:fakert/.test(plain.stdout) && /@cotal-ai\/connector-pi\s+\S+\s+included\s+connector:pi/.test(plain.stdout) && !/\x1b\[/.test(plain.stdout), shown(plain));
 
+  const olderPackage = JSON.stringify({ name: added.pkg, version: "1.2.2", type: "module", main: "./index.js" });
+  const addedMetadata = join(addedDir, "package.json");
+  writeFileSync(addedMetadata, olderPackage);
+  const skewed = run(["ext", "list", "--json"]);
+  const [skew] = skewed.envelope?.warnings ?? [];
+  check("a different installed version keeps the recorded pin and gives a reinstall step without importing or repairing",
+    skewed.status === 4 && skewed.envelope?.completeness === "partial" && JSON.stringify(skewed.envelope.result?.items) === JSON.stringify(items) &&
+    skew?.target?.pkg === added.pkg && skew.message.includes("1.2.2 on disk") && skew.message.includes("manifest pins 1.2.3") &&
+    skew.message.includes("`cotal ext add '@acme/fake-runtime@1.2.3'`") && !existsSync(imported) && readFileSync(addedMetadata, "utf8") === olderPackage &&
+    readFileSync(manifestPath, "utf8") === manifest, shown(skewed));
   renameSync(addedDir, `${addedDir}.saved`);
   const seededMetadata = join(seededDir, "package.json");
   for (const content of ["{", "{}"]) {
