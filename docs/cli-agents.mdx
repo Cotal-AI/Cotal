@@ -653,8 +653,9 @@ connects to the mesh.
 That overlay checks the mesh even if the local catalog is empty and refuses if the mesh cannot be reached.
 It heads the list with the mesh it read. A persona is `running` when a live session reports the same
 local source file, even if its display name differs. The report uses an advisory fingerprint and
-does not publish the persona's file path. If no session reports a match and any live participant
-did not report its source, the status is `running status unknown`. Otherwise the persona is
+does not publish the persona's file path. If no session reports a match and a live agent or
+connector session did not report its source, the status is `running status unknown`. Infrastructure
+endpoints such as the manager do not make the status unknown. Otherwise the persona is
 `not running` in that snapshot.
 
 

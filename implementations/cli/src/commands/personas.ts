@@ -6,7 +6,6 @@ import {
   isContractDigest,
   oneLine,
   personaDir,
-  personaFileDigest,
   PERSONA_FILE_META_KEY,
   type CompletionResult,
   type ParsedArgs,
@@ -168,7 +167,7 @@ async function list(verbose: boolean, running: boolean, values: ConnectValues): 
       continue;
     }
     const d = e.def!;
-    const live = overlay && personaRunningLabel(e.path, overlay);
+    const live = overlay && personaRunningLabel(e.sourceDigest!, overlay);
     const meta = [d.role && c.cyan(oneLine(d.role)), d.model && c.dim(`model=${oneLine(d.model)}`), d.owner && c.dim(`owner=${oneLine(d.owner)}`), live]
       .filter(Boolean)
       .join("  ");
@@ -197,7 +196,9 @@ async function presentPersonas(values: ConnectValues): Promise<PersonaPresence> 
       if (status === "offline") continue;
       const digest = card.meta?.[PERSONA_FILE_META_KEY];
       if (isContractDigest(digest)) result.files.add(digest);
-      else result.unattributed = true;
+      // Connectors can run a persona with kind: endpoint. Broker services and managers
+      // advertise endpoint cards without a connector and do not obscure a negative result.
+      else if (card.kind === "agent" || typeof card.meta?.connector === "string") result.unattributed = true;
     }
     return result;
   } finally {
@@ -205,8 +206,8 @@ async function presentPersonas(values: ConnectValues): Promise<PersonaPresence> 
   }
 }
 
-function personaRunningLabel(path: string, presence: PersonaPresence): string {
-  if (presence.files.has(personaFileDigest(path))) return c.green("● running");
+function personaRunningLabel(digest: string, presence: PersonaPresence): string {
+  if (presence.files.has(digest)) return c.green("● running");
   if (presence.unattributed) return c.dim("? running status unknown");
   return c.dim("○ not running");
 }

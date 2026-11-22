@@ -162,7 +162,11 @@ export function assertValidKind(kind: unknown, where?: string): EndpointKind {
 /** Load and parse an agent definition file (Markdown + `---` frontmatter). A consumer that
  *  validates the effective role after applying its own overrides can defer role syntax checking. */
 export function loadAgentFile(path: string, options?: { deferRoleValidation?: boolean }): AgentDef {
-  const bytes = readFileSync(path);
+  return readAgentFile(path, path, options);
+}
+
+function readAgentFile(path: string, sourcePath: string, options?: { deferRoleValidation?: boolean }): AgentDef {
+  const bytes = readFileSync(sourcePath);
   const source = bytes.toString("utf8");
   const encoding = utf8Problem(bytes, source);
   if (encoding) throw new Error(`agent file ${path}: ${encoding}; save it as UTF-8`);
@@ -519,7 +523,11 @@ export const PERSONA_FILE_META_KEY = "ai.cotal.persona.file";
 /** Advisory presence correlation for a local persona file without publishing its path.
  * Keep the basename so separate catalog entries that link to one file stay distinct. */
 export function personaFileDigest(path: string): string {
-  return rawDigest(JSON.stringify([hostname(), realpathSync.native(dirname(path)), basename(path)]));
+  return personaCoordinateDigest(realpathSync.native(dirname(path)), basename(path));
+}
+
+function personaCoordinateDigest(directory: string, filename: string): string {
+  return rawDigest(JSON.stringify([hostname(), directory, filename]));
 }
 
 /** Resolve a name-or-path to an agent file. A path (absolute, contains a slash — `/` or, on
@@ -539,6 +547,8 @@ export interface PersonaCatalogEntry {
   path: string;
   /** Parsed definition, or undefined when the file failed to parse (see `error`). */
   def?: AgentDef;
+  /** Presence correlation for the source directory and filename read by this snapshot. */
+  sourceDigest?: string;
   /** Parse error message, if the file is malformed — surfaced rather than crashing the list. */
   error?: string;
   /** The encoding problem when the file is not valid UTF-8. */
@@ -577,10 +587,13 @@ export function listPersonaCatalog(root: string): PersonaCatalogEntry[] {
  *  are not opened, and entries retain encoding and symbolic-link details for local reports. */
 export function readPersonaCatalog(root: string): PersonaCatalogEntry[] {
   const dir = personaDir(root);
+  let sourceDir: string;
   let files: string[];
   try {
-    files = readdirSync(dir).filter((f) => f.endsWith(".md"));
-    accessSync(dir, constants.X_OK);
+    // Resolve the catalog directory once so retargeting a directory link cannot split a read.
+    sourceDir = realpathSync.native(dir);
+    files = readdirSync(sourceDir).filter((f) => f.endsWith(".md"));
+    accessSync(sourceDir, constants.X_OK);
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code === "ENOENT" && !lstatSync(dir, { throwIfNoEntry: false })) return [];
     throw e;
@@ -588,16 +601,17 @@ export function readPersonaCatalog(root: string): PersonaCatalogEntry[] {
   return files.sort().map((f) => {
     const name = f.slice(0, -3);
     const path = join(dir, f);
-    const link = personaLinkTarget(path);
+    const sourcePath = join(sourceDir, f);
+    const link = personaLinkTarget(sourcePath);
     try {
       // A FIFO or a device would block the read, so only a regular file is opened. A link is
       // followed, as the read follows it.
-      if (!statSync(path).isFile()) return { name, path, error: `persona is not a regular file: ${path}`, notRegular: true as const, ...(link !== undefined ? { link } : {}) };
-      return { name, path, def: loadAgentFile(path), ...(link !== undefined ? { link } : {}) };
+      if (!statSync(sourcePath).isFile()) return { name, path, error: `persona is not a regular file: ${path}`, notRegular: true as const, ...(link !== undefined ? { link } : {}) };
+      return { name, path, def: readAgentFile(path, sourcePath), sourceDigest: personaCoordinateDigest(sourceDir, f), ...(link !== undefined ? { link } : {}) };
     } catch (e) {
       let encoding: string | undefined;
       try {
-        const bytes = readFileSync(path);
+        const bytes = readFileSync(sourcePath);
         encoding = utf8Problem(bytes, bytes.toString("utf8"));
       } catch { /* unreadable: `error` says so */ }
       return { name, path, error: (e as Error).message, ...(encoding ? { encoding } : {}), ...(link !== undefined ? { link } : {}) };

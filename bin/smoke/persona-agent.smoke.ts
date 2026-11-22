@@ -35,7 +35,7 @@
  */
 import { spawn as spawnProc, type ChildProcess } from "node:child_process";
 import { SMOKE_BROKER_TOKEN, freePort, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Command, Connector, LaunchOpts } from "@cotal-ai/core";
@@ -154,6 +154,8 @@ async function captureProcess(command: string, args: string[], env: NodeJS.Proce
   });
 }
 
+const runningList = () => run("personas", ["list", "--running", "--space", SPACE]);
+
 async function checkRunningOverlay(): Promise<void> {
   const dir = join(workspaceRoot, ".cotal", "agents");
   const file = (name: string) => join(dir, `${name}.md`);
@@ -162,8 +164,11 @@ async function checkRunningOverlay(): Promise<void> {
   writeFileSync(file("override"), "---\nname: another-label\n---\nThe unlaunched definition.\n");
   const env = { COTAL_SPACE: SPACE, COTAL_SERVERS: SERVER };
   const launched = new MeshAgent(configFromEnv({ ...env, COTAL_AGENT_FILE: file("catalog-key"), COTAL_NAME: "override" }), env);
-  const legacy = new MeshAgent(configFromEnv({ ...env, COTAL_NAME: "same-label", COTAL_KIND: "endpoint" }), env);
-  const list = async () => unstyled(await capture(() => run("personas", ["list", "--running", "--space", SPACE])));
+  const legacy = new MeshAgent(configFromEnv({ ...env, COTAL_NAME: "same-label" }), env);
+  const endpoint = new MeshAgent({ ...configFromEnv({ ...env, COTAL_NAME: "endpoint-seat", COTAL_KIND: "endpoint" }), connector: "fixture" }, env);
+  const list = async () => unstyled(await capture(runningList));
+  const managerOnly = await list();
+  ok("the live manager alone leaves an unlaunched persona stopped", /^catalog-key\s+○ not running$/m.test(managerOnly), managerOnly);
   try {
     await launched.start();
     await launched.waitUntilConnected();
@@ -173,12 +178,49 @@ async function checkRunningOverlay(): Promise<void> {
     await legacy.start();
     await legacy.waitUntilConnected();
     const uncertain = await list();
-    ok("unattributed live participants leave unmatched personas unknown without obscuring a match", /^same-label\s+\? running status unknown$/m.test(uncertain) && /^catalog-key\s+● running$/m.test(uncertain), uncertain);
+    ok("unattributed live agents leave unmatched personas unknown without obscuring a match", /^same-label\s+\? running status unknown$/m.test(uncertain) && /^catalog-key\s+● running$/m.test(uncertain), uncertain);
+    await legacy.stop();
+    await endpoint.start();
+    await endpoint.waitUntilConnected();
+    const connectorOnly = await list();
+    ok("an unattributed endpoint-kind connector session still leaves unmatched personas unknown", /^same-label\s+\? running status unknown$/m.test(connectorOnly), connectorOnly);
+    await endpoint.stop();
+    await checkChangedCatalog(dir);
   } finally {
-    await Promise.all([legacy.stop(), launched.stop()]);
+    await Promise.all([legacy.stop(), endpoint.stop(), launched.stop()]);
   }
   const stopped = await list();
   ok("offline presence does not mark a catalog file running or unknown", /^catalog-key\s+○ not running$/m.test(stopped), stopped);
+}
+
+async function checkChangedCatalog(dir: string): Promise<void> {
+  const alternate = mkdtempSync(join(workspaceRoot, "alternate-catalog-"));
+  writeFileSync(join(alternate, "catalog-key.md"), "---\nname: display-name\n---\nReplacement definition.\n");
+  const moved = `${dir}-moved`;
+  for (const retarget of [false, true]) {
+    const out = unstyled(await capture(async () => {
+      // The command reads the catalog synchronously, then awaits the broker snapshot.
+      const listing = runningList();
+      let renamed = false;
+      let linked = false;
+      try {
+        renameSync(dir, moved);
+        renamed = true;
+        if (retarget) {
+          symlinkSync(alternate, dir, "junction");
+          linked = true;
+        }
+      } finally {
+        try { await listing; }
+        finally {
+          if (linked) unlinkSync(dir);
+          if (renamed) renameSync(moved, dir);
+        }
+      }
+    }));
+    ok(`${retarget ? "retargeting" : "renaming"} the catalog during the broker read preserves the captured row`,
+      /^catalog-key\s+● running$/m.test(out) && out.includes("The launched definition.") && !out.includes("Replacement definition."), out);
+  }
 }
 
 let mgr: InstanceType<typeof Manager> | undefined;
@@ -193,10 +235,10 @@ try {
   }
   recordMesh({ space: SPACE, server: SERVER, root: workspaceRoot, mode: "open", ts: new Date().toISOString() });
 
-  await checkRunningOverlay();
-
   mgr = new Manager({ space: SPACE, servers: SERVER, runtime: "pty", workspaceRoot });
   await mgr.start();
+
+  await checkRunningOverlay();
 
   // A — the issue's exact shape: file pins `pin`, env points at `other`, no --agent, detached.
   process.env.COTAL_DEFAULT_AGENT = "other";
