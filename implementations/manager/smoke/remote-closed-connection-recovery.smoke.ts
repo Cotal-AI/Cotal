@@ -70,7 +70,6 @@ const family = async (ttl: number) =>
 type Internals = {
   dial(opts: object): Promise<NatsConnection>;
   dialServeConnection(state: unknown, readCreds: () => string): Promise<{ nc: NatsConnection; handle: { stop(): Promise<void> } }>;
-  goalWriterCreds?: string;
   serviceServe?: { nc: NatsConnection; identity: Identity; grant: { epoch: number }; creds?: string };
   ep: { reconnect(): Promise<void> };
   leaseStopping: boolean;
@@ -82,6 +81,7 @@ type Internals = {
     sessionLedgerCreds?: string;
   };
   credentialRenewal: { remoteSupervisorCreds?: string; remoteExecutorCreds?: string; remoteRenewalDebt?: { processEpoch: number; reason: string; unadoptedSubjects: string[] }; };
+  goalWriterComponent: { goalWriterCreds?: string; };
 };
 
 // The operator-visible reason each failed re-dial attempt logs.
@@ -126,7 +126,7 @@ try {
   // supervisor, executor and goal-writer connections are not dialed here.
   m.credentialRenewal.remoteSupervisorCreds = initial.supervisor;
   m.credentialRenewal.remoteExecutorCreds = initial.executor;
-  m.goalWriterCreds = initial.goalWriter;
+  m.goalWriterComponent.goalWriterCreds = initial.goalWriter;
   m.servePlane.sessionLedgerCreds = initial.sessionLedger;
   m.servePlane.sessionLedgerIdentity = held.sessionLedger;
   m.ep = { reconnect: async () => {} };
@@ -170,7 +170,7 @@ try {
     assert.equal(sw.creds, renewed.value!.sessionLedger);
     assert.equal(m.servePlane.sessionLedgerCreds, renewed.value!.sessionLedger);
     assert.equal(m.serviceServe!.creds, renewed.value!.serve);
-    assert.equal(m.goalWriterCreds, renewed.value!.goalWriter);
+    assert.equal(m.goalWriterComponent.goalWriterCreds, renewed.value!.goalWriter);
   });
   await cell("every duty keeps its held nkey, and no per-duty or local path ran", async () => {
     for (const n of names) assert.equal(credsClaims(renewed.value![n]).sub, held[n].id, `${n} keeps its held nkey`);

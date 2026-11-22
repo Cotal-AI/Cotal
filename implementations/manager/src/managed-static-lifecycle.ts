@@ -90,7 +90,7 @@ export function managedStaticLifecycleDeps(m: Manager): ManagedStaticLifecycleDe
     userMode: () => m["userMode"],
     evictor: () => m["staticLifecycleEvict"],
     resumeRequired: () => m["resumeRequired"],
-    records: () => m["goalWriter"]?.ctx.kv,
+    records: () => m["goalWriterComponent"].goalWriter?.ctx.kv,
     agentFor: (name) => m["agents"].get(name),
     retirementFor: (name) => m["retirement"].held(name),
     recordStaticRetirement: (a) => m["retirement"].recordStaticRetirement(a),

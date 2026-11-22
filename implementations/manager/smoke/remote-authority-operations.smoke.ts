@@ -37,12 +37,12 @@ const manager = new Manager({
   },
 }) as unknown as {
   managerInstanceId: string;
-  goalWriter: unknown;
   dial(opts: unknown): Promise<never>;
   withEndpointServeExecutor<T>(fn: unknown): Promise<T>;
   withOpenServeConnection<T>(fn: unknown): Promise<T>;
   deregisterServiceOnStop(): Promise<void>;
   reconcileGoalIndex(): Promise<void>;
+  goalWriterComponent: { goalWriter: unknown; };
 };
 manager.managerInstanceId = instanceId;
 
@@ -59,7 +59,7 @@ manager.withOpenServeConnection = async () => {
 await manager.deregisterServiceOnStop();
 assert.deepEqual({ scoped, bare, hostScans }, { scoped: 1, bare: 0, hostScans: 0 });
 
-manager.goalWriter = {};
+manager.goalWriterComponent.goalWriter = {};
 manager.dial = async () => {
   bare++;
   throw new Error("remote authority must not dial anonymously for the goal-index sweep");

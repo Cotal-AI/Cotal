@@ -8,6 +8,7 @@ import type { FreeSlotCause, Manager } from "./manager.js";
 import type { TeardownTarget } from "./retirement.js";
 import type { ManagedAgent } from "./seat-types.js";
 import type { ManagerConfig } from "./manager-config.js";
+import type { ManagerParts } from "./manager-parts.js";
 
 /** The stop family of {@link FreeSlotCause}: the causes a manager-initiated stop records. */
 type FreeSlotStopCause = Extract<FreeSlotCause, { kind: string }>;
@@ -72,7 +73,6 @@ export interface SeatStopDeps {
   agents: () => Manager["agents"];
   auth: () => Manager["auth"];
   ep: () => Manager["ep"];
-  goalWriter: () => Manager["goalWriter"];
   lifecycleInFlight: () => Manager["lifecycleInFlight"];
   setLifecycleInFlight: (value: Manager["lifecycleInFlight"]) => void;
   maintenanceState: () => Manager["maintenanceState"];
@@ -109,7 +109,6 @@ export function seatStopDeps(m: Manager): SeatStopDeps {
     agents: () => m["agents"],
     auth: () => m["auth"],
     ep: () => m["ep"],
-    goalWriter: () => m["goalWriter"],
     lifecycleInFlight: () => m["lifecycleInFlight"],
     setLifecycleInFlight: (value) => { m["lifecycleInFlight"] = value; },
     maintenanceState: () => m["maintenanceState"],
@@ -141,7 +140,7 @@ export function seatStopDeps(m: Manager): SeatStopDeps {
 
 /** Stopping a seat, recording why it left, reaping its children, and the named despawn doors. */
 export class SeatStop {
-  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: SeatStopDeps) {}
+  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: SeatStopDeps, private readonly parts: Pick<ManagerParts, "goalWriter">) {}
 
   // The Manager members these bodies read, under their Manager names. Each reads through its dep at
   // use, so a field the Manager assigns later is current and a method a test replaces on the Manager
@@ -150,7 +149,6 @@ export class SeatStop {
   private get agents() { return this.deps.agents(); }
   private get auth() { return this.deps.auth(); }
   private get ep() { return this.deps.ep(); }
-  private get goalWriter() { return this.deps.goalWriter(); }
   private get lifecycleInFlight() { return this.deps.lifecycleInFlight(); }
   private set lifecycleInFlight(value: Manager["lifecycleInFlight"]) { this.deps.setLifecycleInFlight(value); }
   private get maintenanceState() { return this.deps.maintenanceState(); }
@@ -582,7 +580,7 @@ export class SeatStop {
    *  despawn (the process teardown is authoritative for the agent; this settles the GOAL honestly).
    *  Cancel rides the despawn's own authorizeNamed reach - there is no cancel-by-goalId. */
   async cancelAgentGoal(name: string, mode: "graceful" | "terminate"): Promise<void> {
-    const gw = this.goalWriter;
+    const gw = this.parts.goalWriter.goalWriter;
     const ref = this.agentGoals.get(name);
     if (!gw || !ref) return;
     this.agentGoals.delete(name);

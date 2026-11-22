@@ -127,7 +127,7 @@ try {
       ...(args !== undefined ? { args } : {}),
       ...(opts.target ? { target: { mode: "owner" as const, owner: DEV_OWNER, actor: opts.target.actor, lifecycleUid: opts.target.lifecycleUid } } : {}),
     }, { deadlineMs: 20_000, currentEpoch: async () => 0 });
-  const actx = (manager as unknown as { goalWriter: { ctx: Parameters<typeof readGoalResult>[0] } }).goalWriter.ctx;
+  const actx = (manager as unknown as { goalWriterComponent: { goalWriter: { ctx: Parameters<typeof readGoalResult>[0] }; } }).goalWriterComponent.goalWriter.ctx;
   const resultOf = async (goalId: string, ms: number): Promise<Awaited<ReturnType<typeof readGoalResult>>> => {
     const until = Date.now() + ms;
     for (;;) {

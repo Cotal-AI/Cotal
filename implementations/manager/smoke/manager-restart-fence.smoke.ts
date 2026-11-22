@@ -67,7 +67,7 @@ const workspaceRoot = mkdtempSync(join(tmpdir(), "cotal-mrf-ws-"));
 mkdirSync(join(workspaceRoot, ".cotal", "agents"), { recursive: true });
 
 const kids: ChildProcess[] = [];
-type MgrPriv = { managerInstanceId: string; serviceServe?: { grant: { epoch: number; instanceId: string } }; goalWriter?: { ctx: ActionContext }; lease: { renewLease: () => Promise<void>; renewLeaseAttempt: () => Promise<void> }; ep: CotalEndpoint };
+type MgrPriv = { managerInstanceId: string; serviceServe?: { grant: { epoch: number; instanceId: string } }; lease: { renewLease: () => Promise<void>; renewLeaseAttempt: () => Promise<void> }; ep: CotalEndpoint; goalWriterComponent: { goalWriter?: { ctx: ActionContext }; } };
 // THE FIXTURE'S HARNESS. `spawn` on the class rail needs a manager whose boot inventory holds an
 // AVAILABLE connector (#1724): a manager with none declines the class `one` rail for spawn/launch,
 // so an unpinned `manager.spawn` has no responder at all — `unavailable no responder` — and the
@@ -114,7 +114,7 @@ try {
 
   // A goal ACCEPTED under epoch 0 and terminated by incarnation 1 before it dies. This is the
   // legitimate pre-restart winner: the work really ran and its outcome is already durable.
-  const gw1 = M1.goalWriter!.ctx;
+  const gw1 = M1.goalWriterComponent.goalWriter!.ctx;
   const ref1 = goalRefOf(reqFor("g-pre-restart"), "g-pre-restart");
   await bindGoal(gw1, ref1, "fp-pre-restart");
   await createGoal(gw1, ref1, {
@@ -353,7 +353,7 @@ try {
 
   // THE INVERSION, driven by a real restart. The advanced epoch does not hide the pre-restart fact
   // and does not license overwriting it: one goal has ONE terminal subject, and the first fact won.
-  const gw2 = M2.goalWriter!.ctx;
+  const gw2 = M2.goalWriterComponent.goalWriter!.ctx;
   const survived = await readGoalResult(gw2, ref1);
   check("the pre-restart terminal SURVIVES the restart and is exactly what the restarted incarnation reads",
     survived?.state === "failed" && (survived?.data as { by?: string })?.by === "pre-restart", survived);

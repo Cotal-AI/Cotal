@@ -79,7 +79,7 @@ try {
   const M = mgr as unknown as {
     managerInstanceId: string;
     serviceServe?: { creds?: string };
-    goalWriterIdentity?: { id: string };
+    goalWriterComponent: { goalWriterIdentity?: { id: string }; };
   };
   // The registration gate + §13.1 family are keyed by the persisted registration instanceId
   // (item 3's split), NOT the per-process lifecycleUid — read/drive at the same key the manager registers under.
@@ -121,7 +121,7 @@ try {
   // ── FAMILY (b): the goal-writer credId is STAGED in the §13.1 revocation family ──────────────
   const execCreds = await mintCreds(auth, newIdentity(), "endpoint-serve-executor", { endpointServeExecutor: { endpoint: MANAGER_ENDPOINT, instanceId: iid } });
   {
-    const gwPrincipal = principalKey(DEV_OWNER, M.goalWriterIdentity!.id).key;
+    const gwPrincipal = principalKey(DEV_OWNER, M.goalWriterComponent.goalWriterIdentity!.id).key;
     const execNc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds: execCreds, tls: false }), maxReconnectAttempts: 0 });
     const authKv = await new Kvm(execNc).open(epAuthBucket(space));
     const rows: Array<{ holderPrincipal?: string; state?: string }> = [];
