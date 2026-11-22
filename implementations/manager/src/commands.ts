@@ -853,13 +853,13 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
   // before its cooperative endpoint exists. A failed start still publishes no pid record. A
   // managed child already owns its exact starting PID slot; it settles that same process here.
   releaseSettledRecord = recordManagerPid(managerRoot, space);
-  publishManagerSpareCapability(managerContext, mgr.spareSeats);
-  if (args.values["machine-parent"] === true && remoteAuthority && process.connected)
-    process.send?.({ kind: "manager-ready", instanceId: remoteAuthority.instanceId }, () => { /* The parent can disconnect while this observation is in flight. */ });
   if (v.name !== undefined && name !== undefined) {
     try { if (readManagerName(managerContext) !== name) recordManagerName(managerContext, name); }
     catch (e) { console.error(c.yellow(`! the manager name was not recorded, so the next start does not keep it: ${(e as Error).message}`)); }
   }
+  publishManagerSpareCapability(managerContext, mgr.spareSeats);
+  if (args.values["machine-parent"] === true && remoteAuthority && process.connected)
+    process.send?.({ kind: "manager-ready", instanceId: remoteAuthority.instanceId }, () => { /* The parent can disconnect while this observation is in flight. */ });
   if (v["seat-cap"] !== undefined && seatCap !== undefined) {
     try { if (readManagerSeatCap(managerContext) !== seatCap) recordManagerSeatCap(managerContext, seatCap); }
     catch (e) { console.error(c.yellow(`! the manager seat cap was not recorded, so the next start does not keep it: ${(e as Error).message}`)); }

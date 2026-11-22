@@ -1,0 +1,1 @@
+smoke:up-manager-name:live

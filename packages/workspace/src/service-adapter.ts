@@ -50,6 +50,8 @@ export interface ServiceAdapterContext {
   readonly stack?: ControllerStackView;
   /** This start's explicit manager cap. The manager records it only once it starts serving. */
   readonly managerSeatCap?: SeatCap;
+  /** This start's explicit manager name. It is not part of the saved service definition. */
+  readonly managerName?: string;
 }
 
 /** A resume attempt's per-launch inputs. `resumeCommit` names a protected handoff file by path and

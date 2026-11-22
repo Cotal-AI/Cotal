@@ -1034,6 +1034,7 @@
     "smoke:legacy-root-upgrade:live": "tsx implementations/cli/smoke/legacy-root-upgrade-live.smoke.ts",
     "smoke:stack-settle:live": "tsx implementations/cli/smoke/stack-settle-live.smoke.ts",
     "smoke:up-config-write:live": "tsx implementations/cli/smoke/up-config-write-live.smoke.ts",
+    "smoke:up-manager-name:live": "tsx implementations/cli/smoke/up-manager-name-live.smoke.ts",
     "smoke:up-interrupt:live": "tsx implementations/cli/smoke/up-interrupt-live.smoke.ts",
     "smoke:space-teardown:live": "tsx implementations/cli/smoke/space-teardown-live.smoke.ts",
     "smoke:moved-root:live": "tsx implementations/cli/smoke/moved-root-live.smoke.ts",

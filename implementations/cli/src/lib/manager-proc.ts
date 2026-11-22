@@ -7,9 +7,9 @@ import { entryScript } from "../seed/paths.js";
 import { resolveRuntimeSpace } from "./status.js";
 import { cotalRoot } from "./paths.js";
 import {
-  assertManagerCanSpare, armManagerShutdownIntent, assertRecordIdentity, disarmManagerShutdownIntent,
+  assertManagerCanSpare, assertManagerName, armManagerShutdownIntent, assertRecordIdentity, codeSpan, CommandFailure, disarmManagerShutdownIntent,
   canonicalLocalProcessPath, commandIsCotalSupervisor, identityRecord, localProcessPath, parsePid, probeLiveness,
-  readPidfile, readProcessCommand, readProcessRecord, reclaimDeadPreUpgradeRecord,
+  readManagerName, readPidfile, readProcessCommand, readProcessRecord, reclaimDeadPreUpgradeRecord,
   MANAGER_DELIVERY_AWARE_MARKER, MANAGER_LOGFILE, MANAGER_PIDFILE, MANAGER_SHUTDOWN_INTENT, MANAGER_SPARE_CAPABILITY,
   type CommandReader, type LivenessProbe, type LocalProcess, type LocalProcessContext, type ManagerSpareSeats, type ProcessIdentityRecord,
   type ProcessRecord, type ProcessRecordState, type SeatCap,
@@ -20,6 +20,7 @@ import { stopLocalProcess } from "./local-process-stop.js";
 import { listManagerSeatsForSpare, printLegacyManagerSpareUncertainty, printSparedAgents, type SpareSeatRow } from "./teardown-spare.js";
 import { seedBeforeLaunch } from "../seed/launch.js";
 import { lastLoggedLine, type LogStart } from "./private-log.js";
+import { shellWord } from "./endpoint-errors.js";
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -120,6 +121,14 @@ export function managerLiveness(
   seams: RecordSeams = {},
 ): ProcessRecordState {
   return managerRecordState(space, root, seams).state;
+}
+
+/** A running manager keeps its launch name. The new name travels only to a fresh manager. */
+export function assertManagerNameChange(root: string, space: string, name: string | undefined): void {
+  if (name === undefined) return;
+  assertManagerName(name);
+  if (readManagerName({ root, space }) !== name && managerLiveness(space, root) === "alive")
+    throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `a manager already runs for space ${space}, and it keeps the name it started with`, { target: { root, space }, remedy: `stop it with \`cotal down\`, then run ${codeSpan(`cotal up --manager-name=${shellWord(name)}`)}` });
 }
 
 /** One line describing what was found behind the record, for a caller that has to explain itself. */
@@ -314,6 +323,7 @@ export type ManagerStartOpts = {
   /** Live-session ceiling forwarded as `supervise --max-sessions`. */
   maxSessions?: number;
   managerSeatCap?: SeatCap;
+  managerName?: string;
 };
 
 export function startManagerDetached(
@@ -361,6 +371,7 @@ export function startManagerDetached(
     ...(o.wsPort !== undefined ? ["--ws-port", String(o.wsPort)] : []),
     ...(o.maxSessions !== undefined ? ["--max-sessions", String(o.maxSessions)] : []),
     ...(o.managerSeatCap !== undefined ? ["--seat-cap", seatCapText(o.managerSeatCap)] : []),
+    ...(o.managerName !== undefined ? [`--name=${o.managerName}`] : []),
   ];
   // This is an INTERNAL child re-exec: the `up`/`spawn` that reached here already ran the first-run
   // connector seed, so the manager skips it on boot (a direct `cotal supervise` still seeds).

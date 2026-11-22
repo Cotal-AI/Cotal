@@ -59,11 +59,8 @@ import {
 } from "@cotal-ai/core";
 import { jetstreamManager, StorageType } from "@nats-io/jetstream";
 import {
-  assertManagerName,
   processStopped,
-  readManagerName,
   readManagerSeatCap, DEFAULT_SEAT_CAP,
-  recordManagerName,
   parseSeatCapFlag,
   seatCapText,
   type SeatCap,
@@ -210,7 +207,7 @@ import { deliveryStoppedByDown, deliveryUp, ensureControlPlane, ensureDelivery, 
 import { RESPONDER_UNBOUND_CONSEQUENCE } from "../lib/delivery-responder.js";
 import { displayCmd } from "../lib/self-exec.js";
 import { shellWord } from "../lib/endpoint-errors.js";
-import { clearManagerArtifacts, liveManagerWouldApplyMaxSessions, managerHasDeliveryMarker, managerLogDisplayPath, managerRecordState, managerUp, stopManager } from "../lib/manager-proc.js";
+import { assertManagerNameChange, clearManagerArtifacts, liveManagerWouldApplyMaxSessions, managerHasDeliveryMarker, managerLogDisplayPath, managerRecordState, managerUp, stopManager } from "../lib/manager-proc.js";
 import { ManifestError, formatIssue, loadManifest, type PreparedManifest } from "../lib/manifest/index.js";
 import { UnusableFile } from "../lib/unusable-file.js";
 import { buildLaunchSpec, genRunId, manifestToChannels, preflightConnectors, writeLaunchSpec } from "../lib/manifest/apply.js";
@@ -1485,17 +1482,7 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
       ensureRootForSpace(spaceForRoot);
     }
   }
-  // `--manager-name` is recorded for this root, where the manager reads it at each start. A running
-  // manager keeps the name it started with, so a different name while one runs is refused.
-  if (values["manager-name"] !== undefined) {
-    const name = assertManagerName(values["manager-name"]);
-    const named = { root: cotalRoot(), space: values.space ?? folderSpace() };
-    if (readManagerName(named) !== name) {
-      if (managerRecordState(named.space, named.root).state === "alive")
-        throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `a manager already runs for space ${named.space}, and it keeps the name it started with`, { target: { root: named.root, space: named.space }, remedy: `stop it with \`cotal down\`, then run ${codeSpan(`cotal up --manager-name ${shellWord(name)}`)}` });
-      if (!values["dry-run"]) recordManagerName(named, name);
-    }
-  }
+  const managerName = values["manager-name"];
   // The manager records this cap once it serves. A running manager keeps the cap it started with.
   const managerSeatCap = parseSeatCapFlag("--seat-cap", values["seat-cap"]);
   if (managerSeatCap !== undefined) {
@@ -1588,10 +1575,11 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
       // A foreground terminal holds the start as well, so a signal during it stops what it started.
       const start = async () => {
         try {
+          assertManagerNameChange(meshRoot, stackSpace, managerName);
           const stackServer = values.server ?? readStackJournal(meshRoot)?.journal.server ?? localMeshesForRoot(meshRoot).find((m) => m.space === stackSpace)?.server ?? await unrecordedStackServer(meshRoot, stackSpace, values.host);
           if (values.foreground && presentation !== "json") stackUpForegroundNotice(presentation, stackSpace, takeover);
           await stackUp({ maintenanceLock: stackLock, root: meshRoot, space: stackSpace, server: stackServer, transport, runtime: values.runtime ?? "pty", noManager, managerSeatCap, ...(stackMode ? { mode: stackMode } : {}), ...(values.idp ? { idp: values.idp } : {}), ...(values.host ? { host: values.host } : {}), ...(values["store-dir"] ? { storeDir: values["store-dir"] } : {}), ...(values["rotate-sys"] ? { rotateSys: true } : {}), ...(values["recreate-membership-store"] ? { recreateMembershipStore: true } : {}), ...(values["recreate-issued-stores"] !== undefined ? { recreateIssuedStores: resolve(values["recreate-issued-stores"]) } : {}), ...(maxFileStore !== undefined ? { maxFileStore } : {}), ...(logFile !== undefined ? { logFile } : {}), ...(logfileSizeLimit !== undefined ? { logfileSizeLimit } : {}), ...(logfileMaxNum !== undefined ? { logfileMaxNum } : {}), ...(authTimeout !== undefined ? { authTimeout } : {}), ...(maxPayload !== undefined ? { maxPayload } : {}), ...(accountResolver !== undefined ? { accountResolver } : {}), ...(maxSessions !== undefined ? { maxSessions } : {}), ...(values.channels ? { channels: values.channels } : {}), ...(values.__invokedRoot ? { invokedRoot: values.__invokedRoot } : {}), foreground: values.foreground === true, presentation,
-            retryAtAnotherAddress: (host) => retryStackAddress(args.raw, invokedFrom, stackServer, host),
+            managerName, retryAtAnotherAddress: (host) => retryStackAddress(args.raw, invokedFrom, stackServer, host),
           }, native);
         } finally { releaseMaintenanceLock(stackLock); }
       };
@@ -1734,6 +1722,7 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
     // on a free port, which this root's record keeps; a re-run must start from that URL, or every
     // lookup below misses its own mesh and the space claim refuses it (#3889).
     const recordedSpace = values.space ?? folderSpace();
+    assertManagerNameChange(meshRoot, recordedSpace, managerName);
     const registration = localMeshesForRoot(cotalRoot()).find((m) => m.space === recordedSpace);
     // A stopped legacy root's own files decide its start: its `down` dropped the registration that
     // kept its address, or kept one for a space named after its folder, which only holds the name.
@@ -2190,7 +2179,7 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
         runtime: values.runtime,
         attachHost: attachHostFor(held.space, values.host),
         maxSessions: maxSessionsFor(held.space, maxSessions),
-        managerSeatCap,
+        managerSeatCap, managerName,
         noManager,
       }, startAuth);
       if (!controlPlane) process.exitCode = 1;
@@ -2316,7 +2305,7 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
       host: values.host,
       runtime: values.runtime,
       maxSessions,
-      managerSeatCap,
+      managerSeatCap, managerName,
       noManager,
       resumeAttempt,
       resumeCommit: commitTokenHandoff(cotalRoot(), (restored?.managerCommit ?? ordinaryAttempt?.managerCommit) !== undefined, startupLock),
@@ -2583,7 +2572,7 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
       ...(values["recreate-membership-store"] ? { recreateMembershipStore: true } : {}),
       host: values.host,
       maxSessions,
-      managerSeatCap,
+      managerSeatCap, managerName,
       maxFileStore,
       publicExchange,
       resumeAttempt,
@@ -4027,6 +4016,7 @@ async function startDeliveryWithBroker(
     wsPort?: number;
     maxSessions?: number;
     managerSeatCap?: SeatCap;
+    managerName?: string;
     /** #1417 broker-only mode: ensure the delivery daemon and not the manager. */
     noManager?: boolean;
     /** The mesh is open, so no delivery daemon starts, whatever accounts the root holds. */
@@ -4181,6 +4171,7 @@ async function serveReadyListener(l: {
   host?: string;
   maxSessions?: number;
   managerSeatCap?: SeatCap;
+  managerName?: string;
   maxFileStore?: number;
   publicExchange?: string[];
   resumeAttempt?: string;
@@ -4252,7 +4243,7 @@ async function serveReadyListener(l: {
     // is never a side effect of anything but the operator binding the mesh somewhere reachable.
     attachHost,
     maxSessions,
-    managerSeatCap: l.managerSeatCap,
+    managerSeatCap: l.managerSeatCap, managerName: l.managerName,
     noManager: l.noManager,
     resumeAttempt: l.resumeAttempt,
     resumeCommit: l.resumeCommit,
@@ -4326,6 +4317,7 @@ export interface DetachOpts {
   resumeCommit?: { path: string; sha256: string };
   maxSessions?: number;
   managerSeatCap?: SeatCap;
+  managerName?: string;
   /** #1417 broker-only boot (`--no-manager`): no manager starts with this broker. An `up -f` under
    *  the flag boots the broker + channels and launches NO agents from this host — a manifest's
    *  agents are booted by its manager, so a launch spec under `--no-manager` would promise a boot
@@ -4429,7 +4421,7 @@ export async function startMeshDetached(
     ...(opts.recreateMembershipStore ? { recreateMembershipStore: true } : {}),
     host: opts.host,
     maxSessions: opts.maxSessions,
-    managerSeatCap: opts.managerSeatCap,
+    managerSeatCap: opts.managerSeatCap, managerName: opts.managerName,
     maxFileStore: opts.maxFileStore,
     publicExchange: opts.publicExchange,
     resumeAttempt: opts.resumeAttempt,

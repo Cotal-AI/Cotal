@@ -171,6 +171,7 @@ export interface StackUpRequest {
   accountResolver?: "memory" | "full";
   maxSessions?: number;
   managerSeatCap?: SeatCap;
+  managerName?: string;
   channels?: string;
   foreground: boolean;
   presentation: ReturnType<typeof presentationOf>;
@@ -994,7 +995,7 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
     // A redefined member starts its replacement under the IDs the journal already names.
     const started = await startProcessService(definition, {
       ...(replacement ? { replacement: { instanceId: replacement.instanceId, launchRequestId: replacement.launchRequestId } } : current[0] ? { instance: current[0].name } : {}),
-      ...(role === "manager" && request.managerSeatCap !== undefined ? { managerSeatCap: request.managerSeatCap } : {}),
+      ...(role === "manager" ? { managerSeatCap: request.managerSeatCap, managerName: request.managerName } : {}),
     });
     mark(role, { instanceId: started.instance.name, state: started.noOp ? "reused" : "started", replacement: undefined, process: started.instance.record.value.process });
     if (!started.noOp) changed.push(instanceProjection(started.instance));
