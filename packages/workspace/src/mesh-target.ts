@@ -1125,9 +1125,12 @@ export function resolveMeshTarget(cwd: string, flags: ResolveFlags = {}): MeshTa
     if (!m) {
       notStarted(flags.space, cwd);
       const root = findCotalRoot(cwd);
-      if (flags.server === undefined && isGenuineSpace(root) && !stackRecord(root) && !preparedSpaceAt(root)) {
+      if (isGenuineSpace(root) && !stackRecord(root) && !preparedSpaceAt(root)) {
         const retained = retainedLegacyBroker(root);
-        if (retained && !retained.open && !legacyStackOtherHome(root)) {
+        // A --server naming the retained broker is the same target, not another mesh: the
+        // file-only mint for the stopped space may use it. Any other address stays refused.
+        if (retained && !retained.open && !legacyStackOtherHome(root)
+          && (flags.server === undefined || brokerUrlKey(flags.server) === brokerUrlKey(retained.server))) {
           const { spaces } = rootInventory(root);
           if (spaces.length === 1 && spaces[0] === flags.space && !loadMeshes().some(m => m.space === flags.space || canonicalRoot(m.root) === canonicalRoot(root))) {
             if (flags.allowStoppedLocal) return localTarget(root, retained.server, "local-space", flags.readOnly);
