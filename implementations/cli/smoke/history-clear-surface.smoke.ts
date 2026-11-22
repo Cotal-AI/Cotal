@@ -80,6 +80,23 @@ const stop = () => {
 try {
   const up = run(["up", "--open", "--no-manager", "--server", server, "--json"]);
   check("fixture: the prepared project starts a broker", up.status === 0, shown(up));
+  const explicit = ["--space", "hcunregistered", "--server", server];
+  const openPreview = run(["history", "clear", ...explicit, "--dry-run", "--json"]);
+  check("an explicit open target can be previewed without registering it", openPreview.status === 0
+    && openPreview.envelope?.target?.space === "hcunregistered" && openPreview.envelope.target.broker === server
+    && openPreview.envelope.result?.streams?.join(",") === chatStream("hcunregistered")
+    && openPreview.envelope.result.authorization === "not-checked" && openPreview.envelope.result.retainedCounts === "not-checked"
+    && openPreview.envelope.result.purged === false, shown(openPreview));
+  const openClear = run(["history", "clear", ...explicit, "--yes", "--json"]);
+  check("the confirmed clear accepts the same unregistered target", openClear.status === 0 && openClear.envelope?.outcome === "no-op"
+    && openClear.envelope.target?.space === openPreview.envelope?.target?.space, shown(openClear));
+  const limitTarget = ["history", "limit", "--space", "hcdry", "--json"];
+  const limit = run(limitTarget);
+  check("history limit reads the broker address from the local space records", limit.status === 0 && limit.envelope?.target?.broker === server, shown(limit));
+  for (const [flag, value] of [["--server", server], ["--creds", "unused.creds"]] as const) {
+    const override = run([...limitTarget, flag, value]);
+    check(`history limit refuses ${flag} even with a local space`, override.status === 1 && override.envelope?.error?.code === "USAGE_INVALID", shown(override));
+  }
   const sent = run(["send", "-c", "general", "hello retained history", "--space", "hcdry", "--json"]);
   check("fixture: a channel message is stored", sent.status === 0, shown(sent));
   const read = run(["history", "general", "--space", "hcdry", "--limit", "10", "--grep", "hello", "--json"]);
@@ -107,6 +124,10 @@ check("control: a registered space previews without a broker, exit 0", preview.s
 check("control: the preview names its space and chat stream and purges nothing", preview.envelope?.target?.space === "hcother" && (preview.envelope.result?.streams ?? []).includes(chatStream("hcother")) && preview.envelope.result?.purged === false, preview.envelope);
 const previewPlain = run(["history", "clear", "--dry-run", "--space", "hcother", "--plain"]);
 check("control: the plain preview begins with Mesh: <space>", previewPlain.status === 0 && previewPlain.stdout.split("\n")[0] === "Mesh: hcother", shown(previewPlain));
+const offlineExplicit = run(["history", "clear", "--dry-run", "--space", "hcoffline", "--server", `nats://127.0.0.1:${port}`, "--dms", "--json"]);
+check("an unregistered explicit target previews both streams without a reachable broker", offlineExplicit.status === 0
+  && offlineExplicit.envelope?.result?.streams?.join(",") === [chatStream("hcoffline"), dmStream("hcoffline")].join(",")
+  && offlineExplicit.envelope.result.purged === false, shown(offlineExplicit));
 
 for (const [args, guidance] of [
   [["general"], "Omit --force"],
@@ -147,6 +168,9 @@ const section = docs.slice(start, docs.indexOf("\n## ", start + 1));
 const clearLine = section.split("\n").find((line) => line.startsWith("cotal history clear")) ?? "";
 check("docs: the history synopsis names --yes and --dry-run for clear", clearLine.includes("--yes") && clearLine.includes("--dry-run") && !clearLine.includes("--force"), clearLine);
 check("docs: the history flag table has no --force row", !section.includes("| `--force` |"), section.slice(0, 400));
+const overrideRow = section.split("\n").find((line) => line.startsWith("|") && line.includes("`--server <url>`"));
+check("docs: broker and credential overrides are scoped to history reads and clear", overrideRow !== undefined && overrideRow.includes("`--creds <path>`")
+  && overrideRow.includes("Reads and `clear` only"), overrideRow);
 
 // Scripts, examples and other smokes that still pass the removed spelling would be refused at run time.
 const REMOVED = [/history clear --force/, /"clear",(?:\s*\.\.\.\w+,)?\s*"--force"/];
