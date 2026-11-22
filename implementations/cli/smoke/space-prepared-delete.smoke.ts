@@ -219,6 +219,16 @@ check("the recovery command removes the damaged record", forgetDamaged.status ==
 
 const unknown = run(["space", "delete", "nosuch", "--dry-run", "--json"]);
 check("control: a name nothing records is still not found, exit 2", unknown.status === 2 && unknown.envelope?.error?.code === "TARGET_NOT_FOUND", shown(unknown));
+const addedOffline = run(["space", "add", "offline", "--server", server, "--root", noSpace, "--force"]);
+const offline = run(["space", "delete", "offline", "--dry-run", "--json"]);
+check("a failed deletion preview names the recorded broker and how to inspect its registration",
+  addedOffline.status === 0 && offline.status === 2 && offline.envelope?.error?.code === "TARGET_UNAVAILABLE" &&
+    offline.envelope.error.message?.includes(server) === true && offline.envelope.error.message.includes("no alternate address or identity was tried") &&
+    offline.envelope.error.remedy === "inspect the registration with `cotal space show offline`", shown(offline));
+const offlineShown = run(["space", "show", "offline", "--plain"]);
+check("the recorded registration is still visible and its broker is unreachable",
+  offlineShown.status === 0 && offlineShown.stdout.includes(server) && offlineShown.stdout.includes("unreachable"), shown(offlineShown));
+check("rig: remove the offline manual registration", run(["space", "forget", "offline"]).status === 0);
 const unknownApply = run(["space", "delete", "no-such-space", "--plain"]);
 const unknownPreview = run(["space", "delete", "no-such-space", "--dry-run", "--plain"]);
 check("noninteractive apply of a missing name gives the same refusal as dry-run without asking for confirmation",

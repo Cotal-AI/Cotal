@@ -50,7 +50,7 @@ process.env.COTAL_HOME = home;
 // exactly as the real binary does, or the check silently has nothing to look at.
 await import("../src/index.js");
 const { chatStream, createSpaceAuth, dialerFor, isReachable, registry, spacePrefix } = await import("@cotal-ai/core");
-const { acquireMaintenanceLock, authDir, beginMaintenanceCut, clearCurrent, findMesh, getCurrent, isCommandFailure, loadMeshes, loadSpaceAuth, meshesDir, pruneMesh, pruneStaleMeshes, recordMesh, recordPreparedSpace, releaseMaintenanceLock, removeMesh, removePreparedSpace, resolveNativeServiceTarget, saveSpaceAuth, setCurrent, writeMaintenanceResumeDocument } = await import("@cotal-ai/workspace");
+const { acquireMaintenanceLock, authDir, beginMaintenanceCut, clearCurrent, findMesh, findPreparedSpace, getCurrent, isCommandFailure, loadMeshes, loadSpaceAuth, meshesDir, pruneMesh, pruneStaleMeshes, recordMesh, recordPreparedSpace, releaseMaintenanceLock, removeMesh, removePreparedSpace, resolveNativeServiceTarget, saveSpaceAuth, setCurrent, writeMaintenanceResumeDocument } = await import("@cotal-ai/workspace");
 const { meshes, meshesComplete } = await import("../src/commands/meshes.js");
 
 let pass = 0;
@@ -311,6 +311,19 @@ try {
   // ── add: guards ───────────────────────────────────────────────────────────────────────────────
   const dup = await run(["add", "beta"], { server: LIVE, root });
   check("add refuses a space that is already registered", dup.code === 1 && dup.out.includes("already registered"), dup.out);
+  const savedUnchecked = await run(["add", "beta"], { server: LIVE, root, force: true });
+  const beforeVerification = findMesh("beta");
+  check("rig: save the live mesh unchecked", savedUnchecked.code === 0 && beforeVerification?.unchecked === true, savedUnchecked.out);
+  const differentTls = await run(["add", "beta"], { server: LIVE, root, tls: true });
+  check("add does not verify an unchecked record with different TLS intent",
+    differentTls.code === 1 && differentTls.out.includes("already registered") && findMesh("beta")?.unchecked === true, differentTls.out);
+  const verifiedInPlace = await run(["add", "beta"], { server: `${LIVE}/`, root });
+  check("add verifies an unchanged unchecked record in place and keeps its selection and recorded address",
+    verifiedInPlace.code === 0 && verifiedInPlace.out.includes('verified "beta"') && findMesh("beta")?.unchecked === undefined &&
+      findMesh("beta")?.server === LIVE && findMesh("beta")?.ts === beforeVerification?.ts && getCurrent() === "beta", verifiedInPlace.out);
+  const offlineCheck = await run(["add", "ghost"], { server: DEAD, root });
+  check("failed verification keeps the record unchecked and preserves the selection",
+    offlineCheck.code === 1 && offlineCheck.out.includes("the unchecked registration was kept") && findMesh("ghost")?.unchecked === true && getCurrent() === "beta", offlineCheck.out);
   const replaced = await run(["add", "beta"], { server: DEAD, root, force: true });
   check("add --force replaces an existing record", replaced.code === 0 && findMesh("beta")?.server === DEAD, findMesh("beta"));
   // A registration this machine started is how `cotal down` finds that stack. Replacing it, as
@@ -342,6 +355,10 @@ try {
   recordPreparedSpace({ space: "prepared-here", root, ts: new Date(0).toISOString() });
   const overPrepared = await run(["add", "prepared-here"], { server: DEAD, root, force: true });
   check("add --force refuses a space prepared on this machine", overPrepared.code === 2 && overPrepared.out.includes("a space prepared on this machine") && findMesh("prepared-here") === undefined, overPrepared.out);
+  const rmPrepared = await run(["rm", "prepared-here"]);
+  check("rm gives the local-only forget command for a prepared name and keeps the record",
+    rmPrepared.code === 1 && rmPrepared.out.includes("`cotal space forget prepared-here`") && !rmPrepared.out.includes("`cotal meshes`") &&
+      findPreparedSpace("prepared-here")?.root === root, rmPrepared.out);
   removePreparedSpace("prepared-here");
   const noServer = await run(["add", "nowhere"], { root });
   check("add without --server fails loud", noServer.code === 1 && noServer.out.includes("--server"), noServer.out);
