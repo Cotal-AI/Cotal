@@ -107,6 +107,15 @@ function abortReason(signal: AbortSignal | undefined): Error {
     : new DOMException("This operation was aborted", "AbortError");
 }
 
+/** The options of a `channelHistoryPage` read. */
+export interface ChannelHistoryPageOptions {
+  limit?: number;
+  signal?: AbortSignal;
+  /** Read only what this one principal published on the channel, as `channelHistory` reads it: the
+   *  filter is its own subject, whose sender slots the broker's publish permissions police. */
+  publisher?: { owner: string; actor: string };
+}
+
 /** Retained-history reads and private reader allocation for one endpoint. */
 export class EndpointHistory {
 
@@ -164,7 +173,7 @@ export class EndpointHistory {
    *  lifecycle wait for native consumer inactivity cleanup; they never delete another reader. */
   async channelHistoryPage(
     channel: string,
-    opts?: { limit?: number; signal?: AbortSignal },
+    opts?: ChannelHistoryPageOptions,
   ): Promise<HistoryPage> {
     assertValidChannel(channel);
     if (!isConcreteChannel(channel)) throw new Error("channelHistoryPage requires one concrete channel");
@@ -177,7 +186,11 @@ export class EndpointHistory {
     signal.throwIfAborted();
     const stream = chatStream(this.identity.space);
     const name = chatHistDurable(this.identity.owner, this.identity.actor, this.deps.requireLifecycleUid("channelHistoryPage"));
-    const subject = chatSubject(this.identity.space, "*", "*", channel);
+    const from = opts?.publisher;
+    // A `*` in either slot would widen the read back to any sender, so both are concrete tokens.
+    const subject = from === undefined
+      ? chatSubject(this.identity.space, "*", "*", channel)
+      : chatSubject(this.identity.space, assertValidOwnerToken(from.owner), assertValidOwnerToken(from.actor), channel);
     const marker = randomUUID();
     let created: ConsumerInfo;
     for (;;) {
