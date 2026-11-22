@@ -325,7 +325,8 @@ try {
 
   await cell("H0e serve publishes a socket at the Linux pathname limit", async () => {
     const nearLimit = join(root, "r".repeat(67 - Buffer.byteLength(root) - 1));
-    mkdirSync(nearLimit, { mode: 0o700 });
+    mkdirSync(nearLimit, { mode: 0o755 });
+    chmodSync(nearLimit, 0o755);
     const env = { ...childEnv, XDG_RUNTIME_DIR: nearLimit };
     const args = ["--daemon-home", managed];
     const before = await cli(["status", ...args, "--json"], 30_000, env);
@@ -335,6 +336,7 @@ try {
       check("H0e serve publishes the 107-byte socket", live(daemon) && Buffer.byteLength(daemon.socket ?? "") === 107, daemon.err);
       const after = await cli(["status", ...args, "--json"], 30_000, env);
       check("H0e status reaches the foreground daemon", after.status === 0 && after.doc.result?.pid === daemon.child.pid, after);
+      check("H0e keeps the configured runtime at 0755 and protects the socket directory at 0700", (lstatSync(nearLimit).mode & 0o777) === 0o755 && daemon.socket !== undefined && (lstatSync(dirname(daemon.socket)).mode & 0o777) === 0o700);
       check("H0e only the published socket remains", daemon.socket !== undefined && readdirSync(dirname(daemon.socket)).join() === "daemon.sock", daemon.err);
     } finally {
       await stop(daemon);

@@ -25,7 +25,7 @@
  * needs no cleanup: it exists only while a process holds an instance of it.
  */
 import { createHash } from "node:crypto";
-import { closeSync, lstatSync, mkdirSync } from "node:fs";
+import { closeSync, lstatSync, mkdirSync, statSync } from "node:fs";
 import { Socket } from "node:net";
 import { join } from "node:path";
 import { mkSecretDir } from "@cotal-ai/core";
@@ -105,11 +105,18 @@ function host<T>(what: string, call: () => T): T {
 }
 
 function linuxDaemonRuntime(env: NodeJS.ProcessEnv): string {
-  const runtime = env.XDG_RUNTIME_DIR || `/run/user/${euid()}`;
-  try { checkDir(runtime); }
-  catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    const message = env.XDG_RUNTIME_DIR
+  const configured = env.XDG_RUNTIME_DIR;
+  const runtime = configured || `/run/user/${euid()}`;
+  try {
+    if (configured) statSync(runtime);
+    else checkDir(runtime);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      // Only diagnose absence here. The socket operations check their own paths.
+      if (configured) return runtime;
+      throw error;
+    }
+    const message = configured
       ? `XDG_RUNTIME_DIR points to ${runtime}, which does not exist`
       : `${runtime} is absent and XDG_RUNTIME_DIR is not set, so there is no per-user runtime directory to hold the daemon socket`;
     throw new EndpointRefusal("NO_RUNTIME_DIR", message);
