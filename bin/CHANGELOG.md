@@ -1,5 +1,90 @@
 # cotal-ai
 
+## 0.174.0
+
+### Patch Changes
+
+- d612999: `auth mint` explains that stopped per-user-auth spaces cannot issue static credentials and names a missing output directory when minting an endpoint caller.
+- 656a593: When the desktop app cannot read the account's application PATH, the refusal now names the login shell, its exit status or signal, and its last error output, or says that its startup printed more than 64 KiB. Before, every cause showed the same sentence and left the person nothing to fix.
+- fa6c571: Correct the JSON field paths in the workflow answer and amendment receipt documentation.
+- 4e0ab2a: Document how to resume `cotal history --follow --json` without skipping unread messages that share the last processed timestamp.
+- b17198a: History reads and previews that pass `--force` now tell you to remove it and keep the other arguments instead of suggesting a purge.
+- 9cc5f7a: When a manager cannot find the seat named by `stop`, the suggested `ps` command keeps the stop's space, broker and explicit manager selection.
+- bf44b77: Keep the verified self-updated release in use when only the npm package manifest timestamp changes.
+- 55555ab: Show subscribed channels when a local persona's read allowlist is empty, and let `persona edit` open a private draft to repair invalid frontmatter.
+- c0298ea: Avoid the Linux npm launcher warning from a deleted directory where the shell supports it, and make plain `cotal update` exit 0 after successful reconciliation with the registry version reported as not established instead of exiting 1 with “version check failed”.
+- b41a012: Self-update restores owner write permission on a read-only retained-generation directory that you own.
+- 12bd829: Resume an interrupted self-update with the installed release and reconcile built-in connectors even when the npm registry is offline.
+- 0d86b2d: Detached spawn accepts catalog names ending in `.md` and prints a command to restore a missing default persona on the manager's host.
+- Updated dependencies [5053a5e]
+- Updated dependencies [d612999]
+- Updated dependencies [245f5ab]
+- Updated dependencies [376469f]
+- Updated dependencies [576047e]
+- Updated dependencies [ac659de]
+- Updated dependencies [0e16f98]
+- Updated dependencies [c0dac1c]
+- Updated dependencies [e7ef63d]
+- Updated dependencies [37b69ed]
+- Updated dependencies [766ff72]
+- Updated dependencies [9d08e2d]
+- Updated dependencies [6e9a832]
+- Updated dependencies [ba74c9f]
+- Updated dependencies [f93db6f]
+- Updated dependencies [721d295]
+- Updated dependencies [46f00ce]
+- Updated dependencies [9dd33f2]
+- Updated dependencies [7efc878]
+- Updated dependencies [9454dcb]
+- Updated dependencies [733ddbf]
+- Updated dependencies [f6760fa]
+- Updated dependencies [4e0ab2a]
+- Updated dependencies [627d8c5]
+- Updated dependencies [b17198a]
+- Updated dependencies [2329c23]
+- Updated dependencies [f1abc70]
+- Updated dependencies [6cd0057]
+- Updated dependencies [9cc5f7a]
+- Updated dependencies [8d19dbf]
+- Updated dependencies [31d4578]
+- Updated dependencies [ec11157]
+- Updated dependencies [d67f0f7]
+- Updated dependencies [26473b2]
+- Updated dependencies [3b11ab7]
+- Updated dependencies [55555ab]
+- Updated dependencies [78d93f9]
+- Updated dependencies [19894a7]
+- Updated dependencies [4d69bd5]
+- Updated dependencies [0f676c9]
+- Updated dependencies [c0298ea]
+- Updated dependencies [96ef3da]
+- Updated dependencies [8864401]
+- Updated dependencies [1fba601]
+- Updated dependencies [70f0199]
+- Updated dependencies [f670fe9]
+- Updated dependencies [12bd829]
+- Updated dependencies [8fcd1b0]
+- Updated dependencies [2f52b64]
+- Updated dependencies [f729c04]
+- Updated dependencies [5faf2c8]
+- Updated dependencies [debeaaa]
+- Updated dependencies [d45f432]
+- Updated dependencies [c194012]
+- Updated dependencies [00dfc8d]
+- Updated dependencies [0d86b2d]
+- Updated dependencies [f3e469a]
+- Updated dependencies [3e16dcd]
+  - @cotal-ai/core@0.174.0
+  - @cotal-ai/connector-core@0.174.0
+  - @cotal-ai/manager@0.174.0
+  - @cotal-ai/cli@0.174.0
+  - @cotal-ai/workspace@0.174.0
+  - @cotal-ai/runtime@0.174.0
+  - @cotal-ai/auth@0.174.0
+  - @cotal-ai/delivery@0.174.0
+  - @cotal-ai/registry@0.174.0
+  - @cotal-ai/seat@0.174.0
+
 ## 0.173.0
 
 ### Patch Changes
