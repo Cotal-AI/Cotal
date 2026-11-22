@@ -45,7 +45,7 @@
     {
       "name": "S4 stop clamping the callerAcl default",
       "file": "implementations/manager/src/seat-start.ts",
-      "find": "        return bound.kind === \"bounded\" ? own.filter((ch) => grantOverreach(this.space, bound.caller, bound.ceiling, { [field]: [ch] }).length === 0) : own;",
+      "find": "        return bound.kind === \"bounded\" ? own.filter((ch) => grantOverreach(this.config.space, bound.caller, bound.ceiling, { [field]: [ch] }).length === 0) : own;",
       "replace": "        return own;",
       "expectRed": "clamped to what the spawner's evidence holds",
       "cell": "clamped to what the spawner's evidence holds"
