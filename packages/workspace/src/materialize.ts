@@ -85,31 +85,48 @@ function importFailure(pkg: string, version: string, e: unknown, remedy: string,
   }
 }
 
+/** An installed extension declares an entry the loader cannot select. */
+export class InvalidExtensionEntryError extends Error {}
+
 function rootExport(exports: unknown): string {
-  if (typeof exports === "string") return exportTarget(exports);
+  let target = exports;
   if (exports && typeof exports === "object" && !Array.isArray(exports)) {
     const map = exports as Record<string, unknown>;
     const keys = Object.keys(map);
-    if (keys.every((key) => key.startsWith("."))) {
-      if (Object.hasOwn(map, ".")) return exportTarget(map["."]);
-    } else if (keys.every((key) => !key.startsWith("."))) {
-      return exportTarget(map);
+    if (keys.some((key) => key.startsWith("."))) {
+      if (!keys.every((key) => key.startsWith(".")) || !Object.hasOwn(map, ".")) {
+        throw new InvalidExtensionEntryError('extension "exports" must declare a root entry');
+      }
+      target = map["."];
     }
   }
-  throw new Error('extension "exports" must declare a root file or an import/default condition');
+  const entry = exportTarget(target);
+  if (entry !== undefined && entry !== null) return entry;
+  throw invalidRootExport();
 }
 
-function exportTarget(target: unknown): string {
-  let entry = target;
-  if (target && typeof target === "object" && !Array.isArray(target)) {
-    const first = Object.entries(target).find(([key]) => key !== "types" && key !== "require");
-    if (first && (first[0] === "import" || first[0] === "default")) {
-      entry = first[1];
+function invalidRootExport(): InvalidExtensionEntryError {
+  return new InvalidExtensionEntryError('extension root export must select a package-relative file');
+}
+
+// undefined means no condition matched. A selected null blocks the export.
+function exportTarget(target: unknown): string | null | undefined {
+  if (target === null) return null;
+  if (typeof target === "string" && target.startsWith("./") && !/[%\\?#]/.test(target) &&
+      !target.slice(2).split("/").some((part) => part === "." || part === ".." || part.toLowerCase() === "node_modules")) return target;
+  if (typeof target === "object" && !Array.isArray(target)) {
+    const conditions = Object.entries(target);
+    for (const [key, value] of conditions) {
+      if (key === "node-addons" || key === "module-sync") {
+        throw new InvalidExtensionEntryError(`unsupported extension root export condition "${key}"; declare a node or import entry first`);
+      }
+      if (key !== "node" && key !== "import" && key !== "default") continue;
+      const entry = exportTarget(value);
+      if (entry !== undefined) return entry;
     }
+    return undefined;
   }
-  if (typeof entry === "string" && entry.startsWith("./") && !/[%\\?#]/.test(entry) &&
-      !entry.slice(2).split("/").some((part) => part === "." || part === ".." || part.toLowerCase() === "node_modules")) return entry;
-  throw new Error('extension root export must select a file through a package-relative string, import, or default target');
+  throw invalidRootExport();
 }
 
 /** Select the package-relative entry from the same metadata used for peer binding. */
@@ -129,7 +146,7 @@ export function extensionEntry(meta: InstalledExtensionPackage, dir?: string): s
       const entry = `${main}${suffix}`;
       const candidate = statSync(join(dir, entry), { throwIfNoEntry: false });
       if (candidate && !candidate.isDirectory()) {
-        throw new Error(`extension main resolves to ${entry}; specify a JavaScript entry file`);
+        throw new InvalidExtensionEntryError(`extension main resolves to ${entry}; specify a JavaScript entry file`);
       }
     }
     return join(main, "index.js");

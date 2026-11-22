@@ -46,8 +46,12 @@ registry.register({ kind: "command", name: "directory-entry-example", summary: "
   check("an extensionless main loads its .js file", file.status === 0 && greet("Hello from an extensionless main"));
 
   write("explicit.mjs", "Hello from the export");
-  const conditional = add({ version: "1.4.0", exports: { default: "./explicit.mjs", import: "./dist.js" } });
-  check("top-level export conditions precede main and respect declaration order", conditional.status === 0 && greet("Hello from the export"));
+  const conditional = add({ version: "1.4.0", exports: { browser: "./dist.js", default: "./explicit.mjs", import: "./dist.js" } });
+  check("an inactive browser condition does not hide a preceding default over import", conditional.status === 0 && greet("Hello from the export"));
+  const node = add({ version: "1.5.0", exports: { ".": { node: "./explicit.mjs", import: "./dist.js" } } });
+  check("the node condition wins over a later import", node.status === 0 && greet("Hello from the export"));
+  const nested = add({ version: "1.6.0", exports: { ".": { node: { browser: "./dist.js" }, import: { types: "./unused.d.ts", default: "./explicit.mjs" } } } });
+  check("nested conditions select an active file after an unmatched branch", nested.status === 0 && greet("Hello from the export"));
 
   const manifest = join(prefix, "extensions.json");
   const before = readFileSync(manifest, "utf8");
@@ -62,7 +66,7 @@ registry.register({ kind: "command", name: "directory-entry-example", summary: "
   const json = add({ version: "2.0.0" });
   check("a non-JavaScript candidate ahead of a directory index is refused", json.status === 1 && json.stderr.includes("main resolves to ./dist.json"));
 
-  for (const exports of [{ ".": "./dist" }, { import: "./dist" }]) {
+  for (const exports of [{ ".": "./dist" }, { import: "./dist", default: "./explicit.mjs" }]) {
     const exported = add({ version: "2.0.0", exports });
     const refused = exported.status === 1 && exported.stderr.includes(`extension set installed no entry for ${name}`);
     if (!refused) console.error(exported.stderr.trim());
@@ -70,8 +74,13 @@ registry.register({ kind: "command", name: "directory-entry-example", summary: "
   }
   const unexported = add({ version: "2.0.0", exports: { "./feature": "./explicit.mjs" } });
   check("a subpath-only map cannot fall back to main", unexported.status === 1 && unexported.stderr.includes('"exports" must declare a root'));
-  const blocked = add({ version: "2.0.0", exports: { import: null, default: "./explicit.mjs" } });
-  check("a blocked import condition cannot fall through to default or main", blocked.status === 1 && blocked.stderr.includes("root export must select a file"));
+  const blocked = add({ version: "2.0.0", exports: { import: { default: null }, default: "./explicit.mjs" } });
+  check("a blocked nested condition cannot fall through to default or main", blocked.status === 1 && blocked.stderr.includes("root export must select a package-relative file"));
+  for (const condition of ["node-addons", "module-sync"]) {
+    const unsupported = add({ version: "2.0.0", exports: { [condition]: "./dist/index.js", default: "./explicit.mjs" } });
+    check(`a leading ${condition} condition refuses instead of choosing a different entry`,
+      unsupported.status === 1 && unsupported.stderr.includes(`unsupported extension root export condition "${condition}"`));
+  }
   check("entry refusals preserve the working extension", readFileSync(manifest, "utf8") === before && greet("Hello from the export"));
 }
 
@@ -274,7 +283,7 @@ registry.register({ kind: "command", name: "greet-example", summary: "Print a gr
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
-  assert.equal(passed + failed, process.platform === "linux" || process.platform === "darwin" ? 49 : 46, "all expected copy/rollback checks ran");
+  assert.equal(passed + failed, process.platform === "linux" || process.platform === "darwin" ? 53 : 50, "all expected copy/rollback checks ran");
   console.log(`ext-install-copies smoke: ${passed} passed, ${failed} failed`);
   emitSentinel({ passed, failed });
   process.exit(failed ? 1 : 0);

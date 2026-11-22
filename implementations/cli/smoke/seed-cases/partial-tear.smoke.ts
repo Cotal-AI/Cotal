@@ -10,6 +10,7 @@ try {
     // built-in (a surviving package.json is NOT proof of integrity) — never clear the cursor + succeed.
     const pkgDir = join(cfg, "cotal", "extensions", "node_modules", "@cotal-ai", "connector-hermes");
     const mainEntry = join(pkgDir, "dist", "index.js");
+    const pkgJson = join(pkgDir, "package.json");
     if (existsSync(mainEntry)) {
       const original = readFileSync(mainEntry);
       rmSync(mainEntry, { force: true }); // package.json survives; the built entry does not
@@ -23,6 +24,13 @@ try {
         const repaired = cotal(cfg, ["ext", "seed", "--repair"]);
         check("partial tear: --repair replaces a looping entry symlink", repaired.status === 0 && existsSync(mainEntry) && readFileSync(mainEntry).equals(original), repaired.stderr);
       }
+      const metadata = JSON.parse(readFileSync(pkgJson, "utf8"));
+      rmSync(mainEntry, { force: true });
+      writeJson(pkgJson, { ...metadata, exports: { "./subpath": "./dist/index.js" } });
+      const repaired = cotal(cfg, ["ext", "seed", "--repair"]);
+      check("partial tear: --repair replaces an invalid root export and restores the entry",
+        repaired.status === 0 && existsSync(mainEntry) && readFileSync(mainEntry).equals(original) &&
+        JSON.stringify(JSON.parse(readFileSync(pkgJson, "utf8")).exports) === JSON.stringify(metadata.exports), repaired.stderr);
     } else {
       check("partial tear: hermes main entry present to tear", false, mainEntry);
     }

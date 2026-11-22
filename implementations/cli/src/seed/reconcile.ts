@@ -7,6 +7,7 @@ import {
   claimUpdateClosureAccess,
   waitForUpdateClosure,
   CorruptExtensionPackageError,
+  InvalidExtensionEntryError,
   SEEDED_EXTENSIONS,
   bindExtensionPeers,
   connectorConfigDir,
@@ -952,20 +953,18 @@ function entryPresent(pkg: string, installed: InstalledExtensionPackage): boolea
   }
 }
 
-/** A seeded built-in's install on disk. It is intact only with a package.json carrying a version AND
- *  its entry file present; a partial tear (entry gone, package.json kept) or a corrupt package.json
- *  is torn, which a maintenance run reinstalls rather than stopping on. */
+/** A seeded built-in is intact only with valid package metadata and a resolvable entry file.
+ *  Repair reinstalls a torn package but surfaces unrelated read errors. */
 function installState(name: string): "absent" | "torn" | "intact" {
   const pkg = SEEDED_EXTENSIONS[name].pkg;
-  let installed: ReturnType<typeof installedExtensionPackage>;
   try {
-    installed = installedExtensionPackage(pkg);
+    const installed = installedExtensionPackage(pkg);
+    if (!installed) return "absent";
+    return entryPresent(pkg, installed) ? "intact" : "torn";
   } catch (e) {
-    if (e instanceof CorruptExtensionPackageError) return "torn";
+    if (e instanceof CorruptExtensionPackageError || e instanceof InvalidExtensionEntryError) return "torn";
     throw e;
   }
-  if (!installed) return "absent";
-  return entryPresent(pkg, installed) ? "intact" : "torn";
 }
 
 function installedEntry(name: string): InstalledExtension | undefined {

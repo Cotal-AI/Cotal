@@ -730,10 +730,12 @@ cotal ext seed [--repair|--reset|--force]
 `add` and `remove` each take one operand. Missing or extra operands are usage errors and
 leave the extension inventory unchanged.
 Give `add` a package name or a local package path such as `./example-extension`.
-A package can declare its entry through a root `exports` string or an `import` or `default`
-condition, either at the top level or under `"."`. Cotal checks conditions in declaration order,
-skipping `types` and `require`. The selected export must point to a package-relative file.
-An unsupported or missing root export does not fall back to `main`.
+A package can declare its entry through a root `exports` string or a condition map, either at
+the top level or under `"."`. Cotal checks `node`, `import`, and `default` in declaration order,
+including in nested condition maps. It skips conditions such as `browser`, `types`, and `require`,
+but refuses `node-addons` and `module-sync` if reached before selecting an entry. The selected
+export must point to a package-relative file. A selected `null` blocks the export. Cotal does not
+fall back to `main` when an export map does not supply a usable root entry.
 Without `exports`, `"main": "./dist"` checks the declared path, then `dist.js`, then
 `dist/index.js` if `dist` is a directory. Cotal refuses if Node would select `dist.json` or
 `dist.node` ahead of that index. A missing directory index does not fall back to the package root.
@@ -857,7 +859,7 @@ the seed keeps stdout to itself:
 | Flag | Meaning |
 |---|---|
 | (none) | Reconcile: seed any never-seeded built-in, refresh a seeded one whose version the binary bumped, leave a removed one removed. A no-op once current. |
-| `--repair` | Recover after a seed that failed or was interrupted, or a lost authority (rebuilds that seed's connector; restores the removed-vs-never-seeded record from its durable backup). Also reinstalls a seeded built-in whose entry file is gone or whose `package.json` is not JSON or has no `version`. |
+| `--repair` | Recover after a seed that failed or was interrupted, or a lost authority (rebuilds that seed's connector; restores the removed-vs-never-seeded record from its durable backup). Also reinstalls a seeded built-in with a missing entry file, an unusable entry declaration, or an invalid `package.json`. |
 | `--reset` | Discard the record and re-seed all seven built-ins (the six connectors plus the web dashboard). **Resurrects any you removed.** Rebuilds cleanly over corrupt seed state. |
 | `--force` | Re-seed the built-ins even when the version stamp is current. Refuses to downgrade a newer shared store. |
 
