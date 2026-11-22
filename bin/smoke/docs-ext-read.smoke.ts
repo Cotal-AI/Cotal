@@ -83,6 +83,13 @@ let specBody = "";
   check("the CLI hub read to a pipe keeps its Markdown heading and links", piped.status === 0 && piped.stdout.includes("\n# CLI reference\n") && piped.stdout.includes("[CLI usage](cli-usage.mdx#structured-output)"), shown(piped));
   const usage = run(["docs", "cli-usage"]);
   check("a reference page read to a pipe keeps its Markdown table", usage.status === 0 && usage.stdout.includes("\n# CLI usage\n") && /^\|---\|---\|$/m.test(usage.stdout) && /^\| `schemaVersion` \| `1` \|$/m.test(usage.stdout), shown(usage));
+  const help = run(["help"]);
+  const mcpHelp = run(["mcp", "--help"]);
+  check("the CLI command table links the MCP entry that help lists",
+    usage.status === 0 && /^\| Agents \| \[`mcp`\]\(cli-messaging\.mdx#mcp\) \|/m.test(usage.stdout) &&
+    help.status === 0 && /^\s+mcp +serve Cotal tools over stdio/m.test(help.stdout) &&
+    mcpHelp.status === 0 && mcpHelp.stdout.includes("cotal mcp [--space <name>]"),
+    { usage: shown(usage), help: shown(help), mcpHelp: shown(mcpHelp) });
   const spec = run(["docs", "spec", "--json"]);
   specBody = (spec.envelope?.result as { body?: string } | undefined)?.body ?? "";
   check("spec, lang and schema are pages too", spec.status === 0 && specBody.length > 0 && run(["docs", "lang", "--json"]).status === 0 && run(["docs", "schema", "--json"]).status === 0, shown(spec));
@@ -125,6 +132,28 @@ let specBody = "";
   check("the bundled endpoint authoring reference names the JSON digests and offline verification fields",
     docs.status === 0 && docs.envelope?.result?.source === "bundled" && missing.length === 0,
     { ...shown(docs), missing });
+
+  const whoami = typeof body === "string" ? body.split(/^## whoami$/m)[1]?.split(/^## /m)[0] ?? "" : "";
+  const example = /`(nats:\/\/127\.0\.0\.1:\d+)`/.exec(whoami)?.[1];
+  const bare = run(["whoami", "--server", "127.0.0.1:48112", "--json"]);
+  const qualified = example ? run(["whoami", "--server", example, "--json"]) : undefined;
+  check("the whoami reference requires a scheme and its example reaches the identity report",
+    docs.status === 0 && whoami.includes("Bare host addresses are refused") &&
+    bare.status === 1 && bare.envelope?.error?.code === "USAGE_INVALID" &&
+    qualified?.status === 4 && qualified.envelope?.warnings.some((warning) => warning.code === "BROKER_NOT_PROBED") === true,
+    { example, bare: shown(bare), qualified: qualified && shown(qualified) });
+}
+
+{
+  const docs = run(["docs", "cli-maintenance", "--json"]);
+  const body = docs.envelope?.result?.body;
+  const start = typeof body === "string" ? /^cotal manager start \[.*$/m.exec(body)?.[0] ?? "" : "";
+  const manager = run(["manager", "start", "--help"]);
+  const service = run(["service", "start", "manager", "--help"]);
+  check("the bundled manager start usage shows the launch flags together, as supported by both command forms",
+    docs.status === 0 && start.includes("[--launch <file> --launch-sha256 <digest>]") &&
+    [manager, service].every((help) => help.status === 0 && /^\s+--launch\s/m.test(help.stdout) && /^\s+--launch-sha256\s/m.test(help.stdout)),
+    { start, manager: shown(manager), service: shown(service) });
 }
 
 {

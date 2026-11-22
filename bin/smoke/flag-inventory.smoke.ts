@@ -543,8 +543,9 @@ for (const cmd of commands) {
 }
 
 // The Commands table in docs/cli-usage.mdx has one row per command, the hidden ones `cotal help` leaves
-// out included, under the section help lists it in. The composition root also registers `daemon`,
-// which GOLDEN leaves out, so it is imported only after the golden check above.
+// out included, under the section help lists it in. Load the composition root's command modules
+// outside GOLDEN before comparing the table with the registry.
+await import("../mcp.js");
 await import("../daemon/command.js");
 const helpAll = registry.all<Command>("command").filter((cmd) => !cmd.name.startsWith("__"));
 const doc = (await readDocument(fileURLToPath(new URL("../../docs/cli-usage.mdx", import.meta.url)))).markdown;
