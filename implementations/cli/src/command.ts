@@ -126,11 +126,9 @@ function takesWordsRaw(cmd: Command | undefined): boolean {
 /** Refuse a repeated global flag using the command's output mode and subcommand help. */
 async function repeatedGlobalFlag(word: string, cmd: Command | undefined, words: string[], warnings: OutputWarning[] = []): Promise<never> {
   const { cmd: found, rest } = await serviceSurface(takesWordsRaw(cmd) ? undefined : cmd, words, true);
-  const end = rest.indexOf("--");
-  const options = end === -1 ? rest : rest.slice(0, end);
   const json = found !== undefined && asksForJson(found, rest);
   if (!json) for (const warning of warnings) console.error(c.red(`! ${warning.message}`));
-  return runOperation({ warnings }, () => usageExit(`Option '${word}' cannot be repeated`, found, json, options.includes("--plain"), undefined, rest));
+  return runOperation({ warnings }, () => usageExit(`Option '${word}' cannot be repeated`, found, json, asksForPlain(rest), undefined, rest));
 }
 
 /** Whether the invoked mode declares a structured output, so it reports every outcome by the 0 to 5
@@ -138,6 +136,13 @@ async function repeatedGlobalFlag(word: string, cmd: Command | undefined, words:
 function structured(cmd: Command, first: string | undefined): boolean {
   const sub = findSubcommand(cmd, first);
   return ((sub ? sub.outputs : cmd.outputs) ?? []).some((mode) => mode === "json" || mode === "ndjson");
+}
+
+/** Select plain presentation for a refusal before parsed flags are available. */
+function asksForPlain(args: readonly string[]): boolean {
+  const flag = args.indexOf("--plain");
+  const end = args.indexOf("--");
+  return flag !== -1 && (end === -1 || flag < end);
 }
 
 /** Whether `args` ask `cmd` for JSON before any `--`: `--json`, `-j`, or `-j` in a short option group
@@ -510,7 +515,7 @@ function parseRefusal(error: Error & { code?: string }, cmd: Command, rest: read
 function parseOrExit(cmd: Command, rest: string[]): ParsedArgs {
   const seed = extSeedSubcommand(cmd, rest);
   const json = !seed && asksForJson(cmd, rest);
-  const plain = !seed && rest.includes("--plain");
+  const plain = !seed && asksForPlain(rest);
   const flagNames = seed?.flagNames ?? (cmd.name === "spawn" ? cmd.flagNames : undefined);
   const misspelled = cmd.rawArgs ? undefined : misspelledOption(cmd, rest, flagNames);
   if (misspelled) usageExit(misspelled.message, cmd, json, plain, misspelled.remedy, seed ? [seed.name] : rest);
@@ -645,7 +650,7 @@ async function serviceSurface(found: Command | undefined, words: string[], forRe
   } catch (error) {
     if (forRefusal || asksForHelp(words)) return { cmd: found, rest: words };
     const failure = isCommandFailure(error) ? error : new CommandFailure("refused", "SCHEMA_INVALID", "service preset metadata could not be read; no provider was imported or installed");
-    return failureExit(found, failure, asksForJson(found, words), words.includes("--plain"));
+    return failureExit(found, failure, asksForJson(found, words), asksForPlain(words));
   }
 }
 
@@ -802,7 +807,7 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
     try {
       armTelemetry(registry, cmd, words, startedAt);
     } catch (e) {
-      if (isCommandFailure(e)) failureExit(cmd, e, asksForJson(cmd, rest), rest.includes("--plain"), undefined, rest);
+      if (isCommandFailure(e)) failureExit(cmd, e, asksForJson(cmd, rest), asksForPlain(rest), undefined, rest);
       throw e;
     }
   };
@@ -852,8 +857,7 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
         const message = e instanceof Error ? e.message : String(e);
         const failure = isCommandFailure(e) ? e : new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", displayRemedy(message),
           e instanceof SeedChildFailure ? { remedy: displayRemedy("fix that, then run `cotal ext seed --repair`") } : {});
-        const end = rest.indexOf("--");
-        const plain = parsed?.values.plain === true || (!parsed && (end === -1 ? rest : rest.slice(0, end)).includes("--plain"));
+        const plain = parsed ? parsed.values.plain === true : asksForPlain(rest);
         failureExit(cmd, failure, asksForJson(cmd, rest), plain, undefined, rest);
       }
       seedRefusal(e);

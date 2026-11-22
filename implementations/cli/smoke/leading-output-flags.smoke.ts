@@ -35,8 +35,8 @@ process.on("exit", () => rmSync(home, { recursive: true, force: true }));
 
 const HOST_ENV = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("COTAL_") && k !== "FORCE_COLOR" && k !== "NO_COLOR"));
 const env = { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config"), XDG_RUNTIME_DIR: home, COTAL_HOME: join(home, ".cotal"), COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1", NO_COLOR: "1", LC_ALL: "C.UTF-8" };
-const run = (args: string[], config = env.XDG_CONFIG_HOME) => {
-  const r = spawnSync(process.execPath, [BIN, ...args], { cwd: neutral, env: { ...env, XDG_CONFIG_HOME: config }, encoding: "utf8", timeout: 120_000 });
+const run = (args: string[], config = env.XDG_CONFIG_HOME, extraEnv: NodeJS.ProcessEnv = {}) => {
+  const r = spawnSync(process.execPath, [BIN, ...args], { cwd: neutral, env: { ...env, XDG_CONFIG_HOME: config, ...extraEnv }, encoding: "utf8", timeout: 120_000 });
   let envelope: Envelope | undefined;
   try { envelope = JSON.parse(r.stdout ?? "") as Envelope; } catch { envelope = undefined; }
   return { status: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? "", envelope };
@@ -74,14 +74,24 @@ const withValue = run(["--json", "ep", "work", "--server", "commit", "commti"]);
 check("a flag value is not a nested subcommand, including through a command alias", withValue.status === 1 && withValue.stderr === ""
   && withValue.envelope?.error?.message?.startsWith('cotal endpoint work has no subcommand "commti" - did you mean commit?') === true, shown(withValue));
 
-const plainBefore = run(["auth", "handle", "--plain", "--", "inspec"]);
-const plainAfter = run(["auth", "handle", "--", "inspec", "--plain"]);
-const withoutPlain = run(["auth", "handle", "--", "inspec"]);
-check("--plain before -- gives a plain nested subcommand refusal", plainBefore.status === 1 && plainBefore.stdout === ""
-  && plainBefore.stderr.includes("USAGE_INVALID") && plainBefore.stderr.includes('cotal auth handle has no subcommand "inspec"'), shown(plainBefore));
-check("--plain after -- leaves a nested subcommand refusal in rich text", plainAfter.status === 1 && plainAfter.stdout === ""
-  && plainAfter.stderr.startsWith('✗ cotal auth handle has no subcommand "inspec" - did you mean inspect?')
-  && plainAfter.stderr === withoutPlain.stderr, { after: shown(plainAfter), control: shown(withoutPlain) });
+const plainRefusals = [
+  { label: "nested subcommand", args: ["auth", "handle"], operands: ["inspec"], reason: 'cotal auth handle has no subcommand "inspec"' },
+  { label: "unknown option", args: ["auth", "handle", "inspecx", "--spac", "x"], reason: "Unknown option '--spac'" },
+  { label: "typographic option", args: ["auth", "handle", "inspecx", "\u2013\u2013space", "x"], reason: "starts with a typographic dash" },
+  { label: "missing preset", args: ["service", "add", "probe", "--preset="], reason: "--preset needs one declared preset name" },
+  { label: "invalid telemetry setting", args: ["auth", "handle", "inspec"], reason: "COTAL_TELEMETRY must be off, minimal or regular",
+    extraEnv: { DO_NOT_TRACK: "0", COTAL_TELEMETRY: "invalid" } },
+];
+for (const { label, args, operands = [], reason, extraEnv } of plainRefusals) {
+  const plainBefore = run([...args, "--plain", "--", ...operands], undefined, extraEnv);
+  const plainAfter = run([...args, "--", ...operands, "--plain"], undefined, extraEnv);
+  const withoutPlain = run([...args, "--", ...operands], undefined, extraEnv);
+  check(`--plain before -- gives a plain ${label} refusal`, plainBefore.status === 1 && plainBefore.stdout === ""
+    && plainBefore.stderr.includes("USAGE_INVALID") && plainBefore.stderr.includes(reason), shown(plainBefore));
+  check(`--plain after -- leaves a ${label} refusal in rich text`, plainAfter.status === 1 && plainAfter.stdout === ""
+    && withoutPlain.status === 1 && withoutPlain.stdout === "" && plainAfter.stderr.startsWith("✗ ")
+    && plainAfter.stderr.includes(reason) && plainAfter.stderr === withoutPlain.stderr, { after: shown(plainAfter), control: shown(withoutPlain) });
+}
 
 const duplicateInput = "Option '--no-input' cannot be repeated";
 const jsonDuplicate = (r: ReturnType<typeof run>, command: string) => r.status === 1 && r.stderr === "" &&
