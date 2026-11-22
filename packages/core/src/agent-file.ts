@@ -26,7 +26,8 @@
  * half, alongside the join link.
  */
 import { accessSync, constants, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, statSync } from "node:fs";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { hostname } from "node:os";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import type { EndpointKind } from "./types.js";
 import { assertValidName } from "./resolve.js";
@@ -35,6 +36,7 @@ import { utf16Problem, utf8Problem } from "./text-encoding.js";
 import { assertValidChannel, assertValidRole, channelInAllow, isConcreteChannel, resolveReadAcl } from "./subjects.js";
 import { assertBoundedOwner } from "./endpoint-subjects.js";
 import { parsePersonaEndpoints, type PersonaEndpoint } from "./persona-endpoints.js";
+import { rawDigest } from "./canonical.js";
 
 export interface AgentDef {
   name: string;
@@ -510,6 +512,14 @@ export function composeWirePersona(args: WirePersonaArgs, existing?: AgentDef): 
  *  a persona derives the directory from here, so moving the catalog moves all of them together. */
 export function personaDir(root: string): string {
   return join(root, ".cotal", "agents");
+}
+
+export const PERSONA_FILE_META_KEY = "ai.cotal.persona.file";
+
+/** Advisory presence correlation for a local persona file without publishing its path.
+ * Keep the basename so separate catalog entries that link to one file stay distinct. */
+export function personaFileDigest(path: string): string {
+  return rawDigest(JSON.stringify([hostname(), realpathSync.native(dirname(path)), basename(path)]));
 }
 
 /** Resolve a name-or-path to an agent file. A path (absolute, contains a slash — `/` or, on

@@ -3,8 +3,11 @@ import {
   agentFilePath,
   assertValidName,
   assertValidRole,
+  isContractDigest,
   oneLine,
   personaDir,
+  personaFileDigest,
+  PERSONA_FILE_META_KEY,
   type CompletionResult,
   type ParsedArgs,
 } from "@cotal-ai/core";
@@ -141,8 +144,7 @@ async function list(verbose: boolean, running: boolean, values: ConnectValues): 
   try { entries = readPersonas(root); }
   catch (error) { throw catalogReadRefusal(personaDir(root), error); }
   // An explicit live overlay checks the mesh even when there are no local personas to mark.
-  const overlay = running ? await presentNames(values) : undefined;
-  const present = overlay?.names;
+  const overlay = running ? await presentPersonas(values) : undefined;
   if (overlay) console.log(`${renderReport({ space: overlay.space, sections: [] }, "rich", process.stdout)}\n`);
   if (!entries.length) {
     const spaceFlag = values.space === undefined ? "" : ` --space ${shellWord(values.space)}`;
@@ -166,7 +168,7 @@ async function list(verbose: boolean, running: boolean, values: ConnectValues): 
       continue;
     }
     const d = e.def!;
-    const live = present ? (present.has(e.name) ? c.green("● running") : c.dim("○ not running")) : undefined;
+    const live = overlay && personaRunningLabel(e.path, overlay);
     const meta = [d.role && c.cyan(oneLine(d.role)), d.model && c.dim(`model=${oneLine(d.model)}`), d.owner && c.dim(`owner=${oneLine(d.owner)}`), live]
       .filter(Boolean)
       .join("  ");
@@ -181,16 +183,32 @@ async function list(verbose: boolean, running: boolean, values: ConnectValues): 
   if (entries.some((entry) => entry.error)) process.exitCode = exitCode("partial", "OPERATION_PARTIAL");
 }
 
-/** Snapshot the names currently present on the mesh — the live overlay behind `personas list
- *  --running` — with the space they were read from. The transient endpoint reads the roster once at
- *  start. A name is "running" when an agent of exactly that name is present and not offline. */
-async function presentNames(values: ConnectValues): Promise<{ space: string; names: Set<string> }> {
+interface PersonaPresence {
+  space: string;
+  files: Set<string>;
+  unattributed: boolean;
+}
+
+async function presentPersonas(values: ConnectValues): Promise<PersonaPresence> {
   const { ep, space } = await openTransient(values, "personas");
   try {
-    return { space, names: new Set(ep.getRoster().filter((p) => p.status !== "offline").map((p) => p.card.name)) };
+    const result: PersonaPresence = { space, files: new Set(), unattributed: false };
+    for (const { card, status } of ep.getRoster()) {
+      if (status === "offline") continue;
+      const digest = card.meta?.[PERSONA_FILE_META_KEY];
+      if (isContractDigest(digest)) result.files.add(digest);
+      else result.unattributed = true;
+    }
+    return result;
   } finally {
     await ep.stop();
   }
+}
+
+function personaRunningLabel(path: string, presence: PersonaPresence): string {
+  if (presence.files.has(personaFileDigest(path))) return c.green("● running");
+  if (presence.unattributed) return c.dim("? running status unknown");
+  return c.dim("○ not running");
 }
 
 function show(name: string | undefined, values: { space?: string; server?: string }): void {

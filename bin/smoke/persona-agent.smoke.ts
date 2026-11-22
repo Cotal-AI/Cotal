@@ -34,7 +34,7 @@
  * Run: pnpm smoke:persona-agent
  */
 import { spawn as spawnProc, type ChildProcess } from "node:child_process";
-import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, freePort, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -48,10 +48,11 @@ const home = mkdtempSync(join(tmpdir(), "cotal-869-home-"));
 process.env.COTAL_HOME = home;
 process.env.XDG_CONFIG_HOME = join(home, "xdg");
 
-const { parseCommandArgs, probeConnect, registry } = await import("@cotal-ai/core");
+const { parseCommandArgs, personaFileDigest, PERSONA_FILE_META_KEY, probeConnect, registry } = await import("@cotal-ai/core");
 const { recordMesh } = await import("@cotal-ai/workspace");
 const { spawnRequiredExtensions, runCli } = await import("@cotal-ai/cli");
 await import("@cotal-ai/cli"); // registers the CLI commands (spawn/stop/ps) into the registry
+const { configFromEnv, MeshAgent } = await import("@cotal-ai/connector-core");
 const { Manager } = await import("@cotal-ai/manager");
 
 let pass = 0;
@@ -153,6 +154,33 @@ async function captureProcess(command: string, args: string[], env: NodeJS.Proce
   });
 }
 
+async function checkRunningOverlay(): Promise<void> {
+  const dir = join(workspaceRoot, ".cotal", "agents");
+  const file = (name: string) => join(dir, `${name}.md`);
+  writeFileSync(file("catalog-key"), `---\nname: display-name\n${PERSONA_FILE_META_KEY}: ${personaFileDigest(file("same-label"))}\n---\nThe launched definition.\n`);
+  writeFileSync(file("same-label"), "---\nname: display-name\n---\nAnother definition.\n");
+  writeFileSync(file("override"), "---\nname: another-label\n---\nThe unlaunched definition.\n");
+  const env = { COTAL_SPACE: SPACE, COTAL_SERVERS: SERVER };
+  const launched = new MeshAgent(configFromEnv({ ...env, COTAL_AGENT_FILE: file("catalog-key"), COTAL_NAME: "override" }), env);
+  const legacy = new MeshAgent(configFromEnv({ ...env, COTAL_NAME: "same-label", COTAL_KIND: "endpoint" }), env);
+  const list = async () => unstyled(await capture(() => run("personas", ["list", "--running", "--space", SPACE])));
+  try {
+    await launched.start();
+    await launched.waitUntilConnected();
+    const matched = await list();
+    ok("running overlay follows the catalog file through a display-name override", /^catalog-key\s+● running$/m.test(matched), matched);
+    ok("running overlay ignores colliding names and a persona's own provenance claim", /^same-label\s+○ not running$/m.test(matched) && /^override\s+○ not running$/m.test(matched), matched);
+    await legacy.start();
+    await legacy.waitUntilConnected();
+    const uncertain = await list();
+    ok("unattributed live participants leave unmatched personas unknown without obscuring a match", /^same-label\s+\? running status unknown$/m.test(uncertain) && /^catalog-key\s+● running$/m.test(uncertain), uncertain);
+  } finally {
+    await Promise.all([legacy.stop(), launched.stop()]);
+  }
+  const stopped = await list();
+  ok("offline presence does not mark a catalog file running or unknown", /^catalog-key\s+○ not running$/m.test(stopped), stopped);
+}
+
 let mgr: InstanceType<typeof Manager> | undefined;
 try {
   const brokerStore = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}869-js-`));
@@ -164,6 +192,8 @@ try {
     await sleep(100);
   }
   recordMesh({ space: SPACE, server: SERVER, root: workspaceRoot, mode: "open", ts: new Date().toISOString() });
+
+  await checkRunningOverlay();
 
   mgr = new Manager({ space: SPACE, servers: SERVER, runtime: "pty", workspaceRoot });
   await mgr.start();
@@ -466,9 +496,9 @@ try {
   }
 
   console.log(`\npersona-agent 869 reachability smoke: ${pass} passed, ${fail} failed`);
-  process.exit(fail === 0 ? 0 : 1);
+  process.exitCode = fail === 0 ? 0 : 1;
 } finally {
   try { await mgr?.stop({ withAgents: true }); } catch { /* teardown best-effort */ }
-  for (const k of kids) k.kill("SIGKILL");
+  await Promise.all(kids.map(k => killAndAwaitExit(k, "SIGKILL")));
   releaseBroker?.();
 }
