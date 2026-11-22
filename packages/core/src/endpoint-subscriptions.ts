@@ -45,6 +45,7 @@ export type MembershipFeedWatch = {
   consumer?: PushConsumer;
   consumerStream?: string;
   consumerName?: string;
+  stopped: boolean;
   arm: Promise<void>;
   stopPromise?: Promise<void>;
   resolveStop?: () => void;
@@ -54,7 +55,6 @@ export type MembershipFeedWatch = {
  *  copied, and every method is looked up on the endpoint at call time, so a test that replaces one
  *  of those methods on the endpoint is seen here. */
 export interface EndpointSubscriptionsDeps {
-  stopped: () => boolean;
   authed: () => boolean;
   chatSubDenied: () => Set<string>;
   plane3Channels: () => Map<string, number>;
