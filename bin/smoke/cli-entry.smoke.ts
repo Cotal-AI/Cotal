@@ -809,8 +809,8 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
     }, noSeed);
     const left = readdirSync(dotCotal);
     chmodSync(dotCotal, 0o700);
-    check("up refuses a .cotal it cannot write with PERMISSION_DENIED, exit 2, naming it and chmod u+w, and writes nothing",
-      readOnly.status === 2 && readOnly.stderr.includes("PERMISSION_DENIED") && readOnly.stderr.includes(`${dotCotal} is not writable by this account`) && readOnly.stderr.includes(`chmod u+w ${dotCotal}`) && left.length === 0, { ...shown(readOnly), left });
+    check("up refuses a .cotal it cannot write with PERMISSION_DENIED, exit 2, naming it and chmod u+wx, and writes nothing",
+      readOnly.status === 2 && readOnly.stderr.includes("PERMISSION_DENIED") && readOnly.stderr.includes(`${dotCotal} does not grant this account both write and search access`) && readOnly.stderr.includes(`chmod u+wx ${dotCotal}`) && left.length === 0, { ...shown(readOnly), left });
   }
   // A catalog travels with a cloned repo, so the legacy list escapes the control characters it reads
   // from one, and the flags that write a persona refuse them.
