@@ -4,7 +4,7 @@
 import { spaceDeletionStreams } from "./space-deletion-targets.js";
 import { BROKER_USER_INFO_SUBJECT } from "./broker-identity.js";
 import { spacePrefix, chatSubject, principalKey, unicastSubject, anycastSubject, controlServiceSubject, CONTROL_DELIVERY_ADMIN, chatStream, presenceBucket, channelBucket, assertLifecycleToken, membershipBucket, deliveryBucket, managerBucket, MANAGER_LEASE_KEY, MANAGER_RENEWAL_LEASE_KEY, livenessServeFilter, livenessReplyGrant, isTransferStream } from "./subjects.js";
-import { epCallerGrantRows, epServeGrantRows, baselineCallerCapabilities, spawnCallerCapabilities, runCallerCapabilities, epRequestGrantRows, operatorInstrumentCapabilities, instanceOnlyManagerCapabilities, epDescribeAllGrantRow, BASELINE_LIFECYCLE_ENDPOINT, MANAGER_VITALS_COMMAND, MANAGER_VITALS_SCOPE, type EpCapability } from "./endpoint-grants.js";
+import { epCallerGrantRows, epServeGrantRows, baselineCallerCapabilities, spawnCallerCapabilities, runCallerCapabilities, epRequestGrantRows, operatorInstrumentCapabilities, personSeatCapabilities, instanceOnlyManagerCapabilities, epDescribeAllGrantRow, BASELINE_LIFECYCLE_ENDPOINT, MANAGER_VITALS_COMMAND, MANAGER_VITALS_SCOPE, type EpCapability } from "./endpoint-grants.js";
 import { assertServeGrantMintable } from "./endpoint-service.js";
 import { effectsBindGrants, poolOwnerBindGrants, epAuthBucket, epcStreamName } from "./endpoint-binding.js";
 import { epCallerReplyFilter, assertGeneration, isIssuedCaller, type EpCaller, type IssuedCaller } from "./endpoint-subjects.js";
@@ -23,6 +23,11 @@ import type { MintOpts, MintPrincipal } from "./provision-jwt.js";
  * the space through the class rail. */
 const SPAWN_VIEW_READS = Object.freeze(["status", "models", "resolve-cwd", "list-dir", "ps"] as const);
 
+/** The reads a person's own manager view carries whatever their scope (SPEC 13.21): `inspect`
+ * resolves a seat's name before every seat command, and `ps` lists their agents. The Manager bounds
+ * both to the caller's owner unless the caller holds admin. */
+const PERSON_VIEW_READS = Object.freeze(["inspect", "ps"] as const);
+
 /** One seat's manager control view. It carries no agent messaging or delivery surface, and every
  * manager request, including describe, is pinned to one exact registered instance. */
 export function managerCallerPermissions(space: string, pr: MintPrincipal, opts: MintOpts): Record<string, unknown> {
@@ -40,9 +45,17 @@ export function managerCallerPermissions(space: string, pr: MintPrincipal, opts:
     ...(caps.includes(MANAGER_VITALS_SCOPE) ? [{ endpoint: BASELINE_LIFECYCLE_ENDPOINT, command: MANAGER_VITALS_COMMAND }] : []),
     ...(caps.includes("run") ? runCallerCapabilities(pr.owner) : []),
     ...(caps.includes("admin") ? operatorInstrumentCapabilities("admin", pr.owner) : []),
+    // A person controls the agents under their own owner (SPEC 13.21), keyed on the ledger row's
+    // kind.
+    ...(opts.ledgerKind === "interactive"
+      ? [...personSeatCapabilities(pr.owner), ...PERSON_VIEW_READS.map((command) => ({ endpoint: BASELINE_LIFECYCLE_ENDPOINT, command }))]
+      : []),
   ];
   const caller = issuedCallerFor({ owner: pr.owner, actor: pr.actor, uid: assertLifecycleToken(pr.lifecycleUid) }, opts);
+  // The sets overlap on one instance (a person's rows and the spawn set, admin and spawn), and a
+  // subject is minted once.
   const rows = epCallerGrantRows(space, instanceOnlyManagerCapabilities(ordinary, instanceId), caller);
+  rows.pub = [...new Set(rows.pub)];
   const listing = opts.listing ? listingGrantRows(space, caller, opts.listing) : { pub: [], sub: [] };
   return {
     pub: {

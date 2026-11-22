@@ -9,6 +9,7 @@ import { withScopedEndpoint } from "./endpoint-evict.js";
 import { MANAGER_ENDPOINT } from "./manager-service-contract.js";
 import { withTimeout } from "./manager-timeout.js";
 import type { Manager } from "./manager.js";
+import type { ManagerParts } from "./manager-parts.js";
 import { appendStaticCredentialRow, recordSlotCredential, staticLifecycleTransport } from "./static-lifecycle.js";
 import type { ManagerConfig } from "./manager-config.js";
 
@@ -19,8 +20,6 @@ export interface BrokerTransportDeps {
   leaseStopping: () => Manager["leaseStopping"];
   managerInstanceId: () => Manager["managerInstanceId"];
   remoteAuthority: () => Manager["remoteAuthority"];
-  remoteBundleAdoption: () => Manager["remoteBundleAdoption"];
-  remoteExecutorCreds: () => Manager["remoteExecutorCreds"];
   transportDown: () => Manager["transportDown"];
   renewRemoteExecutor: (...args: Parameters<Manager["renewRemoteExecutor"]>) => ReturnType<Manager["renewRemoteExecutor"]>;
   renewRemoteStandingBundle: (...args: Parameters<Manager["renewRemoteStandingBundle"]>) => ReturnType<Manager["renewRemoteStandingBundle"]>;
@@ -37,8 +36,6 @@ export function brokerTransportDeps(m: Manager): BrokerTransportDeps {
     leaseStopping: () => m["leaseStopping"],
     managerInstanceId: () => m["managerInstanceId"],
     remoteAuthority: () => m["remoteAuthority"],
-    remoteBundleAdoption: () => m["remoteBundleAdoption"],
-    remoteExecutorCreds: () => m["remoteExecutorCreds"],
     transportDown: () => m["transportDown"],
     renewRemoteExecutor: (...args) => m["renewRemoteExecutor"](...args),
     renewRemoteStandingBundle: (...args) => m["renewRemoteStandingBundle"](...args),
@@ -48,7 +45,7 @@ export function brokerTransportDeps(m: Manager): BrokerTransportDeps {
 
 /** Dialing the broker, tracking and retiring connections, and the scoped one-shot executor connections the manager's writes ride. */
 export class BrokerTransport {
-  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: BrokerTransportDeps) {}
+  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: BrokerTransportDeps, private readonly parts: Pick<ManagerParts, "credentialRenewal">) {}
 
   // The Manager members these bodies read, under their Manager names. Each reads through its dep at
   // use, so a field the Manager assigns later is current and a method a test replaces on the Manager
@@ -57,8 +54,6 @@ export class BrokerTransport {
   private get leaseStopping() { return this.deps.leaseStopping(); }
   private get managerInstanceId() { return this.deps.managerInstanceId(); }
   private get remoteAuthority() { return this.deps.remoteAuthority(); }
-  private get remoteBundleAdoption() { return this.deps.remoteBundleAdoption(); }
-  private get remoteExecutorCreds() { return this.deps.remoteExecutorCreds(); }
   private get transportDown() { return this.deps.transportDown(); }
   private renewRemoteExecutor(...args: Parameters<Manager["renewRemoteExecutor"]>): ReturnType<Manager["renewRemoteExecutor"]> { return this.deps.renewRemoteExecutor(...args); }
   private renewRemoteStandingBundle(...args: Parameters<Manager["renewRemoteStandingBundle"]>): ReturnType<Manager["renewRemoteStandingBundle"]> { return this.deps.renewRemoteStandingBundle(...args); }
@@ -195,7 +190,7 @@ export class BrokerTransport {
    *  This is NEVER the manager's standing seed/supervisor connection. */
   async withEndpointServeExecutor<T>(fn: (kvs: { recordsKv: KV; authKv: KV; nc: NatsConnection }) => Promise<T>): Promise<T> {
     const identity = this.remoteAuthority?.identities.executor ?? newIdentity();
-    if (this.remoteAuthority && (!this.remoteExecutorCreds || inspectCredHealth(this.remoteExecutorCreds).state !== "healthy")) {
+    if (this.remoteAuthority && (!this.parts.credentialRenewal.remoteExecutorCreds || inspectCredHealth(this.parts.credentialRenewal.remoteExecutorCreds).state !== "healthy")) {
       // Shutdown has drained and discarded the standing serve context. Renew only its scoped
       // maintenance executor through the existing host operation; never resurrect standing duties.
       if (this.leaseStopping) await this.renewRemoteExecutor(true);
@@ -204,14 +199,14 @@ export class BrokerTransport {
         // released at adoption, not after its own completion is required by that drain.
         const renewal = this.renewRemoteStandingBundle(true);
         void renewal.catch((error) => console.error(`! remote manager standing renewal completion: ${rejectionText(error)}`));
-        await this.remoteBundleAdoption;
-        if (!this.remoteExecutorCreds || inspectCredHealth(this.remoteExecutorCreds).state !== "healthy") {
+        await this.parts.credentialRenewal.remoteBundleAdoption;
+        if (!this.parts.credentialRenewal.remoteExecutorCreds || inspectCredHealth(this.parts.credentialRenewal.remoteExecutorCreds).state !== "healthy") {
           await renewal;
           throw new Error("standing renewal did not adopt a healthy scoped executor");
         }
       } else await this.renewRemoteExecutor(true);
     }
-    const creds = this.remoteExecutorCreds ?? (this.auth
+    const creds = this.parts.credentialRenewal.remoteExecutorCreds ?? (this.auth
       ? await mintCreds(this.auth, identity, "endpoint-serve-executor", {
           endpointServeExecutor: { endpoint: MANAGER_ENDPOINT, instanceId: this.managerInstanceId },
           ...(this.config.endpointServeExecutorExpiresInSeconds !== undefined

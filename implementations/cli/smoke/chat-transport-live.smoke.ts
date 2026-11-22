@@ -62,8 +62,7 @@ function open(name: string, mode: "stdio" | "plain" = "stdio") {
   child.stderr.on("data", (b: Buffer) => { err += b.toString(); });
   let serial = 0;
   const client = { child, records, output: () => out.replace(/\x1b\[[0-9;]*m/g, ""),
-    async request(type: string, fields = {}) {
-      const id = `${name}-${++serial}`;
+    async request(type: string, fields = {}, id = `${name}-${++serial}`) {
       child.stdin.write(`${JSON.stringify({ schemaVersion: 1, type, id, ...fields })}\n`);
       await until(() => records.some(({ record }) => record.id === id));
       return records.find(({ record }) => record.id === id)!.record;
@@ -119,6 +118,9 @@ try {
   const peer = open("peer-listener");
   const initial = await chat.request("connection");
   check("positive control: both shipped sessions report connected", initial.result?.state === "connected" && (await peer.request("connection")).result?.state === "connected");
+  const spaced = await chat.request("connection", {}, "request 1");
+  check("a shipped session echoes the exact ID containing an ASCII space", spaced.type === "result" && spaced.id === "request 1"
+    && spaced.outcome === "ok" && spaced.result?.state === "connected", spaced);
   const sent = await peer.request("send", { channel: "general", text: "healthy-control" });
   await until(() => chat.records.some(({ record }) => record.message?.text === "healthy-control"));
   await wait(1_000);

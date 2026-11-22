@@ -581,11 +581,13 @@ export interface MintOpts {
   /** The issuer handles a static `agent` mint decides its listing generation over. The horizon is
    *  the credential's own expiry, so a mint with no expiry gets no listing generation. */
   listingSeam?: ListingSeam;
-  /** `agent` profile only: the kind of the ledger row the principal was found in, which only the
-   *  auth callout reads (SPEC 13.21). A row of either kind serves its own `agent` endpoint on the
-   *  principal route; an `interactive` row, an actor its person granted directly, also calls its
-   *  owner's agents there with the `owner` word. It never comes from a scope token, which a parent
-   *  could hand to the agents it spawns. A static mint refuses it. */
+  /** `agent` and `manager-caller` profiles only: the kind of the ledger row the principal was found
+   *  in, which only the auth callout reads (SPEC 13.21). On `agent`, a row of either kind serves its
+   *  own `agent` endpoint on the principal route; an `interactive` row, an actor its person granted
+   *  directly, also calls its owner's agents there with the `owner` word and reads their event
+   *  channels. On `manager-caller`, an `interactive` row stops, attaches to, types into and
+   *  interrupts its owner's agents. It never comes from a scope token, which a parent could hand to
+   *  the agents it spawns. A static mint refuses it. */
   ledgerKind?: "interactive" | "managed-agent";
   /** The durable half of an issuance, REQUIRED beside {@link MintOpts.issued} on {@link mintCreds}:
    *  the credential is built first, then its evidence is staged create-only, the existing

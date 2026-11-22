@@ -105,8 +105,8 @@ export interface HistoryItem {
 
 /** What `cotal history` read: the newest `limit` retained messages of its selection, oldest first,
  *  then filtered by `--since`, `--from` and `--grep`. It never claims complete history: `olderRetained`
- *  says whether retained messages older than the window exist, `reachesSince` whether the window goes
- *  back to `--since`, and `retention` names the limits that remove messages and each sender whose
+ *  says whether retained messages older than the window exist, `reachesSince` whether the window covers
+ *  the `--since` range, and `retention` names the limits that remove messages and each sender whose
  *  older messages a channel has lost to them. */
 export interface HistoryResult {
   readonly kind: "history";
@@ -571,12 +571,9 @@ export async function readWindow(ep: CotalEndpoint, conn: Connection, req: Windo
   const oldest = read[0];
   const since = req.since;
   const atOrPastEnd = since?.kind === "seq" && lastSeq !== undefined && since.seq >= lastSeq;
+  // Only sequence order bounds unread rows. Sender timestamps can disagree with broker order.
   const reached = since?.kind === "seq"
-    ? (previousSeq !== undefined && previousSeq <= since.seq) || (oldest?.seq != null && oldest.seq <= since.seq + 1)
-    // A mixed window is not ordered by sender time, so any retained row can reach a time cutoff.
-    : since?.kind === "time" && (req.dms
-      ? read.some((item) => Date.parse(item.ts) <= since.ms)
-      : oldest !== undefined && Date.parse(oldest.ts) <= since.ms);
+    && ((previousSeq !== undefined && previousSeq <= since.seq) || (oldest?.seq != null && oldest.seq <= since.seq + 1));
   const reachesSince = since === undefined ? null : atOrPastEnd || olderRetained === false || reached ? true : olderRetained === null ? null : false;
   return {
     warnings,
@@ -748,7 +745,9 @@ function historyView(r: HistoryResult, space: string, names: ReadonlyMap<string,
   const filters = [r.window.from !== null ? `--from ${r.window.from}` : null, r.window.grep !== null ? `--grep ${r.window.grep}` : null].filter((flag) => flag !== null);
   if (filters.length && r.window.olderRetained !== false) notes.push({ text: `${filters.join(" and ")} searched only the ${r.window.read} read; older retained messages were not searched`, tone: "hint" });
   if (r.window.olderRetained === null) notes.push({ text: "whether older retained messages exist is unknown", tone: "waiting" });
-  if (r.window.reachesSince === false) notes.push({ text: `the window does not reach back to --since ${r.window.since}; messages between them are not shown`, tone: "waiting" });
+  if (r.window.reachesSince === false) notes.push({ text: since?.kind === "time"
+    ? `the window may omit retained messages after --since ${r.window.since}; sender timestamps can differ from storage order`
+    : `the window does not reach back to --since ${r.window.since}; messages between them are not shown`, tone: "waiting" });
   if (r.retention) {
     const limits = [r.retention.perSender !== null ? `${r.retention.perSender} per sender on each channel` : null, r.retention.maxAgeMs !== null ? `posts older than ${formatChatAge(r.retention.maxAgeMs)} expire` : null].filter(Boolean);
     notes.push({ text: `retention: ${limits.length ? limits.join(", ") : "no limit set"}; history is what remains, not every message sent`, tone: "hint" });

@@ -80,7 +80,7 @@ export const START_TIMEOUT_MS = 40_000;
 /** v0.3 ctl op → v0.4 typed command (P2 item 1, 1c.2b): the wire names the manager REGISTERS
  *  (manager-service-contract ROWS). `start` is creation (`spawn`), a NAMED `stop` is the one
  *  owner/any-mode terminal (`despawn`), the per-agent `status` read is `inspect`; the camelCase
- *  admin family maps to its kebab-case wire names. `targeted` marks the three commands whose
+ *  admin family maps to its kebab-case wire names. `targeted` marks the commands whose
  *  `{name}` argument becomes a §13.2 target block (resolved to the agent's principal triple via
  *  the name-keyed `inspect` read — it rides the spawn capability arm, so resolution reach equals
  *  despawn/attach reach; the wire target is (owner, actor, lifecycleUid), never an alias). */
@@ -93,6 +93,7 @@ const EP_COMMANDS: Record<string, { command: string; targeted?: boolean; self?: 
   stopSelf: { command: "stop", self: true },
   attach: { command: "attach", targeted: true },
   input: { command: "input", targeted: true },
+  interrupt: { command: "interrupt", targeted: true },
   status: { command: "inspect" },
   ps: { command: "ps" },
   slots: { command: "slots" },
@@ -212,10 +213,11 @@ async function askManagerEp(
         return { ...refused, preSubmitRefusal: true, managerInstanceId: info.responder.instanceId, managerEpoch: info.responder.epoch, error: `could not resolve "${name}": ${refused.error}` };
       }
       const row = info.reply.data as { id: string; lifecycleUid: string };
+      // The caller's own pin is checked first, so a run the caller chose that was replaced says so.
+      if (pin?.expectedTarget && (row.id !== pin.expectedTarget.id || row.lifecycleUid !== pin.expectedTarget.lifecycleUid))
+        return { ok: false, code: "not-found", error: `${name} was replaced by a new run since it was selected, so nothing was sent; refresh the agent list and try again`, preSubmitRefusal: true, selectedSeatChanged: true };
       if (selected && ((row.id !== selected.id && `${caller.owner}.${row.id}` !== selected.id) || row.lifecycleUid !== selected.lifecycleUid))
         return { ok: false, code: "expired", error: `${name} changed lifecycle after owner resolution, so nothing was sent`, preSubmitRefusal: true, selectedSeatChanged: true };
-      if (pin?.expectedTarget && (row.id !== pin.expectedTarget.id || row.lifecycleUid !== pin.expectedTarget.lifecycleUid))
-        return { ok: false, code: "not-found", error: `${name} was replaced by a new run since it was selected, so nothing was sent; refresh the agent list and try again` };
       // A STATIC row's `id` is the bare actor under the caller's own owner; a USER-mode row's `id`
       // is the composite `owner.actor` principal key - split it (an embedded dot would break the
       // target block's subject arity). Mode `any` spans owners (operator reach); mode `owner` pins
@@ -360,7 +362,11 @@ export function describeUnanswered(reply: ManagerReply): boolean {
  *  to type a flag it does not have. Absence of a pin therefore never means "not passed". */
 export interface ManagerPin {
   instanceId?: string;
-  /** The live presence row used to select this manager before minting its caller instrument. */
+  /** The seat row that selected this manager before minting its caller instrument: a live presence
+   *  row, or the row the pinned manager listed. It skips the presence lookup by name. The manager's
+   *  own `inspect` still finds the seat by `name`, which must be the manager's exact name for it, and
+   *  the answer must carry this id and lifecycle before anything is sent. An `expectedTarget` is
+   *  checked first. */
   expectedSeat?: { name: string; id: string; lifecycleUid: string };
   /** A picker-selected incarnation, checked after name resolution and before publication. */
   expectedTarget?: { id: string; lifecycleUid: string };

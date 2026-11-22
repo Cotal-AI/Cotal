@@ -25,18 +25,9 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { configFromEnv } from "../src/config.js";
+import { createSuite } from "@cotal-ai/smoke-kit";
 
-let pass = 0;
-let fail = 0;
-const check = (name: string, cond: boolean, extra?: unknown): void => {
-  if (cond) {
-    pass++;
-    console.log(`  ✓ ${name}`);
-  } else {
-    fail++;
-    console.log(`  ✗ FAIL: ${name}`, extra ?? "");
-  }
-};
+const { check, finish, passed, failed } = createSuite();
 const eq = (a: unknown, b: unknown): boolean => JSON.stringify(a) === JSON.stringify(b);
 
 const dir = mkdtempSync(join(tmpdir(), "session-channels-"));
@@ -95,5 +86,6 @@ for (const bad of ["agnet", "Agent", "service"]) {
   check(`COTAL_KIND=${bad} is refused with the EndpointKind message`, msg === `invalid kind ${JSON.stringify(bad)}: "kind" must be "agent" or "endpoint"`, msg);
 }
 
-console.log(`\nsession-channels: ${pass} passed, ${fail} failed`);
-process.exit(fail === 0 ? 0 : 1);
+console.log(`\nsession-channels: ${passed()} passed, ${failed()} failed`);
+finish();
+process.exit(failed() === 0 ? 0 : 1);

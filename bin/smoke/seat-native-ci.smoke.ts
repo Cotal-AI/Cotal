@@ -16,6 +16,7 @@ import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { createSuite } from "@cotal-ai/smoke-kit";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const CI = join(ROOT, ".github", "workflows", "ci.yml");
@@ -24,17 +25,7 @@ const PKG = join(ROOT, "package.json");
 
 const BUILDERS = ["seat-native-linux-x64", "seat-native-linux-arm64"] as const;
 
-let pass = 0;
-let fail = 0;
-function check(name: string, cond: boolean, extra?: unknown): void {
-  if (cond) {
-    pass++;
-    console.log(`  ✓ ${name}`);
-  } else {
-    fail++;
-    console.log(`  ✗ FAIL: ${name}`, extra ?? "");
-  }
-}
+const { check, finish, passed, failed } = createSuite();
 
 function jobs(text: string): Map<string, string> {
   const lines = text.split("\n");
@@ -230,6 +221,7 @@ try {
   check("a truncated host artifact refuses packaging", validate().status !== 0);
 } finally { rmSync(fixture, { recursive: true, force: true }); }
 
-console.log(`\n${fail === 0 ? "SEAT NATIVE CI SMOKE OK" : "SEAT NATIVE CI SMOKE FAILED"}  (${pass} passed, ${fail} failed)`);
-console.log(`SUITE COMPLETE: ${pass} passed, ${fail} failed`);
-process.exit(fail === 0 ? 0 : 1);
+console.log(`\n${failed() === 0 ? "SEAT NATIVE CI SMOKE OK" : "SEAT NATIVE CI SMOKE FAILED"}  (${passed()} passed, ${failed()} failed)`);
+console.log(`SUITE COMPLETE: ${passed()} passed, ${failed()} failed`);
+finish();
+process.exit(failed() === 0 ? 0 : 1);

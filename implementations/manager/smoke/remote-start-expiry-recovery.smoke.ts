@@ -83,9 +83,8 @@ type Internals = {
   serviceServe?: { nc: NatsConnection; creds?: string; grant: { epoch: number } };
   goalWriter?: { nc: NatsConnection; creds?: string };
   sessionLedgerConn?: { nc: NatsConnection; creds?: string };
-  remoteSupervisorCreds?: string; remoteExecutorCreds?: string;
-  remoteRenewalDebt?: { processEpoch: number; reason: string; unadoptedSubjects: string[] };
   managerInstanceId: string;
+  credentialRenewal: { remoteSupervisorCreds?: string; remoteExecutorCreds?: string; remoteRenewalDebt?: { processEpoch: number; reason: string; unadoptedSubjects: string[] }; };
 };
 
 let manager: Manager | undefined;
@@ -212,20 +211,20 @@ try {
         `the ${label} close handler reported neither the all-duty refusal nor a re-dial outcome`);
     assert.ok(["service endpoint", "goal-writer", "session-ledger"].some((label) => logged.some((l) => refused(label).test(l))),
       "no close handler reported the all-duty refusal, so the refusal reached no operator-visible log");
-    assert.ok(m.remoteRenewalDebt === undefined || m.remoteRenewalDebt.processEpoch === epoch);
+    assert.ok(m.credentialRenewal.remoteRenewalDebt === undefined || m.credentialRenewal.remoteRenewalDebt.processEpoch === epoch);
     if (!adopted) {
-      assert.equal(m.remoteSupervisorCreds, initial.supervisor);
-      assert.equal(m.remoteExecutorCreds, initial.executor);
-      assert.match(m.remoteRenewalDebt!.reason, /not serve principal/);
+      assert.equal(m.credentialRenewal.remoteSupervisorCreds, initial.supervisor);
+      assert.equal(m.credentialRenewal.remoteExecutorCreds, initial.executor);
+      assert.match(m.credentialRenewal.remoteRenewalDebt!.reason, /not serve principal/);
     }
   });
   await cell("the next attempt adopts the repaired family for the same nkeys and every standing connection serves again", async () => {
     assert.ok(await until(async () => adopted !== undefined && (await Promise.all(conns().map(flushes))).every(Boolean), 40_000),
       `standing connections not restored: ${JSON.stringify(await Promise.all(conns().map(flushes)))}`);
     assert.ok(refusals >= 1);
-    assert.equal(m.remoteRenewalDebt, undefined);
-    assert.equal(m.remoteSupervisorCreds, adopted!.supervisor);
-    assert.equal(m.remoteExecutorCreds, adopted!.executor);
+    assert.equal(m.credentialRenewal.remoteRenewalDebt, undefined);
+    assert.equal(m.credentialRenewal.remoteSupervisorCreds, adopted!.supervisor);
+    assert.equal(m.credentialRenewal.remoteExecutorCreds, adopted!.executor);
     assert.equal(m.serviceServe!.creds, adopted!.serve);
     assert.equal(m.goalWriter!.creds, adopted!.goalWriter);
     assert.equal(m.sessionLedgerConn!.creds, adopted!.sessionLedger);

@@ -251,7 +251,10 @@ function decoded(bytes: Buffer, file: string | undefined, { target, instead }: F
     if (file !== undefined) throw new UnusableFile(`the message file ${JSON.stringify(file)} is not valid UTF-8`, target(file), `save it as UTF-8 text, ${instead}`);
     throw new CommandFailure("refused", "USAGE_INVALID", "the message input is not valid UTF-8");
   }
-  if (!text.trim()) throw new CommandFailure("refused", "USAGE_INVALID", "the explicit message input is empty");
+  if (!text.trim()) {
+    if (file !== undefined) throw new UnusableFile(`the message file ${JSON.stringify(file)} is empty or contains only whitespace`, target(file), `write a nonempty message in the file, ${instead}`);
+    throw new CommandFailure("refused", "USAGE_INVALID", "the explicit message input is empty");
+  }
   return text;
 }
 
