@@ -1,5 +1,28 @@
 # @cotal-ai/runtime
 
+## 0.174.3
+
+### Patch Changes
+
+- affcbdd: `run show` rejects diagnostic paging flags even with a journal limit, and `watch --json` reports an invalid view with stream error and end records.
+- f85c211: Local `cotal run answer` and `cotal run amend` reject a whitespace-only `--by` before contacting the broker.
+- 23c283e: A simulation results script with a fault entry that names no step, or carries a field the reader does not know, is now refused before the simulation runs instead of simulating as if the fault were not there.
+- c42b757: A failed offline simulation keeps the warnings static validation found. They print with the failure in text mode and ride in the failure envelope in JSON mode.
+- b8c54dd: Keep the intended space in CLI retry and follow-up commands and name it in membership stream errors when local records identify it.
+- f98cece: Workflow commands offer offline simulation on open meshes, keep the selected route in checkpoint and receipt follow-ups, and ship a working simulation example.
+- Updated dependencies [ab010b5]
+- Updated dependencies [f2158ba]
+- Updated dependencies [52c5b11]
+- Updated dependencies [61b02ca]
+- Updated dependencies [43963e8]
+- Updated dependencies [8a7bd4b]
+- Updated dependencies [ff4cd00]
+- Updated dependencies [4697bab]
+- Updated dependencies [b8c54dd]
+  - @cotal-ai/workspace@0.174.3
+  - @cotal-ai/core@0.174.3
+  - @cotal-ai/lang@0.174.3
+
 ## 0.174.2
 
 ### Patch Changes
