@@ -271,6 +271,10 @@ Update that app with its signed platform installer so the app, CLI and runtime s
 If npm is missing from `PATH`, `update --self` exits 1 and `update --check` reports partial results
 with exit 4. Install npm or add it to `PATH`, then retry. A registry connection failure still
 leaves the installation unchanged without failing `update --self`.
+On Linux and macOS, if npm on `PATH` requires a different Node version, the updater can run npm
+with the compatible Node recorded by the global npm installation. Cotal keeps running on its
+current Node and does not change your shell or project. If the recorded Node is missing or
+incompatible, select a Node and npm that work together on `PATH`, then retry.
 On Linux and macOS, an installed self-update restores owner write access to its own connector
 directories before staging a release. If it cannot make those directories writable, it names the
 directory to fix and stops before staging.

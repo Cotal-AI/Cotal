@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { emitSentinel } from "@cotal-ai/smoke-kit";
 import { runNpm, runNpmAsync } from "../src/commands/update-process.js";
+import { checkNpmUpdateNode } from "./npm-update-node.js";
 
 // Exercise the real POSIX installer main/launcher/PATH/next-step path. Only runtime discovery
 // and npm installation are fixtures; this suite does not qualify a downloaded package.
@@ -711,8 +712,9 @@ main --no-setup --no-modify-path --version "$FIXTURE_TARGET"
   assert.equal(evalExport.status, 0, output(evalExport));
   assert.equal(evalExport.stdout, weirdBin, "manual PATH export evaluates to the exact literal BIN_DIR");
 
+  const npmChecks = checkNpmUpdateNode(join(realpathSync(root), "npm-engine"), binRoot);
   console.log("INSTALLER SELECTION: all real-shell main-path controls passed");
-  emitSentinel({ passed: process.platform === "linux" ? 181 : 160, failed: 0 });
+  emitSentinel({ passed: (process.platform === "linux" ? 181 : 160) + npmChecks, failed: 0 });
   passed = true;
 } finally {
   if (passed) rmSync(root, { recursive: true, force: true });
