@@ -6,6 +6,7 @@ import {
   codeSpan,
   CommandFailure,
   findMesh,
+  instanceIdShaped,
   isCommandFailure,
   isConnectRefusal,
   isWorkspaceTargetError,
@@ -100,27 +101,44 @@ export function managedAgentComplete(argv: string[]): CompletionResult {
 
 /** The named target grammar, checked before any command preparation. */
 export function managedTarget(args: ParsedArgs, operation: "stop" | "attach", allowPicker = false): string | undefined {
-  const named = typeof args.values.name === "string" ? args.values.name : undefined;
+  const v = args.values;
+  const named = typeof v.name === "string" ? v.name : undefined;
   if (args.positionals.length > 1 || (args.positionals.length && named !== undefined))
     throw new CommandFailure("refused", "USAGE_INVALID", `choose one agent: \`cotal ${operation} <name>\``);
   const name = args.positionals[0] ?? named;
-  if (typeof args.values.on === "string") onInstance(args.values.on, name === undefined ? onRerun(`cotal ${operation}`, args.values) : onRemedyVerb(`cotal ${operation}`, { ...args.values, name }));
+  const { server, on } = v;
+  if (typeof server === "string" && (typeof on === "string" || !name?.trim())) {
+    const checked = checkServer(server, "--server");
+    if (!checked.ok) throw new CommandFailure("refused", "USAGE_INVALID", `${checked.message.replace(/^✗ /, "")}; the command did not run`, { remedy: checked.remedy, selfContained: true });
+  }
+  const options = operation === "stop" ? stopRetryWords(v) : v["no-reconnect"] ? ["--no-reconnect"] : [];
+  const verb = `cotal ${operation}`;
+  if (typeof on === "string") onInstance(on, name === undefined ? onRerun(`${verb} <name>`, v, options) : onRemedyVerb(verb, { ...v, name }, options));
+  const pin = typeof on === "string" ? ["--on", on] : [];
   if (name === undefined && operation === "attach" && allowPicker) {
     if (!canPrompt()) {
-      const { server, on } = args.values;
-      if (typeof server === "string") {
-        const checked = checkServer(server, "--server");
-        if (!checked.ok) throw new CommandFailure("refused", "USAGE_INVALID", `${checked.message.replace(/^✗ /, "")}; the command did not run`, { remedy: checked.remedy, selfContained: true });
+      if (typeof on === "string" && !instanceIdShaped(on)) {
+        let mode: string | undefined;
+        try { mode = resolveMeshTarget(process.cwd(), { space: typeof v.space === "string" ? v.space : undefined, server: typeof server === "string" ? server : undefined, readOnly: true }).mode; }
+        catch { /* an unresolved target does not establish support for manager names or hosts */ }
+        if (mode !== "user") {
+          const roster = codeSpan(onRerun("cotal ps", v));
+          const retry = codeSpan(onRerun("cotal attach <name> --on <instance>", v, options));
+          throw new CommandFailure("refused", "USAGE_INVALID", `--on ${JSON.stringify(on)} is not a valid manager instance id. A manager's name or host is taken only on a user-auth mesh`, { remedy: `run ${roster}, then ${retry}`, selfContained: true });
+        }
       }
-      const pin = typeof on === "string" ? ["--on", on] : [];
-      const roster = codeSpan(onRerun("cotal ps", args.values, pin));
-      const retry = codeSpan(onRerun("cotal attach <name>", args.values, args.values["no-reconnect"] ? [...pin, "--no-reconnect"] : pin));
+      const roster = codeSpan(onRerun("cotal ps", v, pin));
+      const retry = codeSpan(onRerun("cotal attach <name>", v, [...pin, ...options]));
       throw new CommandFailure("refused", "USAGE_INVALID", "name the agent to attach without an interactive terminal", { remedy: `run ${roster}, then ${retry}`, selfContained: true });
     }
     return undefined;
   }
   if (name !== undefined && /[\u0000-\u001f\u007f]/u.test(name)) throw new CommandFailure("refused", "USAGE_INVALID", "the agent name contains terminal control characters");
-  if (!name?.trim()) throw new CommandFailure("refused", "USAGE_INVALID", `name the agent to ${operation}`, { remedy: "run `cotal ps`, then `cotal " + operation + " <name>`" });
+  if (!name?.trim()) {
+    const roster = codeSpan(onRerun("cotal ps", v));
+    const retry = codeSpan(onRerun(`${verb} <name>`, v, [...pin, ...options]));
+    throw new CommandFailure("refused", "USAGE_INVALID", `name the agent to ${operation}`, { remedy: `run ${roster}, then ${retry}` });
+  }
   return name;
 }
 
@@ -159,7 +177,7 @@ export async function stop(args: ParsedArgs): Promise<void> {
     name = managedTarget(args, "stop");
     refuseControlCreds(v.creds, v.space);
     const refusal = { onRefusal: v.json ? "throw" as const : undefined };
-    pin = await pinForTarget({ ...v, name } as never, "cotal stop", [], refusal);
+    pin = await pinForTarget({ ...v, name } as never, "cotal stop", stopRetryWords(v), refusal);
     on = pin.instanceId;
     // A typed pin the registry does not list is refused at once, as spawn refuses it. Stop's admin
     // instrument holds no registry read, so the check uses the one ps reads the registry with.
@@ -287,6 +305,11 @@ function fmtUptime(ms: number): string {
 function onRemedyVerb(verb: string, v: { name?: unknown; space?: unknown; server?: unknown }, rest: readonly string[] = []): string {
   return onRerun(verb, v, [String(v.name), ...rest]);
 }
+
+const stopRetryWords = (v: { force?: unknown; json?: unknown; plain?: unknown }): string[] => [
+  ...(v.force === true ? ["--force"] : []),
+  ...(v.json === true ? ["--json"] : v.plain === true ? ["--plain"] : []),
+];
 
 /** The words a terminal input retry needs to keep the original text and Enter behavior. */
 const inputRetryWords = (text: string, noEnter?: boolean): string[] => [
