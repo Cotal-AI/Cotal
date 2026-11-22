@@ -52,7 +52,7 @@ export function readPreparedSpaces(): { spaces: PreparedSpace[]; unusable: MeshR
     try { stat = code === "ENOTDIR" ? statSync(dir) : undefined; } catch { stat = undefined; }
     if (stat) {
       const summary = stat.isFile() ? `${dir} is a file, not a folder` : `${dir} is not a folder`;
-      throw new MeshRegistryError(dir, summary, { cause: e, summary, remedy: `move ${dir} aside, for example \`mv ${dir} ${dir}.old\`; Cotal makes the folder when it next prepares a space` });
+      throw new MeshRegistryError(dir, summary, { cause: e, summary, remedy: `move ${dir} aside, for example \`mv -- ${shellPath(dir)} ${shellPath(`${dir}.old`)}\`; Cotal makes the folder when it next prepares a space` });
     }
     throw new MeshRegistryError(dir, `the prepared spaces folder ${dir} could not be read: ${(e as Error).message}`, { cause: e });
   }
