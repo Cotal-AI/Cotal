@@ -112,9 +112,18 @@ try {
       selected.code === 2 && selected.stderr.includes("nats://127.0.0.1:1\n") && !/4222|"main"/.test(selected.stderr), selected.stderr);
   }
   {
-    const r = await run("creds-missing", mintLifecycleUid());
-    check("a --creds file that does not exist is refused TARGET_NOT_FOUND, exit 2, naming the file",
-      r.code === 2 && /Code: +TARGET_NOT_FOUND/.test(r.stderr) && r.stderr.includes(`creds file not found: ${credsPath}.missing`) && !/can't reach/.test(r.stderr), r.stderr);
+    const link = "cotal://127.0.0.1:1/jpair-link?channel=review.%3E,other";
+    for (const [space, joinLink, mintFlags] of [
+      ["", "", "--allow-subscribe general --space <space>"],
+      ["", link, "--allow-subscribe 'review.>' --space jpair-link"],
+      ["-override", "cotal://127.0.0.1:1/jpair-link?channel=-review", "--allow-subscribe=-review --space=-override"],
+    ] as const) {
+      const r = await run("creds-missing", mintLifecycleUid(), { JPAIR_SPACE: space, JPAIR_LINK: joinLink });
+      check(`a missing --creds file refuses before dialing and recommends ${mintFlags}`,
+        r.code === 2 && /Code: +TARGET_NOT_FOUND/.test(r.stderr) && r.stderr.includes(`creds file not found: ${credsPath}.missing`) &&
+        r.stderr.includes("check the path") && r.stderr.includes(`--provision ${mintFlags} --no-persona --out <file>`) &&
+        r.stderr.includes("--lifecycle-uid set to the new UID that mint reports") && !/can't reach/.test(r.stderr), r.stderr);
+    }
   }
 } finally {
   rmSync(dir, { recursive: true, force: true });

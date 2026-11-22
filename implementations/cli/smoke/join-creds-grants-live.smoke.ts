@@ -4,7 +4,7 @@
 import { strict as assert } from "node:assert";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createRequire } from "node:module";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -108,19 +108,24 @@ try {
     await run.exited;
   }
   const truncated = join(dir, "truncated.creds");
-  writeFileSync(truncated, readFileSync(other.file, "utf8").split("\n").slice(0, 2).join("\n") + "\n", { mode: 0o600 });
-  const truncatedJoin = cli("join", "--space", space, "--creds", truncated, "--lifecycle-uid", other.uid, "--channel", "review.code");
-  check("truncated join refuses the incomplete file and explains how to pair the replacement", await truncatedJoin.exited === 1 &&
-    /Code: +SCHEMA_INVALID/.test(truncatedJoin.output()) && truncatedJoin.output().includes("no complete NATS user JWT block") &&
-    truncatedJoin.output().includes("--lifecycle-uid set to the new UID that mint reports"), truncatedJoin.output());
-  const truncatedAdvice = /`cotal auth mint (<name> [^`]+)`/.exec(truncatedJoin.output())?.[1];
-  assert.ok(truncatedAdvice && truncatedAdvice.includes(`--provision --allow-subscribe review.code --space ${space}`), truncatedJoin.output());
-  const truncatedRepair = join(dir, "truncated-repair.creds");
-  const truncatedMint = cli("auth", "mint", ...truncatedAdvice.split(" ").map((arg) => arg === "<name>" ? "truncated_repair" : arg === "<file>" ? truncatedRepair : arg));
-  check("the truncated-file remedy mints a replacement", await truncatedMint.exited === 0, truncatedMint.output());
-  const truncatedUid = /^\s*Lifecycle:\s+(\S+)/m.exec(truncatedMint.output())?.[1];
-  assert.ok(truncatedUid && truncatedUid !== other.uid, truncatedMint.output());
-  await joins("truncated-repair", truncatedRepair, truncatedUid, "review.code");
+  writeFileSync(truncated, "-----BEGIN NATS USER JWT-----\nincomplete\n", { mode: 0o600 });
+  for (const [label, file, exit, refusal, detail, advice] of [
+    ["missing", join(dir, "absent.creds"), 2, "TARGET_NOT_FOUND", "creds file not found:", "check the path"],
+    ["truncated", truncated, 1, "SCHEMA_INVALID", "no complete NATS user JWT block", "pass the complete credential file as it was issued"],
+  ] as const) {
+    const attempt = cli("join", "--space", space, "--creds", file, "--lifecycle-uid", other.uid, "--channel", "review.code");
+    check(`${label} file keeps its refusal and explains how to pair the replacement`, await attempt.exited === exit &&
+      new RegExp(`Code: +${refusal}`).test(attempt.output()) && attempt.output().includes(detail) && attempt.output().includes(advice) &&
+      attempt.output().includes("--lifecycle-uid set to the new UID that mint reports"), attempt.output());
+    const command = /`cotal auth mint (<name> [^`]+)`/.exec(attempt.output())?.[1];
+    assert.equal(command, `<name> --provision --allow-subscribe review.code --space ${space} --no-persona --out <file>`, attempt.output());
+    const replacement = join(dir, `${label}-repair.creds`);
+    const repair = cli("auth", "mint", ...command.split(" ").map((arg) => arg === "<name>" ? `${label}_repair` : arg === "<file>" ? replacement : arg));
+    check(`the ${label}-file remedy mints a replacement`, await repair.exited === 0, repair.output());
+    const replacementUid = /^\s*Lifecycle:\s+(\S+)/m.exec(repair.output())?.[1];
+    assert.ok(replacementUid && replacementUid !== other.uid, repair.output());
+    await joins(`${label}-repair`, replacement, replacementUid, "review.code");
+  }
 
   const foreign = join(dir, "foreign.creds"), foreignUid = mintLifecycleUid();
   const foreignAuth = await createSpaceAuth("elsewhere");

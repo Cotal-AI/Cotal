@@ -40,7 +40,7 @@ import {
   type ParsedArgs,
   type SpaceAuth,
 } from "@cotal-ai/core";
-import { CommandFailure, activateTerminalSeat, issueTerminalSeat, retireTerminalSeat, seatExpiryAt, credsSpace, findMesh, inputDisabledByFlag, isConnectRefusal, preflightOrThrow, reachableOrThrow, readCredsFile, refreshRegistrationPolicy, refuseStaticCredsForKnownUserAuth, resolveTargetOrThrow, connectUserControlOrThrow, endpointAuth, type Connection, type MeshEntry, offlineRecipientNotice } from "@cotal-ai/workspace";
+import { CommandFailure, activateTerminalSeat, issueTerminalSeat, retireTerminalSeat, seatExpiryAt, codeSpan, credsSpace, findMesh, inputDisabledByFlag, isConnectRefusal, preflightOrThrow, reachableOrThrow, readCredsFile, refreshRegistrationPolicy, refuseStaticCredsForKnownUserAuth, resolveTargetOrThrow, connectUserControlOrThrow, endpointAuth, type Connection, type MeshEntry, offlineRecipientNotice } from "@cotal-ai/workspace";
 import { withControlConnection } from "@cotal-ai/workspace/control";
 import { credentialEnded } from "../lib/connect.js";
 import { shellWord } from "../lib/endpoint-errors.js";
@@ -87,9 +87,26 @@ function joinAuthFailure(e: unknown, space: string, credential?: { lifecycleUid:
   return undefined;
 }
 
+function joinReadFlag(channel: string): string {
+  return `--allow-subscribe${channel.startsWith("-") ? "=" : " "}${shellWord(channel)}`;
+}
+
+function joinCredentialMint(channel: string, space: string | undefined): string {
+  // File refusals precede target resolution, so name only a space supplied by the caller.
+  const target = space === undefined ? "--space <space>" : `--space${space.startsWith("-") ? "=" : " "}${shellWord(space)}`;
+  return codeSpan(`cotal auth mint <name> --provision ${joinReadFlag(channel)} ${target} --no-persona --out <file>`);
+}
+
 function credentialInboxRemedy(space: string, channel: string): string {
-  const read = `--allow-subscribe ${shellWord(channel)}`;
-  return `ask the space's owner to mint the credential with \`cotal auth mint <name> --provision ${read} --space ${shellWord(space)} --no-persona --out <file>\`, then join with the lifecycle UID that mint reports. To keep the original grants, replace \`${read}\` with \`--identity <original-file>\``;
+  return `ask the space's owner to mint the credential with ${joinCredentialMint(channel, space)}, then join with the lifecycle UID that mint reports. To keep the original grants, replace ${codeSpan(joinReadFlag(channel))} with \`--identity <original-file>\``;
+}
+
+function readJoinCreds(path: string, channel: string, space: string | undefined): string {
+  const replacement = `If you need a replacement, ask the space's owner to mint it with ${joinCredentialMint(channel, space)}, then join with --lifecycle-uid set to the new UID that mint reports`;
+  return readCredsFile(path, {
+    missingRemedy: `check the path. ${replacement}`,
+    malformedRemedy: `pass the complete credential file as it was issued. ${replacement}`,
+  });
 }
 
 /** Diagnose the lifecycle-keyed grants of a static agent credential. The broker still
@@ -151,15 +168,11 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
   // somewhere and talk, so a landing channel is the point of the command. `general` stays the
   // default HERE only - an agent's read set comes from its persona and defaults to no channel.
   const channel = values.channel ?? link?.channels?.[0] ?? "general";
-  const mintSpace = values.space ?? link?.space;
   const auth = {
     token: values.token ?? link?.token,
     user: link?.user,
     pass: link?.pass,
-    creds: values.creds ? readCredsFile(values.creds, {
-      malformedRemedy: "pass the complete credential file as it was issued. If you need a replacement, ask the space's owner to mint it with " +
-        `\`cotal auth mint <name> --provision --allow-subscribe ${shellWord(channel)}${mintSpace === undefined ? "" : ` --space ${shellWord(mintSpace)}`} --no-persona --out <file>\`, then join with --lifecycle-uid set to the new UID that mint reports`,
-    }) : undefined,
+    creds: values.creds ? readJoinCreds(values.creds, channel, values.space ?? link?.space) : undefined,
     tls: values.tls ?? link?.tls ?? false,
   };
   // The join session's lifecycle UID (SPEC 13.1). The pairing input (--lifecycle-uid /
