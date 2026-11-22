@@ -111,13 +111,14 @@ const slowRetireStub: Connector = {
   },
 };
 // Needs a confirmed startup, as Claude does. Its child paints a prompt and, on the prompt's Enter,
-// its input screen with the notice (`confirmed`) or without it (`silent`); `ready` paints the input
-// screen with no prompt. Each then joins as the stub, two seconds in.
-let startupMode: "confirmed" | "silent" | "ready" = "confirmed";
+// its input screen with the notice (`confirmed`) or without it (`silent`). `ready` paints the input
+// screen with no prompt; `unmatched` shows neither. Each then joins as the stub, two seconds in.
+let startupMode: "confirmed" | "silent" | "ready" | "unmatched" = "confirmed";
 const startupChild = (mode: string): string => `
 const show = (text) => process.stdout.write("\\x1b[2J\\x1b[H" + text + "\\r\\n");
 const join = () => { process.stdin.pause(); setTimeout(() => import(${JSON.stringify(pathToFileURL(STUB).href)}), 2000); };
 if (${JSON.stringify(mode)} === "ready") { show("input ready"); join(); }
+else if (${JSON.stringify(mode)} === "unmatched") { show("app banner"); join(); }
 else {
   show("LOAD THE CHANNEL\\r\\nEnter to confirm");
   process.stdin.setRawMode(true);
@@ -540,6 +541,13 @@ try {
     plainConfirmed.terminal?.state === "succeeded" && plainConfirmed.notice === undefined && plainConfirmed.row !== undefined && plainConfirmed.row.startupNotice === undefined,
     { terminal: plainConfirmed.terminal, row: plainConfirmed.row });
   await despawnPlain(plainConfirmed.name);
+  startupMode = "unmatched";
+  const plainUnmatched = await plainSpawn(goalId("plain-unmatched"));
+  check("a plain launch fails with the runtime diagnostic when a joined seat never shows the startup prompt",
+    plainUnmatched.terminal?.state === "failed" && errorOf(plainUnmatched.terminal) ===
+      `${plainUnmatched.name}: Cotal startup confirmation failed: prompt "LOAD THE CHANNEL" did not appear within 15000ms.`,
+    plainUnmatched.terminal);
+  check("the failed startup is absent from ps", plainUnmatched.name !== undefined && plainUnmatched.ps.ok === true && plainUnmatched.row === undefined, plainUnmatched.ps);
 } finally {
   for (const nc of seatConns) await nc.drain().catch(() => nc.close());
   await runnerNc?.drain().catch(() => runnerNc?.close());
@@ -550,7 +558,7 @@ try {
   await broker.stop().catch(() => {});
 }
 
-const EXPECTED_CELLS = 70;
+const EXPECTED_CELLS = 72;
 console.log(`\n${fail === 0 && pass === EXPECTED_CELLS ? "SPAWN ONCE SMOKE OK ✅" : "SPAWN ONCE SMOKE FAILED"}  (${pass} passed, ${fail} failed)`);
 if (pass + fail !== EXPECTED_CELLS) {
   console.log(`SUITE INCOMPLETE — ran ${pass + fail} of ${EXPECTED_CELLS} cells; a partial run is not a pass`);
