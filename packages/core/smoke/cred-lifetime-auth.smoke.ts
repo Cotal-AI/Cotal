@@ -92,11 +92,11 @@ if (process.argv[2] === "expiry-child") {
   await ep.start();
   const nc = (ep as unknown as { conn: { nc?: NatsConnection } }).conn.nc;
   if (!nc) throw new Error("expiry child started without a NATS connection");
-  const binding = ep as unknown as { stopped: boolean; connectAndBind(): Promise<void> };
+  const binding = ep as unknown as { lifecycle: { stopped: boolean }; connectAndBind(): Promise<void> };
   const connectAndBind = binding.connectAndBind.bind(ep);
   let stoppedBindAttempts = 0;
   binding.connectAndBind = async () => {
-    if (binding.stopped) stoppedBindAttempts++;
+    if (binding.lifecycle.stopped) stoppedBindAttempts++;
     await connectAndBind();
   };
   // Broker expiry drives the real supervisor into rebuild. Hold its real old-connection close

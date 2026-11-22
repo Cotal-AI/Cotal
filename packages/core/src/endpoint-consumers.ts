@@ -3,6 +3,7 @@
 // the consumer and stream reads. Moved verbatim from endpoint.ts. It owns the task epoch, the first-connect
 // flag and the chat subscription refusals; the endpoint keeps the shared fields and chatFrontier and forwards
 // to these. Not re-exported by the index.
+import type { LifecycleState } from "./endpoint-lifecycle-state.js";
 import type { ConnectionState } from "./endpoint-connection-state.js";
 import type { EndpointIdentity } from "./endpoint-identity.js";
 import { withDeadline } from "./deadline.js";
@@ -22,7 +23,6 @@ import { type Subscription, PermissionViolationError } from "@nats-io/transport-
 export interface EndpointConsumersDeps {
   authed: () => boolean;
   streamMsgs: () => ConsumerMessages[];
-  stopped: () => boolean;
   dmOnlyInFlight: () => Promise<void> | undefined;
   setDmOnlyInFlight: (value: Promise<void> | undefined) => void;
   chatSubs: () => Map<string, Subscription>;
@@ -57,11 +57,10 @@ export class EndpointConsumers {
    *  connection status, so the callback owns it (see {@link EndpointConsumers.subscribeChat}) and watchStatus skips it. */
   private readonly chatSubRefusals = new WeakSet<PermissionViolationError>();
 
-  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly conn: ConnectionState, private readonly deps: EndpointConsumersDeps) {}
+  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly conn: ConnectionState, private readonly lifecycle: Readonly<LifecycleState>, private readonly deps: EndpointConsumersDeps) {}
 
   private get authed() { return this.deps.authed(); }
   private get streamMsgs() { return this.deps.streamMsgs(); }
-  private get stopped() { return this.deps.stopped(); }
   private get dmOnlyInFlight() { return this.deps.dmOnlyInFlight(); }
   private set dmOnlyInFlight(value: Promise<void> | undefined) { this.deps.setDmOnlyInFlight(value); }
   private get chatSubs() { return this.deps.chatSubs(); }
@@ -194,7 +193,7 @@ export class EndpointConsumers {
         } satisfies MessageMeta);
       }
     })().catch((e) => {
-      if (!this.stopped) this.emit("error", e as Error);
+      if (!this.lifecycle.stopped) this.emit("error", e as Error);
     });
   }
 
@@ -230,7 +229,7 @@ export class EndpointConsumers {
       let absences = 0;
       let deleted = false;
       for await (const s of msgs.status()) {
-        if (this.stopped || this.conn.nc !== boundNc) break;
+        if (this.lifecycle.stopped || this.conn.nc !== boundNc) break;
         if (s.type === "next") {
           absences = 0;
           deleted = false;
@@ -249,7 +248,7 @@ export class EndpointConsumers {
           ));
       }
     })().catch((e) => {
-      if (!this.stopped) this.emit("error", e as Error);
+      if (!this.lifecycle.stopped) this.emit("error", e as Error);
     });
   }
 
@@ -317,7 +316,7 @@ export class EndpointConsumers {
     // the connection is closing or closed, so any reply could be lost, and the broker redelivers an
     // unacked copy after the durable's ack_wait to whichever epoch binds next.
     const boundNc = this.conn.nc;
-    const retired = (): boolean => this.stopped || this.conn.nc !== boundNc || !boundNc || boundNc.isClosed();
+    const retired = (): boolean => this.lifecycle.stopped || this.conn.nc !== boundNc || !boundNc || boundNc.isClosed();
     void (async () => {
       for await (const m of msgs) {
         if (retired()) break;
@@ -342,7 +341,7 @@ export class EndpointConsumers {
         }
       }
     })().catch((e) => {
-      if (!this.stopped) this.emit("error", e as Error);
+      if (!this.lifecycle.stopped) this.emit("error", e as Error);
     });
   }
 

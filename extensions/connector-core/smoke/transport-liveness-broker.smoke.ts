@@ -185,7 +185,7 @@ try {
   // the release would wait on the gate this cell holds. Release once the endpoint itself has begun
   // stopping, which keeps the order the cell is about: the stop lands first, the bind ends after it.
   const raceStopping = raceAgent.stop();
-  const raceEndpointStopping = await until(() => (raceAgent.ep as unknown as { stopped?: boolean }).stopped === true, 30_000);
+  const raceEndpointStopping = await until(() => (raceAgent.ep as unknown as { lifecycle: { stopped?: boolean } }).lifecycle.stopped === true, 30_000);
   releaseBind();
   await raceStopping;
   await raceStart;
@@ -272,7 +272,7 @@ try {
   // As in the initial-bind cell: stop() waits for the held bind, so release it once the endpoint has
   // begun stopping rather than after stop() returns.
   const rebuildStopping = rebuildAgent.stop();
-  const rebuildEndpointStopping = await until(() => (rebuildAgent!.ep as unknown as { stopped?: boolean }).stopped === true, 30_000);
+  const rebuildEndpointStopping = await until(() => (rebuildAgent!.ep as unknown as { lifecycle: { stopped?: boolean } }).lifecycle.stopped === true, 30_000);
   releaseRebuildBind();
   await rebuildStopping;
   await rebuildWork;
@@ -1123,7 +1123,7 @@ try {
   await backoffAgent.start(100);
   const boEp = backoffAgent.ep as unknown as {
     conn: { nc?: { close(): Promise<void>; isClosed(): boolean } };
-    reconnection: { retryAttempt: number }; reestablishing: boolean; rebuildPromise?: Promise<void>;
+    reconnection: { retryAttempt: number }; lifecycle: { reestablishing: boolean; rebuildPromise?: Promise<void> };
   };
   boBroker.kill("SIGKILL");
   await awaitExit(boBroker);
@@ -1132,14 +1132,14 @@ try {
   backoffAgent.ep.retryNow();
   check(
     "retryNow leaves a link nats.js is still reconnecting alone",
-    reconnectingNc !== undefined && boEp.conn.nc === reconnectingNc && !reconnectingNc.isClosed() && !boEp.reestablishing,
-    { same: boEp.conn.nc === reconnectingNc, reestablishing: boEp.reestablishing },
+    reconnectingNc !== undefined && boEp.conn.nc === reconnectingNc && !reconnectingNc.isClosed() && !boEp.lifecycle.reestablishing,
+    { same: boEp.conn.nc === reconnectingNc, reestablishing: boEp.lifecycle.reestablishing },
   );
   // nats.js would retry for about 20 s before giving up. Closing the real connection is the same
   // terminal close, so the endpoint's own rebuild loop starts now.
   await reconnectingNc!.close();
   // After four failed rebuilds the loop sleeps 12 to 24 s, longer than the send's 10 s wait.
-  const backedOff = await until(() => boEp.reconnection.retryAttempt >= 4 && boEp.reestablishing && !boEp.rebuildPromise, 40_000);
+  const backedOff = await until(() => boEp.reconnection.retryAttempt >= 4 && boEp.lifecycle.reestablishing && !boEp.lifecycle.rebuildPromise, 40_000);
   boBroker = startBroker(boConfig);
   releases.push(teardownOnSignal(boBroker, dir));
   for (let i = 0; i < 80; i++) { if (await isReachable(boServers)) break; await sleep(50); }
