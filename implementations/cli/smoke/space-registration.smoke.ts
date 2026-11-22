@@ -394,8 +394,38 @@ setCurrent("keep");
   const human = await run(["space", "add", "open4", "--server", LIVE, "--root", root], { FORCE_COLOR: "1" });
   const text = human.stdout.replace(/\x1b\[[0-9;]*m/g, "");
   check("the human report says it was added and how to select it", human.status === 0 && /✓ added open4/.test(text) && /broker answered and serves this space/.test(text) && /select it with `cotal use open4`/.test(text), shown(human));
+  const emptyRoot = mkdtempSync(join(home, "empty-registration-"));
+  const addedAtEmptyRoot = await json(["space", "add", "open4", "--server", LIVE, "--root", emptyRoot, "--mode", "open", "--force"]);
+  setCurrent("open4");
+  const sameRegistration = ["space", "add", "open4", "--server", `${LIVE}/`, "--root", `${emptyRoot}/.`, "--mode", "open"];
+  const differentTls = await json([...sameRegistration, "--tls"]);
+  check("an unchecked registration still refuses an in-place change to its TLS requirement",
+    refused(differentTls, 2, "CONFLICT") && findMesh("open4")?.unchecked === true, shown(differentTls));
+  const checkedAtEmptyRoot = await json(sameRegistration);
+  check("a trailing slash verifies the same unchecked broker in place and preserves the selection",
+    addedAtEmptyRoot.status === 0 && checkedAtEmptyRoot.status === 0 && checkedAtEmptyRoot.env?.result.replaced === true &&
+      checkedAtEmptyRoot.env.result.verified === true && findMesh("open4")?.unchecked !== true && getCurrent() === "open4", shown(checkedAtEmptyRoot));
+  clearCurrent();
+  const fromEmptyRoot = await run(["space", "show", "--plain"], {}, emptyRoot);
+  check("bare show uses the empty registered folder with no selection",
+    fromEmptyRoot.status === 0 && fromEmptyRoot.stdout.includes("Mesh: open4") && fromEmptyRoot.stdout.includes("this folder's space") &&
+      !existsSync(join(emptyRoot, ".cotal")), shown(fromEmptyRoot));
+  setCurrent("keep");
+  const withSelection = await json(["space", "show"], emptyRoot);
+  check("bare show prefers the empty registered folder to an explicit selection without changing it",
+    withSelection.status === 0 && withSelection.env?.result.space === "open4" && withSelection.env.result.root === emptyRoot &&
+      withSelection.env.result.check === "reachable" && getCurrent() === "keep", shown(withSelection));
   const plain = await run(["space", "add", "open5", "--server", LIVE, "--root", root, "--plain"], { FORCE_COLOR: "1" });
   check("--plain writes it with no ANSI", plain.status === 0 && !/\x1b\[/.test(plain.stdout) && /added open5/.test(plain.stdout), shown(plain));
+
+  const secondAtEmptyRoot = await json(["space", "add", "open5", "--server", LIVE, "--root", emptyRoot, "--mode", "open", "--force"]);
+  const ambiguous = await json(["space", "show"], emptyRoot);
+  const named = await json(["space", "show", "open4"], emptyRoot);
+  check("bare show refuses two registrations at an empty root and names both explicit choices",
+    secondAtEmptyRoot.status === 0 && refused(ambiguous, 2, "TARGET_AMBIGUOUS") &&
+      ["open4", "open5"].every((name) => ambiguous.env?.error?.remedy.includes(` space show ${name}\``)) &&
+      named.status === 0 && named.env?.result.space === "open4" && getCurrent() === "keep", shown(ambiguous));
+  check("forget the second registration without changing its root", (await json(["space", "forget", "open5"])).status === 0);
 
   if (process.platform !== "win32") {
     const spacedRoot = projectRoot("registrations with 'quotes' and `backticks`");
@@ -468,6 +498,13 @@ setCurrent("keep");
   const kiloFile = join(meshesDir(), `${spaceSegment("kilo")}.json`), limaFile = join(meshesDir(), `${spaceSegment("lima")}.json`);
   writeFileSync(kiloFile, "not JSON\n");
   writeFileSync(limaFile, `{"space":"lima",\n`);
+  const damagedBefore = registryFiles();
+  for (const name of [".", ".."]) {
+    const invalid = await json(["space", "forget", name]);
+    check(`forget refuses ${name} as an invalid name before reading the damaged registry`,
+      refused(invalid, 1, "USAGE_INVALID") && invalid.env?.error?.message.includes("Nothing was forgotten") &&
+        invalid.env.error.remedy.includes("`cotal space`") && JSON.stringify(registryFiles()) === JSON.stringify(damagedBefore), shown(invalid));
+  }
   const listedDamaged = await json(["space"]);
   check("a listing still refuses while any damaged record remains, naming the first damaged file",
     refused(listedDamaged, 1, "SCHEMA_INVALID") && (listedDamaged.env?.error?.message ?? "").includes(kiloFile) && (listedDamaged.env?.error?.remedy ?? "").includes("cotal space forget kilo"), shown(listedDamaged));

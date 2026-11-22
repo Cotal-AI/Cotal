@@ -43,12 +43,13 @@ An unoccupied folder still offers `cotal space create <name>` for this folder.
 A discovered space is never dialed by a listing and
 reads `not checked`. `space show [<name>]` shows one space in full and probes only that broker.
 With no name it is about this folder: the space it has registered, else the one it holds prepared or
-stopped, else the selected one. If the folder has several registrations, `space show` refuses with
+stopped, else the selected one. A registration for the current directory does not need a `.cotal`
+folder to appear in `space show`. If the folder has several registrations, `space show` refuses with
 `TARGET_AMBIGUOUS`, exit 2, and gives a `cotal space show <name>` command for each instead of using
 the selection. This does not change what other commands target. If `cotal use`
 explicitly selected a different space, `space show` says that commands such as `cotal who` still
-target the selection here. Pass `--space <name>` or run `cotal use --clear` to target the folder's
-space instead. Neither `space` nor `space show` writes anything. A registry record that cannot be
+target the selection here. Pass `--space <name>` to target the folder's space instead. Neither
+`space` nor `space show` writes anything. A registry record that cannot be
 read refuses both with `SCHEMA_INVALID`, exit 1, naming its file.
 Inside a renamed project's folder, bare `space show` uses the stack journal to find the local
 registration that matches its name, original root and broker. If neither a matching record nor a
@@ -121,7 +122,8 @@ its mode was not checked: `space` and `space show` show the mode as not checked,
 `modeChecked: false` in `--json`. `whoami` reports conditional access and points to `cotal space show <name>`.
 If its broker does not answer, `space show` tells you to wait and check again. Once the broker
 answers, `space show` prints a `space add` command without `--force` that checks the recorded broker,
-root, mode and transport settings in place. It quotes the root when the shell would otherwise split
+root, mode and transport settings in place. A trailing slash on a NATS URL does not prevent this
+check. The command quotes the root when the shell would otherwise split
 or expand it. A failed check keeps the unchecked record and the selection.
 Declining the question is a `no-op` with a `USER_CANCELLED` warning. `--json` gives the registration under `space`, in the
 shape `space show` gives, with `verified` and `replaced`.
@@ -251,7 +253,8 @@ For a discovered space, the next step names removal from the provider's catalog 
 `cotal sync`, because `space forget` cannot remove a catalog-owned registration.
 
 `space forget <name>` removes a registration this machine keeps. It stops nothing, deletes nothing on
-the broker, and keeps the files under its root. It refuses a space this machine is running with
+the broker, and keeps the files under its root. A name of `.` or `..` refuses with `USAGE_INVALID`,
+exit 1, before reading the registry. It refuses a space this machine is running with
 `LIFECYCLE_BLOCKED`, because `cotal down` stops it, and a discovered space with `CONFLICT`, because
 its catalog keeps it. A stack `cotal up` started stays a prepared space at its root after that
 `down`, so the refusal names `cotal down` and then `space forget` again. A legacy root's `down` drops

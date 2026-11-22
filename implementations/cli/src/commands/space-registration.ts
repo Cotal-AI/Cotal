@@ -5,6 +5,7 @@ import { isAbsolute, join, resolve } from "node:path";
 import {
   CommandFailure,
   authDir,
+  brokerUrlKey,
   canonicalRoot,
   codeSpan,
   checkDiscoveryDocument,
@@ -248,7 +249,7 @@ async function addFromServer(name: string | undefined, v: AddValues, prompt: boo
   const mode = take(checkMode(name, root, accounts, v.mode, false), target);
   const auth = take(checkTrust(mode, root, name), target);
   const replaced = replaceable(name, v.force === true, target, (existing) =>
-    existing.server === server && existing.root === root && existing.mode === mode && (existing.tlsRequired === true) === tlsRequired &&
+    brokerUrlKey(existing.server) === brokerUrlKey(server) && existing.root === root && existing.mode === mode && (existing.tlsRequired === true) === tlsRequired &&
     (existing.unencryptedOverlay === true) === Boolean(dial.residual));
   const verified = v.force !== true;
   if (verified) {
