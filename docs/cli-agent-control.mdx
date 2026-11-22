@@ -35,6 +35,9 @@ cotal attach [<name>] [--on <instance>] [--no-reconnect] [--space <s>]
 
 ### Control credentials
 
+Without an agent name or an interactive terminal, `attach` refuses and suggests a roster command
+and an attach command with a name. Both keep the explicit `--space`, `--server` and `--on` selectors.
+
 On a controller stack started with `--no-manager`, `ps` refuses `TARGET_UNAVAILABLE`: no manager
 runs, so there are no managed agents to list. Bare `cotal up` adds the manager. A `manager` preset
 service started at the root answers instead, and `status` names it on its Manager row. Bare `up`
