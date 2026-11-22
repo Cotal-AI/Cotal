@@ -1,5 +1,18 @@
 # @cotal-ai/cli
 
+## 0.174.1
+
+### Patch Changes
+
+- 98e726c: Move the status command's flag grammar, result types and gap collector out of `status.ts` into an internal `status-model.ts`. `status.ts` re-exports every name it exported before, so the module surface is unchanged.
+- 2e9777f: Move the up command's broker transport, TLS and store-selection checks out of `up.ts` into an internal `up-transport.ts`. The module surface of `up.ts` is unchanged.
+- 0d29594: Self-update no longer stops on an interrupted-update record from another config folder when the current config folder does not exist yet. It retains the unusable record and continues, as it does when the folder exists.
+- 5b8eb17: Keep internal extension update helpers out of CLI telemetry so they do not create install IDs or send package diagnostics. Public extension commands still report normally.
+- c7b409c: The npm launcher uses the supported Node.js recorded at installation when the Node.js on PATH is too old.
+- Updated dependencies [0d29594]
+  - @cotal-ai/workspace@0.174.1
+  - @cotal-ai/core@0.174.1
+
 ## 0.174.0
 
 ### Patch Changes

@@ -1,5 +1,11 @@
 # @cotal-ai/connector-core
 
+## 0.174.1
+
+### Patch Changes
+
+- 8ec8bc4: The mesh agent's option types, connection constants and module-level helpers now live in their own connector-core module, with no change in behavior.
+
 ## 0.174.0
 
 ### Minor Changes

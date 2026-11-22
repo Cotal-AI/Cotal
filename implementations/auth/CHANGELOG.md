@@ -1,5 +1,15 @@
 # @cotal-ai/auth
 
+## 0.174.1
+
+### Patch Changes
+
+- fc7ea92: The service host's serving reads move into their own module, with no change in behaviour.
+- Updated dependencies [0d29594]
+  - @cotal-ai/workspace@0.174.1
+  - @cotal-ai/core@0.174.1
+  - @cotal-ai/lang@0.174.1
+
 ## 0.174.0
 
 ### Patch Changes

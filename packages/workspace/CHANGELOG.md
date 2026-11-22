@@ -1,5 +1,12 @@
 # @cotal-ai/workspace
 
+## 0.174.1
+
+### Patch Changes
+
+- 0d29594: Self-update no longer stops on an interrupted-update record from another config folder when the current config folder does not exist yet. It retains the unusable record and continues, as it does when the folder exists.
+- @cotal-ai/core@0.174.1
+
 ## 0.174.0
 
 ### Patch Changes

@@ -1,5 +1,11 @@
 # @cotal-ai/connector-jcode
 
+## 0.174.1
+
+### Patch Changes
+
+- 2b7f154: The Jcode host's bridge recovery moves into its own module, with no change in behaviour.
+
 ## 0.174.0
 
 ### Minor Changes
