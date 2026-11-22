@@ -400,7 +400,7 @@ function stoppedManagerStatus(resolved: PresetServiceTarget, recorded: NonNullab
   const name = resolved.requested;
   const target = { space, name, executionHost: "this-machine", pid: recorded.pid };
   const next = `cotal up --root ${shellWord(root)} --space${space.startsWith("-") ? "=" : " "}${shellWord(space)}`;
-  writeResult(presentation, { command: commandName, target, result: { kind: "service-status", name, preset: resolved.preset, recordedProcess: { ...recorded, startedBy: "cotal up or cotal supervise", savedService: false }, started: false, observedProcess: "stopped", next } }, (): Report => ({ sections: [
+  writeResult(presentation, { command: commandName, target, result: { kind: "service-status", name, preset: resolved.preset, recordedProcess: { ...recorded, startedBy: "cotal up or cotal supervise", savedService: false }, started: false, observedProcess: "gone" } }, (): Report => ({ sections: [
     { title: `The ${recorded.label} is stopped`, blocks: [{ kind: "fields", rows: [["Space", space], ["PID", recorded.pid === null ? "not recorded" : String(recorded.pid)], ["Started by", "cotal up or `cotal supervise`, not as a saved service"]] }] },
     { title: "Next", blocks: [{ kind: "commands", items: [{ command: next, description: "Start the stack again" }] }] },
   ] }));

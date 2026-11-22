@@ -198,6 +198,10 @@ function launchPreview(space: string): void {
   check("the corrected launch preview succeeds without saving or starting a manager",
     retry.status === 0 && result?.dryRun === true && result.saved === false && result.allocated === false
       && !serviceDefinitionStore(space).read("manager") && !serviceInstances(space, "manager").length, out(retry));
+  const status = cotal(["manager", "status", "--space", space, "--json"]);
+  const receipt = JSON.parse(status.stdout);
+  check("launch previews leave no manager history in the broker-only space", status.status === 2
+    && receipt.error?.code === "TARGET_NOT_FOUND" && receipt.error.message.includes("no manager has been started"), out(status));
 }
 const ptyEnv = Object.fromEntries(Object.entries(env).filter((entry): entry is [string, string] => entry[1] !== undefined));
 const started: ChildProcess[] = [];

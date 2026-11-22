@@ -363,11 +363,11 @@ try {
     const stoppedStatus = upCotal(["manager", "status", "--space", UP_SPACE, "--json"]);
     const report = JSON.parse(stoppedStatus.stdout);
     const stackStart = `cotal up --root ${realpathSync(upProject)} --space ${UP_SPACE}`;
-    check("manager status after down reports the PID-only manager stopped and points back to its stack",
-      stoppedStatus.status === 0 && report.result?.kind === "service-status" && report.result.observedProcess === "stopped"
-      && report.result.recordedProcess?.savedService === false && report.result.next === stackStart, out(stoppedStatus));
+    check("manager status after down reports the PID-only manager gone without changing the JSON shape",
+      stoppedStatus.status === 0 && report.outcome === "ok" && report.result?.kind === "service-status" && report.result.observedProcess === "gone"
+      && report.result.recordedProcess?.savedService === false && !Object.hasOwn(report.result, "next"), out(stoppedStatus));
     const stoppedPlain = upCotal(["manager", "status", "--space", UP_SPACE, "--plain"]);
-    check("plain manager status offers the same stack start", stoppedPlain.status === 0
+    check("plain manager status says stopped and offers the stack start", stoppedPlain.status === 0
       && out(stoppedPlain).includes("The manager is stopped") && out(stoppedPlain).includes(stackStart), out(stoppedPlain));
     const stoppedLogs = upCotal(["manager", "logs", "--tail", "3"]);
     check("cotal manager logs after down reads the log it left, marked stopped, with cotal up next",

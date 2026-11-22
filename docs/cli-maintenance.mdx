@@ -383,8 +383,8 @@ Two saved manager services in one space refuse `TARGET_AMBIGUOUS`, naming each w
 command. An unpinned `start` or `status` reports the PID of a manager that `cotal up` or
 `cotal supervise` started without a saved service. With `--json`, `status` reports
 `result.observedProcess` as `running`. `start` starts nothing beside it. When retained local records
-show that a manager without a saved service has stopped, `status` reports `stopped` instead and
-names the `cotal up` command for that root and space. JSON gives the same command in `result.next`.
+show that a manager without a saved service has stopped, the human report says it is stopped and
+names the `cotal up` command for that root and space. JSON reports `result.observedProcess` as `gone`.
 With `--instance`, these commands require a matching owned service instance and refuse `TARGET_NOT_FOUND`
 (exit 2) when there is none. Without a pin, `logs` reads the log `cotal up`
 opened for it, `<root>/.cotal/manager.<spaceKey>.log`, and changes nothing. It takes `--tail`,
