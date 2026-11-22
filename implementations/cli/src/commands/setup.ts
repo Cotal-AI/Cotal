@@ -691,11 +691,7 @@ async function prepare(plan: SetupPlan, opts: { demo: boolean; interactive: bool
   }
   // A connector's skills action runs for every connector whose harness is present, so someone using
   // that harness gets Cotal's skills even without joining the mesh through it.
-  for (const other of await setupConnectorCandidates(await setupConnectorSurface())) {
-    if (other.value === candidate.value || other.missing.length > 0) continue;
-    const provider = await connectorSetupProvider(other.connector);
-    if (provider?.skills) await actions.run(other.value, actionStep(provider.skills, connectorSkillsInput(), provider));
-  }
+  await reconcileOtherConnectorSkills(candidate.value, target, narrate, log, actions.ran, warnings);
   if (agentSkillsSkew().some((s) => s.state !== "current")) {
     const skills = seedAgentSkills(log);
     written.push({ what: "cross-vendor skills", path: agentSkillsHome() });
@@ -1182,6 +1178,43 @@ async function reconcileConnectorSkills(): Promise<void> {
   for (const connector of await setupConnectorSurface()) {
     const provider = await availableSetupProvider(connector);
     if (provider?.skills) await provider.skills.run(connectorSkillsInput());
+  }
+}
+
+/**
+ * Refresh skills for every other available connector without attributing optional failures to the
+ * selected harness, blocking subsequent connectors, or halting setup.
+ */
+async function reconcileOtherConnectorSkills(
+  selectedHarness: string,
+  target: { space: string },
+  narrate: boolean,
+  log: SetupLog,
+  ran: ActionRun[],
+  warnings: OutputWarning[],
+): Promise<void> {
+  for (const other of await setupConnectorCandidates(await setupConnectorSurface())) {
+    if (other.value === selectedHarness || other.missing.length > 0) continue;
+    const provider = await connectorSetupProvider(other.connector);
+    if (!provider?.skills) continue;
+    const step = actionStep(provider.skills, connectorSkillsInput(), provider);
+    const spin = narrate ? p.spinner() : undefined;
+    spin?.start(step.title);
+    try {
+      const detail = await step.run();
+      spin?.stop(`${step.title}${detail ? dim(` · ${detail}`) : ""}`);
+      log.line(`${step.name}: ok${detail ? ` · ${detail}` : ""}`);
+      ran.push({ connector: other.value, action: step.name, title: step.title, detail: detail ?? null });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      spin?.stop(`${step.title}: skipped`);
+      log.line(`${step.name}: skipped (${other.value}) · ${message}`);
+      warnings.push({
+        code: "DEPENDENCY_UNAVAILABLE",
+        target: { ...target, connector: other.value },
+        message: `optional skills refresh for ${other.value} did not finish (${message})`,
+      });
+    }
   }
 }
 
