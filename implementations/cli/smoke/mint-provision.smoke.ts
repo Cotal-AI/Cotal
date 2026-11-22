@@ -996,6 +996,14 @@ try {
       const wrongName = await runMint(["wrong_name", "--space", "not_offlinecheck", "--plain"]);
       check("#8302: a different name does not mint from the stopped local account",
         wrongName.code === 2 && wrongName.out.includes("TARGET_NOT_FOUND") && !existsSync(agentSecretFilePaths(stoppedRoot, "offlinecheck", "wrong_name").creds), wrongName.out);
+      const namedServer = await runMint(["named_offline_server", "--space", "offlinecheck", "--server", server, "--plain"]);
+      const namedServerFile = agentSecretFilePaths(stoppedRoot, "offlinecheck", "named_offline_server").creds;
+      check("naming the stopped local space with its recorded --server mints from its original account without provisioning",
+        namedServer.code === 0 && existsSync(namedServerFile) && /Broker footprint:\s+not provisioned by this command/.test(namedServer.out) &&
+        credsClaims(readFileSync(namedServerFile, "utf8")).nats?.issuer_account === credsClaims(readFileSync(liveFile, "utf8")).nats?.issuer_account, namedServer.out);
+      const wrongServer = await runMint(["wrong_server", "--space", "offlinecheck", "--server", "nats://127.0.0.1:39999", "--plain"]);
+      check("a different --server does not mint from the stopped local account",
+        wrongServer.code === 2 && wrongServer.out.includes("TARGET_NOT_FOUND") && !existsSync(agentSecretFilePaths(stoppedRoot, "offlinecheck", "wrong_server").creds), wrongServer.out);
       const signer = join(exports, "signer.json");
       const exported = await runCotal(["auth", "signer", "--space", "offlinecheck", "--out", signer, "--plain"]);
       check("stopped root exports its signer without a broker", exported.code === 0 && existsSync(signer) && (statSync(signer).mode & 0o777) === 0o600, exported.out);
@@ -1007,6 +1015,12 @@ try {
         check(`  #8379: ${space.length ? "with" : "without"} --space it says the mesh is not running and offers a file-only mint without --provision`,
           /the mesh "offlinecheck" in .* last ran at/.test(provision.out) && /omit --provision to mint only the private credential file/.test(provision.out), provision.out);
       }
+      const provisionServer = await runMint(["needsbroker_server", "--provision", "--space", "offlinecheck", "--server", server, "--plain"]);
+      check("stopped root with --space and its recorded --server still requires a live broker for --provision",
+        provisionServer.code === 2 && provisionServer.out.includes("TARGET_UNAVAILABLE") && provisionServer.out.includes("start it again with `cotal up`") &&
+        !existsSync(agentSecretFilePaths(stoppedRoot, "offlinecheck", "needsbroker_server").creds), provisionServer.out);
+      check("  with --space and --server it says the mesh is not running and offers a file-only mint without --provision",
+        /the mesh "offlinecheck" in .* last ran at/.test(provisionServer.out) && /omit --provision to mint only the private credential file/.test(provisionServer.out), provisionServer.out);
       const endpoint = await runMint(["caller", "--space", "offlinecheck", "--endpoint", "com.example.offline", "--out", join(exports, "caller.creds"), "--plain"]);
       check("stopped root still refuses named endpoint discovery and publishes no caller",
         endpoint.code === 2 && endpoint.out.includes("TARGET_UNAVAILABLE") && !existsSync(join(exports, "caller.creds")) && !endpoint.out.includes("omit --provision"), endpoint.out);
