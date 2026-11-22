@@ -34,8 +34,19 @@ export function validateEndpointAuthoringArguments(args: ParsedArgs): void {
 }
 function directory(path: string): string | null {
   const root = parse(path).root;
-  try { return realDirNoSymlink(root, ...path.slice(root.length).split(sep).filter(Boolean)); }
-  catch { throw new CommandFailure("refused", "PERMISSION_DENIED", "the scaffold directory crosses a symlink or non-directory; no existing file was overwritten"); }
+  let parent = root;
+  for (const segment of path.slice(root.length).split(sep).filter(Boolean)) {
+    const component = join(parent, segment);
+    try { if (!realDirNoSymlink(parent, segment)) return null; }
+    catch {
+      throw new CommandFailure("refused", "PERMISSION_DENIED", `the scaffold directory is blocked at ${codeSpan(shellWord(component))}; no existing file was overwritten`, {
+        target: { path: component },
+        remedy: "retry with --dir set to a real directory path that does not cross a symlink or non-directory",
+      });
+    }
+    parent = component;
+  }
+  return parent;
 }
 type ScaffoldChange = { path: string; kind: "directory" | "file"; complete: boolean };
 
