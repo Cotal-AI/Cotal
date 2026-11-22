@@ -575,7 +575,7 @@ export interface PsResult {
  *  `status`'s reading that no agent application is set up here, so an empty list's Next agrees with
  *  the one `status` gives. `interactive` is whether a terminal is there to answer `setup`'s
  *  questions, as `status` reads it: without one, the Next points at `setup --help` instead. */
-export function psView(result: PsResult, wide: boolean, rowsOf: ReadonlyMap<string, readonly unknown[]> = new Map(), noApplication = false, mode?: string, interactive = true): Report {
+export function psView(result: PsResult, wide: boolean, rowsOf: ReadonlyMap<string, readonly unknown[]> = new Map(), noApplication = false, mode?: string, interactive = true, spawnCommand?: string): Report {
   const empty = result.kind === "slots" ? "No active static slots." : "No managed agents.";
   const blocksFor = (rows: readonly unknown[]): Block[] =>
     !rows.length ? [{ kind: "lines", lines: [{ text: empty, tone: "hint" }] }]
@@ -583,14 +583,19 @@ export function psView(result: PsResult, wide: boolean, rowsOf: ReadonlyMap<stri
     : seatBlocks(rows as AgentRow[], wide);
   // A single manager that answered is the common case: a flat list, no per-manager grouping noise.
   // Its instance id is still shown, with or without agents, because it is what `--on` takes.
-  if (result.managers.length <= 1 && result.managers.every((m) => m.state === "answered")) return { sections: [
-    { title: result.kind === "slots" ? "Static slots" : "Agents", blocks: blocksFor(result.items) },
-    ...result.managers.map((m): Section => ({ title: "Manager", blocks: [{ kind: "fields", rows: [["instance", m.instanceId], ...(m.reportedHost ? [["reported host", m.reportedHost] as [string, string]] : [])] }] })),
-    { title: "Next", blocks: [{ kind: "commands", items: result.items.length ? [
+  if (result.managers.length <= 1 && result.managers.every((m) => m.state === "answered")) {
+    const next = result.items.length ? [
       { command: `${displayCmd()} attach <name>`, description: "Return to an agent's terminal" },
       { command: `${displayCmd()} stop <name>`, description: "Stop one agent" },
-    ] : [noApplication ? (interactive ? { command: `${displayCmd()} setup`, description: "Set up an agent application" } : { command: `${displayCmd()} setup --help`, description: "See setup flags for scripts. Bare setup needs a terminal." }) : { command: `${displayCmd()} spawn`, description: "Launch your default agent" }] }] },
-  ] };
+    ] : noApplication ? [interactive ? { command: `${displayCmd()} setup`, description: "Set up an agent application" } : { command: `${displayCmd()} setup --help`, description: "See setup flags for scripts. Bare setup needs a terminal." }]
+    : spawnCommand === undefined ? [] : [{ command: spawnCommand, description: "Launch your default agent" }];
+    const sections: Section[] = [
+      { title: result.kind === "slots" ? "Static slots" : "Agents", blocks: blocksFor(result.items) },
+      ...result.managers.map((m): Section => ({ title: "Manager", blocks: [{ kind: "fields", rows: [["instance", m.instanceId], ...(m.reportedHost ? [["reported host", m.reportedHost] as [string, string]] : [])] }] })),
+    ];
+    if (next.length) sections.push({ title: "Next", blocks: [{ kind: "commands", items: next }] });
+    return { sections };
+  }
   // Several managers: one section each, named by the FULL instance id, since `--on` takes nothing
   // shorter and this is precisely where it becomes the one way to address a manager. Silent and
   // refused instances are shown, never dropped.
@@ -658,7 +663,10 @@ export async function ps(args: ParsedArgs): Promise<void> {
     if (parts?.restartRoot !== undefined) {
       const cause = isConnectRefusal(e) ? e.cause : e;
       const block = channelSeedRestartBlock(parts.restartRoot) ?? (isWorkspaceTargetError(cause) && cause.details.lastRun
-        ? await legacyRestartAddressProblem(cause.details.server, `${displayCmd()} up`) : undefined);
+        ? await legacyRestartAddressProblem(cause.details.server, `${displayCmd()} up`)
+        : isWorkspaceTargetError(e) && e.details.stopped && e.details.space !== undefined
+          ? await (await import("./stack-up.js")).stoppedStackAddressProblem(parts.restartRoot, e.details.space, v.server)
+          : undefined);
       if (block) throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `${parts.message}. Restart blocked: ${block.message}`, {
         target: isConnectRefusal(e) ? e.target : isWorkspaceTargetError(e) ? spaceRootTarget(e.details) : undefined,
         native: isConnectRefusal(e) ? e.native : undefined,
@@ -671,7 +679,9 @@ export async function ps(args: ParsedArgs): Promise<void> {
     if (slots || on !== undefined || !failure || !(failure instanceof NoManagerAnswered || noLiveManager(failure))) throw e;
     return psFromPresence(v, presentation);
   }
-  const view = (result: PsResult): Report => psView(result, wide, census.rowsOf, !result.items.length && noApplicationHere(), census.mode, presentation === "rich" && canPrompt());
+  const spawnCommand = v.server !== undefined && brokerAddressForDisplay(v.server) !== v.server ? undefined
+    : onRerun(`${displayCmd()} spawn`, { space: v.server === undefined ? census.target.space : v.space, server: v.server });
+  const view = (result: PsResult): Report => psView(result, wide, census.rowsOf, !result.items.length && noApplicationHere(), census.mode, presentation === "rich" && canPrompt(), spawnCommand);
   writeResult(
     presentation,
     {

@@ -81,7 +81,7 @@ the refusal. Otherwise, `ps` reports `TARGET_UNAVAILABLE`. If the recorded root'
 `.cotal/channels.json` would prevent `up` from restarting the stack, the refusal names the file
 and the repair instead of recommending a restart. After `down` removes a foreground stack's
 registration, `ps` still checks its channel seed and saved broker address. If another program holds
-the address and blocks the start, the refusal says to stop that listener or start on another port.
+the controller stack's recorded address, the refusal tells you to free it before restarting the stack.
 `ps` does not change the store or the file, and it does not stop the listener.
 
 On a stopped local stack, `ps` reports an unreadable or invalid stack journal and its recovery step
@@ -102,8 +102,9 @@ owner-filtered substitute for the refused read.
 
 `ps` shows the instance id `--on` takes for each manager that answered, with or without agents. One
 manager is listed under `Manager` as its `instance`, and with several each gets a `manager <id>`
-header. With no agents its Next is `cotal spawn`, or `cotal setup` when no agent application is set
-up here, as `status` reports it.
+header. With no agents it suggests `cotal spawn` for the space just listed, keeping any explicit
+broker address it can safely print. If `status` reports that no agent application is set up here,
+it suggests `cotal setup` instead.
 
 When `ps` asks every manager, it then asks each manager that answered for the host name in its own
 status reply. The host shows as `· reports host <host>` after the id, or as a `reported host` row

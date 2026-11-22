@@ -20,6 +20,7 @@ import {
   CommandFailure,
   accountInventory,
   authDir,
+  brokerUrlKey,
   canonicalRoot,
   codeSpan,
   deliveryCredsKey,
@@ -605,11 +606,11 @@ async function recordedAddressHeld(space: string, server: string, bindHost?: str
   return holders.length ? { says: `${held.says}, where process ${holders.join(", ")} of this account listens`, frees: held.frees } : held;
 }
 
-/** The live address blocker for a stopped controller stack with a recorded broker. */
-export async function stoppedStackAddressProblem(root: string, space: string): Promise<{ message: string; remedy: string } | undefined> {
+/** The live address blocker for a stopped controller stack, when the requested server matches its recorded broker. */
+export async function stoppedStackAddressProblem(root: string, space: string, server?: string): Promise<{ message: string; remedy: string } | undefined> {
   try {
     const journal = readStackJournal(root)?.journal;
-    if (journal?.space !== space) return undefined;
+    if (journal?.space !== space || (server !== undefined && brokerUrlKey(server) !== brokerUrlKey(journal.server))) return undefined;
     const { kind, phase } = journal.operation;
     const cleanStop = kind === "down" && phase === "completed";
     const refusedRestart = kind === "up" && phase === "refused" && !stackNeverStarted(journal)
