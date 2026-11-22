@@ -23,7 +23,7 @@ import {
 } from "@cotal-ai/core";
 import { JetStreamApiCodes, jetstreamManager, StorageType } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
-import { CommandFailure, authDir, getSpaceAuth, brokerAddressKey, canonicalRoot, loadMeshes, workspaceSecretStore } from "@cotal-ai/workspace";
+import { CommandFailure, authDir, getSpaceAuth, brokerAddressKey, canonicalRoot, codeSpan, loadMeshes, shellPath, workspaceSecretStore } from "@cotal-ai/workspace";
 import { c } from "../ui.js";
 import { cotalRoot } from "../lib/paths.js";
 import { STACK_DEFINITION } from "../lib/stack-journal.js";
@@ -37,8 +37,8 @@ export function registeredAddressHolder(server: string, space: string) {
   return loadMeshes().find((m) => m.space !== space && canonicalRoot(m.root) !== root && brokerAddressKey(m.server) === key);
 }
 
-/** Refuse an address that a space registered for another folder keeps while its broker is stopped,
- *  as an occupied one is refused. Starting there would leave two registrations naming one broker:
+/** Another folder's registration reserves its broker address whether or not a listener answers.
+ *  Starting there would leave two registrations naming one broker:
  *  whichever stack runs answers for both, and the other one's `down` and reads reach it. Every
  *  start that names its own address asks this, a manifest's `broker.servers` included, and
  *  `elsewhere` names the way to move the one being started. A space this start takes the name of is
@@ -46,9 +46,9 @@ export function registeredAddressHolder(server: string, space: string) {
 export function refuseRegisteredAddress(server: string, space: string, elsewhere: string): void {
   const held = registeredAddressHolder(server, space);
   if (!held) return;
-  throw new CommandFailure("refused", "CONFLICT", `${server} is the broker address of "${held.space}", registered for ${held.root} and stopped; nothing was started`, {
+  throw new CommandFailure("refused", "CONFLICT", `${server} is the broker address of "${held.space}", registered for ${held.root}; nothing was started`, {
     target: { root: cotalRoot(), server, space, heldSpace: held.space, heldBy: held.root },
-    remedy: `${elsewhere}, or free that one with \`cotal space forget ${held.space}\``,
+    remedy: `${elsewhere}; check the other space with ${codeSpan(`cotal status --space ${shellPath(held.space)}`)}`,
   });
 }
 

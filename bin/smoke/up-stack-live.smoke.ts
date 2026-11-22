@@ -452,7 +452,7 @@ try {
   const otherUp = cliIn(other, "up", "--detach", "--server", SERVER);
   if (otherUp.status === 0) cliIn(other, "down", "--yes");
   ok("another folder's up at this stopped space's address refuses CONFLICT, exit 2, naming this one, and writes nothing",
-    otherUp.status === 2 && /Code:\s+CONFLICT/.test(plain(otherUp.stderr)) && plain(otherUp.stderr).includes(`${SERVER} is the broker address of "${SPACE}", registered for ${realpathSync(root)} and stopped`) && !existsSync(join(other, ".cotal")), otherUp.stdout + otherUp.stderr);
+    otherUp.status === 2 && /Code:\s+CONFLICT/.test(plain(otherUp.stderr)) && plain(otherUp.stderr).includes(`${SERVER} is the broker address of "${SPACE}", registered for ${realpathSync(root)}; nothing was started`) && !existsSync(join(other, ".cotal")), otherUp.stdout + otherUp.stderr);
   // A manifest names its broker in `broker.servers`, and that address is held by the same rule, so
   // `up -f` is refused there too and its next step names the field to change.
   const manifestRoot = mkdtempSync(join(tmpdir(), "cotal-upstack-manifest-"));
@@ -461,15 +461,23 @@ try {
   if (manifestUp.status === 0) cliIn(manifestRoot, "down", "--yes");
   ok("an up -f whose broker.servers is this stopped space's address refuses CONFLICT, exit 2, naming this one and broker.servers, and writes nothing",
     manifestUp.status === 2 && /Code:\s+CONFLICT/.test(plain(manifestUp.stderr)) &&
-      plain(manifestUp.stderr).includes(`${SERVER} is the broker address of "${SPACE}", registered for ${realpathSync(root)} and stopped`) &&
+      plain(manifestUp.stderr).includes(`${SERVER} is the broker address of "${SPACE}", registered for ${realpathSync(root)}; nothing was started`) &&
       plain(manifestUp.stderr).includes("point broker.servers in cotal.yaml at another address") &&
-      plain(manifestUp.stderr).includes(`cotal space forget ${SPACE}`) && !existsSync(join(manifestRoot, ".cotal")), manifestUp.stdout + manifestUp.stderr);
-  rmSync(manifestRoot, { recursive: true, force: true });
+      plain(manifestUp.stderr).includes(`cotal status --space ${SPACE}`) && !existsSync(join(manifestRoot, ".cotal")), manifestUp.stdout + manifestUp.stderr);
   const restart = cli("up", "--detach", "--server", SERVER);
   if (existsSync(join(root, ".cotal", "nats.pid"))) pids.push(pidOf("nats.pid"));
   ok("a bare up starts it again on the retained launcher, with no stack journal",
     restart.status === 0 && /^✓ running in the background: nats-server \(pid \d+\), delivery daemon, manager - stop with: `(?:pnpm )?cotal down`$/m.test(plain(restart.stdout)) && !existsSync(join(root, ".cotal", "stack-controller.json")),
     restart.stdout + restart.stderr);
+  const previewAt = (server: string) => cliIn(manifestRoot, "up", "-f", "cotal.yaml", "--server", server, "--dry-run");
+  const refusedPreview = previewAt(SERVER), advice = plain(refusedPreview.stderr);
+  ok("a manifest preview at the running stack's address names its registration and keeps the retry read-only",
+    refusedPreview.status === 2 && advice.includes(`registered for ${realpathSync(root)}; nothing was started`)
+      && advice.includes("choose another address for --server and repeat the same --dry-run") && !advice.includes("space forget"), advice);
+  const freeServer = `nats://127.0.0.1:${await freePort()}`, retriedPreview = previewAt(freeServer);
+  ok("repeating the preview at another address plans the stack without starting it",
+    retriedPreview.status === 0 && retriedPreview.stdout.includes(freeServer) && !existsSync(join(manifestRoot, ".cotal")), retriedPreview.stdout + retriedPreview.stderr);
+  rmSync(manifestRoot, { recursive: true, force: true });
   // A read of a registration whose address this running stack serves is refused by the holder's
   // name, and the record stays: deleting it would leave its folder naming no space at all, and the
   // address is held rather than reused.
