@@ -679,11 +679,13 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
     console.error(c.red(`✗ ${rejectionText(e)}`));
     process.exit(1);
   }
-  // A name given here is recorded for this root's manager once it is up, so a restart keeps it.
-  // Without one, the name an earlier start recorded applies.
+  // `up` supplies a launch-only name and saves it after observing this manager's readiness.
+  // A direct --name is saved here. Without either flag, use the root's saved name.
   let name: string | undefined;
   try {
-    name = v.name !== undefined ? assertManagerName(v.name) : readManagerName({ root: managerRoot, space });
+    if (v.name !== undefined && v["launch-name"] !== undefined) throw new Error("--name and --launch-name cannot be combined");
+    const requestedName = v["launch-name"] ?? v.name;
+    name = requestedName !== undefined ? assertManagerName(requestedName) : readManagerName({ root: managerRoot, space });
   } catch (e) {
     if (service) throw unconfirmedStart(e);
     console.error(c.red(`✗ ${(e as Error).message}`));
@@ -853,11 +855,11 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
   // before its cooperative endpoint exists. A failed start still publishes no pid record. A
   // managed child already owns its exact starting PID slot; it settles that same process here.
   releaseSettledRecord = recordManagerPid(managerRoot, space);
+  publishManagerSpareCapability(managerContext, mgr.spareSeats);
   if (v.name !== undefined && name !== undefined) {
     try { if (readManagerName(managerContext) !== name) recordManagerName(managerContext, name); }
     catch (e) { console.error(c.yellow(`! the manager name was not recorded, so the next start does not keep it: ${(e as Error).message}`)); }
   }
-  publishManagerSpareCapability(managerContext, mgr.spareSeats);
   if (args.values["machine-parent"] === true && remoteAuthority && process.connected)
     process.send?.({ kind: "manager-ready", instanceId: remoteAuthority.instanceId }, () => { /* The parent can disconnect while this observation is in flight. */ });
   if (v["seat-cap"] !== undefined && seatCap !== undefined) {
@@ -1100,6 +1102,7 @@ const managerCommands: Command[] = [
       { name: "launch-sha256", type: "string", description: "full digest pinned by the saved service definition" },
       { name: "roster", type: "string", description: "absolute roster file whose agents start at launch" },
       { name: "name", type: "string", description: "manager name for presence and --on; recorded for this root" },
+      { name: "launch-name", type: "string", description: "manager name for this launch; the starting command owns persistence" },
       { name: "service-instance", type: "string", description: "full controller-assigned instance ID" },
       { name: "launch-request", type: "string", description: "full original launch request ID" },
       { name: "state-directory", type: "string", description: "owned private launch state directory" },
@@ -1141,6 +1144,7 @@ const managerCommands: Command[] = [
       { name: "max-sessions", type: "string", value: "<n>", description: "live-session ceiling (default 64; one session per console pane, so size for agents × panes)" },
       { name: "seat-cap", type: "string", value: "<n|unlimited>", description: "live seats this manager admits per owner (default unlimited); kept for later starts in this root" },
       { name: "name", type: "string", value: "<name>", description: "the name who --all, the manager choice and --on use for this manager; kept for later starts in this root" },
+      { name: "launch-name", type: "string", description: "manager name for this launch; the starting command owns persistence" },
       { name: "roster", type: "string", value: "<file>", description: "declarative roster to boot at startup" },
       { name: "launch", type: "string", value: "<spec>", description: "resolved mesh-manifest launch spec (`cotal up -f` / `spawn -f`)" },
       { name: "resume-attempt", type: "string", value: "<id>", description: "maintenance restore attempt accepted by resumePreserved" },

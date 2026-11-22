@@ -59,6 +59,7 @@ import {
 } from "@cotal-ai/core";
 import { jetstreamManager, StorageType } from "@nats-io/jetstream";
 import {
+  assertManagerName,
   processStopped,
   readManagerSeatCap, DEFAULT_SEAT_CAP,
   parseSeatCapFlag,
@@ -984,7 +985,11 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
     __folderNamed?: boolean;
   };
   if (freshTeamBoot && (!values.file || values.restore || values.__restoreAttempt || values.__ordinaryResumeAttempt || values["rotate-sys"] || values["no-manager"])) throw new CommandFailure("refused", "USAGE_INVALID", "fresh team boot accepts one manifest and its selected lifetime, not a restore, rotation or manager-free override");
-  if (values["manager-name"] !== undefined && (values.restore || values.file || values["no-manager"])) throw new CommandFailure("refused", "USAGE_INVALID", "--manager-name names the manager a plain `cotal up` starts; it cannot be combined with --restore, --file or --no-manager");
+  const managerName = values["manager-name"];
+  if (managerName !== undefined) {
+    if (values.restore || values.file || values["no-manager"]) throw new CommandFailure("refused", "USAGE_INVALID", "--manager-name names the manager a plain `cotal up` starts; it cannot be combined with --restore, --file or --no-manager");
+    assertManagerName(managerName);
+  }
   if (values["seat-cap"] !== undefined && (values.restore || values.file || values["no-manager"])) throw new CommandFailure("refused", "USAGE_INVALID", "--seat-cap caps the manager a plain `cotal up` starts; it cannot be combined with --restore, --file or --no-manager");
   // `space create` and `down` refuse a root other local accounts can write, so `up` refuses it too,
   // before anything is written: a stack started there could not be stopped from it.
@@ -1482,7 +1487,6 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
       ensureRootForSpace(spaceForRoot);
     }
   }
-  const managerName = values["manager-name"];
   // The manager records this cap once it serves. A running manager keeps the cap it started with.
   const managerSeatCap = parseSeatCapFlag("--seat-cap", values["seat-cap"]);
   if (managerSeatCap !== undefined) {
@@ -1827,7 +1831,7 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
       const ownerStatus = localProcessOwnerStatus(restoredAttempt.listenerProof.processOwner);
       if (ownerStatus === "alive") {
         await provePreparedRestoreListener(restoredAttempt);
-        await adoptProvenListener(restoredAttempt, restoredAttempt.targetPath, "proven restore listener", startupLock);
+        await adoptProvenListener(restoredAttempt, restoredAttempt.targetPath, "proven restore listener", managerName, startupLock);
         return;
       }
       if (ownerStatus === "unknown")
@@ -1856,7 +1860,7 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
       // The recovered attempt's exact bound listener is alive: prove it over the wire and adopt it
       // instead of spawning a competitor over the same store.
       await proveOrdinaryResumeListener(ordinaryAttempt);
-      await adoptProvenListener(ordinaryAttempt, ordinaryAttempt.storeDir, "adopted resume listener", startupLock);
+      await adoptProvenListener(ordinaryAttempt, ordinaryAttempt.storeDir, "adopted resume listener", managerName, startupLock);
       return;
     }
     if (ordinaryAttempt?.journalState === "resume-committed")
@@ -3117,6 +3121,7 @@ async function adoptProvenListener(
   attempt: PendingOrdinaryResume | PreparedRestore,
   storeDir: string,
   listener: string,
+  managerName: string | undefined,
   heldLock?: MaintenanceLock,
 ): Promise<void> {
   await recreateAdoptedMemoryBuckets(attempt.root, attempt.space, attempt.server, attempt.mode);
@@ -3145,6 +3150,7 @@ async function adoptProvenListener(
     runtime: attempt.runtime,
     attachHost,
     maxSessions,
+    managerName,
     resumeAttempt: attempt.attemptId,
     resumeCommit: commitTokenHandoff(attempt.root, attempt.managerCommit !== undefined, heldLock),
   });

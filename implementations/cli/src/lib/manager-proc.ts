@@ -7,12 +7,12 @@ import { entryScript } from "../seed/paths.js";
 import { resolveRuntimeSpace } from "./status.js";
 import { cotalRoot } from "./paths.js";
 import {
-  assertManagerCanSpare, assertManagerName, armManagerShutdownIntent, assertRecordIdentity, codeSpan, CommandFailure, disarmManagerShutdownIntent,
+  assertManagerCanSpare, armManagerShutdownIntent, assertRecordIdentity, codeSpan, CommandFailure, disarmManagerShutdownIntent,
   canonicalLocalProcessPath, commandIsCotalSupervisor, identityRecord, localProcessPath, parsePid, probeLiveness,
-  readManagerName, readPidfile, readProcessCommand, readProcessRecord, reclaimDeadPreUpgradeRecord,
+  readManagerName, readPidfile, readProcessCommand, readProcessRecord, reclaimDeadPreUpgradeRecord, recordManagerName, recordOperationWarning,
   MANAGER_DELIVERY_AWARE_MARKER, MANAGER_LOGFILE, MANAGER_PIDFILE, MANAGER_SHUTDOWN_INTENT, MANAGER_SPARE_CAPABILITY,
   type CommandReader, type LivenessProbe, type LocalProcess, type LocalProcessContext, type ManagerSpareSeats, type ProcessIdentityRecord,
-  type ProcessRecord, type ProcessRecordState, type SeatCap,
+  type OutputWarning, type ProcessRecord, type ProcessRecordState, type SeatCap,
   parsePositiveIntegerFlag, seatCapText, verifyIdentityPin, writePidPair,
 } from "@cotal-ai/workspace";
 import { c } from "../ui.js";
@@ -126,9 +126,18 @@ export function managerLiveness(
 /** A running manager keeps its launch name. The new name travels only to a fresh manager. */
 export function assertManagerNameChange(root: string, space: string, name: string | undefined): void {
   if (name === undefined) return;
-  assertManagerName(name);
   if (readManagerName({ root, space }) !== name && managerLiveness(space, root) === "alive")
     throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `a manager already runs for space ${space}, and it keeps the name it started with`, { target: { root, space }, remedy: `stop it with \`cotal down\`, then run ${codeSpan(`cotal up --manager-name=${shellWord(name)}`)}` });
+}
+
+/** Save the launch-only name after the caller has proved its new manager is serving. */
+export function saveStartedManagerName(root: string, space: string, name: string | undefined): OutputWarning | undefined {
+  if (name === undefined) return;
+  try {
+    if (readManagerName({ root, space }) !== name) recordManagerName({ root, space }, name);
+  } catch (error) {
+    return { code: "MANAGER_NAME_NOT_RECORDED", target: { root, space }, message: `the manager started as ${JSON.stringify(name)}, but its name was not saved for the next start: ${(error as Error).message}` };
+  }
 }
 
 /** One line describing what was found behind the record, for a caller that has to explain itself. */
@@ -371,7 +380,7 @@ export function startManagerDetached(
     ...(o.wsPort !== undefined ? ["--ws-port", String(o.wsPort)] : []),
     ...(o.maxSessions !== undefined ? ["--max-sessions", String(o.maxSessions)] : []),
     ...(o.managerSeatCap !== undefined ? ["--seat-cap", seatCapText(o.managerSeatCap)] : []),
-    ...(o.managerName !== undefined ? [`--name=${o.managerName}`] : []),
+    ...(o.managerName !== undefined ? [`--launch-name=${o.managerName}`] : []),
   ];
   // This is an INTERNAL child re-exec: the `up`/`spawn` that reached here already ran the first-run
   // connector seed, so the manager skips it on boot (a direct `cotal supervise` still seeds).
@@ -487,6 +496,8 @@ export async function ensureManager(
   let logStart: LogStart | undefined;
   const pid = startManagerDetached(o, (start) => { logStart = start; });
   await awaitManagerUp(space, identityRecord(pid), logStart);
+  const warning = saveStartedManagerName(root, space, o.managerName);
+  if (warning) recordOperationWarning(warning);
   return { running: true, started: true, pid };
 }
 

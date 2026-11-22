@@ -10,6 +10,7 @@
 import { randomUUID } from "node:crypto";
 import { closeSync, existsSync, lstatSync, readFileSync, realpathSync } from "node:fs";
 import { displayCmd } from "../lib/self-exec.js";
+import { saveStartedManagerName } from "../lib/manager-proc.js";
 import { homedir } from "node:os";
 import { isIP } from "node:net";
 import { basename, join, resolve } from "node:path";
@@ -510,12 +511,15 @@ export async function stackUp(request: StackUpRequest, native: StackUpNative): P
   const { journal, changed, allReused, admittedRestore, settled, brokerExecutable, streamsRecreated, rotation, storeShared, storeWarnings, clearedRecords } = await startControllerStack(request, native);
   const { root, space, server, mode } = journal;
   const managed = journal.members.some((row) => row.role === "manager" && (row.state === "started" || row.state === "reused"));
+  const nameWarning = journal.members.some((row) => row.role === "manager" && row.state === "started")
+    ? saveStartedManagerName(root, space, request.managerName) : undefined;
   // The receipt says when the start selected its space, and when another space stays selected.
   const current = usableSelection();
   const keptCurrent = current !== space ? current : undefined;
   const selected = current === space && before !== space;
   const written: { what: string; path: string }[] = [];
   const warnings: OutputWarning[] = settled ? [{ code: "OPERATION_SETTLED", target: { root, space, operation: settled.operation.id }, message: stackSettlementNotice(settled) }] : [];
+  if (nameWarning) warnings.push(nameWarning);
   warnings.push(...storeWarnings ?? [], ...(clearedRecords ?? []).map((row) => staleRecordWarning(root, row)));
   if (storeShared) warnings.push({ code: "STORE_SHARED", target: { root, space, storeDir: storeShared.path, otherSpaces: storeShared.tenants }, message: sharedStoreWarning(storeShared.path, storeShared.tenants) });
   // Damage the broker found while it restored its stored files is logged by now.
@@ -543,7 +547,9 @@ export async function stackUp(request: StackUpRequest, native: StackUpNative): P
   } catch (error) {
     warnings.push({ code: "SAVED_SERVICES_NOT_READ", target: { root, space }, message: `the saved services of ${space} could not be listed: ${(error as Error).message}` });
   }
-  writeResult(request.presentation, { command: "up", target: { root, space, server }, result: { kind: "controller-stack-up", root, space, server, mode, operation: journal.operation, members: journal.members, changed, foreground: request.foreground, admittedRestore: admittedRestore ?? null, settledOperation: settled ?? null, brokerExecutable: brokerExecutable ?? null, streamsRecreated: streamsRecreated === true, rotatedSystemAccount: rotation ?? null, listeners: stackListeners(journal), written, savedServices, inheritedServices, selection: { current: current ?? null, changed: current === space && before !== space } }, warnings, ...(allReused && written.length === 0 && !streamsRecreated ? { noOp: true } : {}) }, (result) => {
+  const outcome = nameWarning ? { partial: { message: "the stack is running, but the requested manager name was not saved", remedy: "fix the name record write error, stop the stack with `cotal down`, then repeat the named start" } }
+    : allReused && written.length === 0 && !streamsRecreated ? { noOp: true } : {};
+  writeResult(request.presentation, { command: "up", target: { root, space, server }, result: { kind: "controller-stack-up", root, space, server, mode, operation: journal.operation, members: journal.members, changed, foreground: request.foreground, admittedRestore: admittedRestore ?? null, settledOperation: settled ?? null, brokerExecutable: brokerExecutable ?? null, streamsRecreated: streamsRecreated === true, rotatedSystemAccount: rotation ?? null, listeners: stackListeners(journal), written, savedServices, inheritedServices, selection: { current: current ?? null, changed: current === space && before !== space } }, warnings, ...outcome }, (result) => {
     const members = membersView({ ...journal, members: result.members }, allReused ? "Controller stack already running" : "Controller stack started", result.brokerExecutable, result.streamsRecreated);
     const exposed = result.listeners && exposedPlaintext(result.listeners);
     const listening: Report["sections"] = [{ title: "Listeners", blocks: [

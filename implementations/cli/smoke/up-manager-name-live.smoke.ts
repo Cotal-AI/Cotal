@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
-import { createServer } from "node:net";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmdirSync, writeFileSync } from "node:fs";
+import { createConnection, createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { assertSmokeSandboxDown, createSuite, freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
-import { readManagerName } from "@cotal-ai/workspace";
+import { canonicalLocalProcessPath, MANAGER_NAME_RECORD, MANAGER_SPARE_CAPABILITY, readManagerName } from "@cotal-ai/workspace";
 import { finishOwnedChild, observeOwnedChild, waitForOwnedChild } from "./_foreground-owned-child.js";
 
 const bin = join(import.meta.dirname, "../../../bin/dist/cotal.js");
@@ -28,9 +28,9 @@ function project(space: string) {
   return { root, space, anchor: recordSmokeSandbox({ root, cotalHome: env.COTAL_HOME, xdgConfigHome: env.XDG_CONFIG_HOME }) };
 }
 
-function launch(target: ReturnType<typeof project>, args: string[]) {
+function launch(target: ReturnType<typeof project>, args: string[], preload?: string) {
   assertSmokeSandboxDown(target.anchor, args, { cwd: target.root, env });
-  const child = spawn(process.execPath, [bin, ...args], { cwd: target.root, env, stdio: ["ignore", "pipe", "pipe"] });
+  const child = spawn(process.execPath, [...(preload ? ["--require", preload] : []), bin, ...args], { cwd: target.root, env, stdio: ["ignore", "pipe", "pipe"] });
   const state = observeOwnedChild(child);
   let out = "", err = "";
   child.stdout.on("data", (chunk: Buffer) => { out += chunk.toString(); });
@@ -47,8 +47,8 @@ function launch(target: ReturnType<typeof project>, args: string[]) {
   };
 }
 
-async function cli(target: ReturnType<typeof project>, ...args: string[]) {
-  const run = launch(target, args);
+async function runCli(target: ReturnType<typeof project>, args: string[], preload?: string) {
+  const run = launch(target, args, preload);
   try {
     await waitForOwnedChild(() => run.state.closed, 120_000, args.join(" "));
     assert.ifError(run.state.error);
@@ -56,6 +56,7 @@ async function cli(target: ReturnType<typeof project>, ...args: string[]) {
     return run.output();
   } finally { await run.close(); }
 }
+const cli = (target: ReturnType<typeof project>, ...args: string[]) => runCli(target, args);
 
 async function occupied(target: ReturnType<typeof project>, port: number, expected: string | undefined) {
   const listener = createServer((socket) => socket.end());
@@ -86,6 +87,13 @@ async function checkLiveName(target: ReturnType<typeof project>, expected: strin
 async function stop(target: ReturnType<typeof project>) {
   const down = await cli(target, "down", "--yes");
   assert.equal(down.code, 0, down.out + down.err);
+}
+
+async function preparedProject(space: string) {
+  const target = project(space);
+  const prepared = await cli(target, "space", "create", target.space);
+  assert.equal(prepared.code, 0, prepared.out + prepared.err);
+  return target;
 }
 
 async function foreground(target: ReturnType<typeof project>, server: string, expected: string, name?: string) {
@@ -131,9 +139,90 @@ async function retainedLauncher() {
   } finally { await stop(target); }
 }
 
-const controller = project("controller");
-const prepared = await cli(controller, "space", "create", controller.space);
-assert.equal(prepared.code, 0, prepared.out + prepared.err);
+async function nameWriteFailures() {
+  const target = await preparedProject("name-write");
+  const server = `nats://127.0.0.1:${await freePort()}`;
+  const capability = canonicalLocalProcessPath(MANAGER_SPARE_CAPABILITY, target);
+  const record = canonicalLocalProcessPath(MANAGER_NAME_RECORD, target);
+  const args = ["up", "--open", "--server", server, "--json"];
+  try {
+    mkdirSync(capability, { mode: 0o700 });
+    try {
+      const failed = await cli(target, ...args, "--manager-name", "NotReady");
+      assert.equal(failed.code, 4, failed.out + failed.err);
+      assert.match(failed.out, /OPERATION_PARTIAL/);
+      assert.ok(failed.out.includes(capability));
+      check("a manager that fails to publish its spare capability leaves no saved name", readManagerName(target) === undefined);
+    } finally { rmdirSync(capability); }
+
+    const preload = join(scratch, "name-write-fault.cjs");
+    writeFileSync(preload, `const fs = require("node:fs");
+const rename = fs.renameSync;
+fs.renameSync = (from, to) => {
+  if (to === ${JSON.stringify(record)}) throw Object.assign(new Error("name record is read-only"), { code: "EROFS" });
+  return rename(from, to);
+};
+require("node:module").syncBuiltinESMExports();\n`, { mode: 0o600 });
+    const started = await runCli(target, [...args, "--manager-name", "NotSaved"], preload);
+    assert.equal(started.code, 4, started.out + started.err);
+    const receipt = JSON.parse(started.out) as { outcome: string; warnings: { code: string; message: string }[] };
+    check("the partial startup receipt names the failed save", receipt.outcome === "partial" && receipt.warnings.some((warning) =>
+      warning.code === "MANAGER_NAME_NOT_RECORDED" && warning.message.includes("NotSaved") && warning.message.includes("name record is read-only")), receipt.warnings);
+    await checkLiveName(target, "NotSaved");
+    check("a reported name write failure leaves no saved name", readManagerName(target) === undefined);
+  } finally { await stop(target); }
+}
+
+function listenerIsUp(port: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const socket = createConnection(port, "127.0.0.1");
+    const done = (up: boolean) => { socket.destroy(); resolve(up); };
+    socket.once("connect", () => done(true));
+    socket.once("error", () => done(false));
+    socket.setTimeout(250, () => done(false));
+  });
+}
+
+async function adoptedListener() {
+  const target = project("adopted-name");
+  const port = await freePort();
+  const journalPath = join(target.root, ".cotal", "maintenance", "v1", "journal.json");
+  const readBoundAttempt = () => JSON.parse(readFileSync(journalPath, "utf8")) as { state: string; listenerProof?: { processOwner: { pid: number } } };
+  try {
+    const first = await cli(target, "up", "--open", "--server", `nats://127.0.0.1:${port}`, "--manager-name", "BeforeResume");
+    assert.equal(first.code, 0, first.out + first.err);
+    const cut = await cli(target, "down", "--preserve-state");
+    assert.equal(cut.code, 0, cut.out + cut.err);
+
+    const preload = join(scratch, "interrupt-bound-resume.cjs");
+    writeFileSync(preload, `const fs = require("node:fs");
+const rename = fs.renameSync;
+fs.renameSync = (from, to) => {
+  const result = rename(from, to);
+  if (to === ${JSON.stringify(journalPath)}) {
+    const journal = JSON.parse(fs.readFileSync(to, "utf8"));
+    if (journal.state === "resume-intent" && journal.listenerProof) process.exit(86);
+  }
+  return result;
+};
+require("node:module").syncBuiltinESMExports();\n`, { mode: 0o600 });
+    const interrupted = await runCli(target, ["up", "--detach"], preload);
+    assert.equal(interrupted.code, 86, interrupted.out + interrupted.err);
+    const journal = readBoundAttempt();
+    assert.equal(journal.state, "resume-intent");
+    const pid = journal.listenerProof?.processOwner.pid;
+    assert.ok(pid && process.kill(pid, 0), "the interrupted resume left its bound broker alive");
+    for (let i = 0; i < 100 && !await listenerIsUp(port); i++) await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.ok(await listenerIsUp(port), "the bound broker is accepting connections");
+    const resumed = await cli(target, "up", "--detach", "--manager-name", "AfterResume");
+    assert.equal(resumed.code, 0, resumed.out + resumed.err);
+    check("resume adopted the bound broker and consumed its journal", !existsSync(journalPath) && Number(readFileSync(join(target.root, ".cotal", "nats.pid"), "utf8")) === pid);
+    await checkLiveName(target, "AfterResume");
+    check("the adopted-listener resume saves the requested name", readManagerName(target) === "AfterResume");
+  } finally { await stop(target); }
+}
+
+const controller = await preparedProject("controller");
 const port = await freePort();
 const server = `nats://127.0.0.1:${port}`;
 await occupied(controller, port, undefined);
@@ -142,4 +231,6 @@ await foreground(controller, server, "KeptManager", "KeptManager");
 await occupied(controller, port, "KeptManager");
 await foreground(controller, server, "KeptManager");
 await retainedLauncher();
+await nameWriteFailures();
+await adoptedListener();
 finish();
