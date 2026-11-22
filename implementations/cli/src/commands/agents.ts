@@ -1079,7 +1079,7 @@ export async function attach(args: ParsedArgs): Promise<void> {
   }
   const v = { ...args.values, name: name ?? selection!.name, ...(selection ? { on: selection.on } : {}) } as FlagValues<typeof attachFlags> & { name: string };
   const reconnecting = v["no-reconnect"] !== true;
-  const on = v.on !== undefined ? (await pinForTarget(v as never, "cotal attach")).instanceId : undefined;
+  const on = v.on !== undefined ? (await pinForTarget(v as never, "cotal attach", reconnecting ? [] : ["--no-reconnect"])).instanceId : undefined;
   // A typed pin the registry does not list is refused at once, as stop refuses it.
   if (selection === undefined && on !== undefined) {
     const reader = await resolveControlTarget(v, "control-caller-privileged", on);

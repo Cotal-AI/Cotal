@@ -635,6 +635,7 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
     [["spawn", "dev", "--foreground", "--on", "a".repeat(30)], /^✗ a spawn in this terminal takes no structured receipt, manager credential or manager pin\n {2}omit --on to launch in this terminal, or replace --foreground with -d/],
     [["attach"], /^✗ name the agent to attach without an interactive terminal\n {2}run `cotal ps`, then `cotal attach <name>`/],
     [["run", "show"], /^✗ run show takes one identifier\n {2}`cotal run` lists the runs; run `cotal run show <run-id>`/],
+    [["run", "revoke", "--local", "--by", "operator", "--reason", "audit"], /^✗ run revoke takes one identifier\n {2}add a run ID after `run revoke` in the original command\. A revoke requires `--local --by <actor> --reason <text>`/],
   ] as const) {
     const r = cotal([...argv], undefined, noSeed);
     check(`${argv.join(" ")} refuses with its fix and no help`, r.status === 1 && said.test(r.stderr) && !r.stderr.includes("Usage"), shown(r));
@@ -1032,6 +1033,21 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
   const outside = cotal(["persona", "create", "q", "--prompt", "body", "--subscribe", "general", "--allow-subscribe", "ops", "--json"], persona, noSeed);
   check("persona create with --subscribe outside --allow-subscribe is USAGE_INVALID, naming both flags",
     outside.status === 1 && outside.stdout.includes('"code":"USAGE_INVALID"') && outside.stdout.includes("every --subscribe channel must be within --allow-subscribe") && !outside.stdout.includes("cotal-persona-"), shown(outside));
+}
+
+{
+  const server = "nats://127.0.0.1:1";
+  const args = ["run", "resume", "run-example", "--file", "recovery.cotal.js", "--space", "custom-workflows", "--server", server, "--timeout", "30s", "--json"];
+  const refused = cotal(args, undefined, noSeed);
+  const receipt = JSON.parse(refused.stdout);
+  check("hosted resume tells the caller to remove only the source file option",
+    refused.status === 1 && refused.stderr === "" && receipt.error?.code === "USAGE_INVALID"
+    && receipt.error.remedy.startsWith("remove only --file and its value from the original command, then rerun it"), shown(refused));
+  const retried = cotal([...args.slice(0, 3), ...args.slice(5)], undefined, noSeed);
+  const retryReceipt = JSON.parse(retried.stdout);
+  check("following the resume advice keeps JSON and reaches the explicit broker without a space registration",
+    retried.status === 2 && retried.stderr === "" && retryReceipt.target?.space === "custom-workflows"
+    && retryReceipt.error?.code === "TARGET_UNAVAILABLE" && retryReceipt.error.message.includes(server), shown(retried));
 }
 
 // ── team check names each located manifest problem, without quoting a persona file ───────────────

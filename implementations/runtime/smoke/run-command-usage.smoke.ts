@@ -192,9 +192,10 @@ const VERBS = ["start", "resume", "ps", "journal", "answer", "amend", "revoke", 
   c("hosted `resume --endpoint` is refused", usageRefusal(got2, "--endpoint is only for the local path"), got2);
   reset();
   const got3 = await attempt(["resume", "run-0"], { file: "p.cotal.js" });
-  c("hosted `resume --file` is refused, and the sentence hands back a command with the run id in it",
+  c("hosted `resume --file` is refused with instructions to keep all the other options",
     usageRefusal(got3, "--file is not taken") && isCommandFailure(got3)
-      && got3.remedy?.includes("omit --file") === true && got3.remedy.includes("cotal run resume run-0 --local --file <program>"), got3);
+      && got3.remedy?.startsWith("remove only --file and its value from the original command") === true
+      && got3.remedy.includes("cotal run resume run-0 --local --file <program>"), got3);
   for (const verb of ["check", "migrate"]) for (const [flag, value] of [["adopt", "h1"], ["release", "h1"], ["discard-approvals", true]] as const) {
     const got = await attempt([verb, "run-0", "p.cotal.js"], { [flag]: value });
     c(`${verb} --${flag} is a usage refusal before a connection`, usageRefusal(got, `--${flag} decides what a commit does`), got);
