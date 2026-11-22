@@ -1,5 +1,5 @@
 import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, statSync, type Stats } from "node:fs";
-import { hasDuplicateNames } from "@cotal-ai/core";
+import { hasDuplicateNames, hasOutOfRangeNumber } from "@cotal-ai/core";
 import { dryRunOutcome, DurationError, Journal, journalEntryKeyString, LangErrors, parseDuration, SimClockStartError, validate, type SimScript } from "@cotal-ai/lang";
 import { CommandFailure, isCommandFailure, oneLine, presentationOf, recordOperationWarning, writeResult, type Report } from "@cotal-ai/workspace";
 import { logLineText } from "./log-line.js";
@@ -70,7 +70,14 @@ function scriptOf(file: string | undefined): SimScript {
   try { text = new TextDecoder("utf-8", { fatal: true }).decode(bytes); }
   catch { throw new CommandFailure("refused", "SCHEMA_INVALID", "the simulation results script is not valid UTF-8, so it was not simulated", { target: { file }, remedy: `save ${file} as UTF-8 text` }); }
   let value: unknown;
-  try { value = JSON.parse(text); }
+  // The reviver sees the literal even when JSON.parse rounded it to a safe integer.
+  const startSources = new WeakMap<object, string>();
+  try {
+    value = JSON.parse(text, function (this: object, key: string, item: unknown, context?: { source?: string }) {
+      if (key === "start" && typeof item === "number" && context?.source !== undefined) startSources.set(this, context.source);
+      return item;
+    });
+  }
   catch { throw new CommandFailure("refused", "SCHEMA_INVALID", `the simulation results script ${file} is not valid JSON`, { target: { file }, remedy: `save a JSON results object in ${file}` }); }
   const duplicate = hasDuplicateNames(text);
   if (duplicate.duplicate) throw new CommandFailure("refused", "SCHEMA_INVALID", `the simulation results script ${file} names ${JSON.stringify(duplicate.name)} twice in one object`, {
@@ -85,6 +92,10 @@ function scriptOf(file: string | undefined): SimScript {
       throw new CommandFailure("refused", "SCHEMA_INVALID", `invalid simulation script field '${key}'`);
   }
   const clock = script.clock as Record<string, unknown> | undefined;
+  if (clock !== undefined && Number.isSafeInteger(clock.start)) {
+    const source = startSources.get(clock);
+    if (source === undefined || hasOutOfRangeNumber(source).outOfRange) throw clockStartRefusal(file, new SimClockStartError());
+  }
   // A misspelled clock key is silently ignored: the simulator falls back to the 1m default,
   // so `clock.checkpoints` measures a delay the author never asked for. Refuse it before
   // simulation, naming the singular key when the typo is a plural of one.
@@ -135,6 +146,12 @@ function scriptOf(file: string | undefined): SimScript {
     }
   }
   return script as SimScript;
+}
+
+function clockStartRefusal(file: string | undefined, error: SimClockStartError): CommandFailure {
+  return new CommandFailure("refused", "SCHEMA_INVALID", error.message, {
+    target: { file }, remedy: "set clock.start within the supported range or omit it to start at zero",
+  });
 }
 
 /** Why a scripted fault is not one the simulator can raise, or undefined. The simulator matches
@@ -305,11 +322,7 @@ export async function offlineWorkflow(mode: "validate" | "plan" | "simulate", fi
   try { report = await dryRunOutcome(source, script, { file, journal }); }
   catch (error) {
     for (const warning of warnings) recordOperationWarning(warning, { echo: presentation !== "json" });
-    if (error instanceof SimClockStartError) {
-      throw new CommandFailure("refused", "SCHEMA_INVALID", error.message, {
-        target: { file: values.handler }, remedy: "set clock.start within the supported range or omit it to start at zero",
-      });
-    }
+    if (error instanceof SimClockStartError) throw clockStartRefusal(values.handler, error);
     throw simulationFailure(error, file, journal);
   }
   // A program that fails under its script is a completed simulation, and the failure is its outcome.

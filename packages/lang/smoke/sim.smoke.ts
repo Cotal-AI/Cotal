@@ -129,6 +129,15 @@ const ctxFor = (key: StepKey, attempt = 0): EffectContext => ({
   ok("a wake beyond the elapsed time limit leaves the clock unchanged", sim.now() === 0, sim.now());
 }
 
+{
+  const start = Number.MAX_SAFE_INTEGER - 1;
+  const sim = new SimHandler({ clock: { start } });
+  throws(() => sim.advance(0.25), { code: "L6003" });
+  ok("a fractional direct advance leaves the clock unchanged near the limit", sim.now() === start, sim.now());
+  sim.advance(1);
+  ok("a whole direct advance can reach the clock limit", sim.now() === Number.MAX_SAFE_INTEGER, sim.now());
+}
+
 // ---- 5) injected checkpoint answers ---------------------------------------------------------------
 
 {

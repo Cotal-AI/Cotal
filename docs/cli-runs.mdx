@@ -386,7 +386,9 @@ prompts an `unblock` turn, and the unnamed wait reads the `wait` entry.
 
 An invalid clock start or duration is refused before simulation with `SCHEMA_INVALID`, exit 1,
 even if the program does not reach that effect. The refusal names the results file and the field to
-correct. If a wake time, deadline or elapsed time goes outside the same range, the simulator raises
+correct. Decimal and exponent notation are accepted for `clock.start` when the JSON number denotes
+a whole number in range. The simulator rejects fractions that would round to a whole number.
+If a wake time, deadline or elapsed time goes outside the same range, the simulator raises
 L6003. If it goes uncaught, the CLI exits 5 with `OPERATION_FAILED`. Use a start closer to zero or
 shorter durations.
 

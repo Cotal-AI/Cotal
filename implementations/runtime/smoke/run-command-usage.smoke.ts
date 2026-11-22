@@ -358,12 +358,32 @@ const VERBS = ["start", "resume", "ps", "journal", "answer", "amend", "revoke", 
     c(`a malformed scripted handoff names turns.build[1].to (${JSON.stringify(to)})`, scriptRefusal(invalid, "turns.build[1].to must be an agent handle"), invalid);
   }
   for (const text of ['{"clock":{"start":"1000"}}', '{"clock":{"start":null}}', '{"clock":{"start":1e999}}',
-    '{"clock":{"start":1000.5}}', '{"clock":{"start":9007199254740992}}', '{"clock":{"start":-9007199254740992}}']) {
+    '{"clock":{"start":1000.5}}', '{"clock":{"start":9007199254740992}}', '{"clock":{"start":-9007199254740992}}',
+    '{"clock":{"start":9007199254740990.25}}', '{"clock":{"start":-9007199254740991.25}}',
+    String.raw`{"clo\u0063k":{"st\u0061rt":1e-324},"events":{"wait":{"start":0}}}`]) {
     const invalid = await simulateText(text);
     c(`an invalid clock start is refused (${text})`,
       scriptRefusal(invalid, "clock.start must be a whole number of milliseconds between -9007199254740991 and 9007199254740991")
       && isCommandFailure(invalid) && (invalid.target as { file?: string })?.file === handler
       && invalid.remedy?.includes("clock.start") === true, invalid);
+  }
+  {
+    const shown: string[] = [];
+    const write = process.stdout.write;
+    process.stdout.write = ((chunk: string | Uint8Array) => { shown.push(String(chunk)); return true; }) as typeof process.stdout.write;
+    try {
+      writeFileSync(program, 'log(now());\nawait sleep("1ms");\n');
+      for (const [literal, start] of [["900719925474098900e-2", 9007199254740989], ["1000.0", 1000], ["-0e-400", 0]] as const) {
+        shown.length = 0;
+        const error = await simulateText(`{"clock":{"start":${literal}},"events":{"wait":{"start":1e-324}}}`, { json: true });
+        const result = shown.length === 0 ? undefined : JSON.parse(shown.join("")).result;
+        c(`clock.start accepts an exact whole millisecond (${literal}) without checking unrelated start fields`,
+          error === undefined && result?.elapsedMs === 1 && result.log[0]?.values[0] === start, { error, result });
+      }
+    } finally {
+      process.stdout.write = write;
+      writeFileSync(program, 'await checkpoint("go", "Proceed?", { timeout: "4s", onExpiry: "proceed" });\n');
+    }
   }
   // The reported typo: `clock.checkpoints` silently fell back to the 60s default, so the
   // simulation measured 60000ms instead of the 3000ms the author asked for. An unknown clock

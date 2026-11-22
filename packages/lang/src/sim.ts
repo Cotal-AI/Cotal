@@ -100,6 +100,14 @@ export class SimClockStartError extends RangeError {
   }
 }
 
+function clockRangeError(cause: string, fix: string): EffectError {
+  return new EffectError(
+    "L6003",
+    "simulation-clock-range",
+    `L6003 Simulation clock out of range\n\n${cause}\n\nFix: ${fix}`,
+  );
+}
+
 interface Consumption {
   readonly table: string;
   readonly name: string;
@@ -165,16 +173,18 @@ export class SimHandler implements EffectHandler {
 
   /** Advance virtual time immediately. The timed effects go through the event queue instead. */
   advance(ms: number): void {
+    if (!Number.isSafeInteger(ms)) {
+      throw clockRangeError("A direct clock advance must use whole milliseconds in the safe integer range.", "pass a safe integer to SimHandler.advance.");
+    }
     this.virtualNow = this.clockInstant(this.virtualNow + ms);
   }
 
   // Both the absolute clock and the elapsed time in a report need millisecond resolution.
   private clockInstant(at: number): number {
     if (Number.isSafeInteger(at) && Number.isSafeInteger(at - this.startedAt)) return at;
-    throw new EffectError(
-      "L6003",
-      "simulation-clock-range",
-      `L6003 Simulation clock out of range\n\nA virtual wake or deadline exceeds the range for millisecond precision (${Number.MIN_SAFE_INTEGER} to ${Number.MAX_SAFE_INTEGER} ms for both timestamps and elapsed time).\n\nFix: choose a clock.start closer to zero or shorten the simulated durations.`,
+    throw clockRangeError(
+      `A virtual wake or deadline exceeds the range for millisecond precision (${Number.MIN_SAFE_INTEGER} to ${Number.MAX_SAFE_INTEGER} ms for both timestamps and elapsed time).`,
+      "choose a clock.start closer to zero or shorten the simulated durations.",
     );
   }
 
