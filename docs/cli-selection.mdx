@@ -360,12 +360,13 @@ authoritative liveness or membership check. User-auth deletion inventory and app
 are not supported. The dry-run removes no live or local state, and a read that covers its whole scope
 exits 0. A space that is prepared and not running, including one stopped with `cotal down`, has no
 live broker to read or delete from: `space delete` refuses it with `TARGET_UNAVAILABLE`, exit 2.
-For a stopped stack the preview points to `cotal reset store <space> --dry-run` to inspect its saved
-streams. A request without `--dry-run` instead names `cotal reset store <space> --yes`, which removes
+For a stopped stack the preview points to `cotal reset store <space> --dry-run` to show the impact of
+resetting its local store. A stream inventory requires a running broker. A request without `--dry-run`
+instead names `cotal reset store <space> --yes`, which removes
 the stored streams, and `space forget`, which removes only its local record. For a space that never ran it names only
 `space forget`, because no streams were stored.
 If the recorded project folder is missing and this folder holds the matching journal, the refusal
-names how to move the project back before inspecting or resetting the store. When it offers adoption, start and
+names how to move the project back before previewing or resetting the store. When it offers adoption, start and
 stop the adopted stack in its new root before resetting its store. If the project cannot be
 located, the refusal says that stored streams could not be checked.
 

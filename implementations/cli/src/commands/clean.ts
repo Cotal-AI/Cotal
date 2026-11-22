@@ -85,8 +85,8 @@ function recordedAttemptStep(root: string, journal: ReturnType<typeof readMainte
 
 export function validateCleanArguments(args: ParsedArgs): void {
   const target = args.positionals[0];
-  if (target === "history" && args.values.attempt !== undefined)
-    throw new CommandFailure("refused", "USAGE_INVALID", "clean history cannot be scoped by --attempt. That option selects a restore for clean restore-attempt or clean restore-fallback. Nothing was purged.", { selfContained: true });
+  if ((target === "history" || target === "store" || target === "all") && args.values.attempt !== undefined)
+    throw new CommandFailure("refused", "USAGE_INVALID", `clean ${target} cannot be scoped by --attempt. That option selects a restore for clean restore-attempt or clean restore-fallback. Nothing was ${target === "history" ? "purged" : "removed"}.`, { selfContained: true });
   if (args.values["store-dir"] === undefined) return;
   if (target === "history")
     throw new CommandFailure("refused", "USAGE_INVALID", "clean history targets a running mesh. Nothing was purged. Only clean store and clean all take --store-dir.", { selfContained: true });
