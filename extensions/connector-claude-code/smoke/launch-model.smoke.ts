@@ -25,18 +25,9 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { claudeConnector } from "../src/extension.js";
+import { createSuite } from "@cotal-ai/smoke-kit";
 
-let pass = 0;
-let fail = 0;
-const check = (name: string, cond: boolean, extra?: unknown) => {
-  if (cond) {
-    pass++;
-    console.log(`  ✓ ${name}`);
-  } else {
-    fail++;
-    console.log(`  ✗ FAIL: ${name}`, extra ?? "");
-  }
-};
+const { check, finish, passed, failed } = createSuite();
 
 const launch = (extra: Record<string, unknown>) =>
   claudeConnector.buildLaunch({ space: "s", name: "seat", events: false, ...extra } as never);
@@ -117,9 +108,10 @@ check(
 const EXPECTED = 21;
 check(
   `every cell ran - ${EXPECTED} expected, a conditional cell that vanishes is invisible without this`,
-  pass + fail === EXPECTED, // counted BEFORE this check lands, so it counts the cells above it
-  `${pass + fail} cells reported`,
+  passed() + failed() === EXPECTED, // counted BEFORE this check lands, so it counts the cells above it
+  `${passed() + failed()} cells reported`,
 );
 
-console.log(`SUITE COMPLETE: ${pass} passed, ${fail} failed`);
-process.exit(fail === 0 ? 0 : 1);
+console.log(`SUITE COMPLETE: ${passed()} passed, ${failed()} failed`);
+finish();
+process.exit(failed() === 0 ? 0 : 1);

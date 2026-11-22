@@ -16,6 +16,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 // @ts-expect-error - plain .mjs helper, imported by bin/smoke/shard.mjs.
 import { neverRanBlock } from "./shard-never-ran.mjs";
+import { createSuite } from "@cotal-ai/smoke-kit";
 
 const SHARD = fileURLToPath(new URL("./shard.mjs", import.meta.url));
 const { packageManager } = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8"));
@@ -64,17 +65,7 @@ function runShippedShard(scripts: Record<string, string>) {
   }
 }
 
-let pass = 0;
-let fail = 0;
-const check = (name: string, cond: boolean, extra?: unknown) => {
-  if (cond) {
-    pass++;
-    console.log(`  ✓ ${name}`);
-  } else {
-    fail++;
-    console.log(`  ✗ FAIL: ${name}`, extra ?? "");
-  }
-};
+const { check, finish, passed, failed } = createSuite();
 
 console.log("shard-never-ran: the never-ran census a shard prints at its break point");
 
@@ -158,9 +149,10 @@ check(
 const EXPECTED = 17;
 check(
   `every cell ran - ${EXPECTED} expected, so a cell that stops existing is not mistaken for one that passed`,
-  pass + fail === EXPECTED,
-  `${pass + fail} cells reported`,
+  passed() + failed() === EXPECTED,
+  `${passed() + failed()} cells reported`,
 );
 
-console.log(`SUITE COMPLETE: ${pass} passed, ${fail} failed`);
-process.exit(fail === 0 ? 0 : 1);
+console.log(`SUITE COMPLETE: ${passed()} passed, ${failed()} failed`);
+finish();
+process.exit(failed() === 0 ? 0 : 1);
