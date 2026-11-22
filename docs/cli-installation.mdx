@@ -633,7 +633,7 @@ cotal join --link <url> | --token <t>
 | `--space <s>` / `--server <url>` / `--creds <path>` | resolved mesh | Which mesh, and which credential |
 | `--name <n>` | none | Your presence name |
 | `--role <r>` | none | Your role |
-| `--channel <c>` | link's first channel, else `general` | Channel to join; a static credential needs a read grant for it |
+| `--channel <c>` | link's first channel, else `general` | Channel to join, with or without a leading `#`. A static credential needs a read grant for it |
 | `--kind <k>` | `agent` | Endpoint kind |
 | `--link <url>` | none | Join link (`cotal://…`) |
 | `--token <t>` | none | Join token |
@@ -648,6 +648,10 @@ on an incoming line, and on a DM you send. A `--link` supplies the where and the
 Enter `/quit` to leave the session, including when pasting it after another command, or press
 Ctrl-D at the terminal prompt. If `/dm`, `/anycast`, or `/me` is missing an argument, `join`
 prints its usage without posting the line to the channel.
+
+With terminal input and redirected stdout, `join` writes the transcript to stdout and keeps the
+prompt on stderr if stderr is a terminal. Without terminal input or a terminal output stream, it
+holds presence without reading stdin.
 
 A bare join on a static-auth mesh provisions its own inboxes and read grant for the landing
 channel. It establishes durable membership when the channel's delivery policy is durable, even
@@ -686,7 +690,8 @@ UID and a read grant, the refusal names that lifecycle and a mint with `--provis
 channel flag to keep its existing grants. Without a UID, `join`
 first refuses with the lifecycle-pairing requirement. An `observer` or `admin` credential cannot join as a participant and is refused with `PERMISSION_DENIED` before the lifecycle-pairing check, naming the `agent` mint command.
 
-On a registered user-auth space, sign in with `cotal login` first. `join` uses your existing `cli`
+On a registered user-auth space, `join` refuses expiry flags before asking you to sign in. For a
+join without expiry flags, sign in with `cotal login` first. `join` uses your existing `cli`
 actor bearer and renews it through the same login and exchange while the session runs. Its channel
 and DM resources must already be provisioned by the space operator. It never mints static
 credentials or widens your grants. A changed principal, lifecycle or connection trust refuses
