@@ -105,6 +105,15 @@ const ansi = /\x1b\[/;
       && missing.envelope?.outcome === "refused" && missing.envelope.error?.code === "USAGE_INVALID"
       && missing.envelope.error.message === "--space needs a value" && missing.envelope.error.remedy === "write --space <name>", shown(missing));
   }
+  for (const args of [["config", "get", "harness", "-jZ"], ["config", "-vjZ"]]) {
+    const unknown = run(args);
+    check(`${args.join(" ")} keeps JSON when an unknown option follows j in the group`, unknown.status === 1 && unknown.stderr === ""
+      && unknown.envelope?.command === "config" && unknown.envelope.outcome === "refused" && unknown.envelope.completeness === "not-checked"
+      && unknown.envelope.error?.code === "USAGE_INVALID" && unknown.envelope.error.message === "Unknown option '-Z'", shown(unknown));
+  }
+  const unknownFirst = run(["config", "get", "harness", "-Zj"]);
+  check("a j after an unknown short option in the group does not select JSON", unknownFirst.status === 1 && unknownFirst.stdout === ""
+    && unknownFirst.stderr.includes("Unknown option '-Z'"), shown(unknownFirst));
   const attached = run(["config", "get", "harness", "-sj", "--bogus"]);
   check("a j in an attached space value does not select JSON", attached.status === 1 && attached.stdout === ""
     && attached.stderr.includes("Unknown option '--bogus'"), shown(attached));

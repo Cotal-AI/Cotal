@@ -141,7 +141,7 @@ function structured(cmd: Command, first: string | undefined): boolean {
 }
 
 /** Whether `args` ask `cmd` for JSON before any `--`: `--json`, `-j`, or `-j` in a short option group
- *  before any value-taking option. The mode is the first positional after skipping declared values. */
+ *  before any unknown or value-taking option. The mode is the first positional after skipping declared values. */
 function asksForJson(cmd: Command, args: readonly string[]): boolean {
   if (!structured(cmd, metadataPositionals(cmd, args).positionals[0]?.value)) return false;
   const shorts = new Map(cmd.flags?.flatMap((flag) => flag.short ? [[flag.short, flag.type] as const] : []));
@@ -149,14 +149,11 @@ function asksForJson(cmd: Command, args: readonly string[]): boolean {
   return (end === -1 ? args : args.slice(0, end)).some((word) => {
     if (word === "--json" || word === "-j") return true;
     if (!/^-[^-]/.test(word)) return false;
-    let json = false;
     for (const ch of word.slice(1)) {
-      const type = shorts.get(ch);
-      if (type === undefined) return false;
-      if (type === "string") break;
-      if (ch === "j") json = true;
+      if (shorts.get(ch) !== "boolean") break;
+      if (ch === "j") return true;
     }
-    return json;
+    return false;
   });
 }
 

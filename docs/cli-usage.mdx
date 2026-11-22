@@ -283,7 +283,9 @@ Diagnostics stay on stderr. A command that refuses or fails under `--json` repor
 envelope alone and writes no text report on stderr. The text report goes to stderr only when the
 envelope cannot be written to stdout, and the exit code is the same either way. A usage error under
 `--json` is a `refused` envelope with code `USAGE_INVALID`, and the help it names stays off stdout.
-This also applies to `-j` grouped before a short option that needs a value, as in `cotal config get harness -js`.
+This also applies when `-j` comes before an unknown short option in the same group, as in
+`cotal config get harness -jZ`, or before an option that is missing its value, as in
+`cotal config get harness -js`.
 A word that names none of a command's subcommands and is near none of them is a usage error that
 lists the subcommands the command takes.
 A command without a JSON output refuses `--json` as an unknown option.
