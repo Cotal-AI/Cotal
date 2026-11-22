@@ -105,13 +105,13 @@ try {
   rmSync(join(destination, "stream-a.snap"));
   assert.throws(() => backupRead({ positionals: ["verify", realpathSync(destination)], values: {}, raw: [] }),
     verifyFault("stream-a.snap", "missing", /^backup artifact is missing its declared file stream-a\.snap/));
-  // An interrupted create leaves snapshots with no manifest: verify names it an incomplete artifact.
+  // Snapshots with no manifest identify an incomplete artifact, not an attempt to recover.
   const partial = join(root, "partial-artifact");
   mkdirSync(partial);
   writeFileSync(join(partial, "stream-0123456789abcdef01234567.snap"), Buffer.from([1, 2, 3]));
   assert.throws(() => backupRead({ positionals: ["verify", realpathSync(partial)], values: {}, raw: [] }), (error: unknown) =>
-    isCommandFailure(error) && error.code === "SCHEMA_INVALID" && error.message === `${realpathSync(partial)} has no manifest.json, so it is an incomplete artifact, as an interrupted backup create leaves one; nothing in it was checked`
-      && (error.target as { fault?: unknown }).fault === "manifest-missing" && (error.remedy ?? "").includes("cotal backup recover <attempt> --yes"));
+    isCommandFailure(error) && error.code === "SCHEMA_INVALID" && error.message === `${realpathSync(partial)} has no manifest.json, so it is an incomplete artifact; nothing in it was checked`
+      && (error.target as { fault?: unknown }).fault === "manifest-missing" && (error.remedy ?? "").startsWith("verify another intact copy"));
   // A folder that holds nothing a create writes, or a file, is not an artifact, not an interrupted one,
   // and the refusal says which it is.
   const plain = join(root, "not-a-backup");

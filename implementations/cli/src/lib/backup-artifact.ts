@@ -479,12 +479,19 @@ export function missingBackupPathText(path: string, missing: "folder" | "artifac
  *  is. The folder of a create interrupted before it wrote a file, which the claim on `root` names, is
  *  an incomplete artifact, as is a real folder with no manifest: create writes the manifest last. */
 export function notAnArtifactRefusal(root: string, path: string, outcome: string, target: Readonly<Record<string, unknown>> = {}): CommandFailure | undefined {
-  if (notAnArtifact(path) && !claimedDestination(root, path)) {
+  const missing = manifestMissing(path);
+  const claim = missing ? claimedDestination(root, path) : undefined;
+  if (notAnArtifact(path) && !claim) {
     const stat = statSync(path);
     const what = !stat.isDirectory() ? (stat.isFile() ? "is a file" : "is not a folder") : readdirSync(path).length === 0 ? "is an empty folder" : "holds no manifest.json and no file a backup create writes";
     return new CommandFailure("refused", "TARGET_NOT_FOUND", `${path} is not a backup artifact: it ${what}; ${outcome}`, { target: { ...target, directory: path }, remedy: "name the folder backup create wrote" });
   }
-  if (manifestMissing(path)) return new CommandFailure("refused", "SCHEMA_INVALID", `${path} has no manifest.json, so it is an incomplete artifact, as an interrupted backup create leaves one; ${outcome}`, { target: { ...target, directory: path, fault: "manifest-missing" }, remedy: "it cannot be verified or restored. In the folder it was created from, `cotal status` names the interrupted backup attempt, and `cotal backup recover <attempt> --yes` removes this directory; then create a new backup" });
+  if (missing) {
+    const remedy = claim?.owned
+      ? `run \`cotal backup recover ${claim.attemptId} --yes\` from the original project once the attempt has stopped, then create a new backup`
+      : "verify another intact copy, or create a new backup from a stopped preserved cut";
+    return new CommandFailure("refused", "SCHEMA_INVALID", `${path} has no manifest.json, so it is an incomplete artifact; ${outcome}`, { target: { ...target, directory: path, fault: "manifest-missing" }, remedy });
+  }
   return undefined;
 }
 
@@ -499,15 +506,19 @@ function notAnArtifact(path: string): boolean {
 }
 
 /** Whether the claim on `root` names `path` as its backup destination. */
-function claimedDestination(root: string, path: string): boolean {
+function claimedDestination(root: string, path: string): { attemptId: string; owned: boolean } | undefined {
   try {
     const journal = readMaintenanceJournal(root);
-    return journal?.state === "claimed" && !!journal.claim.ownedPaths?.some((owned) => owned.label === "destination" && owned.path === path);
-  } catch { return false; }
+    if (journal?.state !== "claimed") return undefined;
+    const destination = journal.claim.ownedPaths?.find((entry) => entry.label === "destination" && entry.path === path);
+    if (!destination) return undefined;
+    const { dev, ino } = destination;
+    const owned = dev !== undefined && ino !== undefined && sameDirectoryIdentity(path, { dev: BigInt(dev), ino: BigInt(ino) });
+    return { attemptId: journal.claim.attemptId, owned };
+  } catch { return undefined; }
 }
 
-/** A real directory with no `manifest.json`: create writes the manifest last, so this is a backup that
- *  never published. */
+/** A real directory with no `manifest.json`. */
 function manifestMissing(directory: string): boolean {
   try { return lstatSync(directory).isDirectory() && !lstatSync(join(directory, "manifest.json"), { throwIfNoEntry: false }); }
   catch { return false; }

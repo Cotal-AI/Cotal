@@ -228,9 +228,21 @@ try {
   check("input reaches the unjoined seat", input.status === 0, input);
   for (const [i, name] of unjoinedSeats.entries()) {
     const flags = i === 1 ? ["--force"] : i === 2 ? ["--on", IID1] : [];
-    const stopped = await cotal(["stop", name, ...flags, "--space", space, "--server", SERVERS], root1);
+    const route = ["--space", space, "--server", SERVERS];
+    let stopArgs = ["stop", name, ...flags, ...route];
+    if (name === "unjoinedForce") {
+      const refused = await cotal([...stopArgs, "--on", "not-a-pin"], root1);
+      const retry = refused.out.match(/`(cotal stop [^`]+)`/)?.[1];
+      check("a malformed stop pin refuses and the retry keeps the hard stop", refused.status === 1
+        && refused.out.includes("not a valid lifecycle token")
+        && retry === `cotal stop ${name} --force ${route.join(" ")} --on <instance>`, refused);
+      if (!retry) continue;
+      stopArgs = retry.replace("<instance>", IID1).split(" ").slice(1);
+    }
+    const stopped = await cotal(stopArgs, root1);
     console.log(`$ cotal stop ${name} ${flags.join(" ")}\n${stopped.out}`);
-    check(`stop ${flags.join(" ") || "without pin"} reaches the unjoined seat`, stopped.status === 0, stopped);
+    check(`stop ${flags.join(" ") || "without pin"} reaches the unjoined seat in the requested mode`,
+      stopped.status === 0 && stopped.out.includes(i === 1 ? "Native mode: hard despawn" : "Native mode: graceful"), stopped);
   }
 
   const unjoinedAfter = await cotal(["ps", "--space", space, "--server", SERVERS], root1);
@@ -253,6 +265,24 @@ try {
   const pinnedNoName = await cotal(["attach", "--on", IID1, ...route, "--no-reconnect"], other);
   check("noninteractive attach keeps the manager pin in both commands and the session option in the retry",
     pinnedNoName.status === 1 && pinnedNoName.out.includes(`run \`cotal ps --on ${IID1} ${route.join(" ")}\`, then \`cotal attach <name> --on ${IID1} --no-reconnect ${route.join(" ")}\``), pinnedNoName);
+  const shortPin = await cotal(["attach", "--on", "m4k7asdf1234", ...route, "--no-reconnect"], other);
+  const [discovery, attachRetry] = [...shortPin.out.matchAll(/`([^`]+)`/g)].map((match) => match[1]);
+  check("noninteractive attach diagnoses the malformed pin and suggests an unpinned roster and corrected attach",
+    shortPin.status === 1 && shortPin.out.includes("not a valid manager instance id") && discovery === roster
+    && attachRetry === `cotal attach <name> --on <instance> --no-reconnect ${route.join(" ")}`, shortPin);
+  const discoveryResult = discovery === roster ? await cotal(discovery.split(" ").slice(1), other) : undefined;
+  check("the malformed-pin discovery command lists both managers on the specified space",
+    discoveryResult?.status === 0 && discoveryResult.out.includes(IID1) && discoveryResult.out.includes(IID2), discoveryResult ?? shortPin);
+  const missingStop = await cotal(["stop", ...route, "--json"], other);
+  const missingStopEnvelope = JSON.parse(missingStop.out);
+  const stopRemedy: string = missingStopEnvelope.error?.remedy ?? "";
+  check("nameless stop refuses before target resolution and keeps the explicit route and JSON in its retry",
+    missingStop.status === 1 && missingStopEnvelope.error?.code === "USAGE_INVALID" && missingStopEnvelope.target === null
+    && stopRemedy === `run \`${roster}\`, then \`cotal stop <name> --json ${route.join(" ")}\``, missingStop);
+  const stopRoster = stopRemedy.split("`")[1];
+  const stopRosterResult = stopRoster === roster ? await cotal(stopRoster.split(" ").slice(1), other) : undefined;
+  check("the nameless stop roster finds the explicit space rather than the selected space",
+    stopRosterResult?.status === 0 && stopRosterResult.out.includes(IID1) && stopRosterResult.out.includes(IID2), stopRosterResult ?? missingStop);
   const privateServer = await cotal(["attach", "--space", space, "--server", SERVERS.replace("://", "://user:sensitive-value@")], other);
   check("a broker URL with userinfo is refused without echoing it", privateServer.status === 1
     && privateServer.out.includes("--server must not embed credentials") && !privateServer.out.includes("sensitive-value"), privateServer);

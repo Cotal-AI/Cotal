@@ -77,7 +77,7 @@
  */
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { connect } from "@nats-io/transport-node";
@@ -520,6 +520,17 @@ try {
       check(`reset ${kind} ${mode} refuses CONFLICT, naming the linked store path and the directory it points to`, reset.status === 2 && reset.env?.error?.code === "CONFLICT" && Boolean(reset.env.error.message.includes(`the recorded store path ${store} is a link to ${moved}`)) && Boolean(reset.env.error.remedy?.includes(`cotal reset ${kind} ${space} --dry-run`)), shown(reset));
     }
     check("nothing is removed through the link", existsSync(join(moved, "notes.txt")) && existsSync(join(moved, "jetstream")));
+    rmSync(store);
+    const missing = `${store}-missing`;
+    symlinkSync(missing, store);
+    for (const kind of ["store", "space"]) for (const mode of ["--dry-run", "--yes"]) {
+      const reset = cli(root, "reset", kind, space, mode, "--json");
+      check(`reset ${kind} ${mode} refuses a dangling store link`, reset.status === 2 && reset.env?.error?.code === "CONFLICT"
+        && reset.env.error.message.includes(`the recorded store path ${store} is a link to ${missing}`)
+        && reset.env.error.message.includes("nothing was removed"), shown(reset));
+    }
+    check("the dangling link and parked store remain", readlinkSync(store) === missing
+      && !existsSync(missing) && existsSync(join(moved, "jetstream")));
   }
 
   // 10. A stack whose folder is deleted stops from another folder, and its name starts again.

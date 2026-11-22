@@ -800,8 +800,8 @@ try {
     const sr1 = new Manager({ space, servers: broker.servers, runtime: "pty", workspaceRoot });
     await sr1.start();
     const doors = sr1 as unknown as {
-      daemonRenewalOwner: boolean;
       renewDaemonCreds: () => Promise<void>;
+      credentialRenewal: { daemonRenewalOwner: boolean; };
     };
 
     // THE NON-HOLDER: same rail, no lease, names the MANAGER'S OWN store — the answer a bare
@@ -837,8 +837,8 @@ try {
       await until(async () => { await doors.renewDaemonCreds(); return nonHolderAnswers > 0; }, 30_000),
       { nonHolderAnswers, holderAnswers });
     check("a NON-HOLDER answer with the manager's own store is REFUSED: the manager does not take the renewal lease (#1694)",
-      doors.daemonRenewalOwner === false,
-      { daemonRenewalOwner: doors.daemonRenewalOwner, nonHolderAnswers, holderAnswers });
+      doors.credentialRenewal.daemonRenewalOwner === false,
+      { daemonRenewalOwner: doors.credentialRenewal.daemonRenewalOwner, nonHolderAnswers, holderAnswers });
 
     // ROUND 2, blocker 2 REPRODUCTION SHAPE: a manager that already HELD the renewal lease must
     // LOSE it when a later pass refuses. This manager started while the holder answered with a
@@ -857,9 +857,9 @@ try {
     // manager's root and drives a pass while the holder still answers, so the pass reads "shared"
     // and takes the lease; THEN the responders come off the rail for the refusal.
     holderStore = "manager-own";
-    const tookLease = await until(async () => { await doors.renewDaemonCreds(); return doors.daemonRenewalOwner === true; }, 30_000);
+    const tookLease = await until(async () => { await doors.renewDaemonCreds(); return doors.credentialRenewal.daemonRenewalOwner === true; }, 30_000);
     check("the manager held the renewal lease before the refusal (started shared, then the responder answered its store)",
-      tookLease && doors.daemonRenewalOwner === true, { daemonRenewalOwner: doors.daemonRenewalOwner });
+      tookLease && doors.credentialRenewal.daemonRenewalOwner === true, { daemonRenewalOwner: doors.credentialRenewal.daemonRenewalOwner });
 
     await nonHolder.stop().catch(() => {});
     try { holderSub.unsubscribe(); } catch { /* already closed */ }
@@ -880,8 +880,8 @@ try {
     finally { console.error = origSay; }
     const passLog = said.join("\n");
     check("a no-responder rail while the row names a holder REFUSES (undetermined, never absent) and the manager holds no renewal lease",
-      (refusal.includes("names a holder") || passLog.includes("names a holder")) && doors.daemonRenewalOwner === false,
-      { refusal, passLog, daemonRenewalOwner: doors.daemonRenewalOwner });
+      (refusal.includes("names a holder") || passLog.includes("names a holder")) && doors.credentialRenewal.daemonRenewalOwner === false,
+      { refusal, passLog, daemonRenewalOwner: doors.credentialRenewal.daemonRenewalOwner });
 
     // ROUND 2, blocker 1: the row EXISTS (a live PUT) but its bytes do not parse. The core reader
     // swallows the parse failure into `undefined`, so this reads as no-row → "absent" → the manager
@@ -903,8 +903,8 @@ try {
     catch (e) { unreadableRefusal = (e as Error).message; }
     finally { console.error = origSay2; }
     check("a lease row that EXISTS but does not parse is UNREADABLE, not absent: the pass refuses and the manager holds no renewal lease",
-      (unreadableRefusal.includes("could not read") || said2.join("\n").includes("could not read")) && doors.daemonRenewalOwner === false,
-      { unreadableRefusal, passLog: said2.join("\n"), daemonRenewalOwner: doors.daemonRenewalOwner });
+      (unreadableRefusal.includes("could not read") || said2.join("\n").includes("could not read")) && doors.credentialRenewal.daemonRenewalOwner === false,
+      { unreadableRefusal, passLog: said2.join("\n"), daemonRenewalOwner: doors.credentialRenewal.daemonRenewalOwner });
 
     // Case 3: the corrupt row is REPLACED with a holderless one (a row that names no holder —
     // `bucket.update` under the holder's own cred, the one lease-key writer) and the rail still
@@ -923,8 +923,8 @@ try {
     try { await doors.renewDaemonCreds(); }
     catch (e) { absentRefusal = (e as Error).message; }
     check("a holderless or absent lease row with no responder reads ABSENT: the manager may take the renewal lease (the daemon is not bound yet)",
-      absentRefusal === "" && doors.daemonRenewalOwner === true,
-      { absentRefusal, daemonRenewalOwner: doors.daemonRenewalOwner });
+      absentRefusal === "" && doors.credentialRenewal.daemonRenewalOwner === true,
+      { absentRefusal, daemonRenewalOwner: doors.credentialRenewal.daemonRenewalOwner });
 
     await sr1.stop({ withAgents: true }).catch(() => {});
   }

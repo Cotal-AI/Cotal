@@ -9,7 +9,7 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import {
@@ -603,6 +603,7 @@ async function interruptedCreateScenario(): Promise<void> {
   const configDir = join(home, "xdg");
   const sandbox = recordSmokeSandbox({ root, cotalHome: home, xdgConfigHome: configDir });
   const destination = join(root, "interrupted-backup");
+  const store = join(root, "private store");
   const port = await freePort();
   const server = `nats://127.0.0.1:${port}`;
   const space = "backup_faults_int_create";
@@ -616,9 +617,16 @@ async function interruptedCreateScenario(): Promise<void> {
     assert.equal(result.status, 0, `interrupted create ${label}\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`);
   };
   try {
-    must("up", run("up", "--detach", "--open", "--server", server, "--space", space));
-    assert.ok(existsSync(join(root, ".cotal", "nats")), "up resolved this root");
-    must("preserve cut", run("down", "--preserve-state"));
+    must("up", run("up", "--detach", "--open", "--server", server, "--space", space, "--store-dir", store));
+    assert.ok(existsSync(join(store, "jetstream")), "up opened the custom store");
+    const wrongStore = run("down", "--preserve-state", "--yes", "--store-dir", "./different store", "--session-store", ".");
+    assert.equal(wrongStore.status, 2, wrongStore.stderr);
+    const option = wrongStore.stderr.match(/omit --store-dir, or pass (--store-dir .+)$/m)?.[1];
+    assert.equal(option, `--store-dir '${store}'`, wrongStore.stderr);
+    // Let the shell parse the printed option, then run the guarded CLI with those arguments.
+    const parsed = spawnSync("sh", ["-c", `printf '%s\\n' ${option}`], { encoding: "utf8" });
+    assert.equal(parsed.status, 0, parsed.stderr);
+    must("preserve cut with the printed store option", run("down", "--preserve-state", "--yes", ...parsed.stdout.trimEnd().split("\n"), "--session-store", "."));
 
     // Its own process group, as a terminal runs it, so the SIGINT below is the one Ctrl-C sends.
     const child = spawn(process.execPath, ["--import", tsxImport, cliPath, "backup", "create", destination], { cwd: root, env, detached: true, stdio: ["ignore", "ignore", "pipe"] });
@@ -649,6 +657,19 @@ async function interruptedCreateScenario(): Promise<void> {
     const verified = run("backup", "verify", destination);
     assert.equal(verified.status, 1, `verify refuses the partial artifact\n${verified.stderr}`);
     assert.ok(verified.stderr.includes("has no manifest.json, so it is an incomplete artifact"), `verify calls the partial artifact incomplete\n${verified.stderr}`);
+    assert.ok(verified.stderr.includes(recover), `verify names the owning attempt's recovery\n${verified.stderr}`);
+    const parked = join(root, "parked-backup");
+    renameSync(destination, parked);
+    try {
+      cpSync(parked, destination, { recursive: true });
+      const replacement = run("backup", "verify", destination);
+      assert.equal(replacement.status, 1, replacement.stderr);
+      assert.match(replacement.stderr, /verify another intact copy/);
+      assert.doesNotMatch(replacement.stderr, /backup recover/);
+    } finally {
+      rmSync(destination, { recursive: true, force: true });
+      renameSync(parked, destination);
+    }
     const samePath = run("backup", "create", destination);
     assert.equal(samePath.status, 2, `a create at the partial artifact refuses\n${samePath.stderr}`);
     assert.ok(samePath.stderr.includes(`is the partial artifact of interrupted backup attempt ${attemptId}`) && samePath.stderr.includes(recover), `that refusal names the attempt and its recovery\n${samePath.stderr}`);
@@ -663,6 +684,15 @@ async function interruptedCreateScenario(): Promise<void> {
     assert.deepEqual(attemptResidue(root), [], "recovery leaves no clone or broker files");
     must("create at the same destination after recovery", run("backup", "create", destination));
     assertValidManifest(destination, space, "full");
+    must("verify the completed backup", run("backup", "verify", destination));
+    const copy = join(root, "copy-without-manifest");
+    cpSync(destination, copy, { recursive: true });
+    rmSync(join(copy, "manifest.json"));
+    const incomplete = run("backup", "verify", copy);
+    assert.equal(incomplete.status, 1, incomplete.stderr);
+    assert.match(incomplete.stderr, /SCHEMA_INVALID/);
+    assert.match(incomplete.stderr, /verify another intact copy/);
+    assert.doesNotMatch(incomplete.stderr, /backup recover/);
     must("ordinary resume after recovery", run("up", "--detach", "--open", "--server", server, "--space", space));
     must("down", run("down", "--yes"));
   } finally {

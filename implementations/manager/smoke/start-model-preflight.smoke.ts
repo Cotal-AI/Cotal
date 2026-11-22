@@ -627,7 +627,7 @@ for (const probe of [
 {
   const mgr = new Manager({ space: "smoke", servers: undefined, runtime: "pty", workspaceRoot });
   (mgr as unknown as { ep: unknown }).ep = fakeEp({}, () => [], mgr); // roster reports nobody → never "joins"
-  (mgr as unknown as { readinessTimeoutMs: number }).readinessTimeoutMs = 40;
+  (mgr as unknown as { config: { readinessTimeoutMs: number } }).config.readinessTimeoutMs = 40;
   (mgr as unknown as { runtime: { kind: string; spawn: (n: string, s: LaunchSpec) => AgentHandle } }).runtime = {
     kind: "fake",
     spawn: (name) => ({ name, kind: "fake", status: () => "running", stop: () => {}, interrupt: () => {}, attach: () => fakeSession }),

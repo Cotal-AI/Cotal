@@ -56,13 +56,13 @@ export async function packCandidateNext({ sourceRoot, candidate, output, offset 
   assert.match(source, /^[a-f0-9]{40}$/);
   assert.equal(git(['status', '--porcelain', '--untracked-files=all', '--ignore-submodules=none']), '', 'source inputs must be clean before stamping');
   const expected = json(join(root, '.changeset/config.json')).fixed.flat().sort();
-  assert.equal(expected.length, 24, 'expected all 24 fixed-group packages');
-  assert.equal(new Set(expected).size, 24);
+  assert.equal(expected.length, 25, 'expected all 25 fixed-group packages');
+  assert.equal(new Set(expected).size, 25);
   const verify = (directory, version) => {
     const bytes = readFileSync(join(directory, 'manifest.json'));
     const manifest = JSON.parse(bytes);
     assert.equal(manifest.source, source, 'candidate source must match source H');
-    assert.deepEqual(manifest.packages.map(pkg => pkg.name).sort(), expected, 'complete 24-package closure');
+    assert.deepEqual(manifest.packages.map(pkg => pkg.name).sort(), expected, 'complete 25-package closure');
     for (const pkg of manifest.packages) {
       assert.equal(pkg.version, version, 'lockstep candidate version');
       assert.match(pkg.archive, /^[^/\\]+\.tgz$/);

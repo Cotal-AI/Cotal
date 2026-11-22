@@ -37,7 +37,7 @@
     },
     {
       "name": "the family grammar admits a * segment",
-      "file": "packages/core/src/subjects.ts",
+      "file": "packages/core/src/subject-grammar.ts",
       "find": "    segs.slice(0, -1).every((s) => /^[A-Za-z0-9_-]+$/.test(s));",
       "replace": "    segs.slice(0, -1).every((s) => /^[A-Za-z0-9_*-]+$/.test(s));",
       "expectRed": "the root >, any *, a bare channel, team.** and a mid > are not families",
@@ -45,7 +45,7 @@
     },
     {
       "name": "familiesCovering also lists a family under the channel itself",
-      "file": "packages/core/src/subjects.ts",
+      "file": "packages/core/src/subject-grammar.ts",
       "find": "  return segs.slice(1).map((_, i) => `${segs.slice(0, i + 1).join(\".\")}.>`);",
       "replace": "  return segs.map((_, i) => `${segs.slice(0, i + 1).join(\".\")}.>`);",
       "expectRed": "familiesCovering(a.b.c) = a.>, a.b.>",

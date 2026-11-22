@@ -67,6 +67,7 @@ Task dispatch:
 | [Telemetry](telemetry.mdx) | CLI usage telemetry fields, levels, storage, delivery, and opt-outs. |
 | [Use the console](console.mdx) | Inspect a mesh from the terminal and use authorized operator controls. |
 | [Use the web dashboard](web-dashboard.mdx) | Configure the read-only dashboard and inspect a space through a protected browser session. |
+| [Use an ACP client](acp-clients.mdx) | Spawn and drive Cotal agents from T3 Code, Zed and other Agent Client Protocol clients. |
 | [Supervise a remote mesh](remote-supervision.mdx) | Separate broker and manager hosts, publish an exchange, and enroll remote agents. |
 | [Supervise the stack](supervise-processes.mdx) | Choose process ownership under systemd and monitor actual component health. |
 | [Deploy agent teams](deploy.mdx) | Review the container example, its current build limitation, and the credentials it needs. |

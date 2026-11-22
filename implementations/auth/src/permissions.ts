@@ -187,7 +187,9 @@ export function calloutPermissions(
           "manager-caller",
           t.space,
           { ...principal, lifecycleUid: t.act.lifecycleUid },
-          { capabilities: caps, lifecycleUid: t.act.lifecycleUid, managerInstanceId: instanceId, ...binding },
+          // The row's kind, never a scope token, decides a person's control of their own agents
+          // (SPEC 13.21).
+          { capabilities: caps, lifecycleUid: t.act.lifecycleUid, managerInstanceId: instanceId, ...binding, ...(acl.kind !== undefined ? { ledgerKind: acl.kind } : {}) },
         );
         // Interactive issuance is unchanged. A managed seat needs both its current persona scope
         // and the fresh direct-parent grant. The mint still uses only signed act.scope.

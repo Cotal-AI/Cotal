@@ -1,5 +1,18 @@
 # @cotal-ai/connector-core
 
+## 0.175.0
+
+No changes in this release.
+
+## 0.174.4
+
+### Patch Changes
+
+- 4e25638: Correct the `whoami` broker URL requirements, document the paired `manager start` launch flags, and list `mcp` in the CLI command reference.
+- c618c33: The service reference example now saves the definition in the newly prepared space even when another space is selected.
+- 0b55375: The agent briefing now offers a single-task helper with `once: true` without listing which harnesses support it.
+  The manager already refuses a connector that cannot take a once task, so the sentence matches the `cotal_spawn` description, which dropped the same list.
+
 ## 0.174.3
 
 No changes in this release.

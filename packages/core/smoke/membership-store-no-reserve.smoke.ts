@@ -32,7 +32,7 @@ import {
   type SpaceAccountAuth,
 } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
-import { SMOKE_BROKER_TOKEN, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, killAndAwaitExit, teardownOnSignal, createSuite } from "@cotal-ai/smoke-kit";
 
 const FILE_STORE_CAP = 256 * 1024 * 1024;
 const SPACES = 8;
@@ -40,11 +40,7 @@ const LEGACY_SPACE = "legacydensity";
 const DRIFT_SPACE = "driftdensity";
 const DRIFT_CAP = 32 * 1024 * 1024;
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-let ok = 0, fail = 0;
-const check = (name: string, pass: boolean, extra?: unknown) => {
-  if (pass) { ok++; console.log(`  ✓ ${name}`); }
-  else { fail++; console.log("  ✗ FAIL:", name, extra ?? ""); }
-};
+const { check, finish, passed, failed } = createSuite();
 
 interface Jsz {
   reserved_storage?: number;
@@ -193,5 +189,6 @@ try {
   release();
 }
 
-console.log(`\n${ok} passed, ${fail} failed`);
-if (fail) process.exit(1);
+console.log(`\n${passed()} passed, ${failed()} failed`);
+finish();
+if (failed()) process.exit(1);

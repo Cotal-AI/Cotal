@@ -154,14 +154,13 @@ check("control: a valid role token is created", roleOk.status === 0 && existsSyn
 // A malformed --on names the command to rerun, with --on written once.
 for (const [argv, rerun] of [
   [["persona", "--on", "bad"], "cotal persona --on <instance>"],
-  [["persona", "create", "h1", "--prompt", "x", "--on", "bad"], "cotal persona create h1 --on <instance>"],
   // #7322: a verb that targets an agent keeps the agent, its other positionals and the space it named.
-  [["stop", "default_agent", "--on", "bad"], "cotal stop default_agent --on <instance>"],
+  [["stop", "default_agent", "--on", "bad"], "cotal stop default_agent --json --on <instance>"],
   // #7644: input gives its text again, quoted for a shell, rather than a `<text>` a shell reads as a redirection.
   [["input", "default_agent", "hello world", "--on", "bad"], "cotal input default_agent 'hello world' --on <instance>"],
   [["input", "default_agent", "hello world", "--no-enter", "--on", "bad"], "cotal input default_agent 'hello world' --no-enter --on <instance>"],
   [["status", "default_agent", "--on", "bad"], "cotal status default_agent --on <instance>"],
-  [["stop", "default_agent", "--space", "elsewhere", "--on", "bad"], "cotal stop default_agent --space elsewhere --on <instance>"],
+  [["stop", "default_agent", "--force", "--space", "elsewhere", "--on", "bad"], "cotal stop default_agent --force --json --space elsewhere --on <instance>"],
   // #7644: ps and models keep the --space and filter they were given.
   [["ps", "--space", "elsewhere", "--on", "bad"], "cotal ps --space elsewhere --on <instance>"],
   [["ps", "--slots", "--server", "nats://127.0.0.1:39200", "--on", "bogus"], "cotal ps --slots --server nats://127.0.0.1:39200 --on <instance>"],
@@ -173,13 +172,18 @@ for (const [argv, rerun] of [
   check(`${argv.slice(0, -2).join(" ")} --on bad names ${rerun} and never --on twice`,
     pinned.status === 1 && pinned.envelope?.error?.code === "USAGE_INVALID" && (pinned.envelope.error.remedy ?? "").endsWith(`rerun it as \`${rerun}\``) && !said.includes("--on --on"), shown(pinned));
 }
+const createPin = cotal("persona", "create", "h1", "--prompt", "keep this definition private", "--on", "bad", "--space", "opsp", "--json");
+check("persona create with a malformed pin tells JSON callers to replace only the original --on value",
+  createPin.status === 1 && createPin.envelope?.error?.code === "USAGE_INVALID" &&
+  (createPin.envelope.error.remedy ?? "").includes("replace only the --on value in the original command") &&
+  !createPin.stdout.includes("cotal persona create h1 --on") && !createPin.stdout.includes("keep this definition private"), shown(createPin));
 // #7644: a principal id, an empty value and an endpoint's malformed --on are refused while the
 // arguments are read, with the command to rerun in the message. It keeps the command's words and
 // the --space it was given; it used to keep only the verb.
 for (const [argv, rerun] of [
-  [["stop", "default_agent", "--space", "elsewhere", "--on", "local.U123"], "cotal stop default_agent --space elsewhere --on <instance>"],
+  [["stop", "default_agent", "--space", "elsewhere", "--on", "local.U123"], "cotal stop default_agent --json --space elsewhere --on <instance>"],
   [["status", "default_agent", "--on", "local.U123"], "cotal status default_agent --on <instance>"],
-  [["stop", "default_agent", "--on", ""], "cotal stop default_agent --on <instance>"],
+  [["stop", "default_agent", "--on", ""], "cotal stop default_agent --json --on <instance>"],
   [["input", "reviewer", "Review this", "--no-enter", "--on", "", "--space", "audit"], "cotal input reviewer 'Review this' --no-enter --space audit --on <instance>"],
   [["input", "reviewer", "--text=--verbose now", "--no-enter", "--on", "local.U123"], "cotal input reviewer '--text=--verbose now' --no-enter --on <instance>"],
   [["endpoint", "describe", "ai.cotal.manager", "--space", "elsewhere", "--on", "bad"], "cotal endpoint describe ai.cotal.manager --space elsewhere --on <instance>"],

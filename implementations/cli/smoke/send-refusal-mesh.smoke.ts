@@ -40,7 +40,7 @@ if (!existsSync(BIN)) {
 
 interface Envelope {
   outcome: string;
-  target: { space?: string; name?: string; post?: string[] | null } | null;
+  target: { space?: string; name?: string; post?: string[] | null; file?: string } | null;
   result?: { stored?: boolean; sender?: { principal: string } };
   error?: { code: string; message?: string; remedy?: string };
 }
@@ -256,13 +256,23 @@ try {
   const otherSpace = `${openSpace}-other`;
   const missing = run(["send", "--server", openServers, "--space", otherSpace, "-c", "general", "--file", "missing.txt", "--json"], openRoot);
   const retried = retryFileSend(missing, openRoot, "file retry");
+  const emptyFile = "./message.txt";
+  writeFileSync(join(openRoot, emptyFile), "");
+  const emptyBody = run(["send", "--server", openServers, "--space", otherSpace, "-c", "general", "--file", emptyFile, "--json"], openRoot);
+  check("an empty message file is refused with its path, explicit space and a retry",
+    emptyBody.status === 1 && emptyBody.stderr === "" && emptyBody.envelope?.outcome === "refused"
+      && emptyBody.envelope.target?.space === otherSpace && emptyBody.envelope.target.file === emptyFile
+      && emptyBody.envelope.error?.code === "USAGE_INVALID" && emptyBody.envelope.error.message?.includes(`"${emptyFile}" is empty`) === true
+      && emptyBody.envelope.error.remedy?.includes("write a nonempty message in the file") === true, shown(emptyBody));
+  const emptyRetry = retryFileSend(emptyBody, openRoot, "empty file retry");
   const targetHistory = run(["history", "general", "--server", openServers, "--space", otherSpace, "--json"], openRoot);
   const folderHistory = run(["history", "general", "--json"], openRoot);
   check("file retry publishes only to the explicit space, not the project space", missing.status === 2 && missing.envelope?.error?.code === "TARGET_NOT_FOUND"
     && retried.status === 0 && retried.envelope?.target?.space === otherSpace && retried.envelope.result?.stored === true
-    && targetHistory.status === 0 && targetHistory.stdout.includes('"text":"file retry"')
-    && folderHistory.status === 0 && folderHistory.stdout.includes('"text":"first-open"') && !folderHistory.stdout.includes('"text":"file retry"'),
-    { refusal: shown(missing), retry: shown(retried), target: shown(targetHistory), folder: shown(folderHistory) });
+    && emptyRetry.status === 0 && emptyRetry.envelope?.target?.space === otherSpace && emptyRetry.envelope.result?.stored === true
+    && targetHistory.status === 0 && targetHistory.stdout.includes('"text":"file retry"') && targetHistory.stdout.includes('"text":"empty file retry"')
+    && folderHistory.status === 0 && folderHistory.stdout.includes('"text":"first-open"') && !folderHistory.stdout.includes('file retry'),
+    { refusal: shown(missing), retry: shown(retried), emptyRetry: shown(emptyRetry), target: shown(targetHistory), folder: shown(folderHistory) });
   const noBody = run(["send", "--server", openServers, "--space", otherSpace, "-c", "general", "--json"], openRoot);
   const invalidServer = run(["send", "--server", "nats://fixture-user:fixture-secret@127.0.0.1:4222", "-c", "general", "--json"], openRoot);
   check("body grammar remedies keep explicit targets but do not print credentials embedded in an invalid URL",

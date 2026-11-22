@@ -54,12 +54,12 @@ const owner = `u_${"a".repeat(26)}`;
 type Target = { id: string; name: string; lifecycleUid: string };
 type Hold = { opId: string; owner: string; actor: string; target: Target; startedAt: number; lastError?: string };
 type Internals = {
+  config: { servers: string };
   ep: CotalEndpoint;
   userMode: boolean;
   managerInstanceId: string;
   managerServeIdentity: ReturnType<typeof newIdentity>;
   serviceServe: { grant: { epoch: number } };
-  servers: string;
   provisionUserAgent(name: string, opts: { lifecycleUid: string }): Promise<unknown>;
   lifecycleInFlight: number;
   retirement: {
@@ -169,7 +169,7 @@ try {
   for (const mode of ["expired", "denied", "dial-refused", "ok"] as const) {
     await cell(`orphan rollback ${mode} names its lifecycle without a despawn or hold claim`, async () => {
       answer = mode === "dial-refused" ? "expired" : mode;
-      internal.servers = mode === "dial-refused" ? `nats://127.0.0.1:${await freePort()}` : servers;
+      internal.config.servers = mode === "dial-refused" ? `nats://127.0.0.1:${await freePort()}` : servers;
       lines.length = 0;
       const before = allocated.length;
       const reply = await start(); await drain();
@@ -191,7 +191,7 @@ try {
     });
   }
   await cell("confirmed held retirement clears only its hold and preserves success copy", async () => {
-    answer = "ok"; internal.servers = servers;
+    answer = "ok"; internal.config.servers = servers;
     const target = { id: `${owner}.worker`, name: "worker", lifecycleUid: mintLifecycleUid() };
     internal.retirement.retiring.set("worker", hold(target));
     const reply = await start(); await drain();
@@ -203,7 +203,7 @@ try {
   for (const mode of ["denied", "dial-refused"] as const) {
     await cell(`held ${mode} preserves the despawn prefix and last error`, async () => {
       answer = "denied";
-      internal.servers = mode === "dial-refused" ? `nats://127.0.0.1:${await freePort()}` : servers;
+      internal.config.servers = mode === "dial-refused" ? `nats://127.0.0.1:${await freePort()}` : servers;
       const target = { id: `${owner}.worker`, name: "worker", lifecycleUid: mintLifecycleUid() };
       const held = hold(target); internal.retirement.retiring.set("worker", held);
       try {
@@ -218,7 +218,7 @@ try {
   }
   for (const change of ["new", "replaced", "cleared"] as const) {
     await cell(`a hold ${change} during the rail await cannot supply predecessor despawn claims`, async () => {
-      answer = "expired"; internal.servers = servers;
+      answer = "expired"; internal.config.servers = servers;
       const target = { id: `${owner}.worker`, name: "worker", lifecycleUid: mintLifecycleUid() };
       const prior = { ...hold(target), lastError: "prior diagnostic" };
       const successor = { ...hold({ ...target, lifecycleUid: mintLifecycleUid() }), lastError: "successor diagnostic" };

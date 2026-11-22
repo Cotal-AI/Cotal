@@ -5,6 +5,7 @@ import type { SessionEstablishment } from "./attach-endpoint.js";
 import { MANAGER_ENDPOINT } from "./manager-service-contract.js";
 import type { Manager } from "./manager.js";
 import type { ManagedAgent } from "./seat-types.js";
+import type { ManagerConfig } from "./manager-config.js";
 
 /** How much of an `input` text is written to a seat's pty at a time. Comfortably under the 4096-byte
  * kernel input buffer, so a slice is never re-split at a boundary the manager did not choose: the
@@ -32,10 +33,9 @@ export const RUNTIME_NO_TERMINAL_DETAIL = "ai.cotal.manager.runtime-no-terminal"
 export interface TerminalInputDeps {
   agents: () => Manager["agents"];
   auth: () => Manager["auth"];
-  managerLifecycleUid: () => Manager["managerLifecycleUid"];
   sessionPlane: () => Manager["sessionPlane"];
-  wsPort: () => Manager["wsPort"];
   runtimeFor: (...args: Parameters<Manager["runtimeFor"]>) => ReturnType<Manager["runtimeFor"]>;
+  resolveConnector: (...args: Parameters<Manager["resolveConnector"]>) => ReturnType<Manager["resolveConnector"]>;
 }
 
 /** Builds the {@link TerminalInputDeps} for a Manager. It reads Manager members by name at each use, so a
@@ -44,26 +44,24 @@ export function terminalInputDeps(m: Manager): TerminalInputDeps {
   return {
     agents: () => m["agents"],
     auth: () => m["auth"],
-    managerLifecycleUid: () => m["managerLifecycleUid"],
     sessionPlane: () => m["sessionPlane"],
-    wsPort: () => m["wsPort"],
     runtimeFor: (...args) => m["runtimeFor"](...args),
+    resolveConnector: (...args) => m["resolveConnector"](...args),
   };
 }
 
 /** Typing into a seat's terminal and opening an attach or console session on it, after authorization. */
 export class TerminalInput {
-  constructor(private readonly deps: TerminalInputDeps) {}
+  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: TerminalInputDeps) {}
 
   // The Manager members these bodies read, under their Manager names. Each reads through its dep at
   // use, so a field the Manager assigns later is current and a method a test replaces on the Manager
   // is the one that runs.
   private get agents() { return this.deps.agents(); }
   private get auth() { return this.deps.auth(); }
-  private get managerLifecycleUid() { return this.deps.managerLifecycleUid(); }
   private get sessionPlane() { return this.deps.sessionPlane(); }
-  private get wsPort() { return this.deps.wsPort(); }
   private runtimeFor(...args: Parameters<Manager["runtimeFor"]>): ReturnType<Manager["runtimeFor"]> { return this.deps.runtimeFor(...args); }
+  private resolveConnector(...args: Parameters<Manager["resolveConnector"]>): ReturnType<Manager["resolveConnector"]> { return this.deps.resolveConnector(...args); }
 
   /** The post-authorization `input` effect (C3): type `text` into the seat's terminal as if a human
    *  had. The single call an external UI needs to deliver a harness command (`/compact`, `/clear`,
@@ -191,6 +189,34 @@ export class TerminalInput {
     return { name: a.name, bytes };
   }
 
+  /** The post-authorization `interrupt` effect: write the seat's connector-declared interrupt key
+   *  into its terminal, as one keypress. `input` cannot send it, because it delivers text as a
+   *  bracketed paste, and a harness reads a pasted Escape as text.
+   *
+   *  It refuses before writing when the name was refilled during authorization, the seat is not
+   *  running, its connector declares no interrupt key, or its runtime owns no input stream. Writing
+   *  the key states nothing about the turn: a seat with no live turn takes it as a stray keypress,
+   *  and the run's end, if any, rides the event plane. */
+  async interruptAuthorized(a: ManagedAgent): Promise<{ name: string }> {
+    if (this.agents.get(a.name) !== a)
+      throw new EpEnvelopeError("failed-precondition", `agent "${a.name}" was replaced during authorization - retry`, undefined, "not-executed");
+    if (a.handle.status() !== "running")
+      throw new EpEnvelopeError("failed-precondition", `agent "${a.name}" is not running (${a.handle.status()}); nothing to interrupt`, undefined, "not-executed");
+    const key = (await this.resolveConnector(a.agent)).interruptKey;
+    if (!key)
+      throw new EpEnvelopeError("unimplemented", `interrupt is not supported by connector ${a.agent}`, undefined, "not-executed");
+    const write = a.handle.write?.bind(a.handle);
+    if (!write)
+      throw new EpEnvelopeError("unimplemented", `interrupt is not supported by runtime ${a.handle.kind}`, undefined, "not-executed");
+    // Resolving the connector awaited. Write only into the incarnation the caller was authorized for.
+    if (this.agents.get(a.name) !== a || a.handle.status() !== "running")
+      throw new EpEnvelopeError("failed-precondition", `agent "${a.name}" changed during the interrupt; nothing was written`, undefined, "not-executed");
+    const accepted = await write(key);
+    if (accepted !== Buffer.byteLength(key, "utf8"))
+      throw new EpEnvelopeError("unavailable", `interrupt for seat "${a.name}" failed: runtime accepted ${String(accepted)} of ${Buffer.byteLength(key, "utf8")} bytes`);
+    return { name: a.name };
+  }
+
   /** The post-authorization attach effect: mint the holder-bound §13.6 offer, redeem it
    *  through the ONE session plane (one-use CAS + presenter-equality), and stand up the PTY bridge —
    *  atomically. The reply is the SIGNED grant (no ws:// URL, non-bearer, never logged); the caller
@@ -252,7 +278,7 @@ export class TerminalInput {
    *  — the terminal rides the mesh session. Injected only when a wsPort exists (see the constructor). */
   async establishConsoleSession(name: string): Promise<SessionEstablishment> {
     if (!this.sessionPlane) throw new Error("the manager session plane is not available (the manager is not fully started)");
-    if (this.wsPort === undefined) throw new Error("the broker websocket port is not configured; the console cannot open a mesh session");
+    if (this.config.wsPort === undefined) throw new Error("the broker websocket port is not configured; the console cannot open a mesh session");
     // CLAIM the session slot here, before the PTY attach and before this establisher goes on to
     // mint a seed-signed `session-caller` credential: a capacity refusal must land before anything
     // with a side effect or a cost. The claim is carried INTO establishAttach, so the reservation
@@ -265,7 +291,7 @@ export class TerminalInput {
       if (a.handle.status() !== "running") throw new Error(`agent "${name}" is not running (${a.handle.status()}); nothing to attach`);
       const session = a.handle.attach(); // throws for non-streamable runtimes — surfaced to the browser as a 500
       // The loopback operator is the console's holder (same-host trust boundary).
-      const caller = { owner: DEV_OWNER, actor: "console", uid: this.managerLifecycleUid };
+      const caller = { owner: DEV_OWNER, actor: "console", uid: this.config.managerLifecycleUid };
       const { grant } = await this.sessionPlane.establishAttach(caller, { name: a.name, lifecycleUid: a.lifecycleUid }, session, slot);
       // The caller credential is minted ONLY after a session is really live, so a refused or failed
       // establishment never yields a seed-signed JWT. (A failure HERE would leave a live session the
@@ -278,7 +304,7 @@ export class TerminalInput {
             expiresAt: Math.floor(grant.exp / 1000), // grant.exp is ms (now+ttlMs); the JWT exp is seconds
           })
         : "";
-      return { grant, wsUrl: `ws://127.0.0.1:${this.wsPort}`, creds };
+      return { grant, wsUrl: `ws://127.0.0.1:${this.config.wsPort}`, creds };
     } catch (e) {
       slot.release(); // idempotent with establishAttach's own release
       throw e;

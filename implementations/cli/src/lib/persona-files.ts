@@ -77,6 +77,11 @@ export function personaNameProblem(name: string): string | undefined {
   return undefined;
 }
 
+export function personaNameWords(name: string, flags = ""): string {
+  const word = shellWord(name);
+  return name.startsWith("-") ? `${flags} -- ${word}` : ` ${word}${flags}`;
+}
+
 export function personaPath(root: string, name: string, access: "show" | "write" = "write"): string {
   const allowDots = access === "show" && name !== "." && name !== "..";
   const problem = personaNameProblem(allowDots ? name.replaceAll(".", "_") : name);
@@ -169,7 +174,7 @@ export function commitPersona(path: string, expected: PersonaSource | undefined,
       throw new CommandFailure("refused", "CONFLICT", `persona ${current === undefined ? "was removed" : "changed"} while the operation was open: ${path}`, { remedy: current === undefined ? "list the catalog with `cotal persona` and retry" : "read the current definition and retry" });
     const twin = current === undefined && bytes !== undefined ? caseTwin(path) : undefined;
     if (twin !== undefined) {
-      const edit = twin.startsWith("-") ? `${target} -- ${shellWord(twin)}` : ` ${shellWord(twin)}${target}`;
+      const edit = personaNameWords(twin, target);
       throw new CommandFailure("refused", "CONFLICT", `persona '${basename(path, ".md")}' differs from the existing '${twin}' only in case; nothing was written`, { remedy: `choose another name, or change the existing one with \`cotal persona edit${edit}\`` });
     }
     if (bytes === undefined) unlinkSync(path);
@@ -291,7 +296,7 @@ export async function editPersona(path: string, name: string, catalog: PersonaCa
   assertCatalogWritable(dirname(path));
   const editor = resolvePreference("editor", { preferences: cachedPreferences(), space: catalog.space }).value;
   if (!editor) throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "no editor is set", { remedy: "set VISUAL or EDITOR, or run `cotal config set editor vim`" });
-  const retry = `cotal persona edit${name.startsWith("-") ? `${target} -- ${name}` : ` ${name}${target}`}`;
+  const retry = `cotal persona edit${personaNameWords(name, target)}`;
   // A draft the editor may have changed and that was not saved is kept, and the failure names it.
   let keep = false;
   const edit = await withDraft(name, async (draft): Promise<PersonaEdit | { action: "interrupted"; signal: InterruptSignal; draft?: string }> => {

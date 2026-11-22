@@ -280,8 +280,9 @@ The version command does not repair the manifest itself.
 | `changed` | What a command that did not succeed changed anyway |
 
 Diagnostics stay on stderr. A command that refuses or fails under `--json` reports it with the
-envelope alone and writes no text report on stderr. The text report goes to stderr only when the
-envelope cannot be written to stdout, and the exit code is the same either way. A usage error under
+envelope alone and writes no text report on stderr. If the reader closes stdout early, the command
+keeps its exit code without printing a text report. Other failures to write the envelope send the
+text report to stderr and keep the same exit code. A usage error under
 `--json` is a `refused` envelope with code `USAGE_INVALID`, and the help it names stays off stdout.
 This also applies to `-j` grouped before a short option that needs a value, as in `cotal config get harness -js`.
 A word that names none of a command's subcommands and is near none of them is a usage error that
@@ -398,7 +399,9 @@ On Linux, a broker on a loopback address whose process is stopped by a signal, s
 still accepts connections and never answers. Once the first dial to it times out, the refusal names
 that process's pid and gives `kill -CONT <pid>` as the remedy, without waiting out the longer
 confirm, so a command such as `send` or `run` returns in a few seconds. `cotal status` shows the
-connection as `broker process <pid> is stopped` and offers the same command. A broker that runs but
+connection as `broker process <pid> is stopped` and offers the same command. On Linux, if a stopped
+listener holds the broker address and its executable identifies it as another program, `status` and `ps` name the
+occupied address without suggesting a signal. A broker that runs but
 does not answer, or one on another host, still waits out the confirm.
 
 
@@ -535,7 +538,8 @@ interrupted. Ctrl-C ends it at once with exit 130, as it ends the commands above
 
 The table has one row per command, including the hidden ones `cotal help` leaves out, under the
 section help lists it in.
-Installed extensions add their own: `@cotal-ai/linear` adds the [`linear`](cli-integrations.mdx#linear) command, and
+Installed extensions add their own: `@cotal-ai/linear` adds the [`linear`](cli-integrations.mdx#linear) command,
+`@cotal-ai/acp` adds the [`acp`](acp-clients.mdx#acp) command, and
 `@cotal-ai/web` adds the [web dashboard](cli-observation.mdx#web) as a service preset.
 
 The manifest modes of `up`, `spawn`, and `down` (`-f <cotal.yaml>`) plus `topology` are covered

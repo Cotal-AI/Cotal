@@ -315,7 +315,7 @@ try {
   assert.equal(candidateOldNc.isClosed(), false, "failed replacement cleanup leaves the old transport alive");
   await wait(100);
   assert.ok(candidateClosedAt > candidateFlushAt, "failed candidate socket closes without receiving a drain PONG");
-  const adoption = manager as unknown as { remoteBundleAdoption?: Promise<void>; remoteBundleRenewal?: Promise<void>; remoteRenewalDebt?: { reason: string } };
+  const adoption = (manager as unknown as { credentialRenewal: { remoteBundleAdoption?: Promise<void>; remoteBundleRenewal?: Promise<void>; remoteRenewalDebt?: { reason: string } } }).credentialRenewal;
   assert.equal(adoption.remoteBundleAdoption, undefined, "failed native cleanup releases executor adoption waiters");
   assert.equal(adoption.remoteBundleRenewal, undefined, "failed native cleanup releases renewal ownership");
   assert.match(adoption.remoteRenewalDebt!.reason, /standing serve flush exceeded/);
