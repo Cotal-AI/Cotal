@@ -607,10 +607,14 @@ try {
   const bodyText = "Review café and the literal � symbol.";
   const latinBody = Buffer.from("Review café changes.\n", "latin1");
   const utf8Body = Buffer.from(`${bodyText}\n`);
-  for (const [name, from] of [["body-file", bodySource], ["body-stdin", "-"]] as const) {
+  for (const [command, verb, name, from] of [
+    ["persona", "create", "body-file", bodySource], ["persona", "create", "body-stdin", "-"],
+    ["personas", "new", "legacy-body-file", bodySource], ["personas", "new", "legacy-body-stdin", "-"],
+  ] as const) {
+    const output = command === "persona" ? ["--plain"] : [];
     const create = (bytes: Buffer) => {
       if (from !== "-") writeFileSync(from, bytes);
-      return native(["persona", "create", name, "--from", from, "--subscribe", "", "--plain"], MESH, childEnv, from === "-" ? bytes : undefined);
+      return native([command, verb, name, "--from", from, "--subscribe", "", ...output], MESH, childEnv, from === "-" ? bytes : undefined);
     };
     const path = agentFilePath(MESH, name);
     const refused = create(latinBody);
@@ -620,9 +624,30 @@ try {
       refused.stderr.includes(`${source} is not valid UTF-8`) &&
       refused.stderr.includes("convert the input to UTF-8 and retry") && !existsSync(path), refused.stdout + refused.stderr);
     const created = create(utf8Body);
-    const shown = native(["persona", "show", name, "--plain"]);
+    const shown = native([command, "show", name, ...output]);
     check(`${name}: valid UTF-8 keeps accented text and a literal replacement character`,
       created.status === 0 && shown.status === 0 && shown.stdout.includes(bodyText), created.stderr + shown.stdout + shown.stderr);
+  }
+
+  {
+    const name = "a b", path = agentFilePath(MESH, name);
+    const source = "---\nname: spacedfile\nagent: claude\n---\nFixture body.\n";
+    writeFileSync(path, source);
+    const listed = native(["persona", "--json"]);
+    const shown = native(["persona", "show", name, "--json"]);
+    const preview = native(["spawn", "--dry-run", "--json", "--", name]);
+    check("persona list, show and spawn preview agree on a spaced catalog name",
+      listed.status === 0 && JSON.parse(listed.stdout).result.items.some((item: { name: string }) => item.name === name) &&
+      shown.status === 0 && JSON.parse(shown.stdout).result.source === source &&
+      preview.status === 0 && JSON.parse(preview.stdout).result.persona.path === path, shown.stdout + shown.stderr);
+    const plain = native(["persona", "show", name, "--plain"]);
+    check("persona show quotes a spaced name in its follow-up commands", plain.status === 0 &&
+      plain.stdout.includes("cotal spawn 'a b'") && plain.stdout.includes("cotal p show 'a b' --json") &&
+      !plain.stdout.includes("cotal p edit"), plain.stdout + plain.stderr);
+    const create = native(["persona", "create", name, "--prompt", "Do not write.", "--subscribe", "", "--json"]);
+    check("persona create still refuses spaced names", create.status === 1 &&
+      JSON.parse(create.stdout).error?.code === "USAGE_INVALID" && readFileSync(path, "utf8") === source, create.stdout + create.stderr);
+    unlinkSync(path);
   }
 
   const spacedSource = "sample card.md";

@@ -82,9 +82,10 @@ export function personaNameWords(name: string, flags = ""): string {
   return name.startsWith("-") ? `${flags} -- ${word}` : ` ${word}${flags}`;
 }
 
-export function personaPath(root: string, name: string, access: "show" | "write" = "write"): string {
-  const allowDots = access === "show" && name !== "." && name !== "..";
-  const problem = personaNameProblem(allowDots ? name.replaceAll(".", "_") : name);
+export function personaPath(root: string, name: string, access: "show" | "legacy-remove" | "write" = "write"): string {
+  const allowDots = access !== "write" && name !== "." && name !== "..";
+  const stem = allowDots ? name.replaceAll(".", "_") : name;
+  const problem = personaNameProblem(access === "show" && name === name.trim() ? stem.replaceAll(" ", "_") : stem);
   if (problem) throw new CommandFailure("refused", "USAGE_INVALID", problem);
   return join(personaDir(root), `${name}.md`);
 }
