@@ -197,6 +197,14 @@ try {
   const bob = await join_("bob", { role: "reviewer", kind: "agent", meta: { connector: "jcode", model: "glm-test", host: "box-b" } });
   const carol = await join_("carol", { kind: "agent" });
   await join_("logger", { role: "logger", kind: "endpoint" });
+  const idle = await run(["who", "--all", "--json"]);
+  check("the unfiltered roster lists the idle agent", idle.status === 0 && rowsOf(idle).alice?.status === "idle", shown(idle));
+  for (const [flags, label] of [[[], "agents"], [["--all"], "participants"]] as const) {
+    const empty = await run(["who", ...flags, "--waiting", "--plain"]);
+    check(`--waiting reports no matching ${label} when everyone is idle`,
+      empty.status === 0 && empty.stderr === "" && empty.stdout.includes(`no ${label} match --waiting in ${space}`) &&
+      !empty.stdout.includes(`no ${label} present`) && !empty.stdout.includes("alice/builder"), shown(empty));
+  }
   await alice.setStatus("working");
   await bob.setStatus("waiting");
   await bob.setActivity("reviewing the change");

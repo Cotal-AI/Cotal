@@ -75,7 +75,8 @@ A part `who` could not read makes the run `partial` (exit 4): a roster snapshot 
 (`ROSTER_ERROR`), or a manager census it could not read in full (`MANAGERS_UNREAD`, and the warnings
 `ps` names). A credential that may not read the roster is refused with `PERMISSION_DENIED` (exit 2),
 never shown an empty roster.
-A mesh where nobody is present is a complete roster: `who` says so and exits 0.
+A mesh where nobody is present is a complete roster: `who` without `--waiting` says so and exits 0.
+With `--waiting`, an empty report says that no rows match the filter, not that nobody is present.
 
 
 ### Watch consumer lifetime
