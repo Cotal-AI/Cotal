@@ -181,7 +181,8 @@ An option value that starts with `-` is written `--limit=-1`,
 which the refusal gives. The refusal quotes values that a POSIX shell would split or expand, as in
 `--search='-help usage'`. An option given with no value at the end of the command or just before
 another option, including `--no-input` or `--no-color`, is refused with the option and its placeholder.
-The same applies just before `--`. Put the value before `--`
+The same applies just before `--`. This refusal takes priority over misspellings in later words
+and over looking up a service preset. Put the value before `--`
 and leave the operands after it. A short option takes its value after a space, so `-c=general` is refused
 rather than read as the value `=general`. An option typed with a typographic dash, as pasted from
 typeset text, is refused rather than read as a positional. The correction keeps any attached value
@@ -217,7 +218,9 @@ raw. After `--` they are ordinary words. Each is given once, as any flag is, bef
 command word. No command may declare a flag with either name. The output
 flags `--json` (`-j`) and `--plain` may also come before the command word, as in
 `cotal --json status`; they are read as the command's own flags, so a command without that output
-refuses them as it does after the command word. A command that takes its words raw, such as the
+refuses them as it does after the command word. In a group of short options after the command word,
+`-j` still selects JSON if it comes before the option that takes a value, as in `cotal send -jc general hello`.
+A command that takes its words raw, such as the
 hidden completion entry, has no flags to read them as and refuses them before its word with a usage
 error. A `--` before the command word ends these leading flags. An installed extension
 whose command declares one is an internal error, and `cotal` exits 1 before running any command.

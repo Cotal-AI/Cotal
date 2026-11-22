@@ -406,8 +406,15 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
     [["history", "--json", "--limit", "1", "--limit", "--no-input", "abc"], "--limit", "<n>"],
     [["send", "--json", "-c", "--no-input", "hello"], "--channel", "<channel>"],
     [["send", "--json", "-vc", "--no-color", "hello"], "--channel", "<channel>"],
+    [["send", "-jvc", "--no-input", "greeting"], "--channel", "<channel>"],
+    [["send", "-jc", "--no-color", "greeting"], "--channel", "<channel>"],
+    [["docs", "-j", "--search", "--no-color", "\u2013\u2013search"], "--search", "<query>"],
     [["service", "add", "demo", "--json", "--preset", "--no-input", "broker"], "--preset", "<name>"],
     [["service", "add", "demo", "--json", "--file", "--no-input", "--preset", "alienpreset"], "--file", "<definition.json>"],
+    [["service", "add", "demo", "--json", "--file", "--plain", "--preset", "alienpreset"], "--file", "<definition.json>"],
+    [["service", "add", "demo", "--json", "-f", "--space", "s1", "--preset", "alienpreset"], "--file", "<definition.json>"],
+    [["service", "add", "demo", "--json", "--preset", "--plain", "broker"], "--preset", "<name>"],
+    [["service", "add", "demo", "--json", "--preset"], "--preset", "<name>"],
   ] as const) {
     const result = cotal([...argv]);
     const reports = envelopes(result);
@@ -419,6 +426,12 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
   const literal = cotal(["docs", "--json", "--search=--no-input", "--no-input"]);
   check("an attached value that looks like a global flag is still a value",
     literal.status === 0 && literal.stderr === "" && envelopes(literal)[0]?.result?.query === "--no-input", shown(literal));
+  const attached = cotal(["send", "-vcj", "--no-color"]);
+  check("j inside an attached short option value does not ask for JSON",
+    attached.status === 1 && attached.stdout === "" && attached.stderr.includes("choose exactly one body"), shown(attached));
+  const typoFirst = cotal(["docs", "-j", "\u2013\u2013plain", "--search", "--no-input"]);
+  check("a misspelling before the missing value still gets its own correction", typoFirst.status === 1 && typoFirst.stderr === ""
+    && envelopes(typoFirst)[0]?.error?.remedy === "type the option with hyphens: --plain", shown(typoFirst));
   const unknownPreset = cotal(["service", "add", "demo", "--json", "--preset", "alienpreset", "--no-input"]);
   check("a complete service preset option still resolves the named preset", unknownPreset.status === 2 && unknownPreset.stderr === ""
     && envelopes(unknownPreset)[0]?.error?.code === "DEPENDENCY_UNAVAILABLE", shown(unknownPreset));

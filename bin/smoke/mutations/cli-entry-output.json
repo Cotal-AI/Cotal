@@ -43,9 +43,9 @@
     },
     {
       "name": "the usage envelope is not written for -j",
-      "file": "implementations/cli/src/command.ts",
-      "find": "(word) => word === \"--json\" || word === \"-j\" ||",
-      "replace": "(word) => word === \"--json\" ||",
+      "file": "implementations/cli/src/lib/command-path.ts",
+      "find": "        if (flag.type === \"boolean\") { booleanFlags.add(flag.name); continue; }\n",
+      "replace": "        if (flag.type === \"boolean\") { if (word !== \"-j\") booleanFlags.add(flag.name); continue; }\n",
       "expectRed": "an unexpected argument under -j is a USAGE_INVALID envelope",
       "cell": "an unexpected argument under -j is a USAGE_INVALID envelope",
       "command": "pnpm --filter cotal-ai... build && pnpm exec tsx bin/smoke/cli-entry.smoke.ts",

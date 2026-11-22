@@ -137,16 +137,9 @@ function structured(cmd: Command, first: string | undefined): boolean {
   return ((sub ? sub.outputs : cmd.outputs) ?? []).some((mode) => mode === "json" || mode === "ndjson");
 }
 
-/** Whether `args` ask `cmd` for JSON before any `--`: `--json`, `-j`, or `-j` in a group of the
- *  command's boolean short flags. Read from the words, because a usage error has no parse, so the mode
- *  is the first positional after skipping declared option values. */
-function asksForJson(cmd: Command, args: readonly string[]): boolean {
-  if (!structured(cmd, metadataPositionals(cmd, args).positionals[0]?.value)) return false;
-  const booleans = new Set((cmd.flags ?? []).flatMap((flag) => (flag.type === "boolean" && flag.short ? [flag.short] : [])));
-  const end = args.indexOf("--");
-  return (end === -1 ? args : args.slice(0, end)).some(
-    (word) => word === "--json" || word === "-j" || (/^-[A-Za-z]{2,}$/.test(word) && word.includes("j") && [...word.slice(1)].every((ch) => booleans.has(ch))),
-  );
+/** A usage error has no strict parse. Read the output flag and mode from declared option boundaries. */
+function asksForJson(cmd: Command, args: readonly string[], metadata = metadataPositionals(cmd, args)): boolean {
+  return metadata.booleanFlags.has("json") && structured(cmd, metadata.positionals[0]?.value);
 }
 
 /** Under COTAL_DEBUG, print the failure's stack and the stack of each error that caused it. */
@@ -421,10 +414,10 @@ function extSeedSubcommand(cmd: Command, words: readonly string[]): Subcommand |
 /** An option the parser would misread without an error: a short option written `-c=value`, which
  *  takes `=value` as its value, or a declared option typed with a typographic dash pasted from typeset
  *  text, which is read as a positional. */
-function misspelledOption(cmd: Command, rest: readonly string[], flagNames: readonly string[] | undefined): { message: string; remedy?: string } | undefined {
+function misspelledOption(cmd: Command, rest: readonly string[], flagNames: readonly string[] | undefined, before = rest.length): { message: string; remedy?: string } | undefined {
   const names = new Set<string>([...(flagNames ?? (cmd.flags ?? []).map((flag) => flag.name)), ...GLOBAL_FLAGS]);
   for (const [index, word] of rest.entries()) {
-    if (word === "--") return undefined;
+    if (index >= before || word === "--") return undefined;
     const previous = rest[index - 1];
     if (previous !== undefined && cmd.flags?.some((flag) => flag.type === "string" && (previous === `--${flag.name}` || previous === `-${flag.short}`))) continue;
     const short = /^-([^-=])=(.*)$/su.exec(word);
@@ -446,11 +439,21 @@ function missingFlagValue(flag: FlagSpec, beforeSeparator = false) {
   return { message: `--${flag.name} needs a value`, remedy: `write --${flag.name} ${flag.value ?? "<value>"}${beforeSeparator ? " before --" : ""}` };
 }
 
+type ValueProblem = ReturnType<typeof metadataPositionals>["valueProblem"];
+
+function missingOptionValue(cmd: Command, problem: NonNullable<ValueProblem>) {
+  const { flag, value } = problem;
+  if (value === undefined || value === "--") return missingFlagValue(flag, value === "--");
+  const declared = value.startsWith("--") ? cmd.flags?.some((item) => item.name === value.slice(2).split("=", 1)[0])
+    : cmd.flags?.some((item) => item.short === value[1]);
+  if (declared || GLOBAL_FLAG_WORDS.has(value)) return missingFlagValue(flag);
+}
+
 /** A parse error as a refusal. Node's own usage guidance is replaced with this CLI's remedies:
  *  a word that starts with `-` goes after `--` only where the command takes operands,
  *  an option value that starts with `-` is written `--name=value`, and an option given with no value,
  *  last, before `--`, or before another of the command's options, is named with its placeholder. */
-function parseRefusal(error: Error & { code?: string }, cmd: Command, ambiguousValue: ReturnType<typeof metadataPositionals>["ambiguousValue"], flagNames: readonly string[] | undefined, takesOperands: boolean): { message: string; remedy?: string } {
+function parseRefusal(error: Error & { code?: string }, cmd: Command, valueProblem: ValueProblem, flagNames: readonly string[] | undefined, takesOperands: boolean): { message: string; remedy?: string } {
   if (error.code === "ERR_PARSE_ARGS_UNKNOWN_OPTION") {
     const reason = error.message.replace(/'\. To specify a positional argument starting with a '-', place it at the end of the command after '--', as in '-- "(?:[^"\\]|\\.)*"$/u, "'");
     const option = /^Unknown option '(--.+)'$/su.exec(reason)?.[1];
@@ -463,13 +466,11 @@ function parseRefusal(error: Error & { code?: string }, cmd: Command, ambiguousV
   const last = bare === undefined ? undefined : cmd.flags?.find((item) => item.name === bare);
   if (error.code === "ERR_PARSE_ARGS_INVALID_OPTION_VALUE" && last) return missingFlagValue(last);
   const long = /use '--([^=']+)=-XYZ'/.exec(error.message)?.[1];
-  const flag = long === undefined ? undefined : cmd.flags?.find((item) => item.name === long);
-  if (error.code === "ERR_PARSE_ARGS_INVALID_OPTION_VALUE" && flag && ambiguousValue?.flag.name === flag.name) {
-    const { value } = ambiguousValue;
-    if (value === "--") return missingFlagValue(flag, true);
-    if (GLOBAL_FLAG_WORDS.has(value) || cmd.flags?.some((item) => value === `--${item.name}` || value.startsWith(`--${item.name}=`) || (item.short !== undefined && value === `-${item.short}`)))
-      return missingFlagValue(flag);
-    return { message: `the value of --${flag.name} starts with "-", so it reads as an option`, remedy: `write it as --${flag.name}=${shellWord(value)}` };
+  if (error.code === "ERR_PARSE_ARGS_INVALID_OPTION_VALUE" && valueProblem && valueProblem.flag.name === long) {
+    const missing = missingOptionValue(cmd, valueProblem);
+    if (missing) return missing;
+    if (valueProblem.value !== undefined)
+      return { message: `the value of --${long} starts with "-", so it reads as an option`, remedy: `write it as --${long}=${shellWord(valueProblem.value)}` };
   }
   return { message };
 }
@@ -477,17 +478,18 @@ function parseRefusal(error: Error & { code?: string }, cmd: Command, ambiguousV
 /** `rest` parsed against `cmd`'s declared flags, positionals and subcommands, or a usage exit. */
 function parseOrExit(cmd: Command, rest: string[]): ParsedArgs {
   const seed = extSeedSubcommand(cmd, rest);
-  const json = !seed && asksForJson(cmd, rest);
-  const plain = !seed && rest.includes("--plain");
+  const metadata = metadataPositionals(cmd, rest);
+  const { positionals, valueProblem } = metadata;
+  const json = !seed && asksForJson(cmd, rest, metadata);
+  const plain = !seed && metadata.booleanFlags.has("plain");
   const flagNames = seed?.flagNames ?? (cmd.name === "spawn" ? cmd.flagNames : undefined);
-  const misspelled = cmd.rawArgs ? undefined : misspelledOption(cmd, rest, flagNames);
+  const misspelled = cmd.rawArgs ? undefined : misspelledOption(cmd, rest, flagNames, valueProblem ? valueProblem.index + 1 : rest.length);
   if (misspelled) usageExit(misspelled.message, cmd, json, plain, misspelled.remedy, seed ? [seed.name] : rest);
   let parsed: ParsedArgs;
   try {
     parsed = takesWordsRaw(cmd) ? parseCommandArgs(cmd, rest) : parseWithGlobalFlags(cmd, rest);
   } catch (e) {
     if (isArgError(e)) {
-      const { positionals, ambiguousValue } = metadataPositionals(cmd, rest);
       const first = positionals[0]?.value;
       let selected: Command | Subcommand = cmd;
       for (const { value } of positionals) {
@@ -497,7 +499,7 @@ function parseOrExit(cmd: Command, rest: string[]): ParsedArgs {
       }
       const takesOperands = !seed && cmd.positionals !== undefined &&
         (!cmd.subcommands?.length || cmd.name === "history" || (first !== undefined && findSubcommand(cmd, first) !== undefined));
-      const refusal = parseRefusal(e as Error & { code?: string }, cmd, ambiguousValue, seed?.flagNames ?? selected.flagNames, takesOperands);
+      const refusal = parseRefusal(e as Error & { code?: string }, cmd, valueProblem, seed?.flagNames ?? selected.flagNames, takesOperands);
       usageExit(refusal.message, cmd, json, plain, refusal.remedy, rest);
     }
     throw e;
@@ -619,10 +621,14 @@ async function serviceSurface(found: Command | undefined, words: string[], forRe
   if (found?.name !== "service" && found?.name !== "manager") return { cmd: found, rest: words };
   // An incomplete base option must not be reported as a failure to resolve the preset.
   if (found.name === "service" && !forRefusal && !asksForHelp(words)) {
-    const { ambiguousValue } = metadataPositionals(found, words);
-    if (ambiguousValue && GLOBAL_FLAG_WORDS.has(ambiguousValue.value)) {
-      const { message, remedy } = missingFlagValue(ambiguousValue.flag);
-      usageExit(message, found, asksForJson(found, words), words.includes("--plain"), remedy, words);
+    const metadata = metadataPositionals(found, words);
+    const { valueProblem } = metadata;
+    if (valueProblem) {
+      const missing = missingOptionValue(found, valueProblem);
+      if (missing) {
+        const { message, remedy } = misspelledOption(found, words, undefined, valueProblem.index + 1) ?? missing;
+        usageExit(message, found, asksForJson(found, words, metadata), metadata.booleanFlags.has("plain"), remedy, words);
+      }
     }
   }
   try {
