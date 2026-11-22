@@ -1124,9 +1124,10 @@ export function resolveMeshTarget(cwd: string, flags: ResolveFlags = {}): MeshTa
     if (!m) {
       notStarted(flags.space, cwd);
       const root = findCotalRoot(cwd);
-      if (flags.server === undefined && isGenuineSpace(root) && !stackRecord(root) && !preparedSpaceAt(root)) {
+      if (isGenuineSpace(root) && !stackRecord(root) && !preparedSpaceAt(root)) {
         const retained = retainedLegacyBroker(root);
-        if (retained && !retained.open && !legacyStackOtherHome(root)) {
+        if (retained && !retained.open &&
+          (flags.server === undefined || brokerUrlKey(flags.server) === brokerUrlKey(retained.server)) && !legacyStackOtherHome(root)) {
           const { spaces } = rootInventory(root);
           if (spaces.length === 1 && spaces[0] === flags.space && !loadMeshes().some(m => m.space === flags.space || canonicalRoot(m.root) === canonicalRoot(root))) {
             if (flags.allowStoppedLocal) return localTarget(root, retained.server, "local-space", flags.readOnly);
