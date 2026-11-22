@@ -357,9 +357,13 @@ const VERBS = ["start", "resume", "ps", "journal", "answer", "amend", "revoke", 
     const invalid = await simulate({ turns: { build: [{ status: "blocked" }, { status: "handoff", to }] } });
     c(`a malformed scripted handoff names turns.build[1].to (${JSON.stringify(to)})`, scriptRefusal(invalid, "turns.build[1].to must be an agent handle"), invalid);
   }
-  for (const text of ['{"clock":{"start":"1000"}}', '{"clock":{"start":null}}', '{"clock":{"start":1e999}}']) {
+  for (const text of ['{"clock":{"start":"1000"}}', '{"clock":{"start":null}}', '{"clock":{"start":1e999}}',
+    '{"clock":{"start":1000.5}}', '{"clock":{"start":9007199254740992}}', '{"clock":{"start":-9007199254740992}}']) {
     const invalid = await simulateText(text);
-    c(`an invalid clock start is refused (${text})`, scriptRefusal(invalid, "clock.start must be a finite number in milliseconds"), invalid);
+    c(`an invalid clock start is refused (${text})`,
+      scriptRefusal(invalid, "clock.start must be a whole number of milliseconds between -9007199254740991 and 9007199254740991")
+      && isCommandFailure(invalid) && (invalid.target as { file?: string })?.file === handler
+      && invalid.remedy?.includes("clock.start") === true, invalid);
   }
   // The reported typo: `clock.checkpoints` silently fell back to the 60s default, so the
   // simulation measured 60000ms instead of the 3000ms the author asked for. An unknown clock
@@ -426,17 +430,33 @@ const VERBS = ["start", "resume", "ps", "journal", "answer", "amend", "revoke", 
     const write = process.stdout.write;
     process.stdout.write = ((chunk: string | Uint8Array) => { shown.push(String(chunk)); return true; }) as typeof process.stdout.write;
     const to = { kind: "spawned", agent: "sim.ana", persona: "ana" };
-    let handoff: unknown, clock: unknown;
+    let handoff: unknown, clock: unknown, nearLimit: unknown;
     try {
       writeFileSync(program, 'const builder = await spawn("builder");\nconst ana = await spawn("ana");\nfor (const attempt of [1, 2]) {\n  const result = await turn(builder, { name: "build" });\n  log(result.status, result.to?.agent === ana.agent);\n}\n');
       handoff = await simulate({ turns: { build: [{ status: "blocked" }, { status: "handoff", to, note: "yours" }] } }, { json: true });
       writeFileSync(program, 'await sleep("1ms");\nlog("done");\n');
       clock = await simulate({ clock: { start: 1000 } }, { json: true });
+      nearLimit = await simulate({ clock: { start: Number.MAX_SAFE_INTEGER - 1 } }, { json: true });
     } finally { process.stdout.write = write; }
-    const [turnOut, clockOut] = shown.join("").trim().split("\n").map((line) => JSON.parse(line));
+    const [turnOut, clockOut, limitOut] = shown.join("").trim().split("\n").map((line) => JSON.parse(line));
     c("sequential turn results preserve their order and carry the agent handle", handoff === undefined && turnOut.result?.outcome === "completed"
       && JSON.stringify(turnOut.result.log.map((entry: { values: unknown }) => entry.values)) === JSON.stringify([["blocked", false], ["handoff", true]]), { handoff, turnOut });
-    c("a finite nonzero clock start still measures elapsed time from that start", clock === undefined && clockOut.result?.elapsedMs === 1, { clock, clockOut });
+    c("a nonzero clock start still measures elapsed time from that start", clock === undefined && clockOut.result?.elapsedMs === 1, { clock, clockOut });
+    c("a one-millisecond sleep can reach the clock limit", nearLimit === undefined && limitOut.result?.elapsedMs === 1, { nearLimit, limitOut });
+  }
+  {
+    for (const [source, step] of [
+      ['await sleep("1ms");\nawait sleep("1ms");\n', "/sleep#1"],
+      ['await waitUntil(() => true, { name: "poll", every: "1ms", deadline: "2ms" });\n', "/waitUntil:poll#0"],
+    ] as const) {
+      writeFileSync(program, source);
+      const crossed = await simulate({ clock: { start: Number.MAX_SAFE_INTEGER - 1 } });
+      c(`crossing the clock limit at ${step} reports the failed step and a remedy`,
+        isCommandFailure(crossed) && crossed.code === "OPERATION_FAILED" && exitCode(crossed.outcome, crossed.code) === 5
+        && crossed.native?.code === "L6003"
+        && (crossed.target as { step?: string })?.step === step
+        && crossed.remedy === "choose a clock.start closer to zero or shorten the simulated durations.", crossed);
+    }
   }
   writeFileSync(program, 'await checkpoint("go", "Proceed?", { timeout: "4s", onExpiry: "proceed" });\n');
   // A simulation that stops says why and where: a missing entry is the script's gap, named with the

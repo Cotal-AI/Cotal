@@ -6,7 +6,8 @@
  * invents a plausible turn result green-lights broken programs, which is worse than not having
  * one, so most of this suite is about what the simulator refuses to do.
  */
-import { SimHandler, SimUnscriptedError, type SimScript } from "../src/sim.js";
+import { rejects, throws } from "node:assert/strict";
+import { SimClockStartError, SimHandler, SimUnscriptedError, type SimScript } from "../src/sim.js";
 import { EffectError, type EffectContext } from "../src/effects.js";
 import { KeyScope, digest, requestId, type StepKey } from "../src/keys.js";
 
@@ -117,6 +118,15 @@ const ctxFor = (key: StepKey, attempt = 0): EffectContext => ({
   ok("but the virtual clock moves the full four hours", sim.now() === 4 * 3_600_000, sim.now());
   await sim.sleep({ duration: "2d" }, ctxFor(s.nextEffect("sleep")));
   ok("and durations accumulate", sim.now() === 4 * 3_600_000 + 2 * 86_400_000);
+}
+
+{
+  throws(() => new SimHandler({ clock: { start: Number.MAX_SAFE_INTEGER + 1 } }), SimClockStartError);
+  const sim = new SimHandler({ clock: { start: Number.MIN_SAFE_INTEGER } });
+  const s = new KeyScope();
+  await sim.sleep({ duration: `${Number.MAX_SAFE_INTEGER}ms` }, ctxFor(s.nextEffect("sleep")));
+  await rejects(sim.sleep({ duration: "1ms" }, ctxFor(s.nextEffect("sleep"))), { code: "L6003" });
+  ok("a wake beyond the elapsed time limit leaves the clock unchanged", sim.now() === 0, sim.now());
 }
 
 // ---- 5) injected checkpoint answers ---------------------------------------------------------------

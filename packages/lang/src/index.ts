@@ -139,6 +139,7 @@ export {
 } from "./dryrun.js";
 
 export {
+  SimClockStartError,
   SimHandler,
   SimUnscriptedError,
   type Scripted,

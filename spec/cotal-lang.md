@@ -1348,6 +1348,7 @@ time, L5xxx durability, L6xxx simulation.
 | L5025 | Effect refused; run held for a capable host |
 | L6001 | Unscripted effect in simulation |
 | L6002 | Simulation script entry unused |
+| L6003 | Simulation clock out of range |
 
 `L4000` is not a catalog code: it is the generic code an unclassified failure carries (`kind`
 `handler-fault`, `scope-fault`, or `host`), and it is what a program sees for a failure the catalog
@@ -1356,9 +1357,8 @@ scope it settles under its own code with kind `runtime` (§10.6). L3022, L4001 t
 L4025 and L4026 are the effect handler's failure vocabulary: a host reports them, the interpreter
 journals and delivers them, and none is raised by the language itself.
 L1006, L1014, L5005, L5007 and L6002 are reserved: no path in this revision raises them.
-L6001 and L6002 belong to the reference implementation's simulator (`SimHandler`, `dryRun`), which
-runs a program against a script of scripted answers and refuses an effect the script does not
-answer; simulation is a tool, not part of this language, and this document does not define it.
+L6xxx codes belong to the reference implementation's simulator (`SimHandler`, `dryRun`). Simulation
+is a tool outside the language itself.
 
 ## Appendix B. Change log
 

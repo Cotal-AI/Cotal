@@ -1,6 +1,6 @@
 import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, statSync, type Stats } from "node:fs";
 import { hasDuplicateNames } from "@cotal-ai/core";
-import { dryRunOutcome, DurationError, Journal, journalEntryKeyString, LangErrors, parseDuration, validate, type SimScript } from "@cotal-ai/lang";
+import { dryRunOutcome, DurationError, Journal, journalEntryKeyString, LangErrors, parseDuration, SimClockStartError, validate, type SimScript } from "@cotal-ai/lang";
 import { CommandFailure, isCommandFailure, oneLine, presentationOf, recordOperationWarning, writeResult, type Report } from "@cotal-ai/workspace";
 import { logLineText } from "./log-line.js";
 
@@ -85,9 +85,6 @@ function scriptOf(file: string | undefined): SimScript {
       throw new CommandFailure("refused", "SCHEMA_INVALID", `invalid simulation script field '${key}'`);
   }
   const clock = script.clock as Record<string, unknown> | undefined;
-  const start = clock?.start;
-  if (start !== undefined && (typeof start !== "number" || !Number.isFinite(start)))
-    throw new CommandFailure("refused", "SCHEMA_INVALID", "clock.start must be a finite number in milliseconds", { target: { file } });
   // A misspelled clock key is silently ignored: the simulator falls back to the 1m default,
   // so `clock.checkpoints` measures a delay the author never asked for. Refuse it before
   // simulation, naming the singular key when the typo is a plural of one.
@@ -227,8 +224,8 @@ function faultParts(error: unknown): { title: string; cause?: string; fix?: stri
   return { title, ...(cause !== undefined ? { cause } : {}), ...(fix !== undefined ? { fix } : {}) };
 }
 
-/** Why a simulation did not complete. An L6xxx code is the simulator's: the script does not cover
- *  the program, and `target.step` names the step it stopped at. */
+/** Why a simulation did not complete. An L6xxx code is the simulator's, and `target.step` names
+ *  the step it stopped at when the journal recorded one. */
 function simulationFailure(error: unknown, file: string, journal: Journal): CommandFailure {
   const code = (error as { code?: unknown }).code;
   const native = typeof code === "string" && /^L[0-9]+$/.test(code) ? code : undefined;
@@ -308,6 +305,11 @@ export async function offlineWorkflow(mode: "validate" | "plan" | "simulate", fi
   try { report = await dryRunOutcome(source, script, { file, journal }); }
   catch (error) {
     for (const warning of warnings) recordOperationWarning(warning, { echo: presentation !== "json" });
+    if (error instanceof SimClockStartError) {
+      throw new CommandFailure("refused", "SCHEMA_INVALID", error.message, {
+        target: { file: values.handler }, remedy: "set clock.start within the supported range or omit it to start at zero",
+      });
+    }
     throw simulationFailure(error, file, journal);
   }
   // A program that fails under its script is a completed simulation, and the failure is its outcome.

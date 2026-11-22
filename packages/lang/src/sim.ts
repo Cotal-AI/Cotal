@@ -71,6 +71,7 @@ export interface SimScript {
   /** Keyed by the `wait` step's name. A scripted `null` is a timeout, which is a choice. */
   readonly events?: Readonly<Record<string, Scripted<unknown>>>;
   readonly clock?: {
+    /** Virtual epoch in whole milliseconds, within the safe integer bounds. */
     readonly start?: number;
     /** Virtual time each turn consumes. Default "5m". */
     readonly turn?: string;
@@ -89,6 +90,13 @@ export class SimUnscriptedError extends Error {
   ) {
     super(message);
     this.name = "SimUnscriptedError";
+  }
+}
+
+export class SimClockStartError extends RangeError {
+  constructor() {
+    super(`clock.start must be a whole number of milliseconds between ${Number.MIN_SAFE_INTEGER} and ${Number.MAX_SAFE_INTEGER}`);
+    this.name = "SimClockStartError";
   }
 }
 
@@ -134,6 +142,7 @@ interface ParkedEvent {
 }
 
 export class SimHandler implements EffectHandler {
+  private readonly startedAt: number;
   private virtualNow: number;
   private readonly occurrences = new Map<string, number>();
   private readonly consumed: Consumption[] = [];
@@ -144,7 +153,10 @@ export class SimHandler implements EffectHandler {
   private settled: (() => Promise<void>) | undefined;
 
   constructor(readonly script: SimScript = {}) {
-    this.virtualNow = script.clock?.start ?? 0;
+    const { start = 0 } = script.clock ?? {};
+    if (!Number.isSafeInteger(start)) throw new SimClockStartError();
+    this.startedAt = start;
+    this.virtualNow = start;
   }
 
   now(): number {
@@ -153,7 +165,17 @@ export class SimHandler implements EffectHandler {
 
   /** Advance virtual time immediately. The timed effects go through the event queue instead. */
   advance(ms: number): void {
-    this.virtualNow += ms;
+    this.virtualNow = this.clockInstant(this.virtualNow + ms);
+  }
+
+  // Both the absolute clock and the elapsed time in a report need millisecond resolution.
+  private clockInstant(at: number): number {
+    if (Number.isSafeInteger(at) && Number.isSafeInteger(at - this.startedAt)) return at;
+    throw new EffectError(
+      "L6003",
+      "simulation-clock-range",
+      `L6003 Simulation clock out of range\n\nA virtual wake or deadline exceeds the range for millisecond precision (${Number.MIN_SAFE_INTEGER} to ${Number.MAX_SAFE_INTEGER} ms for both timestamps and elapsed time).\n\nFix: choose a clock.start closer to zero or shorten the simulated durations.`,
+    );
   }
 
   /**
@@ -167,7 +189,7 @@ export class SimHandler implements EffectHandler {
         return;
       }
       const event: ParkedEvent = {
-        wake: this.virtualNow + ms,
+        wake: this.clockInstant(this.virtualNow + ms),
         seq: this.parkSeq++,
         done: false,
         deliver: () => {
@@ -421,14 +443,15 @@ export class SimHandler implements EffectHandler {
    */
   async observe(req: ObserveRequest, ctx: EffectContext): Promise<boolean> {
     this.checkFault(ctx);
+    const deadlineAt = this.clockInstant(req.deadlineAt);
     // ATTEMPT 0 LOOKS IMMEDIATELY; every later one waits the cadence first.
     if (req.attempt > 0) {
       // The park itself must not overshoot the deadline: parking for the full cadence and then
       // reporting late would advance the run clock past an instant the wait never reached.
-      const step = Math.min(parseDuration(req.every), Math.max(0, req.deadlineAt - this.virtualNow));
+      const step = Math.min(parseDuration(req.every), Math.max(0, deadlineAt - this.virtualNow));
       await this.timed(step, ctx);
     }
-    return this.virtualNow < req.deadlineAt;
+    return this.virtualNow < deadlineAt;
   }
 
   async notify(_req: NotifyRequest, ctx: EffectContext): Promise<null> {

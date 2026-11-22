@@ -61,9 +61,10 @@ checkpoints and events and refuses anything unscripted (L6001), so a simulation 
 invent an answer. Time is discrete-event simulated on one virtual clock: timed effects park at
 their wake times and are delivered in wake order, so concurrent branches accumulate their own
 durations and a `race` under simulation is decided by the rule itself (least recorded clock, ties
-by declaration order), not by the order effects were asked. The simulator also enforces the `ask`
-schema shorthand: an unreadable schema is refused (L4022), and non-conforming replies consume
-`attempts` before L4006.
+by declaration order), not by the order effects were asked. Clock starts use whole milliseconds
+within JavaScript's safe integer range. A wake, deadline or elapsed time outside that range raises
+L6003. The simulator also enforces the `ask` schema shorthand: an unreadable schema is refused
+(L4022), and non-conforming replies consume `attempts` before L4006.
 
 ## Suites
 
