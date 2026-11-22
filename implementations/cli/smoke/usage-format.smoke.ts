@@ -358,9 +358,10 @@ for (const [args, usage, foreign] of [
   for (const flags of [[], ["--plain"]]) {
     const refused = await at80(["service", "add", "myep", "--preset", "exec-endpoint", "--space", "widenext", ...flags]);
     const short = await at80(["service", "add", "b", "--preset", "broker", "--space", "w", ...flags]);
-    check(`the service add refusal on 80 columns${flags.length ? " under --plain" : ""} keeps its remedy command on one line`,
-      refused.some((line) => line.trim() === listedCommand.replace("<name>", "myep")) && registered.status === 0
-      && short.some((line) => line.trim() === shortCommand && displayWidth(line) <= 80),
+    check(`the service add refusal on 80 columns${flags.length ? " under --plain" : ""} keeps the remedy's flags together`,
+      registered.status === 0 && (flags.length
+        ? refused.some((line) => line.includes("`--contract <file> --handler <file>`")) && short.some((line) => line.includes("`--config <file> --binary <file>`"))
+        : refused.some((line) => line.trim() === listedCommand.replace("<name>", "myep")) && short.some((line) => line.trim() === shortCommand && displayWidth(line) <= 80)),
       { refused: refused.slice(0, 16), registered: shown(registered), short: short.slice(0, 16) });
   }
   // A logged-in user with a private runtime directory and no session bus reaches no user manager, so
