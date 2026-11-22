@@ -65,7 +65,7 @@ import { historySetupFailureRecords } from "./commands/history.js";
 import { HISTORY_LIMIT_FLAGS } from "./commands/history-limit.js";
 import { CatalogPreparationError, prepareCatalogCommand } from "./commands/sync.js";
 import { keepStartupNotice, type StartupNotice } from "./lib/interrupt-notice.js";
-import { metadataPositionals, typographicOptionParts } from "./lib/command-path.js";
+import { metadataPositionals, shortEqualsOptionParts, typographicOptionParts } from "./lib/command-path.js";
 import { chooseMeshTarget, spaceChoiceRemedy } from "./lib/choose-target.js";
 import { registryFailure } from "./lib/registry-errors.js";
 import { FlagValueRefusal } from "./lib/flag-value-refusal.js";
@@ -425,14 +425,14 @@ function misspelledOption(cmd: Command, rest: readonly string[], flagNames: read
     if (word === "--") return undefined;
     const previous = rest[index - 1];
     if (previous !== undefined && cmd.flags?.some((flag) => flag.type === "string" && (previous === `--${flag.name}` || previous === `-${flag.short}`))) continue;
-    const short = /^-([^-=])=(.*)$/su.exec(word);
-    const flag = short && cmd.flags?.find((item) => item.short === short[1] && item.type === "string");
+    const short = shortEqualsOptionParts(word);
+    const flag = short && cmd.flags?.find((item) => item.short === short.short && item.type === "string");
     if (short && flag) {
-      const value = short[2]!;
+      const { value } = short;
       const quoted = shellWord(value);
       const long = `--${flag.name}=${quoted}`;
-      const correction = value.startsWith("-") ? long : `-${short[1]} ${quoted} or ${long}`;
-      return { message: `${word} gives -${short[1]} the value "=${value}"`, remedy: `write ${correction}` };
+      const correction = value.startsWith("-") ? long : `-${short.short} ${quoted} or ${long}`;
+      return { message: `${word} gives -${short.short} the value "=${value}"`, remedy: `write ${correction}` };
     }
     const typed = typographicOption(word, names, cmd.flags);
     if (typed) return typed;
@@ -565,7 +565,7 @@ function refuseRemovedFolder(cmd: Command, parsed: ParsedArgs, rest: readonly st
     return;
   }
   if (cmd.name.startsWith("__") || FOLDERLESS.has(cmd.name) || !workingFolderRemoved()) return;
-  failureExit(cmd, new CommandFailure("refused", "USAGE_INVALID", "this folder no longer exists", { remedy: "cd to an existing folder and run the command again", selfContained: true }), structured(cmd, parsed.positionals[0]) && parsed.values.json === true, parsed.values.plain === true, undefined, rest);
+  failureExit(cmd, new CommandFailure("refused", "USAGE_INVALID", "this folder no longer exists", { remedy: "cd to an existing folder and run the command again", selfContained: true }), structured(cmd, parsed.positionals[0]) && parsed.values.json === true, parsed.values.plain === true, undefined, rest, parsed);
 }
 
 /** The parsed args with a subcommand alias in the first positional replaced by its name, so `run`
@@ -803,7 +803,7 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
   // the extensions, so a command that could use them stops here, before the seed would write there.
   // Help, shell completion, version and docs use none of them.
   if (configFolder && cmd && parsed && !cmd.name.startsWith("__") && !["help", "completion", "version", "docs"].includes(cmd.name))
-    failureExit(cmd, configFolderRefusal(configFolder), structured(cmd, parsed.positionals[0]) && parsed.values.json === true, parsed.values.plain === true, undefined, rest);
+    failureExit(cmd, configFolderRefusal(configFolder), structured(cmd, parsed.positionals[0]) && parsed.values.json === true, parsed.values.plain === true, undefined, rest, parsed);
   // The seed can install or upgrade an extension package, so the surface is read again after it and
   // an extension stub resolves against the manifest the seed left.
   const controlOnlyManager = parsed?.values.execution === "none" && (cmd?.name === "supervise" || cmd?.name === "__daemon-manager");
@@ -868,20 +868,22 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
     // COTAL_HOME that cannot be a directory can hold no record: both stop them before any command
     // reads it.
     const home = process.env.COTAL_HOME;
-    if (home && !isAbsolute(home)) failureExit(cmd, new CommandFailure("refused", "USAGE_INVALID", `COTAL_HOME ${JSON.stringify(home)} is a relative path, so each folder a command runs in would have its own Cotal home; the command did not run`, { remedy: `set COTAL_HOME to an absolute path, or unset it to use ${userCotalDir()}` }), structured(cmd, parsed.positionals[0]) && parsed.values.json === true, parsed.values.plain === true, undefined, rest);
+    const json = structured(cmd, parsed.positionals[0]) && parsed.values.json === true;
+    const plain = parsed.values.plain === true;
+    if (home && !isAbsolute(home)) failureExit(cmd, new CommandFailure("refused", "USAGE_INVALID", `COTAL_HOME ${JSON.stringify(home)} is a relative path, so each folder a command runs in would have its own Cotal home; the command did not run`, { remedy: `set COTAL_HOME to an absolute path, or unset it to use ${userCotalDir()}` }), json, plain, undefined, rest, parsed);
     const homeProblem = cotalHomeProblem();
-    if (homeProblem) failureExit(cmd, new CommandFailure("refused", "SCHEMA_INVALID", `${homeProblem}; the command did not run`, { remedy: `point COTAL_HOME at a directory, or unset it to use ${userCotalDir()}` }), structured(cmd, parsed.positionals[0]) && parsed.values.json === true, parsed.values.plain === true, undefined, rest);
+    if (homeProblem) failureExit(cmd, new CommandFailure("refused", "SCHEMA_INVALID", `${homeProblem}; the command did not run`, { remedy: `point COTAL_HOME at a directory, or unset it to use ${userCotalDir()}` }), json, plain, undefined, rest, parsed);
     // A `.cotal` that is a file in the folder the command uses, such as someone's notes, holds no
     // records, and every reader would otherwise report a different wrong cause. The machine daemon
     // uses its selected home, not the invoking project's records.
     const dirProblem = cmd.name === "version" || cmd.name === "daemon" || workingFolderRemoved() ? undefined : cotalDirProblem(typeof parsed.values.root === "string" ? resolve(parsed.values.root) : findCotalRoot());
-    if (dirProblem) failureExit(cmd, new CommandFailure("refused", "CONFLICT", `${dirProblem}; the command did not run`, { remedy: "rename or move that file, then run the command again" }), structured(cmd, parsed.positionals[0]) && parsed.values.json === true, parsed.values.plain === true, undefined, rest);
+    if (dirProblem) failureExit(cmd, new CommandFailure("refused", "CONFLICT", `${dirProblem}; the command did not run`, { remedy: "rename or move that file, then run the command again" }), json, plain, undefined, rest, parsed);
     if (!["version", "docs", "status", "daemon"].includes(cmd.name)) {
       try {
         cachedPreferences();
       } catch (e) {
         if (!isCommandFailure(e)) throw e;
-        failureExit(cmd, e, structured(cmd, parsed.positionals[0]) && parsed.values.json === true, parsed.values.plain === true, undefined, rest);
+        failureExit(cmd, e, json, plain, undefined, rest, parsed);
       }
     }
   }
@@ -950,7 +952,7 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
       // A registry record or directory it could not read is refused by its file, as `space` reports
       // it, and as a target it could not resolve is refused above.
       if (isMeshRegistryError(e)) failureExit(cmd, inOperationSpace(registryFailure(e), scope.space), json, parsed.values.plain === true, scope, rest);
-      if (e instanceof CatalogPreparationError) failureExit(cmd, new CommandFailure("refused", e.code, e.message), json, parsed.values.plain === true, scope, rest);
+      if (e instanceof CatalogPreparationError) failureExit(cmd, new CommandFailure("refused", e.code, e.message), json, parsed.values.plain === true, scope, rest, parsed);
       failureExit(cmd, inOperationSpace(new CommandFailure("unknown", "OPERATION_UNKNOWN", e instanceof Error ? e.message : String(e), { cause: e }), scope.space), json, parsed.values.plain === true, scope, rest);
     }
     // A workspace TARGET error carries structured recovery — which entry, whether it was removed,

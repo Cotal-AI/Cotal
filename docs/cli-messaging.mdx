@@ -784,10 +784,12 @@ connection is one `TARGET_UNAVAILABLE` error. A
 `gap` record says the connection was re-established and messages sent while it was down are not
 shown. A JSON follow that refuses invalid read arguments does not connect and reports `USAGE_INVALID`.
 This includes missing option values, unknown options, an empty `--space` or an invalid `--server`.
-An argument refusal, a target that cannot be opened or a snapshot that cannot be read produces an
-`error` with the failure's code and any remedy, then an `end` with `reason: "setup-failed"`. No
-snapshot is written. An `end` record closes the stream. The exit code is the snapshot's, the
-failure's when setup or the credential ends the follow, or 130 or 143 when SIGINT or SIGTERM ends it.
+A parser refusal leaves `target.space` null if the space option is missing a value, misspelled or
+repeated. An argument refusal, a target that cannot be opened (including when `.cotal` is a file)
+or an unreadable snapshot produces an `error` with the failure's code and any remedy, then an `end`
+with `reason: "setup-failed"`. No snapshot is written. An `end` record closes the stream. The exit
+code is the snapshot's, the failure's when setup or the credential ends the follow, or 130 or 143
+when SIGINT or SIGTERM ends it.
 
 To resume a JSON follow, save the last processed event's `data.ts` and the `data.id` values
 you processed at that timestamp. Restart with `--since` set to one millisecond before the saved

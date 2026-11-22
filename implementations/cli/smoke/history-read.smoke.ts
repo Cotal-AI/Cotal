@@ -137,6 +137,14 @@ async function checkHistoryFollowValidation(): Promise<void> {
     const address = listener.address();
     if (!address || typeof address === "string") throw new Error("expected a loopback TCP listener");
     const server = `nats://127.0.0.1:${address.port}`;
+    const blocked = join(home, "history-blocked");
+    mkdirSync(blocked);
+    const notes = join(blocked, ".cotal");
+    writeFileSync(notes, "project notes\n");
+    const prefsConfig = join(home, "history-config");
+    mkdirSync(join(prefsConfig, "cotal"), { recursive: true, mode: 0o700 });
+    const prefsFile = join(prefsConfig, "cotal", "preferences.json");
+    writeFileSync(prefsFile, "[]\n", { mode: 0o600 });
     const args = ["history", "--json", "--limit", "0"];
     const finite = await run(args);
     check("finite history with --limit 0 writes one USAGE_INVALID receipt, exit 1",
@@ -150,27 +158,43 @@ async function checkHistoryFollowValidation(): Promise<void> {
       { words: ["--follow", "-j", "--limit", "--", "general"], channel: "general", message: "--limit needs a value", remedy: "write --limit <n> before --" },
       { words: ["#general", "--follow", "-j", "--space="], channel: "general", message: "--space/-s is empty; name one space" },
       { words: ["--dms", "--follow", "-j", "-s", " "], dms: true, message: "--space/-s is empty; name one space" },
+      { words: ["--dms", "--follow", "-j", "-s=first"], dms: true, message: '-s=first gives -s the value "=first"', remedy: "write -s first or --space=first" },
+      { words: ["#general", "--follow", "-j", "-s="], channel: "general", message: '-s= gives -s the value "="' },
+      { words: ["#general", "--follow", "-j", "-s", "first", "--space", "second"], channel: "general", message: "Option '-s, --space' cannot be repeated" },
+      { words: ["--dms", "--follow", "-j", "--space=first", "-ssecond"], dms: true, message: "Option '-s, --space' cannot be repeated" },
       { words: ["#general", "--follow", "-j", "--space=read-space"], server: `${server}/path`, space: "read-space", channel: "general", message: "--server must be a bare broker URL - drop its path; the command did not run" },
       { words: ["\u2013\u2013grep=alpha", "--follow", "--json", "#general"], channel: "general", message: "\u2013\u2013grep=alpha starts with a typographic dash, so it is not an option", remedy: "type the option with hyphens: --grep=alpha" },
       { words: ["\u2013\u2013grep", "alpha", "--follow", "-j", "#general"], channel: "general", message: "\u2013\u2013grep starts with a typographic dash, so it is not an option" },
       { words: ["\u2013\u2013no-input", "--follow", "-j", "#general"], channel: "general", message: "\u2013\u2013no-input starts with a typographic dash, so it is not an option" },
       { words: ["--follow", "-j", "--unknown-option", "--", "\u2013\u2013dms"], channel: "\u2013\u2013dms", message: "Unknown option '--unknown-option'" },
+      { words: ["#general", "--follow", "-j", "--space=read-space"], label: "JSON history with a .cotal file", cwd: blocked, exit: 2, code: "CONFLICT", space: "read-space", channel: "general",
+        message: `${notes} is a file, not a directory, so it cannot hold this folder's Cotal records; the command did not run`, remedy: "rename or move that file, then run the command again" },
+      { words: ["--follow", "-j"], label: "JSON history with a Cotal home that is a file", env: { COTAL_HOME: notes }, exit: 1, code: "SCHEMA_INVALID",
+        message: `COTAL_HOME ${notes} is not a directory, so it can hold no Cotal records; the command did not run` },
+      { words: ["--follow", "-j"], label: "JSON history with a blocked config folder", env: { XDG_CONFIG_HOME: notes }, exit: 1, code: "SCHEMA_INVALID",
+        message: `the Cotal config folder ${join(notes, "cotal")} cannot be made: ${notes} is a file, not a folder; Cotal keeps your preferences, config and extensions there, so the command did not run` },
+      { words: ["--follow", "-j"], label: "JSON history with invalid preferences", env: { XDG_CONFIG_HOME: prefsConfig }, exit: 1, code: "SCHEMA_INVALID",
+        message: `the preferences file ${prefsFile} is invalid: not an object`, remedy: `fix or remove ${prefsFile}; nothing resets it` },
     ];
-    for (const { words, label, message, remedy, channel, space: targetSpace, dms, server: address = server } of cases) {
-      const stream = await run(["history", "--server", address, ...words]);
+    for (const { words, label, message, remedy, channel, space: targetSpace, dms, server: address = server, cwd, env, exit = 1, code = "USAGE_INVALID" } of cases) {
+      const stream = await run(["history", "--server", address, ...words], cwd, env);
       const records = stream.stdout.trim().split("\n").filter(Boolean).map((line) => JSON.parse(line) as {
         schemaVersion?: number; stream?: string; type?: string; target?: { space: string | null; channel: string | null; dms: boolean };
         data?: { code?: string; message?: string; remedy?: string; reason?: string };
       });
-      check(`${label ?? `JSON history ${words.join(" ")}`} writes only error and setup-failed end, exit 1, without connecting`,
-        stream.status === 1 && stream.stderr === "" && connections === 0
+      check(`${label ?? `JSON history ${words.join(" ")}`} writes only error and setup-failed end, exit ${exit}, without connecting`,
+        stream.status === exit && stream.stderr === "" && connections === 0
           && records.map((r) => r.type).join() === "error,end"
           && records.every((r) => r.schemaVersion === 1 && r.stream === "history" && r.target?.space === (targetSpace ?? null)
             && r.target?.channel === (channel ?? null) && r.target?.dms === (dms ?? false))
-          && records[0]?.data?.code === "USAGE_INVALID" && records[0]?.data?.message === message
+          && records[0]?.data?.code === code && records[0]?.data?.message === message
           && (remedy === undefined || records[0]?.data?.remedy === remedy) && records[1]?.data?.reason === "setup-failed",
         { stream: shown(stream), connections });
     }
+    const blockedRead = await run(["history", "#general", "-j", "--space=read-space", "--server", server], blocked);
+    check("a finite history read from a project with a .cotal file keeps one CONFLICT receipt",
+      blockedRead.status === 2 && blockedRead.stderr === "" && connections === 0 && blockedRead.envelope?.command === "history"
+        && blockedRead.envelope.outcome === "refused" && blockedRead.envelope.error?.code === "CONFLICT", shown(blockedRead));
     for (const words of [["general", "--limit"], ["--grep=--follow", "--limit"], ["--limit", "--", "--follow"],
       ["--follow", "--limit", "--plain"], ["clear", "--follow", "--limit"], ["limit", "--follow", "--max-age"],
       ["#general", "--space="], ["clear", "--follow", "--space="], ["--follow", "\u2013\u2013dms", "clear"],

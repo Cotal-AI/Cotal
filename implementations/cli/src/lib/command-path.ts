@@ -5,13 +5,27 @@ export function typographicOptionParts(word: string): { name: string; value?: st
   return match ? { name: match[1]!, value: match[2] } : undefined;
 }
 
+export function shortEqualsOptionParts(word: string): { short: string; value: string } | undefined {
+  const match = /^-([^-=])=(.*)$/su.exec(word);
+  return match ? { short: match[1]!, value: match[2]! } : undefined;
+}
+
 /** Read command words and declared options for help, completion and refusals, without validating an invocation. */
 export function metadataPositionals(cmd: Pick<Command, "flags">, argv: readonly string[], options: { completing?: boolean; refusalGlobalFlags?: readonly string[] } = {}) {
   const positionals: { value: string; index: number }[] = [];
   const values: ParsedArgs["values"] = Object.create(null);
+  const seenStrings = options.refusalGlobalFlags && new Set<string>();
   let valueFlag: FlagSpec | undefined;
   let optionsEnded = false;
   const takeOption = (flag: FlagSpec, inline: string | undefined, index: number, validSpelling = true): number => {
+    if (seenStrings && flag.type === "string" && !flag.multiple) {
+      // A refused repeat does not select either value, even when an occurrence had no value.
+      if (seenStrings.has(flag.name)) {
+        delete values[flag.name];
+        validSpelling = false;
+      }
+      seenStrings.add(flag.name);
+    }
     if (flag.type === "boolean") {
       if (validSpelling && inline === undefined) values[flag.name] = true;
     } else if (inline !== undefined) {
@@ -38,10 +52,12 @@ export function metadataPositionals(cmd: Pick<Command, "flags">, argv: readonly 
       if (flag) index = takeOption(flag, equals === -1 ? undefined : word.slice(equals + 1), index);
     } else if (!optionsEnded && word.startsWith("-") && word !== "-") {
       const cluster = word.slice(1);
+      const shortEquals = options.refusalGlobalFlags && shortEqualsOptionParts(word);
       for (let offset = 0; offset < cluster.length; offset++) {
         const flag = cmd.flags?.find((item) => item.short === cluster[offset]);
         if (!flag) continue;
-        index = takeOption(flag, flag.type === "string" ? cluster.slice(offset + 1) || undefined : undefined, index);
+        const inline = flag.type === "string" ? cluster.slice(offset + 1) || undefined : undefined;
+        index = takeOption(flag, inline, index, !shortEquals || flag.type !== "string");
         if (flag.type === "string") break;
       }
     } else {
