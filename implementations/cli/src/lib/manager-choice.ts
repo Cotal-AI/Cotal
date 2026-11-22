@@ -1,12 +1,12 @@
 import type { Readable, Writable } from "node:stream";
 import { BASELINE_LIFECYCLE_ENDPOINT, findCommand, invokeCommand, registry, resolveService, type Command, type Presence } from "@cotal-ai/core";
-import { CommandFailure, DEFAULT_MANAGER_NAME, codeSpan, instanceIdShaped, isCommandFailure, isConnectRefusal, renderReport, resolveMeshTarget, type Connection, resolveControlTarget, type ControlAuth, type MeshTarget } from "@cotal-ai/workspace";
+import { CommandFailure, DEFAULT_MANAGER_NAME, codeSpan, instanceIdShaped, isCommandFailure, isConnectRefusal, renderReport, resolveMeshTarget, type Connection, resolveControlTarget, type ControlAuth, type MeshTarget, type ResolveFlags } from "@cotal-ai/workspace";
 import { cliControl, onInstance, onInstanceId, onRetry, type ManagerRetry } from "./control.js";
 import { openEndpointConnection } from "./endpoint-client.js";
 import { commandWord } from "./leading-flags.js";
 import { shellWord } from "./endpoint-errors.js";
 import { displayCmd } from "./self-exec.js";
-import { openTransient } from "./transient.js";
+import { openTransient, type ConnectValues } from "./transient.js";
 import { askManager, liveManagerIds, managerCandidate, reportedManagerHost, severalLive, type ManagerCandidate } from "@cotal-ai/workspace/control";
 
 /** The exchange's refusal of an unpinned manager-caller selection when it counts none of the caller's
@@ -33,7 +33,7 @@ function selectorFor(manager: ManagerCandidate, managers: readonly ManagerCandid
 /** The roster of the space `values` resolve to, read once, with the connection that read it. Only
  *  presence is read: it carries each manager's name, host and start, and a connection whose grant
  *  stops short of the channel registry still reads it. */
-async function presenceOf(values: { space?: string; server?: string }): Promise<{ roster: Presence[]; connection: Connection }> {
+async function presenceOf(values: ResolveFlags): Promise<{ roster: Presence[]; connection: Connection }> {
   const { ep, connection } = await openTransient(values, "manager-candidates", { throwOnRefusal: true, presenceOnly: true, report: () => {} });
   try { return { roster: ep.getRoster(), connection }; } finally { await ep.stop().catch(() => {}); }
 }
@@ -65,11 +65,13 @@ export class AgentManagerUnsettled extends CommandFailure {
   }
 }
 
-const targetFlags = (values: { space?: unknown; server?: unknown }) =>
-  ({ ...(typeof values.space === "string" ? { space: values.space } : {}), ...(typeof values.server === "string" ? { server: values.server } : {}) });
+type TargetValues = Omit<ConnectValues, "space" | "server" | "creds"> & { space?: unknown; server?: unknown };
+
+const targetFlags = ({ space, server, offline, openInventory }: TargetValues) =>
+  ({ space: typeof space === "string" ? space : undefined, server: typeof server === "string" ? server : undefined, offline, openInventory });
 
 /** Your live managers on the user-auth mesh `flags` resolve to, as presence shows them. */
-async function yourLiveManagers(flags: { space?: string; server?: string }): Promise<ManagerCandidate[]> {
+async function yourLiveManagers(flags: ResolveFlags): Promise<ManagerCandidate[]> {
   const { roster, connection } = await presenceOf(flags);
   // Your managers' presence keys are `<owner>.manager_<instanceId>`, and a key is written only by
   // its holder, so the instance id is read from the key, never from what the card says.
@@ -99,7 +101,7 @@ export function validateManagerPin(on: string, mode: MeshTarget["mode"] | undefi
  * candidates. On a static or open mesh a manager's presence does not carry its instance id, so a
  * name is refused there and the instance id is asked for.
  */
-export async function managerPin(values: { on?: unknown; space?: unknown; server?: unknown }, verb: ManagerRetry): Promise<string | undefined> {
+export async function managerPin(values: TargetValues & { on?: unknown }, verb: ManagerRetry): Promise<string | undefined> {
   const on = onInstance(values.on === undefined ? undefined : String(values.on), verb);
   if (on === undefined || instanceIdShaped(on)) return on;
   const flags = targetFlags(values);
@@ -330,7 +332,7 @@ let pick: ManagerSelection | undefined;
  *  its own host, the one `cotal ps` prints as its reported host. Without a target, or for a manager
  *  that does not answer, its host is unknown. */
 export async function managerSelection(
-  values: { on?: unknown; space?: unknown; server?: unknown },
+  values: TargetValues & { on?: unknown },
   instanceId: string,
   target?: { space: string; server: string; auth: ControlAuth },
 ): Promise<ManagerSelection> {

@@ -1,7 +1,7 @@
 import { CotalEndpoint, DEV_OWNER, channelBucket, chatStream, credsClaims, dmStream, isPublishPermissionDenied, mintCreds, newIdentity, presenceBucket, subjectMatches, taskStream } from "@cotal-ai/core";
 import { CommandFailure, endpointAuth, type Connection } from "@cotal-ai/workspace";
 import { c } from "../ui.js";
-import { connectOrExit, connectOrThrow } from "./connect.js";
+import { connectOrExit, connectOrThrow, type ConnectFlags } from "./connect.js";
 import { brokerStoreWrite, storeWriteRepair } from "./broker-store-health.js";
 import { streamGone, streamsAbsent } from "./space-streams.js";
 import { DIAL_TIMEOUT_MS, DialNotAdmitted, dialWithRetry, notAdmittedRefusal } from "@cotal-ai/workspace/control";
@@ -15,11 +15,7 @@ import { DIAL_TIMEOUT_MS, DialNotAdmitted, dialWithRetry, notAdmittedRefusal } f
  * and {@link endpointAuth} spreads whichever material arrived.
  */
 
-export interface ConnectValues {
-  space?: string;
-  server?: string;
-  creds?: string;
-}
+export type ConnectValues = Omit<ConnectFlags, "readOnly" | "allowStoppedLocal">;
 
 /** Resolve where to connect + with what credentials (`--creds` → raw off-registry; user-auth mesh →
  *  login/bearer material; else the running mesh's minted least-privilege OPERATOR creds — self-scoped

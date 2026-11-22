@@ -25,8 +25,8 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSyn
 import { hostname, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { agentFilePath } from "@cotal-ai/core";
-import { createSuite } from "@cotal-ai/smoke-kit";
-import { recordMesh } from "@cotal-ai/workspace";
+import { createSuite, freePort } from "@cotal-ai/smoke-kit";
+import { recordMesh, setAdoptedCurrent } from "@cotal-ai/workspace";
 
 const BIN = join(import.meta.dirname, "..", "..", "..", "bin", "dist", "cotal.js");
 if (!existsSync(BIN)) {
@@ -57,7 +57,8 @@ const outcome = (r: ReturnType<typeof spawnSync>) => {
 };
 const fixture = join(import.meta.dirname, "operation-space.fixture.ts");
 const kernel = (...words: string[]) => outcome(spawnSync(process.execPath, [...process.execArgv, fixture, ...words], { cwd: root, env, encoding: "utf8", timeout: 60_000 }));
-const cotal = (...words: string[]) => outcome(spawnSync(process.execPath, [BIN, ...words], { cwd: root, env, encoding: "utf8", timeout: 120_000 }));
+const cotalIn = (cwd: string, ...words: string[]) => outcome(spawnSync(process.execPath, [BIN, ...words], { cwd, env, encoding: "utf8", timeout: 120_000 }));
+const cotal = (...words: string[]) => cotalIn(root, ...words);
 const shown = (r: ReturnType<typeof kernel>) => ({ status: r.status, stdout: r.stdout.slice(0, 600), stderr: r.stderr.slice(0, 600) });
 const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
 
@@ -446,15 +447,16 @@ const userRoot = join(home, "user-project");
 mkdirSync(dirname(agentFilePath(userRoot, "minimal")), { recursive: true });
 writeFileSync(agentFilePath(userRoot, "minimal"), "---\nname: minimal\n---\n");
 const instanceOnlySpaces = [["preview-open", "open"], ["preview-static", "auth"]] as const;
+const offlineBroker = `nats://127.0.0.1:${await freePort()}`;
 const priorHome = process.env.COTAL_HOME;
 try {
   process.env.COTAL_HOME = env.COTAL_HOME;
   for (const [space, mode] of instanceOnlySpaces) {
     const targetRoot = join(home, space);
-    mkdirSync(targetRoot);
-    recordMesh({ space, server: "nats://127.0.0.1:9", root: targetRoot, mode, origin: "manual", ts: new Date().toISOString() });
+    mkdirSync(join(targetRoot, ".cotal"), { recursive: true });
+    recordMesh({ space, server: offlineBroker, root: targetRoot, mode, origin: "manual", ts: new Date().toISOString() });
   }
-  recordMesh({ space: "preview-user", server: "nats://127.0.0.1:34300", root: userRoot, mode: "user", origin: "manual",
+  recordMesh({ space: "preview-user", server: offlineBroker, root: userRoot, mode: "user", origin: "manual",
     userAuth: { provider: "cotal", idp: { url: "https://idp.example/api/auth", issuer: "https://idp.example", audience: "https://idp.example" } }, ts: new Date().toISOString() });
 } finally {
   if (priorHome === undefined) delete process.env.COTAL_HOME;
@@ -534,6 +536,31 @@ for (const mode of [["--dry-run"], []]) {
   const auto = cotal("spawn", "-d", "--json", "--runtime", "auto", ...mode);
   check(`--runtime auto is refused USAGE_INVALID ${mode.length ? "by the preview" : "before a launch resolves any target"}`,
     auto.status === 1 && auto.envelope?.error?.code === "USAGE_INVALID" && auto.envelope.error.message === "--runtime auto chooses a manager's own runtime, not the runtime of one seat", shown(auto));
+}
+
+// A stopped local registration does not capture an implicit spawn over the adopted selection.
+try {
+  process.env.COTAL_HOME = env.COTAL_HOME;
+  const selector = ["spawn", "minimal", "-d", "--on", "build-host.invalid", "--json"];
+  setAdoptedCurrent("preview-user");
+  const openRoot = join(home, "preview-open");
+  const userPreview = cotalIn(openRoot, ...selector, "--dry-run");
+  const userLaunch = cotalIn(openRoot, ...selector);
+  check("with an adopted user space and an offline open project, preview accepts a host and launch reaches user auth",
+    userPreview.status === 0 && userPreview.envelope?.target?.space === "preview-user" && userPreview.envelope.target.authMode === "user"
+      && userLaunch.status === 2 && userLaunch.envelope?.error?.code === "DEPENDENCY_UNAVAILABLE"
+      && userLaunch.envelope.error.message?.includes('space "preview-user" has no user-auth material') === true,
+    { preview: shown(userPreview), launch: shown(userLaunch) });
+  setAdoptedCurrent("preview-open");
+  for (const mode of [[], ["--dry-run"]]) {
+    const open = cotalIn(userRoot, ...selector, ...mode);
+    check(`with an adopted open space and an offline user project, ${mode.length ? "preview" : "launch"} rejects a host`,
+      open.status === 1 && open.stderr === "" && open.envelope?.error?.code === "USAGE_INVALID"
+        && open.envelope.target?.on === "build-host.invalid", shown(open));
+  }
+} finally {
+  if (priorHome === undefined) delete process.env.COTAL_HOME;
+  else process.env.COTAL_HOME = priorHome;
 }
 
 finish();

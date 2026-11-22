@@ -57,7 +57,7 @@ import { runningStackManagerPid, stackManagerAbsent, stackManagerStarting } from
 import { cliControl, failIfNotOk, onRerun } from "../lib/control.js";
 import { askManagerFolder, managerPin, managerSelection, managersWithPersona, rerunOn, rerunWithCwd, type FolderCheck } from "../lib/manager-choice.js";
 import { canPrompt } from "./meshes-wizard.js";
-import { callerHarness, missingConnector, spawnPersona } from "../lib/spawn-defaults.js";
+import { callerHarness, missingConnector, spawnPersona, spawnTargetFlags } from "../lib/spawn-defaults.js";
 import { attachSeat, joinedAgentRows, psSeatLabel } from "./agents.js";
 import { AgentAlreadyRunning, heldAnswer, settleHeldName } from "../lib/held-name.js";
 import { shellWord } from "../lib/endpoint-errors.js";
@@ -144,8 +144,8 @@ export function managedLaunchView(r: ManagedLaunchResult): Report {
 
 /** The auth mode of the mesh `flags` name, or undefined when they name no registered mesh, which
  *  the launch's own resolve then reports. */
-function meshMode(flags: { space?: string; server?: string }): string | undefined {
-  try { return resolveMeshTarget(process.cwd(), { space: flags.space, server: flags.server }).mode; }
+function meshMode(flags: ConnectFlags): string | undefined {
+  try { return resolveMeshTarget(process.cwd(), flags).mode; }
   catch { return undefined; }
 }
 
@@ -162,11 +162,12 @@ export async function launchManagedPersona(
   // `COTAL_DEFAULT_PERSONA` > `default`). Identity is separate:
   // when `--name` is given it OVERRIDES the file's `name:` (foreground's `requested`), threaded
   // as the op's `identity` so it is never silently dropped in detached mode.
-  let on = await managerPin(values, spawnRerun(values, positionals));
+  const flags = await spawnTargetFlags(values);
+  const selector = { ...flags, on: values.on };
+  let on = await managerPin(selector, spawnRerun(values, positionals));
   // From a managed seat's own shell the launch is the SEAT's, as its `cotal_spawn` tool is: the
   // manager records the seat as the spawner, so the seat can stop the child it asked for (#718).
   // `--on` keeps the pin on that path too.
-  const flags = { space: values.space, server: values.server, creds: values.creds };
   const seatIntent = Boolean(process.env.COTAL_NAME || process.env.COTAL_ID || process.env.COTAL_LIFECYCLE_UID || process.env.COTAL_ACCEPTED_TOKEN);
   if (seatIntent && values.creds !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", "a managed seat's child launch uses that seat's own caller, not a --creds override");
   let cwd = values.cwd;
@@ -186,7 +187,7 @@ export async function launchManagedPersona(
     if (pin !== undefined) {
       if (!probe.auth.bearer) await refuseUnregisteredManager(probe.space, probe.server, probe.auth, pin);
       on = pin;
-      const selection = await managerSelection(values, pin, probe);
+      const selection = await managerSelection(selector, pin, probe);
       if (selection.manager.host !== hostname()) {
         const folder = await askManagerFolder(selection, process.argv.slice(2), (path) => checkFolder(flags, pin, path));
         if (folder === null) process.exit(0);
@@ -275,7 +276,7 @@ export async function launchManagedPersona(
   let reply: Awaited<ReturnType<typeof start>>;
   try {
     let mesh: MeshTarget | undefined;
-    try { mesh = resolveMeshTarget(process.cwd(), { space: flags.space, server: flags.server }); } catch { /* no registered mesh: nothing to release */ }
+    try { mesh = resolveMeshTarget(process.cwd(), flags); } catch { /* no registered mesh: nothing to release */ }
     reply = await settleHeldName(flags, start, (o) => "value" in o && !o.value.ok && o.value.nativeOutcome === "not-executed"
       ? heldAnswer({ code: o.value.code, details: o.value.details, message: o.value.error ?? "" }, values.name) : undefined, meshRelease(mesh));
   } catch (e) {

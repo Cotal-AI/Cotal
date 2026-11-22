@@ -1,7 +1,7 @@
 import { lstatSync } from "node:fs";
 import { isAbsolute, join, relative } from "node:path";
 import { agentFilePath, personaDir } from "@cotal-ai/core";
-import { cachedPreferences, canonicalRoot, CommandFailure, describeLayer, isWorkspaceTargetError, OFFICIAL_CONNECTORS, preparedNeverStarted, resolveMeshTarget, resolvePreference, type MeshTarget, type PreferenceContext } from "@cotal-ai/workspace";
+import { cachedPreferences, canonicalRoot, CommandFailure, describeLayer, isWorkspaceTargetError, OFFICIAL_CONNECTORS, preparedNeverStarted, pruneStaleMeshes, resolveMeshTarget, resolvePreference, resolveReadsLiveness, type ConnectFlags, type MeshTarget, type PreferenceContext } from "@cotal-ai/workspace";
 import { defaultPersonaFix } from "./default-persona.js";
 
 /** Persona selection shared by foreground and detached spawn: `--config`, then the positional, then
@@ -35,6 +35,12 @@ export function callerHarness(space: string): string | undefined {
 /** Whether a spawn runs through a manager: only when the caller asks for one with `--detach` or
  *  `--on`. Any other spawn runs the application in this terminal, on every kind of mesh. */
 export const spawnUsesManager = (values: { detach?: boolean; on?: string }): boolean => values.detach === true || values.on !== undefined;
+
+/** Use one broker liveness snapshot for a preview or for both the selector and connection of a launch. */
+export async function spawnTargetFlags({ space, server, creds }: Pick<ConnectFlags, "space" | "server" | "creds">): Promise<ConnectFlags> {
+  const flags = { space, server, creds };
+  return creds === undefined && resolveReadsLiveness(process.cwd(), flags) ? { ...flags, ...await pruneStaleMeshes(server, "targets") } : flags;
+}
 
 /** Only a static mesh's seat carries an issuance whose expiry the caller sets. */
 export function checkSpawnExpiryTarget(values: { "expires-in"?: string; "expires-at"?: string }, target: Pick<MeshTarget, "space" | "mode" | "auth">): void {
