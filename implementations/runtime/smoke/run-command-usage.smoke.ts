@@ -684,6 +684,8 @@ log([].filter(() => true), [].find(() => true) === undefined, [].findLast(() => 
   for (const limit of ["0", "1001", "x"])
     c(`run show --limit ${limit} is refused`, usageRefusal(gate(["show", "run-0"], { limit }), "--limit must be between 1 and 1000"), limit);
   c("run journal --limit with --json is refused", usageRefusal(gate(["journal", "run-0"], { limit: "5", json: true }), "--json returns the whole journal"));
+  const cursor = gate(["show", "run-0"], { cursor: "AAAAAAAA", limit: "1" });
+  c("run show refuses an inventory cursor even with a journal limit", isCommandFailure(cursor) && cursor.code === "USAGE_INVALID" && cursor.remedy?.includes("remove --cursor") === true, cursor);
   c("run ps --limit without --page is still refused", usageRefusal(gate(["ps"], { limit: "5" }), "diagnostic paging requires run --page"));
   const view = { runId: "run-0", endpoint: "manager", spec: {} as RunStatusView["spec"],
     journal: Array.from({ length: 30 }, (_, n) => ({ n, kind: "activation" as const, holder: "h", epoch: n, replayedTo: 0 })) } satisfies RunStatusView;

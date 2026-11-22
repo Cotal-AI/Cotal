@@ -1194,9 +1194,13 @@ export function workflowArguments(args: ParsedArgs): { values: RunValues; verb: 
     if (!Number.isSafeInteger(ms)) outOfRange();
     if (ms === 0) usage("--timeout must be longer than zero, or every checkpoint, ask and turn that sets no limit of its own expires at once");
   }
-  if (verb === "journal" && values.limit !== undefined) {
-    if (!/^[1-9][0-9]*$/.test(values.limit) || Number(values.limit) > 1000) usage(`run ${raw}: --limit must be between 1 and 1000`);
-    if (values.json) usage(`run ${raw}: --limit bounds the text view, and --json returns the whole journal`);
+  if (verb === "journal") {
+    const paging = [values.page !== undefined ? "--page" : undefined, values.cursor !== undefined ? "--cursor" : undefined].filter(Boolean).join(" and ");
+    if (paging) usage(`run ${raw}: diagnostic inventory options are not available here`, `remove ${paging} to read the journal, or use \`cotal run --page --on <instance>\` for diagnostic inventory`);
+    if (values.limit !== undefined) {
+      if (!/^[1-9][0-9]*$/.test(values.limit) || Number(values.limit) > 1000) usage(`run ${raw}: --limit must be between 1 and 1000`);
+      if (values.json) usage(`run ${raw}: --limit bounds the text view, and --json returns the whole journal`);
+    }
   } else if (values.page !== undefined || values.limit !== undefined || values.cursor !== undefined) {
     if (verb !== "ps" || values.local === true || values.page !== true || values.on === undefined)
       usage("diagnostic paging requires run --page --on <instance> without --local");

@@ -334,8 +334,9 @@ cotal run --page --on <instance> --cursor <cursor>
 For the MCP surface, use `cotal_run` with `verb: "ps"`, `instance` and `page: { limit: 8 }`.
 Pass a returned `nextCursor` as `page.cursor` to continue. A managed session can use its existing
 manager binding. Keep the same space, endpoint filter, instance and process epoch throughout a scan.
-The CLI requires `--on`; page mode is not available with `--local` or other verbs. An older host
-refuses page mode rather than returning a truncated legacy list.
+The CLI requires `--on`; page mode is not available with `--local` or other verbs. Use
+`cotal run show <run-id> --limit <n>` without `--page` or `--cursor` to limit the text journal.
+An older host refuses page mode rather than returning a truncated legacy list.
 
 Each page has at most 16 rows (default 8), and the complete reply fits 65536 bytes and the broker's
 payload limit. The reader issues at most 64 storage calls and stops issuing them after 2 seconds or

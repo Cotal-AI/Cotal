@@ -62,6 +62,7 @@ import { deferSeedToLaunch } from "./seed/launch.js";
 import { isAuthenticSeedChild } from "./seed/lock.js";
 import { printHelpPath, printEntry } from "./help.js";
 import { historySetupFailureRecords } from "./commands/history.js";
+import { watchSetupFailureRecords } from "./commands/watch.js";
 import { HISTORY_LIMIT_FLAGS } from "./commands/history-limit.js";
 import { CatalogPreparationError, prepareCatalogCommand } from "./commands/sync.js";
 import { keepStartupNotice, type StartupNotice } from "./lib/interrupt-notice.js";
@@ -186,8 +187,9 @@ function failureExit(cmd: Command, failure: CommandFailure, json: boolean, plain
       ? "auth mint" : cmd.name;
     const historyFollow = cmd.name === "history" && validationArgs?.values.follow === true && !plain
       && !findSubcommand(cmd, validationArgs.positionals[0]);
-    const lines = historyFollow ? historySetupFailureRecords(validationArgs, failure).map((record) => `${JSON.stringify(record)}\n`).join("")
-      : envelopeLine(failureEnvelope(command, failure, warnings, scope));
+    const records = historyFollow ? historySetupFailureRecords(validationArgs, failure)
+      : cmd.name === "watch" && validationArgs && !plain ? watchSetupFailureRecords(validationArgs, failure) : undefined;
+    const lines = records ? records.map((record) => `${JSON.stringify(record)}\n`).join("") : envelopeLine(failureEnvelope(command, failure, warnings, scope));
     writeSync(1, lines);
   } catch (error) {
     reportLostOutput(error as NodeJS.ErrnoException);

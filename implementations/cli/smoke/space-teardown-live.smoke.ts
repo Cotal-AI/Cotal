@@ -323,6 +323,10 @@ try {
       await new Promise((settle) => setTimeout(settle, 250));
     }
     check("the finished run is counted and only the waiting run is listed, with its state", runs?.finished === 1 && runs.unfinished?.length === 1 && runs.unfinished[0]?.runId === runId && runs.unfinished[0].state === "running", runs);
+    const journal = cli(root, "run", "show", runId ?? "-", "--limit", "1", "--space", space);
+    check("run show --limit reads one journal row", journal.status === 0 && journal.stdout.includes("Journal · last 1 of"), shown(journal));
+    const pagedJournal = cli(root, "run", "show", runId ?? "-", "--page", "--limit", "1", "--space", space);
+    check("run show refuses inventory paging even when the journal limit is valid", pagedJournal.status === 1 && pagedJournal.stdout === "" && pagedJournal.stderr.includes("remove --page to read the journal") && pagedJournal.stderr.includes("cotal run --page --on <instance>"), shown(pagedJournal));
     for (const [definition, id] of [["stack-manager", manager], ["stack-delivery", delivery]] as const) {
       const stoppedMember = cli(root, "service", "stop", definition, "--instance", String(id), "--space", space, "--yes", "--json");
       check(`the ${definition} member stops on its own`, stoppedMember.status === 0, shown(stoppedMember));
