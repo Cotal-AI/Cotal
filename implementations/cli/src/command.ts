@@ -103,18 +103,17 @@ function takeGlobalFlag(word: string): boolean {
   return true;
 }
 
-/** Separate globals before `--` without applying them to a command that takes its words raw. */
-function splitGlobalFlags(words: readonly string[], leading: ReadonlySet<string>): { rest: string[]; flags: Set<string>; repeated?: string } {
-  const end = words.indexOf("--");
+/** Collect globals before `--`; the parser still needs their original positions. */
+function collectGlobalFlags(words: readonly string[], leading: ReadonlySet<string>): { flags: Set<string>; repeated?: string } {
   const flags = new Set<string>();
   let repeated: string | undefined;
-  const head = (end === -1 ? words : words.slice(0, end)).filter((word) => {
-    if (!GLOBAL_FLAG_WORDS.has(word)) return true;
+  for (const word of words) {
+    if (word === "--") break;
+    if (!GLOBAL_FLAG_WORDS.has(word)) continue;
     if (leading.has(word) || flags.has(word)) repeated ??= word;
     flags.add(word);
-    return false;
-  });
-  return { rest: end === -1 ? head : [...head, ...words.slice(end)], flags, repeated };
+  }
+  return { flags, repeated };
 }
 
 /** Whether `cmd` takes its words raw: it declares so, or it is an internal command, whose words are
@@ -152,8 +151,7 @@ function asksForJson(cmd: Command, args: readonly string[]): boolean {
     let json = false;
     for (const ch of word.slice(1)) {
       const type = shorts.get(ch);
-      if (type === undefined) return false;
-      if (type === "string") break;
+      if (type === undefined || type === "string") break;
       if (ch === "j") json = true;
     }
     return json;
@@ -459,6 +457,21 @@ function misspelledOption(cmd: Command, rest: readonly string[], flagNames: read
   return undefined;
 }
 
+function parserOptions(cmd: Command) {
+  return Object.fromEntries((cmd.flags ?? []).map(({ name, type, short }) => [name, { type, ...(short ? { short } : {}) }]));
+}
+
+/** Strip standalone globals, but keep any global where a string option needs its value. */
+function stripGlobalFlags(cmd: Command, words: string[]): string[] {
+  if (takesWordsRaw(cmd)) return words;
+  const end = words.indexOf("--");
+  const head = end === -1 ? words : words.slice(0, end);
+  if (!head.some((word) => GLOBAL_FLAG_WORDS.has(word))) return words;
+  const { tokens } = parseArgs({ args: head, options: parserOptions(cmd), strict: false, allowPositionals: true, tokens: true });
+  const globals = new Set(tokens.filter((token) => token.kind === "option" && GLOBAL_FLAG_WORDS.has(head[token.index]!)).map((token) => token.index));
+  return words.filter((_, index) => !globals.has(index));
+}
+
 /** A parse error as a refusal. A mistyped option names its spelling. A word that starts with `-`
  *  goes after `--` only where the command takes operands and there is no spelling suggestion.
  *  An option value that starts with `-` is written `--name=value`, and an option given with no value,
@@ -484,7 +497,7 @@ function parseRefusal(error: Error & { code?: string }, cmd: Command, rest: read
   const long = /use '--([^=']+)=-XYZ'/.exec(error.message)?.[1];
   const flag = long === undefined ? undefined : cmd.flags?.find((item) => item.name === long);
   if (error.code === "ERR_PARSE_ARGS_INVALID_OPTION_VALUE" && flag) {
-    const options = Object.fromEntries((cmd.flags ?? []).map(({ name, type, short }) => [name, { type, ...(short ? { short } : {}) }]));
+    const options = parserOptions(cmd);
     const { tokens } = parseArgs({ args: [...rest], options, strict: false, allowPositionals: true, tokens: true });
     let seen = false;
     for (const token of tokens) {
@@ -495,6 +508,7 @@ function parseRefusal(error: Error & { code?: string }, cmd: Command, rest: read
       if (token.inlineValue === false && !numeric && value?.startsWith("-") && value !== "-") {
         if (seen && !flag.multiple) return { message: `--${flag.name} cannot be repeated`, remedy: `use --${flag.name} once` };
         if (value === "--") return missingValue(flag, true);
+        if (GLOBAL_FLAG_WORDS.has(value)) return missingValue(flag);
         const next = parseArgs({ args: [value], options, strict: false, allowPositionals: true, tokens: true });
         if (next.tokens.every((item) => item.kind === "option" && Object.hasOwn(options, item.name)))
           return missingValue(flag);
@@ -508,6 +522,7 @@ function parseRefusal(error: Error & { code?: string }, cmd: Command, rest: read
 
 /** `rest` parsed against `cmd`'s declared flags, positionals and subcommands, or a usage exit. */
 function parseOrExit(cmd: Command, rest: string[]): ParsedArgs {
+  rest = stripGlobalFlags(cmd, rest);
   const seed = extSeedSubcommand(cmd, rest);
   const json = !seed && asksForJson(cmd, rest);
   const plain = !seed && rest.includes("--plain");
@@ -697,11 +712,10 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
     : original === "--help" || original === "-h" ? "help" : original;
   const words = [...output, ...argv.slice(lead + 1)];
   const builtin = findCommand(registry.all<Command>("command"), word);
-  const globals = splitGlobalFlags(words, leadingGlobals);
+  const globals = collectGlobalFlags(words, leadingGlobals);
   const ownWords = (cmd: Command | undefined): string[] => {
-    if (takesWordsRaw(cmd)) return [...words];
-    for (const option of globals.flags) takeGlobalFlag(option);
-    return [...globals.rest];
+    if (!takesWordsRaw(cmd)) for (const option of globals.flags) takeGlobalFlag(option);
+    return [...words];
   };
   const duplicate = (cmd: Command | undefined) => repeatedLeading ?? (takesWordsRaw(cmd) ? undefined : globals.repeated);
   if (repeatedLeading && (word === undefined || takesWordsRaw(builtin))) return repeatedGlobalFlag(repeatedLeading, undefined, []);
