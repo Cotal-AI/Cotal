@@ -22,7 +22,7 @@ export async function help(args: ParsedArgs): Promise<void> {
   const cmd = findCommand(commands, word);
   if (!cmd || cmd.name.startsWith("__")) throw new Error(unknownCommandMessage(commands, word));
   if (cmd.name === "service" && path.length === 2 && path[0] === "start" && findServicePreset(path[1]!)) {
-    paintFor(process.stdout, () => printHelpPath(servicePresetCommand(cmd, path), ["start"]));
+    paintFor(process.stdout, () => printHelpPath(servicePresetCommand(cmd, path), path));
     return;
   }
   paintFor(process.stdout, () => printHelpPath(managerServiceCommand(cmd, path)?.cmd ?? cmd, path));
