@@ -312,7 +312,7 @@ and an unconfirmed native stop cannot be forgotten just because its process disa
 ## manager [#manager]
 
 ```bash
-cotal manager start [--runtime <name>] [--roster <file>] [--name <name>] [--foreground|--dry-run] [--space <s>]
+cotal manager start [--runtime <name>] [--roster <file>] [--name <name>] [--foreground] [--dry-run] [--space <s>]
 cotal manager stop [--with-agents] [--yes|--dry-run] [--space <s>]
 cotal manager restart [--with-agents] [--yes|--dry-run] [--space <s>]
 cotal manager status [--instance <full-id>] [--space <s>]
@@ -385,8 +385,9 @@ manager is stopped, with its PID while its record still names one, and names `co
 and `--json` carries `recordedProcess` with `state` set to `stopped`. With no such log, `logs`
 refuses `TARGET_NOT_FOUND` and names the file. If the folder's records show a manager ran there (a
 PID record that names a dead manager, or the instance identity a manager keeps once it starts), the
-refusal says the log is no longer there and names only `cotal up`. Otherwise it says no manager has
-been started and names `cotal up` or `cotal manager start`. `cotal service logs stack-manager` reads
+refusal says the log is no longer there and names `cotal up` with the stack's `--root` and `--space`.
+Otherwise it says no manager has been started and also offers `cotal manager start` with the same
+`--space`. `cotal service logs stack-manager` reads
 the same file when no `stack-manager` is saved. A
 manager that `cotal supervise` runs in a terminal writes to that terminal instead. `stop`, `install`
 and the other verbs refuse it while it runs, because no saved service owns it; it stops with its

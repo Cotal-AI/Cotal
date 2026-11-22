@@ -410,6 +410,7 @@ ok("the refusal reads as the rule the file broke",
     try { loadAgentFile(f); } catch (e) { err = (e as Error).message; }
     ok(`endpoints refuses ${label}`, want.test(err), err);
   };
+  refuse("an explicit null", "null", /"endpoints" must be a list, not null/);
   refuse("a scalar", "com.example.orders", /must be a list/);
   refuse("an unknown entry key", "[{ endpoint: com.example.orders, commands: [list], target: self }]", /unknown key target/);
   refuse("a journal flag", "[{ endpoint: com.example.orders, commands: [list], journal: true }]", /unknown key journal/);

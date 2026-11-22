@@ -73,7 +73,10 @@ writable, `ps` reports `PERMISSION_DENIED` and names the store and how to repair
 `--server` names the saved broker. A different `--server` does not use the local store to diagnose
 the refusal. Otherwise, `ps` reports `TARGET_UNAVAILABLE`. If the recorded root's default
 `.cotal/channels.json` would prevent `up` from restarting the stack, the refusal names the file
-and the repair instead of recommending a restart. `ps` does not change the store or the file.
+and the repair instead of recommending a restart. After `down` removes a foreground stack's
+registration, `ps` still checks its channel seed and saved broker address. If another program holds
+the address and blocks the start, the refusal says to stop that listener or start on another port.
+`ps` does not change the store or the file, and it does not stop the listener.
 
 A raw `--creds` file is refused as `UNSUPPORTED` before dialing by `status <agent>`, `ps`, `stop`, `attach`, `input` and `models`, because
 that route mints no endpoint-caller triple. Run the command without `--creds` from the project folder, or pass `--space` against its registry

@@ -2,7 +2,7 @@ import { hostname } from "node:os";
 import { drainAndClose } from "@cotal-ai/core";
 import { randomUUID } from "node:crypto";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
-import { accessSync, constants, lstatSync, realpathSync } from "node:fs";
+import { accessSync, constants, existsSync, lstatSync, realpathSync } from "node:fs";
 import type { ConsumerInfo } from "@nats-io/jetstream";
 import type { NatsConnection } from "@nats-io/transport-node";
 import {
@@ -555,13 +555,22 @@ async function createBackup(args: ParsedArgs, observed: BackupObservation): Prom
   const journal = readMaintenanceJournal(root);
   if (!journal) throw notReady(root, undefined);
   const destinationPath = resolve(destination);
+  const folder = dirname(destinationPath);
   let destinationExists: boolean;
   try { destinationExists = lstatSync(destinationPath, { throwIfNoEntry: false }) !== undefined; }
   catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
+    if (code === "EACCES") {
+      const withChmod = oneLine(folder) === folder && existsSync(folder)
+        ? ` with ${codeSpan(`chmod u+x ${shellWord(folder)}`)}` : "";
+      throw new CommandFailure("refused", "PERMISSION_DENIED", `this account cannot search ${folder}, so the backup cannot be created in it; nothing was written`, {
+        target: { directory: destinationPath, folder },
+        remedy: `make the path to that folder searchable${withChmod}, or name a destination in a folder this account can write and search`,
+      });
+    }
     if (code !== "ENOTDIR" && code !== "ELOOP") throw error;
     const problem = code === "ENOTDIR" ? "contains a parent that is not a directory" : "contains a symbolic-link loop";
-    throw new CommandFailure("refused", "USAGE_INVALID", `the backup destination ${destinationPath} ${problem} (${code}); nothing was written`, { target: { directory: destinationPath, folder: dirname(destinationPath) }, native: { code }, remedy: "name a destination with an existing directory as its parent", selfContained: true });
+    throw new CommandFailure("refused", "USAGE_INVALID", `the backup destination ${destinationPath} ${problem} (${code}); nothing was written`, { target: { directory: destinationPath, folder }, native: { code }, remedy: "name a destination with an existing directory as its parent", selfContained: true });
   }
   if (destinationExists) {
     // The partial artifact of an interrupted create is named with the command that removes it.
@@ -581,7 +590,6 @@ async function createBackup(args: ParsedArgs, observed: BackupObservation): Prom
     .find((path) => overlaps(canonicalFuturePath(destinationPath), path));
   if (cleaned)
     throw new CommandFailure("refused", "USAGE_INVALID", `the backup destination ${destinationPath} is inside ${cleaned}, which \`cotal clean all\` removes; nothing was written`, { target: { directory: destinationPath, removedBy: cleaned }, remedy: `name a destination outside ${cleaned}`, selfContained: true });
-  const folder = dirname(destinationPath);
   try { accessSync(folder, constants.W_OK | constants.X_OK); }
   catch {
     // Do not offer a command whose operand the terminal would change by escaping invisibles.

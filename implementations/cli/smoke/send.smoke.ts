@@ -61,7 +61,7 @@ import { authDir, recordMesh, saveSpaceAuth, setCurrent } from "@cotal-ai/worksp
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-const EXPECTED = 113;
+const EXPECTED = 116;
 let pass = 0;
 let fail = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
@@ -191,6 +191,19 @@ try {
     if (priorCotalHome === undefined) delete process.env.COTAL_HOME;
     else process.env.COTAL_HOME = priorCotalHome;
   }
+  const help = await run(["send", "-c", "general", "--help"]);
+  check("ASCII --help prints send help", help.code === 0 && help.stdout.startsWith("cotal send\n") && help.stderr === "", help);
+  const pasted = "\u2014help";
+  const pastedHelp = await run(["send", "-c", "general", pasted]);
+  const emptyHistory = await run(["history", "general", "--json"]);
+  check("pasted help is refused without publishing", pastedHelp.code === 1 && pastedHelp.stdout === ""
+    && pastedHelp.stderr.includes("type the option with hyphens: --help") && emptyHistory.code === 0
+    && JSON.parse(emptyHistory.stdout).result.items.length === 0, { pastedHelp, emptyHistory });
+  const literal = await run(["send", "-c", "general", "--", pasted]);
+  const literalHistory = await run(["history", "general", "--json"]);
+  check("pasted help after -- is the only message in history", literal.code === 0 && literalHistory.code === 0
+    && JSON.stringify(JSON.parse(literalHistory.stdout).result.items.map(({ text }: { text: string }) => text)) === JSON.stringify([pasted]),
+  { literal, literalHistory });
   const bobIdentity = newIdentity();
   const bobUid = mintLifecycleUid();
   const bobCreds = await provisionPeer(bobIdentity, {

@@ -1,7 +1,7 @@
 import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, statSync, type Stats } from "node:fs";
 import { hasDuplicateNames } from "@cotal-ai/core";
 import { dryRunOutcome, DurationError, Journal, journalEntryKeyString, LangErrors, parseDuration, validate, type SimScript } from "@cotal-ai/lang";
-import { CommandFailure, isCommandFailure, oneLine, presentationOf, writeResult, type Report } from "@cotal-ai/workspace";
+import { CommandFailure, isCommandFailure, oneLine, presentationOf, recordOperationWarning, writeResult, type Report } from "@cotal-ai/workspace";
 import { logLineText } from "./log-line.js";
 
 interface OfflineValues {
@@ -302,8 +302,11 @@ export async function offlineWorkflow(mode: "validate" | "plan" | "simulate", fi
   const script = scriptOf(values.handler);
   const journal = new Journal({ run: "dry-run" });
   let report: Awaited<ReturnType<typeof dryRunOutcome>>;
+  // A simulation that throws never reaches the report, so the validation warnings go into the
+  // run's recorded warnings first: the failure envelope carries them, and text mode prints them
+  // with the failure.
   try { report = await dryRunOutcome(source, script, { file, journal }); }
-  catch (error) { throw simulationFailure(error, file, journal); }
+  catch (error) { for (const warning of warnings) recordOperationWarning(warning); throw simulationFailure(error, file, journal); }
   // A program that fails under its script is a completed simulation, and the failure is its outcome.
   const failure = "fault" in report ? programFailure(report.fault, journal) : null;
   const result = { kind: "workflow-simulation", outcome: failure ? "failed" : "completed", failure, steps: "fault" in report ? null : report.steps, elapsedMs: report.elapsedMs, effects: report.effects, agents: report.agents, waits: report.waits, checkpoints: report.checkpoints, unusedScript: report.unusedScript, log: report.log };

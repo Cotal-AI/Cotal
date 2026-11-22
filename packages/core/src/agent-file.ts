@@ -282,6 +282,8 @@ export function parseAgentFileSource(src: string, path: string, options?: { defe
     try { assertValidRole(role); }
     catch { throw new Error(`agent file ${path}: "role" must be a single token using letters, digits, underscores or hyphens`); }
   }
+  if (fm.endpoints === null)
+    throw new Error(`agent file ${path}: "endpoints" must be a list, not null. Remove the key or supply a list such as endpoints: []`);
 
   // Sweep every scalar frontmatter key we don't model into meta, verbatim — connector launcher
   // hints ride here so core stays ignorant of surface-specific keys.

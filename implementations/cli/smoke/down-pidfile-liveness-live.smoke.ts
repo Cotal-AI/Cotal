@@ -91,9 +91,15 @@ try {
   renameSync(aside, recorded);
   aside = undefined;
   ok("the manager pidfile is back", existsSync(recorded) && readPid(recorded) === managerPid);
-  const stopped = cli("down", "--yes");
+  const outputRefusal = cli("down", "--yes", "--json");
+  const { outcome, error } = JSON.parse(outputRefusal.stdout);
+  const retry = /^run `[^`]+ (down --yes)` from this root without --json or --plain/.exec(error?.remedy)?.[1];
+  ok("legacy down refuses JSON without stopping anything and keeps confirmation in the retry",
+    outputRefusal.status === 2 && outputRefusal.stderr === "" && outcome === "refused" && error?.code === "UNSUPPORTED"
+    && retry !== undefined && alive(managerPid) && await portOpen(PORT), outputRefusal);
+  const stopped = cli(...retry!.split(" "));
   const stoppedText = `${stopped.stdout ?? ""}${stopped.stderr ?? ""}`;
-  ok("bare down with the pidfile restored exits 0", stopped.status === 0, stoppedText);
+  ok("the advertised retry exits 0 without interactive input", stopped.status === 0, stoppedText);
   let gone = false;
   for (let i = 0; i < 40 && !gone; i++) {
     gone = !alive(managerPid) && !(await portOpen(PORT));

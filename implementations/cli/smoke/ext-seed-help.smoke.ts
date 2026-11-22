@@ -19,12 +19,13 @@ import { join } from "node:path";
 
 const REPO = join(import.meta.dirname, "..", "..", "..");
 const BIN = join(REPO, "bin", "dist", "cotal.js");
+const childEnv = { ...process.env, DO_NOT_TRACK: "1" };
 assert.ok(existsSync(BIN), `built binary missing at ${BIN} - run \`pnpm --filter cotal-ai... build\` first`);
 
 for (const flag of ["--help", "-h"]) {
   const xdg = mkdtempSync(join(tmpdir(), "cotal-ext-seed-help-"));
   try {
-    const r = spawnSync("node", [BIN, "ext", "seed", flag], { encoding: "utf8", env: { ...process.env, XDG_CONFIG_HOME: xdg } });
+    const r = spawnSync("node", [BIN, "ext", "seed", flag], { encoding: "utf8", env: { ...childEnv, XDG_CONFIG_HOME: xdg } });
     const out = `${r.stdout ?? ""}${r.stderr ?? ""}`;
     assert.equal(r.status, 0, `\`ext seed ${flag}\` should exit 0, got ${r.status}: ${out}`);
     assert.match(out, /--repair/, `\`ext seed ${flag}\` should render the seed usage: ${out}`);
@@ -39,7 +40,7 @@ for (const flag of ["--help", "-h"]) {
 {
   const xdg = mkdtempSync(join(tmpdir(), "cotal-ext-seed-refusal-"));
   try {
-    const env = { ...process.env, XDG_CONFIG_HOME: xdg, NO_COLOR: "1" };
+    const env = { ...childEnv, XDG_CONFIG_HOME: xdg, NO_COLOR: "1" };
     const run = (...args: string[]) => spawnSync(process.execPath, [BIN, ...args], { encoding: "utf8", env });
     const help = run("ext", "seed", "--help");
     for (const [args, message] of [
@@ -69,7 +70,7 @@ for (const flag of ["--help", "-h"]) {
 {
   const xdg = mkdtempSync(join(tmpdir(), "cotal-ext-root-"));
   try {
-    const r = spawnSync("node", [BIN, "ext", "root"], { encoding: "utf8", env: { ...process.env, XDG_CONFIG_HOME: xdg } });
+    const r = spawnSync("node", [BIN, "ext", "root"], { encoding: "utf8", env: { ...childEnv, XDG_CONFIG_HOME: xdg } });
     const expected = join(xdg, "cotal", "extensions");
     assert.equal(r.status, 0, `\`ext root\` should exit 0, got ${r.status}: ${r.stdout}${r.stderr}`);
     assert.equal(r.stdout, `${expected}\n`, `\`ext root\` must print exactly the prefix path with no seed noise, got ${JSON.stringify(r.stdout)}`);
@@ -85,7 +86,7 @@ for (const flag of ["--help", "-h"]) {
 {
   const xdg = mkdtempSync(join(tmpdir(), "cotal-ext-help-"));
   try {
-    const r = spawnSync("node", [BIN, "ext", "--help"], { encoding: "utf8", env: { ...process.env, XDG_CONFIG_HOME: xdg } });
+    const r = spawnSync("node", [BIN, "ext", "--help"], { encoding: "utf8", env: { ...childEnv, XDG_CONFIG_HOME: xdg } });
     const out = `${r.stdout ?? ""}${r.stderr ?? ""}`;
     assert.equal(r.status, 0, `\`ext --help\` should exit 0, got ${r.status}: ${out}`);
     assert.match(out, /\broot\b/, `\`ext --help\` must list the \`root\` subcommand: ${out}`);

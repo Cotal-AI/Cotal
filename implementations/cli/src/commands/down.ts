@@ -161,7 +161,8 @@ export function validateDownArguments(args: ParsedArgs): void {
         remedy: `run ${codeSpan(retry)} from this root`,
       });
     }
-    throw new CommandFailure("refused", "UNSUPPORTED", "--json and --plain apply only to a controller stack, a --dry-run preview, a stack that is already stopped or a folder whose records name another folder's space; a bare stop here prints its own lines, and nothing was stopped", { remedy: `run \`${displayCmd()} down\` from this root without --json or --plain; \`${displayCmd()} down --dry-run --json\` reads this root's stack` });
+    const retry = bareStop(args.values) ? sameDown(args.values) : `${displayCmd()} down`;
+    throw new CommandFailure("refused", "UNSUPPORTED", "--json and --plain apply only to a controller stack, a --dry-run preview, a stack that is already stopped or a folder whose records name another folder's space; a bare stop here prints its own lines, and nothing was stopped", { remedy: `run ${codeSpan(retry)} from this root without --json or --plain; \`${displayCmd()} down --dry-run --json\` reads this root's stack` });
   }
 }
 

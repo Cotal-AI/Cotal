@@ -146,6 +146,26 @@ async function backupStageFaultScenario(): Promise<void> {
     assert.equal(journalState(root), "ready");
     const sourceBefore = lstatSync(sourcePath, { bigint: true });
 
+    if (process.getuid && process.getuid() !== 0) {
+      const folder = join(root, "no search");
+      const destination = join(folder, "archive");
+      const journal = join(root, ".cotal", "maintenance", "v1", "journal.json");
+      const before = readFileSync(journal, "utf8");
+      mkdirSync(folder, { mode: 0o600 });
+      const denied = run("backup", "create", destination, "--plain");
+      assert.equal(denied.status, 2, denied.stderr);
+      assert.match(denied.stderr, /Code:\s+PERMISSION_DENIED/);
+      assert.ok(denied.stderr.includes(`cannot search ${folder}`), denied.stderr);
+      assert.equal(readFileSync(journal, "utf8"), before, "the refusal leaves the cut unchanged");
+      const command = /\nNext\n +make the path to that folder searchable with (`+)(chmod u\+x .+?)\1,/.exec(denied.stderr)?.[2];
+      assert.ok(command, `Next shows a copyable chmod command\n${denied.stderr}`);
+      must("apply the printed chmod", spawnSync("sh", ["-c", command], { cwd: root, env, encoding: "utf8", timeout: 10_000 }));
+      assert.ok(!existsSync(destination), "the refusal writes no backup");
+      must("create in the searchable folder", run("backup", "create", destination, "--only", "registry"));
+      must("verify the backup in the searchable folder", run("backup", "verify", destination));
+      console.log("backup destination search permission: ok");
+    }
+
     // A path that names nothing is refused before any lock, saying whether its folder or the
     // artifact is missing.
     const nowhere = join(root, "no-such-folder", "artifact");

@@ -566,6 +566,7 @@ export async function web(args: ParsedArgs, lifecycle?: WebServiceLifecycle): Pr
   // run it, the server lives in `src`, so the page is read from the package's `dist/web` instead.
   const client = clientAssets(join(here, basename(here) === "src" ? "../dist/web" : "web"));
 
+  const getOnlyPaths = new Set(["/feed", WEB_READINESS_PATH, "/api/roster", "/api/membership", "/api/channels", "/api/activity", "/api/dms"]);
   const launchNonce = lifecycle ? randomBytes(32).toString("base64url") : undefined;
   const gate = makeAuthGate(port, host, launchNonce);
 
@@ -614,6 +615,8 @@ export async function web(args: ParsedArgs, lifecycle?: WebServiceLifecycle): Pr
     const announcedBody = declared > 0 || req.headers["transfer-encoding"] !== undefined;
     const noBodyRoute = !BODY_ROUTES.has(path) || req.method !== "POST";
     if (noBodyRoute && announcedBody) throw noBody(path, declared);
+    if (req.method !== "GET" && (getOnlyPaths.has(path) || (path.startsWith("/api/channels/") && path.endsWith("/history"))))
+      return getOnly(res);
 
     if (path === "/feed") {
       res.writeHead(200, {
@@ -775,11 +778,7 @@ export async function web(args: ParsedArgs, lifecycle?: WebServiceLifecycle): Pr
         return;
       }
       if (action === "events") {
-        // A read, so GET only. Any other method is named as refused, never answered as a read.
-        if (req.method !== "GET") {
-          res.writeHead(405, { "content-type": "application/json", allow: "GET" });
-          return void res.end(JSON.stringify({ error: "GET only" }));
-        }
+        if (req.method !== "GET") return getOnly(res);
         const agent = agentIdFromPath(rest.slice(0, cut));
         const limit = historyLimit(query, 200);
         // BOUNDED LIKE ITS SIBLINGS, with their wording: a late read and a failed one are 503s
@@ -1263,6 +1262,11 @@ function printLaunchLink(launchUrl: string, host: string, port: number, note: st
 function json(res: ServerResponse, data: unknown, status = 200): void {
   res.writeHead(status, { "content-type": "application/json" });
   res.end(JSON.stringify(data));
+}
+
+function getOnly(res: ServerResponse): void {
+  res.setHeader("Allow", "GET");
+  json(res, { error: "GET only" }, 405);
 }
 
 /** Trailing-edge debounce — coalesces a burst of deltas (membership feed, presence replay) into one push. */

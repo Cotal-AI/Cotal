@@ -72,7 +72,7 @@ import { chooseMeshTarget, spaceChoiceRemedy } from "./lib/choose-target.js";
 import { registryFailure } from "./lib/registry-errors.js";
 import { FlagValueRefusal } from "./lib/flag-value-refusal.js";
 import { workingFolderRemoved } from "./lib/paths.js";
-import { reportLostOutput } from "./lib/stdout-owner.js";
+import { reportLostOutput, writeAllSync } from "./lib/stdout-owner.js";
 import { shellWord } from "./lib/endpoint-errors.js";
 import { displayRemedy } from "./lib/self-exec.js";
 import { GLOBAL_FLAG_WORDS, OUTPUT_FLAG_WORDS } from "./lib/leading-flags.js";
@@ -140,16 +140,24 @@ function structured(cmd: Command, first: string | undefined): boolean {
   return ((sub ? sub.outputs : cmd.outputs) ?? []).some((mode) => mode === "json" || mode === "ndjson");
 }
 
-/** Whether `args` ask `cmd` for JSON before any `--`: `--json`, `-j`, or `-j` in a group of the
- *  command's boolean short flags. Read from the words, because a usage error has no parse, so the mode
- *  is the first positional after skipping declared option values. */
+/** Whether `args` ask `cmd` for JSON before any `--`: `--json`, `-j`, or `-j` in a short option group
+ *  before any value-taking option. The mode is the first positional after skipping declared values. */
 function asksForJson(cmd: Command, args: readonly string[]): boolean {
   if (!structured(cmd, metadataPositionals(cmd, args).positionals[0]?.value)) return false;
-  const booleans = new Set((cmd.flags ?? []).flatMap((flag) => (flag.type === "boolean" && flag.short ? [flag.short] : [])));
+  const shorts = new Map(cmd.flags?.flatMap((flag) => flag.short ? [[flag.short, flag.type] as const] : []));
   const end = args.indexOf("--");
-  return (end === -1 ? args : args.slice(0, end)).some(
-    (word) => word === "--json" || word === "-j" || (/^-[A-Za-z]{2,}$/.test(word) && word.includes("j") && [...word.slice(1)].every((ch) => booleans.has(ch))),
-  );
+  return (end === -1 ? args : args.slice(0, end)).some((word) => {
+    if (word === "--json" || word === "-j") return true;
+    if (!/^-[^-]/.test(word)) return false;
+    let json = false;
+    for (const ch of word.slice(1)) {
+      const type = shorts.get(ch);
+      if (type === undefined) return false;
+      if (type === "string") break;
+      if (ch === "j") json = true;
+    }
+    return json;
+  });
 }
 
 /** Under COTAL_DEBUG, print the failure's stack and the stack of each error that caused it. */
@@ -191,7 +199,7 @@ function failureExit(cmd: Command, failure: CommandFailure, json: boolean, plain
     const records = historyFollow ? historySetupFailureRecords(validationArgs, failure)
       : cmd.name === "watch" && validationArgs && !plain ? watchSetupFailureRecords(validationArgs, failure) : undefined;
     const lines = records ? records.map((record) => `${JSON.stringify(record)}\n`).join("") : envelopeLine(failureEnvelope(command, failure, warnings, scope));
-    writeSync(1, lines);
+    writeAllSync(1, Buffer.from(lines));
   } catch (error) {
     reportLostOutput(error as NodeJS.ErrnoException);
     try { writeReport(); } catch { /* stderr failed too; the exit status still says so */ }
@@ -426,7 +434,9 @@ function extSeedSubcommand(cmd: Command, words: readonly string[]): Subcommand |
  *  takes `=value` as its value, or a declared option typed with a typographic dash pasted from typeset
  *  text, which is read as a positional. */
 function misspelledOption(cmd: Command, rest: readonly string[], flagNames: readonly string[] | undefined): { message: string; remedy?: string } | undefined {
-  const names = new Set<string>([...(flagNames ?? (cmd.flags ?? []).map((flag) => flag.name)), ...GLOBAL_FLAGS]);
+  const names = new Set<string>([...(flagNames ?? (cmd.flags ?? []).map((flag) => flag.name)), ...GLOBAL_FLAGS, "help"]);
+  const flags: FlagSpec[] = [...(cmd.flags ?? []), { name: "help", short: "h", type: "boolean" }];
+  const positionals = new Set(metadataPositionals(cmd, rest).positionals.map(({ index }) => index));
   for (const [index, word] of rest.entries()) {
     if (word === "--") return undefined;
     const previous = rest[index - 1];
@@ -440,7 +450,7 @@ function misspelledOption(cmd: Command, rest: readonly string[], flagNames: read
       const correction = value.startsWith("-") ? long : `-${short[1]} ${quoted} or ${long}`;
       return { message: `${word} gives -${short[1]} the value "=${value}"`, remedy: `write ${correction}` };
     }
-    const typed = typographicOption(word, names, cmd.flags);
+    const typed = positionals.has(index) ? typographicOption(word, names, flags) : undefined;
     if (typed) return typed;
   }
   return undefined;

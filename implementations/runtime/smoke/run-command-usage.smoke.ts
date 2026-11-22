@@ -11,11 +11,11 @@
  * Run: pnpm smoke:runtime-run-command-usage   (no broker)
  */
 import { spawnSync } from "node:child_process";
-import { chmodSync, closeSync, constants, mkdirSync, mkdtempSync, openSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, constants, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { EpEnvelopeError, EP_UNANSWERED, LANG_PROBLEM_DETAIL_KIND, registry, type Command, type RunStatusView } from "@cotal-ai/core";
-import { CommandFailure, exitCode, isCommandFailure } from "@cotal-ai/workspace";
+import { CommandFailure, exitCode, isCommandFailure, runOperation } from "@cotal-ai/workspace";
 import { runWorkflow } from "../src/index.js";
 import { managerRefusal, renderLangProblem, unansweredHostFailure, unansweredManagerRefusal, withMatchingKeys, workflowArguments } from "../src/run-command.js";
 import { printRunDetail } from "../src/workflow-views.js";
@@ -61,8 +61,8 @@ const gate = (positionals: string[], values: Record<string, string | boolean> = 
     ["revoke --local --json", ["revoke", "run-1"], { local: true, by: "a", reason: "b", json: true }, "run revoke prints no --json output", "remove --json from the original command and rerun it"],
     ["revoke --local --plain", ["revoke", "run-1"], { local: true, by: "a", reason: "b", plain: true }, "run revoke prints no --plain output", "remove --plain from the original command and rerun it"],
     ["check --plain", ["check", "run-1", "p.cotal.js"], { plain: true }, "run check prints no --plain output", "run it without --plain: `cotal run check run-1 --file p.cotal.js`"],
-    ["start --local --json", ["start", "p.cotal.js"], { local: true, "admit-read": "none", "admit-publish": "none", json: true }, "run start --local prints no --json output", "drop --local to start it on the manager, which takes --json: `cotal run start <file> --json`"],
-    ["resume --local --json", ["resume", "run-1"], { local: true, json: true }, "run resume --local prints no --json output", "drop --local to resume it on the manager, which takes --json: `cotal run resume run-1 --json`"],
+    ["start --local --json", ["start", "p.cotal.js"], { local: true, "admit-read": "none", "admit-publish": "none", json: true }, "run start --local prints no --json output", "remove --json from the original command to keep driving it locally, or start it on the manager with `cotal run start --file p.cotal.js --json`"],
+    ["resume --local --json", ["resume", "run-1"], { local: true, json: true }, "run resume --local prints no --json output", "remove --json from the original command to keep driving it locally, or resume it on the manager with `cotal run resume run-1 --json`"],
   ];
   for (const [what, positionals, values, message, remedy] of cases) {
     const got = gate(positionals, values);
@@ -273,6 +273,32 @@ const VERBS = ["start", "resume", "ps", "journal", "answer", "amend", "revoke", 
   const noResponder = unansweredHostFailure("run-start", "s", new EpEnvelopeError("unavailable", "no responder for manager.run-start (SPEC 13.5)",
     [{ kind: EP_UNANSWERED, endpoint: "manager", command: "run-start", rail: "ep.v1" }], "not-executed"));
   c("a start the broker saw no responder for was not executed and stays TARGET_UNAVAILABLE", noResponder.outcome === "refused" && noResponder.code === "TARGET_UNAVAILABLE", { outcome: noResponder.outcome, code: noResponder.code });
+}
+
+{
+  const example = (file: string, section: string, language: string) => {
+    const page = readFileSync(new URL(`../../../docs/${file}.mdx`, import.meta.url), "utf8").replace(/\r\n/g, "\n");
+    const fence = `\`\`\`${language}\n`;
+    const block = page.split(section)[1]?.split(fence)[1]?.split("\n```")[0];
+    if (!block) throw new Error(`Missing ${language} example in ${file}: ${section}`);
+    return block;
+  };
+  const dir = mkdtempSync(join(tmpdir(), "run-simulate-docs-"));
+  const program = join(dir, "workflow.cotal.js"), handler = join(dir, "results.json");
+  const chunks: string[] = [];
+  const write = process.stdout.write;
+  try {
+    writeFileSync(program, example("workflows", "## An example program", "js"));
+    writeFileSync(handler, example("cli-runs", "### Offline commands", "json"));
+    process.stdout.write = ((chunk: string | Uint8Array) => { chunks.push(String(chunk)); return true; }) as typeof process.stdout.write;
+    await runWorkflow({ values: { handler, json: true }, positionals: ["simulate", program], raw: [] });
+  } finally {
+    process.stdout.write = write;
+    rmSync(dir, { recursive: true, force: true });
+  }
+  const output = JSON.parse(chunks.join(""));
+  c("the published results file completes the guide workflow without unused results",
+    output.result.outcome === "completed" && output.result.unusedScript.length === 0, output);
 }
 
 // A scripted checkpoint result is read by the simulator only for an `expired` status, so a
@@ -600,6 +626,29 @@ log([].filter(() => true), [].find(() => true) === undefined, [].findLast(() => 
   const said = ERR.join(" ").replace(/\s+/g, " ");
   c("a validator warning names its code, title, position and fix on stderr",
     said.includes(`L3021 \`fanOut\` has no stable key (${program}:1:7)`) && said.includes("Fix: Pass a key function"), said);
+  rmSync(dir, { recursive: true, force: true });
+}
+
+// A simulation that fails after validation keeps the validation warning: the failure still
+// exits 5 as OPERATION_FAILED, and the warning is printed with the failure instead of lost.
+{
+  const dir = mkdtempSync(join(tmpdir(), "run-simulate-warning-"));
+  const program = join(dir, "warning-fail.js");
+  const handler = join(dir, "results.json");
+  writeFileSync(program, 'if (false) {\n  await fanOut(["x", "y"], (x) => sleep("1s", { name: "nap" }), { name: "fo" });\n}\nthrow "boom";\n');
+  writeFileSync(handler, "{}\n");
+  const err: string[] = [];
+  const write = process.stderr.write;
+  process.stderr.write = ((chunk: unknown) => { err.push(String(chunk)); return true; }) as typeof process.stderr.write;
+  let got: unknown;
+  // The kernel runs a command inside its operation scope, where recorded warnings live; the
+  // direct call below does the same so the failure carries what the kernel would carry.
+  try { got = await runOperation({}, () => runWorkflow({ values: { handler }, positionals: ["simulate", program], raw: [] })).then(() => undefined, (e: Error) => e); }
+  finally { process.stderr.write = write; }
+  const said = err.join(" ").replace(/\s+/g, " ");
+  c("a failed simulation keeps its validation warning on stderr",
+    isCommandFailure(got) && got.outcome === "failed" && got.code === "OPERATION_FAILED" && exitCode(got.outcome, got.code) === 5
+    && said.includes("L3021") && said.includes("has no stable key"), { got, said });
   rmSync(dir, { recursive: true, force: true });
 }
 

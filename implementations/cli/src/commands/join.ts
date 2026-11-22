@@ -2,6 +2,7 @@ import { userInfo } from "node:os";
 import * as readline from "node:readline";
 import {
   CotalEndpoint,
+  assertValidChannel,
   parseJoinLink,
   resolvePeer,
   AmbiguousPeerError,
@@ -134,6 +135,18 @@ export async function join(args: ParsedArgs): Promise<void> {
   }
 }
 
+function validateJoinChannel(channel: string): void {
+  try {
+    assertValidChannel(channel);
+  } catch (e) {
+    throw new CommandFailure("refused", "USAGE_INVALID", (e as Error).message, {
+      ...(channel.startsWith("#") ? { remedy: `pass the channel without its #, as ${JSON.stringify(channel.slice(1))}` } : {}),
+      cause: e,
+      selfContained: true,
+    });
+  }
+}
+
 async function joinSpace(args: ParsedArgs): Promise<void> {
   const values = args.values as { space?: string; name?: string; role?: string; channel?: string; server?: string; kind?: string; link?: string; token?: string; creds?: string; "lifecycle-uid"?: string; tls?: boolean; "expires-in"?: string; "expires-at"?: string };
   const expiresAt = seatExpiryAt(values);
@@ -151,6 +164,7 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
   // somewhere and talk, so a landing channel is the point of the command. `general` stays the
   // default HERE only - an agent's read set comes from its persona and defaults to no channel.
   const channel = values.channel ?? link?.channels?.[0] ?? "general";
+  validateJoinChannel(channel);
   const mintSpace = values.space ?? link?.space;
   const auth = {
     token: values.token ?? link?.token,

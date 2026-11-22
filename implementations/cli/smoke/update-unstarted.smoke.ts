@@ -156,7 +156,7 @@ try {
   const home = join(other, "home");
   mkdirSync(home, { mode: 0o700 });
   const cli = (...args: string[]) => spawnSync(process.execPath, [bin, ...args], {
-    cwd: other, env: { ...ambient, ...registryEnv, HOME: home, USERPROFILE: home, COTAL_HOME: join(root, "home"), XDG_CONFIG_HOME: join(home, ".config"), COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_ALLOW_CHECKOUT_SEED: "1", COTAL_NO_UPDATE_CHECK: "1" },
+    cwd: other, env: { ...ambient, ...registryEnv, HOME: home, USERPROFILE: home, COTAL_HOME: join(root, "home"), XDG_CONFIG_HOME: join(home, ".config"), COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_ALLOW_CHECKOUT_SEED: "1", COTAL_NO_UPDATE_CHECK: "1", DO_NOT_TRACK: "1" },
     encoding: "utf8", timeout: 120_000,
   });
   const deleted = join(other, "project"), space = `deleted-${randomUUID()}`;

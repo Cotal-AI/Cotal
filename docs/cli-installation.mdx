@@ -68,9 +68,9 @@ project folder and the space from the bundle:
 cotal setup --destination self-hosted --harness claude --project ~/research --space research --connection-file ./research.json --no-input
 ```
 
-A space name `cotal up` cannot
-start is refused with the name respelled in letters, digits, `-` and `_` as the remedy, and an
-unknown `--harness` with the known ones and `cotal ext add <npm-package>`.
+Setup refuses invalid local space names. A local name has at most 64 characters, starts with a
+letter, digit or `_`, and uses only letters, digits, `-` and `_`. Setup suggests a valid spelling
+when it can. For an unknown `--harness`, setup lists the known ones and points to `cotal ext add <npm-package>`.
 
 A local space is prepared as `cotal space create` prepares it. A self-hosted space is one already
 registered with `cotal space add` or a signed-in catalog, or one `--connection-file` registers. A
@@ -93,6 +93,9 @@ programs that setup calls.
 If the default persona cannot be written after setup saves the space, setup exits 4 with
 `OPERATION_PARTIAL`. The JSON envelope names the space in `target.space` and lists the confirmed
 writes in `changed`. If a file blocks `.cotal/agents`, move it aside and run the same setup again.
+If setup cannot open `.cotal/setup.log` after saving preparation, it also exits 4 with
+`OPERATION_PARTIAL`. The JSON envelope names the space and log path in `target` and lists the
+confirmed writes in `changed`. Check and repair that path, then run the same setup again.
 
 Setup needs an installed connector. When `--harness` names a built-in connector that is not
 installed, setup reports `DEPENDENCY_UNAVAILABLE`. The remedy names the `cotal ext add` command
@@ -929,8 +932,11 @@ cotal docs --search <query> [--json | --plain]
 | `--plain` | off | Text without color. A page has a source and version line followed by Markdown. |
 
 Reads the docs bundled with this installed version, offline: the same pages agents read with
-`cotal_docs`. Bare `docs` lists the pages by category (`Start here`, `Guide`, `Concept`, `Reference`,
-`Project`, the order of the docs index), each with its title; `result.pages` holds each page's slug,
+`cotal_docs`. The command does not read or repair the installed extension inventory, so you can
+consult it while fixing that inventory.
+
+Bare `docs` lists the pages by category (`Start here`, `Guide`, `Concept`, `Reference`, `Project`,
+the order of the docs index), each with its title; `result.pages` holds each page's slug,
 title, kind (its classification line, such as `Concept (informative)`), category (the heading it
 lists under) and summary, in that order, and
 `result.sources` the normative `spec`, `lang` and `schema`. A page is named by its slug,

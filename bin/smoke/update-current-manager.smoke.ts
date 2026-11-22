@@ -170,13 +170,18 @@ console.log('LEGACY_READS=' + legacyReads);
         assert.doesNotMatch(self + plain, /legacy manager custody|manual cold update/);
       } finally { await new Promise<void>((resolve, reject) => registry.close(error => error ? reject(error) : resolve())); }
       const foreignChildArgs = [join(other, "dist/cotal.js"), "update"];
-      const installedChild = spawnSync(process.execPath, foreignChildArgs, {
-        cwd: otherHome, encoding: "utf8", timeout: 120_000,
-        env: { ...env, HOME: otherHome, COTAL_HOME: join(otherHome, "state"), XDG_CONFIG_HOME: config, TMPDIR: otherHome,
-          COTAL_UPDATE_PARENT: String(process.pid), COTAL_UPDATE_TARGET_VERSION: version },
-      });
-      assert.equal(installedChild.status, 0, installedChild.stdout + installedChild.stderr);
-      assert.match(installedChild.stdout, /connector integrations refreshed/);
+      for (const mode of [
+        { COTAL_INSTALL_RECONCILE: "1" },
+        {},
+        { COTAL_UPDATE_PARENT: String(process.pid), COTAL_UPDATE_TARGET_VERSION: version },
+      ]) {
+        const result = spawnSync(process.execPath, foreignChildArgs, {
+          cwd: otherHome, encoding: "utf8", timeout: 120_000,
+          env: { ...env, HOME: otherHome, COTAL_HOME: join(otherHome, "state"), XDG_CONFIG_HOME: config, TMPDIR: otherHome, ...mode },
+        });
+        assert.equal(result.status, 0, result.stdout + result.stderr);
+        assert.match(result.stdout, /connector integrations refreshed/);
+      }
       const daemonAfterChild = cli("daemon", "status", "--json");
       assert.equal(daemonAfterChild.status, 0, daemonAfterChild.stdout + daemonAfterChild.stderr);
       assert.equal(JSON.parse(daemonAfterChild.stdout).result.pid, JSON.parse(status.stdout).result.pid);
