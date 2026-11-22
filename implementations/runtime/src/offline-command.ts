@@ -240,7 +240,7 @@ function simulationFailure(error: unknown, file: string, journal: Journal, handl
   let remedy = fix ?? (native?.startsWith("L6") ? "script a result for that step; unscripted effects are not invented" : undefined);
   if (native === "L6001" && handler === undefined) {
     const source = retryWord(file.startsWith("-") ? `./${file}` : file);
-    const retry = codeSpan(`cotal run simulate ${source} --handler <results-file>`);
+    const retry = codeSpan(`cotal run simulate ${source} --handler=<results-file>`);
     remedy = `save the missing entry in a separate JSON results file, then pass its path in place of <results-file>: ${retry}`;
   }
   return new CommandFailure("failed", "OPERATION_FAILED", `the offline simulation did not complete: ${why.charAt(0).toLowerCase()}${why.slice(1)}`, {

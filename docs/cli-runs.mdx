@@ -336,10 +336,11 @@ for a list entry.
 
 A missing script entry or an exhausted list raises L6001. If it goes uncaught, the error names the
 table and step. If you ran without `--handler`, save the missing entry in a separate JSON results
-file and replace `<results-file>` in the suggested command with its path. For an exhausted list the
-error names the needed result, counted from 1, while the step key counts occurrences from 0. JSON
-includes `target.step` if a failed journal entry matches the error code. That can be a different step
-from the one in the message, for example when parallel branches both raise L6001.
+file and substitute its path in `--handler=<results-file>`, quoting the path if needed. For an
+exhausted list the error names the needed result, counted from 1, while the step key counts
+occurrences from 0. JSON includes `target.step` if a failed journal entry matches the error code.
+That can be a different step from the one in the message, for example when parallel branches both
+raise L6001.
 
 If L6001 or a statement such as `throw "boom"` goes uncaught, the simulator produces no report.
 The CLI exits 5 with `OPERATION_FAILED`. Its JSON envelope has `outcome: "failed"` and

@@ -14,7 +14,7 @@ import { spawnSync } from "node:child_process";
 import { chmodSync, closeSync, constants, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { EpEnvelopeError, EP_UNANSWERED, LANG_PROBLEM_DETAIL_KIND, registry, type Command, type RunStatusView } from "@cotal-ai/core";
+import { EpEnvelopeError, EP_UNANSWERED, LANG_PROBLEM_DETAIL_KIND, parseCommandArgs, registry, type Command, type RunStatusView } from "@cotal-ai/core";
 import { CommandFailure, exitCode, isCommandFailure, runOperation } from "@cotal-ai/workspace";
 import { runWorkflow } from "../src/index.js";
 import { managerRefusal, renderLangProblem, unansweredHostFailure, unansweredManagerRefusal, withMatchingKeys, workflowArguments } from "../src/run-command.js";
@@ -444,8 +444,21 @@ const VERBS = ["start", "resume", "ps", "journal", "answer", "amend", "revoke", 
   c("a workflow named results.json gets a separate results-file remedy without choosing its path",
     isCommandFailure(noHandler) && noHandler.native?.code === "L6001" && exitCode(noHandler.outcome, noHandler.code) === 5
       && noHandler.remedy !== undefined && noHandler.remedy.includes("save the missing entry in a separate JSON results file")
-      && noHandler.remedy.includes(`cotal run simulate '${program.replaceAll("'", "'\\''")}' --handler <results-file>`)
+      && noHandler.remedy.includes(`cotal run simulate '${program.replaceAll("'", "'\\''")}' --handler=<results-file>`)
       && !noHandler.remedy.includes("<result>"), noHandler);
+  const dashHandler = "-answers.json";
+  writeFileSync(join(dir, dashHandler), '{"checkpoints":{"go":{"status":"expired"}}}');
+  const retry = parseCommandArgs(registry.resolve<Command>("command", "run"), ["simulate", program, `--handler=${dashHandler}`, "--json"]);
+  const cwd = process.cwd();
+  const retryOutput: string[] = [];
+  const writeRetryOutput = process.stdout.write;
+  process.chdir(dir);
+  process.stdout.write = ((chunk: string | Uint8Array) => { retryOutput.push(String(chunk)); return true; }) as typeof process.stdout.write;
+  try { await runWorkflow(retry); }
+  finally { process.stdout.write = writeRetryOutput; process.chdir(cwd); }
+  const retried = JSON.parse(retryOutput.join(""));
+  c("the suggested handler form accepts a dash-prefixed relative path and completes the simulation",
+    retried.outcome === "ok" && retried.result?.outcome === "completed" && retried.result.elapsedMs === 4000, retried);
   // A simulation that stops says why and where: a missing entry is the script's gap, named with the
   // entry to add. An expired gate under the default onExpiry is a completed simulation whose program
   // failed with L4007 at that gate.
