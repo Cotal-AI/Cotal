@@ -166,7 +166,7 @@ try {
   //    Changing the completion checks in endpoint-history.ts must turn these red. That is the property an
   //    output-only assertion could never have, because the discarded stream-head algorithm returned
   //    identical values for every fixture in this file.
-  const epNc = (ep as unknown as { nc: import("@nats-io/transport-node").NatsConnection }).nc;
+  const epNc = (ep as unknown as { conn: { nc: import("@nats-io/transport-node").NatsConnection } }).conn.nc;
   const priv = (ep as unknown as { history: EndpointHistory }).history;
   const CHAT = `CHAT_${SPACE}`;
   const TALK = `cotal.${SPACE}.chat.*.*.talk`;

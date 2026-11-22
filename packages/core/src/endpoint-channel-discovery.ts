@@ -2,8 +2,8 @@
 // delivery-class lookups, and the registry watch or read that fills it), as an internal component.
 // Moved verbatim from endpoint.ts; the endpoint keeps the public methods and forwards to them. Not
 // re-exported by the index.
+import type { ConnectionState } from "./endpoint-connection-state.js";
 import type { EndpointIdentity } from "./endpoint-identity.js";
-import type { NatsConnection } from "@nats-io/transport-node";
 import { JetStreamApiCodes, type ConsumerInfo } from "@nats-io/jetstream";
 import type { KV, KvEntry } from "@nats-io/kv";
 import {
@@ -23,9 +23,6 @@ import type { ChannelConfig, ChannelDefaults, DeliveryClass } from "./types.js";
 /** What the channel discovery component reads from its endpoint. State is read when it is used,
  *  never copied, and every method is looked up on the endpoint at call time. */
 export interface EndpointChannelDiscoveryDeps {
-  nc: () => NatsConnection | undefined;
-  channelKv: () => KV | undefined;
-  setChannelWatchIter: (iter: Awaited<ReturnType<KV["watch"]>>) => void;
   channelConfigs: () => Map<string, ChannelConfig>;
   channelDefaults: () => ChannelDefaults;
   setChannelDefaults: (defaults: ChannelDefaults) => void;
@@ -45,11 +42,8 @@ export interface EndpointChannelDiscoveryDeps {
  *  replay and delivery-class policy they answer, and the registry watch or one-shot read that keeps
  *  the cache. Internal: `CotalEndpoint` keeps the public methods and forwards to it. */
 export class EndpointChannelDiscovery {
-  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly deps: EndpointChannelDiscoveryDeps) {}
+  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly conn: ConnectionState, private readonly deps: EndpointChannelDiscoveryDeps) {}
 
-  private get nc() { return this.deps.nc(); }
-  private get channelKv() { return this.deps.channelKv(); }
-  private set channelWatchIter(iter: Awaited<ReturnType<KV["watch"]>>) { this.deps.setChannelWatchIter(iter); }
   private get channelConfigs() { return this.deps.channelConfigs(); }
   private get channelDefaults() { return this.deps.channelDefaults(); }
   private set channelDefaults(defaults: ChannelDefaults) { this.deps.setChannelDefaults(defaults); }
@@ -82,7 +76,7 @@ export class EndpointChannelDiscovery {
   async readChannels(): Promise<void> {
     if (!this.readsChannelsOnDemand)
       throw new Error("readChannels is for a consumer that reads presence on demand; this endpoint watches the channel registry or keeps no cache of it");
-    const kv = this.channelKv;
+    const kv = this.conn.channelKv;
     if (!kv) throw new Error(this.notLiveMsg());
     if (this.channelRead) return this.channelRead;
     const generation = ++this.channelReadGeneration;
@@ -131,8 +125,8 @@ export class EndpointChannelDiscovery {
    *  wildcard reads the space defaults only. A space with no registry bucket has the built-in policy.
    *  `registered` says whether the channel has its own registry entry. */
   async channelReplayPolicy(channel: string): Promise<{ replay: boolean; window: string | null; registered: boolean }> {
-    if (!this.nc) throw new Error(this.notLiveMsg());
-    const kv = this.channelKv ?? (await openChannelRegistry(this.nc, this.identity.space, { create: false }));
+    if (!this.conn.nc) throw new Error(this.notLiveMsg());
+    const kv = this.conn.channelKv ?? (await openChannelRegistry(this.conn.nc, this.identity.space, { create: false }));
     let cfg: ChannelConfig | undefined;
     let defaults: ChannelDefaults | undefined;
     try {
@@ -158,11 +152,11 @@ export class EndpointChannelDiscovery {
    *  cache. A failed bind throws out of connect; an entry that does not decode or validate is
    *  reported as a `warning` and dropped, so its channel resolves to the default policy. */
   async startChannelWatch(): Promise<void> {
-    if (!this.channelKv) return;
-    const bound = await this.bindKvWatch(this.channelKv);
+    if (!this.conn.channelKv) return;
+    const bound = await this.bindKvWatch(this.conn.channelKv);
     if (!bound) return;
     const { iter } = bound;
-    this.channelWatchIter = iter;
+    this.conn.channelWatchIter = iter;
     void (async () => {
       for await (const e of iter) this.handleChannelEntry(e);
     })().catch((e) => this.emit("error", e as Error));
@@ -170,8 +164,8 @@ export class EndpointChannelDiscovery {
 
   /** {@link EndpointOptions.readOnce}: fill the channel cache from one read of the registry. */
   async readChannelsOnce(): Promise<void> {
-    if (!this.channelKv) return;
-    for (const e of await lastKvEntries(this.channelKv)) this.handleChannelEntry(e);
+    if (!this.conn.channelKv) return;
+    for (const e of await lastKvEntries(this.conn.channelKv)) this.handleChannelEntry(e);
   }
 
   private handleChannelEntry(e: KvEntry): void {

@@ -198,8 +198,8 @@ try {
     parts: [{ kind: "text", text: "plane3-subject-wins" }],
   };
   const posterJs = (poster as unknown as {
-    js: { publish(subject: string, data: string, opts: { msgID: string }): Promise<unknown> };
-  }).js;
+    conn: { js: { publish(subject: string, data: string, opts: { msgID: string }): Promise<unknown> } };
+  }).conn.js;
   await posterJs.publish(
     chatSubject(space, posterPrincipal.owner, posterPrincipal.actor, "review"),
     JSON.stringify(mismatch),
@@ -219,8 +219,8 @@ try {
     parts: [{ kind: "text", text: "legacy-unversioned-dlv" }],
   };
   const dlvJs = (dlv as unknown as {
-    js: { publish(subject: string, data: string, opts: { msgID: string }): Promise<unknown> };
-  }).js;
+    conn: { js: { publish(subject: string, data: string, opts: { msgID: string }): Promise<unknown> } };
+  }).conn.js;
   await dlvJs.publish(dlvSubject(space, DEV_OWNER, aId.id, uidA), JSON.stringify(legacy), { msgID: legacy.id });
   check("unversioned persisted DLV entries terminate loudly", await until(() =>
     agentErrors.some((message) => message.includes("unauthenticated or unversioned DLV entry terminated"))));
