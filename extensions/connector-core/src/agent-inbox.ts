@@ -612,7 +612,7 @@ export class AgentInbox {
       channel: m.channel,
       service: m.toService,
       mentions: m.mentions,
-      mentionsMe: m.mentions?.includes(this.config.name.toLowerCase()) ?? false,
+      mentionsMe: m.mentions?.includes(this.ep.card.name.toLowerCase()) ?? false,
       historical,
       text,
       replyTo: m.replyTo,

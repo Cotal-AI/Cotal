@@ -36,7 +36,7 @@
     },
     {
       "name": "unsafe saved addresses pretend to be known display strings",
-      "file": "implementations/cli/src/commands/status.ts",
+      "file": "implementations/cli/src/commands/status-model.ts",
       "find": "  gaps.add(\"BROKER_ADDRESS_INVALID\", `broker address for '${space}' cannot be displayed`, { space });\n  return null;",
       "replace": "  gaps.add(\"BROKER_ADDRESS_INVALID\", `broker address for '${space}' cannot be displayed`, { space });\n  return \"unavailable\";",
       "expectRed": "status reports an invalid stored address as unknown",

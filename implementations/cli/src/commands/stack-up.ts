@@ -13,6 +13,7 @@ import { displayCmd } from "../lib/self-exec.js";
 import { homedir } from "node:os";
 import { isIP } from "node:net";
 import { basename, join, resolve } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { JetStreamApiCodes, JetStreamApiError } from "@nats-io/jetstream";
 import { awaitDeadDeliveryLease, CONTRACT_ARTIFACT_MAX_BYTES, deliveryLeaseHolderFor, isJetStreamMissing, isReachable, LEASE_TTL_MS, MANAGER_START_PAYLOAD_FLOOR, mintCreds, newIdentity, openPrivateAppend, type BrokerTransport, type ParsedArgs } from "@cotal-ai/core";
 import {
@@ -97,7 +98,7 @@ function websocketPortTaken(error: unknown, wsPort: number, logFile: string | un
 export interface StackUpNative {
   /** `userAuth` asks the native `authSetup` user arm (`prepareServer`) and must return its private
    *  `user` material; any other mode must return none. */
-  prepareBroker(opts: { transport: BrokerTransport; server: string; space: string; open: boolean; userAuth?: { idpUrl?: string }; host?: string; storeDir?: string; existingStore?: ExistingStorePin; maxFileStore?: number; logFile?: string; logfileSizeLimit?: number; logfileMaxNum?: number; authTimeout?: number; maxPayload?: number; accountResolver?: "memory" | "full"; noManager?: boolean; channels?: string; seed?: unknown }): Promise<{ root: string; server: string; space: string; storeDir: string; transport: BrokerTransport; setup?: { mintProvisioner(): Promise<string>; wsPort: number; moveWebsocketPort(): Promise<number> }; user?: StackUserPrepared; confPath: string; bin: string; source: "path" | "bundled"; version: string | null; seedFile?: unknown; authTimeout?: number; maxPayload?: number; accountResolver?: "memory" | "full" }>;
+  prepareBroker(opts: { transport: BrokerTransport; server: string; space: string; open: boolean; userAuth?: { idpUrl?: string }; host?: string; wsPort?: number; storeDir?: string; existingStore?: ExistingStorePin; maxFileStore?: number; logFile?: string; logfileSizeLimit?: number; logfileMaxNum?: number; authTimeout?: number; maxPayload?: number; accountResolver?: "memory" | "full"; noManager?: boolean; channels?: string; seed?: unknown }): Promise<{ root: string; server: string; space: string; storeDir: string; transport: BrokerTransport; setup?: { mintProvisioner(): Promise<string>; wsPort: number; moveWebsocketPort(): Promise<number> }; user?: StackUserPrepared; confPath: string; bin: string; source: "path" | "bundled"; version: string | null; seedFile?: unknown; authTimeout?: number; maxPayload?: number; accountResolver?: "memory" | "full" }>;
   /** Recreation options are accepted only on a fresh broker before space services start. */
   initializeStreams(server: string, space: string, setup: { mintProvisioner(): Promise<string> } | undefined, seedFile: unknown, recreateIssuedStores?: string, recreateMembershipStore?: boolean): Promise<void>;
   /** On a broker the stack reuses, create the space's streams again when every one of them is gone,
@@ -230,10 +231,12 @@ export interface StackUpResult {
   clearedRecords?: LocalRecord[];
 }
 
+const PUBLIC_EXCHANGE_INPUTS: readonly string[] = ["exchange-public-port", "exchange-public-url", "exchange-trusted-proxy", "advertised-server", "agent-provisioning-url"];
+
 /** Inputs that name a legacy-only startup refuse on the controller route. They are not dropped. A
  *  recorded stack takes `rotate-sys` on a stopped start; a first start refuses it, because it mints
  *  the space's system account new. */
-const CONTROLLER_UNSUPPORTED = ["file", "dry-run", "restore", "restore-only", "accept-missing-source", "accept-stale-checkpoint", "rotate-sys", "exchange-public-port", "exchange-public-url", "exchange-trusted-proxy", "advertised-server", "agent-provisioning-url", "tls-cert", "tls-key"] as const;
+const CONTROLLER_UNSUPPORTED = ["file", "dry-run", "restore", "restore-only", "accept-missing-source", "accept-stale-checkpoint", "rotate-sys", ...PUBLIC_EXCHANGE_INPUTS, "tls-cert", "tls-key"] as const;
 
 /** The inputs that ask for a TLS broker, which the controller stack does not serve: the certificate
  *  pair, and a `--server` that names a `tls://` address. */
@@ -263,11 +266,14 @@ const MANIFEST_ROUTE: readonly string[] = ["dry-run", ...TLS_INPUTS];
 function controllerUnsupported(root: string, options: readonly string[], prepared: boolean): CommandFailure {
   const flags = options.map((name) => `--${name}`);
   const named = flags.length === 1 ? flags[0]! : `${flags.slice(0, -1).join(", ")} and ${flags.at(-1)!}`;
+  const publicExchange = options.every((name) => PUBLIC_EXCHANGE_INPUTS.includes(name));
   const manifest = prepared && options.every((name) => MANIFEST_ROUTE.includes(name));
   const rotation = prepared && options.includes("rotate-sys") ? "; a first start mints the space's $SYS creds, so there is nothing to rotate" : "";
   return new CommandFailure("refused", "UNSUPPORTED", `${prepared ? "this root is prepared for a controller-owned stack" : "this root's stack is owned by the service controller"}, which has no route for ${named}; nothing was started through the legacy launcher`, {
     target: { root, options },
-    remedy: manifest && options.some((name) => TLS_INPUTS.includes(name))
+    remedy: publicExchange
+      ? "to serve a public exchange, run `cotal up --user-auth --idp <auth base URL>` from a new, unprepared project folder without running `cotal space create` first. Keep the broker and public exchange flags, use `--space <unused-name>`, and omit `--root`, `--json` and `--plain`"
+      : manifest && options.some((name) => TLS_INPUTS.includes(name))
       ? `run \`cotal up\` without ${named} to serve plaintext, or serve TLS from a manifest whose broker.servers names a tls:// address, with \`cotal up -f <cotal.yaml> --tls-cert <cert.pem> --tls-key <key.pem>\``
       : manifest ? `run \`cotal up\` without ${named}, or start the space from a manifest with \`cotal up -f <cotal.yaml>\`, which takes ${flags.length === 1 ? "it" : "them"}` : `run \`cotal up\` without ${named}${rotation}`,
   });
@@ -599,14 +605,20 @@ async function recordedAddressHeld(space: string, server: string, bindHost?: str
   return holders.length ? { says: `${held.says}, where process ${holders.join(", ")} of this account listens`, frees: held.frees } : held;
 }
 
-/** The restart blocker for a prepared space whose controller stack completed its stop. */
+/** The live address blocker for a stopped controller stack with a recorded broker. */
 export async function stoppedStackAddressProblem(root: string, space: string): Promise<{ message: string; remedy: string } | undefined> {
   try {
     const journal = readStackJournal(root)?.journal;
-    if (journal?.space !== space || journal.operation.kind !== "down" || journal.operation.phase !== "completed") return undefined;
+    if (journal?.space !== space) return undefined;
+    const { kind, phase } = journal.operation;
+    const cleanStop = kind === "down" && phase === "completed";
+    const refusedRestart = kind === "up" && phase === "refused" && !stackNeverStarted(journal)
+      && journal.members.some((row) => row.role === "broker" && row.state === "refused");
+    if (!cleanStop && !refusedRestart) return undefined;
     const held = await recordedAddressHeld(space, journal.server, journal.broker?.host);
     if (!held) return undefined;
-    const restart = `${displayCmd()} up${journal.members.some((row) => row.role === "manager" && row.state === "not-attempted") ? " --no-manager" : ""}`;
+    const noManager = journal.members.some((row) => row.role === "manager" && row.state === "not-attempted" && (cleanStop || row.instanceId === null));
+    const restart = `${displayCmd()} up${noManager ? " --no-manager" : ""}`;
     return { message: held.says, remedy: `${held.frees}, then run ${codeSpan(restart)} in ${root}; this stack keeps its recorded address` };
   } catch (error) {
     // An unreadable local record does not establish an address conflict.
@@ -671,6 +683,38 @@ export function bindReaches(host: string, server: string): boolean {
     return new URL(`nats://${isIP(host) === 6 ? `[${host}]` : host}:1`).hostname === new URL(server).hostname;
   } catch {
     return false;
+  }
+}
+
+/** Refuse a busy broker address before launch. Only a recorded address held by TIME-WAIT gets a bounded retry. */
+async function assertStackBrokerAddress(request: StackUpRequest, root: string, space: string, server: string, bindHost: string | undefined, recorded: boolean): Promise<void> {
+  const { host: dialHost, port } = brokerListenAddress(server);
+  const host = bindHost ?? dialHost;
+  let deadline: number | undefined;
+  for (;;) {
+    const bindError = await listenerBindError(server, bindHost);
+    if (bindError === undefined || bindError === "timeout" || bindError.code !== "EADDRINUSE") return;
+    const { says, frees, timeWait } = await addressHolder("the stack's broker address", host, port);
+    if (recorded && timeWait) {
+      if (deadline === undefined) {
+        deadline = performance.now() + 60_000;
+        if (request.presentation !== "json") process.stderr.write(`Waiting up to a minute for TIME-WAIT to clear on the stack's broker address ${host}:${port}\n`);
+      }
+      const remaining = deadline - performance.now();
+      if (remaining > 0) {
+        await delay(Math.min(500, remaining));
+        continue;
+      }
+    }
+    // The socket can clear between a failed bind and the observation that ends the wait.
+    if (deadline !== undefined && !timeWait && await listenerBindError(server, bindHost) === undefined) return;
+    const retry = recorded ? undefined : await request.retryAtAnotherAddress?.(host);
+    throw new CommandFailure("refused", "CONFLICT", `${says} (bind failed: address already in use); no broker was launched`, {
+      target: { root, space, server, bindError: bindError.code },
+      remedy: recorded
+        ? `${frees}, then run bare \`${displayCmd()} up\` from ${root}; this stack keeps its recorded address`
+        : `${retry !== undefined ? `${retry}, or ` : ""}${frees} and retry this start`,
+    });
   }
 }
 
@@ -919,17 +963,18 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
     return { role, definition: STACK_DEFINITION[role], instanceId: recorded?.instanceId ?? null, process: roles.includes(role) ? undefined : recorded?.process, state: roles.includes(role) ? "planned" : "not-attempted" };
   });
   let journal: StackJournal = { schemaVersion: 1, kind: "cotal-stack-controller", root, space, server, mode, recovery: { home: resolve(homeCotalDir()), host: stackRecoveryHost() }, ...(recordedBroker ? { broker: recordedBroker } : {}), members, operation: newStackOperation("up"), updatedAt: new Date().toISOString() };
-  // The whole scoped plan is durable before the first effect. A crash after this reads as unsettled
-  // until the next whole-stack operation settles it from its members' evidence.
-  let snapshot: StackJournalSnapshot = writeStackJournal(root, current ?? recorded, journal);
+  // The whole scoped plan is durable before the first effect. It is written only once the broker
+  // address checks below pass, so a restart refused there keeps the proof that the stack stopped
+  // cleanly. Until that first write, settle and mark adjust only the in-memory plan.
+  let snapshot: StackJournalSnapshot | undefined;
   const changed: unknown[] = [];
   const settle = (phase: StackJournal["operation"]["phase"]) => {
     journal = { ...journal, operation: { ...journal.operation, phase }, updatedAt: new Date().toISOString() };
-    snapshot = writeStackJournal(root, snapshot, journal);
+    if (snapshot !== undefined) snapshot = writeStackJournal(root, snapshot, journal);
   };
   const mark = (role: StackRole, change: Partial<StackMember>) => {
     journal = { ...journal, members: journal.members.map((row) => row.role === role ? { ...row, ...change } : row), updatedAt: new Date().toISOString() };
-    snapshot = writeStackJournal(root, snapshot, journal);
+    if (snapshot !== undefined) snapshot = writeStackJournal(root, snapshot, journal);
   };
   // A redefinition retires the member's recorded instance with its old definition. The replacement's
   // IDs are journaled before that retirement and the new definition's revision before its launch.
@@ -955,7 +1000,6 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
     if (!started.noOp) changed.push(instanceProjection(started.instance));
     return started.instance;
   };
-  settle("applying");
   // Set only when a user stack's manager is withheld for want of an existing login and grant. That
   // is a known pre-effect refusal of one member, never a launch and never an unknown outcome.
   let loginBlock: CommandFailure | undefined;
@@ -992,22 +1036,16 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
           : `${stopHolder}, then run bare \`${displayCmd()} up\` from ${root}; this stack keeps its recorded address`,
       });
     }
-    // A program that holds the address without answering NATS, such as a web server, is refused here
-    // too, before any broker instance is recorded, so a first start names another address.
-    const bindError = brokerRunning ? undefined : await listenerBindError(server, brokerHost);
-    if (bindError !== undefined && bindError !== "timeout" && bindError.code === "EADDRINUSE") {
-      const { host: dialHost, port } = brokerListenAddress(server);
-      const host = brokerHost ?? dialHost;
-      const { says, frees } = await addressHolder("the stack's broker address", host, port);
-      const retry = previous === undefined ? await request.retryAtAnotherAddress?.(host) : undefined;
-      throw new CommandFailure("refused", "CONFLICT", `${says} (bind failed: address already in use); no broker was launched`, {
-        target: { root, space, server, bindError: bindError.code },
-        remedy: previous === undefined
-          ? `${retry !== undefined ? `${retry}, or ` : ""}${frees} and retry this start`
-          : `${frees}, then run bare \`${displayCmd()} up\` from ${root}; this stack keeps its recorded address`,
-      });
-    }
+    if (!brokerRunning) await assertStackBrokerAddress(request, root, space, server, brokerHost, previous !== undefined);
+    snapshot = writeStackJournal(root, current ?? recorded, journal);
+    settle("applying");
     let prepared: Awaited<ReturnType<StackUpNative["prepareBroker"]>> | undefined;
+    let pinnedWsPort: number | undefined;
+    if (!brokerRunning && mode !== "open" && savedManager?.type === "adapter" && savedManager.adapter === STACK_ADAPTER.manager && savedManager.options.root === root) {
+      const port = savedManager.options["ws-port"];
+      if (typeof port === "number" && serviceInstances(space, STACK_DEFINITION.manager).some((row) =>
+        row.record.value.definitionRevision === managerDefinition?.record.revision && observeServiceProcess(row.record.value) === "running")) pinnedWsPort = port;
+    }
     if (!brokerRunning) {
       if (request.rotateSys) {
         // Rotated here, after the address check, so no broker can still serve the retired account.
@@ -1021,7 +1059,7 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
         }
         failedRole = undefined;
       }
-      prepared = await native.prepareBroker({ transport: request.transport, server, space, open: mode === "open", ...(mode === "user" ? { userAuth: request.idp !== undefined ? { idpUrl: request.idp } : {} } : {}), ...(brokerHost ? { host: brokerHost } : {}), ...(brokerStore ? { storeDir: brokerStore } : {}), ...(storePin ? { existingStore: storePin } : {}), ...(brokerCap !== undefined ? { maxFileStore: brokerCap } : {}), ...(brokerLogFile !== undefined ? { logFile: brokerLogFile } : {}), ...(brokerLogfileSizeLimit !== undefined ? { logfileSizeLimit: brokerLogfileSizeLimit } : {}), ...(brokerLogfileMaxNum !== undefined ? { logfileMaxNum: brokerLogfileMaxNum } : {}), ...(request.authTimeout !== undefined ? { authTimeout: request.authTimeout } : {}), ...(request.maxPayload !== undefined ? { maxPayload: request.maxPayload } : {}), ...(request.accountResolver !== undefined ? { accountResolver: request.accountResolver } : {}), ...(request.noManager ? { noManager: true } : {}), ...(request.manifest ? { seed: request.manifest.seed } : request.channels ? { channels: request.channels } : {}) });
+      prepared = await native.prepareBroker({ transport: request.transport, server, space, open: mode === "open", ...(mode === "user" ? { userAuth: request.idp !== undefined ? { idpUrl: request.idp } : {} } : {}), ...(brokerHost ? { host: brokerHost } : {}), ...(pinnedWsPort !== undefined ? { wsPort: pinnedWsPort } : {}), ...(brokerStore ? { storeDir: brokerStore } : {}), ...(storePin ? { existingStore: storePin } : {}), ...(brokerCap !== undefined ? { maxFileStore: brokerCap } : {}), ...(brokerLogFile !== undefined ? { logFile: brokerLogFile } : {}), ...(brokerLogfileSizeLimit !== undefined ? { logfileSizeLimit: brokerLogfileSizeLimit } : {}), ...(brokerLogfileMaxNum !== undefined ? { logfileMaxNum: brokerLogfileMaxNum } : {}), ...(request.authTimeout !== undefined ? { authTimeout: request.authTimeout } : {}), ...(request.maxPayload !== undefined ? { maxPayload: request.maxPayload } : {}), ...(request.accountResolver !== undefined ? { accountResolver: request.accountResolver } : {}), ...(request.noManager ? { noManager: true } : {}), ...(request.manifest ? { seed: request.manifest.seed } : request.channels ? { channels: request.channels } : {}) });
       if (canonicalRoot(prepared.root) !== root || prepared.space !== space || prepared.server !== server || (prepared.setup === undefined) !== (mode === "open") || (prepared.user === undefined) !== (mode !== "user")) throw new CommandFailure("refused", "CONFLICT", "the prepared broker configuration names another root, space, address or auth mode; the stack did not continue");
       if (mode === "user") assertUserStackTransport(server, prepared.transport.kind === "tls-required");
       // The validated transport decision is recorded before the broker child starts, so its
@@ -1039,14 +1077,13 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
     const broker = ensureDefinition(space, "broker", adapterDefinition(space, STACK_ADAPTER.broker, brokerOptions, 30000), root, replace("broker"));
     if (storePin) recheckExistingStore(storePin, { root, space });
     const storeIdentity = prepared ? readStoreIdentity(prepared.storeDir) : undefined;
-    // The preparation chose a free websocket port, but nothing holds it until the broker binds it. When
-    // another process takes it first, the broker exits before readiness, and a broker this call
-    // prepared is launched again on a newly chosen port.
+    // Retry a websocket bind failure on another port only when no running manager advertises it.
     let brokerInstance: ServiceInstanceSnapshot;
     for (;;) {
       try { brokerInstance = await start("broker", broker); break; }
       catch (error) {
         if (!prepared?.setup || brokerRelaunches === BROKER_WEBSOCKET_RELAUNCHES || !websocketPortTaken(error, prepared.setup.wsPort, brokerLogFile === undefined ? undefined : resolve(brokerLogFile))) throw error;
+        if (pinnedWsPort !== undefined) throw new CommandFailure("failed", "OPERATION_FAILED", `the broker could not bind websocket port ${pinnedWsPort}, which the running manager still advertises`, { remedy: `free websocket port ${pinnedWsPort}, then run \`cotal up\` again` });
         const wsPort = await prepared.setup.moveWebsocketPort();
         if (request.presentation !== "json") process.stderr.write(`another process took the broker's websocket port ${prepared.setup.wsPort} before the broker bound it; launching the broker again with port ${wsPort}\n`);
         prepared = { ...prepared, setup: { ...prepared.setup, wsPort } };
@@ -1149,7 +1186,8 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
     }
     if (!request.noManager && !loginBlock) {
       const options: Record<string, unknown> = { root, runtime: request.runtime, server };
-      if (prepared?.setup?.wsPort !== undefined) options["ws-port"] = prepared.setup.wsPort;
+      const wsPort = prepared?.setup?.wsPort ?? definitionListeners(broker)?.find((listener) => listener.name === "websocket")?.port;
+      if (wsPort != null) options["ws-port"] = wsPort;
       if (maxSessions !== undefined) options["max-sessions"] = maxSessions;
       if (brokerHost) options["console-host"] = brokerHost;
       if (request.manifest) {
@@ -1168,6 +1206,8 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
     }
     if (!loginBlock) settle("completed");
   } catch (caught) {
+    // A refused first start still records that the stack never started, so a later stop reports a no-op.
+    if (snapshot === undefined && current === undefined) snapshot = writeStackJournal(root, current ?? recorded, journal);
     // A reused broker that lost some of the space's streams, but not all of them as `cotal space delete`
     // leaves it, gets none back here; a broker start creates the missing ones.
     const error = brokerReused && isJetStreamMissing(caught, JetStreamApiCodes.StreamNotFound)

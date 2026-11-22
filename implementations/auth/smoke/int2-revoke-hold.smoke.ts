@@ -32,7 +32,7 @@
  * lives; D clear the fault and recover through the DOCUMENTED public same-name spawn nudge (latched on
  * row-deleted + hold-cleared), then the alias is reusable. Reuses the freeslot user-mode scaffolding.
  */
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal, createSuite } from "@cotal-ai/smoke-kit";
 
 // ---------- SELF-DISPATCH (must be the FIRST thing that runs) ----------
 // The manager builds the agent's bearer argv from `process.argv[1]`, which in this in-process
@@ -152,11 +152,7 @@ function launchEnv(): Record<string, string> {
   return out;
 }
 
-let pass = 0, fail = 0;
-const check = (name: string, cond: boolean, extra?: unknown) => {
-  if (cond) { pass++; console.log(`  ✓ ${name}`); }
-  else { fail++; console.log(`  ✗ FAIL: ${name}`, extra ?? ""); }
-};
+const { check, finish, passed, failed } = createSuite();
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 const SELF = process.argv[1];
@@ -562,8 +558,8 @@ try {
   for (const stray of added2) await mAny.opStop({ name: stray, graceful: false }, mAny.ep.ref().id, true);
 
   console.error = origErr;
-  console.log(`\nINT-2 SWALLOWED-REVOKE ${fail === 0 ? "GREEN ✅ (fix present: failed revoke holds the name; retry re-drives)" : "RED ❌"}  (${pass} passed, ${fail} failed)`);
-  if (fail) process.exitCode = 1;
+  console.log(`\nINT-2 SWALLOWED-REVOKE ${failed() === 0 ? "GREEN ✅ (fix present: failed revoke holds the name; retry re-drives)" : "RED ❌"}  (${passed()} passed, ${failed()} failed)`);
+  finish();
 } catch (e) {
   console.error("  ✗ scenario threw:", e);
   process.exitCode = 1;

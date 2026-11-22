@@ -40,8 +40,6 @@ export async function applyChannelOnlyTeam(file: string, values: TeamValues): Pr
   const requestedMode = manifest.broker?.auth === false ? "open" : manifest.broker?.auth === "user" ? "user" : "auth";
   if (manifest.broker?.auth !== undefined && requestedMode !== registered.mode)
     throw new CommandFailure("refused", "CONFLICT", "the manifest authentication mode differs from this registered mesh; no identity mode was substituted", { target: { root, space, recordedMode: registered.mode, requestedMode } });
-  if (registered.mode === "open" && manifest.channels.some((channel) => channel.deliveryClass === "durable"))
-    throw new CommandFailure("refused", "UNSUPPORTED", "an open mesh has no durable delivery daemon; no durable channel card was created", { target: { root, space } });
   const notLive = cardsWithoutLiveDelivery(manifest.channels);
   if (notLive)
     throw new CommandFailure("refused", "UNSUPPORTED", `channel-only additive apply creates a card only with explicit live delivery, and ${notLive.cards} ${notLive.verb} not set deliveryClass: live; inherited or durable delivery needs a verified daemon first, so nothing was created`, { target: { root, space, cards: notLive.names }, remedy: liveDeliveryRemedy(registered.mode) });

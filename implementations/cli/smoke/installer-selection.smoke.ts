@@ -5,6 +5,7 @@ import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSyn
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { emitSentinel } from "@cotal-ai/smoke-kit";
+import { runNpm, runNpmAsync } from "../src/commands/update-process.js";
 
 // Exercise the real POSIX installer main/launcher/PATH/next-step path. Only runtime discovery
 // and npm installation are fixtures; this suite does not qualify a downloaded package.
@@ -84,7 +85,7 @@ try {
   mkdirSync(join(npmPackage, "dist"));
   mkdirSync(join(npmPackage, "scripts"));
   copyFileSync(join(binRoot, postinstall), join(npmPackage, postinstall));
-  writeFileSync(join(npmPackage, "dist/cotal.js"), '#!/usr/bin/env node\nconsole.log(process.argv[2] === "--entry" ? process.argv[1] : "cotal-ai 0.0.0");\n', { mode: 0o755 });
+  writeFileSync(join(npmPackage, "dist/cotal.js"), '#!/usr/bin/env node\nconst output = { "--entry": process.argv[1], "--cwd": JSON.stringify([process.cwd(), process.env.PWD]) };\nconsole.log(output[process.argv[2]] ?? "cotal-ai 0.0.0");\n', { mode: 0o755 });
   const installation = readFileSync(resolve(import.meta.dirname, "../../../docs/installation.mdx"), "utf8");
   assert(installation.includes("`wget` instead of `curl`") && installation.includes("wget -qO- https://get.cotal.ai | sh -s -- --no-setup"), "the install guide offers the wget bootstrap");
   const shellLauncher = join(npmHome, ".local", "bin", "cotal");
@@ -128,9 +129,137 @@ try {
   const noNode = spawnSync(npmLauncher, ["--version"], { env: { ...npmEnv, PATH: dirname(npmLauncher) }, encoding: "utf8", timeout: 10_000 });
   assert.equal(noNode.status, 0, output(noNode));
   assert.equal(noNode.stdout.trim(), "cotal-ai 0.0.0", "npm launcher uses the install-time Node without Node on PATH");
+  const pathNode = join(npmHome, "project-bin", "node");
+  mkdirSync(dirname(pathNode));
+  const projectEnv = { ...npmEnv, PATH: dirname(pathNode), FIXTURE_NODE: process.execPath, NODE_EXEC_MARKER: join(npmHome, "path-node-executed") };
+  symlinkSync(process.execPath, pathNode);
+  const sameNode = spawnSync("/bin/sh", ["-x", npmLauncher, "--version"], { env: projectEnv, encoding: "utf8", timeout: 10_000 });
+  assert.equal(sameNode.status, 0, output(sameNode));
+  assert.equal(sameNode.stdout.trim(), "cotal-ai 0.0.0");
+  assert.match(sameNode.stderr, /^\++ exec node .* --version$/m, "the trace includes the CLI launch");
+  assert.doesNotMatch(sameNode.stderr, /^\++ (?:.*\/)?node --version$/m, "the recorded Node on PATH needs no version probe");
+  rmSync(pathNode);
+  for (const version of ["22.9.0", "22.10.0"]) {
+    writeFileSync(pathNode, `#!/bin/sh
+if [ "$1" = --version ]; then
+  printf 'v${version}\\n'
+else
+  printf 'selected\\n' > "$NODE_EXEC_MARKER"
+  exec "$FIXTURE_NODE" "$@"
+fi
+`, { mode: 0o755 });
+    const selected = spawnSync(npmLauncher, ["--version"], { env: projectEnv, encoding: "utf8", timeout: 10_000 });
+    assert.equal(selected.status, 0, output(selected));
+    assert.equal(selected.stdout.trim(), "cotal-ai 0.0.0");
+    assert.equal(existsSync(projectEnv.NODE_EXEC_MARKER), version === "22.10.0", `PATH Node ${version} is selected only if supported`);
+  }
   const launched = spawnSync(npmLauncher, ["--entry"], { env: { ...npmEnv, PATH: dirname(npmLauncher) }, encoding: "utf8", timeout: 10_000 });
   assert.equal(launched.status, 0, output(launched));
   assert.equal(realpathSync(launched.stdout.trim()), bootstrap, "the shell launcher runs the stable JavaScript entry");
+  const oldLauncher = launcherText.replace(/^node_supported\(\) \{[\s\S]*?^\}; then/m, "if command -v node >/dev/null 2>&1; then");
+  assert.notEqual(oldLauncher, launcherText);
+  writeFileSync(npmLauncher, oldLauncher);
+  const refresh = spawnSync(process.execPath, [join(npmPackage, postinstall), "--refresh", dirname(dirname(bootstrap))], { env: npmEnv, encoding: "utf8", timeout: 10_000 });
+  assert.equal(refresh.status, 0, output(refresh));
+  assert.equal(readlinkSync(npmLauncher), npmLink);
+  assert.equal(readFileSync(npmLauncher, "utf8"), launcherText, "refresh writes the same launcher as a fresh install");
+  const wrapper = realpathSync(npmLauncher);
+  for (const [contents, mode] of [
+    [oldLauncher, 0o775],
+    [oldLauncher.replace(/^  node='.*'$/m, '  node="unrecognized pin"'), 0o755],
+    [oldLauncher.replace(/^  node='.*'$/m, `  node='${join(root, "missing-node")}'`), 0o755],
+  ] as const) {
+    writeFileSync(wrapper, contents);
+    chmodSync(wrapper, mode);
+    const skipped = spawnSync(process.execPath, [join(npmPackage, postinstall), "--refresh", dirname(dirname(bootstrap))], { env: npmEnv, encoding: "utf8", timeout: 10_000 });
+    assert.equal(skipped.status, 0, output(skipped));
+    assert.equal(readFileSync(wrapper, "utf8"), contents);
+    const version = spawnSync(npmLauncher, ["--version"], { env: { ...npmEnv, PATH: dirname(process.execPath) }, encoding: "utf8", timeout: 10_000 });
+    assert.equal(version.status, 0, output(version));
+    assert.equal(version.stdout.trim(), "cotal-ai 0.0.0");
+  }
+  writeFileSync(wrapper, launcherText);
+  const npmTools = mkdirSync(join(npmHome, "npm-tools"), { recursive: true })!;
+  const projectNpm = join(npmTools, "npm");
+  writeFileSync(join(npmTools, "node"), "#!/bin/sh\nexit 18\n", { mode: 0o755 });
+  writeFileSync(projectNpm, '#!/usr/bin/env node\nconsole.log(process.execPath)\n', { mode: 0o755 });
+  const path = process.env.PATH;
+  try {
+    process.env.PATH = `${npmTools}:${path ?? ""}`;
+    for (const npm of [runNpm([]), await runNpmAsync([])]) {
+      assert.equal(npm.status, 0, npm.stderr);
+      assert.equal(npm.stdout.trim(), process.execPath, "npm selected by PATH runs under Cotal's Node");
+    }
+    assert.equal(process.env.PATH, `${npmTools}:${path ?? ""}`);
+  } finally {
+    if (path === undefined) delete process.env.PATH;
+    else process.env.PATH = path;
+  }
+  if (process.platform === "linux") {
+    const split = 'COTAL_NPM_PWD=${PWD} PWD=/proc/self/cwd /bin/sh';
+    const probe = spawnSync("/usr/bin/env", ["-S", split, "-c", '[ "$PWD" = /proc/self/cwd ] && [ . -ef . ] && exit 0'], {
+      env: npmEnv, encoding: "utf8", timeout: 1000,
+    });
+    const expectedHeader = existsSync("/proc/self/cwd") && probe.status === 0 ? `#!/usr/bin/env -S ${split}` : "#!/bin/sh";
+    assert.equal(launcherText.split("\n")[0], expectedHeader);
+    const fallback = join(root, "fallback");
+    const pkg = join(fallback, "lib/node_modules/cotal-ai");
+    const bin = join(fallback, "bin");
+    for (const directory of [bin, join(pkg, "dist"), join(pkg, "scripts")]) mkdirSync(directory, { recursive: true });
+    for (const file of ["package.json", postinstall, "dist/cotal.js"]) copyFileSync(join(npmPackage, file), join(pkg, file));
+    const fallbackLauncher = join(bin, "cotal");
+    symlinkSync("../lib/node_modules/cotal-ai/dist/cotal.js", fallbackLauncher);
+    const refusedProbe = spawnSync(process.execPath, ["-e", `
+      const assert = require("node:assert/strict");
+      let probed = false;
+      require("node:child_process").spawnSync = (file, args, options) => {
+        assert.equal(file, "/usr/bin/env");
+        assert.equal(args[0], "-S");
+        assert.equal(args[1], ${JSON.stringify(split)});
+        assert.ok(options.timeout > 0 && options.timeout <= 1000);
+        probed = true;
+        return { status: 1 };
+      };
+      require(process.argv[1]);
+      if (require("node:fs").existsSync("/proc/self/cwd")) assert.ok(probed);
+    `, join(pkg, postinstall)], { env: npmEnv, encoding: "utf8", timeout: 10_000 });
+    assert.equal(refusedProbe.status, 0, output(refusedProbe));
+    assert.equal(readlinkSync(fallbackLauncher), "../lib/node_modules/cotal-ai/dist/cotal-npm");
+    assert.equal(readFileSync(fallbackLauncher, "utf8").split("\n")[0], "#!/bin/sh");
+    const fallbackEnv = { ...npmEnv, PATH: bin };
+    const fallbackRun = spawnSync(fallbackLauncher, ["--version"], { env: fallbackEnv, encoding: "utf8", timeout: 10_000 });
+    assert.equal(fallbackRun.status, 0, output(fallbackRun));
+    assert.equal(fallbackRun.stdout.trim(), "cotal-ai 0.0.0");
+    const busyboxOptions = { env: { ...fallbackEnv, PATH: `${toolPath}:${process.env.PATH ?? ""}` }, encoding: "utf8" as const, timeout: 10_000 };
+    const busybox = spawnSync("busybox", ["env", "-S", split, "-c", "exit 0"], busyboxOptions);
+    if ((busybox.error as NodeJS.ErrnoException | undefined)?.code !== "ENOENT") {
+      const launch = spawnSync("busybox", ["sh", fallbackLauncher, "--version"], busyboxOptions);
+      assert.equal(launch.status, 0, output(launch));
+      assert.equal(launch.stdout.trim(), "cotal-ai 0.0.0");
+      console.log(`NPM LAUNCHER: BusyBox env -S exited ${busybox.status}; BusyBox sh fallback ran ${launch.stdout.trim()}`);
+      if (expectedHeader !== "#!/bin/sh") {
+        const cwd = realpathSync(npmHome);
+        const enhanced = spawnSync("busybox", ["sh", npmLauncher, "--cwd"], {
+          ...busyboxOptions, cwd, env: { ...busyboxOptions.env, COTAL_NPM_PWD: cwd, PWD: "/proc/self/cwd" },
+        });
+        assert.equal(enhanced.status, 0, output(enhanced));
+        assert.deepEqual(JSON.parse(enhanced.stdout), [cwd, cwd]);
+        console.log("NPM LAUNCHER: BusyBox sh enhanced body preserved the project directory");
+      }
+    }
+    if (expectedHeader !== "#!/bin/sh") {
+      const projectAlias = join(root, "project alias's");
+      symlinkSync(npmHome, projectAlias);
+      for (const pwd of [projectAlias, undefined, root]) {
+        const project = spawnSync(npmLauncher, ["--cwd"], {
+          cwd: npmHome, env: { ...npmEnv, PATH: dirname(npmLauncher), PWD: pwd }, encoding: "utf8", timeout: 10_000,
+        });
+        assert.equal(project.status, 0, output(project));
+        assert.deepEqual(JSON.parse(project.stdout), [realpathSync(npmHome), pwd === projectAlias ? pwd : realpathSync(npmHome)]);
+      }
+    }
+    console.log(`NPM LAUNCHER: real postinstall selected ${expectedHeader}; forced probe refusal selected #!/bin/sh and ran ${fallbackRun.stdout.trim()}`);
+  }
   const daemonDir = join(npmHome, "cotal", "daemon");
   const receipt = join(daemonDir, "service-unit.json");
   // The defaults no longer collide. Explicitly point the installer at npm's bin to test refusal.
@@ -307,6 +436,30 @@ exec "$FIXTURE_NODE" -e 'console.log(require("node:fs").readlinkSync(process.arg
     assert(!existsSync(join(obstructed.home, ".local/share/cotal")), "refusal leaves the install root absent");
     assert.deepEqual(readdirSync(obstructed.home).sort(), [".local", "old-bin"], "refusal writes no shell startup files");
   }
+
+  rmSync(obstructed.newBin, { recursive: true });
+  writeFileSync(obstructed.newBin, "keep-me\n");
+  for (const args of [[], ["--dry-run"]]) {
+    const blocked = runLauncherCheck(args);
+    assert.equal(blocked.status, 1, output(blocked));
+    assert(output(blocked).includes(`${quote(obstructed.newBin)} is not a directory.`));
+    assert.match(output(blocked), /set COTAL_BIN_DIR/);
+    assert.doesNotMatch(output(blocked), /Would write/);
+    assert.deepEqual(readdirSync(join(obstructed.home, ".local")), ["bin"], "refusal leaves the install root absent");
+    assert.deepEqual(readdirSync(obstructed.home).sort(), [".local", "old-bin"]);
+    assert.equal(readFileSync(obstructed.newBin, "utf8"), "keep-me\n");
+  }
+  for (const version of ["0.82.2", "0.82.3"]) {
+    const installed = spawnSync("/bin/sh", [driver, library], {
+      env: { ...obstructed.env, PATH: toolPath, COTAL_BIN_DIR: alternateBin, FIXTURE_TARGET: version }, encoding: "utf8",
+    });
+    assert.equal(installed.status, 0, output(installed));
+    const launched = spawnSync(join(alternateBin, "cotal"), ["--version"], { env: obstructed.env, encoding: "utf8" });
+    assert.equal(launched.status, 0, output(launched));
+    assert.equal(launched.stdout.trim(), `cotal-ai ${version}`);
+    assert.equal(readFileSync(obstructed.newBin, "utf8"), "keep-me\n");
+  }
+  assert.equal(readFileSync(obstructed.env.FIXTURE_UPDATE_ARGS, "utf8"), "update\n");
 
   const selected = fixture("selected");
   const direct = spawnSync("/bin/sh", [driver, library], { env: { ...selected.env, PATH: `${selected.newBin}:${selected.oldBin}:${toolPath}` }, encoding: "utf8" });

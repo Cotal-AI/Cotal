@@ -82,7 +82,12 @@ export function channelArguments(args: ParsedArgs): { action: string; name?: str
   if ((values.replay !== undefined || values["no-replay"] !== undefined) && stray !== undefined && /^(on|off|true|false|yes|no)$/i.test(stray)) {
     const flag = /^(off|false|no)$/i.test(stray) ? "--no-replay" : "--replay";
     const word = named && rawName ? ` ${shellWord(rawName.startsWith("-") ? `#${rawName}` : rawName)}` : "";
-    throw new CommandFailure("refused", "USAGE_INVALID", `--replay takes no value, so "${stray}" was read as a channel name; --replay turns replay on and --no-replay turns it off`, { remedy: `run ${codeSpan(`cotal channel ${action}${word} ${flag}${targetWords(values)}`)}` });
+    const edits = (["window", "delivery", "desc", "instructions"] as const).map((key) => {
+      const value = values[key];
+      return value === undefined ? "" : ` --${key}${value.startsWith("-") ? "=" : " "}${shellWord(value)}`;
+    }).join("");
+    const output = values.json ? " --json" : values.plain ? " --plain" : "";
+    throw new CommandFailure("refused", "USAGE_INVALID", `--replay takes no value, so "${stray}" was read as a channel name; --replay turns replay on and --no-replay turns it off`, { remedy: `run ${codeSpan(`cotal channel ${action}${word} ${flag}${edits}${targetWords(values)}${output}`)}` });
   }
   if (extra.length || (named ? !rawName : rawName !== undefined))
     throw usage(named ? `cotal channel ${action} takes one channel name` : `cotal channel ${action} takes no channel name`);
@@ -126,8 +131,8 @@ export async function channels(args: ParsedArgs): Promise<void> {
   const target = { space: connection.space, ...(name ? { channel: name } : {}) };
   if (!writes) {
     const full = await readChannelRegistry({ ...options, directGet: batchedRead(connection, channelBucket(connection.space)) });
-    const registry = action === "show" ? namedRegistry(full, name!) : full;
-    writeResult(presentation, { command: "channel", target, result: { action, name, space: connection.space, registry, scope: "configured channel metadata" } }, (result) => registryView(result, connection.mode === "open"));
+    const registry = action === "show" ? namedRegistry(full, name!) : action === "defaults" ? defaultsRegistry(full) : full;
+    writeResult(presentation, { command: "channel", target, result: { action, name, space: connection.space, registry, scope: "configured channel metadata" } }, (result) => registryView(result, connection.mode === "open", values));
     return;
   }
   if (action === "remove") await refuseUnknownChannel(name!, values, target, "remove");
@@ -222,10 +227,13 @@ export async function refuseUnknownChannel(name: string, values: Values, target:
   if (saved.has(name) || (await earlierMessages(values, name)) !== false) return;
   const spelled = registered.find((channel) => channel.toLowerCase() === name.toLowerCase());
   const known = registered.length ? `registered channels: ${registered.map((channel) => `#${channel}`).join(", ")}` : "this space registers no channels";
-  const removeFlags = action === "remove" ? `${values.purge ? " --purge" : ""}${values.yes ? " --yes" : ""}` : "";
+  const word = spelled === undefined ? undefined : shellWord(spelled.startsWith("-") ? `#${spelled}` : spelled);
+  const remedy = word === undefined ? "name a channel the space has; `cotal ch` lists the registered ones"
+    : action === "remove" ? `inspect the registered spelling: ${codeSpan(`cotal channel show ${word}${targetWords({ ...values, space: reader.space })}`)}`
+    : `name it as registered: ${codeSpan(`cotal channel members ${word}${targetWords(values)}`)}`;
   throw new CommandFailure("refused", "TARGET_NOT_FOUND",
     `#${name} has ${action === "members" ? "no observed members, " : ""}no saved entry and no retained messages; ${spelled ? `channel names are case-sensitive, and the registered one is #${spelled}` : known}`,
-    { target, remedy: spelled ? `name it as registered: ${codeSpan(`cotal channel ${action} ${shellWord(spelled.startsWith("-") ? `#${spelled}` : spelled)}${targetWords(values)}${removeFlags}`)}` : "name a channel the space has; `cotal ch` lists the registered ones" });
+    { target, remedy });
 }
 
 /** A saved setting in the receipt, in the words `channel show` uses for it. */
@@ -258,10 +266,16 @@ function namedRegistry({ defaults, channels, undecodable }: ChannelRegistryRead,
   return { defaults, channels: entry === undefined ? {} : { [name]: entry }, ...(errors?.length ? { undecodable: errors } : {}) };
 }
 
-function registryView(result: { action: string; name?: string; space: string; registry: ChannelRegistryRead }, open: boolean): Report {
+function defaultsRegistry({ defaults, undecodable }: ChannelRegistryRead): ChannelRegistryRead {
+  const errors = undecodable?.filter(({ key }) => key === CHANNEL_DEFAULTS_KEY);
+  return { defaults, ...(errors?.length ? { undecodable: errors } : {}) };
+}
+
+function registryView(result: { action: string; name?: string; space: string; registry: ChannelRegistryRead }, open: boolean, values: Values): Report {
   const { registry, name } = result;
   const bad = (key: string) => registry.undecodable?.find((entry) => entry.key === key);
   if (result.action === "show") {
+    const scope = targetWords({ ...values, space: result.space });
     const config = Object.hasOwn(registry.channels ?? {}, name!) ? registry.channels![name!] : undefined;
     const undecodable = bad(name!);
     return { sections: [
@@ -270,8 +284,8 @@ function registryView(result: { action: string; name?: string; space: string; re
       { title: "Next", blocks: [
         ...(open ? [{ kind: "lines" as const, lines: ["Broker-observed channel membership is unavailable on open meshes."] }] : []),
         { kind: "commands", items: [
-          ...(open ? [] : [{ command: `cotal ch members ${shellWord(name!.startsWith("-") ? `#${name}` : name!)}`, description: "Read broker-observed membership" }]),
-          { command: channelHistoryCommand(name!), description: "Read retained messages within your grant" },
+          ...(open ? [] : [{ command: `cotal ch members ${shellWord(name!.startsWith("-") ? `#${name}` : name!)}${scope}`, description: "Read broker-observed membership" }]),
+          { command: `${channelHistoryCommand(name!)}${scope}`, description: "Read retained messages within your grant" },
         ] },
       ] },
     ] };

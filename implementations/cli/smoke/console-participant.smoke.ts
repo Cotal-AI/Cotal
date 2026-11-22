@@ -12,6 +12,8 @@
  *      on the fresh connection (a newer presence timestamp lands after the restart) and a DM sent
  *      after it still reaches the operator.
  *   C. LEAVE: stopping the peer publishes an offline record a watcher sees, not a lapsed TTL.
+ *   D. The interactive console activates the participant when a human sends.
+ *   E. Both placements of --no-input keep the console passive on a terminal.
  */
 import { randomUUID } from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
@@ -22,7 +24,7 @@ import { CotalEndpoint, isReachable, setupSpaceStreams, type CotalMessage, type 
 import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { MeshView, openObserver } from "@cotal-ai/workspace/view";
 import { makeParticipant } from "../src/console/root.js";
-import { ConsoleSession, clean } from "./_console-pty.js";
+import { ConsoleSession, clean, cotalPty } from "./_console-pty.js";
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 let pass = 0, fail = 0;
@@ -54,6 +56,41 @@ let release = teardownOnSignal(srv, dir);
 
 const stops: (() => Promise<unknown>)[] = [];
 const rosterOf = (ep: CotalEndpoint, name: string): Presence | undefined => ep.getRoster().find((p) => p.card.name === name);
+const cHome = join(dir, "console-home");
+const homeEnv = { HOME: cHome, XDG_RUNTIME_DIR: cHome, COTAL_HOME: cHome, XDG_CONFIG_HOME: cHome, COTAL_SKIP_CONNECTOR_SEED: "1" };
+
+async function checkPassiveConsole(args: string[], space: string, sender: CotalEndpoint): Promise<void> {
+  const name = args.join(" ");
+  const marker = `input attempted by ${name}`;
+  const observed = `live message for ${name}`;
+  const pty = cotalPty([...args, "--space", space, "--server", OPEN], {
+    cwd: cHome,
+    env: { PATH: process.env.PATH ?? "", ...homeEnv },
+  });
+  let out = "";
+  let exit: { exitCode: number } | undefined;
+  pty.onData((data) => { out += data; });
+  pty.onExit((result) => { exit = result; });
+  try {
+    const see = (text: string) => until(() => clean(out).includes(text) ? true : undefined, 15_000);
+    const passive = await see(`watching space ${space} - Ctrl-C to stop`);
+    check(`${name} opens the passive line stream`, passive === true, clean(out).slice(-500));
+    if (!passive) return;
+    pty.write(`\x10msg #general ${marker}\r`);
+    await sender.multicast(observed, { channel: "general" });
+    check(`${name} still streams live messages`, await see(observed) === true, clean(out).slice(-500));
+    pty.write("\x03");
+    check(`${name} exits 130 on Ctrl-C`, (await until(() => exit, 8_000))?.exitCode === 130, exit);
+    check(`${name} opens neither the alternate screen nor the palette`, !out.includes("\x1b[?1049h") && !clean(out).includes("Commands"));
+    const history = (await sender.channelHistory("general")).flatMap((m) => m.parts.map((part) => part.kind === "text" ? part.text : undefined));
+    check(`${name} keeps the live message and not the typed command in history`, history.includes(observed) && !history.includes(marker));
+  } finally {
+    if (!exit) {
+      pty.kill();
+      check(`${name} terminal child reaped`, await until(() => exit, 8_000) !== undefined);
+    }
+  }
+}
 
 try {
   await up(OPEN);
@@ -136,11 +173,10 @@ try {
   // PIECES work and proves nothing about the console. Deleting App's first-send activation, its
   // idempotence guard, or the roster flag it hands the status bar left every cell here green,
   // because nothing rendered App. This section drives the real console under a pty instead.
-  const cHome = join(dir, "console-home");
-  mkdirSync(cHome, { recursive: true });
-  const cs = new ConsoleSession(["--space", space, "--server", OPEN], cHome, {}, { cols: 140, rows: 36 });
+  mkdirSync(join(cHome, ".cotal"), { recursive: true, mode: 0o700 });
+  const cs = new ConsoleSession(["--space", space, "--server", OPEN], cHome, homeEnv, { cols: 140, rows: 36, cwd: cHome });
   stops.push(async () => cs.close());
-  check("the console paints against the open mesh", await cs.waitFor(`${space} · #`, 40_000), clean(cs.out).slice(-200));
+  check("the console opens on the all feed", await cs.waitFor(`${space} · #all`, 40_000), clean(cs.out).slice(-200));
 
   // Identify the console's peer by what it IS, not by a name this file already used: section A's
   // own operator is still on the roster as an offline record, and the console names its peer after
@@ -151,6 +187,13 @@ try {
   check("before the operator sends anything, the console has put nobody on the roster", operators().length === 0, seats());
 
   let mk = cs.mark();
+  await cs.command("msg #other");
+  check("a channel without message text shows usage", await cs.waitFor("usage: msg [#channel] <text>", 4_000, mk), clean(cs.out.slice(mk)).slice(-500));
+  const general = await watcher.channelHistory("general");
+  const other = await watcher.channelHistory("other");
+  check("a channel without message text writes neither history", general.length === 0 && other.length === 0, { general, other });
+  check("a channel without message text leaves the operator off the roster", operators().length === 0, seats());
+
   await cs.compose("from-the-console");
   const joined = await until(() => (operators().length === 1 ? true : undefined), 12_000);
   check("the console's FIRST send activates participant mode by itself", joined === true, seats());
@@ -172,6 +215,11 @@ try {
   await cs.command("MSG #general Keep Channel Case");
   const msg = await until(() => readPaletteMessage("Keep Channel Case"), 4000);
   check("uppercase MSG sends the unchanged body to #general", msg?.channel === "general" && msg?.text === "Keep Channel Case", msg ?? clean(cs.out).slice(-500));
+  mk = cs.mark();
+  await cs.command("msg #other To Other Channel");
+  check("a channel with message text sends to that channel", await cs.waitFor("→ #other", 4_000, mk), clean(cs.out.slice(mk)).slice(-500));
+  const sent = await watcher.channelHistory("other");
+  check("the explicit channel retains the unchanged body", sent.length === 1 && sent[0].channel === "other" && sent[0].parts[0]?.kind === "text" && sent[0].parts[0].text === "To Other Channel", sent);
 
   // Idempotence is NOT visible as a second roster row: a duplicate peer registers under the same
   // card id, so the roster still shows one. What it is visible as is an ORPHAN. Without the guard
@@ -184,6 +232,11 @@ try {
   check("the console quits cleanly", await cs.quit(), { exited: true });
   const left = await until(() => (operators().length === 0 ? true : undefined), 12_000);
   check("...and NOTHING is left publishing the operator's presence afterwards", left === true, seats());
+
+  console.log("E. --no-input keeps the console passive on a terminal");
+  for (const args of [["--no-input", "console"], ["console", "--no-input"]]) {
+    await checkPassiveConsole(args, space, alice);
+  }
 
 } catch (e) {
   fail++;

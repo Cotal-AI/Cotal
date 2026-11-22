@@ -765,8 +765,15 @@ export const claudeSetupProvider: ConnectorSetupProvider = {
     explain: "Rewrites the copy of the Cotal plugin that Claude Code sessions load, and Cotal's entry in Claude Desktop, for this release.",
     context: [DOCS_URL],
     run({ cotal, skills }) {
+      const installed = installedPluginForRefresh();
       const path = desktopConfigPath();
-      if (!installedPluginForRefresh() && (path === undefined || readDesktopEntry(path) === undefined)) return "not installed";
+      if (!installed && (path === undefined || readDesktopEntry(path) === undefined)) return "not installed";
+      const protectedDir = [dirname(claudeUserMcpPath()), pluginCacheDir()]
+        .find((dir) => isConfigProtected(join(dir, ".cotal-setup.lock")));
+      if (protectedDir) {
+        const integration = installed === "cotal-skills" ? "Claude skills refresh" : "Claude integration refresh";
+        return `${integration} deferred because ${protectedDir} is read-only. Make that directory writable, then run \`cotal update\`.`;
+      }
       // Re-read installed state under the mutation locks before changing any integration.
       return withPluginLock(() => {
         const entries = installedForRefresh();

@@ -14,14 +14,16 @@
  *   - the views that must finish their own shutdown, and `down`, which must finish its stops, own
  *     stdout's errors and attach no listener of their own to process.stdout;
  *   - with stdout in a file under a file-size limit, a write cut short is reported as EFBIG and
- *     exits 3, where Node's file stream reported it done and the process exited 0; with no limit
- *     the whole write lands. Those cells need `bash` on PATH.
+ *     exits 3. With no limit the whole write lands. The built CLI keeps the refusal exit code and
+ *     prints a text refusal on stderr if the limit cuts its JSON short. The file-size-limited cells
+ *     need `bash` on PATH.
+ *   - a built CLI JSON refusal reaches a pipe that accepts only a few bytes per write.
  * The views themselves (chat, watch, service logs, the service journal) and `down` are not driven here.
  *
  * Run: pnpm smoke:stdout-owner
  */
-import { spawn } from "node:child_process";
-import { closeSync, mkdtempSync, openSync, readFileSync, rmSync, statSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import { closeSync, mkdtempSync, openSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -162,7 +164,6 @@ if (mode !== undefined) {
 
   console.log("3. an error other than EPIPE");
   {
-    // An owner used to end quietly with 0 on any error, so a full disk lost its output unreported.
     const owned = await run("owned-eio", false);
     check("owned, an EIO is reported in one stderr line, once, exits 3 and still reaches the owner",
       owned.code === 3 && owned.stderr.startsWith("✗ could not write to stdout: synthetic EIO\n") && owned.stderr.split("could not write").length === 2 && owned.stderr.includes("owner saw EIO") && !owned.stderr.includes("    at "), owned);
@@ -189,13 +190,13 @@ if (mode !== undefined) {
 
   console.log("5. a stdout that is a file writes each chunk whole or fails");
   {
-    /** Run `file-write` with stdout in a fresh file, under a 1 KiB file-size limit with SIGXFSZ
+    /** Run Node with stdout in a fresh file, under a 1 KiB file-size limit with SIGXFSZ
      *  ignored as a shell's `ulimit -f 1; trap "" XFSZ` leaves it, or with no limit. */
-    const runToFile = (limited: boolean): Promise<{ code: number | null; stderr: string; bytes: number }> => {
+    const runToFile = (entry: string[], limited: boolean): Promise<{ code: number | null; stderr: string; bytes: number }> => {
       const dir = mkdtempSync(join(tmpdir(), "cotal-stdout-file-"));
       const path = join(dir, "out.json");
       const fd = openSync(path, "w", 0o600);
-      const node = [process.execPath, ...process.execArgv, fileURLToPath(import.meta.url), "file-write"];
+      const node = [process.execPath, ...entry];
       const [cmd, ...args] = limited ? ["bash", "-c", `ulimit -f 1; trap "" XFSZ; exec "$0" "$@"`, ...node] : node;
       return new Promise((resolve) => {
         const child = spawn(cmd!, args, { stdio: ["ignore", fd, "pipe"] });
@@ -211,15 +212,53 @@ if (mode !== undefined) {
         });
       });
     };
-    // Node's file stream took the 1024 bytes the limit allowed and reported the write done, so an
-    // export cut short exited 0 with nothing on stderr (#7124).
-    const short = await runToFile(true);
+    const entry = [...process.execArgv, fileURLToPath(import.meta.url), "file-write"];
+    const short = await runToFile(entry, true);
     check("a write the file-size limit cuts short is one stderr line naming EFBIG, exit 3, after the 1024 bytes that fit",
       short.code === 3 && short.bytes === 1024 && short.stderr === "✗ could not write to stdout: EFBIG: file too large, write\n", short);
-    const whole = await runToFile(false);
+    const whole = await runToFile(entry, false);
     check("with no limit the whole document is written and the process runs on", whole.code === 0 && whole.bytes === 3001 && whole.stderr.includes("still running"), whole);
     const run = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "bin", "run.ts"), "utf8");
     check("the binary makes its stdout write whole chunks to a file", /^completeFileWrites\(\);$/m.test(run));
+
+    const cli = join(import.meta.dirname, "../../../bin/dist/cotal.js");
+    const refused = await runToFile([cli, "docs", "xyz-not-a-real-page", "--json"], true);
+    check("a short JSON refusal keeps exit 1 and writes the EFBIG diagnostic and text refusal to stderr",
+      refused.code === 1 && refused.bytes === 1024 && refused.stderr.startsWith("✗ could not write to stdout: EFBIG: file too large, write\n")
+        && refused.stderr.includes('no docs page "xyz-not-a-real-page"'), refused);
+  }
+
+  console.log("6. a short-writing pipe receives the whole JSON refusal");
+  {
+    const dir = mkdtempSync(join(tmpdir(), "cotal-stdout-pipe-"));
+    try {
+      const hook = join(dir, "short-write.cjs");
+      // Limit each synchronous stdout write to three bytes while sending those bytes to the real pipe.
+      writeFileSync(hook, `
+const fs = require("node:fs");
+const { syncBuiltinESMExports } = require("node:module");
+const writeSync = fs.writeSync;
+fs.writeSync = (fd, chunk, ...args) => {
+  if (fd !== 1) return writeSync(fd, chunk, ...args);
+  if (typeof chunk === "string") chunk = Buffer.from(chunk);
+  const [offset = 0, length = chunk.length - offset] = args;
+  return writeSync(fd, chunk, offset, Math.min(length, 3));
+};
+syncBuiltinESMExports();
+`);
+      const cli = join(import.meta.dirname, "../../../bin/dist/cotal.js");
+      const args = [cli, "docs", "xyz-not-a-real-page-é", "--json"];
+      const throughPipe = (args: string[]) => spawnSync("bash", ["-o", "pipefail", "-c", '"$@" | cat', "bash", process.execPath, ...args],
+        { encoding: "utf8", timeout: 20_000 });
+      const whole = throughPipe(args);
+      const short = throughPipe(["--require", hook, ...args]);
+      check("a normal refusal writes JSON on stdout only and exits 1",
+        whole.status === 1 && whole.stderr === "" && whole.stdout.includes("xyz-not-a-real-page-é") && whole.stdout.includes('"outcome":"refused"'), whole);
+      check("short writes to a pipe preserve every byte and keep stderr empty and exit 1",
+        short.status === 1 && short.stderr === "" && short.stdout === whole.stdout, short);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   }
 
   finish();

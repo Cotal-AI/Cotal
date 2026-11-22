@@ -195,7 +195,7 @@ export class AgentTurns {
     const principal = this.ep.principal;
     const lifecycleUid = this.config.lifecycleUid;
     if (lease.owner !== principal.owner || lease.actor !== principal.actor || lease.lifecycleUid !== lifecycleUid ||
-        lease.name !== this.config.name)
+        lease.name !== this.ep.card.name)
       throw new Error("the participation lease does not bind this connection's exact owner, actor, lifecycle and name");
     const managerInstanceId = assertLifecycleToken(lease.managerInstanceId, "participation manager instance");
     if (!Number.isFinite(lease.expiresAt) || lease.expiresAt <= Date.now())

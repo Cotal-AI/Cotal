@@ -26,6 +26,7 @@ import {
   presentationOf,
   readPreferences,
   resolvePreference,
+  spaceNameTooLong,
   writePreference,
   writeResult,
   type Cell,
@@ -36,6 +37,7 @@ import {
   type Report,
   type ResolvedPreference,
 } from "@cotal-ai/workspace";
+import { checkSpaceFlagValue } from "./meshes-add.js";
 import { completingFlagValue, positionalsForCompletion } from "../lib/completion.js";
 import { personaCatalog, personaNameProblem } from "../lib/persona-files.js";
 import { registryFailure } from "../lib/registry-errors.js";
@@ -119,6 +121,10 @@ export function validateConfigArguments(args: ParsedArgs): void {
   if (v.space !== undefined) {
     const problem = preferenceSpaceProblem(v.space);
     if (problem) throw usage(problem);
+    const flag = checkSpaceFlagValue(v.space);
+    if (!flag.ok) throw new CommandFailure("refused", "USAGE_INVALID", flag.message.replace(/^✗ /, ""), { remedy: flag.remedy });
+    const tooLong = spaceNameTooLong(v.space);
+    if (tooLong) throw new CommandFailure("refused", "USAGE_INVALID", tooLong, { remedy: "choose a shorter space name" });
   }
   if (sub === "set" && args.positionals.length !== 3) throw usage("usage: cotal config set <key> <value> [--user | --space <name>]");
   if (sub === "unset" && args.positionals.length !== 2) throw usage("usage: cotal config unset <key> [--user | --space <name>]");

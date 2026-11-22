@@ -3,7 +3,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { spawn, spawnSync } from 'node:child_process';
 import { createServer } from 'node:http';
 import { connect } from 'node:net';
-import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { delimiter, dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -222,16 +222,22 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
       }
       const corrupt = '{"v":2,"futureSelection":true}\n';
       const record = JSON.stringify({ v: 1, entry: realpathSync(entry), version: previous, root: graph });
-      // Use only a damaged lineage in the rollback case, and a readable lineage in the success case.
-      const unreadable = rollback ? current : local;
-      if (!rollback) writeFileSync(current, record, { mode: 0o600 });
-      writeFileSync(unreadable, corrupt, { mode: 0o400 });
+      writeFileSync(local, corrupt, { mode: 0o400 });
+      writeFileSync(current, JSON.stringify({ ...JSON.parse(record), root: generation }), { mode: 0o600 });
       armed = false;
       const noNewer = await run(process.execPath, [entry, 'update', '--self'], 60000);
       assert.equal(noNewer.code, 0, noNewer.output);
-      assert.match(noNewer.output, /No connector reconciliation was run/);
-      assert.equal(readFileSync(unreadable, 'utf8'), corrupt);
+      assert.match(noNewer.output, /No newer CLI version\. No connector reconciliation was run\./);
+      assert.match(noNewer.output, /connector retention selection.*unreadable.*cotal ext seed --repair/);
+      assert.equal(readFileSync(local, 'utf8'), corrupt);
       armed = true;
+      // Use only a damaged lineage in the rollback case, and a readable lineage in the success case.
+      const unreadable = rollback ? current : local;
+      if (rollback) {
+        rmSync(local);
+        writeFileSync(current, corrupt);
+        chmodSync(current, 0o400);
+      } else writeFileSync(current, record);
       const started = Date.now();
       const result = await run(process.execPath, [entry, 'update', '--self'], 180000);
       const elapsedMs = Date.now() - started;
@@ -440,6 +446,7 @@ exec npm "$@"
     if (dateFiltered) writeFileSync(join(home, '.npmrc'), filterConfig);
     const started = Date.now();
     let abandonedCache, unrecordedCache, abandonedStagingCache, unrecordedStagingCache;
+    let legacyScratch, retainedScratch;
     if (staged) {
       const tools = join(root, 'tools'), busProbe = join(root, 'bus-called');
       mkdirSync(tools);
@@ -491,6 +498,7 @@ exec npm "$@"
         .flatMap(name => readdirSync(join(scratch, name)).filter(cache => cache.startsWith('cotal-update-npm-')).map(cache => join(scratch, name, cache)));
       assert.equal(caches.length, 1, 'found the staging worker’s private npm cache');
       abandonedStagingCache = caches[0];
+      mkdirSync(join(dirname(abandonedStagingCache), 'node-compile-cache'), { recursive: true });
       const ownerExited = new Promise(done => owner.once('exit', (_code, signal) => done(signal)));
       owner.kill('SIGKILL');
       assert.equal(await ownerExited, 'SIGKILL');
@@ -513,6 +521,7 @@ exec npm "$@"
       const cache = readdirSync(join(scratch, outer)).find(name => name.startsWith('cotal-release-check-'));
       assert(cache, 'the running updater made a release archive cache');
       abandonedCache = join(scratch, outer, cache);
+      mkdirSync(join(scratch, outer, 'node-compile-cache'), { recursive: true });
       const workers = readdirSync(abandonedCache).filter(name => name.startsWith('.worker-'));
       assert(workers.length > 0, 'the real npm worker has recorded custody');
       pausedArchive = Number(workers.find(name => {
@@ -528,6 +537,7 @@ exec npm "$@"
       const whileActive = await run(process.execPath, [entry, 'update', '--self'], 60000);
       assert.equal(whileActive.code, 0, whileActive.output);
       assert(existsSync(abandonedCache), 'retry leaves the surviving npm worker cache alone');
+      assert(existsSync(join(scratch, outer, 'node-compile-cache')), 'retry leaves compile cache with the surviving worker');
       heldArchive.end(archives.get(target));
       process.kill(pausedArchive, 'SIGCONT');
       pausedArchive = undefined;
@@ -541,6 +551,27 @@ exec npm "$@"
       const settled = Date.now() + 10000;
       while (!gone() && Date.now() < settled) await new Promise(done => setTimeout(done, 25));
       assert(gone(), 'the interrupted update archive workers exited');
+      const old = new Date(Date.now() - 61 * 60_000);
+      const fixture = ({ recent, extra, mode } = {}) => {
+        const path = mkdtempSync(join(scratch, 'cotal-update-'));
+        const cache = join(path, 'node-compile-cache');
+        const entry = join(cache, 'compiled');
+        mkdirSync(cache);
+        writeFileSync(entry, 'cache');
+        if (extra) writeFileSync(join(path, 'keep'), 'other content');
+        if (mode) chmodSync(path, mode);
+        for (const [index, item] of [path, cache, entry].entries()) if (index !== recent) utimesSync(item, old, old);
+        return path;
+      };
+      legacyScratch = fixture();
+      const link = join(scratch, 'cotal-update-link00');
+      const shared = fixture({ mode: 0o750 });
+      const linkTarget = join(scratch, 'link-target');
+      const targetCache = join(linkTarget, 'node-compile-cache');
+      mkdirSync(targetCache, { recursive: true, mode: 0o700 });
+      for (const item of [linkTarget, targetCache]) utimesSync(item, old, old);
+      symlinkSync(linkTarget, link);
+      retainedScratch = [shared, link, linkTarget, fixture({ extra: true }), ...[0, 1, 2].map(recent => fixture({ recent }))];
     }
     if (scenario === 'orphan') {
       const first = run(process.execPath, [entry, 'update', '--self'], 60000);
@@ -635,6 +666,7 @@ exec npm "$@"
       assert.equal(existsSync(marker), false);
       assert.equal(existsSync(join(root, 'bus-called')), false, 'exact child custody needs no native user manager query');
       assert(!existsSync(abandonedStagingCache), 'the successful retry removes the abandoned staging cache');
+      assert(!existsSync(dirname(abandonedStagingCache)), 'the successful retry removes the abandoned staging scratch');
       assert(existsSync(unrecordedStagingCache), 'the successful retry leaves unrecorded staging caches alone');
       const current = await run(process.execPath, [entry, '--version'], 60000);
       assert.match(current.output, /cotal-ai 99\.0\.0/);
@@ -704,7 +736,10 @@ exec npm "$@"
       } else if (scenario === 'archive-interrupted') {
         assert.equal(selected, target, update.output);
         assert.equal(existsSync(abandonedCache), false, 'retry removes the recorded orphan cache');
+        assert(!existsSync(dirname(abandonedCache)), 'retry removes the abandoned scratch and its compile cache');
         assert(existsSync(unrecordedCache), 'retry does not infer custody from a directory name');
+        assert(!existsSync(legacyScratch), 'retry removes compile-only scratch without custody files');
+        for (const path of retainedScratch) assert(existsSync(path), `retry preserves ineligible scratch: ${path}`);
       } else if (['orphan', 'pending', 'reconcile-killed'].includes(scenario)) {
         assert.equal(selected, target, update.output);
         assert.match(update.output, /installed globally and reconciled/);

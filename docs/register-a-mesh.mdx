@@ -28,9 +28,13 @@ A selected mesh stays selected when its broker is offline.
 Commands report that failure instead of connecting elsewhere.
 Registering another mesh with `space add` or `meshes add` also keeps a selected prepared or stopped space selected.
 If the selected entry no longer exists, the command refuses with `TARGET_NOT_FOUND`.
+An empty or unreadable saved selection also prevents fallback. Clear it with `cotal use --clear`
+or select a known space again.
 
 With no selection, Cotal first uses the current project's `.cotal/`.
 Outside a project, it uses the only running mesh or refuses an ambiguous choice when several are running.
+If a competing unchecked open registration names a space its broker does not serve, automatic
+selection skips that record without removing it.
 The `(default)` marker in `cotal meshes` marks the selected entry.
 
 `cotal up` records a local mesh's broker URL, project root, and authentication mode in `~/.cotal/meshes/space.<key>.json`.
@@ -172,6 +176,7 @@ cotal space forget optiplex
 
 `cotal meshes rm` also forgets entries and treats repeated names as one target. Neither command stops the broker.
 Use `cotal down` to stop a mesh running here.
+For a prepared space, `cotal meshes rm` points to `cotal space forget` instead of removing it.
 
 A hand-registered entry survives `cotal down` and `cotal clean all`, even if its root is the project being stopped.
 Those commands remove entries created by a local `up`.
@@ -184,3 +189,4 @@ An `up` targeting a hand-registered mesh refuses to start a different endpoint a
 For a remote broker, follow its remedy to run `cotal manager start --space <s>` with delivery on the broker host.
 For a local entry, remove it with `cotal meshes rm` if it needs replacement.
 Re-registering with `--force` can replace an entry, but still applies its address restrictions.
+To verify an unchecked open or static-auth entry, repeat `cotal meshes add` without `--force` and keep the same broker, root, mode and transport settings.

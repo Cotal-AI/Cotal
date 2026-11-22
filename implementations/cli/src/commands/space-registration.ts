@@ -5,6 +5,7 @@ import { isAbsolute, join, resolve } from "node:path";
 import {
   CommandFailure,
   authDir,
+  brokerUrlKey,
   canonicalRoot,
   codeSpan,
   checkDiscoveryDocument,
@@ -248,7 +249,7 @@ async function addFromServer(name: string | undefined, v: AddValues, prompt: boo
   const mode = take(checkMode(name, root, accounts, v.mode, false), target);
   const auth = take(checkTrust(mode, root, name), target);
   const replaced = replaceable(name, v.force === true, target, (existing) =>
-    existing.server === server && existing.root === root && existing.mode === mode && (existing.tlsRequired === true) === tlsRequired &&
+    brokerUrlKey(existing.server) === brokerUrlKey(server) && existing.root === root && existing.mode === mode && (existing.tlsRequired === true) === tlsRequired &&
     (existing.unencryptedOverlay === true) === Boolean(dial.residual));
   const verified = v.force !== true;
   if (verified) {
@@ -419,7 +420,9 @@ function addedView(r: SpaceAdded | AddCancelled): Report {
  */
 export async function spaceCreate(name: string, rootFlag: string | undefined, adopt: boolean, presentation: Presentation): Promise<void> {
   const root = resolve(rootFlag ?? process.cwd());
-  if (!isDir(root)) throw usage(`--root ${root} is not a directory`, "create the folder first, or pass an existing one");
+  const kind = projectRootKind(root);
+  if (kind !== "directory" && (kind !== "missing" || rootFlag === undefined || adopt))
+    throw usage(`--root ${root} is not a directory`, "pass an existing directory");
   if (adopt) {
     // Its own rules come first, so a folder moved on this machine is told to move back, not to forget.
     let found: ReturnType<typeof journalRecordedElsewhere>;
@@ -437,8 +440,9 @@ export async function spaceCreate(name: string, rootFlag: string | undefined, ad
     if (lstatSync(dir, { throwIfNoEntry: false })) protectedLocalDirectory(dir, "the project's .cotal directory");
   }
   const adoptedFrom = adopt ? adoptStackJournal(root, name) : undefined;
+  const createdRoot = kind === "missing" && mkdirPrivate(root, "the project root") !== undefined;
   const { file, preparedAt } = existing ? { file: undefined, preparedAt: existing.ts } : recordLocalSpace(name, root);
-  const written = [...(adoptedFrom !== undefined ? [{ what: `stack journal, adopted from ${adoptedFrom}`, path: stackJournalPath(canonicalRoot(root)) }] : []), ...(file ? [{ what: "prepared space", path: file }] : [])];
+  const written = [...(createdRoot ? [{ what: "project folder", path: root }] : []), ...(adoptedFrom !== undefined ? [{ what: `stack journal, adopted from ${adoptedFrom}`, path: stackJournalPath(canonicalRoot(root)) }] : []), ...(file ? [{ what: "prepared space", path: file }] : [])];
   const personaPath = join(personaDir(root), "default.md");
   let persona: ReturnType<typeof seedDefaultPersona>;
   try { persona = seedDefaultPersona(root); }
@@ -579,11 +583,11 @@ export function recordLocalSpace(name: string, root: string): { file: string; pr
 
 const unwritable = (error: unknown): boolean => ["EACCES", "EPERM", "EROFS"].includes((error as NodeJS.ErrnoException).code ?? "");
 
-function isDir(path: string): boolean {
+function projectRootKind(path: string): "directory" | "missing" | "other" {
   try {
-    return statSync(path).isDirectory();
-  } catch {
-    return false;
+    return statSync(path).isDirectory() ? "directory" : "other";
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "ENOENT" ? "missing" : "other";
   }
 }
 

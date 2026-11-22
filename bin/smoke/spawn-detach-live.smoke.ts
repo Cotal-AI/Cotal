@@ -41,9 +41,9 @@ const scratch = makeScratch("cotal-detach-");
 const home = mkdtempSync(join(tmpdir(), "cotal-detach-home-"));
 process.env.COTAL_HOME = home;
 
-const { parseCommandArgs, probeConnect, registry, CotalEndpoint, openSessionRail, EpEnvelopeError } = await import("@cotal-ai/core");
+const { parseCommandArgs, probeConnect, registry, CotalEndpoint, openSessionRail, EpEnvelopeError, eventChannel } = await import("@cotal-ai/core");
 const { connect } = await import("@nats-io/transport-node");
-const { recordMesh, isCommandFailure, exitCode, commandFailureReport, renderReport } = await import("@cotal-ai/workspace");
+const { recordMesh, recordPreparedSpace, getCurrent, setCurrent, clearCurrent, isCommandFailure, exitCode, commandFailureReport, renderReport } = await import("@cotal-ai/workspace");
 await import("@cotal-ai/cli"); // registers the CLI commands (spawn/stop/ps/attach) into the registry
 const { Manager } = await import("@cotal-ai/manager");
 import type { AgentHandle, Command, Connector, ControlReply, LaunchOpts, LaunchSpec, RuntimeProvider, SessionGrant } from "@cotal-ai/core";
@@ -538,6 +538,71 @@ try {
   // connectors together).
   const subEnv = { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: join(home, "xdg"), COTAL_SKIP_CONNECTOR_SEED: "1" };
 
+  {
+    const retryConnector: Connector = { ...e2eCon, name: "retry-e2e", eventChannel };
+    registry.register(retryConnector);
+    const file = join(workspaceRoot, "sample $file's.md");
+    const cli = join(import.meta.dirname, "..", "dist", "cotal.js");
+    const prompt = "-keep `text`\non another line";
+    writeFileSync(file, "---\nname: file-agent\nagent: e2e-exit\nrole: writer\n---\nExplicit persona.\n");
+    const ps = await capture(() => run("ps", ["--space", SPACE]));
+    const instance = /instance:\s+([a-z0-9]{26,32})/.exec(ps)?.[1];
+    ok("ps names the live manager instance for a spawn retry", instance !== undefined, ps);
+    const refused = spawnSync(process.execPath, [cli, "--no-color", "spawn", "--file", file,
+      "--detach", "--no-events", "--harness", "retry-e2e", "--name", "retry-agent", `--prompt=${prompt}`,
+      "--subscribe", "", "--opt", "one=a b", "--opt", "two=c", "--on=not-a-pin", "--space", SPACE, "--server", SERVER],
+    { cwd: workspaceRoot, env: subEnv, encoding: "utf8", timeout: 30_000 });
+    const retry = /rerun it as (`+)(cotal spawn [^\n]+)\1\r?$/m.exec(refused.stderr)?.[2];
+    ok("an invalid pin is refused with a single replaceable manager selector",
+      refused.status === 1 && retry?.match(/--on <instance>/g)?.length === 1 && !retry.includes("not-a-pin"), refused.stderr);
+    const shell = spawnSync("bash", ["-c", `printf '%s\\0' ${retry!.replace("--on <instance>", `--on ${instance}`)}`], { encoding: "utf8" });
+    const [bin, verb, ...args] = shell.stdout.split("\0").slice(0, -1);
+    ok("the printed retry is a shell command", shell.status === 0 && bin === "cotal" && verb === "spawn", shell.stderr);
+    const launched = await capture(() => run("spawn", args));
+    ok("following the retry launches the explicit file, harness and seat with events off",
+      joinedAs(launched, "retry-agent") && /Application:\s+retry-e2e/.test(launched) && lastOpts?.role === "writer"
+      && lastOpts?.events === false && lastOpts?.prompt === prompt && JSON.stringify(lastOpts?.subscribe) === "[]"
+      && JSON.stringify(lastOpts?.launchOptions) === JSON.stringify({ one: "a b", two: "c" }), { launched, lastOpts });
+    await capture(() => run("stop", ["retry-agent", "--space", SPACE, "--on", instance!]));
+  }
+
+  {
+    const agents = join(workspaceRoot, ".cotal", "agents");
+    writeFileSync(join(agents, "review.md.md"), "---\nname: reviewer\nagent: e2e\n---\nCatalog persona.\n");
+    writeFileSync(join(workspaceRoot, "review.md"), "---\nname: file-reviewer\nagent: e2e\n---\nExplicit file.\n");
+    const listed = await capture(() => run("persona", ["--plain", "--space", SPACE]));
+    ok("persona lists the dotted catalog key", /\breview\.md\s+/.test(listed), listed);
+    for (const [selector, name] of [[["review.md"], "reviewer"], [["--file", "review.md"], "file-reviewer"]] as const) {
+      const launched = await capture(() => run("spawn", [...selector, "--detach", "--no-events", "--space", SPACE]));
+      ok(`detached ${selector.join(" ")} joins as ${name}`, joinedAs(launched, name), launched);
+      const stoppedOut = await capture(() => run("stop", ["--name", name, "--space", SPACE]));
+      ok(`stopped ${name}`, stopped(stoppedOut, name), stoppedOut);
+    }
+  }
+
+  {
+    const defaultPath = join(workspaceRoot, ".cotal", "agents", "default.md");
+    const launch = ["--detach", "--no-events", "--harness", "e2e", "--space", SPACE];
+    const cli = join(import.meta.dirname, "..", "dist", "cotal.js");
+    let failure: unknown;
+    try { await capture(() => run("spawn", launch)); } catch (error) { failure = error; }
+    const refused = isCommandFailure(failure) ? failure : undefined;
+    const remedy = refused?.remedy ?? "";
+    const repair = ["persona", "create", "default", "--space", SPACE, "--prompt", "You are an agent on the Cotal mesh.", "--subscribe", ""];
+    ok("missing default names the manager project and gives a complete creation command without launching",
+      refused?.code === "LIFECYCLE_BLOCKED" && exitCode(refused.outcome, refused.code) === 2 && refused.message.includes(defaultPath)
+        && remedy.includes("on the manager's host")
+        && remedy.includes(`\`cotal persona create default --space ${SPACE} --prompt 'You are an agent on the Cotal mesh.' --subscribe ''\``), failure);
+    const ps = await capture(() => run("ps", ["--space", SPACE]));
+    ok("a missing default leaves no seat", NO_AGENTS.test(ps), ps);
+    const created = spawnSync(process.execPath, [cli, ...repair], { cwd: workspaceRoot, env: subEnv, encoding: "utf8" });
+    ok("the command from the refusal writes the default persona", created.status === 0 && statSync(defaultPath).isFile(), created.stdout + created.stderr);
+    const retried = await capture(() => run("spawn", launch));
+    ok("the same manager launches the restored default", joinedAs(retried, "default"), retried);
+    const stoppedOut = await capture(() => run("stop", ["--name", "default", "--space", SPACE]));
+    ok("stopped the restored default seat", stopped(stoppedOut, "default"), stoppedOut);
+  }
+
   // E — the start tombstone (true subprocess through bin/cotal.ts, i.e. built dist).
   const tomb = spawnSync(TSX, [join(import.meta.dirname, "..", "cotal.ts"), "start", "--name", "x"], {
     encoding: "utf8",
@@ -595,6 +660,22 @@ try {
       const managerOwn = attachCalls - beforeDetached;
       const paneResult = (JSON.parse(fgJson) as { result: { runtime: string; streamsTerminal: boolean | null } }).result;
       ok("--json names the runtime and that it streams no terminal", paneResult.runtime === "e2e-nostream" && paneResult.streamsTerminal === false, paneResult);
+      const alternate = mkdtempSync(join(scratch, "alternate-"));
+      recordPreparedSpace({ space: "alternate", root: alternate, ts: new Date().toISOString() });
+      const selected = getCurrent();
+      setCurrent("alternate");
+      try {
+        const duplicate = plain(await capture(() => run("spawn", ["poet", "--detach", "--no-events", "--agent", "e2e", "--space", SPACE, "--name", "pane2", "--on", on2])));
+        const words = /Attach to it: `[^`]*\battach ([^`]+)`/.exec(duplicate)?.[1]?.split(" ") ?? [];
+        ok("duplicate spawn is a no-op and prints an attach pinned to its space and manager", duplicate.includes("Already running")
+          && words.join(" ") === `pane2 --space ${SPACE} --on ${on2}`, duplicate);
+        let retry: unknown;
+        try { await run("attach", [...words, "--no-reconnect"]); } catch (error) { retry = error; }
+        ok("the printed attach reaches the existing seat's runtime in the requested space",
+          isCommandFailure(retry) && retry.code === "UNSUPPORTED" && retry.message.includes('runtime: watch this agent where it runs'), String(retry));
+      } finally {
+        if (selected === undefined) clearCurrent(); else setCurrent(selected);
+      }
       const before = attachCalls;
       // Forcing `isTTY` also turns the report's color on, so the receipt is read without it.
       const fgOut = plain(await atTerminal(() => capture(() => run("spawn", ["poet", "--no-events", "--agent", "e2e", "--space", SPACE, "--name", "pane", "--on", on2]))));

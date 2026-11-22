@@ -29,7 +29,7 @@ import {
   type CompletionResult,
   type ParsedArgs,
 } from "@cotal-ai/core";
-import { CLI_USER_ACTOR, CommandFailure, agentGrants, checkServer, codeSpan, connectOrThrow, connectSpace, endpointAuth, recordOperationSpace, jsonFlag, plainFlag, presentationOf, writeResult, targetFlags, userAuthStateDir, workspaceSecretStore, type Connection, type ConnectFlags, type OutputWarning, concreteChannelProblem, offlineRecipientNotice, spaceStreamsExpected } from "@cotal-ai/workspace";
+import { CLI_USER_ACTOR, CommandFailure, agentGrants, checkServer, codeSpan, connectOrThrow, connectSpace, endpointAuth, recordOperationSpace, jsonFlag, plainFlag, presentationOf, writeResult, targetFlags, userAuthStateDir, workspaceSecretStore, type Connection, type ConnectFlags, type OutputWarning, concreteChannelProblem, offlineRecipientNotice, payloadRefused, spaceStreamsExpected } from "@cotal-ai/workspace";
 import { completedFlagValue, completingFlagValue } from "../lib/completion.js";
 import { batchedRead, openTransient, streamGoneAt } from "../lib/transient.js";
 import { streamsAbsent } from "../lib/space-streams.js";
@@ -127,6 +127,12 @@ export function sendArguments(args: ParsedArgs): SendInput {
   return { ...destination, source: values.file !== undefined ? (values.file === "-" ? "stdin" : "file") : values.stdin ? "stdin" : "argument", ...(args.positionals[0] === undefined ? {} : { text: args.positionals[0] }) };
 }
 
+const option = (name: string, value: string) => `--${name}${value.startsWith("-") ? "=" : " "}${shellWord(value)}`;
+
+function targetOptions(values: ConnectFlags): string[] {
+  return targetFlags.flatMap(({ name }) => values[name] === undefined ? [] : [option(name, values[name])]);
+}
+
 /** A remedy that replaces the body without changing where or as whom the message is sent. */
 function sendAgain(destination: Pick<SendInput, "mode" | "target">, values: Values, body: string, recipientPlaceholder?: string): string {
   // Body grammar is also checked before the dispatcher validates --server. Never echo an unchecked URL.
@@ -134,11 +140,10 @@ function sendAgain(destination: Pick<SendInput, "mode" | "target">, values: Valu
     const checked = checkServer(values.server, "--server");
     if (!checked.ok) return checked.remedy ?? checked.message.replace(/^✗ /, "");
   }
-  const option = (name: string, value: string) => `--${name}${value.startsWith("-") ? "=" : " "}${shellWord(value)}`;
   const [long, short] = destination.mode === "msg" ? ["channel", "-c"] : destination.mode === "ask" ? ["role", "-r"] : ["to", "-t"];
   const recipient = recipientPlaceholder !== undefined ? `${short} ${recipientPlaceholder}`
     : destination.target.startsWith("-") ? option(long, destination.target) : `${short} ${shellWord(destination.target)}`;
-  const options = targetFlags.flatMap(({ name }) => values[name] === undefined ? [] : [option(name, values[name])]);
+  const options = targetOptions(values);
   options.push(...(values.mention ?? []).map((name) => option("mention", name)));
   if (values["reply-to"] !== undefined) options.push(option("reply-to", values["reply-to"]));
   return `run ${codeSpan(["cotal send", recipient, ...options, body].join(" "))}`;
@@ -267,7 +272,7 @@ function identityLabel(candidate: PeerCandidate, p: Presence | undefined): strin
   return `${candidate.id} (${name}, ${kind}${p.runtime ? `, started ${new Date(p.runtime.startedAt).toLocaleTimeString()}` : ""})`;
 }
 
-async function directPeer(ep: Awaited<ReturnType<typeof openTransient>>["ep"], space: string, name: string, use: "to" | "mention"): Promise<Presence> {
+async function directPeer(ep: Awaited<ReturnType<typeof openTransient>>["ep"], space: string, name: string, use: "to" | "mention", values: ConnectFlags): Promise<Presence> {
   // Presence arrives asynchronously. Never turn a partial name into a fuzzy target.
   for (let attempt = 0; attempt < 20; attempt++) {
     try {
@@ -280,7 +285,8 @@ async function directPeer(ep: Awaited<ReturnType<typeof openTransient>>["ep"], s
     }
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
-  throw new CommandFailure("refused", "TARGET_NOT_FOUND", "no matching participant was found in the authorized presence view", { target: { space, name }, remedy: `list the participants with \`cotal who --all --space ${space}\`, then use one name or full identity` });
+  const roster = ["cotal who --all", ...targetOptions({ ...values, space })].join(" ");
+  throw new CommandFailure("refused", "TARGET_NOT_FOUND", "no matching participant was found in the authorized presence view", { target: { space, name }, remedy: `list the participants with ${codeSpan(roster)}, then use one name or full identity` });
 }
 
 /** How long a role send waits for the presence snapshot before it says nothing about holders. */
@@ -319,12 +325,6 @@ function editDistance(a: string, b: string): number {
     row = next;
   }
   return row[b.length]!;
-}
-
-/** nats.js refuses a frame over the broker's `max_payload` before writing any of it. */
-function payloadRefused(error: unknown): boolean {
-  for (let e: unknown = error; e instanceof Error; e = e.cause) if (e.name === "InvalidArgumentError" && e.message.includes("max_payload")) return true;
-  return false;
 }
 
 /** JetStream answers 10023, insufficient resources, to a write while its file store holds more than
@@ -478,14 +478,14 @@ export async function send(args: ParsedArgs): Promise<void> {
     for (const name of values.mention ?? []) {
       // A mention travels as the peer's name (SPEC §5), the value a receiver compares with its own.
       // An instance id is accepted only when its name resolves back to that same peer.
-      const peer = await directPeer(ep, space, name.replace(/^@/, ""), "mention");
+      const peer = await directPeer(ep, space, name.replace(/^@/, ""), "mention", values);
       let named: Presence | undefined;
       try { named = resolvePeer(ep.getRoster(), peer.card.name); } catch { named = undefined; }
       if (named?.card.id !== peer.card.id)
         throw new CommandFailure("refused", "TARGET_AMBIGUOUS", "a mention carries the agent's name, and this name does not name only that participant", { target: { space, name: peer.card.name }, remedy: `send to that participant with \`cotal send -t ${peer.card.id}\` instead` });
       mentions.push(peer.card.name);
     }
-    const peer = input.mode === "dm" ? await directPeer(ep, space, input.target, "to") : undefined;
+    const peer = input.mode === "dm" ? await directPeer(ep, space, input.target, "to", values) : undefined;
     let messageId: string;
     let sequence: number | null = null;
     try {

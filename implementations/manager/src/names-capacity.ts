@@ -96,7 +96,7 @@ export class NamesCapacity {
   /** Names whose spawn is in flight (reserved synchronously before the provision await) - counted
    *  toward the ceiling (once per name, see {@link Manager.occupancy}) so two concurrent same-name
    *  spawns can't both pass the gate (P4a). Each name carries the OWNER its launch was admitted
-   *  for, so the per-owner ceiling ({@link Manager.ownerSeats}) counts a launch from the moment it
+   *  for, so the per-owner ceiling ({@link ownerSeats}) counts a launch from the moment it
    *  is reserved; a cap read only off `agents` would let a burst of concurrent spawns overshoot it,
    *  because none of them has a seat yet when the next one checks. */
   private readonly reserved = new Map<string, string>();
@@ -145,9 +145,13 @@ export class NamesCapacity {
     const live = new Set<string>();
     for (const p of this.deps.roster()) {
       if (p.status === "offline") continue;
-      const predecessor = this.deps.predecessor(p.card.name);
+      // In user mode the alias is the actor. `set-name` changes only `card.name`, so a renamed agent
+      // still holds its actor, and a spawn under that alias would collide with its principal.
+      const actor = this.deps.userMode() ? parsePrincipalKey(p.card.id)?.actor : undefined;
+      const predecessor = this.deps.predecessor(actor ?? p.card.name);
       if (predecessor !== undefined && predecessor.principal === p.card.id && predecessor.lifecycleUid === p.lifecycleUid) continue;
       live.add(p.card.name);
+      if (actor !== undefined) live.add(actor);
     }
     return live;
   }

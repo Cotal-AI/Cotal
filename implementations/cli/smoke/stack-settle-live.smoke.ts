@@ -36,7 +36,7 @@
  *     the empty streams start, then delivery's first write fails and keeps the broker as a partial
  *     start, whose Next, like `status`'s, names only a larger cap; stopping that broker lets a
  *     replacement cap apply. After replacement, `status` reads the stack as stopped, with its last
- *     operation, and names bare up. Once a space holds
+ *     operation, and names the broker-only restart. Once a space holds
  *     more than its cap, `send` refuses `DEPENDENCY_UNAVAILABLE` naming the store and the cap,
  *     `status` shows the store full and names only the larger-cap route, and `down` and `service stop
  *     stack-manager` refuse the same way before any stop, because the manager's stop needs an
@@ -547,17 +547,21 @@ try {
   {
     const space = "starting";
     const root = prepare(space);
-    const port = await freePort();
-    const child = spawn(process.execPath, ["--import", TSX_IMPORT, CLI, "up", "--server", `nats://127.0.0.1:${port}`, "--json"], { cwd: root, env, stdio: "ignore" });
+    const other = join(projects, "settle");
+    const selected = cli(other, "use", "settle", "--json");
+    check("the caller selects a different stopped space", selected.status === 0, shown(selected));
+    const server = `nats://127.0.0.1:${await freePort()}`;
+    const child = spawn(process.execPath, ["--import", TSX_IMPORT, CLI, "up", "--server", server, "--json"], { cwd: root, env, stdio: "ignore" });
     const pinned = await until(() => pidOf(space, "stack-delivery") !== null, 120_000);
     const delivery = pidOf(space, "stack-delivery");
     if (delivery !== null) process.kill(delivery, "SIGSTOP");
     track(space);
     const manager = () => readStackJournal(root)?.journal.members.find((row) => row.role === "manager")?.state;
-    const starting = cli(root, "ps", "--space", space, "--json");
-    check("ps while an up starts the stack says its manager is starting, TARGET_UNAVAILABLE, exit 2",
-      pinned && child.exitCode === null && manager() === "planned" && starting.status === 2 && starting.env?.error?.code === "TARGET_UNAVAILABLE" &&
-        starting.env.error.message === "the stack's manager is starting, so it has no managed agents to list yet", { ...shown(starting), manager: manager() });
+    const starting = cli(other, "ps", "--space", space, "--server", server, "--plain");
+    const retry = /run `([^`]+)` again once/.exec(starting.stderr)?.[1];
+    check("ps while a different space's manager starts refuses and keeps the target and format in its retry",
+      pinned && child.exitCode === null && manager() === "planned" && starting.status === 2 && starting.stderr.includes("TARGET_UNAVAILABLE") &&
+        starting.stderr.includes("the stack's manager is starting") && retry === `cotal ps --plain --space ${space} --server ${server}`, { ...shown(starting), manager: manager() });
     child.kill("SIGKILL");
     await exited(child);
     const dead = cli(root, "ps", "--space", space, "--json");
@@ -566,6 +570,15 @@ try {
     await until(() => gone(space, "stack-delivery"), 10_000);
     const stopped = cli(root, "down", "--yes", "--json");
     check("down --yes settles that up and stops its broker", stopped.status === 0, shown(stopped));
+    const up = cli(root, "up", "--space", space, "--server", server, "--json");
+    track(space);
+    const retried = retry ? cli(other, ...execWords(retry).slice(1)) : undefined;
+    check("the printed retry reads the intended roster once the manager is ready", up.status === 0 && retried?.status === 0
+      && retried.stdout.includes(`Mesh: ${space}\n`) && retried.stdout.includes("No managed agents."), retried);
+    const down = cli(root, "down", "--yes", "--space", space, "--json");
+    check("the startup retry stack stops", down.status === 0, shown(down));
+    const cleared = cli(other, "use", "--clear", "--json");
+    check("the caller clears its selection", cleared.status === 0, shown(cleared));
   }
 
   // 3. A busy port on the first up (B2-02).
@@ -666,12 +679,21 @@ try {
       const hints = status.env?.result?.hints as string[] | undefined;
       check("status names the stopped stack's occupied address and how to free it", status.status === 0 && selected?.message?.includes(`another process holds that address 127.0.0.1:${movedPort}`) === true && hints?.includes(remedy) === true && !hints.some((hint) => hint.startsWith("start it again with")), shown(status));
       check("history refuses the stopped stack and names the same address and remedy", history.status === 2 && history.env?.error?.code === "TARGET_UNAVAILABLE" && history.env.error.message.includes(`another process holds that address 127.0.0.1:${movedPort}`) && history.env.error.remedy === remedy, shown(history));
+      const retry = cli(second, "up", "--no-manager", "--json");
+      const after = cli(second, "status", "--space", other, "--json");
+      const afterSelected = after.env?.result?.selected as { message?: string } | undefined;
+      const afterHints = after.env?.result?.hints as string[] | undefined;
+      check("status keeps the occupied address diagnosis after a refused restart",
+        retry.status === 2 && retry.env?.error?.code === "CONFLICT" && after.status === 0
+        && afterSelected?.message?.includes(`another process holds that address 127.0.0.1:${movedPort}`) === true
+        && afterHints?.includes(remedy) === true && !afterHints.some((hint) => hint.startsWith("start it again with")),
+        { retry: shown(retry), status: shown(after) });
       check("the read commands leave the independent listener and stopped broker alone", occupant.listening && gone(other, "stack-broker"));
     } finally {
       await new Promise<void>((done) => occupant.close(() => done()));
     }
     const free = cli(second, "history", "--space", other, "general", "--json");
-    check("history goes back to ordinary stopped-stack guidance when the address is clear", free.status === 2 && free.env?.error?.remedy?.startsWith("start it again with `cotal up` in ") === true, shown(free));
+    check("history goes back to ordinary stopped-stack guidance when the address is clear", free.status === 2 && free.env?.error?.remedy?.startsWith("start it again with `cotal up --no-manager` in ") === true, shown(free));
     // Once it ran, it keeps that address, so a broker another space started there must stop first.
     const third = "takenport";
     const taker = prepare(third);
@@ -722,9 +744,9 @@ try {
     const stoppedSelected = stoppedStatus.env?.result?.selected as { message?: string } | undefined;
     const hints = (stoppedStatus.env?.result?.hints ?? []) as string[];
     const launcher = launcherAt(root);
-    check("status then says the stack is stopped after a completed down, not prepared but not started, and names a bare up",
+    check("status says the stack is stopped after a completed down and names a broker-only restart",
       stoppedStatus.status === 0 && Boolean(stoppedSelected?.message?.includes(`"${space}" is stopped; its last operation, \`cotal down\`, completed`))
-        && launcher !== undefined && hints.includes(`start it again with \`${launcher} up\` in ${root}`), { selected: stoppedSelected, hints, launcher });
+        && launcher !== undefined && hints.includes(`start it again with \`${launcher} up --no-manager\` in ${root}`), { selected: stoppedSelected, hints, launcher });
     const notedDown = cli(root, "status", "--json");
     check("with another space selected, the folder note names a bare up after a completed down",
       notedDown.status === 0 && notedDown.env?.target?.space !== space && folderNote(notedDown)?.message === `this folder holds the stopped space "${space}"; restart it with \`cotal up\``, { ...shown(notedDown), target: notedDown.env?.target, note: folderNote(notedDown) });

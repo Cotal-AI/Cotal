@@ -296,10 +296,13 @@ function protectionGap(path: string, stat: EntryStat, options: { ancestor?: bool
   return acl === "" ? undefined : gap("is group-writable and has an extended ACL", "g-w");
 }
 
+type CheckedPath = string | { parentOf: string };
+const checkedPath = (path: CheckedPath): string => typeof path === "string" ? path : dirname(resolve(path.parentOf));
+
 /** One refusal naming every gap, so a single change fixes them all. Paths that share a reason are
  *  listed together, and each kind of fix is one command over its paths. When links are the only
  *  gaps a physical path fixes, the remedy names the `checked` path with its links resolved. */
-function protectionRefusal(what: string, gaps: readonly ProtectionGap[], checked?: string): CommandFailure {
+function protectionRefusal(what: string, gaps: readonly ProtectionGap[], checked?: CheckedPath): CommandFailure {
   const reasons = [...new Set(gaps.map((gap) => gap.reason))].map((reason) => {
     const paths = gaps.filter((gap) => gap.reason === reason).map((gap) => gap.path);
     return paths.length === 1 ? `${paths[0]} ${reason}` : `${paths.slice(0, -1).join(", ")} and ${paths.at(-1)} ${reason.replace(/^is /, "are ")}`;
@@ -315,10 +318,13 @@ function protectionRefusal(what: string, gaps: readonly ProtectionGap[], checked
   return new CommandFailure("refused", "PERMISSION_DENIED", `${what} is not protected against other local writers: ${reasons.join("; ")}`, { remedy: remedies.join("; "), target: gaps.length === 1 ? { path } : { path, paths: gaps.map((gap) => gap.path) } });
 }
 
-function physicalRemedy(gaps: readonly ProtectionGap[], checked: string | undefined): string {
+function physicalRemedy(gaps: readonly ProtectionGap[], checked: CheckedPath | undefined): string {
   let physical: string | undefined;
   if (checked !== undefined && gaps.every((gap) => gap.fix !== "physical" || gap.reason === "is a symbolic link")) {
-    try { physical = realpathSync.native(checked); } catch { physical = undefined; }
+    try {
+      const resolved = realpathSync.native(checkedPath(checked));
+      physical = typeof checked === "string" ? resolved : join(resolved, basename(checked.parentOf));
+    } catch { physical = undefined; }
   }
   return physical === undefined ? "use a physical path owned by you or root, without symlinks" : `use the physical path ${shellPath(physical)}`;
 }
@@ -347,10 +353,10 @@ export function assertProtectedEntry(what: string, path: string, stat: EntryStat
 
 /** Verify an existing physical directory chain before using a protected private output path. The
  *  whole chain is read, and one refusal names every entry in it that is not protected. `what` names
- *  the path for the refusal, such as "the project root". Returns whether an ancestor above `path`
- *  bars other local accounts from reaching it. */
-export function protectedLocalDirectory(path: string, what = "the path", policy?: ProtectedPathPolicy): boolean {
-  const { gaps, privateAncestor } = directoryChainGaps(path, what, policy);
+ *  the path for the refusal, such as "the project root". With `parentOf`, check the directory chain
+ *  but keep the filename in the physical-path remedy. Returns whether an ancestor bars other local accounts. */
+export function protectedLocalDirectory(path: CheckedPath, what = "the path", policy?: ProtectedPathPolicy): boolean {
+  const { gaps, privateAncestor } = directoryChainGaps(checkedPath(path), what, policy);
   if (gaps.length) throw protectionRefusal(what, gaps, path);
   return privateAncestor;
 }

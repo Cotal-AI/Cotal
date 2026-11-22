@@ -1480,6 +1480,11 @@ main() {
 
   _t0=$(date +%s)
 
+  if { [ -e "$BIN_DIR" ] || [ -L "$BIN_DIR" ]; } && [ ! -d "$BIN_DIR" ]; then
+    die "$(shquote "$BIN_DIR") is not a directory." \
+      "Move it aside or set COTAL_BIN_DIR to a different launcher directory."
+  fi
+
   if [ -d "$BIN_DIR/cotal" ]; then
     die "$(shquote "$BIN_DIR/cotal") is a directory." \
       "Move the directory aside or set COTAL_BIN_DIR to a different launcher directory."

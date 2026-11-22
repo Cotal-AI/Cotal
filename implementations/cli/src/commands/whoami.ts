@@ -178,7 +178,7 @@ export async function whoami(args: ParsedArgs): Promise<void> {
       ...(warnings.length ? { partial: result.identity.kind === "unknown"
         ? { message: "whoami could not tell what this identity may do at that address; the warning names why", remedy: registered ? `run \`cotal whoami --space ${shellWord(t.space)}\` without --server to read it at the address it is registered at` : "add the space with `cotal space add <name> --server <url> --root <dir>`, which checks the broker, then run `cotal whoami --space <name>`" }
         : result.modeChecked === false
-          ? { message: "whoami could not tell whether the broker enforces the registered mode; the warning names why", remedy: `check it by adding it again without --force: \`cotal space forget ${shellWord(t.space)}\`, then \`cotal space add ${shellWord(t.space)} --server ${shellWord(server)} --root ${shellWord(t.root)}\`` }
+          ? { message: "whoami could not tell whether the broker enforces the registered mode; the warning names why", remedy: `run \`cotal space show ${shellWord(t.space)}\` to check the broker without removing its registration` }
           : { message: "whoami could not read this identity's grant; the warning names why", remedy: "run `cotal whoami` on the machine that hosts the space's auth service" } } : {}),
     },
     (r) => whoamiView(r),

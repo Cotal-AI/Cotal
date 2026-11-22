@@ -21,6 +21,7 @@ import { countedAssert, emitSentinel, skipSuite } from "@cotal-ai/smoke-kit";
 import { chmodSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, statSync as nodeStat, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { isConnectRefusal, readCredsFile } from "../src/connect.js";
 import { CommandFailure } from "../src/output.js";
 import {
   assertProtectedEntry, localRecordAccess, privateGroupGap, protectedCredentialReference, protectedFileAccessAvailable,
@@ -260,6 +261,26 @@ try {
   symlinkSync(clean, above);
   refused(() => protectedLocalDirectory(join(above, "sub"), "the project root", local), /: .*\/above is a symbolic link$/,
     `use the physical path ${shellPath(realpathSync.native(join(clean, "sub")))}`, "a link above the folder names the folder's physical path");
+
+  const filename = "operator's sample.txt";
+  const physicalFile = join(realpathSync.native(clean), "sub", filename);
+  writeFileSync(physicalFile, "not a credential", { mode: 0o600 });
+  assert.throws(() => readCredsFile(join(above, "sub", filename)), (e) => isConnectRefusal(e) && e.code === "PERMISSION_DENIED"
+    && e.parts?.remedy === `use the physical path ${shellPath(physicalFile)}`, "a linked credential directory refuses and its hint keeps the quoted filename");
+  assert.throws(() => readCredsFile(physicalFile), (e) => isConnectRefusal(e) && e.code === "SCHEMA_INVALID"
+    && e.message.includes("NATS user JWT"), "the suggested file reaches credential validation");
+  const spacedCreds = join(realpathSync.native(clean), "sub", "guest copy.creds");
+  writeFileSync(spacedCreds, [
+    "-----BEGIN NATS USER JWT-----",
+    "not-a-real-jwt",
+    "------END NATS USER JWT------",
+    "-----BEGIN USER NKEY SEED-----",
+    "SUAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    "------END USER NKEY SEED-----",
+    "",
+  ].join("\r\n"), { mode: 0o600 });
+  assert.throws(() => readCredsFile(spacedCreds), (e) => isConnectRefusal(e) && e.code === "SCHEMA_INVALID"
+    && e.parts?.remedy === `save it with LF line endings, for example with \`dos2unix ${shellPath(spacedCreds)}\``, "a CRLF credential in a spaced path gets a quoted dos2unix remedy");
 
   // A credential keeps its owner-only rule: group write refuses before any group is considered.
   const creds = join(dir, "creds");

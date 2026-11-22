@@ -6,6 +6,7 @@ import {
   bindExtensionPeers,
   extensionPackageDir,
   extensionProvides,
+  extensionReinstallAdvice,
   hostPackageDir,
   installedExtensionPackage,
   loadExtensionsManifest,
@@ -178,7 +179,7 @@ async function loadOne(ext: InstalledExtension, advertised: ExtensionRef): Promi
   }
   if (onDisk.version !== ext.version) {
     throw new Error(
-      `extension ${pkg} is ${onDisk.version} on disk but the manifest pinned ${ext.version} (its cached command surface may be stale) - re-add it: \`cotal ext add ${ext.spec}\``,
+      `extension ${pkg} is ${onDisk.version} on disk but the manifest pinned ${ext.version} (its cached command surface may be stale). ${extensionReinstallAdvice(ext)}`,
     );
   }
   // The prefix is machine-global, but global installs, npx, and source worktrees are distinct hosts.

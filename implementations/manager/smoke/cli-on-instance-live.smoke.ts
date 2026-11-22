@@ -685,8 +685,12 @@ try {
       rowOf("models-unlisted")?.supported === false &&
       every.env.warnings.filter((w) => w.code === "MODEL_CATALOG_UNREADABLE").map((w) => w.target.agent).join() === "models-broken",
     { status: every.run.status, stdout: every.run.stdout.slice(-900) });
-  const unlistedHuman = await cotal(["models", "--harness", "models-unlisted", "--space", space], root1);
+  const unlistedHuman = await cotal(["models", "--harness", "models-unlisted", "--refresh", "--space", space, "--server", SERVERS], root1);
   mustHaveRun(unlistedHuman, "`models --harness models-unlisted`");
+  const otherManager = /Not asked: +(\S+)/.exec(strip(unlistedHuman.out))?.[1];
+  check("the other-manager command keeps the selected catalog, refresh request and broker",
+    otherManager !== undefined && strip(unlistedHuman.out).includes(`cotal models --space ${space} --harness models-unlisted --refresh --server ${SERVERS} --on ${otherManager}`),
+    { status: unlistedHuman.status, out: strip(unlistedHuman.out) });
   check("the report gives the reason the install lists no catalog and no failure",
     unlistedHuman.status === 0 && strip(unlistedHuman.out).includes("this fixture install lists no catalog; pass --model") && !/could not be read/.test(strip(unlistedHuman.out)),
     { status: unlistedHuman.status, out: strip(unlistedHuman.out).slice(-400) });

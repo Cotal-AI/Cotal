@@ -3,11 +3,10 @@ import { TurnRelay, goalKey, TURN_ANSWER_RETENTION_MS, type PendingTurn, type On
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { CotalEndpoint, accountFromCreds, DEFAULT_SERVER, DEV_OWNER, injectedSecretStoreIdentity, type DeprovisionResourceAccounting, type IssuedBinding, type IssuedStore, mintLifecycleUid, oneLine, parsePrincipalKey, principalKey, probeConnect, resolveAuthProvider } from "@cotal-ai/core";
+import { CotalEndpoint, accountFromCreds, DEFAULT_SERVER, DEV_OWNER, injectedSecretStoreIdentity, type DeprovisionResourceAccounting, type IssuedBinding, type IssuedStore, mintLifecycleUid, parsePrincipalKey, principalKey, probeConnect, resolveAuthProvider } from "@cotal-ai/core";
 import { retainConnectorSeat } from "@cotal-ai/workspace";
-import { logicalExecutionEntry } from "@cotal-ai/workspace";
 import { agentSecretKeyForFile, DEFAULT_SEAT_CAP, findCotalRoot, loadManagerInstanceIdentity, manifestExtensionNames, materializeFromManifest, runtimeInstallHint, spaceKey, userAuthStateDir, workspaceSecretStore, type ManagerInstanceIdentity, type SeatCap } from "@cotal-ai/workspace";
-import type { ActionContext, EpCapability, PersonaEndpoint, RunAdmission, Connector, ConnectorSetupProvider, ControlReply, DelegatedGrant, EpCaller, LaunchSpec, ManagerLeaseInfo, Presence, RuntimeProvider, RuntimeReference, SecretStore, SecretStoreIdentity, SpaceAuth, StartupOutcome } from "@cotal-ai/core";
+import type { ActionContext, EpCapability, PersonaEndpoint, RunAdmission, Connector, ControlReply, DelegatedGrant, EpCaller, LaunchSpec, Presence, RuntimeProvider, RuntimeReference, SecretStore, SecretStoreIdentity, SpaceAuth, StartupOutcome } from "@cotal-ai/core";
 import {
   createRuntime,
   isCustodialRuntime,
@@ -39,10 +38,11 @@ import { StatusAndModels, statusAndModelsDeps, MANAGER_VERSION } from "./status-
 import { ReadinessWait, readinessWaitDeps } from "./readiness-wait.js";
 import { BrokerTransport, brokerTransportDeps } from "./broker-transport.js";
 import { StartDoors, startDoorsDeps } from "./start-doors.js";
-import { HarnessResolution, harnessResolutionDeps, resolveHarness } from "./harness-resolution.js";
-import { ConnectorInventory, connectorInventoryDeps } from "./connector-inventory.js";
+import { HarnessResolution, harnessResolutionDeps } from "./harness-resolution.js";
+import { ConnectorInventory } from "./connector-inventory.js";
+import type { ManagerParts } from "./manager-parts.js";
 import { Preservation, preservationDeps } from "./preservation.js";
-import { PreservedResume, preservedResumeDeps, bearerEntryArgv } from "./preserved-resume.js";
+import { PreservedResume, preservedResumeDeps } from "./preserved-resume.js";
 export { PASTE_END, PASTE_START, RUNTIME_NO_TERMINAL_DETAIL } from "./terminal-input.js";
 import { CredentialRenewal, credentialRenewalDeps } from "./credential-renewal.js";
 import { SeatLaunch, seatLaunchDeps, type SpawnRun, type StaticSpawnBound } from "./seat-launch.js";
@@ -65,7 +65,7 @@ import { ManagerSessionPlane } from "./session/index.js";
 // endpoint-serve credential subsystem (gate provisioning, registration barrier, mint fence) plus
 // the register/authorize/serve seams, all driven over a scoped one-shot executor connection.
 import { readEndpointGateGeneration, deregisterServiceInstance, type ServiceDeregistration, type EpIssuanceGate, type GoalIndexEntry, turnNoticeSubject, EpEnvelopeError, type EpServeContext, type EpServeGrant, type EpServeHandle, type GoalRef, type Identity } from "@cotal-ai/core";
-import { MANAGER_ENDPOINT, type ManagerConnectorStatus, type ManagerStaticReconciliationStatus, type ManagerStopImpact } from "./manager-service-contract.js";
+import { MANAGER_ENDPOINT, type ManagerStaticReconciliationStatus, type ManagerStopImpact } from "./manager-service-contract.js";
 import type { NatsConnection } from "@nats-io/transport-node";
 import type { KV } from "@nats-io/kv";
 
@@ -97,7 +97,6 @@ const RETIREMENT_CONCURRENCY = 8;
 /** A hard preservation stop should settle quickly. The manager still waits and reports a partial
  * cut rather than pretending a child is gone. Held in ManagerOptions so fake runtimes can shorten it. */
 const PRESERVE_STOP_TIMEOUT_MS = 10_000;
-
 
 export interface ManagerOptions {
   space: string;
@@ -379,6 +378,8 @@ export interface ForkProvenance {
 export interface ManagerResumeAgent {
   space: string;
   name: string;
+  /** The display name `set-name` last gave the seat; a relaunch restores it. Absent: `name`. */
+  displayName?: string;
   role?: string;
   identity: ManagerResumeIdentity;
   launch: {
@@ -491,8 +492,6 @@ interface PersonalTurnParticipant {
   expiresAt: number;
 }
 
-
-
 /** The refusal a control instance with `execution: none` gives every launch, hosting, model and write door. */
 const EXECUTION_NONE_REFUSAL = "execution: none forbids seat launch, workflow hosting, model inspection and caller-driven writes on this control instance; select the participant Manager with an instance-pinned manager-caller view";
 
@@ -528,6 +527,9 @@ async function awaitStartupOutcome(a: ManagedAgent, launchedAt: number, readines
  * mesh traffic — terminal I/O streams over its own attach endpoint instead.
  */
 export class Manager {
+  /** The parts, filled at the end of the constructor once every part exists. Parts read a peer from it at use. */
+  private readonly parts = {} as ManagerParts;
+
   protected readonly space: string;
   protected readonly servers: string | undefined;
   /** The broker ws listener port (loopback) `cotal up` allocated, for the console session
@@ -684,13 +686,6 @@ export class Manager {
   protected readonly onceWatched = new Set<string>();
   /** Process start, for the served `status` uptime. */
   protected readonly startedAtMs = Date.now();
-  /** Connector harness inventory. Available paths stay pinned; unavailable rows are retried when
-   * launch, model lookup or status asks, without stopping unrelated Manager work. */
-  protected connectorStatuses: ManagerConnectorStatus[] = [];
-  protected connectorRequirements = new Map<string, { requires: readonly string[]; needsClaudeWake: boolean }>();
-  private claudeWakeRecheck?: Promise<void>;
-  /** The boot inventory's warnings, printed once start completes, so a refused start prints none. */
-  protected bootNotes: string[] = [];
   /** The complete boot task. stop() joins it after fencing static reconciliation, so a registration
    * already past an earlier shutdown check cannot finish after stop() returns. */
   private startTask?: Promise<void>;
@@ -720,7 +715,7 @@ export class Manager {
    *  Gates the whole spawn path: user mode grants ledger actors + bearer plumbing, never static mints. */
   protected userMode = false;
   protected readonly namesCapacity = new NamesCapacity(namesCapacityDeps(this));
-  private readonly servePlane = new ServePlane(servePlaneDeps(this));
+  private readonly servePlane = new ServePlane(servePlaneDeps(this), this.parts);
 
   protected resolveServeTarget(t: { owner: string; actor: string }): { lifecycleUid: string; mappingRevision: number } | undefined {
           if (this.remoteAuthority) {
@@ -741,16 +736,6 @@ export class Manager {
   }
   protected readonly retirement = new Retirement(retirementDeps(this));
   private readonly lease = new LeaseKeeper(leaseKeeperDeps(this));
-  protected get leaseInfo(): Omit<ManagerLeaseInfo, "since"> | undefined { return this.lease.leaseInfo; }
-  protected set leaseInfo(info: Omit<ManagerLeaseInfo, "since"> | undefined) { this.lease.leaseInfo = info; }
-  protected get leaseRevision(): number | undefined { return this.lease.leaseRevision; }
-  protected set leaseRevision(revision: number | undefined) { this.lease.leaseRevision = revision; }
-  protected get leaseTimer(): ReturnType<typeof setInterval> | undefined { return this.lease.leaseTimer; }
-  protected set leaseTimer(timer: ReturnType<typeof setInterval> | undefined) { this.lease.leaseTimer = timer; }
-  private get leaseRenewTask(): Promise<void> | undefined { return this.lease.leaseRenewTask; }
-  protected acquireInstanceLease(info: Omit<ManagerLeaseInfo, "since">): Promise<number> { return this.lease.acquireInstanceLease(info); }
-  protected renewLease(): Promise<void> { return this.lease.renewLease(); }
-  private releaseOwnManagerLease(): Promise<void> { return this.lease.releaseOwnManagerLease(); }
   /** Set at the top of `stop()`. `renewLease` returns at once once this is set, and its `gone` arm
    *  does not re-acquire: a manager that is stopping never puts its own key back. It also closes the
    *  lifecycle fence ({@link beginLifecycle}), so no spawn can launch a seat the stop never sees. */
@@ -849,7 +834,7 @@ export class Manager {
   private readonly terminalInputComponent = new TerminalInput(terminalInputDeps(this));
 
   /** Status, seat list and model catalog reads. Every dependency reads through at its use. */
-  private readonly statusAndModelsComponent = new StatusAndModels(statusAndModelsDeps(this));
+  private readonly statusAndModelsComponent = new StatusAndModels(statusAndModelsDeps(this), this.parts);
 
   /** The launch readiness race and exit watch. Every dependency reads through at its use. */
   private readonly readinessWaitComponent = new ReadinessWait(readinessWaitDeps(this));
@@ -861,16 +846,17 @@ export class Manager {
   private readonly startDoorsComponent = new StartDoors(startDoorsDeps(this));
 
   /** Connector and harness resolution for a launch. Every dependency reads through at its use. */
-  private readonly harnessResolutionComponent = new HarnessResolution(harnessResolutionDeps(this));
+  private readonly harnessResolutionComponent = new HarnessResolution(harnessResolutionDeps(this), this.parts);
 
-  /** The boot connector inventory. Every dependency reads through at its use. */
-  private readonly connectorInventoryComponent = new ConnectorInventory(connectorInventoryDeps(this));
+  /** The connector inventory. It owns the connector rows and the boot notes. */
+  private readonly connectorInventory: ConnectorInventory;
+
 
   /** Manager preservation and released-seat adoption. Every dependency reads through at its use. */
   private readonly preservationComponent = new Preservation(preservationDeps(this));
 
   /** Preserved-manager resume and its control doors. Every dependency reads through at its use. */
-  private readonly preservedResumeComponent = new PreservedResume(preservedResumeDeps(this));
+  private readonly preservedResumeComponent = new PreservedResume(preservedResumeDeps(this), this.parts);
 
   /** The goal-writer connection and the goal index it reconciles. Every dependency reads through at its use. */
   private readonly goalWriterComponent = new GoalWriter(goalWriterDeps(this));
@@ -879,10 +865,10 @@ export class Manager {
   private readonly credentialRenewal = new CredentialRenewal(credentialRenewalDeps(this));
 
   /** The launch pipeline's leaf steps. Every dependency reads through at its use. */
-  private readonly seatLaunch = new SeatLaunch(seatLaunchDeps(this));
+  private readonly seatLaunch = new SeatLaunch(seatLaunchDeps(this), this.parts);
 
   /** Manager boot: execution admission, connect, registration and lease. Every dependency reads through at its use. */
-  private readonly bootComponent = new ManagerBoot(bootDeps(this));
+  private readonly bootComponent = new ManagerBoot(bootDeps(this), this.parts);
 
   constructor(opts: ManagerOptions) {
     if (opts.expectedConnectorGeneration !== undefined && opts.expectedConnectorGeneration !== MANAGER_VERSION)
@@ -970,6 +956,18 @@ export class Manager {
       // keeps the loopback-only console it always had.
       opts.attachHost ?? "127.0.0.1",
     );
+    this.connectorInventory = new ConnectorInventory(
+      { execution: this.execution, installedExtensions: this.installedExtensions, machineSetupCommand: this.machineSetupCommand, expectedConnectorGeneration: this.expectedConnectorGeneration },
+      this.parts,
+      (resumeOperation) => this.beginLifecycle(resumeOperation),
+    );
+    Object.assign(this.parts, {
+      connectorInventory: this.connectorInventory,
+      harnessResolution: this.harnessResolutionComponent,
+      lease: this.lease,
+      seatLaunch: this.seatLaunch,
+      servePlane: this.servePlane,
+    } satisfies ManagerParts);
   }
 
   get runtimeKind(): string {
@@ -1329,7 +1327,7 @@ export class Manager {
     const starting = this.startTask;
     await this.awaitStaticReconcileDrain();
     await starting?.catch(() => {});
-    if (this.leaseTimer) clearInterval(this.leaseTimer);
+    if (this.lease.leaseTimer) clearInterval(this.lease.leaseTimer);
     if (this.credRenewTimer) clearInterval(this.credRenewTimer);
     if (this.endpointServeRenewalTimer) clearTimeout(this.endpointServeRenewalTimer);
     if (this.daemonRenewalLeaseTimer) clearInterval(this.daemonRenewalLeaseTimer);
@@ -1337,7 +1335,7 @@ export class Manager {
     // A renew already in flight when the timer was cleared above must be awaited, not raced: it can
     // still move the key's revision after we clear the timer, and releasing against a cached
     // revision it has since moved is a CAS the broker correctly refuses, silently, forever.
-    await this.leaseRenewTask?.catch(() => {});
+    await this.lease.leaseRenewTask?.catch(() => {});
     // Join the bounded Manager renewal. Its stop/deadline fence refuses late adoption, but the
     // host still owns any submitted issuance and its outcome can remain unknown after timeout.
     await this.remoteBundleRenewal?.catch(() => {});
@@ -1382,7 +1380,7 @@ export class Manager {
     // A seat that may still be alive keeps this instance's leases and registration (see
     // teardownManagedAgents): they lapse on their TTL instead of being handed to a successor.
     if (seatFailure === undefined) {
-      await step("release manager lease", () => this.releaseOwnManagerLease());
+      await step("release manager lease", () => this.lease.releaseOwnManagerLease());
       // #1634: hand the renewal lease back on a clean stop so a sibling picks it up on its next pass
       // rather than waiting out the bucket TTL. A non-owner holds no revision and this is a no-op.
       await step("release renewal lease", () => this.ep.releaseDaemonRenewalLease());
@@ -1870,63 +1868,6 @@ export class Manager {
   /** {@link SeatLaunch.connectorNames}. */
   protected connectorNames(): string[] { return this.seatLaunch.connectorNames(); }
 
-  /** {@link ConnectorInventory.inspectConnectorsAtBoot}. */
-  protected inspectConnectorsAtBoot(...args: Parameters<ConnectorInventory["inspectConnectorsAtBoot"]>): ReturnType<ConnectorInventory["inspectConnectorsAtBoot"]> { return this.connectorInventoryComponent.inspectConnectorsAtBoot(...args); }
-
-  /** Install and verify the hosted Claude wake channel, or report the cause and remedy. */
-  protected async prepareClaudeWake(): Promise<string | undefined> {
-    try {
-      const connector = await this.resolveConnector("claude");
-      if (!connector.setup) throw new Error("Claude connector has no setup provider");
-      const provider = await materializeFromManifest<ConnectorSetupProvider>(connector.setup, { expectedGeneration: this.expectedConnectorGeneration });
-      if (!provider.connector) throw new Error("Claude connector has no install action");
-      const cotal = bearerEntryArgv();
-      cotal[cotal.length - 1] = logicalExecutionEntry() ?? cotal.at(-1)!;
-      await provider.connector.run({ cotal, machineHost: true });
-    } catch (error) {
-      const detail = oneLine(rejectionText(error).replace(/eyJ[A-Za-z0-9_.-]*/g, "<redacted>").slice(0, 800));
-      return `Claude wake channel setup failed: ${detail}. Correct the cause and run \`${this.machineSetupCommand}\` on this computer.`;
-    }
-  }
-
-  /** Retry unavailable applications without changing resolved available rows. Claude launches
-   *  join the status or launch that started wake setup, before any name or capacity is reserved. */
-  protected refreshUnavailableConnectors(name?: string, setupClaude = false): Promise<void> | undefined {
-    const wasEnabled = this.classSpawnEnabled();
-    let pending: Promise<void> | undefined;
-    for (const row of this.connectorStatuses) {
-      if (row.state !== "unavailable" || (name !== undefined && row.agent !== name)) continue;
-      const requirements = this.connectorRequirements.get(row.agent);
-      if (!requirements) continue;
-      if (requirements.needsClaudeWake && this.claudeWakeRecheck) {
-        pending = this.claudeWakeRecheck;
-        continue;
-      }
-      const { binaries, reason } = resolveHarness(row.agent, requirements.requires);
-      if (reason) {
-        row.binaries = binaries;
-        row.reason = reason;
-      } else if (requirements.needsClaudeWake) {
-        const release = setupClaude ? this.beginLifecycle(true) : undefined;
-        if (!release) continue;
-        pending = this.claudeWakeRecheck = this.prepareClaudeWake().then((failure) => {
-          row.binaries = binaries;
-          if (failure) { row.reason = failure; return; }
-          const alreadyEnabled = this.classSpawnEnabled();
-          row.state = "available";
-          delete row.reason;
-          if (!alreadyEnabled) this.servePlane.enableClassSpawn();
-        }).finally(() => { this.claudeWakeRecheck = undefined; release(); });
-        void pending.catch((error) => console.error(`! manager: Claude recheck failed: ${rejectionText(error)}`));
-      } else {
-        row.binaries = binaries;
-        row.state = "available";
-        delete row.reason;
-      }
-    }
-    if (!wasEnabled && this.classSpawnEnabled()) this.servePlane.enableClassSpawn();
-    return pending;
-  }
   /** {@link SeatLaunch.classSpawnEnabled}. */
   protected classSpawnEnabled(): boolean { return this.seatLaunch.classSpawnEnabled(); }
   protected omitClassCommands(): readonly string[] | undefined { return this.seatLaunch.omitClassCommands(); }
@@ -2015,9 +1956,6 @@ export class Manager {
 
   /** The owner a launch belongs to: {@link NamesCapacity.launchOwner}. */
   protected launchOwner(opts: Pick<StartAgentOpts, "owner">, spawner?: string): string { return this.namesCapacity.launchOwner(opts, spawner); }
-  /** Live seats this manager holds for one owner: {@link NamesCapacity.ownerSeats}. */
-  // @ts-expect-error TS6133: the seat-cap smoke reads this private count through a structural view.
-  private ownerSeats(owner: string): number { return this.namesCapacity.ownerSeats(owner); }
   /** The per-owner ceiling at accept: {@link NamesCapacity.seatCapRefusal}. */
   protected seatCapRefusal(owner: string): EpEnvelopeError | undefined { return this.namesCapacity.seatCapRefusal(owner); }
 

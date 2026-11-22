@@ -35,6 +35,9 @@ cotal attach [<name>] [--on <instance>] [--no-reconnect] [--space <s>]
 
 ### Control credentials
 
+Without an agent name or an interactive terminal, `attach` refuses and suggests a roster command
+and an attach command with a name. Both keep the explicit `--space`, `--server` and `--on` selectors.
+
 On a controller stack started with `--no-manager`, `ps` refuses `TARGET_UNAVAILABLE`: no manager
 runs, so there are no managed agents to list. Bare `cotal up` adds the manager. A `manager` preset
 service started at the root answers instead, and `status` names it on its Manager row. Bare `up`
@@ -43,9 +46,10 @@ then refuses `LIFECYCLE_BLOCKED`, exit 2, naming that service and the
 bare `up` starts the stack's own manager. A stack manager whose process died stays registered, so
 `ps` waits out the manager's answer deadline first, then refuses the same way and names bare
 `cotal up`, which starts it again. While an `up` is still starting the
-stack's manager, `ps` refuses `TARGET_UNAVAILABLE` saying the manager is starting, and its Next is
-to run `cotal ps` again once `up` reports it started. That `up` holds the root's maintenance lock;
-once it has exited, `ps` gives the refusal above.
+stack's manager, `ps` refuses `TARGET_UNAVAILABLE` and shows the retry with the same explicit
+`--space`, `--server` and output flags. Run it once `up` reports that the manager started.
+While starting, `up` holds the root's maintenance lock. If it exits without starting the manager,
+`ps` gives the no-manager refusal above.
 
 On any other static or open space, such as a legacy stack started with `--no-manager`, a manager
 registry that lists no live manager makes `ps` refuse `TARGET_UNAVAILABLE`, exit 2: no manager is
@@ -67,10 +71,15 @@ it through a `--server` other than the broker its registration records, it canno
 stack runs. The Next then says to start the space's manager where its stack runs and names no local
 command.
 
-When a recorded local stack is stopped, `ps` still refuses `TARGET_UNAVAILABLE`,
-exit 2. If the recorded root's default `.cotal/channels.json` would prevent `up` from restarting the
-stack, the refusal names the file and the repair instead of recommending a restart. `ps` does not
-change the file.
+When a recorded local stack is stopped, `ps` refuses with exit 2. If the broker store is not
+writable, `ps` reports `PERMISSION_DENIED` and names the store and how to repair it, including when
+`--server` names the saved broker. A different `--server` does not use the local store to diagnose
+the refusal. Otherwise, `ps` reports `TARGET_UNAVAILABLE`. If the recorded root's default
+`.cotal/channels.json` would prevent `up` from restarting the stack, the refusal names the file
+and the repair instead of recommending a restart. After `down` removes a foreground stack's
+registration, `ps` still checks its channel seed and saved broker address. If another program holds
+the address and blocks the start, the refusal says to stop that listener or start on another port.
+`ps` does not change the store or the file, and it does not stop the listener.
 
 A raw `--creds` file is refused as `UNSUPPORTED` before dialing by `status <agent>`, `ps`, `stop`, `attach`, `input` and `models`, because
 that route mints no endpoint-caller triple. Run the command without `--creds` from the project folder, or pass `--space` against its registry
@@ -186,6 +195,7 @@ On a user-auth mesh `ps` also renders each managed agent's last credential-refre
   advises aligning manager versions. The no-answer label means only that the instance is registered
   and did not answer. It does not say the host is down, because a dead host never deregisters itself and a
   live one can be slow; if it is gone, deregister it.
+  The suggested one-manager read keeps any `--space`, `--server` and `--slots` from the request.
   `--on <instance>` pins the read to one exact instance id instead. A wrong pin fails loud
   rather than falling through. On a static or open mesh a well-formed id that the registry lists for
   no manager is refused `TARGET_NOT_FOUND` at once, naming the managers that run, as `spawn --on`
@@ -584,7 +594,8 @@ In a stopped local space's project folder, `cotal stop <agent> --json` writes on
 
 Failed name resolution refuses before a stop, terminal input or first attach is submitted. The
 receipt retains the inspect error and responding manager. It records local pre-submission proof
-without inventing a native effect outcome.
+without inventing a native effect outcome. When a manager cannot resolve the agent named by `stop`,
+its suggested `ps` command keeps the original space and broker options and any explicit manager selection.
 
 When the manager refuses a stop, terminal input or first attach before anything ran, for example
 because the agent is not running or the caller may not control it, its reply carries

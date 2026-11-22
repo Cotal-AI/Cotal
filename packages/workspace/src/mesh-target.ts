@@ -1,10 +1,11 @@
 import { accessSync, closeSync, constants, existsSync, lstatSync, openSync, readFileSync, readdirSync, readSync, realpathSync, type Stats } from "node:fs";
 import { join } from "node:path";
-import { boundedValue, DEFAULT_SERVER, DEFAULT_SPACE, personaDir, type SpaceAuth } from "@cotal-ai/core";
+import { boundedValue, DEFAULT_SERVER, DEFAULT_SPACE, MANAGER_START_PAYLOAD_FLOOR, personaDir, type SpaceAuth } from "@cotal-ai/core";
 import { isLoopbackLiteral } from "@cotal-ai/core/loopback";
 import { parse as parseYaml } from "yaml";
 import { accountInventory, authDir, cotalDirLink, findCotalRoot, hasUserAuthState, listSpaceAccounts, loadSpaceAuth, movedRootRemedy, rootControlProblem, rootPathProblem, soleSpaceOf, stackJournalPath, stackJournalRoot, userAuthSpacesOnDisk } from "./auth-paths.js";
 import { brokerAddressForDisplay } from "./broker-display.js";
+import { readBrokerPolicy } from "./broker-policy.js";
 import { DELIVERY_PIDFILE, localProcessPath, MANAGER_PIDFILE } from "./local-process.js";
 import { CommandFailure, isCommandFailure, recordOperationSpaceNote, recordOperationWarning, SHOWN_VALUE_MAX } from "./output.js";
 import { assertRecordIdentity, parsePid, probeLiveness, readPidfile, type ProcessIdentityRecord } from "./pid.js";
@@ -13,11 +14,11 @@ import {
   canonicalRoot,
   brokerUrlKey,
   findMesh,
-  getCurrent,
   readCurrentSelection,
   homeCotalDir,
   loadMeshes,
   pruneMesh,
+  type CurrentSelection,
   type MeshEntry,
   type UserAuthInfo,
 } from "./mesh-registry.js";
@@ -108,6 +109,8 @@ export interface ResolveFlags {
    * preflight can name its root. Callers that do not sweep omit this; TAB completion must.
    */
   offline?: readonly string[];
+  /** Broker inventory evidence used only by the unflagged registry fallback. */
+  openInventory?: { served: readonly string[]; unserved: readonly string[] };
 }
 
 /** The distinct, command-agnostic reasons {@link resolveMeshTarget} can't pick a single mesh. Each
@@ -137,10 +140,12 @@ export interface MeshTargetErrorDetails {
   available?: string[];
   /** The same meshes by SPACE NAME, in `available`'s order — set where the ambiguity is a set of
    *  RECORDED meshes a caller can select by name: the running meshes of the bare fallback, or the
-   *  registrations one folder's broker hosts, so a caller that must act on each (rather than print
+   *  registrations at one folder or broker, so a caller that must act on each (rather than print
    *  them) reads each by name and decides for it. Absent for every other ambiguity: several tenants
    *  on one root's disk name no registration to act on, and there the refusal stands. */
   spaces?: string[];
+  /** At least one fallback candidate is unchecked and its broker inventory did not confirm it. */
+  uncheckedCandidates?: boolean;
   /** For `unreadable-auth` with no space: the first folder on the way to the root's trust folder that
    *  this account cannot enter, when a permission error kept that folder from being read. */
   folder?: string;
@@ -176,8 +181,10 @@ export interface MeshTargetErrorDetails {
    *  configured, which a bare `cotal up` there starts again. */
   lastRun?: boolean;
   /** For `not-started` on a prepared space whose controller stack launched a member and was
-   *  stopped: its last recorded operation, and the file store cap it recorded, if any. */
-  stopped?: { operation: string; outcome: string; storeCap?: number };
+   *  stopped: its last operation, whether to restart without a manager, and its store cap. */
+  stopped?: { operation: string; outcome: string; noManager?: true; storeCap?: number };
+  /** A retained local stack needs the user-auth launcher on restart. */
+  restartUserAuth?: true;
   /** For `not-started` on a prepared space: the last whole-stack operation its root's stack journal
    *  records for it with no outcome, which `cotal status` there names the way out of. */
   unsettled?: "up" | "down";
@@ -476,7 +483,15 @@ export function preparedNeverStarted(d: MeshTargetErrorDetails): d is MeshTarget
 const OPERATION: Record<string, string> = { up: codeSpan("cotal up"), down: codeSpan("cotal down"), preserve: `a preserving ${codeSpan("cotal down")}`, resume: "a resume" };
 const OUTCOME: Record<string, string> = { completed: "completed", failed: "failed", refused: "was refused", partial: "applied in part", unknown: "has an unknown outcome", applying: "did not finish", planned: "did not finish" };
 
-/** The last operation and recorded store cap of `space`'s controller stack at `root`, when its
+/** A retained manager row does not permit a manager to start below the broker's recorded limit. */
+function brokerPayloadRequiresNoManager(root: string): boolean {
+  try {
+    const payload = readBrokerPolicy(root)?.maxPayload;
+    return payload !== undefined && payload < MANAGER_START_PAYLOAD_FLOOR;
+  } catch { return false; }
+}
+
+/** The last operation and recorded restart details of `space`'s controller stack at `root`, when its
  *  journal names a member it launched. Undefined for a stack that never launched one, or a journal
  *  this read cannot use; the commands that act on the journal check it fully. With `cleanStopAt`,
  *  require this root's completed `down` at that broker URL. */
@@ -484,13 +499,16 @@ export function stoppedStack(root: string, space: string, cleanStopAt?: string):
   try {
     const path = stackJournalPath(root), file = lstatSync(path);
     if (!file.isFile() || file.size > 64 * 1024) return undefined;
-    const journal = JSON.parse(readFileSync(path, "utf8")) as { space?: unknown; root?: unknown; server?: unknown; members?: unknown; operation?: { kind?: unknown; phase?: unknown }; broker?: { maxFileStore?: unknown } } | null;
-    if (journal?.space !== space || !Array.isArray(journal.members) || !journal.members.some((row) => typeof (row as { instanceId?: unknown } | null)?.instanceId === "string")) return undefined;
+    const journal = JSON.parse(readFileSync(path, "utf8")) as { space?: unknown; root?: unknown; server?: unknown; members?: ({ role?: unknown; state?: unknown; instanceId?: unknown } | null)[]; operation?: { kind?: unknown; phase?: unknown }; broker?: { maxFileStore?: unknown } } | null;
+    const members = journal?.members;
+    if (journal?.space !== space || !Array.isArray(members) || !members.some((row) => typeof row?.instanceId === "string")) return undefined;
     if (cleanStopAt !== undefined && (journal.root !== canonicalRoot(root) || journal.operation?.kind !== "down" || journal.operation.phase !== "completed" || typeof journal.server !== "string" || brokerUrlKey(journal.server) !== brokerUrlKey(cleanStopAt))) return undefined;
     const operation = OPERATION[String(journal.operation?.kind)], outcome = OUTCOME[String(journal.operation?.phase)];
     if (operation === undefined || outcome === undefined) return undefined;
     const cap = journal.broker?.maxFileStore;
-    return { operation, outcome, ...(Number.isSafeInteger(cap) && Number(cap) > 0 ? { storeCap: Number(cap) } : {}) };
+    const noManager = journal.operation?.kind === "down" && journal.operation.phase === "completed" &&
+      (members.some((row) => row?.role === "manager" && row.state === "not-attempted") || brokerPayloadRequiresNoManager(root));
+    return { operation, outcome, ...(noManager ? { noManager: true } : {}), ...(Number.isSafeInteger(cap) && Number(cap) > 0 ? { storeCap: Number(cap) } : {}) };
   } catch { return undefined; }
 }
 
@@ -780,11 +798,10 @@ export function recordsElsewhereError(root: string): MeshTargetError | undefined
 }
 
 /** The space a target failure concerns, which its report heads with `Mesh:` and its envelope carries
- *  as `target.space`: the space it names, or, in a folder holding the records of a stack that runs
- *  from another folder, the space those records name, as `up` and `down` there name it. That one is
- *  kept out of `details.space`, which callers read as a prepared space. */
+ *  as `target.space`. A retained last-run record or a journal from another folder can name the
+ *  space without putting it in `details.space`, which callers read as a prepared space. */
 export function targetErrorSpace(details: MeshTargetErrorDetails): string | undefined {
-  return details.space ?? (details.recordedRoot !== undefined && details.stackRemedy !== undefined && details.home === undefined ? details.stackSpace : undefined);
+  return details.space ?? (details.home === undefined && (details.lastRun || (details.recordedRoot !== undefined && details.stackRemedy !== undefined)) ? details.stackSpace : undefined);
 }
 
 /** What a folder holding the records of a stack that runs from another folder holds, for the reports
@@ -859,10 +876,9 @@ function recordsRunElsewhere(folder: { root: string; registered: readonly string
  * A root with several running spaces, none of them the selection, keeps the selection and says so
  * before the command acts, with the `--space` that targets one of them instead.
  */
-function selectionTargetsHere(cwd: string, current: string, meshes: readonly MeshEntry[], offline: ReadonlySet<string>): boolean {
-  const explicit = readCurrentSelection()?.source === "explicit";
+function selectionTargetsHere(cwd: string, { space: current, source }: CurrentSelection, meshes: readonly MeshEntry[], offline: ReadonlySet<string>): boolean {
   const folder = folderSpaces(cwd, meshes);
-  if (explicit) {
+  if (source === "explicit") {
     if (folder && !folder.registered.includes(current) && folder.prepared !== current) {
       const names = [...folder.registered, ...(folder.prepared ? [folder.prepared] : [])];
       if (names.length) recordOperationSpaceNote(current, `the selected space applies here; this folder's space ${names.map(s => `"${s}"`).join(", ")} is reached with ${names.map(space => `--space ${shellPath(space)}`).join(" or ")} or \`cotal use --clear\``);
@@ -996,11 +1012,14 @@ export function folderSpaceStopped(cwd: string, current: string): { space: strin
 /** The one space REGISTERED at the root of the project folder `cwd` is in, which a command without
  *  `--space` targets there while it runs, or, with none registered, the space of the root's own half
  *  started or half stopped stack ({@link unfinishedStackSpace}). Undefined outside a project and where
- *  the root has none or several. A space prepared here and never started is not one: see
+ *  the root has none or several. A caller inspecting the folder itself can refuse an ambiguous
+ *  registration instead. A space prepared here and never started is not one: see
  *  {@link folderSpaceHeld}. */
-export function folderSpace(cwd: string): string | undefined {
-  const folder = folderSpaces(cwd, loadMeshes());
+export function folderSpace(cwd: string, { refuseAmbiguous = false } = {}): string | undefined {
+  const meshes = loadMeshes();
+  const folder = folderSpaces(cwd, meshes);
   if (!folder) return undefined;
+  if (refuseAmbiguous && folder.registered.length > 1) registrationAt(folder.root, meshes);
   return folder.registered.length === 1 ? folder.registered[0] : folder.registered.length === 0 ? unfinishedStackSpace(folder.root) : undefined;
 }
 
@@ -1026,7 +1045,7 @@ function registrationAt(root: string, meshes: readonly MeshEntry[]): MeshEntry |
   if (rootMatches.length > 1)
     throw new MeshTargetError(
       "ambiguous-target",
-      `this folder's broker hosts ${rootMatches.length} spaces (${rootMatches.map((m) => m.space).join(", ")}) - name one with --space`,
+      `this folder has ${rootMatches.length} registered spaces: ${rootMatches.map((m) => m.space).join(", ")}`,
       { available: rootMatches.map((m) => `${m.space} (${m.root})`), spaces: rootMatches.map((m) => m.space) },
     );
   return rootMatches[0];
@@ -1041,11 +1060,11 @@ function registrationAt(root: string, meshes: readonly MeshEntry[]): MeshEntry |
  * it with.
  */
 export function credsSpace(cwd: string): { space: string; selected: boolean } | undefined {
+  const current = readCurrentSelection();
   const meshes = loadMeshes();
-  const current = getCurrent();
   // Offline by design: a credential goes to the broker its caller paired it with, and this reads no
   // liveness, so a space registered for this folder is taken as running here.
-  if (current && selectionTargetsHere(cwd, current, meshes, new Set())) return { space: current, selected: true };
+  if (current && selectionTargetsHere(cwd, current, meshes, new Set())) return { space: current.space, selected: true };
   const root = findCotalRoot(cwd);
   if (!isGenuineSpace(root)) return undefined;
   assertRootIsSingleTenant(root);
@@ -1059,15 +1078,15 @@ export function credsSpace(cwd: string): { space: string; selected: boolean } | 
  *  probe then. It follows the same precedence and records nothing. */
 export function resolveReadsLiveness(cwd: string, flags: ResolveFlags = {}): boolean {
   if (flags.space || flags.server) return false;
+  const current = readCurrentSelection();
   const meshes = loadMeshes();
-  const current = getCurrent();
   if (current) {
-    if (readCurrentSelection()?.source === "explicit") return false;
+    if (current.source === "explicit") return false;
     // With a selection, liveness answers one question: does a space this folder has registered still
     // run, and so capture the command instead of the selection? A folder that registers the
     // selection itself resolves without it.
     const folder = folderSpaces(cwd, meshes);
-    if (!folder || folder.registered.includes(current) || folder.prepared === current) return false;
+    if (!folder || folder.registered.includes(current.space) || folder.prepared === current.space) return false;
     if (folder.registered.length) return true;
     // This folder registers nothing. A root holding its own stopped stack is still what a read
     // discovers here, so it falls through to the registration check below.
@@ -1112,7 +1131,7 @@ export function resolveMeshTarget(cwd: string, flags: ResolveFlags = {}): MeshTa
           const { spaces } = rootInventory(root);
           if (spaces.length === 1 && spaces[0] === flags.space && !loadMeshes().some(m => m.space === flags.space || canonicalRoot(m.root) === canonicalRoot(root))) {
             if (flags.allowStoppedLocal) return localTarget(root, retained.server, "local-space", flags.readOnly);
-            throw new MeshTargetError("not-started", `the mesh "${flags.space}" in ${root} last ran at ${retained.server}, and no space is registered for it here`, { root, server: retained.server, lastRun: true, stackSpace: flags.space });
+            throw new MeshTargetError("not-started", `the mesh "${flags.space}" in ${root} last ran at ${retained.server}, and no space is registered for it here`, { root, server: retained.server, lastRun: true, stackSpace: flags.space, ...(userAuthSpacesOnDisk(authDir(root)).includes(flags.space) ? { restartUserAuth: true } : {}) });
           }
         }
       }
@@ -1141,7 +1160,7 @@ export function resolveMeshTarget(cwd: string, flags: ResolveFlags = {}): MeshTa
       throw new MeshTargetError(
         "ambiguous-target",
         `${onServer.length} spaces are recorded at ${flags.server} (${onServer.map((e) => e.space).join(", ")}) - name one with --space`,
-        { server: flags.server, available: onServer.map((e) => `${e.space} (${e.root})`) },
+        { server: flags.server, available: onServer.map((e) => `${e.space} (${e.root})`), spaces: onServer.map((e) => e.space) },
       );
     if (onServer[0]) {
       // `--server` names a BROKER, not a tenant. One registry row at that server does not prove the
@@ -1183,9 +1202,10 @@ export function resolveMeshTarget(cwd: string, flags: ResolveFlags = {}): MeshTa
     return local;
   }
 
+  const selection = readCurrentSelection();
   const meshes = loadMeshes();
-  const current = getCurrent();
-  if (current && selectionTargetsHere(cwd, current, meshes, offline)) {
+  if (selection && selectionTargetsHere(cwd, selection, meshes, offline)) {
+    const current = selection.space;
     const cur = meshes.find((m) => m.space === current);
     if (!cur) {
       notStarted(current, cwd);
@@ -1248,7 +1268,8 @@ export function resolveMeshTarget(cwd: string, flags: ResolveFlags = {}): MeshTa
       // or take it over rather than start what the caller asked for. Name that folder instead.
       const elsewhere = named === undefined ? undefined : legacyStackElsewhere(root, named);
       if (flags.allowStoppedLocal && named !== undefined && !elsewhere) return localTarget(root, retained.server, "local-space", flags.readOnly);
-      throw new MeshTargetError("not-started", `the mesh${named === undefined ? "" : ` "${named}"`} in ${root} last ran at ${retained.server}, and no space is registered for it here`, { root, server: retained.server, lastRun: true, ...(named === undefined ? {} : { stackSpace: named }), ...(elsewhere === undefined ? {} : { recordedRoot: elsewhere.recordedRoot, stackRemedy: elsewhere.remedy }) });
+      const restartUserAuth = !retained.open && named !== undefined && !elsewhere && userAuthSpacesOnDisk(authDir(root)).includes(named);
+      throw new MeshTargetError("not-started", `the mesh${named === undefined ? "" : ` "${named}"`} in ${root} last ran at ${retained.server}, and no space is registered for it here`, { root, server: retained.server, lastRun: true, ...(named === undefined ? {} : { stackSpace: named }), ...(elsewhere === undefined ? {} : { recordedRoot: elsewhere.recordedRoot, stackRemedy: elsewhere.remedy }), ...(restartUserAuth ? { restartUserAuth: true } : {}) });
     }
     // No record for this root (migration, or our broker went down and the entry was just pruned).
     // Before guessing DEFAULT_SERVER, refuse if a DIFFERENT mesh is recorded there — otherwise the
@@ -1297,23 +1318,19 @@ export function resolveMeshTarget(cwd: string, flags: ResolveFlags = {}): MeshTa
     return localTarget(root, DEFAULT_SERVER, "local-space", flags.readOnly);
   }
 
-  // The fallback names *running* meshes. A liveness miss used to delete the record and
-  // shrink this set; the record now stays, so a known-dead entry must not count here
-  // or the error ("no mesh running" / "multiple meshes running") would name a mesh
-  // that is not running. Named `--space` above is unfiltered: preflight still has to
-  // resolve a dead record to name its root. Zero running includes "recorded but all
-  // offline": that is still `no-meshes`. The named-space / preflight path is what
-  // reports "recorded at <root> but not running".
-  const running = meshes.filter((m) => !offline.has(m.space));
-  if (running.length === 0) throw new MeshTargetError("no-meshes", "no mesh running");
-  if (running.length === 1) return targetFromEntry(running[0], running[0].server, "registry", flags.readOnly);
+  // Broker liveness and inventory narrow the fallback without changing the registry. Named targets
+  // stay available to preflight, which can diagnose the requested record on its own.
+  const candidates = meshes.filter((m) => !offline.has(m.space) && !flags.openInventory?.unserved.includes(m.space));
+  if (candidates.length === 0) throw new MeshTargetError("no-meshes", "no mesh running");
+  if (candidates.length === 1) return targetFromEntry(candidates[0], candidates[0].server, "registry", flags.readOnly);
 
-  const names = running.map((m) => `${m.space} (${m.root})`);
-  // `spaces` rides alongside the display strings: this is the one ambiguity whose members are each a
-  // running mesh a caller can select by name, so a caller that must visit every one of them (`update`,
-  // which replaces the single binary they all share) gets the names without parsing `available`.
-  throw new MeshTargetError("ambiguous-target", `multiple meshes running: ${names.join(", ")}`, {
+  const unchecked = (m: MeshEntry) => m.unchecked && !flags.openInventory?.served.includes(m.space);
+  const names = candidates.map((m) => `${m.space} (${m.root})${unchecked(m) ? " (not verified running)" : ""}`);
+  const uncheckedCandidates = candidates.some(unchecked);
+  const message = uncheckedCandidates ? "multiple spaces recorded; some are not verified running" : "multiple meshes running";
+  throw new MeshTargetError("ambiguous-target", `${message}: ${names.join(", ")}`, {
     available: names,
-    spaces: running.map((m) => m.space),
+    spaces: candidates.map((m) => m.space),
+    ...(uncheckedCandidates ? { uncheckedCandidates } : {}),
   });
 }

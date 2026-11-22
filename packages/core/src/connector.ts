@@ -21,6 +21,10 @@ export interface LaunchOpts {
   validateOnly?: boolean;
   space: string;
   name: string;
+  /** The display name the seat starts with, when `set-name` (SPEC 13.22) gave it one other than
+   *  `name`. The connector forwards it (`COTAL_DISPLAY_NAME`) and keeps `name` as the launch name,
+   *  which in user mode is also the actor. */
+  displayName?: string;
   role?: string;
   /** Stable agent id (the nkey public key). When set, the launched session adopts it
    *  as its `card.id` instead of generating a random one — so the id the launcher

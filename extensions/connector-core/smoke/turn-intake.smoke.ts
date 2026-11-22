@@ -876,8 +876,8 @@ await mgr.start();
 if ((mgr as unknown as { credRenewTimer?: ReturnType<typeof setInterval> }).credRenewTimer) {
   clearInterval((mgr as unknown as { credRenewTimer?: ReturnType<typeof setInterval> }).credRenewTimer);
 }
-if ((mgr as unknown as { leaseTimer?: ReturnType<typeof setInterval> }).leaseTimer) {
-  clearInterval((mgr as unknown as { leaseTimer?: ReturnType<typeof setInterval> }).leaseTimer);
+if ((mgr as unknown as { lease: { leaseTimer?: ReturnType<typeof setInterval> } }).lease.leaseTimer) {
+  clearInterval((mgr as unknown as { lease: { leaseTimer?: ReturnType<typeof setInterval> } }).lease.leaseTimer);
 }
 
 let capturedLaunch: unknown;
@@ -951,8 +951,8 @@ const localMgr = new Manager({
 stubPostLeaseBoot(localMgr);
 await localMgr.start();
 (localMgr as unknown as { staticLifecycle: { staticReconcileStopping: boolean } }).staticLifecycle.staticReconcileStopping = false;
-if ((localMgr as unknown as { leaseTimer?: ReturnType<typeof setInterval> }).leaseTimer) {
-  clearInterval((localMgr as unknown as { leaseTimer?: ReturnType<typeof setInterval> }).leaseTimer);
+if ((localMgr as unknown as { lease: { leaseTimer?: ReturnType<typeof setInterval> } }).lease.leaseTimer) {
+  clearInterval((localMgr as unknown as { lease: { leaseTimer?: ReturnType<typeof setInterval> } }).lease.leaseTimer);
 }
 
 const localSpecs: Array<{ name: string; env?: Record<string, string | undefined> }> = [];

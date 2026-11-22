@@ -37,7 +37,7 @@ type Envelope = {
 function run(args: string[], extraEnv: Record<string, string> = {}) {
   const r = spawnSync(process.execPath, [BIN, ...args], {
     cwd: home,
-    env: { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: xdg, COTAL_HOME: join(home, ".cotal-home"), COTAL_SKIP_CONNECTOR_SEED: "1", ...extraEnv },
+    env: { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: xdg, COTAL_HOME: join(home, ".cotal-home"), COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1", ...extraEnv },
     encoding: "utf8",
     timeout: 60_000,
   });
@@ -83,6 +83,13 @@ let specBody = "";
   check("the CLI hub read to a pipe keeps its Markdown heading and links", piped.status === 0 && piped.stdout.includes("\n# CLI reference\n") && piped.stdout.includes("[CLI usage](cli-usage.mdx#structured-output)"), shown(piped));
   const usage = run(["docs", "cli-usage"]);
   check("a reference page read to a pipe keeps its Markdown table", usage.status === 0 && usage.stdout.includes("\n# CLI usage\n") && /^\|---\|---\|$/m.test(usage.stdout) && /^\| `schemaVersion` \| `1` \|$/m.test(usage.stdout), shown(usage));
+  const help = run(["help"]);
+  const mcpHelp = run(["mcp", "--help"]);
+  check("the CLI command table links the MCP entry that help lists",
+    usage.status === 0 && /^\| Agents \| \[`mcp`\]\(cli-messaging\.mdx#mcp\) \|/m.test(usage.stdout) &&
+    help.status === 0 && /^\s+mcp +serve Cotal tools over stdio/m.test(help.stdout) &&
+    mcpHelp.status === 0 && mcpHelp.stdout.includes("cotal mcp [--space <name>]"),
+    { usage: shown(usage), help: shown(help), mcpHelp: shown(mcpHelp) });
   const spec = run(["docs", "spec", "--json"]);
   specBody = (spec.envelope?.result as { body?: string } | undefined)?.body ?? "";
   check("spec, lang and schema are pages too", spec.status === 0 && specBody.length > 0 && run(["docs", "lang", "--json"]).status === 0 && run(["docs", "schema", "--json"]).status === 0, shown(spec));
@@ -113,6 +120,40 @@ let specBody = "";
   const searchFields = ["result.hits", "kind", "docs-search", "version", "query", "slug", "page", "heading", "text"];
   check("the bundled docs reference describes the JSON search fields and successful empty hit array",
     json.status === 0 && searchFields.every((field) => searchDocs.includes(`\`${field}\``)) && /`result\.hits` is `\[\]` when nothing matches/.test(searchDocs), searchDocs.slice(-600));
+}
+
+{
+  const docs = run(["docs", "cli-endpoints", "--json"]);
+  const body = docs.envelope?.result?.body;
+  const authoring = typeof body === "string" ? body.split(/^## Endpoint authoring$/m)[1]?.split(/^## /m)[0] ?? "" : "";
+  const fields = ["result.kind", "local-endpoint-contract", "result.closureDigest", "result.commands", "inputDigest", "outputDigest",
+    "handlerExecuted", "brokerContacted", "authorityChecked", "servingChecked"];
+  const missing = fields.filter((field) => !authoring.includes(`\`${field}\``));
+  check("the bundled endpoint authoring reference names the JSON digests and offline verification fields",
+    docs.status === 0 && docs.envelope?.result?.source === "bundled" && missing.length === 0,
+    { ...shown(docs), missing });
+
+  const whoami = typeof body === "string" ? body.split(/^## whoami$/m)[1]?.split(/^## /m)[0] ?? "" : "";
+  const example = /`(nats:\/\/127\.0\.0\.1:\d+)`/.exec(whoami)?.[1];
+  const bare = run(["whoami", "--server", "127.0.0.1:48112", "--json"]);
+  const qualified = example ? run(["whoami", "--server", example, "--json"]) : undefined;
+  check("the whoami reference requires a scheme and its example reaches the identity report",
+    docs.status === 0 && whoami.includes("Bare host addresses are refused") &&
+    bare.status === 1 && bare.envelope?.error?.code === "USAGE_INVALID" &&
+    qualified?.status === 4 && qualified.envelope?.warnings.some((warning) => warning.code === "BROKER_NOT_PROBED") === true,
+    { example, bare: shown(bare), qualified: qualified && shown(qualified) });
+}
+
+{
+  const docs = run(["docs", "cli-maintenance", "--json"]);
+  const body = docs.envelope?.result?.body;
+  const start = typeof body === "string" ? /^cotal manager start \[.*$/m.exec(body)?.[0] ?? "" : "";
+  const manager = run(["manager", "start", "--help"]);
+  const service = run(["service", "start", "manager", "--help"]);
+  check("the bundled manager start usage shows the launch flags together, as supported by both command forms",
+    docs.status === 0 && start.includes("[--launch <file> --launch-sha256 <digest>]") &&
+    [manager, service].every((help) => help.status === 0 && /^\s+--launch\s/m.test(help.stdout) && /^\s+--launch-sha256\s/m.test(help.stdout)),
+    { start, manager: shown(manager), service: shown(service) });
 }
 
 {
@@ -190,6 +231,35 @@ for (const [args, why] of [
   check(`${args.join(" ")} is one USAGE_INVALID envelope, exit 1`, r.status === 1 && r.envelope?.error?.code === "USAGE_INVALID" && why.test(r.envelope.error.message), shown(r));
 }
 
+{
+  const config = join(home, "damaged-inventory");
+  const extensions = join(config, "cotal", "extensions");
+  const manifest = join(extensions, "extensions.json");
+  const env = { XDG_CONFIG_HOME: config };
+  mkdirSync(extensions, { recursive: true });
+  writeFileSync(manifest, "{}\n");
+  const json = run(["docs", "cli-usage", "--json"], env);
+  check("docs returns one complete bundled page with a damaged extension inventory",
+    json.status === 0 && json.stderr === "" && json.envelope?.command === "docs" &&
+    json.envelope.outcome === "ok" && json.envelope.completeness === "complete" &&
+    json.envelope.result?.kind === "docs-page" && json.envelope.result.slug === "cli-usage" &&
+    json.envelope.result.source === "bundled", shown(json));
+  const plain = run(["docs", "cli-usage", "--plain"], env);
+  check("plain docs opens with a damaged extension inventory",
+    plain.status === 0 && plain.stderr === "" && plain.stdout.startsWith(`bundled v${VERSION}\n\n# CLI usage\n`), shown(plain));
+  const list = run(["ext", "list", "--json"], env);
+  check("the extension listing still reports the damage, and docs leaves the manifest unchanged",
+    list.status === 1 && list.stdout === "" && list.stderr.includes('no "extensions" array') &&
+    readFileSync(manifest, "utf8") === "{}\n", shown(list));
+
+  const journal = join(config, "cotal", ".extensions-promotion.json");
+  writeFileSync(journal, "{}\n", { mode: 0o600 });
+  const index = run(["--no-color", "-j", "--", "docs"], env);
+  check("docs with leading flags opens the index without touching the extension promotion journal",
+    index.status === 0 && index.stderr === "" && index.envelope?.result?.kind === "docs-index" &&
+    readFileSync(journal, "utf8") === "{}\n", shown(index));
+}
+
 // ── docs: the bundle loads only when docs runs ───────────────────────────────────────────────────
 {
   const built = readFileSync(join(import.meta.dirname, "..", "dist", "docs.js"), "utf8");
@@ -235,6 +305,16 @@ for (const [args, why] of [
   const plain = run(["ext", "--plain"]);
   check("the plain listing is a table with the source of each", plain.status === 0 && /^\s*Package\s+Version\s+Source\s+Provides$/m.test(plain.stdout) && /@acme\/fake-runtime\s+1\.2\.3\s+added\s+runtime:fakert/.test(plain.stdout) && /@cotal-ai\/connector-pi\s+\S+\s+included\s+connector:pi/.test(plain.stdout) && !/\x1b\[/.test(plain.stdout), shown(plain));
 
+  const olderPackage = JSON.stringify({ name: added.pkg, version: "1.2.2", type: "module", main: "./index.js" });
+  const addedMetadata = join(addedDir, "package.json");
+  writeFileSync(addedMetadata, olderPackage);
+  const skewed = run(["ext", "list", "--json"]);
+  const [skew] = skewed.envelope?.warnings ?? [];
+  check("a different installed version keeps the recorded pin and gives a reinstall step without importing or repairing",
+    skewed.status === 4 && skewed.envelope?.completeness === "partial" && JSON.stringify(skewed.envelope.result?.items) === JSON.stringify(items) &&
+    skew?.target?.pkg === added.pkg && skew.message.includes("1.2.2 on disk") && skew.message.includes("manifest pins 1.2.3") &&
+    skew.message.includes("`cotal ext add '@acme/fake-runtime@1.2.3'`") && !existsSync(imported) && readFileSync(addedMetadata, "utf8") === olderPackage &&
+    readFileSync(manifestPath, "utf8") === manifest, shown(skewed));
   renameSync(addedDir, `${addedDir}.saved`);
   const seededMetadata = join(seededDir, "package.json");
   for (const content of ["{", "{}"]) {

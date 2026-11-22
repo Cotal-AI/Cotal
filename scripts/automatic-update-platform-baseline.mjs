@@ -55,7 +55,9 @@ export function candidateNextOptions(options, disposable = hosted) {
   const hostedConsent = mode === '0.164.10' && options.state === 'agent' && options.layout === 'npm'
     && options['daemon-hosted-manager'] === 'true' && options['stop-agents'] === 'true'
     && daemonHostedManagerOptions(options, {hosted: disposable});
-  assert(disposable && options.candidate && ['npm', 'installer'].includes(options.layout) && (options.state === 'daemon' || hostedConsent) && options.method === 'self', 'candidate next hop requires hosted manual native service and both closures');
+  const recovery = mode === 'candidate' && process.platform === 'linux' && options.layout === 'npm'
+    && options.state === 'recovery' && options['foreign-config-snapshot'] === 'true';
+  assert(options.candidate && ['npm', 'installer'].includes(options.layout) && (recovery || disposable && (options.state === 'daemon' || hostedConsent)) && options.method === 'self', 'candidate next hop requires both closures and a supported recovery or hosted native service coordinate');
   if (mode === 'candidate' && followOnAction !== 'installer') assert.equal(options.layout, 'npm', 'fresh candidate next cells use npm layout');
   if (mode === '0.164.10') assert.equal(options.source, '0.164.10');
   return mode === 'candidate' ? 'candidate' : 'source-0.164.10';
@@ -1430,7 +1432,7 @@ export async function matrixCell(options) {
       check('independent manual service final state', report.manualServiceFinalState.passed, report.manualServiceFinalState);
       if (!report.manualServiceFinalState.passed) report.result = 'failed';
       if (nextHopMode) report.nextHop.passed = report.nextHop.passed === true && report.manualServiceFinalState.passed && report.assertions.every(row => row.passed);
-    } else if (nextHopMode && (options['disabled-daemon-before-update'] === 'true' || Boolean(desktopRuntime))) {
+    } else if (nextHopMode && (state === 'recovery' || options['disabled-daemon-before-update'] === 'true' || Boolean(desktopRuntime))) {
       report.nextHop.passed = report.nextHop.passed === true && report.assertions.every(row => row.passed);
     }
     if (compositionCleanup && !daemonHostedManager) {

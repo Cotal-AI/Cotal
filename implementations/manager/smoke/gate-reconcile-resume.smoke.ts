@@ -31,6 +31,7 @@ import {
   serveIssuanceGateKv,
 } from "@cotal-ai/core";
 import { GateReconcileRefused, reconcileEndpointGate } from "../src/reconcile-gate.js";
+import { createSuite } from "@cotal-ai/smoke-kit";
 
 const casLoss = (message = "wrong last sequence") => Object.assign(new Error(message), { code: 10071 });
 const enc = new TextEncoder();
@@ -150,12 +151,7 @@ function memKv(): KV & {
   return self as unknown as ReturnType<typeof memKv>;
 }
 
-let passed = 0;
-let failed = 0;
-const check = (name: string, condition: unknown, extra?: unknown) => {
-  if (condition) { passed++; console.log(`  ✓ ${name}`); }
-  else { failed++; console.log(`  ✗ FAIL: ${name}`, extra ?? ""); }
-};
+const { check, finish, passed, failed } = createSuite();
 
 const SPACE = "resume1064";
 const ENDPOINT = "manager";
@@ -335,6 +331,6 @@ console.log("C. cursor binding and executor authority are exact");
 }
 
 const EXPECTED = 23;
-check(`every cell ran (${EXPECTED} before the sentinel)`, passed + failed === EXPECTED, { passed, failed });
-console.log(`\nGATE-RECONCILE RESUME SMOKE ${failed === 0 ? "OK" : "FAILED"} (${passed} passed, ${failed} failed)`);
-if (failed) process.exitCode = 1;
+check(`every cell ran (${EXPECTED} before the sentinel)`, passed() + failed() === EXPECTED, { passed: passed(), failed: failed() });
+console.log(`\nGATE-RECONCILE RESUME SMOKE ${failed() === 0 ? "OK" : "FAILED"} (${passed()} passed, ${failed()} failed)`);
+finish();

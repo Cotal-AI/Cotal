@@ -1,6 +1,8 @@
+import { AsyncLocalStorage } from "node:async_hooks";
+import { randomUUID } from "node:crypto";
 import { existsSync, lstatSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { mkSecretDir, writeSecretFile } from "@cotal-ai/core";
+import { mkSecretDir, writeSecretFile, writeSecretFileAtomic } from "@cotal-ai/core";
 import { findCotalRoot, movedRootRemedy, spaceSegment, stackJournalRoot, userAuthStateDir } from "./auth-paths.js";
 import { homeCotalDir } from "./cotal-home.js";
 import { prepareCotalHomeForWrite } from "./protected-records.js";
@@ -697,21 +699,44 @@ export interface CurrentSelection {
   readonly source: "explicit" | "adopted";
 }
 
+const installCustodyRead = new AsyncLocalStorage<true>();
+
+/** Read install-wide Manager custody without making a damaged space selection a prerequisite. */
+export function withInstallCustodyRead<T>(read: () => T, installWide = true): T {
+  return installWide ? installCustodyRead.run(true, read) : read();
+}
+
 /** Read the bare-name pointer and its optional matching adoption marker. */
 export function readCurrentSelection(): CurrentSelection | undefined {
+  try { return readSavedSelection(); }
+  catch (error) {
+    if (installCustodyRead.getStore() && isMeshRegistryError(error)) return undefined;
+    throw error;
+  }
+}
+
+function readSavedSelection(): CurrentSelection | undefined {
+  const file = currentFile();
+  const remedy = "clear the selection with `cotal use --clear`, or select a known space again";
   let space: string;
   try {
-    space = readFileSync(currentFile(), "utf8").trim();
-  } catch (e) {
-    if ((e as NodeJS.ErrnoException).code === "ENOENT") return undefined;
-    throw new MeshRegistryError(currentFile(), `${currentFile()} could not be read: ${(e as Error).message}`, { cause: e });
+    space = readFileSync(file, "utf8").trim();
+  } catch (cause) {
+    if ((cause as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    const summary = `${file} could not be read: ${(cause as Error).message}`;
+    throw new MeshRegistryError(file, summary, { cause, summary, remedy });
   }
-  if (!space) throw new MeshRegistryError(currentFile(), `${currentFile()} is empty - select a mesh with \`cotal use <space>\` or remove the file`);
+  if (!space) {
+    const summary = `${file} is empty - select a mesh with \`cotal use <space>\` or remove the file`;
+    throw new MeshRegistryError(file, summary, { summary, remedy });
+  }
+  const marker = `${file}.adopted`;
   try {
-    return { space, source: readFileSync(`${currentFile()}.adopted`, "utf8").trim() === space ? "adopted" : "explicit" };
+    return { space, source: readFileSync(marker, "utf8").trim() === space ? "adopted" : "explicit" };
   } catch (cause) {
     if ((cause as NodeJS.ErrnoException).code === "ENOENT") return { space, source: "explicit" };
-    throw new MeshRegistryError(`${currentFile()}.adopted`, `the selection source could not be read: ${(cause as Error).message}`, { cause });
+    const summary = `${marker} could not be read: ${(cause as Error).message}`;
+    throw new MeshRegistryError(marker, summary, { cause, summary, remedy });
   }
 }
 
@@ -728,12 +753,30 @@ export function setAdoptedCurrent(space: string): void {
 function writeCurrentSelection(space: string, source: CurrentSelection["source"]): void {
   if (!space.trim()) throw new Error("a selection needs a space name");
   prepareCotalHomeForWrite();
-  rmSync(`${currentFile()}.adopted`, { force: true });
-  writeSecretFile(currentFile(), space);
-  if (source === "adopted") writeSecretFile(`${currentFile()}.adopted`, space);
+  const file = currentFile();
+  removeSelectionRecord(`${file}.adopted`);
+  const prior = lstatSync(file, { throwIfNoEntry: false });
+  if (prior?.isDirectory()) removeSelectionRecord(file);
+  try { writeSecretFile(file, space); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EACCES" || source !== "explicit" || !prior?.isFile() ||
+        (process.getuid !== undefined && prior.uid !== process.getuid())) throw error;
+    writeSecretFileAtomic(file, space);
+  }
+  if (source === "adopted") writeSecretFile(`${file}.adopted`, space);
 }
 
 export function clearCurrent(): void {
-  rmSync(`${currentFile()}.adopted`, { force: true });
-  rmSync(currentFile(), { force: true });
+  removeSelectionRecord(`${currentFile()}.adopted`);
+  removeSelectionRecord(currentFile());
+}
+
+/** A directory at a record path belongs aside, not in a recursive deletion. */
+function removeSelectionRecord(file: string): void {
+  try { rmSync(file, { force: true }); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ERR_FS_EISDIR" || !lstatSync(file, { throwIfNoEntry: false })?.isDirectory()) throw error;
+    prepareCotalHomeForWrite();
+    renameSync(file, `${file}.corrupt.${randomUUID()}`);
+  }
 }

@@ -71,6 +71,7 @@ The component check distinguishes absent processes, components that are not serv
 An open mesh needs no delivery daemon, so its absence does not fail the check.
 An observed store write failure or full store makes the broker `not-serving` even when its listener answers.
 On a stopped local stack, `status` and `ps` name an unwritable store and its permission repair before recommending a restart.
+If the manager exits but a legacy open stack's broker still runs, `status` checks `.cotal/channels.json` before suggesting a stop and restart. Fix or remove an invalid seed file while the broker is still running.
 Follow the report's next action if the stack is incomplete.
 The report also warns if the recorded broker store is missing or its directory was replaced.
 `status --space <name>` checks that local stack's root even from another folder. Coincident folder
@@ -79,6 +80,7 @@ restart can lose that retained history.
 `down`, its dry run and the next `up` repeat the warning. A stack journal that cannot be read is
 reported separately, with the permission repair when available. It does not select legacy process
 records or infer that the broker stopped. The owned-service observations remain visible.
+If the selected local space has no running registration and its journal cannot be read, `ps` reports the journal refusal and its recovery step. The component check reports `target refused` and exits `3` instead of treating the stack as absent.
 [Recover a mesh](recover-a-mesh.mdx) explains the project logs and recovery states.
 [Launch agents](launch-agents.mdx#check-connector-availability) explains how the manager checks installed connectors.
 
@@ -121,7 +123,7 @@ A refused stop leaves the stack running. Use `cotal down --with-agents` when you
 
 ## Watching [#watching]
 
-`cotal console` opens the terminal view. It prints a line stream when piped.
+`cotal console` opens the terminal view by default. It prints a passive line stream when piped or run with `--no-input` or `--plain`.
 The separately configured web service provides the browser dashboard.
 Both observe the mesh without starting dependencies.
 Follow [Watch a mesh](watch-a-mesh.mdx) for either view.

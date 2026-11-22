@@ -168,6 +168,12 @@ that the roster reader cannot accept, before changing endpoint state or publishi
 `TypeError` names the field without printing the rejected value. `setCondition(null)`
 still clears the condition. The publisher also checks the final wire row.
 
+`CotalEndpoint.setCardName(name)` changes the card's display name and republishes presence at
+once. It throws on a name the shared name rule refuses, before anything changes, and the
+current name changes nothing. The card's `id` and the principal stay. The `agent` endpoint's
+`set-name` command calls it. An endpoint that watches presence emits a changed name as a
+`presence` `update` event and a `roster` event, as it does a changed status.
+
 `assertPresenceRow(value, key)` uses the same shape rule as `isPresenceRow(value, key)`,
 but throws instead of returning false. It does not coerce values or impose a new enum on
 forward-compatible attention/condition strings. This is wire-shape validation, not an

@@ -149,6 +149,26 @@ async function scenario(mode: "open" | "auth"): Promise<void> {
 
     must("full backup", run("backup", "create", artifact));
     must("registry backup", run("backup", "create", registryArtifact, "--only", "registry"));
+    if (mode === "open") {
+      const cold = mkdtempSync(join(tmpdir(), "cotal-backup-restore-cold-"));
+      try {
+        const project = join(cold, "project"), config = join(cold, "config");
+        mkdirSync(project);
+        const cleanEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.toUpperCase().startsWith("COTAL_")));
+        const refused = spawnSync(tsx, [cliPath, "backup", "restore", registryArtifact, "--plain"], {
+          cwd: project, encoding: "utf8", timeout: 30_000,
+          env: { ...cleanEnv, COTAL_HOME: join(cold, "home"), XDG_CONFIG_HOME: config, COTAL_ALLOW_CHECKOUT_SEED: "1", npm_config_offline: "true" },
+        });
+        const output = `${refused.stdout}\n${refused.stderr}`;
+        assert.equal(refused.status, 2, output);
+        assert.match(output, /restore requires stable ready maintenance state, found none/);
+        assert.match(output, /LIFECYCLE_BLOCKED/);
+        assert.deepEqual(readdirSync(project), [], "a refused restore leaves the project empty");
+        assert.equal(existsSync(join(config, "cotal")), false, "a refused restore leaves connector configuration untouched");
+      } finally {
+        rmSync(cold, { recursive: true, force: true });
+      }
+    }
     assert.ok(existsSync(join(artifact, "manifest.json")));
     const fullManifest = JSON.parse(readFileSync(join(artifact, "manifest.json"), "utf8")) as BackupManifest;
     assert.equal(fullManifest.format, "cotal-space-backup/v3");
@@ -436,6 +456,23 @@ async function scenario(mode: "open" | "auth"): Promise<void> {
       // The previous store holds the only copy of what the restore left out, so the preview warns and
       // both cleanup commands refuse to delete it without --discard-history.
       const previous = active.restore.previousSource!.identity.path;
+      const journalPath = join(root, ".cotal", "maintenance", "v1", "journal.json");
+      const journalBefore = readFileSync(journalPath, "utf8");
+      const otherStore = join(root, ".cotal", "not-the-fallback");
+      mkdirSync(otherStore, { mode: 0o700 });
+      writeFileSync(join(otherStore, "marker"), "kept");
+      const wrongStore = run("clean", "restore-fallback", "--attempt", active.restore.attemptId, "--force", "--discard-history", "--store-dir", "./.cotal/not-the-fallback");
+      assert.ok(wrongStore.status === 1 && wrongStore.stderr.includes("does not take --store-dir") && wrongStore.stderr.includes("Remove --store-dir and its value"), `${mode} cleanup refuses the store path\n${wrongStore.stdout}${wrongStore.stderr}`);
+      assert.ok(lstatSync(join(previous, "jetstream")).isDirectory());
+      assert.equal(readFileSync(journalPath, "utf8"), journalBefore);
+      assert.equal(readFileSync(join(otherStore, "marker"), "utf8"), "kept");
+      const { run: runElsewhere } = sandboxRun(join(home, "other-project"), home);
+      const wrongFolder = runElsewhere("clean", "restore-fallback", "--attempt", active.restore.attemptId, "--force");
+      assert.equal(wrongFolder.status, 2, `${mode} cleanup from another project refuses\n${wrongFolder.stderr}`);
+      assert.match(wrongFolder.stderr, /Code: +TARGET_NOT_FOUND/);
+      assert.match(wrongFolder.stderr, /Check that you are in the original project folder and verify the attempt ID/);
+      assert.doesNotMatch(wrongFolder.stderr, /has settled/);
+      assert.ok(existsSync(previous), `${mode} cleanup from another project keeps the previous store`);
       const preview = run("backup", "cleanup-fallback", active.restore.attemptId, "--dry-run", "--json");
       must("cleanup-fallback preview", preview);
       assert.ok((JSON.parse(preview.stdout) as { warnings: { code: string }[] }).warnings.some((w) => w.code === "HISTORY_ONLY_IN_PREVIOUS_STORE"), `${mode} preview warns about the only copy\n${preview.stdout}`);
@@ -472,10 +509,9 @@ async function scenario(mode: "open" | "auth"): Promise<void> {
       rmSync(join(root, "notes.txt"));
     }
     assert.equal(existsSync(join(root, ".cotal", "maintenance", "v1", "journal.json")), false, "fallback cleanup retires the restore journal");
-    // A repeat finds no record of the attempt, because the cleanup retired it, and says so by name.
     const repeated = run("clean", "restore-fallback", "--attempt", active.restore.attemptId, "--force", "--discard-history");
-    assert.ok(repeated.status === 2 && /Code: +TARGET_NOT_FOUND/.test(repeated.stderr) && repeated.stderr.includes(`no maintenance record at this root names restore attempt ${active.restore.attemptId}; nothing was deleted`) &&
-      repeated.stderr.includes("a completed restore-fallback retires its journal, so the restore has settled"), `${mode} a repeated clean restore-fallback says the restore settled\n${repeated.stderr}`);
+    assert.ok(repeated.status === 2 && /Code: +TARGET_NOT_FOUND/.test(repeated.stderr) && repeated.stderr.includes(`no maintenance record at this root names restore attempt ${active.restore.attemptId}; nothing was deleted`), `${mode} a repeated clean restore-fallback refuses without a matching record\n${repeated.stderr}`);
+    assert.doesNotMatch(repeated.stderr, /has settled/);
   } finally {
     run("down", "--yes");
     rmSync(root, { recursive: true, force: true });
@@ -1127,6 +1163,9 @@ async function restoreClaimRaceScenario(): Promise<void> {
       },
     });
     releaseMaintenanceLock(lock);
+    const wrongStore = run("clean", "restore-attempt", "--attempt", "race-stale", "--force", "--store-dir", "./other-store");
+    assert.ok(wrongStore.status === 1 && wrongStore.stderr.includes("does not take --store-dir"), `rollback refuses the store path\n${wrongStore.stdout}${wrongStore.stderr}`);
+    assert.equal(readMaintenanceJournal(root)?.state, "restore-ready");
     const recovered = run("clean", "restore-attempt", "--attempt", "race-stale", "--force");
     assert.equal(recovered.status, 0, `stale attempt recovery\nstdout:\n${recovered.stdout}\nstderr:\n${recovered.stderr}`);
     assert.match(recovered.stdout, /retry with `cotal up --restore <dir>` \(replace <dir> with the backup directory/, "rollback names the required backup directory for a retry");

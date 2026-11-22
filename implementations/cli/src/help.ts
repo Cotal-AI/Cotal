@@ -309,13 +309,15 @@ export function printCommandHelp(cmd: Command, sub?: Subcommand, out: (line: str
   out(renderReport({ sections }, "rich", width));
 }
 
-/** Resolve declared subcommands and aliases. Words after a leaf subcommand are operands. */
+/** Resolve declared subcommands and aliases, stopping at operands. */
 export function printHelpPath(cmd: Command, words: readonly string[], out: (line: string) => void = console.log, width = terminalWidth(process.stdout)): void {
+  if (cmd.positionals !== undefined && !cmd.subcommands?.length) return printCommandHelp(cmd, undefined, out, width);
   let surface: Pick<Command, "subcommands"> = cmd;
   let selected: Subcommand | undefined;
   const path: string[] = [];
   for (const word of words) {
     const sub = findSubcommand(surface, word);
+    if (!sub && surface === cmd && cmd.name === "history") break;
     if (!sub || sub.hidden) {
       // The parser's usage error for the same word: the reason, then the help of the path that exists,
       // both on stderr, so painted for it whatever stream the caller paints for.

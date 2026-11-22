@@ -114,6 +114,30 @@ check("help service remove lists --instance <full-id> in its usage and options",
   check("control: a file for sa under its existing name is still refused as already existing",
     again.status === 2 && again.stdout.includes('"code":"CONFLICT"') && again.stdout.includes("this service definition already exists"), shown(again));
 
+  for (const [flag, value, location] of [["--file", "", []], ["-f", "  ", ["--space", "missing-space"]]] as const) {
+    const empty = run(["service", "add", "blank-file", flag, value, ...location, "--json"], a);
+    const receipt = JSON.parse(empty.stdout);
+    check(`${flag} with a blank path refuses before resolving a target`,
+      empty.status === 1 && empty.stderr === "" && receipt.outcome === "refused" && receipt.target === null &&
+      receipt.error?.code === "USAGE_INVALID" && receipt.error.message.includes("--file") && receipt.error.remedy?.includes("--file <definition.json>"), shown(empty));
+  }
+
+  for (const [flags, dryRun] of [[[], false], [["--yes"], false], [["--dry-run"], true]] as const) {
+    const stop = run(["service", "stop", "tick", "--space", "sa", ...flags, "--json"], b);
+    const receipt = JSON.parse(stop.stdout);
+    check(`stop ${flags.join(" ")} of a saved service without an instance reports no-op`,
+      stop.status === 0 && receipt.outcome === "no-op" && receipt.target?.name === "tick" && receipt.target.space === "sa" &&
+      receipt.target.instanceId === null && receipt.result?.dryRun === dryRun, shown(stop));
+  }
+  const missingStop = run(["service", "stop", "tick", "--space", "sa", "--instance", "00000000-0000-4000-8000-000000000000", "--yes", "--json"], b);
+  check("stop still refuses an explicit instance ID that does not belong to the service",
+    missingStop.status === 2 && JSON.parse(missingStop.stdout).error?.code === "TARGET_NOT_FOUND", shown(missingStop));
+  const after = run(["service", "--space", "sa", "--json"], b);
+  const afterInventory = JSON.parse(after.stdout).result;
+  check("no stop allocates an instance and no blank import saves a definition",
+    after.status === 0 && afterInventory?.instances.length === 0 &&
+    afterInventory.definitions.map((row: { name: string }) => row.name).join() === "tick", shown(after));
+
   const unstartedLogs = run(["service", "logs", "tick", "--space", "sa", "--tail", "30", "--plain"], b);
   const statusStep = /^Next\n\s+(.+ service status tick --space sa --plain)$/m.exec(unstartedLogs.stderr)?.[1];
   check("logs for an unstarted service explains why there is no log and names the explicit status command",

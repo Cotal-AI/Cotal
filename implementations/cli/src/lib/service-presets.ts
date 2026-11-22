@@ -1,18 +1,20 @@
 import { brokerUrlHasUserinfo, registry, type Command, type FlagSpec, type ParsedArgs } from "@cotal-ai/core";
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { brokerUrlCredentialRefusal, cacheServicePreset, CommandFailure, extensionProvides, findMesh, hasUserAuthState, installedExtensionPackage, isCommandFailure, loadExtensionsManifest, oneLine, resolveNativeServiceTarget, runtimeInstallHint, segmentedKey, serviceMetadataDigest, spaceMaterialKey, validateServiceAdapterOptions, validateServiceAdapterPaths, verifiedExtensionServicePresets, WEB_SERVICE_ADAPTER, type ServiceDefinitionInput, type ServicePreset, type ServicePresetDefault } from "@cotal-ai/workspace";
+import { assertManagerName, brokerUrlCredentialRefusal, cacheServicePreset, CommandFailure, extensionProvides, findMesh, hasUserAuthState, installedExtensionPackage, isCommandFailure, loadExtensionsManifest, oneLine, resolveNativeServiceTarget, runtimeInstallHint, segmentedKey, serviceMetadataDigest, spaceMaterialKey, validateServiceAdapterOptions, validateServiceAdapterPaths, verifiedExtensionServicePresets, WEB_SERVICE_ADAPTER, type ServiceDefinitionInput, type ServicePreset, type ServicePresetDefault } from "@cotal-ai/workspace";
 import { installedExtensionsEnabled } from "../ext-loader.js";
 import { metadataPositionals } from "./command-path.js";
 import { shellWord } from "./endpoint-errors.js";
 import { resolveServiceAdapter } from "./service-adapters.js";
+import { STACK_ADAPTER } from "./stack-journal.js";
 import { cliVersion } from "./version.js";
 
-/** Check the manager's local launch coordinates and runtime metadata without importing a provider. */
+/** Check the manager's launch coordinates, name and runtime metadata without importing a provider. */
 export function assertManagerStartOptions(space: string, options: Record<string, unknown>): void {
   const server = options.server as string | undefined;
   if (server !== undefined && brokerUrlHasUserinfo(server)) throw brokerUrlCredentialRefusal("--server");
   if (server !== undefined || findMesh(space)) resolveNativeServiceTarget(String(options.root), space, server);
+  if (options.name !== undefined) assertManagerName(String(options.name));
 
   const runtime = String(options.runtime);
   if (runtime === "pty" || registry.has("runtime", runtime)) return;
@@ -243,6 +245,13 @@ export function servicePresetDefinition(preset: ServicePreset, space: string, gi
   if (preset.adapter === WEB_SERVICE_ADAPTER && (options["read-only"] === false) !== (typeof options["posting-creds"] === "string")) {
     const given = options["read-only"] === false ? "--no-read-only" : "--posting-creds";
     throw new CommandFailure("refused", "USAGE_INVALID", `${given} requires ${given === "--no-read-only" ? "--posting-creds <file>" : "--no-read-only"}: the dashboard posts only when it is not read-only, with a separate posting credential; nothing was saved or started`, { remedy: `${line} --no-read-only --posting-creds <file>`, selfContained: true, remedyIsCommand: true });
+  }
+  // A manager launch is a private native spec pinned by its full digest, so each of the two flags
+  // needs the other. Its launch refuses one without the other, and a saved definition would offer
+  // a start that cannot run.
+  if (preset.adapter === STACK_ADAPTER.manager && (options.launch === undefined) !== (options["launch-sha256"] === undefined)) {
+    const given = options.launch === undefined ? "--launch-sha256" : "--launch";
+    throw new CommandFailure("refused", "USAGE_INVALID", `${given} requires ${given === "--launch" ? "--launch-sha256 <digest>" : "--launch <file>"}: a manager launch needs both its private native spec and its full SHA-256; nothing was saved or started`, { remedy: `${line} --launch <file> --launch-sha256 <digest>`, selfContained: true, remedyIsCommand: true });
   }
   // Saving the native auth preset must not offer a start its hosting root cannot support.
   // Read only the existing marker, without preparing authority or importing provider code.

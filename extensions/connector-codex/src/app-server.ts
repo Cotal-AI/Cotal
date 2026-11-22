@@ -155,6 +155,22 @@ function writeTokenFile(path: string, token: string): void {
   }
 }
 
+/** An error the app-server answered to a request, as distinct from a request it never answered. */
+export class AppServerRpcError extends Error {
+  constructor(readonly code: number | undefined, message: string) {
+    super(message);
+    this.name = "AppServerRpcError";
+  }
+}
+
+/** One skill as `skills/list` reports it (measured on codex-cli 0.170.0). */
+export interface CodexSkill {
+  name: string;
+  description: string;
+  path: string;
+  enabled: boolean;
+}
+
 /** One decoded line off the app-server: a response, a notification, or a server→client request. */
 interface RpcMessage {
   id?: number | string;
@@ -518,6 +534,40 @@ export class AppServerDriver extends EventEmitter {
     });
   }
 
+  /** The skills Codex finds for this thread's working directory, re-read from disk. A repo skill
+   *  comes before a user or system skill of the same name (measured on codex-cli 0.170.0). */
+  async listSkills(): Promise<CodexSkill[]> {
+    const r = (await this.request("skills/list", { cwds: [this.opts.cwd], forceReload: true })) as { data?: { skills?: CodexSkill[] }[] } | undefined;
+    if (!Array.isArray(r?.data)) throw new Error("skills/list answered with no data list");
+    return r.data.flatMap((entry) => entry.skills ?? []);
+  }
+
+  /** Begin a turn that runs one skill. Codex loads the SKILL.md at `path` into the turn as that
+   *  skill's instructions, apart from the user's text, which carries `args`. Codex skips a path it
+   *  cannot read and runs the turn anyway, so the caller passes a path `skills/list` reported. */
+  async startSkillTurn(name: string, path: string, args: string): Promise<void> {
+    if (!this.threadId) throw new Error("thread not started");
+    await this.request("turn/start", {
+      threadId: this.threadId,
+      input: [{ type: "skill", name, path }, ...(args ? [{ type: "text", text: args, text_elements: [] }] : [])],
+    });
+  }
+
+  /** Stop the turn running on the thread, ours or one started from the attached TUI. Codex answers
+   *  `{}` and ends the turn `interrupted`, or refuses with "no active turn to interrupt" when the
+   *  turn ended first (measured on codex-cli 0.170.0). */
+  async interruptTurn(): Promise<"interrupted" | "idle"> {
+    const turnId = this.currentTurnId;
+    if (!this.threadId || !turnId) return "idle";
+    try {
+      await this.request("turn/interrupt", { threadId: this.threadId, turnId });
+      return "interrupted";
+    } catch (e) {
+      if (e instanceof AppServerRpcError && e.message.includes("no active turn")) return "idle";
+      throw e;
+    }
+  }
+
   /** Inject input into the turn currently in flight (true mid-turn steer). Returns false when
    *  there is no active turn or it just ended — the caller falls back to {@link startTurn} at the
    *  next turn boundary. `expectedTurnId` makes the injection race-safe: if the turn we aimed at
@@ -733,7 +783,7 @@ export class AppServerDriver extends EventEmitter {
         this.pendingStarts.delete(msg.id as number);
         this.releaseBuffered();
       }
-      if (msg.error) p.reject(new Error(msg.error.message ?? "app-server error"));
+      if (msg.error) p.reject(new AppServerRpcError(msg.error.code, msg.error.message ?? "app-server error"));
       else p.resolve(msg.result);
       return;
     }

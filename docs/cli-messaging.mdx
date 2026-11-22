@@ -41,8 +41,9 @@ can carry, such as one holding `\` or longer than 128 characters, is refused wit
 before any presence lookup. A name collision refuses
 with `TARGET_AMBIGUOUS` and lists the full identities that carry the name, each with its display
 name, its kind (`agent`, `endpoint` or `chat session`) and the local time its process started, and a target that is not
-present refuses with `TARGET_NOT_FOUND` and points at `cotal who --all`. No fuzzy match selects an
-agent for you.
+present refuses with `TARGET_NOT_FOUND`. The suggested `cotal who --all` command uses the resolved
+space and keeps any explicit broker and credential file so it lists the same roster. No fuzzy match
+selects an agent for you.
 
 
 ### Message addressing
@@ -60,7 +61,7 @@ A one-shot sender displays the OS login and host as `<login>@<host>`, not the la
 seat's name. On a local static-auth mesh, the account signer binds that label to a stable
 `local.cli_<sha256>` principal. Each send still uses a fresh, short-lived connection credential
 with the existing operator permissions. An explicit `--creds` keeps that credential's principal,
-and a signed-in mesh keeps the user's `cli` actor. Open meshes do not authenticate a sender.
+and a signed-in mesh keeps the user's `cli` actor. On POSIX, if a directory in the `--creds` path is a symbolic link, the CLI refuses before connecting. When it can resolve the directory, the suggested path includes the filename. Open meshes do not authenticate a sender.
 A peer message is not proof of the person's authorization to perform an action.
 
 
@@ -391,6 +392,10 @@ have happened. The session never retries it, and it reports an unexpected failur
 same way. `failed` (`OPERATION_FAILED`) is a step that did not complete and had no effect. `stored`
 means the broker's stream accepted the message. It does not say anyone read it.
 
+A `send`, `dm` or `anycast` message that exceeds the broker's byte limit with its envelope is
+`refused` with `UNSUPPORTED`. The error names the limit when the connection can still report it,
+confirms nothing was stored, and tells you to shorten or split the message.
+
 Before a `send`, `dm` or `anycast` publishes on an authenticated or locally created space, it checks
 the chat stream. When that stream is absent, the request refuses with `TARGET_UNAVAILABLE` and the
 same message `cotal send` gives, without publishing. An unreadable stream check does not establish
@@ -503,6 +508,8 @@ Each value with no per-channel override is marked `inherited`, whether it comes 
 defaults or the built-in policy. The inventory uses the same mark for replay and delivery.
 Explicit settings are unmarked even when they equal the defaults. In `channel defaults`, the
 mark identifies values supplied by the built-in policy.
+The suggested membership and history commands name the space inspected and keep any explicit
+`--server` and `--creds` options. A membership report's suggested follow command does the same.
 
 `channel show <name> --json` returns the raw space defaults in `result.registry.defaults` when
 saved and decodable. `result.registry.channels` contains only the named channel's saved entry, or
@@ -510,13 +517,26 @@ an empty object if the entry is absent or cannot be decoded. `result.registry.un
 decode errors for the defaults and named channel when present. The command does not apply
 inheritance or fill in built-in defaults. Use `channel --json` for the full inventory.
 
+`channel defaults --json` with no settings reports only the space defaults. It returns saved,
+decodable defaults in `result.registry.defaults` or reports a defaults-key decode error in
+`result.registry.undecodable`. It does not include channel entries or fill in built-in defaults.
+
 `channel set` and `channel defaults` trim surrounding whitespace from `--window` before saving
 the duration. For example, `--window ' 24h '` saves `24h`.
+
+Use `--replay` to turn replay on and `--no-replay` to turn it off. If you write `--replay off`,
+the command refuses without saving and gives a retry that keeps your other settings, target and output format.
+
 `members` reads the broker-derived membership feed. Its timestamp is the last successful feed
 poll, not proof of current activity or access. A roster name that is only whitespace is shown as
 the id. A member the roster has not named says `name not reported`. JSON keeps the roster name,
 or null when the roster has none. With `--follow --json`, it emits membership NDJSON
-records. A missing feed remains unknown rather than an empty confirmed census. Without `--follow`, a
+records. If setup fails before the snapshot, it writes an `error` with the code and any remedy,
+then an `end` with `reason: "setup-failed"` and `lastAsOf: null`. Both records name the requested
+channel and the space when known.
+This includes the name retained by a directly started local space after it stops.
+
+A missing feed remains unknown rather than an empty confirmed census. Without `--follow`, a
 census with no member for a name that has no saved entry and no retained messages is refused with
 `TARGET_NOT_FOUND`, listing the registered channels, or naming the registered spelling when only the
 case differs. A channel with a saved entry or retained messages and no member reads as empty. A
@@ -528,13 +548,16 @@ record and the current census follow once the feed answers again, so a follow ou
 restart. A credential that can no longer connect ends the follow with the refusal a one-shot
 command with that credential gets, as [`history --follow`](#history) does. The delivery service
 writes that feed, and an open mesh runs none, so `members` refuses an open mesh with `UNSUPPORTED`.
+The refusal suggests `cotal who` for the same space and keeps an explicit broker address. The
+roster shows who is present in the space, not who belongs to the channel.
 On an open mesh, `channel show` explains that membership is unavailable and still suggests reading
 retained history.
 
 Removal keeps retained history unless `--purge` is present. The confirmation names the channel,
 space and history scope. Scripts pass `--yes`. A name with no saved entry and no retained messages
 is refused with `TARGET_NOT_FOUND` before the confirmation, listing the registered channels, or
-naming the registered spelling when only the case differs. Removing a channel that has retained
+naming the registered spelling when only the case differs. In that case the suggested command
+inspects the registered channel without removing it. Removing a channel that has retained
 messages but no saved entry is a `no-op`, and its Metadata row says `no saved entry`. A missing
 channel registry bucket is no saved entry, so that remove is the same `no-op`. `--purge`
 still deletes that channel's retained messages. When the chat stream is not on the broker, that
@@ -593,13 +616,14 @@ login has no Direct Get row on the registry, and neither has an agent credential
 
 ```bash
 cotal history [<channel> | --dms] [--since <time|seq>] [--limit <n>] [--from <name>] [--grep <text>] [--follow] [--json | --plain]
-cotal history clear [--dms] [--yes | --dry-run] [--json | --plain] [--space <s>]
+cotal history clear [--dms] [--yes | --dry-run] [--json | --plain] [--space <s>] [--server <url>] [--creds <path>]
 cotal history limit [--max-age <age|none>] [--per-sender <n|none>] [--inbox-max-age <age|none>] [--inbox-per-agent <n|none>] [--dm-max-age <age|none>] [--dm-per-sender <n|none>] [--yes] [--json | --plain] [--space <s>]
 ```
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--space <s>` / `--server <url>` / `--creds <path>` | resolved mesh | Target mesh |
+| `--space <s>` | resolved mesh | Target space for reads, `clear` and `limit` |
+| `--server <url>` / `--creds <path>` | resolved mesh | Reads and `clear` only: use the named broker or credential file |
 | `--dms` | off | Read all accessible channels and DMs. Requires a DM read grant. With `clear`, also clear DM history |
 | `--since <time\|seq>` | none | Only messages after an ISO 8601 date and time, an age such as `30m`, `2h` or `1d`, or a chat stream sequence. A date, or a date and time without an offset, is local time |
 | `--limit <n>` | 50 | How many of the newest retained messages to read, a positive safe integer |
@@ -617,9 +641,12 @@ cotal history limit [--max-age <age|none>] [--per-sender <n|none>] [--inbox-max-
 | `--dm-max-age <age\|none>` | none | `limit`: delete a DM once it is older than this, from `2m` to `3650d`, or `none` |
 | `--dm-per-sender <n\|none>` | none | `limit`: keep this many of each sender's newest DMs to each recipient, at least 1, or `none` |
 
+`history limit` reads the broker address and signing authority from the selected space's records.
+
 Reads the newest retained messages in the selected space, newest last. Name a channel to read
-only that channel. Without a channel, `history` reads every accessible channel, and `--dms` also
-includes accessible DMs. Do not combine a channel name with `--dms`.
+only that channel. Without a channel, `history` reads every accessible channel, including names
+such as `events.team.standup`. Add `--dms` to also include accessible DMs. Do not combine a channel
+name with `--dms`.
 To read a channel named `clear`, use `cotal history '#clear'`.
 Use the same quoted `#` form for `limit`. `channel show` uses this form for every channel in its
 history recommendation. A name holding `*` or `>` is refused with
@@ -641,6 +668,8 @@ before connecting. When older retained messages are not shown, raise `--limit` t
 There is no 1000-message read cap. For example, `cotal history general --limit 2000`
 reads the newest 2000 retained messages before applying filters. `result.window` says how many messages were read, whether older retained
 messages exist that the window did not reach, and whether the window goes back to `--since`.
+For a sequence cutoff, posts on other channels do not leave a gap in a named channel's window.
+The window can reach the cutoff even when it leaves out retained posts at or before it.
 With `--dms`, channel posts keep their broker sequence order even when sender timestamps disagree.
 To fill the window, the command works from the newest end of each stream and compares sender
 timestamps across the two sources. A full window alone does not prove that it left out older messages.
@@ -698,6 +727,9 @@ server's storage limit bounds a stream, and a full store refuses new messages.
 With no limit flag, `history limit` only reads. It prints the limit each of the four streams holds,
 writes nothing, and asks for no `--yes`. `result.kind` is `history-limits`, and each
 `result.streams[]` entry names its stream and the `holds` limit, with `null` for no age or no count.
+
+`--force` is refused. Omit it from history reads, including reads of the current limits. When
+setting limits, use `--yes` to confirm without prompting and keep the target and limit flags.
 
 Run it on the broker host from the space's root: it mints a one-shot provisioner credential from the
 root's trust, as `up` does, and a root without that trust is refused with `PERMISSION_DENIED`. A
@@ -766,14 +798,24 @@ rejects it the Next says to run the follow again, which mints one from the curre
 `--json` each line is one record: `{"schemaVersion":1,"stream":"history","type":<type>,"target":…,"receivedAt":…,"data":…}`.
 When the follow starts, it writes a `snapshot` holding the window, then one `event` per message
 that matches the filters. A time-based `--since` applies to both the snapshot and live messages.
-A sequence cutoff applies only to the snapshot because live events have no `seq`. To read on from a follow, give
-`--since` the last event's `ts`. An `error` record names a failure on the live feed, and a lost
+A sequence cutoff applies only to the snapshot because live events have no `seq`.
+An `error` record names a failure on the live feed, and a lost
 connection is one `TARGET_UNAVAILABLE` error. A
 `gap` record says the connection was re-established and messages sent while it was down are not
-shown. If the follow cannot open its target or read the snapshot, it writes an `error` with the code
-and any remedy, then an `end` with `reason: "setup-failed"`, without a snapshot. An `end` record closes
+shown. If the follow refuses invalid read arguments, cannot open its target or cannot read the
+snapshot, it writes an `error` with the code and any remedy, then an `end` with
+`reason: "setup-failed"`, without a snapshot. Both targets include the requested `channel` (`null`
+if none) and `dms` flag, along with any known space or project root. An `end` record closes
 the stream. The exit code is the snapshot's, the failure's when setup or the credential ends the
 follow, or 130 or 143 when SIGINT or SIGTERM ends it.
+
+To resume a JSON follow, save the last processed event's `data.ts` and the `data.id` values
+you processed at that timestamp. Restart with `--since` set to one millisecond before the saved
+time. For example, if the saved time is `2026-11-21T17:14:49.666Z`, pass
+`--since 2026-11-21T17:14:49.665Z`. A time cutoff is exclusive, so passing the saved time itself
+skips every message at that time. The overlap replays those messages. Skip only IDs you already
+processed, comparing `id` in the snapshot's `data.items` and `data.id` in live events.
+Raise `--limit` if the snapshot's window does not reach back to the cutoff.
 
 `history clear` purges retained history from every channel in the space it targets; `--dms` extends
 it to direct-message history. It refuses extra channel names, read filters and `--follow` before
@@ -826,13 +868,15 @@ candidate IDs and refusals in one receipt. Without `--json`, it keeps its earlie
 folder's space, else the selected one. It takes no channel argument. `--dms` also requests DM
 history under the existing purger authority. In a terminal, confirmation names the space, broker
 and space-wide scope and defaults to cancellation. Scripts
-and `--json` require `--yes`. The old `--force` spelling refuses with the replacement.
+and `--json` require `--yes`. If you passed `--force` to confirm a purge, replace it with `--yes` and
+keep the target and scope options. For a preview, omit `--force` and keep `--dry-run`.
 
 `history clear --dry-run` resolves the target and names the affected streams offline. It issues no
 caller credential, connects nowhere and does not check authorization or retained message counts.
+For an open broker, pass both `--space` and `--server` to preview a target without a local registration.
 A local controller stack stopped by a completed `down` previews using its saved broker address.
-A space that is prepared but not started is refused with `TARGET_UNAVAILABLE` (exit 2), and the
-refusal says how to start it.
+Without an explicit broker, a space that is prepared but not started is refused with
+`TARGET_UNAVAILABLE` (exit 2), and the refusal says how to start it.
 The purge uses the existing purger instrument or one-action user purger view, not a broader caller.
 On a user-auth mesh whose grant lacks scope `admin`, the purger view is not issued and the refusal
 is `PERMISSION_DENIED` (exit 2). Its remedy is the identity provider's own sentence, which names

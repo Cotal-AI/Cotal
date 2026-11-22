@@ -20,6 +20,7 @@
  */
 import { execFile, spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -56,6 +57,7 @@ import {
 import { awaitBrokerReady, createSuite, killAndAwaitExit, SMOKE_BROKER_TOKEN, teardownOnSignal, teardownPathOnSignal } from "@cotal-ai/smoke-kit";
 import { authDir, clearCurrent, recordMesh, removeMesh, saveSpaceAuth, setCurrent } from "@cotal-ai/workspace";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
+import { execWords } from "../src/lib/exec-words.js";
 import { clean, nodePty } from "./_console-pty.js";
 import { credentialEnded } from "../src/lib/connect.js";
 import { MAX_BUFFER } from "@cotal-ai/workspace/chat";
@@ -125,6 +127,124 @@ const run = (args: string[], cwd = shell, extra: NodeJS.ProcessEnv = {}): Promis
 const shown = (r: { status: number; stdout: string; stderr: string }) => ({ status: r.status, stdout: r.stdout.slice(0, 1500), stderr: r.stderr.slice(0, 600) });
 const texts = (r: { envelope?: Envelope }) => (r.envelope?.result?.items ?? []).map((i) => i.text);
 
+async function checkChannelReplayRetry(): Promise<void> {
+  const name = "remedy.probe";
+  const scope = ["--space", openSpace, "--json"];
+  const set = ["channel", "set", name];
+  const seeded = await run([...set, "--desc", "Old note", "--window", "6h", "--replay", ...scope]);
+  const changed = { replay: false, replayWindow: "48h", description: "New note", instructions: "-Owner's instructions", deliveryClass: "live" };
+  const refused = await run([...set, "--desc", changed.description, "--window", changed.replayWindow,
+    `--instructions=${changed.instructions}`, "--delivery", changed.deliveryClass, "--replay", "off", ...scope]);
+  const readback = () => run(["channel", "show", name, ...scope]);
+  const before = await readback();
+  const entry = (r: Awaited<ReturnType<typeof readback>>) =>
+    (r.envelope?.result as unknown as { registry?: ChannelRegistryRead } | undefined)?.registry?.channels?.[name];
+  check("a replay usage refusal leaves the channel unchanged",
+    seeded.status === 0 && refused.status === 1 && refused.envelope?.error?.code === "USAGE_INVALID"
+      && before.status === 0 && entry(before)?.replay === true && entry(before)?.description === "Old note" && entry(before)?.replayWindow === "6h",
+    { refused: shown(refused), before: shown(before) });
+  const command = /^run `(.+)`$/.exec(refused.envelope?.error?.remedy ?? "")?.[1];
+  const retried = command ? await run(execWords(command).slice(1)) : undefined;
+  const after = await readback();
+  const saved = entry(after);
+  check("the replay retry keeps the settings, target and JSON output",
+    retried?.status === 0 && retried.envelope?.outcome === "ok" && after.status === 0
+      && Object.entries(changed).every(([key, value]) => saved?.[key as keyof typeof changed] === value),
+    { command, retried: retried && shown(retried), after: shown(after) });
+}
+
+async function checkHistoryFollowValidation(): Promise<void> {
+  let connections = 0;
+  const listener = createServer((socket) => { connections++; socket.destroy(); });
+  await new Promise<void>((resolve, reject) => {
+    listener.once("error", reject);
+    listener.listen(0, "127.0.0.1", resolve);
+  });
+  try {
+    const address = listener.address();
+    if (!address || typeof address === "string") throw new Error("expected a loopback TCP listener");
+    const server = `nats://127.0.0.1:${address.port}`;
+    const args = ["history", "--json", "--limit", "0"];
+    const finite = await run(args);
+    const stream = await run([...args, "--follow", "--server", server]);
+    const records = stream.stdout.trim().split("\n").filter(Boolean).map((line) => JSON.parse(line) as {
+      schemaVersion?: number; stream?: string; type?: string; target?: { space: string | null; channel: string | null; dms: boolean };
+      data?: { code?: string; message?: string; reason?: string };
+    });
+    check("finite history with --limit 0 writes one USAGE_INVALID receipt, exit 1",
+      finite.status === 1 && finite.stderr === "" && finite.envelope?.command === "history"
+        && finite.envelope.outcome === "refused" && finite.envelope.error?.code === "USAGE_INVALID", shown(finite));
+    check("invalid JSON history follow writes only error and setup-failed end, exit 1, without connecting",
+      stream.status === 1 && stream.stderr === "" && connections === 0
+        && records.map((r) => r.type).join() === "error,end"
+        && records.every((r) => r.schemaVersion === 1 && r.stream === "history" && r.target?.space === null && r.target?.channel === null && r.target?.dms === false)
+        && records[0]?.data?.code === "USAGE_INVALID" && records[0]?.data?.message === finite.envelope?.error?.message
+        && records[1]?.data?.reason === "setup-failed",
+      { stream: shown(stream), finite: shown(finite), connections });
+  } finally {
+    await new Promise<void>((resolve) => listener.close(() => resolve()));
+  }
+}
+
+async function checkMembershipSetupRefusal(targetSpace: string, channel: string, code: string, ...targetFlags: string[]): Promise<void> {
+  const args = ["channel", "members", channel, "--space", targetSpace, "--json", ...targetFlags];
+  const finite = await run(args);
+  const stream = await run([...args, "--follow"]);
+  const records = stream.stdout.trim().split("\n").filter(Boolean).map((line) => JSON.parse(line) as {
+    schemaVersion?: number; stream?: string; type?: string; target?: { space?: string; channel?: string };
+    data?: { code?: string; message?: string; remedy?: string; reason?: string; lastAsOf?: number | null };
+  });
+  const error = finite.envelope?.error;
+  check(`membership follow frames ${code} as an error and end with the space and channel, exit 2`,
+    finite.status === 2 && finite.envelope?.command === "channel" && finite.envelope?.outcome === "refused"
+      && error?.code === code && Boolean(error.remedy) && stream.status === 2 && stream.stderr === ""
+      && records.map((r) => r.type).join() === "error,end" && records.every((r) =>
+        r.schemaVersion === 1 && r.stream === "membership" && r.target?.space === targetSpace && r.target?.channel === channel)
+      && records[0]?.data?.code === error.code && records[0]?.data?.message === error.message && records[0]?.data?.remedy === error.remedy
+      && records[1]?.data?.reason === "setup-failed" && records[1]?.data?.lastAsOf === null,
+    { finite: shown(finite), stream: shown(stream) });
+}
+
+async function checkUnreachableHistoryFollow(server: string): Promise<void> {
+  const finite = await run(["history", "review", "--server", server, "--json"]);
+  const error = finite.envelope?.error;
+  for (const [scope, channel, dms] of [["review", "review", false], ["--dms", null, true]] as const) {
+    const stream = await run(["history", scope, "--follow", "--server", server, "--json"]);
+    const records = stream.stdout.trim().split("\n").filter(Boolean).map((line) => JSON.parse(line) as {
+      schemaVersion: number; stream: string; type: string;
+      target: { space: string; root?: string; channel: string | null; dms: boolean };
+      data: { code?: string; message?: string; remedy?: string; reason?: string };
+    });
+    check(`unreachable history ${scope} follow retains its requested scope and connection target, exit 2`,
+      finite.status === 2 && error?.code === "TARGET_UNAVAILABLE" && stream.status === 2 && stream.stderr === ""
+        && records.map((record) => record.type).join() === "error,end"
+        && records.every((record) => record.schemaVersion === 1 && record.stream === "history"
+          && record.target?.space === "main" && record.target?.root === shell
+          && record.target?.channel === channel && record.target?.dms === dms)
+        && records[0]?.data.code === error.code && records[0]?.data.message === error.message && records[0]?.data.remedy === error.remedy
+        && records[1]?.data.reason === "setup-failed", shown(stream));
+  }
+}
+
+async function checkEventShapedChannelHistory(): Promise<void> {
+  const channel = "events.team.standup";
+  const text = "Standup marker";
+  const target = ["--space", openSpace, "--server", openServers, "--json"];
+  const saved = await run(["channel", "set", channel, "--desc", "Ordinary team chat", ...target]);
+  const sent = await run(["send", "-c", channel, text, ...target]);
+  check("fixture: an ordinary channel with an event-shaped name accepts a post", saved.status === 0 && sent.status === 0,
+    { saved: shown(saved), sent: shown(sent) });
+  for (const args of [[channel, "--limit", "1"], ["--limit", "2200"]]) {
+    const history = await run(["history", ...args, "--grep", text, ...target]);
+    const { envelope } = history;
+    check(`history ${args.join(" ")} reads ordinary chat from an event-shaped channel`,
+      history.status === 0 && history.stderr === "" && envelope?.completeness === "complete" && envelope.warnings.length === 0
+        && envelope.result !== null && envelope.result.channels.includes(channel) && envelope.result.window.olderRetained === false
+        && envelope.result.items.length === 1 && envelope.result.items[0]?.channel === channel && envelope.result.items[0]?.text === text,
+      shown(history));
+  }
+}
+
 /** A follow child: its stdout lines as they arrive, and a way to wait for one. */
 function follow(args: string[]) {
   const child = spawn(process.execPath, [BIN, ...args], { cwd: shell, env: isolatedEnv, stdio: ["ignore", "pipe", "pipe"] });
@@ -148,6 +268,46 @@ function follow(args: string[]) {
     return false;
   };
   return { child, lines, exited, until, stderr: () => stderr };
+}
+
+async function checkFollowResume(alice: CotalEndpoint, bob: CotalEndpoint, timestamp: string) {
+  const args = ["history", "general", "--follow", "--json", "--grep", "resume boundary"];
+  const parse = (line: string) => JSON.parse(line) as { type: string; data: Item & { items?: Item[] } };
+  const original = follow(args);
+  let events: Item[] = [];
+  try {
+    const ready = await original.until((line) => parse(line).type === "snapshot");
+    const send = (sender: CotalEndpoint, text: string) => {
+      const now = Date.now;
+      Date.now = () => Date.parse(timestamp);
+      try { return sender.multicast(text, { channel: "general" }); }
+      finally { Date.now = now; }
+    };
+    await send(alice, "resume boundary one");
+    await send(bob, "resume boundary two");
+    const received = await original.until((line) => parse(line).data.text === "resume boundary two");
+    events = original.lines.map(parse).filter((record) => record.type === "event").map((record) => record.data);
+    check("the original follow emits both messages with the same timestamp and different IDs",
+      ready && received && events.length === 2 && events.every((item) => item.ts === timestamp)
+        && events.every((item) => Boolean(item.id)) && events[0]?.id !== events[1]?.id, events);
+  } finally {
+    await killAndAwaitExit(original.child, "SIGINT");
+  }
+  const [processed, unprocessed] = events;
+  if (!processed || !unprocessed) return;
+
+  const since = new Date(Date.parse(processed.ts) - 1).toISOString();
+  const resumed = follow([...args, "--since", since]);
+  try {
+    const ready = await resumed.until((line) => parse(line).type === "snapshot");
+    const items = resumed.lines.map(parse).find((record) => record.type === "snapshot")?.data.items ?? [];
+    const unseen = items.filter((item) => item.id !== processed.id);
+    check("a 1 ms overlap replays both boundary events and deduplication by ID keeps only the unread one",
+      ready && items.length === 2 && items.every((item) => item.ts === processed.ts)
+        && items.some((item) => item.id === processed.id) && unseen.length === 1 && unseen[0]?.id === unprocessed.id, items);
+  } finally {
+    await killAndAwaitExit(resumed.child, "SIGINT");
+  }
 }
 
 const endpoints: CotalEndpoint[] = [];
@@ -209,8 +369,8 @@ try {
   await wait(1_100);
   const midpoint = new Date().toISOString();
   await wait(100);
-  await alice.multicast("deploy finished", { channel: "general" });
   await bob.multicast("paging ops", { channel: "ops" });
+  await alice.multicast("deploy finished", { channel: "general" });
   const bobId = `${bob.principal.owner}.${bob.principal.actor}`;
   await alice.unicast(bobId, "a private note");
   await wait(600);
@@ -226,7 +386,7 @@ try {
   check("a DM is not in channel history", !texts(general).includes("a private note"), texts(general));
 
   const all = await run(["history", "--json"]);
-  check("history with no channel reads every channel, newest last", JSON.stringify(texts(all)) === JSON.stringify(["deploy started", "looks good", "deploy finished", "paging ops"]) && all.envelope?.result?.items.at(-1)?.channel === "ops", texts(all));
+  check("history with no channel reads every channel, newest last", JSON.stringify(texts(all)) === JSON.stringify(["deploy started", "looks good", "paging ops", "deploy finished"]) && all.envelope?.result?.items[2]?.channel === "ops", texts(all));
 
   const two = await run(["history", "general", "--limit", "2", "--json"]);
   check("--limit 2 keeps the two newest and says older ones are retained", JSON.stringify(texts(two)) === JSON.stringify(["looks good", "deploy finished"]) && two.envelope?.result?.window.olderRetained === true, two.envelope?.result);
@@ -254,6 +414,14 @@ try {
     dayJson.envelope?.result?.window.since === "2026-01-14T10:00:00.000Z" && dayPlain.stdout.includes("--since 2026-01-15 is ") && dayPlain.stdout.includes("local time (2026-01-14T10:00:00.000Z); only messages after it are shown"), { json: dayJson.envelope?.result?.window, plain: shown(dayPlain) });
   const narrow = await run(["history", "general", "--limit", "1", "--since", String(items[0]?.seq), "--json"]);
   check("a window that does not reach back to --since says so", narrow.envelope?.result?.window.reachesSince === false, narrow.envelope?.result?.window);
+  const interleavedArgs = ["history", "general", "--limit", "1", "--since", String(items[1]?.seq)];
+  const [interleaved, interleavedPlain] = await Promise.all([run([...interleavedArgs, "--json"]), run([...interleavedArgs, "--plain"])]);
+  const interleavedWindow = interleaved.envelope?.result?.window;
+  check("an intervening post on another channel does not leave a gap after a sequence cutoff",
+    interleaved.status === 0 && texts(interleaved).join() === "deploy finished"
+      && interleavedWindow?.read === 1 && interleavedWindow.olderRetained === true && interleavedWindow.reachesSince === true
+      && interleavedPlain.status === 0 && interleavedPlain.stdout.includes("older retained messages are not shown")
+      && !interleavedPlain.stdout.includes("the window does not reach back"), { json: shown(interleaved), plain: shown(interleavedPlain) });
   const hashed = await run(["history", "#general", "--json"]);
   check("#general reads the same channel as general", JSON.stringify(texts(hashed)) === JSON.stringify(texts(general)) && hashed.envelope?.result?.channels[0] === "general", shown(hashed));
   // A channel the space lacks used to report the space's replay default as if it existed.
@@ -293,12 +461,14 @@ try {
   check("history help lists a channel and --dms as alternatives and names the scope of --dms",
     help.status === 0 && help.stdout.includes("cotal history [<channel> | --dms]")
       && help.stdout.includes("read all accessible channels and DMs"), help.stdout);
-  for (const args of [["general", "--dms"], ["--limit", "0"], ["--limit", "9007199254740992"], ["--since", "yesterday-ish"], ["--since=-5"], ["--since", "10/23/2026"], ["--since", "2026-02-30"], ["--dms", "--since", "5"], ["general", "ops"], ["--force"], ["--json", "--plain"]]) {
+  for (const args of [["general", "--dms"], ["--limit", "9007199254740992"], ["--since", "yesterday-ish"], ["--since=-5"], ["--since", "10/23/2026"], ["--since", "2026-02-30"], ["--dms", "--since", "5"], ["general", "ops"], ["--force"], ["--json", "--plain"]]) {
     const r = await run(["history", ...args, "--json"]);
     check(`history ${args.join(" ")} is one USAGE_INVALID envelope, exit 1`, r.status === 1 && r.envelope?.error?.code === "USAGE_INVALID", shown(r));
   }
+  await checkHistoryFollowValidation();
 
   const unavailable = `nats://127.0.0.1:${await pickFreePort()}`;
+  await checkUnreachableHistoryFollow(unavailable);
   const tooOld = await run(["history", "--since", "999999999999999999999999999999999999999999999999d", "--server", unavailable, "--json"]);
   check("an unrepresentable --since age is a usage error before connecting", tooOld.status === 1 && tooOld.envelope?.error?.code === "USAGE_INVALID", shown(tooOld));
   // A value that starts with a dash used to be refused by the parser as "ambiguous", and a channel
@@ -476,6 +646,7 @@ try {
   const timedEvents = timed.lines.map((l) => JSON.parse(l) as { type: string; data: { text?: string } }).filter((r) => r.type === "event");
   check("a live follow excludes an event at the time cutoff and emits a later event",
     timedSnap && timedEvent && timedEvents.map((r) => r.data.text).join() === "after the cutoff", timed.lines);
+  await checkFollowResume(alice, bob, midpoint);
 
   const fp = follow(["history", "--follow", "--plain", "--grep", "plain"]);
   await fp.until((l) => /replay to new members/.test(l));
@@ -701,9 +872,9 @@ try {
     }
     for (const channel of channels) {
       const card = await run(["channel", "show", channel, "--space", openSpace, "--plain"]);
-      const word = card.stdout.match(/^\s+cotal history '(#[\w.-]+)'\s+Read retained messages within your grant$/m)?.[1];
+      const [, word, targetSpace] = card.stdout.match(/^\s+cotal history '(#[\w.-]+)' --space (\S+)\s+Read retained messages within your grant$/m) ?? [];
       // Only execute the quoted channel form. An unexpected administrative command is a test failure.
-      const read = word === `#${channel}` ? await run(["history", word, "--space", openSpace, "--json"]) : undefined;
+      const read = word === `#${channel}` && targetSpace === openSpace ? await run(["history", word, "--space", targetSpace, "--json"]) : undefined;
       const messages = read?.envelope?.result?.items;
       check(`channel show #${channel} recommends a history read for that channel only`,
         card.status === 0 && read?.status === 0 && messages?.length === 1
@@ -739,6 +910,32 @@ try {
       const refused = await run(["history", "clear", ...args, "--yes", "--space", openSpace]);
       const after = await run(["history", "--space", openSpace, "--json"]);
       check(`history clear refuses ${label} before purging either channel`, refused.status === 1 && after.status === 0 && texts(after).length === 2 && sentinels.every((text) => texts(after).includes(text)), { refused: shown(refused), after: shown(after) });
+    }
+
+    const before = await run(["history", "--space", openSpace, "--json"]);
+    for (const [path, force] of [["./absent store", false], ["./absent store", true], ["", true], ["~/store", true]] as const) {
+      const refused = await run(["clean", "history", "--store-dir", path, "--space", openSpace, ...(force ? ["--force"] : [])]);
+      const after = await run(["history", "--space", openSpace, "--json"]);
+      check(`clean history refuses --store-dir ${JSON.stringify(path)} ${force ? "with" : "without"} --force and preserves live history`,
+        refused.status === 1 && refused.stderr.includes("clean history targets a running mesh")
+        && refused.stderr.includes("Only clean store and clean all take --store-dir")
+        && !/cotal clean history.*--force|omit --store-dir/.test(refused.stderr)
+        && before.status === 0 && texts(before).length === 2 && after.status === 0
+        && JSON.stringify(after.envelope?.result?.items) === JSON.stringify(before.envelope?.result?.items),
+        { refused: shown(refused), before: shown(before), after: shown(after) });
+    }
+
+    for (const force of [false, true]) {
+      const refused = await run(["clean", "history", "--server", openServers, "--space", openSpace,
+        "--attempt", "restore-00000000-0000-4000-8000-000000000000", ...(force ? ["--force"] : [])]);
+      const after = await run(["history", "--space", openSpace, "--json"]);
+      check(`clean history refuses --attempt ${force ? "with" : "without"} --force and preserves live history`,
+        refused.status === 1 && refused.stderr.includes("clean history cannot be scoped by --attempt")
+        && refused.stderr.includes("selects a restore") && refused.stderr.includes("Nothing was purged")
+        && !/cotal clean history.*--force/.test(refused.stderr)
+        && before.status === 0 && texts(before).length === 2 && after.status === 0
+        && JSON.stringify(after.envelope?.result?.items) === JSON.stringify(before.envelope?.result?.items),
+        { refused: shown(refused), before: shown(before), after: shown(after) });
     }
   }
 
@@ -795,9 +992,27 @@ try {
     const again = await run(["channel", "remove", "ops", "--yes", "--space", space, "--json"]);
     check("removing it again is TARGET_NOT_FOUND, exit 2, listing the registered channels",
       again.status === 2 && again.envelope?.error?.code === "TARGET_NOT_FOUND" && /#ops has no saved entry and no retained messages; registered channels: #general$/.test(again.envelope.error.message), shown(again));
-    const cased = await run(["channel", "remove", "General", "--purge", "--yes", "--space", space, "--json"]);
-    check("another case of a registered channel is refused before any purge, naming the registered spelling",
-      cased.status === 2 && cased.envelope?.error?.code === "TARGET_NOT_FOUND" && /channel names are case-sensitive, and the registered one is #general$/.test(cased.envelope.error.message), shown(cased));
+    const upper = "reports.Daily", lower = "reports.daily";
+    for (const channel of [upper, lower]) {
+      const saved = await run(["channel", "set", channel, "--desc", channel, "--space", openSpace]);
+      const posted = await run(["send", "-c", channel, `retained in ${channel}`, "--space", openSpace]);
+      if (saved.status !== 0 || posted.status !== 0) throw new Error(`could not seed #${channel}: ${JSON.stringify({ saved: shown(saved), posted: shown(posted) })}`);
+    }
+    const purge = ["channel", "remove", lower, "--purge", "--yes", "--space", openSpace, "--json"];
+    const purged = await run(purge);
+    const cased = await run(purge);
+    const remedy = cased.envelope?.error?.remedy;
+    const inspect = remedy === `inspect the registered spelling: \`cotal channel show ${upper} --space ${openSpace}\``
+      ? await run(["channel", "show", upper, "--space", openSpace, "--plain"]) : undefined;
+    const kept = await run(["history", `#${upper}`, "--space", openSpace, "--json"]);
+    check("repeating a confirmed purge suggests inspecting the differently cased channel and preserves its message",
+      purged.status === 0 && (purged.envelope?.result as { purged?: number } | null)?.purged === 1
+        && cased.status === 2 && cased.envelope?.error?.code === "TARGET_NOT_FOUND"
+        && cased.envelope.error.message.includes(`#${lower} has no saved entry and no retained messages`)
+        && inspect?.status === 0 && inspect.stdout.includes(`Channel - #${upper}`) && kept.status === 0 && texts(kept).join() === `retained in ${upper}`,
+      { purged: shown(purged), refused: shown(cased), inspect: inspect && shown(inspect), history: shown(kept) });
+    const removedReports = await run(["channel", "remove", upper, "--purge", "--yes", "--space", openSpace]);
+    check("the remaining case can be purged with its own exact confirmation", removedReports.status === 0, shown(removedReports));
     // A channel with retained messages and no saved entry is one the space has, so its remove is a no-op.
     const posted = await run(["send", "-c", "opz", "kept", "--space", space]);
     const typo = await run(["channel", "remove", "opz", "--yes", "--space", space, "--json"]);
@@ -842,6 +1057,12 @@ try {
       listed.status === 0 && row(listed.stdout, "policy") === "#policy  Operations  off - inherited  live - inherited", shown(listed));
     const defaultsCard = await channel("defaults");
     check("saved channel defaults are explicit and carry no inheritance marks", policyIs(defaultsCard, "off", "1h", "live"), shown(defaultsCard));
+    const observerDefaults = await run(["channel", "defaults", "--creds", observer, "--server", servers, "--space", space, "--json"]);
+    const observerRegistry = (observerDefaults.envelope?.result as { registry?: ChannelRegistryRead })?.registry;
+    check("channel defaults JSON scopes the registry read with an observer credential",
+      observerDefaults.status === 0 && observerDefaults.stderr === ""
+        && Object.keys(observerRegistry ?? {}).join() === "defaults" && observerRegistry?.defaults?.replay === false
+        && observerRegistry.defaults.replayWindow === "1h" && observerRegistry.defaults.deliveryClass === "live", shown(observerDefaults));
     const missing = await channel("show", "policy-unregistered");
     check("an unsaved channel marks every field inherited too", policyIs(missing, "off - inherited", "1h - inherited", "live - inherited"), shown(missing));
     const mixedSet = await channel("set", "policy", "--no-replay");
@@ -864,12 +1085,15 @@ try {
         && row(sameList.stdout, "policy") === "#policy  Operations  off  live", { show: shown(same), list: shown(sameList) });
   }
 
-  // Named JSON includes the same raw defaults as the inventory and only the requested entry.
+  // Scoped channel reads return the raw defaults and only the entries they request.
   {
     const registrySpace = `histreg-${randomUUID().slice(0, 8)}`;
     const json = (...args: string[]) => run(["channel", ...args, "--space", registrySpace, "--server", openServers, "--json"]);
     const registryOf = (r: Awaited<ReturnType<typeof run>>) =>
       (r.envelope?.result as { registry?: ChannelRegistryRead } | null | undefined)?.registry;
+    const absent = await json("defaults");
+    check("channel defaults JSON leaves absent defaults unset",
+      absent.status === 0 && absent.stderr === "" && JSON.stringify(registryOf(absent)) === "{}", shown(absent));
     const defaults = await json("defaults", "--delivery", "live", "--no-replay", "--window", "2h");
     const saved = await json("set", "__proto__", "--desc", "Operations");
     const other = await json("set", "elsewhere", "--desc", "Elsewhere");
@@ -881,6 +1105,10 @@ try {
         && Object.hasOwn(full?.channels ?? {}, "__proto__") && full?.channels?.__proto__?.description === "Operations"
         && full?.defaults?.deliveryClass === "live" && full.defaults?.replay === false && full.defaults?.replayWindow === "2h",
       { defaults: shown(defaults), saved: shown(saved), other: shown(other), inventory: shown(inventory) });
+    const savedDefaults = await json("defaults");
+    check("channel defaults JSON returns raw defaults without channel metadata",
+      savedDefaults.status === 0 && savedDefaults.stderr === ""
+        && JSON.stringify(registryOf(savedDefaults)) === JSON.stringify({ defaults: full?.defaults }), shown(savedDefaults));
     const named = await json("show", "__proto__");
     const missing = await json("show", "constructor");
     check("channel show JSON returns only the named saved entry and raw defaults",
@@ -904,6 +1132,10 @@ try {
     check("channel show JSON keeps decode errors for the requested channel and defaults only",
       bad.status === 0 && registryOf(bad)?.defaults === undefined && JSON.stringify(registryOf(bad)?.channels) === "{}"
         && JSON.stringify(registryOf(bad)?.undecodable) === JSON.stringify(entries?.filter(({ key }) => key !== "bad.other")), shown(bad));
+    const badDefaults = await json("defaults");
+    check("channel defaults JSON keeps only the defaults-key decode error",
+      badDefaults.status === 0 && badDefaults.stderr === ""
+        && JSON.stringify(registryOf(badDefaults)) === JSON.stringify({ undecodable: entries?.filter(({ key }) => key === CHANNEL_DEFAULTS_KEY) }), shown(badDefaults));
   }
 
   {
@@ -915,6 +1147,8 @@ try {
       saved.status === 0 && patch?.replayWindow === "24h" && readback.status === 0 && registry?.channels?.["wire.window"]?.replayWindow === "24h",
       { saved: shown(saved), readback: shown(readback) });
   }
+
+  await checkChannelReplayRetry();
 
   // Empty wire IDs are independent deliveries, including after a retained snapshot.
   {
@@ -965,9 +1199,18 @@ try {
     const authCard = await run(["channel", "show", "general", "--space", space, "--plain"]);
     check("channel show still suggests membership on the auth mesh",
       authCard.status === 0 && authCard.stdout.includes("cotal ch members general"), shown(authCard));
-    const members = await run(["channel", "members", "general", "--space", openSpace, "--json"]);
-    const remedy = (members.envelope?.error as { remedy?: string } | undefined)?.remedy ?? "";
-    check("channel members on an open mesh is UNSUPPORTED, exit 2, naming cotal who", members.status === 2 && members.envelope?.outcome === "refused" && members.envelope?.error?.code === "UNSUPPORTED" && remedy.includes("cotal who"), shown(members));
+    const selectedRoster = await run(["who", "--json"]);
+    check("the default roster targets the selected static-auth space", selectedRoster.status === 0 && spaceOf(selectedRoster) === space, shown(selectedRoster));
+    for (const serverFlags of [[], ["--server", openServers]]) {
+      const members = await run(["channel", "members", "general", "--space", openSpace, ...serverFlags, "--json"]);
+      const argv = ["who", "--space", openSpace, ...serverFlags];
+      const roster = members.envelope?.error?.remedy?.startsWith(`\`cotal ${argv.join(" ")}\` lists who is present`)
+        ? await run([...argv, "--json"]) : undefined;
+      check(`an open membership refusal keeps the space${serverFlags.length ? " and explicit broker" : ""} in the roster command`,
+        members.status === 2 && members.envelope?.outcome === "refused" && members.envelope.error?.code === "UNSUPPORTED"
+          && roster?.status === 0 && spaceOf(roster) === openSpace, { refused: shown(members), roster: roster && shown(roster) });
+    }
+    await checkMembershipSetupRefusal(openSpace, "general", "UNSUPPORTED");
     const authMembers = await run(["channel", "members", "general", "--space", space, "--json"]);
     check("on the auth mesh it still reads the feed", authMembers.envelope?.command === "channel" && authMembers.envelope?.error?.code !== "UNSUPPORTED", shown(authMembers));
   }
@@ -1214,6 +1457,8 @@ try {
       && stoppedRecords[0]?.data?.code === stoppedError.code && stoppedRecords[0]?.data?.message === stoppedError.message
       && stoppedRecords[0]?.data?.remedy === stoppedError.remedy && stoppedRecords[1]?.data?.reason === "setup-failed",
     { read: shown(stoppedRead), follow: shown(stoppedFollow) });
+  await checkMembershipSetupRefusal(space, "updates", "TARGET_UNAVAILABLE", "--server", servers);
+  await checkEventShapedChannelHistory();
 } finally {
   for (const ep of endpoints) await ep.stop().catch(() => {});
   await provisioner?.stop().catch(() => {});

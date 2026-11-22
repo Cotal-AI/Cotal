@@ -1,5 +1,27 @@
 # @cotal-ai/seat
 
+## 0.174.3
+
+No changes in this release.
+
+## 0.174.2
+
+No changes in this release.
+
+## 0.174.1
+
+No changes in this release.
+
+## 0.174.0
+
+No changes in this release.
+
+## 0.173.0
+
+### Patch Changes
+
+- f79e065: Jcode startup failures report the full path to the private log, so you can open it from any directory on the host that ran Jcode.
+
 ## 0.172.2
 
 No changes in this release.

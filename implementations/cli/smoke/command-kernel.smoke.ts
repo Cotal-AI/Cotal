@@ -14,11 +14,14 @@ import type { InstalledExtension } from "@cotal-ai/workspace";
 import "../src/index.js"; // self-register the CLI commands (for the completion check)
 import { complete } from "../src/commands/completion.js";
 import { EXT_UPDATE_PARENT_ENV, ext } from "../src/commands/ext.js";
-import { hostPackageDir, isCommandFailure, MeshTargetError, seededCommandsMismatch, writeUpdateRecovery, readUpdateRecovery, clearUpdateRecovery } from "@cotal-ai/workspace";
+import { hostPackageDir, isCommandFailure, MeshTargetError, seededCommandsMismatch, telemetrySettingsPath, writeUpdateRecovery, readUpdateRecovery, clearUpdateRecovery } from "@cotal-ai/workspace";
 import { executeUpdate, installedUpdatePrefix, parseNpmVersion, printLegacyReport, reportRunningManagers, update, validateUpdateArguments, verifyCurrentExtension, verifyGlobalEntry, type UpdateRuntime } from "../src/commands/update.js";
 import { supervisorMayServe } from "../src/lib/manager-proc.js";
 import { claimExtensionMutation, claimExtensionUpdatePass } from "../src/lib/ext-mutation.js";
 import { compareSemver } from "../src/seed/reconcile.js";
+
+// The probe children strip COTAL_* from their environment; this opt-out survives that filter.
+process.env.DO_NOT_TRACK = "1";
 
 const noop = async (): Promise<void> => {};
 
@@ -67,6 +70,15 @@ const noop = async (): Promise<void> => {};
         assert.ok(!existsSync(join(home, "current-mesh")), "invalid input never selects a space");
       }
     }
+    const invalidWatch = run(["watch", "--view", "bad", "--json"]);
+    assert.equal(invalidWatch.status, 1, invalidWatch.stdout + invalidWatch.stderr);
+    assert.equal(invalidWatch.stderr, "");
+    const watchRecords = invalidWatch.stdout.trimEnd().split("\n").map((line) => JSON.parse(line));
+    assert.deepEqual(watchRecords.map(({ schemaVersion, stream, type }) => [schemaVersion, stream, type]), [[1, "watch", "error"], [1, "watch", "end"]]);
+    assert.equal(watchRecords[0].data.code, "USAGE_INVALID");
+    assert.match(watchRecords[0].data.message, /watch --view takes feed/);
+    assert.equal(watchRecords[1].data.reason, "setup-failed");
+
     const upHelp = run(["up", "--help"]);
     assert.equal(upHelp.status, 0, upHelp.stderr);
     const upText = upHelp.stdout.replace(/\s+/g, " ");
@@ -104,6 +116,19 @@ const noop = async (): Promise<void> => {};
     assert.ok(!existsSync(join(config, "cotal", "extensions")), "catalog refresh never seeds connectors");
     for (const url of ["https://example.test/auth", "http://127.0.0.1:1234/auth", "http://[::1]:1234/auth"])
       assert.doesNotThrow(() => findCommand(registry.all<Command>("command"), "sync")!.validate!({ values: { idp: url }, positionals: [], raw: [] }));
+
+    for (const verb of ["answer", "amend"]) {
+      const invalid = run(["run", verb, "auditrun", "paused", "--local", "--server", "nats://127.0.0.1:1", "--value", "true", "--by", "  ", "--json"],
+        { COTAL_SKIP_CONNECTOR_SEED: "1" });
+      assert.equal(invalid.status, 1, invalid.stdout + invalid.stderr);
+      assert.equal(invalid.stderr, "");
+      const report = JSON.parse(invalid.stdout);
+      assert.equal(report.outcome, "refused");
+      assert.equal(report.target, null);
+      assert.equal(report.error.code, "USAGE_INVALID");
+      assert.match(report.error.message, /requires --by <who>/);
+      assert.equal(report.error.remedy, "add --by <who> to name the local answerer");
+    }
 
     writeFileSync(join(root, "workflow.cotal.js"), 'const ok = await checkpoint("approve-plan", "Approve the plan?");\nlog(ok.status);\n');
     for (const words of [["start", "workflow.cotal.js"], ["resume", "run_sample"]]) {
@@ -1394,11 +1419,12 @@ async function completionOut(positionals: string[]): Promise<string> {
   assert.ok(observed < wrote, "the running-manager observation precedes the seed store rewrite");
 }
 
-// --- malformed npm fails after local reconcile; extension failures continue and aggregate --------
+// --- Registry metadata is advisory; extension failures continue and aggregate ------------------
 {
   const malformed = updateRuntime({ npm: () => ({ status: 0, stdout: "not-json" }) });
-  assert.equal(await executeUpdate(false, malformed.rt), 1);
+  assert.equal(await executeUpdate(false, malformed.rt), 0);
   assert.ok(malformed.events.includes("reconcile"));
+  assert.ok(malformed.events.some((event) => /Registry latest:\s+not established/.test(event)));
 
   const attempted: string[] = [];
   const continued = updateRuntime({
@@ -2390,4 +2416,5 @@ if (process.platform !== "win32") {
   }
 }
 
+assert.ok(!existsSync(telemetrySettingsPath()), "kernel smoke commands must not create a telemetry install record");
 console.log("✓ command-kernel smoke passed");

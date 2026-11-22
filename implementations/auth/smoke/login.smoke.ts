@@ -20,7 +20,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import { performance } from "node:perf_hooks";
 import { AGENT_LIFECYCLE_HELD, mintLifecycleUid } from "@cotal-ai/core";
-import { jwtVerify } from "jose";
+import { exportJWK, generateKeyPair, jwtVerify } from "jose";
 import { betterAuth } from "better-auth";
 import { memoryAdapter } from "better-auth/adapters/memory";
 import { jwt } from "better-auth/plugins/jwt";
@@ -1296,6 +1296,14 @@ console.log("H) /token is posted once per (IdP, session) within the hold, never 
 // points to gets no request. A key set served at <base>/jwks itself still passes.
 {
   const hits: string[] = [];
+  const pair = await generateKeyPair("EdDSA", { extractable: true });
+  const key = await exportJWK(pair.publicKey), privateKey = await exportJWK(pair.privateKey);
+  const other = await exportJWK((await generateKeyPair("ES256")).publicKey);
+  const keys: Record<string, unknown[]> = {
+    "/d/jwks": [other, key], "/empty/jwks": [], "/wrong-alg/jwks": [other, { ...key, alg: "ES256" }],
+    "/malformed/jwks": [{ ...key, x: "bad" }], "/private/jwks": [privateKey], "/encryption/jwks": [{ ...key, use: "enc" }],
+    "/missing-verify/jwks": [{ ...key, key_ops: ["sign"] }],
+  };
   const elsewhere = createServer((req, res) => { hits.push(`elsewhere ${req.url}`); res.writeHead(200, { "content-type": "application/json" }).end('{"keys":[]}'); });
   await new Promise<void>((r) => elsewhere.listen(0, "127.0.0.1", r));
   const elsewhereBase = `http://127.0.0.1:${(elsewhere.address() as AddressInfo).port}`;
@@ -1303,7 +1311,7 @@ console.log("H) /token is posted once per (IdP, session) within the hold, never 
     hits.push(`pinned ${req.url}`);
     if (req.url === "/x/jwks") res.writeHead(302, { location: `${elsewhereBase}/jwks` }).end();
     else if (req.url === "/s/jwks") res.writeHead(302, { location: "/real/jwks" }).end();
-    else res.writeHead(200, { "content-type": "application/json" }).end('{"keys":[]}');
+    else res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ keys: keys[req.url ?? ""] ?? [] }));
   });
   await new Promise<void>((r) => pinned.listen(0, "127.0.0.1", r));
   const pinnedBase = `http://127.0.0.1:${(pinned.address() as AddressInfo).port}`;
@@ -1314,7 +1322,12 @@ console.log("H) /token is posted once per (IdP, session) within the hold, never 
   const same = await preflight("/s");
   check("  and one to the same origin, whose target gets no request",
     !same.ok && same.reason === "unavailable" && same.message.includes("HTTP 302, a redirect; redirects are refused") && !hits.includes("pinned /real/jwks"), { same, hits });
-  check("  a key set served at <base>/jwks still passes", (await preflight("/d")).ok, hits);
+  check("  a key set with an Ed25519 verification key and other algorithms passes", (await preflight("/d")).ok, hits);
+  for (const path of ["/empty", "/wrong-alg", "/malformed", "/private", "/encryption", "/missing-verify"]) {
+    const verdict = await preflight(path);
+    check(`  ${path} refuses when its set has no usable Ed25519 key`, !verdict.ok && verdict.reason === "unavailable"
+      && verdict.message.includes("did not return a usable Ed25519 signing key"), verdict);
+  }
   pinned.close();
   elsewhere.close();
 }

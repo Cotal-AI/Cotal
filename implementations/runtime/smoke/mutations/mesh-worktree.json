@@ -128,7 +128,7 @@
     },
     {
       "name": "adoption seeds from the raw append log, counting every step twice",
-      "file": "implementations/runtime/src/mesh-handler.ts",
+      "file": "implementations/runtime/src/mesh-handler-support.ts",
       "find": "  const first = entries[0];\n  if (first === undefined) return entries;\n  return new Journal({ run: first.run, entries, readOnly: true }).entries();",
       "replace": "  return entries;",
       "expectRed": "the tree is free after adoption: a spawn that never produced an agent holds no reservation",

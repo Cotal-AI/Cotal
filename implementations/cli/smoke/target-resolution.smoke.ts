@@ -33,13 +33,14 @@ import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { jetstreamManager } from "@nats-io/jetstream";
 import { SMOKE_BROKER_TOKEN, assertSmokeSandboxDown, createSuite, freePort, recordSmokeSandbox, teardownOnSignal, type SmokeSandboxAnchor } from "@cotal-ai/smoke-kit";
 import { clean, cotalPty, repoRoot, wait, type Pty } from "./_console-pty.js";
 
 const home = mkdtempSync(join(tmpdir(), "cotal-target-resolution-"));
 // Set before the workspace is imported: it reads COTAL_HOME on each call.
 process.env.COTAL_HOME = join(home, ".cotal");
-const { getCurrent, recordMesh, removeMesh, recordPreparedSpace, removePreparedSpace, resolveOnPath, setCurrent, setAdoptedCurrent, clearCurrent } = await import("@cotal-ai/workspace");
+const { findMesh, getCurrent, recordMesh, removeMesh, recordPreparedSpace, removePreparedSpace, resolveOnPath, setCurrent, setAdoptedCurrent, clearCurrent } = await import("@cotal-ai/workspace");
 const { observeServiceProcess, serviceInstances } = await import("../src/lib/service-instances.js");
 
 const { check, finish } = createSuite();
@@ -57,16 +58,16 @@ process.on("exit", () => {
   for (const p of ptys) p.kill();
   rmSync(home, { recursive: true, force: true });
 });
-async function broker(): Promise<string> {
+async function broker(jetstream = true): Promise<string> {
   const port = await freePort();
-  const b = spawn("nats-server", ["-js", "-a", "127.0.0.1", "-p", String(port), "-sd", mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN))], { stdio: "ignore" });
+  const b = spawn("nats-server", [...(jetstream ? ["-js"] : []), "-a", "127.0.0.1", "-p", String(port), "-sd", mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN))], { stdio: "ignore" });
   teardownOnSignal(b);
   brokers.push(b);
   return `nats://127.0.0.1:${port}`;
 }
 const A = await broker();
 const B = await broker();
-const { isReachable } = await import("@cotal-ai/core");
+const { chatStream, dialerFor, isReachable } = await import("@cotal-ai/core");
 for (let i = 0; i < 50 && !((await isReachable(A)) && (await isReachable(B))); i++) await wait(100);
 
 // A working folder that is no project, so neither the folder nor a selection names the target.
@@ -114,13 +115,60 @@ const QUESTION = "Which one?";
   const env1 = envelope(script);
   check("a script with an ambiguous target is TARGET_AMBIGUOUS, exit 2", script.status === 2 && env1?.error?.code === "TARGET_AMBIGUOUS", shown(script));
   check("its message names the running spaces and its remedy says how to pick one",
-    /alpha/.test(env1?.error?.message ?? "") && /beta/.test(env1?.error?.message ?? "") && /--space <name>/.test(env1?.error?.remedy ?? "") && !/--space <name>/.test(env1?.error?.message ?? ""), env1?.error);
+    /alpha/.test(env1?.error?.message ?? "") && /beta/.test(env1?.error?.message ?? "") && !/--space/.test(env1?.error?.message ?? "") &&
+      ["alpha", "beta"].every((space) => env1?.error?.remedy?.includes(` who --json --space ${space}\``)), env1?.error);
   const identity = run(["whoami", "--json"]);
   const env2 = envelope(identity);
   check("a command that resolves its own target refuses the same way, its remedy apart from its message",
-    identity.status === 2 && env2?.error?.code === "TARGET_AMBIGUOUS" && /--space <name>/.test(env2?.error?.remedy ?? "") && !/--space <name>/.test(env2?.error?.message ?? ""), env2?.error);
+    identity.status === 2 && env2?.error?.code === "TARGET_AMBIGUOUS" && /--space alpha.*--space beta/.test(env2?.error?.remedy ?? "") && !/--space/.test(env2?.error?.message ?? ""), env2?.error);
   const human = run(["who"]);
   check("a script's human output refuses without asking", human.status === 2 && !human.stdout.includes(QUESTION) && !human.stderr.includes(QUESTION) && /multiple meshes running/.test(human.stderr), shown(human));
+}
+
+// A folder can hold several registrations without having a single default space to inspect.
+{
+  const root = join(home, "beta");
+  recordMesh({ space: "gamma", server: B, root, mode: "open", origin: "manual", ts: new Date(0).toISOString() });
+  try {
+    const who = run(["who", "--plain"], root);
+    const next = who.stderr.split("\nNext\n")[1] ?? "";
+    const commands = Array.from(next.matchAll(/`([^`]+)`/g), (match) => match[1]!);
+    check("who in a shared folder refuses before opening the roster and names both exact reads",
+      who.status === 2 && /Code:\s+TARGET_AMBIGUOUS/.test(who.stderr) && /this folder has 2 registered spaces: beta, gamma/.test(who.stderr) &&
+        commands.length === 2 && commands[0]?.endsWith(" who --plain --space beta") && commands[1]?.endsWith(" who --plain --space gamma"), shown(who));
+    for (const flags of [["--plain"], ["list", "--live", "-j"]]) {
+      const inventory = run(["endpoint", ...flags], root);
+      const error = envelope(inventory)?.error;
+      const remedy: unknown = error?.remedy;
+      const guidance = typeof remedy === "string" ? remedy : inventory.stderr.split("\nNext\n")[1] ?? "";
+      const retries = Array.from(guidance.matchAll(/`([^`]+)`/g), (match) => match[1]!);
+      check("ambiguous endpoint inventory names its spaces and preserves the requested inventory options",
+        inventory.status === 2 && /TARGET_AMBIGUOUS/.test(error?.code ?? inventory.stderr) && /registered spaces: beta, gamma/.test(error?.message ?? inventory.stderr) &&
+          retries.length === 2 && ["beta", "gamma"].every((space, i) => retries[i]?.endsWith(` endpoint ${flags.join(" ")} --space ${space}`)), shown(inventory));
+      if (flags[0] === "--plain" && process.platform !== "win32") for (const [i, space] of ["beta", "gamma"].entries()) {
+        const retry = spawnSync("sh", ["-c", retries[i] ?? ""], { cwd: root, env, encoding: "utf8", timeout: 120_000 });
+        check(`the printed inventory retry reads the saved references for ${space} without selecting it`,
+          retry.status === 0 && retry.stdout?.startsWith(`Mesh: ${space}\n`) && retry.stdout.includes("Saved endpoint references") && getCurrent() === undefined, shown(retry));
+      }
+    }
+    for (const space of ["beta", "gamma"]) {
+      const picked = run(["who", "--plain", "--space", space], root);
+      check(`the exact roster read for ${space} succeeds without choosing a default`, picked.status === 0 && picked.stdout.startsWith(`Mesh: ${space}\n`) && getCurrent() === undefined, shown(picked));
+      const show = run(["space", "show", space, "--json"], root);
+      check(`space show ${space} still reads the named space`, show.status === 0 && envelope(show)?.target?.space === space, shown(show));
+    }
+    for (const selected of [undefined, "alpha"]) {
+      if (selected !== undefined) setAdoptedCurrent(selected);
+      const show = run(["space", "show", "--json"], root);
+      const error = envelope(show)?.error;
+      check(`bare space show refuses a shared folder with ${selected === undefined ? "no" : "an unrelated adopted"} selection`,
+        show.status === 2 && error?.code === "TARGET_AMBIGUOUS" && /registered spaces: beta, gamma/.test(error.message) &&
+          ["beta", "gamma"].every((space) => error.remedy?.includes(` space show ${space}\``)) && !error.remedy.includes("space show alpha") && getCurrent() === selected, shown(show));
+    }
+  } finally {
+    clearCurrent();
+    removeMesh("gamma");
+  }
 }
 
 // Equivalent URLs keep identity and unchecked registrations keep their caveat.
@@ -134,9 +182,126 @@ const QUESTION = "Which one?";
   recordMesh({ space: "shared", server: A, root: join(home, "beta"), mode: "open", origin: "manual", ts: new Date(0).toISOString(), unchecked: true });
   const ambiguous = run(["whoami", "--server", A, "--json"]);
   check("explicit broker ambiguity names recorded spaces and explains removing --server after use", ambiguous.status === 2 && /multiple spaces recorded/.test(envelope(ambiguous)?.error?.message ?? "") && /remove --server/.test(envelope(ambiguous)?.error?.remedy ?? ""), shown(ambiguous));
+  for (const [serverFlags, format] of [[["--server", A], "--plain"], [[`--server=${A}/`], "-j"]] as const) {
+    const args = ["who", ...serverFlags, format, "--all"];
+    const refused = run(args);
+    const error = envelope(refused)?.error;
+    const remedy: unknown = error?.remedy;
+    const next = typeof remedy === "string" ? remedy : refused.stderr.split("\nNext\n")[1] ?? "";
+    const commands = Array.from(next.matchAll(/`([^`]+)`/g), (match) => match[1]!);
+    const expected = format === "-j" ? `who '--server=${A}/' -j --all` : `who --server ${A} --plain --all`;
+    check(`who ${format} on a shared broker refuses and keeps the broker and flags in each exact choice`,
+      refused.status === 2 && (format === "-j" ? error?.code === "TARGET_AMBIGUOUS" : /Code:\s+TARGET_AMBIGUOUS/.test(refused.stderr)) &&
+      commands.length === 2 && ["alpha", "shared"].every((space, index) => commands[index]?.endsWith(` ${expected} --space ${space}`)), shown(refused));
+    for (const space of ["alpha", "shared"]) {
+      const picked = run([...args, "--space", space]);
+      check(`the ${format} retry for ${space} reads its roster without selecting a default`, picked.status === 0 && getCurrent() === undefined &&
+        (format === "-j" ? envelope(picked)?.target?.space === space : picked.stdout.startsWith(`Mesh: ${space}\n`)), shown(picked));
+    }
+  }
   const unchecked = run(["whoami", "--space", "shared", "--server", `${A}/`, "--json"]);
   check("equivalent URL does not turn unchecked mode into checked", unchecked.status === 4 && envelope(unchecked)?.result?.modeChecked === false, shown(unchecked));
   removeMesh("shared");
+}
+
+// A reachable open broker can answer for names that have no streams there.
+{
+  const root = join(home, "upcoming");
+  mkdirSync(root);
+  const nc = await dialerFor(A)({ servers: A });
+  try {
+    const streams = (await jetstreamManager(nc)).streams;
+    await streams.add({ name: chatStream("alpha"), subjects: ["inventory.alpha"] });
+    removeMesh("beta");
+    const add = ["space", "add", "upcoming", "--server", A, "--root", root];
+    const checked = run([...add, "--yes", "--json"]);
+    check("checked registration refuses a space absent from the broker inventory", checked.status === 2 && envelope(checked)?.error?.code === "TARGET_NOT_FOUND", shown(checked));
+    const forced = run([...add, "--force", "--json"]);
+    check("force records the upcoming space unchecked", forced.status === 0 && findMesh("upcoming")?.unchecked === true, shown(forced));
+
+    const automatic = run(["who", "--json"]);
+    check("automatic selection targets the only served candidate", automatic.status === 0 && envelope(automatic)?.target?.space === "alpha", shown(automatic));
+    const tty = terminal(["who"]);
+    check("the terminal reads the sole served candidate without asking", await until(() => tty.s.code !== undefined, 15_000) && tty.s.code === 0 && /\bin alpha\b/.test(tty.s.text()) && !tty.s.text().includes(QUESTION), tty.s.text().slice(-600));
+    check("automatic selection keeps the unchecked record and leaves the default clear", findMesh("upcoming")?.unchecked === true && getCurrent() === undefined);
+    const explicit = run(["who", "--server", A, "--json"]);
+    check("explicit server still needs a name when several spaces are recorded there", explicit.status === 2 && /multiple spaces recorded/.test(envelope(explicit)?.error?.message ?? ""), shown(explicit));
+    setCurrent("upcoming");
+    const selected = run(["who", "--json"]);
+    check("an explicit selection still targets the unchecked record", selected.status === 0 && envelope(selected)?.target?.space === "upcoming", shown(selected));
+    clearCurrent();
+
+    await streams.add({ name: chatStream("upcoming"), subjects: ["inventory.upcoming"] });
+    const two = run(["who", "--json"]);
+    check("an unchecked registration with a live stream stays a candidate", two.status === 2 && /multiple meshes running/.test(envelope(two)?.error?.message ?? "") && /upcoming/.test(envelope(two)?.error?.message ?? ""), shown(two));
+
+    const unavailable = await broker(false);
+    for (let i = 0; i < 30 && !(await isReachable(unavailable)); i++) await wait(50);
+    check("the broker without inventory still answers", await isReachable(unavailable), unavailable);
+    recordMesh({ ...findMesh("upcoming")!, server: unavailable });
+    const unknown = run(["who", "--json"]);
+    const error = envelope(unknown)?.error;
+    check("unreadable inventory is not called running or mistaken for absence", unknown.status === 2 && error?.code === "TARGET_AMBIGUOUS" && /upcoming.*not verified running/.test(error.message) && /--space alpha/.test(error.remedy) && /--space upcoming/.test(error.remedy), shown(unknown));
+  } finally {
+    clearCurrent();
+    removeMesh("upcoming");
+    recordMesh({ space: "beta", server: B, root: join(home, "beta"), mode: "open", origin: "manual", ts: new Date(0).toISOString() });
+    await nc.close();
+  }
+}
+
+// A damaged selection refuses even with exactly one live fallback.
+{
+  const beta = findMesh("beta")!;
+  const prepared = join(home, "prepared-selection");
+  const pointer = join(env.COTAL_HOME!, "current-mesh");
+  removeMesh("beta");
+  mkdirSync(prepared);
+  recordPreparedSpace({ space: "planned", root: prepared, ts: new Date(0).toISOString() });
+  try {
+    const selected = run(["use", "planned", "--plain"]);
+    const stopped = run(["who", "--json"]);
+    check("an intact selection names the prepared space and refuses instead of reading the running one",
+      selected.status === 0 && stopped.status === 2 && envelope(stopped)?.error?.code === "TARGET_UNAVAILABLE" && envelope(stopped)?.target?.space === "planned", shown(stopped));
+
+    writeFileSync(pointer, "");
+    const use = run(["use", "--plain"]), who = run(["who", "--plain"]);
+    check("bare who and use give the same refusal for an empty selection, without a roster",
+      use.status === 1 && who.status === 1 && who.stdout === "" && who.stderr === use.stderr &&
+      who.stderr.includes(`${pointer} is empty`) && who.stderr.includes("SCHEMA_INVALID") && who.stderr.includes("`cotal use --clear`"), shown(who));
+    const local = run(["who", "--json"], join(home, "alpha"));
+    check("an empty selection does not fall back to the running project either",
+      local.status === 1 && envelope(local)?.error?.code === "SCHEMA_INVALID" && envelope(local)?.target?.file === pointer && envelope(local)?.target?.space === undefined, shown(local));
+    for (const flags of [["--space", "alpha"], ["--server", A]]) {
+      const explicit = run(["who", ...flags, "--json"]);
+      check(`${flags[0]} still targets the named mesh with an empty saved selection`,
+        explicit.status === 0 && envelope(explicit)?.target?.space === "alpha", shown(explicit));
+    }
+
+    run(["use", "planned"]);
+    const marker = `${pointer}.adopted`;
+    mkdirSync(marker);
+    writeFileSync(join(marker, "keep"), "");
+    const unreadable = run(["who", "--json"]);
+    check("an unreadable selection marker is named and does not permit fallback",
+      unreadable.status === 1 && envelope(unreadable)?.error?.code === "SCHEMA_INVALID" && envelope(unreadable)?.target?.file === marker, shown(unreadable));
+    const reselected = run(["use", "planned", "--json"]);
+    check("selecting again repairs an unreadable marker without losing its directory contents",
+      reselected.status === 0 && getCurrent() === "planned" && !existsSync(marker) &&
+      readdirSync(env.COTAL_HOME!).some(name => name.startsWith("current-mesh.adopted.corrupt.") && existsSync(join(env.COTAL_HOME!, name, "keep"))), shown(reselected));
+    mkdirSync(marker);
+    const clearedMarker = run(["use", "--clear", "--plain"]);
+    check("clearing an unreadable marker clears the saved selection", clearedMarker.status === 0 && !existsSync(pointer) && !existsSync(marker), shown(clearedMarker));
+
+    writeFileSync(pointer, "");
+    const cleared = run(["use", "--clear", "--plain"]), fallback = run(["who", "--json"]);
+    check("deliberately clearing the damaged selection restores the single-space fallback",
+      cleared.status === 0 && fallback.status === 0 && envelope(fallback)?.target?.space === "alpha", shown(fallback));
+  } finally {
+    clearCurrent();
+    removePreparedSpace("planned");
+    recordMesh(beta);
+  }
 }
 
 // ── A terminal chooses, for this run only ───────────────────────────────────────────────────────────
@@ -260,13 +425,14 @@ const QUESTION = "Which one?";
   check("chat --stdio there names the selection it joins and that note; away from any project it names neither",
     deltaChat.status === 0 && deltaChat.stderr.includes(`cotal chat: this session joins the selected space "alpha"; ${HELD}\n`) &&
       awayChat.status === 0 && !/this session joins|this folder holds/.test(awayChat.stderr), { here: shown(deltaChat), away: shown(awayChat) });
-  // The listing and `use` name no folder space there, because none is the target; `space show`, which
-  // is about the folder, still shows what it holds and says the selection applies until it runs.
+  // The listing marks no folder target. `use` names the selection and the folder separately, while
+  // `space show` inspects the prepared folder and says the selection applies until it runs.
   const listed = run(["space", "--json"], delta), listedText = run(["space"], delta), shownSpace = run(["space", "show"], delta), used = run(["use", "--json"], delta), usedText = run(["use"], delta);
-  check("in that folder the listing and use name no folder space, and space show names what it holds",
+  check("the listing marks no folder target, while use and space show identify the prepared folder",
     envelope(listed)?.result?.folder === null && !/^ {2}delta \(this folder's\) /m.test(listedText.stdout) &&
       /^Mesh: delta\n {2}this folder's prepared space; commands here target the selected space "alpha" until it runs$/m.test(shownSpace.stdout) && /^space: +delta$/m.test(shownSpace.stdout) &&
-      envelope(used)?.result?.current === "alpha" && envelope(used)?.result?.folder === null && !usedText.stdout.includes(`commands in this folder target its space "delta"`),
+      used.status === 0 && envelope(used)?.target?.space === "alpha" && envelope(used)?.result?.current === "alpha" && envelope(used)?.result?.folder === "delta" &&
+      usedText.status === 0 && usedText.stdout.includes(`commands here target this folder's space "delta" while it runs`),
     { listed: shown(listed), listedText: shown(listedText), shownSpace: shown(shownSpace), used: shown(used), usedText: shown(usedText) });
   // status reports the selection there, with what this folder holds and its `up` under the heading.
   const statusHere = run(["status", "--json"], delta), statusHereText = run(["status"], delta);

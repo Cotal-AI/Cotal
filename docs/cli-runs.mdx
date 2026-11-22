@@ -169,8 +169,9 @@ An unreadable revocation marker makes the result partial, exit 4, with a `REVOCA
 warning naming the run. A `run --endpoint <endpoint>` that matches no run lists nothing and says so,
 naming the endpoints runs are recorded under, with an `ENDPOINT_HAS_NO_RUNS` warning. The text view is presentation and is not a stable parsing target. With
 `--local`, only the list, `show`, `answer` and `amend` take `--json` or `--plain`. Any other local form
-refuses either flag `USAGE_INVALID`, exit 1: `start --local` and `resume --local` name the
-manager's form, which takes it. `revoke` and `check` have no other form. For `check`, the retry
+refuses either flag with `USAGE_INVALID`, exit 1. For `start --local` and `resume --local`, remove
+the output flag to drive the run locally, or use the suggested manager command, which keeps your
+explicit target and output flag. `revoke` and `check` have no other form. For `check`, the retry
 keeps the candidate file and explicit target and omits the output flag. If the broker URL cannot
 be displayed safely, the refusal asks you to remove the output flag from your original command.
 `run --page`, which is not in release 0.88.0 or earlier, asks one manager for a single bounded
@@ -197,11 +198,17 @@ answer without `--value` carries no value: the step settles as answered, and the
 program's checkpoint result has no `value`. `--value` is refused with `SCHEMA_INVALID` before
 anything is sent when the record would not hold what you typed: an object that names a key twice,
 a number outside the range JSON carries (such as `1e999`), or a value nested more than 1000 levels
-deep. An empty or blank `--artifact` is refused with `USAGE_INVALID`. The receipt of `answer` and
-`amend` names the step, the value it filed or that none was given, any artifact and the answer id. A value longer than
-120 characters is cut there too, with a line that says so. With `--json` they are in
-`result.answer`, whole, where `valueGiven` says whether a value was sent. `amend` records a changed
-position on a settled checkpoint or `ask`: it files a new answer beside the accepted one, naming it, and the journal lists it under the step. The pause stays
+deep. An empty or blank `--artifact` is refused with `USAGE_INVALID`. The text receipts for `answer`
+and `amend` show the step, the submitted value or that none was given, any artifact and the answer
+ID. They shorten values longer than 120 characters and say when they do.
+
+With `--json`, `result.answer` contains `step`, the full `value` and `artifact` if supplied, and
+`valueGiven`, which is false when `value` is absent. The returned answer ID is in
+`result.result.answerId`. An amendment also reports the ID of the accepted answer in
+`result.result.supersedes`.
+
+`amend` records a changed position on a settled checkpoint or `ask`: it files a new answer beside
+the accepted one, and the journal lists it under the step. The pause stays
 settled and the run keeps the answer it acted on. A step that is still open or settled without an
 answer refuses an amend. So does a run ID that no run is recorded under, and that refusal says no
 run is recorded under that ID. With `--local` these refusals are `TARGET_NOT_FOUND`, exit 2, as the
@@ -246,15 +253,18 @@ records the path. The guide is [workflows](workflows.mdx).
 
 ## Workflow command forms [#workflow-command-forms]
 
-`cotal run` (or `cotal r`) lists the authorized workflow records. `run show <run-id>` reads
+`cotal run` (or `cotal r`) lists the authorized workflow records. On an open mesh, the text list
+points to offline simulation because that mesh cannot host runs. `run show <run-id>` reads
 recorded state, open requests, each step's recorded error and the last 20 journal rows. `--limit <n>`
 prints the last `n` rows instead, from 1 to 1000, and is refused with `--json`. A settled
 `race` row names the branch it took, and a cancelled row in a branch that lost a race names the
 branch that won and the race. An answer whose step was in a branch that lost a race, or
 whose pause was cancelled after accepting it, is listed as `not acted on`. Its JSON result contains
-the full returned status and journal. The JSON command under `Next` keeps `--local` and any
-explicit target selectors, but omits `--limit`. Revoked admission and unreadable revocation markers
-remain distinct from the record's state. Neither a record nor a receipt is a live agent-progress report.
+the full returned status and journal. The JSON and answer commands under `Next` keep `--local` and
+any explicit target selectors. The JSON command omits `--limit`, and a local answer requires
+`--by <who>`. Answer and amendment receipts keep the same route in their `show` command.
+Revoked admission and unreadable revocation markers remain distinct from the record's state.
+Neither a record nor a receipt is a live agent-progress report.
 
 ```bash
 cotal r
@@ -280,8 +290,8 @@ L1031 because the program has no statements. A lone `;` is an empty statement an
 start sends the program to the manager in one message, so a program over the broker's message limit
 (`max_payload`) is refused `UNSUPPORTED` with its size and the limit, and nothing is sent. Resume uses the host's recorded program. Hosted answers
 and amendments are attributed to the authenticated caller, never a supplied name. On a static-auth mesh that caller is one actor derived from the OS login and host, so hosted run commands from that login and host record the same actor. Each command still mints a fresh short-lived credential and lifecycle. A signed-in user keeps that user's `cli` actor, and a managed seat keeps the seat's name. Local answers and
-amendments require `--by <who>`; a missing or empty value refuses `USAGE_INVALID` before contacting
-the broker, with a JSON refusal under `--json`. `check <run-id> <file>`
+amendments require `--by <who>`. If the value is missing, empty or whitespace-only, the CLI refuses it with
+`USAGE_INVALID` before contacting the broker, with a JSON refusal under `--json`. `check <run-id> <file>`
 replays the run's recorded journal
 against the edited program and prints whether the migration is admissible, and it files no migration. Revocation keeps
 the existing local trust and explicit actor/reason requirements and does not cancel a task.
@@ -322,14 +332,21 @@ status, a non-string note, an unknown field, a scripted `at`, and a missing, mal
 unexpected destination. A destination refusal names the `to` field, including the array index
 for a list entry.
 
-When the script has no result for an effect, the simulation exits 5 with `OPERATION_FAILED`. The
-message names the step and the entry to add, and `target.step` carries the step. When the program
-itself fails under the script, as a checkpoint scripted `expired` under the default `onExpiry: "fail"`
-does with L4007, the simulation completes and exits 0. Its program outcome is failed, with the step
-and that step's outcome, or the last step the program settled before its own code failed, and the
-language's error. JSON carries this as `result.outcome` and `result.failure`. A simulation does not
-establish live authority, installed applications or readiness. All three support JSON and plain
-output and contact no broker.
+A missing script entry or an exhausted list raises L6001. If it goes uncaught, the error names the
+table and step and suggests what to add. For an exhausted list it names the needed result, counted
+from 1, while the step key counts occurrences from 0. JSON includes `target.step` if a failed
+journal entry matches the error code. That can be a different step from the one in the message,
+for example when parallel branches both raise L6001.
+
+If L6001 or a statement such as `throw "boom"` goes uncaught, the simulator produces no report.
+The CLI exits 5 with `OPERATION_FAILED`. Its JSON envelope has `outcome: "failed"` and
+`result: null`.
+
+A simulation that returns a report exits 0 with envelope `outcome: "ok"`. This includes reports of
+program faults with language error codes L3xxx or L4xxx, such as L4007 when a checkpoint expires
+under the default `onExpiry: "fail"`. Those reports have `result.outcome: "failed"`.
+A simulation does not establish live authority, installed applications or readiness. All three
+offline commands support JSON and plain output and contact no broker.
 
 The `--handler` file is one JSON object in UTF-8, with an optional leading byte-order mark.
 It must be a regular file or a symlink to one, as the program file must be.
@@ -344,12 +361,15 @@ for every occurrence, or a list used in order. A step with no name is keyed by i
 `ask`. `spawn`, `sleep`, `notify`, `monitor`, `observe` and conclaves need no entry, and a sleep
 moves the virtual clock forward.
 
+Use this results file with the [example program](workflows.mdx#a-first-program). The blocked builder
+prompts an `unblock` turn, and the unnamed wait reads the `wait` entry.
+
 ```json
 {
   "checkpoints": { "approve-plan": { "status": "resolved", "value": true, "by": "ana" } },
   "asks": { "plan": { "steps": ["design", "build"] } },
-  "turns": { "build": [{ "status": "blocked", "note": "needs a key" }, { "status": "done" }] },
-  "events": { "await-reply": null }
+  "turns": { "build": { "status": "blocked", "note": "needs a key" }, "unblock": { "status": "done" } },
+  "events": { "wait": null }
 }
 ```
 
@@ -371,12 +391,31 @@ and advances virtual time only to that timeout.
 A checkpoint scripted as `expired` expires at the step's `timeout`, as a live deadline does. A
 resolved checkpoint, or an expired one without a `timeout`, takes the `clock.checkpoint` delay.
 
-The simulation's `log(...)` lines print under `Log`, and `--json` carries them in `result.log`, each
-with its `scope` and `values`. A step with no entry, or a list shorter than the step's occurrences,
-stops the simulation with L6001 and exit 5. The failure names the table, the step's name and its step key,
-and the remedy names the entry to add. For a list that is too short, it also says which result the step
-needs, counted from 1, while the step key counts occurrences from 0. A failure in the program itself
-names its code and cause.
+When the simulation returns a report, `cotal run simulate <file> --json` puts these fields in the
+`result` object:
+
+| Field | Meaning |
+|---|---|
+| `result.kind` | `workflow-simulation`. |
+| `result.outcome` | The program's outcome, `completed` or `failed`, inside the CLI's `ok` envelope. |
+| `result.failure` | `null` when the program succeeds. Otherwise contains `code`, `title`, `cause`, `fix` and the journal diagnostics `step`, `stepOutcome` and `after`. Unavailable details are `null`. |
+| `result.steps` | The number of interpreter steps charged against the step budget, including work that does not call an effect. `null` if the program fails. |
+| `result.elapsedMs` | Milliseconds advanced on the virtual clock since `clock.start` (default `0`). |
+| `result.effects` | Simulation journal entries with `step` (the step key), `kind`, `name` (empty if unnamed) and `status` (the journal state if no status was recorded). An effect inside `once` can also carry `atMostOnce: true`. |
+| `result.agents` | Simulated `spawn` requests with `persona` and channel names in `joins`, plus `worktree`, `role` and `permits` if supplied. No agents were launched. |
+| `result.waits` | One entry per reached `waitUntil` that starts polling, with `step`, `name`, polling interval `every` and duration `deadline`. Channel `wait` calls appear in `result.effects`. |
+| `result.checkpoints` | One row per checkpoint request sent to the simulator, with `step`, `name`, `prompt` and any `timeout`, `onExpiry` and `to` from the request. An escalation adds a second row with the same step key and `onExpiry: "proceed"`. |
+| `result.unusedScript` | Keys from `turns`, `asks`, `checkpoints` and `events` that were never selected during result lookup, in `table.name` form (for example, `checkpoints.approve-plan`). A matching list counts as used even when empty or exhausted. A fault injected before lookup does not use the key. |
+| `result.log` | `log(...)` calls in order, each with `scope` and `values`. In plain output these appear under `Log`. |
+
+In `result.failure`, `step` and `stepOutcome` describe the last failed entry in journal order with
+the same error code. If there is no match and the code is L4007, they describe the last settled entry
+if it is an expired checkpoint. These are journal matches, so they may not identify the source of
+the uncaught error. When no step matches, `after` names the last settled entry in journal order, if
+there is one.
+
+`result.elapsedMs` does not measure how long the CLI process ran. For example, `await sleep("1h")`
+advances virtual time by `3600000` milliseconds without waiting an hour in real time.
 
 
 ### Seat turns

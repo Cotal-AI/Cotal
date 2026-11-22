@@ -489,7 +489,8 @@ try {
   // it runs on its own stack in `webRoot`, which these cells stop before the open-mesh cells below.
   const extAdd = cli("ext", "add", join(WT, "implementations", "web"));
   check("the web extension installs into this isolated config", extAdd.status === 0, `${extAdd.stdout}${extAdd.stderr}`);
-  const webUp = cliIn(webRoot, ["up", "--detach", "--space", WEB_SPACE, "--server", `nats://127.0.0.1:${await freePort()}`], 120_000);
+  const webServer = `nats://127.0.0.1:${await freePort()}`;
+  const webUp = cliIn(webRoot, ["up", "--detach", "--space", WEB_SPACE, "--server", webServer], 120_000);
   webStack = webUp.status === 0;
   check("the dashboard's static-auth stack starts", webStack, `${webUp.stdout}${webUp.stderr}`);
   const notStarted = cliIn(webRoot, ["status", "--components", "--space", WEB_SPACE]);
@@ -514,19 +515,22 @@ try {
     const resumed = cliIn(webRoot, ["status", "--components", "--space", WEB_SPACE]);
     check("resuming that broker restores serving health", resumed.status === 0 && /broker\s+serving/.test(resumed.stdout), `${resumed.stdout}${resumed.stderr}`);
   }
-  const managerGuidance = (cwd: string, openMesh: boolean) => {
-    const roster = cliIn(cwd, ["ps", "--json"]);
+  const managerGuidance = (cwd: string, openMesh: boolean, space: string, server: string) => {
+    const roster = cliIn(cwd, ["ps", "--space", space, "--json"]);
     const manager = (JSON.parse(roster.stdout) as { result: { managers: { instanceId: string }[] } }).result.managers[0]!.instanceId;
-    for (const name of ["manager", manager]) {
-      const read = cliIn(cwd, ["status", name, "--json"]);
+    for (const name of ["manager", manager]) for (const flags of [[], ["--space", space, "--server", server]]) {
+      const from = flags.length && openMesh ? webRoot : cwd;
+      const read = cliIn(from, ["status", name, ...flags, "--json"]);
       const error = (JSON.parse(read.stdout) as { error?: { code: string; remedy?: string } }).error;
-      check(`status ${name === "manager" ? "manager" : "manager instance"} explains the answering manager is not an agent`,
+      const target = flags.length ? ` ${flags.join(" ")}` : "";
+      check(`status ${name === "manager" ? "manager" : "manager instance"} keeps its ${flags.length ? "explicit" : "implicit"} target in Manager guidance`,
         read.status === 2 && error?.code === "TARGET_NOT_FOUND" && error.remedy !== undefined
           && error.remedy.includes(`${name} is this space's manager, which is answering, not an agent it runs`)
-          && error.remedy.includes("`cotal status`") && error.remedy.includes("`cotal endpoint describe manager`") === !openMesh, `${read.stdout}${read.stderr}`);
+          && error.remedy.includes(`\`cotal status${target}\``) && error.remedy.includes("cotal endpoint describe manager") === !openMesh
+          && (openMesh || error.remedy.includes(`\`cotal endpoint describe manager${target}\``)), `${read.stdout}${read.stderr}`);
     }
   };
-  managerGuidance(webRoot, false);
+  managerGuidance(webRoot, false, WEB_SPACE, webServer);
   if (process.platform !== "win32") {
     const deliveryCreds = join(webRoot, ".cotal", deliveryCredsKey(WEB_SPACE, { injected: false, root: webRoot }));
     chmodSync(deliveryCreds, 0o644);
@@ -550,22 +554,24 @@ try {
   const minted = cliIn(webRoot, ["auth", "mint", "dashboard", "--profile", "admin", "--out", creds, "--space", WEB_SPACE]);
   check("the dashboard's protected credential file is minted", minted.status === 0 && existsSync(creds), `${minted.stdout}${minted.stderr}`);
   const webPort = await freePort();
-  check("space create prepares an open controller stack", cliIn(openRoot, ["space", "create", "component-health-open"]).status === 0);
-  const openUp = cliIn(openRoot, ["up", "--open", "--server", `nats://127.0.0.1:${await freePort()}`], 120_000);
+  const openSpace = "component-health-open";
+  const openServer = `nats://127.0.0.1:${await freePort()}`;
+  const openStore = join(openRoot, "custom-store");
+  check("space create prepares an open controller stack", cliIn(openRoot, ["space", "create", openSpace]).status === 0);
+  const openUp = cliIn(openRoot, ["up", "--open", "--server", openServer, "--store-dir", openStore], 120_000);
   openStack = openUp.status === 0;
   check("an open controller stack starts", openStack, `${openUp.stdout}${openUp.stderr}`);
   const openHealth = cliIn(openRoot, ["status", "--components"]);
   const openText = `${openHealth.stdout}${openHealth.stderr}`;
   check("a healthy open stack needs no delivery daemon and exits zero", openHealth.status === 0 && /delivery\s+not-started.*not used on an open mesh/.test(openText) && /broker\s+serving/.test(openText) && /manager\s+serving/.test(openText), openText);
-  managerGuidance(openRoot, true);
+  managerGuidance(openRoot, true, openSpace, openServer);
   const openDown = cliIn(openRoot, ["down", "--yes"], 120_000);
   openStack = openDown.status !== 0;
   check("the open controller stack stops", openDown.status === 0, `${openDown.stdout}${openDown.stderr}`);
-  const stoppedStore = (cwd: string) => {
+  const stoppedStore = (cwd: string, store = join(cwd, ".cotal", "nats"), target?: { space: string; server: string; otherServer: string }) => {
     if (process.platform === "win32" || process.getuid?.() === 0) return;
     const cleared = cliIn(cwd, ["use", "--clear"]);
     check("clear the sibling selection before inspecting this stopped stack", cleared.status === 0, `${cleared.stdout}${cleared.stderr}`);
-    const store = join(cwd, ".cotal", "nats");
     spawnSync("chmod", ["-R", "a-w", store]);
     try {
       for (const command of ["status", "ps"]) for (const output of ["--plain", "--json"]) {
@@ -574,9 +580,22 @@ try {
         check(`${command} ${output} names the stopped store permission repair before restart`,
           report.status === (command === "status" ? 0 : 2) && text.includes("not writable by this account") && text.includes("chmod -R u+w") && !text.includes("reset store") && !text.includes("there to restart") && !/cotal up +Start this folder's stopped stack/.test(text), text);
       }
+      if (target) {
+        const ps = (server: string) => cliIn(cwd, ["ps", "--plain", "--space", target.space, "--server", server]);
+        const matching = ps(target.server);
+        const text = `${matching.stdout}${matching.stderr}`;
+        check("ps at the saved broker URL names the read-only custom JetStream directory",
+          matching.status === 2 && text.includes("PERMISSION_DENIED") && text.includes(`${store} is not writable`) && text.includes(`chmod -R u+w ${store}`) && !text.includes("there to restart"), text);
+        const other = ps(target.otherServer);
+        const otherText = `${other.stdout}${other.stderr}`;
+        check("ps at a different broker URL keeps the broker refusal",
+          other.status === 2 && otherText.includes("TARGET_UNAVAILABLE") && !otherText.includes(store), otherText);
+      }
     } finally { spawnSync("chmod", ["-R", "u+rwX", store]); }
   };
-  stoppedStore(openRoot);
+  let otherServer: string;
+  do { otherServer = `nats://127.0.0.1:${await freePort()}`; } while (otherServer === openServer);
+  stoppedStore(openRoot, join(openStore, "jetstream"), { space: openSpace, server: openServer, otherServer });
   const defaultDown = cliIn(webRoot, ["down", "--yes"], 120_000);
   webStack = defaultDown.status !== 0;
   check("stop the default stack before inspecting its retained store", defaultDown.status === 0, `${defaultDown.stdout}${defaultDown.stderr}`);
@@ -820,7 +839,7 @@ try {
   check("pending keeps the stopped-space diagnosis, the recipient, and the project's restart remedy",
     pending.status === 2 && receipt.target?.requested === "nobody" && receipt.target.space === controllerSpace && receipt.target.root === controllerRoot
       && receipt.error?.code === "TARGET_UNAVAILABLE" && receipt.error.message === `"${controllerSpace}" is stopped; its last operation, \`cotal down\`, completed`
-      && receipt.error.remedy === `start it again with \`cotal up\` in ${controllerRoot}`, receipt);
+      && receipt.error.remedy === `start it again with \`cotal up --no-manager\` in ${controllerRoot}`, receipt);
   const stoppedController = cliIn(controllerRoot, ["status", "--components"]);
   check("a cleanly stopped controller target is absent (1), not refused",
     stoppedController.status === 1 && /target\s+absent.*not-started/.test(stoppedController.stdout), `${stoppedController.stdout}${stoppedController.stderr}`);
@@ -828,6 +847,24 @@ try {
   const selectedHealth = selectedStopped.stdout.split("Component Health")[1] ?? "";
   check("component health preserves the header's stopped selection instead of probing the folder's space",
     selectedStopped.status === 1 && selectedStopped.stdout.includes(`Mesh: ${controllerSpace}`) && selectedHealth.includes(`"${controllerSpace}" is stopped`) && !selectedHealth.includes(WEB_SPACE), `${selectedStopped.stdout}${selectedStopped.stderr}`);
+  const journal = join(controllerRoot, ".cotal", "stack-controller.json"), wholeJournal = readFileSync(journal);
+  const truncatedJournal = '{"schemaVersion":1,"kind":\n';
+  writeFileSync(journal, truncatedJournal);
+  try {
+    const message = `the stack journal ${journal} is not valid JSON`;
+    const remedy = `no member of this stack is running, so remove ${journal}`;
+    const ps = cliIn(controllerRoot, ["ps", "--plain", "--space", controllerSpace]);
+    const psText = ps.stdout + ps.stderr;
+    check("ps refuses a truncated journal and names its recovery, not an unstarted space",
+      ps.status === 1 && /Code:\s+SCHEMA_INVALID/.test(psText) && psText.includes(message) && psText.includes(remedy) && !psText.includes("is prepared but not started"), psText);
+    const status = cliIn(webRoot, ["status", "--components", "--space", controllerSpace]);
+    const health = status.stdout.split("Component Health")[1] ?? "";
+    check("component health refuses the selected root's truncated journal (3), even from another folder",
+      status.status === 3 && /target\s+refused.*SCHEMA_INVALID/.test(health) && health.includes(message) && health.includes(remedy), status.stdout + status.stderr);
+    check("the diagnostics leave the journal unchanged", readFileSync(journal, "utf8") === truncatedJournal);
+  } finally {
+    writeFileSync(journal, wholeJournal);
+  }
 
   const legacyUp = cliIn(webRoot, ["up", "--no-manager", "--space", WEB_SPACE], 120_000);
   webStack = legacyUp.status === 0;

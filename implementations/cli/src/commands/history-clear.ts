@@ -1,7 +1,7 @@
 import * as prompts from "../lib/prompts.js";
 import { chatStream, dmStream, dialerFor, isPublishPermissionDenied, isStreamNotFound, standaloneConnectOpts } from "@cotal-ai/core";
 import { jetstreamManager } from "@nats-io/jetstream";
-import { ConfirmationRequired, CommandFailure, recordOperationSpace, brokerAddressForDisplay, connectOrThrow, credentialRefusalMessage, isConnectRefusal, isWorkspaceTargetError, oneLine, presentationOf, resolveMeshTarget, userViewAuth, writeResult, type Report } from "@cotal-ai/workspace";
+import { ConfirmationRequired, CommandFailure, recordOperationSpace, brokerAddressForDisplay, connectOrThrow, credentialRefusalMessage, findCotalRoot, findMesh, hasUserAuthState, isConnectRefusal, isWorkspaceTargetError, oneLine, presentationOf, resolveMeshTarget, userViewAuth, writeResult, type Report } from "@cotal-ai/workspace";
 import { canPrompt } from "./meshes-wizard.js";
 import { targetWords, yesRequired } from "../lib/confirmation-required.js";
 import { noticeOnInterrupt } from "../lib/interrupt-notice.js";
@@ -18,8 +18,12 @@ export async function historyClear(values: Values): Promise<void> {
   const presentation = presentationOf(values);
   if (values["dry-run"]) {
     let selected: { space: string; server: string };
-    try { selected = resolveMeshTarget(process.cwd(), { ...values, readOnly: true }); }
-    catch (error) {
+    try {
+      const { space, server, creds } = values;
+      selected = space && server && creds === undefined && !findMesh(space) && !hasUserAuthState(findCotalRoot(), space, { readOnly: true })
+        ? { space, server }
+        : resolveMeshTarget(process.cwd(), { ...values, readOnly: true });
+    } catch (error) {
       // A completed down removes the live registration but keeps the broker address in its journal.
       if (!isWorkspaceTargetError(error) || error.code !== "not-started") throw error;
       const { root, space, stopped } = error.details;

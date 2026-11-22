@@ -134,7 +134,7 @@ import {
   kvWatchConsumer,
   decodeBearerPrincipal,
   RepeatedRefusal,
-  describeStatusError,
+  describeStatusError, expiryAwareErrorEvent,
 } from "./endpoint-dial.js";
 export {
   DEFAULT_SERVER,
@@ -882,7 +882,7 @@ export class CotalEndpoint extends EventEmitter {
       // Reversing these two lines silently loses the only post-drop reason an agent can report.
       this.emit("connection", { connected: false });
       this.emit(
-        "error",
+        expiryAwareErrorEvent(err, this.listenerCount("error") > 0),
         new Error(`mesh connection closed${err ? `: ${err.message || err.name}` : ""} - re-establishing`),
       );
       void this.reestablishLoop();
@@ -1511,24 +1511,24 @@ export class CotalEndpoint extends EventEmitter {
   }
 
   /** Overlay the host's live model and optional variant onto the card's display-only metadata, then
-   *  republish presence. For connectors that learn their actual selection only after launch (e.g.
-   *  Claude Code's `SessionStart` hook). The mutated card is read live by every later publish, so even
-   *  a pre-connect call surfaces on the first presence write. `provider` is the effective provider
-   *  the connector reported serving the model; when omitted an existing `meta.provider` is left
-   *  untouched (unlike `variant`, it is never deleted, since a caller that does not know the
-   *  provider says nothing about whether one still applies). */
+   *  republish presence. The mutated card is read live by every later publish, so even a pre-connect
+   *  call surfaces on the first presence write. `provider` is the effective provider the connector
+   *  reported serving the model; when omitted an existing `meta.provider` is left untouched. */
   async setCardModel(model: string, variant?: string, provider?: string): Promise<void> {
     return this.presence.setCardModel(model, variant, provider);
   }
 
   /** Overlay the session's working directory onto the card's display-only `meta.cwd`, then
-   *  republish presence. For connectors that learn the directory from the harness after launch (e.g.
-   *  Claude Code's `SessionStart` hook) rather than from their own process. Advisory display data,
-   *  never a routing or access input. The pathname is kept byte for byte: a directory name may hold
-   *  or end in whitespace, so it is never trimmed or normalized. An empty string names no directory
-   *  and leaves the card unchanged. */
+   *  republish presence. Advisory display data; an empty string leaves the card unchanged. */
   async setCardCwd(cwd: string): Promise<void> {
     return this.presence.setCardCwd(cwd);
+  }
+
+  /** Change the card's display name and republish presence at once (SPEC §6). The principal stays
+   *  as it is, and every later message carries the new `from.name`. Throws on a name
+   *  {@link assertValidName} refuses; the same name changes nothing. */
+  async setCardName(name: string): Promise<void> {
+    return this.presence.setCardName(name);
   }
 
   // ---- channel discovery ---------------------------------------------------
@@ -1998,7 +1998,7 @@ export class CotalEndpoint extends EventEmitter {
         if (s.error instanceof PermissionViolationError && s.error.operation === "publish"
           && this.connection.isOwnWatchDelete(s.error.subject))
           continue;
-        if (!this.connection.reportSubscriptionDenial(s.error)) this.emit("error", describeStatusError(s.error));
+        if (!this.connection.reportSubscriptionDenial(s.error)) this.emit(expiryAwareErrorEvent(s.error, this.listenerCount("error") > 0), describeStatusError(s.error));
       }
     })().catch((e) => {
       // Defensive symmetry with the reachable in-loop epoch guard above. Measured against five real

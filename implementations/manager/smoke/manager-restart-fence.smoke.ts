@@ -67,7 +67,7 @@ const workspaceRoot = mkdtempSync(join(tmpdir(), "cotal-mrf-ws-"));
 mkdirSync(join(workspaceRoot, ".cotal", "agents"), { recursive: true });
 
 const kids: ChildProcess[] = [];
-type MgrPriv = { managerInstanceId: string; serviceServe?: { grant: { epoch: number; instanceId: string } }; goalWriter?: { ctx: ActionContext }; renewLease: () => Promise<void>; lease: { renewLeaseAttempt: () => Promise<void> }; ep: CotalEndpoint };
+type MgrPriv = { managerInstanceId: string; serviceServe?: { grant: { epoch: number; instanceId: string } }; goalWriter?: { ctx: ActionContext }; lease: { renewLease: () => Promise<void>; renewLeaseAttempt: () => Promise<void> }; ep: CotalEndpoint };
 // THE FIXTURE'S HARNESS. `spawn` on the class rail needs a manager whose boot inventory holds an
 // AVAILABLE connector (#1724): a manager with none declines the class `one` rail for spawn/launch,
 // so an unpinned `manager.spawn` has no responder at all — `unavailable no responder` — and the
@@ -230,7 +230,7 @@ try {
       return second - 1;
     } finally { renewDone(); }
   };
-  void M1.renewLease();
+  void M1.lease.renewLease();
   m1ep.renewManagerLease = async (info, revision) => {
     await released;
     return realRenew(info, revision);

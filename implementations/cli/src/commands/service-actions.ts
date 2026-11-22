@@ -175,7 +175,7 @@ export async function serviceAction(args: ParsedArgs, space: string, root: strin
     if (prompts.isCancel(selected)) return cancelled();
     id = selected;
   }
-  const selected = values["new-instance"] ? undefined : selectServiceInstance(rows, id, mode === "start" || mode === "install" || mode === "status" || mode === "logs");
+  const selected = values["new-instance"] ? undefined : selectServiceInstance(rows, id, mode === "start" || mode === "stop" || mode === "install" || mode === "status" || mode === "logs");
   // A preset name resolved to another saved name keeps the name the person typed beside it.
   const target = { space, name, instanceId: selected?.name ?? null, ...(resolved && resolved.requested !== name ? { requested: resolved.requested } : {}) };
   if (["start", "stop", "restart"].includes(mode)) assertNoServiceUnitAttempts(space, name);
@@ -331,6 +331,11 @@ export async function serviceAction(args: ParsedArgs, space: string, root: strin
   }
   const declaredStop = prepared?.adapter ?? (definition.record.value.launch.type === "adapter" ? resolveServiceAdapter(definition.record.value.launch.adapter, definition.record.value.launch.options, false) : undefined);
   if (values["with-agents"] && declaredStop?.declaration.stop !== "native") throw new CommandFailure("refused", "UNSUPPORTED", "--with-agents requires this selected adapter's native stop policy; generic descendant signals are not supported", { target });
+  if (mode === "stop" && !selected) {
+    const result = { kind: "service-stop", space, definition: name, instanceId: null, dryRun: values["dry-run"] === true };
+    writeResult(presentation, { command: commandName, target, result, noOp: true }, (): Report => ({ sections: [{ title: "Service was not running; nothing was stopped", blocks: [{ kind: "fields", rows: [["Definition", name], ["Instance", "not recorded"]] }] }] }));
+    return;
+  }
   const launch = definition.record.value.launch;
   if (launch.type === "adapter" && launch.adapter === STACK_ADAPTER.manager && (mode === "restart" || mode === "start" && (!selected || observeServiceProcess(selected.record.value) !== "running")))
     assertManagerStartOptions(space, launch.options);
@@ -411,9 +416,10 @@ export async function serviceAction(args: ParsedArgs, space: string, root: strin
   }
   const result = instanceProjection(started.instance);
   const browserWarnings: { code: string; message: string; target: { space: string; name: string } }[] = [];
-  const noBrowser = () => browserWarnings.push({ code: "BROWSER_NOT_OPENED", target: { space, name }, message: `No browser was opened; use \`cotal service logs web --space ${space}\` for the private session record and open its single-use launchUrl locally.` });
+  const sessionSource = result.foreground ? "the original foreground terminal" : `\`cotal service logs web --space ${space}\``;
+  const noBrowser = () => browserWarnings.push({ code: "BROWSER_NOT_OPENED", target: { space, name }, message: `No browser was opened; find the private session record in ${sessionSource} and open its single-use launchUrl locally.` });
   const noOpen = args.values["no-open"] === true;
-  let refreshedBrowserLink = false;
+  let refreshedSessionPath: string | undefined;
   if (mode === "start" && name === "web" && prepared?.adapter?.pin.name === "web-service" && !values.foreground && (!noOpen || started.noOp)) {
     try {
       const value = started.instance.record.value;
@@ -428,7 +434,7 @@ export async function serviceAction(args: ParsedArgs, space: string, root: strin
         const { launchUrl } = await response.json() as { launchUrl: string };
         const url = new URL(launchUrl);
         if (url.origin !== new URL(session.launchUrl).origin || url.protocol !== "http:" || url.username || url.password || url.pathname !== "/" || !url.searchParams.get("k")) throw new Error("invalid launch URL");
-        refreshedBrowserLink = true;
+        refreshedSessionPath = path;
         if (!noOpen) {
           if (process.platform === "linux" && !process.env.DISPLAY && !process.env.WAYLAND_DISPLAY) noBrowser();
           else {
@@ -443,10 +449,10 @@ export async function serviceAction(args: ParsedArgs, space: string, root: strin
       }
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT" && (error as NodeJS.ErrnoException).syscall?.startsWith("spawn ")) noBrowser();
-      else throw new CommandFailure("partial", "OPERATION_PARTIAL", refreshedBrowserLink ? "the dashboard is running, but its browser session could not be opened" : "the dashboard is running, but a fresh browser link was not confirmed", { target: { space, name, instanceId: result.instanceId }, remedy: refreshedBrowserLink ? `use \`cotal service logs web --space ${space}\` for the private session record, or retry \`cotal service start web\`` : `inspect \`cotal service logs web --space ${space}\` before retrying \`cotal service start web\`` });
+      else throw new CommandFailure("partial", "OPERATION_PARTIAL", refreshedSessionPath ? "the dashboard is running, but its browser session could not be opened" : "the dashboard is running, but a fresh browser link was not confirmed", { target: { space, name, instanceId: result.instanceId }, remedy: refreshedSessionPath ? `find the private session record in ${sessionSource}, or retry \`cotal service start web\`` : `inspect ${sessionSource} before retrying \`cotal service start web\`` });
     }
   }
-  writeResult(presentation, { command: commandName, target: { ...target, instanceId: result.instanceId }, result: { kind: mode === "restart" ? "service-restart" : "service-start", ...result, ...(mode === "restart" ? { originalStopImpact: nativePlan ?? kernelPlan ?? null } : {}), ...(resolved ? { presetDefinition: resolved.saved } : {}) }, noOp: started.noOp && !refreshedBrowserLink, warnings: browserWarnings }, (row) => {
+  writeResult(presentation, { command: commandName, target: { ...target, instanceId: result.instanceId }, result: { kind: mode === "restart" ? "service-restart" : "service-start", ...result, ...(mode === "restart" ? { originalStopImpact: nativePlan ?? kernelPlan ?? null } : {}), ...(resolved ? { presetDefinition: resolved.saved } : {}) }, noOp: started.noOp && !refreshedSessionPath, warnings: browserWarnings }, (row) => {
     const view = instanceView(row, started.noOp ? "Already running; nothing was started" : row.nativeEndpoint ? "Owned process running; native adapter readiness recorded" : row.reportedListener ? "Owned broker process reported its listener" : row.readinessObservation === "http-reachable" ? "Owned process running; HTTP reachable" : "Owned service process running");
     // A background child reports how to reach it, such as the dashboard's bootstrap file, in its own log.
     if (values.foreground) return view;
@@ -457,6 +463,7 @@ export async function serviceAction(args: ParsedArgs, space: string, root: strin
     const named = args.values.space ? ` --space ${oneLine(row.space)}` : "";
     const logs = commandName === "manager" ? `cotal manager logs${named}` : only && !args.values.space ? `cotal service logs ${row.definition}` : `cotal service logs ${row.definition} --space ${oneLine(row.space)} --instance ${row.instanceId}`;
     const stop = commandName === "manager" ? `cotal manager stop${named}` : `cotal service stop ${row.definition}${named}`;
+    if (row.foreground) return { sections: [...view.sections, { title: "Next", blocks: [{ kind: "lines", lines: [refreshedSessionPath ? `Private browser bootstrap file: ${oneLine(refreshedSessionPath)}` : "Read the service's startup output in the original foreground terminal."] }, { kind: "commands", items: [{ command: stop, description: "Stop it" }] }] }] };
     return { sections: [...view.sections, { title: "Next", blocks: [{ kind: "commands", items: [{ command: logs, description: "Read the service's own startup output, including how to reach it when it reports that" }, { command: stop, description: "Stop it" }] }] }] };
   });
   if (values.foreground && started.child && started.exit) {

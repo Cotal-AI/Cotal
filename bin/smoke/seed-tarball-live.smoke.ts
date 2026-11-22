@@ -40,10 +40,12 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
 const base = mkdtempSync(join(tmpdir(), "cotal-tarball-smoke-"));
 const tgz = join(base, "tgz");
 const prefix = join(base, "prefix");
-const cfg = join(base, "cfg");
+const physicalConfig = join(base, "cfg");
+const cfg = process.platform === "win32" ? physicalConfig : join(base, "linked-config");
 mkdirSync(tgz, { recursive: true });
 mkdirSync(prefix, { recursive: true });
-mkdirSync(cfg, { recursive: true });
+mkdirSync(physicalConfig, { recursive: true });
+if (cfg !== physicalConfig) symlinkSync(physicalConfig, cfg, "dir");
 
 try {
   console.log("packing the cotal-ai closure …");
@@ -256,7 +258,7 @@ try {
   // `cotal update` keeps a seeded built-in only when its store and installed copies are byte-equal to
   // the shipped payload, which for a restored file is the shared copy. A tampered copy is reinstalled.
   const lock = JSON.parse(readFileSync(join(extensionPrefix, "package-lock.json"), "utf8")) as {
-    packages: Record<string, { optional?: boolean; os?: string[]; cpu?: string[]; libc?: string[] }>;
+    packages: Record<string, { version?: string; optional?: boolean; os?: string[]; cpu?: string[]; libc?: string[] }>;
   };
   const native = Object.entries(lock.packages).find(([key, entry]) =>
     key.includes("/@1jehuang/jcode-") && entry.optional && !platformExcludesHost(entry));
@@ -265,9 +267,9 @@ try {
   check("first seed includes the host native dependency despite omit=optional", existsSync(nativeManifest));
   const updateEnv = seedEnv;
   mkdirSync(updateEnv.HOME, { recursive: true });
-  const update = () => {
-    const run = spawnSync("node", [invokedBin, "update"], { cwd: prefix, encoding: "utf8", env: updateEnv });
-    check("plain update exits successfully", run.status === 0, run.stderr);
+  const update = (...args: string[]) => {
+    const run = spawnSync("node", [invokedBin, "update", ...args], { cwd: prefix, encoding: "utf8", env: updateEnv });
+    check(`update ${args.join(" ")} exits successfully`, run.status === 0, run.stderr);
     return `${run.stdout ?? ""}${run.stderr ?? ""}`;
   };
   const reconciled = (out: string) => out.split("\n").find((line) => line.includes("connectors reconciled")) ?? "";
@@ -307,6 +309,26 @@ try {
     repairOut.split("\n").filter((line) => line.includes("claude")).join("\n"),
   );
   check("the reinstall restores the shared copy", readFileSync(installedAt("claude", tamperedRel)).equals(sharedCopy(tamperedRel)));
+  if (cfg !== physicalConfig) {
+    const lockPath = join(extensionPrefix, "package-lock.json");
+    const lock = JSON.parse(readFileSync(lockPath, "utf8"));
+    const stale = `../.extensions.stage-removed/config/cotal/extensions/${native[0]}`;
+    lock.packages[stale] = { version: native[1].version, extraneous: true };
+    writeFileSync(lockPath, JSON.stringify(lock));
+    const repaired = update();
+    const repairedLock = JSON.parse(readFileSync(lockPath, "utf8")) as { packages: Record<string, { extraneous?: boolean }> };
+    check("one update repairs a lock containing a removed stage", /reinstalling every built-in/.test(repaired) &&
+      Object.entries(repairedLock.packages).every(([key, entry]) => !key.includes(".extensions.stage-") && !(key.startsWith("../") && entry.extraneous)), repaired);
+    const linkedUpdate = update("--self");
+    check("the next update through the link keeps the installed built-ins", !/reinstalling every built-in|Reconciling built-in/.test(linkedUpdate), linkedUpdate);
+    updateEnv.XDG_CONFIG_HOME = physicalConfig;
+    for (const args of [["--version"], ["status"]]) {
+      const run = spawnSync("node", [invokedBin, ...args], { cwd: prefix, encoding: "utf8", env: updateEnv });
+      check(`${args[0]} succeeds through the physical config path`, run.status === 0, run.stderr);
+    }
+    const physicalUpdate = update("--self");
+    check("an update through the physical path keeps the installed built-ins", !/reinstalling every built-in|Reconciling built-in/.test(physicalUpdate), physicalUpdate);
+  }
 } finally {
   rmSync(base, { recursive: true, force: true });
 }

@@ -42,7 +42,7 @@ if (process.argv[2] === "__daemon-auth-service") {
   const { createServer } = await import("node:http");
   const { tmpdir } = await import("node:os");
   const { join } = await import("node:path");
-  const { randomUUID } = await import("node:crypto");
+  const { generateKeyPairSync, randomUUID } = await import("node:crypto");
   type ChildProcess = import("node:child_process").ChildProcess;
 
   const home = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}callout-mt-`));
@@ -109,7 +109,8 @@ if (process.argv[2] === "__daemon-auth-service") {
   childEnv.COTAL_TELEMETRY = "off";
   childEnv.DO_NOT_TRACK = "1";
 
-  const idp = createServer((_req, res) => { res.writeHead(200, { "content-type": "application/json" }); res.end('{"keys":[]}'); });
+  const jwks = JSON.stringify({ keys: [generateKeyPairSync("ed25519").publicKey.export({ format: "jwk" })] });
+  const idp = createServer((_req, res) => { res.writeHead(200, { "content-type": "application/json" }); res.end(jwks); });
   await new Promise<void>((resolve) => idp.listen(0, "127.0.0.1", resolve));
   const idpUrl = `http://127.0.0.1:${(idp.address() as import("node:net").AddressInfo).port}/auth`;
 

@@ -247,6 +247,12 @@ export function readStackJournal(root: string): StackJournalSnapshot | undefined
   return { journal: validate(input, canonical), sha256: createHash("sha256").update(bytes).digest("hex") };
 }
 
+/** The refusal for a malformed or unreadable journal. A missing journal does not block startup. */
+export function unusableStackJournal(root: string): CommandFailure | undefined {
+  try { readStackJournal(root); return undefined; }
+  catch (error) { return isCommandFailure(error) && (error.code === "SCHEMA_INVALID" || error.code === "PERMISSION_DENIED") ? error : undefined; }
+}
+
 /** The stack journal at `root` that another folder recorded, as a copy or a moved folder keeps it, with
  *  that folder. Undefined when `root` has no journal or recorded it itself. */
 export function journalRecordedElsewhere(root: string): { journal: StackJournal; recordedRoot: string; sha256: string } | undefined {
@@ -276,11 +282,14 @@ export function adoptionRefusal(root: string, found: { journal: StackJournal; re
  *  up refused before any member started, as a stack that never ran here. Returns the recorded root. */
 export function adoptStackJournal(root: string, space: string): string {
   const canonical = canonicalRoot(root), path = stackJournalPath(canonical);
-  const lock = acquireLock(`${path}.lock`, { label: "stack journal", onTimeout: () => new CommandFailure("refused", "CONFLICT", "another writer holds the stack journal") });
+  // Only lock a candidate journal; acquiring a lock can create its parent directory.
+  const lock = journalRecordedElsewhere(canonical)
+    ? acquireLock(`${path}.lock`, { label: "stack journal", onTimeout: () => new CommandFailure("refused", "CONFLICT", "another writer holds the stack journal") })
+    : undefined;
   try {
-    const found = journalRecordedElsewhere(canonical);
+    const found = lock && journalRecordedElsewhere(canonical);
     if (!found) throw new CommandFailure("refused", "TARGET_NOT_FOUND", `${canonical} holds no stack journal another folder recorded, so there is nothing to adopt; nothing was written`, { target: { root: canonical, space }, remedy: `run ${codeSpan(`cotal space create ${space} --root ${shellWord(canonical)}`)} without --adopt` });
-    if (found.journal.space !== space) throw new CommandFailure("refused", "CONFLICT", `the stack journal in ${canonical} is for "${found.journal.space}", not "${space}"; nothing was written`, { target: { root: canonical, space, journalSpace: found.journal.space }, remedy: `adopt it with \`cotal space create ${found.journal.space} --adopt --root ${canonical}\`` });
+    if (found.journal.space !== space) throw new CommandFailure("refused", "CONFLICT", `the stack journal in ${canonical} is for "${found.journal.space}", not "${space}"; nothing was written`, { target: { root: canonical, space, journalSpace: found.journal.space }, remedy: `adopt it with ${codeSpan(`cotal space create ${shellWord(found.journal.space)} --adopt --root ${shellWord(canonical)}`)}` });
     const block = stackAdoptionBlock(canonical, found.recordedRoot, space, found.journal.members);
     if (block) throw new CommandFailure("refused", "CONFLICT", `${block.message}; it was not adopted and nothing was written`, { target: { root: canonical, recordedRoot: found.recordedRoot, space }, remedy: block.remedy });
     const under = (path: string) => { const rest = relative(found.recordedRoot, path); return rest !== "" && !rest.startsWith("..") && !isAbsolute(rest) ? join(canonical, rest) : path; };
@@ -313,7 +322,7 @@ export function adoptStackJournal(root: string, space: string): string {
     validate(next, canonical);
     writeSecretFileAtomic(path, JSON.stringify(next, null, 2) + "\n");
     return found.recordedRoot;
-  } finally { lock.release(); }
+  } finally { lock?.release(); }
 }
 
 /** A controller-owned stack cannot be preserved in this release, so its preserve, and the backup and
@@ -1046,5 +1055,14 @@ export function stackScopeRefusals(journal: StackJournal, next: string, { broker
   }
   if (brokerStopped) return;
   const sharing = loadMeshes().filter((mesh) => mesh.space !== journal.space && mesh.server === journal.server);
-  if (sharing.length) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "another registration names this stack's exact broker address; a shared broker is not stopped in this cut", { target: { server: journal.server, spaces: sharing.map((mesh) => mesh.space) } });
+  // The stop is refused because this listener answers for more than one registration, so the
+  // operator needs the command that takes the other registration off this address. Each other space
+  // is named with its own `space show` to read it first and `space forget --plain` to take it off
+  // the address once its own stack is stopped; forget refuses while that space runs, and the stop
+  // to run again once the address is this stack's alone. The forget is never automatic: an active
+  // shared space is not safe to stop.
+  if (sharing.length) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "another registration names this stack's exact broker address; a shared broker is not stopped in this cut", { target: { server: journal.server, spaces: sharing.map((mesh) => mesh.space) }, remedy: [
+    ...sharing.map((mesh) => `read "${mesh.space}" with \`cotal space show ${mesh.space}\`, stop it in its own folder, then take it off this address with \`cotal space forget ${mesh.space} --plain\``),
+    `then run ${next}`,
+  ].join("; ") });
 }

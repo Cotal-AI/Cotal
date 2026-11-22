@@ -52,7 +52,7 @@ import { renderDetachedSummary } from "../../implementations/cli/src/lib/up-repo
 import { shellWord } from "../../implementations/cli/src/lib/endpoint-errors.js";
 import { clean, cotalPty } from "../../implementations/cli/smoke/_console-pty.js";
 import { assertSmokeSandboxDown, freePort, killAndAwaitExit, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
-import { canonicalLocalProcessPath, deliveryCredsKey, DELIVERY_PIDFILE, displayWidth, MANAGER_DELIVERY_AWARE_MARKER, MANAGER_LOGFILE, MANAGER_PIDFILE, MANAGER_SPARE_CAPABILITY, resolveOnPath, workspaceSecretStore } from "@cotal-ai/workspace";
+import { canonicalLocalProcessPath, deliveryCredsKey, DELIVERY_PIDFILE, displayWidth, MANAGER_DELIVERY_AWARE_MARKER, MANAGER_LOGFILE, MANAGER_PIDFILE, MANAGER_SPARE_CAPABILITY, readMaintenanceLockHolder, resolveOnPath, workspaceSecretStore } from "@cotal-ai/workspace";
 
 // Ephemeral OS-assigned port: no fixed-port collision across back-to-back / concurrent runs.
 const PORT = await freePort();
@@ -961,12 +961,16 @@ process.report.getReport = () => {
     rgUp.stdout?.on("data", (b: Buffer) => void (rgOutText += b.toString()));
     rgUp.stderr?.on("data", (b: Buffer) => void (rgOutText += b.toString()));
     const rgRecord = (template: string) => canonicalLocalProcessPath(template, { root: rgRoot, space: basename(rgRoot) });
-    let rgManagerUp = false;
-    for (let i = 0; i < 60 && !rgManagerUp; i++) {
-      await sleep(1000);
-      try { rgManagerUp = /✓ manager up/.test(readFileSync(rgRecord(MANAGER_LOGFILE), "utf8")); } catch { /* not yet */ }
-    }
-    ok("refusal rig: foreground up reached manager up", rgManagerUp);
+    // Foreground startup reads the spare capability before releasing its maintenance lock.
+    const rgStartupFinished = () => {
+      try {
+        return /✓ manager up/.test(readFileSync(rgRecord(MANAGER_LOGFILE), "utf8")) &&
+          readMaintenanceLockHolder(rgRoot)?.operation !== "foreground up";
+      } catch { return false; }
+    };
+    const rgStartupDeadline = Date.now() + 60_000;
+    while (!rgStartupFinished() && Date.now() < rgStartupDeadline) await sleep(200);
+    ok("refusal rig: foreground up finished starting", rgStartupFinished(), plain(rgOutText));
     const rgManagerPid = Number(readFileSync(rgRecord(MANAGER_PIDFILE), "utf8").trim());
     // The shape under test: a pinned manager whose spare capability is NOT proven.
     rmSync(rgRecord(MANAGER_SPARE_CAPABILITY), { force: true });
@@ -983,7 +987,8 @@ process.report.getReport = () => {
       { manager: rgManagerPid, managerAlive: alive(rgManagerPid), upAlive: rgUp ? alive(rgUp.pid ?? 0) : false });
     ok("no spared report is printed on the refusal path", !/left \d+ managed agent/.test(plain(rgOutText)), rgOutText);
     // The operator's route ends the run: down --with-agents, then up exits via the broker-exit path.
-    cliInEnv(rgRoot, rgEnv, "down", "--with-agents", "--yes");
+    const rgDown = cliInEnv(rgRoot, rgEnv, "down", "--with-agents", "--yes");
+    ok("the operator's cotal down --with-agents exits 0", rgDown.status === 0, plain(rgDown.stdout + rgDown.stderr));
     const rgExited = await new Promise<boolean>((res) => {
       const timer = setTimeout(() => res(false), 45_000);
       rgUp?.once("exit", () => { clearTimeout(timer); res(true); });
@@ -1037,7 +1042,7 @@ process.report.getReport = () => {
     const noAppPs = plain(cliInEnv(recRoot, noAppEnv, "ps", "--plain").stdout);
     const noAppPsNext = noAppPs.split("\nNext\n")[1] ?? "";
     ok("with seeded connectors and no agent binary on PATH, empty ps recommends setup instead of spawn",
-      /setup\s+Set up an agent application/.test(noAppPsNext) && !/\bspawn\s+Launch your default agent/.test(noAppPsNext), noAppPs);
+      /setup --help\s+See setup flags for scripts/.test(noAppPsNext) && !/\bspawn\s+Launch your default agent/.test(noAppPsNext), noAppPs);
 
     for (const badArgs of [["status", "nosuch", "--json", "--plain"], ["status", "nosuch", "--wide", "--json"], ["status", "nosuch", "--verbose", "--json"]]) {
       const bad = cliIn(recRoot, ...badArgs);
