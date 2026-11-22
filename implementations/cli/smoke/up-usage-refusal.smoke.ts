@@ -450,6 +450,27 @@ const holder = createServer((socket) => socket.on("error", () => {}));
 const held = await new Promise<number>((resolve) => holder.listen(0, "127.0.0.1", () => resolve((holder.address() as AddressInfo).port)));
 const started = (root: string) => existsSync(join(root, ".cotal", "nats.pid"));
 try {
+  if (process.platform !== "win32" && process.getuid?.() !== 0) {
+    const path = join(realpathSync(prepared), ".cotal");
+    const args = ["up", "--foreground", "--server", `nats://127.0.0.1:${held}`];
+    const before = readdirSync(path).sort().join("\n");
+    chmodSync(path, 0o600);
+    try {
+      const blocked = run(args, prepared);
+      const command = blocked.stderr.match(/with (chmod u\+wx .+)$/m)?.[1];
+      check("an owner-writable .cotal without search access refuses before startup and names a permission repair",
+        blocked.status === 2 && /Code:\s+PERMISSION_DENIED/.test(blocked.stderr) && blocked.stderr.includes(`${path} does not grant this account both write and search access`) && command === `chmod u+wx ${path}`, shown(blocked));
+      check("the refusal leaves .cotal without search permission", (lstatSync(path).mode & 0o777) === 0o600);
+      if (command === `chmod u+wx ${path}`) {
+        const repaired = spawnSync("sh", ["-c", command], { cwd: prepared, encoding: "utf8" });
+        check("the printed command restores owner search access without changing project entries",
+          repaired.status === 0 && (lstatSync(path).mode & 0o777) === 0o700 && readdirSync(path).sort().join("\n") === before, repaired.stderr);
+      }
+    } finally {
+      chmodSync(path, 0o700);
+    }
+  }
+
   const emptyRestore = realpathSync(mkdtempSync(join(tmpdir(), "cotal-up-empty-restore-")));
   roots.push(emptyRestore);
   const restoreArgs = ["--open", "--no-manager", "--server", `nats://127.0.0.1:${held}`, "--space", "emptyrestore", "--restore", ""];

@@ -589,7 +589,7 @@ function assertUpRootWritable(root: string): void {
   catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
     if (code !== "EACCES" && code !== "EPERM" && code !== "EROFS") throw error;
-    throw new CommandFailure("refused", "PERMISSION_DENIED", `${path} is not writable by this account (${code}); nothing was started or written`, { target: { root, path }, remedy: `make it writable by you, for example with chmod u+w ${shellWord(path)}` });
+    throw new CommandFailure("refused", "PERMISSION_DENIED", `${path} does not grant this account both write and search access (${code}); nothing was started or written`, { target: { root, path }, remedy: `make it writable and searchable by you, for example with chmod u+wx ${shellWord(path)}` });
   }
 }
 
