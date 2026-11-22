@@ -1230,8 +1230,7 @@ export class Manager {
   private async stopOnce(withAgents: boolean): Promise<void> {
     this.leaseStopping = true;
     this.config.shutdownReadiness.abort();
-    clearTimeout(this.credentialRenewal.credentialPushRetry);
-    this.credentialRenewal.credentialPushRetry = undefined;
+    this.credentialRenewal.stopRetries();
     this.transcripts?.stop();
     this.staticLifecycle.stop();
     const starting = this.startTask;
