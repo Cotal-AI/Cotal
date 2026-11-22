@@ -233,8 +233,8 @@ On a controller stack, Ctrl-C or `SIGTERM` in that terminal runs the same guarde
 `cotal down` and exits 130 or 143. A
 signal while the stack is still starting lets the start settle, then runs that stop. When the start
 fails, the stop still runs before the start failure is printed. A hangup, such as a closed terminal,
-runs no stop. The command prints that the stack is still running and names `cotal down`, then exits
-129, and the stack keeps running until `cotal down` stops it. A hangup while the stack is still
+leaves the stack running and exits 129. The printed stop command changes to the stack's project
+folder before running `cotal down`, so it also works from another folder. A hangup while the stack is still
 starting lets the start settle, prints the same line and exits 129, and leaves what the start left.
 While a foreground `up` holds the stack, it records its process in `.cotal/stack-foreground.hold`,
 and a second foreground `up` on that stack refuses `CONFLICT`, exit 2, names that process, and
