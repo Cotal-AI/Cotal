@@ -302,8 +302,8 @@ try {
   await wait(1_100);
   const midpoint = new Date().toISOString();
   await wait(100);
-  await alice.multicast("deploy finished", { channel: "general" });
   await bob.multicast("paging ops", { channel: "ops" });
+  await alice.multicast("deploy finished", { channel: "general" });
   const bobId = `${bob.principal.owner}.${bob.principal.actor}`;
   await alice.unicast(bobId, "a private note");
   await wait(600);
@@ -319,7 +319,7 @@ try {
   check("a DM is not in channel history", !texts(general).includes("a private note"), texts(general));
 
   const all = await run(["history", "--json"]);
-  check("history with no channel reads every channel, newest last", JSON.stringify(texts(all)) === JSON.stringify(["deploy started", "looks good", "deploy finished", "paging ops"]) && all.envelope?.result?.items.at(-1)?.channel === "ops", texts(all));
+  check("history with no channel reads every channel, newest last", JSON.stringify(texts(all)) === JSON.stringify(["deploy started", "looks good", "paging ops", "deploy finished"]) && all.envelope?.result?.items[2]?.channel === "ops", texts(all));
 
   const two = await run(["history", "general", "--limit", "2", "--json"]);
   check("--limit 2 keeps the two newest and says older ones are retained", JSON.stringify(texts(two)) === JSON.stringify(["looks good", "deploy finished"]) && two.envelope?.result?.window.olderRetained === true, two.envelope?.result);
@@ -347,6 +347,14 @@ try {
     dayJson.envelope?.result?.window.since === "2026-01-14T10:00:00.000Z" && dayPlain.stdout.includes("--since 2026-01-15 is ") && dayPlain.stdout.includes("local time (2026-01-14T10:00:00.000Z); only messages after it are shown"), { json: dayJson.envelope?.result?.window, plain: shown(dayPlain) });
   const narrow = await run(["history", "general", "--limit", "1", "--since", String(items[0]?.seq), "--json"]);
   check("a window that does not reach back to --since says so", narrow.envelope?.result?.window.reachesSince === false, narrow.envelope?.result?.window);
+  const interleavedArgs = ["history", "general", "--limit", "1", "--since", String(items[1]?.seq)];
+  const [interleaved, interleavedPlain] = await Promise.all([run([...interleavedArgs, "--json"]), run([...interleavedArgs, "--plain"])]);
+  const interleavedWindow = interleaved.envelope?.result?.window;
+  check("an intervening post on another channel does not leave a gap after a sequence cutoff",
+    interleaved.status === 0 && texts(interleaved).join() === "deploy finished"
+      && interleavedWindow?.read === 1 && interleavedWindow.olderRetained === true && interleavedWindow.reachesSince === true
+      && interleavedPlain.status === 0 && interleavedPlain.stdout.includes("older retained messages are not shown")
+      && !interleavedPlain.stdout.includes("the window does not reach back"), { json: shown(interleaved), plain: shown(interleavedPlain) });
   const hashed = await run(["history", "#general", "--json"]);
   check("#general reads the same channel as general", JSON.stringify(texts(hashed)) === JSON.stringify(texts(general)) && hashed.envelope?.result?.channels[0] === "general", shown(hashed));
   // A channel the space lacks used to report the space's replay default as if it existed.
