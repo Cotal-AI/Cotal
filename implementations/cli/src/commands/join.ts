@@ -45,6 +45,7 @@ import { CommandFailure, activateTerminalSeat, issueTerminalSeat, retireTerminal
 import { withControlConnection } from "@cotal-ai/workspace/control";
 import { credentialEnded } from "../lib/connect.js";
 import { shellWord } from "../lib/endpoint-errors.js";
+import { FlagValueRefusal } from "../lib/flag-value-refusal.js";
 import { withProvisioner } from "../lib/provisioner.js";
 import { resolveSpace } from "../lib/status.js";
 import { activityDetail, c, presenceDetail, statusBadge, stderrLine } from "../ui.js";
@@ -170,10 +171,9 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
   // default HERE only - an agent's read set comes from its persona and defaults to no channel.
   const channel = values.channel ?? link?.channels?.[0] ?? "general";
   try { assertValidChannel(channel); }
-  catch (cause) {
-    throw new CommandFailure("refused", "USAGE_INVALID", "join needs one valid channel name or pattern", {
-      remedy: "pass one valid channel with --channel, such as general or 'team.>', rather than a comma-separated list", cause, selfContained: true,
-    });
+  catch {
+    throw new FlagValueRefusal("join needs one valid channel name or pattern",
+      "pass one valid channel with --channel, such as general or 'team.>', rather than a comma-separated list");
   }
   const auth = {
     token: values.token ?? link?.token,
