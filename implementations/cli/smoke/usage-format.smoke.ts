@@ -206,12 +206,21 @@ if (process.platform !== "win32") {
   check("endpoint init does not replace scaffold files", conflict.status === 2 && JSON.parse(conflict.stdout).error?.code === "CONFLICT"
     && readFileSync(files[0]!, "utf8") === original, shown(conflict));
 
-  symlinkSync(directories[0]!, join(cwd, "linked-parent"), "dir");
-  for (const blocked of ["linked-parent", `${dir}/contract.json`]) {
-    const rejected = run(["endpoint", "init", "scratch", "--dir", `${blocked}/missing/scratch`, "--json"], {}, cwd);
-    check("endpoint init refuses a parent symlink or non-directory", rejected.status === 2 && JSON.parse(rejected.stdout).error?.code === "PERMISSION_DENIED"
-      && !existsSync(join(directories[0]!, "missing")), shown(rejected));
+  symlinkSync(directories[0]!, join(cwd, dir, "linked-parent"), "dir");
+  for (const blocked of [`${dir}/linked-parent`, `${dir}/contract.json`]) {
+    const args = ["endpoint", "init", "scratch", "--dir", `${blocked}/missing/scratch`];
+    const rejected = run([...args, "--json"], {}, cwd);
+    const plain = run([...args, "--plain"], {}, cwd);
+    const { target, error } = JSON.parse(rejected.stdout);
+    check("endpoint init names a blocked parent and advises using a real directory",
+      rejected.status === 2 && rejected.stderr === "" && error?.code === "PERMISSION_DENIED" && target?.path === join(cwd, blocked)
+      && /real directory path/.test(error.remedy) && plain.status === 2 && plain.stdout === ""
+      && plain.stderr.includes(join(cwd, blocked).replace(/'/g, `'\\''`)) && plain.stderr.includes("Next") && plain.stderr.includes(error.remedy)
+      && !existsSync(join(directories[0]!, "missing")), { json: shown(rejected), plain: shown(plain) });
   }
+  const physical = run(["endpoint", "init", "scratch", "--dir", join(directories[0]!, "missing/scratch"), "--json"], {}, cwd);
+  check("endpoint init succeeds with a real directory instead of the symlink", physical.status === 0
+    && existsSync(join(directories[0]!, "missing/scratch/contract.json")), shown(physical));
 
   const partial = run(["endpoint", "init", "scratch", "--dir", `partial-parent/${"x".repeat(256)}/scratch`, "--json"], {}, cwd);
   const partialReceipt = JSON.parse(partial.stdout);
@@ -232,6 +241,24 @@ if (process.platform !== "win32") {
     && text.every((r) => r.status === 2 && r.stdout === "" && r.stderr.includes(path) && r.stderr.includes(envelope.error.remedy))
     && corrected.status === 0 && JSON.parse(corrected.stdout).outcome === "ok", { text: text.map(shown), json: shown(json), corrected: shown(corrected) });
 }
+
+const referenceProject = join(home, "endpoint-reference");
+mkdirSync(referenceProject);
+const addReference = (path: string) => run(["endpoint", "add", "example", "--file", path, "--space", "usage-examples", "--json"], {}, referenceProject);
+const beforePreparation = addReference("");
+const prepared = run(["space", "create", "usage-examples", "--root", referenceProject, "--json"], {}, referenceProject);
+const afterPreparation = addReference("");
+for (const r of [beforePreparation, afterPreparation]) {
+  const envelope = JSON.parse(r.stdout);
+  check("endpoint add rejects empty --file before resolving the space or path", r.status === 1 && r.stderr === ""
+    && envelope.target === null && envelope.error?.code === "USAGE_INVALID" && envelope.error.message === "--file is empty"
+    && /reference JSON file/.test(envelope.error.remedy), shown(r));
+}
+const reference = { schemaVersion: 1, space: "usage-examples", endpoint: "com.example.reviews" };
+writeFileSync(join(referenceProject, "reference.json"), JSON.stringify(reference), { mode: 0o600 });
+const added = addReference("reference.json");
+check("endpoint add saves the reference after retrying with a file path", prepared.status === 0 && added.status === 0
+  && JSON.parse(added.stdout).result?.reference?.endpoint === reference.endpoint, { prepared: shown(prepared), added: shown(added) });
 
 const conflict = run(["up", "--foreground", "--detach"]);
 check("two conflicting flags have the same shape", usageShape(conflict, /--foreground or --detach/), shown(conflict));
