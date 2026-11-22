@@ -419,14 +419,15 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
         return;
       }
       if (req.op === "service-connect" || req.op === "service-disconnect" || req.op === "service-status") {
+        const notRegistered = {
+          space: req.space, state: "not-registered" as const, message: `Space ${req.space} is not registered on this machine.`,
+          remedy: "Check the space name or run `cotal space` to list registered spaces.",
+        };
         const run = req.op === "service-status" ? Promise.resolve(services.status(req.space))
           : (async () => {
             if (req.op === "service-connect") {
               const entry = findMesh(req.space);
-              if (!entry) return {
-                space: req.space, state: "not-registered" as const, message: `Space ${req.space} is not registered on this machine.`,
-                remedy: "Check the space name or run `cotal space` to list registered spaces.",
-              };
+              if (!entry) return notRegistered;
               if (entry.mode !== "user") return {
                 space: req.space, state: "unsupported" as const, message: NON_USER_AUTH_MESSAGE, remedy: NON_USER_AUTH_REMEDY,
               };
@@ -461,9 +462,13 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
               const { entries, unusable } = readMeshRegistry();
               // Keep pre-hex registrations visible without mistaking a damaged canonical record for a legacy one.
               damaged = unusable.some(error => error.file === meshFile(req.space));
-              if (!damaged && entries.some(entry => entry.space === req.space && entry.mode !== "user")) {
-                if (req.op === "service-status") return { space: req.space, state: "unsupported", message: NON_USER_AUTH_MESSAGE, remedy: NON_USER_AUTH_REMEDY };
-                return { ...result, manager: { ...manager, next: NON_USER_AUTH_REMEDY } };
+              if (!damaged) {
+                const entry = entries.find(entry => entry.space === req.space);
+                if (req.op === "service-status" && result.state === "not-requested" && !entry) return notRegistered;
+                if (entry && entry.mode !== "user") {
+                  if (req.op === "service-status") return { space: req.space, state: "unsupported", message: NON_USER_AUTH_MESSAGE, remedy: NON_USER_AUTH_REMEDY };
+                  return { ...result, manager: { ...manager, next: NON_USER_AUTH_REMEDY } };
+                }
               }
             } catch (error) {
               if (!isMeshRegistryError(error)) throw error;
@@ -690,7 +695,8 @@ async function publishSocket(paths: DaemonPaths, uid: number, lock: HeldLifetime
   // whatever sits at the path it bound (measured on Node 24), so binding the private name means
   // close() can only ever remove that name, never a socket another process later put at the
   // public path. The private name is removed as soon as the link exists.
-  const bindPath = join(paths.dir!, `.bind-${process.pid}-${randomBytes(6).toString("hex")}`);
+  // The temporary basename is 11 ASCII bytes, the same length as daemon.sock.
+  const bindPath = join(paths.dir!, `.${randomBytes(7).toString("base64url")}`);
   assertSocketPathFits(bindPath);
   // umask is process-wide; it is narrowed only around listen() and restored in `finally`. The
   // directory is already verified 0700 and the bound socket is chmod-ed and re-checked below, so

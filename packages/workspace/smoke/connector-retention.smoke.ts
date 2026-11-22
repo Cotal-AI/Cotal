@@ -120,6 +120,25 @@ assert.notEqual(selected,original);
 assert.equal(connectorConfigDir(),selected);
 assert.equal(canRecoverConnectorConfig(),true,'current selection, including interrupted publication, keeps recovery');
 assert.equal(retainConnectorConfig(),selected);
+${scenario === "linked-config" ? `
+const physical=fs.realpathSync(safe);
+const selectionFile=join(dirname(selected),'selection.json');
+const selection=readFileSync(selectionFile,'utf8');
+process.env.XDG_CONFIG_HOME=physical;
+assert.equal(connectorConfigDir(),selected,'the physical path preserves the saved selection');
+fs.chmodSync(selected,0o500);
+prepareConnectorConfigForUpdate();
+assert.equal(fs.statSync(selected).mode&0o777,0o700);
+assert.equal(readFileSync(selectionFile,'utf8'),selection,'alias use does not republish the record');
+const record=JSON.parse(selection), foreign=mkdtempSync(join(physical,'foreign-'));
+writeFileSync(selectionFile,JSON.stringify({...record,root:join(foreign,selected.slice(join(safe,'cotal').length))}));
+assert.throws(()=>connectorConfigDir(),/differs/,'the same retained suffix under a different config is refused');
+writeFileSync(selectionFile,selection);
+rmSync(selectionFile);
+assert.equal(connectorConfigDir(),selected,'the physical path can use the same-version lineage');
+writeFileSync(selectionFile,selection,{mode:0o600});
+process.env.XDG_CONFIG_HOME=safe;
+` : ""}
 ${scenario === "retain" ? `const unrelated=join(original,'installs','other-install');mkdirSync(unrelated,{mode:0o500});fs.chmodSync(selected,0o520);fs.chmodSync(join(selected,'seed'),0o500);prepareConnectorConfigForUpdate();assert.equal(connectorConfigDir(),selected);assert.equal(fs.statSync(selected).mode&0o777,0o700);assert.equal(fs.statSync(join(selected,'seed')).mode&0o777,0o700);assert.equal(fs.statSync(unrelated).mode&0o777,0o500);fs.chmodSync(unrelated,0o700);` : ""}
 assert.equal(readFileSync(join(selected,'extensions/node_modules/old/lazy.js'),'utf8'),'old graph\\n');
 writeFileSync(join(selected,'extensions/node_modules/old/lazy.js'),'new graph\\n');

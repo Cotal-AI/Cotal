@@ -3,7 +3,7 @@
   "info": {
     "title": "Dashboard HTTP API",
     "version": "1",
-    "description": "HTTP interface of the @cotal-ai/web reference implementation. This description covers read operations, readiness metadata and the legacy channel deletion route; it does not establish a separate stable product or Cloud management API. Start the dashboard using the web service preset described in the operator guide. The server defaults to 127.0.0.1:7799; use the host and port configured for your dashboard.\n\nOpen the owner-private launch URL once to exchange its k query token for the cotal_web_session cookie. Keep the session on the same host. With the default bind, the permitted browser origins are http://127.0.0.1:<port>, http://localhost:<port> and http://cotal.localhost:<port>. A custom host uses its own HTTP origin. A cross-origin request is refused before session checks. The readiness nonce only opens /api/meta.\n\nRead operations use GET and take no request body. Some read handlers also accept other bodyless methods; this description does not promise a 405 response for them. The native web service is read-only and always refuses channel deletion with 403. Legacy direct dashboard instances can enable deletion; /api/meta reports channelDeleteSupported. Description version 1 identifies this document, not the wire or npm package version.",
+    "description": "HTTP interface of the @cotal-ai/web reference implementation. This description covers read operations, readiness metadata and the legacy channel deletion route; it does not establish a separate stable product or Cloud management API. Start the dashboard using the web service preset described in the operator guide. The server defaults to 127.0.0.1:7799; use the host and port configured for your dashboard.\n\nOpen the owner-private launch URL once to exchange its k query token for the cotal_web_session cookie. Keep the session on the same host. With the default bind, the permitted browser origins are http://127.0.0.1:<port>, http://localhost:<port> and http://cotal.localhost:<port>. A custom host uses its own HTTP origin. A cross-origin request is refused before session checks. The readiness nonce only opens /api/meta.\n\nRead operations use GET and take no request body. After authentication, a bodyless request using a different method gets 405 with the Allow header set to GET. The native web service is read-only and always refuses channel deletion with 403. Legacy direct dashboard instances can enable deletion; /api/meta reports channelDeleteSupported. Description version 1 identifies this document, not the wire or npm package version.",
     "license": {
       "name": "Apache-2.0"
     }
@@ -447,7 +447,7 @@
       "get": {
         "operationId": "read-dashboard-meta",
         "summary": "Read dashboard metadata",
-        "description": "Return the space, process ID and whether channel deletion is supported. An authenticated browser session, one-use launch token or the private readiness nonce can access this route. The readiness nonce is accepted only here and does not mint a session. Query strings are accepted. Other bodyless methods also reach this read handler; no 405 behavior is promised.",
+        "description": "Return the space, process ID and whether channel deletion is supported. An authenticated browser session, one-use launch token or the private readiness nonce can access this route. The readiness nonce is accepted only here and does not mint a session. Query strings are accepted.",
         "security": [
           {
             "DashboardSession": []

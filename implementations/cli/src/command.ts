@@ -1,6 +1,7 @@
 import { existsSync, writeSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join, parse, resolve } from "node:path";
+import { parseArgs } from "node:util";
 import { commandDeclarationProblems, findCommand, findSubcommand, parseCommandArgs, type Command, type FlagSpec, type ParsedArgs, type Registry, type Subcommand } from "@cotal-ai/core";
 import {
   CommandFailure,
@@ -61,15 +62,17 @@ import { SeedChildFailure, deferredSeedRefusal, reconcileSeededConnectors, seedD
 import { deferSeedToLaunch } from "./seed/launch.js";
 import { isAuthenticSeedChild } from "./seed/lock.js";
 import { printHelpPath, printEntry } from "./help.js";
+import { historySetupFailureRecords } from "./commands/history.js";
+import { watchSetupFailureRecords } from "./commands/watch.js";
 import { HISTORY_LIMIT_FLAGS } from "./commands/history-limit.js";
 import { CatalogPreparationError, prepareCatalogCommand } from "./commands/sync.js";
 import { keepStartupNotice, type StartupNotice } from "./lib/interrupt-notice.js";
 import { metadataPositionals } from "./lib/command-path.js";
-import { chooseMeshTarget } from "./lib/choose-target.js";
+import { chooseMeshTarget, spaceChoiceRemedy } from "./lib/choose-target.js";
 import { registryFailure } from "./lib/registry-errors.js";
 import { FlagValueRefusal } from "./lib/flag-value-refusal.js";
 import { workingFolderRemoved } from "./lib/paths.js";
-import { reportLostOutput } from "./lib/stdout-owner.js";
+import { reportLostOutput, writeAllSync } from "./lib/stdout-owner.js";
 import { shellWord } from "./lib/endpoint-errors.js";
 import { displayRemedy } from "./lib/self-exec.js";
 import { GLOBAL_FLAG_WORDS, OUTPUT_FLAG_WORDS } from "./lib/leading-flags.js";
@@ -137,16 +140,24 @@ function structured(cmd: Command, first: string | undefined): boolean {
   return ((sub ? sub.outputs : cmd.outputs) ?? []).some((mode) => mode === "json" || mode === "ndjson");
 }
 
-/** Whether `args` ask `cmd` for JSON before any `--`: `--json`, `-j`, or `-j` in a group of the
- *  command's boolean short flags. Read from the words, because a usage error has no parse, so the mode
- *  is the first positional after skipping declared option values. */
+/** Whether `args` ask `cmd` for JSON before any `--`: `--json`, `-j`, or `-j` in a short option group
+ *  before any value-taking option. The mode is the first positional after skipping declared values. */
 function asksForJson(cmd: Command, args: readonly string[]): boolean {
   if (!structured(cmd, metadataPositionals(cmd, args).positionals[0]?.value)) return false;
-  const booleans = new Set((cmd.flags ?? []).flatMap((flag) => (flag.type === "boolean" && flag.short ? [flag.short] : [])));
+  const shorts = new Map(cmd.flags?.flatMap((flag) => flag.short ? [[flag.short, flag.type] as const] : []));
   const end = args.indexOf("--");
-  return (end === -1 ? args : args.slice(0, end)).some(
-    (word) => word === "--json" || word === "-j" || (/^-[A-Za-z]{2,}$/.test(word) && word.includes("j") && [...word.slice(1)].every((ch) => booleans.has(ch))),
-  );
+  return (end === -1 ? args : args.slice(0, end)).some((word) => {
+    if (word === "--json" || word === "-j") return true;
+    if (!/^-[^-]/.test(word)) return false;
+    let json = false;
+    for (const ch of word.slice(1)) {
+      const type = shorts.get(ch);
+      if (type === undefined) return false;
+      if (type === "string") break;
+      if (ch === "j") json = true;
+    }
+    return json;
+  });
 }
 
 /** Under COTAL_DEBUG, print the failure's stack and the stack of each error that caused it. */
@@ -158,9 +169,9 @@ function debugStacks(failure: Error): void {
 
 /** A classified failure: its line and remedy on stderr, its envelope on stdout when one was asked
  *  for, and the exit code its outcome sets. A usage refusal is followed by the help of the command
- *  or subcommand `words` name. The envelope is written synchronously, because stdout to a pipe is
+ *  or subcommand `words` name. Structured output is written synchronously, because stdout to a pipe is
  *  asynchronous on some platforms and `exit` would cut it short. */
-function failureExit(cmd: Command, failure: CommandFailure, json: boolean, plain = false, scope?: OperationScope, words: readonly string[] = []): never {
+function failureExit(cmd: Command, failure: CommandFailure, json: boolean, plain = false, scope?: OperationScope, words: readonly string[] = [], validationArgs?: ParsedArgs): never {
   const warnings = scope ? scope.warnings ?? [] : operationWarnings();
   recordTelemetryFailure(failure.outcome, failure.code, failure);
   // A command's own usage refusal reads as the parser's: the error, its remedy, then the help. A
@@ -183,7 +194,12 @@ function failureExit(cmd: Command, failure: CommandFailure, json: boolean, plain
     // Mint receipts identify the operation, not the auth namespace used by account reports.
     const command = cmd.name === "auth" && findSubcommand(cmd, metadataPositionals(cmd, words).positionals[0]?.value)?.name === "mint"
       ? "auth mint" : cmd.name;
-    writeSync(1, envelopeLine(failureEnvelope(command, failure, warnings, scope)));
+    const historyFollow = cmd.name === "history" && validationArgs?.values.follow === true && !plain
+      && !findSubcommand(cmd, validationArgs.positionals[0]);
+    const records = historyFollow ? historySetupFailureRecords(validationArgs, failure)
+      : cmd.name === "watch" && validationArgs && !plain ? watchSetupFailureRecords(validationArgs, failure) : undefined;
+    const lines = records ? records.map((record) => `${JSON.stringify(record)}\n`).join("") : envelopeLine(failureEnvelope(command, failure, warnings, scope));
+    writeAllSync(1, Buffer.from(lines));
   } catch (error) {
     reportLostOutput(error as NodeJS.ErrnoException);
     try { writeReport(); } catch { /* stderr failed too; the exit status still says so */ }
@@ -418,7 +434,9 @@ function extSeedSubcommand(cmd: Command, words: readonly string[]): Subcommand |
  *  takes `=value` as its value, or a declared option typed with a typographic dash pasted from typeset
  *  text, which is read as a positional. */
 function misspelledOption(cmd: Command, rest: readonly string[], flagNames: readonly string[] | undefined): { message: string; remedy?: string } | undefined {
-  const names = new Set<string>([...(flagNames ?? (cmd.flags ?? []).map((flag) => flag.name)), ...GLOBAL_FLAGS]);
+  const names = new Set<string>([...(flagNames ?? (cmd.flags ?? []).map((flag) => flag.name)), ...GLOBAL_FLAGS, "help"]);
+  const flags: FlagSpec[] = [...(cmd.flags ?? []), { name: "help", short: "h", type: "boolean" }];
+  const positionals = new Set(metadataPositionals(cmd, rest).positionals.map(({ index }) => index));
   for (const [index, word] of rest.entries()) {
     if (word === "--") return undefined;
     const previous = rest[index - 1];
@@ -432,7 +450,7 @@ function misspelledOption(cmd: Command, rest: readonly string[], flagNames: read
       const correction = value.startsWith("-") ? long : `-${short[1]} ${quoted} or ${long}`;
       return { message: `${word} gives -${short[1]} the value "=${value}"`, remedy: `write ${correction}` };
     }
-    const typed = typographicOption(word, names, cmd.flags);
+    const typed = positionals.has(index) ? typographicOption(word, names, flags) : undefined;
     if (typed) return typed;
   }
   return undefined;
@@ -441,28 +459,42 @@ function misspelledOption(cmd: Command, rest: readonly string[], flagNames: read
 /** A parse error as a refusal. Node's own usage guidance is replaced with this CLI's remedies:
  *  a word that starts with `-` goes after `--` only where the command takes operands,
  *  an option value that starts with `-` is written `--name=value`, and an option given with no value,
- *  last or before another of the command's options, is named with its placeholder. */
+ *  last, before `--`, or before another of the command's options, is named with its placeholder. */
 function parseRefusal(error: Error & { code?: string }, cmd: Command, rest: readonly string[], flagNames: readonly string[] | undefined, takesOperands: boolean): { message: string; remedy?: string } {
   if (error.code === "ERR_PARSE_ARGS_UNKNOWN_OPTION") {
     const reason = error.message.replace(/'\. To specify a positional argument starting with a '-', place it at the end of the command after '--', as in '-- "(?:[^"\\]|\\.)*"$/u, "'");
     const option = /^Unknown option '(--.+)'$/su.exec(reason)?.[1];
     const hint = option ? didYouMean(option, [...(flagNames ?? (cmd.flags ?? []).map((flag) => flag.name)).map((name) => `--${name}`), "--no-color", "--no-input", "--help"]) : "";
     const message = hint ? `${reason} - ${hint}` : reason;
-    return takesOperands ? { message, remedy: "to pass a word that starts with \"-\", put -- before it" } : { message };
+    const remedy = cmd.name === "completion" ? "drop the unknown option"
+      : takesOperands ? "to pass a word that starts with \"-\", put -- before it" : undefined;
+    return { message, remedy };
   }
   const message = error.message.split(".")[0]!;
-  const missingValue = (flag: FlagSpec) => ({ message: `--${flag.name} needs a value`, remedy: `write --${flag.name} ${flag.value ?? "<value>"}` });
+  const missingValue = (flag: FlagSpec, beforeSeparator = false) => ({ message: `--${flag.name} needs a value`, remedy: `write --${flag.name} ${flag.value ?? "<value>"}${beforeSeparator ? " before --" : ""}` });
   const bare = /^Option '(?:-[^,']+, )?--([^ ']+) <value>' argument missing/.exec(error.message)?.[1];
   const last = bare === undefined ? undefined : cmd.flags?.find((item) => item.name === bare);
   if (error.code === "ERR_PARSE_ARGS_INVALID_OPTION_VALUE" && last) return missingValue(last);
   const long = /use '--([^=']+)=-XYZ'/.exec(error.message)?.[1];
   const flag = long === undefined ? undefined : cmd.flags?.find((item) => item.name === long);
   if (error.code === "ERR_PARSE_ARGS_INVALID_OPTION_VALUE" && flag) {
-    const at = rest.findIndex((word) => word === `--${flag.name}` || (flag.short !== undefined && word === `-${flag.short}`));
-    const value = at < 0 ? undefined : rest[at + 1];
-    if (value !== undefined && cmd.flags?.some((item) => value === `--${item.name}` || value.startsWith(`--${item.name}=`) || (item.short !== undefined && value === `-${item.short}`)))
-      return missingValue(flag);
-    if (value?.startsWith("-")) return { message: `the value of --${flag.name} starts with "-", so it reads as an option`, remedy: `write it as --${flag.name}=${shellWord(value)}` };
+    const options = Object.fromEntries((cmd.flags ?? []).map(({ name, type, short }) => [name, { type, ...(short ? { short } : {}) }]));
+    const { tokens } = parseArgs({ args: [...rest], options, strict: false, allowPositionals: true, tokens: true });
+    let seen = false;
+    for (const token of tokens) {
+      if (token.kind !== "option" || token.name !== flag.name) continue;
+      const value = token.value;
+      // The strict parser accepts a dash and digit after a standalone string option.
+      const numeric = rest[token.index] === token.rawName && /^-\d/.test(value ?? "");
+      if (token.inlineValue === false && !numeric && value?.startsWith("-") && value !== "-") {
+        if (seen && !flag.multiple) return { message: `--${flag.name} cannot be repeated`, remedy: `use --${flag.name} once` };
+        if (value === "--") return missingValue(flag, true);
+        if (cmd.flags?.some((item) => value === `--${item.name}` || value.startsWith(`--${item.name}=`) || (item.short !== undefined && value === `-${item.short}`)))
+          return missingValue(flag);
+        return { message: `the value of --${flag.name} starts with "-", so it reads as an option`, remedy: `write it as --${flag.name}=${shellWord(value)}` };
+      }
+      seen = true;
+    }
   }
   return { message };
 }
@@ -507,7 +539,7 @@ function parseOrExit(cmd: Command, rest: string[]): ParsedArgs {
   // An empty --store-dir reads as no value and opens the default store, and a ~ no shell expanded
   // names a folder called ~ in the working folder.
   const storeDir = parsed.values["store-dir"];
-  if (typeof storeDir === "string" && (!storeDir.trim() || storeDir.startsWith("~")))
+  if (!(cmd.name === "clean" && first === "history") && typeof storeDir === "string" && (!storeDir.trim() || storeDir.startsWith("~")))
     failureExit(cmd, storeDirRefusal(storeDir), json, parsed.values.plain === true);
   // `--json` implies `--no-input`: a script reading one document cannot answer a prompt.
   if (structured(cmd, first) && parsed.values.json === true) disableInput();
@@ -516,7 +548,7 @@ function parseOrExit(cmd: Command, rest: string[]): ParsedArgs {
   try {
     cmd.validate?.(canonical);
   } catch (error) {
-    if (isCommandFailure(error)) failureExit(cmd, error, json, canonical.values.plain === true, undefined, rest);
+    if (isCommandFailure(error)) failureExit(cmd, error, json, canonical.values.plain === true, undefined, rest, canonical);
     if (isArgError(error)) usageExit((error as Error).message.split(".")[0]!, cmd, json, plain, undefined, rest);
     throw error;
   }
@@ -928,7 +960,8 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
     // not resolve or connect to is refused before any request, under the refusal's own code; a
     // failure it did not classify is unknown: it may have had effects that cannot be attributed.
     if (structured(cmd, mode)) {
-      const renderRemedy = ["status", "ps", "space", "whoami"].includes(cmd.name) ? displayRemedy : undefined;
+      const spaceRemedy = spaceChoiceRemedy(isConnectRefusal(e) ? e.cause : e, cmd.name, parsed, rest);
+      const renderRemedy = spaceRemedy !== undefined ? () => spaceRemedy : ["status", "ps", "space", "whoami"].includes(cmd.name) ? displayRemedy : undefined;
       if (isConnectRefusal(e)) {
         const failure = e.failure(renderRemedy), cause = e.cause;
         if (isWorkspaceTargetError(cause) && cause.code === "not-started" && cause.details.stopped && !cause.details.unsettled && cause.details.root && cause.details.space) {

@@ -33,7 +33,7 @@ import { mint } from "./commands/mint.js";
 import { revokeCredential } from "./commands/revoke-credential.js";
 import { channels, channelArguments, channelComplete, channelFlags } from "./commands/channels.js";
 import { history, historyComplete, historyFlags, historySubcommands, validateHistoryArguments } from "./commands/history.js";
-import { clean, cleanComplete } from "./commands/clean.js";
+import { clean, cleanComplete, validateCleanArguments } from "./commands/clean.js";
 import { reset, resetComplete, resetFlags, validateResetArguments } from "./commands/reset.js";
 import { feedback, feedbackFlags, validateFeedbackArguments } from "./commands/feedback.js";
 import { send, sendComplete, sendFlags, sendArguments } from "./commands/send.js";
@@ -329,6 +329,7 @@ const baseCommands: Command[] = [
       { name: "force", type: "boolean", description: "required - destructive, no prompting" },
       { name: "dry-run", type: "boolean", description: "store/all: list what would be removed and remove nothing" },
     ],
+    validate: validateCleanArguments,
     run: clean,
     complete: cleanComplete,
   },
@@ -475,7 +476,12 @@ const baseCommands: Command[] = [
       { name: "expires-in", type: "string", value: "<seconds>", description: "static mesh, bare join: end this session's credential after this many seconds; omitted, it has no expiry and ends when you leave" },
       { name: "expires-at", type: "string", value: "<unix-seconds>", description: "static mesh, bare join: end this session's credential at this time; never with --expires-in" },
     ],
-    run: join,
+    run: (args) => {
+      const channel = args.values.channel;
+      return join(typeof channel === "string" && channel.startsWith("#")
+        ? { ...args, values: { ...args.values, channel: channel.slice(1) } }
+        : args);
+    },
   },
   {
     kind: "command", name: "mint", group: "Identity", hidden: true,
@@ -793,8 +799,8 @@ const baseCommands: Command[] = [
       { name: "show", flagNames: ["space", "json", "plain"], summary: "read a local reference and its revision", examples: [{ command: "cotal endpoint show <name>", note: "read a saved reference" }], reads: true, usage: "cotal endpoint show <name>" },
       { name: "describe", flagNames: ["space", "server", "creds", "on", "refresh", "json", "plain"], summary: "read the selected native endpoint's digest-verified contracts", examples: [{ command: "cotal endpoint describe <target>", note: "read an endpoint's commands and schemas" }, { command: "cotal endpoint describe ep:<class>", note: "read them by endpoint class" }], reads: true, usage: "cotal endpoint describe <ref:name | ep:class | target>" },
       { name: "invoke", flagNames: ["space", "server", "creds", "on", "args", "name", "self", "admin", "timeout", "handle", "wait", "cast", "all", "json", "plain"], summary: "invoke one declared command under the existing caller authority", examples: [{ command: "cotal endpoint invoke <target> <command>", note: "call one command" }, { command: "cotal endpoint invoke <target> <command> --args '<json>'", note: "call it with arguments" }], usage: "cotal endpoint invoke <target> <command> [--args '<json>']" },
-      { name: "watch", flagNames: ["space", "server", "creds", "on", "since", "json", "plain"], summary: "declared record/event watch; native declaration adapter unavailable in this author", examples: [{ command: "cotal endpoint watch <target> <record-key-or-topic>", note: "watch a declared record or topic" }], usage: "cotal endpoint watch <target> <record-key-or-topic> [--since <native-sequence>]", reads: true },
-      { name: "session", flagNames: ["space", "server", "creds", "on", "json", "plain"], summary: "declared interactive session; native declaration adapter unavailable in this author", examples: [{ command: "cotal endpoint session <target> <command>", note: "open a declared interactive session" }], usage: "cotal endpoint session <target> <command>" },
+      { name: "watch", flagNames: ["space", "server", "creds", "on", "since", "json", "plain"], summary: "watching declared records or events is unavailable in this CLI", usage: "cotal endpoint watch <target> <record-key-or-topic> [--since <native-sequence>]", reads: true },
+      { name: "session", flagNames: ["space", "server", "creds", "on", "json", "plain"], summary: "declared interactive sessions are unavailable in this CLI", usage: "cotal endpoint session <target> <command>" },
       { name: "work", flagNames: ["space", "server", "creds", "on", "lease", "result", "json", "plain"], summary: "declared work pools are unavailable in this CLI", usage: "cotal endpoint work lease <target> <pool> | work commit <target> <pool> --lease <private-file> --result <JSON>", subcommands: [
         { name: "lease", flagNames: ["space", "server", "creds", "on", "json", "plain"], summary: "leasing from a work pool is unavailable in this CLI", usage: "cotal endpoint work lease <target> <pool>" },
         { name: "commit", flagNames: ["space", "server", "creds", "on", "lease", "result", "json", "plain"], summary: "committing a work result is unavailable in this CLI", usage: "cotal endpoint work commit <target> <pool> --lease <private-file> --result <JSON>" },

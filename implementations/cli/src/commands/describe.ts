@@ -7,7 +7,7 @@ import {
 } from "@cotal-ai/core";
 import { type NatsConnection } from "@nats-io/transport-node";
 import {
-  CommandFailure, codeSpan, commandFailureReport, exitCode, failureEnvelope, jsonFlag, plainFlag, presentationOf, renderReport, streamRecord, writeEnvelope, writeResult, writeStreamRecord,
+  CommandFailure, brokerAddressForDisplay, codeSpan, commandFailureReport, exitCode, failureEnvelope, jsonFlag, plainFlag, presentationOf, renderReport, streamRecord, writeEnvelope, writeResult, writeStreamRecord,
   loadMeshes, targetFlags, type Report,
   recordOperationSpace, resolveMeshTarget,
 } from "@cotal-ai/workspace";
@@ -169,6 +169,16 @@ export async function invokeCmd(args: ParsedArgs, commandName = "invoke"): Promi
     const service = await resolveService(nc, space, endpoint, auth.epCaller!, { deadlineMs: budgetMs, commands, ...(instanceId === undefined ? {} : { instanceId }) }).catch((error: unknown) => {
       if (selectedSeat && unansweredRequest(error))
         throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `manager instance ${on} did not answer the named seat's contract read`, { target, cause: error });
+      if (instanceId !== undefined && unansweredRequest(error) && error instanceof EpEnvelopeError) {
+        const inventory = `cotal endpoint list --live --space ${shellWord(space)}`;
+        const verify = values.server === undefined ? `with ${codeSpan(inventory)}`
+          : brokerAddressForDisplay(values.server) === values.server ? `with ${codeSpan(`${inventory} --server ${shellWord(values.server)}`)}`
+          : "against the same space and broker";
+        throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `pinned instance ${instanceId} of ${endpoint} did not answer its contract read within the ${budgetMs}ms ${values.timeout === undefined ? "deadline" : "--timeout"}; no invocation was sent`, {
+          native: { code: error.code, outcome: error.outcome }, cause: error,
+          remedy: `verify the full instance ID ${verify}, or ${longerTimeout} if you expect that instance to answer`,
+        });
+      }
       if (!(error instanceof EpEnvelopeError) || error.code !== "deadline-exceeded" || unansweredRequest(error) && values.timeout === undefined) throw error;
       if (unansweredRequest(error)) throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `no instance of ${endpoint} answered its contract read within the ${budgetMs}ms --timeout, so nothing is serving it, none could be reached, or the deadline was too short`, {
         native: { code: error.code, outcome: error.outcome }, cause: error,

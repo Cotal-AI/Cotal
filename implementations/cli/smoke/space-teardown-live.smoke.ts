@@ -214,6 +214,10 @@ try {
     const deleteStopped = cli(home, "space", "delete", space, "--yes", "--json");
     check("space delete after down refuses TARGET_UNAVAILABLE and names cotal reset store, not cotal up",
       deleteStopped.status === 2 && deleteStopped.env?.error?.code === "TARGET_UNAVAILABLE" && Boolean(deleteStopped.env.error.remedy?.includes(`cotal reset store ${space} --yes`)) && !deleteStopped.env.error.remedy?.includes("cotal up"), shown(deleteStopped));
+    const deletePreview = cli(home, "space", "delete", space, "--dry-run", "--json");
+    check("the stopped stack's deletion preview points only to a read-only store preview",
+      deletePreview.status === 2 && deletePreview.env?.error?.code === "TARGET_UNAVAILABLE" &&
+        deletePreview.env.error.remedy === `inspect its stored streams with \`cotal reset store ${space} --dry-run\``, shown(deletePreview));
 
     // 4. Reset after a normal down (B4-02).
     const storeStopped = cli(root, "reset", "store", space, "--dry-run", "--json");
@@ -323,6 +327,10 @@ try {
       await new Promise((settle) => setTimeout(settle, 250));
     }
     check("the finished run is counted and only the waiting run is listed, with its state", runs?.finished === 1 && runs.unfinished?.length === 1 && runs.unfinished[0]?.runId === runId && runs.unfinished[0].state === "running", runs);
+    const journal = cli(root, "run", "show", runId ?? "-", "--limit", "1", "--space", space);
+    check("run show --limit reads one journal row", journal.status === 0 && journal.stdout.includes("Journal · last 1 of"), shown(journal));
+    const pagedJournal = cli(root, "run", "show", runId ?? "-", "--page", "--limit", "1", "--space", space);
+    check("run show refuses inventory paging even when the journal limit is valid", pagedJournal.status === 1 && pagedJournal.stdout === "" && pagedJournal.stderr.includes("remove --page to read the journal") && pagedJournal.stderr.includes("cotal run --page --on <instance>"), shown(pagedJournal));
     for (const [definition, id] of [["stack-manager", manager], ["stack-delivery", delivery]] as const) {
       const stoppedMember = cli(root, "service", "stop", definition, "--instance", String(id), "--space", space, "--yes", "--json");
       check(`the ${definition} member stops on its own`, stoppedMember.status === 0, shown(stoppedMember));
@@ -664,7 +672,7 @@ try {
       check("an open space with an overriding auth broker names both addresses and dropping --server, never up here",
         mismatch.status === 2 && mismatch.env?.error?.code === "AUTH_REQUIRED"
           && mismatch.env.error.message.includes(authServer) && mismatch.env.error.message.includes(`"${space}" is recorded as an open mesh at ${server}`)
-          && mismatch.env.error.remedy === `check that address, or drop --server to reach "${space}" at ${server}, where it is recorded`
+          && mismatch.env.error.remedy === `check that address, or drop --server and retry with \`--space ${space}\` to reach its recorded broker at ${server}`
           && !mismatch.env.error.remedy.includes("cotal up"), shown(mismatch));
     }
     const openDown = cli(root, "down", "--yes", "--json");

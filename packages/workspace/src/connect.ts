@@ -1,7 +1,6 @@
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, statSync, type Stats } from "node:fs";
 import { hostname, userInfo } from "node:os";
-import { dirname, resolve } from "node:path";
 import {
   DEFAULT_SPACE,
   DEV_OWNER,
@@ -42,7 +41,7 @@ import { findCotalRoot, getSpaceAuth, hasUserAuthState, userAuthStateDir } from 
 import { agentGrants, grantMintFlags } from "./agent-grants.js";
 import { workspaceSecretStore } from "./secret-store-fs.js";
 import { brokerUrlKey, canonicalRoot, findMesh, loadMeshes, movedProject, pruneMesh, type MeshEntry, type UserAuthInfo } from "./mesh-registry.js";
-import { isWorkspaceTargetError, MeshTargetError, preparedLifecycle, recordsElsewhereError, resolveMeshTarget, resolveReadsLiveness, stoppedStack, targetErrorSpace, type MeshTarget, type ResolveFlags, credsSpace } from "./mesh-target.js";
+import { isWorkspaceTargetError, MeshTargetError, preparedLifecycle, recordsElsewhereError, resolveMeshTarget, resolveReadsLiveness, retainedLegacyBroker, stoppedStack, targetErrorSpace, type MeshTarget, type ResolveFlags, credsSpace } from "./mesh-target.js";
 import { findPreparedSpace } from "./prepared-spaces.js";
 import { shellPath } from "./local-record-source.js";
 import { codeSpan } from "./text-wrap.js";
@@ -641,12 +640,16 @@ export async function connectOrThrow(flags: ConnectFlags, role: Profile, opts: C
     // for that very space even when the registry lost (or never had) the entry — treating it as an
     // open broker would credless-connect into a callout denial whose copy sends the operator
     // port-hunting. Name the real state and the recovery instead.
-    if (hasUserAuthState(findCotalRoot(), flags.space))
+    const root = findCotalRoot();
+    if (hasUserAuthState(root, flags.space)) {
+      const retained = retainedLegacyBroker(root);
+      const restart = codeSpan(`cotal up --user-auth --space ${shellPath(flags.space)}${retained && !retained.open ? ` --server ${shellPath(retained.server)}` : ""}`);
       throw new ConnectRefusal(
-        `✗ space "${flags.space}" has user auth enabled on disk but no usable registry entry - re-record it with \`cotal up\` from its project folder, then sign in (\`cotal login\`)`,
+        `✗ space "${flags.space}" has user auth enabled on disk but no usable registry entry - re-record it with ${restart} from its project folder, then sign in (\`cotal login\`)`,
         undefined,
         { code: "TARGET_NOT_FOUND" },
       );
+    }
     const tls = tlsIntent(flags.server, false);
     try {
       await reachableOrThrow(flags.server, { tls });
@@ -903,7 +906,7 @@ async function userConnect(target: MeshTarget): Promise<Connection> {
  *  malformed file is refused naming the file and what is wrong with it, rather than reaching a
  *  serving broker as an unreachable one. A file other accounts can read is still used, with a
  *  warning on stderr: the private-file rule refuses only the credentials Cotal keeps itself. */
-export function readCredsFile(path: string): string {
+export function readCredsFile(path: string, options?: { malformedRemedy?: string }): string {
   const refuse = (problem: string, code: RefusalCode, remedy: string) =>
     new ConnectRefusal(`✗ creds file ${problem}`, `  ${remedy}`, { code, parts: { message: `creds file ${problem}`, remedy }, target: { path } });
   let stat: Stats;
@@ -914,7 +917,7 @@ export function readCredsFile(path: string): string {
     // Another local account that can write a folder on its path can swap the file, so it is refused
     // as auth mint refuses to write one there. POSIX only, as the file-mode warning below is.
     if (localRecordAccess() === "posix") {
-      try { protectedLocalDirectory(dirname(resolve(path)), "its path"); }
+      try { protectedLocalDirectory({ parentOf: path }, "its path"); }
       catch (error) {
         if (error instanceof CommandFailure && error.code === "PERMISSION_DENIED") throw refuse(`${path} cannot be used: ${error.message}`, "PERMISSION_DENIED", error.remedy ?? "move it to a folder only you can write");
         throw error;
@@ -929,8 +932,8 @@ export function readCredsFile(path: string): string {
   }
   const problem = credsProblem(text);
   if (problem) throw refuse(`${path} cannot be used: ${problem.message}`, "SCHEMA_INVALID", problem.code === "crlf"
-    ? `save it with LF line endings, for example with \`dos2unix ${path}\``
-    : "pass the complete credential file as it was issued; `cotal auth mint <label> --out <file>` writes a new one");
+    ? `save it with LF line endings, for example with \`dos2unix ${shellPath(path)}\``
+    : options?.malformedRemedy ?? "pass the complete credential file as it was issued; `cotal auth mint <label> --out <file>` writes a new one");
   const exposure = credentialFileExposure(path, stat);
   if (exposure) console.error(c.yellow(`! creds file ${path} ${exposure.reason}; ${exposure.remedy}`));
   return text;
@@ -1080,9 +1083,9 @@ export async function reachableOrExit(server: string, auth: RawAuth = {}): Promi
  *  dead-recorded mesh the operator is recovering with a live `--server` override. A `readOnly`
  *  resolve takes no sweep and keeps a stale entry. */
 export async function resolveTargetOrThrow(flags: ResolveFlags): Promise<MeshTarget> {
-  const sweep = flags.offline === undefined && !flags.readOnly && resolveReadsLiveness(process.cwd(), flags) ? await pruneStaleMeshes(flags.server, "targets") : {};
   let target: MeshTarget;
   try {
+    const sweep = flags.offline === undefined && !flags.readOnly && resolveReadsLiveness(process.cwd(), flags) ? await pruneStaleMeshes(flags.server, "targets") : {};
     target = resolveMeshTarget(process.cwd(), { ...flags, ...sweep });
   } catch (e) {
     // The target error rides as `cause`, so a caller that must tell "no mesh recorded at all" from

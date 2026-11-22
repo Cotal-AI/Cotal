@@ -108,7 +108,15 @@ try {
     check("the printed retry succeeds without starting the stack's manager", retried.status === 0 && running("stack-manager") === undefined, shown(retried));
   }
   const again = cotal("up", "--json");
-  check("bare up starts the stack's own manager without saving the refused cap", again.status === 0 && running("stack-manager") !== undefined && cap() === undefined, shown(again));
+  const stackManager = running("stack-manager")?.instanceId;
+  const stackBroker = running("stack-broker")?.instanceId;
+  check("bare up starts the stack's own manager without saving the refused cap", again.status === 0 && stackManager !== undefined && stackBroker !== undefined && cap() === undefined, shown(again));
+  const sameCap = cotal("up", "--seat-cap", "unlimited", "--json");
+  check("explicit unlimited reuses the default-cap manager and broker", sameCap.status === 0 && cap() === undefined
+    && running("stack-manager")?.instanceId === stackManager && running("stack-broker")?.instanceId === stackBroker, shown(sameCap));
+  const changedCap = cotal("up", "--seat-cap", "3", "--json");
+  check("changing the cap of a live manager still requires a stop", changedCap.status === 2 && changedCap.env?.error?.code === "LIFECYCLE_BLOCKED"
+    && changedCap.env.error.remedy?.includes("cotal down") === true && cap() === undefined, shown(changedCap));
   const after = cotal("status", "--json");
   const settled = after.env?.result?.folder as { noManager?: boolean; managerService?: unknown } | undefined;
   check("status no longer reads the stack as --no-manager", after.status === 0 && settled?.noManager === false && settled.managerService === null, shown(after));

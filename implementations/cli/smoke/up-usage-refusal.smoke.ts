@@ -77,7 +77,7 @@ const [unprepared, journalRoot] = roots as [string, string];
 process.on("exit", () => { for (const dir of [home, folder, ...roots]) rmSync(dir, { recursive: true, force: true }); });
 
 const HOST_ENV = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("COTAL_") && k !== "FORCE_COLOR" && k !== "NO_COLOR"));
-const env = { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config"), COTAL_HOME: join(home, ".cotal"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" };
+const env = { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config"), COTAL_HOME: join(home, ".cotal"), COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1", NO_COLOR: "1" };
 const anchors = new Map<string, SmokeSandboxAnchor>();
 /** Record `at`, which already holds its `.cotal`, as a root a down may run in. */
 const sandbox = (at: string) => anchors.set(at, recordSmokeSandbox({ root: at, cotalHome: env.COTAL_HOME, xdgConfigHome: env.XDG_CONFIG_HOME }));
@@ -156,6 +156,14 @@ for (const [flag, value] of [
     result.status === 1 && result.envelope?.outcome === "refused" && error?.code === "USAGE_INVALID"
       && error.message === `${flag} can only be used with user auth. Nothing started.`
       && error.remedy?.includes("--user-auth instead of --open") === true && !existsSync(join(folder, ".cotal")), shown(result));
+}
+
+for (const port of ["nope", "", "-1", "1.5", "65536"]) {
+  const result = run(["up", "--user-auth", "--no-manager", "--space", "bad-exchange", "--exchange-public-port", port, "--json"]);
+  check(`up refuses exchange port ${JSON.stringify(port)} before touching the project`,
+    result.status === 1 && result.envelope?.error?.code === "USAGE_INVALID"
+      && result.envelope.error.message?.includes("--exchange-public-port must be a whole number from 0 to 65535") === true
+      && !existsSync(join(folder, ".cotal")), shown(result));
 }
 
 // First-enable user auth must not leave static signing authority on any startup route.
@@ -237,6 +245,20 @@ const prepared = mkdtempSync(join(tmpdir(), "cotal-up-usage-prepared-"));
 process.on("exit", () => rmSync(prepared, { recursive: true, force: true }));
 const created = run(["space", "create", "upusage", "--root", prepared, "--json"]);
 check("space create prepares a folder", created.status === 0, shown(created));
+const upHelp = run(["up", "--help"]);
+check("up help marks every public exchange flag as legacy user-auth only",
+  ["exchange-public-port", "exchange-public-url", "exchange-trusted-proxy", "advertised-server", "agent-provisioning-url"].every((flag) =>
+    new RegExp(`^  --${flag} .*legacy user-auth startup only`, "m").test(upHelp.stdout)), shown(upHelp));
+const preparedExchange = run(["up", "--user-auth", "--no-manager", "--server", "nats://127.0.0.1:1", "--idp", "https://idp.example.test/auth",
+  "--exchange-public-port", "0", "--exchange-public-url", "https://mesh.example.test", "--json"], prepared);
+const exchangeError = preparedExchange.envelope?.error;
+check("a prepared root refuses public exchange and names a route that keeps the broker, IdP and exchange flags",
+  preparedExchange.status === 2 && exchangeError?.code === "UNSUPPORTED"
+    && exchangeError.message?.includes("--exchange-public-port and --exchange-public-url") === true
+    && exchangeError.remedy?.includes("new, unprepared project folder") === true
+    && exchangeError.remedy.includes("cotal up --user-auth --idp <auth base URL>")
+    && exchangeError.remedy.includes("Keep the broker and public exchange flags")
+    && !existsSync(join(prepared, ".cotal", "stack-controller.json")), shown(preparedExchange));
 const named = run(["up", "--server", "nats://localhost:43131", "--json"], prepared);
 check("in a prepared folder a host name is the same USAGE_INVALID refusal, exit 1, naming 127.0.0.1", named.status === 1 && named.envelope?.error?.code === "USAGE_INVALID" && /names the host localhost/.test(named.envelope.error.message ?? "") && named.stdout.includes("--server nats://127.0.0.1:43131"), shown(named));
 check("it wrote no stack journal", !existsSync(join(prepared, ".cotal", "stack-controller.json")), readdirSync(join(prepared, ".cotal")));
@@ -450,6 +472,27 @@ const holder = createServer((socket) => socket.on("error", () => {}));
 const held = await new Promise<number>((resolve) => holder.listen(0, "127.0.0.1", () => resolve((holder.address() as AddressInfo).port)));
 const started = (root: string) => existsSync(join(root, ".cotal", "nats.pid"));
 try {
+  if (process.platform !== "win32" && process.getuid?.() !== 0) {
+    const path = join(realpathSync(prepared), ".cotal");
+    const args = ["up", "--foreground", "--server", `nats://127.0.0.1:${held}`];
+    const before = readdirSync(path).sort().join("\n");
+    chmodSync(path, 0o600);
+    try {
+      const blocked = run(args, prepared);
+      const command = blocked.stderr.match(/with (chmod u\+wx .+)$/m)?.[1];
+      check("an owner-writable .cotal without search access refuses before startup and names a permission repair",
+        blocked.status === 2 && /Code:\s+PERMISSION_DENIED/.test(blocked.stderr) && blocked.stderr.includes(`${path} does not grant this account both write and search access`) && command === `chmod u+wx ${path}`, shown(blocked));
+      check("the refusal leaves .cotal without search permission", (lstatSync(path).mode & 0o777) === 0o600);
+      if (command === `chmod u+wx ${path}`) {
+        const repaired = spawnSync("sh", ["-c", command], { cwd: prepared, encoding: "utf8" });
+        check("the printed command restores owner search access without changing project entries",
+          repaired.status === 0 && (lstatSync(path).mode & 0o777) === 0o700 && readdirSync(path).sort().join("\n") === before, repaired.stderr);
+      }
+    } finally {
+      chmodSync(path, 0o700);
+    }
+  }
+
   const emptyRestore = realpathSync(mkdtempSync(join(tmpdir(), "cotal-up-empty-restore-")));
   roots.push(emptyRestore);
   const restoreArgs = ["--open", "--no-manager", "--server", `nats://127.0.0.1:${held}`, "--space", "emptyrestore", "--restore", ""];

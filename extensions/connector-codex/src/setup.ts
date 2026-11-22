@@ -181,9 +181,7 @@ function hasCachedPlugin(): boolean {
 
 /** An installed entry already supplies Codex's enablement preference. `plugin add` would rewrite
  * it (even re-enabling a disabled plugin), so refresh only publishes the Cotal cache directory. */
-function refreshCache(version: string): void {
-  const cache = pluginCache();
-  if (isConfigProtected(cache)) throw new Error(`Cannot refresh the Cotal plugin cache at ${cache}: it is read-only.`);
+function refreshCache(cache: string, version: string): void {
   const scratch = mkdtempSync(join(dirname(cache), ".cotal-refresh-"));
   const next = join(scratch, "next");
   const previous = join(scratch, "previous");
@@ -328,12 +326,16 @@ export const codexSetupProvider: ConnectorSetupProvider = {
           throw error;
         }
         const version = pluginVersion(pluginFiles(cotal, ""));
+        const cache = pluginCache();
+        if (installed.version !== version && isConfigProtected(cache)) {
+          return `Codex plugin refresh deferred because ${cache} is read-only. ${PLUGIN}@${MARKETPLACE} remains at ${installed.version}. Make that directory writable, then run \`cotal update\`.`;
+        }
         materializeCodexPlugin(cotal, version);
         const marketplace = configuredMarketplace();
         const desired = codexMarketplaceDir();
         const needsRegistration = marketplaceRegistrationStale(marketplace);
         let deferred: string | undefined;
-        if (installed.version !== version) refreshCache(version);
+        if (installed.version !== version) refreshCache(cache, version);
         if (needsRegistration) {
           const config = join(codexHome(), "config.toml");
           // The config path is only checked when the existing registration really needs an edit.

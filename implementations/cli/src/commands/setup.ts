@@ -36,6 +36,7 @@ import {
   recordMesh,
   resolveOnPath,
   seedConnectorServers,
+  spaceNameTooLong,
   writePreference,
   writeResult,
   type Cell,
@@ -70,6 +71,7 @@ import { runtimeProviders } from "./runtimes.js";
 import { onInstanceId } from "../lib/control.js";
 import { signedInSpace } from "../lib/conversation-identity.js";
 import { addFromBundle, checkLocalSpace, checkSelfHostedSpace, recordLocalSpace, type LocalSpaceState, type SelfHostedSpace } from "./space-registration.js";
+import { mkdirPrivate } from "../lib/private-directory.js";
 
 const ONBOARD_VERSION = "2";
 
@@ -585,9 +587,12 @@ interface SetupPlan {
 async function planSetup(inputs: SetupInputs, runtimes: readonly RuntimeChoice[], start: boolean): Promise<SetupPlan> {
   const target = { space: inputs.space };
   const problem = preferenceSpaceProblem(inputs.space);
-  // A name with a letter or digit left after the others are replaced is offered as it would be spelled.
-  const spelled = token(inputs.space);
-  if (problem) throw usage(problem, /[A-Za-z0-9]/.test(spelled) ? `pass --space ${spelled}, or another name of letters, digits, - and _` : "pass a --space name of letters, digits, - and _");
+  if (problem) {
+    const spelled = token(inputs.space).replace(/^-+/, "");
+    throw usage(problem, /[A-Za-z0-9]/.test(spelled) && !spaceNameTooLong(spelled)
+      ? `pass --space ${spelled}, or another name of letters, digits, - and _`
+      : "choose a name that starts with a letter, digit or underscore and has only letters, digits, - and _");
+  }
   const candidates = await harnessCandidates(inputs.harness);
   const candidate = candidates.find((c) => c.value === inputs.harness);
   if (!candidate) throw usage(`no harness ${JSON.stringify(inputs.harness)}; known harnesses: ${candidates.map((c) => c.value).join(", ")}`, HARNESS_REMEDY);
@@ -655,15 +660,14 @@ async function prepare(plan: SetupPlan, opts: { demo: boolean; interactive: bool
   } else if (plan.space.kind === "registered") {
     spaceState = "registered";
   } else {
-    if (inputs.createProject) {
-      mkdirSync(inputs.project, { recursive: true });
+    if (inputs.createProject && mkdirPrivate(inputs.project, "the project root") !== undefined) {
       wrote("project folder", inputs.project);
     }
     if (plan.space.state === "created") wrote("prepared space", recordLocalSpace(inputs.space, inputs.project).file);
     spaceState = plan.space.state;
   }
 
-  const persona = seedDefaultPersona(inputs.project);
+  const persona = prepareDefaultPersona(inputs, spaceState, written);
   if (persona) wrote(persona.what, persona.path);
   if (opts.demo) {
     const agents = personaDir(inputs.project);
@@ -676,7 +680,16 @@ async function prepare(plan: SetupPlan, opts: { demo: boolean; interactive: bool
   if (prefs.defaults.harness === undefined && writePreference({}, "harness", inputs.harness, prefs.revision).changed) wrote("your harness preference", preferencesPath());
 
   const narrate = opts.presentation === "rich";
-  const log = openSetupLog(join(inputs.project, ".cotal", "setup.log"));
+  const path = join(inputs.project, ".cotal", "setup.log");
+  let log: SetupLog;
+  try { log = openSetupLog(path); }
+  catch (error) {
+    const partial = written.length > 0;
+    const saved = partial ? "setup saved some changes, but " : "";
+    throw new CommandFailure(partial ? "partial" : "failed", partial ? "OPERATION_PARTIAL" : "OPERATION_FAILED", `${saved}setup could not open the setup log: ${error instanceof Error ? error.message : String(error)}`, {
+      target: { ...target, path }, changed: written, cause: error, remedy: `check and repair the log path ${path}, then run the same setup again`,
+    });
+  }
   const actions = actionRunner(narrate, opts.interactive, log);
   if (candidate.missing.length === 0) {
     const provider = await connectorSetupProvider(candidate.connector);
@@ -691,11 +704,7 @@ async function prepare(plan: SetupPlan, opts: { demo: boolean; interactive: bool
   }
   // A connector's skills action runs for every connector whose harness is present, so someone using
   // that harness gets Cotal's skills even without joining the mesh through it.
-  for (const other of await setupConnectorCandidates(await setupConnectorSurface())) {
-    if (other.value === candidate.value || other.missing.length > 0) continue;
-    const provider = await connectorSetupProvider(other.connector);
-    if (provider?.skills) await actions.run(other.value, actionStep(provider.skills, connectorSkillsInput(), provider));
-  }
+  await reconcileOtherConnectorSkills(candidate.value, target, narrate, log, actions.ran, warnings);
   if (agentSkillsSkew().some((s) => s.state !== "current")) {
     const skills = seedAgentSkills(log);
     written.push({ what: "cross-vendor skills", path: agentSkillsHome() });
@@ -785,6 +794,21 @@ async function prepare(plan: SetupPlan, opts: { demo: boolean; interactive: bool
     }
   }
   writeResult(opts.presentation, { command: "setup", target, result, warnings, ...(partial ? { partial } : { noOp: !startup.requested && written.length === 0 && actions.ran.length === 0 }) }, setupView);
+}
+
+function prepareDefaultPersona(inputs: SetupInputs, spaceState: SetupResult["spaceState"], written: readonly Written[]): ReturnType<typeof seedDefaultPersona> {
+  try { return seedDefaultPersona(inputs.project); }
+  catch (error) {
+    const dir = personaDir(inputs.project);
+    const native = error instanceof Error ? error as NodeJS.ErrnoException : undefined;
+    const blocked = native?.code === "EEXIST" && native.path === dir;
+    const partial = written.length > 0;
+    const saved = spaceState === "created" ? `prepared space "${inputs.space}" is saved, but ` : partial ? "setup saved some changes, but " : "";
+    throw new CommandFailure(partial ? "partial" : "failed", partial ? "OPERATION_PARTIAL" : "OPERATION_FAILED", `${saved}setup could not write the default persona: ${native?.message ?? String(error)}`, {
+      target: { space: inputs.space, path: blocked ? dir : join(dir, "default.md") }, changed: written, cause: error,
+      remedy: `${blocked ? `move the file at ${dir} aside` : `check and repair the persona path in ${dir}`}, then run the same setup again`,
+    });
+  }
 }
 
 /**
@@ -1167,6 +1191,43 @@ async function reconcileConnectorSkills(): Promise<void> {
   for (const connector of await setupConnectorSurface()) {
     const provider = await availableSetupProvider(connector);
     if (provider?.skills) await provider.skills.run(connectorSkillsInput());
+  }
+}
+
+/**
+ * Refresh skills for every other available connector without attributing optional failures to the
+ * selected harness, blocking subsequent connectors, or halting setup.
+ */
+async function reconcileOtherConnectorSkills(
+  selectedHarness: string,
+  target: { space: string },
+  narrate: boolean,
+  log: SetupLog,
+  ran: ActionRun[],
+  warnings: OutputWarning[],
+): Promise<void> {
+  for (const other of await setupConnectorCandidates(await setupConnectorSurface())) {
+    if (other.value === selectedHarness || other.missing.length > 0) continue;
+    const provider = await connectorSetupProvider(other.connector);
+    if (!provider?.skills) continue;
+    const step = actionStep(provider.skills, connectorSkillsInput(), provider);
+    const spin = narrate ? p.spinner() : undefined;
+    spin?.start(step.title);
+    try {
+      const detail = await step.run();
+      spin?.stop(`${step.title}${detail ? dim(` · ${detail}`) : ""}`);
+      log.line(`${step.name}: ok${detail ? ` · ${detail}` : ""}`);
+      ran.push({ connector: other.value, action: step.name, title: step.title, detail: detail ?? null });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      spin?.stop(`${step.title}: skipped`);
+      log.line(`${step.name}: skipped (${other.value}) · ${message}`);
+      warnings.push({
+        code: "DEPENDENCY_UNAVAILABLE",
+        target: { ...target, connector: other.value },
+        message: `optional skills refresh for ${other.value} did not finish (${message})`,
+      });
+    }
   }
 }
 

@@ -3,7 +3,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { discardLaunchArtifacts, registry, type Connector, type LaunchOpts, type LaunchSpec } from "@cotal-ai/core";
-import { aclEnv, controlEndpoint, launchEnv, MODEL_PROVIDER_KEYS, materialEnv } from "@cotal-ai/connector-core";
+import { aclEnv, nameEnv, controlEndpoint, launchEnv, MODEL_PROVIDER_KEYS, materialEnv } from "@cotal-ai/connector-core";
 import { HERMES_FORK_RECORD, hermesSeatHome } from "./seat-home.js";
 
 /** The launcher owns the mesh endpoint and supervises the Hermes gateway as a child — see launch.ts.
@@ -81,7 +81,7 @@ export const hermesConnector: Connector = {
       ...launchEnv({ providerKeys: HERMES_PROVIDER_KEYS, envAllow: opts.envAllow }),
       ...aclEnv(opts),
       COTAL_SPACE: opts.space,
-      COTAL_NAME: opts.name,
+      ...nameEnv(opts),
     };
     if (opts.resolvedBinaries?.uv) env.COTAL_HERMES_UV_BIN = opts.resolvedBinaries.uv;
     // Adopt-home is a machine-wide operator decision ("put MY Hermes on the mesh"), not a
@@ -90,6 +90,11 @@ export const hermesConnector: Connector = {
     // per-session; this one has no per-spawn meaning and would otherwise be unreachable, since a
     // seat cannot opt in to its own profile.
     const adoptHome = process.env.COTAL_HERMES_ADOPT_HOME?.trim();
+    if (opts.validateOnly) {
+      if (!adoptHome && !opts.model)
+        throw new Error("A managed Hermes profile needs a model. Set one with --model or the agent file's model: field, or use your own profile with COTAL_HERMES_ADOPT_HOME=$HOME/.hermes.");
+      return { command: "", args: [] };
+    }
     if (adoptHome) env.COTAL_HERMES_ADOPT_HOME = adoptHome;
     // The fork's provenance is the seat's own record of it, which the launcher writes into the seat's
     // profile when it forks. The launcher refuses a profile that is not where this names it.
@@ -114,7 +119,6 @@ export const hermesConnector: Connector = {
       env.HERMES_MODEL = opts.model;
       env.COTAL_MODEL = opts.model;
     }
-    if (opts.validateOnly) return { command: "", args: [] };
     const artifacts: string[] = [];
     try {
       // The exit watcher owns the socket directory and the single carrier even on a forced stop.

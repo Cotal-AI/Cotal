@@ -56,10 +56,11 @@ function stoppedManagerLog(space: string, root: string, requested: string, prese
   const path = managerLogPath(space, root), record = presetPidRecord(space, root, preset);
   if (!existsSync(path)) {
     const target = { space, name: requested, path };
-    if (record?.liveness === "dead" || loadManagerInstanceIdentity(root, space)) throw new CommandFailure("refused", "TARGET_NOT_FOUND", `the manager log at ${path} is no longer there; nothing was read`, { target, remedy: "start the stack again with `cotal up`" });
+    const stack = codeSpan(`cotal up --root ${shellWord(root)} --space ${shellWord(space)}`);
+    if (record?.liveness === "dead" || loadManagerInstanceIdentity(root, space)) throw new CommandFailure("refused", "TARGET_NOT_FOUND", `the manager log at ${path} is no longer there; nothing was read`, { target, remedy: `start the stack again with ${stack}` });
     throw new CommandFailure("refused", "TARGET_NOT_FOUND", `no manager has been started in space ${oneLine(space)}: there is no manager log at ${path}; nothing was read`, {
       target,
-      remedy: "start the stack with `cotal up`, or the manager alone with `cotal manager start`",
+      remedy: `start the stack with ${stack}, or the manager alone with ${codeSpan(`cotal manager start --space ${shellWord(space)}`)}`,
     });
   }
   return { requested, name: requested, preset: preset.name, saved: null, stopped: { pid: record?.liveness === "dead" ? record.pid : null, label: record?.label ?? preset.name } };
@@ -149,7 +150,7 @@ export function resolvePresetService(space: string, root: string, requested: str
   if (mode === "install") throw adapterInstallRefusal(space, requested, preset.adapter, {}, requested === "manager" ? "manager" : undefined, { space, name: requested });
   if (mode !== "start") throw new CommandFailure("refused", "TARGET_NOT_FOUND", `no ${requested} has been started in space ${oneLine(space)}; nothing was ${mode === "status" || mode === "logs" ? "read" : "changed"}`, {
     target: { space, name: requested },
-    remedy: requested === "manager" ? "start it with `cotal manager start`" : `start it with \`cotal service start ${requested}\``,
+    remedy: requested === "manager" ? `start it with ${codeSpan(`cotal manager start --space${space.startsWith("-") ? "=" : " "}${shellWord(space)}`)}` : `start it with \`cotal service start ${requested}\``,
   });
   if (values["dry-run"]) return { requested, name: requested, preset: preset.name, saved: null };
   const definition: ServiceDefinitionInput = { ...servicePresetDefinition(preset, space, values, root, "start"), root };

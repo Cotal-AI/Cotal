@@ -1259,6 +1259,7 @@
   "env:COTAL_DETACH_KEY": "current:config set",
   "env:COTAL_DIR_DANGLING": "internal:a status warning code, not an environment variable",
   "env:COTAL_DIR_LINKED": "internal:a status warning code, not an environment variable",
+  "env:COTAL_DISPLAY_NAME": "internal:the display name the manager restores when it relaunches a renamed seat",
   "env:COTAL_ENDPOINTS": "internal:seat session variable the launcher writes for a spawned seat",
   "env:COTAL_ENROLLMENT_FILE": "current:spawn --foreground --enrollment-file",
   "env:COTAL_ENROLLMENT_URL": "current:spawn --foreground --enrollment-file",

@@ -287,6 +287,7 @@ export class PreservedResume {
     return structuredClone({
       space: this.config.space,
       name: a.name,
+      ...(a.displayName !== undefined ? { displayName: a.displayName } : {}),
       role: a.role,
       identity,
       launch: {
@@ -535,8 +536,10 @@ export class PreservedResume {
         inactive.push(`${entry.name} runtime status failed: ${rejectionText(e)}`);
         continue;
       }
+      // The principal and lifecycle name the incarnation. `card.name` is display data that `set-name`
+      // changes, so it proves nothing here.
       if (!roster.some((presence) =>
-        presence.card.id === expectedPrincipal && presence.card.name === entry.name && presence.status !== "offline" &&
+        presence.card.id === expectedPrincipal && presence.status !== "offline" &&
         presence.lifecycleUid === entry.identity.lifecycleUid))
         inactive.push(`${entry.name} incarnation ${entry.identity.lifecycleUid} (principal ${expectedPrincipal}) is not exactly present`);
     }
@@ -606,7 +609,6 @@ export class PreservedResume {
           return confirmedPredecessor === undefined ||
             confirmedPredecessor.principal !== principal ||
             confirmedPredecessor.lifecycleUid !== presence.lifecycleUid ||
-            presence.card.name !== entry.name ||
             entry.identity.lifecycleUid === confirmedPredecessor.lifecycleUid;
         });
         if (principalIsLive) {
@@ -994,6 +996,7 @@ export class PreservedResume {
         const launchOpts: LaunchOpts = {
           ...this.hostLaunchFields(loadCotalConfig(this.config.workspaceRoot), entry.launch.connector, entry.launch.shareTools, harness),
           name: entry.name,
+          displayName: entry.displayName,
           role: entry.role,
           id: authority.id,
           creds: authority.creds,
@@ -1072,6 +1075,7 @@ export class PreservedResume {
       const handle = await this.spawnCustodied(runtime, entry.name, prepared.spec, entry.launch.cwd, custody);
       const managed: ManagedAgent = {
         name: entry.name,
+        ...(entry.displayName !== undefined ? { displayName: entry.displayName } : {}),
         role: entry.role,
         agent: entry.launch.connector,
         id: resumeId,

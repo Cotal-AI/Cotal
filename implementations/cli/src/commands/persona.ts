@@ -67,24 +67,27 @@ export async function persona(args: ParsedArgs): Promise<void> {
   const catalog = personaCatalog(values);
   recordOperationSpace(catalog.space);
   if (sub === undefined) return list(catalog, presentation);
-  const path = personaPath(catalog.root, name!);
+  const path = personaPath(catalog.root, name!, sub === "show" ? "show" : "write");
   if (sub === "show") {
     const source = requirePersonaSource(path);
     const definition = validatePersona(source.bytes, path);
+    const needsSeparator = name!.startsWith("-");
+    const word = needsSeparator ? `-- ${name}` : name;
+    const jsonWords = needsSeparator ? `--json ${word}` : `${word} --json`;
     writeResult(presentation, { command: "persona", target: catalog, result: { kind: "persona", name, path, definition, source: source.bytes.toString("utf8") } }, result => ({ sections: [
       { title: `Persona · ${result.name}`, blocks: [{ kind: "fields", rows: [
         ["Role", result.definition.role ?? "not set"],
         ["Application", result.definition.agent ? `${result.definition.agent} · pinned` : "user default"],
         ["Model", result.definition.model ?? "application default"],
-        ["Read", (result.definition.allowSubscribe ?? result.definition.subscribe ?? []).join(", ") || "no channels"],
+        ["Read", resolveReadAcl(result.definition.subscribe ?? [], result.definition.allowSubscribe).join(", ") || "no channels"],
         ["Post", (result.definition.allowPublish ?? []).join(", ") || "no channels"],
         ["File", result.path],
       ] }] },
       { title: "Instructions", blocks: [{ kind: "lines", lines: result.definition.persona?.trim() ? result.definition.persona.split(/\r?\n/) : [{ text: "No instructions in this definition.", tone: "hint" }] }] },
       { title: "Next", blocks: [{ kind: "commands", items: [
-        { command: `cotal p edit ${result.name}`, description: "Edit this local definition" },
-        { command: `cotal spawn ${result.name}`, description: "Launch an agent from it" },
-        { command: `cotal p show ${result.name} --json`, description: "Read all fields and the complete source" },
+        ...(personaNameProblem(result.name!) ? [] : [{ command: `cotal p edit ${word}`, description: "Edit this local definition" }]),
+        { command: `cotal spawn ${word}`, description: "Launch an agent from it" },
+        { command: `cotal p show ${jsonWords}`, description: "Read all fields and the complete source" },
       ] }] },
     ] }));
     return;
@@ -98,11 +101,11 @@ export async function persona(args: ParsedArgs): Promise<void> {
       throw new CommandFailure("refused", "CONFLICT", `persona '${name}' already exists`, { remedy: `change it with \`cotal persona edit ${name}${target}\`, or remove it with \`cotal persona remove ${name}${target}\` first` });
     }
     const bytes = await createSource(name!, path, values);
-    commitPersona(path, expected, bytes);
+    commitPersona(path, expected, bytes, targetWords(values));
     return receipt(presentation, catalog, name!, path, "created");
   }
   if (sub === "edit") {
-    const edit = await editPersona(path, name!, catalog, presentation === "json");
+    const edit = await editPersona(path, name!, catalog, targetWords(values), presentation === "json");
     if (edit.action === "saved") return receipt(presentation, catalog, name!, path, "saved");
     return editNotSaved(presentation, catalog, name!, path, edit);
   }
@@ -151,6 +154,7 @@ async function createSource(name: string, path: string, values: Values): Promise
         : `cotal persona create ${ownName} ${file}${targetWords(values)}`;
       const rename = `set its name to '${name}'`;
       const remedy = personaNameProblem(def.name) || reservedPersonaName(def.name) ? rename
+        : values.file === "-" ? `pipe the original definition into ${codeSpan(retry)} again, or ${rename} and pipe the corrected definition into the original command`
         : `create it under its own name with ${codeSpan(retry)}, or ${rename}`;
       throw new CommandFailure("refused", "SCHEMA_INVALID", `persona name must match the catalog name '${name}'; ${source} names '${def.name}'`, { remedy });
     }

@@ -644,10 +644,10 @@ async function run(args: ParsedArgs): Promise<void> {
     return runDesktopBridge({ resolveTarget: () => target(args), version: binVersion(), peerUid, peerPid });
   }
   if (mode === "name") {
-    const { paths } = resolveTarget(args);
+    const { paths, home } = resolveTarget(args);
     let reply;
     try { reply = await exchangeDesktopRequest({ paths, peerUid, peerPid }, { op: "name", ...(rest[0] !== undefined ? { name: rest[0] } : {}) }); }
-    catch (error) { throw asFailure(error); }
+    catch (error) { throw asFailure(error, home); }
     if (!reply.ok) throw new CommandFailure("refused", "USAGE_INVALID", reply.error.message);
     if ("event" in reply || !("computer" in reply.result) || typeof reply.result.computer !== "string") throw new CommandFailure("failed", "OPERATION_FAILED", "the daemon returned no computer name");
     const result = { computer: reply.result.computer };
@@ -655,10 +655,10 @@ async function run(args: ParsedArgs): Promise<void> {
     return;
   }
   if (mode === "spaces") {
-    const { paths } = resolveTarget(args);
+    const { paths, home } = resolveTarget(args);
     let reply;
     try { reply = await exchangeDesktopRequest({ paths, peerUid, peerPid }, { op: "spaces", refresh: args.values.refresh === true }); }
-    catch (error) { throw asFailure(error); }
+    catch (error) { throw asFailure(error, home); }
     if (!reply.ok) {
       if (reply.error.code === "DEPENDENCY_UNAVAILABLE") throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", reply.error.message, { remedy: reply.error.remedy, native: { code: reply.error.code } });
       throw new CommandFailure("failed", "OPERATION_FAILED", "the daemon could not read its spaces", { native: { code: reply.error.code } });

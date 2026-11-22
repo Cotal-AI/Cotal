@@ -2,7 +2,7 @@ import "../../implementations/cli/smoke/update-isolation.js";
 import assertions from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, statSync, chmodSync, symlinkSync, realpathSync, renameSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, sep } from "node:path";
+import { join, relative, sep } from "node:path";
 import { globalConfigDir } from "@cotal-ai/core";
 import { writeUpdateRecovery, readUpdateRecovery, clearUpdateRecovery, claimUpdateClosureAccess, connectorConfigDir, retainConnectorConfig, prepareCotalHomeForWrite, ProtectedRecordStore, protectedResolvedDirectory } from "@cotal-ai/workspace";
 import { snapshotUpdateClosure } from "../../implementations/cli/src/lib/update-snapshot.js";
@@ -164,6 +164,28 @@ try {
     assert.ok(readUpdateRecovery()!.renames!.every(entry => entry.done));
     legacy.discard(); clearUpdateRecovery();
     assert.equal(existsSync(legacy.path), false);
+    const previous = join(retained, "..", "..", "1.0.0", "cotal");
+    const saved = join(previous, ".update-snapshot-previous");
+    for (const name of ["seed", "extensions"]) {
+      mkdirSync(join(saved, name), { recursive: true, mode: 0o700 });
+      writeFileSync(join(saved, name, "stamp"), "previous snapshot");
+      mkdirSync(join(previous, name), { mode: 0o700 });
+      writeFileSync(join(previous, name, "stamp"), "previous live");
+    }
+    const recovery = { previous: "1.0.0", target: "2.0.0", installed: "2.0.0", phase: "restoring", snapshot: saved, reason: "interrupted retained update" } as const;
+    writeUpdateRecovery({ ...recovery, previous: "3.0.0" });
+    assert.throws(() => snapshotUpdateClosure(saved), /invalid update snapshot/);
+    const linkedHome = join(root, "retained-home-alias");
+    symlinkSync(root, linkedHome);
+    const linkedSnapshot = join(linkedHome, relative(root, saved));
+    writeUpdateRecovery({ ...recovery, snapshot: linkedSnapshot });
+    const rollback = snapshotUpdateClosure(linkedSnapshot);
+    rollback.restore();
+    for (const name of ["seed", "extensions"]) {
+      assert.equal(readFileSync(join(previous, name, "stamp"), "utf8"), "previous snapshot");
+      assert.equal(readFileSync(join(retained, name, "stamp"), "utf8"), "target retained");
+    }
+    rollback.discard(); clearUpdateRecovery();
     for (const kind of ["missing", "file", "symlink", "foreign"] as const) {
       const path = join(kind === "foreign" ? root : config, `.update-snapshot-${kind}`);
       if (kind === "file") writeFileSync(path, "not a directory");

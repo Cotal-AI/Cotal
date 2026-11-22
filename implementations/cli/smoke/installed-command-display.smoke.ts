@@ -171,7 +171,8 @@ try {
   const prepared = run(["space", "create", space, "--root", root, "--json"]);
   if (prepared.code !== 0) throw new Error(`preparation failed: ${prepared.output}`);
   attempted = true;
-  const up = run(["up", "--server", `nats://127.0.0.1:${await freePort()}`, "--detach", "--json"]);
+  const server = `nats://127.0.0.1:${await freePort()}`;
+  const up = run(["up", "--server", server, "--detach", "--json"]);
   if (up.code !== 0) throw new Error(`owned stack failed: ${up.output}`);
   const metadata = run(["status", "--json"]);
   const json = JSON.parse(metadata.stdout) as { result?: { machine?: { install?: { kind: string } } } };
@@ -185,10 +186,27 @@ try {
     writeFileSync(join(sandbox, "followed-command.json"), JSON.stringify({ code: followed.status, output: followed.stdout + followed.stderr }, null, 2));
     suite.check("the printed roster command runs unchanged from another folder", followed.status === 0 && !followed.stderr.includes("not found"), { code: followed.status, output: followed.stdout + followed.stderr });
   }
+  const otherRoot = join(sandbox, "other-project");
+  mkdirSync(otherRoot, { mode: 0o700 });
+  const other = run(["space", "create", "other-project", "--root", otherRoot]);
+  const selected = run(["use", "other-project"]);
+  const bare = run(["who", "--plain"], outside);
+  const explicit = run(["status", "--space", space, "--plain"], outside);
+  const scoped = rosterCommand(explicit.stdout);
+  const followed = scoped ? spawnSync("/bin/sh", ["-c", scoped], { cwd: outside, env, encoding: "utf8", timeout: 60_000 }) : undefined;
+  suite.check("a different selected space cannot redirect the copied roster command",
+    other.code === 0 && selected.code === 0 && bare.code === 2 && bare.output.includes("other-project") &&
+    explicit.code === 0 && scoped?.endsWith(` who --space ${space}`) === true &&
+    followed?.status === 0 && followed.stdout.includes(`Mesh: ${space}`), { bare, explicit, followed });
+  const addressed = run(["status", "--server", server, "--plain"], outside);
+  suite.check("server-only status retains the broker address in the roster command",
+    addressed.code === 0 && rosterCommand(addressed.stdout)?.endsWith(` who --server ${server}`) === true, addressed);
+  const restored = run(["use", space]);
+  if (restored.code !== 0) throw new Error(`selection did not restore: ${restored.output}`);
   const roster = run(["ps", "--plain"]);
   suite.check("off-PATH roster suggestions use the same runnable prefix", roster.code === 0 && !/^\s+cotal (?:spawn|setup)\b/m.test(roster.stdout) && !roster.stdout.includes("pnpm cotal"), roster);
   const onPath = run(["status", "--plain"], root, `${env.COTAL_BIN_DIR}:${tools}`);
-  suite.check("on-PATH installed status keeps concise cotal commands", onPath.code === 0 && rosterCommand(onPath.stdout) === "cotal who" && !onPath.stdout.includes("pnpm cotal"), onPath);
+  suite.check("on-PATH installed status keeps the cotal prefix and names its space", onPath.code === 0 && rosterCommand(onPath.stdout) === `cotal who --space ${space}` && !onPath.stdout.includes("pnpm cotal"), onPath);
   const source = spawnSync(process.execPath, [join(repo, "bin/dist/cotal.js"), "status", "--plain"], { cwd: root, env, encoding: "utf8", timeout: 60_000 });
   suite.check("off-PATH source checkout retains pnpm cotal guidance", source.status === 0 && source.stdout.includes("pnpm cotal"), { code: source.status, output: source.stdout + source.stderr });
   const setupCommand = status.stdout.split("\n").find((line) => / setup --help(?:\s|$)/.test(line))?.trim().split(" --help")[0];

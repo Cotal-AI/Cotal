@@ -1,5 +1,33 @@
 # @cotal-ai/core
 
+## 0.174.3
+
+### Patch Changes
+
+- 8a7bd4b: Persona show prints commands you can copy for names starting with a hyphen, and persona files reject a blank or null endpoints declaration instead of ignoring it.
+- ff4cd00: Persona retries keep the selected catalog and explain when to pipe input again, malformed closing fences are rejected, and blank connector pins use the default unless a harness is specified.
+
+## 0.174.2
+
+### Patch Changes
+
+- 7b7e60c: Agent deprovisioning and the standalone connect options now live in their own core modules, with no change in behavior.
+
+## 0.174.1
+
+No changes in this release.
+
+## 0.174.0
+
+### Minor Changes
+
+- 5053a5e: An agent's owner can now rename the agent, and every client in the space sees the new name while the agent keeps its identity. The `agent` endpoint advances to revision 4 with `set-name` `{ name }`, which only the owner's interactive session may call. The agent checks the name with the shared name rule, refuses the name of another live agent compared lowercased, changes its card's display name and republishes presence at once; refusals are typed with the `ai.cotal.agent.name-refused` detail (`name-invalid` or `name-taken`), and the current name again changes nothing. Messages sent afterwards carry the new `from.name`, and stored history keeps the old one. `CotalEndpoint.setCardName` makes the change, and an endpoint that watches presence reports a changed display name as a `presence` update and a `roster` event. A manager keeps a seat's last shown name apart from its alias and passes it as `COTAL_DISPLAY_NAME` (`LaunchOpts.displayName`) when it starts the seat again after a crash or a preserved resume, so the seat comes back under the same alias and actor with its last name. `ps`, resume commit and name allocation find a renamed seat by its principal, and in user mode a new spawn does not take a renamed agent's actor.
+
+### Patch Changes
+
+- f93db6f: Hold the identity and configuration a `CotalEndpoint` fixes at construction in one internal object that its parts read by reference, instead of passing each value to each part through its own callback. Point the internal parts' imports of `isPublishPermissionDenied`, `isFromSubjectSender`, `deliveryLimitOf` and `fitHistoryPage` at the modules that define them. The package exports, public methods and wire behaviour are unchanged.
+- f6760fa: Keep endpoints without an error listener alive when their broker credential expires, and give each provisioning operation in the send smoke test a fresh credential.
+
 ## 0.173.0
 
 ### Minor Changes

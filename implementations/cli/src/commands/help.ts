@@ -13,7 +13,7 @@ import { manifestRepair, readUpdatePending } from "../lib/update-pending.js";
 export const helpFlags = [{ name: "all", type: "boolean", description: "accepted for scripts written before help listed every command; it changes nothing" }] as const;
 
 /** `cotal help [command…]`: every command, or the help of the command the words name. The words
- *  are literal nesting: a command (or its alias), then one of its subcommands. A manager lifecycle
+ *  select a command or alias, then its subcommands before any operands. A manager lifecycle
  *  verb is read as the dispatcher reads it, so its help is the one `--help` prints. */
 export async function help(args: ParsedArgs): Promise<void> {
   const [word, ...path] = args.positionals;

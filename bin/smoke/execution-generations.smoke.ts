@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, renameSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -267,6 +267,14 @@ try {
     assert.equal(script.status, 0, script.stderr);
     assert.equal(readlinkSync(entry), wrapper);
     assert.equal(launch().stdout.trim(), "retained generation selected", "the wrapper alone does not retire an unchanged package");
+
+    const bytes = readFileSync(manifest), before = lstatSync(manifest, { bigint: true });
+    utimesSync(manifest, 1, 1);
+    assert.notEqual(lstatSync(manifest, { bigint: true }).ctimeNs, before.ctimeNs);
+    assert.deepEqual(readFileSync(manifest), bytes);
+    const touched = launch();
+    assert.equal(touched.status, 0, touched.stderr);
+    assert.equal(touched.stdout.trim(), "retained generation selected", "touching an unchanged manifest keeps the verified update");
 
     // Keep the same manifest bytes and bootstrap hash. Only the installed package's incarnation changes.
     cpSync(manifest, `${manifest}.new`); renameSync(`${manifest}.new`, manifest);

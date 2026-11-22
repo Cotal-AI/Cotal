@@ -197,12 +197,14 @@ function durableCotalsOnPath(env: NodeJS.ProcessEnv): string[] {
 }
 
 /** The copy-paste command prefix for user-facing hints: prefer PATH, npx, or pnpm dlx, then the
- *  installed entry under this Node runtime. A dev clone uses pnpm. Re-execs use {@link selfArgv}. */
-export function displayCmd(): string {
+ *  installed entry under this Node runtime. A dev clone uses pnpm unless the command must run
+ *  from another folder. Re-execs use {@link selfArgv}. */
+export function displayCmd({ fromAnyFolder = false } = {}): string {
   if (cotalOnPath()) return "cotal";
   if (isNpx()) return "npx cotal-ai";
   if (isPnpmDlx()) return "pnpm dlx cotal-ai";
-  if (runsCliEntry() && seedWriterKind() === "released") {
+  if (runsCliEntry() && (fromAnyFolder || seedWriterKind() === "released")) {
+    if (seedWriterKind() !== "released") return selfArgv().map(shellWord).join(" ");
     const command = [process.execPath, entryScript()].map(shellWord).join(" ");
     if (process.platform !== "win32" && process.env.COTAL_LAUNCHER === "1") {
       const prefix = process.env.npm_config_prefix;

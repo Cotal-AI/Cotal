@@ -61,13 +61,16 @@ The event builders do not collect command argument values, mesh, space, agent, u
 names, prompts or messages. They do collect the environment-derived fields listed below,
 including `TERM_PROGRAM` at `regular`. Failure text is sent at `regular` after pattern-based
 masking (see `errorMessage`); masking is not a guarantee that arbitrary error text contains no
-identifying information. Use `minimal` to exclude error text or `off` to send nothing.
+identifying information. When `spawn` reports a failure with a native cause, its message and
+stack stay local because the diagnostic can include the agent's terminal output. The event still
+records the typed error code. Use `minimal` to exclude all error text or `off` to send nothing.
 
 The install id is a persistent identifier for the settings file. The `account` field at
 `regular` hashes the cached sign-in's IdP URL and subject id; it allows correlation across
 machines without sending those raw identifiers. The daemon, manager,
 connectors and workflow runtime send nothing; neither do internal
-entries, hidden daemon runners, `agent-bearer` and `cotal telemetry` itself.
+entries (including extension update helpers), hidden daemon runners, `agent-bearer` and
+`cotal telemetry` itself.
 The standalone `cotal --version` and `cotal -V` flags send no events.
 
 The intake receives the request's IP address even though the CLI does not put it in the
@@ -78,10 +81,11 @@ opt-outs; it does not establish the receiving service's IP handling or retention
 ## Delivery
 
 One `command` event is posted as the CLI process exits, whatever the exit path. At `regular`, the
-first command of each UTC day also posts an `install` event first. Each is one `POST` of JSON,
-`content-type: application/json`, to `https://cotal.ai/v1/telemetry`. The command and install
-posts share one 1.5 second send deadline, with no retry. Send failures are ignored and do not
-change the command's exit code; the exit hook waits at most 1.5 seconds for delivery.
+first eligible command of each UTC day also posts an `install` event first. `cotal docs` leaves
+that event for another command so it can run without reading the extension inventory. Each event
+is one `POST` of JSON, `content-type: application/json`, to `https://cotal.ai/v1/telemetry`. The
+command and install posts share one 1.5 second send deadline, with no retry. Send failures are
+ignored and do not change the command's exit code; the exit hook waits at most 1.5 seconds for delivery.
 `COTAL_TELEMETRY_URL` points to a self-hosted intake. An invalid value refuses with `USAGE_INVALID`
 when a command would send events, when `cotal telemetry` reports an active level, or when you set
 a sending level without an environment opt-out. `cotal telemetry off` and reports of `off` still
@@ -118,8 +122,8 @@ At `regular` the event also carries:
 | `subcommand` | string or `null` | The registered subcommand the first positional names (`ext add`, `daemon status`), never a user value. |
 | `flags` | string array, at most 32 | Flag names as typed (`--json`, `-j`, `--server`), values stripped; an unknown flag counts by name. |
 | `errorCode` | string or `null` | The typed code of a refusal or failure (`USAGE_INVALID`, `AUTH_REQUIRED`, `OPERATION_PARTIAL`); `null` on success or when the exit carried no code. |
-| `errorMessage` | string or `null`, at most 500 characters | The failure's message after masking: quoted words become `<value>` (the CLI quotes every user value it echoes), URLs `<url>`, email addresses `<email>`, IPv4 addresses `<ip>`, paths `<path>` and any run of 32 or more token characters `<token>`. `null` on success. |
-| `errorStack` | string or `null`, at most 2000 characters | At most 12 frames of the failure's stack, each file path cut down to its part inside `node_modules` (the installed package and file, never the directory it is installed under); a frame outside one reads `<path>`. `null` on success or when the failure had no stack. |
+| `errorMessage` | string or `null`, at most 500 characters | The failure's message after masking: quoted words become `<value>`, URLs `<url>`, email addresses `<email>`, IPv4 addresses `<ip>`, paths `<path>` and any run of 32 or more token characters `<token>`. `null` on success or for a `spawn` failure with a native cause. |
+| `errorStack` | string or `null`, at most 2000 characters | At most 12 frames of the failure's stack, each file path cut down to its part inside `node_modules` (the installed package and file, never the directory it is installed under); a frame outside one reads `<path>`. `null` on success, when the failure had no stack, or for a `spawn` failure with a native cause. |
 | `interactive` | boolean | Whether stdout is a terminal. |
 | `shell` | string or `null` | The basename of `SHELL`. |
 | `terminal` | string or `null` | `TERM_PROGRAM` as set. |

@@ -8,6 +8,7 @@ import { extensionNames, materializeExtension, preflightRuntime } from "../ext-l
 import { callerHarness, checkSpawnExpiryTarget, directPersonaPath, missingConnector, missingPersona, spawnPersona, spawnUsesManager, type PersonaSite } from "../lib/spawn-defaults.js";
 import { checkHarness, invalidEnvironmentValues } from "./config.js";
 import { DEFAULT_AGENT } from "../lib/default-persona.js";
+import { refuseUnmintableName } from "./spawn-managed-launch.js";
 import type { spawnFlags } from "./spawn.js";
 
 type Values = FlagValues<typeof spawnFlags>;
@@ -49,7 +50,9 @@ export async function spawnLaunchPreview(args: Pick<ParsedArgs, "positionals"> &
     root = selected.root; space = selected.space; broker = brokerAddressForDisplay(selected.server) ?? null; targetMode = selected.mode; site = selected;
   } catch (error) {
     if (!isWorkspaceTargetError(error)) throw error;
-    if (error.code === "not-started" && error.details.root && error.details.space) { root = error.details.root; space = error.details.space; site = { root, space, personaRoot: personaDir(root), origin: "up" }; }
+    const { root: localRoot, space: preparedSpace, stackSpace, lastRun, recordedRoot } = error.details;
+    const offlineSpace = preparedSpace ?? (!spawnUsesManager(values) && lastRun && recordedRoot === undefined ? stackSpace : undefined);
+    if (error.code === "not-started" && localRoot && offlineSpace) { root = localRoot; space = offlineSpace; site = { root, space, personaRoot: personaDir(root), origin: "up" }; }
     else if (error.code === "unknown-space" && values["enrollment-file"] && values.file && values.space && token(values.space) === values.space) { root = process.cwd(); space = values.space; site = { root, space, personaRoot: personaDir(root) }; }
     // Every other resolution failure keeps the sentence and next step the reads print for it, so a
     // preview in a copied, moved or taken-over folder names that folder rather than reporting only
@@ -66,6 +69,7 @@ export async function spawnLaunchPreview(args: Pick<ParsedArgs, "positionals"> &
   // A folder whose records name no space is refused above, so a preview never names an assumed space.
   const target = { space, broker, authMode: targetMode };
   if (spawnUsesManager(values)) {
+    if (values.name !== undefined) refuseUnmintableName(values.name, targetMode === "user");
     // The manager resolves the persona, harness and working directory on its own host at launch, so
     // the preview shows the request and says what it did not read.
     const warnings = unknownHarness(values.agent ?? callerHarness(space), values.agent !== undefined, space);

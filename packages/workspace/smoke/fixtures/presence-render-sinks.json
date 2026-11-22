@@ -1,10 +1,10 @@
 {
   "expected": {
-    "total": 1106,
+    "total": 1111,
     "honest-text": 71,
     "presence-only-glyph/count": 138,
     "command-ack": 13,
-    "non-render/control": 884
+    "non-render/control": 889
   },
   "classRationales": {
     "non-render/control": "This candidate handles presence state without making a human work-progress claim. Status tokens, routing, component inputs and presentation metadata are control data; exceptions that report a different kind of status carry an entry-specific reason."
@@ -75,6 +75,12 @@
       "path": "packages/core/src/resolve.ts",
       "kind": "status-token",
       "anchor": "ter((p) => p.status !== \"offline\");\n    const pool = live",
+      "class": "non-render/control"
+    },
+    {
+      "path": "extensions/connector-core/src/agent-name.ts",
+      "kind": "status-token",
+      "anchor": "\"offline\"",
       "class": "non-render/control"
     },
     {
@@ -1342,6 +1348,13 @@
       "anchor": "mutation.complete(\n      closed.status,\n      closed.signal,\n      closed.signal !== null\n        ? `${operation} child terminated by ${closed.signal}`\n        : `Windows npm intermediary exited ${closed.status}; descendant completion is unproved`,\n    )",
       "class": "non-render/control",
       "rationale": "Terminal command plumbing: drives the spinner's closing state; the update output reports process state, not agent presence progress."
+    },
+    {
+      "path": "implementations/cli/src/lib/update-recovery-state.ts",
+      "kind": "derived-output",
+      "anchor": "`reconciliation exited ${child.status ?? child.signal ?? \"without a result\"}`",
+      "class": "non-render/control",
+      "rationale": "The recovery error reports the reconciliation child's exit status or signal, not peer presence."
     },
     {
       "path": "implementations/cli/src/console/app.tsx",
@@ -4047,6 +4060,18 @@
       "class": "non-render/control"
     },
     {
+      "path": "implementations/cli/src/commands/who.ts",
+      "kind": "status-token",
+      "anchor": " string, scope: \"all\" | \"waiting\" | \"agents\", shared: Rea",
+      "class": "non-render/control"
+    },
+    {
+      "path": "implementations/cli/src/commands/who.ts",
+      "kind": "status-token",
+      "anchor": "onst change = scope === \"waiting\" ? \"`--all` instead of `",
+      "class": "non-render/control"
+    },
+    {
       "path": "implementations/cli/src/commands/whoami.ts",
       "kind": "status-token",
       "anchor": " text: \"unknown\", tone: \"waiting\" } : g === \"all\" ? \"all\"",
@@ -5871,12 +5896,19 @@
     {
       "path": "implementations/cli/src/commands/update.ts",
       "kind": "status-token",
+      "anchor": " text: \"unknown\", tone: \"waiting\" } : available ? { text:",
+      "class": "non-render/control",
+      "rationale": "Self-update version field: \"waiting\" is the color tone for a registry version that could not be read, not any peer's presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/update.ts",
+      "kind": "status-token",
       "anchor": "ext: \"available\", tone: \"waiting\" } : \"no newer latest ta",
       "class": "non-render/control",
       "rationale": "Self-update version field: \"waiting\" is the color tone for an available update, not any peer's presence."
     },
     {
-      "path": "implementations/cli/src/commands/update.ts",
+      "path": "implementations/cli/src/commands/update-continuity.ts",
       "kind": "derived-output",
       "anchor": "printLegacyReport(report, target.space, undefined, console.log, on, remedy)",
       "class": "non-render/control",

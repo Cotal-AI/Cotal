@@ -18,7 +18,7 @@ cotal service show <name>
 cotal service add <name> --exec "<command>" [--cwd <dir>]
 cotal service add <name> --preset <preset> <preset-options>
 cotal service add <name> --file <definition.json>
-cotal service start <name> [<preset-options>] [--instance <id>|--new-instance] [--foreground|--dry-run]
+cotal service start <name> [<preset-options>] [--instance <id>|--new-instance] [--foreground] [--dry-run]
 cotal service stop <name> [--instance <id>] [--with-agents] [--yes|--dry-run]
 cotal service restart <name> [--instance <id>] [--with-agents] [--yes|--dry-run]
 cotal service status <name> [--instance <id>]
@@ -28,7 +28,8 @@ cotal service uninstall <name> [--instance <id>] [--yes|--dry-run]
 cotal service remove <name> [--instance <id>] [--yes]
 ```
 
-`svc` and `services` are aliases. Every form takes `--space`, `--json` and `--plain`.
+`svc` and `services` are aliases. Every form takes `--space` and `--plain`.
+Every form takes `--json` except `start --foreground` without `--dry-run`.
 
 | Flag | Meaning |
 |---|---|
@@ -76,9 +77,11 @@ dashboard's `web.creds` on a space
 `cotal up` has not run on since it was added, refuses the same way: `cotal service start web --creds <file>`
 replaces it. A start refused before anything launched forgets the definition it saved. A preset name acts on the
 space's one service built on that preset, so after `cotal up` the name `delivery` reaches
-`stack-delivery`. The manager has its own [`manager`](cli-maintenance.mdx#manager) commands. `--json` writes one envelope for every form,
-and `logs --follow --json` writes one record per line once it selects an instance. Without `--json`,
-a follow's last line says why it ended. If a saved service has no recorded instance, `logs` refuses
+`stack-delivery`. The manager has its own [`manager`](cli-maintenance.mdx#manager) commands.
+A foreground start with `--dry-run --json` writes one preview envelope without launching a process.
+Other commands that take `--json` write one envelope, except `logs --follow --json`, which writes
+one record per line once it selects an instance. Without `--json`, a follow's last line says why
+it ended. If a saved service has no recorded instance, `logs` refuses
 with `TARGET_NOT_FOUND` (exit 2). An instance must run before it can produce a log. The refusal
 gives a `service status` command for the same service and space, which starts nothing.
 `logs` refuses a log file this account
@@ -137,8 +140,9 @@ value the preset's schema refuses gives the preset's help as its Next:
 `broker` preset's `server`: `add` checks it against the address rules a start applies, and its
 refusal quotes the address unless it holds an `@`, which may be a credential.
 
-`--file` imports a version-1 definition. This one runs a program and treats it as ready once its
-loopback health URL answers 200:
+`--file` imports a version-1 definition. An empty or whitespace-only value refuses `USAGE_INVALID`
+(exit 1) before selecting a space and asks for `--file <definition.json>`.
+This definition runs a program and treats it as ready once its loopback health URL answers 200:
 
 ```json
 {
@@ -226,7 +230,10 @@ Ctrl-D or closed input at that question leaves the service unchanged and exits 0
 with `--space` and the `--instance` and `--with-agents` you gave, so that command acts on the same
 service. Without an
 installed unit, a `restart` whose process is already gone stops nothing, so it does not ask. A
-start or stop that finds nothing to do says so and reports `no-op`.
+start or stop that finds nothing to do says so and reports `no-op`. For a saved definition with no
+recorded instances, `stop` and `stop --dry-run` report `no-op` without asking for confirmation or
+allocating an instance. An explicit `--instance` that does not belong to the service still refuses
+with `TARGET_NOT_FOUND` (exit 2).
 
 `service status <name>` reports `not started` and exits 0 for a saved definition with no recorded
 instances. It does not allocate an instance or start a process. With `--json`, the result has

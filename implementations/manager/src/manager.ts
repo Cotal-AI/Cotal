@@ -99,7 +99,6 @@ const RETIREMENT_CONCURRENCY = 8;
  * cut rather than pretending a child is gone. Held in ManagerOptions so fake runtimes can shorten it. */
 const PRESERVE_STOP_TIMEOUT_MS = 10_000;
 
-
 export interface ManagerOptions {
   space: string;
   /** Assert the embedding generation matches this Manager. Installed first-party connectors
@@ -380,6 +379,8 @@ export interface ForkProvenance {
 export interface ManagerResumeAgent {
   space: string;
   name: string;
+  /** The display name `set-name` last gave the seat; a relaunch restores it. Absent: `name`. */
+  displayName?: string;
   role?: string;
   identity: ManagerResumeIdentity;
   launch: {
@@ -491,8 +492,6 @@ interface PersonalTurnParticipant {
   generation?: string;
   expiresAt: number;
 }
-
-
 
 /** The refusal a control instance with `execution: none` gives every launch, hosting, model and write door. */
 const EXECUTION_NONE_REFUSAL = "execution: none forbids seat launch, workflow hosting, model inspection and caller-driven writes on this control instance; select the participant Manager with an instance-pinned manager-caller view";

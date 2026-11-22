@@ -69,7 +69,7 @@ const openBroker = spawn("nats-server", ["-a", "127.0.0.1", "-p", String(openPor
 const releaseOpenBroker = teardownOnSignal(openBroker, dir);
 
 const HOST_ENV = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("COTAL_") && k !== "FORCE_COLOR" && k !== "NO_COLOR"));
-const env = { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config"), COTAL_HOME: join(home, ".cotal"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" };
+const env = { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config"), COTAL_HOME: join(home, ".cotal"), COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1", NO_COLOR: "1" };
 const run = (args: string[], cwd = root, shell = false) => {
   const r = spawnSync(shell ? "sh" : process.execPath, shell ? args : [BIN, ...args], { cwd, env, encoding: "utf8", timeout: 60_000 });
   let envelope: Envelope | undefined;
@@ -126,7 +126,7 @@ try {
     const r = run([...args, "--json"]);
     check(`${args.slice(0, 2).join(" ")}${args.includes("--space") ? " --space" : ""} --server <closed>: refused TARGET_UNAVAILABLE, exit 2, naming that address and the space's recorded broker`,
       r.status === 2 && r.envelope?.error?.code === "TARGET_UNAVAILABLE" && r.envelope.error.message === unanswered
-        && r.envelope.error.remedy === `check that address, or drop --server to reach "${space}" at ${servers}, where it is recorded`, shown(r));
+        && r.envelope.error.remedy === `check that address, or drop --server and retry with \`--space ${space}\` to reach its recorded broker at ${servers}`, shown(r));
   }
   const empty = mkdtempSync(join(dir, "empty-"));
   const bare = run(["send", "-c", "general", "x", "--server", closed, "--json"], empty);

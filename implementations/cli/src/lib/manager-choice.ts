@@ -1,7 +1,7 @@
 import type { Readable, Writable } from "node:stream";
 import { BASELINE_LIFECYCLE_ENDPOINT, findCommand, invokeCommand, registry, resolveService, type Command, type Presence } from "@cotal-ai/core";
 import { CommandFailure, DEFAULT_MANAGER_NAME, codeSpan, instanceIdShaped, isCommandFailure, isConnectRefusal, renderReport, resolveMeshTarget, type Connection, resolveControlTarget, type ControlAuth } from "@cotal-ai/workspace";
-import { cliControl, onInstance, onInstanceId } from "./control.js";
+import { cliControl, onInstance, onInstanceId, onRetry, type ManagerRetry } from "./control.js";
 import { openEndpointConnection } from "./endpoint-client.js";
 import { commandWord } from "./leading-flags.js";
 import { shellWord } from "./endpoint-errors.js";
@@ -87,7 +87,7 @@ async function yourLiveManagers(flags: { space?: string; server?: string }): Pro
  * candidates. On a static or open mesh a manager's presence does not carry its instance id, so a
  * name is refused there and the instance id is asked for.
  */
-export async function managerPin(values: { on?: unknown; space?: unknown; server?: unknown }, verb: string): Promise<string | undefined> {
+export async function managerPin(values: { on?: unknown; space?: unknown; server?: unknown }, verb: ManagerRetry): Promise<string | undefined> {
   const on = onInstance(values.on === undefined ? undefined : String(values.on), verb);
   if (on === undefined || instanceIdShaped(on)) return on;
   const flags = targetFlags(values);
@@ -97,7 +97,7 @@ export async function managerPin(values: { on?: unknown; space?: unknown; server
     try { onInstanceId(on, verb); } catch (error) {
       throw new CommandFailure("refused", "USAGE_INVALID", `${(error as Error).message}. A manager's name or host is taken only on a user-auth mesh`, {
         target: { on },
-        remedy: `cotal ps prints each manager's instance id; rerun it as \`${verb} --on <instance>\``,
+        remedy: `cotal ps prints each manager's instance id; rerun it as ${onRetry(verb)}`,
         selfContained: true,
       });
     }

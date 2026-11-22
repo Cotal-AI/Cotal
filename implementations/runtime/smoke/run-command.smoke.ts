@@ -80,15 +80,15 @@ let takeovers = 100;
 // per read, pinned to the one run and the one takeover it replays. An admin credential holds no
 // records read row on this mesh, so the suite cannot ride one; the command mints its own for every
 // verb.
-const asOperator = async <T>(runId: string, use: (planes: { nc: Awaited<ReturnType<typeof connect>>; runId: string; takeoverId: string }) => Promise<T>): Promise<T> => {
+const asOperator = async <T>(runId: string, use: (planes: { nc: Awaited<ReturnType<typeof connect>>; runId: string; takeoverId: string }) => Promise<T>, endpoint = EP): Promise<T> => {
   const takeoverId = `t${(takeovers += 1)}`;
-  const creds = await mintCreds(auth, newIdentity(), "run-operator", { runOperator: { endpoint: EP, runId, takeoverId } });
+  const creds = await mintCreds(auth, newIdentity(), "run-operator", { runOperator: { endpoint, runId, takeoverId } });
   const nc = await connect({ servers, ...standaloneConnectOpts({ creds, tls: false }), maxReconnectAttempts: 0 });
   try { return await use({ nc, runId, takeoverId }); } finally { await nc.drain().catch(() => {}); }
 };
 const record = (runId: string) => asOperator(runId, async ({ nc }) => readRunRecord(await openRecordsBucket(nc, SPACE), EP, runId));
-const journal = (runId: string) => asOperator(runId, async ({ nc, takeoverId }) =>
-  replayRunJournal(jetstream(nc), await jetstreamManager(nc), SPACE, runId, takeoverId));
+const journal = (runId: string, endpoint = EP) => asOperator(runId, async ({ nc, takeoverId }) =>
+  replayRunJournal(jetstream(nc), await jetstreamManager(nc), SPACE, runId, takeoverId), endpoint);
 /** A revocation marker written RAW, under the same one-shot `run-admitter` profile `revoke` mints.
  *  The exported writer validates what it writes, so a marker the reader cannot read has to be
  *  created past it. The marker key is create-only and never removed (SPEC 14.8), so it stays. */
@@ -163,15 +163,15 @@ writeFileSync(ASKING, 'const a = { agent: "dev#u", persona: "dev" };\nconst v = 
 
 /** Start the checkpoint program and wait for its pause to open, so the run's record genuinely reads
  *  `running` while a cell reads it. The drive comes back unsettled: the caller answers it. */
-const holdAtCheckpoint = async (): Promise<{ rid: string; open: boolean; driven: Promise<unknown> }> => {
-  const driven = wf(["start"], { file: CHECKPOINT }).catch(() => undefined);
+const holdAtCheckpoint = async (endpoint = EP): Promise<{ rid: string; open: boolean; driven: Promise<unknown> }> => {
+  const driven = wf(["start"], { file: CHECKPOINT, endpoint }).catch(() => undefined);
   let R: string | undefined;
   for (let i = 0; i < 100 && R === undefined; i += 1) { await wait(50); R = startedId(); }
   const rid = R ?? "";
   let open = false;
   for (let i = 0; i < 100 && !open; i += 1) {
     await wait(200);
-    const back = await journal(rid).catch(() => undefined);
+    const back = await journal(rid, endpoint).catch(() => undefined);
     for (const r of back?.records ?? []) {
       if (r.record.kind !== "step") continue;
       const e = r.record.entry as JournalEntry;
@@ -666,6 +666,13 @@ const takeoverRun = startedId()!;
   const { rid, open: openPause } = await holdAtCheckpoint();
   c("the run to be revoked is open and held, so the control below reads a live record", openPause && rid !== "", captured());
 
+  const revokeArgs = { endpoint: EP, by: "smoke-operator", reason: "broker outage" };
+  reset();
+  const refusal = await wf(["revoke", rid], { ...revokeArgs, json: true }).then(() => undefined, (e: unknown) => e);
+  c("revoke with --json asks to remove only that flag from the original invocation",
+    isCommandFailure(refusal) && exitCode(refusal.outcome, refusal.code) === 1
+      && refusal.remedy === "remove --json from the original command and rerun it", refusal);
+
   // THE CONTROL, and it is what makes the cell after it mean anything: the same run, the same
   // table, one read before the marker exists.
   reset();
@@ -674,7 +681,7 @@ const takeoverRun = startedId()!;
   c("ps prints running for the run before it is revoked", stateOf(before) === "running", before);
 
   reset();
-  await wf(["revoke", rid], { by: "smoke-operator", reason: "broker outage" });
+  await wf(["revoke", rid], revokeArgs);
   c("revoke acknowledges with the revoker and the reason",
     captured().includes("revoked by smoke-operator (broker outage)"), captured());
   c("...and says what the table will now show, so the two surfaces cannot drift apart unnoticed",
@@ -972,6 +979,38 @@ const takeoverRun = startedId()!;
     !!other?.items?.some((r) => r.runId === P) && other.items.every((r) => r.runId !== rid && r.runId !== unreadId), other);
 }
 
+{
+  const endpoint = "local-review";
+  const step = "/checkpoint:approve#0";
+  reset();
+  const { rid, open, driven } = await holdAtCheckpoint(endpoint);
+  const next = (verb: string) => lines().find((line) => line.startsWith(`  cotal r ${verb} `))?.trim().split(/ {2,}/)[0];
+  const copied = (command: string) => {
+    // The fixture's only quoted arguments are single shell words with no embedded quotes.
+    const words = command.match(/'[^']*'|\S+/g)?.map((word) => word.replace(/^'|'$/g, "")) ?? [];
+    const run = findCommand(registry.all<Command>("command"), "r")!;
+    return runWorkflow(parseCommandArgs(run, words.slice(2)));
+  };
+  const route = ` --local --endpoint ${endpoint} --space ${SPACE} --server '${servers}'`;
+  await wf(["show", rid], { endpoint, plain: true });
+  const answer = next("answer");
+  c("the local checkpoint offers an answer with its explicit route and required answerer",
+    open && answer === `cotal r answer ${rid} '<step-key>' --value '<json>'${route} --by '<who>'`, answer);
+  if (answer !== undefined) await copied(answer.replace("<step-key>", step).replace("<json>", "true").replace("<who>", "reviewer"));
+  const outcome = await Promise.race([driven.then(() => "completed"), wait(15_000).then(() => "still-paused")]);
+  c("the printed answer settles the checkpoint and the local drive completes",
+    outcome === "completed" && captured().includes(`run ${rid}: completed`), captured());
+  reset();
+  await wf(["amend", rid, step], { endpoint, by: "reviewer", value: "false", plain: true });
+  const show = next("show");
+  c("the amendment receipt offers a read from the same local route", show === `cotal r show ${rid}${route}`, show);
+  reset();
+  if (show !== undefined) await copied(show);
+  c("the printed show reads the original answer and amendment from that endpoint",
+    /^ +Endpoint: +local-review$/m.test(captured()) && lines().some((line) => line.includes(step) && /answered +true +reviewer/.test(line)) &&
+      lines().some((line) => line.includes(step) && /amended +false +reviewer/.test(line)), captured());
+}
+
 // ── 15) batching preserves record validation, deleted values and failed marker reads ─────────
 {
   const endpoint = "batchvalidation";
@@ -1058,7 +1097,7 @@ const takeoverRun = startedId()!;
 
 // The sentinel: a skipped block above would exit green while running fewer cells than the suite
 // declares, and a count is the only reader that can see that.
-const DECLARED = 129;
+const DECLARED = 134;
 if (ok + fail !== DECLARED) {
   fail += 1;
   console.error(`  ✗ FAIL: the suite declares ${DECLARED} cells but ran ${ok + fail - 1}`);

@@ -1170,7 +1170,7 @@ export async function runJcodeHost(): Promise<void> {
     // not just a busy agent, because the thrown code is `internal` for every one of them.
     // drive() is gated on initialized. Leave that false until this notice has been attempted so a
     // turn_done from the still-open proof cannot dispatch the spawn kickoff first (#1440).
-    const joinNotice = `You are now connected to the Cotal mesh as "${config.name}". The earlier cotal_orientation result was captured before this join; use cotal_orientation again for live context.`;
+    const joinNotice = `You are now connected to the Cotal mesh as "${config.displayName ?? config.name}". The earlier cotal_orientation result was captured before this join; use cotal_orientation again for live context.`;
     if (bootPrompt) {
       try {
         await hostState.client.sendMessage(hostState.sessionId, joinNotice, { noReply: true });

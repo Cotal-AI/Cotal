@@ -45,6 +45,9 @@ The resolver reports schema and semantic errors with the manifest's file and lin
 | `host` | Bind interface without a URL scheme. Does not select the port. The port comes from `servers` or the CLI's `--server`, never `host` or `--host`. |
 | `auth` | Omitted, `true`, or `static` selects per-agent JWT credentials. `false` selects an open development mesh. `user` selects per-user auth through `cotal login` and the actor ledger. |
 | `idp` | IdP auth base URL, valid only with `auth: user`. Uses HTTPS, or HTTP on a loopback IP literal such as `127.0.0.1`. Embedded credentials, a query, and a fragment are refused. Pins the IdP when user auth is first enabled. |
+| `logFile` | Native broker log path. A relative path resolves beside the manifest. `up -f --log-file` overrides it with a path relative to the invoking folder. |
+| `logfileSizeLimit` | Positive integer byte count at which the broker rotates its log. Requires `logFile` or, for `up -f`, `--log-file`. |
+| `logfileMaxNum` | Positive integer limit on the number of broker log files, including the active file. Requires `logFile` or, for `up -f`, `--log-file`. |
 
 The schema and `topology view` accept a broker list, but `up -f` and `team boot` bind one broker URL. A list refuses `USAGE_INVALID` before writing.
 For `up -f`, a `tls://` URL requires `--tls-cert` and `--tls-key`; with those flags, a `nats://` URL is refused.

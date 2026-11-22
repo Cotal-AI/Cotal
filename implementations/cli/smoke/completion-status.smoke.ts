@@ -12,7 +12,7 @@
  * Run: pnpm smoke:completion-status
  */
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { assertSmokeSandboxDown, createSuite } from "@cotal-ai/smoke-kit";
@@ -216,6 +216,21 @@ const strip = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "");
   check("the report says that rc sources a missing stub", danglingReport.status === 0 && danglingReport.stdout.includes(`${rc} sources ${stub}, which is missing`), shown(danglingReport));
 }
 
+// ── Uninstall ignores a comment that only names the stub ─────────────────────────────────────────────
+// A comment cannot load the stub, so removing the stub cannot break it.
+{
+  const s = sandbox();
+  s.run(["completion", "install", "bash"]);
+  const rc = join(s.home, ".bashrc");
+  const stub = join(s.xdg, "cotal", "completion.bash");
+  appendFileSync(rc, `# Completion script: ${stub}\n`);
+  const removed = s.run(["completion", "uninstall", "bash", "--json"]);
+  const report = removed.stdout.startsWith("{") ? JSON.parse(removed.stdout) : undefined;
+  check("uninstall removes the managed block and stub but keeps a comment naming the stub",
+    removed.status === 0 && report?.result?.changed?.includes(stub) === true && !existsSync(stub) && readFileSync(rc, "utf8") === `# Completion script: ${stub}\n`,
+    { ...shown(removed), rc: readFileSync(rc, "utf8") });
+}
+
 // ── A file the status cannot read ───────────────────────────────────────────────────────────────────
 {
   const s = sandbox();
@@ -415,23 +430,18 @@ if (process.platform !== "win32" && process.getuid?.() !== 0) {
   chmodSync(s.xdg, 0o700);
 }
 
-// ── install refuses before it writes ────────────────────────────────────────────────────────────────
+// Zsh startup folder creation and install refusals.
 {
   const s = sandbox("/bin/zsh");
   const stub = join(s.xdg, "cotal", "completion.zsh");
-  const nowhere = join(s.home, "nowhere");
-  const missingDir = s.run(["completion", "install", "zsh"], { ZDOTDIR: nowhere });
-  check("install refuses a ZDOTDIR that does not exist, exit 2, with nothing written", missingDir.status === 2 && missingDir.stdout === "" && /TARGET_NOT_FOUND/.test(missingDir.stderr) && !existsSync(stub), shown(missingDir));
-  check("the refusal names the folder and ZDOTDIR, with the mkdir that creates it", missingDir.stderr.includes(`the shell startup folder ${nowhere}, which ZDOTDIR names, does not exist; nothing was changed`) && missingDir.stderr.includes(`create it with (umask 077 && mkdir -p ${nowhere}), or unset ZDOTDIR to use ~/.zshrc`), shown(missingDir));
-  const missingJson = s.run(["completion", "install", "zsh", "--json"], { ZDOTDIR: nowhere });
-  const missingEnv = JSON.parse(missingJson.stdout) as { target: { path?: string }; error: { remedy?: string } };
-  check("its JSON names the folder as the target and carries the remedy", missingEnv.target.path === nowhere && missingEnv.error.remedy?.includes(`mkdir -p ${nowhere}`) === true, missingEnv);
-  const spaced = join(s.home, "zsh missing dir's");
-  const quotedMissing = s.run(["completion", "install", "zsh", "--json"], { ZDOTDIR: spaced });
-  const mkdirCommand = JSON.parse(quotedMissing.stdout).error.remedy.match(/\(umask 077 && mkdir -p .+\)/)?.[0];
-  const created = spawnSync("/bin/sh", ["-c", mkdirCommand ?? "exit 99"], { cwd: s.home, encoding: "utf8" });
-  check("the printed mkdir remedy creates exactly the ZDOTDIR containing spaces and an apostrophe", created.status === 0 && existsSync(spaced) && !existsSync(join(s.home, "zsh")), { mkdirCommand, stderr: created.stderr });
+  const parent = join(s.home, "zsh missing dir's");
+  const spaced = join(parent, "nested");
+  const previousUmask = process.umask(0o000);
   const spacedInstall = s.run(["completion", "install", "zsh"], { ZDOTDIR: spaced });
+  process.umask(previousUmask);
+  check("install creates a missing absolute ZDOTDIR privately even under umask 000",
+    spacedInstall.status === 0 && [parent, spaced].every((path) => (statSync(path).mode & 0o777) === 0o700) &&
+      readFileSync(join(spaced, ".zshrc"), "utf8").includes(stub), shown(spacedInstall));
   const conflict = s.run(["completion", "uninstall", "zsh", "--json"]);
   const remedy = JSON.parse(conflict.stdout).error.remedy as string;
   const assignment = remedy.match(/`(ZDOTDIR=.+) cotal completion`/)?.[1];
@@ -442,6 +452,11 @@ if (process.platform !== "win32" && process.getuid?.() !== 0) {
   s.run(["completion", "uninstall", "zsh"], { ZDOTDIR: spaced });
   const relative = s.run(["completion", "install", "zsh"], { ZDOTDIR: "zdot" });
   check("install refuses a relative ZDOTDIR, exit 1, with nothing written", relative.status === 1 && /relative ZDOTDIR/.test(relative.stderr) && !existsSync(stub) && !existsSync(join(s.home, "zdot")), shown(relative));
+  chmodSync(parent, 0o777);
+  const unsafeDir = join(parent, "not-created");
+  const unsafe = s.run(["completion", "install", "zsh"], { ZDOTDIR: unsafeDir });
+  chmodSync(parent, 0o700);
+  check("install does not create a missing ZDOTDIR below an unsafe ancestor", unsafe.status === 2 && /PERMISSION_DENIED/.test(unsafe.stderr) && !existsSync(unsafeDir) && !existsSync(stub), shown(unsafe));
   if (process.platform !== "win32" && process.getuid?.() !== 0) {
     const rc = join(s.home, ".zshrc");
     writeFileSync(rc, "# mine\n");
@@ -452,8 +467,9 @@ if (process.platform !== "win32" && process.getuid?.() !== 0) {
     const readOnly = s.run(["completion", "install", "zsh"]);
     chmodSync(rc, 0o600);
     // The line is the one the owned block would hold, single-quoted as the shell needs.
-    check("an rc it can read but not extend fails, exit 5, naming the stub it wrote and the line to add", readOnly.status === 5 && /wrote .*completion\.zsh but could not add its line/.test(readOnly.stderr) && readOnly.stderr.includes(`source '${stub}'`) && existsSync(stub) && readFileSync(rc, "utf8") === "# mine\n", shown(readOnly));
-    check("that failure lists the files it changed instead of a receipt count", /Confirmed changes\n {2}\S*completion\.zsh\n/.test(readOnly.stderr) && !readOnly.stderr.includes("change receipt(s)"), shown(readOnly));
+    check("an rc it can read but not extend reports partial installation, exit 4, naming the line to add", readOnly.status === 4 && /OPERATION_PARTIAL/.test(readOnly.stderr) && /wrote .*completion\.zsh but could not add its line/.test(readOnly.stderr) && readOnly.stderr.includes(`source '${stub}'`) && readFileSync(rc, "utf8") === "# mine\n", shown(readOnly));
+    const record = `${stub}.ownership.json`;
+    check("the partial report lists both files written and does not list the startup file", existsSync(stub) && existsSync(record) && readOnly.stderr.includes(`Confirmed changes\n  ${stub}\n  ${record}\n\n`), shown(readOnly));
     const installed = s.run(["completion", "install", "zsh"]);
     chmodSync(rc, 0o400);
     const lockedOut = s.run(["completion", "uninstall", "zsh"]);
@@ -562,6 +578,9 @@ if (process.platform !== "win32" && process.getuid?.() !== 0) {
   check("completion bash --json is refused with nothing on stdout", oldJson.status === 1 && oldJson.stdout === "" && oldJson.stderr.includes("cotal completion script bash"), shown(oldJson));
   const missing = s.run(["completion", "script"]);
   check("completion script without a shell is refused", missing.status === 1 && missing.stdout === "" && /choose a supported shell/.test(missing.stderr), shown(missing));
+  const unknownFlag = s.run(["completion", "script", "bash", "--not-a-flag"], { LC_ALL: "C.UTF-8" });
+  check("completion script asks to drop an unknown option instead of passing it as another shell", unknownFlag.status === 1 && unknownFlag.stdout === ""
+    && /Unknown option '--not-a-flag'\n  drop the unknown option\n/.test(unknownFlag.stderr) && !unknownFlag.stderr.includes("put -- before it"), shown(unknownFlag));
   for (const word of ["tcsh", "bsah"]) {
     const other = s.run(["completion", word]);
     check(`completion ${word} exits 1, writes nothing on stdout, and puts the help on stderr`, other.status === 1 && other.stdout === "" && new RegExp(`no subcommand "${word}"`).test(other.stderr) && /^Usage$/m.test(other.stderr), shown(other));

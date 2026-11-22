@@ -1,0 +1,3 @@
+# Codex skills through the agent endpoint: listed once each with no path, run as a skill turn by the listed path,
+# unknown and disabled skills refused, and a skill queued behind a stuck turn freed by interrupt.
+smoke:codex-skill-command:auth

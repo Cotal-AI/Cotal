@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { userInfo } from "node:os";
-import { DEFAULT_SERVER, DEV_OWNER, LAUNCH_MATERIAL_ENV, brokerUrlHasUserinfo, discardLaunchMaterial, assertLifecycleToken, assertValidChannel, assertValidKind, channelInAllow, credsClaims, eventChannel, idFromCreds, isConcreteChannel, loadAgentFile, parseJoinLink, parsePersonaEndpoints, resolveReadAcl, type AgentDef, type EndpointKind, type PersonaEndpoint } from "@cotal-ai/core";
+import { DEFAULT_SERVER, DEV_OWNER, LAUNCH_MATERIAL_ENV, assertValidName, brokerUrlHasUserinfo, discardLaunchMaterial, assertLifecycleToken, assertValidChannel, assertValidKind, channelInAllow, credsClaims, eventChannel, idFromCreds, isConcreteChannel, loadAgentFile, parseJoinLink, parsePersonaEndpoints, resolveReadAcl, type AgentDef, type EndpointKind, type PersonaEndpoint } from "@cotal-ai/core";
 import { readMaterial } from "./session-env.js";
 
 /** Keyed beta intake — used when a `COTAL_FEEDBACK_KEY` is configured. */
@@ -47,6 +47,10 @@ export interface AgentConfig {
     | { bearer: () => Promise<string>; bearerCmd?: undefined }
   );
   name: string;
+  /** The display name the card starts with, when it differs from `name`: the name `set-name` last
+   *  gave this seat, which its launcher restores on a restart (`COTAL_DISPLAY_NAME`). `name` stays
+   *  the launch name, which in user mode is also the actor. */
+  displayName?: string;
   role?: string;
   description?: string;
   tags?: string[];
@@ -237,6 +241,14 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): AgentConfig
   const name = env.COTAL_NAME?.trim() || def?.name || (link ? userInfo().username : undefined);
   if (!name)
     throw new Error("COTAL_NAME, COTAL_AGENT_FILE or COTAL_LINK is required — a Cotal session needs an explicit identity from its launcher");
+  const displayName = env.COTAL_DISPLAY_NAME || undefined;
+  if (displayName !== undefined) {
+    try {
+      assertValidName(displayName);
+    } catch (e) {
+      throw new Error(`COTAL config: COTAL_DISPLAY_NAME: ${(e as Error).message}`);
+    }
+  }
   // Read set: env > persona file > join link. No implicit channel at the end of that chain — a
   // session whose launcher, persona and link all name none joins none (DM-reachable, not on `general`).
   const resolvedSubscribe = envList(env.COTAL_SUBSCRIBE) ?? def?.subscribe ?? link?.channels ?? [];
@@ -374,6 +386,7 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): AgentConfig
     creds: boundedCreds ? async () => readFileSync(credsPath!, "utf8") : initialCreds,
     userAuth,
     name,
+    ...(displayName !== undefined && displayName !== name ? { displayName } : {}),
     // Untrimmed: a role is an address, so the endpoint refuses a padded one rather than routing it.
     role: env.COTAL_ROLE || def?.role || undefined,
     description: def?.description,

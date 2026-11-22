@@ -5,16 +5,18 @@ import test from 'node:test';
 // Small exact transcript samples from the historical public refusals:
 // https://github.com/Cotal-AI/Cotal/issues/6785
 // https://github.com/Cotal-AI/Cotal/issues/6747
+// https://github.com/Cotal-AI/Cotal/issues/8919
 const transcripts = [
   ['  update-participant-a-1794633286189: a manager for this mesh runs on this machine; reading its custody\n',
    '✗ running manager continuity check: ✗ signed in, but the exchange for actor "cli" (view "manager-caller") was refused: manager-caller selection found no manager candidate for owner u_wdhhojionrz2rav4mearesx4ou\n'],
   ['', 'Outcome unconfirmed\n  invalid update snapshot directory\n  Outcome: unknown\n  Code:    OPERATION_UNKNOWN\n'],
+  ['', "Request refused\n  Cannot inspect the interrupted update snapshot: ENOENT: no such file or directory, lstat '/home/runner/work/_temp/cell-v0HMuS/home/config'. Correct access, then run `cotal update --self`.\n  Outcome:     refused\n  Code:        DEPENDENCY_UNAVAILABLE\n  Native code: UPDATE_RECOVERY_INSPECTION_FAILED\n\nNext\n  follow the recovery instruction above, then run `cotal update --self`\n"],
 ];
 // Explicit synthetic safety evidence, not a claim that historical cleanup succeeded.
 function fixture(index) {
   const entry = knownRefusals[index];
-  const cell = {id: entry.id, phase: 'candidate', sourceVersion: '0.164.6'};
-  const update = {exit: index === 1 ? 3 : 1, signal: null, timeout: false,
+  const cell = {id: entry.id, phase: 'candidate', sourceVersion: entry.sourceVersion ?? '0.164.6'};
+  const update = {exit: entry.exit, signal: null, timeout: false,
     stdout: transcripts[index][0], stderr: transcripts[index][1]};
   const report = {source: cell.sourceVersion, sourceRequested: cell.sourceVersion, result: 'failed', update,
     assertions: [...entry.failedAssertions.map(name => ({name, passed: false,

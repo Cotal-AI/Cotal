@@ -1,6 +1,24 @@
 import type { ParsedArgs } from "@cotal-ai/core";
-import { isWorkspaceTargetError, pruneStaleMeshes, resolveMeshTarget, type ResolveFlags } from "@cotal-ai/workspace";
+import { brokerAddressForDisplay, codeSpan, isWorkspaceTargetError, pruneStaleMeshes, resolveMeshTarget, type ResolveFlags } from "@cotal-ai/workspace";
 import { canPrompt } from "../commands/meshes-wizard.js";
+import { shellWord } from "./endpoint-errors.js";
+import { displayCmd } from "./self-exec.js";
+
+/** Give the read command again with each exact registered space. */
+export function spaceChoiceRemedy(error: unknown, command: string, args: ParsedArgs, rest: readonly string[]): string | undefined {
+  if (!isWorkspaceTargetError(error) || error.code !== "ambiguous-target" || !error.details.spaces?.length) return undefined;
+  const show = command === "space" && args.positionals[0] === "show";
+  const inventory = command === "endpoint" && (args.positionals[0] ?? "list") === "list";
+  if (args.values.creds !== undefined && !inventory) return undefined;
+  if (!show && !inventory && command !== "who") return undefined;
+  const server = args.values.server;
+  if (server !== undefined && (show || typeof server !== "string" || brokerAddressForDisplay(server) !== server)) return undefined;
+  const cli = displayCmd({ fromAnyFolder: true });
+  const end = rest.indexOf("--");
+  const flags = (end === -1 ? rest : rest.slice(0, end)).map(shellWord);
+  const words = show ? [cli, "space", "show"] : [cli, command, ...flags, "--space"];
+  return `run ${error.details.spaces.map((space) => codeSpan([...words, shellWord(space)].join(" "))).join(" or ")}`;
+}
 
 /**
  * With no `--space`, `--server` or `--creds`, a command that several running meshes could serve

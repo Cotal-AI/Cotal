@@ -53,7 +53,7 @@ const { Manager } = await import("../../manager/src/manager.js");
 const { managerRailGone, pinnedLivenessProbe, scatterResolveCommands } = await import("../../../packages/workspace/dist/control/index.js");
 const { pickFreePort } = await import("../../../packages/core/smoke/_free-port.js");
 
-const EXPECTED_CELLS = 32; // Includes three stopped-broker deregistration checks.
+const EXPECTED_CELLS = 33; // Includes three stopped-broker deregistration checks.
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 let pass = 0, fail = 0;
@@ -290,6 +290,10 @@ try {
   const ps = await cli(["ps", "--space", SPACE]);
   check("ps lists the corpse as stale and names endpoint deregister from this space's own root",
     ps.status === 4 && ps.stdout.includes(`remove the record from this space's own root: \`cotal endpoint deregister manager ${IID_CORPSE} --yes\``), { status: ps.status, out: ps.stdout.slice(-700) });
+  const slotRead = await cli(["ps", "--slots", "--space", SPACE, "--server", SERVERS, "--json"]);
+  const slotReport = JSON.parse(slotRead.stdout);
+  check("a partial slot read keeps the slot view and both target flags in its one-manager retry",
+    slotRead.status === 4 && slotReport.error?.remedy?.includes(`\`cotal ps --on <instance> --slots --space ${SPACE} --server ${SERVERS}\``), slotReport.error);
   const legacy = await cli(["deregister-instance", "--instance", IID_CORPSE]);
   check("deregister-instance refuses naming endpoint deregister and the static authority it needs, and prints no usage after it",
     legacy.status === 1 && legacy.stderr.includes("the legacy deregistration spelling no longer executes") && legacy.stderr.includes("cotal endpoint deregister <class> <full-instance-id>") &&
