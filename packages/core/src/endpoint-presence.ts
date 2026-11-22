@@ -1,7 +1,8 @@
+import type { ConnectionState } from "./endpoint-connection-state.js";
 import type { EndpointIdentity } from "./endpoint-identity.js";
 import type { ConsumerInfo } from "@nats-io/jetstream";
 import type { KV, KvEntry } from "@nats-io/kv";
-import { TimeoutError, type NatsConnection } from "@nats-io/transport-node";
+import { TimeoutError } from "@nats-io/transport-node";
 import type { Presence, PresenceStatus, PresenceCondition, PresencePrompts, AttentionMode, ChannelMode } from "./types.js";
 import { processRuntime } from "./process-runtime.js";
 import { lastKvEntries } from "./kv-scan.js";
@@ -14,8 +15,6 @@ type PresenceWatch = Awaited<ReturnType<KV["watch"]>>;
 
 /** Live connection dependencies shared with the endpoint's other broker readers. */
 export interface EndpointPresenceDeps {
-  bucket: () => KV | undefined;
-  connection: () => NatsConnection | undefined;
   /** The `prompts` field this process's presence carries now, or none (SPEC §6). */
   prompts: () => PresencePrompts | undefined;
   stopped: () => boolean;
@@ -158,10 +157,8 @@ export class EndpointPresence {
    *  `DrainingConnectionError` out of `reset()` on a timer nothing awaits. */
   private presenceWatchIter?: Awaited<ReturnType<KV["watch"]>>;
 
-  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly deps: EndpointPresenceDeps) {}
+  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly conn: Readonly<ConnectionState>, private readonly deps: EndpointPresenceDeps) {}
 
-  private get kv() { return this.deps.bucket(); }
-  private get nc() { return this.deps.connection(); }
   private get stopped() { return this.deps.stopped(); }
   private get reconnecting() { return this.deps.reconnecting(); }
   private get presenceEpoch() { return this.deps.epoch(); }
@@ -227,8 +224,8 @@ export class EndpointPresence {
   async readPresence(): Promise<Presence[]> {
     if (this.identity.doWatch && !this.identity.readOnce)
       throw new Error("readPresence is for an endpoint that does not watch presence; this one keeps its roster live (getRoster)");
-    const kv = this.kv;
-    if (!kv) throw new Error(this.nc ? "readPresence needs the presence bucket open (registerPresence or watchPresence)" : this.notLiveMsg());
+    const kv = this.conn.kv;
+    if (!kv) throw new Error(this.conn.nc ? "readPresence needs the presence bucket open (registerPresence or watchPresence)" : this.notLiveMsg());
     if (this.presenceRead) return this.presenceRead;
     const generation = ++this.presenceReadGeneration;
     const roster = (async () => {
@@ -390,7 +387,7 @@ export class EndpointPresence {
   }
 
   async publishPresence(): Promise<void> {
-    if (!this.identity.doRegister || !this.kv) return; // observers watch but never publish their own record
+    if (!this.identity.doRegister || !this.conn.kv) return; // observers watch but never publish their own record
     const p: Presence = {
       card: this.identity.card,
       // SPEC §6: presence carries the incarnation's lifecycle UID (MUST in auth mode from v0.4);
@@ -429,7 +426,7 @@ export class EndpointPresence {
     // (heartbeat 2s against a ~5s JetStream put timeout), so "succeeded" alone is not "newest".
     const generation = ++this.presencePutGeneration;
     try {
-      await this.kv.put(this.identity.card.id, JSON.stringify(record));
+      await this.conn.kv.put(this.identity.card.id, JSON.stringify(record));
     } catch (e) {
       // #1356: a broker can put this bucket into a state where it refuses every write and never
       // recovers, and the write is the ONLY thing that fails - open and watch both still succeed, so
@@ -550,10 +547,10 @@ export class EndpointPresence {
    *  endpoint shutdown would resurrect a watch on a stopped endpoint, and one that completes after a
    *  rebuild would overwrite the fresh epoch's watch with a dead-connection iterator. */
   async startPresenceWatch(): Promise<ConsumerInfo | undefined> {
-    if (!this.kv) return undefined;
+    if (!this.conn.kv) return undefined;
     let hydrated!: () => void;
     this.presenceSnapshot = new Promise<void>((resolve) => { hydrated = resolve; });
-    const bound = await this.bindKvWatch(this.kv);
+    const bound = await this.bindKvWatch(this.conn.kv);
     if (!bound) {
       hydrated();
       return undefined;
@@ -592,7 +589,7 @@ export class EndpointPresence {
   /** `readOnce`: fill the roster from one read of the presence bucket. Stale
    *  and offline records resolve as they do in a watch's initial replay. */
   async readPresenceOnce(): Promise<void> {
-    if (this.kv) for (const e of await lastKvEntries(this.kv)) this.handleKvEntry(e);
+    if (this.conn.kv) for (const e of await lastKvEntries(this.conn.kv)) this.handleKvEntry(e);
     this.presenceSnapshotPopulated = true;
     // No record reached the roster (an empty bucket, or only the TTL canary): nobody is present.
     if (this.lastPresenceWatchAt === 0) this.markPresenceBucketEmpty();
@@ -611,7 +608,7 @@ export class EndpointPresence {
    * the view stays stale.
    */
   private rebindStalePresenceWatch(now: number): void {
-    if (this.stopped || this.reconnecting || !this.kv || !this.nc || this.nc.isClosed()) return;
+    if (this.stopped || this.reconnecting || !this.conn.kv || !this.conn.nc || this.conn.nc.isClosed()) return;
     if (this.presenceRebind || now - this.presenceRebindAt < this.identity.ttlMs) return;
     this.presenceRebindAt = now;
     const old = this.presenceWatchIter;

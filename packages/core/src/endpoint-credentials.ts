@@ -1,6 +1,7 @@
 // The bearer and credential renewal of CotalEndpoint, as an internal component: fetch, prove, adopt
 // and present the auth material, and swap the live connection onto it. Moved verbatim from endpoint.ts;
 // the endpoint keeps the public methods and forwards to them. Not re-exported by the index.
+import type { ConnectionState } from "./endpoint-connection-state.js";
 import type { EndpointIdentity } from "./endpoint-identity.js";
 import { randomUUID } from "node:crypto";
 import type { NatsConnection } from "@nats-io/transport-node";
@@ -15,7 +16,6 @@ import { requestSafeReconnect } from "./request-safe-reconnect.js";
  *  copied, a field it reassigns is written back through its setter, and every method is looked up on
  *  the endpoint at call time. */
 export interface EndpointCredentialsDeps {
-  nc: () => NatsConnection | undefined;
   currentBearer: () => string | undefined;
   setCurrentBearer: (value: string | undefined) => void;
   bearerAdoptedAtMs: () => number;
@@ -29,14 +29,12 @@ export interface EndpointCredentialsDeps {
   setPresentedExp: (value: number | undefined) => void;
   currentCreds: () => string | undefined;
   setCurrentCreds: (value: string | undefined) => void;
-  ownedConnections: () => Set<NatsConnection>;
   authExpiryReconnectTimer: () => NodeJS.Timeout | undefined;
   setAuthExpiryReconnectTimer: (value: NodeJS.Timeout | undefined) => void;
   credsTxnsRunning: () => number;
   setCredsTxnsRunning: (value: number) => void;
   reconnecting: () => boolean;
   reestablishing: () => boolean;
-  requestsAwaitingReply: () => Map<NatsConnection, Set<(error: Error) => void>>;
   residentSwap: () => Promise<void> | undefined;
   setResidentSwap: (value: Promise<void> | undefined) => void;
   emitRecoverable: (err: Error) => void;
@@ -59,9 +57,8 @@ export class EndpointCredentials {
   private credsTxn: Promise<unknown> = Promise.resolve();
   private credsTimer?: NodeJS.Timeout;
 
-  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly deps: EndpointCredentialsDeps) {}
+  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly conn: Readonly<ConnectionState>, private readonly deps: EndpointCredentialsDeps) {}
 
-  private get nc() { return this.deps.nc(); }
   private get currentBearer() { return this.deps.currentBearer(); }
   private set currentBearer(value: string | undefined) { this.deps.setCurrentBearer(value); }
   private get bearerAdoptedAtMs() { return this.deps.bearerAdoptedAtMs(); }
@@ -75,14 +72,12 @@ export class EndpointCredentials {
   private set presentedExp(value: number | undefined) { this.deps.setPresentedExp(value); }
   private get currentCreds() { return this.deps.currentCreds(); }
   private set currentCreds(value: string | undefined) { this.deps.setCurrentCreds(value); }
-  private get ownedConnections() { return this.deps.ownedConnections(); }
   private get authExpiryReconnectTimer() { return this.deps.authExpiryReconnectTimer(); }
   private set authExpiryReconnectTimer(value: NodeJS.Timeout | undefined) { this.deps.setAuthExpiryReconnectTimer(value); }
   private get credsTxnsRunning() { return this.deps.credsTxnsRunning(); }
   private set credsTxnsRunning(value: number) { this.deps.setCredsTxnsRunning(value); }
   private get reconnecting() { return this.deps.reconnecting(); }
   private get reestablishing() { return this.deps.reestablishing(); }
-  private get requestsAwaitingReply() { return this.deps.requestsAwaitingReply(); }
   private get residentSwap() { return this.deps.residentSwap(); }
   private set residentSwap(value: Promise<void> | undefined) { this.deps.setResidentSwap(value); }
   private emitRecoverable(err: Error) { void this.deps.emitRecoverable(err); }
@@ -176,7 +171,7 @@ export class EndpointCredentials {
     const held = this.currentBearer;
     await this.refreshBearer();
     if (this.stopped || this.currentBearer === held) return;
-    if (this.nc && !this.nc.isClosed()) await this.swapConnectionOntoFreshCreds();
+    if (this.conn.nc && !this.conn.nc.isClosed()) await this.swapConnectionOntoFreshCreds();
     else this.kickBackoff();
   }
 
@@ -346,7 +341,7 @@ export class EndpointCredentials {
    *  near-dead JWT and the operator never sees a spurious "authentication expired". After the
    *  reconnect succeeds, re-arm the expiry fence for the credential now authenticated on the wire. */
   private async swapConnectionOntoFreshCreds(): Promise<void> {
-    const nc = this.nc;
+    const nc = this.conn.nc;
     if (!(nc && !this.stopped)) return;
     const overlap = this.identity.overlapOnConnectionRenewal && this.identity.onConnection
       ? await this.openRenewalOverlap().catch(() => undefined)
@@ -358,7 +353,7 @@ export class EndpointCredentials {
       await nc.reconnect().catch(() => {});
       if (overlap && !nc.isClosed())
         await withDeadline(nc.flush(), 10_000, () => new Error("resident renewal flush did not finish")).catch(() => {});
-      if (this.nc === nc && !this.stopped) this.armAuthExpiryReconnectFence(nc);
+      if (this.conn.nc === nc && !this.stopped) this.armAuthExpiryReconnectFence(nc);
     } finally {
       if (overlap && !overlap.isClosed()) await this.closeWithoutLibraryReconnect(overlap).catch(() => {});
     }
@@ -381,7 +376,7 @@ export class EndpointCredentials {
         sentinelCreds: this.identity.sentinelCreds, tls: this.identity.tls,
       }),
     });
-    this.ownedConnections.add(overlap);
+    this.conn.ownedConnections.add(overlap);
     try {
       this.identity.onConnection?.(overlap);
       await withDeadline(overlap.flush(), 5_000, () => new Error("renewal overlap flush did not finish"));
@@ -412,7 +407,7 @@ export class EndpointCredentials {
     this.disableLibraryReconnect(nc);
     await nc.close();
     if (!nc.isClosed()) throw new Error("endpoint connection closure is unproved; consumer custody must be retained");
-    this.ownedConnections.delete(nc);
+    this.conn.ownedConnections.delete(nc);
   }
 
   /** Disable nats-core reconnect shortly before the JWT authenticated on this wire expires. The small
@@ -433,8 +428,8 @@ export class EndpointCredentials {
     // at once. A later expiry waits in steps of that bound, and the fence is armed again from there.
     const delay = Math.max(0, expiryMs - Date.now() - 500);
     this.authExpiryReconnectTimer = delay > MAX_TIMER_MS
-      ? setTimeout(() => { if (this.nc === nc) this.armAuthExpiryReconnectFence(nc); }, MAX_TIMER_MS)
-      : setTimeout(() => { if (this.nc === nc) this.disableLibraryReconnect(nc); }, delay);
+      ? setTimeout(() => { if (this.conn.nc === nc) this.armAuthExpiryReconnectFence(nc); }, MAX_TIMER_MS)
+      : setTimeout(() => { if (this.conn.nc === nc) this.disableLibraryReconnect(nc); }, delay);
     this.authExpiryReconnectTimer.unref?.();
   }
 
@@ -554,15 +549,15 @@ export class EndpointCredentials {
    * instead of after its backoff; the rebuild re-fetches a stale credential from the source. */
   async refreshCredsRequestSafe(): Promise<void> {
     if (!this.identity.credsSource) throw new Error("credential refresh requires a creds source");
-    const nc = this.nc;
+    const nc = this.conn.nc;
     if (!nc && !this.stopped && (this.reconnecting || this.reestablishing)) return await this.reconnect();
     if (!nc || this.stopped) throw new Error("credential refresh requires a running endpoint");
     const deadline = Date.now() + EndpointCredentials.RELOAD_DEADLINE_MS;
     await this.runCredsTxn(async () => {
       await this.adoptFreshCreds({ deadline });
-      if (this.nc !== nc || this.stopped) throw new Error("endpoint connection changed during credential refresh");
-      await requestSafeReconnect(nc, () => this.requestsAwaitingReply.get(nc)?.size ?? 0);
-      if (this.nc === nc && !this.stopped) this.armAuthExpiryReconnectFence(nc);
+      if (this.conn.nc !== nc || this.stopped) throw new Error("endpoint connection changed during credential refresh");
+      await requestSafeReconnect(nc, () => this.conn.requestsAwaitingReply.get(nc)?.size ?? 0);
+      if (this.conn.nc === nc && !this.stopped) this.armAuthExpiryReconnectFence(nc);
     });
   }
 

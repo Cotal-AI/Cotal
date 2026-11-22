@@ -150,7 +150,7 @@ console.log("describe REQUEST-BINDING (freelance HIGH #1):");
   const ep = new CotalEndpoint({ space: SPACE, lifecycleUid: CALLER.uid, card: { name: "selected-cache", kind: "agent" }, channels: [] });
   const cached: ResolvedService = { endpoint: ENDPOINT, owner: "local", caller: CALLER, responder: ATTACKER, commands: new Map([["mutate", {} as never]]) };
   const cache = new Map([[ENDPOINT, cached]]);
-  (ep as unknown as { nc: unknown }).nc = fakeNc(() => []);
+  (ep as unknown as { conn: { nc: unknown } }).conn.nc = fakeNc(() => []);
   (ep as unknown as { controlPlane: { resolvedServices: Map<string, ResolvedService> } }).controlPlane.resolvedServices = cache;
   await rejects("class responder invoke bypasses a sibling's ordinary class cache", () =>
     ep.invokeService(ENDPOINT, "mutate", undefined, { classInstanceId: HONEST.instanceId, deadlineMs: 100 }), "deadline-exceeded");
@@ -363,7 +363,7 @@ console.log("describe REQUEST-BINDING (freelance HIGH #1):");
   const service: ResolvedService = { endpoint: ENDPOINT, owner: "local", caller: CALLER, responder: HONEST, commands: new Map() };
   const cache = new Map([[ENDPOINT, service]]);
   const commandCache = new Map([[ENDPOINT, new Map([["mutate", service]])]]);
-  (ep as unknown as { nc: unknown }).nc = fakeNc(() => []);
+  (ep as unknown as { conn: { nc: unknown } }).conn.nc = fakeNc(() => []);
   (ep as unknown as { controlPlane: { resolvedServices: Map<string, ResolvedService> } }).controlPlane.resolvedServices = cache;
   (ep as unknown as { controlPlane: { resolvedCommandServices: Map<string, Map<string, ResolvedService>> } }).controlPlane.resolvedCommandServices = commandCache;
   c("CONTROL: unpinned describe uses the existing class cache", await ep.describeService(ENDPOINT) === service);
@@ -386,7 +386,7 @@ console.log("describe REQUEST-BINDING (freelance HIGH #1):");
   const mutate = resolved("mutate"), query = resolved("query");
   const full: ResolvedService = { ...mutate, commands: new Map([...mutate.commands, ...query.commands]) };
   let publishes = 0;
-  (ep as unknown as { nc: unknown }).nc = fakeInvokeNc(() => { publishes++; });
+  (ep as unknown as { conn: { nc: unknown } }).conn.nc = fakeInvokeNc(() => { publishes++; });
   const fullCache = new Map<string, ResolvedService>();
   (ep as unknown as { controlPlane: { resolvedServices: Map<string, ResolvedService> } }).controlPlane.resolvedServices = fullCache;
   (ep as unknown as { controlPlane: { resolvedCommandServices: Map<string, Map<string, ResolvedService>> } }).controlPlane.resolvedCommandServices =
