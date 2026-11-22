@@ -1,4 +1,4 @@
-import { writeSync } from "node:fs";
+import { reportLostOutput, writeAllSync } from "@cotal-ai/workspace";
 import { Socket } from "node:net";
 import type { Writable } from "node:stream";
 
@@ -23,15 +23,6 @@ export function stdoutError(error: NodeJS.ErrnoException): void {
   process.exit(Number(process.exitCode ?? 0) || 3);
 }
 
-/** Write every byte synchronously or throw the write error. */
-export function writeAllSync(fd: number, chunk: Buffer): void {
-  for (let done = 0; done < chunk.length;) {
-    const wrote = writeSync(fd, chunk, done, chunk.length - done);
-    if (wrote === 0) throw Object.assign(new Error("stdout took no bytes"), { code: "EIO" });
-    done += wrote;
-  }
-}
-
 /**
  * Make a stdout that is a file, not a pipe or a terminal, write all of each chunk or fail. Node
  * writes a file with one `writeSync` and ignores how many bytes it took. After a short write this
@@ -49,12 +40,6 @@ export function completeFileWrites(stream: Writable = process.stdout): void {
     }
     callback();
   };
-}
-
-/** Say on stderr, in one line, that stdout could not be written. A closed pipe says nothing. */
-export function reportLostOutput(error: NodeJS.ErrnoException): void {
-  if (error.code === "EPIPE") return;
-  try { writeSync(2, `✗ could not write to stdout: ${error.message}\n`); } catch { /* stderr failed too; the exit status still says so */ }
 }
 
 /**

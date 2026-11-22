@@ -82,11 +82,28 @@ export function personaNameWords(name: string, flags = ""): string {
   return name.startsWith("-") ? `${flags} -- ${word}` : ` ${word}${flags}`;
 }
 
-export function personaPath(root: string, name: string, access: "show" | "write" = "write"): string {
-  const allowDots = access === "show" && name !== "." && name !== "..";
-  const problem = personaNameProblem(allowDots ? name.replaceAll(".", "_") : name);
+export function personaPath(root: string, name: string, access: "show" | "legacy-remove" | "write" = "write"): string {
+  const allowDots = access !== "write" && name !== "." && name !== "..";
+  const stem = allowDots ? name.replaceAll(".", "_") : name;
+  const problem = personaNameProblem(access === "show" && name === name.trim() ? stem.replaceAll(" ", "_") : stem);
   if (problem) throw new CommandFailure("refused", "USAGE_INVALID", problem);
   return join(personaDir(root), `${name}.md`);
+}
+
+function personaLinkRemedy(path: string): string | undefined {
+  const link = linkTarget(path);
+  if (link === undefined) return undefined;
+  try {
+    if (statSync(path).isFile()) {
+      accessSync(path, constants.R_OK);
+      return `${path} is a link to ${link}; replace the link with a copy of that file`;
+    }
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT" || code === "ENOTDIR")
+      return `${path} is a link to ${link}, but its target is missing. Restore the target if you still need it, or move the broken link aside and put a regular persona file in its place.`;
+  }
+  return `${path} is a link to ${link}, but its target is not a readable regular file. Move the link aside and put a regular persona file in its place.`;
 }
 
 /** Only absence is absent. Unreadable and non-regular sources refuse rather than becoming empty. */
@@ -94,8 +111,8 @@ export function readPersonaSource(path: string): PersonaSource | undefined {
   try {
     const stat = lstatSync(path);
     if (!stat.isFile()) {
-      const link = stat.isSymbolicLink() ? linkTarget(path) : undefined;
-      throw new CommandFailure("refused", "PERMISSION_DENIED", `persona is not a regular file: ${path}`, link === undefined ? {} : { remedy: `${path} is a link to ${link}; replace the link with a copy of that file` });
+      const remedy = stat.isSymbolicLink() ? personaLinkRemedy(path) : undefined;
+      throw new CommandFailure("refused", "PERMISSION_DENIED", `persona is not a regular file: ${path}`, remedy === undefined ? {} : { remedy });
     }
     return { bytes: readFileSync(path), ino: stat.ino, dev: stat.dev, mtimeMs: stat.mtimeMs };
   } catch (error) {

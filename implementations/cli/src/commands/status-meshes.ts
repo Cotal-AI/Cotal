@@ -31,7 +31,7 @@ import {
 } from "@cotal-ai/workspace";
 import { type DeliveryResponderState } from "../lib/delivery-responder.js";
 import { chatStreamGone, stackState } from "../lib/space-streams.js";
-import { stoppedStackAddressProblem } from "./stack-up.js";
+import { stackStartAddressProblem } from "./stack-up.js";
 import { legacyRestartAddressProblem } from "../lib/broker-service.js";
 import { displayCmd, displayRemedy } from "../lib/self-exec.js";
 import { readPersonas, type PersonaEntry } from "../lib/personas.js";
@@ -234,7 +234,7 @@ export async function readSelected(selected: Selected, responder: { state: Deliv
     // A copy or a moved folder is reported under the space its records name, as the commands run here
     // refuse under it, and says what the folder holds; Next gives the step they name.
     const elsewhere = e.code === "not-started" ? recordsElsewhereText(d) : undefined;
-    const held = e.code === "not-started" && d.stopped && !d.unsettled && d.root && d.space ? await stoppedStackAddressProblem(d.root, d.space) : undefined;
+    const held = e.code === "not-started" && !d.rootMissing && !d.unsettled && d.root && d.space ? await stackStartAddressProblem(d.root, d.space) : undefined;
     const result: SelectedResult = {
       resolved: false, code: e.code, message: elsewhere ?? (held ? `${message}; ${held.message}` : message),
       ...(e.code === "not-started" && d.space !== undefined && d.root !== undefined && !d.rootMissing ? { space: d.space, root: d.root } : {}),
@@ -260,7 +260,7 @@ export async function readSelected(selected: Selected, responder: { state: Deliv
       const block = channelSeedRestartBlock(restartRoot);
       if (block) {
         Object.assign(result, { channelSeedBlocksRestart: true, root: restartRoot });
-        hints.push(`Restart blocked: ${block.message}. ${block.remedy}`);
+        hints.push(`${d.space && !d.stopped ? "First start" : "Restart"} blocked: ${block.message}. ${block.remedy}`);
       } else {
         const legacy = d.lastRun ? await legacyRestartAddressProblem(d.server, `${cmd} up`) : undefined;
         if (legacy) result.message += `; ${legacy.message}`;

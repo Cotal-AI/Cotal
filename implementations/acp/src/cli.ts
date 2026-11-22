@@ -56,26 +56,30 @@ function claimStdout(): WritableStream<Uint8Array> {
 
 const log = (line: string): void => void process.stderr.write(`cotal acp: ${line}\n`);
 
+async function signInTarget(space: string | undefined, server: string | undefined) {
+  try {
+    const target = await resolveTargetOrThrow({ space, server });
+    return { space: target.space, idp: target.mode === "user" ? target.userAuth?.idp.url : undefined };
+  } catch (e) {
+    if (!isConnectRefusal(e) || (e.cause as { code?: unknown } | undefined)?.code !== "no-meshes") throw e;
+    return undefined;
+  }
+}
+
 /** The sign-in a client runs in a terminal: `cotal login` for a space that authenticates users,
  *  `cotal setup` when no space is recorded on this machine. */
-function signIn(space: string | undefined, server: string | undefined): Promise<number> {
-  return (async () => {
-    let command: string[];
-    try {
-      const target = await resolveTargetOrThrow({ space, server });
-      if (target.mode !== "user" || !target.userAuth) {
-        log(`${target.space} does not authenticate users, so there is nothing to sign in to.`);
-        return 0;
-      }
-      command = ["login", "--idp", target.userAuth.idp.url];
-    } catch (e) {
-      if (!isConnectRefusal(e) || (e.cause as { code?: unknown } | undefined)?.code !== "no-meshes") throw e;
-      command = ["setup", ...(space ? ["--space", space] : [])];
-    }
-    const cotal = [...process.execArgv, process.argv[1]!];
-    log(`running \`cotal ${command.join(" ")}\``);
-    return spawnSync(process.execPath, [...cotal, ...command], { stdio: "inherit" }).status ?? 1;
-  })();
+async function signIn(space: string | undefined, server: string | undefined): Promise<number> {
+  const target = await signInTarget(space, server);
+  let command: string[];
+  if (!target) command = ["setup", ...(space ? ["--space", space] : [])];
+  else if (target.idp !== undefined) command = ["login", "--idp", target.idp];
+  else {
+    log(`${target.space} does not authenticate users, so there is nothing to sign in to.`);
+    return 0;
+  }
+  const cotal = [...process.execArgv, process.argv[1]!];
+  log(`running \`cotal ${command.join(" ")}\``);
+  return spawnSync(process.execPath, [...cotal, ...command], { stdio: "inherit" }).status ?? 1;
 }
 
 export async function acp(args: ParsedArgs): Promise<void> {
@@ -91,7 +95,8 @@ export async function acp(args: ParsedArgs): Promise<void> {
     log(`${reason}. Stopping; start the agent again in your client.`);
     process.exit(1);
   };
-  const app = cotalAgent({ mesh: () => openLiveMesh({ space, server, log, stop }), hidden: hiddenStore(), log, version });
+  const canSignIn = () => signInTarget(space, server).then((target) => !target || target.idp !== undefined, () => false);
+  const app = cotalAgent({ mesh: () => openLiveMesh({ space, server, log, stop }), hidden: hiddenStore(), log, version, canSignIn });
   const connection = app.connect(ndJsonStream(output, input));
   await connection.closed;
 }

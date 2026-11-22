@@ -360,20 +360,21 @@ authoritative liveness or membership check. User-auth deletion inventory and app
 are not supported. The dry-run removes no live or local state, and a read that covers its whole scope
 exits 0. A space that is prepared and not running, including one stopped with `cotal down`, has no
 live broker to read or delete from: `space delete` refuses it with `TARGET_UNAVAILABLE`, exit 2.
-For a stopped stack the preview points to `cotal reset store <space> --dry-run` to inspect its saved
-streams. A request without `--dry-run` instead names `cotal reset store <space> --yes`, which removes
+For a stopped stack the preview points to `cotal reset store <space> --dry-run` to show the impact of
+resetting its local store. A stream inventory requires a running broker. A request without `--dry-run`
+instead names `cotal reset store <space> --yes`, which removes
 the stored streams, and `space forget`, which removes only its local record. For a space that never ran it names only
 `space forget`, because no streams were stored.
 If the recorded project folder is missing and this folder holds the matching journal, the refusal
-names how to move the project back before inspecting or resetting the store. When it offers adoption, start and
+names how to move the project back before previewing or resetting the store. When it offers adoption, start and
 stop the adopted stack in its new root before resetting its store. If the project cannot be
 located, the refusal says that stored streams could not be checked.
 
 If a damaged mesh registration prevents the lookup, `space delete` refuses with `TARGET_UNAVAILABLE`,
-exit 2, before contacting a broker. It names the file and advises restoring it from backup or, if
-the file is named for a space, removing the local registration with `cotal space forget <space>`.
-If the named space's prepared record is damaged, both preview and apply refuse with `SCHEMA_INVALID`,
-exit 1. They name the file and show how to remove the local record with `cotal space forget <space>`.
+exit 2, before contacting a broker. If the named space's prepared record is damaged, both preview
+and apply refuse with `SCHEMA_INVALID`, exit 1. The refusal names the path and the recovery. Restore
+a damaged file from backup or, if it is named for a space, remove it with `cotal space forget <space>`.
+If a directory occupies the record path, move it aside intact before restoring the record.
 
 The dry run also reads the space's workflow runs from its records bucket and lists each run that
 has not finished, with its recorded state. Deleting the streams removes those runs, and a run still
@@ -774,8 +775,11 @@ After a completed stop, Next names `cotal up --no-manager` instead if the stop r
 or the broker's payload limit is too low to start one.
 If the recorded broker address is occupied after a completed stop, `status` and `history` name the
 address and explain how to free it before restarting. The stack keeps its address.
-A space that never started still reads as prepared but not started. A recorded file-store cap does not
-change the restart command because Cotal reserves no fixed capacity per space.
+A space that never started still reads as prepared but not started. If its default `.cotal/channels.json`
+blocks the first start, `status` and `ps` name the file and the repair. If a refused first start
+recorded a broker address and the address is still in use, `status` names how to free it or start
+at another address. A recorded file-store cap does not change the restart command because Cotal
+reserves no fixed capacity per space.
 `meshes.currentStopped` says whether the selection is such a stopped stack. A stack whose last `up`
 or `down` has no recorded outcome is not stopped, even when a member it launched still runs: the
 selection reads as prepared but not started, and the selected space names that operation.
@@ -876,15 +880,18 @@ that does not parse, or is missing a field every consumer reads (`server`, `mode
 before they act. The refusal names the file under `target` without repeating its stored values.
 `meshes` also says what is wrong with it. `status` lists the readable records, names the file and
 exits 4. Remove the file or restore the record. Nothing repairs or invents a field for you.
-When the file is named for a space, the refusal names `cotal space forget <space>`, which removes
+When a damaged file is named for a space, the refusal names `cotal space forget <space>`, which removes
 that file even if other registrations are damaged. It reads no broker or folder from the damaged
 file, so it reports none from that file.
+If a directory occupies a registration or prepared record path, `space forget` refuses without
+removing it. Move the directory aside to an unused path, then restore the record if you have a backup.
 A registry directory that exists but cannot be read, such as one without read permission or a
 regular file in its place, refuses the same way, naming the directory, and `meshes` gives the read
 error. Only an absent directory is an empty registry. The folder of prepared spaces,
 `~/.cotal/prepared`, refuses the same way when it exists and cannot be read, on every command that
 reads it, such as `space`, `space create`, `use <name>` and `up`. A file in its place is named as
-`<path> is a file, not a folder`, with the step that moves it aside. A record in it that does not parse
+`<path> is a file, not a folder`, with an `mv` command that quotes both paths when the shell would
+otherwise split or expand them. A record in it that does not parse
 or is not a prepared space record refuses only a command about the space its file is named for, such
 as `use <space>`, and names `cotal space forget <space>`. Other commands skip it with the warning `PREPARED_RECORD_SKIPPED`, which names the
 file and `cotal space forget <space>`, the step that removes it, and `status` lists it under

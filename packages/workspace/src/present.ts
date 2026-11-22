@@ -1,6 +1,6 @@
 import { c, paintFor } from "./colors.js";
 import { oneLine } from "@cotal-ai/core";
-import { CommandFailure, exitCode, operationSpaceNote, operationWarnings, writeEnvelope, type Completeness, type OutputWarning } from "./output.js";
+import { CommandFailure, envelopeLine, exitCode, operationSpaceNote, operationWarnings, reportLostOutput, writeAllSync, writeEnvelope, type Completeness, type Envelope, type OutputWarning } from "./output.js";
 import { codeSpan, displayWidth, terminalWidth, wrapWords } from "./text-wrap.js";
 
 // Defined in a leaf module so that output.ts can wrap its warnings without importing this one.
@@ -292,7 +292,8 @@ export function presentationOf(values: { readonly json?: unknown; readonly plain
  *  stderr. `partial` marks a read that answered for only part of what was asked: the result keeps
  *  what was read, the outcome is `partial`, and the run exits 4. `noOp` marks a change that was
  *  already in place: the outcome is `no-op` and the run exits 0. `failure` retains an attributed
- *  multi-member result alongside its classified error. A failure without useful result data is
+ *  result alongside its classified error, with a text report on stderr if its JSON cannot be
+ *  written for a reason other than a closed pipe. A failure without useful result data is
  *  thrown as a {@link CommandFailure} for the kernel to write. */
 export function writeResult<R>(
   presentation: Presentation,
@@ -315,8 +316,9 @@ export function writeResult<R>(
   // A warning the run already recorded was printed then, and its envelope carries it once.
   const recorded = operationWarnings();
   const warnings = (out.warnings ?? []).filter((w) => !recorded.some((r) => r.code === w.code && r.message === w.message));
+  process.exitCode = exitCode(outcome, code);
   if (presentation === "json") {
-    writeEnvelope({
+    const envelope: Envelope = {
       schemaVersion: 1,
       command: out.command,
       target: out.target,
@@ -326,21 +328,33 @@ export function writeResult<R>(
       warnings: [...recorded, ...warnings],
       ...(error ? { error } : {}),
       ...(out.failure?.changed === undefined ? {} : { changed: out.failure.changed }),
-    });
-  } else {
-    const target = out.target !== null && typeof out.target === "object" && !Array.isArray(out.target) ? out.target as Record<string, unknown> : undefined;
-    const report = view(out.result);
-    console.log(renderReport({ ...report, ...(typeof target?.space === "string" && target.space ? { space: target.space } : {}) }, presentation, process.stdout));
-    const errWidth = terminalWidth(process.stderr);
-    const say = (cell: Styled, hang: number, whole?: boolean) => { for (const line of paintFor(process.stderr, () => drawWrapped(cell, presentation, errWidth, hang, whole))) console.error(line); };
-    // The run's own warnings were printed on stderr when they were recorded.
-    for (const warning of warnings) say({ text: `! ${warning.message}`, tone: "waiting" }, 2);
-    if (error) {
-      say({ text: `${marks(presentation) ? "✗" : "!"} ${error.message}`, tone: outcome === "partial" || outcome === "unknown" ? "waiting" : "failed" }, 2);
-      if (error.remedy) say({ text: `  ↳ ${error.remedy}`, tone: "hint" }, 2, out.failure?.remedyIsCommand);
+    };
+    if (!out.failure) return writeEnvelope(envelope);
+    const line = envelopeLine(envelope);
+    try {
+      writeAllSync(1, Buffer.from(line));
+      return;
+    } catch (error) {
+      const writeError = error as NodeJS.ErrnoException;
+      if (writeError.code === "EPIPE") return;
+      reportLostOutput(writeError);
     }
   }
-  process.exitCode = exitCode(outcome, code);
+  const style = presentation === "json" ? "rich" : presentation;
+  const stream = presentation === "json" ? process.stderr : process.stdout;
+  const target = out.target !== null && typeof out.target === "object" && !Array.isArray(out.target) ? out.target as Record<string, unknown> : undefined;
+  const report = view(out.result);
+  const rendered = renderReport({ ...report, ...(typeof target?.space === "string" && target.space ? { space: target.space } : {}) }, style, stream);
+  if (presentation === "json") console.error(rendered);
+  else console.log(rendered);
+  const errWidth = terminalWidth(process.stderr);
+  const say = (cell: Styled, hang: number, whole?: boolean) => { for (const line of paintFor(process.stderr, () => drawWrapped(cell, style, errWidth, hang, whole))) console.error(line); };
+  // The run's own warnings were printed on stderr when they were recorded.
+  for (const warning of warnings) say({ text: `! ${warning.message}`, tone: "waiting" }, 2);
+  if (error) {
+    say({ text: `${marks(style) ? "✗" : "!"} ${error.message}`, tone: outcome === "partial" || outcome === "unknown" ? "waiting" : "failed" }, 2);
+    if (error.remedy) say({ text: `  ↳ ${error.remedy}`, tone: "hint" }, 2, out.failure?.remedyIsCommand);
+  }
 }
 
 /** A failure report exposes only attributed target/receipt fields, never arbitrary input objects. */

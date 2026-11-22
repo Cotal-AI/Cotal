@@ -91,13 +91,16 @@ const snapshot = (endpoint: CotalEndpoint): Handles => {
   const e = endpoint as unknown as {
     conn: { nc?: unknown };
     deliveryPlane: { deliveryServeSub?: unknown; deliveryAdminServeSub?: unknown };
-    subs?: unknown[];
+    delivery: { subs?: unknown[] };
   };
+  // A path that does not reach the endpoint's subscription list must fail here, not read as cleared.
+  const subs = e.delivery?.subs;
+  if (!Array.isArray(subs)) throw new Error("failed-bind-cleanup: the endpoint's subscription list (delivery.subs) is not an array; the reflection path is wrong");
   return {
     nc: e.conn.nc !== undefined,
     deliveryServeSub: e.deliveryPlane.deliveryServeSub !== undefined,
     deliveryAdminServeSub: e.deliveryPlane.deliveryAdminServeSub !== undefined,
-    subsLen: Array.isArray(e.subs) ? e.subs.length : 0,
+    subsLen: subs.length,
   };
 };
 

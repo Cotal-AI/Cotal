@@ -164,8 +164,9 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
   env.npm_config_registry = origin;
   let interrupted, orphan, abandoned, pausedArchive;
   let closureStart, closureEnd;
+  let cwd = root;
   const run = async (file, args, timeoutMs) => {
-    const child = spawn(file, args, { cwd: root, env, stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(file, args, { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] });
     let output = '';
     child.stdout.on('data', bytes => {
       output += bytes;
@@ -391,10 +392,11 @@ exec npm "$@"
     }
     const originalPath = env.PATH;
     if (scenario === 'corepack') {
-      const project = join(root, 'package.json'), tools = join(root, 'tools');
+      cwd = join(root, 'work');
+      const project = join(root, 'package.json'), tools = join(cwd, 'tools');
       const manifest = JSON.stringify({ name: 'local-project', private: true, packageManager: 'pnpm@11.0.0' });
       writeFileSync(project, manifest);
-      mkdirSync(tools);
+      mkdirSync(tools, { recursive: true });
       writeFileSync(join(tools, 'npm'), `#!/bin/sh
 set -eu
 if [ "\${NPM_SMOKE_REFUSAL:-}" = 1 ]; then
@@ -414,7 +416,7 @@ export PATH="$NPM_SMOKE_REAL_PATH"
 exec npm "$@"
 `, { mode: 0o700 });
       env.NPM_SMOKE_REAL_PATH = originalPath;
-      env.PATH = `${tools}${delimiter}${originalPath}`;
+      env.PATH = `tools${delimiter}${originalPath}`;
       const blocked = await run('npm', ['view', 'cotal-ai@latest', 'version', '--json'], 60000);
       assert.equal(blocked.code, 1, blocked.output);
       assert.match(blocked.output, /This project is configured to use pnpm/);

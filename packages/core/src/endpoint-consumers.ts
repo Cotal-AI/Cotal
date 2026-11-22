@@ -3,6 +3,7 @@
 // the consumer and stream reads. Moved verbatim from endpoint.ts. It owns the task epoch, the first-connect
 // flag and the chat subscription refusals; the endpoint keeps the shared fields and chatFrontier and forwards
 // to these. Not re-exported by the index.
+import type { DeliveryState } from "./endpoint-delivery-state.js";
 import type { LifecycleState } from "./endpoint-lifecycle-state.js";
 import type { ConnectionState } from "./endpoint-connection-state.js";
 import type { EndpointIdentity } from "./endpoint-identity.js";
@@ -15,19 +16,13 @@ import { taskDurableConfig } from "./streams.js";
 import { dmDurable, dmStream, taskStream, taskDurable, type ParsedSubject, parseSubject, chatSubject } from "./subjects.js";
 import type { AnycastTakeOutcome, MessageMeta, CotalMessage, Delivery } from "./types.js";
 import { type JetStreamManager, type ConsumerMessages, jetstreamManager, type Consumer, type JsMsg, JetStreamApiCodes, type ConsumerInfo } from "@nats-io/jetstream";
-import { type Subscription, PermissionViolationError } from "@nats-io/transport-node";
+import { PermissionViolationError } from "@nats-io/transport-node";
 
 /** What the consumers component reads from its endpoint. State is read when it is used, never copied, a
  *  field it reassigns is written back through its setter, and every method is looked up on the endpoint
  *  at call time, so a member a caller replaced on the endpoint is the one that runs. */
 export interface EndpointConsumersDeps {
   authed: () => boolean;
-  streamMsgs: () => ConsumerMessages[];
-  dmOnlyInFlight: () => Promise<void> | undefined;
-  setDmOnlyInFlight: (value: Promise<void> | undefined) => void;
-  chatSubs: () => Map<string, Subscription>;
-  chatSubDenied: () => Set<string>;
-  plane3Channels: () => Map<string, number>;
   notLiveMsg: () => string;
   requireLifecycleUid: (what: string) => string;
   ensureDmDurable: (owner: string, actor: string, lifecycleUid: string, opts: { ackWaitMs?: number; inactiveThresholdMs?: number }) => Promise<void>;
@@ -57,15 +52,9 @@ export class EndpointConsumers {
    *  connection status, so the callback owns it (see {@link EndpointConsumers.subscribeChat}) and watchStatus skips it. */
   private readonly chatSubRefusals = new WeakSet<PermissionViolationError>();
 
-  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly conn: ConnectionState, private readonly lifecycle: Readonly<LifecycleState>, private readonly deps: EndpointConsumersDeps) {}
+  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly conn: ConnectionState, private readonly lifecycle: Readonly<LifecycleState>, private readonly delivery: DeliveryState, private readonly deps: EndpointConsumersDeps) {}
 
   private get authed() { return this.deps.authed(); }
-  private get streamMsgs() { return this.deps.streamMsgs(); }
-  private get dmOnlyInFlight() { return this.deps.dmOnlyInFlight(); }
-  private set dmOnlyInFlight(value: Promise<void> | undefined) { this.deps.setDmOnlyInFlight(value); }
-  private get chatSubs() { return this.deps.chatSubs(); }
-  private get chatSubDenied() { return this.deps.chatSubDenied(); }
-  private get plane3Channels() { return this.deps.plane3Channels(); }
   private notLiveMsg(): string { return this.deps.notLiveMsg(); }
   private requireLifecycleUid(what: string): string { return this.deps.requireLifecycleUid(what); }
   private ensureDmDurable(owner: string, actor: string, lifecycleUid: string, opts: { ackWaitMs?: number; inactiveThresholdMs?: number }): Promise<void> { return this.deps.ensureDmDurable(owner, actor, lifecycleUid, opts); }
@@ -171,7 +160,7 @@ export class EndpointConsumers {
       : await this.bindTaskConsumer(stream, durable);
     const ackWaitMs = await ackWaitOf(consumer);
     const msgs = await consumer.consume();
-    this.streamMsgs.push(msgs);
+    this.delivery.streamMsgs.push(msgs);
     if (opts.inbox) this.watchInbox(msgs, stream, durable);
     void (async () => {
       for await (const m of msgs) {
@@ -303,13 +292,13 @@ export class EndpointConsumers {
     const ackWaitMs = await ackWaitOf(consumer); // cached by the bind's own CONSUMER.INFO, no request
     // A rebind after reconnect must not overlap the previous epoch's running handler. A handler that
     // does not settle within the stop bound fails this bind; the retry loop tries again.
-    if (this.dmOnlyInFlight) {
+    if (this.delivery.dmOnlyInFlight) {
       const settleMs = mode.settleTimeoutMs ?? 30_000;
-      await withDeadline(this.dmOnlyInFlight, settleMs, () =>
+      await withDeadline(this.delivery.dmOnlyInFlight, settleMs, () =>
         new Error(`DM-only rebind waited ${settleMs}ms for the previous handler to settle; not reading the next DM yet`));
     }
     const msgs = await consumer.consume({ max_messages: 1 });
-    this.streamMsgs.push(msgs);
+    this.delivery.streamMsgs.push(msgs);
     // The epoch this loop belongs to. nats.js can yield copies it already received after stop() began
     // or after a rebuild replaced the connection (a stacked pull after a missed-heartbeat reset hands
     // over several at once). Such a copy never reaches the handler and is neither acked nor nak'd:
@@ -331,13 +320,13 @@ export class EndpointConsumers {
           kind: "dm",
         } satisfies MessageMeta));
         const flight = run.then(() => {}, () => {});
-        this.dmOnlyInFlight = flight;
+        this.delivery.dmOnlyInFlight = flight;
         try {
           await run;
         } catch (e) {
           this.emit("error", e instanceof Error ? e : new Error(String(e)));
         } finally {
-          if (this.dmOnlyInFlight === flight) this.dmOnlyInFlight = undefined;
+          if (this.delivery.dmOnlyInFlight === flight) this.delivery.dmOnlyInFlight = undefined;
         }
       }
     })().catch((e) => {
@@ -351,8 +340,8 @@ export class EndpointConsumers {
    *  alongside the Plane-3 durable copy, coalesced by the receiver's id-dedup. Drops our own echo +
    *  spoofed senders. */
   subscribeChat(channel: string): void {
-    if (!this.conn.nc || this.chatSubs.has(channel)) return;
-    this.chatSubDenied.delete(channel);
+    if (!this.conn.nc || this.delivery.chatSubs.has(channel)) return;
+    this.delivery.chatSubDenied.delete(channel);
     const subject = chatSubject(this.identity.space, "*", "*", channel);
     const sub = this.conn.nc.subscribe(subject, {
       callback: (err, m) => {
@@ -364,8 +353,8 @@ export class EndpointConsumers {
           // this fires nothing then; joinChannel reads `chatSubDenied` and throws cleanly.) Either way
           // the refusal is reported from here, by that throw or the leave below, so watchStatus skips it.
           if (err instanceof PermissionViolationError) this.chatSubRefusals.add(err);
-          this.chatSubDenied.add(channel);
-          this.chatSubs.delete(channel);
+          this.delivery.chatSubDenied.add(channel);
+          this.delivery.chatSubs.delete(channel);
           const i = this.identity.channels.indexOf(channel);
           if (i >= 0) {
             this.identity.channels.splice(i, 1);
@@ -374,7 +363,7 @@ export class EndpointConsumers {
             // callback can't await, so a fail-closed async helper RETRIES the tombstone (backoff) UNTIL it
             // succeeds, clearing the mirror only then; while pending it is surfaced via cotal_channels —
             // never a silent drop, never lost retry state.
-            const gen = this.plane3Channels.get(channel);
+            const gen = this.delivery.plane3Channels.get(channel);
             if (gen !== undefined) void this.closeRefusedMembership(channel, gen);
             this.emit(
               "error",
@@ -402,21 +391,21 @@ export class EndpointConsumers {
         } satisfies MessageMeta);
       },
     });
-    this.chatSubs.set(channel, sub);
+    this.delivery.chatSubs.set(channel, sub);
   }
 
   /** Close a channel's core subscription (manager-free leave). */
   unsubscribeChat(channel: string): void {
-    const sub = this.chatSubs.get(channel);
+    const sub = this.delivery.chatSubs.get(channel);
     if (sub) {
       try {
         sub.unsubscribe();
       } catch {
         /* closing with the connection */
       }
-      this.chatSubs.delete(channel);
+      this.delivery.chatSubs.delete(channel);
     }
-    this.chatSubDenied.delete(channel);
+    this.delivery.chatSubDenied.delete(channel);
   }
 
   /** Confirm a just-opened core subscription was accepted by the broker. A `sub.allow` violation is

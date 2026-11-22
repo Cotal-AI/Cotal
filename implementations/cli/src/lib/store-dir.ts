@@ -161,7 +161,7 @@ export function assertStoreDirArgument(value: string, root: string): void {
   if (statIfPresent(path, lstatSync)?.isSymbolicLink()) {
     let real: string | undefined;
     try { real = realpathSync.native(path); } catch { real = undefined; }
-    throw new CommandFailure("refused", "USAGE_INVALID", `the --store-dir path ${path} is a link to ${real ?? `${readlinkSync(path)}, which does not exist`}; nothing was started or written`, { target: { storeDir: path, ...(real ? { linkTarget: real } : {}) }, remedy: real ? `name the directory itself with --store-dir ${real}` : "name a real directory with --store-dir" });
+    throw new CommandFailure("refused", "USAGE_INVALID", `the --store-dir path ${path} is a link to ${real ?? `${readlinkSync(path)}, which does not exist`}; nothing was started or written`, { target: { storeDir: path, ...(real ? { linkTarget: real } : {}) }, remedy: real ? `name the directory itself with --store-dir ${shellPath(real)}` : "name a real directory with --store-dir" });
   }
   let existing = path, stat = statIfPresent(existing);
   while (!stat) {

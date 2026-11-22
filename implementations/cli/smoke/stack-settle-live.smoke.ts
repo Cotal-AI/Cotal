@@ -1113,11 +1113,19 @@ try {
     check("the refusal says the stack started no member", Boolean(refused.env?.error?.message.startsWith("the controller stack started no member (broker: ")) && !refused.env?.error?.message.includes("started members were kept"), shown(refused));
     const retry = /\bcotal up --server nats:\/\/127\.0\.0\.1:(\d+) --no-manager --json`/.exec(refused.env?.error?.remedy ?? "");
     check("its next step keeps the options with another port, or stops that program", !!retry && Number(retry[1]) !== port && refused.env?.error?.remedy?.includes(`stop the process listening on 127.0.0.1:${port}`) === true, shown(refused));
+    const status = cli(root, "status", "--space", space, "--json");
+    const selected = status.env?.result?.selected as { code?: string; message?: string } | undefined;
+    const hints = (status.env?.result?.hints as string[] | undefined) ?? [];
+    const statusRetry = /\bcotal up --foreground --server nats:\/\/127\.0\.0\.1:(\d+)`/.exec(hints.join("\n"));
+    check("status keeps the prepared verdict and names how to free or change the refused first-start address",
+      status.status === 0 && selected?.code === "not-started" && selected.message?.includes(`"${space}" is prepared but not started; another process holds that address 127.0.0.1:${port}`) === true && !!statusRetry && Number(statusRetry[1]) !== port && hints.some((hint) => hint.includes(`stop the process listening on 127.0.0.1:${port}`)) && !hints.some((hint) => hint.startsWith("start it with")), shown(status));
+    const bareRetry = cli(root, "up", "--no-manager", "--json");
+    check("retrying without a server override refuses at the same address", bareRetry.status === 2 && bareRetry.env?.error?.code === "CONFLICT" && bareRetry.env.error.message.includes(`127.0.0.1:${port}`), shown(bareRetry));
     check("no broker instance was recorded", serviceInstances(space, "stack-broker").length === 0, serviceInstances(space, "stack-broker").map((row) => row.record.value.state));
     const nothing = cli(root, "down", "--yes", "--json");
     check("down --yes there stops nothing and exits 0", nothing.status === 0 && nothing.env?.outcome === "no-op", shown(nothing));
     // Nor a mode: the refused up asked for static auth, and the next one may ask for an open stack.
-    const moved = cli(root, "up", "--server", `nats://127.0.0.1:${await freePort()}`, "--open", "--no-manager", "--json");
+    const moved = cli(root, "up", "--server", `nats://127.0.0.1:${statusRetry?.[1] ?? await freePort()}`, "--open", "--no-manager", "--json");
     track(space);
     check("the next up starts at another address while the program still holds the first", moved.status === 0, shown(moved));
     check("and in the open mode it asked for, which the refused up did not pin", moved.env?.result !== undefined && JSON.stringify(moved.env.result).includes('"mode":"open"'), shown(moved));
