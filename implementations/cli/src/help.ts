@@ -309,8 +309,9 @@ export function printCommandHelp(cmd: Command, sub?: Subcommand, out: (line: str
   out(renderReport({ sections }, "rich", width));
 }
 
-/** Resolve declared subcommands and aliases. Operands follow a leaf subcommand or `history`. */
+/** Resolve declared subcommands and aliases, stopping at operands. */
 export function printHelpPath(cmd: Command, words: readonly string[], out: (line: string) => void = console.log, width = terminalWidth(process.stdout)): void {
+  if (cmd.positionals !== undefined && !cmd.subcommands?.length) return printCommandHelp(cmd, undefined, out, width);
   let surface: Pick<Command, "subcommands"> = cmd;
   let selected: Subcommand | undefined;
   const path: string[] = [];

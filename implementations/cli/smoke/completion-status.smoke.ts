@@ -562,6 +562,9 @@ if (process.platform !== "win32" && process.getuid?.() !== 0) {
   check("completion bash --json is refused with nothing on stdout", oldJson.status === 1 && oldJson.stdout === "" && oldJson.stderr.includes("cotal completion script bash"), shown(oldJson));
   const missing = s.run(["completion", "script"]);
   check("completion script without a shell is refused", missing.status === 1 && missing.stdout === "" && /choose a supported shell/.test(missing.stderr), shown(missing));
+  const unknownFlag = s.run(["completion", "script", "bash", "--not-a-flag"], { LC_ALL: "C.UTF-8" });
+  check("completion script asks to drop an unknown option instead of passing it as another shell", unknownFlag.status === 1 && unknownFlag.stdout === ""
+    && /Unknown option '--not-a-flag'\n  drop the unknown option\n/.test(unknownFlag.stderr) && !unknownFlag.stderr.includes("put -- before it"), shown(unknownFlag));
   for (const word of ["tcsh", "bsah"]) {
     const other = s.run(["completion", word]);
     check(`completion ${word} exits 1, writes nothing on stdout, and puts the help on stderr`, other.status === 1 && other.stdout === "" && new RegExp(`no subcommand "${word}"`).test(other.stderr) && /^Usage$/m.test(other.stderr), shown(other));

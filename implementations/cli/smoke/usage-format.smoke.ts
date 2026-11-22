@@ -134,6 +134,15 @@ const separatorError = JSON.parse(separatorValue.stdout).error;
 check("an option followed by the separator asks for its value before the separator", separatorValue.status === 1 && separatorValue.stderr === ""
   && separatorError.code === "USAGE_INVALID" && separatorError.message === "--limit needs a value"
   && separatorError.remedy === "write --limit <n> before --", shown(separatorValue));
+for (const args of [["--search", "-1"], ["--search=-1"], ["--search", "first"]]) {
+  const repeated = run(["docs", "--json", ...args, "--search", "--"]);
+  const error = JSON.parse(repeated.stdout).error;
+  check(`a second --search with no value after ${args.join(" ")} asks to use --search once`, repeated.status === 1 && repeated.stderr === ""
+    && error.code === "USAGE_INVALID" && error.message === "--search cannot be repeated" && error.remedy === "use --search once", shown(repeated));
+}
+const numericQuery = run(["docs", "--json", "--search", "-1"]);
+check("one search accepts a dash and digit without an equals sign", numericQuery.status === 0 && numericQuery.stderr === ""
+  && JSON.parse(numericQuery.stdout).result.query === "-1", shown(numericQuery));
 const shortEquals = run(["send", "-c=general", "hello"]);
 check("-c=value is refused naming the value it would give", usageShape(shortEquals, /-c=general gives -c the value "=general"/) && /write -c general or --channel=general/.test(shortEquals.stderr), shown(shortEquals));
 for (const typed of ["\u2014json", "\u2212\u2212json", "\u2013json"]) {
@@ -243,6 +252,7 @@ check("explicit help still refuses a misspelled service subcommand before its op
   usageShape(misspelledStatus, /cotal service has no subcommand "sttaus" - did you mean status\?/), shown(misspelledStatus));
 
 for (const [command, word, title] of [
+  ["docs", "cli", "cotal docs"],
   ["history", "general", "cotal history"],
   ["h", "general", "cotal history"],
   ["history", "clear", "cotal history clear"],
