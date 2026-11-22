@@ -4,17 +4,19 @@ import { canPrompt } from "../commands/meshes-wizard.js";
 import { shellWord } from "./endpoint-errors.js";
 import { displayCmd } from "./self-exec.js";
 
-/** Give a roster read or a folder inspection again with each exact registered space. */
+/** Give the read command again with each exact registered space. */
 export function spaceChoiceRemedy(error: unknown, command: string, args: ParsedArgs, rest: readonly string[]): string | undefined {
-  if (!isWorkspaceTargetError(error) || error.code !== "ambiguous-target" || !error.details.spaces?.length || args.values.creds !== undefined) return undefined;
+  if (!isWorkspaceTargetError(error) || error.code !== "ambiguous-target" || !error.details.spaces?.length) return undefined;
   const show = command === "space" && args.positionals[0] === "show";
-  if (!show && command !== "who") return undefined;
+  const inventory = command === "endpoint" && (args.positionals[0] ?? "list") === "list";
+  if (args.values.creds !== undefined && !inventory) return undefined;
+  if (!show && !inventory && command !== "who") return undefined;
   const server = args.values.server;
   if (server !== undefined && (show || typeof server !== "string" || brokerAddressForDisplay(server) !== server)) return undefined;
   const cli = displayCmd({ fromAnyFolder: true });
   const end = rest.indexOf("--");
   const flags = (end === -1 ? rest : rest.slice(0, end)).map(shellWord);
-  const words = show ? [cli, "space", "show"] : [cli, "who", ...flags, "--space"];
+  const words = show ? [cli, "space", "show"] : [cli, command, ...flags, "--space"];
   return `run ${error.details.spaces.map((space) => codeSpan([...words, shellWord(space)].join(" "))).join(" or ")}`;
 }
 

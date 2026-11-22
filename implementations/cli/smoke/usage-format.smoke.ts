@@ -52,7 +52,7 @@
  * Run: pnpm smoke:usage-format
  */
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir, userInfo } from "node:os";
 import { delimiter, join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -191,14 +191,33 @@ if (process.platform !== "win32") {
   const cwd = realpathSync(neutral);
   const parent = "reviewer's $draft/nested";
   const dir = `${parent}/reviews`;
-  const scaffold = run(["endpoint", "init", "com.example.reviews", "--dir", dir, "--plain"], {}, cwd);
-  const next = /^Next\n  (.+)$/m.exec(scaffold.stderr)?.[1];
-  const unchanged = !existsSync(join(neutral, "reviewer's $draft"));
-  const retry = next && spawnSync("sh", ["-c", `node=$1\nbin=$2\ncotal() { "$node" "$bin" "$@"; }\n${next}`, "endpoint-init", process.execPath, BIN], { cwd: neutral, env, encoding: "utf8", timeout: 120_000 });
-  check("endpoint init names its missing parent without creating it, and its Next creates the scaffold",
-    scaffold.status === 2 && scaffold.stdout === "" && scaffold.stderr.split("\nNext")[0]!.includes("reviewer'\\''s $draft/nested") && unchanged
-    && !!retry && retry.status === 0 && existsSync(join(neutral, dir, "contract.json")) && existsSync(join(neutral, dir, "handler.mjs")),
-    { scaffold: shown(scaffold), retry });
+  const scaffold = run(["endpoint", "init", "com.example.reviews", "--dir", dir, "--json"], {}, cwd);
+  const receipt = JSON.parse(scaffold.stdout);
+  const directories = ["reviewer's $draft", parent, dir].map((path) => join(cwd, path));
+  const files = ["contract.json", "handler.mjs"].map((name) => join(cwd, dir, name));
+  const expected = [...directories.map((path) => ({ path, kind: "directory", complete: true })), ...files.map((path) => ({ path, kind: "file", complete: true }))];
+  check("endpoint init creates and reports all missing directories privately in one invocation",
+    scaffold.status === 0 && scaffold.stderr === "" && JSON.stringify(receipt.result?.changed) === JSON.stringify(expected)
+    && directories.every((path) => (statSync(path).mode & 0o777) === 0o700)
+    && files.every((path, index) => (statSync(path).mode & 0o777) === (index === 0 ? 0o600 : 0o700)), shown(scaffold));
+
+  const original = readFileSync(files[0]!, "utf8");
+  const conflict = run(["endpoint", "init", "different", "--dir", dir, "--json"], {}, cwd);
+  check("endpoint init does not replace scaffold files", conflict.status === 2 && JSON.parse(conflict.stdout).error?.code === "CONFLICT"
+    && readFileSync(files[0]!, "utf8") === original, shown(conflict));
+
+  symlinkSync(directories[0]!, join(cwd, "linked-parent"), "dir");
+  for (const blocked of ["linked-parent", `${dir}/contract.json`]) {
+    const rejected = run(["endpoint", "init", "scratch", "--dir", `${blocked}/missing/scratch`, "--json"], {}, cwd);
+    check("endpoint init refuses a parent symlink or non-directory", rejected.status === 2 && JSON.parse(rejected.stdout).error?.code === "PERMISSION_DENIED"
+      && !existsSync(join(directories[0]!, "missing")), shown(rejected));
+  }
+
+  const partial = run(["endpoint", "init", "scratch", "--dir", `partial-parent/${"x".repeat(256)}/scratch`, "--json"], {}, cwd);
+  const partialReceipt = JSON.parse(partial.stdout);
+  check("endpoint init reports directories created before a component exceeds the filename limit", partial.status === 4
+    && partialReceipt.error?.code === "OPERATION_PARTIAL" && JSON.stringify(partialReceipt.changed) === JSON.stringify([{ path: join(cwd, "partial-parent"), kind: "directory", complete: true }])
+    && (statSync(join(cwd, "partial-parent")).mode & 0o777) === 0o700, shown(partial));
 
   const authoring = run(["endpoint", "init", "reviews"], {}, cwd);
   const wrong = "reviews/wrong.json";

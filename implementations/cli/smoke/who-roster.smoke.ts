@@ -269,6 +269,13 @@ try {
   const livePlain = await run(["endpoints", "--plain"]);
   check("the endpoints report words the condition and the ages from those values",
     livePlain.status === 0 && /carol\s.*idle \(auth for \d+s\) - unchanged for \d+s/.test(livePlain.stdout) && /reviewing the change \(set \d+s ago\)/.test(livePlain.stdout), shown(livePlain));
+  const targetedPresence = await run(["endpoints", "--space", space, "--server", servers, "--plain"]);
+  const rosterCommand = /^  (cotal who[^\r\n]*?)(?: {2,}Read the agent roster|$)/m.exec(targetedPresence.stdout)?.[1];
+  const rosterRetry = rosterCommand && await run(rosterCommand.split(" ").slice(1));
+  check("the live endpoint roster shortcut preserves the space and broker and reads that roster",
+    targetedPresence.status === 0 && rosterCommand === `cotal who --plain --space ${space} --server ${servers}` &&
+    !!rosterRetry && rosterRetry.status === 0 && rosterRetry.stdout.startsWith(`Mesh: ${space}\n`) && rosterRetry.stdout.includes("bob/reviewer"),
+    { presence: shown(targetedPresence), rosterCommand, rosterRetry: rosterRetry && shown(rosterRetry) });
 
   const plain = await run(["who", "--plain"], { FORCE_COLOR: "1" });
   const rich = await run(["who"], { FORCE_COLOR: "1" });
