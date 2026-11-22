@@ -697,8 +697,10 @@ async function assertStackBrokerAddress(request: StackUpRequest, root: string, s
     const { says, frees, timeWait } = await addressHolder("the stack's broker address", host, port);
     if (recorded && timeWait) {
       if (deadline === undefined) {
-        deadline = performance.now() + 60_000;
-        if (request.presentation !== "json") process.stderr.write(`Waiting up to a minute for TIME-WAIT to clear on the stack's broker address ${host}:${port}\n`);
+        // Linux can retain a TIME-WAIT socket briefly after its 60-second timer reaches zero.
+        const waitSeconds = 65;
+        deadline = performance.now() + waitSeconds * 1000;
+        if (request.presentation !== "json") process.stderr.write(`Waiting up to ${waitSeconds} seconds for TIME-WAIT to clear on the stack's broker address ${host}:${port}\n`);
       }
       const remaining = deadline - performance.now();
       if (remaining > 0) {

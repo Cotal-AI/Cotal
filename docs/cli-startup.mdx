@@ -729,7 +729,7 @@ address. On Linux, when nothing listens there and a connection's local end holds
 refusal says so in place of another process. Only a connection on the bind host's own address or a
 wildcard counts, so one elsewhere on the machine that shares the port number changes nothing. If
 only closed connections in TIME-WAIT hold a controller stack's recorded address, `up` retries the
-bind for up to a minute and starts the broker as soon as it can bind. If that wait expires, or the
+bind for up to 65 seconds and starts the broker as soon as it can bind. If that wait expires, or the
 address is not recorded by the controller, `up` refuses and names the step to take.
 When no member started, the refusal says the stack
 started no member. A text `up` prints one `Starting <definition>` line
