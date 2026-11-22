@@ -29,7 +29,7 @@ import {
   type CompletionResult,
   type ParsedArgs,
 } from "@cotal-ai/core";
-import { CLI_USER_ACTOR, CommandFailure, agentGrants, checkServer, codeSpan, connectOrThrow, connectSpace, endpointAuth, recordOperationSpace, jsonFlag, plainFlag, presentationOf, writeResult, targetFlags, userAuthStateDir, workspaceSecretStore, type Connection, type ConnectFlags, type OutputWarning, concreteChannelProblem, offlineRecipientNotice, spaceStreamsExpected } from "@cotal-ai/workspace";
+import { CLI_USER_ACTOR, CommandFailure, agentGrants, checkServer, codeSpan, connectOrThrow, connectSpace, endpointAuth, recordOperationSpace, jsonFlag, plainFlag, presentationOf, writeResult, targetFlags, userAuthStateDir, workspaceSecretStore, type Connection, type ConnectFlags, type OutputWarning, concreteChannelProblem, offlineRecipientNotice, payloadRefused, spaceStreamsExpected } from "@cotal-ai/workspace";
 import { completedFlagValue, completingFlagValue } from "../lib/completion.js";
 import { batchedRead, openTransient, streamGoneAt } from "../lib/transient.js";
 import { streamsAbsent } from "../lib/space-streams.js";
@@ -325,12 +325,6 @@ function editDistance(a: string, b: string): number {
     row = next;
   }
   return row[b.length]!;
-}
-
-/** nats.js refuses a frame over the broker's `max_payload` before writing any of it. */
-function payloadRefused(error: unknown): boolean {
-  for (let e: unknown = error; e instanceof Error; e = e.cause) if (e.name === "InvalidArgumentError" && e.message.includes("max_payload")) return true;
-  return false;
 }
 
 /** JetStream answers 10023, insufficient resources, to a write while its file store holds more than
