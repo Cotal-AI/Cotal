@@ -23,6 +23,8 @@ export interface RunProgramValue {
   readonly source: string;
   /** The file name the source came from, when it came from one. Diagnostic only. */
   readonly file?: string;
+  /** The default pause timeout selected at hosted start. */
+  readonly defaultCheckpointTimeout?: string;
   readonly at: number;
 }
 
@@ -32,17 +34,19 @@ export function parseRunProgram(raw: unknown, key: string): RunProgramValue {
     throw new EpEnvelopeError("internal", `run program ${key} is not an object; garbled state never authorizes`);
   const o = raw as Record<string, unknown>;
   for (const k of Object.keys(o))
-    if (!["v", "run", "source", "file", "at"].includes(k))
+    if (!["v", "run", "source", "file", "defaultCheckpointTimeout", "at"].includes(k))
       throw new EpEnvelopeError("internal", `run program ${key} carries the unknown field "${k}"; record schemas are closed`);
   if (o.v !== 1 || typeof o.run !== "string" || typeof o.source !== "string"
     || typeof o.at !== "number" || !Number.isSafeInteger(o.at) || o.at < 0
-    || (o.file !== undefined && typeof o.file !== "string"))
+    || (o.file !== undefined && typeof o.file !== "string")
+    || (o.defaultCheckpointTimeout !== undefined && (typeof o.defaultCheckpointTimeout !== "string" || o.defaultCheckpointTimeout.length === 0)))
     throw new EpEnvelopeError("internal", `run program ${key} is malformed; garbled state never authorizes`);
   return {
     v: 1,
     run: o.run,
     source: o.source,
     ...(o.file !== undefined ? { file: o.file as string } : {}),
+    ...(o.defaultCheckpointTimeout !== undefined ? { defaultCheckpointTimeout: o.defaultCheckpointTimeout } : {}),
     at: o.at,
   };
 }

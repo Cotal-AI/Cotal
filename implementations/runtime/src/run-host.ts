@@ -346,6 +346,7 @@ export const cotalLangRunHost: RunHost = {
       pause,
       cancellation,
       cancellationObserved,
+      defaultCheckpointTimeout: req.defaultCheckpointTimeout,
       ...(req.file !== undefined ? { file: req.file } : {}),
       ...(req.resultBytes !== undefined ? { resultBytes: req.resultBytes } : {}),
       ...(req.onLog !== undefined ? { onLog: (line: { readonly scope: string; readonly values: readonly unknown[] }) => req.onLog!(logLineText(line)) } : {}),
