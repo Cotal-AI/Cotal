@@ -112,19 +112,28 @@ try {
       selected.code === 2 && selected.stderr.includes("nats://127.0.0.1:1\n") && !/4222|"main"/.test(selected.stderr), selected.stderr);
   }
   {
-    const link = "cotal://127.0.0.1:1/jpair-link?channel=review.%3E,other";
-    for (const [space, joinLink, mintFlags] of [
-      ["", "", "--allow-subscribe general --space <space>"],
-      ["", link, "--allow-subscribe 'review.>' --space jpair-link"],
-      ["-override", "cotal://127.0.0.1:1/jpair-link?channel=-review", "--allow-subscribe=-review --space=-override"],
+    for (const [space, link, server, mintFlags] of [
+      ["", "", "", "--allow-subscribe general --space <space>"],
+      ["", "cotals://fixture_user:fixture_password@[::1]:1/jpair-link?channel=review.%3E,other", "", "--allow-subscribe 'review.>' --space jpair-link --server 'tls://[::1]:1'"],
+      ["-override", "cotal://fixture_token@127.0.0.1:1/jpair-link?channel=-review", "wss://127.0.0.1:2/edge%20route", "--allow-subscribe=-review --space=-override --server 'wss://127.0.0.1:2/edge%20route'"],
     ] as const) {
-      const r = await run("creds-missing", mintLifecycleUid(), { JPAIR_SPACE: space, JPAIR_LINK: joinLink });
+      const r = await run("creds-missing", mintLifecycleUid(), { JPAIR_SPACE: space, JPAIR_LINK: link, JPAIR_SERVER: server });
       check(`a missing --creds file refuses before dialing and recommends ${mintFlags}`,
         r.code === 2 && /Code: +TARGET_NOT_FOUND/.test(r.stderr) && r.stderr.includes(`creds file not found: ${credsPath}.missing`) &&
         r.stderr.includes("check the path") && r.stderr.includes(`--provision ${mintFlags} --no-persona --out <file>`) &&
-        r.stderr.includes("--lifecycle-uid set to the new UID that mint reports") && !/can't reach/.test(r.stderr), r.stderr);
+        r.stderr.includes("--lifecycle-uid set to the new UID that mint reports") && !/can't reach|fixture_user|fixture_password|fixture_token/.test(r.stderr), r.stderr);
     }
   }
+  for (const [channel, reason] of [["#general", 'a leading "#" is not part'], ["general/x", 'segment "general/x" must be a NATS-safe token'], ["team..x", "empty segment"]] as const) {
+    const r = await run("creds-missing", mintLifecycleUid(), { JPAIR_CHANNEL: channel });
+    check(`invalid --channel ${channel} names its own error without offering a mint`, r.code === 1 &&
+      /USAGE_INVALID/.test(r.stderr) && r.stderr.includes(reason) && !/comma-separated|auth mint/.test(r.stderr), r.stderr);
+  }
+  const linkChannel = await run("creds-missing", mintLifecycleUid(), { JPAIR_LINK: "cotal://fixture_token@127.0.0.1:1/jpair-link?channel=bad%2Fchannel" });
+  check("an invalid linked channel names its origin and how to replace or override it", linkChannel.code === 1 &&
+    /USAGE_INVALID/.test(linkChannel.stderr) && linkChannel.stderr.includes("the join link's first channel") &&
+    linkChannel.stderr.includes('segment "bad/channel"') && linkChannel.stderr.includes("ask for a corrected join link") &&
+    !/fixture_token|comma-separated|auth mint/.test(linkChannel.stderr), linkChannel.stderr);
 } finally {
   rmSync(dir, { recursive: true, force: true });
 }

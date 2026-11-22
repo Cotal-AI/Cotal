@@ -8,7 +8,7 @@
 //   token-env    : --token, ambient COTAL_LIFECYCLE_UID set (ignored, self-mints, proceeds to preflight)
 //   open-env     : open join, ambient COTAL_LIFECYCLE_UID   (ignored, self-mints, proceeds to preflight)
 //   creds-noserver / token-noserver: --creds + uid / --token, no --server, space JPAIR_SPACE
-//   creds-missing: --creds naming a file that does not exist, + uid, link and space via env
+//   creds-missing: --creds naming a file that does not exist, + uid, connection and channel via env
 // A refusal is reported by its classified report on stderr, with its code, and exits with the
 // status the outcome table gives that code.
 import { commandFailureReport, exitCode, isCommandFailure, renderReport } from "@cotal-ai/workspace";
@@ -26,7 +26,7 @@ const values: Record<string, string | boolean | undefined> =
   : mode === "open-env" ? { ...base }
   : mode === "creds-noserver" ? { space: process.env.JPAIR_SPACE, creds: CREDS, "lifecycle-uid": uid }
   : mode === "token-noserver" ? { space: process.env.JPAIR_SPACE, token: "tok" }
-  : mode === "creds-missing" ? { link: process.env.JPAIR_LINK || undefined, space: process.env.JPAIR_SPACE || undefined, creds: `${CREDS}.missing`, "lifecycle-uid": uid }
+  : mode === "creds-missing" ? { link: process.env.JPAIR_LINK || undefined, space: process.env.JPAIR_SPACE || undefined, server: process.env.JPAIR_SERVER || undefined, channel: process.env.JPAIR_CHANNEL, creds: `${CREDS}.missing`, "lifecycle-uid": uid }
   : (() => { throw new Error(`unknown mode ${mode}`); })();
 
 try {

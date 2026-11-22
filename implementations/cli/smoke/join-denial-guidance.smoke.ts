@@ -178,7 +178,7 @@ try {
         res.status === 2 &&
           /Code: +PERMISSION_DENIED/.test(res.text) &&
           res.text.includes(`an ${profile}-profile credential cannot join as a mesh participant`) &&
-          res.text.includes("cotal auth mint <name> --provision --allow-subscribe general --out <file>") &&
+          res.text.includes(`cotal auth mint <name> --provision --allow-subscribe general --space ${SPACE} --server ${server} --no-persona --out <file>`) &&
           !/lifecycle-paired|DELIVERY DAEMON|dm-durable-missing/i.test(res.text),
         { status: res.status, out: res.text });
     }

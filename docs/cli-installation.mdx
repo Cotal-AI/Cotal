@@ -676,7 +676,9 @@ The session can follow the pattern, but broadcasts from the join prompt require 
 If the file is missing or incomplete, `join` refuses it before connecting. Check the path or
 pass the complete file as issued. If you need a replacement, ask the space's owner to mint it
 with `--space` for the intended space, `--provision`, `--allow-subscribe` for the landing channel,
-`--no-persona` and `--out`. Use the lifecycle UID that the replacement mint reports.
+`--no-persona` and `--out`. If `--server` or a join link selected the broker, the replacement
+command includes that broker's address without any login details. Use the lifecycle UID that the
+replacement mint reports.
 `--provision` alone grants no channel access. A missing read grant is refused with
 `PERMISSION_DENIED` naming the channel and `--allow-subscribe`. A mismatched lifecycle UID is
 refused separately, naming the UID and the mint that reported its pair. Neither refusal points at

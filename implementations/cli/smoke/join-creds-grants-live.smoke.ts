@@ -100,8 +100,8 @@ try {
   const other = await mint("other_channel", "--allow-subscribe", "review.>");
   await refused("other-channel", other.file, other.uid, /does not grant read access to #general[\s\S]*--allow-subscribe general/);
 
-  async function joins(name: string, file: string, uid: string, channel: string) {
-    const run = cli("join", "--space", space, "--creds", file, "--lifecycle-uid", uid, "--name", name, "--channel", channel);
+  async function joins(name: string, file: string, uid: string, channel: string, ...target: string[]) {
+    const run = cli("join", "--space", space, "--creds", file, "--lifecycle-uid", uid, "--name", name, "--channel", channel, ...target);
     await until(() => run.output().includes("holding presence") || run.proc.exitCode !== null);
     check(`${name}: matching lifecycle and read grant join successfully`, run.proc.exitCode === null && run.output().includes("holding presence"), run.output());
     await killAndAwaitExit(run.proc);
@@ -109,27 +109,29 @@ try {
   }
   const truncated = join(dir, "truncated.creds");
   writeFileSync(truncated, "-----BEGIN NATS USER JWT-----\nincomplete\n", { mode: 0o600 });
-  for (const [label, file, exit, refusal, detail, advice] of [
-    ["missing", join(dir, "absent.creds"), 2, "TARGET_NOT_FOUND", "creds file not found:", "check the path"],
-    ["truncated", truncated, 1, "SCHEMA_INVALID", "no complete NATS user JWT block", "pass the complete credential file as it was issued"],
+  recordMesh({ space, server: `nats://127.0.0.1:${await freePort()}`, root: project, mode: "auth", ts: new Date().toISOString() });
+  for (const [label, file, exit, refusal, detail, advice, target] of [
+    ["missing", join(dir, "absent.creds"), 2, "TARGET_NOT_FOUND", "creds file not found:", "check the path", ["--server", broker.servers]],
+    ["truncated", truncated, 1, "SCHEMA_INVALID", "no complete NATS user JWT block", "pass the complete credential file as it was issued", ["--link", `${broker.servers.replace(/^nats:/, "cotal:")}/${space}`]],
   ] as const) {
     const invalid = cli("join", "--space", space, "--creds", file, "--lifecycle-uid", other.uid, "--channel", "general,review.code");
     check(`${label} file with a comma list refuses the channel without suggesting a mint`, await invalid.exited === 1 &&
-      /Code: +USAGE_INVALID/.test(invalid.output()) && invalid.output().includes("one valid channel name or pattern") &&
+      /Code: +USAGE_INVALID/.test(invalid.output()) && invalid.output().includes("a comma-separated list was supplied") &&
       !invalid.output().includes("auth mint"), invalid.output());
-    const attempt = cli("join", "--space", space, "--creds", file, "--lifecycle-uid", other.uid, "--channel", "review.code");
+    const attempt = cli("join", "--space", space, "--creds", file, "--lifecycle-uid", other.uid, "--channel", "review.code", ...target);
     check(`${label} file keeps its refusal and explains how to pair the replacement`, await attempt.exited === exit &&
       new RegExp(`Code: +${refusal}`).test(attempt.output()) && attempt.output().includes(detail) && attempt.output().includes(advice) &&
       attempt.output().includes("--lifecycle-uid set to the new UID that mint reports"), attempt.output());
     const command = /`cotal auth mint (<name> [^`]+)`/.exec(attempt.output())?.[1];
-    assert.equal(command, `<name> --provision --allow-subscribe review.code --space ${space} --no-persona --out <file>`, attempt.output());
+    assert.equal(command, `<name> --provision --allow-subscribe review.code --space ${space} --server ${broker.servers} --no-persona --out <file>`, attempt.output());
     const replacement = join(dir, `${label}-repair.creds`);
     const repair = cli("auth", "mint", ...command.split(" ").map((arg) => arg === "<name>" ? `${label}_repair` : arg === "<file>" ? replacement : arg));
     check(`the ${label}-file remedy mints a replacement`, await repair.exited === 0, repair.output());
     const replacementUid = /^\s*Lifecycle:\s+(\S+)/m.exec(repair.output())?.[1];
     assert.ok(replacementUid && replacementUid !== other.uid, repair.output());
-    await joins(`${label}-repair`, replacement, replacementUid, "review.code");
+    await joins(`${label}-repair`, replacement, replacementUid, "review.code", ...target);
   }
+  recordMesh({ space, server: broker.servers, root: project, mode: "auth", ts: new Date().toISOString() });
 
   const foreign = join(dir, "foreign.creds"), foreignUid = mintLifecycleUid();
   const foreignAuth = await createSpaceAuth("elsewhere");
@@ -187,7 +189,7 @@ try {
         code === 2 &&
           /Code: +PERMISSION_DENIED/.test(out) &&
           out.includes(`an ${profile}-profile credential cannot join as a mesh participant`) &&
-          out.includes("cotal auth mint <name> --provision --allow-subscribe general --out <file>") &&
+          out.includes(`cotal auth mint <name> --provision --allow-subscribe general --space ${space} --no-persona --out <file>`) &&
           !/lifecycle-paired|DELIVERY DAEMON|dm-durable-missing/i.test(out),
         out);
     }
