@@ -10,6 +10,7 @@ import {
   type PresenceView,
   spacePrefix,
   credsClaims,
+  patternInAllow,
   mintCreds,
   mintLifecycleUid,
   newIdentity,
@@ -536,10 +537,8 @@ export async function web(args: ParsedArgs, lifecycle?: WebServiceLifecycle): Pr
   } catch (e) {
     console.error(c.dim(`• membership feed unavailable - graph shows traffic only (${(e as Error).message})`));
   }
-  // Every comm on the mesh (chat / unicast / anycast) → push to the live feed. The admin cred
-  // allows exactly the MESSAGING plane (SPEC 13.9/13.11: chat + inst + svc, enumerated — never
-  // the space-wide `>`, which would also plain-subscribe the v0.4 endpoint request rails), so
-  // the tap is one subscription per plane.
+  // Tap each authorized messaging plane separately. A space-wide tap would also subscribe to
+  // endpoint request rails.
   //
   // An agent's frames go only to the feeds watching that agent, and to none when nobody watches;
   // they are never broadcast as `message` (see `classifyTap`). Everything else is broadcast.
@@ -553,12 +552,17 @@ export async function web(args: ParsedArgs, lifecycle?: WebServiceLifecycle): Pr
     const { mode, senderId, channel, msg } = verdict.data;
     broadcast("message", { mode, senderId, channel, msg });
   };
-  for (const plane of ["chat", "inst", "svc"])
-    ep.tap(onTap, { subject: `${spacePrefix(space)}.${plane}.>` });
+  const subscriptions = conn.creds ? credsClaims(conn.creds).nats?.sub : undefined;
+  for (const plane of ["chat", "inst", "svc"]) {
+    const subject = `${spacePrefix(space)}.${plane}.>`;
+    if (subscriptions?.allow?.length && !patternInAllow(subscriptions.allow, subject)) continue;
+    if (subscriptions?.deny?.length && patternInAllow(subscriptions.deny, subject)) continue;
+    ep.tap(onTap, { subject });
+  }
   // A supplied observer credential can read only its owner's payload rail.
   const payloadPrefix = `${spacePrefix(space)}.evp.`;
   const payloadSubjects = conn.creds
-    ? (credsClaims(conn.creds).nats?.sub?.allow ?? []).filter(subject => subject.startsWith(payloadPrefix))
+    ? (subscriptions?.allow ?? []).filter(subject => subject.startsWith(payloadPrefix))
     : [`${payloadPrefix}>`];
   for (const subject of payloadSubjects) ep.tap(onTap, { subject });
 
