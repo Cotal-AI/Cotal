@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { accountFromCreds, credsClaims, credsRenewalDelayMs, divergentSecretStoreNotice, inspectCredHealth, mintCreds, parseDaemonStoreAnswer, parseSecretStoreIdentity, rejectionText, REMOTE_MANAGER_IDENTITY_NAMES, requestSafeReconnect, sameSecretStoreIdentity, serveIssuanceGateKv, STANDING_RENEWABLE_TTL_SEC, type ControlReply, type CredHealth, type DaemonStoreAnswer, type DeliveryLeaseInfo, type EpServeHandle, type SecretStoreIdentity } from "@cotal-ai/core";
+import { accountFromCreds, credsClaims, credsRenewalDelayMs, divergentSecretStoreNotice, EpEnvelopeError, inspectCredHealth, mintCreds, parseDaemonStoreAnswer, parseSecretStoreIdentity, rejectionText, REMOTE_MANAGER_IDENTITY_NAMES, requestSafeReconnect, sameSecretStoreIdentity, serveIssuanceGateKv, STANDING_RENEWABLE_TTL_SEC, type ControlReply, type CredHealth, type DaemonStoreAnswer, type DeliveryLeaseInfo, type EpServeHandle, type SecretStoreIdentity } from "@cotal-ai/core";
 import { agentSecretKeyForFile, DELIVERY_CREDS_KIND, MEMBERSHIP_RW_CREDS_KIND, remintDaemonCreds, spaceMaterialKey, SYSTEM_CREDS_FILES, writeRenewalRecord, type RenewalRecord } from "@cotal-ai/workspace";
 import type { KV } from "@nats-io/kv";
 import { credsAuthenticator, RequestError, type NatsConnection } from "@nats-io/transport-node";
@@ -154,7 +154,8 @@ export class CredentialRenewal {
   /** A refused or failed standing candidate is cleanup debt, never a silent loss: the last-good
    * family stays live and this records what the host may have signed but the manager never adopted. */
   remoteRenewalDebt?: { at: number; processEpoch: number; reason: string; unadoptedSubjects: string[] };
-  credentialPushRetry?: ReturnType<typeof setTimeout>;
+  private credentialPushRetry?: ReturnType<typeof setTimeout>;
+  private remoteStandingRetry?: ReturnType<typeof setTimeout>;
   readonly credentialPushes: Map<NatsConnection, Promise<void>> = new Map<NatsConnection, Promise<void>>();
   supervisorCredentialPush?: Promise<void>;
   readonly pendingCredentialPushes: Set<NatsConnection> = new Set<NatsConnection>();
@@ -389,6 +390,26 @@ export class CredentialRenewal {
       ]);
     }, 1_000);
     this.credentialPushRetry.unref();
+  }
+
+  stopRetries(): void {
+    clearTimeout(this.credentialPushRetry);
+    this.credentialPushRetry = undefined;
+    clearTimeout(this.remoteStandingRetry);
+    this.remoteStandingRetry = undefined;
+  }
+
+  private scheduleRemoteStandingRetry(): void {
+    if (this.remoteStandingRetry || this.leaseStopping) return;
+    this.remoteStandingRetry = setTimeout(() => {
+      this.remoteStandingRetry = undefined;
+      const release = this.beginLifecycle();
+      if (!release) return;
+      void this.deps.renewRemoteStandingBundle().catch((error) => {
+        console.error(`! remote manager renewal pass failed: ${rejectionText(error)}`);
+      }).finally(release);
+    }, 2_000);
+    this.remoteStandingRetry.unref();
   }
 
   /** Retain a busy transport and retry its adopted credential without replaying requests. */
@@ -639,6 +660,8 @@ export class CredentialRenewal {
   async renewRemoteStandingBundle(force = false): Promise<void> {
     if (this.remoteBundleRenewal) return this.remoteBundleRenewal;
     if (this.leaseStopping) return;
+    clearTimeout(this.remoteStandingRetry);
+    this.remoteStandingRetry = undefined;
     this.remoteBundleAdoption = new Promise<void>((resolve) => { this.finishRemoteBundleAdoption = resolve; });
     const renewal = this.renewRemoteStandingBundleOnce(force, performance.now() + REMOTE_STANDING_BUDGET_MS);
     this.remoteBundleRenewal = renewal;
@@ -755,6 +778,7 @@ export class CredentialRenewal {
         : REMOTE_MANAGER_IDENTITY_NAMES.map((name) => remote.identities[name].id);
       this.remoteRenewalDebt = { at: Date.now(), processEpoch, reason: rejectionText(e), unadoptedSubjects };
       console.error(`! remote manager all-duty renewal: ${this.remoteRenewalDebt.reason} - no unsigned or local replacement is available`);
+      if (candidate === undefined && e instanceof EpEnvelopeError && e.code === "unavailable") this.scheduleRemoteStandingRetry();
       if (force) throw e;
     }
   }
