@@ -299,6 +299,7 @@ For a direct launch or preview, a positional name ending in `.md` selects a matc
 For example, `cotal spawn review.md` selects `.cotal/agents/review.md.md` if that entry exists.
 With no matching catalog entry, a positional `.md` name is read as a file relative to the mesh root.
 A managed launch reads that positional `.md` name from the manager's catalog. Use `--file <persona-file>` to select a file explicitly.
+If `spawn` refuses the `--on` value and prints a retry with `<instance>`, replace that placeholder with the full manager instance ID from `cotal ps`. The retry keeps the persona and launch options you supplied.
 A reference with a path separator selects that file. A relative path resolves against the mesh root, except that
 a managed handoff, and an enrollment onto a mesh this machine has not registered yet, resolve the
 persona file against the working directory. A missing
