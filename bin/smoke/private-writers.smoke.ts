@@ -33,13 +33,9 @@ import { appendPrivate, writePrivate, writeRecord, type SeatRecord } from "../..
 import { placeCarried } from "../../extensions/connector-claude-code/src/carried.js";
 import { materialize, writeMarketplaceManifest } from "../../extensions/connector-claude-code/src/setup.js";
 import { captureProcessIdentity, recordLaunch } from "../../extensions/connector-jcode/src/private-lifecycle.js";
+import { createSuite } from "@cotal-ai/smoke-kit";
 
-let pass = 0;
-let fail = 0;
-const check = (name: string, condition: boolean, detail?: unknown): void => {
-  if (condition) { pass++; console.log(`  ✓ ${name}`); }
-  else { fail++; console.log(`  ✗ FAIL: ${name}`, detail ?? ""); }
-};
+const { check, finish, passed, failed } = createSuite();
 
 if (process.platform === "win32") {
   console.log("private-writers: the symlink refusal is the POSIX rule; win32 keeps the ACL rule (skipped)");
@@ -257,5 +253,6 @@ function lstatExists(path: string): boolean {
   try { lstatSync(path); return true; } catch { return false; }
 }
 
-console.log(`\n${pass} passed, ${fail} failed`);
-if (fail) process.exit(1);
+console.log(`\n${passed()} passed, ${failed()} failed`);
+finish();
+if (failed()) process.exit(1);

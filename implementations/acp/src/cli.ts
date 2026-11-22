@@ -73,7 +73,7 @@ function signIn(space: string | undefined, server: string | undefined): Promise<
       command = ["setup", ...(space ? ["--space", space] : [])];
     }
     const cotal = [...process.execArgv, process.argv[1]!];
-    log(`running cotal ${command.join(" ")}`);
+    log(`running \`cotal ${command.join(" ")}\``);
     return spawnSync(process.execPath, [...cotal, ...command], { stdio: "inherit" }).status ?? 1;
   })();
 }

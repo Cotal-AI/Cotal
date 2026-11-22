@@ -1,5 +1,13 @@
 # @cotal-ai/cli
 
+## 0.175.1
+
+### Patch Changes
+
+- 637b535: Keep the selected application and explicit broker in the suggested catalog refresh on the answering Manager.
+- @cotal-ai/core@0.175.1
+  - @cotal-ai/workspace@0.175.1
+
 ## 0.175.0
 
 ### Minor Changes

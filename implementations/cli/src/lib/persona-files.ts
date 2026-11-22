@@ -34,7 +34,7 @@ export function personaCatalog(values: { space?: string; server?: string }): Per
     if (!isWorkspaceTargetError(error)) throw error;
     if (error.code === "not-started" && !values.server && error.details.root && error.details.space && !error.details.rootMissing)
       return catalogAt(error.details.root, error.details.space);
-    if (error.code === "unknown-space" && values.space !== undefined && values.server === undefined) {
+    if ((error.code === "unknown-space" || error.code === "not-started" && error.details.lastRun) && values.space !== undefined && values.server === undefined) {
       const root = findCotalRoot();
       // Legacy down can drop the registration, but the rendered open config still names the space.
       if (isGenuineSpace(root) && cotalDirLink(root) === undefined && !existsSync(stackJournalPath(root)) &&

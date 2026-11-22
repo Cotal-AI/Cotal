@@ -51,7 +51,7 @@ import { pidfileState, pidfileTargets } from "./down.js";
 import { localProcessSurface } from "../ext-loader.js";
 import { readStackJournal, recordResetStore, STACK_DEFINITION, stackJournalPath } from "../lib/stack-journal.js";
 import { rollbackRestoreWithBroker } from "../lib/controller-restore.js";
-import { maintenanceNextStep } from "../lib/restore.js";
+import { maintenanceNextStep, restoreNextStep } from "../lib/restore.js";
 import { displayCmd } from "../lib/self-exec.js";
 import { MissingFlags } from "../lib/missing-flags.js";
 import { attemptProcessesGone } from "../lib/isolated-broker.js";
@@ -199,6 +199,11 @@ export async function clean(args: ParsedArgs): Promise<void> {
         throw new CommandFailure("refused", "TARGET_NOT_FOUND", `no maintenance record at this root names restore attempt ${values.attempt}; nothing was deleted`, {
           target: { root, attemptId: values.attempt },
           remedy: recordedAttemptStep(root, journal, "this root holds no restore attempt. Check that you are in the original project folder and verify the attempt ID before retrying"),
+        });
+      if (journal.state === "restore-ready")
+        throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `restore attempt ${values.attempt} is still pre-commit; nothing was deleted`, {
+          target: { root, attemptId: values.attempt, state: journal.state },
+          remedy: restoreNextStep(journal.state, values.attempt),
         });
       const active = journal.state === "active" && journal.restore.attemptId === values.attempt && !journal.restore.cleanup ? journal : undefined;
       const leftOut = active ? restoreLeftOut(active) : undefined;

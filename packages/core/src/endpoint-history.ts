@@ -1,3 +1,4 @@
+import type { ConnectionState } from "./endpoint-connection-state.js";
 import type { EndpointIdentity } from "./endpoint-identity.js";
 import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
@@ -11,10 +12,6 @@ import type { HistoryPage } from "./endpoint.js";
 
 /** Current transport and shared lifecycle operations used by history reads. */
 export interface EndpointHistoryDeps {
-  connection: () => NatsConnection | undefined;
-  jetstream: () => JetStreamClient | undefined;
-  manager: () => JetStreamManager | undefined;
-  setManager: (manager: JetStreamManager | undefined) => void;
   notLiveMsg: () => string;
   requireLifecycleUid: (operation: string) => string;
   requestDelivery: (op: string, args: Record<string, unknown>) => Promise<ControlReply>;
@@ -126,13 +123,7 @@ export class EndpointHistory {
   /** Per stream, the history-reader names of this connection's current reader id and the reads
    *  waiting for one (see {@link acquireHistoryReader}). */
   private readonly historyReaderSlots = new Map<string, HistoryReaderSlots>();
-  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly deps: EndpointHistoryDeps) {}
-  private get nc() { return this.deps.connection(); }
-  private get js() { return this.deps.jetstream(); }
-  private get jsm() { return this.deps.manager(); }
-  private set jsm(manager: JetStreamManager | undefined) {
-    this.deps.setManager(manager);
-  }
+  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly conn: ConnectionState, private readonly deps: EndpointHistoryDeps) {}
 
 
   /** Fetch recent messages from a channel's JetStream backlog. `signal` cancels the active pull and
@@ -180,8 +171,8 @@ export class EndpointHistory {
     const limit = opts?.limit ?? 50;
     if (!Number.isSafeInteger(limit) || limit < 1)
       throw new Error("channelHistoryPage limit must be a positive safe integer");
-    if (!this.nc || !this.js) throw new Error(this.deps.notLiveMsg());
-    const jsm = this.jsm ??= await jetstreamManager(this.nc);
+    if (!this.conn.nc || !this.conn.js) throw new Error(this.deps.notLiveMsg());
+    const jsm = this.conn.jsm ??= await jetstreamManager(this.conn.nc);
     const signal = AbortSignal.any([AbortSignal.timeout(10_000), ...(opts?.signal ? [opts.signal] : [])]);
     signal.throwIfAborted();
     const stream = chatStream(this.identity.space);
@@ -213,7 +204,7 @@ export class EndpointHistory {
     const owns = (info: ConsumerInfo) => info.created === created.created &&
       info.config.description === marker && info.config.filter_subject === subject;
     if (!owns(created)) throw new Error("channelHistoryPage: consumer ownership was not established");
-    const consumer = await this.js.consumers.get(stream, name);
+    const consumer = await this.conn.js.consumers.get(stream, name);
     const pending = created.num_pending;
     const out: CotalMessage[] = [];
     let delivered = 0;
@@ -447,7 +438,7 @@ export class EndpointHistory {
     before?: number,
     signal?: AbortSignal,
   ): Promise<{ seq: number; subject: string; msg: HistoryMessage }[]> {
-    if (!this.nc) throw new Error(this.deps.notLiveMsg());
+    if (!this.conn.nc) throw new Error(this.deps.notLiveMsg());
     signal?.throwIfAborted();
     // A LIMIT THAT IS NOT A FINITE NUMBER HAS NO ANSWER, AND THE SEARCH BELOW CANNOT REFUSE IT.
     // Every comparison against NaN is false, so `limit <= 0` does not fire for one, and neither of
@@ -471,10 +462,10 @@ export class EndpointHistory {
     if (!Number.isSafeInteger(limit))
       throw new Error(`history limit must be a whole number of messages this server can count exactly, received ${limit}`);
     if (limit <= 0) return [];
-    const nc = this.nc;
+    const nc = this.conn.nc;
     let reader: HistoryReader | undefined;
     try {
-      reader = await this.acquireHistoryReader(nc, this.jsm ?? (this.jsm = await jetstreamManager(nc)), stream, signal);
+      reader = await this.acquireHistoryReader(nc, this.conn.jsm ?? (this.conn.jsm = await jetstreamManager(nc)), stream, signal);
       // THE EXACT CEILING, on the already-granted surface. A one-shot consumer with
       // `DeliverPolicy.Last` plus this subject's filter reports the newest MATCHING sequence, and its
       // `num_pending` of zero means the channel is genuinely empty. Using the STREAM's last sequence
@@ -907,14 +898,14 @@ export class EndpointHistory {
     start: { seq: number } | { time: Date },
     opts: { untilSeq?: number; limit?: number } = {},
   ): Promise<JsMsg[]> {
-    if (!this.jsm || !this.js) throw new Error(this.deps.notLiveMsg());
+    if (!this.conn.jsm || !this.conn.js) throw new Error(this.deps.notLiveMsg());
     const stream = chatStream(this.identity.space);
     const name = chatHistDurable(this.identity.owner, this.identity.actor, this.deps.requireLifecycleUid("chat history reads"));
     const out: JsMsg[] = [];
     // Clear any consumer leaked by a crashed prior read before re-creating it with THIS read's
     // single filter (the read ACL is enforced at create — see the doc above).
     await this.deps.deleteConsumerIfPresent(stream, name);
-    await this.jsm.consumers.add(stream, {
+    await this.conn.jsm.consumers.add(stream, {
       name,
       filter_subject: subject,
       ack_policy: AckPolicy.None,
@@ -925,7 +916,7 @@ export class EndpointHistory {
         : { deliver_policy: DeliverPolicy.StartSequence, opt_start_seq: start.seq }),
     });
     try {
-      const consumer = await this.js.consumers.get(stream, name);
+      const consumer = await this.conn.js.consumers.get(stream, name);
       let pending = (await consumer.info()).num_pending;
       while (pending > 0) {
         const want = Math.min(pending, 256);
@@ -1022,7 +1013,7 @@ export class EndpointHistory {
     channel: string,
     sinceSeq: number,
   ): Promise<{ messages: CotalMessage[]; seqs: number[]; dropped: boolean; unanswered: boolean }> {
-    if (!this.jsm) throw new Error(this.deps.notLiveMsg());
+    if (!this.conn.jsm) throw new Error(this.deps.notLiveMsg());
     if (!isConcreteChannel(channel)) return { messages: [], seqs: [], dropped: false, unanswered: true };
     const policy = await this.deps.joinPolicyFresh(channel);
     if (!policy.replay) return { messages: [], seqs: [], dropped: true, unanswered: true };

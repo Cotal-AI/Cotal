@@ -23,6 +23,7 @@ cotal service logs stack-broker --space main --tail 30
 
 Replace `main` with the space name. If selection is ambiguous, run `cotal service --space main --json` and add `--instance <full-id>` for the instance to inspect.
 These logs live in the Cotal home's service-instance store, not the project's `.cotal/`.
+You can read a captured log after `cotal down` without the credentials the service used to start.
 Manager lines begin with their UTC write time.
 
 Only the retained legacy launcher writes these files under the mesh's project folder:
