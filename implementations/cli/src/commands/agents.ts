@@ -42,7 +42,7 @@ import { completingFlagValue } from "../lib/completion.js";
 import { displayCmd } from "../lib/self-exec.js";
 import { shellWord } from "../lib/endpoint-errors.js";
 import { runningStackManagerPid, stackManagerAbsent, stackManagerStarting, unusableStackJournal } from "../lib/stack-journal.js";
-import { connectorHarnesses } from "../lib/status.js";
+import { connectorHarnesses, setupNext } from "../lib/status.js";
 import { channelSeedRestartBlock } from "../lib/channel-seed.js";
 import { rootStoreProblem } from "../lib/store-dir.js";
 import { askManager, scatterManager, managerFailure, readFailure, refuseUnregisteredManager, startStackManagerRemedy, unansweredDescribeRefusal, type ScatterInstanceLiveness, type ScatterInstanceReply, type ManagerPin, managersByInstance, type ManagerCandidate, askYourManagers, locateSeat, managerReadFailure, refusedManagers, seatMissRefusal } from "@cotal-ai/workspace/control";
@@ -537,7 +537,7 @@ export interface PsResult {
  *  instance of its own is still listed under the manager that returned it. `noApplication` is
  *  `status`'s reading that no agent application is set up here, so an empty list's Next agrees with
  *  the one `status` gives. */
-function psView(result: PsResult, wide: boolean, rowsOf: ReadonlyMap<string, readonly unknown[]> = new Map(), noApplication = false, mode?: string): Report {
+function psView(result: PsResult, wide: boolean, rowsOf: ReadonlyMap<string, readonly unknown[]>, noApplication: boolean, interactive: boolean, mode?: string): Report {
   const empty = result.kind === "slots" ? "No active static slots." : "No managed agents.";
   const blocksFor = (rows: readonly unknown[]): Block[] =>
     !rows.length ? [{ kind: "lines", lines: [{ text: empty, tone: "hint" }] }]
@@ -551,7 +551,7 @@ function psView(result: PsResult, wide: boolean, rowsOf: ReadonlyMap<string, rea
     { title: "Next", blocks: [{ kind: "commands", items: result.items.length ? [
       { command: `${displayCmd()} attach <name>`, description: "Return to an agent's terminal" },
       { command: `${displayCmd()} stop <name>`, description: "Stop one agent" },
-    ] : [noApplication ? { command: `${displayCmd()} setup`, description: "Set up an agent application" } : { command: `${displayCmd()} spawn`, description: "Launch your default agent" }] }] },
+    ] : [noApplication ? setupNext(interactive) : { command: `${displayCmd()} spawn`, description: "Launch your default agent" }] }] },
   ] };
   // Several managers: one section each, named by the FULL instance id, since `--on` takes nothing
   // shorter and this is precisely where it becomes the one way to address a manager. Silent and
@@ -623,7 +623,7 @@ export async function ps(args: ParsedArgs): Promise<void> {
     if (slots || on !== undefined || !failure || !(failure instanceof NoManagerAnswered || noLiveManager(failure))) throw e;
     return psFromPresence(v, presentation);
   }
-  const view = (result: PsResult): Report => psView(result, wide, census.rowsOf, !result.items.length && noApplicationHere(), census.mode);
+  const view = (result: PsResult): Report => psView(result, wide, census.rowsOf, !result.items.length && noApplicationHere(), presentation === "rich" && canPrompt(), census.mode);
   writeResult(
     presentation,
     {

@@ -32,6 +32,9 @@ cotal attach [<name>] [--on <instance>] [--no-reconnect] [--space <s>]
 | `--slots` (`ps`) | off | List the durable static slot rows this manager owns instead of live seats, through the `slots` command. Static-auth spaces only; open and user-auth spaces refuse with `UNSUPPORTED`, exit 2, naming `cotal ps`. Mutually exclusive with `--wide`. A row that is not in the live roster still prints, with `LIVE` false; a retired row never prints |
 | `--no-reconnect` (`attach`) | off | End the attach when its session ends, instead of re-establishing it. For scripts that want one run and one exit code |
 
+When `cotal ps` lists no agents from a single manager and no agent application is set up here,
+its Next section suggests `cotal setup` on a terminal that can prompt. It suggests
+`cotal setup --help` with `--plain`, with prompts disabled, or without a terminal.
 
 ### Control credentials
 

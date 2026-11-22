@@ -9,6 +9,12 @@ import { cliVersion } from "./version.js";
 // Moved into `@cotal-ai/workspace` (stage 4); re-exported for the CLI's many importers.
 export { resolveRuntimeSpace, resolveSpace } from "@cotal-ai/workspace";
 
+export function setupNext(interactive: boolean, needsSpace = false): { command: string; description: string } {
+  return interactive
+    ? { command: `${displayCmd()} setup`, description: needsSpace ? "Set up an agent application and a space" : "Set up an agent application" }
+    : { command: `${displayCmd()} setup --help`, description: "See setup flags for scripts. Bare setup needs a terminal." };
+}
+
 /** Where the dashboard that holds the live `pid` in `web.pid` recorded its session. A dashboard started
  * as an owned service writes its own record beside its startup receipt and never writes `web.session`,
  * so the web service instance whose recorded process is that live pid names the file. Any other holder

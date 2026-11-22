@@ -124,7 +124,7 @@ import { agentSkillsSkew } from "../lib/agent-skills.js";
 import { managerHasDeliveryMarker } from "../lib/manager-proc.js";
 import { MANAGER_OMITTED } from "../lib/delivery-proc.js";
 import { signedInSpace } from "../lib/conversation-identity.js";
-import { connectorHarnesses, connectorStatusRows, machineStatus, recordedWebUrl, webBoundAddress, webInstalled, webSessionSource, type HarnessStatus } from "../lib/status.js";
+import { connectorHarnesses, connectorStatusRows, machineStatus, recordedWebUrl, setupNext, webBoundAddress, webInstalled, webSessionSource, type HarnessStatus } from "../lib/status.js";
 import { legacyManagerStopped, statusRuntimeSpace } from "./status-legacy.js";
 import { deliveryResponderFromLease, deliveryResponderState, deliveryRowSuffix, RESPONDER_UNBOUND_CONSEQUENCE, type DeliveryResponderState } from "../lib/delivery-responder.js";
 import { brokerStoreWrite, storeFull, storeWriteRepair, type StoreWriteObservation } from "../lib/broker-store-health.js";
@@ -2005,12 +2005,11 @@ function nextActions(r: StatusResult, seedFailed: boolean, interactive: boolean,
   if (noApplication) {
     const s = r.selected;
     const connector = r.machine.connectors?.find((row) => row.name === preparedHarness);
-    if (interactive) items.push({ command: `${cmd} setup`, description: !s.resolved && s.code !== "not-started" ? "Set up an agent application and a space" : "Set up an agent application" });
-    else if (connector && !s.resolved && s.code === "not-started" && s.root && s.space && !s.recordedRoot) {
+    if (!interactive && connector && !s.resolved && s.code === "not-started" && s.root && s.space && !s.recordedRoot) {
       const guide = Object.hasOwn(OFFICIAL_CONNECTORS, connector.name) ? `connect-${connector.name}` : "connectors";
       extra.push(`Install ${connector.missing.join(", ")} on PATH first. See https://docs.cotal.ai/docs/${guide}/.`);
       items.push({ command: `${cmd} setup --destination local --harness ${shellWord(connector.name)} --project ${shellWord(s.root)} --space ${shellWord(s.space)} --configure-only --no-input`, description: "" });
-    } else items.push({ command: `${cmd} setup --help`, description: "See setup flags for scripts. Bare setup needs a terminal." });
+    } else items.push(setupNext(interactive, !s.resolved && s.code !== "not-started"));
   }
   if (r.selected.resolved) {
     const s = r.selected;
