@@ -1,7 +1,7 @@
 import { createConnection } from "node:net";
 import { existsSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
-import { isReachable, DEFAULT_SERVER, validateTlsMaterial, type BrokerTransport, type ChannelRegistryFile } from "@cotal-ai/core";
+import { CONTRACT_ARTIFACT_MAX_BYTES, MANAGER_START_PAYLOAD_FLOOR, isReachable, DEFAULT_SERVER, validateTlsMaterial, type BrokerTransport, type ChannelRegistryFile } from "@cotal-ai/core";
 import {
   CommandFailure,
   brokerAddressForDisplay,
@@ -44,6 +44,12 @@ export function parseMaxPayload(raw: string | undefined): number | undefined {
   return bytes;
 }
 const MAX_BROKER_PAYLOAD_BYTES = 64 * 1024 * 1024;
+
+/** A manager publishes its contract artifacts before it can serve. */
+export function assertManagerPayload(maxPayload: number | undefined): void {
+  if (maxPayload !== undefined && maxPayload < MANAGER_START_PAYLOAD_FLOOR)
+    throw new CommandFailure("refused", "USAGE_INVALID", `--max-payload ${maxPayload} is below ${MANAGER_START_PAYLOAD_FLOOR} bytes, the least the space's manager starts on: it publishes its contract artifacts, one message each, and the largest is bounded at ${CONTRACT_ARTIFACT_MAX_BYTES} bytes with ${MANAGER_START_PAYLOAD_FLOOR - CONTRACT_ARTIFACT_MAX_BYTES} more for the publish; nothing was started`, { remedy: `pass --max-payload ${MANAGER_START_PAYLOAD_FLOOR} or more, or pass --no-manager to start the broker without a manager` });
+}
 
 /** `--account-resolver`, memory or full. */
 export function parseAccountResolver(raw: string | undefined): "memory" | "full" | undefined {

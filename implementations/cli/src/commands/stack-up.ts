@@ -13,6 +13,7 @@ import { displayCmd } from "../lib/self-exec.js";
 import { homedir } from "node:os";
 import { isIP } from "node:net";
 import { basename, join, resolve } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { JetStreamApiCodes, JetStreamApiError } from "@nats-io/jetstream";
 import { awaitDeadDeliveryLease, CONTRACT_ARTIFACT_MAX_BYTES, deliveryLeaseHolderFor, isJetStreamMissing, isReachable, LEASE_TTL_MS, MANAGER_START_PAYLOAD_FLOOR, mintCreds, newIdentity, openPrivateAppend, type BrokerTransport, type ParsedArgs } from "@cotal-ai/core";
 import {
@@ -680,6 +681,38 @@ export function bindReaches(host: string, server: string): boolean {
   }
 }
 
+/** Refuse a busy broker address before launch. Only a recorded address held by TIME-WAIT gets a bounded retry. */
+async function assertStackBrokerAddress(request: StackUpRequest, root: string, space: string, server: string, bindHost: string | undefined, recorded: boolean): Promise<void> {
+  const { host: dialHost, port } = brokerListenAddress(server);
+  const host = bindHost ?? dialHost;
+  let deadline: number | undefined;
+  for (;;) {
+    const bindError = await listenerBindError(server, bindHost);
+    if (bindError === undefined || bindError === "timeout" || bindError.code !== "EADDRINUSE") return;
+    const { says, frees, timeWait } = await addressHolder("the stack's broker address", host, port);
+    if (recorded && timeWait) {
+      if (deadline === undefined) {
+        deadline = performance.now() + 60_000;
+        if (request.presentation !== "json") process.stderr.write(`Waiting up to a minute for TIME-WAIT to clear on the stack's broker address ${host}:${port}\n`);
+      }
+      const remaining = deadline - performance.now();
+      if (remaining > 0) {
+        await delay(Math.min(500, remaining));
+        continue;
+      }
+    }
+    // The socket can clear between a failed bind and the observation that ends the wait.
+    if (deadline !== undefined && !timeWait && await listenerBindError(server, bindHost) === undefined) return;
+    const retry = recorded ? undefined : await request.retryAtAnotherAddress?.(host);
+    throw new CommandFailure("refused", "CONFLICT", `${says} (bind failed: address already in use); no broker was launched`, {
+      target: { root, space, server, bindError: bindError.code },
+      remedy: recorded
+        ? `${frees}, then run bare \`${displayCmd()} up\` from ${root}; this stack keeps its recorded address`
+        : `${retry !== undefined ? `${retry}, or ` : ""}${frees} and retry this start`,
+    });
+  }
+}
+
 /** Start the recorded stack and return its domain result without writing any receipt. */
 export async function startControllerStack(request: StackUpRequest, native: StackUpNative): Promise<StackUpResult> {
   const root = canonicalRoot(request.root), space = request.space;
@@ -998,21 +1031,7 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
           : `${stopHolder}, then run bare \`${displayCmd()} up\` from ${root}; this stack keeps its recorded address`,
       });
     }
-    // A program that holds the address without answering NATS, such as a web server, is refused here
-    // too, before any broker instance is recorded, so a first start names another address.
-    const bindError = brokerRunning ? undefined : await listenerBindError(server, brokerHost);
-    if (bindError !== undefined && bindError !== "timeout" && bindError.code === "EADDRINUSE") {
-      const { host: dialHost, port } = brokerListenAddress(server);
-      const host = brokerHost ?? dialHost;
-      const { says, frees } = await addressHolder("the stack's broker address", host, port);
-      const retry = previous === undefined ? await request.retryAtAnotherAddress?.(host) : undefined;
-      throw new CommandFailure("refused", "CONFLICT", `${says} (bind failed: address already in use); no broker was launched`, {
-        target: { root, space, server, bindError: bindError.code },
-        remedy: previous === undefined
-          ? `${retry !== undefined ? `${retry}, or ` : ""}${frees} and retry this start`
-          : `${frees}, then run bare \`${displayCmd()} up\` from ${root}; this stack keeps its recorded address`,
-      });
-    }
+    if (!brokerRunning) await assertStackBrokerAddress(request, root, space, server, brokerHost, previous !== undefined);
     snapshot = writeStackJournal(root, current ?? recorded, journal);
     settle("applying");
     let prepared: Awaited<ReturnType<StackUpNative["prepareBroker"]>> | undefined;
