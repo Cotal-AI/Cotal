@@ -11,7 +11,7 @@
  */
 import { registry } from "@cotal-ai/core";
 import { isCommandFailure, type LocalProcess, type ServicePreset } from "@cotal-ai/workspace";
-import { resolveServicePreset, servicePresetFlags } from "../src/lib/service-presets.js";
+import { resolveServicePreset, servicePresetDefinition, servicePresetFlags } from "../src/lib/service-presets.js";
 
 let pass = 0, fail = 0;
 const check = (name: string, condition: boolean, detail?: unknown) => {
@@ -48,6 +48,40 @@ check("an absent web preset refuses by name", web?.code === "DEPENDENCY_UNAVAILA
 check("...and names the package that provides it", web?.remedy?.includes("cotal ext add @cotal-ai/web") === true, web);
 const other = refusal(() => resolveServicePreset("nosuchpreset"));
 check("any other absent preset refuses by name with the generic install route", other?.code === "DEPENDENCY_UNAVAILABLE" && other.message.includes('named "nosuchpreset"') && other.remedy?.includes("cotal ext add <package>") === true, other);
+
+// A manager launch is a private native spec pinned by its full digest, so saving one of the two
+// flags alone is refused and saves nothing, while the pair together defines the launch.
+const managerAdapter: LocalProcess = {
+  kind: "local-process", name: "manager-service", label: "Manager service", controllerOnly: true, pidFile: "manager.{space}.pid",
+  service: {
+    abiVersion: 1, readiness: "process", capabilities: { multiInstance: false, foreground: true, logs: true },
+    optionsSchema: { type: "object", additionalProperties: false, required: ["root", "runtime"], properties: {
+      root: { type: "string", minLength: 1, maxLength: 4096, description: "registered mesh root" },
+      runtime: { type: "string", minLength: 1, maxLength: 200, description: "explicit installed runtime" },
+      launch: { type: "string", minLength: 1, maxLength: 4096, description: "existing private resolved native launch spec" },
+      "launch-sha256": { type: "string", minLength: 64, maxLength: 64, description: "full SHA-256 of the exact resolved launch file; required with launch" },
+    } },
+  },
+};
+const managerPreset: ServicePreset = { kind: "service-preset", name: "manager", adapter: "manager-service", timeoutMs: 60000, summary: "manager fixture", defaults: { root: { space: "root" }, runtime: { value: "pty" } } };
+registry.register(managerAdapter, managerPreset);
+const digest = "a".repeat(64);
+const managerAdd = (values: Record<string, string>) => refusal(() => servicePresetDefinition(managerPreset, "space", values, "/root", "add manager"));
+const loneLaunch = managerAdd({ launch: "/root/launch.json" });
+check("a manager add with --launch alone refuses USAGE_INVALID naming --launch-sha256",
+  loneLaunch?.code === "USAGE_INVALID" && loneLaunch.message.startsWith("--launch requires --launch-sha256 <digest>:") === true
+    && loneLaunch.remedy === "cotal service add manager --preset manager --launch <file> --launch-sha256 <digest>", loneLaunch);
+const loneDigest = managerAdd({ "launch-sha256": digest });
+check("a manager add with --launch-sha256 alone refuses USAGE_INVALID naming --launch",
+  loneDigest?.code === "USAGE_INVALID" && loneDigest.message.startsWith("--launch-sha256 requires --launch <file>:") === true
+    && loneDigest.remedy === "cotal service add manager --preset manager --launch <file> --launch-sha256 <digest>", loneDigest);
+const paired = (() => { try { return servicePresetDefinition(managerPreset, "space", { launch: "/root/launch.json", "launch-sha256": digest }, "/root", "add manager"); } catch (error) { return error; } })();
+check("a manager add with both launch flags defines the launch",
+  !(paired instanceof Error) && (paired as { launch: { options: Record<string, unknown> } }).launch.options.launch === "/root/launch.json"
+    && (paired as { launch: { options: Record<string, unknown> } }).launch.options["launch-sha256"] === digest, paired);
+const neither = (() => { try { return servicePresetDefinition(managerPreset, "space", {}, "/root", "add manager"); } catch (error) { return error; } })();
+check("a manager add with neither launch flag still defines the service",
+  !(neither instanceof Error) && (neither as { launch: { options: Record<string, unknown> } }).launch.options.launch === undefined, neither);
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
