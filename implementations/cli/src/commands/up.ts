@@ -2392,14 +2392,13 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
   assertServesDialHost(transport, new URL(server).hostname);
   const brokerSetup = useAuth ? await authSetup(storeDir, server, space, host, wantUser ? { idpUrl: values.idp } : undefined, transport, values["rotate-sys"], maxFileStore, false, { authTimeout, maxPayload, accountResolver, manager: values["no-manager"] !== true, logFile, logfileSizeLimit, logfileMaxNum }) : undefined;
   const brokerMaxPayload = brokerSetup?.maxPayload ?? maxPayload ?? readBrokerPolicy(cotalRoot())?.maxPayload;
-  const port = Number(new URL(server).port) || 4222;
   // Both modes go through a RENDERER, never bare CLI flags. Open mode used to start from
   // `-js -sd … -p … -a …`, which never called a renderer at all — so the required transport union
   // protected the auth path and was silent on the open one, and a cert/key pair passed to an
   // open-mode `up` would have been accepted while the listener came up in cleartext.
   const renderingBinary = brokerSetup?.brokerBinary ?? await resolveNatsServer();
   if (!renderingBinary.version) throw unreadVersion(renderingBinary);
-  const confPath = brokerSetup ? brokerSetup.confPath : writeOpenBrokerConf(storeDir, space, { brokerVersion: renderingBinary.version, port, host, transport, maxFileStore, maxPayload: brokerMaxPayload, logFile, logfileSizeLimit, logfileMaxNum });
+  const confPath = brokerSetup ? brokerSetup.confPath : writeOpenBrokerConf(storeDir, space, server, { brokerVersion: renderingBinary.version, host, transport, maxFileStore, maxPayload: brokerMaxPayload, logFile, logfileSizeLimit, logfileMaxNum });
   const natsArgs = [
     "-c", confPath,
     ...(boundListener ? ["--name", boundListener.serverName] : []),
@@ -4392,12 +4391,11 @@ export async function prepareBrokerStart(opts: DetachOpts) {
   }
   const setup = useAuth ? await authSetup(storeDir, server, space, host, opts.userAuth, transport, opts.rotateSys, opts.maxFileStore, opts.quietBoot, { authTimeout: opts.authTimeout, maxPayload: opts.maxPayload, accountResolver: opts.accountResolver, manager: opts.noManager !== true, logFile, logfileSizeLimit: opts.logfileSizeLimit, logfileMaxNum: opts.logfileMaxNum, wsPort: opts.wsPort }) : undefined;
   const maxPayload = setup?.maxPayload ?? opts.maxPayload ?? readBrokerPolicy(root)?.maxPayload;
-  const port = Number(new URL(server).port) || 4222;
   // Same rule as the foreground path: every route to a listener names its transport (see
   // `writeOpenBrokerConf`). Detach must not be the mode where the fence quietly does not apply.
   const renderingBinary = setup?.brokerBinary ?? await resolveNatsServer();
   if (!renderingBinary.version) throw unreadVersion(renderingBinary);
-  const confPath = setup ? setup.confPath : writeOpenBrokerConf(storeDir, space, { brokerVersion: renderingBinary.version, port, host, transport, maxFileStore: opts.maxFileStore, maxPayload, logFile, logfileSizeLimit: opts.logfileSizeLimit, logfileMaxNum: opts.logfileMaxNum });
+  const confPath = setup ? setup.confPath : writeOpenBrokerConf(storeDir, space, server, { brokerVersion: renderingBinary.version, host, transport, maxFileStore: opts.maxFileStore, maxPayload, logFile, logfileSizeLimit: opts.logfileSizeLimit, logfileMaxNum: opts.logfileMaxNum });
   // Trust preparation awaits; the pinned store is checked again before its config is handed back.
   if (opts.existingStore) recheckExistingStore(opts.existingStore, { space, storeDir });
   const args = [
@@ -5248,11 +5246,12 @@ async function recreateDeletedStreams(opts: { root: string; space: string; serve
  * mode through a renderer is what makes the union total: there is now no route to a listener that
  * does not state its transport.
  */
-function writeOpenBrokerConf(storeDir: string, space: string, opts: { brokerVersion: string; port: number; host: string; transport: BrokerTransport; maxFileStore?: number; maxPayload?: number; logFile?: string; logfileSizeLimit?: number; logfileMaxNum?: number }): string {
+function writeOpenBrokerConf(storeDir: string, space: string, server: string, opts: { brokerVersion: string; host: string; transport: BrokerTransport; maxFileStore?: number; maxPayload?: number; logFile?: string; logfileSizeLimit?: number; logfileMaxNum?: number }): string {
   const confPath = cotalPath("server-open.conf");
+  const port = Number(new URL(server).port) || 4222;
   writeBrokerConfig(
     confPath,
-    namedOpenConfig(openServerConfig({ brokerVersion: opts.brokerVersion, port: opts.port, host: opts.host, storeDir: configuredStoreDir(cotalRoot(), storeDir), maxFileStore: opts.maxFileStore, maxPayload: opts.maxPayload, logFile: opts.logFile, logfileSizeLimit: opts.logfileSizeLimit, logfileMaxNum: opts.logfileMaxNum, transport: opts.transport }), space),
+    namedOpenConfig(openServerConfig({ brokerVersion: opts.brokerVersion, port, host: opts.host, storeDir: configuredStoreDir(cotalRoot(), storeDir), maxFileStore: opts.maxFileStore, maxPayload: opts.maxPayload, logFile: opts.logFile, logfileSizeLimit: opts.logfileSizeLimit, logfileMaxNum: opts.logfileMaxNum, transport: opts.transport }), space, server),
   );
   return confPath;
 }

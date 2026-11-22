@@ -72,6 +72,8 @@ When a recorded local stack is stopped, `ps` refuses with exit 2. If the broker 
 writable, `ps` reports `PERMISSION_DENIED` and names the store and how to repair it, including when
 `--server` names the saved broker. In the project folder of a stopped foreground open stack with
 no registration, `--space` and `--server` must match the saved configuration to get this diagnosis.
+For a wildcard bind such as `--host 0.0.0.0`, `ps` matches the saved client URL, not the bind address.
+Older wildcard configurations that do not record a client URL cannot establish this match.
 An explicit target that does not match keeps its connection refusal. If no store permission problem
 is found, `ps` reports `TARGET_UNAVAILABLE`. If the recorded root's default `.cotal/channels.json`
 would prevent `up` from restarting the stack, the refusal names the file and the repair instead of

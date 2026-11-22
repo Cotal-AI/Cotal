@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, statSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { emitSentinel, freePort, recordSmokeSandbox, SMOKE_BROKER_TOKEN } from "@cotal-ai/smoke-kit";
@@ -27,32 +27,36 @@ for (const path of [control, nested, join(other, ".cotal"), env.COTAL_HOME, env.
   mkdirSync(path, { recursive: true, mode: 0o700 });
 recordSmokeSandbox({ root: project, cotalHome: env.COTAL_HOME, xdgConfigHome: env.XDG_CONFIG_HOME });
 
-const space = "foreground-open-store", server = `nats://127.0.0.1:${await freePort()}`;
-const registration = join(env.COTAL_HOME, "meshes", `space.${spaceKey(space)}.json`);
-const owner = spawn(process.execPath, [cli, "up", "--foreground", "--open", "--no-manager", "--space", space, "--server", server, "--store-dir", "./custom"], { cwd: project, env, stdio: ["ignore", "pipe", "pipe"] });
-const state = observeOwnedChild(owner);
-let output = "", broker: ProcessIdentityRecord | undefined;
-owner.stdout.on("data", (data: Buffer) => { output += data.toString(); });
-owner.stderr.on("data", (data: Buffer) => { output += data.toString(); });
-function collectBroker(): void {
-  const pin = verifyIdentityPin(join(control, "nats.pid"));
-  if (pin.kind === "match") broker = pin.record;
+const space = "foreground-open-store";
+
+async function startAndStop(server: string, host: string): Promise<void> {
+  const registration = join(env.COTAL_HOME, "meshes", `space.${spaceKey(space)}.json`);
+  const args = [cli, "up", "--foreground", "--open", "--no-manager", "--space", space, "--server", server, "--host", host, "--store-dir", "./custom"];
+  const owner = spawn(process.execPath, args, { cwd: project, env, stdio: ["ignore", "pipe", "pipe"] });
+  const state = observeOwnedChild(owner);
+  let output = "", broker: ProcessIdentityRecord | undefined;
+  owner.stdout.on("data", (data: Buffer) => { output += data.toString(); });
+  owner.stderr.on("data", (data: Buffer) => { output += data.toString(); });
+  function collectBroker(): void {
+    const pin = verifyIdentityPin(join(control, "nats.pid"));
+    if (pin.kind === "match") broker = pin.record;
+  }
+  try {
+    await waitForOwnedChild(() => {
+      if (state.error || state.exited) throw state.error ?? new Error(output);
+      collectBroker();
+      return broker !== undefined && existsSync(registration) && existsSync(join(control, "agents", "default.md"));
+    }, 30_000, "foreground open stack ready");
+  } finally {
+    await finishOwnedChild(owner, state, collectBroker, () => broker ? [broker] : [], "foreground open stack");
+  }
+  assert.equal(state.code, 143, output);
+  assert.equal(existsSync(registration), false, "the stopped open stack has no registration");
+  assert.equal(existsSync(join(control, "stack-controller.json")), false, "the stack has no controller journal");
 }
-try {
-  await waitForOwnedChild(() => {
-    if (state.error || state.exited) throw state.error ?? new Error(output);
-    collectBroker();
-    return broker !== undefined && existsSync(registration) && existsSync(join(control, "agents", "default.md"));
-  }, 30_000, "foreground open stack ready");
-} finally {
-  await finishOwnedChild(owner, state, collectBroker, () => broker ? [broker] : [], "foreground open stack");
-}
-assert.equal(state.code, 143, output);
-assert.equal(existsSync(registration), false, "the stopped open stack has no registration");
-assert.equal(existsSync(join(control, "stack-controller.json")), false, "the stack has no controller journal");
 
 function ps(cwd: string, ...flags: string[]): string {
-  const result = spawnSync(process.execPath, [cli, "ps", "--plain", ...flags], { cwd, env, encoding: "utf8", timeout: 30_000 });
+  const result = spawnSync(process.execPath, [cli, "ps", ...flags], { cwd, env, encoding: "utf8", timeout: 30_000 });
   if (result.error) throw result.error;
   const text = `${result.stdout}${result.stderr}`;
   assert.equal(result.status, 2, text);
@@ -70,16 +74,42 @@ function unavailable(text: string): void {
   assert.ok(!text.includes(jetstream), text);
 }
 
-const mode = statSync(jetstream).mode & 0o777;
-chmodSync(jetstream, mode & ~0o222);
-try {
-  permission(ps(project));
-  permission(ps(project, "--space", space, "--server", server));
-  permission(ps(nested, "--space", space, "--server", `${server}/`));
-  unavailable(ps(project, "--space", space, "--server", `nats://127.0.0.1:${await freePort()}`));
-  unavailable(ps(project, "--space", "another-space", "--server", server));
-  unavailable(ps(project, "--space", space, "--server", server.replace(/^nats:/, "tls:")));
-  unavailable(ps(other, "--space", space, "--server", server));
-} finally { chmodSync(jetstream, mode); }
-unavailable(ps(project, "--space", space, "--server", server));
-emitSentinel({ cells: 8, passed: 8, failed: 0 });
+function readOnlyStore(check: () => void): void {
+  const mode = statSync(jetstream).mode & 0o777;
+  chmodSync(jetstream, mode & ~0o222);
+  try { check(); } finally { chmodSync(jetstream, mode); }
+}
+
+const port = await freePort(), otherPort = await freePort();
+const server = `nats://127.0.0.1:${port}`;
+await startAndStop(server, "127.0.0.1");
+readOnlyStore(() => {
+  permission(ps(project, "--plain"));
+  permission(ps(project, "--plain", "--space", space, "--server", server));
+  permission(ps(nested, "--plain", "--space", space, "--server", `${server}/`));
+  unavailable(ps(project, "--plain", "--space", space, "--server", `nats://127.0.0.1:${otherPort}`));
+  unavailable(ps(project, "--plain", "--space", "another-space", "--server", server));
+  unavailable(ps(project, "--plain", "--space", space, "--server", server.replace(/^nats:/, "tls:")));
+  unavailable(ps(other, "--plain", "--space", space, "--server", server));
+});
+unavailable(ps(project, "--plain", "--space", space, "--server", server));
+
+const wildcardPort = await freePort();
+const wildcardClient = `nats://127.0.0.${process.platform === "linux" ? 2 : 1}:${wildcardPort}`;
+await startAndStop(wildcardClient, "0.0.0.0");
+const configPath = join(control, "server-open.conf");
+const config = readFileSync(configPath, "utf8");
+assert.match(config, /^host: 0\.0\.0\.0$/m);
+assert.ok(config.includes(`# client URL: ${JSON.stringify(wildcardClient)}\n`));
+readOnlyStore(() => {
+  permission(ps(project, "--plain", "--space", space, "--server", wildcardClient));
+  const json = JSON.parse(ps(nested, "--json", "--space", space, "--server", wildcardClient));
+  assert.equal(json.error?.code, "PERMISSION_DENIED");
+  assert.equal(json.target?.root, project);
+  assert.ok(json.error?.message.includes(jetstream));
+  unavailable(ps(project, "--plain", "--space", space, "--server", `nats://0.0.0.0:${wildcardPort}`));
+  const otherHost = process.platform === "linux" ? "127.0.0.1" : "localhost";
+  unavailable(ps(project, "--plain", "--space", space, "--server", `nats://${otherHost}:${wildcardPort}`));
+});
+assert.equal(readFileSync(configPath, "utf8"), config, "ps leaves the retained configuration unchanged");
+emitSentinel({ cells: 13, passed: 13, failed: 0 });

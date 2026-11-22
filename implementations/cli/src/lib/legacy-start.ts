@@ -5,16 +5,16 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { DEFAULT_SERVER } from "@cotal-ai/core";
-import { authDir, legacyStackElsewhere, meshesForRoot, NATS_PIDFILE, retainedLegacyBroker, rootHoldsAccount, soleSpaceOf, spaceFromKey, spaceKey, verifyIdentityPin } from "@cotal-ai/workspace";
+import { authDir, checkServer, legacyStackElsewhere, meshesForRoot, NATS_PIDFILE, retainedLegacyBroker, rootHoldsAccount, soleSpaceOf, spaceFromKey, spaceKey, verifyIdentityPin } from "@cotal-ai/workspace";
 import { listFreshTeamSummaries } from "./team-fresh.js";
 
 /** The line an open broker configuration names its space on, by its {@link spaceKey}. */
 const OPEN_SPACE_LINE = /^# space key: ([0-9a-f]+)$/m;
 
-/** An open broker configuration that names `space`. An open root holds no account to name it, and
- *  `down` drops its registration, so this line in `server-open.conf` names it for the next `up`. */
-export function namedOpenConfig(config: string, space: string): string {
-  return `${config}# space key: ${spaceKey(space)}\n`;
+/** Open stacks have no account to name the space. Their client URL can differ from the bind host. */
+export function namedOpenConfig(config: string, space: string, server: string): string {
+  const clientUrl = checkServer(server, "broker URL").ok ? server : null;
+  return `${config}# space key: ${spaceKey(space)}\n# client URL: ${JSON.stringify(clientUrl)}\n`;
 }
 
 /** After `clean all` removed a root's identity and broker configuration, the newest fresh team

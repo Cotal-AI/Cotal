@@ -1,6 +1,7 @@
 import { lstatSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { accountInventory, authDir, spaceFromKey } from "./auth-paths.js";
+import { checkServer } from "./broker-url.js";
 import { readLocalRecordSource } from "./local-record-source.js";
 
 const CONFIG_LIMIT = 64 * 1024;
@@ -52,13 +53,29 @@ export function renderedBrokerStore(config: string, cwd: string): string | undef
   return named === undefined ? undefined : resolve(cwd, JSON.parse(named) as string);
 }
 
-/** The space, listener and store named by one retained open broker configuration. */
+function renderedOpenClientUrl(text: string): string | undefined {
+  const protocol = /^tls[ \t]*\{/m.test(text) ? "tls" : "nats";
+  const bound = renderedBrokerServer(text, protocol);
+  if (bound === undefined) return undefined;
+  const listener = new URL(bound);
+  const wildcard = listener.hostname === "0.0.0.0" || listener.hostname === "[::]";
+  const recorded = /^# client URL:[ \t]*(.*)$/m.exec(text)?.[1];
+  // Old configs only identify a client endpoint when the bind host was a concrete address.
+  if (recorded === undefined) return wildcard ? undefined : bound;
+  const server: unknown = JSON.parse(recorded);
+  if (typeof server !== "string" || !checkServer(server, "saved client URL").ok) return undefined;
+  const client = new URL(server);
+  return client.protocol === listener.protocol && (client.port || "4222") === listener.port &&
+    (wildcard || client.hostname === listener.hostname) ? server : undefined;
+}
+
+/** The space, client URL and store named by one retained open broker configuration. */
 export function retainedOpenBroker(root: string): { space: string; server: string; storeDir: string } | undefined {
   if (rootHoldsAccount(root)) return undefined;
   const text = readLocalRecordSource(openBrokerConfigPath(root), CONFIG_LIMIT, true)?.toString("utf8");
   if (text === undefined) return undefined;
   const space = renderedOpenSpace(text);
-  const server = renderedBrokerServer(text, /^tls[ \t]*\{/m.test(text) ? "tls" : "nats");
+  const server = renderedOpenClientUrl(text);
   const storeDir = renderedBrokerStore(text, root);
   return space && server && storeDir ? { space, server, storeDir } : undefined;
 }
