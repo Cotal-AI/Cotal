@@ -47,7 +47,7 @@ const home = mkdtempSync(join(tmpdir(), "cotal-operation-space-"));
 const root = realpathSync(mkdtempSync(join(home, "project-")));
 process.on("exit", () => rmSync(home, { recursive: true, force: true }));
 const HOST_ENV = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("COTAL_") && k !== "FORCE_COLOR" && k !== "NO_COLOR"));
-const env = { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config"), COTAL_HOME: join(home, ".cotal"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" };
+const env: NodeJS.ProcessEnv & { XDG_CONFIG_HOME: string } = { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config"), COTAL_HOME: join(home, ".cotal"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" };
 
 const outcome = (r: ReturnType<typeof spawnSync>) => {
   const stdout = String(r.stdout ?? ""), stderr = String(r.stderr ?? "");
@@ -306,6 +306,12 @@ try {
   const preview = cotal("spawn", "review.md", "--dry-run", "--plain");
   check("spawn --dry-run previews the dotted catalog name instead of the project file",
     preview.status === 0 && preview.stdout.includes(dottedCatalog) && preview.stdout.includes("reviewer"), shown(preview));
+  for (const [ref, path, name] of [["review.md", dottedCatalog, "reviewer"], ["./review.md", dottedFile, "other"]]) {
+    env.COTAL_DEFAULT_PERSONA = ref;
+    const preferred = cotal("spawn", "--dry-run", "--plain");
+    check(`spawn --dry-run with COTAL_DEFAULT_PERSONA=${ref} selects ${name}`,
+      preferred.status === 0 && preferred.stdout.includes(path) && new RegExp(`Requested name:\\s+${name}$`, "m").test(preferred.stdout), shown(preferred));
+  }
   const remove = cotal("personas", "rm", "review.md", "--space", "opsp");
   check("legacy personas rm asks for confirmation without changing either file",
     remove.status === 1 && remove.stderr.includes("cotal personas rm review.md --space opsp --force") &&
@@ -315,6 +321,7 @@ try {
     forced.status === 0 && !existsSync(dottedCatalog) && existsSync(dottedFile) &&
     readFileSync(dottedFile, "utf8") === projectSource, shown(forced));
 } finally {
+  delete env.COTAL_DEFAULT_PERSONA;
   rmSync(dottedCatalog, { force: true });
   rmSync(dottedFile, { force: true });
 }
