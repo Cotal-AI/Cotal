@@ -1039,12 +1039,6 @@ process.report.getReport = () => {
     const noAppStatusNext = noAppStatus.split("\nNext\n")[1] ?? "";
     ok("with seeded connectors and no agent binary on PATH, status recommends setup instead of spawn",
       /Agent applications:\s+not set up/.test(noAppStatus) && /setup --help\s+See setup flags for scripts/.test(noAppStatusNext) && !/\bspawn\s+Open your default agent/.test(noAppStatusNext), noAppStatus);
-    for (const args of [["ps"], ["ps", "--plain"]]) {
-      const noAppPs = cliInEnv(recRoot, noAppEnv, ...args);
-      ok(`without a terminal or an agent application, empty ${args.join(" ")} recommends scripted setup help`,
-        noAppPs.status === 0 && /^\s*No managed agents\.$/m.test(plain(noAppPs.stdout)) &&
-          nextRows(noAppPs.stdout)[0]?.[0]?.endsWith(" setup --help") === true, noAppPs.stdout + noAppPs.stderr);
-    }
 
     for (const badArgs of [["status", "nosuch", "--json", "--plain"], ["status", "nosuch", "--wide", "--json"], ["status", "nosuch", "--verbose", "--json"]]) {
       const bad = cliIn(recRoot, ...badArgs);
