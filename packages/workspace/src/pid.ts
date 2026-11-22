@@ -22,6 +22,7 @@ import { nativeWin32CreationToken } from "./win32-process.js";
 import { darwinProcessBinding, type DarwinProcessBinding } from "./darwin-process.js";
 import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync, readdirSync, readlinkSync, renameSync, rmSync, statSync } from "node:fs";
+import { basename } from "node:path";
 import { createPrivateRecord, writePrivateRecord } from "@cotal-ai/core";
 import { acquireLock, processStartToken as posixStartToken } from "./advisory-lock.js";
 import { probeLiveness, type LivenessProbe } from "./liveness.js";
@@ -111,6 +112,12 @@ export function stoppedLoopbackListener(server: string): number | undefined {
     if (pid !== undefined && processStopped(pid) && holdsSocket(pid, sockets)) return pid;
   }
   return undefined;
+}
+
+/** True only when Linux identifies the listener's executable as something other than nats-server. */
+export function hasNonNatsExecutable(pid: number): boolean {
+  if (process.platform !== "linux") return false;
+  try { return basename(readlinkSync(`/proc/${pid}/exe`)).replace(/ \(deleted\)$/, "") !== "nats-server"; } catch { return false; }
 }
 
 /** Every process of this account that listens where a loopback `server` dials, so a report can name

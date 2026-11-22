@@ -325,10 +325,7 @@ function connectionCell(s: Extract<SelectedResult, { resolved: true }>): Cell {
   return stateCell(`${states[s.connection] ?? s.connection.replaceAll("-", " ")}${s.staleRecord ? " · saved registration needs attention" : ""}`, "failed");
 }
 
-/** How a space signs a connection in, and what else a reader acts on about it: a mode the record
- *  states but no broker was seen to enforce says so, a TLS requirement is named, and an account
- *  catalog that could not be refreshed is named on each of its spaces. The broker address is not
- *  here: `cotal space show <name>` names it. */
+/** Show recorded mode, TLS, and catalog problems. `cotal space show <name>` names the address. */
 function signsInText(entry: StatusResult["meshes"]["items"][number], wide: boolean): string {
   return [
     `${entry.mode === "user" ? "user sign-in" : entry.mode === "auth" ? "static auth" : "open"}${entry.modeChecked ? "" : ", not checked"}`,
@@ -509,7 +506,7 @@ export function backupRecovery(maintenance: StatusResult["maintenance"], sourceM
   return maintenance && (maintenance.state === "claimed" || maintenance.state === "restore-ready" || sourceMissing) ? maintenance.next : null;
 }
 
-function nextActions(r: StatusResult, seedFailed: boolean, interactive: boolean, recovery: string | null, preparedHarness?: string): Section {
+function nextActions(r: StatusResult, seedFailed: boolean, interactive: boolean, recovery: string | null, preparedHarness?: string, stoppedForeignListener = false): Section {
   if (seedFailed) return {
     title: "Next",
     blocks: [{ kind: "lines", lines: r.hints.flatMap(hint => hint.split("\n").map(line => cell(line, "hint"))) }],
@@ -576,6 +573,7 @@ function nextActions(r: StatusResult, seedFailed: boolean, interactive: boolean,
   const exited = legacy ? (r.folder.processes ?? []).filter((row) => (row.name === "nats" || row.name === "manager") && row.state === "stopped" && (row.pid !== null || row.detail === "stopped")).map((row) => row.name) : [];
   const storeBlocked = !elsewhere && r.selected.resolved && r.selected.connection === "unreachable" && rootStoreProblem(r.selected.root) !== undefined;
   if (r.selected.resolved && r.selected.connection === "broker-stopped") items.unshift({ command: `kill -CONT ${r.selected.brokerPid}`, description: "Resume the stopped broker process so it answers again" });
+  else if (stoppedForeignListener) { /* The address remedy in hints takes precedence over a restart. */ }
   else if (block && blocked) {
     const inspect = { command: `${cmd} service status ${block.definition} --instance ${block.instanceId} --space ${shellWord(blocked.space)}`, description: block.route.kind === "inspect" ? "Inspect the member that keeps up and down from settling" : "Inspect that member" };
     items.unshift(...(block.route.kind === "abandon" ? [{ command: `${cmd} down --abandon-stop ${block.route.requestId} --yes`, description: `Abandon the unconfirmed stop of ${block.definition}; up and down refuse until then` }, inspect] : [inspect]));
@@ -725,7 +723,7 @@ function maintenanceOverview(maintenance: StatusResult["maintenance"]): Section 
 
 /** The approved screen hierarchy; record-level diagnostics are opt-in. `wide` reports every row in
  *  full, as `--all` and `--wide` ask. */
-export function statusView(r: StatusResult, verbose = false, wide = false, { interactive = false, preparedHarness, seed, recovery = backupRecovery(r.maintenance) }: { interactive?: boolean; preparedHarness?: string; seed?: ReturnType<typeof readCursor>; recovery?: string | null } = {}): Report {
+export function statusView(r: StatusResult, verbose = false, wide = false, { interactive = false, preparedHarness, seed, recovery = backupRecovery(r.maintenance), stoppedForeignListener = false }: { interactive?: boolean; preparedHarness?: string; seed?: ReturnType<typeof readCursor>; recovery?: string | null; stoppedForeignListener?: boolean } = {}): Report {
   const selected = selectedOverview(r);
   // This folder's own stack under another selection, with the lines it has when it is selected.
   const held = folderStack(r.folder, r.selected), heldLines = held ? stackLines(r.folder) : [];
@@ -735,6 +733,6 @@ export function statusView(r: StatusResult, verbose = false, wide = false, { int
   const maintenance = maintenanceOverview(r.maintenance);
   const sections = [machineOverview(r, wide, interactive, seed), spacesOverview(r, wide, Boolean(seed)), ...(selected ? [selected] : []), ...(heldSection ? [heldSection] : []), ...(maintenance ? [maintenance] : []), ...(attempts ? [attempts] : []), ...(owned ? [owned] : [])];
   if (verbose) sections.push(machineSection(r.machine), extensionsSection(r.extensions), folderSection(r.folder, r.selected), ...meshesSections(r.meshes), selectedSection(r.selected, r.folder, stackDeliveryPid(r), r.store?.state === "full"));
-  sections.push(nextActions(r, Boolean(seed), interactive, recovery, preparedHarness));
+  sections.push(nextActions(r, Boolean(seed), interactive, recovery, preparedHarness, stoppedForeignListener));
   return { sections };
 }

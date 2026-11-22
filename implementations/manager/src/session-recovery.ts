@@ -11,6 +11,7 @@ import { writeContinuityAssignment } from "./launch.js";
 import { controlSession } from "./control-session.js";
 import { RESTART_WORK_EXIT_MS, withTimeout } from "./manager-timeout.js";
 import type { Manager } from "./manager.js";
+import type { ManagerConfig } from "./manager-config.js";
 
 const SESSION_RESTART_LIMIT = 3;
 const SESSION_RESTART_WINDOW_MS = 120_000;
@@ -19,8 +20,6 @@ type Readiness = { ok: true; operator?: string } | { ok: false; uncertain?: bool
 
 /** Lifecycle and runtime operations used to prove and recover one managed host session. */
 export interface SessionRecoveryDeps {
-  workspaceRoot: () => string;
-  execution: () => "runtime" | "none";
   executionRefusal: () => string;
   instanceId: () => string;
   endpoint: () => CotalEndpoint;
@@ -37,7 +36,6 @@ export interface SessionRecoveryDeps {
   recordSlotCustody: (agent: { name: string; id: string; lifecycleUid: string }, reference: RuntimeReference) => Promise<void>;
   spawnCustodied: (runtime: Runtime, name: string, spec: LaunchSpec, cwd: string, reserved: RuntimeReference | undefined) => Promise<AgentHandle>;
   awaitReadiness: (agent: ManagedAgent, timeoutMs: number, opts: { reapOnExit?: boolean; joinedAfter?: number }) => Promise<Readiness>;
-  readinessTimeoutMs: () => number;
   recordSlotRuntime: (agent: ManagedAgent) => Promise<void>;
   refreshSeatRecord: (agent: ManagedAgent) => void;
   watchExit: (agent: ManagedAgent) => void;
@@ -50,8 +48,6 @@ export interface SessionRecoveryDeps {
  *  field the Manager assigns later is current and a member a test replaces on the instance is the one that runs. */
 export function sessionRecoveryDeps(m: Manager): SessionRecoveryDeps {
   return {
-    workspaceRoot: () => m["workspaceRoot"],
-    execution: () => m["execution"],
     executionRefusal: () => m["executionRefusal"](),
     instanceId: () => m["managerInstanceId"],
     endpoint: () => m["ep"],
@@ -68,7 +64,6 @@ export function sessionRecoveryDeps(m: Manager): SessionRecoveryDeps {
     recordSlotCustody: (agent, reference) => m["recordSlotCustody"](agent, reference),
     spawnCustodied: (runtime, name, spec, cwd, reserved) => m["spawnCustodied"](runtime, name, spec, cwd, reserved),
     awaitReadiness: (agent, timeoutMs, opts) => m["awaitReadiness"](agent, timeoutMs, opts),
-    readinessTimeoutMs: () => m["readinessTimeoutMs"],
     recordSlotRuntime: (agent) => m["recordSlotRuntime"](agent),
     refreshSeatRecord: (agent) => m["refreshSeatRecord"](agent),
     watchExit: (agent) => m["watchExit"](agent),
@@ -80,7 +75,7 @@ export function sessionRecoveryDeps(m: Manager): SessionRecoveryDeps {
 
 /** Session-state proof, transcript provenance, continuity assignments and bounded crash recovery. */
 export class SessionRecovery {
-  constructor(private readonly deps: SessionRecoveryDeps) {}
+  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: SessionRecoveryDeps) {}
 
   readSessionStatePath(path: string):
     | { sessionId: string; status: "running" | "quit" }
@@ -115,7 +110,7 @@ export class SessionRecovery {
   retainedSessionId(entry: ManagerResumeAgent, connector: Connector): string | undefined {
     if (entry.launch.sessionId) return entry.launch.sessionId;
     if (!connector.supportsSessionContinuation) return undefined;
-    const path = join(this.deps.workspaceRoot(), ".cotal", "pi-sessions", `${entry.name}-${entry.identity.lifecycleUid}.json`);
+    const path = join(this.config.workspaceRoot, ".cotal", "pi-sessions", `${entry.name}-${entry.identity.lifecycleUid}.json`);
     try {
       const state = this.readSessionStatePath(path);
       if (state.status === "prompt")
@@ -199,7 +194,7 @@ export class SessionRecovery {
   /** Re-record an exact seat's assignment at a proven session, so crash recovery, a preserved resume
    *  and the next manifest launch never pick different sessions. */
   recordContinuity(a: ManagedAgent, sessionId: string): void {
-    if (a.continuity) writeContinuityAssignment(this.deps.workspaceRoot(), { ...a.continuity, sessionId });
+    if (a.continuity) writeContinuityAssignment(this.config.workspaceRoot, { ...a.continuity, sessionId });
   }
 
   /** At a stop boundary the connector's session record is the last proof of the session an exact
@@ -275,7 +270,7 @@ export class SessionRecovery {
    *  comes from `restart.policy` when spawn carried `supervise`; otherwise the Pi session-recovery
    *  constants. Spending the budget falls through to normal retirement. */
   recoverManagedSession(a: ManagedAgent): void {
-    if (this.deps.execution() === "none") throw new EpEnvelopeError("unimplemented", this.deps.executionRefusal());
+    if (this.config.execution === "none") throw new EpEnvelopeError("unimplemented", this.deps.executionRefusal());
     const restart = a.restart;
     if (!restart || !restart.armed || restart.recovering || a.terminalizing) return;
     const release = this.deps.beginLifecycle();
@@ -351,7 +346,7 @@ export class SessionRecovery {
           a.handle = handle;
           a.control = spec.control;
           try {
-            const readiness = await this.deps.awaitReadiness(a, connector.readinessTimeoutMs ?? this.deps.readinessTimeoutMs(), {
+            const readiness = await this.deps.awaitReadiness(a, connector.readinessTimeoutMs ?? this.config.readinessTimeoutMs, {
               reapOnExit: false,
               joinedAfter,
             });

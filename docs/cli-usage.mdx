@@ -398,7 +398,9 @@ On Linux, a broker on a loopback address whose process is stopped by a signal, s
 still accepts connections and never answers. Once the first dial to it times out, the refusal names
 that process's pid and gives `kill -CONT <pid>` as the remedy, without waiting out the longer
 confirm, so a command such as `send` or `run` returns in a few seconds. `cotal status` shows the
-connection as `broker process <pid> is stopped` and offers the same command. A broker that runs but
+connection as `broker process <pid> is stopped` and offers the same command. On Linux, if a stopped
+listener holds the broker address and its executable identifies it as another program, `status` and `ps` name the
+occupied address without suggesting a signal. A broker that runs but
 does not answer, or one on another host, still waits out the confirm.
 
 

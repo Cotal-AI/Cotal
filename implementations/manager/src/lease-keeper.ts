@@ -2,6 +2,7 @@ import type { CotalEndpoint, ManagerLeaseInfo } from "@cotal-ai/core";
 import { MANAGER_LEASE_TTL_MS, awaitLeaseExpiry, leaseRemainingMs, rejectionText } from "@cotal-ai/core";
 import { probeLiveness } from "@cotal-ai/workspace";
 import type { Manager } from "./manager.js";
+import type { ManagerConfig } from "./manager-config.js";
 
 /** How long a clean stop keeps trying to release its liveness lease when the broker does not answer
  *  (#3916). The client redials a lost broker every 2 s, so a connection dropped by an outage of up to
@@ -39,7 +40,6 @@ type LeaseState = "held" | "held-unrenewed" | "gone" | "unknown";
 export interface LeaseKeeperDeps {
   endpoint: () => CotalEndpoint;
   instanceId: () => string;
-  space: () => string;
   stopping: () => boolean;
 }
 
@@ -49,7 +49,6 @@ export function leaseKeeperDeps(m: Manager): LeaseKeeperDeps {
   return {
     endpoint: () => m["ep"],
     instanceId: () => m["managerInstanceId"],
-    space: () => m["space"],
     stopping: () => m["leaseStopping"],
   };
 }
@@ -71,11 +70,10 @@ export class LeaseKeeper {
    *  for release would otherwise move the row out from under a same-cached-revision CAS delete. */
   leaseRenewTask?: Promise<void>;
 
-  constructor(private readonly deps: LeaseKeeperDeps) {}
+  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: LeaseKeeperDeps) {}
 
   private get ep(): CotalEndpoint { return this.deps.endpoint(); }
   private get managerInstanceId(): string { return this.deps.instanceId(); }
-  private get space(): string { return this.deps.space(); }
   private get leaseStopping(): boolean { return this.deps.stopping(); }
 
   /** Create THIS instance's lease key, waiting out a dead predecessor's row first (#4092).
@@ -88,12 +86,12 @@ export class LeaseKeeper {
    *  Any other conflict refuses at once, as before. */
   async acquireInstanceLease(info: Omit<ManagerLeaseInfo, "since">): Promise<number> {
     const refuse = (held: ManagerLeaseInfo | undefined, e: unknown): Error => {
-      if (!held) return new Error(`could not acquire the manager lease for space "${this.space}": ${rejectionText(e)}`);
+      if (!held) return new Error(`could not acquire the manager lease for space "${this.config.space}": ${rejectionText(e)}`);
       const sameRoot = held.root === info.root;
       return new ManagerInstanceLeaseHeld(
-        `manager instance ${this.managerInstanceId} already serves space "${this.space}" from ${sameRoot ? "this" : "another"} workspace root (${held.runtime}, pid ${held.pid}, root ${held.root}) - stop it first before restarting the same instance`,
+        `manager instance ${this.managerInstanceId} already serves space "${this.config.space}" from ${sameRoot ? "this" : "another"} workspace root (${held.runtime}, pid ${held.pid}, root ${held.root}) - stop it first before restarting the same instance`,
         this.managerInstanceId,
-        this.space,
+        this.config.space,
         held,
         sameRoot,
       );
@@ -155,7 +153,7 @@ export class LeaseKeeper {
         why = rejectionText(e);
       }
       if (Date.now() >= deadline) {
-        console.error(`! manager instance ${this.managerInstanceId} could not release its liveness lease (space "${this.space}"): ${why}; a same-root restart inside the bucket TTL will be refused`);
+        console.error(`! manager instance ${this.managerInstanceId} could not release its liveness lease (space "${this.config.space}"): ${why}; a same-root restart inside the bucket TTL will be refused`);
         return;
       }
       await new Promise((r) => setTimeout(r, LEASE_RELEASE_RETRY_MS));
@@ -239,7 +237,7 @@ export class LeaseKeeper {
             // registration, which is the other process's now. That process took over on the premise
             // that this one was gone, so this exit leaves what a crash would, and seats a custodian or
             // multiplexer owns outlive it the same way.
-            console.error(`! manager instance ${this.managerInstanceId} finds its liveness lease key held by ${verdict.by}, not by this process (renew: ${why}); that process serves this instance now, so this one stops serving and exits (space "${this.space}")`);
+            console.error(`! manager instance ${this.managerInstanceId} finds its liveness lease key held by ${verdict.by}, not by this process (renew: ${why}); that process serves this instance now, so this one stops serving and exits (space "${this.config.space}")`);
             process.exit(1);
           case "unknown":
             this.noteLease("unknown", `could not renew its liveness lease (${why}) or re-read it (${verdict.why}); serving, retrying until the broker answers`);
@@ -257,7 +255,7 @@ export class LeaseKeeper {
   private noteLease(state: LeaseState, what: string): void {
     if (state === this.leaseState) return;
     this.leaseState = state;
-    console.error(`${state === "held" ? "✓" : "!"} manager instance ${this.managerInstanceId} ${what} (space "${this.space}")`);
+    console.error(`${state === "held" ? "✓" : "!"} manager instance ${this.managerInstanceId} ${what} (space "${this.config.space}")`);
   }
 
   /** What the broker actually says about THIS instance's lease key, right now. `unknown` is a first-class

@@ -345,10 +345,10 @@ export async function readSelected(selected: Selected, responder: { state: Deliv
       else hints.push(remedy === undefined ? message : `${message}; ${displayRemedy(remedy, cmd)}`);
     }
     if (preflight.kind === "non-nats-listener" || preflight.kind === "auth-unsupported" || preflight.kind === "jetstream-unsupported") {
-      const { message, remedy } = workspaceErrorParts({ kind: "preflight", failure: preflight.kind, target, pruned: false });
+      const { message, remedy } = workspaceErrorParts({ kind: "preflight", failure: preflight.kind, target, pruned: false, pid: preflight.pid });
       hints.push(remedy === undefined ? message : `${message}; ${displayRemedy(remedy, cmd)}`);
     }
-    return { ...base, connection: preflight.kind, ...(seedBlock ? { channelSeedBlocksRestart: true as const } : {}), ...(preflight.pid === undefined ? {} : { brokerPid: preflight.pid }), staleRecord: preflight.prune && !offline, snapshot: { state: "skipped", reason: "broker not connected" } };
+    return { ...base, connection: preflight.kind, ...(seedBlock ? { channelSeedBlocksRestart: true as const } : {}), ...(preflight.kind === "broker-stopped" ? { brokerPid: preflight.pid } : {}), staleRecord: preflight.prune && !offline, snapshot: { state: "skipped", reason: "broker not connected" } };
   }
   // The mesh-level statement of the same axis (#1576). The folder section says what this machine's
   // delivery PROCESS is doing; this says whether the SPACE currently has a bound responder, which is

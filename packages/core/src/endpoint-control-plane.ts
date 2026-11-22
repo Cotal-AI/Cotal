@@ -31,13 +31,8 @@ export interface EndpointControlPlaneDeps {
   issuedGeneration: () => string | undefined;
   rebuildPromise: () => Promise<void> | undefined;
   subs: () => Subscription[];
-  resolvedServices: () => Map<string, ResolvedService>;
-  resolvedCommandServices: () => Map<string, Map<string, ResolvedService>>;
-  serviceInvocations: () => WeakMap<NatsConnection, Set<Promise<void>>>;
   requestsAwaitingReply: () => Map<NatsConnection, Set<(error: Error) => void>>;
   activeGoalFollowers: () => Set<GoalFollower>;
-  splitsRecovered: () => number;
-  setSplitsRecovered: (count: number) => void;
   notLiveMsg: () => string;
   requireLifecycleUid: (what: string) => string;
   reportSubscriptionDenial: (error: unknown) => boolean;
@@ -50,6 +45,24 @@ export interface EndpointControlPlaneDeps {
  *  bound reply every request rides) and its service-invocation client (describe, list, invoke,
  *  and follow a goal). Internal: `CotalEndpoint` keeps the public methods and forwards to it. */
 export class EndpointControlPlane {
+  /** Full per-endpoint-name {@link resolveService} cache for {@link describeService}. Narrow command
+   *  handles never enter it, so discovery cannot inherit a truncated invocation surface. */
+  private readonly resolvedServices = new Map<string, ResolvedService>();
+  /** Requests still resolving, preparing observation or awaiting their command's answer. */
+  private readonly serviceInvocations = new WeakMap<NatsConnection, Set<Promise<void>>>();
+  /** Narrow invocation handles, keyed by endpoint and the sorted command set they verify. Kept
+   *  separate from full discovery handles so alternating commands neither overwrite each other nor
+   *  poison {@link describeService}. */
+  private readonly resolvedCommandServices = new Map<string, Map<string, ResolvedService>>();
+  /** How many calls {@link invokeService} has silently recovered from a bind refusal (§13.2) or a
+   *  member holding no mapping for the target (§13.3) — the class-queue splits this endpoint hit
+   *  and survived.
+   *
+   *  Counted because it is recovered: handling the split is what makes it invisible, so this is the
+   *  only evidence the split rate exists. Always on, never behind a flag — a counter you have to
+   *  enable is not there when the thing you needed it for happened. */
+  private splitsRecovered = 0;
+
   constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly deps: EndpointControlPlaneDeps) {}
 
   private get nc() { return this.deps.nc(); }
@@ -59,19 +72,19 @@ export class EndpointControlPlane {
   private get issuedGeneration() { return this.deps.issuedGeneration(); }
   private get rebuildPromise() { return this.deps.rebuildPromise(); }
   private get subs() { return this.deps.subs(); }
-  private get resolvedServices() { return this.deps.resolvedServices(); }
-  private get resolvedCommandServices() { return this.deps.resolvedCommandServices(); }
-  private get serviceInvocations() { return this.deps.serviceInvocations(); }
   private get requestsAwaitingReply() { return this.deps.requestsAwaitingReply(); }
   private get activeGoalFollowers() { return this.deps.activeGoalFollowers(); }
-  private get splitsRecovered() { return this.deps.splitsRecovered(); }
-  private set splitsRecovered(count: number) { this.deps.setSplitsRecovered(count); }
   private notLiveMsg() { return this.deps.notLiveMsg(); }
   private requireLifecycleUid(what: string) { return this.deps.requireLifecycleUid(what); }
   private reportSubscriptionDenial(error: unknown) { return this.deps.reportSubscriptionDenial(error); }
   private ref() { return this.deps.ref(); }
   private reconnect() { return this.deps.reconnect(); }
   private emit(event: string, ...args: unknown[]) { return this.deps.emit(event, ...args); }
+
+  /** How many class-queue splits {@link splitsRecovered} counted. */
+  get splitRecoveryCount(): number {
+    return this.splitsRecovered;
+  }
 
   /** Serve control requests for a service. Returns the subscription so a caller that re-registers on
    *  reconnect (the delivery daemon) can drop the stale one. `boundReply` is REQUIRED for any service

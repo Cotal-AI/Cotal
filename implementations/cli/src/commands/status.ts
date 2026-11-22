@@ -254,9 +254,9 @@ export async function status(args: ParsedArgs): Promise<void> {
   const recovery = backupRecovery(maintenance, sourceMissing);
   const selectedHints: string[] = [];
   const target = await readSelected(selected, responder, folder, gaps, selectedHints, preflight, Boolean(values.all));
-  // Do not offer the conditional store reset when this folder needs a channel seed repair first,
-  // while a maintenance journal holds the store, or if the store is unwritable.
-  if ((target.resolved || target.code !== "SCHEMA_INVALID") && folder.storedState && folder.processSpace !== null && maintenance === null && !(target.channelSeedBlocksRestart && target.root === root) && !rootStoreProblem(root)) {
+  const stoppedForeignListener = preflight?.ok === false && preflight.kind === "non-nats-listener" && preflight.pid !== undefined;
+  // Address, journal, channel seed, and store problems can block the conditional store reset.
+  if (!stoppedForeignListener && (target.resolved || target.code !== "SCHEMA_INVALID") && folder.storedState && folder.processSpace !== null && maintenance === null && !(target.channelSeedBlocksRestart && target.root === root) && !rootStoreProblem(root)) {
     const reset = storeResetTarget(root, folder.processSpace);
     // An explicit address is not evidence about a different broker's store.
     if (values.server === undefined || (reset && selected.ok && selected.target.space === reset.space
@@ -324,7 +324,7 @@ export async function status(args: ParsedArgs): Promise<void> {
       preparedHarness: !selected.ok && isWorkspaceTargetError(selected.error) && selected.error.code === "not-started" && preparedNeverStarted(selected.error.details)
         ? preferences.spaces[selected.error.details.space]?.harness : undefined,
       seed,
-      recovery,
+      recovery, stoppedForeignListener,
     }),
   );
   if (values.components) await printComponentHealth(selected, store, target.resolved && target.connection === "unreachable");
