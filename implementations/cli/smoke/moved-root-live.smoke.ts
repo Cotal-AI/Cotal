@@ -215,7 +215,10 @@ for (const open of [false, true]) {
   for (const flag of ["--dry-run", "--yes"]) {
     const deletion = cli(subdir, "space", "delete", space, flag, "--plain");
     check(`space delete ${flag} refuses without a broker and names the moved root before reset`,
-      deletion.status === 2 && deletion.stderr.includes("TARGET_UNAVAILABLE") && deletion.stderr.includes("no broker was contacted") && deletion.stderr.includes(remedy) && deletion.stderr.includes(`cotal reset store ${space} --yes`) && !deletion.stderr.includes("no stored streams"));
+      deletion.status === 2 && deletion.stderr.includes("TARGET_UNAVAILABLE") && deletion.stderr.includes("no broker was contacted") &&
+        deletion.stderr.includes(flag === "--yes" ? remedy : `move this folder back to ${project}, then inspect its stored streams`) &&
+        deletion.stderr.includes(`cotal reset store ${space} ${flag}`) && !deletion.stderr.includes("no stored streams") &&
+        (flag === "--yes" || !deletion.stderr.includes(forget) && !deletion.stderr.includes("--yes")));
   }
   const unknownStore = json(other, "space", "delete", space, "--dry-run");
   check("space delete outside the renamed project does not infer absent streams",

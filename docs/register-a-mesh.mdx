@@ -176,6 +176,7 @@ cotal space forget optiplex
 
 `cotal meshes rm` also forgets entries and treats repeated names as one target. Neither command stops the broker.
 Use `cotal down` to stop a mesh running here.
+For a prepared space, `cotal meshes rm` points to `cotal space forget` instead of removing it.
 
 A hand-registered entry survives `cotal down` and `cotal clean all`, even if its root is the project being stopped.
 Those commands remove entries created by a local `up`.
@@ -188,3 +189,4 @@ An `up` targeting a hand-registered mesh refuses to start a different endpoint a
 For a remote broker, follow its remedy to run `cotal manager start --space <s>` with delivery on the broker host.
 For a local entry, remove it with `cotal meshes rm` if it needs replacement.
 Re-registering with `--force` can replace an entry, but still applies its address restrictions.
+To verify an unchecked open or static-auth entry, repeat `cotal meshes add` without `--force` and keep the same broker, root, mode and transport settings.

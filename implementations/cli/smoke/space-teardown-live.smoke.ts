@@ -214,6 +214,10 @@ try {
     const deleteStopped = cli(home, "space", "delete", space, "--yes", "--json");
     check("space delete after down refuses TARGET_UNAVAILABLE and names cotal reset store, not cotal up",
       deleteStopped.status === 2 && deleteStopped.env?.error?.code === "TARGET_UNAVAILABLE" && Boolean(deleteStopped.env.error.remedy?.includes(`cotal reset store ${space} --yes`)) && !deleteStopped.env.error.remedy?.includes("cotal up"), shown(deleteStopped));
+    const deletePreview = cli(home, "space", "delete", space, "--dry-run", "--json");
+    check("the stopped stack's deletion preview points only to a read-only store preview",
+      deletePreview.status === 2 && deletePreview.env?.error?.code === "TARGET_UNAVAILABLE" &&
+        deletePreview.env.error.remedy === `inspect its stored streams with \`cotal reset store ${space} --dry-run\``, shown(deletePreview));
 
     // 4. Reset after a normal down (B4-02).
     const storeStopped = cli(root, "reset", "store", space, "--dry-run", "--json");
