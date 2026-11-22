@@ -164,6 +164,8 @@ async function checkHistoryFollowArgumentRefusals(server: string, connections: (
   const general = { space: null, channel: "general", dms: false };
   const badServer = `${server}/unexpected`;
   const typo = "\u2013\u2013limit";
+  const typoGrep = "\u2013\u2013grep";
+  const typoSpace = "\u2013\u2013space";
   const streams = [
     { args: ["#general", "--follow", "--json", "--limit"], target: general, message: "--limit needs a value", remedy: "write --limit <n>" },
     { args: ["general", "--limit", "--follow", "--json"], target: general, message: "--limit needs a value", remedy: "write --limit <n>" },
@@ -171,6 +173,14 @@ async function checkHistoryFollowArgumentRefusals(server: string, connections: (
     { args: ["-jstest-space", "--dms", "--follow", "--unknown-option"], target: { space: "test-space", channel: null, dms: true }, message: "Unknown option '--unknown-option'" },
     { args: ["--follow", "--json", "--unknown-option", "--", "--plain"], target: { ...general, channel: "--plain" }, message: "Unknown option '--unknown-option'" },
     { args: ["--follow", "--json", typo, "#general"], target: general, message: `${typo} starts with a typographic dash, so it is not an option`, remedy: "type the option with hyphens: --limit" },
+    { args: ["--follow", "--json", typoGrep, "limit", "#general"], target: general, message: `${typoGrep} starts with a typographic dash, so it is not an option` },
+    { args: ["--follow", "--json", typoSpace, "test-space", "#general"], target: general, message: `${typoSpace} starts with a typographic dash, so it is not an option` },
+    { args: ["--follow", "--json", `${typoSpace}=test-space`, "#general"], target: general, message: `${typoSpace}=test-space starts with a typographic dash, so it is not an option` },
+    { args: ["--follow", "--json", "\u2013s", "test-space", "#general"], target: general, message: "\u2013s starts with a typographic dash, so it is not an option", remedy: "type the option with hyphens: -s" },
+    { args: [typoGrep, "--follow", "--json", "--", "--plain"], target: { ...general, channel: "--plain" }, message: `${typoGrep} starts with a typographic dash, so it is not an option` },
+    { args: ["#general", "--follow", "--json", "--grep", typoSpace, "--limit"], target: general, message: "--limit needs a value" },
+    { args: ["--follow", "--json", "-s=test-space", "#general"], target: general, message: '-s=test-space gives -s the value "=test-space"', remedy: "write -s test-space or --space=test-space" },
+    { args: ["--follow", "--json", "--space=blue", "-s=test-space", "#general"], target: { ...general, space: "blue" }, message: '-s=test-space gives -s the value "=test-space"' },
     { args: ["--follow", "--json", "--unknown-option", "--", typo], target: { ...general, channel: typo }, message: "Unknown option '--unknown-option'" },
     { args: ["#general", "--follow", "--json", "--space="], target: general, message: "--space/-s is empty; name one space" },
     { args: ["#general", "--follow", "--json"], broker: badServer, target: general, message: "--server must be a bare broker URL - drop its path; the command did not run" },
@@ -191,7 +201,7 @@ async function checkHistoryFollowArgumentRefusals(server: string, connections: (
   }
   const receiptArgs = [["general", "--limit"], ["clear", "--follow", "--limit"], ["limit", "--follow", "--max-age"],
     ["general", "--follow", "--plain", "--limit"], ["--limit", "--", "--follow"], ["--grep=--follow", "--limit"],
-    ["--follow", "\u2013\u2013grep", "limit"], ["clear", "--follow", "--space="]];
+    ["--follow", typoGrep, "limit"], ["--follow", typoGrep, "phrase", "clear"], ["clear", "--follow", "--space="]];
   for (const { args, broker } of [...receiptArgs.map((args) => ({ args, broker: server })), { args: ["general"], broker: badServer }]) {
     const result = await runHistory(["--json", ...args], broker);
     check(`history --json ${args.join(" ")} keeps one refusal receipt without connecting`,

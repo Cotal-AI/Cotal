@@ -787,9 +787,11 @@ connection is one `TARGET_UNAVAILABLE` error. A
 shown. A follow that refuses invalid read arguments, cannot open its target or cannot read the
 snapshot writes an `error` with the code and any remedy, then an `end` with
 `reason: "setup-failed"`. It does not write a snapshot. Invalid read arguments include unknown
-options, missing values, an empty `--space` and an invalid `--server`. An `end` record closes
-the stream. The exit code is the snapshot's, the failure's when setup or the
-credential ends the follow, or 130 or 143 when SIGINT or SIGTERM ends it.
+or misspelled options, missing values, an empty `--space` and an invalid `--server`. If a
+recognized misspelling has a value and the request also names a target, the error names the target.
+Words after `--` stay literal. An `end` record closes the stream. The exit code is the
+snapshot's, the failure's when setup or the credential ends the follow, or 130 or 143 when
+SIGINT or SIGTERM ends it.
 
 To resume a JSON follow, save the last processed event's `data.ts` and the `data.id` values
 you processed at that timestamp. Restart with `--since` set to one millisecond before the saved

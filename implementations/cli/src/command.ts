@@ -144,7 +144,7 @@ function structured(cmd: Command, first: string | undefined): boolean {
  *  command's boolean short flags. Read from the words, because a usage error has no parse, so the mode
  *  is the first positional after skipping declared option values. */
 function asksForJson(cmd: Command, args: readonly string[]): boolean {
-  if (cmd.name === "history") return metadataPositionals(cmd, args, { forRefusal: true }).values.json === true;
+  if (cmd.name === "history") return historyRefusalContext(cmd, args).values.json === true;
   if (!structured(cmd, metadataPositionals(cmd, args).positionals[0]?.value)) return false;
   const booleans = new Set((cmd.flags ?? []).flatMap((flag) => (flag.type === "boolean" && flag.short ? [flag.short] : [])));
   const end = args.indexOf("--");
@@ -402,7 +402,7 @@ function usageExit(message: string, cmd?: Command, json = false, plain = false, 
 
 /** The refusal for a named or short option typed with a typographic dash pasted from
  *  typeset text, as `\u2013\u2013json`, naming it with hyphens; undefined when `word` is no such option. */
-function typographicOption(word: string, names: ReadonlySet<string>, flags: readonly FlagSpec[] = []): { message: string; remedy?: string } | undefined {
+function typographicOption(word: string, names: ReadonlySet<string>, flags: readonly FlagSpec[] = []) {
   const typed = /^[\u2010-\u2015\u2212][-\u2010-\u2015\u2212]*([^=]+)(?:=(.*))?$/su.exec(word);
   if (!typed) return undefined;
   const [, name, value] = typed;
@@ -410,23 +410,34 @@ function typographicOption(word: string, names: ReadonlySet<string>, flags: read
   const flag = flags.find((flag) => long ? flag.name === name : flag.short === name);
   if (!long && !flag) return undefined;
   const message = `${word} starts with a typographic dash, so it is not an option`;
-  if (value === undefined) return { message, remedy: `type the option with hyphens: ${long ? "--" : "-"}${name}` };
-  if (flag?.type !== "string") return { message };
-  return { message, remedy: `type the option with hyphens: --${flag.name}=${shellWord(value)}` };
+  if (value === undefined) return { message, remedy: `type the option with hyphens: ${long ? "--" : "-"}${name}`, separateValue: flag?.type === "string" };
+  if (flag?.type !== "string") return { message, separateValue: false };
+  return { message, remedy: `type the option with hyphens: --${flag.name}=${shellWord(value)}`, separateValue: false };
 }
 
 function optionNames(cmd: Command, flagNames?: readonly string[]): ReadonlySet<string> {
   return new Set([...(flagNames ?? (cmd.flags ?? []).map((flag) => flag.name)), ...GLOBAL_FLAGS]);
 }
 
-/** Keep malformed options out of the requested target, but keep operands after `--` literal. */
+function shortEqualsOption(word: string, flags: readonly FlagSpec[] | undefined) {
+  const match = /^-([^-=])=(.*)$/su.exec(word);
+  const flag = match && flags?.find((item) => item.short === match[1] && item.type === "string");
+  return match && flag ? { flag, value: match[2]! } : undefined;
+}
+
+/** Recover the intended history mode without treating misspellings as valid options. */
 function historyRefusalContext(cmd: Command, words: readonly string[]): Pick<ParsedArgs, "values" | "positionals"> {
-  const { values, positionals } = metadataPositionals(cmd, words, { forRefusal: true });
   const names = optionNames(cmd);
-  const separator = words.indexOf("--");
-  return { values, positionals: positionals
-    .filter(({ value, index }) => (separator !== -1 && index > separator) || !typographicOption(value, names, cmd.flags))
-    .map(({ value }) => value) };
+  const { values, positionals, malformedOperands } = metadataPositionals(cmd, words, {
+    malformedOption: (word) => typographicOption(word, names, cmd.flags)
+      ?? (shortEqualsOption(word, cmd.flags) ? { separateValue: false } : undefined),
+  });
+  const targets = positionals.map(({ value }) => value);
+  // With no other operand, an explicit #channel or reserved verb is the selector, not a typo's value.
+  const [candidate] = malformedOperands;
+  if (!targets.length && malformedOperands.length === 1 && candidate !== undefined
+      && (candidate.startsWith("#") || findSubcommand(cmd, candidate))) targets.push(candidate);
+  return { values, positionals: targets };
 }
 
 /** Identify seed before recovery, even when a typographic maintenance flag precedes it. */
@@ -449,14 +460,13 @@ function misspelledOption(cmd: Command, rest: readonly string[], flagNames: read
     if (word === "--") return undefined;
     const previous = rest[index - 1];
     if (previous !== undefined && cmd.flags?.some((flag) => flag.type === "string" && (previous === `--${flag.name}` || previous === `-${flag.short}`))) continue;
-    const short = /^-([^-=])=(.*)$/su.exec(word);
-    const flag = short && cmd.flags?.find((item) => item.short === short[1] && item.type === "string");
-    if (short && flag) {
-      const value = short[2]!;
+    const short = shortEqualsOption(word, cmd.flags);
+    if (short) {
+      const { flag, value } = short;
       const quoted = shellWord(value);
       const long = `--${flag.name}=${quoted}`;
-      const correction = value.startsWith("-") ? long : `-${short[1]} ${quoted} or ${long}`;
-      return { message: `${word} gives -${short[1]} the value "=${value}"`, remedy: `write ${correction}` };
+      const correction = value.startsWith("-") ? long : `-${flag.short} ${quoted} or ${long}`;
+      return { message: `${word} gives -${flag.short} the value "=${value}"`, remedy: `write ${correction}` };
     }
     const typed = typographicOption(word, names, cmd.flags);
     if (typed) return typed;

@@ -1,8 +1,20 @@
 import type { Command, FlagSpec, ParsedArgs } from "@cotal-ai/core";
 
+type MetadataOptions = {
+  completing?: boolean;
+  /** Read refusal metadata only. A malformed option can own a word without supplying a value. */
+  malformedOption?: (word: string) => { separateValue: boolean } | undefined;
+};
+
+/** A standalone string flag can take a negative number, but not another option or `--`. */
+function refusalOperand(value: string, standalone: boolean): boolean {
+  return !value.startsWith("-") || value === "-" || (standalone && /^-\d/.test(value));
+}
+
 /** Read metadata paths without interpreting option values as command words or running a validator. */
-export function metadataPositionals(cmd: Pick<Command, "flags">, argv: readonly string[], options: { completing?: boolean; forRefusal?: boolean } = {}) {
+export function metadataPositionals(cmd: Pick<Command, "flags">, argv: readonly string[], options: MetadataOptions = {}) {
   const positionals: { value: string; index: number }[] = [];
+  const malformedOperands: string[] = [];
   const values: ParsedArgs["values"] = {};
   let valueFlag: FlagSpec | undefined;
   let optionsEnded = false;
@@ -10,7 +22,7 @@ export function metadataPositionals(cmd: Pick<Command, "flags">, argv: readonly 
     const value = argv[index + 1];
     if (index >= argv.length - 2) valueFlag = flag;
     // In a refusal, an option missing its operand must not hide the next option or separator.
-    if (options.forRefusal && value?.startsWith("-") && value !== "-" && !(standalone && /^-\d/.test(value))) return false;
+    if (options.malformedOption && value !== undefined && !refusalOperand(value, standalone)) return false;
     values[flag.name] = value;
     return true;
   };
@@ -18,6 +30,15 @@ export function metadataPositionals(cmd: Pick<Command, "flags">, argv: readonly 
     const word = argv[index]!;
     // Completion includes the unfinished cursor word; only an earlier separator is committed.
     if (!optionsEnded && word === "--" && (!options.completing || index < argv.length - 1)) { optionsEnded = true; continue; }
+    const malformed = optionsEnded ? undefined : options.malformedOption?.(word);
+    if (malformed) {
+      const next = argv[index + 1];
+      if (malformed.separateValue && next !== undefined && refusalOperand(next, true) && !options.malformedOption?.(next)) {
+        malformedOperands.push(next);
+        index++;
+      }
+      continue;
+    }
     if (!optionsEnded && word.startsWith("--")) {
       const equals = word.indexOf("=");
       const flag = cmd.flags?.find((item) => item.name === (equals === -1 ? word.slice(2) : word.slice(2, equals)));
@@ -37,5 +58,5 @@ export function metadataPositionals(cmd: Pick<Command, "flags">, argv: readonly 
       }
     } else positionals.push({ value: word, index });
   }
-  return { positionals, values, valueFlag, optionsEnded };
+  return { positionals, values, valueFlag, optionsEnded, malformedOperands };
 }
