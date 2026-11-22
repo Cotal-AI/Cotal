@@ -856,6 +856,19 @@ try {
         && JSON.stringify(after.envelope?.result?.items) === JSON.stringify(before.envelope?.result?.items),
         { refused: shown(refused), before: shown(before), after: shown(after) });
     }
+
+    for (const force of [false, true]) {
+      const refused = await run(["clean", "history", "--server", openServers, "--space", openSpace,
+        "--attempt", "restore-00000000-0000-4000-8000-000000000000", ...(force ? ["--force"] : [])]);
+      const after = await run(["history", "--space", openSpace, "--json"]);
+      check(`clean history refuses --attempt ${force ? "with" : "without"} --force and preserves live history`,
+        refused.status === 1 && refused.stderr.includes("clean history cannot be scoped by --attempt")
+        && refused.stderr.includes("selects a restore") && refused.stderr.includes("Nothing was purged")
+        && !/cotal clean history.*--force/.test(refused.stderr)
+        && before.status === 0 && texts(before).length === 2 && after.status === 0
+        && JSON.stringify(after.envelope?.result?.items) === JSON.stringify(before.envelope?.result?.items),
+        { refused: shown(refused), before: shown(before), after: shown(after) });
+    }
   }
 
   {
