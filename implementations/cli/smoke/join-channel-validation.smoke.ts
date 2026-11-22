@@ -36,12 +36,12 @@ process.env.DO_NOT_TRACK = "1";
 const { isCommandFailure, recordMesh } = await import("@cotal-ai/workspace");
 const { join } = await import("../src/commands/join.js");
 
-async function expectUsageInvalid(channel: string): Promise<import("@cotal-ai/workspace").CommandFailure> {
+async function expectUsageInvalid(input: { channel: string } | { link: string }): Promise<import("@cotal-ai/workspace").CommandFailure> {
   let caught: unknown;
   try {
     await join({
       values: {
-        channel,
+        ...input,
         name: "joininvalid",
         space: "auditroom",
         server: "nats://127.0.0.1:47737",
@@ -52,7 +52,7 @@ async function expectUsageInvalid(channel: string): Promise<import("@cotal-ai/wo
   } catch (err) {
     caught = err;
   }
-  assert.ok(isCommandFailure(caught), `join --channel ${JSON.stringify(channel)} must refuse with CommandFailure`);
+  assert.ok(isCommandFailure(caught), `join ${JSON.stringify(input)} must refuse with CommandFailure`);
   assert.equal(caught.outcome, "refused");
   assert.equal(caught.code, "USAGE_INVALID");
   return caught;
@@ -62,24 +62,34 @@ try {
   recordMesh({ space: "auditroom", server: "nats://127.0.0.1:47737", root: project, mode: "open", ts: new Date().toISOString(), origin: "manual" });
   process.chdir(project);
 
-  // 1. Empty segments (`bad..channel`, `.leading`, `trailing.`, `""`) refuse as USAGE_INVALID
-  // mentioning empty segment and never recommending `cotal up` or `--creds`/`--token`.
+  // A bare empty segment reports the grammar error without unrelated recovery advice.
   for (const bad of ["bad..channel", ".leading", "trailing.", ""]) {
-    const failure = await expectUsageInvalid(bad);
+    const failure = await expectUsageInvalid({ channel: bad });
     assert.ok(failure.message.includes("empty segment"), `expected empty segment message for ${JSON.stringify(bad)}, got: ${failure.message}`);
-    assert.ok(!(failure.remedy ?? "").includes("cotal up"), `unexpected provisioning remedy: ${failure.remedy}`);
-    assert.ok(!(failure.remedy ?? "").includes("--creds"), `unexpected credential remedy: ${failure.remedy}`);
+    assert.equal(failure.remedy, undefined);
   }
 
-  // 2. Leading `#` points out dropping `#`, and non-NATS-safe characters also fail USAGE_INVALID.
-  const hashErr = await expectUsageInvalid("#general");
-  assert.ok((hashErr.remedy ?? "").includes('"general"'), `expected remedy without '#', got: ${hashErr.remedy}`);
+  for (const channel of ["#bad..channel", "#", "##bad..channel", "##", "#foo/bar"]) {
+    const failure = await expectUsageInvalid({ channel });
+    assert.match(failure.message, /empty segment|NATS-safe token/);
+    assert.equal(failure.remedy, "pass a valid channel, for example `--channel team.chat`");
+  }
 
-  const slashErr = await expectUsageInvalid("foo/bar");
+  const joinLink = (channel: string) => `cotal://127.0.0.1:47737/auditroom?channel=${encodeURIComponent(channel)}`;
+  for (const channel of ["#bad..channel", "#"]) {
+    const failure = await expectUsageInvalid({ link: joinLink(channel) });
+    assert.match(failure.message, /empty segment/);
+    assert.equal(failure.remedy, "pass a valid channel, for example `--channel team.chat`");
+  }
+  const hashErr = await expectUsageInvalid({ link: joinLink("#team.>") });
+  assert.match(hashErr.message, /join link channel cannot start with #/);
+  assert.equal(hashErr.remedy, "override the link channel with `--channel='team.>'`");
+
+  const slashErr = await expectUsageInvalid({ channel: "foo/bar" });
   assert.ok(slashErr.message.includes("NATS-safe token"), `expected NATS-safe message, got: ${slashErr.message}`);
 
   // 3. Control: valid concrete channels and channel families pass validation cleanly.
-  for (const valid of ["team.chat", "team.>"]) {
+  for (const valid of ["team.chat", "#team.chat", "team.>"]) {
     let caught: unknown;
     try {
       await join({

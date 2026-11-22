@@ -95,7 +95,7 @@ function isPlainObject(v: unknown): v is Record<string, unknown> {
 }
 
 function validId(v: unknown): v is string {
-  return typeof v === "string" && v.length > 0 && v.length <= MAX_REQUEST_ID && /^[\x21-\x7e]+$/.test(v);
+  return typeof v === "string" && v.length > 0 && v.length <= MAX_REQUEST_ID && !/[^\x20-\x7e]/.test(v);
 }
 
 /** A concrete, policy-valid channel, or the refusal for it. A string gets the sentence `cotal send -c`

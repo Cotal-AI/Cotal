@@ -1,7 +1,7 @@
 import { brokerUrlHasUserinfo, registry, type Command, type FlagSpec, type ParsedArgs } from "@cotal-ai/core";
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { assertManagerName, brokerUrlCredentialRefusal, cacheServicePreset, CommandFailure, extensionProvides, findMesh, hasUserAuthState, installedExtensionPackage, isCommandFailure, loadExtensionsManifest, oneLine, resolveNativeServiceTarget, runtimeInstallHint, segmentedKey, serviceMetadataDigest, spaceMaterialKey, validateServiceAdapterOptions, validateServiceAdapterPaths, verifiedExtensionServicePresets, WEB_SERVICE_ADAPTER, type ServiceDefinitionInput, type ServicePreset, type ServicePresetDefault } from "@cotal-ai/workspace";
+import { assertManagerName, brokerUrlCredentialRefusal, cacheServicePreset, codeSpan, CommandFailure, extensionProvides, findMesh, hasUserAuthState, installedExtensionPackage, isCommandFailure, loadExtensionsManifest, oneLine, resolveNativeServiceTarget, runtimeInstallHint, segmentedKey, serviceMetadataDigest, spaceMaterialKey, validateServiceAdapterOptions, validateServiceAdapterPaths, verifiedExtensionServicePresets, WEB_SERVICE_ADAPTER, type ServiceDefinitionInput, type ServicePreset, type ServicePresetDefault } from "@cotal-ai/workspace";
 import { installedExtensionsEnabled } from "../ext-loader.js";
 import { metadataPositionals } from "./command-path.js";
 import { shellWord } from "./endpoint-errors.js";
@@ -226,11 +226,15 @@ export function servicePresetDefinition(preset: ServicePreset, space: string, gi
   const flags = servicePresetFlags(preset);
   const missing = presetMissingOptions(preset, given);
   const line = verb === "start" ? `cotal service start ${preset.name}` : `cotal service ${verb} --preset ${preset.name}`;
-  // The line also names each default this space cannot fill, so it works the first time it is run.
+  // Keep the caller's flags (including preview and output mode) without echoing option values.
+  const fromCommand = verb === "start" || given.preset !== undefined;
+  const retryWith = (additions: string) => `rerun the original command with ${codeSpan(additions)}, keeping all other arguments and flags unchanged`;
   if (missing.length) {
     const unfilled = presetUnfilledDefaults(preset, space, root, given);
+    const additions = [...missing.map((name) => `--${name} ${flags.find((flag) => flag.name === name)?.value ?? ""}`.trimEnd()), ...unfilled.map((row) => `--${row.name} ${row.value}`)].join(" ");
     const onSpace = given.space === undefined ? "" : ` --space ${shellWord(space)}`;
-    throw new CommandFailure("refused", "USAGE_INVALID", `the ${preset.name} preset needs ${missing.map((name) => `--${name}`).join(", ")}, which ${missing.length === 1 ? "has" : "have"} no default${unfilled.map((row) => `, and --${row.name}, since ${row.reason}`).join("")}; nothing was saved or started`, { remedy: `${line} ${[...missing.map((name) => `--${name} ${flags.find((flag) => flag.name === name)?.value ?? ""}`.trimEnd()), ...unfilled.map((row) => `--${row.name} ${row.value}`)].join(" ")}${onSpace}`, selfContained: true, remedyIsCommand: true });
+    const showCommand = !fromCommand || Object.keys(given).every((name) => name === "space" || name === "preset");
+    throw new CommandFailure("refused", "USAGE_INVALID", `the ${preset.name} preset needs ${missing.map((name) => `--${name}`).join(", ")}, which ${missing.length === 1 ? "has" : "have"} no default${unfilled.map((row) => `, and --${row.name}, since ${row.reason}`).join("")}; nothing was saved or started`, { remedy: showCommand ? `${line} ${additions}${onSpace}` : retryWith(additions), selfContained: true, ...(showCommand ? { remedyIsCommand: true } : {}) });
   }
   const values: ParsedArgs["values"] = { ...presetDefaultOptions(preset, space, root, given, migrate), ...given };
   const options = parsedPresetOptions(preset, values);
@@ -250,8 +254,9 @@ export function servicePresetDefinition(preset: ServicePreset, space: string, gi
   // needs the other. Its launch refuses one without the other, and a saved definition would offer
   // a start that cannot run.
   if (preset.adapter === STACK_ADAPTER.manager && (options.launch === undefined) !== (options["launch-sha256"] === undefined)) {
-    const given = options.launch === undefined ? "--launch-sha256" : "--launch";
-    throw new CommandFailure("refused", "USAGE_INVALID", `${given} requires ${given === "--launch" ? "--launch-sha256 <digest>" : "--launch <file>"}: a manager launch needs both its private native spec and its full SHA-256; nothing was saved or started`, { remedy: `${line} --launch <file> --launch-sha256 <digest>`, selfContained: true, remedyIsCommand: true });
+    const supplied = options.launch === undefined ? "--launch-sha256" : "--launch";
+    const needed = options.launch === undefined ? "--launch <file>" : "--launch-sha256 <digest>";
+    throw new CommandFailure("refused", "USAGE_INVALID", `${supplied} requires ${needed}: a manager launch needs both its private native spec and its full SHA-256; nothing was saved or started`, { remedy: fromCommand ? retryWith(needed) : `${line} --launch <file> --launch-sha256 <digest>`, selfContained: true, ...(fromCommand ? {} : { remedyIsCommand: true }) });
   }
   // Saving the native auth preset must not offer a start its hosting root cannot support.
   // Read only the existing marker, without preparing authority or importing provider code.

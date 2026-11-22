@@ -13,7 +13,7 @@ import { targetWords } from "../lib/confirmation-required.js";
 import { assertLabels, commitPersona, editPersona, personaCatalog, personaPath, readPersonaSource, requirePersonaSource, reservedPersonaName, serializePersona, validatePersona } from "../lib/persona-files.js";
 import { completedFlagValue, completingFlagValue, positionalsForCompletion } from "../lib/completion.js";
 import { shellWord } from "../lib/endpoint-errors.js";
-import { catalogFolderProblem, catalogReadRefusal, listPersonaNames, readPersonas, type PersonaEntry } from "../lib/personas.js";
+import { catalogReadRefusal, listPersonaNames, readPersonas, type PersonaEntry } from "../lib/personas.js";
 import { openTransient, type ConnectValues } from "../lib/transient.js";
 import { c } from "../ui.js";
 
@@ -136,9 +136,6 @@ async function list(verbose: boolean, running: boolean, values: ConnectValues): 
   // A refusal names the space it read, as `persona` names it.
   const { root, space } = personaCatalog(values);
   recordOperationSpace(space);
-  // A catalog folder that is a file or a looping link is not an empty catalog.
-  const folder = catalogFolderProblem(personaDir(root));
-  if (folder) throw folder;
   // Only an absent folder is an empty catalog. One that cannot be read is refused, as `persona` refuses it.
   let entries: PersonaEntry[];
   try { entries = readPersonas(root); }

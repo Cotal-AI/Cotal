@@ -61,7 +61,6 @@ export interface ServePlaneDeps {
   managerInstanceId(): string;
   managerServeIdentity(): Identity;
   leaseStopping(): boolean;
-  remoteBundleRenewal(): Promise<void> | undefined;
   serviceServe(): ServiceServe | undefined;
   setServiceServe(value: ServiceServe | undefined): void;
   sessionLedgerIdentity(): Identity | undefined;
@@ -109,7 +108,6 @@ export function servePlaneDeps(m: Manager): ServePlaneDeps {
     managerInstanceId: () => m["managerInstanceId"],
     managerServeIdentity: () => m["managerServeIdentity"],
     leaseStopping: () => m["leaseStopping"],
-    remoteBundleRenewal: () => m["remoteBundleRenewal"],
     serviceServe: () => m["serviceServe"],
     setServiceServe: (value) => { m["serviceServe"] = value; },
     sessionLedgerIdentity: () => m["sessionLedgerIdentity"],
@@ -157,14 +155,13 @@ export class ServePlane {
    *  revoke; a session that never staged drops its entry when the manager exits. */
   private readonly sessionServingKeys = new Map<string, string>();
 
-  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: ServePlaneDeps, private readonly parts: Pick<ManagerParts, "connectorInventory">) {}
+  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: ServePlaneDeps, private readonly parts: Pick<ManagerParts, "connectorInventory" | "credentialRenewal">) {}
 
   private get auth(): SpaceAuth | undefined { return this.deps.auth(); }
   private get remoteAuthority(): Pick<NonNullable<ManagerOptions["remoteAuthority"]>, "identities" | "goalWriterCreds" | "sessionLedgerCreds" | "serveCreds" | "serveGrant" | "mintSessionServing"> | undefined { return this.deps.remoteAuthority(); }
   private get managerInstanceId(): string { return this.deps.managerInstanceId(); }
   private get managerServeIdentity(): Identity { return this.deps.managerServeIdentity(); }
   private get leaseStopping(): boolean { return this.deps.leaseStopping(); }
-  private get remoteBundleRenewal(): Promise<void> | undefined { return this.deps.remoteBundleRenewal(); }
   private get serviceServe(): ServiceServe | undefined { return this.deps.serviceServe(); }
   private set serviceServe(value: ServiceServe | undefined) { this.deps.setServiceServe(value); }
   private get sessionLedgerIdentity(): Identity | undefined { return this.deps.sessionLedgerIdentity(); }
@@ -280,8 +277,8 @@ export class ServePlane {
       if (!s) return false;
       const deadline = this.remoteAuthority ? performance.now() + this.deps.remoteStandingBudgetMs : undefined;
       // Let an admitted renewal finish owning its candidate before recovery opens another.
-      if (deadline === undefined) await this.remoteBundleRenewal;
-      else await this.deps.withTimeout(Promise.resolve(this.remoteBundleRenewal), this.deps.remoteStandingTimeLeft(deadline),
+      if (deadline === undefined) await this.parts.credentialRenewal.remoteBundleRenewal;
+      else await this.deps.withTimeout(Promise.resolve(this.parts.credentialRenewal.remoteBundleRenewal), this.deps.remoteStandingTimeLeft(deadline),
         "remote manager closed-serve renewal wait exceeded its 10000ms aggregate budget");
       if (this.leaseStopping || this.serviceServe !== s || s.nc !== closed) return true;
       if (deadline !== undefined) await this.deps.withTimeout(this.deps.renewRemoteBeforeRedial("serve", () => s.creds), this.deps.remoteStandingTimeLeft(deadline),

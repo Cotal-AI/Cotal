@@ -28,6 +28,7 @@ import {
   registry,
   token,
   type AuthProvider,
+  type ManagerInstanceListing,
   type EpCaller,
   type MintOpts,
   type ProbeResult,
@@ -186,15 +187,10 @@ export interface UserViewAuth {
   source: () => Promise<string>;
 }
 
-/** Mint an elevated-view bearer over an existing user-mode {@link Connection} — the user-mode
- *  path for the operator surfaces (`web`, `console`, `history clear`, `channels`, `spawn -f`).
- *  The view is authorized server-side against the fresh ledger row; a refusal THROWS the exact
- *  re-grant sentence. Call ONLY with a user-mode connection (`conn.bearer` set) — anything else
- *  is a caller bug. Long-running servers (the web delete handler) call THIS and surface the
- *  thrown sentence; CLI startup paths use {@link userViewAuthOrExit}. */
-export async function userViewAuth(conn: Connection, view: string, opts: { managerInstanceId?: string; transferWriter?: { instanceId: string; hex: string } } = {}): Promise<UserViewAuth> {
+/** The auth provider and this machine's sign-in state for a user-mode {@link Connection}. */
+function userAuthState(conn: Connection, what: string): { provider: AuthProvider; dir: string; store: ReturnType<typeof workspaceSecretStore>; bearer: string } {
   if (!conn.bearer || !conn.userAuth || !conn.root)
-    throw new Error(`userViewAuth: not a user-mode registry connection (view "${view}")`);
+    throw new Error(`userViewAuth: not a user-mode registry connection (${what})`);
   const ua = conn.userAuth;
   let provider: AuthProvider;
   try {
@@ -204,8 +200,63 @@ export async function userViewAuth(conn: Connection, view: string, opts: { manag
       `space "${conn.space}" uses the "${ua.provider}" auth provider, which this build does not register - user-auth spaces need it (the official cotal binary includes @cotal-ai/auth)`,
     );
   }
-  const dir = userAuthStateDir(conn.root, conn.space);
-  const store = workspaceSecretStore(conn.root);
+  return { provider, dir: userAuthStateDir(conn.root, conn.space), store: workspaceSecretStore(conn.root), bearer: conn.bearer };
+}
+
+/** {@link userSignInAuth}'s source refused a bearer for another sign-in: the person's row was
+ *  granted again, or this machine signed in as another account, while a reader held the old one.
+ *  The reader cannot recover in place. */
+export class SignInChangedError extends Error {}
+
+/** Why `bearer` is not the sign-in `started` names, or undefined when it is the same owner, actor and
+ *  lifecycle. A caller that must act as one sign-in throughout checks each bearer it is handed. */
+export function signInChange(started: { owner: string; actor: string; lifecycleUid: string }, bearer: string): SignInChangedError | undefined {
+  const now = principalFromBearer(bearer);
+  if (now.owner !== started.owner || now.actor !== started.actor)
+    return new SignInChangedError(`this machine is now signed in as ${now.owner}.${now.actor}, not ${started.owner}.${started.actor}; restart to act as that account`);
+  if (now.lifecycleUid !== started.lifecycleUid)
+    return new SignInChangedError(`your sign-in ${started.owner}.${started.actor} was granted again (lifecycle ${now.lifecycleUid}; this reader started on ${started.lifecycleUid}); restart it to read under the new grant`);
+  return undefined;
+}
+
+/** The person's own sign-in as a standing reader's auth material: the plain bearer a user-mode
+ *  {@link Connection} carries, and a source that runs the exchange again for each new connection, so
+ *  a long-running reader holds no elevated view. A person's sign-in reads the event channels of
+ *  every agent under their owner (SPEC 13.21). Call ONLY with a user-mode connection. */
+export function userSignInAuth(conn: Connection): UserViewAuth {
+  const { provider, dir, store, bearer } = userAuthState(conn, "the sign-in");
+  const { sentinelCreds } = conn;
+  if (!sentinelCreds) throw new Error("userSignInAuth: the connection carries no sentinel credential");
+  const { owner, actor, lifecycleUid } = principalFromBearer(bearer);
+  // A reader's history consumer is named for this lifecycle, and a re-grant retires it. A bearer
+  // for another sign-in is refused, so the reader fails loud instead of reading under a name its
+  // new credential does not hold.
+  const source = async () => {
+    const next = (await provider.userCredentials({ store, dir, space: conn.space, actor: CLI_USER_ACTOR })).bearer;
+    const changed = signInChange({ owner, actor, lifecycleUid }, next);
+    if (changed) throw changed;
+    return next;
+  };
+  return { bearer, sentinelCreds, owner, actor, lifecycleUid, source };
+}
+
+/** The signed-in person's own Manager instances, as the space's auth service lists them: each Manager
+ *  their owner registered and the space host's own, with the verdict an unpinned selection reads.
+ *  The list spends no selection. Call ONLY with a user-mode connection. */
+export async function ownManagerInstances(conn: Connection): Promise<ManagerInstanceListing[]> {
+  const { provider, dir, store } = userAuthState(conn, "the manager list");
+  if (!provider.listManagerInstances) throw new Error(`the "${provider.name}" auth provider cannot list a person's managers`);
+  return provider.listManagerInstances({ store, dir, space: conn.space });
+}
+
+/** Mint an elevated-view bearer over an existing user-mode {@link Connection} — the user-mode
+ *  path for the operator surfaces (`web`, `console`, `history clear`, `channels`, `spawn -f`).
+ *  The view is authorized server-side against the fresh ledger row; a refusal THROWS the exact
+ *  re-grant sentence. Call ONLY with a user-mode connection (`conn.bearer` set) — anything else
+ *  is a caller bug. Long-running servers (the web delete handler) call THIS and surface the
+ *  thrown sentence; CLI startup paths use {@link userViewAuthOrExit}. */
+export async function userViewAuth(conn: Connection, view: string, opts: { managerInstanceId?: string; transferWriter?: { instanceId: string; hex: string } } = {}): Promise<UserViewAuth> {
+  const { provider, dir, store, bearer: signIn } = userAuthState(conn, `view "${view}"`);
   if (opts.managerInstanceId !== undefined) {
     if (view !== "manager-caller") throw new Error("a manager instance selector requires the manager-caller view");
     assertLifecycleToken(opts.managerInstanceId, "managerInstanceId");
@@ -213,7 +264,7 @@ export async function userViewAuth(conn: Connection, view: string, opts: { manag
   if ((view === "transfer-writer") !== (opts.transferWriter !== undefined))
     throw new Error("the transfer-writer view and the one object it uploads come together or not at all");
   const request = { store, dir, space: conn.space, actor: CLI_USER_ACTOR, view, ...opts };
-  const original = view === "manager-caller" ? principalFromBearer(conn.bearer) : undefined;
+  const original = view === "manager-caller" ? principalFromBearer(signIn) : undefined;
   const mint = async () => {
     const result = await provider.userCredentials(request);
     if (!original) return { ...result, principal: principalFromBearer(result.bearer) };

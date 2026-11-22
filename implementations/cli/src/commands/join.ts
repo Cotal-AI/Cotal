@@ -136,16 +136,26 @@ export async function join(args: ParsedArgs): Promise<void> {
   }
 }
 
-function validateJoinChannel(channel: string): void {
+function resolveJoinChannel(flag: string | undefined, linked: string | undefined): string {
+  const input = flag ?? linked ?? "general";
+  const displayed = input.startsWith("#");
+  const channel = displayed ? input.slice(1) : input;
   try {
     assertValidChannel(channel);
   } catch (e) {
     throw new CommandFailure("refused", "USAGE_INVALID", (e as Error).message, {
-      ...(channel.startsWith("#") ? { remedy: `pass the channel without its #, as ${JSON.stringify(channel.slice(1))}` } : {}),
+      remedy: displayed ? "pass a valid channel, for example `--channel team.chat`" : undefined,
       cause: e,
       selfContained: true,
     });
   }
+  if (displayed && flag === undefined) {
+    throw new CommandFailure("refused", "USAGE_INVALID", "the join link channel cannot start with #", {
+      remedy: `override the link channel with \`--channel=${shellWord(channel)}\``,
+      selfContained: true,
+    });
+  }
+  return channel;
 }
 
 async function joinSpace(args: ParsedArgs): Promise<void> {
@@ -164,8 +174,7 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
   // A HUMAN joining from a terminal, not a persona-driven agent: they typed `cotal join` to land
   // somewhere and talk, so a landing channel is the point of the command. `general` stays the
   // default HERE only - an agent's read set comes from its persona and defaults to no channel.
-  const channel = values.channel ?? link?.channels?.[0] ?? "general";
-  validateJoinChannel(channel);
+  const channel = resolveJoinChannel(values.channel, link?.channels?.[0]);
   const mintSpace = values.space ?? link?.space;
   const auth = {
     token: values.token ?? link?.token,

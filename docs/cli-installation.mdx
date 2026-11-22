@@ -180,6 +180,7 @@ An answering daemon without an active automatic schedule is reported separately,
 paused by an unreadable update-attempt record with no next attempt. The preference stays saved;
 the command installs and starts nothing.
 `cotal update --notify off` silences notices independently, and `--notify on` enables them.
+Both `--auto` and `--notify` refuse `--on`, even with an empty value, without changing preferences.
 If `update-settings.json` contains damaged JSON or invalid settings, these preference commands
 save its contents in a private `update-settings.json.corrupt.<id>` copy in the same folder,
 report that path, and restore the defaults: automatic updates and notices on. A supplied
@@ -645,6 +646,11 @@ An interactive presence: join a space under your own name and role, without laun
 harness. Another participant whose name is only whitespace is shown as the id, in the roster,
 on an incoming line, and on a DM you send. A `--link` supplies the where and the auth in one value. See
 [Spaces](spaces.mdx) and [Identity and auth](identity-and-auth.mdx).
+
+`join` checks the channel before connecting. It accepts one optional leading `#` on `--channel`,
+then checks the rest of the name. A channel in a join link must omit `#`. To override a malformed
+channel in a link, pass `--channel` with a valid name such as `team.chat`.
+
 Enter `/quit` to leave the session, including when pasting it after another command, or press
 Ctrl-D at the terminal prompt. If `/dm`, `/anycast`, or `/me` is missing an argument, `join`
 prints its usage without posting the line to the channel.

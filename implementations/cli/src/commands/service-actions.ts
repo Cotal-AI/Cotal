@@ -157,16 +157,23 @@ export function unsavedServiceStep(name: string, mode: string): string {
   return name === "web" ? "the web dashboard is an extension: add it with `cotal ext add @cotal-ai/web`, then start it with `cotal service start web`" : mode === "stop" ? "list this space's saved definitions with `cotal service`" : "add a supported service definition explicitly before starting it";
 }
 
+function missingServiceDefinition(space: string, name: string, mode: string, commandName: string): CommandFailure {
+  const stackName = stackMemberFor(space, name);
+  const reading = mode === "logs" || mode === "status";
+  const effect = reading ? "nothing was read" : `no process or extension was ${mode === "stop" ? "stopped" : "started"}`;
+  const remedy = stackName
+    ? `this space's controller stack names it ${stackName}: use \`cotal ${commandName === "down" ? "down" : `${commandName} ${mode}`} ${stackName} --space ${space}\`${mode === "stop" ? ", or bare `cotal down` to stop the whole stack" : ""}`
+    : reading ? `list this space's saved definitions with \`cotal service --space ${shellWord(space)}\`` : unsavedServiceStep(name, mode);
+  return new CommandFailure("refused", "TARGET_NOT_FOUND", `no saved service definition resolves this name in the selected space; ${effect}`, { target: { space, name }, remedy });
+}
+
 /** `root` is the selected space's root, where a definition must have been added to launch. */
 export async function serviceAction(args: ParsedArgs, space: string, root: string, commandName = "service", resolved?: PresetServiceTarget): Promise<void> {
   const [mode, name] = args.positionals as [string, string];
   const values = args.values as { instance?: string; "new-instance"?: boolean; foreground?: boolean; "with-agents"?: boolean; "dry-run"?: boolean; yes?: boolean; tail?: string; follow?: boolean; json?: boolean };
   const presentation = presentationOf(args.values);
   const store = serviceDefinitionStore(space, addedDefinitionStep), definition = store.read(name);
-  if (!definition) {
-    const stackName = stackMemberFor(space, name);
-    throw new CommandFailure("refused", "TARGET_NOT_FOUND", `no saved service definition resolves this name in the selected space; no process or extension was ${mode === "stop" ? "stopped" : "started"}`, { target: { space, name }, remedy: stackName ? `this space's controller stack names it ${stackName}: use \`cotal ${commandName === "down" ? "down" : `${commandName} ${mode}`} ${stackName} --space ${space}\`${mode === "stop" ? ", or bare `cotal down` to stop the whole stack" : ""}` : unsavedServiceStep(name, mode) });
-  }
+  if (!definition) throw missingServiceDefinition(space, name, mode, commandName);
   if (mode === "start" || mode === "restart" || mode === "install") assertDefinitionRoot(definition, space, root, mode);
   const rows = serviceInstances(space, name);
   let id = values.instance;

@@ -24,19 +24,10 @@ import { tmpdir } from "node:os";
 import { delimiter, dirname, join, sep } from "node:path";
 import { resolveOnPath } from "@cotal-ai/workspace";
 import { platformExcludesHost } from "../../implementations/cli/src/seed/verify.js";
+import { createSuite } from "@cotal-ai/smoke-kit";
 
 const REPO = join(import.meta.dirname, "..", "..");
-let pass = 0;
-let fail = 0;
-const check = (name: string, cond: boolean, extra?: unknown) => {
-  if (cond) {
-    pass++;
-    console.log(`  ✓ ${name}`);
-  } else {
-    fail++;
-    console.log(`  ✗ FAIL: ${name}`, extra ?? "");
-  }
-};
+const { check, finish, passed, failed } = createSuite();
 
 function seedWithShadowedNode(entry: string, cwd: string, env: NodeJS.ProcessEnv, version: string) {
   const tools = join(env.HOME!, "tools");
@@ -362,5 +353,6 @@ try {
   rmSync(base, { recursive: true, force: true });
 }
 
-console.log(`\nseed-tarball smoke: ${pass} passed, ${fail} failed`);
-process.exit(fail ? 1 : 0);
+console.log(`\nseed-tarball smoke: ${passed()} passed, ${failed()} failed`);
+finish();
+process.exit(failed() ? 1 : 0);

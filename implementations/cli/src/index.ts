@@ -476,12 +476,7 @@ const baseCommands: Command[] = [
       { name: "expires-in", type: "string", value: "<seconds>", description: "static mesh, bare join: end this session's credential after this many seconds; omitted, it has no expiry and ends when you leave" },
       { name: "expires-at", type: "string", value: "<unix-seconds>", description: "static mesh, bare join: end this session's credential at this time; never with --expires-in" },
     ],
-    run: (args) => {
-      const channel = args.values.channel;
-      return join(typeof channel === "string" && channel.startsWith("#")
-        ? { ...args, values: { ...args.values, channel: channel.slice(1) } }
-        : args);
-    },
+    run: join,
   },
   {
     kind: "command", name: "mint", group: "Identity", hidden: true,
