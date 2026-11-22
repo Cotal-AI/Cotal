@@ -115,6 +115,8 @@ The presets built into the CLI are `auth-service`, `broker`, `delivery`, `exec-e
 `feedback-intake` and `manager`. The `linear` and `web` presets come with the `@cotal-ai/linear`
 and `@cotal-ai/web` extensions, which `cotal ext add <package>` installs. Bare `service` lists the
 presets this machine has, and a name it does not have is refused as `DEPENDENCY_UNAVAILABLE`.
+Without a preset name, `--preset` is refused with exit 1. The text refusal includes the
+`cotal service add --help` output on stderr, including `--preset <name>`.
 
 `cotal service add <name> --preset <preset> --help` lists a preset's options. An option the preset
 fills itself shows `(default: ...)`, such as the space's root for `--root` and `pty` for the
