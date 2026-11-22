@@ -308,7 +308,7 @@ import {
 } from "../lib/restore.js";
 import { attemptProcessesGone } from "../lib/isolated-broker.js";
 import { assertEndpointUnreachable } from "../lib/endpoint-cut.js";
-import { addressHolder, brokerListenAddress, listenerBindError } from "../lib/broker-service.js";
+import { brokerAddressConflict } from "../lib/broker-service.js";
 import { freePort, freshStackServer, retryStackAddress, serverWithFreePort } from "../lib/up-broker-address.js";
 import { askManager } from "@cotal-ai/workspace/control";
 import { cliControl } from "../lib/control.js";
@@ -4471,14 +4471,10 @@ export async function startMeshDetached(
  *  the controller stack refuses it. nats-server would exit on its bind with only a log line, and the
  *  readiness probe would wait on that program instead. `command` is the start the remedy reruns. */
 async function assertBrokerAddressFree(server: string, command: string, bindHost?: string): Promise<void> {
-  const bindError = await listenerBindError(server, bindHost);
-  if (bindError === undefined || bindError === "timeout" || bindError.code !== "EADDRINUSE") return;
-  const { host: dialHost, port } = brokerListenAddress(server), address = new URL(server);
-  const host = bindHost ?? dialHost;
-  const { says, frees } = await addressHolder("the broker address", host, port);
-  throw new CommandFailure("refused", "CONFLICT", `${says} (bind failed: address already in use); no broker was launched`, {
-    target: { root: cotalRoot(), server, bindError: bindError.code },
-    remedy: `start it at another address with ${codeSpan(`${command} --server ${address.protocol}//${address.hostname}:<port>`)}, or ${frees} and run ${codeSpan(command)} again`,
+  const conflict = await brokerAddressConflict(server, command, bindHost);
+  if (!conflict) return;
+  throw new CommandFailure("refused", "CONFLICT", `${conflict.message} (bind failed: address already in use); no broker was launched`, {
+    target: { root: cotalRoot(), server, bindError: "EADDRINUSE" }, remedy: conflict.remedy,
   });
 }
 

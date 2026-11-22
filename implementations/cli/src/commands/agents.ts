@@ -44,6 +44,7 @@ import { shellWord } from "../lib/endpoint-errors.js";
 import { runningStackManagerPid, stackManagerAbsent, stackManagerStarting, unusableStackJournal } from "../lib/stack-journal.js";
 import { connectorHarnesses } from "../lib/status.js";
 import { channelSeedRestartBlock } from "../lib/channel-seed.js";
+import { legacyRestartAddressProblem } from "../lib/broker-service.js";
 import { rootStoreProblem } from "../lib/store-dir.js";
 import { askManager, scatterManager, managerFailure, readFailure, refuseUnregisteredManager, startStackManagerRemedy, unansweredDescribeRefusal, type ScatterInstanceLiveness, type ScatterInstanceReply, type ManagerPin, managersByInstance, type ManagerCandidate, askYourManagers, locateSeat, managerReadFailure, refusedManagers, seatMissRefusal } from "@cotal-ai/workspace/control";
 
@@ -610,7 +611,9 @@ export async function ps(args: ParsedArgs): Promise<void> {
     }
     const parts = isConnectRefusal(e) ? e.parts : isWorkspaceTargetError(e) && e.code === "not-started" ? workspaceErrorParts({ kind: "target", error: e }) : undefined;
     if (parts?.restartRoot !== undefined) {
-      const block = channelSeedRestartBlock(parts.restartRoot);
+      const cause = isConnectRefusal(e) ? e.cause : e;
+      const block = channelSeedRestartBlock(parts.restartRoot) ?? (isWorkspaceTargetError(cause) && cause.details.lastRun
+        ? await legacyRestartAddressProblem(cause.details.server, `${displayCmd()} up`) : undefined);
       if (block) throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `${parts.message}. Restart blocked: ${block.message}`, {
         target: isConnectRefusal(e) ? e.target : isWorkspaceTargetError(e) ? spaceRootTarget(e.details) : undefined,
         native: isConnectRefusal(e) ? e.native : undefined,
