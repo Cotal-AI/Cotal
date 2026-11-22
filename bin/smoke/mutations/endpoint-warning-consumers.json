@@ -99,7 +99,7 @@
     },
     {
       "name": "status snapshot loses its explicit warning disposition",
-      "file": "implementations/cli/src/commands/status.ts",
+      "file": "implementations/cli/src/commands/status-meshes.ts",
       "find": "  ep.on(\"warning\", ignoreSnapshotWarning);",
       "replace": "  void ignoreSnapshotWarning;",
       "cell": "status snapshot deliberately ignores recoverable side-channel warnings",
