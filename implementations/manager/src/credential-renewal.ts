@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { accountFromCreds, credsClaims, credsRenewalDelayMs, divergentSecretStoreNotice, inspectCredHealth, mintCreds, parseDaemonStoreAnswer, parseSecretStoreIdentity, rejectionText, REMOTE_MANAGER_IDENTITY_NAMES, requestSafeReconnect, sameSecretStoreIdentity, serveIssuanceGateKv, STANDING_RENEWABLE_TTL_SEC, type ControlReply, type CredHealth, type DaemonStoreAnswer, type DeliveryLeaseInfo, type EpServeHandle } from "@cotal-ai/core";
+import { accountFromCreds, credsClaims, credsRenewalDelayMs, divergentSecretStoreNotice, inspectCredHealth, mintCreds, parseDaemonStoreAnswer, parseSecretStoreIdentity, rejectionText, REMOTE_MANAGER_IDENTITY_NAMES, requestSafeReconnect, sameSecretStoreIdentity, serveIssuanceGateKv, STANDING_RENEWABLE_TTL_SEC, type ControlReply, type CredHealth, type DaemonStoreAnswer, type DeliveryLeaseInfo, type EpServeHandle, type SecretStoreIdentity } from "@cotal-ai/core";
 import { agentSecretKeyForFile, DELIVERY_CREDS_KIND, MEMBERSHIP_RW_CREDS_KIND, remintDaemonCreds, spaceMaterialKey, SYSTEM_CREDS_FILES, writeRenewalRecord, type RenewalRecord } from "@cotal-ai/workspace";
 import type { KV } from "@nats-io/kv";
 import { credsAuthenticator, RequestError, type NatsConnection } from "@nats-io/transport-node";
@@ -71,46 +71,18 @@ const STORE_CHALLENGE_TIMEOUT_MS = 5_000;
 export interface CredentialRenewalDeps {
   agents: () => Manager["agents"];
   auth: () => Manager["auth"];
-  credentialPushRetry: () => Manager["credentialPushRetry"];
-  setCredentialPushRetry: (value: Manager["credentialPushRetry"]) => void;
-  credentialPushes: () => Manager["credentialPushes"];
-  daemonRenewalEligible: () => Manager["daemonRenewalEligible"];
-  setDaemonRenewalEligible: (value: Manager["daemonRenewalEligible"]) => void;
-  daemonRenewalOwner: () => Manager["daemonRenewalOwner"];
-  setDaemonRenewalOwner: (value: Manager["daemonRenewalOwner"]) => void;
-  endpointServeRenewalTimer: () => Manager["endpointServeRenewalTimer"];
-  setEndpointServeRenewalTimer: (value: Manager["endpointServeRenewalTimer"]) => void;
   ep: () => Manager["ep"];
-  finishRemoteBundleAdoption: () => Manager["finishRemoteBundleAdoption"];
-  setFinishRemoteBundleAdoption: (value: Manager["finishRemoteBundleAdoption"]) => void;
   goalWriter: () => Manager["goalWriter"];
   goalWriterCreds: () => Manager["goalWriterCreds"];
   setGoalWriterCreds: (value: Manager["goalWriterCreds"]) => void;
   leaseStopping: () => Manager["leaseStopping"];
   managerInstanceId: () => Manager["managerInstanceId"];
-  pendingCredentialPushes: () => Manager["pendingCredentialPushes"];
   remoteAuthority: () => Manager["remoteAuthority"];
-  remoteBundleAdoption: () => Manager["remoteBundleAdoption"];
-  setRemoteBundleAdoption: (value: Manager["remoteBundleAdoption"]) => void;
-  remoteBundleRenewal: () => Manager["remoteBundleRenewal"];
-  setRemoteBundleRenewal: (value: Manager["remoteBundleRenewal"]) => void;
-  remoteExecutorCreds: () => Manager["remoteExecutorCreds"];
-  setRemoteExecutorCreds: (value: Manager["remoteExecutorCreds"]) => void;
-  remoteRenewalDebt: () => Manager["remoteRenewalDebt"];
-  setRemoteRenewalDebt: (value: Manager["remoteRenewalDebt"]) => void;
-  remoteSupervisorCreds: () => Manager["remoteSupervisorCreds"];
-  setRemoteSupervisorCreds: (value: Manager["remoteSupervisorCreds"]) => void;
   runHosting: () => Manager["runHosting"];
-  secretStoreIdentity: () => Manager["secretStoreIdentity"];
-  setSecretStoreIdentity: (value: Manager["secretStoreIdentity"]) => void;
   serviceServe: () => Manager["serviceServe"];
   sessionLedgerConn: () => Manager["sessionLedgerConn"];
   sessionLedgerCreds: () => Manager["sessionLedgerCreds"];
   setSessionLedgerCreds: (value: Manager["sessionLedgerCreds"]) => void;
-  supervisorCredentialPush: () => Manager["supervisorCredentialPush"];
-  setSupervisorCredentialPush: (value: Manager["supervisorCredentialPush"]) => void;
-  supervisorCredentialPushPending: () => Manager["supervisorCredentialPushPending"];
-  setSupervisorCredentialPushPending: (value: Manager["supervisorCredentialPushPending"]) => void;
   userMode: () => Manager["userMode"];
   deliveryShard: () => (typeof Manager)["DELIVERY_SHARD"];
   beginLifecycle: (...args: Parameters<Manager["beginLifecycle"]>) => ReturnType<Manager["beginLifecycle"]>;
@@ -131,46 +103,18 @@ export function credentialRenewalDeps(m: Manager): CredentialRenewalDeps {
   return {
     agents: () => m["agents"],
     auth: () => m["auth"],
-    credentialPushRetry: () => m["credentialPushRetry"],
-    setCredentialPushRetry: (value) => { m["credentialPushRetry"] = value; },
-    credentialPushes: () => m["credentialPushes"],
-    daemonRenewalEligible: () => m["daemonRenewalEligible"],
-    setDaemonRenewalEligible: (value) => { m["daemonRenewalEligible"] = value; },
-    daemonRenewalOwner: () => m["daemonRenewalOwner"],
-    setDaemonRenewalOwner: (value) => { m["daemonRenewalOwner"] = value; },
-    endpointServeRenewalTimer: () => m["endpointServeRenewalTimer"],
-    setEndpointServeRenewalTimer: (value) => { m["endpointServeRenewalTimer"] = value; },
     ep: () => m["ep"],
-    finishRemoteBundleAdoption: () => m["finishRemoteBundleAdoption"],
-    setFinishRemoteBundleAdoption: (value) => { m["finishRemoteBundleAdoption"] = value; },
     goalWriter: () => m["goalWriter"],
     goalWriterCreds: () => m["goalWriterCreds"],
     setGoalWriterCreds: (value) => { m["goalWriterCreds"] = value; },
     leaseStopping: () => m["leaseStopping"],
     managerInstanceId: () => m["managerInstanceId"],
-    pendingCredentialPushes: () => m["pendingCredentialPushes"],
     remoteAuthority: () => m["remoteAuthority"],
-    remoteBundleAdoption: () => m["remoteBundleAdoption"],
-    setRemoteBundleAdoption: (value) => { m["remoteBundleAdoption"] = value; },
-    remoteBundleRenewal: () => m["remoteBundleRenewal"],
-    setRemoteBundleRenewal: (value) => { m["remoteBundleRenewal"] = value; },
-    remoteExecutorCreds: () => m["remoteExecutorCreds"],
-    setRemoteExecutorCreds: (value) => { m["remoteExecutorCreds"] = value; },
-    remoteRenewalDebt: () => m["remoteRenewalDebt"],
-    setRemoteRenewalDebt: (value) => { m["remoteRenewalDebt"] = value; },
-    remoteSupervisorCreds: () => m["remoteSupervisorCreds"],
-    setRemoteSupervisorCreds: (value) => { m["remoteSupervisorCreds"] = value; },
     runHosting: () => m["runHosting"],
-    secretStoreIdentity: () => m["secretStoreIdentity"],
-    setSecretStoreIdentity: (value) => { m["secretStoreIdentity"] = value; },
     serviceServe: () => m["serviceServe"],
     sessionLedgerConn: () => m["sessionLedgerConn"],
     sessionLedgerCreds: () => m["sessionLedgerCreds"],
     setSessionLedgerCreds: (value) => { m["sessionLedgerCreds"] = value; },
-    supervisorCredentialPush: () => m["supervisorCredentialPush"],
-    setSupervisorCredentialPush: (value) => { m["supervisorCredentialPush"] = value; },
-    supervisorCredentialPushPending: () => m["supervisorCredentialPushPending"],
-    setSupervisorCredentialPushPending: (value) => { m["supervisorCredentialPushPending"] = value; },
     userMode: () => m["userMode"],
     deliveryShard: () => (m.constructor as typeof Manager).DELIVERY_SHARD,
     beginLifecycle: (...args) => m["beginLifecycle"](...args),
@@ -191,50 +135,52 @@ export function credentialRenewalDeps(m: Manager): CredentialRenewalDeps {
 export class CredentialRenewal {
   constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: CredentialRenewalDeps) {}
 
+  /** Named identity of {@link ManagerConfig.secrets}: the same coordinate the delivery daemon must reload from.
+   *  Set at construction for an injected store; the workspace store is named on first challenge. */
+  secretStoreIdentity?: SecretStoreIdentity;
+  /** #2073: the `endpoint-serve` credential's OWN renewal, armed from its `[renewAt, exp)` window
+   *  (`credsRenewalDelayMs`) rather than left to `credRenewTimer`'s boot-phased TTL/4 tick, which can
+   *  miss the window by ordering. Re-armed at registration and after every successful re-mint;
+   *  cleared in `stop()` beside `credRenewTimer`. */
+  endpointServeRenewalTimer?: ReturnType<typeof setTimeout>;
+  /** #1634: does THIS manager own the delivery daemon's credential renewal? True only while the
+   *  daemon reloads from this manager's store AND this manager holds the per-space renewal lease.
+   *  Starts false: a manager that has not proved both must not remint. */
+  daemonRenewalOwner: boolean = false;
+  /** #2561: may the lease heartbeat contend at all? Set by every claim, false while the daemon names
+   *  another store or the challenge refused. Without it the heartbeat re-takes the lease the claim
+   *  just released and holds it against every manager and `doctor auth --fix` that can remint. */
+  daemonRenewalEligible: boolean = false;
+  remoteExecutorCreds?: string;
+  remoteSupervisorCreds?: string;
+  remoteBundleRenewal?: Promise<void>;
+  remoteBundleAdoption?: Promise<void>;
+  finishRemoteBundleAdoption?: () => void;
+  /** A refused or failed standing candidate is cleanup debt, never a silent loss: the last-good
+   * family stays live and this records what the host may have signed but the manager never adopted. */
+  remoteRenewalDebt?: { at: number; processEpoch: number; reason: string; unadoptedSubjects: string[] };
+  credentialPushRetry?: ReturnType<typeof setTimeout>;
+  readonly credentialPushes: Map<NatsConnection, Promise<void>> = new Map<NatsConnection, Promise<void>>();
+  supervisorCredentialPush?: Promise<void>;
+  readonly pendingCredentialPushes: Set<NatsConnection> = new Set<NatsConnection>();
+  supervisorCredentialPushPending: boolean = false;
+
   // The Manager members these bodies use, under their Manager names. Each reads or writes through
   // its dep at use.
   private get agents() { return this.deps.agents(); }
   private get auth() { return this.deps.auth(); }
-  private get credentialPushRetry() { return this.deps.credentialPushRetry(); }
-  private set credentialPushRetry(value: Manager["credentialPushRetry"]) { this.deps.setCredentialPushRetry(value); }
-  private get credentialPushes() { return this.deps.credentialPushes(); }
-  private get daemonRenewalEligible() { return this.deps.daemonRenewalEligible(); }
-  private set daemonRenewalEligible(value: Manager["daemonRenewalEligible"]) { this.deps.setDaemonRenewalEligible(value); }
-  private get daemonRenewalOwner() { return this.deps.daemonRenewalOwner(); }
-  private set daemonRenewalOwner(value: Manager["daemonRenewalOwner"]) { this.deps.setDaemonRenewalOwner(value); }
-  private get endpointServeRenewalTimer() { return this.deps.endpointServeRenewalTimer(); }
-  private set endpointServeRenewalTimer(value: Manager["endpointServeRenewalTimer"]) { this.deps.setEndpointServeRenewalTimer(value); }
   private get ep() { return this.deps.ep(); }
-  private get finishRemoteBundleAdoption() { return this.deps.finishRemoteBundleAdoption(); }
-  private set finishRemoteBundleAdoption(value: Manager["finishRemoteBundleAdoption"]) { this.deps.setFinishRemoteBundleAdoption(value); }
   private get goalWriter() { return this.deps.goalWriter(); }
   private get goalWriterCreds() { return this.deps.goalWriterCreds(); }
   private set goalWriterCreds(value: Manager["goalWriterCreds"]) { this.deps.setGoalWriterCreds(value); }
   private get leaseStopping() { return this.deps.leaseStopping(); }
   private get managerInstanceId() { return this.deps.managerInstanceId(); }
-  private get pendingCredentialPushes() { return this.deps.pendingCredentialPushes(); }
   private get remoteAuthority() { return this.deps.remoteAuthority(); }
-  private get remoteBundleAdoption() { return this.deps.remoteBundleAdoption(); }
-  private set remoteBundleAdoption(value: Manager["remoteBundleAdoption"]) { this.deps.setRemoteBundleAdoption(value); }
-  private get remoteBundleRenewal() { return this.deps.remoteBundleRenewal(); }
-  private set remoteBundleRenewal(value: Manager["remoteBundleRenewal"]) { this.deps.setRemoteBundleRenewal(value); }
-  private get remoteExecutorCreds() { return this.deps.remoteExecutorCreds(); }
-  private set remoteExecutorCreds(value: Manager["remoteExecutorCreds"]) { this.deps.setRemoteExecutorCreds(value); }
-  private get remoteRenewalDebt() { return this.deps.remoteRenewalDebt(); }
-  private set remoteRenewalDebt(value: Manager["remoteRenewalDebt"]) { this.deps.setRemoteRenewalDebt(value); }
-  private get remoteSupervisorCreds() { return this.deps.remoteSupervisorCreds(); }
-  private set remoteSupervisorCreds(value: Manager["remoteSupervisorCreds"]) { this.deps.setRemoteSupervisorCreds(value); }
   private get runHosting() { return this.deps.runHosting(); }
-  private get secretStoreIdentity() { return this.deps.secretStoreIdentity(); }
-  private set secretStoreIdentity(value: Manager["secretStoreIdentity"]) { this.deps.setSecretStoreIdentity(value); }
   private get serviceServe() { return this.deps.serviceServe(); }
   private get sessionLedgerConn() { return this.deps.sessionLedgerConn(); }
   private get sessionLedgerCreds() { return this.deps.sessionLedgerCreds(); }
   private set sessionLedgerCreds(value: Manager["sessionLedgerCreds"]) { this.deps.setSessionLedgerCreds(value); }
-  private get supervisorCredentialPush() { return this.deps.supervisorCredentialPush(); }
-  private set supervisorCredentialPush(value: Manager["supervisorCredentialPush"]) { this.deps.setSupervisorCredentialPush(value); }
-  private get supervisorCredentialPushPending() { return this.deps.supervisorCredentialPushPending(); }
-  private set supervisorCredentialPushPending(value: Manager["supervisorCredentialPushPending"]) { this.deps.setSupervisorCredentialPushPending(value); }
   private get userMode() { return this.deps.userMode(); }
   private beginLifecycle(...args: Parameters<Manager["beginLifecycle"]>): ReturnType<Manager["beginLifecycle"]> { return this.deps.beginLifecycle(...args); }
   private dialRemoteStanding(...args: Parameters<Manager["dialRemoteStanding"]>): ReturnType<Manager["dialRemoteStanding"]> { return this.deps.dialRemoteStanding(...args); }

@@ -44,7 +44,6 @@ export interface ManagerBootDeps {
   managerServeIdentity: () => Manager["managerServeIdentity"];
   setManagerServeIdentity: (value: Manager["managerServeIdentity"]) => void;
   remoteAuthority: () => Manager["remoteAuthority"];
-  remoteSupervisorCreds: () => Manager["remoteSupervisorCreds"];
   resumeCredRenewal: () => Manager["resumeCredRenewal"];
   setResumeCredRenewal: (value: Manager["resumeCredRenewal"]) => void;
   runHosting: () => Manager["runHosting"];
@@ -97,7 +96,6 @@ export function bootDeps(m: Manager): ManagerBootDeps {
     managerServeIdentity: () => m["managerServeIdentity"],
     setManagerServeIdentity: (value) => { m["managerServeIdentity"] = value; },
     remoteAuthority: () => m["remoteAuthority"],
-    remoteSupervisorCreds: () => m["remoteSupervisorCreds"],
     resumeCredRenewal: () => m["resumeCredRenewal"],
     setResumeCredRenewal: (value) => { m["resumeCredRenewal"] = value; },
     runHosting: () => m["runHosting"],
@@ -132,7 +130,7 @@ export function bootDeps(m: Manager): ManagerBootDeps {
 
 /** Starting the manager: admitting its execution state, connecting and registering it, taking its instance lease, and healing a predecessor's frozen registration gate. */
 export class ManagerBoot {
-  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: ManagerBootDeps, private readonly parts: Pick<ManagerParts, "connectorInventory" | "lease">) {}
+  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: ManagerBootDeps, private readonly parts: Pick<ManagerParts, "connectorInventory" | "credentialRenewal" | "lease">) {}
 
   // The Manager members these bodies read, under their Manager names. Each reads through its dep at
   // use, so a field the Manager assigns later is current and a method a test replaces on the Manager
@@ -154,7 +152,6 @@ export class ManagerBoot {
   private get managerServeIdentity() { return this.deps.managerServeIdentity(); }
   private set managerServeIdentity(value: Manager["managerServeIdentity"]) { this.deps.setManagerServeIdentity(value); }
   private get remoteAuthority() { return this.deps.remoteAuthority(); }
-  private get remoteSupervisorCreds() { return this.deps.remoteSupervisorCreds(); }
   private get resumeCredRenewal() { return this.deps.resumeCredRenewal(); }
   private set resumeCredRenewal(value: Manager["resumeCredRenewal"]) { this.deps.setResumeCredRenewal(value); }
   private get runHosting() { return this.deps.runHosting(); }
@@ -334,7 +331,7 @@ export class ManagerBoot {
     if (this.remoteAuthority) {
       const remote = this.remoteAuthority;
       id = remote.identities.supervisor.id;
-      creds = async () => this.remoteSupervisorCreds!;
+      creds = async () => this.parts.credentialRenewal.remoteSupervisorCreds!;
     } else if (this.auth) {
       const identity = newIdentity();
       const auth = this.auth;
@@ -474,9 +471,9 @@ export class ManagerBoot {
       if (this.remoteAuthority.renewStandingBundle) await this.renewRemoteStandingBundle();
       else await this.renewRemoteExecutor();
       let standingTtl = STANDING_RENEWABLE_TTL_SEC;
-      if (this.remoteSupervisorCreds) {
+      if (this.parts.credentialRenewal.remoteSupervisorCreds) {
         try {
-          const claims = credsClaims(this.remoteSupervisorCreds);
+          const claims = credsClaims(this.parts.credentialRenewal.remoteSupervisorCreds);
           if (typeof claims.exp === "number" && typeof claims.iat === "number" && claims.exp > claims.iat) {
             standingTtl = claims.exp - claims.iat;
           }

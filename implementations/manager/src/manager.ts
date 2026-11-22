@@ -6,7 +6,7 @@ import { join, resolve } from "node:path";
 import { CotalEndpoint, accountFromCreds, DEFAULT_SERVER, DEV_OWNER, injectedSecretStoreIdentity, type DeprovisionResourceAccounting, type IssuedBinding, type IssuedStore, mintLifecycleUid, parsePrincipalKey, principalKey, probeConnect, resolveAuthProvider } from "@cotal-ai/core";
 import { retainConnectorSeat } from "@cotal-ai/workspace";
 import { agentSecretKeyForFile, DEFAULT_SEAT_CAP, findCotalRoot, loadManagerInstanceIdentity, manifestExtensionNames, materializeFromManifest, runtimeInstallHint, spaceKey, userAuthStateDir, workspaceSecretStore, type ManagerInstanceIdentity, type SeatCap } from "@cotal-ai/workspace";
-import type { ActionContext, EpCapability, PersonaEndpoint, RunAdmission, Connector, ControlReply, DelegatedGrant, EpCaller, LaunchSpec, Presence, RuntimeProvider, RuntimeReference, SecretStore, SecretStoreIdentity, SpaceAuth, StartupOutcome } from "@cotal-ai/core";
+import type { ActionContext, EpCapability, PersonaEndpoint, RunAdmission, Connector, ControlReply, DelegatedGrant, EpCaller, LaunchSpec, Presence, RuntimeProvider, RuntimeReference, SecretStore, SpaceAuth, StartupOutcome } from "@cotal-ai/core";
 import {
   createRuntime,
   isCustodialRuntime,
@@ -554,9 +554,6 @@ export class Manager {
     goalAcceptanceRetentionMs: TURN_ANSWER_RETENTION_MS,
   });
 
-  /** Named identity of {@link ManagerConfig.secrets}: the same coordinate the delivery daemon must reload from.
-   *  Set at construction for an injected store; the workspace store is named on first challenge. */
-  protected secretStoreIdentity?: SecretStoreIdentity;
   /** See {@link ManagerOptions.installedExtensions}. */
   protected readonly installedExtensions: boolean;
   // Declared only: no own Runtime slot exists in the none arm.
@@ -726,19 +723,6 @@ export class Manager {
   /** The class-2 renewal owner's half-TTL schedule; armed only on auth meshes. */
   protected credRenewTimer?: ReturnType<typeof setInterval>;
   protected resumeCredRenewal?: () => void;
-  /** #2073: the `endpoint-serve` credential's OWN renewal, armed from its `[renewAt, exp)` window
-   *  (`credsRenewalDelayMs`) rather than left to `credRenewTimer`'s boot-phased TTL/4 tick, which can
-   *  miss the window by ordering. Re-armed at registration and after every successful re-mint;
-   *  cleared in `stop()` beside `credRenewTimer`. */
-  protected endpointServeRenewalTimer?: ReturnType<typeof setTimeout>;
-  /** #1634: does THIS manager own the delivery daemon's credential renewal? True only while the
-   *  daemon reloads from this manager's store AND this manager holds the per-space renewal lease.
-   *  Starts false: a manager that has not proved both must not remint. */
-  protected daemonRenewalOwner = false;
-  /** #2561: may the lease heartbeat contend at all? Set by every claim, false while the daemon names
-   *  another store or the challenge refused. Without it the heartbeat re-takes the lease the claim
-   *  just released and holds it against every manager and `doctor auth --fix` that can remint. */
-  protected daemonRenewalEligible = false;
   protected daemonRenewalLeaseTimer?: ReturnType<typeof setInterval>;
   protected maintenanceState: ManagerMaintenanceState = "active";
   protected lifecycleInFlight = 0;
@@ -750,14 +734,6 @@ export class Manager {
   protected resumeRequired = false;
   protected resumeDurableCommitToken?: string;
   protected readonly remoteAuthority?: NonNullable<ManagerOptions["remoteAuthority"]>;
-  protected remoteExecutorCreds?: string;
-  protected remoteSupervisorCreds?: string;
-  protected remoteBundleRenewal?: Promise<void>;
-  protected remoteBundleAdoption?: Promise<void>;
-  protected finishRemoteBundleAdoption?: () => void;
-  /** A refused or failed standing candidate is cleanup debt, never a silent loss: the last-good
-   * family stays live and this records what the host may have signed but the manager never adopted. */
-  protected remoteRenewalDebt?: { at: number; processEpoch: number; reason: string; unadoptedSubjects: string[] };
 
   /** {@link BrokerTransport.dial}. */
   protected dial(...args: Parameters<BrokerTransport["dial"]>): ReturnType<BrokerTransport["dial"]> { return this.brokerTransportComponent.dial(...args); }
@@ -821,7 +797,7 @@ export class Manager {
   private readonly readinessWaitComponent = new ReadinessWait(this.config, readinessWaitDeps(this));
 
   /** Broker dials and scoped executor connections. Every dependency reads through at its use. */
-  private readonly brokerTransportComponent = new BrokerTransport(this.config, brokerTransportDeps(this));
+  private readonly brokerTransportComponent = new BrokerTransport(this.config, brokerTransportDeps(this), this.parts);
 
   /** The start and launch control doors. Every dependency reads through at its use. */
   private readonly startDoorsComponent = new StartDoors(this.config, startDoorsDeps(this));
@@ -880,14 +856,14 @@ export class Manager {
     config.maxSessions = opts.maxSessions;
     config.seatCap = opts.seatCap ?? DEFAULT_SEAT_CAP;
     this.remoteAuthority = opts.remoteAuthority;
-    this.remoteExecutorCreds = opts.remoteAuthority?.executorCreds;
-    this.remoteSupervisorCreds = opts.remoteAuthority?.supervisorCreds;
+    this.credentialRenewal.remoteExecutorCreds = opts.remoteAuthority?.executorCreds;
+    this.credentialRenewal.remoteSupervisorCreds = opts.remoteAuthority?.supervisorCreds;
     if (opts.pooled && (!opts.remoteAuthority?.accountPublicKey ||
         accountFromCreds(opts.remoteAuthority.supervisorCreds) !== opts.remoteAuthority.accountPublicKey))
       throw new Error("pooled control requires a proved assigned account for its initial supervisor credential");
     if (opts.remoteAuthority) config.managerLifecycleUid = opts.remoteAuthority.lifecycleUid;
     config.secrets = opts.secretStore ?? workspaceSecretStore(this.config.workspaceRoot);
-    if (opts.secretStore) this.secretStoreIdentity = injectedSecretStoreIdentity(opts.secretStore);
+    if (opts.secretStore) this.credentialRenewal.secretStoreIdentity = injectedSecretStoreIdentity(opts.secretStore);
     this.installedExtensions = opts.installedExtensions ?? false;
     config.expectedConnectorGeneration = MANAGER_VERSION;
     config.machineSetupCommand = opts.machineSetupCommand;
@@ -945,6 +921,7 @@ export class Manager {
     );
     Object.assign(this.parts, {
       connectorInventory: this.connectorInventory,
+      credentialRenewal: this.credentialRenewal,
       harnessResolution: this.harnessResolutionComponent,
       lease: this.lease,
       seatLaunch: this.seatLaunch,
@@ -1167,11 +1144,6 @@ export class Manager {
   /** {@link CredentialRenewal.scheduleServeRenewal}. */
   protected scheduleServeRenewal(...args: Parameters<CredentialRenewal["scheduleServeRenewal"]>): ReturnType<CredentialRenewal["scheduleServeRenewal"]> { return this.credentialRenewal.scheduleServeRenewal(...args); }
 
-  protected credentialPushRetry?: ReturnType<typeof setTimeout>;
-  protected readonly credentialPushes = new Map<NatsConnection, Promise<void>>();
-  protected supervisorCredentialPush?: Promise<void>;
-  protected readonly pendingCredentialPushes = new Set<NatsConnection>();
-  protected supervisorCredentialPushPending = false;
   /** {@link CredentialRenewal.boundedReconnect}. */
   protected boundedReconnect(...args: Parameters<CredentialRenewal["boundedReconnect"]>): ReturnType<CredentialRenewal["boundedReconnect"]> { return this.credentialRenewal.boundedReconnect(...args); }
   /** {@link CredentialRenewal.renewDaemonCreds}. */
@@ -1302,8 +1274,8 @@ export class Manager {
   private async stopOnce(withAgents: boolean): Promise<void> {
     this.leaseStopping = true;
     this.config.shutdownReadiness.abort();
-    clearTimeout(this.credentialPushRetry);
-    this.credentialPushRetry = undefined;
+    clearTimeout(this.credentialRenewal.credentialPushRetry);
+    this.credentialRenewal.credentialPushRetry = undefined;
     this.transcripts?.stop();
     this.staticLifecycle.stop();
     const starting = this.startTask;
@@ -1311,7 +1283,7 @@ export class Manager {
     await starting?.catch(() => {});
     if (this.lease.leaseTimer) clearInterval(this.lease.leaseTimer);
     if (this.credRenewTimer) clearInterval(this.credRenewTimer);
-    if (this.endpointServeRenewalTimer) clearTimeout(this.endpointServeRenewalTimer);
+    if (this.credentialRenewal.endpointServeRenewalTimer) clearTimeout(this.credentialRenewal.endpointServeRenewalTimer);
     if (this.daemonRenewalLeaseTimer) clearInterval(this.daemonRenewalLeaseTimer);
     if (this.sessionKeyRenewTimer) clearInterval(this.sessionKeyRenewTimer);
     // A renew already in flight when the timer was cleared above must be awaited, not raced: it can
@@ -1320,7 +1292,7 @@ export class Manager {
     await this.lease.leaseRenewTask?.catch(() => {});
     // Join the bounded Manager renewal. Its stop/deadline fence refuses late adoption, but the
     // host still owns any submitted issuance and its outcome can remain unknown after timeout.
-    await this.remoteBundleRenewal?.catch(() => {});
+    await this.credentialRenewal.remoteBundleRenewal?.catch(() => {});
     // A spawn admitted before the fence closed may still be launching. Its seat must be in the
     // snapshot below, or it would outlive a stop that reported success.
     await this.awaitLifecycleDrain();

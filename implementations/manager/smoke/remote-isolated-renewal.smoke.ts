@@ -80,9 +80,8 @@ type Internals = {
   serviceServe?: { nc: NatsConnection; creds?: string; grant: { epoch: number } };
   goalWriter?: { nc: NatsConnection; creds?: string };
   sessionLedgerConn?: { nc: NatsConnection; creds?: string };
-  remoteSupervisorCreds?: string; remoteExecutorCreds?: string;
-  remoteRenewalDebt?: { processEpoch: number; reason: string; unadoptedSubjects: string[] };
   managerInstanceId: string;
+  credentialRenewal: { remoteSupervisorCreds?: string; remoteExecutorCreds?: string; remoteRenewalDebt?: { processEpoch: number; reason: string; unadoptedSubjects: string[] }; };
 };
 
 let manager: Manager | undefined;
@@ -189,7 +188,7 @@ try {
       assert.ok(await until(() => logged.some((l) => new RegExp(`manager ${label} re-dial attempt failed: .*not serve principal`).test(l)), 7_000), `${label} close handler did not surface host refusal`);
     }
     assert.ok(refusals >= 1, "issuer must refuse first request");
-    assert.equal(m.remoteExecutorCreds, initial.executor, "last-good executor must remain held");
+    assert.equal(m.credentialRenewal.remoteExecutorCreds, initial.executor, "last-good executor must remain held");
     assert.equal(m.serviceServe!.creds, initial.serve, "last-good serve must remain held");
     assert.equal(m.goalWriter!.creds, initial.goalWriter, "last-good goal writer must remain held");
   });
@@ -203,7 +202,7 @@ try {
     }
     assert.ok(adopted, "closed host renewal must supply all five duties");
     for (const n of names) assert.equal(credsClaims(adopted![n]).sub, held[n].id);
-    assert.equal(m.remoteExecutorCreds, adopted!.executor);
+    assert.equal(m.credentialRenewal.remoteExecutorCreds, adopted!.executor);
     assert.equal(m.serviceServe!.creds, adopted!.serve);
     assert.equal(m.goalWriter!.creds, adopted!.goalWriter);
     assert.equal(m.managerInstanceId, instanceId);
