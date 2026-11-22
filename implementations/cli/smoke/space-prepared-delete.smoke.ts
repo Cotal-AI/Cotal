@@ -17,7 +17,7 @@
  * Run: pnpm smoke:space-prepared-delete
  */
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createSuite } from "@cotal-ai/smoke-kit";
@@ -201,6 +201,21 @@ const preview = run(["space", "delete", "b4b", "--dry-run", "--json"]);
 check("a delete preview of a prepared space refuses as unavailable, exit 2", preview.status === 2 && preview.envelope?.error?.code === "TARGET_UNAVAILABLE", shown(preview));
 check("it says the space is prepared and not running", /"b4b" is prepared and not running/.test(preview.envelope?.error?.message ?? ""), preview.envelope?.error);
 check("a space that never ran has no streams, so its remedy names only space forget", /no stack has run for it/.test(preview.envelope?.error?.remedy ?? "") && /cotal space forget b4b/.test(preview.envelope?.error?.remedy ?? "") && !/cotal up/.test(preview.envelope?.error?.remedy ?? ""), preview.envelope?.error);
+
+const damagedRoot = mkdtempSync(join(home, "damaged-"));
+const damagedCreate = run(["space", "create", "damaged", "--root", damagedRoot]);
+check("rig: create a prepared record to damage", damagedCreate.status === 0, shown(damagedCreate));
+const record = join(env.COTAL_HOME, "prepared", `space.${Buffer.from("damaged").toString("hex")}.json`);
+writeFileSync(record, "{");
+for (const flags of [["--dry-run"], []]) {
+  const deletion = run(["space", "delete", "damaged", ...flags, "--json"]);
+  const error = deletion.envelope?.error;
+  check(`delete ${flags.join(" ") || "apply"} names the damaged file and its recovery without contacting a broker`,
+    deletion.status === 1 && error?.code === "SCHEMA_INVALID" && error.message?.includes(record) === true && error.message.includes("no broker was contacted") &&
+    error.remedy?.includes("cotal space forget damaged") === true && readFileSync(record, "utf8") === "{", shown(deletion));
+}
+const forgetDamaged = run(["space", "forget", "damaged", "--json"]);
+check("the recovery command removes the damaged record", forgetDamaged.status === 0 && !existsSync(record), shown(forgetDamaged));
 
 const unknown = run(["space", "delete", "nosuch", "--dry-run", "--json"]);
 check("control: a name nothing records is still not found, exit 2", unknown.status === 2 && unknown.envelope?.error?.code === "TARGET_NOT_FOUND", shown(unknown));

@@ -172,6 +172,8 @@ const ansi = /\x1b\[/;
     ["color saved for a space this machine does not know still names the key", ["config", "set", "color", "never", "--space", "nope"], /color has no per-space value/],
     ["--user with --space", ["config", "get", "harness", "--user", "--space", "demo"], /--user and --space choose different scopes/],
     ["a space name with a space in it", ["config", "--space", "a b"], /"a b" is not a space name/],
+    ["a space name with a leading hyphen", ["config", "get", "harness", "--space=-1"], /starts with "-"/],
+    ["a space name that is too long", ["config", "get", "harness", "--space", "x".repeat(65)], /at most 64/],
     ["get without a key", ["config", "get"], /usage: cotal config get <key>/],
     ["set without a value", ["config", "set", "harness"], /usage: cotal config set <key> <value>/],
     ["an unknown subcommand", ["config", "show"], /cotal config has no subcommand "show"/],
@@ -184,6 +186,9 @@ const ansi = /\x1b\[/;
   }
   const both = run(["config", "--json", "--plain"]);
   check("--json with --plain is refused", both.status === 1 && both.envelope?.error?.code === "USAGE_INVALID", shown(both));
+  const badName = run(["config", "get", "harness", "--space=-1", "--json"]);
+  check("an invalid space selector asks for a valid name, not for a new space",
+    badName.envelope?.error?.remedy === "choose a name that starts with a letter, digit or underscore", shown(badName));
   // A value saved for a space that is neither registered nor prepared would never apply.
   const unknown = run(["config", "set", "persona", "rev", "--space", "nope", "--json"]);
   check("set for a space that is neither registered nor prepared is refused, naming the known spaces, and writes nothing",

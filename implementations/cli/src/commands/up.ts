@@ -4518,13 +4518,13 @@ function ensureRootForSpace(space: string): void {
       remedy: gone ? `forget it with \`cotal space forget ${space}\`, then start it here` : `start it in its folder with \`cotal up --root ${shellWord(prepared.root)} --space ${space}\`, or \`cotal space forget ${space}\` to start it here`,
     });
   }
-  // What spaces does this root already host? Prefer auth material; fall back to a live MeshEntry
-  // whose root is this directory (open meshes have no auth dir).
+  // Auth material, a locally started registration, or a preparation names what this root hosts.
+  // A remote registration uses the root as a connection folder, not as a stack root.
   const hosted = listSpaceAccounts(authDir(root));
   if (hosted.includes(space)) return;
   const existing = hosted.length
     ? hosted
-    : [loadMeshes().find((m) => m.root === root || realpathSafe(m.root) === realpathSafe(root))?.space ?? preparedSpaceAt(root)?.space].filter((s): s is string => !!s);
+    : [localMeshesForRoot(root)[0]?.space ?? preparedSpaceAt(root)?.space].filter((s): s is string => !!s);
   if (existing.length === 0 || existing.includes(space)) return;
   const names = existing.map((s) => `"${s}"`).join(", ");
   if (root !== cwd) {
@@ -4582,14 +4582,6 @@ function assertSelectionNotMoved(root: string, space: string): void {
     target: { root, space: current, preparedRoot: prepared.root },
     remedy: `if this is that folder moved, forget it with \`cotal space forget ${current}\`, then prepare it here with \`cotal space create ${current}\` and run \`cotal up\`; to start "${space}" here, pass --space ${space}`,
   });
-}
-
-function realpathSafe(p: string): string {
-  try {
-    return realpathSync(p);
-  } catch {
-    return p;
-  }
 }
 
 /** The remedy for a hand-registered (`origin === "manual"`) space `claimSpace` refuses to touch.

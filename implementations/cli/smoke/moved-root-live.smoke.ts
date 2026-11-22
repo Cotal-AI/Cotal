@@ -2,7 +2,7 @@
  * Run: pnpm smoke:moved-root:live
  */
 import { spawnSync } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
 import { codeSpan, shellPath } from "@cotal-ai/workspace";
@@ -32,6 +32,13 @@ const json = (cwd: string, ...args: string[]) => {
   const run = cli(cwd, ...args, "--json");
   return { ...run, envelope: JSON.parse(run.stdout) as Envelope };
 };
+const empty = join(scratch, "empty");
+mkdirSync(empty, { mode: 0o700 });
+const emptyAdoption = cli(other, "space", "create", "empty-adoption", "--adopt", "--root", empty, "--plain");
+check("adopting an empty folder refuses and leaves the folder untouched",
+  emptyAdoption.status === 2 && emptyAdoption.stderr.includes("TARGET_NOT_FOUND") &&
+  emptyAdoption.stderr.includes("without --adopt") && readdirSync(empty).length === 0);
+
 const space = "movedroot";
 let started = false;
 try {
