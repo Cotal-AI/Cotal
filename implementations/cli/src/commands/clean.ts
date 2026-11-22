@@ -84,8 +84,14 @@ function recordedAttemptStep(root: string, journal: ReturnType<typeof readMainte
 }
 
 export function validateCleanArguments(args: ParsedArgs): void {
-  if (args.positionals[0] === "history" && args.values["store-dir"] !== undefined)
+  if (args.values["store-dir"] === undefined) return;
+  const target = args.positionals[0];
+  if (target === "history")
     throw new CommandFailure("refused", "USAGE_INVALID", "clean history targets a running mesh. Nothing was purged. Only clean store and clean all take --store-dir.", { selfContained: true });
+  if (target === "restore-fallback" || target === "restore-attempt")
+    throw new CommandFailure("refused", "USAGE_INVALID", `clean ${target} selects a restore by --attempt and does not take --store-dir. Nothing was changed.`, {
+      remedy: "Remove --store-dir and its value only if you intend to act on the restore selected by --attempt.", selfContained: true,
+    });
 }
 
 /** `cotal clean <history|store|all>` - one configurable cleanup verb.
