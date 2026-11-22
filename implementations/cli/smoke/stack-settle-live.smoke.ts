@@ -547,17 +547,21 @@ try {
   {
     const space = "starting";
     const root = prepare(space);
-    const port = await freePort();
-    const child = spawn(process.execPath, ["--import", TSX_IMPORT, CLI, "up", "--server", `nats://127.0.0.1:${port}`, "--json"], { cwd: root, env, stdio: "ignore" });
+    const other = join(projects, "settle");
+    const selected = cli(other, "use", "settle", "--json");
+    check("the caller selects a different stopped space", selected.status === 0, shown(selected));
+    const server = `nats://127.0.0.1:${await freePort()}`;
+    const child = spawn(process.execPath, ["--import", TSX_IMPORT, CLI, "up", "--server", server, "--json"], { cwd: root, env, stdio: "ignore" });
     const pinned = await until(() => pidOf(space, "stack-delivery") !== null, 120_000);
     const delivery = pidOf(space, "stack-delivery");
     if (delivery !== null) process.kill(delivery, "SIGSTOP");
     track(space);
     const manager = () => readStackJournal(root)?.journal.members.find((row) => row.role === "manager")?.state;
-    const starting = cli(root, "ps", "--space", space, "--json");
-    check("ps while an up starts the stack says its manager is starting, TARGET_UNAVAILABLE, exit 2",
-      pinned && child.exitCode === null && manager() === "planned" && starting.status === 2 && starting.env?.error?.code === "TARGET_UNAVAILABLE" &&
-        starting.env.error.message === "the stack's manager is starting, so it has no managed agents to list yet", { ...shown(starting), manager: manager() });
+    const starting = cli(other, "ps", "--space", space, "--server", server, "--plain");
+    const retry = /run `([^`]+)` again once/.exec(starting.stderr)?.[1];
+    check("ps while a different space's manager starts refuses and keeps the target and format in its retry",
+      pinned && child.exitCode === null && manager() === "planned" && starting.status === 2 && starting.stderr.includes("TARGET_UNAVAILABLE") &&
+        starting.stderr.includes("the stack's manager is starting") && retry === `cotal ps --plain --space ${space} --server ${server}`, { ...shown(starting), manager: manager() });
     child.kill("SIGKILL");
     await exited(child);
     const dead = cli(root, "ps", "--space", space, "--json");
@@ -566,6 +570,15 @@ try {
     await until(() => gone(space, "stack-delivery"), 10_000);
     const stopped = cli(root, "down", "--yes", "--json");
     check("down --yes settles that up and stops its broker", stopped.status === 0, shown(stopped));
+    const up = cli(root, "up", "--space", space, "--server", server, "--json");
+    track(space);
+    const retried = retry ? cli(other, ...execWords(retry).slice(1)) : undefined;
+    check("the printed retry reads the intended roster once the manager is ready", up.status === 0 && retried?.status === 0
+      && retried.stdout.includes(`Mesh: ${space}\n`) && retried.stdout.includes("No managed agents."), retried);
+    const down = cli(root, "down", "--yes", "--space", space, "--json");
+    check("the startup retry stack stops", down.status === 0, shown(down));
+    const cleared = cli(other, "use", "--clear", "--json");
+    check("the caller clears its selection", cleared.status === 0, shown(cleared));
   }
 
   // 3. A busy port on the first up (B2-02).

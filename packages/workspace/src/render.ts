@@ -159,6 +159,8 @@ function preflightFailureParts(kind: PreflightFailure, t: MeshTarget, pruned: bo
   const server = brokerAddressForDisplay(t.server) ?? "an invalid broker address";
   const unrecordedAddress = (t.source === "flag-server" || t.source === "flag-space-override") &&
     (t.recordedServer === undefined || brokerUrlKey(t.recordedServer) !== brokerUrlKey(t.server));
+  const recordedAddress = t.recordedServer === undefined ? undefined : brokerAddressForDisplay(t.recordedServer) ?? "an invalid broker address";
+  const recordedRetry = recordedAddress === undefined ? undefined : `check that address, or drop --server and retry with ${codeSpan(`--space ${shellPath(t.space)}`)} to reach its recorded broker at ${recordedAddress}`;
   switch (kind) {
     case "non-nats-listener":
       return parts(`another non-NATS listener holds ${server} while this folder's broker is stopped`, `stop the listener at ${server} and run \`cotal up\` in ${t.root}, or start on another port with \`cotal up --server nats://127.0.0.1:<port>\` there`);
@@ -171,9 +173,7 @@ function preflightFailureParts(kind: PreflightFailure, t: MeshTarget, pruned: bo
       // about whether that space's mesh runs: name the address that did not answer, and the recorded
       // one when there is one. The recorded broker is never tried in its place.
       if (unrecordedAddress)
-        return t.recordedServer === undefined
-          ? parts(`nothing answered at ${server}, the broker address --server named`, "check that address and that a broker runs there")
-          : parts(`nothing answered at ${server}, the broker address --server named`, `check that address, or drop --server to reach "${t.space}" at ${brokerAddressForDisplay(t.recordedServer) ?? "an invalid broker address"}, where it is recorded`);
+        return parts(`nothing answered at ${server}, the broker address --server named`, recordedRetry ?? "check that address and that a broker runs there");
       // Nothing records the default space that was assumed for a folder whose records name no
       // space, so the folder is what to name, with the step that prepares a space in it again.
       if (t.namesNoSpace)
@@ -205,12 +205,12 @@ function preflightFailureParts(kind: PreflightFailure, t: MeshTarget, pruned: bo
     case "creds-rejected":
       // Another space's broker named by `--server` rejects this space's credentials while this space
       // still runs at its recorded address, so `cotal up` is not the step: name both addresses.
-      if (unrecordedAddress && t.recordedServer !== undefined)
-        return parts(`credentials for "${t.space}" were rejected at ${server}, the broker address --server named; a different mesh may be running there`, `check that address, or drop --server to reach "${t.space}" at ${brokerAddressForDisplay(t.recordedServer) ?? "an invalid broker address"}, where it is recorded`);
+      if (unrecordedAddress && recordedRetry !== undefined)
+        return parts(`credentials for "${t.space}" were rejected at ${server}, the broker address --server named; a different mesh may be running there`, recordedRetry);
       return parts(`credentials for "${t.space}" were rejected at ${server}; a different mesh may be running there`, "run `cotal meshes` to check, or `cotal up` here to start yours");
     case "open-wants-auth":
-      if (unrecordedAddress && t.recordedServer !== undefined)
-        return parts(`broker at ${server}, the address --server named, requires auth, but "${t.space}" is recorded as an open mesh at ${brokerAddressForDisplay(t.recordedServer) ?? "an invalid broker address"}`, `check that address, or drop --server to reach "${t.space}" at ${brokerAddressForDisplay(t.recordedServer) ?? "an invalid broker address"}, where it is recorded`);
+      if (unrecordedAddress && recordedRetry !== undefined)
+        return parts(`broker at ${server}, the address --server named, requires auth, but "${t.space}" is recorded as an open mesh at ${recordedAddress}`, recordedRetry);
       return parts(`broker at ${server} requires auth, but this mesh is open (no trust material)`, "use `--space <name>` for an auth mesh, or run `cotal up` here without `--open`");
     case "stale-auth":
       return parts(`credentials for "${t.space}" have EXPIRED; this mesh enforces bounded credential lifetimes`, `run \`cotal doctor auth\` in ${t.root} for the diagnosis + exact repair (the mesh itself is up)`);
