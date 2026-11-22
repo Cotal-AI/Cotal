@@ -24,6 +24,7 @@ cotal ext add @cotal-ai/acp
 The agent needs a [running mesh](run-a-mesh.mdx) with a manager.
 It finds the space the way other commands do, from the folder the client starts it in.
 A client may start it anywhere, so pin the space with `--space`.
+If no manager is registered, ACP tells you how to start one before opening the thread again.
 
 ## Add Cotal to the client [#add-to-a-client]
 
@@ -93,15 +94,15 @@ A select that would hold 64 or more choices is not offered.
 
 | Command | What it does |
 | --- | --- |
-| `/despawn` | Stops the thread's agent. The thread stays, and its next prompt spawns a new agent when your grant may spawn agents (see [Sign in](#sign-in)). |
+| `/despawn` | Send it by itself to stop the thread's agent. The thread stays, and its next prompt spawns a new agent when your grant may spawn agents (see [Sign in](#sign-in)). |
 | `/roster` | Lists who is on the mesh and what each is doing. |
 | `/channels` | Lists the space's channels. |
 
 ## Sign in [#sign-in]
 
-When the space needs a sign-in, a client that can run a terminal offers **Sign in to Cotal**.
+For a space that authenticates users, a client that can run a terminal offers **Sign in to Cotal**. Open and static-auth spaces do not offer it.
 It runs `cotal acp --auth`, which signs in to a space that authenticates users with `cotal login`.
-When this machine records no space at all, it runs `cotal setup` instead.
+When no space is recorded, the client offers the same action to run `cotal setup` instead.
 
 On a space where people sign in, your own sign-in is enough. Whatever your scope, it lists and
 loads your agents, types into them, stops their turns, reads their event channels and despawns them.
@@ -142,7 +143,7 @@ Logs go to standard error.
 | Flag | Meaning |
 | --- | --- |
 | `--space <name>` | The space the agent works in. |
-| `--server <url>` | The broker address, when the space's record does not give it. |
+| `--server <url>` | The broker address. An explicit address overrides the address recorded for the space. |
 | `--auth` | Sign in to the space, or set one up, then exit. |
 
 Deleted sessions are kept as agent runs in `acp/hidden-runs` under the Cotal home, one per line.

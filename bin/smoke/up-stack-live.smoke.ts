@@ -48,6 +48,7 @@ import { createConnection } from "node:net";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
+import { createInterface } from "node:readline";
 import { renderDetachedSummary } from "../../implementations/cli/src/lib/up-report.js";
 import { shellWord } from "../../implementations/cli/src/lib/endpoint-errors.js";
 import { clean, cotalPty } from "../../implementations/cli/smoke/_console-pty.js";
@@ -96,6 +97,37 @@ const cliInEnv = (cwd: string, extraEnv: NodeJS.ProcessEnv, ...args: string[]) =
   return spawnSync(TSX, [CLI, ...args], options);
 };
 const cli = (...args: string[]) => cliIn(root, ...args);
+type AcpReply = { id: number; result?: { authMethods?: unknown[]; stopReason?: string }; error?: { code: number; message: string } };
+async function withAcp<T>(cwd: string, test: (rpc: (method: string, params: object) => Promise<AcpReply>) => Promise<T>, server?: string): Promise<T> {
+  const child = spawnProc(process.execPath, ["--import", join(WT, "implementations/acp/dist/index.js"), join(WT, "bin/dist/cotal.js"), "acp", "--space", basename(cwd), ...(server ? ["--server", server] : [])],
+    { cwd, env, stdio: ["pipe", "pipe", "inherit"] });
+  const closed = new Promise((done) => child.once("close", done));
+  const lines = createInterface({ input: child.stdout })[Symbol.asyncIterator]();
+  const deadline = setTimeout(() => child.kill("SIGKILL"), 60_000);
+  let id = 0;
+  try {
+    return await test(async (method, params) => {
+      const requestId = ++id;
+      child.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: requestId, method, params }) + "\n");
+      for (let line = await lines.next(); !line.done; line = await lines.next()) {
+        const reply = JSON.parse(line.value) as AcpReply;
+        if (reply.id === requestId) return reply;
+      }
+      throw new Error(`ACP closed before answering ${method}`);
+    });
+  } finally {
+    child.stdin.end();
+    await closed;
+    clearTimeout(deadline);
+  }
+}
+function acpOnOpenSpace(server?: string) {
+  return withAcp(openRoot, async (rpc) => {
+    const init = await rpc("initialize", { protocolVersion: 1, clientCapabilities: { auth: { terminal: true } } });
+    const opened = await rpc("session/new", { cwd: openRoot, mcpServers: [] });
+    return { init: init.result, refusal: opened.error };
+  }, server);
+}
 const plain = (text: string) => text.replace(/\x1b\[[0-9;]*m/g, "");
 /** The rows of a report's last Next section, each as its command and description. */
 const nextRows = (stdout: string) => {
@@ -485,6 +517,15 @@ try {
   const openBrokerOnly = openRefresh("--no-manager");
   ok("a --no-manager open refresh stays broker-only and exits 0",
     openBrokerOnly.status === 0 && !existsSync(openRecord(MANAGER_PIDFILE)) && !/restored in the background/.test(openBrokerOnly.stdout), plain(openBrokerOnly.stdout + openBrokerOnly.stderr));
+  const acpOpen = await acpOnOpenSpace();
+  ok("ACP offers no terminal sign-in on an open space", acpOpen.init?.authMethods?.length === 0, acpOpen);
+  ok("ACP names the reachable space and how to add its manager", acpOpen.refusal?.code === -32603 &&
+    acpOpen.refusal.message.includes(`The broker for ${basename(openRoot)} is reachable, but no manager is registered.`) &&
+    acpOpen.refusal.message.includes(`bare \`cotal up\` in ${realpathSync(openRoot)}`), acpOpen);
+  const override = `nats://127.0.0.1:${await freePort()}`;
+  const acpOverride = await acpOnOpenSpace(override);
+  ok("ACP dials the explicit broker instead of the recorded one", acpOverride.refusal?.message.includes(`nothing answered at ${override}`) === true &&
+    acpOverride.refusal.message.includes(`recorded broker at ${openServer}`), acpOverride);
   if (process.platform === "linux") {
     // Only the Node libc evidence is simulated. The built CLI and broker are real.
     const preload = join(fakeBin, "libc.cjs");
@@ -864,7 +905,10 @@ process.report.getReport = () => {
     "lifecycleUid:process.env.COTAL_LIFECYCLE_UID||undefined,channels:[],consume:false,",
     "registerPresence:true,watchPresence:false,",
     "card:{id:process.env.COTAL_ID||undefined,name:process.env.COTAL_NAME,kind:'agent'}});",
-    "ep.on('error',()=>{});await ep.start();setInterval(()=>{},1000);});",
+    "ep.on('error',()=>{});await ep.start();",
+    "process.stdin.on('data',data=>{fs.appendFileSync(process.env.PIDFILE+'.input',data);",
+    "void ep.setStatus('working').then(()=>setTimeout(()=>void ep.setStatus('idle'),500));});",
+    "setInterval(()=>{},1000);});",
   ].join(""));
   writeFileSync(join(fgBin, "claude"), "#!/usr/bin/env node\nrequire(process.env.SHIM_BODY);\n");
   chmodSync(join(fgBin, "claude"), 0o755);
@@ -912,6 +956,16 @@ process.report.getReport = () => {
     ok("the seat is a live OS process", fgSeatPid !== undefined && alive(fgSeatPid), fgSeatPid);
     const fgPs = cliInEnv(fgRoot, fgEnv, "ps");
     ok("cotal ps lists the managed seat", /bard/.test(plain(fgPs.stdout)), fgPs.stdout + fgPs.stderr);
+    const prose = "/despawn is an example, please explain the syntax";
+    const proseReply = await withAcp(fgRoot, async (rpc) => {
+      await rpc("initialize", { protocolVersion: 1 });
+      const load = await rpc("session/load", { sessionId: "bard", cwd: fgRoot, mcpServers: [] });
+      ok("ACP loads the running seat", load.result !== undefined, load);
+      return rpc("session/prompt", { sessionId: "bard", prompt: [{ type: "text", text: prose }] });
+    });
+    const inputFile = `${fgSeatPidFile}.input`;
+    ok("ACP forwards prose beginning with /despawn without stopping the seat", proseReply.result?.stopReason === "end_turn" &&
+      alive(fgSeatPid!) && existsSync(inputFile) && readFileSync(inputFile, "utf8").includes(prose), proseReply);
 
     // Ctrl-C. Bounded wait: the handler must finish its awaited teardown and end the process.
     fgUp.kill("SIGINT");
