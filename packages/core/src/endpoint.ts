@@ -742,7 +742,7 @@ export class CotalEndpoint extends EventEmitter {
 
   /** The connection bind and teardown of this endpoint. Every dependency is read when it is used, so a
    *  field assigned after construction is seen. */
-  private readonly connection = new EndpointConnection(this.identity, {
+  private readonly connection: EndpointConnection = new EndpointConnection(this.identity, {
     currentBearer: () => this.currentBearer,
     bearerRenewalFailures: () => this.bearerRenewalFailures,
     bearerAdoptedAtMs: () => this.bearerAdoptedAtMs,
@@ -831,7 +831,7 @@ export class CotalEndpoint extends EventEmitter {
     startConsumers: () => this.consumers.startConsumers(),
     publishPresence: () => this.publishPresence(),
     emitRecoverable: (err) => this.emitRecoverable(err),
-    rearmMembershipWatches: () => this.subscriptions.rearmMembershipWatches(),
+    rearmMembershipWatches: (): Promise<void> => this.subscriptions.rearmMembershipWatches(),
     armPlane3: () => this.armPlane3(),
     bindLiveness: (plane) => this.liveness.bindLiveness(plane),
     rebindPrincipalServes: (reconnected) => this.rebindPrincipalServes(reconnected),
@@ -1608,7 +1608,7 @@ export class CotalEndpoint extends EventEmitter {
 
   /** Join, leave and channel listing, and the membership feed watches, of this endpoint. Every
    *  dependency is read when it is used, so a field assigned after construction is seen. */
-  private readonly subscriptions = new EndpointSubscriptions(this.identity, {
+  private readonly subscriptions: EndpointSubscriptions = new EndpointSubscriptions(this.identity, {
     nc: () => this.nc,
     jsm: () => this.jsm,
     stopped: () => this.stopped,
@@ -1635,7 +1635,7 @@ export class CotalEndpoint extends EventEmitter {
     presence: () => this.presence,
     membersRegistry: () => this.membersRegistry(),
     deliveryClassFresh: (channel) => this.deliveryClassFresh(channel),
-    recordOwnWatchConsumer: (info) => this.connection.recordOwnWatchConsumer(info),
+    recordOwnWatchConsumer: (info): string => this.connection.recordOwnWatchConsumer(info),
     watchConsumerDeleteDenied: (stream, name, owner) => this.watchConsumerDeleteDenied(stream, name, owner),
     deleteMembershipConsumer: (jsm, stream, name) => this.deleteMembershipConsumer(jsm, stream, name),
     emit: (event, ...args) => this.emit(event, ...args),
