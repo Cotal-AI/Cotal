@@ -1,4 +1,4 @@
-import { CotalEndpoint, formatChatAge, isEventChannel, parseSubject, partsToText, spacePrefix, chatSubject, type CompletionResult, type CotalMessage, type FlagSpec, type FlagValues, type ParsedArgs, type Subcommand, DEV_OWNER, chatHistDurable, chatStream, credsClaims, idFromCreds, subjectMatches } from "@cotal-ai/core";
+import { CotalEndpoint, formatChatAge, parseSubject, partsToText, spacePrefix, chatSubject, type CompletionResult, type CotalMessage, type FlagSpec, type FlagValues, type ParsedArgs, type Subcommand, DEV_OWNER, chatHistDurable, chatStream, credsClaims, idFromCreds, subjectMatches } from "@cotal-ai/core";
 import { PermissionViolationError } from "@nats-io/transport-node";
 import {
   brokerAddressForDisplay,
@@ -289,7 +289,12 @@ export function validateHistoryArguments(args: ParsedArgs): void {
 /** A JSON history follow that refused before writing its snapshot. */
 export function historySetupFailureRecords(args: ParsedArgs, failure: CommandFailure) {
   const first = args.positionals[0];
-  const target = failure.target ?? { space: args.values.space ?? null, channel: first === undefined ? null : channelOf(first), dms: Boolean(args.values.dms) };
+  const target = {
+    space: args.values.space ?? null,
+    ...(typeof failure.target === "object" && failure.target !== null ? failure.target : {}),
+    channel: first === undefined ? null : channelOf(first),
+    dms: Boolean(args.values.dms),
+  };
   return [
     streamRecord("history", "error", target, { code: failure.code, message: failure.message, ...(failure.remedy === undefined ? {} : { remedy: failure.remedy }) }),
     streamRecord("history", "end", target, { reason: "setup-failed" }),
@@ -420,7 +425,7 @@ export async function readWindow(ep: CotalEndpoint, conn: Connection, req: Windo
   // failure there is a part not read; reading every channel needs it to know what to read.
   let listed: { channel: string; messages: number }[] | undefined;
   try {
-    listed = (await ep.listChannels()).filter((row) => !isEventChannel(row.channel));
+    listed = await ep.listChannels();
   } catch (e) {
     if (req.channel === undefined) {
       if (denial(e)) throw new CommandFailure("refused", "PERMISSION_DENIED", `this identity may not list the channels of ${conn.space}: ${(e as Error).message}`, { target: req.target });
