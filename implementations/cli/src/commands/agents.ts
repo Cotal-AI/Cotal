@@ -1,7 +1,6 @@
 import { DEV_OWNER, assertLifecycleToken, peerLabel, type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs, type Presence } from "@cotal-ai/core";
 import {
   brokerAddressForDisplay,
-  brokerUrlKey,
   codeSpan,
   CommandFailure,
   findMesh,
@@ -28,7 +27,6 @@ import {
   resolveControlTarget,
   resolveMeshTarget,
   spaceRootTarget,
-  stoppedStack,
   workspaceErrorParts,
   connectOrThrow,
 } from "@cotal-ai/workspace";
@@ -45,7 +43,7 @@ import { shellWord } from "../lib/endpoint-errors.js";
 import { runningStackManagerPid, stackManagerAbsent, stackManagerStarting, unusableStackJournal } from "../lib/stack-journal.js";
 import { connectorHarnesses } from "../lib/status.js";
 import { channelSeedRestartBlock } from "../lib/channel-seed.js";
-import { rootStoreProblem } from "../lib/store-dir.js";
+import { seatStoreRefusal } from "../lib/seat-store.js";
 import { askManager, scatterManager, managerFailure, readFailure, refuseUnregisteredManager, startStackManagerRemedy, unansweredDescribeRefusal, type ScatterInstanceLiveness, type ScatterInstanceReply, type ManagerPin, managersByInstance, type ManagerCandidate, askYourManagers, locateSeat, managerReadFailure, refusedManagers, seatMissRefusal } from "@cotal-ai/workspace/control";
 
 /**
@@ -799,24 +797,8 @@ export async function readSeats(v: ConnectFlags & FlagValues<typeof psFlags>, co
   try {
     t = await resolveControlTarget(v, "control-caller-privileged", on, { onRefusal: "throw" });
   } catch (e) {
-    // A stopped local stack cannot restart until its store is writable. Diagnose its store
-    // for an explicit server only when it matches the broker recorded for this space and root.
-    if (isWorkspaceTargetError(e) && e.code === "not-started" && e.details.root !== undefined && !e.details.rootMissing) {
-      const { root, space } = e.details;
-      const sameServer = v.server === undefined || (typeof space === "string" && stoppedStack(root, space, v.server) !== undefined);
-      const store = sameServer ? rootStoreProblem(root) : undefined;
-      if (store) throw new CommandFailure("refused", "PERMISSION_DENIED", store.message, { target: { space: space ?? null, root }, remedy: store.remedy });
-    }
-    if (isConnectRefusal(e) && e.code === "TARGET_UNAVAILABLE" && typeof e.target?.root === "string") {
-      const { root, space } = e.target;
-      const entry = typeof space === "string" ? findMesh(space) : undefined;
-      const stopped = isWorkspaceTargetError(e.cause) && e.cause.code === "not-started";
-      const sameServer = v.server === undefined || (entry
-        ? entry.root === root && brokerUrlKey(entry.server) === brokerUrlKey(v.server)
-        : stopped && typeof space === "string" && stoppedStack(root, space, v.server) !== undefined);
-      const store = sameServer && (stopped || entry?.origin === "up") ? rootStoreProblem(root) : undefined;
-      if (store) throw new CommandFailure("refused", "PERMISSION_DENIED", store.message, { target: e.target, remedy: store.remedy });
-    }
+    const storeRefusal = seatStoreRefusal(e, v);
+    if (storeRefusal) throw storeRefusal;
     // The exchange refused to pick one of your several live managers and named them, so each is
     // read. That is the whole set it counts, not a fallback after a failed read.
     const managers = on === undefined ? await refusedManagers(cliControl, e, v) : undefined;

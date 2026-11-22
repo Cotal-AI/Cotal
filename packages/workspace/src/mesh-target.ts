@@ -26,8 +26,10 @@ import { decodeLocalJson, ProtectedRecordStore, shellPath, unsearchableFolder } 
 import { rootNamesNoSpace } from "./space.js";
 import { codeSpan } from "./text-wrap.js";
 import { tlsIntent } from "./broker-url.js";
-import { spaceFromKey } from "./auth-paths.js";
 import { readLocalRecordSource } from "./local-record-source.js";
+import { retainedLegacyBroker, retainedOpenSpace } from "./retained-broker.js";
+
+export { retainedLegacyBroker, retainedOpenSpace, rootHoldsAccount } from "./retained-broker.js";
 
 /**
  * One coherent answer to "which mesh does this command act on, and where do its creds + personas
@@ -705,41 +707,6 @@ function stackRecord(root: string): { server?: string; stackSpace?: string; home
   } catch {
     return {};
   }
-}
-
-/** The `host:` and `port:` a rendered broker configuration names, as a broker URL. */
-function renderedServer(path: string): string | undefined {
-  try {
-    const file = lstatSync(path);
-    if (!file.isFile() || file.size > 64 * 1024) return undefined;
-    const text = readFileSync(path, "utf8");
-    const host = /^host:\s*(\S+)\s*$/m.exec(text)?.[1], port = /^port:\s*(\d+)\s*$/m.exec(text)?.[1];
-    return host && port ? `nats://${host.includes(":") ? `[${host}]` : host}:${port}` : undefined;
-  } catch { return undefined; }
-}
-
-/** Whether the root holds a broker account, readable or not. */
-export function rootHoldsAccount(root: string): boolean {
-  try { const inventory = accountInventory(authDir(root)); return inventory.spaces.length > 0 || inventory.corrupt.length > 0; }
-  catch { return true; }
-}
-
-/** The space identity recorded by an open broker's rendered configuration. */
-export function retainedOpenSpace(root: string): string | undefined {
-  try {
-    const key = /^# space key: ([0-9a-f]+)$/m.exec(readFileSync(join(root, ".cotal", "server-open.conf"), "utf8"))?.[1];
-    return key === undefined ? undefined : spaceFromKey(key);
-  } catch { return undefined; }
-}
-
-/** The broker address and mode retained in this root's rendered configuration. */
-export function retainedLegacyBroker(root: string): { server: string; open: boolean } | undefined {
-  if (rootHoldsAccount(root)) {
-    const server = renderedServer(join(authDir(root), "server.conf"));
-    return server ? { server, open: false } : undefined;
-  }
-  const server = renderedServer(join(root, ".cotal", "server-open.conf"));
-  return server ? { server, open: true } : undefined;
 }
 
 /** Where `space` runs when this machine registered it for a folder that is not `root`, which is how

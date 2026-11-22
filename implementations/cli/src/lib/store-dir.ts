@@ -1,17 +1,16 @@
 import { accessSync, constants, existsSync, lstatSync, readdirSync, readFileSync, readlinkSync, realpathSync, statSync, type Stats } from "node:fs";
 import { dirname, join, relative, resolve, sep, isAbsolute } from "node:path";
 import { token } from "@cotal-ai/core";
-import { authDir, c, CommandFailure, controlDirectory, foreignStoreEntries, loadMeshes, loadPreparedSpaces, localMeshesForRoot, protectedLocalDirectory, shellPath } from "@cotal-ai/workspace";
+import { authDir, c, CommandFailure, controlDirectory, foreignStoreEntries, loadMeshes, loadPreparedSpaces, localMeshesForRoot, protectedLocalDirectory, renderedBrokerStore, shellPath } from "@cotal-ai/workspace";
 import { readStackJournal } from "./stack-journal.js";
 
 /** The stores the broker configurations `root`'s starts rendered name. */
-function renderedStores(root: string, resolveFrom?: string): string[] {
+function renderedStores(root: string, resolveFrom = process.cwd()): string[] {
   const stores: string[] = [];
   for (const conf of [join(authDir(root), "server.conf"), join(root, ".cotal", "server-open.conf")]) {
     if (!existsSync(conf)) continue;
-    // The core renderer writes the path as a JSON string.
-    const named = /jetstream \{ store_dir: ("(?:[^"\\]|\\.)*")/.exec(readFileSync(conf, "utf8"))?.[1];
-    if (named !== undefined) stores.push(resolveFrom === undefined ? resolve(JSON.parse(named) as string) : resolve(resolveFrom, JSON.parse(named) as string));
+    const store = renderedBrokerStore(readFileSync(conf, "utf8"), resolveFrom);
+    if (store !== undefined) stores.push(store);
   }
   return stores;
 }
