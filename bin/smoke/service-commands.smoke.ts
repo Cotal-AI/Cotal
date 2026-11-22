@@ -194,7 +194,7 @@ check("supervise is hidden", command("supervise")?.hidden === true);
 // ---- The real binary --------------------------------------------------------------------------
 const env: NodeJS.ProcessEnv = { ...process.env };
 for (const key of Object.keys(env)) if (key.startsWith("COTAL_") || key === "INVOCATION_ID") delete env[key];
-Object.assign(env, { HOME: home, USERPROFILE: home, COTAL_HOME: join(home, ".cotal"), XDG_CONFIG_HOME: xdg, COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1", COLUMNS: "200" });
+Object.assign(env, { HOME: home, USERPROFILE: home, COTAL_HOME: join(home, ".cotal"), XDG_CONFIG_HOME: xdg, COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1", NO_COLOR: "1", COLUMNS: "200" });
 const cotal = (args: string[]) => spawnSync(process.execPath, ["--import", TSX_LOADER, BIN, ...args], { cwd: root, env, encoding: "utf8", timeout: 120_000 });
 const out = (run: ReturnType<typeof cotal>) => `${run.stdout ?? ""}${run.stderr ?? ""}`;
 const definitions = () => {
@@ -223,9 +223,12 @@ try {
         && !out(installHelp).includes("start it at login"), out(installHelp));
   }
 
-  const status = cotal(["manager", "status", "--space", SPACE]);
-  check("cotal manager status with no manager started says so and names manager start",
-    status.status === 2 && out(status).includes("TARGET_NOT_FOUND") && out(status).includes("no manager has been started in space servicecommands") && out(status).includes("cotal manager start"), out(status));
+  for (const verb of ["status", "stop"]) {
+    const absent = cotal(["manager", verb, "--space", SPACE, "--json"]);
+    const error = JSON.parse(absent.stdout).error;
+    check(`cotal manager ${verb} with no manager started names a start in the same space`,
+      absent.status === 2 && error?.code === "TARGET_NOT_FOUND" && error.message.includes(`no manager has been started in space ${SPACE}`) && error.remedy === `start it with \`cotal manager start --space ${SPACE}\``, out(absent));
+  }
 
   const install = cotal(["manager", "install", "--space", SPACE, "--dry-run"]);
   check("cotal manager install refuses before any effect and names a unit of your own running manager start --foreground",
