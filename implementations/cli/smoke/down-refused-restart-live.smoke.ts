@@ -19,7 +19,7 @@
  */
 import { spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import net from "node:net";
 import { join, resolve as resolvePath } from "node:path";
 import { makeScratch, assertScratchHeld } from "../../../bin/smoke/_scratch.js";
@@ -28,6 +28,7 @@ import { assertSmokeSandboxDown, freePort, recordSmokeSandbox } from "@cotal-ai/
 const scratch = makeScratch("cotal-down-refused-restart-");
 const home = mkdtempSync(join(scratch, "home-"));
 const root = mkdtempSync(join(scratch, "root-"));
+const caller = mkdtempSync(join(scratch, "caller-"));
 const configDir = join(home, "xdg");
 const sandbox = recordSmokeSandbox({ root, cotalHome: home, xdgConfigHome: configDir });
 process.env.COTAL_HOME = home;
@@ -55,16 +56,16 @@ const sandboxEnv = (() => {
 })();
 
 const kids: ChildProcess[] = [];
-async function run(args: string[]): Promise<{ status: number | null; out: string }> {
-  const options = { cwd: root, env: sandboxEnv, stdio: ["ignore", "pipe", "pipe"] as ["ignore", "pipe", "pipe"] };
+async function run(args: string[], cwd = root): Promise<{ status: number | null; out: string; stdout: string }> {
+  const options = { cwd, env: sandboxEnv, stdio: ["ignore", "pipe", "pipe"] as ["ignore", "pipe", "pipe"] };
   assertSmokeSandboxDown(sandbox, args, options);
   const cp = spawn(process.execPath, ["--import", TSX_IMPORT, CLI, ...args], options);
   kids.push(cp);
-  let out = "";
-  cp.stdout?.on("data", (b: Buffer) => { out += b.toString(); });
-  cp.stderr?.on("data", (b: Buffer) => { out += b.toString(); });
+  let stdout = "", stderr = "";
+  cp.stdout?.on("data", (b: Buffer) => { stdout += b.toString(); });
+  cp.stderr?.on("data", (b: Buffer) => { stderr += b.toString(); });
   await once(cp, "exit");
-  return { status: cp.exitCode, out };
+  return { status: cp.exitCode, out: `${stdout}${stderr}`, stdout };
 }
 
 /** A foreground `up` that stays alive until the stack stops; the caller waits for readiness on
@@ -119,13 +120,47 @@ try {
   assertScratchHeld(root, "down refused-restart fixture");
   const port = await freePort();
   const server = `nats://127.0.0.1:${port}`;
+  const space = "lifecycle-stress";
 
-  const created = await run(["space", "create", "lifecycle-stress", "--plain"]);
+  const created = await run(["space", "create", space, "--plain"]);
   ok("space is created", created.status === 0, created.out.slice(-500));
+
+  const referenceFile = join(root, "manager-reference.json");
+  writeFileSync(referenceFile, JSON.stringify({ schemaVersion: 1, space, endpoint: "manager" }));
+  for (const name of ["report-a", "retained"]) {
+    const added = await run(["endpoint", "add", name, "--space", space, "--file", referenceFile, "--json"]);
+    ok(`saved ${name} without a running broker`, added.status === 0, added.out);
+  }
+  const unconfirmed = await run(["endpoint", "remove", "report-a", "--space", space, "-j"]);
+  const retry: string | undefined = /`([^`]+)`/.exec(JSON.parse(unconfirmed.stdout).error?.remedy ?? "")?.[1];
+  ok("the removal confirmation keeps the space and JSON presentation",
+    unconfirmed.status === 1 && retry === `cotal endpoint remove report-a --space ${space} --yes --json`, unconfirmed.out);
+  const removed = await run(retry!.split(" ").slice(1), caller);
+  const removal = JSON.parse(removed.stdout);
+  ok("following the confirmation removes the reference and returns a JSON receipt",
+    removed.status === 0 && removed.out === removed.stdout && removal.target?.space === space &&
+    removal.result?.kind === "reference-removal" && removal.result.removed === true, removed.out);
 
   const fg = runForeground(["up", "--foreground", "--server", server]);
   ok("foreground stack starts and reports readiness",
     await waitFor(fg.out, "Controller stack started", 120_000) && await waitServing(port, true), fg.out().slice(-800));
+
+  const described = await run(["endpoint", "describe", "manager", "--space", space, "--json"]);
+  const instance = JSON.parse(described.stdout).result?.responder.instanceId;
+  ok("manager describes its live instance", described.status === 0 && typeof instance === "string", described.out.slice(-800));
+  const invoke = ["endpoint", "invoke", "manager", "resolve-cwd", "--space", space, "--args", JSON.stringify({ cwd: root })];
+  const active = await run([...invoke, "--on", instance, "--timeout", "5000", "--json"]);
+  ok("invoking the live pin resolves the project directory", active.status === 0 && JSON.parse(active.stdout).result?.data?.cwd === realpathSync(root), active.out);
+  const absent = "z".repeat(30);
+  const stale = await run([...invoke, "--on", absent, "--timeout", "500", "--json"]);
+  const staleDoc = JSON.parse(stale.stdout);
+  ok("invoking an absent pin refuses without calling the live manager",
+    stale.status === 2 && staleDoc.outcome === "refused" && staleDoc.result === null && staleDoc.target?.requestedInstanceId === absent &&
+    staleDoc.error?.code === "TARGET_UNAVAILABLE" && staleDoc.error?.message.includes(`pinned instance ${absent} of manager did not answer`) &&
+    staleDoc.error.message.includes("500ms --timeout") && staleDoc.error.message.includes("no invocation was sent"), stale.out);
+  ok("an unanswered pin advises checking the same space or giving that pin more time",
+    staleDoc.error?.remedy.includes(`cotal endpoint list --live --space ${space}`) && staleDoc.error.remedy.includes("--timeout 10000") &&
+    staleDoc.error.remedy.includes("if you expect that instance to answer") && !staleDoc.error.remedy.includes("start the service"), stale.out);
 
   const stopped = await run(["down", "--yes"]);
   ok("external down stops the stack", stopped.status === 0, stopped.out.slice(-800));
@@ -133,6 +168,22 @@ try {
   ok("foreground launcher exits after the stop", fg.cp.exitCode === 0, `exit ${fg.cp.exitCode}: ${fg.out().slice(-500)}`);
   ok("loopback listener closes after the stop", await waitServing(port, false));
   ok("the completed stop is on record", (() => { const op = journalOperation(); return op.kind === "down" && op.phase === "completed"; })(), JSON.stringify(journalOperation()));
+
+  const inventory = ["endpoint", "list", "--live", "--space", space];
+  const partial = await run([...inventory, "--json"], caller);
+  const partialDoc = JSON.parse(partial.stdout);
+  const stoppedMessage = `"${space}" is stopped; its last operation, \`cotal down\`, completed`;
+  const restart = `start it again with \`cotal up\` in ${realpathSync(root)}`;
+  ok("stopped live inventory keeps saved references and the classified restart guidance in JSON",
+    partial.status === 4 && partialDoc.outcome === "partial" && partialDoc.completeness === "partial" && partialDoc.target?.space === space &&
+    partialDoc.result?.liveCompleteness === "partial" && partialDoc.result.live === null &&
+    partialDoc.result.items.map((item: { name: string }) => item.name).join(",") === "retained" &&
+    partialDoc.result.liveUnavailable?.code === "TARGET_UNAVAILABLE" && partialDoc.result.liveUnavailable.message === stoppedMessage &&
+    partialDoc.error?.code === "OPERATION_PARTIAL" && partialDoc.error.remedy === restart, partial.out);
+  const inventoryText = await run([...inventory, "--plain"], caller);
+  ok("stopped live inventory names the completed stop and restart folder in plain output",
+    inventoryText.status === 4 && inventoryText.stdout.includes("retained") && inventoryText.stdout.includes(stoppedMessage) &&
+    inventoryText.stdout.split("\nNext\n")[1]?.trim() === restart, inventoryText.out);
 
   listener = net.createServer((socket) => socket.destroy());
   await new Promise<void>((resolve, reject) => { listener!.once("error", reject); listener!.listen(port, "127.0.0.1", () => resolve()); });
