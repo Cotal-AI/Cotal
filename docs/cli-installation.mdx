@@ -28,7 +28,7 @@ A terminal that reports 0 columns gets the splash, questions and notes drawn for
 | `--destination` | asked | `local`: a space this machine starts. `self-hosted`: a space registered here that runs on a server, including a Cloud space `cotal login` discovered. The flag value `cloud` is refused before anything is written or contacted, because the Cloud sign-in needs a terminal. The refusal names the scripted route: `cotal login`, then `--destination self-hosted --space <name>`. |
 | `--harness`, `-H` | asked | The connector your agents run in. Setup runs its own setup actions and records it as the space's `harness` preference, so `cotal spawn` in the space launches it. When you have no `harness` preference of your own, it becomes yours too. |
 | `--runtime` | asked; none in a script | A runtime to set up besides the built-in `pty`: `tmux`, `cmux`, `orca`, `herdr` or an installed third-party one. Repeat it for each. |
-| `--project` | asked | The project folder: the space's root, whose `.cotal/agents` holds its personas. For a local space, `--yes` creates a missing folder; otherwise a script's folder must exist. A terminal offers to create it. |
+| `--project` | asked | The project folder: the space's root, whose `.cotal/agents` holds its personas. For a local space, `--yes` creates missing directories with private permissions. Otherwise a script's folder must exist. A terminal offers to create it. |
 | `--space` | asked | The space to prepare (local) or the registered space to use (self-hosted). |
 | `--connection-file` | none | Self-hosted: register the space from a connection bundle exported where it runs, with the checks `space add --file` makes. |
 | `--configure-only` | on | Save preparation and start nothing. Refused with `--start`. |
@@ -1115,8 +1115,9 @@ completion does not support, such as tcsh, is refused with `UNSUPPORTED` (exit 2
 
 An absolute `XDG_CONFIG_HOME` replaces `~/.config` for the owned stubs; a relative value is
 ignored. Mutation refuses a relative `ZDOTDIR`, symlink, untrusted owner or unsafe file access
-before it creates anything, and `install` refuses a missing startup directory. That directory is
-named, with `ZDOTDIR` when that variable chose it, and with the `mkdir` that creates it. `uninstall`
+before it creates anything. Zsh installation creates a missing absolute `ZDOTDIR` with private
+permissions. For other startup paths, a missing directory is refused and the remedy names the
+`mkdir` that creates it. `uninstall`
 does not need it: it removes only the recorded stub and record it finds, creates no directory, and
 with nothing recorded it changes nothing. A record wired into another `ZDOTDIR` is still refused
 with that directory named. One refusal names every
@@ -1131,7 +1132,8 @@ symlink, as a dotfile manager such as stow links it, is never written through: `
 it, exit 2, names it and gives the line to add to the file it points to yourself. Bare `completion`
 warns that it is a symlink and does not read it. A startup file its owner made read-only is never
 replaced. `install`
-still writes its stub, then fails, exit 5, and names the line to add to that file yourself.
+can still write its stub and ownership record. When it writes either file without adding the
+startup line, it reports `OPERATION_PARTIAL`, exit 4, and names the line to add yourself.
 `uninstall` refuses it, exit 2, and changes nothing until you remove that line. On Windows, PowerShell script generation works but automatic
 profile editing remains unsupported: the guarded POSIX file writer cannot safely replace
 Windows reparse-point paths. Installing files does not establish that the host runs its
