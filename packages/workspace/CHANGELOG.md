@@ -1,5 +1,13 @@
 # @cotal-ai/workspace
 
+## 0.174.2
+
+### Patch Changes
+
+- 1e5fbb4: Keep the intended space in `ps` and live endpoint retry guidance, and name the unknown space and how to correct it when saved endpoint inventory refuses.
+- Updated dependencies [7b7e60c]
+  - @cotal-ai/core@0.174.2
+
 ## 0.174.1
 
 ### Patch Changes

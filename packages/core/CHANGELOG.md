@@ -1,5 +1,11 @@
 # @cotal-ai/core
 
+## 0.174.2
+
+### Patch Changes
+
+- 7b7e60c: Agent deprovisioning and the standalone connect options now live in their own core modules, with no change in behavior.
+
 ## 0.174.1
 
 No changes in this release.
