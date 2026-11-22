@@ -580,12 +580,6 @@ export class Manager {
   /** The local instance identity {@link admitExecutionState} already resolved. The ordinary start
    *  adopts it instead of reading the same record again. */
   protected admittedLocalIdentity?: ManagerInstanceIdentity;
-  /** The manager's v0.4 service-endpoint serve state — the serve handle +
-   *  its dedicated connection, the STABLE serve identity (renewals re-mint the same nkey), the
-   *  branded serve grant, and the CURRENT credential (the connection's authenticator reads it on
-   *  every (re)connect, so a renewal is adopted without re-registration). Absent on open meshes,
-   *  in user mode, and before registration completes. */
-  protected serviceServe?: { handle: EpServeHandle; nc: NatsConnection; identity: Identity; grant: EpServeGrant; creds?: string };
   /** #1577: dedicated connections (serve, goal-writer, session-ledger) whose transport is down while
    *  the client reconnects them, tracked by {@link trackTransport}. Such a connection is open
    *  (`isClosed()` is false under unbounded reconnects) yet the broker holds none of its rails, so
@@ -604,7 +598,7 @@ export class Manager {
   protected get turnRelay(): TurnRelay {
     return this.turnRelayInstance ??= new TurnRelay({
       goalWriter: () => this.goalWriterComponent.goalWriter,
-      serviceServe: () => this.serviceServe,
+      serviceServe: () => this.servePlane.serviceServe,
       space: this.config.space,
       managerInstanceId: () => this.managerInstanceId,
       execution: this.execution,
@@ -771,7 +765,7 @@ export class Manager {
   private readonly preservedResumeComponent = new PreservedResume(this.config, preservedResumeDeps(this), this.parts);
 
   /** The goal-writer connection and the goal index it reconciles. Every dependency reads through at its use. */
-  private readonly goalWriterComponent = new GoalWriter(this.config, goalWriterDeps(this));
+  private readonly goalWriterComponent = new GoalWriter(this.config, goalWriterDeps(this), this.parts);
 
   /** Renewal of the manager's standing credentials. Every dependency reads through at its use. */
   private readonly credentialRenewal = new CredentialRenewal(this.config, credentialRenewalDeps(this), this.parts);
@@ -964,7 +958,7 @@ export class Manager {
    *  response, registration-leader read or authorization for another process to act. Wire callers
    *  still use status through its fresh owner/admin visibility gate. No credential or URL leaves. */
   localServiceObservation(): ManagerServiceObservation | undefined {
-    const state = this.serviceServe;
+    const state = this.servePlane.serviceServe;
     if (!state) return undefined;
     const identity = this.serviceIdentityObservation();
     if (state.grant.endpoint !== identity.endpoint || state.grant.instanceId !== identity.instanceId || state.grant.owner !== identity.principal.owner) throw new Error("the manager's local service observation does not match its owned serve incarnation");
@@ -1299,7 +1293,7 @@ export class Manager {
     // being asked here is "which registration did this process write", which only the state
     // before teardown can answer. Deregistration runs AFTER the serve loop has drained, so no
     // in-flight command can write a status back onto the record it just removed.
-    const registrationRevision = this.serviceServe?.grant.registrationRevision;
+    const registrationRevision = this.servePlane.serviceServe?.grant.registrationRevision;
     await step("stop service serve", () => this.stopServiceServe());
     // The drives AFTER the serve loop (no new `run-start` can land) and BEFORE deregistration: a
     // released run's status write is the last thing this incarnation says about it.
@@ -1369,9 +1363,9 @@ export class Manager {
    *  and drop its dedicated connection, or only close the connection while its transport is down.
    *  Best-effort so a graceful stop completes its remaining teardown even when the broker is gone. */
   private async stopServiceServe(): Promise<void> {
-    const s = this.serviceServe;
+    const s = this.servePlane.serviceServe;
     if (!s) return;
-    this.serviceServe = undefined;
+    this.servePlane.serviceServe = undefined;
     await this.retireConnection(s.nc, () => s.handle.stop());
   }
 
@@ -1980,7 +1974,7 @@ export class Manager {
    *  connection that holds this instance's reply rows. The notice carries no turn and the seat
    *  pulls on it, so a lost notice delays that seat until its next pull, and nothing else. */
   protected noticeSeatTurns(seat: { name: string; owner: string; actor: string; uid: string }): void {
-    const serve = this.serviceServe;
+    const serve = this.servePlane.serviceServe;
     if (!serve) return;
     // An issued seat credential reads only the versioned rail, under the generation it was issued.
     const a = this.agents.get(seat.name);
