@@ -55,7 +55,7 @@
     {
       "name": "the rebuild keeps the manager-lease KV handle bound to the drained connection",
       "file": "packages/core/src/endpoint-reconnect.ts",
-      "find": "      this.managerLeaseKv = undefined;\n",
+      "find": "      this.conn.managerLeaseKv = undefined;\n",
       "replace": "",
       "expectRed": "the manager lease renews after reconnect",
       "cell": "the manager lease renews after reconnect (managerLeaseKv reopened on the fresh connection)",

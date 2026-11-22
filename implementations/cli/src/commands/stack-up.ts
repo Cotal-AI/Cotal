@@ -363,7 +363,7 @@ function stackPreflight({ root, space, noManager, invokedRoot, manifest }: Stack
   if (held.length && held.length === legacy.length) {
     const cmd = displayCmd();
     const retryRoot = invokedRoot !== undefined && invokedRoot !== root ? ` --root ${shellWord(root)}` : "";
-    const retry = noManager ? `${cmd} up --space ${shellWord(space)} --no-manager${retryRoot}` : `${cmd} up`;
+    const retry = noManager || retryRoot ? `${cmd} up --space ${shellWord(space)}${noManager ? " --no-manager" : ""}${retryRoot}` : `${cmd} up`;
     throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `${held.map((row) => `the ${row.definition} service of this space runs this root's ${row.record.name} (pid ${row.record.pid}, instance ${row.instanceId})`).join("; ")}, outside the controller stack, which neither adopts nor replaces it`, {
       target: { root, space, processes: legacy, services: held.map((row) => ({ definition: row.definition, instanceId: row.instanceId })) },
       remedy: `stop ${held.length === 1 ? "it" : "each"} with ${held.map((row) => codeSpan(`${cmd} svc stop ${row.definition} --instance ${row.instanceId} --space ${shellWord(space)} --yes`)).join(", ")}, then run ${codeSpan(retry)} again`,
@@ -911,7 +911,7 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
   // evidence under the held maintenance lock. Only a preserve or resume can remain unsettled here.
   // A member stop an earlier down could not confirm in time is settled from its own receipt first.
   if (previous) await settleRetainedStackStops(previous.journal);
-  const { snapshot: current, settled } = previous ? settleStackOperation(request.maintenanceLock, previous) : { snapshot: undefined, settled: undefined };
+  const { snapshot: current, settled } = previous ? settleStackOperation(request.maintenanceLock, previous, request.invokedRoot) : { snapshot: undefined, settled: undefined };
   if (current && stackOperationUnsettled(current.journal))
     throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "an earlier preserve or resume on this root has no settled outcome; it is decided by its own maintenance attempt and no member was started", { target: { root, space, operation: current.journal.operation }, remedy: `inspect the root's maintenance attempt and the stack's members with \`cotal service --space ${space}\` before another whole-stack operation` });
   const server = previous?.journal.server ?? request.server;

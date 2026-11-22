@@ -1,5 +1,6 @@
 // The boot durable memberships of CotalEndpoint, as an internal component. Moved verbatim from
 // endpoint.ts; the endpoint keeps the public methods and forwards to them. Not re-exported by the index.
+import type { LifecycleState } from "./endpoint-lifecycle-state.js";
 import type { EndpointIdentity } from "./endpoint-identity.js";
 import { isChannelFamily, isConcreteChannel } from "./subjects.js";
 import type { ControlReply, DeliveryClass } from "./types.js";
@@ -8,7 +9,6 @@ import type { ControlReply, DeliveryClass } from "./types.js";
  *  copied, and every method is looked up on the endpoint at call time. */
 export interface EndpointBootMembershipsDeps {
   plane3Channels: () => Map<string, number>;
-  stopped: () => boolean;
   requestDelivery: (op: string, args: Record<string, unknown>, timeoutMs?: number) => Promise<ControlReply>;
   requireLifecycleUid: (what: string) => string;
   deliveryClassFresh: (channel: string) => Promise<DeliveryClass>;
@@ -30,10 +30,9 @@ export class EndpointBootMemberships {
    *  via {@link hasDurableMembership} (a joined durable channel NOT yet a member renders degraded). */
   private readonly pendingBootJoins = new Set<string>();
 
-  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly deps: EndpointBootMembershipsDeps) {}
+  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly lifecycle: Readonly<LifecycleState>, private readonly deps: EndpointBootMembershipsDeps) {}
 
   private get plane3Channels() { return this.deps.plane3Channels(); }
-  private get stopped() { return this.deps.stopped(); }
   private requestDelivery(op: string, args: Record<string, unknown>, timeoutMs?: number) { return this.deps.requestDelivery(op, args, timeoutMs); }
   private requireLifecycleUid(what: string) { return this.deps.requireLifecycleUid(what); }
   private deliveryClassFresh(channel: string) { return this.deps.deliveryClassFresh(channel); }
@@ -101,7 +100,7 @@ export class EndpointBootMemberships {
     this.pendingBootJoins.add(channel);
     for (let attempt = 0; ; attempt++) {
       await this.membershipPause(attempt);
-      if (this.stopped || !this.identity.channels.includes(channel) || this.plane3Channels.has(channel)) {
+      if (this.lifecycle.stopped || !this.identity.channels.includes(channel) || this.plane3Channels.has(channel)) {
         this.pendingBootJoins.delete(channel);
         return; // stopped, left, or another path established it
       }

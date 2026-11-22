@@ -104,6 +104,45 @@ const bootstrapAfter = async (seen: string[]) => {
 
 const ownPids: number[] = [];
 
+async function checkDefaultObserver() {
+  const foreground = spawn(realNode, [join(REPO, "bin", "dist", "cotal.js"), "service", "start", "web", "--space", SPACE, "--port", String(WEB_PORT), "--read-only", "--foreground", "--no-open", "--plain"],
+    { env, cwd: root, stdio: ["ignore", "pipe", "pipe"] });
+  const closed = new Promise((resolve) => foreground.once("close", resolve));
+  let output = "";
+  for (const stream of [foreground.stdout, foreground.stderr]) stream.on("data", (data) => { output += data.toString(); });
+  try {
+    for (let i = 0; i < 300 && foreground.exitCode === null && !output.includes("Owned service process running"); i++) await sleep(100);
+    const path = /^\s*Read-only dashboard\. Private browser bootstrap file: (.+)$/m.exec(output)?.[1];
+    ok("the default observer dashboard starts without endpoint errors", !!path && output.includes("Owned service process running") && !output.includes("endpoint reported an error"), output);
+    const { launchUrl } = JSON.parse(readFileSync(path!, "utf8")) as { launchUrl: string };
+    const exchange = await fetch(launchUrl, { redirect: "manual", signal: AbortSignal.timeout(15_000) });
+    const cookie = exchange.headers.get("set-cookie")?.split(";")[0];
+    ok("the observer dashboard exchanges its private browser link", exchange.status === 302 && !!cookie);
+    const feed = await web("/feed", { headers: { cookie: cookie! } });
+    ok("the observer dashboard opens its live feed", feed.status === 200 && feed.body !== null);
+    const reader = feed.body!.getReader(), decoder = new TextDecoder();
+    const live = `${NONCE}-observer-live`;
+    try {
+      const sent = cotal(["send", "-c", "general", live, "--space", SPACE]);
+      ok("the CLI publishes a new live channel message", sent.status === 0, out(sent));
+      let data = "";
+      while (!data.includes(live)) {
+        const chunk = await reader.read();
+        if (chunk.done) break;
+        data += decoder.decode(chunk.value, { stream: true });
+      }
+      ok("the default observer still receives live channel messages", data.includes(live));
+    } finally { await reader.cancel().catch(() => {}); }
+    const broker = readFileSync(join(root, ".cotal", "nats.log"), "utf8");
+    ok("the observer requests neither unauthorized messaging rail", !output.includes("endpoint reported an error") && !broker.split("\n").some((line) =>
+      line.includes("Subscription Violation") && ["inst", "svc"].some((plane) => line.includes(`Subject "cotal.${SPACE}.${plane}.>"`))));
+  } finally {
+    foreground.kill("SIGTERM");
+    await closed;
+    cotal(["service", "remove", "web", "--space", SPACE, "--yes"]);
+  }
+}
+
 async function checkForegroundRepeat() {
   const foreground = spawn(realNode, [join(REPO, "bin", "dist", "cotal.js"), "service", "start", "web", "--space", SPACE, "--foreground", "--no-open", "--plain"],
     { env, cwd: root, stdio: ["ignore", "pipe", "pipe"] });
@@ -162,6 +201,7 @@ try {
     const record = (t: string) => canonicalLocalProcessPath(t, { root, space: SPACE });
     const meshPids = [join(root, ".cotal", "nats.pid"), record(DELIVERY_PIDFILE), record(MANAGER_PIDFILE)].map((f) => Number(readFileSync(f, "utf8").trim()));
     ownPids.push(...meshPids);
+    await checkDefaultObserver();
     const sent = cotal(["send", "-c", "general", NONCE, "--space", SPACE]);
     ok("a message is sent to #general through the CLI", sent.status === 0 && /Message stored/.test(sent.stdout), out(sent).slice(-400));
 

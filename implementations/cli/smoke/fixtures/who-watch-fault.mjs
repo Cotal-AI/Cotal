@@ -26,9 +26,9 @@ proto.start = function (...args) {
 proto.startPresenceWatch = async function (...args) {
   const state = states.get(this);
   if (!state) return bind.apply(this, args);
-  const watch = this.kv.watch.bind(this.kv);
+  const watch = this.conn.kv.watch.bind(this.conn.kv);
   const first = state.watches++ === 0;
-  this.kv.watch = async (...watchArgs) => {
+  this.conn.kv.watch = async (...watchArgs) => {
     const iter = await watch(...watchArgs);
     const iterate = iter[Symbol.asyncIterator].bind(iter);
     iter[Symbol.asyncIterator] = async function* () {
@@ -48,7 +48,7 @@ proto.startPresenceWatch = async function (...args) {
     return iter;
   };
   try { return await bind.apply(this, args); }
-  finally { this.kv.watch = watch; }
+  finally { this.conn.kv.watch = watch; }
 };
 proto.waitForPresenceSnapshot = async function (...args) {
   const result = await waitSnapshot.apply(this, args);
