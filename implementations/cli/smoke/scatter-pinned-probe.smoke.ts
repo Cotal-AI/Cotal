@@ -53,7 +53,7 @@ const { Manager } = await import("../../manager/src/manager.js");
 const { managerRailGone, pinnedLivenessProbe, scatterResolveCommands } = await import("../../../packages/workspace/dist/control/index.js");
 const { pickFreePort } = await import("../../../packages/core/smoke/_free-port.js");
 
-const EXPECTED_CELLS = 32; // Includes three stopped-broker deregistration checks.
+const EXPECTED_CELLS = 33; // Includes three stopped-broker deregistration checks.
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 let pass = 0, fail = 0;
