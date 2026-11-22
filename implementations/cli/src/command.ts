@@ -188,6 +188,7 @@ function failureExit(cmd: Command, failure: CommandFailure, json: boolean, plain
   const writeReport = () => writeSync(2, `${scope ? runOperation(scope, report) : report()}
 `);
   const warningText = scope?.deferredWarningText;
+  if (scope) delete scope.deferredWarningText;
   const writeWarning = () => {
     if (!warningText) return;
     try { writeSync(2, warningText); } catch { /* stderr failed too */ }
@@ -933,6 +934,12 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
   const scope: OperationScope = cmd.name === "__complete" && !debugFlag("COTAL_COMPLETE_DEBUG") ? { quiet: true } : {};
   const mode = parsed.positionals[0];
   const json = structured(cmd, mode) && parsed.values.json === true;
+  const flushWarning = () => {
+    const text = scope.deferredWarningText;
+    if (!text) return;
+    delete scope.deferredWarningText;
+    try { writeSync(2, text); } catch { /* stderr failed too */ }
+  };
   const execute = async () => {
     if (opts.extensions && cmd.requiredExtensions) {
       for (const ref of cmd.requiredExtensions(parsed)) await materializeExtension(ref);
@@ -947,15 +954,11 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
       }
       if (cmd.prepare) await cmd.prepare(parsed);
       await cmd.run(parsed);
-      if (scope.deferredWarningText) {
-        const text = scope.deferredWarningText;
-        delete scope.deferredWarningText;
-        process.stderr.write(text);
-      }
     });
   };
   if (opts.startupNotice && cmd.keepsStartupNotice) keepStartupNotice(opts.startupNotice);
   else await opts.startupNotice?.release();
+  if (json) process.once("exit", flushWarning);
   try {
     await execute();
   } catch (e) {
@@ -1030,5 +1033,8 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
     if (hint) stderrLine("  ↳ ", hint, c.dim);
     if (debugFlag("COTAL_DEBUG") && e instanceof Error && e.stack) console.error(c.dim(e.stack));
     process.exit(1);
+  } finally {
+    process.off("exit", flushWarning);
+    flushWarning();
   }
 }

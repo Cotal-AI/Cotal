@@ -1,3 +1,5 @@
+import { AsyncLocalStorage } from "node:async_hooks";
+
 const SIGNAL_EXIT = { SIGINT: 130, SIGTERM: 143, SIGHUP: 129 } as const;
 export type InterruptSignal = keyof typeof SIGNAL_EXIT;
 export const INTERRUPT_SIGNALS = Object.keys(SIGNAL_EXIT) as InterruptSignal[];
@@ -44,11 +46,11 @@ export function noticeOnInterrupt(notice: () => string): () => void {
  *  ended and reported, and which then writes the notice and exits. A second signal ends it at once. */
 export function noticeBetweenSteps(notice: () => string, inStep: () => boolean): { between(): Promise<void>; release(): void } {
   let pending: InterruptSignal | undefined;
-  const exit = (signal: InterruptSignal): never => {
+  const exit = AsyncLocalStorage.bind((signal: InterruptSignal): never => {
     let text: string;
     try { text = notice(); } catch { text = "Interrupted. `cotal status` shows what this root holds."; }
     exitInterrupted(signal, text);
-  };
+  });
   const handler = (signal: InterruptSignal) => {
     if (pending === undefined && inStep()) pending = signal;
     else exit(signal);

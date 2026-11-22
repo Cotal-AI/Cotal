@@ -1,5 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import { writeSync } from "node:fs";
+import { writeFileSync } from "node:fs";
 import type { FlagSpec, OutputMode } from "@cotal-ai/core";
 import { terminalWidth, wrapWords } from "./text-wrap.js";
 
@@ -298,20 +298,35 @@ export function envelopeLine(envelope: Envelope): string {
   return `${JSON.stringify(envelope)}\n`;
 }
 
-/** Write one envelope as the whole of stdout. */
-export function writeEnvelope(envelope: Envelope): void {
+/** Write one envelope as the whole of stdout. `beforeExit` completes the write before a caller
+ *  that already owns the exit status terminates the process. */
+export function writeEnvelope(envelope: Envelope, { beforeExit = false }: { beforeExit?: boolean } = {}): void {
   const line = envelopeLine(envelope);
   const warning = takeDeferredWarningText();
+  if (beforeExit) {
+    if (warning && !envelope.error) writeWarningSync(warning);
+    try { writeFileSync(1, line); }
+    catch (error) {
+      const writeError = error as NodeJS.ErrnoException;
+      if (writeError.code !== "EPIPE") {
+        writeWarningSync(`✗ could not write to stdout: ${writeError.message}\n`);
+        if (warning && envelope.error) writeWarningSync(warning);
+      }
+    }
+    return;
+  }
   if (warning && envelope.error) {
     process.stdout.write(line, (error?: NodeJS.ErrnoException | null) => {
-      if (error && error.code !== "EPIPE") {
-        try { writeSync(2, warning); } catch { /* stderr failed too */ }
-      }
+      if (error && error.code !== "EPIPE") writeWarningSync(warning);
     });
     return;
   }
   if (warning) process.stderr.write(warning);
   process.stdout.write(line);
+}
+
+function writeWarningSync(text: string): void {
+  try { writeFileSync(2, text); } catch { /* stderr failed too */ }
 }
 
 function takeDeferredWarningText(): string | undefined {

@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { drainAndClose } from "@cotal-ai/core";
 /**
  * `cotal run` — the workflow-run operator surface.
@@ -771,14 +772,14 @@ function payloadRefused(error: unknown): boolean {
  *  signal, so the process used to die silently with the run started, and a retry started a second
  *  one. Returns the release. */
 function reportInterruptedStart(values: RunValues, space: string): () => void {
-  const exit = (signal: "SIGINT" | "SIGTERM"): void => {
+  const exit = AsyncLocalStorage.bind((signal: "SIGINT" | "SIGTERM"): void => {
     const failure = new CommandFailure("unknown", "OPERATION_UNKNOWN", "interrupted after the start request was sent, so the manager may already have recorded the run", {
       target: { space }, remedy: "list the recorded runs with `cotal run` before starting it again",
     });
-    if (values.json) writeEnvelope(failureEnvelope("run", failure));
+    if (values.json) writeEnvelope(failureEnvelope("run", failure), { beforeExit: true });
     process.stderr.write(`${renderReport(commandFailureReport(failure), values.plain ? "plain" : "rich", process.stderr)}\n`);
     process.exit(signal === "SIGINT" ? 130 : 143);
-  };
+  });
   const onInterrupt = () => exit("SIGINT");
   const onTerminate = () => exit("SIGTERM");
   process.once("SIGINT", onInterrupt);

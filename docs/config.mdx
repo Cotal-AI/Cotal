@@ -211,9 +211,9 @@ Symlinks, FIFOs, devices, and folders at `preferences.json` are refused with `PE
 The preferences folder and each ancestor must be writable only by you or root.
 Group write is accepted only for your private group without an extended ACL; world write is refused.
 An unsafe folder permits reads with `PREFERENCES_FOLDER_UNPROTECTED`, naming the path and corrective `chmod`.
-Writes, including setup and `space forget`, refuse `PERMISSION_DENIED` before any change.
+Preference writes refuse `PERMISSION_DENIED` before changing the file. If `space forget` has already removed the registration, it reports a partial result and keeps the saved preferences.
 When a command reports an error in a JSON receipt, the receipt carries this warning without repeating it on stderr.
-Text mode, and the text report when a refusal receipt cannot be written, include the warning on stderr.
+The warning appears on stderr in text mode, when the command exits without a receipt, or when the receipt cannot be written for a reason other than a closed pipe.
 When the folder does not exist, Cotal checks its nearest existing ancestor.
 
 ## Environment variables

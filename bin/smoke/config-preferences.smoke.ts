@@ -13,12 +13,13 @@
  * outside `spawn`: color, the `personas edit` editor and the detach key. A file that begins with a UTF-8 byte-order mark reads, and the next write leaves the
  * mark out; one saved as UTF-16 is refused by its encoding.
  * The launch consumers (harness, persona) are proved through real spawns in `smoke:persona-agent`.
- * Broker-free and offline.
+ * No broker or external network is needed. A loopback listener holds a handshake for the interrupt check.
  *
  * Run: pnpm smoke:config-preferences
  */
 import { spawn, spawnSync } from "node:child_process";
 import { chmodSync, closeSync, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { createServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createSuite } from "@cotal-ai/smoke-kit";
@@ -69,6 +70,39 @@ async function runWithClosedStdout(args: string[]): Promise<{ status: number | n
     child.once("error", reject);
     child.once("close", (status) => resolve({ status, stderr }));
   });
+}
+async function interruptedDelete(stdoutFd: number | "closed" | undefined) {
+  // Hold the initial read at the broker handshake, before the CLI can submit a delete.
+  const sockets = new Set<Socket>();
+  const server = createServer((socket) => {
+    sockets.add(socket);
+    socket.once("close", () => sockets.delete(socket));
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const address = server.address();
+  if (address === null || typeof address === "string") throw new Error("missing loopback test address");
+  try {
+    recordMesh({ space: "interrupt-stdout", root: home, mode: "open", origin: "manual", server: `nats://127.0.0.1:${address.port}`, ts: new Date().toISOString() });
+    const child = spawn(process.execPath, [BIN, "space", "delete", "interrupt-stdout", "--yes", "--json"], {
+      cwd: home, env: sandboxEnv({}), stdio: ["ignore", typeof stdoutFd === "number" ? stdoutFd : "pipe", "pipe"], timeout: 60_000, killSignal: "SIGKILL",
+    });
+    let stdout = "", stderr = "";
+    if (stdoutFd === "closed") child.stdout?.destroy();
+    else child.stdout?.setEncoding("utf8").on("data", (text: string) => { stdout += text; });
+    child.stderr!.setEncoding("utf8").on("data", (text: string) => { stderr += text; });
+    server.once("connection", () => { child.kill("SIGTERM"); });
+    return await new Promise<{ status: number | null; stdout: string; stderr: string }>((resolve, reject) => {
+      child.once("error", reject);
+      child.once("close", (status) => resolve({ status, stdout, stderr }));
+    });
+  } finally {
+    for (const socket of sockets) socket.destroy();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    removeMesh("interrupt-stdout");
+  }
 }
 const shown = (r: { status: number | null; stdout: string; stderr: string }) => ({ status: r.status, stdout: r.stdout.slice(0, 700), stderr: r.stderr.slice(0, 400) });
 const settingOf = (r: ReturnType<typeof run>, key: string) => ((r.envelope?.result as { settings?: Setting[] } | null)?.settings ?? []).find((s) => s.key === key);
@@ -526,6 +560,22 @@ if (process.platform !== "win32") {
     w.code === "PREFERENCES_FOLDER_UNPROTECTED" && (w.target as { path?: string } | undefined)?.path === dir && w.message.includes(`${dir} is writable by every local account`) && w.message.endsWith(`chmod o-w ${dir}`);
   chmodSync(dir, 0o757);
   try {
+    const warn = "! the preferences folder is not protected";
+    const policyRoot = join(home, "invalid-broker-policy");
+    mkdirSync(join(policyRoot, ".cotal"), { recursive: true });
+    writeFileSync(join(policyRoot, ".cotal", "broker-policy.json"), "{invalid");
+    const policy = run(["up", "--json", "--root", policyRoot]);
+    check("a JSON command that exits without a receipt still prints the unsafe-folder warning once",
+      policy.status === 1 && policy.stdout === "" && policy.stderr.includes("broker-policy.json") && policy.stderr.split(warn).length === 2, shown(policy));
+    const interrupted = await interruptedDelete(undefined);
+    const receipt = interrupted.stdout === "" ? undefined : JSON.parse(interrupted.stdout) as Envelope;
+    check("an interrupted JSON command delivers the warning only in the receipt and keeps the signal status",
+      interrupted.status === 143 && receipt?.error?.code === "OPERATION_FAILED" && receipt.warnings.filter(unprotected).length === 1
+      && !interrupted.stderr.includes(warn), shown(interrupted));
+    const closedInterrupt = await interruptedDelete("closed");
+    check("an interrupted JSON command with a closed pipe keeps the interruption notice without echoing the warning",
+      closedInterrupt.status === 143 && closedInterrupt.stderr.includes("interrupted before it deleted anything")
+      && !closedInterrupt.stderr.includes(warn) && !closedInterrupt.stderr.includes("could not write to stdout"), shown(closedInterrupt));
     const write = run(["config", "set", "editor", "ed", "--json"]);
     check("a write into a world-writable preferences folder is refused with PERMISSION_DENIED, exit 2, naming the folder and its chmod",
       write.status === 2 && write.envelope?.error?.code === "PERMISSION_DENIED" && (write.envelope.error.message ?? "").includes(`the preferences folder is not protected against other local writers: ${dir} is writable by every local account`) && write.envelope.error.remedy === `chmod o-w ${dir}`, shown(write));
@@ -547,6 +597,11 @@ if (process.platform !== "win32") {
     const unsetMissing = ["config", "unset", "persona", "--space", "never-registered", "--json"];
     const fd = openSync(file, "r");
     try {
+      const lostInterrupt = await interruptedDelete(fd);
+      check("an interrupted JSON command whose receipt cannot be written prints the warning and keeps the signal status",
+        lostInterrupt.status === 143 && lostInterrupt.stderr.includes("could not write to stdout")
+        && lostInterrupt.stderr.includes("interrupted before it deleted anything") && lostInterrupt.stderr.split(warn).length === 2
+        && lostInterrupt.stderr.includes(`chmod o-w ${dir}`), shown(lostInterrupt));
       const lost = run(unsetMissing, {}, home, fd);
       check("when stdout is read-only, the text refusal includes the independent folder warning once",
         lost.status === 2 && lost.stderr.includes("could not write to stdout") && /Code:\s+TARGET_NOT_FOUND/.test(lost.stderr)

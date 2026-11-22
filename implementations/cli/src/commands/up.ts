@@ -1554,7 +1554,7 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
     const release = values.foreground ? undefined : noticeOnInterrupt(() => {
       settleInterruptedLaunches();
       const failure = stackUpInterrupted(meshRoot, stackSpace, values["no-manager"] === true);
-      if (presentation === "json") writeEnvelope(failureEnvelope("up", failure));
+      if (presentation === "json") writeEnvelope(failureEnvelope("up", failure), { beforeExit: true });
       return `${failure.message} ${failure.remedy}`;
     });
     try {
