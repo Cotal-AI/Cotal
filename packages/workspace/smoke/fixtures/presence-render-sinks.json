@@ -912,13 +912,13 @@
     {
       "path": "implementations/cli/src/console/ui/StatusBar.tsx",
       "kind": "derived-output",
-      "anchor": "{status.space + \" · #\" + activeChannel + \" · \" + agentCount + \" agents · \" +\n            rates.msgsPerSec.toFixed(1) + \" msg/s \"}",
+      "anchor": "{status.space + \" · \" + (activeChannel === null ? \"all\" : \"#\" + activeChannel) + \" · \" + agentCount + \" agents · \" +\n            rates.msgsPerSec.toFixed(1) + \" msg/s \"}",
       "class": "non-render/control"
     },
     {
       "path": "implementations/cli/src/console/ui/StatusBar.tsx",
       "kind": "derived-output",
-      "anchor": "status.space + \" · #\" + activeChannel + \" · \" + agentCount + \" agents · \" +\n            rates.msgsPerSec.toFixed(1) + \" msg/s \"",
+      "anchor": "status.space + \" · \" + (activeChannel === null ? \"all\" : \"#\" + activeChannel) + \" · \" + agentCount + \" agents · \" +\n            rates.msgsPerSec.toFixed(1) + \" msg/s \"",
       "class": "non-render/control"
     },
     {
