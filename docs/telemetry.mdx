@@ -105,7 +105,7 @@ a later terminal run still shows it. An environment-selected level does not trig
 | `level` | `"minimal"` or `"regular"` | The level the event was sent at. |
 | `event` | `"command"` | |
 | `command` | string | The registered top-level command name (`up`, `spawn`, `ext`), never a user word. |
-| `outcome` | `"ok"`, `"error"` or `"refused"` | Exit 0 is `ok`; a typed refusal, or exit 2 without one, is `refused`; anything else is `error`. |
+| `outcome` | `"ok"`, `"error"` or `"refused"` | Exit 0 is `ok`. For `status --components`, a refused check gives `refused`; an absent or non-serving component gives `error` unless another check was refused. Other commands use their reported failure outcome, or `refused` for exit 2 and `error` for other nonzero exits when none was reported. |
 | `exitCode` | integer | The process exit code. |
 | `durationMs` | integer | Milliseconds from dispatch to exit. |
 | `version` | string | The `cotal-ai` version. |
