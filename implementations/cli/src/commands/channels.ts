@@ -183,12 +183,13 @@ export async function channels(args: ParsedArgs): Promise<void> {
   // entry that already holds every value a set gives.
   const unchanged = action === "remove" ? !removed && !purged : !wrote;
   const result = { action, name, space: connection.space, patch: action === "remove" ? null : patch(values), purged: purged ?? null, removed: action === "remove" ? removed : null };
+  const scope = targetWords({ ...values, space: result.space });
   writeResult(presentation, { command: "channel", target, result, noOp: unchanged }, (r) => ({ sections: [
     { title: action !== "remove" ? action === "defaults" ? unchanged ? "Channel defaults unchanged" : "Channel defaults saved" : unchanged ? `Channel unchanged · #${name}` : `Channel saved · #${name}` : removed ? `Channel removed · #${name}` : unchanged ? `Nothing removed · #${name}` : `Channel history purged · #${name}`, blocks: [
       { kind: "fields", rows: [["Space", r.space], ...(action === "remove" ? [["Metadata", removed ? "removed" : "no saved entry"], ["History", r.purged === null ? "kept" : `${r.purged} retained messages purged`]] as [string, string][] : Object.entries(r.patch!).map(savedRow))] },
       { kind: "lines", lines: [{ text: action !== "remove" ? unchanged ? `${action === "defaults" ? "The space defaults already hold" : `#${name} already holds`} every value given, so nothing was written.` : "Metadata does not grant read or post access. Replay controls backfill, not confidentiality." : unchanged ? `${connection.space} has no saved entry for #${name}, so nothing changed.` : "This does not stop members or revoke access. Future posts can create new retained history.", tone: "hint" }] },
     ] },
-    { title: "Next", blocks: [{ kind: "commands", items: [{ command: "cotal ch", description: "See saved channel metadata" }, { command: "cotal history <channel>", description: "Read retained messages within your grant" }] }] },
+    { title: "Next", blocks: [{ kind: "commands", items: [{ command: `cotal ch${scope}`, description: "See saved channel metadata" }, { command: `${name ? channelHistoryCommand(name) : "cotal history <channel>"}${scope}`, description: "Read retained messages within your grant" }] }] },
   ] }));
 }
 

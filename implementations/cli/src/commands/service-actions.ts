@@ -153,8 +153,8 @@ function interruptedStart(name: string, space: string, selected: string | undefi
 
 /** The next step for a name that resolves to no saved definition and to no member of the space's
  *  controller stack. */
-export function unsavedServiceStep(name: string, mode: string): string {
-  return name === "web" ? "the web dashboard is an extension: add it with `cotal ext add @cotal-ai/web`, then start it with `cotal service start web`" : mode === "stop" ? "list this space's saved definitions with `cotal service`" : "add a supported service definition explicitly before starting it";
+export function unsavedServiceStep(name: string, mode: string, space: string): string {
+  return name === "web" ? "the web dashboard is an extension: add it with `cotal ext add @cotal-ai/web`, then start it with `cotal service start web`" : mode === "stop" ? `list this space's saved definitions with \`cotal service --space ${shellWord(space)}\`` : "add a supported service definition explicitly before starting it";
 }
 
 function missingServiceDefinition(space: string, name: string, mode: string, commandName: string): CommandFailure {
@@ -163,7 +163,7 @@ function missingServiceDefinition(space: string, name: string, mode: string, com
   const effect = reading ? "nothing was read" : `no process or extension was ${mode === "stop" ? "stopped" : "started"}`;
   const remedy = stackName
     ? `this space's controller stack names it ${stackName}: use \`cotal ${commandName === "down" ? "down" : `${commandName} ${mode}`} ${stackName} --space ${space}\`${mode === "stop" ? ", or bare `cotal down` to stop the whole stack" : ""}`
-    : reading ? `list this space's saved definitions with \`cotal service --space ${shellWord(space)}\`` : unsavedServiceStep(name, mode);
+    : reading ? `list this space's saved definitions with \`cotal service --space ${shellWord(space)}\`` : unsavedServiceStep(name, mode, space);
   return new CommandFailure("refused", "TARGET_NOT_FOUND", `no saved service definition resolves this name in the selected space; ${effect}`, { target: { space, name }, remedy });
 }
 

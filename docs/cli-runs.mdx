@@ -345,8 +345,8 @@ time, so you cannot script it. A scripted turn result needs a `status` of `done`
 handle such as `{ "agent": "sim.reviewer", "persona": "reviewer" }` instead of an agent name.
 Invalid turn results are refused before simulation with `SCHEMA_INVALID`. This includes an invalid
 status, a non-string note, an unknown field, a scripted `at`, and a missing, malformed or
-unexpected destination. A destination refusal names the `to` field, including the array index
-for a list entry.
+unexpected destination. The refusal names the results file and the field or result to correct
+before rerunning. For a list entry the path includes the array index.
 
 A missing script entry or an exhausted list raises L6001. If it goes uncaught, the error names the
 table and step, suggests what to add, and prints a retry command with shell-quoted paths where needed.

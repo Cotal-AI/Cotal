@@ -594,9 +594,9 @@ file it links to. `spawn` can read that file, but `persona show`, `edit` and `re
 with `PERMISSION_DENIED`. If the target is a readable regular file, the refusal suggests copying it
 in place of the link. If the target is missing, restore it if you still need it, or move the broken
 link aside and put a regular persona file in its place.
-A `.cotal/agents` that is a file or a link that loops holds no personas, so the listings, `show`,
-`create`, `edit` and `remove` refuse it with `CONFLICT`, naming it and what it is, and the next step
-is to move it out of the way.
+If `.cotal/agents` is a file or a link that loops, catalog operations refuse it with `CONFLICT`.
+Move it aside. To read or edit existing definitions, restore their folder at `.cotal/agents`.
+To create a persona, retry the original create command with its source and target options.
 Both listings refuse a dangling catalog link with `CONFLICT`, naming the link and its missing target.
 Restore the target or move the broken link aside. A catalog path that is absent still lists as empty.
 Show and edit accept a definition whose `name` is not its catalog name. The seeded `default`

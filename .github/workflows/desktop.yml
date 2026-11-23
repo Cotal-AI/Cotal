@@ -285,11 +285,6 @@ jobs:
           APPLE_CERTIFICATE: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && secrets.APPLE_CERTIFICATE || '' }}
           APPLE_CERTIFICATE_PASSWORD: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && secrets.APPLE_CERTIFICATE_PASSWORD || '' }}
           APPLE_SIGNING_IDENTITY: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && secrets.APPLE_SIGNING_IDENTITY || '' }}
-          APPLE_ID: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && secrets.APPLE_ID || '' }}
-          APPLE_PASSWORD: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && secrets.APPLE_PASSWORD || '' }}
-          APPLE_TEAM_ID: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && secrets.APPLE_TEAM_ID || '' }}
-          APPLE_API_ISSUER: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && secrets.APPLE_API_ISSUER || '' }}
-          APPLE_API_KEY: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && secrets.APPLE_API_KEY || '' }}
         run: |
           $ErrorActionPreference = 'Stop'
           if ($env:SIGNED_BUILD -ne 'true') {
@@ -314,9 +309,10 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Desktop build failed.' }
           & pnpm --dir desktop check:size
           if ($LASTEXITCODE -ne 0) { throw 'Desktop bundle size budget exceeded.' }
-      # Tauri notarizes and staples the app, then signs the disk image without submitting it. Gatekeeper
-      # assesses a downloaded disk image on open and rejects a signed, unnotarized one, so the image goes to
-      # the notary service too and carries its own ticket.
+      # The only notarization: Tauri gets no notarization login, so it signs the app and the disk image and
+      # skips submitting. Gatekeeper assesses a downloaded disk image on open and rejects a signed, unnotarized
+      # one; the notary service checks everything nested in the image, the app included, so one submission and
+      # the image's stapled ticket cover both, with one wait for Apple instead of two.
       - name: Notarize and staple the macOS disk image
         if: runner.os == 'macOS' && steps.signing.outputs.signed == 'true'
         shell: bash
@@ -511,27 +507,54 @@ jobs:
             ${{ runner.temp }}/win-updater-result/
           if-no-files-found: error
           retention-days: 7
+  # Each platform's installers attach as soon as its build stages them, so a slow macOS notarization
+  # never holds back Windows and Linux. When every build has ended, any platform without installers fails
+  # this job by name.
   release:
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-    needs: native-build
     runs-on: ubuntu-24.04
+    timeout-minutes: 240
     permissions:
+      actions: read
       contents: write
     steps:
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          pattern: desktop-release-*
-          path: installers
-      - name: Attach installers to the version release
+      - name: Attach each platform's installers as soon as they are staged
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
           TAG: ${{ github.ref_name }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
         run: |
           set -euo pipefail
+          expected=(desktop-release-Linux-X64 desktop-release-Windows-X64 desktop-release-macOS-X64 desktop-release-macOS-ARM64)
           if ! gh release view "$TAG" > /dev/null 2>&1; then
-            gh release create "$TAG" --verify-tag --draft --title "$TAG" --notes 'Desktop installer validation packages. Check each platform signature before distribution.'
+            gh release create "$TAG" --verify-tag --draft --title "$TAG" --notes 'Desktop installer validation packages. Check each platform signature before distribution.' \
+              || gh release view "$TAG" > /dev/null
           fi
-          mapfile -d '' packages < <(find installers -type f -print0)
-          test "${#packages[@]}" -gt 0
-          gh release upload "$TAG" "${packages[@]}"
+          attached=" "
+          final=false
+          while :; do
+            # Read the jobs before the artifacts: a build that has ended has already staged what it will stage.
+            running=$(gh api "repos/$GH_REPO/actions/runs/$RUN_ID/attempts/$RUN_ATTEMPT/jobs" --paginate \
+              -q '.jobs[] | select((.name | startswith("native-build")) and .status != "completed") | .name' | wc -l)
+            [ "$running" -eq 0 ] && final=true
+            for name in "${expected[@]}"; do
+              [[ "$attached" == *" $name "* ]] && continue
+              id=$(gh api "repos/$GH_REPO/actions/runs/$RUN_ID/artifacts?name=$name" -q '[.artifacts[] | select(.expired | not)] | max_by(.created_at) | .id // empty')
+              [ -n "$id" ] || continue
+              rm -rf "installers/$name" && mkdir -p "installers/$name"
+              curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -o "installers/$name.zip" "https://api.github.com/repos/$GH_REPO/actions/artifacts/$id/zip"
+              unzip -q "installers/$name.zip" -d "installers/$name"
+              mapfile -d '' packages < <(find "installers/$name" -type f -print0)
+              test "${#packages[@]}" -gt 0
+              gh release upload "$TAG" --clobber "${packages[@]}"
+              attached+="$name "
+              echo "Attached ${#packages[@]} installers from $name."
+            done
+            missing=()
+            for name in "${expected[@]}"; do [[ "$attached" == *" $name "* ]] || missing+=("$name"); done
+            [ "${#missing[@]}" -eq 0 ] && { echo "All ${#expected[@]} platforms attached."; exit 0; }
+            $final && { echo "::error::Builds ended without installers for: ${missing[*]}"; exit 1; }
+            sleep 30
+          done
