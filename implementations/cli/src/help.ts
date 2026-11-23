@@ -335,7 +335,13 @@ export function printHelpPath(cmd: Command, words: readonly string[], out: (line
     path.push(sub.name); selected = sub; surface = sub;
     if (!sub.subcommands?.length) break;
   }
-  if (cmd.name === "service" && selected?.name === "start" && words[1] !== undefined && !serviceStartAllowsNoOpen(words[1]))
-    selected = { ...selected, flagNames: selected.flagNames?.filter((flag) => flag !== "no-open") };
+  if (cmd.name === "service" && selected?.name === "start" && words[1] !== undefined) {
+    const manager = words[1] === "manager";
+    selected = {
+      ...selected,
+      usage: manager ? selected.usage?.replace("|--new-instance]", "]") : selected.usage,
+      flagNames: selected.flagNames?.filter((flag) => (flag !== "no-open" || serviceStartAllowsNoOpen(words[1])) && (flag !== "new-instance" || !manager)),
+    };
+  }
   printCommandHelp(cmd, selected ? { ...selected, name: path.join(" ") } : undefined, out, width);
 }

@@ -95,6 +95,18 @@ const dottedOperand = run(["version", "release.3"]);
 check("an unexpected positional keeps the full value in its refusal",
   usageShape(dottedOperand, /^✗ Unexpected argument 'release\.3'\n/m) && dottedOperand.stderr.includes("\ncotal version\n"), shown(dottedOperand));
 
+for (const verb of ["start", "stop", "restart", "status", "logs", "install", "uninstall"]) {
+  const extra = run(["manager", verb, "extra", "--json"]);
+  const error = parsed(extra)?.error;
+  check(`manager ${verb} names the extra operand and its own selectors`, extra.status === 1 && error?.code === "USAGE_INVALID" &&
+    error.message === `unexpected argument "extra" for \`cotal manager ${verb}\`` &&
+    error.remedy?.includes("remove the extra argument") === true && error.remedy.includes("--space <space> or --instance <full-id>"), shown(extra));
+}
+const managerExtra = run(["manager", "status", "extra", "--plain"]);
+check("a plain manager operand refusal keeps the manager status help", managerExtra.status === 1 &&
+  managerExtra.stderr.includes('unexpected argument "extra" for `cotal manager status`') &&
+  managerExtra.stderr.includes("Usage\n  cotal manager status") && !managerExtra.stderr.includes("use service"), shown(managerExtra));
+
 // The linear extension declares one usage form per line.
 const LINEAR = join(import.meta.dirname, "..", "..", "linear", "dist", "index.js");
 const linear = (args: string[]) => {
@@ -279,10 +291,21 @@ if (process.platform !== "win32") {
     && directories.every((path) => (statSync(path).mode & 0o777) === 0o700)
     && files.every((path, index) => (statSync(path).mode & 0o777) === (index === 0 ? 0o600 : 0o700)), shown(scaffold));
 
-  const original = readFileSync(files[0]!, "utf8");
-  const conflict = run(["endpoint", "init", "different", "--dir", dir, "--json"], {}, cwd);
-  check("endpoint init does not replace scaffold files", conflict.status === 2 && JSON.parse(conflict.stdout).error?.code === "CONFLICT"
-    && readFileSync(files[0]!, "utf8") === original, shown(conflict));
+  const original = files.map((path) => readFileSync(path));
+  const conflictArgs = ["endpoint", "init", "different", "--dir", dir];
+  const conflict = run([...conflictArgs, "--json"], {}, cwd);
+  const plainConflict = run([...conflictArgs, "--plain"], {}, cwd);
+  const rejected = JSON.parse(conflict.stdout);
+  const copyDir = `${parent}/reviews-copy`;
+  const copy = run(["endpoint", "init", "different", "--dir", copyDir, "--json"], {}, cwd);
+  const checked = run(["endpoint", "check", join(copyDir, "contract.json"), "--plain"], {}, cwd);
+  check("endpoint init preserves scaffold files and names the alternate destination remedy in JSON and plain output",
+    conflict.status === 2 && rejected.error?.code === "CONFLICT" && rejected.target?.path === files[0]
+    && rejected.error?.remedy?.includes("cotal endpoint init different --dir <new-directory>")
+    && plainConflict.status === 2 && plainConflict.stderr.includes(rejected.error.remedy)
+    && files.every((path, index) => readFileSync(path).equals(original[index]!))
+    && copy.status === 0 && JSON.parse(copy.stdout).result?.endpoint === "com.example.different" && checked.status === 0,
+    [conflict, plainConflict, copy, checked].map(shown));
 
   symlinkSync(directories[0]!, join(cwd, dir, "linked-parent"), "dir");
   for (const blocked of [`${dir}/linked-parent`, `${dir}/contract.json`]) {
@@ -1074,6 +1097,14 @@ if (process.platform !== "win32") {
   const helpSvcStartMgr = run(["help", "service", "start", "manager"]);
   const svcStartMgrHelp = run(["service", "start", "manager", "--help"]);
   check("help service start manager prints the same preset-augmented help as service start manager --help", helpSvcStartMgr.status === 0 && helpSvcStartMgr.stdout === svcStartMgrHelp.stdout && /--runtime/.test(helpSvcStartMgr.stdout), shown(helpSvcStartMgr));
+  check("manager preset start help keeps --instance and omits --new-instance in Usage and Options",
+    svcStartMgrHelp.status === 0 && /\[--instance <id>\]/.test(svcStartMgrHelp.stdout) && !svcStartMgrHelp.stdout.includes("--new-instance"), shown(svcStartMgrHelp));
+  const genericStartHelp = run(["service", "start", "--help"]);
+  check("generic service start help still lists --new-instance in Usage and Options",
+    genericStartHelp.status === 0 && /\[--instance <id>\|--new-instance\]/.test(genericStartHelp.stdout) && /^  --new-instance\s/m.test(genericStartHelp.stdout), shown(genericStartHelp));
+  const multiManager = run(["service", "start", "manager", "--new-instance", "--dry-run", "--json", "--space", "presetspace"], {}, presetSpace);
+  const multiRefusal = parsed(multiManager) as { outcome?: string; error?: { code?: string } } | undefined;
+  check("manager preset still refuses --new-instance in a preview", multiManager.status === 2 && multiRefusal?.outcome === "refused" && multiRefusal.error?.code === "UNSUPPORTED", shown(multiManager));
   const serviceList = run(["service", "list", "--space", "presetspace", "--json"], {}, presetSpace);
   const helpService = run(["service", "--help"]);
   const helpServiceList = run(["help", "service", "list"]);

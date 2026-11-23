@@ -190,7 +190,6 @@ export interface SeatLaunchDeps {
   place: (...args: Parameters<Manager["place"]>) => ReturnType<Manager["place"]>;
   provisionUserAgent: (...args: Parameters<Manager["provisionUserAgent"]>) => ReturnType<Manager["provisionUserAgent"]>;
   readerRemedy: (...args: Parameters<Manager["readerRemedy"]>) => ReturnType<Manager["readerRemedy"]>;
-  remoteAuthority: () => Manager["remoteAuthority"];
   resolveConnector: (...args: Parameters<Manager["resolveConnector"]>) => ReturnType<Manager["resolveConnector"]>;
   retirement: () => Manager["retirement"];
   runtimeFor: (...args: Parameters<Manager["runtimeFor"]>) => ReturnType<Manager["runtimeFor"]>;
@@ -248,7 +247,6 @@ export function seatLaunchDeps(m: Manager): SeatLaunchDeps {
     place: (...args) => m["place"](...args),
     provisionUserAgent: (...args) => m["provisionUserAgent"](...args),
     readerRemedy: (...args) => m["readerRemedy"](...args),
-    remoteAuthority: () => m["remoteAuthority"],
     resolveConnector: (...args) => m["resolveConnector"](...args),
     retirement: () => m["retirement"],
     runtimeFor: (...args) => m["runtimeFor"](...args),

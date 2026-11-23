@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync, type ChildProcess, type SpawnSyncReturns } from "node:child_process";
 import { createHash } from "node:crypto";
-import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { hostname } from "node:os";
@@ -979,7 +979,8 @@ async function restoredStoreRestartScenario(): Promise<void> {
   const twoStores = realpathSync.native(mkdtempSync(join(tmpdir(), "cotal-two-stores-root-")));
   const twoHome = realpathSync.native(mkdtempSync(join(tmpdir(), "cotal-two-stores-home-")));
   const artifact = join(root, "registry-backup");
-  const store = join(root, "registry-target");
+  const parent = join(root, "store parent");
+  const store = join(parent, "registry-target");
   const server = `nats://127.0.0.1:${await freePort()}`;
   const space = "backup_restored_store_restart";
   const { run } = sandboxRun(root, home);
@@ -992,6 +993,25 @@ async function restoredStoreRestartScenario(): Promise<void> {
     must("seed registry", run("channel", "set", "preserved", "--desc", "survives", "--space", space));
     must("down --preserve-state", run("down", "--preserve-state"));
     must("registry backup", run("backup", "create", artifact, "--only", "registry"));
+    mkdirSync(parent);
+    if (process.platform !== "win32" && process.getuid?.() !== 0) {
+      const journal = join(root, ".cotal", "maintenance", "v1", "journal.json");
+      const ready = readFileSync(journal, "utf8");
+      chmodSync(parent, 0o500);
+      try {
+        for (const args of [["backup", "restore", artifact, "--plain"], ["up", "--restore", artifact, "--detach", "--space", space]]) {
+          const refused = run(...args, "--store-dir", store);
+          assert.equal(refused.status, 2, refused.stderr);
+          assert.match(refused.stderr, /PERMISSION_DENIED/);
+          const report = refused.stderr.replace(/\s+/g, " ");
+          assert.ok(report.includes(`this account cannot write ${parent}`), refused.stderr);
+          assert.match(report, /make the parent directory writable by this account or choose a path under a writable parent/);
+          assert.match(report, /Leave the store directory absent/);
+          assert.equal(existsSync(store), false);
+          assert.equal(readFileSync(journal, "utf8"), ready);
+        }
+      } finally { chmodSync(parent, 0o700); }
+    }
     const restored = run("backup", "restore", artifact, "--only", "registry", "--store-dir", store, "--json");
     must("registry restore into another store", restored);
     const { attemptId, store: restoredStore } = (JSON.parse(restored.stdout) as { result: { attemptId: string; store: string } }).result;

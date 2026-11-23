@@ -24,7 +24,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve as resolvePath } from "node:path";
 import { CotalEndpoint, mintCreds, mintLifecycleUid, newIdentity, provisionAgent } from "@cotal-ai/core";
-import { getSpaceAuth, workspaceSecretStore } from "@cotal-ai/workspace";
+import { acquireMaintenanceLock, getSpaceAuth, readMaintenanceJournal, releaseMaintenanceLock, workspaceSecretStore } from "@cotal-ai/workspace";
 import { assertSmokeSandboxDown, freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
 import { makeScratch, assertScratchHeld } from "../../../bin/smoke/_scratch.js";
 
@@ -106,6 +106,17 @@ try {
     else await sleep(1_000);
   }
   ok("the delivery daemon is running before the cut", deliveryBefore);
+
+  const lock = acquireMaintenanceLock(root);
+  try {
+    const held = readFileSync(lock.path);
+    const blocked = runSync(["down", "--preserve-state", "--yes"]);
+    ok("a held lock refuses the preserve before the cut and names the same stop to retry",
+      blocked.status === 2 && /LIFECYCLE_BLOCKED/.test(tail(blocked)) && tail(blocked).includes("nothing was stopped") &&
+      tail(blocked).includes("repeat `cotal down --preserve-state` from this folder with the same options"), tail(blocked));
+    ok("the holder's lock and running stack survive the refusal without a cut",
+      held.equals(readFileSync(lock.path)) && !readMaintenanceJournal(root) && deliveryUp(space, root) && runSync(["ps", "--space", space]).status === 0);
+  } finally { releaseMaintenanceLock(lock); }
 
   const json = runSync(["down", "--preserve-state", "--json", "--yes"]);
   const receipt = JSON.parse(json.stdout);

@@ -1,6 +1,6 @@
 import { lstatSync } from "node:fs";
 import { isAbsolute, join, relative } from "node:path";
-import { agentFilePath, personaDir } from "@cotal-ai/core";
+import { agentFilePath, personaDir, personaLinkTarget } from "@cotal-ai/core";
 import { cachedPreferences, canonicalRoot, CommandFailure, describeLayer, isWorkspaceTargetError, OFFICIAL_CONNECTORS, preparedNeverStarted, resolveMeshTarget, resolvePreference, type MeshTarget, type PreferenceContext } from "@cotal-ai/workspace";
 import { defaultPersonaFix } from "./default-persona.js";
 
@@ -47,6 +47,15 @@ export function missingConnector(name: string, target: object): CommandFailure {
   const pkg = OFFICIAL_CONNECTORS[name];
   return new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `no connector "${name}" is installed`, { target,
     remedy: pkg ? `add it with \`cotal ext add ${pkg}\`` : "install its integration with `cotal ext add <npm-package>`, or check the name" });
+}
+
+/** After an ENOENT loading the default, check whether a link still occupies its catalog path. */
+export function brokenDefaultPersona(path: string, target: object): CommandFailure | undefined {
+  const link = personaLinkTarget(path);
+  if (link === undefined) return undefined;
+  return new CommandFailure("refused", "TARGET_NOT_FOUND", `the default persona at ${path} is a symbolic link to a missing target: ${link}. The shipped default cannot replace the link`, {
+    target, remedy: "restore the link's target or move the broken link aside, then retry",
+  });
 }
 
 /** The space a launch from `cwd` targets when no `--space` or `--server` names one: the space the mesh
