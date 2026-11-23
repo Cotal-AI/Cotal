@@ -415,7 +415,7 @@ export async function registerServiceInstance(
       // createRecordEntry/updateRecordEntry translate the broker CAS loss (err_code 10071/10164)
       // into EpEnvelopeError("conflict") — classify on THAT, the numeric code never reaches here.
       if (e instanceof EpEnvelopeError && e.code === "conflict")
-        throw new EpEnvelopeError("conflict", `a concurrent registration for endpoint "${spec.endpoint}" took the governance slot first (a definite no-write CAS loss); re-read and re-decide (SPEC 13.7/13.8)`);
+        throw new GovernanceSlotCasLost(spec.endpoint);
       throw new EpEnvelopeError("unavailable", `the governance slot-take for endpoint "${spec.endpoint}" is ambiguous; the registration aborts before any spec write and the gate reopens; a committed-but-unacked slot self-orphans at the reopened generation and this instance's retry replaces it (SPEC 13.7): ${(e as Error)?.message ?? String(e)}`);
     }
   } catch (err) {
@@ -689,6 +689,13 @@ export async function completeFrozenRegistrationFromSpec(
   if (!reopened) return { completed: false, raced: true };
   await releaseHeldGovernance(recordsKv, args.endpoint, args.instanceId, args.gate.generation);
   return { completed: true, registrationRevision: specEntry.revision, processEpoch };
+}
+
+/** The governance-slot write definitely lost its CAS, before any spec write or revocation. */
+export class GovernanceSlotCasLost extends EpEnvelopeError {
+  constructor(endpoint: string) {
+    super("conflict", `a concurrent registration for endpoint "${endpoint}" took the governance slot first (a definite no-write CAS loss); re-read and re-decide (SPEC 13.7/13.8)`);
+  }
 }
 
 /** `details[].kind` on every refusal of {@link assertForeignSlotIsOrphaned}. A caller that repairs the
@@ -1241,4 +1248,3 @@ export function serviceEpochReader(jsm: JetStreamManager, space: string, endpoin
     return parseServiceStatus(rec.value).epoch;
   };
 }
-

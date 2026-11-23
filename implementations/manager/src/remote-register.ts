@@ -1,3 +1,4 @@
+import { setTimeout as delay } from "node:timers/promises";
 import { Kvm } from "@nats-io/kv";
 import { UserAuthenticationExpiredError, type NatsConnection } from "@nats-io/transport-node";
 import {
@@ -12,6 +13,7 @@ import {
   epAuthBucket,
   fetchContractArtifact,
   foreignSlotHeldFrom,
+  GovernanceSlotCasLost,
   principalKey,
   provisionEndpointGateOpen,
   publishContractArtifact,
@@ -25,6 +27,19 @@ import {
   type EpIssuanceBarrier,
 } from "@cotal-ai/core";
 import { MANAGER_ENDPOINT, managerAuthorityContractSource, managerClusterArtifacts } from "./manager-service-contract.js";
+
+async function registerAfterContention<T>(register: () => Promise<T>): Promise<T> {
+  for (let retries = 0; ; retries++) {
+    try {
+      return await register();
+    } catch (error) {
+      // A fresh attempt re-reads the governance head and validates the registration under its gate.
+      if (retries === 4 || !(error instanceof GovernanceSlotCasLost || foreignSlotHeldFrom(error)?.condition === "in-flight"))
+        throw error;
+      await delay(100);
+    }
+  }
+}
 
 /**
  * Run registration with host-issued prepare authority, scoped to one manager instance. Fresh
@@ -147,7 +162,7 @@ export async function registerRemoteManagerAuthority(args: {
       });
       let registered: Awaited<ReturnType<typeof register>>;
       try {
-        registered = await register();
+        registered = await registerAfterContention(register);
       } catch (error) {
         // Only a holder still at the slot stamp needs guarded host reconciliation.
         const held = foreignSlotHeldFrom(error);

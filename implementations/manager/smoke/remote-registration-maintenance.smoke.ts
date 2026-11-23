@@ -9,7 +9,7 @@ import { Kvm } from "@nats-io/kv";
 import {
   commitSiblingIssuance, createSpaceAuth, credentialIdOf, credsClaims, epAuthBucket,
   endpointRegistrationBarrier, eprepairKey, isReachable, mintCreds, mintLifecycleUid, newIdentity, parseEndpointRepairCursor,
-  remoteManagerActors, serverConfig, serveIssuanceGateKv, setupSpaceStreams, standaloneConnectOpts,
+  recordsBucket, remoteManagerActors, serverConfig, serveIssuanceGateKv, setupSpaceStreams, standaloneConnectOpts,
 } from "@cotal-ai/core";
 import { SMOKE_BROKER_TOKEN, awaitBrokerReady, createSuite, freePort, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { registerRemoteManagerAuthority } from "../dist/index.js";
@@ -41,6 +41,52 @@ try {
     observers.push(nc);
     return new Kvm(nc).open(epAuthBucket(space));
   };
+  // Hold the first two governance reads until both Managers have observed the same head.
+  // Their registrations and the deciding CAS both run against the live broker.
+  const open = Kvm.prototype.open;
+  let reads = 0;
+  let releaseReads!: () => void;
+  const bothRead = new Promise<void>(resolve => { releaseReads = resolve; });
+  Kvm.prototype.open = async function (this: Kvm, ...args: Parameters<typeof open>) {
+    const kv = await open.apply(this, args);
+    if (args[0] === recordsBucket(space)) {
+      const get = kv.get.bind(kv);
+      kv.get = async (...query) => {
+        const entry = await get(...query);
+        if (query[0] === "govern.manager" && ++reads <= 2) {
+          if (reads === 2) releaseReads();
+          await bothRead;
+        }
+        return entry;
+      };
+    }
+    return kv;
+  };
+  const managers = [owner, `u_${"b".repeat(26)}`].map(owner => ({ owner, instanceId: mintLifecycleUid() }));
+  const readDeadline = setTimeout(releaseReads, 10_000);
+  try {
+    const results = await Promise.allSettled(managers.map(async ({ owner, instanceId }) => {
+      const { executor, serve } = remoteManagerActors(instanceId);
+      const prepareCreds = await mintCreds(auth, newIdentity(), "remote-manager", {
+        principal: { owner, actor: executor }, remoteManager: { instanceId, owner, actor: executor }, expiresInSeconds: 120,
+      });
+      return registerRemoteManagerAuthority({ space, server, owner, instanceId, serveActor: serve, tlsRequired: false,
+        prepareCreds, evict: async () => { throw new Error("first registration must not evict a holder"); } });
+    }));
+    suite.check("concurrent first registrations: both Managers acquire their own serving grants", results.every((result, i) =>
+      result.status === "fulfilled" && result.value.processEpoch === 0 &&
+      result.value.serveGrant.instanceId === managers[i]!.instanceId && result.value.serveGrant.owner === managers[i]!.owner),
+    results.map(result => result.status === "rejected" ? String(result.reason) : result.value.registrationRevision));
+  } finally {
+    clearTimeout(readDeadline);
+    Kvm.prototype.open = open;
+  }
+  const gates = await Promise.all(managers.map(async ({ instanceId }) =>
+    serveIssuanceGateKv(await openAuth(instanceId), space, { endpoint: "manager", instanceId }).observe()));
+  suite.check("concurrent first registrations: the loser reopened and retried at the original epoch",
+    gates.every(gate => gate?.state === "open" && gate.processEpoch === 0) &&
+      gates.map(gate => gate?.generation).sort().join(",") === "1,2", gates);
+
   for (const mode of ["throw", "mixed", "short", "mixed-live"] as const) {
     const instanceId = mintLifecycleUid();
     const actors = remoteManagerActors(instanceId);

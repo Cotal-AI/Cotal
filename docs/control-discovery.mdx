@@ -452,8 +452,9 @@ not distinguish the two states either. Each of these refusals carries
 `kind = ai.cotal.ep.foreign-slot-held` in `error.details[]` with the holder's instance id and the
 `condition` that refused: `in-flight` for a holder gate still at the stamp, or `no-seam`,
 `unreadable`, `garbled` or `behind` when the registration could not read that gate or read it below
-the stamp. A remote manager asks its host to reconcile the holder only on `in-flight`, the one
-condition a gate repair can clear.
+the stamp. A remote Manager briefly retries registration on a definite governance-slot CAS loss or
+an `in-flight` holder. Each attempt reads the governance head again. If the holder is still in
+flight, the Manager can ask its host for a guarded gate reconciliation.
 
 For the instance that cannot cooperate, an operator names it:
 `cotal endpoint deregister <endpoint> <full-instance-id>`

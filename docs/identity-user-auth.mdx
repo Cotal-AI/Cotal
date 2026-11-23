@@ -446,9 +446,10 @@ host accepts it only when its single sealed scan of the caller instance's
 target a foreign manager slot holder in the same space, but it runs only after the delivery daemon
 proves the frozen gate's holder gone under a complete sweep. The participant receives neither an
 evictor credential nor authority over another instance's records or gate. A clean stop refreshes an
-unhealthy executor before deregistration. A restart verify-evicts its old family, and a manager
-blocked by a foreign governance slot whose holder's gate is still frozen at the slot's stamp asks
-the host to reconcile that holder and retries the registration once. The goal-writer and session-ledger
+unhealthy executor before deregistration. A restart verify-evicts its old family. A Manager that
+loses the governance-slot write or finds another registration in flight briefly retries from a fresh
+read. If the foreign holder still has the slot at its frozen gate's generation, the Manager asks
+the host to reconcile that holder and retries registration once. The goal-writer and session-ledger
 credentials carry a random `issuance:` tag, so a restart that re-mints them within the second of an
 earlier issuance gets new ledger rows and never re-signs a credential its barrier revoked.
 
