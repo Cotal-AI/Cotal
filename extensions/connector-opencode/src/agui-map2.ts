@@ -17,9 +17,12 @@
  *   so `plugin2.ts` closes that run out of band and this mapper forgets it.
  * - every other message kind -> nothing, and it closes nothing.
  *
- * A turn that ends before its first element opened no run, so its `idle` has nothing to close and
- * publishes nothing, as on 1.x. Tool arguments and results are mapped here and dropped by the
- * emitter's egress policy before anything is written, the one place that decides what leaves.
+ * A turn that ends before its first element, such as one the provider refused, has no run open at
+ * its `idle`, so that `idle` publishes a run of its own: its start at the turn's `user` record and
+ * the `idle`'s terminal. A reader waiting on the turn then sees it end. An `idle` that ends no turn
+ * of its own, such as one recorded after an out-of-band close, maps to nothing. Tool arguments and
+ * results are mapped here and dropped by the emitter's egress policy before anything is written,
+ * the one place that decides what leaves.
  */
 import {
   type AguiEvent,
@@ -74,20 +77,29 @@ export interface OpenCode2Mapper {
 
 export function createOpenCode2Mapper(opts: OpenCode2MapperOptions): OpenCode2Mapper {
   let open: string | null = opts.resumeRunId ?? null;
+  /** When the turn no run has taken yet began: its `user` record's time. */
+  let begunAt: number | undefined;
 
   const map: RecordMapper<OpenCode2Record> = (record) => {
     const { message, index, element } = record;
     const timestamp = message.time.created;
 
     if (message.type === "user" || message.type === "idle") {
-      if (open === null) return null;
+      const begun = begunAt;
+      begunAt = message.type === "user" ? timestamp : undefined;
+      const events: AguiEvent[] = [];
+      if (open === null) {
+        if (message.type === "user" || begun === undefined) return null;
+        open = opts.mintRunId();
+        events.push(runStarted({ threadId: opts.threadId, runId: open, timestamp: begun, cotal: { runIdSource: "connector" } }));
+      }
       const runId = open;
       open = null;
       const failed = message.type === "idle" && message.outcome === "failed";
-      const terminal = failed
+      events.push(failed
         ? runError({ message: message.error?.message || "opencode turn failed", timestamp, ...(message.error?.type ? { code: message.error.type } : {}) })
-        : runFinished({ threadId: opts.threadId, runId, timestamp });
-      return { runId, events: [terminal] };
+        : runFinished({ threadId: opts.threadId, runId, timestamp }));
+      return { runId, events };
     }
     if (message.type !== "assistant" || element === undefined) return null;
 
@@ -95,6 +107,7 @@ export function createOpenCode2Mapper(opts: OpenCode2MapperOptions): OpenCode2Ma
     const events: AguiEvent[] = [];
     if (open === null) {
       open = opts.mintRunId();
+      begunAt = undefined;
       events.push(runStarted({ threadId: opts.threadId, runId: open, timestamp: ts, cotal: { runIdSource: "connector" } }));
     }
     const runId = open;
