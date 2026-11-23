@@ -77,7 +77,6 @@ export interface SeatStopDeps {
   setLifecycleInFlight: (value: Manager["lifecycleInFlight"]) => void;
   maintenanceState: () => Manager["maintenanceState"];
   managerInstanceId: () => Manager["managerInstanceId"];
-  remoteAuthority: () => Manager["remoteAuthority"];
   retirement: () => Manager["retirement"];
   unverifiedStops: () => Manager["unverifiedStops"];
   setUnverifiedStops: (value: Manager["unverifiedStops"]) => void;
@@ -112,7 +111,6 @@ export function seatStopDeps(m: Manager): SeatStopDeps {
     setLifecycleInFlight: (value) => { m["lifecycleInFlight"] = value; },
     maintenanceState: () => m["maintenanceState"],
     managerInstanceId: () => m["managerInstanceId"],
-    remoteAuthority: () => m["remoteAuthority"],
     retirement: () => m["retirement"],
     unverifiedStops: () => m["unverifiedStops"],
     setUnverifiedStops: (value) => { m["unverifiedStops"] = value; },
@@ -151,7 +149,7 @@ export class SeatStop {
   private set lifecycleInFlight(value: Manager["lifecycleInFlight"]) { this.deps.setLifecycleInFlight(value); }
   private get maintenanceState() { return this.deps.maintenanceState(); }
   private get managerInstanceId() { return this.deps.managerInstanceId(); }
-  private get remoteAuthority() { return this.deps.remoteAuthority(); }
+  private get remoteAuthority() { return this.config.remoteAuthority; }
   private get retirement() { return this.deps.retirement(); }
   private get unverifiedStops() { return this.deps.unverifiedStops(); }
   private set unverifiedStops(value: Manager["unverifiedStops"]) { this.deps.setUnverifiedStops(value); }

@@ -74,6 +74,8 @@ per-agent ACLs. It runs in the background by default and records the mesh so `co
 any directory can find it; `--detach` explicitly names the same mode. `--foreground` keeps the
 native stack in this terminal. Omit `--json` and `--plain` in foreground mode. For a finite
 startup receipt from a controller-owned stack, use `--json` or `--plain` without `--foreground`.
+For a manifest, use `cotal team boot <file> --foreground` in its prepared project. Add `--dry-run`
+to preview terminal custody without starting the stack.
 
 `--open` with `--service-endpoints` or any public exchange flag refuses `USAGE_INVALID` (exit 1)
 before startup. Remove those flags for an open space, or use them with `--user-auth` instead of `--open`.
@@ -124,9 +126,12 @@ stops the folder's stack, and `down --space` is not a remote replacement for tha
 running mesh records, else the one prepared there. A folder whose records name no space is a new
 project, and `up` names its space after the folder, the name `cotal up --space <folder name>` would
 give it. A folder name that is not a valid space name, such as one with a space in it, refuses
-`USAGE_INVALID`, exit 1. A name another folder on this machine registered or prepared, running or
-stopped, refuses `CONFLICT`, exit 2, and is not taken over. Both refusals write nothing and name
-`cotal up --space <name>`. A space named after its folder keeps its registration after `cotal down`,
+`USAGE_INVALID`, exit 1. Repeat the startup command with its original options and add `--space <name>`
+with a valid unused name. For a controller start with `--json` or `--plain`, prepare the folder
+with `cotal space create <name> --root .` first, then repeat the original command. To stay on
+the native launcher, add `--space <name>` and omit the output flag.
+A name another folder on this machine registered or prepared, running or stopped, refuses
+`CONFLICT`, exit 2, and is not taken over. Both refusals leave the folder unchanged. A space named after its folder keeps its registration after `cotal down`,
 so the name stays the folder's while it is stopped. `cotal up` there starts it again on the same
 launcher, and `cotal space forget <name>` frees the name. A second `up` in the same folder
 runs the same space again. A folder whose stack and registrations name more than one space refuses
@@ -145,9 +150,9 @@ leaves the other space's `down` and its reads reaching this one. When the named 
 `--plain`, and writes nothing in the folder it ran from. If you run it from the renamed folder of a
 running static-auth project, the refusal tells you to move the project back before running
 `cotal down --yes` there. A bare `up` whose folder names a space that
-runs from another folder refuses `CONFLICT` as well. Its Next names
-`cotal up --space <name>` to start a separate space in this folder, and the `cotal down` that stops
-the other one in its own folder. A background boot also brings up the control plane (delivery daemon in auth
+runs from another folder refuses `CONFLICT` as well. To start a separate space, run
+`cotal up --space <name>` in a new project folder outside the current one. Use an unused name and
+keep `--server` if you specified a free address. To stop the running space instead, use `cotal down` in its own folder. A background boot also brings up the control plane (delivery daemon in auth
 mode, then the manager). An open mesh runs no delivery daemon, also in a root that still holds a
 static stack's accounts, and its manager mints no credentials from those accounts, so static and
 open boots can alternate in one folder. Their store then holds both accounts, and a backup holds
@@ -268,9 +273,10 @@ its stop impact. It does not replace native stop authority with a process signal
 was not registered yet, it names that broker's pid, `cotal down --yes` and then `cotal up`. A start
 killed before it could say so leaves the same broker. The next `up` then refuses `CONFLICT`, exit 2,
 with or without `--server`, and names that broker's pid and `cotal down`, because the broker holds
-this root's store and no second one starts beside it. `cotal down` stops it. An
-interrupted `up --no-manager` names `cotal up --no-manager` in each of these, because bare `up` adds
-the manager, and the `cotal down --yes` that settles such an `up` names it as its Next. An `up`
+this root's store and no second one starts beside it. After `cotal down` stops it, repeat the startup
+command that refused, including its options. A bare `cotal up` can reuse the old address or start a
+manager you did not request. An interrupted controller `up --no-manager` names `cotal up --no-manager`
+in its signal notice and after the `cotal down --yes` that settles it. An `up`
 interrupted while it writes a new space's trust material leaves the space new, so the next `up`
 writes all of it again. A bare `down` interrupted the same way exits with the same codes and names
 the members still running; `cotal down --yes` finishes the stop. When it had signalled a member that

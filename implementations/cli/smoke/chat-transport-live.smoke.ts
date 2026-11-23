@@ -106,6 +106,16 @@ async function checkSizeRefusal(chat: ReturnType<typeof open>): Promise<void> {
   check("only the valid posts appear in channel history", JSON.stringify(texts) === JSON.stringify(["before", "after"]), texts ?? history.stderr);
 }
 
+function checkPlainHistory(): void {
+  const result = spawnSync(process.execPath, [cli, "chat", "--plain", "--space", space, "--name", "history-reader"], {
+    cwd: root, env, encoding: "utf8", timeout: 30_000, input: "/history\n:to #general\n/history 1\n/quit\n",
+  });
+  const output = `${result.stdout ?? ""}${result.stderr ?? ""}`;
+  check("plain /history gives the :to remedy and reads the stored post after selecting a channel",
+    result.status === 0 && output.includes("/history denied (USAGE_INVALID): enter :to #<channel>, then retry /history")
+      && !output.includes("(Tab)") && /^\d[^\n]* #general [^\n]*: healthy-control$/m.test(output), output);
+}
+
 let srv = broker("initial");
 const observations: unknown[] = [];
 try {
@@ -136,6 +146,7 @@ try {
   await until(() => chat.records.some(({ record }) => record.message?.text === "healthy-control"));
   await wait(1_000);
   check("positive control: a stored post arrives without a live gap", sent.outcome === "stored" && gaps(chat).length === 0);
+  checkPlainHistory();
   await checkSizeRefusal(chat);
 
   for (const [tag, duration] of [["short", 5_000], ["sustained", 23_000]] as const) {

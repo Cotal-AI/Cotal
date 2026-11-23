@@ -1,5 +1,23 @@
 # @cotal-ai/manager
 
+## 0.176.0
+
+### Patch Changes
+
+- 9f6623a: Plain chat points to `:to` for channel history, `pending` lists its broker and credential options, and service and manager help show that `--foreground` and `--dry-run` can be used together.
+- 5f75575: A Claude seat that your organization's managed settings stop at startup now fails with Claude's full reason, such as `disableSideloadFlags` refusing `--plugin-dir`. The manager kept only the last 160 characters of the agent's final output line, which cut off the cause that Claude prints first. It now keeps that line whole, up to 4096 characters. The Claude connector docs also describe how an administrator installs the Cotal plugin through managed settings.
+- e1c3f6c: Fix the CLI smoke test so it recognizes the live replacement manager in model catalog refresh guidance.
+- 86b1acd: The Manager now keeps its hosting authority in its read-only config, and its internal parts read it from there instead of through a callback each. Exports, commands and wire behaviour are unchanged.
+- 3fd972e: Remove nine private Manager forwarders that only the Manager itself called (boot's start and execution-record claim, the stop path's goal-writer, session-plane, chat-session and reconcile-drain steps, the release of managed agents and a stopped seat's goal cancel), so the Manager calls the owning part directly. Exports, commands and wire behaviour are unchanged.
+- 4d2a366: Move the manager's service-endpoint serve state (the serve handle, its connection, identity, grant and current credential) from the Manager into the serve plane that registers it, which boot, credential renewal, the goal writer, seat launch, seat stop, spawn-goal and retirement now read directly instead of through per-field accessors. Exports, commands and wire behaviour are unchanged.
+- Updated dependencies [e9bcb31]
+- Updated dependencies [56b6dc1]
+- Updated dependencies [5c49fdd]
+- Updated dependencies [089f68d]
+  - @cotal-ai/core@0.176.0
+  - @cotal-ai/workspace@0.176.0
+  - @cotal-ai/seat@0.176.0
+
 ## 0.175.3
 
 ### Patch Changes

@@ -12,7 +12,6 @@ import type { ManagerConfig } from "./manager-config.js";
 export interface PersonaCatalogDeps {
   agents: () => Manager["agents"];
   meshMode: () => Manager["meshMode"];
-  remoteAuthority: () => Manager["remoteAuthority"];
   userMode: () => Manager["userMode"];
   executionRefusal: (...args: Parameters<Manager["executionRefusal"]>) => ReturnType<Manager["executionRefusal"]>;
   managedPrincipal: (...args: Parameters<Manager["managedPrincipal"]>) => ReturnType<Manager["managedPrincipal"]>;
@@ -28,7 +27,6 @@ export function personaCatalogDeps(m: Manager): PersonaCatalogDeps {
   return {
     agents: () => m["agents"],
     meshMode: () => m["meshMode"],
-    remoteAuthority: () => m["remoteAuthority"],
     userMode: () => m["userMode"],
     executionRefusal: (...args) => m["executionRefusal"](...args),
     managedPrincipal: (...args) => m["managedPrincipal"](...args),
@@ -48,7 +46,7 @@ export class PersonaCatalog {
   // is the one that runs.
   private get agents() { return this.deps.agents(); }
   private get meshMode() { return this.deps.meshMode(); }
-  private get remoteAuthority() { return this.deps.remoteAuthority(); }
+  private get remoteAuthority() { return this.config.remoteAuthority; }
   private get userMode() { return this.deps.userMode(); }
   private executionRefusal(...args: Parameters<Manager["executionRefusal"]>): ReturnType<Manager["executionRefusal"]> { return this.deps.executionRefusal(...args); }
   private managedPrincipal(...args: Parameters<Manager["managedPrincipal"]>): ReturnType<Manager["managedPrincipal"]> { return this.deps.managedPrincipal(...args); }

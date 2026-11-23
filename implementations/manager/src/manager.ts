@@ -647,7 +647,7 @@ export class Manager {
   private readonly servePlane = new ServePlane(this.config, servePlaneDeps(this), this.parts);
 
   protected resolveServeTarget(t: { owner: string; actor: string }): { lifecycleUid: string; mappingRevision: number } | undefined {
-          if (this.remoteAuthority) {
+          if (this.config.remoteAuthority) {
             const key = principalKey(t.owner, t.actor).key;
             for (const a of this.agents.values()) if (a.id === key) return { lifecycleUid: a.lifecycleUid, mappingRevision: 0 };
             const participant = [...this.participants.values()].find((p) =>
@@ -682,7 +682,6 @@ export class Manager {
   protected preservationInventory?: ManagerResumeInventory;
   protected resumeRequired = false;
   protected resumeDurableCommitToken?: string;
-  protected readonly remoteAuthority?: NonNullable<ManagerOptions["remoteAuthority"]>;
 
   /** {@link BrokerTransport.dial}. */
   protected dial(...args: Parameters<BrokerTransport["dial"]>): ReturnType<BrokerTransport["dial"]> { return this.brokerTransportComponent.dial(...args); }
@@ -804,7 +803,7 @@ export class Manager {
     config.eventPayloadsWithheld = opts.eventPayloadsWithheld === true;
     config.maxSessions = opts.maxSessions;
     config.seatCap = opts.seatCap ?? DEFAULT_SEAT_CAP;
-    this.remoteAuthority = opts.remoteAuthority;
+    config.remoteAuthority = opts.remoteAuthority;
     this.credentialRenewal.remoteExecutorCreds = opts.remoteAuthority?.executorCreds;
     this.credentialRenewal.remoteSupervisorCreds = opts.remoteAuthority?.supervisorCreds;
     if (opts.pooled && (!opts.remoteAuthority?.accountPublicKey ||
@@ -818,7 +817,7 @@ export class Manager {
     config.machineSetupCommand = opts.machineSetupCommand;
     config.pooled = opts.pooled === true;
     config.execution = opts.execution === "none" ? "none" : "runtime";
-    if (!this.remoteAuthority) {
+    if (!this.config.remoteAuthority) {
       // A fresh root has no execution record, so construction does not read the identity. Records
       // survive identity retirement; only the currently stored identity's record can be claimed.
       const prefix = `manager-execution.${spaceKey(this.config.space)}.`;
@@ -827,7 +826,7 @@ export class Manager {
       if (hasRecord) {
         const local = loadManagerInstanceIdentity(this.config.workspaceRoot, this.config.space);
         if (local && existsSync(this.executionRecordPath(local.instanceId))) {
-          this.claimExecutionRecord(local.instanceId);
+          this.bootComponent.claimExecutionRecord(local.instanceId);
           this.admittedLocalIdentity = local;
         }
       }
@@ -978,8 +977,8 @@ export class Manager {
 
   protected serviceIdentityObservation(): ManagerServiceIdentity {
     if (!this.managerInstanceId || !this.managerServeIdentity) throw new Error("manager native service identity has not been selected");
-    const principal: EpCaller = this.remoteAuthority
-      ? { owner: this.remoteAuthority.owner, actor: this.remoteAuthority.actors.serve, uid: this.config.managerLifecycleUid }
+    const principal: EpCaller = this.config.remoteAuthority
+      ? { owner: this.config.remoteAuthority.owner, actor: this.config.remoteAuthority.actors.serve, uid: this.config.managerLifecycleUid }
       : { owner: DEV_OWNER, actor: this.managerServeIdentity.id, uid: this.config.managerLifecycleUid };
     return Object.freeze({ endpoint: MANAGER_ENDPOINT, instanceId: this.managerInstanceId, principal: Object.freeze(principal) });
   }
@@ -1061,7 +1060,7 @@ export class Manager {
 
   start(): Promise<void> {
     if (this.startTask) return this.startTask;
-    const task = this.runStart();
+    const task = this.bootComponent.runStart();
     let wrapped!: Promise<void>;
     wrapped = task.finally(() => {
       if (this.startTask === wrapped) this.startTask = undefined;
@@ -1074,12 +1073,6 @@ export class Manager {
     return join(this.config.workspaceRoot, ".cotal", `manager-execution.${spaceKey(this.config.space)}.${instanceId}.json`);
   }
 
-  /** {@link ManagerBoot.claimExecutionRecord}. */
-  private claimExecutionRecord(...args: Parameters<ManagerBoot["claimExecutionRecord"]>): ReturnType<ManagerBoot["claimExecutionRecord"]> { return this.bootComponent.claimExecutionRecord(...args); }
-
-
-  /** {@link ManagerBoot.runStart}. */
-  private runStart(...args: Parameters<ManagerBoot["runStart"]>): ReturnType<ManagerBoot["runStart"]> { return this.bootComponent.runStart(...args); }
 
   /** The delivery shard whose lease names the process that reloads the standing credentials.
    *  Delivery is single-shard today and the endpoint's own responder reads row 0; naming it here
@@ -1178,9 +1171,6 @@ export class Manager {
   /** {@link Preservation.isProcessBoundSeat}. */
   protected isProcessBoundSeat(...args: Parameters<Preservation["isProcessBoundSeat"]>): ReturnType<Preservation["isProcessBoundSeat"]> { return this.preservationComponent.isProcessBoundSeat(...args); }
 
-  /** {@link Preservation.releaseManagedAgents}. */
-  private releaseManagedAgents(...args: Parameters<Preservation["releaseManagedAgents"]>): ReturnType<Preservation["releaseManagedAgents"]> { return this.preservationComponent.releaseManagedAgents(...args); }
-
   /** {@link Preservation.adoptReleasedSeats}. */
   protected adoptReleasedSeats(...args: Parameters<Preservation["adoptReleasedSeats"]>): ReturnType<Preservation["adoptReleasedSeats"]> { return this.preservationComponent.adoptReleasedSeats(...args); }
 
@@ -1228,7 +1218,7 @@ export class Manager {
     this.transcripts?.stop();
     this.staticLifecycle.stop();
     const starting = this.startTask;
-    await this.awaitStaticReconcileDrain();
+    await this.staticLifecycle.awaitStaticReconcileDrain();
     await starting?.catch(() => {});
     if (this.lease.leaseTimer) clearInterval(this.lease.leaseTimer);
     if (this.credRenewTimer) clearInterval(this.credRenewTimer);
@@ -1254,7 +1244,7 @@ export class Manager {
           // An in-process seat cannot be detached from the process that is exiting, and a released
           // seat that already exited cannot come back, so the default stop stops and deprovisions
           // both as `withAgents` does instead of orphaning their footprints.
-          const detached = this.releaseManagedAgents();
+          const detached = this.preservationComponent.releaseManagedAgents();
           releaseFailures = detached.failures;
           await this.teardownManagedAgents(detached.stop);
         }
@@ -1278,8 +1268,8 @@ export class Manager {
     // The expiry that would end a chat session stops with this process, and nothing can adopt one,
     // so an active stop retires every session this process admitted, under either agent policy, as
     // it does an in-process seat. A preserving stop leaves them to the next start's sweep.
-    if (this.maintenanceState === "active" && !this.resumeRequired) await step("retire chat sessions", () => this.retireChatSessionsOnStop());
-    else this.reportChatSessionsLeftAtStop(this.resumeRequired ? "this manager is waiting for a resume" : "this manager is preserving its state");
+    if (this.maintenanceState === "active" && !this.resumeRequired) await step("retire chat sessions", () => this.staticLifecycle.retireChatSessionsOnStop());
+    else this.staticLifecycle.reportChatSessionsLeftAtStop(this.resumeRequired ? "this manager is waiting for a resume" : "this manager is preserving its state");
     // A seat that may still be alive keeps this instance's leases and registration (see
     // teardownManagedAgents): they lapse on their TTL instead of being handed to a successor.
     if (seatFailure === undefined) {
@@ -1300,8 +1290,8 @@ export class Manager {
     this.runHosting = undefined;
     if (registrationRevision !== undefined && seatFailure === undefined)
       await step("deregister service", () => this.deregisterServiceOnStop(registrationRevision));
-    await step("stop goal writer", () => this.stopGoalWriter());
-    await step("stop session plane", () => this.stopSessionPlane());
+    await step("stop goal writer", () => this.goalWriterComponent.stopGoalWriter());
+    await step("stop session plane", () => this.servePlane.stopSessionPlane());
     await step("stop endpoint", () => this.ep.stop());
     await step("stop attach endpoint", () => this.attach.stop());
     const also = failures.length ? `; teardown also failed: ${failures.join("; ")}` : "";
@@ -1339,7 +1329,7 @@ export class Manager {
         observeGeneration: () => readEndpointGateGeneration(authKv, { endpoint: MANAGER_ENDPOINT, instanceId: iid }),
       });
     try {
-      const outcome = await ((this.auth || this.remoteAuthority)
+      const outcome = await ((this.auth || this.config.remoteAuthority)
         ? this.withEndpointServeExecutor(dereg)
         : this.withOpenServeConnection(dereg));
       if (outcome.removed)
@@ -1446,9 +1436,9 @@ export class Manager {
   protected runHost(): RunHosting {
     if (this.execution === "none") throw new EpEnvelopeError("unimplemented", this.executionRefusal());
     if (this.runHosting) return this.runHosting;
-    if (this.remoteAuthority && !this.remoteAuthority.runHosting)
+    if (this.config.remoteAuthority && !this.config.remoteAuthority.runHosting)
       throw new EpEnvelopeError("unimplemented", "this manager does not host workflow runs: its issuing host supplied no closed run callbacks, and a remote-authority manager mints no run-driver credentials (SPEC 14.6); drive the run from a terminal with `cotal run start --local --file <program>`");
-    if (this.userMode && !this.remoteAuthority?.runHosting)
+    if (this.userMode && !this.config.remoteAuthority?.runHosting)
       throw new EpEnvelopeError("unimplemented", `user-auth space "${this.config.space}" hosts no workflow runs yet: a hosted run's seats would be spawned under the static owner, which a user mesh refuses; run programs on a static-auth mesh`);
     throw new EpEnvelopeError("unavailable", "the manager is still booting its workflow-run host; retry shortly (SPEC 14.3)");
   }
@@ -1509,11 +1499,11 @@ export class Manager {
     if (this.execution === "none") throw new EpEnvelopeError("unimplemented", this.executionRefusal(), undefined, "not-executed");
     if (!/^pa_[a-z2-7]{26}$/.test(caller.actor))
       throw new EpEnvelopeError("permission-denied", "workflow turn participation is reserved for approved personal conversation actors", undefined, "not-executed");
-    if (!this.remoteAuthority)
+    if (!this.config.remoteAuthority)
       throw new EpEnvelopeError("unimplemented", "personal workflow participation requires a registered issuing host with fresh lifecycle authority", undefined, "not-executed");
-    if (!this.remoteAuthority.authorizeParticipation)
+    if (!this.config.remoteAuthority.authorizeParticipation)
       throw new EpEnvelopeError("unimplemented", "the issuing host supplies no closed personal participation authorization", undefined, "not-executed");
-    const authorized = await this.remoteAuthority.authorizeParticipation({ owner: caller.owner, actor: caller.actor, lifecycleUid: caller.uid });
+    const authorized = await this.config.remoteAuthority.authorizeParticipation({ owner: caller.owner, actor: caller.actor, lifecycleUid: caller.uid });
     if (!authorized)
       throw new EpEnvelopeError("permission-denied", "the exact personal lifecycle is not currently foreground-authorized with run scope", undefined, "not-executed");
     const presence = this.liveParticipantPresence(caller);
@@ -1584,7 +1574,7 @@ export class Manager {
    *  host callback with the full endpoint caller tuple. Error string when denied, `undefined` when
    *  allowed; remote host-state faults throw rather than being collapsed into a denial. */
   protected async authorizeNamed(target: ManagedAgent, caller: string, admin: boolean, epCaller?: EpCaller): Promise<string | undefined> {
-    if (this.remoteAuthority && epCaller && !admin) {
+    if (this.config.remoteAuthority && epCaller && !admin) {
       if (target.spawner === caller) return undefined;
       const principal = parsePrincipalKey(caller);
       if (principal && target.userOwner === principal.owner) return undefined;
@@ -1918,11 +1908,8 @@ export class Manager {
   /** {@link GoalWriter.startGoalWriter}. */
   protected startGoalWriter(...args: Parameters<GoalWriter["startGoalWriter"]>): ReturnType<GoalWriter["startGoalWriter"]> { return this.goalWriterComponent.startGoalWriter(...args); }
 
-  /** {@link GoalWriter.stopGoalWriter}. */
-  private stopGoalWriter(...args: Parameters<GoalWriter["stopGoalWriter"]>): ReturnType<GoalWriter["stopGoalWriter"]> { return this.goalWriterComponent.stopGoalWriter(...args); }
   protected mintAndStageSessionLedger(authKv: KV): Promise<string> { return this.servePlane.mintAndStageSessionLedger(authKv); }
   protected startSessionPlane(): Promise<void> { return this.servePlane.startSessionPlane(); }
-  private stopSessionPlane(): Promise<void> { return this.servePlane.stopSessionPlane(); }
 
   /** {@link GoalWriter.reconcileGoalIndex}. */
   protected reconcileGoalIndex(...args: Parameters<GoalWriter["reconcileGoalIndex"]>): ReturnType<GoalWriter["reconcileGoalIndex"]> { return this.goalWriterComponent.reconcileGoalIndex(...args); }
@@ -2072,7 +2059,7 @@ export class Manager {
     const cause = { kind: "stopped-once", reason } as const;
     this.stopHandle(a, true, cause);
     this.trackStoppedHandle(a, false, cause);
-    void this.cancelAgentGoal(a.name, "graceful");
+    void this.seatStopComponent.cancelAgentGoal(a.name, "graceful");
   }
 
   /** Stop a seat this spawn just placed and track its exit: the stop first, so the terminalizing
@@ -2134,9 +2121,6 @@ export class Manager {
   /** Make an adopted seat a once seat again: its exit settles its task, and the task is served to
    *  it. A task that ended before the restart owes the stop the predecessor may not have made. */
   protected bindOnceSeat(a: ManagedAgent): Promise<void> { return this.turnRelay.bindOnceSeat(a); }
-
-  /** {@link SeatStop.cancelAgentGoal}. */
-  private cancelAgentGoal(...args: Parameters<SeatStop["cancelAgentGoal"]>): ReturnType<SeatStop["cancelAgentGoal"]> { return this.seatStopComponent.cancelAgentGoal(...args); }
 
   protected recordSlotRuntime(a: ManagedAgent): Promise<void> {
     return this.seatCustody.recordSlotRuntime(a);
@@ -2204,24 +2188,12 @@ export class Manager {
     return this.staticLifecycle.retireStaticChatSession(raw);
   }
 
-  private retireChatSessionsOnStop(): Promise<void> {
-    return this.staticLifecycle.retireChatSessionsOnStop();
-  }
-
-  private reportChatSessionsLeftAtStop(why: string): void {
-    return this.staticLifecycle.reportChatSessionsLeftAtStop(why);
-  }
-
   protected renewManagedStaticCred(a: ManagedAgent): Promise<void> {
     return this.staticLifecycle.renewManagedStaticCred(a);
   }
 
   protected readStaticReconcileSlot(alias: string): Promise<StaticManagedSlotRow | undefined> {
     return this.staticLifecycle.readStaticReconcileSlot(alias);
-  }
-
-  private awaitStaticReconcileDrain(): Promise<void> {
-    return this.staticLifecycle.awaitStaticReconcileDrain();
   }
 
   protected reconcileStaticLifecycles(postAdoption = false): Promise<void> {

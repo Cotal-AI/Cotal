@@ -81,7 +81,7 @@ export class SeatStart {
   private place(...args: Parameters<Manager["place"]>): ReturnType<Manager["place"]> { return this.deps.place(...args); }
   private provisionUserAgent(...args: Parameters<Manager["provisionUserAgent"]>): ReturnType<Manager["provisionUserAgent"]> { return this.deps.provisionUserAgent(...args); }
   private readerRemedy(...args: Parameters<Manager["readerRemedy"]>): ReturnType<Manager["readerRemedy"]> { return this.deps.readerRemedy(...args); }
-  private get remoteAuthority() { return this.deps.remoteAuthority(); }
+  private get remoteAuthority() { return this.config.remoteAuthority; }
   private resolveConnector(...args: Parameters<Manager["resolveConnector"]>): ReturnType<Manager["resolveConnector"]> { return this.deps.resolveConnector(...args); }
   private get retirement() { return this.deps.retirement(); }
   private get runHosting() { return this.deps.runHosting(); }

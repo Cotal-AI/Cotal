@@ -155,7 +155,7 @@ function statIfPresent(path: string, stat: (path: string) => Stats = statSync): 
  *  default store: its files would mix with credentials and records, or with another root's store,
  *  and no reset could remove it alone. A link is refused and the directory it points to is named:
  *  the broker config records the path as given, and a reset removes only a real directory. */
-export function assertStoreDirArgument(value: string, root: string): void {
+export function assertStoreDirArgument(value: string, root: string, purpose: "start" | "restore" = "start"): void {
   const path = resolve(value);
   // A dangling link has no real path, so its own target is named instead.
   if (statIfPresent(path, lstatSync)?.isSymbolicLink()) {
@@ -180,7 +180,12 @@ export function assertStoreDirArgument(value: string, root: string): void {
   protectedLocalDirectory(realpathSync.native(existing), "the --store-dir path");
   if (existing === path) return;
   try { accessSync(existing, constants.W_OK | constants.X_OK); }
-  catch { throw new CommandFailure("refused", "PERMISSION_DENIED", `the --store-dir path ${path} cannot be created, because this account cannot write ${existing}; nothing was started or written`, { target: { storeDir: path }, remedy: "name a store directory this account can create, or create it with the right owner first" }); }
+  catch {
+    const remedy = purpose === "restore"
+      ? "make the parent directory writable by this account or choose a path under a writable parent. Leave the store directory absent so the restore can create it."
+      : "name a store directory this account can create, or create it with the right owner first";
+    throw new CommandFailure("refused", "PERMISSION_DENIED", `the --store-dir path ${path} cannot be created, because this account cannot write ${existing}; nothing was started or written`, { target: { storeDir: path }, remedy });
+  }
 }
 
 /** Why a broker could not start JetStream on the store `storeDir`: this account cannot write the
