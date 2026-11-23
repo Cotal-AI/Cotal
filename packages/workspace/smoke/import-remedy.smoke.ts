@@ -141,12 +141,14 @@ try {
     // The native loader is the arbiter here: tsx resolves a directory import to its index file on
     // its own, so the check above would pass without the fix. Drive the same fixture through plain
     // node, where a directory import fails unless the entry was resolved first.
+    const probeEnv: NodeJS.ProcessEnv = { ...process.env, XDG_CONFIG_HOME: tmp };
+    for (const key of Object.keys(probeEnv)) if (key.startsWith("COTAL_")) delete probeEnv[key];
     const probe = spawnSync(process.execPath, ["--input-type=module", "-e",
       `import { importInstalledExtension } from ${JSON.stringify(pathToFileURL(join(import.meta.dirname, "..", "dist", "index.js")).href)};\n` +
       `import { registry } from ${JSON.stringify(pathToFileURL(join(import.meta.dirname, "..", "..", "core", "dist", "index.js")).href)};\n` +
       `await importInstalledExtension({ pkg: "@third/directory-entry", version: "1.0.0", spec: "@third/directory-entry@1.0.0", commands: [], provides: [{ kind: "command", name: "directory-entry-example" }] }, { kind: "command", name: "directory-entry-example" });\n` +
       `console.log(registry.has("command", "directory-entry-example") ? "registered" : "not-registered");\n`,
-    ], { encoding: "utf8", env: { ...process.env, XDG_CONFIG_HOME: tmp } });
+    ], { encoding: "utf8", env: probeEnv });
     check("directory entry: plain node imports and registers the command", probe.status === 0 && probe.stdout.includes("registered"), probe.stderr || probe.stdout);
     // A directory with nothing to resolve keeps the old failure instead of silently succeeding.
     // (The exact wording differs by loader: plain Node reports a directory import, tsx reports
