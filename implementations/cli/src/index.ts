@@ -657,7 +657,7 @@ const baseCommands: Command[] = [
     hidden: true,
     rawArgs: true,
     positionals: "…",
-    summary: "(removed) launch through a manager with `cotal spawn --detach`",
+    summary: "(removed) launch with `cotal spawn`",
     validate: refuseRemovedStart,
     run: async (args) => refuseRemovedStart(args),
   },
