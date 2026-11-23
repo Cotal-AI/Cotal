@@ -139,7 +139,7 @@ import { displayCmd } from "../lib/self-exec.js";
 import { shellWord } from "../lib/endpoint-errors.js";
 import { clearManagerArtifacts, liveManagerWouldApplyMaxSessions, managerHasDeliveryMarker, managerRecordState, stopManager } from "../lib/manager-proc.js";
 import { loadManifest } from "../lib/manifest/index.js";
-import { checkNewUpSpace, preparedUpRoot } from "./up-target.js";
+import { checkNewUpSpace, preparedUpRoot, restoreUpCwd } from "./up-target.js";
 import { cleanedManifestStart, interruptedStartBroker } from "../lib/legacy-start.js";
 import { canonicalServer } from "../lib/broker-service.js";
 import {
@@ -415,7 +415,7 @@ async function holdStack(root: string, start?: () => Promise<void | StackJournal
     releaseStart = () => { process.off("SIGINT", interrupt); process.off("SIGTERM", terminate); process.off("SIGHUP", hangup); };
     if (requested || failure) releaseStart();
     if (requested === "SIGHUP") hangupForegroundStack(root);
-    if (requested) await stopForegroundStack(root, requested, true);
+    if (requested) await stopForegroundStack(root, requested, true, held?.space);
     if (failure) throw failure.error;
     if (requested) return;
   }
@@ -437,7 +437,7 @@ async function holdStack(root: string, start?: () => Promise<void | StackJournal
       stopping = true;
       process.off("SIGINT", interrupt); process.off("SIGTERM", terminate); process.off("SIGHUP", hangup);
       clearInterval(lifetime);
-      void stopForegroundStack(root, signal).finally(resolveHold);
+      void stopForegroundStack(root, signal, false, observed?.space).finally(resolveHold);
     };
     const interrupt = () => stop("SIGINT");
     const terminate = () => stop("SIGTERM");
@@ -523,7 +523,7 @@ export async function up(args: ParsedArgs, inheritedLock?: MaintenanceLock, fres
         const record = lstatSync(join(root, ".cotal"));
         if (!record.isDirectory() || record.isSymbolicLink() || canonicalRoot(cotalRoot()) !== canonicalRoot(root)) throw new Error("changed root");
       } catch {
-        process.chdir(previousCwd);
+        restoreUpCwd(previousCwd);
         throw new CommandFailure("refused", "CONFLICT", "the selected --root changed before startup; no inherited workspace was used", { target: { root } });
       }
     }
@@ -532,7 +532,7 @@ export async function up(args: ParsedArgs, inheritedLock?: MaintenanceLock, fres
       if (fresh) removeEmptyRecords(join(fresh, ".cotal"));
       throw error;
     }
-    finally { if (root) process.chdir(previousCwd); }
+    finally { if (root) restoreUpCwd(previousCwd); }
   } finally {
     if (inheritedLock && !adopted) releaseMaintenanceLock(inheritedLock);
   }
