@@ -470,6 +470,8 @@ as creation candidates. Apply reports the invalid field before writing any cards
 If the manifest's explicit `broker.auth` differs from the registered mode, the preview
 warns that apply would refuse and lists no channel creation candidates. Omit `broker.auth`
 or set it to match the registered mode.
+If the manifest declares `broker.host`, the preview warns that apply would refuse
+and lists no channel creation candidates. Omit `broker.host` to deploy additively.
 Additive deploy does not
 seed manifest-wide defaults. For an existing
 unmanaged card, it names only explicitly declared fields that differ from the live value, never the live

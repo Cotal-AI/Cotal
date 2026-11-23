@@ -334,6 +334,9 @@ async function previewDeploy(file: string, values: TeamValues): Promise<void> {
   const auth = prepared.manifest.broker?.auth;
   const requestedMode = auth === false ? "open" : auth === "user" ? "user" : "auth";
   const authConflict = auth !== undefined && requestedMode !== local.mode;
+  // Both deploy routes refuse a declared broker bind before any effect, so the
+  // preview names it and lists no creation candidates for that manifest.
+  const brokerHost = prepared.manifest.broker?.host !== undefined;
   const openDurable = local.mode === "open" && prepared.manifest.channels.some((channel) => channel.deliveryClass === "durable");
   const notLive = cardsWithoutLiveDelivery(prepared.manifest.channels);
   let attempts: ReturnType<typeof listAdditiveTeamAttempts>;
@@ -344,13 +347,14 @@ async function previewDeploy(file: string, values: TeamValues): Promise<void> {
     retainedAdditiveAttempts: attempts.valid.map((attempt) => ({ deploymentId: attempt.deploymentId, space: attempt.space, server: brokerAddressForDisplay(attempt.server) ?? "not displayable", createdAt: attempt.createdAt, recordedState: additiveTeamRecordedState(attempt, attempts) })), unreadableAdditiveAttempts: attempts.refused.map(({ path }) => path),
     registrationOrigin: local.origin ?? "not recorded", recordedBroker: brokerAddressForDisplay(local.server) ?? null,
     recordedMode: local.mode, recordedTlsRequired: local.tlsRequired === true,
-    runtimeRequest, native: authConflict ? { ...native, channels: { ...native.channels, create: [] } } : native, openDurableUnsupported: openDurable,
+    runtimeRequest, native: authConflict || brokerHost ? { ...native, channels: { ...native.channels, create: [] } } : native, openDurableUnsupported: openDurable,
     agents: prepared.agents.map((agent) => ({ name: agent.name, application: agent.agentType, role: agent.role ?? null, requestedModel: agent.model ?? null })),
     channels: prepared.manifest.channels.map((channel) => ({ name: channel.name, deliveryClass: channel.deliveryClass ?? null, replay: channel.replay ?? null, replayWindow: channel.replayWindow ?? null })),
     targetReachability: "native-reads-established", brokerPolicy: "not-checked", authorization: "read-established-not-deploy-authority", ownershipClassification: "native-roster-and-registry-snapshot", connectorAvailability: "not-checked", effectAttempted: false, persisted: false };
   writeResult(presentationOf(values), { command: "team deploy", target: { space, root: local.root, path }, result,
     completeness: "partial",
     warnings: [...(authConflict ? [{ code: "MANIFEST_WARNING", target: { space }, message: `Apply refuses: broker.auth requests ${authModeText(requestedMode)}, but this space is registered with mode ${authModeText(local.mode)}. Omit broker.auth or set it to match the registered mode.` }] : []),
+      ...(brokerHost ? [{ code: "MANIFEST_WARNING", target: { space }, message: "Apply refuses: broker.host declares a broker bind that team deploy cannot apply. Omit broker.host to deploy additively." }] : []),
       ...prepared.warnings.map((warning) => ({ code: "MANIFEST_WARNING", target: { agent: warning.agent }, message: warning.message })),
       ...Array.from(invalidCards, ([name, message]) => ({ code: "MANIFEST_WARNING", target: { space, cards: [name] }, message })),
       ...(unverifiedCards.length ? [{ code: "CURRENT_CHANNEL_STATE_UNCHECKED", target: { space, cards: unverifiedCards }, message: "Some declared channels have a retained intent but do not match a verified create receipt. Their ownership is not classified." }] : []),
