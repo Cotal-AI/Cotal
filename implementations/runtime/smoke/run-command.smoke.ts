@@ -33,7 +33,7 @@ import {
   revokeRunAdmission, recordAtomicKey, recordStatusKey, RECORD_KINDS, mintLifecycleUid, EpEnvelopeError,
   activateRun, lastActivation, writeRunStatus, findCommand, parseCommandArgs, registry, type Command, type RunStatusView,
 } from "@cotal-ai/core";
-import { authDir, exitCode, isCommandFailure, recordMesh, saveSpaceAuth } from "@cotal-ai/workspace";
+import { authDir, clearCurrent, exitCode, isCommandFailure, recordMesh, recordPreparedSpace, saveSpaceAuth, setCurrent, shellPath } from "@cotal-ai/workspace";
 import { CATALOG, type JournalEntry } from "@cotal-ai/lang";
 import { runWorkflow, journalOutcomeOf, journalStepRow } from "../src/index.js";
 import { printRunDetail } from "../src/workflow-views.js";
@@ -972,6 +972,25 @@ const takeoverRun = startedId()!;
   c("ps filters dotted endpoints by their name rather than their wire token",
     filtered?.items?.length === 1 && filtered.items[0]?.runId === rid, filtered);
 
+  const origin = join(home, "origin");
+  mkdirSync(origin);
+  recordPreparedSpace({ space: "origin", root: origin, ts: new Date().toISOString() });
+  setCurrent("origin");
+  try {
+    reset();
+    await wf(["list"], { endpoint, plain: true });
+    const hint = lines().map((line) => line.trim().split(/ {2,}/)[0]).find((line) => line?.includes(" r show <run-id>"));
+    const expected = `r show <run-id> --local --endpoint ${endpoint} --space ${SPACE} --server ${shellPath(servers)}`;
+    const command = ["cotal", "pnpm cotal"].some((cli) => hint === `${cli} ${expected}`)
+      ? hint!.replace(/^.*? r /, "r ").replace("<run-id>", rid) : undefined;
+    const [, ...showArgs] = command === undefined ? [] : execFileSync("bash", ["-c", `printf '%s\\0' ${command}`], { encoding: "utf8" }).split("\0").slice(0, -1);
+    const replay = run && command !== undefined
+      ? await readEnvelope(() => runWorkflow(parseCommandArgs(run, [...showArgs, "--json"]))).catch((error: Error) => error) : undefined;
+    const view = replay && !(replay instanceof Error) ? (replay.result as { view?: RunStatusView } | undefined)?.view : undefined;
+    c("the local list's printed show command reads the same journal despite a different selected space",
+      view?.runId === rid && view.endpoint === endpoint && view.journal.length === detail?.view?.journal.length, { hint, replay });
+  } finally { clearCurrent(); }
+
   reset();
   await wf(["revoke", rid], { endpoint, by: "smoke-operator", reason: "dotted endpoint control" });
   const revoked = (await envelopeOf(["ps"]))?.result as { items?: RunRowJson[] } | undefined;
@@ -1117,7 +1136,7 @@ const takeoverRun = startedId()!;
 
 // The sentinel: a skipped block above would exit green while running fewer cells than the suite
 // declares, and a count is the only reader that can see that.
-const DECLARED = 136;
+const DECLARED = 137;
 if (ok + fail !== DECLARED) {
   fail += 1;
   console.error(`  ✗ FAIL: the suite declares ${DECLARED} cells but ran ${ok + fail - 1}`);
