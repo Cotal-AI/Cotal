@@ -32,8 +32,8 @@ import { agent, methods, PROTOCOL_VERSION, RequestError, type AgentApp, type Age
 import { TERMINAL_AUTH } from "./auth-method.js";
 import { FrameMapper, type RunSignal } from "./frames.js";
 import { answer, permissionRequest, plainOptions, PromptFollower } from "./prompts.js";
-import { deregisterRemedy, LaunchListsRefused, NoLaunchManager, SignInRequired, type EndpointDeclaration, type ManagerChoice, type Mesh, type SeatFrame, type SeatList, type SeatRef, type SeatRow } from "./mesh.js";
-import { awaitTaken, imageRefusal, promptParts, takeTurn, usageUpdate } from "./turns.js";
+import { deregisterRemedy, LaunchListsRefused, NoLaunchManager, SignInRequired, type ManagerChoice, type Mesh, type SeatFrame, type SeatList, type SeatRef, type SeatRow } from "./mesh.js";
+import { awaitTaken, promptParts, spaceImageRefusal, takeTurn, usageUpdate } from "./turns.js";
 import { applyOption, configOptions, DEFAULT_PERSONA, DEFAULT_VARIANT, defaultManager, initialSelection, MAX_CHOICES, NO_CHANNEL, parseModel, reconcile, refusal, type Offer, type Selection } from "./options.js";
 
 /** The slash commands every session offers. */
@@ -147,8 +147,6 @@ interface Session {
 
 /** The application a session's seat runs, as its model choice names it. */
 const harnessOf = (session: Session): string => parseModel(session.selection.model).agent;
-/** The `agent` endpoint commands the session's application declares, from its manager's catalog. */
-const declaredOf = (session: Session): EndpointDeclaration | undefined => session.offer.catalogs.find((c) => c.agent === harnessOf(session))?.endpoint;
 
 const principal = (p: { owner: string; actor: string }): string => `${p.owner}.${p.actor}`;
 
@@ -331,7 +329,7 @@ function bridge(options: CotalAgentOptions): Bridge {
   const reportUsage = (session: Session, m: Mesh): void => {
     const seat = session.seat;
     if (!seat) return;
-    void usageUpdate(m, seat, declaredOf(session))
+    void usageUpdate(m, seat)
       .then((u) => (u && session.seat === seat ? send(session, u) : undefined))
       .catch((e: Error) => options.log(`session ${session.id}: ${seat.name}'s usage not read: ${e.message}`));
   };
@@ -461,12 +459,12 @@ function turnRunner(b: Bridge, startMs: number, settleMs: number) {
       // A fresh seat's first run answers its kickoff prompt, whatever its clock says.
       const after = until === "run" ? 0 : Date.now();
       let begun = false;
-      // One path, from the connector's declaration: the endpoint's `interrupt` where the space serves
-      // it and the connector declares it, else the manager's interrupt key.
+      // One path, read once from the seat's presence: the endpoint's `interrupt` where the seat says
+      // it serves it now, else the manager's interrupt key.
       const interrupt = (): void => {
         const seat = session.seat;
         if (!seat) return;
-        const stopping = m.agentEndpoints && declaredOf(session)?.interrupt ? m.agentCall(seat, AGENT_CMD_INTERRUPT, {}) : m.interrupt(seat);
+        const stopping = m.served(seat)?.interrupt ? m.agentCall(seat, AGENT_CMD_INTERRUPT, {}) : m.interrupt(seat);
         stopping.then(() => {
           if (turn.cancelled === "requested") turn.cancelled = Date.now();
         }, (e: Error) => {
@@ -723,17 +721,17 @@ function threadHandlers(b: Bridge, offers: Offers, runTurn: ReturnType<typeof tu
       if (!text && !images.length) throw RequestError.invalidParams(undefined, "the prompt is empty");
       const running = session.seat;
       if (running) {
-        const stopReason = await runTurn(session, m, "idle", () => takeTurn(m, running, declaredOf(session), text, images));
+        const stopReason = await runTurn(session, m, "idle", () => takeTurn(m, running, text, images));
         reportUsage(session, m);
         return { stopReason };
       }
       if (session.offer.seatOnly) throw RequestError.invalidParams(undefined, `${session.id} opened without a grant that may spawn, so this thread cannot start another agent`);
       const { agent: harness, model } = parseModel(session.selection.model);
-      const why = refusal(session.offer.catalogs, harness) ?? (images.length ? imageRefusal(m, harness, declaredOf(session)) : undefined);
+      const why = refusal(session.offer.catalogs, harness) ?? (images.length ? spaceImageRefusal(m, harness) : undefined);
       if (why) throw RequestError.invalidParams(undefined, why);
       session.mapper = new FrameMapper(harness, session.cwd);
       // Images ride a turn, so a first prompt with images starts the seat with none and gives it the
-      // prompt once it serves its agent endpoint.
+      // prompt once it takes a turn.
       const stopReason = await runTurn(session, m, images.length ? "idle" : "run", async () => {
         const spawning = m.spawn({
           name: session.name ?? session.id,
@@ -754,9 +752,11 @@ function threadHandlers(b: Bridge, offers: Offers, runTurn: ReturnType<typeof tu
         bind(session, seat);
         options.links.add(m.space, { thread: session.id, lifecycleUid: seat.lifecycleUid });
         if (!images.length) return;
-        for (const until = Date.now() + SERVE_MS; !m.promptCounter(seat); await new Promise((r) => setTimeout(r, WATCH_MS)))
-          if (Date.now() > until) throw new Error(`${seat.name} started but does not serve its agent endpoint, so it cannot take the prompt's images`);
-        await takeTurn(m, seat, declaredOf(session), text, images);
+        // A seat can serve its endpoint before its harness takes turns, as a Claude Code seat does
+        // until its command mod connects, so wait for `turn` before the one read that picks the path.
+        for (const until = Date.now() + SERVE_MS; !m.served(seat)?.turn; await new Promise((r) => setTimeout(r, WATCH_MS)))
+          if (Date.now() > until) throw new Error(`${seat.name} started but does not take a turn on its agent endpoint, so it cannot take the prompt's images`);
+        await takeTurn(m, seat, text, images);
       });
       // The seat's own commands can be read once it runs.
       if (session.seat) void announce(session).catch(() => {});
