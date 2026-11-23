@@ -26,16 +26,22 @@ const home = join(root, "home"), config = join(root, "config"), cotal = join(roo
 for (const path of [home, config, cotal, runtime]) mkdirSync(path, { mode: 0o700 });
 const clean = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_")));
 const env: NodeJS.ProcessEnv = { ...clean, HOME: home, XDG_CONFIG_HOME: config, XDG_RUNTIME_DIR: runtime, COTAL_HOME: cotal, COTAL_NO_UPDATE_CHECK: "1", DO_NOT_TRACK: "1", NO_COLOR: "1", npm_config_prefix: prefix };
-const run = (overrides: NodeJS.ProcessEnv = {}) => spawnSync(process.execPath, [join(installed, "dist/cotal.js"), "update", "--self"], { cwd: root, env: { ...env, ...overrides }, encoding: "utf8", timeout: 30_000 });
+const run = (overrides: NodeJS.ProcessEnv = {}, args = ["update", "--self"]) => spawnSync(process.execPath, [join(installed, "dist/cotal.js"), ...args], { cwd: root, env: { ...env, ...overrides }, encoding: "utf8", timeout: 30_000 });
 const packageBefore = readFileSync(join(installed, "package.json"), "utf8");
 try {
+  const connectorRoot = join(config, "cotal"), seed = join(connectorRoot, "seed");
+  mkdirSync(seed, { recursive: true, mode: 0o700 });
+  const extensionRoot = run({ COTAL_SKIP_CONNECTOR_SEED: "1" }, ["ext", "root"]);
+  check.equal(extensionRoot.status, 0, extensionRoot.stderr);
+  const extensions = extensionRoot.stdout.trim();
+  check.equal(extensions, join(connectorRoot, "extensions"));
+  mkdirSync(extensions, { mode: 0o700 });
   const directories = [installed, join(installed, "dist"), join(prefix, "lib/node_modules"), join(prefix, "lib")];
-  for (const paths of [directories, [join(prefix, "lib/node_modules")], []]) {
+  const offline = { npm_config_registry: "http://127.0.0.1:1", npm_config_fetch_retries: "0", npm_config_fetch_timeout: "1000" };
+  for (const paths of [directories, [join(prefix, "lib/node_modules")], [], [extensions]]) {
     for (const path of paths) chmodSync(path, 0o500);
-    // Registry unavailability returns success without replacement, after real destination preflight.
-    const repaired = run({ npm_config_registry: "http://127.0.0.1:1", npm_config_fetch_retries: "0", npm_config_fetch_timeout: "1000" });
+    const repaired = run(offline);
     check.equal(repaired.status, 0, repaired.stderr);
-    check.equal(repaired.stdout.trim(), paths.length ? "The registry cannot be reached; no installed packages were replaced." : "The registry cannot be reached; nothing was changed.");
     check.equal(existsSync(join(cotal, "update-recovery.json")), false, "offline update leaves an absent recovery file absent");
     check.doesNotMatch(repaired.stderr, /sudo npm|EACCES|Request refused/);
     for (const path of paths) check.equal(lstatSync(path).mode & 0o777, 0o700, "only owner write is restored");
@@ -43,6 +49,7 @@ try {
     release();
     check.equal(readFileSync(join(installed, "package.json"), "utf8"), packageBefore);
     check.equal(existsSync(join(prefix, "lib/.cotal-generations")), false);
+    check.equal(repaired.stdout.trim(), paths.length ? "The registry cannot be reached; no installed packages were replaced." : "The registry cannot be reached; nothing was changed.");
   }
   // A read-only filesystem still refuses. Inject only chmod's EROFS, keeping the real access check.
   const readOnly = join(root, "read-only.mjs");
@@ -51,11 +58,9 @@ const chmod = fs.chmodSync;
 fs.chmodSync = (path, mode) => { if (path === ${JSON.stringify(installed)}) throw Object.assign(new Error('read-only filesystem'), { code: 'EROFS' }); return chmod(path, mode); };
 syncBuiltinESMExports();\n`);
   const nodeOptions = env.NODE_OPTIONS;
-  const connectorRoot = join(config, "cotal"), seed = join(connectorRoot, "seed");
-  mkdirSync(seed, { recursive: true, mode: 0o700 });
   chmodSync(seed, 0o500);
   chmodSync(connectorRoot, 0o500);
-  const repairedConfig = run({ npm_config_registry: "http://127.0.0.1:1", npm_config_fetch_retries: "0", npm_config_fetch_timeout: "1000" });
+  const repairedConfig = run(offline);
   check.equal(repairedConfig.status, 0, repairedConfig.stderr);
   check.equal(lstatSync(seed).mode & 0o777, 0o700);
   check.equal(lstatSync(connectorRoot).mode & 0o777, 0o700);

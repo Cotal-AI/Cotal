@@ -356,7 +356,7 @@ async function updateInstallation(args: ParsedArgs, rt: UpdateRuntime): Promise<
       });
     }
     try {
-      prepareUpdateConnectorConfig(Boolean(rt.prepareExecution));
+      prepareUpdateConnectorConfig(Boolean(rt.prepareExecution), () => { repairedModes = true; });
     } catch (error) {
       if (error instanceof UnreadableConnectorSelection) connectorSelection = error;
       else {

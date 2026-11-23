@@ -310,8 +310,8 @@ export function connectorConfigDir(): string {
   return id ? currentConfig(id) ?? updateSnapshot(id) ?? previousConfig(id) ?? (["extensions", "seed"].some(name => existsSync(join(globalConfigDir(), name))) ? globalConfigDir() : join(id.path, "cotal")) : globalConfigDir();
 }
 
-/** Restore write access before staging, without touching another installation or following managed links. */
-export function prepareConnectorConfigForUpdate(): void {
+/** Restore write access before staging, reporting each mode change even if a later check fails. */
+export function prepareConnectorConfigForUpdate(onModeRepair?: () => void): void {
   const config = resolve(globalConfigDir());
   const what = "the Cotal connector configuration";
   const refuse = (path: string, reason: string): never => {
@@ -333,8 +333,11 @@ export function prepareConnectorConfigForUpdate(): void {
     if (!stat) return false;
     if (!stat.isDirectory() || stat.uid !== process.getuid?.()) refuse(path, "is not a real directory owned by this account");
     const mode = (stat.mode & 0o7755) | 0o200;
-    try { if (mode !== (stat.mode & 0o7777)) chmodSync(path, mode); }
-    catch { refuse(path, "could not be made writable by this account"); }
+    if (mode !== (stat.mode & 0o7777)) {
+      try { chmodSync(path, mode); }
+      catch { refuse(path, "could not be made writable by this account"); }
+      onModeRepair?.();
+    }
     writable(path, constants.R_OK | constants.W_OK | constants.X_OK);
     return true;
   };
