@@ -12,7 +12,9 @@
  *   the record has no boundary between the two authors to filter on.
  * - `idle`      -> closes the open run with the outcome the server recorded: `failed` is `RUN_ERROR`,
  *   and `succeeded` and `interrupted` are `RUN_FINISHED` with no outcome, which says the run ended
- *   without claiming it succeeded. A stop someone pressed is not a failure.
+ *   without claiming it succeeded. A stop someone pressed is not a failure. An execution that a
+ *   rejected permission or a dismissed question interrupted records no `idle` (measured on 2.0.24),
+ *   so `plugin2.ts` closes that run out of band and this mapper forgets it.
  * - every other message kind -> nothing, and it closes nothing.
  *
  * A turn that ends before its first element opened no run, so its `idle` has nothing to close and
@@ -63,10 +65,17 @@ function toolResultContent(state: Extract<OpenCode2Element, { type: "tool" }>["s
   return (state.content ?? []).map((c) => c.text ?? "").join("");
 }
 
-export function createOpenCode2Mapper(opts: OpenCode2MapperOptions): RecordMapper<OpenCode2Record> {
+export interface OpenCode2Mapper {
+  map: RecordMapper<OpenCode2Record>;
+  /** Forget a run the emitter closed out of band. Keyed on the id, as 1.x's `forgetOpenRun` is, so a
+   *  newer run opened before the report arrives stays open. */
+  forgetOpenRun: (runId: string) => void;
+}
+
+export function createOpenCode2Mapper(opts: OpenCode2MapperOptions): OpenCode2Mapper {
   let open: string | null = opts.resumeRunId ?? null;
 
-  return (record) => {
+  const map: RecordMapper<OpenCode2Record> = (record) => {
     const { message, index, element } = record;
     const timestamp = message.time.created;
 
@@ -123,5 +132,12 @@ export function createOpenCode2Mapper(opts: OpenCode2MapperOptions): RecordMappe
     }
 
     return events.length === 0 ? null : { runId, events };
+  };
+
+  return {
+    map,
+    forgetOpenRun: (runId) => {
+      if (open === runId) open = null;
+    },
   };
 }

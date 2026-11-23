@@ -308,7 +308,10 @@ Four things are specific to OpenCode and worth knowing before you read a stream:
   close on the events channel. OpenCode 2.x records how each turn ended in the session itself, as
   succeeded, failed or interrupted, and the connector closes the run from that record, after the
   turn's own records: a failed turn with the same `RUN_ERROR`, and an interrupted one as an ordinary
-  end. A turn that fails before any output opened no run, so it publishes nothing.
+  end. A turn that a rejected permission or a dismissed question interrupted has no such record, so
+  the connector closes its run as an ordinary end when the turn ends, and the next turn waits for
+  that close's position read as above. A turn that fails before any output opened no run, so it
+  publishes nothing.
 
 Reasoning is off by default.
 
