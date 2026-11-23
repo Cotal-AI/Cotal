@@ -216,12 +216,17 @@ class CotalAdapter(BasePlatformAdapter):
             await asyncio.to_thread(hooks.journal_wake)
 
     async def on_processing_complete(self, event: MessageEvent, outcome: Any) -> None:
-        """The gateway finished a message, however it ended, its reply delivered or not."""
+        """The gateway finished a message, however it ended, its reply delivered or not. The journal
+        is written before the busy count, which can end the turn's presence (src/hermes-hooks.ts)."""
         entry = self._busy.pop(id(event), None)
-        self._client.busy(len(self._busy))
         key = entry[1] if entry else None
-        if key and journal.processing_done(key, str(getattr(outcome, "value", outcome))):
+        ended = str(getattr(outcome, "value", outcome))
+        wake = getattr(event.source, "chat_id", None) == OPERATOR_CHAT and journal.operator_done(ended)
+        if key and journal.processing_done(key, ended):
+            wake = True
+        if wake:
             await asyncio.to_thread(hooks.journal_wake)
+        self._client.busy(len(self._busy))
 
     def _set_busy(self, event: MessageEvent, key: Optional[str]) -> None:
         self._busy[id(event)] = (event.source, key)
