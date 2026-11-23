@@ -34,6 +34,9 @@
  *                                              (src/approvals.ts)
  *     {t:"approval_end", session, outcome}     adapter: the oldest approval waiting in <session>
  *                                              stopped waiting
+ *     {t:"delta", key, text}                   adapter: text a reply added under stream <key> while
+ *                                              the model wrote it (plugin/cotal/streams.py)
+ *     {t:"delta_end", key}                     adapter: stream <key> ended with no saved response
  *
  *   sidecar → Python
  *     {t:"incoming", msg}                      push one buffered mesh message (for handle_message)
@@ -150,6 +153,8 @@ interface BridgeEvents {
   onIdle?(): void;
   /** The subscribed adapter sent an `approval` or `approval_end` frame. */
   onApproval?(frame: Record<string, unknown>): void;
+  /** The subscribed adapter sent a `delta` frame (text set) or a `delta_end` frame (text absent). */
+  onDelta?(key: string, text?: string): void;
 }
 
 /** The token the adapter presents in its first frame: HMAC-SHA256 keyed with the UTF-8 bytes of the
@@ -227,6 +232,24 @@ function readFrames(sock: Socket, digest: Buffer, onFrame: (frame: Record<string
     }
   });
   sock.on("close", () => clearTimeout(deadline));
+}
+
+/** Hand one of the subscribed adapter's approval or stream frames to its handler. */
+function adapterEvent(frame: Record<string, unknown>, events: BridgeEvents): void {
+  if (frame.t === "approval" || frame.t === "approval_end") events.onApproval?.(frame);
+  else if (typeof frame.key === "string" && frame.key) {
+    if (frame.t === "delta_end") events.onDelta?.(frame.key);
+    else if (typeof frame.text === "string") events.onDelta?.(frame.key, frame.text);
+  }
+}
+
+/** Settle the request or turn the desk holds from the adapter's answer to it. */
+function deskFrame(frame: Record<string, unknown>, desk: ReturnType<typeof createTurnDesk>): void {
+  if (frame.t === "answer") {
+    if (frame.ok === true) desk.settleRequest(frame.id, { data: (frame.data ?? {}) as Record<string, unknown> });
+    else desk.settleRequest(frame.id, { error: new Error(String(frame.error ?? "the gateway did not say why")) });
+  } else if (frame.t === "turn_taken") desk.settleTurn(frame.id);
+  else desk.settleTurn(frame.id, new CommandRefused("failed-precondition", `the gateway did not take the turn: ${String(frame.error)}`));
 }
 
 /** Start the adapter bridge. Returns a handle whose `close()` stops the server. `control` is the
@@ -344,7 +367,9 @@ export function startBridgeServer(agent: MeshAgent, config: AgentConfig, socketP
         return;
       case "approval":
       case "approval_end":
-        if (sock === adapter) events.onApproval?.(frame);
+      case "delta":
+      case "delta_end":
+        if (sock === adapter) adapterEvent(frame, events);
         return;
       case "busy":
         if (sock !== adapter || typeof frame.count !== "number") return;
@@ -352,8 +377,9 @@ export function startBridgeServer(agent: MeshAgent, config: AgentConfig, socketP
         if (busy === 0) events.onIdle?.();
         return;
       case "answer":
-        if (frame.ok === true) desk.settleRequest(frame.id, { data: (frame.data ?? {}) as Record<string, unknown> });
-        else desk.settleRequest(frame.id, { error: new Error(String(frame.error ?? "the gateway did not say why")) });
+      case "turn_taken":
+      case "turn_refused":
+        deskFrame(frame, desk);
         return;
       case "delivered":
         // Address by the receive key the sidecar echoes (NOT the wire id: an id-less message's
@@ -381,12 +407,6 @@ export function startBridgeServer(agent: MeshAgent, config: AgentConfig, socketP
           }, DEFER_MS).unref();
           pump();
         }
-        return;
-      case "turn_taken":
-        desk.settleTurn(frame.id);
-        return;
-      case "turn_refused":
-        desk.settleTurn(frame.id, new CommandRefused("failed-precondition", `the gateway did not take the turn: ${String(frame.error)}`));
         return;
       case "reply":
         try {

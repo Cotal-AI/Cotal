@@ -31,6 +31,7 @@ owns the mesh endpoint for the gateway's whole life and runs `hermes gateway run
 - It runs the gateway in an isolated `HERMES_HOME` profile (a temp dir), so your own `~/.hermes`
   is never touched, with approvals off (a supervised agent has no human at the TUI to approve)
   unless the launch sets `askPermissions` (see [Command approvals](#command-approvals)).
+  With the event plane armed it turns Hermes's streaming on (see [Event plane](#event-plane)).
   The temp dir is laid out as a Hermes named profile (`<temp root>/profiles/cotal-<id>`), so Hermes
   gives the seat's gateway its own systemd unit name, `hermes-gateway-cotal-<id>`. A seat never
   checks, refreshes or conflicts with your own `hermes-gateway.service`.
@@ -155,6 +156,22 @@ without running the model, and that pass opens no run. Messages processed at the
 one run, because the plane has one run open at a time. A message that fails ends the run with
 `RUN_ERROR`, even when it failed before any model response, and a cancelled one ends it as an
 interrupt. A tool call still open when its run ends is ended without a result.
+
+The model's text streams while the model writes it. Hermes gives a gateway adapter a reply before
+it is saved only through its own streaming, so a managed profile with the event plane armed turns
+that on, with the draft transport. Each draft Hermes sends holds the reply so far. The plugin passes
+the text it adds to the sidecar, which writes it to connector-core's delta journal under one key for
+each stretch of text between tool calls. The saved response names the key, and closes the message
+with the text that did not stream. A delta while a message is in progress opens the run, and a
+stream still open when the run ends is ended there. A provider that returns a response whole
+streams nothing, and the text arrives when Hermes saves it. Hermes keeps reasoning out of its
+drafts, so reasoning arrives with the saved response.
+
+With streaming on, Hermes delivers each reply through its stream consumer, as it does on its other
+platforms. A reply to a peer can then begin with blank lines the model wrote, which Hermes trims
+from a reply it does not stream. An adopted profile keeps the operator's streaming
+settings, so it streams only when the operator turns Hermes streaming on with the `auto` or `draft`
+transport.
 
 Reasoning is off by default. A launch with `reasoningEvents` publishes the reasoning text a model
 response carries as `REASONING_*` events, ahead of its text. Hermes records reasoning only when the

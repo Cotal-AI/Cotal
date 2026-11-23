@@ -293,6 +293,14 @@ class BridgeClient:
         """Report that the oldest approval waiting in ``session_key`` stopped waiting."""
         self._send({"t": "approval_end", "session": session_key, "outcome": outcome})
 
+    def delta(self, key: str, text: str) -> None:
+        """Text a reply added while the model wrote it, for the event plane's stream ``key``."""
+        self._send({"t": "delta", "key": key, "text": text})
+
+    def delta_end(self, key: str) -> None:
+        """End stream ``key``, which no saved response will close."""
+        self._send({"t": "delta_end", "key": key})
+
     def reply(
         self, target: dict, text: str, reply_to: Optional[str] = None, context_id: Optional[str] = None
     ) -> None:

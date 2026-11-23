@@ -14,7 +14,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Part } from "@cotal-ai/core";
 import { memorySubjectFrontier } from "@cotal-ai/smoke-kit";
-import { AguiBrackets, AguiEmitter, EventWal, JsonlFileSource, type AguiEvent, type EmitterEndpoint } from "@cotal-ai/connector-core";
+import { AguiBrackets, AguiEmitter, DeltaMergedSource, EventWal, JsonlFileSource, type AguiEvent, type EmitterEndpoint, type Merged } from "@cotal-ai/connector-core";
 import { createHermesMapper, type HermesJournalRecord } from "../src/agui-map.js";
 
 let pass = 0;
@@ -43,15 +43,19 @@ ${script}`, plugin], { encoding: "utf8", env: { PATH: process.env.PATH, COTAL_HE
 const records = (path: string): HermesJournalRecord[] =>
   readFileSync(path, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l) as HermesJournalRecord);
 
+type Item = HermesJournalRecord | Merged<HermesJournalRecord>;
+/** A turn-journal record as the merged source reads it; a delta line passes as it is. */
+const merged = (r: Item): Merged<HermesJournalRecord> => ("k" in r ? { harness: r } : r);
+
 /** Map records in order through a fresh mapper, feeding every event to the bracket machine. */
-function mapAll(recs: readonly HermesJournalRecord[], opts: { reasoning?: boolean } = {}) {
+function mapAll(recs: readonly Item[], opts: { reasoning?: boolean } = {}) {
   let n = 0;
   const map = createHermesMapper({ threadId: "thread", mintRunId: () => `run-${++n}`, ...opts });
   const brackets = new AguiBrackets();
   const events: (AguiEvent & Record<string, unknown>)[] = [];
   let bracketError: string | undefined;
   for (const rec of recs) {
-    const out = map(rec);
+    const out = map(merged(rec));
     if (out === null || !("runId" in out)) continue;
     for (const e of out.events) {
       try {
@@ -146,12 +150,12 @@ check(
 
 // A re-established plane replays what it consumed and resumes the open run under the wire's id.
 const prefix = [rec("start", { key: "a" }), rec("start", { key: "b" }), rec("assistant", { calls: [call("t4")] }), rec("done", { key: "a", outcome: "success" })];
-const resumed = createHermesMapper({ threadId: "thread", mintRunId: () => "fresh", consumed: prefix, resumeRunId: "wire-run" });
-const tail = [rec("tool", { id: "t4", result: "r" }), rec("done", { key: "b", outcome: "success" })].map((r) => resumed(r));
+const resumed = createHermesMapper({ threadId: "thread", mintRunId: () => "fresh", consumed: prefix.map(merged), resumeRunId: "wire-run" });
+const tail = [rec("tool", { id: "t4", result: "r" }), rec("done", { key: "b", outcome: "success" })].map((r) => resumed(merged(r)));
 check("a resumed mapper continues the open run and its tool call", tail.every((o) => o !== null && "runId" in o && o.runId === "wire-run") && (tail[1] as { events: AguiEvent[] }).events.at(-1)?.type === "RUN_FINISHED", tail);
 let refused = "";
 try {
-  createHermesMapper({ threadId: "thread", mintRunId: () => "x", consumed: prefix });
+  createHermesMapper({ threadId: "thread", mintRunId: () => "x", consumed: prefix.map(merged) });
 } catch (e) {
   refused = (e as Error).message;
 }
@@ -180,8 +184,10 @@ mkdirSync(join(root, "wal", "thread"), { recursive: true });
 const journal = join(root, "live.jsonl");
 writeFileSync(journal, "");
 const wal = await EventWal.open(join(root, "wal", "thread", "wal.json"), { space: "s", threadId: "thread", principal: "local.seat", subjectMayExist: false });
-const source = new JsonlFileSource<HermesJournalRecord>(journal);
-await wal.advanceCursorOnly(await source.cursorAtBeginning());
+const harness = new JsonlFileSource<HermesJournalRecord>(journal);
+writeFileSync(join(root, "deltas.jsonl"), "", { mode: 0o600 });
+const source = new DeltaMergedSource(harness, join(root, "deltas.jsonl"));
+await wal.advanceCursorOnly(source.start(await harness.cursorAtBeginning()));
 const emitter = await AguiEmitter.start({ endpoint: ep, wal, subjectFrontier: memorySubjectFrontier(), source, map: createHermesMapper({ threadId: "thread", mintRunId: () => "run" }) });
 const lines = readFileSync(turnPath, "utf8").split("\n").filter(Boolean);
 let pumpError: string | undefined;

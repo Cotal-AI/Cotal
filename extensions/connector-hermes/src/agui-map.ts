@@ -13,8 +13,12 @@ import {
   toolCallResult,
   toolCallStart,
   toolResultMarker,
+  StreamedParts,
   type AguiEvent,
+  type Merged,
   type RecordMapper,
+  type StreamDelta,
+  type StreamSeed,
 } from "@cotal-ai/connector-core";
 
 /** One line of the turn journal the plugin writes (plugin/cotal/journal.py). */
@@ -31,6 +35,8 @@ export interface HermesJournalRecord {
   content?: string;
   reasoning?: string;
   calls?: { id: string; name: string; arguments: string }[];
+  /** `assistant`: the stream its text streamed under before it was saved (plugin/cotal/streams.py). */
+  stream?: string;
   /** `tool`: the result of call `id`. */
   id?: string;
   result?: string;
@@ -51,18 +57,26 @@ export interface HermesJournalRecord {
  * own ids, and a call still open when the run ends is ended without a result rather than given one.
  * A `failure` ends the run with `RUN_ERROR`, a `cancelled` with an interrupt outcome.
  *
- * `consumed` is the journal up to the cursor the event plane has acknowledged. A re-established
- * plane replays it here so the mapper knows which messages are still in progress, and resumes the
- * open run under the id the wire holds (`resumeRunId`).
+ * Text the model streams before its response is saved arrives as delta lines merged in among the
+ * records (connector-core's DeltaMergedSource). A delta while a message is in progress opens the run
+ * as a model response does, and streams under its key. The saved response names the key, and closes
+ * the stream with the text that did not stream. A stream still open when the run ends is ended
+ * there. A delta while no message is in progress is dropped, and its key closed.
+ *
+ * `consumed` is the merged journal up to the cursor the event plane has acknowledged. A
+ * re-established plane replays it here so the mapper knows which messages are still in progress,
+ * and resumes the open run under the id the wire holds (`resumeRunId`), with the streams `seed`
+ * rebuilds from the delta journal.
  */
 export function createHermesMapper(opts: {
   threadId: string;
   mintRunId: () => string;
-  consumed?: readonly HermesJournalRecord[];
+  consumed?: readonly Merged<HermesJournalRecord>[];
   resumeRunId?: string;
+  seed?: StreamSeed;
   /** Emit `REASONING_*` for the model's reasoning text. Off by default, as in the other mappers. */
   reasoning?: boolean;
-}): RecordMapper<HermesJournalRecord> {
+}): RecordMapper<Merged<HermesJournalRecord>> {
   const { threadId } = opts;
   let mint = (): string => "";
   let open: string | null = null;
@@ -70,11 +84,13 @@ export function createHermesMapper(opts: {
   const tools = new Set<string>();
   let failed = false;
   let cancelled = false;
+  // The replay below only rebuilds which runs and messages are open; the streams come from `seed`.
+  let parts = new StreamedParts();
 
   const started = (runId: string, ts: number): AguiEvent =>
     runStarted({ threadId, runId, timestamp: ts, cotal: { runIdSource: "connector" } });
   const close = (runId: string, ts: number): AguiEvent[] => {
-    const events: AguiEvent[] = [...tools].map((toolCallId) => toolCallEnd({ toolCallId, timestamp: ts }));
+    const events: AguiEvent[] = [...parts.endAll(ts), ...[...tools].map((toolCallId) => toolCallEnd({ toolCallId, timestamp: ts }))];
     events.push(
       failed
         ? runError({ message: "Hermes could not process a message of this run", code: "hermes_processing_failed", timestamp: ts })
@@ -99,7 +115,9 @@ export function createHermesMapper(opts: {
         reasoningMessageEnd({ messageId, timestamp: ts }),
       );
     }
-    if (rec.content) {
+    const streamed = rec.stream ? parts.saved(rec.stream, rec.content ?? "", ts) : { events: [], mapAsNew: true };
+    events.push(...streamed.events);
+    if (rec.content && streamed.mapAsNew) {
       const messageId = `${rec.rid}:text`;
       events.push(
         textMessageStart({ messageId, role: "assistant", timestamp: ts }),
@@ -118,7 +136,15 @@ export function createHermesMapper(opts: {
     return events;
   };
 
-  const map: RecordMapper<HermesJournalRecord> = (rec) => {
+  const delta = (deltas: readonly StreamDelta[], ends: readonly string[], ts: number): AguiEvent[] | null => {
+    if (open === null && pending.size === 0) {
+      parts.end([...deltas.map((d) => d.key), ...ends], ts);
+      return null;
+    }
+    return [...deltas.flatMap((d) => parts.delta(d, ts)), ...parts.end(ends, ts)];
+  };
+
+  const mapRecord: RecordMapper<HermesJournalRecord> = (rec) => {
     if (!Number.isFinite(rec.ts) || typeof rec.rid !== "string")
       throw new Error(`Hermes AG-UI: journal record ${JSON.stringify(rec.k)} has no id or timestamp`);
     switch (rec.k) {
@@ -164,10 +190,20 @@ export function createHermesMapper(opts: {
     }
   };
 
+  const map: RecordMapper<Merged<HermesJournalRecord>> = (rec) => {
+    if ("harness" in rec) return mapRecord(rec.harness);
+    const events = delta(rec.deltas, rec.ends ?? [], rec.timestamp);
+    if (events === null || events.length === 0) return null;
+    if (open !== null) return { runId: open, events };
+    open = mint();
+    return { runId: open, events: [started(open, rec.timestamp), ...events] };
+  };
+
   for (const rec of opts.consumed ?? []) map(rec);
   if ((open !== null) !== (opts.resumeRunId !== undefined))
     throw new Error(`Hermes AG-UI: the journal ${open !== null ? "has a run open" : "has no run open"} where the event plane's log ${opts.resumeRunId !== undefined ? "has one" : "has none"}`);
   if (open !== null) open = opts.resumeRunId!;
   mint = opts.mintRunId;
+  parts = new StreamedParts(opts.seed);
   return map;
 }

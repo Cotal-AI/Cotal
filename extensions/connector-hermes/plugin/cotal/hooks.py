@@ -27,7 +27,7 @@ import socket
 import sys
 from typing import Any
 
-from . import approvals, journal
+from . import approvals, journal, streams
 from .bridge_client import get_client
 from .control_exchange import ClientExchange, ControlConfigError, ExchangeRefused, control_key, socket_dir_problem
 
@@ -143,7 +143,9 @@ def journal_wake() -> None:
 
 
 def post_api_request(*args: Any, **kwargs: Any) -> None:
-    if journal.model_response(str(kwargs.get("platform") or ""), kwargs.get("assistant_message")):
+    platform = str(kwargs.get("platform") or "")
+    # The stream closes before the record is written, so none of its text follows the record.
+    if journal.model_response(platform, kwargs.get("assistant_message"), streams.response_saved(platform)):
         journal_wake()
 
 
