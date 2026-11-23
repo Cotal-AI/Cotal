@@ -775,17 +775,18 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
   const builtinDuplicate = builtin && duplicate(builtin);
   if (builtinDuplicate) return repeatedGlobalFlag(builtinDuplicate, builtin, ownWords(builtin));
   if (word === "-v") usageExit("-v is not the version flag - run `cotal version` or `cotal -V`");
-  // The built-in check reports an unreadable inventory itself. Do not require that inventory to
-  // construct its command surface, or recover an installation as a prelude to this read-only mode.
-  const updateCheck = builtin?.name === "update" && words.includes("--check") && !asksForHelp(words)
-    && parseOrExit(builtin, ownWords(builtin)).values.check === true;
+  // The check reads its own inventory, self-update owns recovery, and preferences need neither.
+  const updateModes = ["check", "self", "auto", "notify"];
+  const parsedUpdate = builtin?.name === "update" && !asksForHelp(words)
+    && updateModes.some(flag => words.includes(`--${flag}`))
+    ? parseOrExit(builtin, ownWords(builtin)) : undefined;
   // Structured version reports inventory failures itself and needs no extension commands.
   const versionJson = builtin?.name === "version" && !asksForHelp(words) && asksForJson(builtin, words);
-  // The built-in updater repairs its connector paths before opening any promotion journal.
-  const selfUpdate = builtin?.name === "update" && words.includes("--self") && !asksForHelp(words)
-    && parseOrExit(builtin, ownWords(builtin)).values.self === true;
-  // The removed start command only gives migration advice and needs no extension inventory.
-  let useExtensionOverlay = opts.extensions && !updateCheck && !selfUpdate && builtin?.name !== "start";
+  const extMode = builtin?.name === "ext" ? metadataPositionals(builtin, words).positionals[0]?.value : undefined;
+  const extList = builtin?.name === "ext" && (extMode === undefined || extMode === "list");
+  // Root only resolves the path. The list reports the inventory itself, after any pending promotion.
+  let useExtensionOverlay = opts.extensions && builtin?.name !== "start" && extMode !== "root" && !extList
+    && !updateModes.some(flag => parsedUpdate?.values[flag] === true);
   function skipUnreadableConnectorOverlay(error: unknown): boolean {
     if (!(error instanceof UnreadableConnectorSelection) || !builtin || !["version", "status", "down"].includes(builtin.name)) return false;
     if (builtin.name === "down") {
@@ -799,7 +800,7 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
     return true;
   }
   const configFolder = globalConfigDirProblem();
-  if (useExtensionOverlay) {
+  if (useExtensionOverlay || (opts.extensions && extList)) {
     try {
       if (builtin?.name === "ext" && await extSeedGate(builtin, ownWords(builtin), configFolder, opts.startupNotice)) return;
       // Topology only renders a manifest. Read the installed overlay normally without finishing an install.
@@ -882,7 +883,7 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
   // `__`-internal ones are exempt, because __complete's argv is ANOTHER command's half-typed
   // line, where `--help` is a word being completed, not a request.
   if (cmd && !cmd.name.startsWith("__") && wantsHelp) return printHelpFor(cmd, rest);
-  let parsed = cmd && !isExtensionStub(cmd) ? parseOrExit(cmd, rest) : undefined;
+  let parsed = cmd && !isExtensionStub(cmd) ? parsedUpdate ?? parseOrExit(cmd, rest) : undefined;
   // ---- Effects: only a validated invocation reaches this line. ----
   // A config folder that is a file fails every read and write of the preferences, the config file and
   // the extensions, so a command that could use them stops here, before the seed would write there.

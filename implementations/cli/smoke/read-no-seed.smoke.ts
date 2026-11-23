@@ -125,6 +125,11 @@ channels:
     hasGraph(pending) && pending.stderr === "" && !existsSync(root) && !existsSync(old) && !existsSync(join(config, "seed")) &&
     existsSync(join(pkgDir, "package.json")) && existsSync(journal) && readFileSync(journal, "utf8") === promotion, shown(pending));
 
+  const resolved = run(["ext", "root"]);
+  check("ext root prints the path without completing a promotion",
+    resolved.status === 0 && resolved.stdout === `${root}\n` && resolved.stderr === "" &&
+    !existsSync(root) && existsSync(stage) && readFileSync(journal, "utf8") === promotion, shown(resolved));
+
   const list = run(["ext", "list", "--json"]);
   check("ext list still recovers the pending promotion and reports the installed package",
     list.status === 0 && JSON.parse(list.stdout).result.items.some((item: { pkg: string }) => item.pkg === pkg) &&
@@ -137,6 +142,45 @@ channels:
   check("topology view reports corrupt inventory without rewriting it",
     corrupt.status === 1 && corrupt.stdout === "" && /corrupt extensions manifest/.test(corrupt.stderr) &&
     corrupt.stderr.includes("cotal ext seed --repair") && readFileSync(inventory, "utf8") === "invalid manifest\n", shown(corrupt));
+}
+
+{
+  const { home, xdg, run } = sandbox();
+  const root = join(xdg, "cotal", "extensions");
+  const manifest = join(root, "extensions.json");
+  const corrupt = "{}\n";
+  mkdirSync(root, { recursive: true });
+  writeFileSync(manifest, corrupt);
+  const offline = { COTAL_NO_UPDATE_CHECK: "1", COTAL_TELEMETRY: "off" };
+  for (const flag of ["auto", "notify"]) {
+    const write = run(["--json", "update", `--${flag}`, "off"], offline);
+    const read = run(["update", `--${flag}`, "-j"], offline);
+    for (const [verb, r] of [["writes", write], ["reads", read]] as const) {
+      const receipt = r.stdout ? JSON.parse(r.stdout) : undefined;
+      check(`update --${flag} ${verb} the preference with a corrupt manifest`,
+        r.status === 0 && r.stderr === "" && receipt?.outcome === "ok" &&
+        receipt.result?.kind === "update-preference" && receipt.result.preference === flag && receipt.result.enabled === false, shown(r));
+    }
+  }
+  const settings = JSON.parse(readFileSync(join(home, ".cotal", "update-settings.json"), "utf8"));
+  check("both preferences were saved", settings.auto === false && settings.notify === false, settings);
+
+  const resolved = run(["x", "root"], offline);
+  check("ext root alias prints only the path to the corrupt manifest",
+    resolved.status === 0 && resolved.stdout === `${root}\n` && resolved.stderr === "", shown(resolved));
+  for (const words of [["ext", "list", "--json"], ["--json", "x"]]) {
+    const r = run(words, offline);
+    const receipt = r.stdout ? JSON.parse(r.stdout) : undefined;
+    check(`${words.join(" ")} reports a structured refusal with repair advice`,
+      r.status === 1 && r.stderr === "" && receipt?.command === "ext" && receipt.outcome === "refused" &&
+      receipt.result === null && receipt.error?.code === "SCHEMA_INVALID" &&
+      receipt.error.message.includes("corrupt extensions manifest") && receipt.error.remedy.includes("cotal ext seed --repair"), shown(r));
+  }
+  const add = run(["ext", "add", "example-extension"], { ...offline, npm_config_offline: "true" });
+  check("ext add still refuses a corrupt manifest without installing anything",
+    add.status === 1 && add.stdout === "" && add.stderr.includes("corrupt extensions manifest"), shown(add));
+  check("the damaged inventory and its directory are unchanged",
+    readFileSync(manifest, "utf8") === corrupt && isDeepStrictEqual(readdirSync(root), ["extensions.json"]) && !existsSync(join(xdg, "cotal", "seed")));
 }
 
 {
