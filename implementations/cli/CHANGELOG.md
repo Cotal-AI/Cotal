@@ -1,5 +1,15 @@
 # @cotal-ai/cli
 
+## 0.176.1
+
+### Patch Changes
+
+- fc7712c: When a moved stack still has an instance recorded on this machine, the adoption refusal directs the operator back to the existing stack without asking for a second adoption.
+- 509deb5: When a manual registration conflicts with a prepared space, name its recorded project in the startup command and explain how to recover if that project has moved.
+- Updated dependencies [fc7712c]
+  - @cotal-ai/workspace@0.176.1
+  - @cotal-ai/core@0.176.1
+
 ## 0.176.0
 
 ### Minor Changes

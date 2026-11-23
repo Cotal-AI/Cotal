@@ -338,6 +338,8 @@ checking the file. If the file is missing, give `--launch` an existing absolute 
 digest to match. Keep your other flags, including `--dry-run` for a preview.
 The lifecycle verbs take no positional arguments. Use `--space <space>` or `--instance <full-id>`
 to select the manager.
+`--name` gives the manager a display name. Only user-auth spaces accept this name with `--on`.
+On open and static spaces, use the full instance ID printed by `cotal ps`.
 See [Native manager service definition](#native-manager-service-definition).
 `cotal help manager <verb>` and `cotal manager <verb> --help` print the verb's help with those
 options. The first

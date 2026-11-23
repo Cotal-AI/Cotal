@@ -1032,7 +1032,7 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
       // A --space that names another space is refused by the -f path below, before anything is written.
       if (prepared && (values.space === undefined || values.space === prepared.manifest.space)) ensureRootForSpace(prepared.manifest.space);
     } else {
-      ensureRootForSpace(spaceForRoot);
+      ensureRootForSpace(spaceForRoot, values.root !== undefined || values.json === true || values.plain === true);
     }
   }
   // A running manager keeps the name it started with.
