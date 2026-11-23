@@ -747,6 +747,7 @@ async function readNamedSeat(values: FlagValues<typeof psFlags>, name: string): 
   const pin = on === undefined ? await pinForTarget({ ...values, name } as never, "cotal status", [], { openMesh: mode === "open" }) : { instanceId: on };
   const t = await resolveControlTarget(values, "control-caller-privileged", pin.instanceId, { onRefusal: "throw" });
   recordOperationSpace(t.space);
+  if (on !== undefined && !t.auth.bearer) await refuseUnregisteredManager(t.space, t.server, t.auth, on);
   const target = { space: t.space, scope: "agent", managerInstanceId: pin.instanceId ?? null };
   const reply = await askManager(cliControl, t.space, t.server, "status", { name }, t.auth, "any", undefined, pin);
   if (!reply.ok) throw readFailure(reply, target);

@@ -53,7 +53,7 @@ export async function spawnLaunchPreview(args: Pick<ParsedArgs, "positionals"> &
   } catch (error) {
     if (!isWorkspaceTargetError(error)) throw error;
     const { root: localRoot, space: preparedSpace, stackSpace, lastRun, recordedRoot } = error.details;
-    const offlineSpace = preparedSpace ?? (!spawnUsesManager(values) && lastRun && recordedRoot === undefined ? stackSpace : undefined);
+    const offlineSpace = preparedSpace ?? (lastRun && recordedRoot === undefined ? stackSpace : undefined);
     if (error.code === "not-started" && localRoot && offlineSpace) { root = localRoot; space = offlineSpace; site = { root, space, personaRoot: personaDir(root), origin: "up" }; }
     else if (error.code === "unknown-space" && values["enrollment-file"] && values.file && values.space && token(values.space) === values.space) { root = process.cwd(); space = values.space; site = { root, space, personaRoot: personaDir(root) }; }
     // Every other resolution failure keeps the sentence and next step the reads print for it, so a
