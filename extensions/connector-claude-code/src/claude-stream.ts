@@ -130,6 +130,13 @@ export function savedText(
   ];
 }
 
+/** A saved text block Claude Code shows nothing for: none of it publishes, and what streamed under its
+ *  number ends there. */
+export function hiddenText(s: ClaudeStreamState | undefined, entry: ClaudeEntry, text: string, ts: number): AguiEvent[] {
+  const key = s?.order.next(entry, text);
+  return key === undefined ? [] : s!.parts.end([key], ts);
+}
+
 /** One line of reply text the command mod relayed: the journal key it numbered, and the text. */
 export interface ClaudeTextDelta {
   key: string;

@@ -854,6 +854,13 @@ the streamed message, and the saved text is then published as a message of its o
 also ends a stream no saved text closed. A subagent's reply does not stream, and neither does a
 reply while no mod serves the session.
 
+An assistant text that Claude Code's terminal shows nothing for publishes nothing. These are
+"No response requested.", which Claude Code writes when it closes a turn itself, as on a resume
+after a reply was cut off; "(no content)", its text for an empty message; and a text that is blank
+once Claude Code drops the analysis blocks and memory tags it does not show. Such a text still ends
+the reply that streamed under its number. An API error Claude Code writes as a reply shows in its
+terminal, so it publishes.
+
 Claude Code's terminal turns its to-do tools off for current models, so a seat on one keeps no task
 list and a client shows no plan for it. The connector leaves that as Claude Code sets it. An
 operator can opt in: set `CLAUDE_CODE_ENABLE_TODO_TOOLS=true` in the environment that starts the

@@ -5,7 +5,8 @@
  * tool call, its tool result not starting the count again; a flush the mod relays after the saved
  * entry publishes nothing; a saved text that does not continue what streamed ends the stream and maps
  * as its own message; a turn end abandons a stream no saved entry closed; a subagent's text block is
- * not numbered; a mapper primed from the transcript goes on numbering where the last one stopped.
+ * not numbered; a mapper primed from the transcript goes on numbering where the last one stopped; a
+ * text block Claude Code shows nothing for publishes nothing and ends what streamed under its number.
  * Mod side: the relay numbers each prompt's messages in the order they stream, skips a subagent's
  * flush, keeps a message's number across its flushes, restarts at the next prompt, and relays under
  * the id the seat sent.
@@ -15,7 +16,7 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { JsonlFileSource, StreamedParts, type AguiEvent, type Merged } from "@cotal-ai/connector-core";
+import { AGUI_EVENT_TYPE, JsonlFileSource, StreamedParts, type AguiEvent, type Merged } from "@cotal-ai/connector-core";
 import { createSuite } from "@cotal-ai/smoke-kit";
 import { createClaudeMapper, type ClaudeEntry } from "../src/agui-map.js";
 import { ClaudeStreamOrder, claudeStreamKey, primeStreamOrder } from "../src/claude-stream.js";
@@ -29,6 +30,9 @@ const Q = "4b5c1a7e-1f0e-4f4e-9c55-6f0bb2f1a002";
 
 const prompt = (promptId: string, uuid: string): ClaudeEntry => ({ type: "user", uuid, timestamp: TS, promptId, origin: { kind: "human" }, message: { content: "go" } });
 const text = (uuid: string, t: string, sidechain = false): ClaudeEntry => ({ type: "assistant", uuid, timestamp: TS, ...(sidechain ? { isSidechain: true } : {}), message: { content: [{ type: "text", text: t }] } });
+/** An assistant entry Claude Code writes itself, as it does on a resume (`model: "<synthetic>"`). */
+const synthetic = (uuid: string, t: string, apiError = false): ClaudeEntry =>
+  ({ type: "assistant", uuid, timestamp: TS, isApiErrorMessage: apiError, message: { model: "<synthetic>", content: [{ type: "text", text: t }] } } as ClaudeEntry);
 const toolUse = (uuid: string): ClaudeEntry => ({ type: "assistant", uuid, timestamp: TS, message: { content: [{ type: "tool_use", id: "toolu_1", name: "Bash", input: {} }] } });
 const toolResult = (promptId: string, uuid: string): ClaudeEntry => ({ type: "user", uuid, timestamp: TS, promptId, message: { content: [{ type: "tool_result", tool_use_id: "toolu_1", content: "ok" }] } });
 const line = (key: string, t: string, ends?: string[]): Merged<ClaudeEntry> => ({ deltas: t ? [{ key, kind: "text", text: t }] : [], timestamp: 1, ...(ends ? { ends } : {}) });
@@ -106,6 +110,25 @@ console.log("\nthe mapper");
   map(line(kq, "Next "));
   const saved = map({ harness: text("a2", "Next prompt") });
   check("a new prompt numbers from one again", same(texts(saved), [`CONTENT:${kq}:prompt`, `END:${kq}`]), texts(saved));
+}
+{
+  // A resumed session whose last reply was cut off: Claude writes "No response requested." under the
+  // killed prompt, shows nothing for it, and the next prompt opens the next turn.
+  const map = mapper();
+  map({ harness: prompt(P, "u1") });
+  map(line(k1, "1. A volcano is an opening in Earth's crust.\n2."));
+  const resumed = map({ harness: synthetic("a1", "No response requested.") });
+  const next = map({ harness: prompt(Q, "u2") });
+  check("Claude's resume entry publishes nothing of its own and ends what streamed under its number",
+    same(texts(resumed), [`END:${k1}`]) && next.some((e) => e.type === AGUI_EVENT_TYPE.RUN_FINISHED), { resumed: texts(resumed), next: next.map((e) => e.type) });
+}
+{
+  const map = mapper();
+  map({ harness: prompt(P, "u1") });
+  const hidden = ["(no content)", " (no content)\n", "", "\n\n", "<context>notes</context>\n", "<cc-memory>\n</cc-memory>"].flatMap((t, i) => map({ harness: synthetic(`h${i}`, t) }));
+  const error = map({ harness: synthetic("e1", "API Error: Request was aborted.", true) });
+  check("a text block Claude Code shows nothing for publishes nothing", hidden.length === 0, texts(hidden));
+  check("...and an API error Claude Code shows still publishes", same(texts(error), ["START:e1#0", "CONTENT:e1#0:API Error: Request was aborted.", "END:e1#0"]), texts(error));
 }
 {
   const dir = mkdtempSync(join(tmpdir(), "cotal-claude-stream-"));
