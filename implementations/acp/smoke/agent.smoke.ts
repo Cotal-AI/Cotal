@@ -25,6 +25,9 @@
  *    and deleting it fails;
  *  - a new session with no manager on this machine starts on the first listed one;
  *  - the slash commands answer locally, and `/despawn` stops the seat;
+ *  - a persona catalog or channel list longer than a client select offers a short select holding the
+ *    caller's own personas, or the described and busiest channels, and `/persona` and `/join` pick
+ *    any by exact name while the thread has no agent; a list that fits keeps its full select;
  *  - `/name` before the first prompt names the seat the thread spawns, refuses a name the manager
  *    would refuse, and on a running seat changes the name it shows or says why not;
  *  - `/open` drives a running seat found by its name or shown name from a thread with no agent,
@@ -45,6 +48,7 @@ import { join } from "node:path";
 import { client, methods, ndJsonStream, PROTOCOL_VERSION, type RequestPermissionRequest, type RequestPermissionResponse, type SessionNotification } from "@agentclientprotocol/sdk";
 import { agentPromptDigest, assertValidOwnerToken, type AgentPrompt, type PromptContent, type PromptSummary } from "@cotal-ai/core";
 import { cotalAgent, defaultName, type HiddenSessions, type ThreadLink, type ThreadLinks } from "../src/agent.js";
+import { MAX_CHOICES } from "../src/options.js";
 import { promptParts } from "../src/turns.js";
 import { AgentCallFailed, LaunchListsRefused, NoLaunchManager, SignInRequired, type AgentCatalog, type AgentEndpointServes, type AguiEventLike, type ManagerChoice, type Mesh, type PromptCounter, type SeatFrame, type SeatRef, type SeatRow, type SpawnRequest } from "../src/mesh.js";
 
@@ -140,7 +144,7 @@ class FakeMesh implements Mesh {
   async personas(instanceId?: string) {
     this.personasAsked.push(instanceId);
     if (this.launchRefused) throw new LaunchListsRefused("the manager did not list its personas: permission-denied");
-    return instanceId === "m2" ? ["default", "builder"] : ["default", "reviewer"];
+    return (instanceId === "m2" ? ["default", "builder"] : ["default", "reviewer"]).map((name) => ({ name }));
   }
   async spawn(req: SpawnRequest): Promise<SeatRef> {
     this.spawned.push(req);
@@ -180,8 +184,19 @@ class FakeMesh implements Mesh {
   async frameHistory(seat: SeatRef) { return this.history.get(seat.name) ?? []; }
   presence(seat: SeatRef) { return this.present.get(seat.actor); }
   async roster() { return [{ name: "alice", status: "idle", role: "reviewer" }]; }
-  async channels() { return ["general", "ops"]; }
+  async channels() { return [{ channel: "general", messages: 3 }, { channel: "ops", messages: 1 }]; }
   async close() { this.closed = true; }
+}
+
+/** A space with more personas and channels than a client select shows. */
+class BigMesh extends FakeMesh {
+  override async personas(instanceId?: string) {
+    this.personasAsked.push(instanceId);
+    return [{ name: "default" }, { name: "mine-a", own: true as const }, { name: "mine-b", own: true as const }, ...Array.from({ length: 70 }, (_, i) => ({ name: `p-${String(i).padStart(2, "0")}` }))];
+  }
+  override async channels() {
+    return [{ channel: "ops", messages: 0, description: "Deploys and incidents." }, ...Array.from({ length: 70 }, (_, i) => ({ channel: `ch-${String(i).padStart(2, "0")}`, messages: i }))];
+  }
 }
 
 class MemoryLinks implements ThreadLinks {
@@ -949,6 +964,62 @@ check("a thread's agent name is a valid user-mode actor token", (() => { try { r
   await again.agent.request(methods.agent.session.delete, { sessionId: opener.sessionId });
   check("deleting a linked thread hides its seat's run", again.hidden.ids.has("life-helper"), [...again.hidden.ids]);
   again.conn.close();
+  c.conn.close();
+}
+
+// A space whose persona catalog and channel list are longer than a client select shows.
+{
+  const space = new BigMesh();
+  const c = connect(async () => space);
+  await c.init;
+  type Select = { currentValue: string; options: { value: string }[] };
+  const select = (options: unknown[] | null | undefined, id: string) => (options as { id: string }[] | null | undefined)?.find((o) => o.id === id) as Select | undefined;
+  const values = (o: Select | undefined) => o?.options.map((x) => x.value) ?? [];
+  const s = await c.agent.request(methods.agent.session.new, { cwd: dir, mcpServers: [] });
+  const persona = select(s.configOptions, "persona");
+  const channel = select(s.configOptions, "channel");
+  check("a persona catalog longer than a select still offers a short persona select at the default", persona?.currentValue === "default" && values(persona)[0] === "default" && values(persona).length < MAX_CHOICES, values(persona));
+  check("it offers the personas the caller owns", JSON.stringify(values(persona)) === JSON.stringify(["default", "mine-a", "mine-b"]), values(persona));
+  check("a channel list longer than a select still offers a short channel select at no channel", channel?.currentValue === "none" && values(channel)[0] === "none" && values(channel).length < MAX_CHOICES, values(channel));
+  check("it offers the channels the space describes, then the busiest", values(channel)[1] === "ops" && values(channel)[2] === "ch-69" && values(channel)[3] === "ch-68", values(channel));
+  await tick();
+  const commands = () => (c.updates.filter((u) => u.sessionId === s.sessionId && u.update.sessionUpdate === "available_commands_update").at(-1)?.update as { availableCommands: { name: string; input?: { hint?: string } }[] } | undefined)?.availableCommands ?? [];
+  check("/persona and /join are announced with an input hint", ["persona", "join"].every((n) => commands().some((x) => x.name === n && x.input?.hint)), commands().map((x) => x.name));
+  const say = async (text: string): Promise<string> => {
+    c.updates.length = 0;
+    await within(c.agent.request(methods.agent.session.prompt, { sessionId: s.sessionId, prompt: [{ type: "text", text }] }).catch((e: unknown) => e));
+    return c.updates.filter((u) => u.sessionId === s.sessionId && u.update.sessionUpdate === "agent_message_chunk").map((u) => (u.update as { content: { text: string } }).content.text).join("\n");
+  };
+  const updated = (id: string) => select((c.updates.filter((u) => u.sessionId === s.sessionId && u.update.sessionUpdate === "config_option_update").at(-1)?.update as { configOptions?: unknown[] } | undefined)?.configOptions, id);
+  const picked = await say("/persona p-50");
+  check("/persona picks a persona the short select does not list", picked.includes("p-50") && space.spawned.length === 0, picked);
+  check("and the select then holds it as its current value", updated("persona")?.currentValue === "p-50" && values(updated("persona")).includes("p-50"), updated("persona"));
+  const missing = await say("/persona nobody");
+  check("/persona with a name the catalog lacks fails with one line and keeps the choice", missing.split("\n").length === 1 && missing.includes(`no persona "nobody"`) && space.spawned.length === 0, missing);
+  const joined = await say("/join ch-03");
+  check("/join picks a channel the short select does not list", joined.includes("ch-03") && updated("channel")?.currentValue === "ch-03" && values(updated("channel")).includes("ch-03"), { joined, channel: updated("channel") });
+  check("/join with a channel the space lacks fails with one line", (await say("/join nowhere")).includes(`no channel "nowhere"`) && space.spawned.length === 0);
+  space.script = { before: [[{ type: "RUN_STARTED", runId: "r1" }]], after: [[{ type: "RUN_FINISHED", runId: "r1" }]] };
+  await within(c.agent.request(methods.agent.session.prompt, { sessionId: s.sessionId, prompt: [{ type: "text", text: "go" }] }).catch((e: unknown) => e));
+  const req = space.spawned[0];
+  check("the first prompt spawns with the persona and channel the commands chose", req?.persona === "p-50" && JSON.stringify(req.subscribe) === '["ch-03"]', req);
+  await tick(50);
+  check("once the agent runs, /persona and /join are no longer offered", commands().length > 0 && !commands().some((x) => x.name === "persona" || x.name === "join"), commands().map((x) => x.name));
+  space.onInput = (seat) => { space.present.set(seat.actor, "working"); setTimeout(() => space.present.set(seat.actor, "idle"), 20); };
+  await say("/persona p-51");
+  check("and a running agent gets /persona as its own words", space.typed.at(-1)?.text === "/persona p-51", space.typed);
+  space.onInput = () => {};
+  await say("/despawn");
+  await tick(50);
+  check("after /despawn, /persona and /join are offered again for the next agent", ["persona", "join"].every((n) => commands().some((x) => x.name === n)), commands().map((x) => x.name));
+
+  const small = connect(async () => new FakeMesh());
+  await small.init;
+  const fits = await small.agent.request(methods.agent.session.new, { cwd: dir, mcpServers: [] });
+  await tick();
+  const offered = (small.updates.filter((u) => u.update.sessionUpdate === "available_commands_update").at(-1)?.update as { availableCommands: { name: string }[] } | undefined)?.availableCommands ?? [];
+  check("a list that fits keeps its full select, and offers no command for it", JSON.stringify(values(select(fits.configOptions, "persona"))) === '["default","reviewer"]' && JSON.stringify(values(select(fits.configOptions, "channel"))) === '["none","general","ops"]' && !offered.some((x) => x.name === "persona" || x.name === "join"), { options: fits.configOptions, offered });
+  small.conn.close();
   c.conn.close();
 }
 

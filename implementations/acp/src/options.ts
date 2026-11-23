@@ -15,7 +15,7 @@
  * holding the selected model's variants.
  */
 import type { SessionConfigOption } from "@agentclientprotocol/sdk";
-import type { AgentCatalog, ManagerChoice } from "./mesh.js";
+import type { AgentCatalog, ChannelRow, ManagerChoice, PersonaRow } from "./mesh.js";
 
 /** The value of a model choice that leaves the model to the application. */
 export const DEFAULT_MODEL = "default";
@@ -26,8 +26,10 @@ export const DEFAULT_PERSONA = "default";
 /** The value of a channel choice that subscribes the new seat to no extra channel. */
 export const NO_CHANNEL = "none";
 /** A client caps a select at this many choices (T3 Code's limit). A list that does not fit is not
- *  offered rather than cut. */
+ *  offered rather than cut, except the persona and channel lists, which offer a short select. */
 export const MAX_CHOICES = 64;
+/** How many named choices a short select offers, besides its default and the current value. */
+const SHORT_CHOICES = 16;
 
 export interface Selection {
   /** `<agent>/<model>`, where the model may be {@link DEFAULT_MODEL}. */
@@ -42,8 +44,8 @@ export interface Selection {
 
 export interface Offer {
   readonly catalogs: readonly AgentCatalog[];
-  readonly personas: readonly string[];
-  readonly channels: readonly string[];
+  readonly personas: readonly PersonaRow[];
+  readonly channels: readonly ChannelRow[];
   readonly managers: readonly ManagerChoice[];
   readonly defaultAgent?: string;
   /** The thread opened without the launch lists: it drives the agent it loaded, offers only that
@@ -116,7 +118,7 @@ export function reconcile(offer: Offer, selection: Selection): Selection {
   return {
     ...next,
     variant: next.variant === DEFAULT_VARIANT || variantsOf(offer, next).includes(next.variant) ? next.variant : DEFAULT_VARIANT,
-    persona: next.persona === DEFAULT_PERSONA || offer.personas.includes(next.persona) ? next.persona : DEFAULT_PERSONA,
+    persona: next.persona === DEFAULT_PERSONA || offer.personas.some((p) => p.name === next.persona) ? next.persona : DEFAULT_PERSONA,
   };
 }
 
@@ -136,10 +138,10 @@ export function applyOption(offer: Offer, selection: Selection, configId: string
         throw new Error(`the selected model has no variant "${value}"`);
       return { ...selection, variant: value };
     case "persona":
-      if (value !== DEFAULT_PERSONA && !offer.personas.includes(value)) throw new Error(`the manager's catalog has no persona "${value}"`);
+      if (value !== DEFAULT_PERSONA && !offer.personas.some((p) => p.name === value)) throw new Error(`the manager's catalog has no persona "${value}"`);
       return { ...selection, persona: value };
     case "channel":
-      if (value !== NO_CHANNEL && !offer.channels.includes(value)) throw new Error(`the space has no channel "${value}"`);
+      if (value !== NO_CHANNEL && !offer.channels.some((c) => c.channel === value)) throw new Error(`the space has no channel "${value}"`);
       return { ...selection, channel: value };
     case "machine":
       if (!offer.managers.some((m) => m.instanceId === value)) throw new Error(`no manager "${value}" is live`);
@@ -148,6 +150,29 @@ export function applyOption(offer: Offer, selection: Selection, configId: string
       throw new Error(`unknown config option "${configId}"`);
   }
 }
+
+/** Whether a list holds more choices than a client select shows. */
+export const cutShort = (list: readonly unknown[]): boolean => list.length >= MAX_CHOICES;
+
+/** The personas the persona select names: the whole catalog when it fits, else the caller's own. A
+ *  manager's list carries nothing else that marks a persona as one the caller uses, so `/persona`
+ *  reaches the rest. */
+function personaChoices(offer: Offer): string[] {
+  const named = offer.personas.filter((p) => p.name !== DEFAULT_PERSONA);
+  return (cutShort(offer.personas) ? named.filter((p) => p.own).slice(0, SHORT_CHOICES) : named).map((p) => p.name);
+}
+
+/** The channels the channel select names: every channel when they fit, else the ones the space
+ *  describes and then the rest, each busiest first. `/join` reaches the others. */
+function channelChoices(offer: Offer): string[] {
+  if (!cutShort(offer.channels)) return offer.channels.map((c) => c.channel);
+  const ranked = [...offer.channels].sort((a, b) => Number(b.description !== undefined) - Number(a.description !== undefined) || b.messages - a.messages);
+  return ranked.slice(0, SHORT_CHOICES).map((c) => c.channel);
+}
+
+/** A select's named choices with the current value among them, which a short select may not list. */
+const withCurrent = (choices: string[], current: string, unset: string): string[] =>
+  current === unset || choices.includes(current) ? choices : [current, ...choices];
 
 /** The model select's choices, grouped by application. */
 function modelGroups(offer: Offer, selection: Selection): { group: string; name: string; options: { value: string; name: string }[] }[] {
@@ -215,22 +240,22 @@ export function configOptions(offer: Offer, selection: Selection): SessionConfig
       currentValue: selection.variant,
       options: [{ value: DEFAULT_VARIANT, name: "Model default" }, ...variants.map((v) => ({ value: v, name: v }))],
     });
-  if (offer.personas.length && offer.personas.length < MAX_CHOICES)
+  if (offer.personas.length)
     options.push({
       id: "persona",
       name: "Persona",
       type: "select",
       currentValue: selection.persona,
-      options: [{ value: DEFAULT_PERSONA, name: "Default persona" }, ...offer.personas.filter((p) => p !== DEFAULT_PERSONA).map((p) => ({ value: p, name: p }))],
+      options: [{ value: DEFAULT_PERSONA, name: "Default persona" }, ...withCurrent(personaChoices(offer), selection.persona, DEFAULT_PERSONA).map((p) => ({ value: p, name: p }))],
     });
-  if (offer.channels.length && offer.channels.length < MAX_CHOICES)
+  if (offer.channels.length)
     options.push({
       id: "channel",
       name: "Channel",
       description: "A channel the new agent joins. Applies at spawn.",
       type: "select",
       currentValue: selection.channel,
-      options: [{ value: NO_CHANNEL, name: "No channel" }, ...offer.channels.map((c) => ({ value: c, name: `#${c}` }))],
+      options: [{ value: NO_CHANNEL, name: "No channel" }, ...withCurrent(channelChoices(offer), selection.channel, NO_CHANNEL).map((c) => ({ value: c, name: `#${c}` }))],
     });
   if (offer.managers.length > 1 && offer.managers.length <= MAX_CHOICES)
     options.push({
