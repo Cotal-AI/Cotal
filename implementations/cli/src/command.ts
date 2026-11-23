@@ -199,9 +199,10 @@ function failureExit(cmd: Command, failure: CommandFailure, json: boolean, plain
   // envelope cannot be written for a reason other than a closed pipe. The exit status stands either way.
   if (!json) writeReport();
   else try {
-    // Mint receipts identify the operation, not the auth namespace used by account reports.
-    const command = cmd.name === "auth" && findSubcommand(cmd, metadataPositionals(cmd, words).positionals[0]?.value)?.name === "mint"
-      ? "auth mint" : cmd.name;
+    const subcommand = cmd.name === "auth" || cmd.name === "doctor"
+      ? findSubcommand(cmd, metadataPositionals(cmd, words).positionals[0]?.value)?.name : undefined;
+    const command = cmd.name === "auth" && subcommand === "mint" ? "auth mint"
+      : cmd.name === "doctor" && subcommand === "auth" ? "doctor auth" : cmd.name;
     const follow = validationArgs?.values.follow === true && validationArgs.values.plain !== true && !plain;
     const historyFollow = cmd.name === "history" && follow
       && !findSubcommand(cmd, validationArgs.positionals[0]);
