@@ -18,7 +18,7 @@
  * with no element is one record of its own: a user prompt, a turn end, and a step that has not
  * written anything yet, which must hold the read like any unsettled element does.
  */
-import type { DurableSource, SourceRead } from "@cotal-ai/connector-core";
+import type { OrderedSource, SourceRead } from "@cotal-ai/connector-core";
 
 /** The fields of a 2.x message this source and its mapper read. */
 export interface OpenCode2Message {
@@ -80,6 +80,18 @@ function parseCursor(cursor: string): { messageId: string; index: number } {
   return { messageId: cursor.slice(0, i), index: Number(index) };
 }
 
+/** Negative when position `a` is before `b`, zero at the same position, positive after. The empty
+ *  cursor is before every record. */
+export function compareCursors2(a: string, b: string): number {
+  if (a === b) return 0;
+  if (a === "") return -1;
+  if (b === "") return 1;
+  const x = parseCursor(a);
+  const y = parseCursor(b);
+  if (x.messageId !== y.messageId) return x.messageId < y.messageId ? -1 : 1;
+  return x.index - y.index;
+}
+
 function isAfter(record: OpenCode2Record, at: { messageId: string; index: number }): boolean {
   if (record.message.id !== at.messageId) return record.message.id > at.messageId;
   return record.index > at.index;
@@ -105,11 +117,12 @@ interface OpenCode2SessionSourceOptions {
   onVanished?: (cursor: string) => void;
 }
 
-export class OpenCode2SessionSource implements DurableSource<OpenCode2Record> {
+export class OpenCode2SessionSource implements OrderedSource<OpenCode2Record> {
   readonly kind = "opencode2-session";
   private readonly page: FetchMessagePage;
   private readonly onVanished?: (cursor: string) => void;
   private reportedVanished?: string;
+  private furthest = "";
 
   constructor(opts: OpenCode2SessionSourceOptions) {
     this.page = opts.page;
@@ -144,6 +157,24 @@ export class OpenCode2SessionSource implements DurableSource<OpenCode2Record> {
     return ordered;
   }
 
+  compare(a: string, b: string): number {
+    return compareCursors2(a, b);
+  }
+
+  /** The furthest position a read has reached: every record up to it was settled when it was read. */
+  get reached(): string {
+    return this.furthest;
+  }
+
+  /** The position of the session's last record before message `messageId`, which a read reaches
+   *  once everything older than the message is settled. */
+  async before(messageId: string): Promise<string> {
+    const newest = (await this.page(undefined)).data.find((m) => m.id < messageId);
+    if (newest === undefined) return "";
+    const count = newest.type === "assistant" ? (newest.content?.length ?? 0) : 0;
+    return `${newest.id}:${count - 1}`;
+  }
+
   async end(): Promise<string> {
     const newest = (await this.page(undefined)).data[0];
     if (newest === undefined) return "";
@@ -169,6 +200,8 @@ export class OpenCode2SessionSource implements DurableSource<OpenCode2Record> {
       if (!isSettled(record, turnEnded)) break;
       records.push({ value: record, cursor: cursorOf(record) });
     }
-    return { records, cursor: records.at(-1)?.cursor ?? cursor };
+    const reached = records.at(-1)?.cursor ?? cursor;
+    if (compareCursors2(reached, this.furthest) > 0) this.furthest = reached;
+    return { records, cursor: reached };
   }
 }
