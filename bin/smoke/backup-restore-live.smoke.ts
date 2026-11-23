@@ -1240,6 +1240,50 @@ async function backupRestoreCycleScenario(): Promise<void> {
   }
 }
 
+async function emptyNewerCutScenario(): Promise<void> {
+  const root = realpathSync.native(mkdtempSync(join(tmpdir(), "cotal-backup-empty-cut-root-")));
+  const home = realpathSync.native(mkdtempSync(join(tmpdir(), "cotal-backup-empty-cut-home-")));
+  const { run } = sandboxRun(root, home);
+  const server = `nats://127.0.0.1:${await freePort()}`;
+  const space = "backup_empty_cut";
+  const artifact = join(root, "backup");
+  const target = join(root, "restored-store");
+  const must = (...args: string[]) => {
+    const result = run(...args);
+    assert.equal(result.status, 0, `${args.join(" ")}\n${result.stdout}${result.stderr}`);
+    return result;
+  };
+  try {
+    must("up", "--detach", "--open", "--server", server, "--space", space);
+    must("down", "--preserve-state", "--yes");
+    must("backup", "create", artifact);
+    must("up", "--detach");
+    must("down", "--preserve-state", "--yes");
+    const cut = readMaintenanceJournal(root);
+    assert.ok(cut?.state === "ready");
+    const manifest = JSON.parse(readFileSync(join(artifact, "manifest.json"), "utf8")) as BackupManifest;
+    assert.ok(Date.parse(cut.cut.intentAt) > Date.parse(manifest.createdAt), "the empty cut is newer than its artifact");
+
+    const restored = must("backup", "restore", artifact, "--store-dir", target, "--plain");
+    assert.match(restored.stdout, /The previous store had no message history or workflow runs for the restored space\./);
+    assert.doesNotMatch(restored.stdout + restored.stderr, /only copy|--discard-history/);
+    const active = readMaintenanceJournal(root);
+    assert.ok(active?.state === "active");
+    const cleanup = ["backup", "cleanup-fallback", active.restore.attemptId];
+    const preview = must(...cleanup, "--dry-run", "--json");
+    assert.doesNotMatch(preview.stdout, /HISTORY_ONLY_IN_PREVIOUS_STORE/);
+    assert.ok(existsSync(cut.source.path), "the preview leaves the fallback intact");
+    must(...cleanup, "--yes");
+    assert.ok(!existsSync(cut.source.path) && existsSync(target), "cleanup removes only the fallback");
+    assert.equal(readMaintenanceJournal(root), undefined, "cleanup retires the restore journal");
+    must("down", "--preserve-state", "--yes");
+  } finally {
+    run("down", "--yes");
+    rmSync(root, { recursive: true, force: true });
+    rmSync(home, { recursive: true, force: true });
+  }
+}
+
 /** A full restore of a backup made before a run's checkpoint was answered rolls the run back. It names
  *  the run and the reopened step in its receipt, in `status` and in the cleanup preview, reads the
  *  set-aside store only from a clone it removes, and the step accepts an answer again. */
@@ -1401,6 +1445,7 @@ await preservationCommitCrashScenario();
 await preservationStopCrashRecoveryScenario();
 await restoreClaimRaceScenario();
 await backupRestoreCycleScenario();
+await emptyNewerCutScenario();
 await rolledBackRunsScenario();
 await otherAccountScenario();
 await scenario("open");

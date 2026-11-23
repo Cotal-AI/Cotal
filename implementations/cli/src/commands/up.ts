@@ -189,11 +189,11 @@ import {
   replacePreparedDeadRestoreListener,
   restoreComposition,
   restoreInterruptNotice,
-  restoreNextStep,
-  restoreOnlyCopy,
+  restoreHistory,
   type PreparedRestore,
   type RestoreFlags,
 } from "../lib/restore.js";
+import { printRestoreReceipt } from "../lib/restore-receipt.js";
 import { attemptProcessesGone } from "../lib/isolated-broker.js";
 import { assertEndpointUnreachable } from "../lib/endpoint-cut.js";
 import { freshStackServer, retryStackAddress, serverWithFreePort } from "../lib/up-broker-address.js";
@@ -2197,20 +2197,6 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
   }
 }
 
-/** The human receipt for a completed `up --restore`. `backup restore` prints its own receipt. */
-function printRestoreReceipt(restored: PreparedRestore, invokedRoot?: string): void {
-  console.log(c.green(`✓ restored the backup ${restored.selection === "registry" ? "registry" : "in full"} as restore attempt ${restored.attemptId}`));
-  const composition = restoreComposition(restored.space, restored.restoredStreams, restored.mode);
-  console.log(c.dim(`restored: ${composition.restoredWords}; recreated empty: ${composition.emptyWords}`));
-  if (composition.note) console.log(c.yellow(composition.note));
-  const cleanupRoot = invokedRoot && invokedRoot !== canonicalRoot(restored.root) ? restored.root : undefined;
-  const cmd = displayCmd();
-  for (const line of leftOutNotes(restored.attemptId, restored.selection, restoreOnlyCopy(restored.root, restored.attemptId), cleanupRoot, cmd)) console.log(c.yellow(line));
-  const journal = readMaintenanceJournal(restored.root);
-  if (journal && "restore" in journal && journal.restore.attemptId === restored.attemptId)
-    console.log(c.dim(`next: ${restoreNextStep(journal.state, restored.attemptId, restoreLeftOut(journal), cleanupRoot, cmd)}`));
-}
-
 /** The address of a prepared stack that neither a journal nor a registration records, as after a
  *  damaged journal was removed once `down` had dropped the registration. Its saved broker definition
  *  names it. With none, a root that holds this space's trust or a store from an earlier start refuses
@@ -2591,10 +2577,11 @@ async function resumeControllerStack(lock: MaintenanceLock, root: string, values
       targetPath, runtime: launch.runtime, brokerPid: broker.pid, delivery: has("delivery"), authService: has("auth"), controlPlane: true, manager: true,
     };
     const composition = restoreComposition(space, result.restoredStreams, result.mode);
+    const { onlyCopy, emptyNote } = restoreHistory(root, attemptId);
     if (restoreSink) restoreSink(result);
     else writeResult(presentationOf(values), { command: "up", target: { root, space, server: launch.server }, result: { kind: "controller-stack-restore", root, space, server: launch.server, attemptId, targetPath, selection: result.selection, restored: composition.restored, recreatedEmpty: composition.recreatedEmpty, retiredBrokerRemoved: attempt.brokerRequired } }, (row) => ({ sections: [{ title: "Controller stack restored", blocks: [
       { kind: "fields", rows: [["Space", row.space], ["Root", row.root], ["Broker", row.server], ["Attempt", row.attemptId], ["Store", row.targetPath], ["Selection", row.selection], ["Restored", composition.restoredWords], ["Recreated empty", composition.emptyWords]] },
-      { kind: "lines", lines: ["Each recorded member was started or adopted for this attempt, and the retained agents were resumed under the same principals. The restore journal stays active until its fallback is cleaned up. This is not agent or task readiness.", ...(composition.note ? [composition.note] : []), ...leftOutNotes(attemptId, result.selection, restoreOnlyCopy(root, attemptId))] },
+      { kind: "lines", lines: ["Each recorded member was started or adopted for this attempt, and the retained agents were resumed under the same principals. The restore journal stays active until its fallback is cleaned up. This is not agent or task readiness.", ...(composition.note ? [composition.note] : []), ...(emptyNote ? [emptyNote] : []), ...leftOutNotes(attemptId, result.selection, onlyCopy)] },
     ] }] }));
     return values.foreground === true && !restoreSink;
   }

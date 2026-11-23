@@ -71,7 +71,7 @@ import {
 import { ArtifactFileFault, artifactStreams, BACKUP_MANIFEST_FORMAT_V1, inspectBackupArtifact, missingBackupPath, missingBackupPathText, notAnArtifactRefusal, readStagedCheckpoints, stageArtifact, type BackupManifest, type StagedArtifact } from "./backup-artifact.js";
 import { authorityFingerprint } from "./maintenance-files.js";
 import { attemptProcessesGone, ensurePrivateAttemptsDir, startIsolatedBroker, sweepAttemptResidue, type IsolatedBroker } from "./isolated-broker.js";
-import { readPreviousRunJournals, readRunJournals, rolledBackRuns } from "./rolled-back-runs.js";
+import { inspectPreviousStore, readRunJournals, rolledBackRuns } from "./rolled-back-runs.js";
 import { noticeOnInterrupt } from "./interrupt-notice.js";
 import { displayCmd } from "./self-exec.js";
 import { assertEndpointUnreachable } from "./endpoint-cut.js";
@@ -557,17 +557,24 @@ export function heldClaim(root: string, attemptId: string, claim: { readonly dea
   return new CommandFailure("refused", "LIFECYCLE_BLOCKED", `${command} is refused: ${kind} attempt ${attemptId} holds this root until ${deadline}, and ${holder}; nothing was changed`, { target: { root, attemptId, deadline, holderPid: coordinator.pid }, remedy });
 }
 
-/** What a restore attempt left only in the store it set aside ({@link restoreLeftOut}), whether that
- *  includes what was written after its artifact ({@link restoreReplacedNewerCut}) or another
- *  account's streams ({@link restoreOtherAccounts}), and that store, as the root's journal records
- *  them. Undefined when it left nothing out or the journal no longer names the attempt. */
-export function restoreOnlyCopy(root: string, attemptId: string): { leftOut: string; newer: boolean; otherAccounts: string[]; rolledBack: ReturnType<typeof restoreRolledBackRuns>; previousStore?: string } | undefined {
+interface RestoreOnlyCopy {
+  leftOut: string;
+  newer: boolean;
+  otherAccounts: string[];
+  rolledBack: ReturnType<typeof restoreRolledBackRuns>;
+  previousStore?: string;
+}
+
+/** The history evidence recorded for this attempt, including what remains only in the fallback. */
+export function restoreHistory(root: string, attemptId: string): { onlyCopy?: RestoreOnlyCopy; emptyNote?: string } {
   try {
     const journal = readMaintenanceJournal(root);
-    if (!journal || !("restore" in journal) || journal.restore.attemptId !== attemptId) return undefined;
+    if (!journal || !("restore" in journal) || journal.restore.attemptId !== attemptId) return {};
     const leftOut = restoreLeftOut(journal);
-    return leftOut ? { leftOut, newer: restoreReplacedNewerCut(journal), otherAccounts: restoreOtherAccounts(journal), rolledBack: restoreRolledBackRuns(journal), ...(journal.restore.previousSource ? { previousStore: journal.restore.previousSource.identity.path } : {}) } : undefined;
-  } catch { return undefined; }
+    const onlyCopy = leftOut ? { leftOut, newer: restoreReplacedNewerCut(journal), otherAccounts: restoreOtherAccounts(journal), rolledBack: restoreRolledBackRuns(journal), ...(journal.restore.previousSource ? { previousStore: journal.restore.previousSource.identity.path } : {}) } : undefined;
+    const emptyNote = "launch" in journal && journal.launch.previousHistoryEmpty === true ? "The previous store had no message history or workflow runs for the restored space." : undefined;
+    return { onlyCopy, emptyNote };
+  } catch { return {}; }
 }
 
 /** What a restore over a newer cut says about each run it rolled back ({@link restoreRolledBackRuns}):
@@ -591,7 +598,7 @@ export function rolledBackNotes(rolledBack: ReturnType<typeof restoreRolledBackR
  *  that what was written after the artifact is not restored. One whose replaced store also held
  *  another account's streams says those are not restored. The store it set aside holds the only
  *  copy, which cleanup-fallback deletes only with `--discard-history`. */
-export function leftOutNotes(attemptId: string, selection: string, onlyCopy: ReturnType<typeof restoreOnlyCopy>, cleanupRoot?: string, cmd = "cotal"): string[] {
+export function leftOutNotes(attemptId: string, selection: string, onlyCopy: RestoreOnlyCopy | undefined, cleanupRoot?: string, cmd = "cotal"): string[] {
   if (!onlyCopy) return [];
   const accounts = onlyCopy.otherAccounts;
   const cleanup = codeSpan(`${cleanupRoot ? `cd ${shellPath(cleanupRoot)} && ` : ""}${cmd} backup cleanup-fallback ${attemptId}`);
@@ -917,9 +924,8 @@ export async function prepareRestore(root: string, flags: RestoreFlags, validate
     releaseMaintenanceLock(lock);
     lock = undefined as never;
     await restoreAndValidate(broker, journal.space, artifact, sanitized!.path, "target", onlyRegistry, checkpoints, true);
-    // A cut preserved after this artifact was made holds history the artifact lacks, and the store
-    // this restore sets aside keeps its only copy. The runs it rolled back are named from the step
-    // journals of both stores: the restored one here, the set-aside one from a private clone.
+    // A newer cut can hold history the artifact lacks. Inspect the set-aside store on a private
+    // clone before waiving consent, and use both brokers' journals to name rolled-back runs.
     const previousCutNewer = sourceExists && Date.parse(journal.cut.intentAt) > Date.parse(artifact.manifest.createdAt);
     const restoredRuns = previousCutNewer && wanted.includes(wfjStreamName(journal.space)) ? await readRunJournals(broker, journal.space) : undefined;
     for (const record of artifact.manifest.streams)
@@ -927,9 +933,10 @@ export async function prepareRestore(root: string, flags: RestoreFlags, validate
     await broker.stop();
     broker = undefined;
     const previousStore = restoredRuns ? (readMaintenanceJournal(root) as RestoreReadyRecord | undefined)?.restore.previousSource?.identity.path : undefined;
-    const rolledBack = restoredRuns && previousStore
-      ? rolledBackRuns(await readPreviousRunJournals({ root, previousStore, attemptId, space: journal.space, mode: journal.mode, ...(auth ? { auth } : {}), deadline, record: recordResources }), restoredRuns)
+    const previous = previousStore
+      ? await inspectPreviousStore({ root, previousStore, attemptId, space: journal.space, mode: journal.mode, auth, deadline, record: recordResources })
       : undefined;
+    const rolledBack = previous && restoredRuns ? rolledBackRuns(previous.runs, restoredRuns) : undefined;
 
     // The seats this restore is about to resume owe the same admission and the same restore as an
     // ordinary one: the retained inventory here is this root's own preserved cut, and the manager
@@ -965,6 +972,7 @@ export async function prepareRestore(root: string, flags: RestoreFlags, validate
       restoredStreams: [...wanted],
       acceptMissingSource: Boolean(flags["accept-missing-source"]),
       ...(previousCutNewer ? { previousCutNewer: true } : {}),
+      ...(previous?.historyEmpty ? { previousHistoryEmpty: true } : {}),
       ...(otherAccounts.length ? { otherAccounts } : {}),
       ...(rolledBack?.runs.length ? { rolledBackRuns: rolledBack.runs as unknown as JsonValue, ...(rolledBack.more ? { rolledBackRunsMore: rolledBack.more } : {}) } : {}),
       serverName,

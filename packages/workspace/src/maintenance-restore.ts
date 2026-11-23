@@ -949,10 +949,9 @@ export function rollbackRestore(lock: MaintenanceLock, options: RollbackRestoreO
 
 type LeftOutRecord = { readonly space: string; readonly mode: MaintenanceAuthMode; readonly restore: Pick<RestoreContext, "selection" | "previousSource">; readonly launch?: { readonly [key: string]: JsonValue } };
 
-/** Whether a restore's launch records that the cut it replaced was preserved after its artifact was
- *  made, so the store it set aside holds history newer than the artifact. */
+/** Whether a restore replaced a newer cut and did not prove its message history and runs empty. */
 export function restoreReplacedNewerCut(record: LeftOutRecord): boolean {
-  return record.launch?.previousCutNewer === true;
+  return record.launch?.previousCutNewer === true && record.launch.previousHistoryEmpty !== true;
 }
 
 /** The other JetStream accounts whose streams a restore left in the store it set aside, such as an

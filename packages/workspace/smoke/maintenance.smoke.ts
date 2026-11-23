@@ -1264,6 +1264,10 @@ if (process.platform !== "win32") {
   // written since.
   const newer = { ...active, launch: { restoredStreams: [wfjStreamName("space-cleanup-runs")], previousCutNewer: true } };
   check("a full restore that replaced a newer cut left out the newer history and runs", restoreLeftOut(newer) === "newer chat and DM history and workflow runs");
+  const newerEmpty = { ...newer, launch: { ...newer.launch, previousHistoryEmpty: true } };
+  check("verified empty newer history needs no consent", restoreLeftOut(newerEmpty) === undefined);
+  check("unknown newer history still needs consent", restoreLeftOut({ ...newer, launch: { ...newer.launch, previousHistoryEmpty: "true" } }) === "newer chat and DM history and workflow runs");
+  check("empty newer history does not waive consent for a different account", restoreLeftOut({ ...newerEmpty, launch: { ...newerEmpty.launch, otherAccounts: ["$G"] } }) === "streams of account $G");
   check("its reason names the older artifact", restoreLeftOutReason(newer) === "this restore's artifact was made before the state it replaced was preserved");
   check("with no workflow journal it also left out every run", restoreLeftOut({ ...active, launch: { previousCutNewer: true } }) === "workflow runs and newer chat and DM history"
     && restoreLeftOutReason({ ...active, launch: { previousCutNewer: true } }) === "this restore's artifact was made before the state it replaced was preserved and held no workflow runs");

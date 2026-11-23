@@ -2,7 +2,7 @@ import { resolve } from "node:path";
 import type { ParsedArgs } from "@cotal-ai/core";
 import { brokerAddressForDisplay, CommandFailure, isCommandFailure, presentationOf, writeResult, type Report } from "@cotal-ai/workspace";
 import { cotalRoot } from "../lib/paths.js";
-import { heldRestoreAttempt, leftOutNotes, restoreComposition, restoreOnlyCopy } from "../lib/restore.js";
+import { heldRestoreAttempt, leftOutNotes, restoreComposition, restoreHistory } from "../lib/restore.js";
 import { assertStoreDirArgument } from "../lib/store-dir.js";
 import { startRestore, type RestoreStartupResult } from "./up.js";
 
@@ -36,11 +36,10 @@ export async function backupRestore(args: ParsedArgs): Promise<void> {
     });
   }
   // A registry restore leaves chat and DM history and workflow runs empty, a full restore of an
-  // artifact with no runs leaves the runs empty, and one of an artifact older than the cut it replaced
-  // leaves out what was written since. Any restore leaves out another account's streams in the store
-  // it replaced. The warning says so and names the store that holds their only copy.
+  // artifact with no runs leaves the runs empty. Warn about history that may be missing from an
+  // older artifact and about other accounts' streams left in the store the restore replaced.
   const registryOnly = result.selection === "registry";
-  const onlyCopy = restoreOnlyCopy(result.root, result.attemptId);
+  const { onlyCopy, emptyNote } = restoreHistory(result.root, result.attemptId);
   const previousStore = onlyCopy?.previousStore;
   const leftOutLines = leftOutNotes(result.attemptId, result.selection, onlyCopy);
   const composition = restoreComposition(result.space, result.restoredStreams, result.mode);
@@ -86,6 +85,7 @@ export async function backupRestore(args: ParsedArgs): Promise<void> {
       { kind: "fields", rows: [["Space", row.space], ["Root", row.root], ["Restore attempt", row.attemptId], ["Selection", row.selection], ["Restored", composition.restoredWords], ["Recreated empty", composition.emptyWords], ["Store", row.store], ["Broker", row.server], ["Broker PID", String(row.brokerPid)], ["Manager", row.manager ? "started" : "not started"], ["Delivery", row.delivery ? "started" : "not started"], ["Seat resume", row.seatResume], ["Journal", "active"]] },
       ...(row.seatResume === "requested" ? [] : [{ kind: "lines" as const, lines: ["A registry-only restore resumes no seat."] }]),
       ...(composition.note ? [{ kind: "lines" as const, lines: [composition.note] }] : []),
+      ...(emptyNote ? [{ kind: "lines" as const, lines: [emptyNote] }] : []),
     ] },
     { title: "Next", blocks: [{ kind: "commands", items: [
       { command: `cotal status --space ${row.space}`, description: "Check the restored stack" },

@@ -173,8 +173,9 @@ A restore made with `--accept-missing-source` replaced a missing source and reta
 so its cleanup removes nothing and only retires the journal. A later `down --preserve-state` then
 starts a new backup cycle. A registry restore leaves every other stream out, chat and DM history
 and workflow runs included. A full restore of an artifact with no workflow runs leaves the runs out,
-and a full restore of an artifact made before the state it replaced was preserved leaves out what
-was written after the artifact. A backup holds one account, so any restore also leaves out the
+and a full restore of an older artifact can leave out history and runs from the newer cut. Cleanup
+requires consent for the newer cut unless restore verified that the cut held no message history or
+workflow runs. A backup holds one account, so any restore also leaves out the
 streams of another account in the store it replaced, such as an open mesh's account beside a static
 space's after both ran in one folder. In each case its old store holds the only copy of them. Its `--dry-run` warns with
 `HISTORY_ONLY_IN_PREVIOUS_STORE` and names what it left out, with those accounts in `otherAccounts`, and the cleanup refuses
@@ -221,9 +222,12 @@ history and workflow runs start empty. Its receipt says so with a `HISTORY_NOT_R
 names the store the restore set aside, which holds the only copy of them. Its next step says
 that `backup cleanup-fallback` deletes that store only with `--discard-history`. A full restore of
 an artifact made before the state it replaced was preserved, such as a backup taken before a later
-`cotal up` and `down --preserve-state`, leaves out the chat and DM history and workflow runs written
-after the artifact. Its receipt says so with a `NEWER_HISTORY_NOT_RESTORED` warning that names the
-store it set aside, which holds their only copy, and its next step includes `--discard-history` too.
+`cotal up` and `down --preserve-state`, can omit chat and DM history and workflow runs written after
+the artifact. When the full artifact includes the workflow journal, restore checks the newer cut on
+an isolated copy. If the check proves the cut held no message history or workflow runs, the plain
+receipt says so and cleanup does not require `--discard-history` for the age difference alone.
+Otherwise, the receipt warns with
+`NEWER_HISTORY_NOT_RESTORED` and cleanup still requires `--discard-history`.
 When the store a restore replaced also held another account's streams, the receipt says they are not
 restored and names the accounts in `otherAccounts`. That is an `OTHER_ACCOUNTS_NOT_RESTORED` warning,
 or the warning above when the restore also left out history or workflow runs, and its next step
@@ -238,9 +242,9 @@ cleanup, list the previous store's `jetstream` folder: each folder there is one 
 When that restore brought the workflow runs back, it also names each run it rolled back and each
 step that was answered after the artifact and is open again, and says that answer is only in the
 store it set aside. A reopened step accepts an answer again. `cotal status` and the
-`backup cleanup-fallback` preview name the same runs. To find them, the restore copies the store it
-sets aside and reads its run journals on one more isolated broker, so such a restore takes longer
-and needs disk space for that copy.
+`backup cleanup-fallback` preview name the same runs. Restore checks history and reads the prior run
+journals on the same isolated copy of the store it sets aside, so such a restore takes longer and
+needs disk space for that copy.
 `up --restore --restore-only registry` prints the same two lines. Without `--store-dir`, a restore
 creates its store at `.cotal/nats`, also when the cut's store is elsewhere, as after
 `up --store-dir`; only a controller root restores into its recorded store. The preserved store stays
