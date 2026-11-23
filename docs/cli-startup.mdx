@@ -232,10 +232,11 @@ If a controller stack's broker crashes, foreground `up` reports the exit and exi
 the stack records and releases the foreground hold. Run the repair command printed by `up` to
 restart the same stack. For a broker-only stack, that command includes `--no-manager`.
 On a controller stack, Ctrl-C or `SIGTERM` in that terminal runs the same guarded stop as bare
-`cotal down` and exits 130 or 143. A
-signal while the stack is still starting lets the start settle, then runs that stop. When the start
-fails, the stop still runs before the start failure is printed. A hangup, such as a closed terminal,
-leaves the stack running and exits 129. The printed stop command changes to the stack's project
+`cotal down` and exits 130 or 143. If the project folder is moved or deleted, the foreground stop
+uses the same recorded process checks as `cotal down --space <space> --yes` from another folder.
+A signal while the stack is still starting lets the start settle, then runs that stop. When the
+start fails, the stop still runs before the start failure is printed. A hangup, such as a closed
+terminal, leaves the stack running and exits 129. The printed stop command changes to the stack's project
 folder before running `cotal down`, so it also works from another folder. A hangup while the stack is still
 starting lets the start settle, prints the same line and exits 129, and leaves what the start left.
 While a foreground `up` holds the stack, it records its process in `.cotal/stack-foreground.hold`,
