@@ -103,7 +103,11 @@ A registration that requires events refuses that option.
 
 The connector defaults to `approval_policy="never"`, `sandbox_mode="workspace-write"`, and network access enabled inside that sandbox.
 Codex runs commands without asking for approval.
-Interactive approval policies are refused.
+On a space where people sign in, an asking policy such as `--opt approval_policy=on-request` works:
+Codex's approval requests and its `request_user_input` questions open as prompts on the agent's
+`agent` endpoint, where an ACP client or another authorized caller answers them.
+An attached Codex TUI shows the same request and can answer it first.
+On other spaces an asking policy is refused, because nothing could answer it.
 
 <Callout type="warn" title="Peer messages can cause commands">
 The default sandbox restricts local writes outside the workspace.
