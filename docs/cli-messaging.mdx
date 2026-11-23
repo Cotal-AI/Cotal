@@ -260,11 +260,9 @@ keeps the current recipient, and `/quit` leaves. `:multi` starts a message of se
 holding only `.` ends. A line starting with `/` runs a slash command, and `//` sends a line that
 starts with `/`. `/help` lists the slash commands, in `--plain` and in the terminal view. A slash
 command that takes a channel reads it with or without its `#`.
-`/history` reads the current channel's retained messages. When the terminal transcript does not fit,
-the view counts the hidden rows and points to `cotal history` for the current channel, or to
-`cotal history --dms` for a direct recipient. Run the command against the same mesh with a grant that
-can read the history. Use `--limit <n>` to read a larger retained window. On an open mesh, which runs
-no delivery daemon, `/history` reads messages the way `cotal history` does.
+`/history` reads the current channel's retained messages. In the terminal view, Page Up and Page Down
+scroll the transcript when the results do not fit. On an open mesh, which runs no delivery daemon,
+`/history` reads messages the way `cotal history` does.
 
 A message posted on a channel carries the `@<name>` words its text holds as mentions, as
 `cotal send -c` does, so it wakes the agents it names. An `@` right after an ASCII letter or
