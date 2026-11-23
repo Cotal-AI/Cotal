@@ -267,7 +267,7 @@ it. A plugin connection publishes its own activity from the moment you approve i
 cotal spawn watcher --agent codex -d   # event plane armed; read it with `cotal console`
 ```
 
-Nine things are specific to Codex and worth knowing before you read a stream:
+Ten things are specific to Codex and worth knowing before you read a stream:
 
 - **The thread's rollout file is the durable record.** The seat's
   rollout lives inside its own isolated `CODEX_HOME`, under
@@ -324,6 +324,15 @@ Nine things are specific to Codex and worth knowing before you read a stream:
   three out. Who may READ a plane is minted separately and out of band either way, with
   `cotal actor grant` on a user-auth mesh and `cotal auth mint --profile agent --allow-subscribe` on a
   static one. Who may read the plane is still that mint, not the spawn grant.
+- **Assistant text streams while Codex writes it.** The seat journals each agent message's deltas
+  next to the thread's write-ahead log, at most one line every 250 ms, and publishes them under the
+  message id `stream:<item id>` before Codex saves the message. The saved message then sends the
+  rest of its text and ends the message, so a reader gets the saved text once. When the saved text
+  does not continue what streamed, the streamed message ends and the saved text is published as a
+  message of its own, so a reader sees the abandoned text once. A message that began before the
+  seat opened its journal, as the first reply of a seat still connecting to the mesh can, is
+  published whole when Codex saves it. A turn that ends, or a seat that stops, while a reply streams
+  ends that message before the run. Reasoning summaries are published when Codex saves them.
 - **Reasoning is published as its summary only.** Codex also stores an encrypted reasoning blob on
   every reasoning record; it is opaque, no reader can display it, and it is never put on the wire.
 - **Each tool result carries the `cotal.toolResult` marker.** A Codex tool output has no error flag,

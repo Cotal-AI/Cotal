@@ -15,7 +15,7 @@
     "extensions/connector-claude-code/src/extension.ts": [223],
     "extensions/connector-claude-code/src/hooks.ts": [504, 172],
     "extensions/connector-claude-code/src/mcp.ts": [157],
-    "extensions/connector-codex/src/agui-map.ts": [188, 168],
+    "extensions/connector-codex/src/agui-map.ts": [182, 160],
     "extensions/connector-codex/src/app-server.ts": [163],
     "extensions/connector-codex/src/host.ts": [954],
     "extensions/connector-codex/src/mcp.ts": [176],

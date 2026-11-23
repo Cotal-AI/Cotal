@@ -62,7 +62,6 @@ import {
   fmtChannel,
   startControlServer,
   briefing,
-  type AguiEmitterHolder,
   JsonlFileSource,
   type InboxItem,
   controlFromEnv,
@@ -73,7 +72,7 @@ import { AppServerDriver, type ThreadItem } from "./app-server.js";
 import { codexCommands } from "./commands.js";
 import { createCodexPrompts, followDriver, type CodexPrompts } from "./prompts.js";
 import type { CodexRecord } from "./agui-map.js";
-import { codexEventHolders } from "./codex-events.js";
+import { codexEventBindings, type CodexEventBinding } from "./codex-events.js";
 import { waitForRollout } from "./agui-rollout.js";
 import { startCotalMcp, MCP_SERVER_NAME, MCP_TOKEN_ENV, type CotalMcpEndpoint } from "./mcp.js";
 import { ASKING_THREAD, configOverrides, mcpOverrides } from "./codex-config.js";
@@ -300,8 +299,8 @@ export async function runCodexHost(): Promise<void> {
    *  exists, and because `start()` reaches the broker, work that must not run for a thread that
    *  never publishes. */
   const eventsArmed = eventPlaneArmed(config);
-  const newEventHolder = codexEventHolders(agent, config, { log, meshReadyTimeoutMs: MESH_READY_TIMEOUT_MS });
-  let events: AguiEmitterHolder<CodexRecord> | undefined;
+  const newEventBinding = codexEventBindings(agent, config, { log, meshReadyTimeoutMs: MESH_READY_TIMEOUT_MS });
+  let events: CodexEventBinding | undefined;
   /** The adopted rollout path. A holder binds to ONE path and dies on a second, so every flush
    *  names the file the emitter is already reading rather than re-deriving it, and a NEW thread
    *  gets a new holder rather than a second adopt (see `bindEvents`). */
@@ -645,15 +644,18 @@ export async function runCodexHost(): Promise<void> {
    *  have appeared during exactly that window. Without this the retry has to win a race with the
    *  flag, and a turn whose start and end land in one burst would lose it. */
   let missedBind = false;
-  /** Flush what the current binding settled, close the run it left open, and wait for both to land.
+  /** End the replies the current binding was streaming, flush what it settled, close the run it
+   *  left open, and wait for all of it to land.
    *
    *  ORDER MATTERS: closing first would terminate a run the flushed records still belong to. This is
    *  the same drain the OpenCode connector runs when a new session replaces the one it publishes. */
   async function drainBinding(): Promise<void> {
     if (events === undefined) return;
-    if (rollout !== undefined) events.flush(rollout);
-    events.closeRun(Date.now());
-    await events.settled();
+    events.abandon();
+    if (rollout !== undefined) events.holder.flush(rollout);
+    events.holder.closeRun(Date.now());
+    await events.holder.settled();
+    events.close();
   }
 
   /** Bind the plane to a thread's rollout, DRAINING and REPLACING any previous binding.
@@ -716,12 +718,12 @@ export async function runCodexHost(): Promise<void> {
       // Again after the last await: a shutdown that began during the drain or this read has already
       // run its own drain, so the holder below would be one nothing closes.
       if (shuttingDown) return;
-      events = newEventHolder(startCursor);
+      events = newEventBinding(path, startCursor);
       rollout = path;
-      events.adopt(path);
+      events.holder.adopt(path);
       // `adopt` starts the emitter, it does not read. Without this the first records wait for a
       // turn boundary that a seat sitting idle never reaches.
-      events.flush(path);
+      events.holder.flush(path);
       // SAID OUT LOUD, because it is a limit and not an implementation detail: the stream starts at
       // the boundary captured just above, the file's last COMPLETE record as of the bind, so
       // whatever the thread had already written before this moment is not republished. A file with
@@ -750,7 +752,7 @@ export async function runCodexHost(): Promise<void> {
     // A dead holder stays bound and no boundary rebuilds it: its failure was answered once, by
     // `eventPlaneStopped` under the space's policy, as on every other connector.
     if (rollout !== undefined) {
-      events?.flush(rollout);
+      events?.holder.flush(rollout);
       return;
     }
     if (eventsArmed && eventsThread !== undefined) void bindEvents(eventsThread, 1);
@@ -791,10 +793,12 @@ export async function runCodexHost(): Promise<void> {
   });
   driver.on("itemCompleted", (item: ThreadItem) => {
     agent.noteActivity();
+    if (item.type === "agentMessage" && item.id) events?.settle(item.id);
     flushEvents();
     if (item.type === "agentMessage" && item.text?.trim()) feed(`● ${item.text.trim()}`);
   });
   driver.on("work", () => agent.noteActivity());
+  driver.on("textDelta", (itemId: string, text: string) => events?.delta(itemId, text));
   /** Has a restart overtaken the incarnation `gen` names? A launch/restart tail is a long chain of
    *  awaits, and at any of them its own app-server can die and the crash rail can bring up a
    *  replacement. From that moment the tail owns NOTHING: continuing would set the context id,
@@ -1111,9 +1115,11 @@ export async function runCodexHost(): Promise<void> {
     // while a Codex `task_complete` IS the terminal and the mapper closes from it. Shutdown is the
     // one boundary the records cannot describe.
     try {
+      events?.abandon();
       flushEvents();
-      events?.closeRun(Date.now());
-      await events?.settled();
+      events?.holder.closeRun(Date.now());
+      await events?.holder.settled();
+      events?.close();
     } catch {
       /* leaving anyway: the forced-exit timer above still owns the deadline */
     }
