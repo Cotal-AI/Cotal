@@ -4,7 +4,7 @@ import { spawn, spawnSync, type ChildProcess, type SpawnSyncReturns } from "node
 import { createHash } from "node:crypto";
 import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { basename, join, relative, resolve } from "node:path";
 import { hostname } from "node:os";
 import { createSpaceAuth, eventPayloadStream, mintCreds, newIdentity, probeConnect, rotateSystemAccount, taskStream } from "@cotal-ai/core";
 import type { BackupManifest } from "../../implementations/cli/src/lib/backup-artifact.js";
@@ -996,8 +996,10 @@ async function restoredStoreRestartScenario(): Promise<void> {
     must("down --preserve-state", run("down", "--preserve-state"));
     must("registry backup", run("backup", "create", artifact, "--only", "registry"));
     mkdirSync(parent, { recursive: true, mode: 0o700 });
-    await assertUnsearchableRestoreStore(run, { root, artifact, store, blocked, server });
     if (process.platform !== "win32" && process.getuid?.() !== 0) {
+      const alias = join(root, "alias");
+      symlinkSync(relative(root, parent), alias);
+      await assertRestoreStorePreflight(run, { root, artifact, store, blocked, server, aliasedStore: join(alias, basename(store)) });
       const journal = join(root, ".cotal", "maintenance", "v1", "journal.json");
       const ready = readFileSync(journal, "utf8");
       chmodSync(parent, 0o500);
@@ -1049,33 +1051,46 @@ async function restoredStoreRestartScenario(): Promise<void> {
   }
 }
 
-async function assertUnsearchableRestoreStore(run: ReturnType<typeof sandboxRun>["run"], paths: {
-  root: string; artifact: string; store: string; blocked: string; server: string;
+async function assertRestoreStorePreflight(run: ReturnType<typeof sandboxRun>["run"], paths: {
+  root: string; artifact: string; store: string; blocked: string; server: string; aliasedStore: string;
 }): Promise<void> {
-  if (process.platform === "win32" || process.getuid?.() === 0) return;
-  const { root, artifact, store, blocked, server } = paths;
+  const { root, artifact, store, blocked, server, aliasedStore } = paths;
   const maintenance = join(root, ".cotal", "maintenance");
   const journal = join(maintenance, "v1", "journal.json");
   const resume = join(maintenance, "v1", "resume.json");
   const attempts = join(maintenance, "attempts");
   const snapshot = () => [readFileSync(journal), readFileSync(resume), existsSync(attempts) ? readdirSync(attempts).sort() : null];
   const before = snapshot();
+  const loop = join(root, "loop");
+  symlinkSync("loop", loop);
+  const cases = [
+    { destination: store, code: "PERMISSION_DENIED", status: 2, native: "EACCES" },
+    { destination: aliasedStore, code: "PERMISSION_DENIED", status: 2, native: "EACCES" },
+    { destination: join(loop, "registry-target"), code: "USAGE_INVALID", status: 1, native: "ELOOP" },
+    { destination: loop, code: "USAGE_INVALID", status: 1, native: "ELOOP" },
+    { destination: join(root, "x".repeat(1024)), code: "USAGE_INVALID", status: 1, native: "ENAMETOOLONG" },
+  ];
   chmodSync(blocked, 0o600);
   try {
     for (const args of [["backup", "restore", artifact], ["up", "--restore", artifact, "--detach"]]) {
-      const refused = run(...args, "--store-dir", store, "--json");
-      assert.equal(refused.status, 2, `${refused.stdout}${refused.stderr}`);
-      const { outcome, error, target } = JSON.parse(refused.stdout);
-      assert.equal(outcome, "refused");
-      assert.equal(error.code, "PERMISSION_DENIED");
-      assert.ok(error.message.includes(`cannot search ${blocked}`), error.message);
-      assert.match(error.message, /no restore was started/);
-      assert.ok(error.remedy.includes(`chmod u+x ${shellPath(blocked)}`), error.remedy);
-      assert.match(error.remedy, /choose a new store path/);
-      assert.equal(target.path, blocked);
-      assert.equal(target.storeDir, store);
-      assert.deepEqual(snapshot(), before, "preflight refusal leaves the preserved cut untouched");
-      assert.equal((await probeConnect(server, { timeoutMs: 500 })).ok, false);
+      for (const { destination, code, status, native } of cases) {
+        const refused = run(...args, "--store-dir", destination, "--json");
+        assert.equal(refused.status, status, `${refused.stdout}${refused.stderr}`);
+        const { outcome, error, target } = JSON.parse(refused.stdout);
+        assert.equal(outcome, "refused");
+        assert.equal(error.code, code);
+        assert.equal(error.cause?.code, native);
+        assert.match(error.message, /no restore was started/);
+        assert.equal(target.storeDir, destination);
+        if (native === "EACCES") {
+          assert.equal(target.path, blocked);
+          assert.ok(error.message.includes(`cannot search ${blocked}`), error.message);
+          assert.ok(error.remedy.includes(`chmod u+x ${shellPath(blocked)}`), error.remedy);
+          assert.match(error.remedy, /choose a new store path/);
+        }
+        assert.deepEqual(snapshot(), before, "preflight refusal leaves the preserved cut untouched");
+        assert.equal((await probeConnect(server, { timeoutMs: 500 })).ok, false);
+      }
     }
   } finally { chmodSync(blocked, 0o700); }
   assert.equal(existsSync(store), false, "the blocked restore did not create a store");

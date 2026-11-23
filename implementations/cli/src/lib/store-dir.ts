@@ -1,7 +1,7 @@
 import { accessSync, constants, existsSync, lstatSync, readdirSync, readFileSync, readlinkSync, realpathSync, statSync, type Stats } from "node:fs";
 import { dirname, join, relative, resolve, sep, isAbsolute } from "node:path";
 import { token } from "@cotal-ai/core";
-import { authDir, c, codeSpan, CommandFailure, controlDirectory, foreignStoreEntries, loadMeshes, loadPreparedSpaces, localMeshesForRoot, oneLine, protectedLocalDirectory, shellPath, unsearchableFolder } from "@cotal-ai/workspace";
+import { authDir, boundedValue, c, codeSpan, CommandFailure, controlDirectory, foreignStoreEntries, loadMeshes, loadPreparedSpaces, localMeshesForRoot, oneLine, protectedLocalDirectory, shellPath } from "@cotal-ai/workspace";
 import { readStackJournal } from "./stack-journal.js";
 
 /** The stores the broker configurations `root`'s starts rendered name. */
@@ -147,16 +147,6 @@ function statIfPresent(path: string, stat: (path: string) => Stats = statSync): 
   catch (error) { if (["ENOENT", "ENOTDIR"].includes((error as NodeJS.ErrnoException).code ?? "")) return undefined; throw error; }
 }
 
-function searchAccessCommand(folder: string): string | undefined {
-  if (process.getuid === undefined || oneLine(folder) !== folder) return undefined;
-  try {
-    const stat = statSync(folder);
-    if (stat.isDirectory() && stat.uid === process.getuid() && !(stat.mode & constants.S_IXUSR))
-      return codeSpan(`chmod u+x ${shellPath(folder)}`);
-  } catch { /* Do not suggest chmod if ownership cannot be checked. */ }
-  return undefined;
-}
-
 /** Check an explicit `--store-dir` before anything is written. Its nearest existing part must be a
  *  directory, so a regular file there is a usage refusal that names it, and that directory's chain
  *  is held to the project-root rule for other local writers. A path still to create needs that
@@ -169,28 +159,81 @@ export function assertStoreDirArgument(value: string, root: string, purpose: "st
   const path = resolve(value);
   try { checkStoreDirPath(path, root, purpose); }
   catch (error) {
-    const code = (error as NodeJS.ErrnoException).code;
-    if (code !== "EACCES" && code !== "EPERM") throw error;
-    const blocked = unsearchableFolder(path);
-    const chmod = blocked === undefined ? undefined : searchAccessCommand(blocked);
-    const message = blocked === undefined
-      ? `this account was denied access to the --store-dir path ${path}`
-      : `this account cannot search ${blocked}, in the --store-dir path ${path}`;
-    const outcome = purpose === "restore" ? "no restore was started" : "nothing was started or written";
-    const remedy = blocked === undefined ? "check access to the store path" : `restore search access${chmod === undefined ? "" : ` with ${chmod}`}`;
-    throw new CommandFailure("refused", "PERMISSION_DENIED", `${message}; ${outcome}`, {
-      target: { storeDir: path, ...(blocked === undefined ? {} : { path: blocked }) },
-      native: { code },
+    if (!(error instanceof Error)) throw error;
+    const { code, errno, syscall } = error as NodeJS.ErrnoException;
+    if (code === undefined || errno === undefined || syscall === undefined) throw error;
+    throw storePathRefusal(path, code, purpose === "restore" ? "no restore was started" : "nothing was started or written");
+  }
+}
+
+function storePathRefusal(path: string, code: string, outcome: string): CommandFailure {
+  const target = { storeDir: path }, native = { code };
+  if (code === "EACCES" || code === "EPERM") {
+    const blocked = blockedStoreAncestor(path);
+    const message = blocked
+      ? `this account cannot search ${blocked.path}, in the --store-dir path ${path}`
+      : `this account was denied access to the --store-dir path ${path}`;
+    const remedy = blocked ? `restore search access${blocked.chmod ? ` with ${blocked.chmod}` : ""}`
+      : "check access along the store path, including any symbolic link targets";
+    return new CommandFailure("refused", "PERMISSION_DENIED", `${message}; ${outcome}`, {
+      target: { ...target, ...(blocked ? { path: blocked.path } : {}) }, native,
       remedy: `${remedy}, or choose a new store path under a parent this account can search and write`,
     });
   }
+  const invalid = code === "ELOOP" ? "contains a symbolic-link loop or too many links"
+    : code === "ENAMETOOLONG" ? "is too long for this filesystem" : undefined;
+  if (invalid !== undefined)
+    return new CommandFailure("refused", "USAGE_INVALID", `the --store-dir path ${boundedValue(path, 200)} ${invalid}; ${outcome}`, {
+      target, native, remedy: "correct the store path or choose a different path with --store-dir", selfContained: true,
+    });
+  return new CommandFailure("refused", "TARGET_UNAVAILABLE", `could not inspect the --store-dir path ${path}; ${outcome}`, {
+    target, native, remedy: "check that the store filesystem is available or choose a different path with --store-dir",
+  });
+}
+
+/** Diagnose a denied search on the physical path without trusting a link as a chmod target. */
+function blockedStoreAncestor(path: string): { path: string; chmod?: string } | undefined {
+  const uid = process.getuid?.();
+  if (uid === undefined) return undefined;
+  const pending = dirname(path).split(sep).filter(Boolean).reverse();
+  let folder: string = sep;
+  let links = 0;
+  try {
+    for (;;) {
+      const stat = lstatSync(folder);
+      if (stat.isSymbolicLink()) {
+        if (++links > 40) return undefined;
+        const link = readlinkSync(folder);
+        // Traversal can fail before a later '..', so do not normalize a link target first.
+        pending.push(...link.split(sep).filter(Boolean).reverse());
+        folder = isAbsolute(link) ? sep : dirname(folder);
+        continue;
+      }
+      if (!stat.isDirectory()) return undefined;
+      try { accessSync(folder, constants.X_OK); }
+      catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code !== "EACCES" && code !== "EPERM") return undefined;
+        const chmod = stat.uid === uid && !(stat.mode & constants.S_IXUSR) && oneLine(folder) === folder
+          ? codeSpan(`chmod u+x ${shellPath(folder)}`) : undefined;
+        return { path: folder, chmod };
+      }
+      const part = pending.pop();
+      if (part === undefined) return undefined;
+      folder = join(folder, part);
+    }
+  } catch { return undefined; }
 }
 
 function checkStoreDirPath(path: string, root: string, purpose: "start" | "restore"): void {
   // A dangling link has no real path, so its own target is named instead.
   if (statIfPresent(path, lstatSync)?.isSymbolicLink()) {
     let real: string | undefined;
-    try { real = realpathSync.native(path); } catch { real = undefined; }
+    try { real = realpathSync.native(path); }
+    catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== "ENOENT" && code !== "ENOTDIR") throw error;
+    }
     throw new CommandFailure("refused", "USAGE_INVALID", `the --store-dir path ${path} is a link to ${real ?? `${readlinkSync(path)}, which does not exist`}; nothing was started or written`, { target: { storeDir: path, ...(real ? { linkTarget: real } : {}) }, remedy: real ? `name the directory itself with --store-dir ${shellPath(real)}` : "name a real directory with --store-dir" });
   }
   let existing = path, stat = statIfPresent(existing);
@@ -210,7 +253,9 @@ function checkStoreDirPath(path: string, root: string, purpose: "start" | "resto
   protectedLocalDirectory(realpathSync.native(existing), "the --store-dir path");
   if (existing === path) return;
   try { accessSync(existing, constants.W_OK | constants.X_OK); }
-  catch {
+  catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code !== "EACCES" && code !== "EPERM" && code !== "EROFS") throw error;
     const remedy = purpose === "restore"
       ? "make the parent directory writable by this account or choose a path under a writable parent. Leave the store directory absent so the restore can create it."
       : "name a store directory this account can create, or create it with the right owner first";
