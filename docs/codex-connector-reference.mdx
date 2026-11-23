@@ -227,7 +227,7 @@ it. A plugin connection publishes its own activity from the moment you approve i
 cotal spawn watcher --agent codex -d   # event plane armed; read it with `cotal console`
 ```
 
-Eight things are specific to Codex and worth knowing before you read a stream:
+Nine things are specific to Codex and worth knowing before you read a stream:
 
 - **The thread's rollout file is the durable record.** The seat's
   rollout lives inside its own isolated `CODEX_HOME`, under
@@ -286,6 +286,11 @@ Eight things are specific to Codex and worth knowing before you read a stream:
   static one. Who may read the plane is still that mint, not the spawn grant.
 - **Reasoning is published as its summary only.** Codex also stores an encrypted reasoning blob on
   every reasoning record; it is opaque, no reader can display it, and it is never put on the wire.
+- **Each tool result carries the `cotal.toolResult` marker.** A Codex tool output has no error flag,
+  so `isError` comes from the call's end record: a command's exit code, whether a patch applied, or
+  an MCP tool's error. When the seat has seen no end record for the call, as for `write_stdin`,
+  `update_plan` or a command still running when its output is written, the marker leaves `isError`
+  out.
 
 ## Trust boundaries
 
