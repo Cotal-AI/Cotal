@@ -190,14 +190,13 @@ if (mode !== undefined) {
 
   console.log("5. a stdout that is a file writes each chunk whole or fails");
   {
-    /** Run Node with stdout in a fresh file, under a 1 KiB file-size limit with SIGXFSZ
-     *  ignored as a shell's `ulimit -f 1; trap "" XFSZ` leaves it, or with no limit. */
-    const runToFile = (entry: string[], limited: boolean): Promise<{ code: number | null; stderr: string; bytes: number }> => {
+    /** Run Node with stdout in a fresh file, optionally with a file-size limit and SIGXFSZ ignored. */
+    const runToFile = (entry: string[], limit?: 0 | 1): Promise<{ code: number | null; stderr: string; bytes: number }> => {
       const dir = mkdtempSync(join(tmpdir(), "cotal-stdout-file-"));
       const path = join(dir, "out.json");
       const fd = openSync(path, "w", 0o600);
       const node = [process.execPath, ...entry];
-      const [cmd, ...args] = limited ? ["bash", "-c", `ulimit -f 1; trap "" XFSZ; exec "$0" "$@"`, ...node] : node;
+      const [cmd, ...args] = limit === undefined ? node : ["bash", "-c", `ulimit -f ${limit}; trap "" XFSZ; exec "$0" "$@"`, ...node];
       return new Promise((resolve) => {
         const child = spawn(cmd!, args, { stdio: ["ignore", fd, "pipe"] });
         closeSync(fd);
@@ -213,19 +212,32 @@ if (mode !== undefined) {
       });
     };
     const entry = [...process.execArgv, fileURLToPath(import.meta.url), "file-write"];
-    const short = await runToFile(entry, true);
+    const short = await runToFile(entry, 1);
     check("a write the file-size limit cuts short is one stderr line naming EFBIG, exit 3, after the 1024 bytes that fit",
       short.code === 3 && short.bytes === 1024 && short.stderr === "✗ could not write to stdout: EFBIG: file too large, write\n", short);
-    const whole = await runToFile(entry, false);
+    const whole = await runToFile(entry);
     check("with no limit the whole document is written and the process runs on", whole.code === 0 && whole.bytes === 3001 && whole.stderr.includes("still running"), whole);
     const run = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "bin", "run.ts"), "utf8");
     check("the binary makes its stdout write whole chunks to a file", /^completeFileWrites\(\);$/m.test(run));
 
     const cli = join(import.meta.dirname, "../../../bin/dist/cotal.js");
-    const refused = await runToFile([cli, "docs", "xyz-not-a-real-page", "--json"], true);
+    const refused = await runToFile([cli, "docs", "xyz-not-a-real-page", "--json"], 1);
     check("a short JSON refusal keeps exit 1 and writes the EFBIG diagnostic and text refusal to stderr",
       refused.code === 1 && refused.bytes === 1024 && refused.stderr.startsWith("✗ could not write to stdout: EFBIG: file too large, write\n")
         && refused.stderr.includes('no docs page "xyz-not-a-real-page"'), refused);
+
+    const dir = mkdtempSync(join(tmpdir(), "cotal-invalid-workflow-"));
+    try {
+      const file = join(dir, "invalid.cotal.js");
+      writeFileSync(file, "const = ;\n");
+      const invalid = await runToFile([cli, "run", "validate", file, "--json"], 0);
+      check("an unwritable JSON validation refusal keeps exit 1 and prints the write error, problem and fix to stderr",
+        invalid.code === 1 && invalid.bytes === 0 && invalid.stderr.includes("✗ could not write to stdout: EFBIG: file too large, write\n")
+          && invalid.stderr.includes("Workflow not valid") && invalid.stderr.includes(`L1008 Invalid syntax or newline hazard (${file}:1:7)`)
+          && invalid.stderr.includes("fix: Fix the syntax at the marked position."), invalid);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   }
 
   console.log("6. a short-writing pipe receives the whole JSON refusal");
