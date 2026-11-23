@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { serviceWebSessionPath, readLocalRecordSource, webBoundUrl } from "@cotal-ai/workspace";
+import { codeSpan, serviceWebSessionPath, readLocalRecordSource, WEB_SERVICE_ADAPTER, webBoundUrl } from "@cotal-ai/workspace";
 import * as prompts from "../lib/prompts.js";
 import { lstatSync, readlinkSync } from "node:fs";
 import type { ParsedArgs } from "@cotal-ai/core";
@@ -425,11 +425,12 @@ export async function serviceAction(args: ParsedArgs, space: string, root: strin
   }
   const result = instanceProjection(started.instance);
   const browserWarnings: { code: string; message: string; target: { space: string; name: string } }[] = [];
-  const sessionSource = result.foreground ? "the original foreground terminal" : `\`cotal service logs web --space ${space}\``;
-  const noBrowser = () => browserWarnings.push({ code: "BROWSER_NOT_OPENED", target: { space, name }, message: `No browser was opened; find the private session record in ${sessionSource} and open its single-use launchUrl locally.` });
+  const serviceTarget = `${shellWord(name)} --space ${shellWord(space)}`;
+  const sessionSource = result.foreground ? "the original foreground terminal" : codeSpan(`cotal service logs ${serviceTarget}`);
+  const noBrowser = (message = `No browser was opened. Find the private session record in ${sessionSource} and open its single-use link locally.`) => browserWarnings.push({ code: "BROWSER_NOT_OPENED", target: { space, name }, message });
   const noOpen = args.values["no-open"] === true;
   let refreshedSessionPath: string | undefined;
-  if (mode === "start" && name === "web" && prepared?.adapter?.pin.name === "web-service" && !values.foreground && (!noOpen || started.noOp)) {
+  if (mode === "start" && prepared?.adapter?.pin.name === WEB_SERVICE_ADAPTER && !values.foreground && (!noOpen || started.noOp)) {
     try {
       const value = started.instance.record.value;
       const path = serviceWebSessionPath({ space, instanceId: value.instanceId, launchRequestId: value.launchRequestId, stateDirectory: serviceInstanceStore(space).directory()! });
@@ -457,8 +458,11 @@ export async function serviceAction(args: ParsedArgs, space: string, root: strin
         throw new Error("browser launch requires a local listener");
       }
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT" && (error as NodeJS.ErrnoException).syscall?.startsWith("spawn ")) noBrowser();
-      else throw new CommandFailure("partial", "OPERATION_PARTIAL", refreshedSessionPath ? "the dashboard is running, but its browser session could not be opened" : "the dashboard is running, but a fresh browser link was not confirmed", { target: { space, name, instanceId: result.instanceId }, remedy: refreshedSessionPath ? `find the private session record in ${sessionSource}, or retry \`cotal service start web\`` : `inspect ${sessionSource} before retrying \`cotal service start web\`` });
+      const missingOpener = (error as NodeJS.ErrnoException).code === "ENOENT" && (error as NodeJS.ErrnoException).syscall?.startsWith("spawn ");
+      const retry = codeSpan(`cotal service start ${serviceTarget}`);
+      if (!missingOpener && name === "web") throw new CommandFailure("partial", "OPERATION_PARTIAL", refreshedSessionPath ? "the dashboard is running, but its browser session could not be opened" : "the dashboard is running, but a fresh browser link was not confirmed", { target: { space, name, instanceId: result.instanceId }, remedy: refreshedSessionPath ? `find the private session record in ${sessionSource}, or retry ${retry}` : `inspect ${sessionSource} before retrying ${retry}` });
+      // The custom-name start succeeds once its dashboard is running, even if the browser handoff fails.
+      noBrowser(missingOpener || refreshedSessionPath ? undefined : `A fresh browser link was not confirmed. Check ${sessionSource} before retrying ${retry}.`);
     }
   }
   writeResult(presentation, { command: commandName, target: { ...target, instanceId: result.instanceId }, result: { kind: mode === "restart" ? "service-restart" : "service-start", ...result, ...(mode === "restart" ? { originalStopImpact: nativePlan ?? kernelPlan ?? null } : {}), ...(resolved ? { presetDefinition: resolved.saved } : {}) }, noOp: started.noOp && !refreshedSessionPath, warnings: browserWarnings }, (row) => {

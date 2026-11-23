@@ -144,7 +144,12 @@ async function checkDefaultObserver() {
 }
 
 async function checkForegroundRepeat() {
-  const foreground = spawn(realNode, [join(REPO, "bin", "dist", "cotal.js"), "service", "start", "web", "--space", SPACE, "--foreground", "--no-open", "--plain"],
+  const add = cotal(["service", "add", "dash", "--preset", "web", "--space", SPACE, "--port", String(WEB_PORT), "--read-only"]);
+  ok("save the dashboard under a custom name", add.status === 0, out(add));
+  const start = ["service", "start", "dash", "--space", SPACE];
+  const preview = cotal([...start, "--foreground", "--no-open", "--dry-run", "--plain"]);
+  ok("a custom dashboard accepts a manual foreground preview", preview.status === 0 && /Definition:\s+dash/.test(preview.stdout), out(preview));
+  const foreground = spawn(realNode, [join(REPO, "bin", "dist", "cotal.js"), ...start, "--foreground", "--no-open", "--plain"],
     { env, cwd: root, stdio: ["ignore", "pipe", "pipe"] });
   const closed = new Promise((resolve) => foreground.once("close", resolve));
   let output = "";
@@ -158,17 +163,21 @@ async function checkForegroundRepeat() {
     const readUrl = () => (JSON.parse(readFileSync(path!, "utf8")) as { launchUrl: string }).launchUrl;
     const exchange = (url: string) => fetch(url, { redirect: "manual", signal: AbortSignal.timeout(15_000) });
     const firstUrl = readUrl();
-    ok("the first foreground link exchanges for a session", (await exchange(firstUrl)).status === 302);
-    const repeat = cotal(["service", "start", "web", "--space", SPACE, "--no-open", "--plain"]);
+    const first = await exchange(firstUrl);
+    const cookie = first.headers.get("set-cookie")?.split(";")[0];
+    ok("the first foreground link exchanges for a session", first.status === 302 && !!cookie);
+    const repeat = cotal([...start, "--no-open", "--plain"]);
     const freshUrl = readUrl();
     ok("a repeated foreground dashboard start names the verified file, not the uncaptured log or link",
       repeat.status === 0 && repeat.stdout.includes("Already running; nothing was started")
       && repeat.stdout.includes(`Private browser bootstrap file: ${path}`)
       && !out(repeat).includes("cotal service logs") && !out(repeat).includes(new URL(freshUrl).searchParams.get("k")!));
-    ok("the repeated foreground start refreshes the link", firstUrl !== freshUrl && (await exchange(freshUrl)).status === 302);
+    ok("the repeated foreground start refreshes the link", firstUrl !== freshUrl && (await exchange(freshUrl)).status === 302 && (await exchange(firstUrl)).status === 401);
+    ok("the original browser session still works", !!cookie && (await web("/", { headers: { cookie } })).status === 200);
   } finally {
     foreground.kill("SIGTERM");
     await closed;
+    cotal(["service", "remove", "dash", "--space", SPACE, "--yes"]);
   }
 }
 

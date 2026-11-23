@@ -1,9 +1,12 @@
 import { remoteManagerActors, type Presence } from "@cotal-ai/core";
+import { brokerAddressForDisplay } from "../broker-display.js";
 import { isConnectRefusal, type ConnectFlags } from "../connect.js";
 import { resolveControlTarget } from "../control-target.js";
+import { shellPath } from "../local-record-source.js";
 import { DEFAULT_MANAGER_NAME } from "../manager-name.js";
 import { CommandFailure, isCommandFailure } from "../output.js";
-import { askManager, scatterManager, readFailure, type ControlClient, type ManagerPin, type ManagerReply, type ScatterInstanceReply } from "./manager.js";
+import { codeSpan } from "../text-wrap.js";
+import { askManager, scatterManager, readFailure, type ControlClient, type ManagerPin, type ManagerReply, type ScatterReply, type ScatterInstanceReply } from "./manager.js";
 import { presenceSeat } from "./seat-presence.js";
 
 /** The exchange's refusal of an unpinned manager-caller selection while several of the caller's own
@@ -148,8 +151,24 @@ export async function locateSeat(
   if (probe.auth.managerInstanceId !== undefined) return { kind: "pin", instanceId: probe.auth.managerInstanceId };
   if (probe.auth.bearer) return { kind: "unpinned" };
   const roster = await client.roster({ space: probe.space, server: probe.server });
-  try { return { kind: "pin", ...presenceSeat(roster, name) }; }
+  let unhinted: Presence | undefined;
+  try { return { kind: "pin", ...presenceSeat(roster, name, (peer) => { unhinted = peer; }) }; }
   catch (error) {
+    if (unhinted && isCommandFailure(error)) {
+      const census = await scatterManager(client, probe.space, probe.server, "ps", probe.auth, probe.spaceAuth).catch(() => undefined);
+      if (census && hasNoSeatOwner(census, roster, unhinted)) {
+        const space = v.space === undefined ? "" : ` --space${v.space.startsWith("-") ? "=" : " "}${shellPath(v.space)}`;
+        const server = v.server === undefined ? "" : ` --server${v.server.startsWith("-") ? "=" : " "}${/^[A-Za-z0-9_./:+-]+$/.test(v.server) ? v.server : shellPath(v.server)}`;
+        const who = v.server !== undefined && brokerAddressForDisplay(v.server) !== v.server
+          ? `${codeSpan(`cotal who${space} --all`)} with your original --server option`
+          : codeSpan(`cotal who${space}${server} --all`);
+        throw new CommandFailure(error.outcome, error.code, error.message, {
+          target: error.target,
+          remedy: `Use the agent's original terminal to type or quit. To see its mesh status, run ${who}.`,
+        });
+      }
+      throw error;
+    }
     if (!isCommandFailure(error) || error.code !== "TARGET_NOT_FOUND") throw error;
   }
   const census = await scatterManager(client, probe.space, probe.server, "ps", probe.auth, probe.spaceAuth);
@@ -162,6 +181,14 @@ export async function locateSeat(
     return { ...loc, expectedSeat: { name: row.name, id: row.id, lifecycleUid: row.lifecycleUid } };
   }
   return loc.kind === "unpinned" ? loc : { ...loc, space: probe.space };
+}
+
+/** A missing hint is not evidence that no manager owns a seat. Every listed manager must answer. */
+function hasNoSeatOwner(census: ScatterReply, roster: readonly Presence[], peer: Presence): boolean {
+  if (!census.ok) return census.noLiveManager === true && !roster.some((p) => p.status !== "offline" && p.card.kind === "endpoint" && p.card.role === "manager");
+  return census.instances.every((instance) => instance.reachable && instance.error === undefined && Array.isArray(instance.data)
+    && instance.data.every((row: { name?: string; lifecycleUid?: string } | null) => row && typeof row.name === "string" && typeof row.lifecycleUid === "string"
+      && row.name !== peer.card.name && row.lifecycleUid !== peer.lifecycleUid));
 }
 
 /**

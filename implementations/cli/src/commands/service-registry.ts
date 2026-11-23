@@ -60,7 +60,7 @@ export function validateServiceArguments(args: ParsedArgs): void {
   if (args.values.yes !== undefined && !["remove", "stop", "restart", "uninstall"].includes(mode)) throw new CommandFailure("refused", "USAGE_INVALID", "--yes belongs to service stop, restart, remove or uninstall");
   if (args.values.instance !== undefined) { if (!["start", "stop", "restart", "status", "logs", "install", "uninstall", "remove"].includes(mode)) throw new CommandFailure("refused", "USAGE_INVALID", "--instance belongs to a service instance operation or remove"); serviceInstanceId(String(args.values.instance)); }
   if (args.values["new-instance"] && (mode !== "start" || args.values.instance !== undefined)) throw new CommandFailure("refused", "USAGE_INVALID", "--new-instance belongs to start and cannot be combined with --instance");
-  if (args.values["no-open"] !== undefined && (mode !== "start" || !serviceStartAllowsNoOpen(name))) throw new CommandFailure("refused", "USAGE_INVALID", "--no-open belongs to service start web");
+  if (args.values["no-open"] !== undefined && mode !== "start") throw new CommandFailure("refused", "USAGE_INVALID", "--no-open belongs to service start web");
   if (args.values.foreground && (mode !== "start" || args.values.json && !args.values["dry-run"])) throw new CommandFailure("refused", "USAGE_INVALID", "--foreground belongs to start and cannot produce a JSON receipt stream");
   if (args.values["with-agents"] !== undefined && !["stop", "restart"].includes(mode)) throw new CommandFailure("refused", "USAGE_INVALID", "--with-agents belongs to service stop or restart with a declared native policy");
   if (args.values["dry-run"] && !["start", "stop", "restart", "install", "uninstall"].includes(mode)) throw new CommandFailure("refused", "USAGE_INVALID", "--dry-run belongs to service start, stop, restart, install or uninstall");
@@ -115,6 +115,8 @@ export async function service(args: ParsedArgs, commandName = "service"): Promis
   const store = serviceDefinitionStore(space, addedDefinitionStep);
   const [mode = "list", suppliedName] = args.positionals;
   const target = { space, executionHost: "this-machine" };
+  if (mode === "start" && args.values["no-open"] !== undefined && !serviceStartAllowsNoOpen(suppliedName!, store.read(suppliedName!)?.record.value.launch))
+    throw new CommandFailure("refused", "USAGE_INVALID", "--no-open belongs to service start web or a saved dashboard service");
   if (["start", "stop", "restart", "status", "logs", "install", "uninstall"].includes(mode)) {
     // A user-auth space's manager is read as your signed-in, granted login, so a start or restart
     // without one is refused here, before a definition is saved, a manager stopped or a child launched.
