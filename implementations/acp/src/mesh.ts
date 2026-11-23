@@ -11,6 +11,13 @@ export interface AgentCatalog {
   readonly available: boolean;
   /** Whether the connector publishes an AG-UI event plane. The bridge needs one. */
   readonly eventPlane: boolean;
+  /** A seat launches asking before it uses a tool: the connector takes `askPermissions` and serves
+   *  its prompts on this space, so the thread answers them. Absent: it launches as the connector's
+   *  default. */
+  readonly askPermissions?: boolean;
+  /** A seat launches publishing the model's reasoning: the connector takes `reasoningEvents` and
+   *  publishes an event plane. */
+  readonly reasoningEvents?: boolean;
   readonly reason?: string;
   readonly models: readonly CatalogModel[];
 }
@@ -74,6 +81,10 @@ export interface SpawnRequest {
   /** The seat's first turn. Absent: the seat starts with none. */
   readonly prompt?: string;
   readonly managerInstanceId?: string;
+  /** Launch the harness asking before it uses a tool. */
+  readonly askPermissions?: true;
+  /** Publish the model's reasoning on the event plane. */
+  readonly reasoningEvents?: true;
 }
 
 /** One AG-UI event as the bridge reads it. Only the fields the mapping uses are named. */

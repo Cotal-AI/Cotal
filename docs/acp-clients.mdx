@@ -104,6 +104,7 @@ The thread knows the file and shell tools of Claude Code, Pi, Codex, OpenCode, J
 On a space where people sign in, the thread also uses the agent's `agent` endpoint ([SPEC 13.22](../SPEC.md#1322-the-agent-endpoint)):
 
 - A question the agent stops to ask, such as a tool permission, shows as a permission request in the client, which may answer it from the thread's mode. A question with a form is shown as a form when the client takes forms. The answer goes back to the agent. An option that needs a written note is not offered; answer it at the agent's terminal.
+- An agent the thread spawns asks before it uses a tool where its application can, so those permission requests reach the thread. It also publishes its reasoning where its application can. The thread asks for both only where the manager reports that the application takes them, and a manager that refuses fails the first prompt with its reason.
 - The agent's own commands and skills join the command list. A skill is listed with a leading `$`. Sending one runs it through the agent's `command`.
 - A prompt can carry images (PNG, JPEG, GIF or WebP) when the agent's presence says it takes them with a turn. Otherwise the prompt fails before anything is sent. A first prompt with images starts the agent with no task, waits up to 20 seconds until it takes a turn, and then gives it the prompt.
 - After each turn, the client's context meter shows how full the agent's context window is, when the agent's presence says it reports its usage.

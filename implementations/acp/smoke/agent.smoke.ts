@@ -630,6 +630,34 @@ check("a thread's agent name is a valid user-mode actor token", (() => { try { r
   check("its first prompt spawns pinned to that manager and answers", first?.stopReason === "end_turn" && away.spawned[0]?.managerInstanceId === "m2", { first, pins: away.spawned.map((r) => r.managerInstanceId) });
   c.conn.close();
 }
+// The opt-in launch fields: asked for where the manager says the connector takes them.
+{
+  const fields = new FakeMesh();
+  fields.catalogList = [
+    { agent: "claude", available: true, eventPlane: true, models: [] },
+    { agent: "pi", available: true, eventPlane: true, askPermissions: true, reasoningEvents: true, models: [] },
+  ];
+  fields.script = { before: [[{ type: "RUN_STARTED", runId: "r1" }]], after: [[{ type: "RUN_FINISHED", runId: "r1" }]] };
+  const c = connect(async () => fields);
+  await c.init;
+  const start = async (model: string) => {
+    const s = await c.agent.request(methods.agent.session.new, { cwd: dir, mcpServers: [] });
+    await c.agent.request(methods.agent.session.setConfigOption, { sessionId: s.sessionId, configId: "model", value: model });
+    return c.agent.request(methods.agent.session.prompt, { sessionId: s.sessionId, prompt: [{ type: "text", text: "go" }] });
+  };
+  await within(start("pi/default"));
+  const pi = fields.spawned.at(-1);
+  check("a seat whose connector takes askPermissions with prompts here, and reasoningEvents, launches with both", pi?.agent === "pi" && pi.askPermissions === true && pi.reasoningEvents === true, pi);
+  await within(start("claude/default"));
+  const claude = fields.spawned.at(-1);
+  check("a seat whose connector takes neither launches with neither", claude?.agent === "claude" && !("askPermissions" in claude) && !("reasoningEvents" in claude), claude);
+  const spawn = fields.spawn.bind(fields);
+  fields.spawn = async () => { throw new Error("pi connector does not support asking before tool use (askPermissions)"); };
+  const refused = await errorOf(start("pi/default"));
+  check("the manager's refusal of a launch field fails the prompt with its reason as is", refused?.message?.includes("does not support asking before tool use (askPermissions)") === true, refused);
+  fields.spawn = spawn;
+  c.conn.close();
+}
 // The seat's agent endpoint: the prompts its harness opens and the commands it runs.
 {
   const space = new FakeMesh();
