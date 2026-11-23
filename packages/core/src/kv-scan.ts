@@ -152,11 +152,12 @@ export async function liveKvEntries(
   } else {
     opts = options;
   }
-  return (await scanKvEntries(kv, filter, opts)).filter((e) => e.operation !== "DEL" && e.operation !== "PURGE");
+  const { entries } = await scanKvEntries(kv, filter, opts);
+  return entries.filter((e) => e.operation !== "DEL" && e.operation !== "PURGE");
 }
 
 /** Complete ordered KV pass including deletion markers, optionally starting at a stream revision. */
-export async function scanKvEntries(kv: KV, filter?: string | string[], opts?: LiveKvEntriesOptions, from?: number): Promise<KvEntry[]> {
+export async function scanKvEntries(kv: KV, filter?: string | string[], opts?: LiveKvEntriesOptions, from?: number): Promise<{ entries: KvEntry[]; lastDelivered: number }> {
   if (opts?.signal?.aborted) {
     throw opts.signal.reason ?? new Error("scan aborted");
   }
@@ -211,6 +212,7 @@ export async function scanKvEntries(kv: KV, filter?: string | string[], opts?: L
   // the broker for no reason.
   const latest = new Map<string, KvWatchEntry>();
   let received = 0;
+  let lastDelivered = 0;
   let sawTerminal = false;
   let bucketName = bucket.bucket;
   let expected = 0;
@@ -241,6 +243,7 @@ export async function scanKvEntries(kv: KV, filter?: string | string[], opts?: L
           if (opts?.signal?.aborted) break;
           const e = bucket.jmToWatchEntry(m, false);
           received++;
+          lastDelivered = e.revision;
           bucketName = e.bucket;
           const prior = latest.get(e.key);
           if (prior === undefined || e.revision >= prior.revision) latest.set(e.key, e);
@@ -290,13 +293,13 @@ export async function scanKvEntries(kv: KV, filter?: string | string[], opts?: L
   }
   // No original scan error was caught or replaced; only a successful empty result waits for
   // cleanup and this final abort check before it can be returned.
-  if (expected === 0) return [];
+  if (expected === 0) return { entries: [], lastDelivered };
   // Fell out without the terminal message: the connection dropped, the consumer was removed, or the
   // stream stalled past the heartbeat. Whatever the cause, this is a PARTIAL view and saying so is
   // the whole point. Filtered and unfiltered obey the same rule, including zero-received.
   if (!sawTerminal) throw new IncompleteKvScan(bucketName, received, expected);
 
-  return [...latest.values()];
+  return { entries: [...latest.values()], lastDelivered };
 }
 
 /**

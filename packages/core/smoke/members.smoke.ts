@@ -258,6 +258,28 @@ async function main() {
   check("warm fan-out view applies a purge marker", !(await fanout()).some((m) => m.owner === D));
   await commitMember(kv, rec({ channel: "team.backend", owner: D, joinCursor: 42, generation: 2 }));
   check("warm fan-out view sees the new join generation", (await fanout()).find((m) => m.owner === D)?.joinCursor === 42);
+  await commitMember(kv, rec({ channel: "team.backend", owner: D, joinCursor: 43, generation: 3 }));
+  const status = kv.status.bind(kv);
+  let reads = 0;
+  let concurrent: ReturnType<typeof fanout> | undefined;
+  kv.status = async () => {
+    const snapshot = await status();
+    if (++reads === 1) {
+      await commitMember(kv, rec({ channel: "team.backend", owner: D, joinCursor: 44, generation: 4 }));
+      concurrent = fanout();
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      check("overlapping fan-out waits for the in-flight refresh", reads === 1, reads);
+    }
+    return snapshot;
+  };
+  try {
+    const first = await fanout();
+    const second = await concurrent;
+    check("both fan-out reads see the rejoin committed inside the scan window",
+      first.find((m) => m.owner === D)?.generation === 4 && second?.find((m) => m.owner === D)?.generation === 4);
+  } finally {
+    kv.status = status;
+  }
   const fanoutCost = async () => {
     const before = nc.stats().inMsgs;
     await fanout();
@@ -278,6 +300,13 @@ async function main() {
   await deleteMember(kv, "review", D, lid(D));
   check("deleteMember purges the record", (await readMember(kv, "review", D, lid(D))) === undefined);
   check("delete left the sibling record intact", (await readMember(kv, "review", A, lid(A))) !== undefined);
+
+  await jsm.streams.delete(`KV_${membersBucket(space)}`);
+  const replacement = await openMembersRegistry(nc, space, { create: true });
+  await commitMember(replacement, rec({ channel: "team.backend", owner: FB }));
+  const recreated = (await fanout()).map((m) => m.owner);
+  check("the same warm handle reads the recreated bucket without retaining previous rows",
+    recreated.length === 1 && recreated[0] === FB, recreated);
 
   console.log(`\nMEMBERS-REGISTRY SMOKE PASSED ✅  (${pass} checks)`);
   await nc.close();

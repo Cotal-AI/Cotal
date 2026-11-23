@@ -229,15 +229,15 @@ export async function listMembers(
 
 const fanoutViews = new WeakMap<KV, KvReadView>();
 
-/** Fresh channel and family rows for the serial fan-out loop. The channel suffix and owner
+/** Fresh channel and family rows for fan-out. The channel suffix and owner
  *  prefix share a NATS token in a member key, so a broker subject filter cannot select them. */
 export async function membersForFanout(kv: KV, channel: string): Promise<MembershipRecord[]> {
   let view = fanoutViews.get(kv);
   if (!view) fanoutViews.set(kv, view = new KvReadView(kv, (key) => parseMemberKey(key)?.channel));
-  await view.refresh();
+  const current = await view.refresh();
   const members: MembershipRecord[] = [];
   for (const group of [channel, ...familiesCovering(channel)]) {
-    for (const entry of view.entries(group)) {
+    for (const entry of current.entries(group)) {
       try { members.push(entry.json<MembershipRecord>()); } catch { /* skip undecodable */ }
     }
   }
