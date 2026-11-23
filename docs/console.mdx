@@ -18,7 +18,8 @@ cotal console --plain            # the passive line stream with plain formatting
 cotal console                    # no --space on an open mesh → the admin overview first
 ```
 
-A real terminal opens the interactive console by default. Piped output, `--plain` and `--no-input` select the timestamped line stream.
+The interactive console requires a terminal on both stdin and stdout.
+Piping or redirecting either stream, or passing `--plain` or `--no-input`, selects the timestamped line stream.
 The line stream does not accept console commands.
 The stream contains presence changes and chat messages, without the console's signal tiles.
 Press Ctrl-C to stop the stream. The broker keeps running and the console reports no outage.
