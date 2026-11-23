@@ -32,8 +32,8 @@ names the member and the name you gave as `requested`. Several names in one `dow
 same way, so `cotal down manager delivery` stops `stack-manager` and `stack-delivery`, and each
 member of the target carries its own `requested`. A name that is no preset, such as `nats`,
 refuses `TARGET_NOT_FOUND` there and names the `stack-` member to use, and a name with no member
-names `cotal service`, which lists the saved definitions. Among several names such a name refuses
-the whole set with the same next step, so no service stops. A set never stops the broker, so
+names `cotal service --space <space>` to list the saved definitions in the space the stop targeted.
+This refusal stops no service, even when several names are given. A set never stops the broker, so
 `nats`, `broker` and `stack-broker` each refuse the whole set `TARGET_NOT_FOUND` before any member
 resolves, with the same message for each name. The next step is a bare `cotal down`, which stops
 the broker with the whole stack. A saved service of your own named `nats` or `broker` is that
