@@ -1448,7 +1448,7 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
       // The recovered attempt's exact bound listener is alive: prove it over the wire and adopt it
       // instead of spawning a competitor over the same store.
       await proveOrdinaryResumeListener(ordinaryAttempt);
-      await adoptProvenListener(ordinaryAttempt, ordinaryAttempt.storeDir, "adopted resume listener", startupLock);
+      await adoptProvenListener(ordinaryAttempt, ordinaryAttempt.storeDir, "adopted resume listener", startupLock, values.channels);
       return;
     }
     if (ordinaryAttempt?.journalState === "resume-committed")
@@ -2161,7 +2161,7 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
       })();
     };
     const { authService, controlPlane } = await serveReadyListener({
-      child, server, space, storeDir, setup, seedFile, transport, maxPayload: brokerMaxPayload,
+      child, server, space, storeDir, setup, seedFile: !resumeAttempt || values.channels ? seedFile : undefined, transport, maxPayload: brokerMaxPayload,
       ...(values["recreate-issued-stores"] !== undefined ? { recreateIssuedStores: resolve(values["recreate-issued-stores"]) } : {}),
       ...(values["recreate-membership-store"] ? { recreateMembershipStore: true } : {}),
       host: values.host,
@@ -2677,9 +2677,9 @@ async function adoptProvenListener(
   attempt: PendingOrdinaryResume | PreparedRestore,
   storeDir: string,
   listener: string,
-  heldLock?: MaintenanceLock,
+  heldLock?: MaintenanceLock, channels?: string,
 ): Promise<void> {
-  await recreateAdoptedMemoryBuckets(attempt.root, attempt.space, attempt.server, attempt.mode);
+  await recreateAdoptedMemoryBuckets(attempt.root, attempt.space, attempt.server, attempt.mode, channels);
   const svc = await ensureRecoveredUserAuth(attempt);
   // Read the recorded exposure BEFORE re-recording: `recordOurMesh` writes the entry whole, so a
   // record built without this field would erase the operator's decision, and the adopted manager

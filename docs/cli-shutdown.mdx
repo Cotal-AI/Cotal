@@ -911,12 +911,14 @@ with `cotal clean store --dry-run` or `cotal clean all --dry-run`.
 
 Removing the store removes what the broker kept in it: workflow runs and their journals, channel
 history, stored messages and every other record. A run still waiting for an answer goes with it and
-cannot be answered or resumed afterwards. Only the broker reads the store, and it is stopped, so
-`cotal down` reads the stack's runs from its manager before stopping it and records them in the
-stack journal with the steps they wait on. The preview, the confirmation and the receipt list those
-runs as of the last down, and `--json` carries them as `storeContents.runsAtLastDown` and
+cannot be answered or resumed afterwards. `cotal down` reads the stack's runs from its manager
+before stopping it and records them in the stack journal with the steps they wait on. The preview,
+the confirmation and the receipt list those runs as of the last down, and `--json` carries them as
+`storeContents.runsAtLastDown` and
 `removedRuns`. When that down could not read them, or no down recorded them, the preview says so.
-To see the runs then, run `cotal up` and `cotal run`, then `cotal down --yes`.
+If the broker is running and a manager is available, see live runs with `cotal run --space <space>`.
+For a stopped stack eligible for reset, run `cotal up` and `cotal run` in its project root to see
+the runs, then `cotal down --yes`.
 
 On a controller stack, both resets leave an empty private store directory in place of the one they
 removed and record it in the stack journal, as `up` records a store it prepares. `status`, `down`

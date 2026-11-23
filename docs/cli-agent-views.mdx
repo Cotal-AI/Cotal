@@ -395,8 +395,9 @@ a dry-run remains a finite preview. It does not establish native apply readiness
 
 A `team boot` in a root whose stack is up, with no `cotal down` since, refuses with
 `LIFECYCLE_BLOCKED`, says the space is already up and starts nothing. Its Next offers
-`cotal service --space <space>` to inspect the recorded stack, or `cotal down --dry-run` to preview
-a stop. After stopping it, run `cotal up` in its root to restart the recorded stack. To add new
+`cotal service --space <space>` to inspect the recorded stack, or `cotal down --space <space> --dry-run`
+from its recorded project root to preview a stop. The preview and restart commands both change to
+that root. The restart includes `--no-manager` when the stack started without a manager. To add new
 channels or agents, use `cotal team deploy <file>` with a separate manifest that declares only new
 resources.
 A recorded stack resumes only after its last whole-stack stop completed and its manager was never
