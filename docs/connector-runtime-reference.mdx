@@ -256,24 +256,28 @@ Serving there is follow-up work.
 The agent owner's interactive session can list an agent's own harness commands and skills and queue one to run, with `commands` and `command` on the agent's endpoint.
 It cancels a queued command with `command-cancel` and reads how far a command got with `command-state`.
 It stops the agent's running turn with `interrupt`, so a command queued behind a turn that hangs can run.
+It gives the agent a turn on the owner's own words, images included, with `turn`, and reads what the harness reports of its context window and cost with `usage`.
 No one else can call them: the broker refuses a sibling agent of the same owner, any other owner, and every grant.
-The agent cannot run a command on itself: `command` from the agent's own identity is `permission-denied`.
+The agent cannot run a command on itself or give itself a turn: `command` and `turn` from the agent's own identity are `permission-denied`.
 
 A connector hands `MeshAgent` a dispatcher as the `commands` option:
 
-- `targets` names what it runs: `command`, `skill`, or both.
+- `targets` names what it runs: `command`, `skill`, both, or neither. With neither, `commands` answers `{ supported: false }`.
 - `list()` returns every command and skill the harness runs now as `{ name, target, description?, inputHint? }`, each named as `dispatch` names it. A rejection reaches the caller as `unavailable`, never as an empty list.
 - `dispatch({ target, name, args })` starts one and resolves once the harness accepted it. A command that runs the model runs as a turn of its own, and some, such as OpenCode's `goal clear`, run no turn. It throws `CommandRefused` with `not-found` or `failed-precondition` when the harness refused it and nothing started. Any other throw leaves the outcome unknown.
 - `interrupt()`, optional, stops the turn the harness is running and resolves `interrupted`, or `idle` when none ran. The connector then ends that turn as one its user stopped, so the next queued command starts. Without it, `interrupt` is `unimplemented`. A throw reaches the caller as `internal` with the outcome unknown.
 - `unsupported()`, optional, names why the harness runs no commands now, or returns undefined while it does. While it names a cause, `commands` answers `{ supported: false }`, and `command` and `interrupt` are `unimplemented` with that cause. Claude Code uses it while no command mod serves the session.
+- `turn({ text, images })`, optional, hands the owner's words to the harness as its user's own message and resolves once the harness accepted it. It throws `CommandRefused` with `failed-precondition` when the harness refused it and nothing started. Without it, `turn` is `unimplemented`.
+- `images`, optional, says the harness takes images with a turn. Without it, a `turn` with images is `unimplemented`. Each image is `{ mimeType, data }`, `data` in base64.
+- `usage()`, optional, resolves what the harness reports now: `context` as `{ used, size }` in tokens and `cost` as `{ amount, currency }`, each left out until the harness reported it. A rejection, or no answer in 10 seconds, reaches the caller as `unavailable`. Without it, `usage` answers `{ supported: false }`.
 
 The runtime sends only those four fields of an entry. It leaves out a name `command` cannot carry and shortens a longer description or hint.
 Without a dispatcher, `commands` answers `{ supported: false }` and `command` is `unimplemented`.
 In this release OpenCode 2.x, [pi](pi-connector-reference.mdx#agent-commands) 0.84.2 or later and [Claude Code](claude-connector-reference.mdx#agent-commands) 2.1.330 or later with mods on have one, and [Codex](codex-connector-reference.mdx#agent-commands) has one that runs skills.
 
-`command` answers the command's `id` at once, and the command waits in a queue for the connector's next idle turn.
+`command` and `turn` answer an `id` at once, and the command or turn waits in one queue for the connector's next idle turn.
 `MeshAgent` emits `command`, and the connector calls `dispatchNextCommand()` while no turn runs. It answers `dispatched`, `failed`, or `empty`.
-At most 8 commands are queued. A queued command has no time bound: it waits until the connector takes it, a caller cancels it, or the agent stops.
+At most 8 commands and turns are queued. A queued command has no time bound: it waits until the connector takes it, a caller cancels it, or the agent stops.
 `command-state` reads `queued` while the command waits and `taken` while the harness is being asked to start it. It then reads `started`, `cancelled`, `refused` or `unknown`, and that state is final.
 Stopping the agent moves every queued command to `refused` with `unavailable`. A command the harness is still being asked to start stays `taken`, and its outcome leaves with the process.
 The agent remembers the last 32 commands to end, and an older id is `not-found`.

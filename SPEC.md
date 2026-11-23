@@ -6525,7 +6525,7 @@ validators of §13.2, so `<pUid>` is a lifecycle UID and no row can name the sen
 | Mint | Serve rows | Caller rows |
 | --- | --- | --- |
 | User-auth, ledger row of kind `managed-agent` | yes | none |
-| User-auth, ledger row of kind `interactive` | yes | `owner` rows for `describe`, `prompts`, `prompt`, `prompt-answer`, `commands`, `command`, `command-cancel`, `command-state`, `interrupt` and `set-name`, and the reply read |
+| User-auth, ledger row of kind `interactive` | yes | `owner` rows for `describe`, `prompts`, `prompt`, `prompt-answer`, `commands`, `command`, `command-cancel`, `command-state`, `interrupt`, `set-name`, `turn` and `usage`, and the reply read |
 | Static credential | no | no |
 | Open mesh | no rows exist | |
 | Every view, service credential and infrastructure profile | no | no |
@@ -6647,16 +6647,18 @@ invokes registered endpoints does not reach them.
 
 The endpoint `agent` on the principal route (§13.21) is the command set an agent serves about the
 questions its harness stops to ask (a tool permission, a question, a plan to approve, a form),
-about the harness commands and skills it runs, about the turn it is running, and about its display
-name. Its contract is a core constant: cluster URN `ai.cotal.agent`, revision 4, every schema closed
-and frozen, nothing published to the contract store. A caller embeds the artifacts and pins their
-digests. Every command is ephemeral and untargeted. The prompt commands declare
-`authorities: ["owner", "grant"]`; `commands`, `command`, `command-cancel`, `command-state`,
-`interrupt` and `set-name` declare `authorities: ["owner"]`, so only the owner's interactive session
-runs an agent's commands, stops its turn or renames it.
+about the harness commands and skills it runs, about its turns, about what its harness reports of
+its usage, and about its display name. Its contract is a core constant: cluster URN
+`ai.cotal.agent`, revision 5, every schema closed and frozen, nothing published to the contract
+store. A caller embeds the artifacts and pins their digests. Every command is ephemeral and
+untargeted. The prompt commands declare `authorities: ["owner", "grant"]`; `commands`, `command`,
+`command-cancel`, `command-state`, `interrupt`, `set-name`, `turn` and `usage` declare
+`authorities: ["owner"]`, so only the owner's interactive session runs an agent's commands, gives it
+a turn, stops its turn, reads its usage or renames it.
 
 Revision 2 adds `commands`, `command`, `command-cancel` and `command-state`, revision 3 adds
-`interrupt`, and revision 4 adds `set-name`. The earlier commands and their digests are unchanged, so
+`interrupt`, revision 4 adds `set-name`, and revision 5 adds `turn` and `usage`. The earlier commands
+and their digests are unchanged, so
 a caller pinned to an earlier revision still calls them. An agent that serves an earlier revision
 answers a command it lacks with `unimplemented`, `not-executed`.
 
@@ -6672,6 +6674,8 @@ answers a command it lacks with `unimplemented`, `not-executed`.
 | `command-state` | `agent.commands.read` | `{ id }` | `{ state: CommandState }` |
 | `interrupt` | `agent.turn.interrupt` | `{}` | `{ state: "interrupted" \| "idle" }` |
 | `set-name` | `agent.profile.write` | `{ name }` | `{ name }` |
+| `turn` | `agent.turn.start` | `{ text, images? }` | `{ id }` |
+| `usage` | `agent.usage.read` | `{}` | `{ supported: false }` or `{ supported: true, context?, cost? }` |
 
 `prompts` lists at most 32 prompts in `open`, those that are `open` or `sent`, and at most 32 in
 `closed`, the last prompts of this runtime to close. `runtime` is the `id` and `startedAt` of the
@@ -6969,6 +6973,16 @@ stops, and its outcome leaves with the process.
 | `set-name` | The agent cannot read presence | `unavailable`, `not-executed` |
 | `set-name` | Another live instance has the name, compared lowercased | `already-exists`, `not-executed`, with `name-refused` `{ reason: "name-taken" }` |
 | `set-name` | Otherwise | `ok`, with `{ name }`: the card carries the name |
+| `turn` | The caller principal is the agent itself | `permission-denied`, `not-executed`, whatever its row |
+| `turn` | The agent's connector takes no turn from its owner | `unimplemented`, `not-executed` |
+| `turn` | `images` is present and the agent's harness takes no images | `unimplemented`, `not-executed` |
+| `turn` | `text` is empty and `images` is absent | `bad-request`, `not-executed` |
+| `turn` | The agent is stopping | `unavailable`, `not-executed` |
+| `turn` | 8 commands and turns are `queued` | `resource-exhausted`, `not-executed` |
+| `turn` | Otherwise | `ok`, with `{ id }`, at once. The turn is `queued`. |
+| `usage` | The agent's connector reports no usage | `ok`, with `{ supported: false }` |
+| `usage` | The harness did not report within 10 s, or failed | `unavailable`, `not-executed` |
+| `usage` | Otherwise | `ok`, with `{ supported: true }` and the fields the harness reported |
 
 **Names.** `set-name` changes the agent's display name, `card.name` (§6), and nothing else: the
 principal, the lifecycle, and every subject, durable and grant keyed by them stay as they are. The
@@ -6984,6 +6998,22 @@ the name they were sent under (§5). A launcher that starts the same lifecycle a
 crash or a preserved resume, keeps it under the same principal and SHOULD start it with the name its
 presence last showed.
 
+**Turns.** `turn` gives the agent a turn on its owner's own words, as if the owner typed them at the
+harness's own input, never framed as a message from a peer. `text` is at most 262144 characters.
+`images` carries 1 to 16 images, each `{ mimeType, data }` with `mimeType` one of `image/png`,
+`image/jpeg`, `image/gif` and `image/webp` and `data` its bytes in standard base64; the whole request
+still fits the connection's `max_payload`. A turn joins the queue `command` uses: the reply carries
+its `id` at once, the agent takes it only while no turn runs, the bound of 8 counts commands and turns
+together, and `command-state` and `command-cancel` take its `id` with the same states and claims.
+`started` says the harness accepted the turn; it does not say the turn finished. The harness's
+refusal is `refused`, `failed-precondition`, and nothing started.
+
+**Usage.** `usage` reads what the agent's harness reports now: `context` is `{ used, size }`, the
+tokens in the model's context window and the window's size, and `cost` is `{ amount, currency }`, the
+session's cost so far, `amount` a non-negative number and `currency` an ISO 4217 code. A field the
+harness has not reported yet is absent, so `{ supported: true }` alone means nothing is known yet. The
+agent waits at most 10 s for the harness.
+
 **Interrupt.** `interrupt` stops the turn the agent is running, whatever started it, as the
 harness's own stop does at the agent's terminal. The reply comes once the harness answered. The
 connector then ends that turn as it ends one its user stopped, and the agent takes its next queued
@@ -6993,7 +7023,7 @@ queued. A command queued behind a turn that never ends waits until the owner int
 
 The bounds:
 
-- At most 8 commands are `queued`. Only `queued` commands count.
+- At most 8 commands and turns are `queued`. Only `queued` ones count.
 - A queued command waits until the agent takes it, a caller cancels it, or the agent stops. It has no
   time bound, and it lives at most for the agent's lifecycle.
 - When the agent stops serving, every `queued` command becomes `refused` with `unavailable` before
@@ -7735,7 +7765,7 @@ Grouped placeholders such as `<CHAT|DM|TASK>` mean one concrete subject per list
 - minted by the auth callout from a ledger row of either kind (§13.21): `P.ep.prin-reply.agent.<owner>.<actor>.<uid>.*.*.*.*.*`,
   replies under its own principal-route head; from an `interactive` row also
   `P.ep.prin.agent.<owner>.*.*.*.<command>.owner.<owner>.<actor>.<uid>.*` for each of `describe`,
-  `prompts`, `prompt`, `prompt-answer`, `commands`, `command`, `command-cancel`, `command-state`, `interrupt` and `set-name`. The kind is the ledger row's, never a scope token's. A
+  `prompts`, `prompt`, `prompt-answer`, `commands`, `command`, `command-cancel`, `command-state`, `interrupt`, `set-name`, `turn` and `usage`. The kind is the ledger row's, never a scope token's. A
   static mint, a principal outside the ledger's row spaces such as a chat session, every view, and
   every observer, admin, delivery, supervisor, serve and infrastructure profile hold no
   principal-route row
@@ -8101,6 +8131,7 @@ Normative revisions of this document, newest first. Dated snapshots per §11; th
 
 | Date | Revision |
 | --- | --- |
+| 2026-11-23 | **The owner gives an agent a turn and reads its usage (§13.21, §13.22, Appendix B), additive.** The `agent` cluster advances to revision 5 with `turn`, capability `agent.turn.start`, input `{ text, images? }` and output `{ id }`, and `usage`, capability `agent.usage.read`, input `{}` and output `{ supported: false }` or `{ supported: true, context?: { used, size }, cost?: { amount, currency } }`, both `authorities: ["owner"]`. `turn` queues the owner's own words, with up to 16 images, on the queue `command` uses, so `command-state` and `command-cancel` take its id and the bound of 8 counts both. It refuses the agent itself as `permission-denied`, a connector that takes no turn, or images where the harness takes none, as `unimplemented`, and a turn with no text and no image as `bad-request`. `usage` answers what the harness reported, waiting at most 10 s, and `unavailable` when it did not. An `interactive` ledger row gains the `owner` rows for both; no `grant` row admits them. Earlier commands and their digests are unchanged. |
 | 2026-11-23 | **`commands` can answer `supported: false` for a while (§13.22), clarification.** `{ supported: false }` means the connector runs no commands now. It can change within a lifecycle, as for a Claude Code seat whose command mod is not running, so a reader asks again later. `command` and `interrupt` then answer `unimplemented`, `not-executed`, with the cause in the message. No subject, schema or digest changes. |
 | 2026-11-21 | **A person controls their own agents without `admin` (§9, §13.9, §13.21), additive.** A signed-in person could not type into or interrupt their own agents through the Manager unless their actor row held `admin`, and could read their agents' event channels only through a channel grant. Both are now keyed on the ledger row being `interactive`, as the principal route's `owner` rows are. The person's `manager-caller` view carries `inspect` and `ps`, and owner-mode `despawn`, `attach`, `input` and `interrupt`, on its instance whatever the row's scope, the target owner pinned to their own. Their `agent` credential subscribes `chat.<owner>.*.events.<owner>.*` and holds one create of its own `chathist_` reader with that filter. A `managed-agent` row gets none of these, so the Manager's `input` and `interrupt` stay out of every agent credential, and a person cannot hand them on. They ride the person's sign-in, so a process using that sign-in uses them. |
 | 2026-11-21 | **A Manager command that interrupts a seat's turn (§9), additive.** The Manager cluster advances to revision 53 with the targeted `interrupt` command. It writes the interrupt key the seat's connector declares into the seat's terminal and answers `{ name }`. It is granted as `input` is. A connector that declares no key, or a runtime that owns no terminal input, is refused with `unimplemented`, and nothing is written. |
