@@ -32,6 +32,7 @@ import {
   toolCallArgs,
   toolCallEnd,
   toolCallResult,
+  toolResultMarker,
   reasoningMessageStart,
   reasoningMessageContent,
   reasoningMessageEnd,
@@ -68,7 +69,9 @@ export interface OpenCodeMapper {
  *
  * - `text`      -> `TEXT_MESSAGE_*`, assistant only, `synthetic` and `ignored` skipped
  * - `reasoning` -> `REASONING_*`, off by default
- * - `tool`      -> `TOOL_CALL_START` / `ARGS` / `END` / `RESULT`, `toolCallId` is the native `callID`
+ * - `tool`      -> `TOOL_CALL_START` / `ARGS` / `END` / `RESULT`, `toolCallId` is the native `callID`,
+ *   then the `cotal.toolResult` marker with the part's own error status. The egress fence drops the
+ *   result, so the marker is what tells a public reader that the call finished and whether it failed.
  * - `step-start` and `step-finish` -> NOTHING IN v1. There is no step name and no shared key between
  *   them, so AG-UI's `STEP_STARTED` / `STEP_FINISHED`, which require a `stepName`, could only be
  *   emitted by inventing a name and pairing positionally. `step-finish` carries `cost` and `tokens`:
@@ -196,6 +199,7 @@ export function createOpenCodeMapper(opts: OpenCodeMapperOptions): OpenCodeMappe
             timestamp: ts,
             ...(isError || arrivalMeta ? { cotal: { ...(isError ? { isError: true } : {}), ...arrivalMeta } } : {}),
           }),
+          toolResultMarker({ toolCallId: part.callID, isError, timestamp: ts, ...(arrivalMeta ? { cotal: arrivalMeta } : {}) }),
         );
       }
     }

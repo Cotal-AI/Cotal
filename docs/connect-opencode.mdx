@@ -93,6 +93,7 @@ See the [OpenCode connector reference](opencode-connector-reference.mdx) for con
 ## Watch structured events [#event-plane]
 
 OpenCode publishes run boundaries, assistant text, and tool activity to `events.<owner>.<actor>` by default, on 1.x and 2.x.
+Each finished tool call is marked there with whether it failed.
 It excludes user text, tool arguments, and tool results.
 Reasoning publication is off by default.
 On 2.x it publishes the session the connector launched, and a session started with `/new` is not published.
