@@ -7,6 +7,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { ProjectTrustStore, SessionManager } from "@earendil-works/pi-coding-agent";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import type { ExactDrainResult, InboxItem, InboxScope, MeshAgent } from "@cotal-ai/connector-core";
+import { applyAguiEgressPolicy } from "@cotal-ai/connector-core";
 import { PiDriver, type CotalBatchDetails, type PiContextLike, type PiHost } from "./src/driver.js";
 import cotalMesh, { persistSessionId, supervisedProjectTrust } from "./src/extension.js";
 import { InboxTurn } from "./src/inbox-turn.js";
@@ -195,9 +196,9 @@ const tick = (): Promise<void> => new Promise((resolve) => setImmediate(resolve)
     const map = createPiMapper("native");
     const events = read.records.flatMap(({ value }) => unitOf(map(value))?.events ?? []);
     ok(events.map((event) => event.type).join() ===
-      "RUN_STARTED,TEXT_MESSAGE_START,TEXT_MESSAGE_CONTENT,TEXT_MESSAGE_END,TOOL_CALL_START,TOOL_CALL_END,TEXT_MESSAGE_START,TEXT_MESSAGE_CONTENT,TEXT_MESSAGE_END,RUN_FINISHED",
+      "RUN_STARTED,TEXT_MESSAGE_START,TEXT_MESSAGE_CONTENT,TEXT_MESSAGE_END,TOOL_CALL_START,TOOL_CALL_ARGS,TOOL_CALL_END,TOOL_CALL_RESULT,CUSTOM,TEXT_MESSAGE_START,TEXT_MESSAGE_CONTENT,TEXT_MESSAGE_END,RUN_FINISHED",
       "native assistant and tool records produce ordered, balanced AG-UI events without invented compaction turns");
-    ok(!JSON.stringify(events).includes("private"), "mixed-authorship user content and tool output never enter the event plane");
+    ok(!JSON.stringify(applyAguiEgressPolicy(events)).includes("private"), "mixed-authorship user content and tool output never enter the public event plane");
     ok((await source.read(read.cursor)).records.length === 0, "the durable cursor never rereads an acknowledged native message");
     ok((await new PiSessionSource(path).read(undefined)).records.length === 0, "an existing resumed transcript begins at its end, not old history");
     const boundaryMap = createPiMapper("resumed");
@@ -207,7 +208,7 @@ const tick = (): Promise<void> => new Promise((resolve) => setImmediate(resolve)
     const failure = unitOf(failedMap({ type: "message", id: "error-call", timestamp: "2026-01-01T00:00:00.000Z", message: {
       role: "assistant", timestamp: 1_767_225_600_000, content: [{ type: "toolCall", id: "err-tool", name: "bash" }], stopReason: "error",
     } }));
-    ok(failure?.events.map((event) => event.type).join() === "RUN_STARTED,TOOL_CALL_START,TOOL_CALL_END,RUN_ERROR",
+    ok(failure?.events.map((event) => event.type).join() === "RUN_STARTED,TOOL_CALL_START,TOOL_CALL_ARGS,TOOL_CALL_END,RUN_ERROR",
       "failed assistant closes native tool brackets before the run error");
     const recovered = unitOf(failedMap({ type: "message", id: "later", timestamp: "2026-01-01T00:00:01.000Z", message: {
       role: "assistant", timestamp: 1_767_225_601_000, content: [{ type: "text", text: "later answer" }], stopReason: "stop",
@@ -217,7 +218,7 @@ const tick = (): Promise<void> => new Promise((resolve) => setImmediate(resolve)
     const aborted = unitOf(createPiMapper("aborted")({ type: "message", id: "abort-call", timestamp: "2026-01-01T00:00:00.000Z", message: {
       role: "assistant", timestamp: 1_767_225_600_000, content: [{ type: "toolCall", id: "abort-tool", name: "bash" }], stopReason: "aborted",
     } }));
-    ok(aborted?.events.map((event) => event.type).join() === "RUN_STARTED,TOOL_CALL_START,TOOL_CALL_END,RUN_FINISHED" &&
+    ok(aborted?.events.map((event) => event.type).join() === "RUN_STARTED,TOOL_CALL_START,TOOL_CALL_ARGS,TOOL_CALL_END,RUN_FINISHED" &&
       JSON.stringify((aborted.events.at(-1) as { outcome?: unknown }).outcome) ===
         JSON.stringify({ type: "interrupt", interrupts: [{ id: "abort-call", reason: "aborted" }] }),
       "an aborted assistant closes its native tool calls and ends its run as an interrupt, not an error");
@@ -229,7 +230,7 @@ const tick = (): Promise<void> => new Promise((resolve) => setImmediate(resolve)
       { type: "message", id: "tool-result", message: { role: "toolResult", timestamp: 1_767_225_601_000, toolCallId: "loop" } },
       { type: "message", id: "after-abort", message: { role: "assistant", timestamp: 1_767_225_602_000, content: [], stopReason: "error", errorMessage: "This operation was aborted" } },
     ].flatMap((value) => unitOf(toolAbortMap(value))?.events ?? []);
-    ok(toolAbort.map((event) => event.type).join() === "RUN_STARTED,TOOL_CALL_START,TOOL_CALL_END,RUN_FINISHED" &&
+    ok(toolAbort.map((event) => event.type).join() === "RUN_STARTED,TOOL_CALL_START,TOOL_CALL_ARGS,TOOL_CALL_END,TOOL_CALL_RESULT,CUSTOM,RUN_FINISHED" &&
       JSON.stringify((toolAbort.at(-1) as { outcome?: unknown }).outcome) ===
         JSON.stringify({ type: "interrupt", interrupts: [{ id: "after-abort", reason: "aborted" }] }),
       "an error carrying the AbortError text after an aborted tool ends its run as an interrupt");
