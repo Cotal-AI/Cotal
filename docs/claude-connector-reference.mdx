@@ -724,6 +724,62 @@ it reads the control endpoint, the connector warns once at start, and the connec
 `prompts` to the Manager. The agent endpoint itself is still served for the agent's commands, so the
 seat's presence still carries `prompts`, with `open` at 0.
 
+## Agent commands [#agent-commands]
+
+On a signed-in space, a seat and a plain Claude Code session run
+[agent commands](connector-runtime-reference.mdx#agent-commands) through the plugin's command mod,
+`hooks/commands.js`. The mod needs Claude Code 2.1.330 or later with mods on. The session's MCP
+server serves a command socket for its Claude Code process, in a private directory under the
+system temp directory. The mod starts a reader that connects to it and says hello with its
+connector version and Claude Code's version, and each answer goes back through a one-shot helper.
+
+The list is Claude Code's own `/` list, without the entries it hides and the commands that do not
+run remotely. Claude does not say which entries are skills, and it runs a skill the same way as a
+command, so every entry has the target `command`. An entry carries Claude's argument hint as its
+`inputHint` once Claude has described the command to the mod.
+
+A command runs as if the person typed `/<name> <args>`, and only under a name the list holds now.
+Claude itself resolves aliases, which could reach a refused command under another name, so an alias
+such as `/cost` ends `refused` with `not-found`. Commands that a person, a plugin or an MCP server
+added run. Claude Code's own commands run only when they print text or start a model turn without a
+panel or a settings write: `/context`, `/compact`, `/init`, `/security-review`, `/code-review`,
+`/simplify` and `/verify`. Any other built-in ends `refused` with `failed-precondition` and a reason:
+
+| Built-in | Why it does not run remotely |
+| --- | --- |
+| `/usage`, `/status`, `/help`, `/release-notes`, `/diff`, `/resume`, `/rewind`, `/hooks`, `/tasks`, `/mcp`, `/plugin` | It opens a panel, and the run does not end until someone at the seat closes it. |
+| `/model`, `/config`, `/effort`, `/theme`, `/fast`, `/autocompact`, `/output-style`, `/tui`, `/statusline`, `/permissions`, `/update-config`, `/fewer-permission-prompts` | It changes the Claude Code settings of the person at the seat. |
+| any other | It is a Claude Code command that does not run remotely. |
+
+The connector starts a queued command only while the seat runs no turn and waits on no dialog, as its
+presence shows. A command reads `started` once Claude started it: a prompt command or a skill once
+its turn started, and a command that prints text once it printed. One that Claude has not started
+within 30 s, such as one a panel or dialog at the seat holds, reads `unknown`, and it may still run
+once the panel closes. After the person at the seat stops a turn with Escape or Stop, Claude refuses
+commands from a mod until that person sends input, so a command then ends `refused` with
+`failed-precondition` and `waiting for local input`. A command Claude dropped from its queue at such a
+stop ends the same way with `dropped by a local Stop`. An organization's mod cannot run a command a
+person's mod registered, and Claude refuses that run too.
+
+`interrupt` stops the main turn with the mod's turn abort, then stops each tool the abort moved to
+the background, such as a running Bash command. It answers `interrupted`, or `idle` when no turn ran.
+When Claude refuses to stop such a tool, it still answers `interrupted`, and the seat's log says
+`a tool is still running`. Claude fires no hook when a mod stops a turn, so the connector ends the
+turn itself: presence reads idle and the next queued command can start. The mod has 10 s to answer.
+
+While no mod serves the session, `commands` answers `supported: false`, and `command` and
+`interrupt` are `unimplemented` with the cause:
+
+- Claude Code is older than 2.1.330.
+- Mods are off: `--bare`, `--safe-mode`, `disableAllHooks`, or an organization's
+  `allowManagedModsOnly`.
+- The plugin's mod comes from another connector version than its MCP server. Reload the plugin or
+  restart the session.
+- A host serving several sessions in one process ([below](#host-sessions-in-one-process)) names no
+  Claude Code process for a session.
+
+Claude Desktop runs no mods, so its server runs no commands.
+
 ## Event plane
 
 A connected native session publishes a structured account of its activity: the messages a person
@@ -1154,7 +1210,10 @@ launches a stdio command, such as a small relay that pipes its stdio to the host
   stream must resume it as needed and keep its own stream error handlers.
 - **`fatalBind`.** Off by default: a control socket that cannot be bound rejects the call and the
   host keeps its other sessions. Only a process that is the session turns it on, as `mcp.cjs` does.
-- **Teardown.** `close()` closes the control socket, the wake policy, the AG-UI emitter, the mesh
+- **`claudePid`.** The pid of the Claude Code process the session's server runs under. Set, the
+  session serves that process's command socket and runs its [agent commands](#agent-commands).
+  Unset, as for a host whose sessions share no Claude Code process, the session runs none.
+- **Teardown.** `close()` closes the control socket, the command socket, the wake policy, the AG-UI emitter, the mesh
   endpoint and the MCP server, and is idempotent. It removes its input listeners without closing
   the caller's streams. The returned promise rejects if teardown fails. A startup failure closes
   what was started before the call rejects. A manager shutdown frame or input EOF or closure closes the
