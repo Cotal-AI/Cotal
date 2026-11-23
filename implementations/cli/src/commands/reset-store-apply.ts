@@ -247,8 +247,10 @@ export async function assertResetEligible(target: ResetTarget, command: ResetCom
 export async function resetStoreApply(space: string, args: ParsedArgs): Promise<void> {
   const presentation = presentationOf(args.values);
   const yes = args.values.yes === true;
-  if (!yes && (!canPrompt() || presentation === "json"))
-    throw new ConfirmationRequired("reset store needs a terminal confirmation or --yes with an exact space name in a script", { target: { space }, remedy: `inspect \`cotal reset store ${space} --dry-run\` first, then run \`cotal reset store ${space} --yes\`` });
+  if (!yes && (!canPrompt() || presentation === "json")) {
+    const format = presentation === "json" ? " --json" : "";
+    throw new ConfirmationRequired("reset store needs a terminal confirmation or --yes with an exact space name in a script", { target: { space }, remedy: `inspect \`cotal reset store ${space} --dry-run${format}\` first, then run \`cotal reset store ${space} --yes${format}\`` });
+  }
   const selected = selectResetTarget(space, "reset store");
   if (selected.tlsRequired || /^(?:tls|wss):\/\//i.test(selected.server))
     throw new CommandFailure("refused", "UNSUPPORTED", "a credless broker probe cannot establish that a TLS-first listener is stopped; no store reset was attempted", { target: { space }, remedy: "use a trusted TLS-aware stopped-broker check before a guarded reset can be offered" });

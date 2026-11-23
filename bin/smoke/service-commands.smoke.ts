@@ -393,9 +393,14 @@ try {
   const confirm = /`(cotal svc remove [^`]*)`/.exec(out(unconfirmed))?.[1] ?? "";
   check("service remove --space <other> --no-input prints a confirmation that names that space",
     second.status === 0 && unconfirmed.status === 1 && confirm === `cotal svc remove hello --space ${PREPARED} --yes`, out(unconfirmed));
-  const confirmed = cotal(confirm.split(" ").slice(1));
-  check("  and running it forgets that space's service and keeps this folder's",
-    confirmed.status === 0 && serviceDefinitionStore(PREPARED).read("hello") === undefined && serviceDefinitionStore(SPACE).read("hello") !== undefined, out(confirmed));
+  const refusedJson = cotal(["service", "remove", "hello", "--space", PREPARED, "--json"]);
+  const confirmJson: string | undefined = JSON.parse(refusedJson.stdout).error?.remedy?.match(/^confirm with `cotal (.+)`$/)?.[1];
+  check("service remove with --json keeps the definition until confirmed and prints a JSON confirmation",
+    refusedJson.status === 1 && serviceDefinitionStore(PREPARED).read("hello") !== undefined && confirmJson === `svc remove hello --space ${PREPARED} --yes --json`, out(refusedJson));
+  const confirmed = confirmJson ? cotal(confirmJson.split(" ")) : undefined;
+  check("the printed confirmation returns a JSON receipt, forgets that space's service and keeps this folder's",
+    confirmed?.status === 0 && JSON.parse(confirmed.stdout).result?.kind === "service-definition-removed"
+      && serviceDefinitionStore(PREPARED).read("hello") === undefined && serviceDefinitionStore(SPACE).read("hello") !== undefined, confirmed && out(confirmed));
 
   const definitionFile = join(prepared, "service definition.json");
   writeFileSync(definitionFile, JSON.stringify({ schemaVersion: 1, space: PREPARED, launch: { type: "process", executable: "echo", args: ["hello"], cwd: prepared }, readiness: { type: "process", timeoutMs: 1000 } }));

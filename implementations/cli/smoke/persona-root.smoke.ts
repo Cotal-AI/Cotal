@@ -896,11 +896,12 @@ try {
     check("the printed JSON command returns the correct persona", json.status === 0 &&
       JSON.parse(json.stdout).result?.definition?.name === "reviewer", json.stdout + json.stderr);
     const refused = native(["persona", "remove", "--json", "--", "-reviewer"]);
-    const remove = JSON.parse(refused.stdout).error?.remedy?.match(/`([^`]+)`/)?.[1];
-    check("persona remove prints copyable confirmation for a hyphen-leading catalog name",
-      refused.status !== 0 && remove === "cotal persona remove --yes -- -reviewer" && existsSync(path), refused.stdout);
-    const removed = native(remove.split(" ").slice(1));
-    check("the printed remove command removes the existing definition", removed.status === 0 && !existsSync(path), removed.stdout + removed.stderr);
+    const remove: string | undefined = JSON.parse(refused.stdout).error?.remedy?.match(/`([^`]+)`/)?.[1];
+    check("persona remove prints a JSON confirmation for a hyphen-leading catalog name",
+      refused.status === 1 && remove === "cotal persona remove --yes --json -- -reviewer" && existsSync(path), refused.stdout);
+    const removed = remove ? native(remove.split(" ").slice(1)) : undefined;
+    check("the printed remove command removes the existing definition with a JSON receipt",
+      removed?.status === 0 && !existsSync(path) && JSON.parse(removed.stdout).result?.action === "removed", removed && removed.stdout + removed.stderr);
   }
   {
     const path = agentFilePath(MESH, "nul-endpoints");
