@@ -347,6 +347,8 @@ export async function holdForegroundStack(root: string, space: string, start?: (
 }
 
 async function holdStack(root: string, space: string, start?: () => Promise<void | StackJournal>, releaseRestoreNotice?: () => void): Promise<void> {
+  // Resolve the outside command before a move can take the entry symlink with the project.
+  const outsideCmd = displayCmd({ fromAnyFolder: true });
   // The start's listeners go only once the hold's own are installed. Node runs a listener for a
   // signal when the loop next polls, and drops the signal if its last listener was removed first,
   // so a signal that lands in the start's last synchronous step would be lost in between.
@@ -367,7 +369,7 @@ async function holdStack(root: string, space: string, start?: () => Promise<void
     try { held = await start(); } catch (error) { failure = { error }; }
     releaseStart = () => { process.off("SIGINT", interrupt); process.off("SIGTERM", terminate); process.off("SIGHUP", hangup); };
     if (requested || failure) releaseStart();
-    if (requested === "SIGHUP") hangupForegroundStack(root, space);
+    if (requested === "SIGHUP") hangupForegroundStack(root, space, outsideCmd);
     if (requested) await stopForegroundStack(root, requested, true, held?.space);
     if (failure) throw failure.error;
     if (requested) return;
@@ -394,7 +396,7 @@ async function holdStack(root: string, space: string, start?: () => Promise<void
     };
     const interrupt = () => stop("SIGINT");
     const terminate = () => stop("SIGTERM");
-    const hangup = () => { checkLifetime(); if (!stopping) hangupForegroundStack(root, space); };
+    const hangup = () => { checkLifetime(); if (!stopping) hangupForegroundStack(root, space, outsideCmd); };
     process.on("SIGINT", interrupt); process.on("SIGTERM", terminate); process.on("SIGHUP", hangup);
     releaseStart();
     handOverStartupNotice();

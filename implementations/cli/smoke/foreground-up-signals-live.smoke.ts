@@ -23,7 +23,7 @@ import assert from "node:assert/strict";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { generateKeyPairSync } from "node:crypto";
 import { once } from "node:events";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer as createHttpServer } from "node:http";
 import { createConnection, createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -968,7 +968,7 @@ async function movedRootSignalCell(signal: "SIGTERM" | "SIGHUP"): Promise<void> 
     assert.equal(stopped.code, 0, stopped.out + stopped.err);
     await until(() => initial.state.closed, 10_000, initial.log);
     assert.equal(initial.state.code, 0, initial.log());
-    if (signal === "SIGHUP") env.PATH = relativeHangupPath(mesh, root, cli, env.PATH);
+    if (signal === "SIGHUP") env.PATH = relativeHangupPath(mesh, root, env.PATH);
     const holder = await start(signal === "SIGHUP" ? ["cotal"] : cli, "--root", mesh);
     const pins = readStackJournal(mesh)?.journal.members.flatMap(({ process }) => process ? [process] : []);
     assert.ok(pins?.length === 3 && pins.every(live), holder.log());
@@ -1007,10 +1007,12 @@ async function movedRootSignalCell(signal: "SIGTERM" | "SIGHUP"): Promise<void> 
   }
 }
 
-function relativeHangupPath(mesh: string, root: string, cli: readonly string[], path: string | undefined): string {
+function relativeHangupPath(mesh: string, root: string, path: string | undefined): string {
   const tools = join(mesh, "tools"), other = join(root, "other-bin");
   for (const dir of [tools, other]) mkdirSync(dir, { mode: 0o700 });
-  writeFileSync(join(tools, "cotal"), `#!/bin/sh\nexec ${cli.map(shellWord).join(" ")} "$@"\n`, { mode: 0o700 });
+  const entryLink = join(tools, "entry.ts");
+  symlinkSync(cliEntry, entryLink);
+  writeFileSync(join(tools, "cotal"), `#!/bin/sh\nexec ${[process.execPath, "--import", tsx, entryLink].map(shellWord).join(" ")} "$@"\n`, { mode: 0o700 });
   writeFileSync(join(other, "cotal"), "#!/bin/sh\necho 'wrong cotal' >&2\nexit 99\n", { mode: 0o700 });
   return ["tools", other, ...(path ? [path] : [])].join(":");
 }

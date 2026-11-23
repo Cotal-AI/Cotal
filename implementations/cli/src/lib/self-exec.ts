@@ -205,8 +205,9 @@ export function displayCmd({ fromAnyFolder = false } = {}): string {
   if (isNpx()) return "npx cotal-ai";
   if (isPnpmDlx()) return "pnpm dlx cotal-ai";
   if (runsCliEntry() && (fromAnyFolder || seedWriterKind() === "released")) {
-    if (seedWriterKind() !== "released") return selfArgv().map(shellWord).join(" ");
-    const command = [process.execPath, entryScript()].map(shellWord).join(" ");
+    const entry = entryScript();
+    if (seedWriterKind() !== "released") return [...selfArgv().slice(0, -1), entry].map(shellWord).join(" ");
+    const command = [process.execPath, entry].map(shellWord).join(" ");
     if (process.platform !== "win32" && process.env.COTAL_LAUNCHER === "1") {
       const prefix = process.env.npm_config_prefix;
       if (!prefix) throw new Error("the installer launcher did not provide its npm prefix");
