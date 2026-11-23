@@ -34,7 +34,7 @@
  *     {t:"incoming", msg}                      push one buffered mesh message (for handle_message)
  *     {t:"turn", id, text, images?}            a turn in the user's own words, run in the
  *                                              adapter's operator chat (see submitTurn)
- *     {t:"interrupt", id} | {t:"usage", id}    a request the adapter answers (see ask)
+ *     {t:"interrupt"|"usage"|"commands", id}   a request the adapter answers (see ask)
  *     {t:"tool_result", id, ok, text?, isError?, error?}   reply to a {t:"tool"} request
  *
  * Delivery is **serial + ack-on-surface**: the sidecar pushes the oldest buffered message, waits
@@ -128,7 +128,7 @@ export interface BridgeServer {
   submitTurn(text: string, images?: readonly TurnImage[]): Promise<void>;
   /** Ask the subscribed adapter to run a request on the gateway, resolving with its answer's data.
    *  Rejects when no adapter is subscribed, or it fails or disconnects before it answers. */
-  ask(request: "interrupt" | "usage"): Promise<Record<string, unknown>>;
+  ask(request: "interrupt" | "usage" | "commands"): Promise<Record<string, unknown>>;
   /** An adapter is subscribed, the gateway has no Cotal message or turn in progress, and no turn
    *  waits for its answer. */
   idle(): boolean;

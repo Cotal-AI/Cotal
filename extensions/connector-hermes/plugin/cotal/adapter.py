@@ -30,6 +30,7 @@ from gateway.session import build_session_key
 
 from . import hooks, journal, replies
 from .bridge_client import get_client
+from .commands import operator_commands
 from .resume import seed_chat
 from .framing import format_injection, shown_sender
 
@@ -299,10 +300,10 @@ class CotalAdapter(BasePlatformAdapter):
             raise
 
     def _on_request(self, frame: dict) -> None:
-        """A request from the sidecar (reader thread): ``interrupt`` or ``usage``, answered once it
-        ran on the gateway loop."""
+        """A request from the sidecar (reader thread): ``interrupt``, ``usage`` or ``commands``,
+        answered once it ran on the gateway loop."""
         request_id = str(frame.get("id") or "")
-        work = {"interrupt": self._interrupt, "usage": self._usage}.get(str(frame.get("t")))
+        work = {"interrupt": self._interrupt, "usage": self._usage, "commands": self._commands}.get(str(frame.get("t")))
         loop = self._loop
         if work is None or loop is None:
             self._client.answer(request_id, error="the gateway is not running" if work else f"unknown request {frame.get('t')!r}")
@@ -344,6 +345,13 @@ class CotalAdapter(BasePlatformAdapter):
         if agent is not None and getattr(agent, "session_cost_status", "unknown") != "unknown":
             usage["cost"] = {"amount": float(agent.session_estimated_cost_usd), "currency": "USD"}
         return usage
+
+    async def _commands(self) -> dict:
+        """The slash commands the operator chat may run (commands.py)."""
+        runner = self.gateway_runner
+        if runner is None:
+            raise RuntimeError("the gateway gave the cotal adapter no runner, so its commands cannot be read")
+        return {"commands": await asyncio.to_thread(operator_commands, runner.config, self._operator_source())}
 
     def _maybe_ack(self, msg: dict, fut: Any) -> None:
         """Ack a message on the mesh stream once it has been surfaced into a turn.

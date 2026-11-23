@@ -194,9 +194,9 @@ See [Event plane](hermes-connector-reference.mdx#event-plane) for how turns beco
 
 ## Turns from the owner [#owner-turns]
 
-On a per-user mesh, the seat's owner can give it turns in their own words, images included, stop its work in progress, and read how full its context window is, through its [agent endpoint](connector-runtime-reference.mdx#agent-commands).
-Each turn runs in the gateway's operator chat, apart from the sessions that peer messages start.
-See [Agent commands](hermes-connector-reference.mdx#agent-commands) for when a turn starts and what a stop does.
+On a per-user mesh, the seat's owner can give it turns in their own words, images included, run the gateway's slash commands and skill commands, stop its work in progress, and read how full its context window is, through its [agent endpoint](connector-runtime-reference.mdx#agent-commands).
+Each turn and command runs in the gateway's operator chat, apart from the sessions that peer messages start.
+See [Agent commands](hermes-connector-reference.mdx#agent-commands) for which commands it lists, when a turn starts and what a stop does.
 
 ## Route answers to the right session [#how-an-answer-finds-its-session]
 
