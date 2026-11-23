@@ -17,6 +17,7 @@ import {
   eventPayloadSubject,
   eventChannelPrincipal,
   isEventChannel,
+  isPermissionDenied,
   noLiveInstances,
   parsePrincipalKey,
   principalKey,
@@ -556,7 +557,10 @@ function spaceReads(c: Connected): Pick<Mesh, "followFrames" | "frameHistory" | 
         started
           ? observer.channelHistoryPage(eventChannel(seat), { limit: HISTORY_FRAMES, publisher: seat }).then((page) => page.items)
           : observer.channelHistory(eventChannel(seat), { limit: HISTORY_FRAMES, publisher: seat }),
-        observer.eventPayloadHistory(seat.owner, seat.actor, { limit: HISTORY_FRAMES }),
+        observer.eventPayloadHistory(seat.owner, seat.actor, { limit: HISTORY_FRAMES }).catch((e: unknown) => {
+          const why = plain(e).message;
+          throw new Error(`${seat.name}'s earlier tool inputs and results cannot be read from its payload history: ${isPermissionDenied(e) ? `this sign-in may not read it (${why})` : why}`);
+        }),
       ]);
       // A payload frame shares its event frame's epoch and seq, and goes right before it. One whose
       // event frame the space has dropped belongs to no call the thread shows.
