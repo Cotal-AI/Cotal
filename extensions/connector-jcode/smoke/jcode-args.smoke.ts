@@ -4,13 +4,13 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { LAUNCH_MATERIAL_ENV, readLaunchMaterial, registry } from "@cotal-ai/core";
-import { configFromEnv, controlFromEnv, cotalToolSpecs, EventWal } from "@cotal-ai/connector-core";
+import { configFromEnv, controlFromEnv, cotalToolSpecs, DeltaMergedSource, EventWal } from "@cotal-ai/connector-core";
 import { z } from "zod";
 import { jcodeConnector, listJcodeModels, JCODE_READINESS_TIMEOUT_MS } from "../src/index.js";
 import { createJcodeMapper } from "../src/agui-map.js";
 /** The unit a record mapped to, or `null`: a turn the mapper opens no run for maps to none. */
 const unitOf = <U extends { runId: string }>(r: U | { turn: true } | null): U | null => (r !== null && "runId" in r ? r : null);
-import { initializeJcodeEventBoundary, JcodeJournalSource } from "../src/agui-source.js";
+import { initializeJcodeEventBoundary, JcodeJournalSource, positionedJcodeJournalSource } from "../src/agui-source.js";
 
 let pass = 0;
 let fail = 0;
@@ -229,7 +229,7 @@ try {
     ] },
   };
   const mapper = createJcodeMapper({ threadId: "session-1", mintRunId: () => "run-1", now: () => 7 });
-  const mapped = unitOf(mapper.map(mapperRecord));
+  const mapped = unitOf(mapper.map({ harness: mapperRecord }));
   check(
     "maps durable Jcode message blocks into one native AG-UI run",
     mapped?.runId === "run-1" &&
@@ -240,9 +240,9 @@ try {
   mapper.forgetOpenRun("run-1");
   check(
     "a closed Jcode run opens a fresh run for later durable output",
-    unitOf(mapper.map({ cursor: "journal:cursor:2", record: { append_messages: [{ role: "assistant", content: [{ type: "text", text: "next" }] }] } }))?.events[0]?.type === "RUN_STARTED",
+    unitOf(mapper.map({ harness: { cursor: "journal:cursor:2", record: { append_messages: [{ role: "assistant", content: [{ type: "text", text: "next" }] }] } } }))?.events[0]?.type === "RUN_STARTED",
   );
-  const restartedMapped = unitOf(createJcodeMapper({ threadId: "session-1", mintRunId: () => "run-2", now: () => 8 }).map(mapperRecord));
+  const restartedMapped = unitOf(createJcodeMapper({ threadId: "session-1", mintRunId: () => "run-2", now: () => 8 }).map({ harness: mapperRecord }));
   const messageIds = (result: typeof mapped) => result?.events.flatMap((event) => "messageId" in event ? [event.messageId] : []) ?? [];
   check(
     "durable Jcode record positions keep message ids stable across mapper restarts",
@@ -256,15 +256,18 @@ try {
     { role: "user", content: [{ type: "tool_result", tool_use_id: "orientation-1", content: "ready" }] },
   ] })}\n`);
   const wal = await EventWal.open(walPath, { space: "space", threadId: "session-restart", principal: "owner:actor", subjectMayExist: false });
-  const boundary = await initializeJcodeEventBoundary(journal, wal);
+  const deltaPath = join(dir, "restart.deltas.jsonl");
+  writeFileSync(deltaPath, "", { mode: 0o600 });
+  const merged = new DeltaMergedSource(positionedJcodeJournalSource(new JcodeJournalSource(journal)), deltaPath);
+  const boundary = await initializeJcodeEventBoundary(journal, wal, merged);
   appendFileSync(journal, `${JSON.stringify({ append_messages: [{ role: "assistant", content: [{ type: "text", text: "requested answer" }] }] })}\n`);
   const restartedWal = await EventWal.open(walPath, { space: "space", threadId: "session-restart", principal: "owner:actor", subjectMayExist: false });
-  const acknowledged = await initializeJcodeEventBoundary(journal, restartedWal);
+  const acknowledged = await initializeJcodeEventBoundary(journal, restartedWal, merged);
   const source = new JcodeJournalSource(journal);
-  const recovered = await source.read(acknowledged);
+  const recovered = await source.read(merged.harnessOf(acknowledged));
   const restartFrames = recovered.records.flatMap((record) =>
     unitOf(createJcodeMapper({ threadId: "session-restart", mintRunId: () => "run-requested", now: () => 9 })
-      .map({ cursor: record.cursor, record: record.value }))?.events.map((event) => event.type) ?? []
+      .map({ harness: { cursor: record.cursor, record: record.value } }))?.events.map((event) => event.type) ?? []
   );
   check(
     "the persisted Jcode boundary excludes readiness and replays a post-boundary record after restart",

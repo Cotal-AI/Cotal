@@ -408,9 +408,8 @@ limits, recovery and the connector coverage still deferred.
 The channel and grant rules are the same as the other connectors; see
 [Connect Claude Code](connect-claude.mdx#event-plane) for how to grant and read one.
 
-Jcode's live Harness API reports token-sized text and reasoning deltas, but that stream cannot be
-read again after a host crash. The connector therefore reads Jcode's native append-only session
-journal under the seat's private home. The journal supplies a durable byte cursor and is keyed by
+The connector reads Jcode's native append-only session journal under the seat's private home. The
+journal supplies a durable byte cursor and is keyed by
 the Jcode session id, which is also the AG-UI thread id. A restarted seat continues from the cursor
 stored in its event write-ahead log and does not republish records already acknowledged.
 
@@ -434,9 +433,17 @@ behind the stored cursor, and the next start publishes them. Any other emitter f
 the same way with the delay before the connector re-establishes the plane; the seat keeps running
 on every space.
 
-The journal records settled message blocks rather than live deltas. Text and reasoning therefore
-arrive per persisted block, and tool activity arrives when Jcode persists the tool-use and result
-blocks. User prompt text is not republished onto the event channel. The launcher sets
+Jcode saves a reply once its provider call is complete, so the seat also journals the text and
+reasoning deltas the Harness API reports, through the
+[delta journal](connector-runtime-reference.mdx#streamed-text), and a reply streams on the event
+plane before Jcode saves it. Each provider call streams under a message of its own, and the reply
+Jcode saves for that call sends the rest of the text and ends it. Reasoning publishes from whichever
+block Jcode stores it in, Anthropic's signed thinking included. When the saved reply does not
+continue what streamed, as after a provider retry, the streamed message ends and the saved text
+publishes as a message of its own. A provider call that fails after it streamed leaves no saved
+reply, so the turn's end ends its streamed message. A delta that arrives while a checkpoint has left
+no journal waits until Jcode writes the next one. Tool activity arrives when Jcode persists the
+tool-use and result blocks. User prompt text is not republished onto the event channel. The launcher sets
 `COTAL_EVENTS` by default; pass `--no-events` to opt out on an unrestricted space. A registration
 that requires events refuses `--no-events`, and its launch always carries the flag and the workspace
 root the event log lives under. A hand-driven user-mode launch with `COTAL_EVENTS_REQUIRED=1` arms
