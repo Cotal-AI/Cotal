@@ -303,7 +303,7 @@ export function freshFolderRoot(values: ParsedArgs["values"]): string | undefine
 /** The space a bare `up` starts in a new project: the name of the project folder, when no `--space`
  *  names one and the folder's records name no space. The name passes the rules `space create`
  *  applies, and a name another folder on this machine holds, running, stopped or prepared, refuses
- *  rather than being taken over. Each refusal names `--space`, before anything is written. */
+ *  rather than being taken over. Both checks run before anything is written. */
 export function folderNamedSpace(values: ParsedArgs["values"]): string | undefined {
   if (values.space !== undefined || values.root !== undefined || values.file !== undefined || values.restore !== undefined) return undefined;
   const root = freshFolderRoot(values) ?? (machineHomeRoot() ? undefined : cotalRoot());
@@ -312,8 +312,12 @@ export function folderNamedSpace(values: ParsedArgs["values"]): string | undefin
   const named = `up names a new project's space after its folder, and`;
   const checked = checkSpaceName(space);
   const invalid = spaceNameTooLong(space) ?? (checked.ok ? undefined : checked.message.replace(/^✗ /, ""));
-  if (invalid)
-    throw new CommandFailure("refused", "USAGE_INVALID", `${named} the folder name ${JSON.stringify(space)} cannot be one: ${invalid}; nothing was started or written`, { target: { root }, remedy: "name the space with `cotal up --space <name>`", selfContained: true });
+  if (invalid) {
+    const remedy = presentationOf(values) === "rich"
+      ? "repeat your startup command with the same options, adding `--space <name>` with a valid unused name"
+      : "for a controller-supported start, prepare this folder with `cotal space create <name> --root .` using a valid unused name, then repeat your startup command with the same options; for native startup, add `--space <name>` and omit the output flag instead";
+    throw new CommandFailure("refused", "USAGE_INVALID", `${named} the folder name ${JSON.stringify(space)} cannot be one: ${invalid}; nothing was started or written`, { target: { root }, remedy, selfContained: true });
+  }
   assertSelectionNotMoved(root, space);
   const held = findMesh(space) ?? findPreparedSpace(space);
   if (held)

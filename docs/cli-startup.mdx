@@ -124,9 +124,12 @@ stops the folder's stack, and `down --space` is not a remote replacement for tha
 running mesh records, else the one prepared there. A folder whose records name no space is a new
 project, and `up` names its space after the folder, the name `cotal up --space <folder name>` would
 give it. A folder name that is not a valid space name, such as one with a space in it, refuses
-`USAGE_INVALID`, exit 1. A name another folder on this machine registered or prepared, running or
-stopped, refuses `CONFLICT`, exit 2, and is not taken over. Both refusals write nothing and name
-`cotal up --space <name>`. A space named after its folder keeps its registration after `cotal down`,
+`USAGE_INVALID`, exit 1. Repeat the startup command with its original options and add `--space <name>`
+with a valid unused name. For a controller start with `--json` or `--plain`, prepare the folder
+with `cotal space create <name> --root .` first, then repeat the original command. To stay on
+the native launcher, add `--space <name>` and omit the output flag.
+A name another folder on this machine registered or prepared, running or stopped, refuses
+`CONFLICT`, exit 2, and is not taken over. Both refusals leave the folder unchanged. A space named after its folder keeps its registration after `cotal down`,
 so the name stays the folder's while it is stopped. `cotal up` there starts it again on the same
 launcher, and `cotal space forget <name>` frees the name. A second `up` in the same folder
 runs the same space again. A folder whose stack and registrations name more than one space refuses
