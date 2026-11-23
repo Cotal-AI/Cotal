@@ -28,6 +28,7 @@ import {
   isJcodeBusyRefusal,
 } from "./host-support.js";
 import { createBridgeRecovery } from "./host-recovery.js";
+import { watchTurnEvents } from "./turn-events.js";
 import { readTokenUsage, type JcodeTokenUsage } from "./usage.js";
 
 /** Turn state of one jcode host session, shared by the closures that drive its turns. */
@@ -139,7 +140,6 @@ export function createHostTurns(hostState: HostTurnState, deps: HostTurnDeps) {
     scheduleErrorRetry,
     sessionBusy,
     publishInboundHealth,
-    finishHostIdleTurn,
   } = deps;
   /** Counts the owner's turns started, so a drive that dispatched one knows the turn now owns `driving`. */
   let ownerTurnsStarted = 0;
@@ -923,36 +923,7 @@ export function createHostTurns(hostState: HostTurnState, deps: HostTurnDeps) {
       connected.on(kind, (event: ApiEvent) => {
         if ("session_id" in event && event.session_id === hostState.sessionId && "provider" in event && typeof event.provider === "string") hostState.provider = event.provider;
       });
-    connected.on("session_status", (event: ApiEvent) => {
-      if (!("session_id" in event) || event.session_id !== hostState.sessionId || event.ev !== "session_status") return;
-      // Advisory idle between tool rounds does not mean the Cotal-owned run() has ended.
-      // steerPending keys off sessionBusy() (driving || turnActive) so that pulse cannot drop a DM.
-      const started = !hostState.turnActive && event.status !== "idle";
-      hostState.turnActive = event.status !== "idle";
-      if (started && !hostState.driving) relayTurnCondition(null);
-      if (!hostState.turnActive) void finishHostIdleTurn();
-      else publishInboundHealth();
-    });
-    // A turn the TUI owns fails only as an unsolicited error frame: no run() of this host is there to
-    // throw it. A host-owned turn reports the same frame through drive()'s catch. Scoped like the
-    // SDK's own run(): a frame naming another session is not this seat's.
-    connected.on("harness_error", (event: ApiEvent) => {
-      if (hostState.driving || event.ev !== "error" || ("session_id" in event && event.session_id !== hostState.sessionId)) return;
-      agent.releaseInFlight(hostState.surfacedIds);
-      hostState.surfacedIds = [];
-      const condition = jcodeTurnCondition(new HarnessError(String(event.code ?? "internal"), String(event.message ?? "harness error")));
-      if (condition) relayTurnCondition(condition);
-    });
-    connected.on("turn_done", (event: ApiEvent) => {
-      if ("session_id" in event && event.session_id === hostState.sessionId) {
-        // The SDK's run() takes turn_done as a turn's success. drive() clears the kept error for a
-        // host-owned turn; a TUI-owned turn clears it here unless it relayed an error of its own.
-        if (!hostState.driving && !hostState.turnConditionPublished) hostState.lastTurnError = undefined;
-        closeEventRun();
-        hostState.turnActive = false;
-        void finishHostIdleTurn();
-      }
-    });
+    watchTurnEvents(connected, hostState, deps);
   };
 
   const { recoverBridge } = createBridgeRecovery(hostState, { ...deps, drive, unservedAutomatic, watchClient });
