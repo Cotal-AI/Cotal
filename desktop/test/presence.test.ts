@@ -21,6 +21,7 @@ test("presence offers are explicit, dismissible, one-time and use no renderer pa
     async invoke(cmd: string, args: unknown) {
       calls.push({ cmd, args: args === undefined ? undefined : JSON.parse(JSON.stringify(args)) });
       if (cmd === "plugin:event|listen") return 1;
+      if (cmd === "plugin:event|emit") return;
       if (cmd === "desktop_presence") return { loginEnabled: true, relocationOffer: true, pinOffer: true, pinMessage: "" };
       if (cmd === "dismiss_presence_offer" || cmd === "set_login_preference") return;
       if (cmd === "pin_to_taskbar") return false;
@@ -46,6 +47,9 @@ test("presence offers are explicit, dismissible, one-time and use no renderer pa
     assert.equal(doc.querySelector("#move-offer"), null);
     await api.setLoginPreference(false);
     assert.deepEqual(calls.find(call => call.cmd === "set_login_preference")?.args, { enabled: false });
+    api.recordLoginInput(false, true, false); await settle();
+    assert.deepEqual(calls.find(call => call.cmd === "plugin:event|emit")?.args, { event: "desktop-login-input", payload: { enabled: false, trusted: true, busy: false } });
+    assert.equal(calls.filter(call => call.cmd === "set_login_preference").length, 1, "diagnostics never repeat the mutation");
   } finally { dom.window.close(); }
 });
 
@@ -109,5 +113,76 @@ test("presence events report close explanation, presence errors and taskbar pin 
     loginError = undefined;
     await api.refreshPresence(true);
     assert.equal(doc.querySelector("#login-error"), null);
+  } finally { dom.window.close(); }
+});
+
+test("startup recovery remains visible when a machine-wide login notice is also reported", async () => {
+  const output = await build({ logLevel: "silent", configFile: false, build: { write: false, lib: { entry: fileURLToPath(new URL("../src/presence.ts", import.meta.url)), formats: ["iife"], name: "presence" } } });
+  const result = Array.isArray(output) ? output[0] : output;
+  assert.ok("output" in result);
+  const chunk = result.output.find(file => file.type === "chunk"); assert.ok(chunk && "code" in chunk);
+  const dom = new JSDOM('<main><div id="settings-startup"></div><input id="autostart" type="checkbox"><p id="notice"></p></main>', { runScripts: "outside-only", url: "http://localhost" });
+  const recovery = "Desktop preferences could not be read. The original file was kept aside at /fixture/presence.saved.json.";
+  const login = "An earlier version also set Cotal to open at login for every user of this computer.";
+  dom.window.__TAURI_INTERNALS__ = {
+    transformCallback: () => 1,
+    async invoke(cmd: string) {
+      if (cmd === "plugin:event|listen") return 1;
+      if (cmd === "desktop_presence") return { loginEnabled: false, relocationOffer: false, pinOffer: false, pinMessage: "", preferenceNotice: recovery, loginError: login };
+      throw new Error(`Unexpected command ${cmd}`);
+    },
+  };
+  try {
+    dom.window.eval(chunk.code + ";globalThis.presence = presence;");
+    const doc = dom.window.document as Document;
+    await dom.window.presence.startPresence((message: string) => { doc.getElementById("notice")!.textContent = message; });
+    assert(doc.body.textContent!.includes(recovery), "startup recovery and its saved-file path must remain visible");
+    assert(doc.body.textContent!.includes(login), "machine-wide login notice must remain visible");
+    await dom.window.presence.refreshPresence();
+    assert(doc.body.textContent!.includes(recovery), "later presence refresh must not erase startup recovery");
+  } finally { dom.window.close(); }
+});
+
+test("Windows leftover machine-wide login entry is reported on the existing error surface while keeping the current-user switch state", async () => {
+  const output = await build({ logLevel: "silent", configFile: false, build: { write: false, lib: { entry: fileURLToPath(new URL("../src/presence.ts", import.meta.url)), formats: ["iife"], name: "presence" } } });
+  const result = Array.isArray(output) ? output[0] : output;
+  assert.ok("output" in result);
+  const chunk = result.output.find(file => file.type === "chunk"); assert.ok(chunk && "code" in chunk);
+  const dom = new JSDOM('<main><div class="connection-card"></div><div id="settings-startup"></div><section id="preferences"><input id="autostart" type="checkbox"></section></main>', { runScripts: "outside-only", url: "http://localhost" });
+  const doc = dom.window.document as Document;
+  const notices: { message: string; error: boolean }[] = [];
+  const leftoverMessage = "An earlier version also set Cotal to open at login for every user of this computer. To remove that, open Cotal once as an administrator and change Open at login there.";
+  let currentUserEnabled = false;
+  dom.window.__TAURI_INTERNALS__ = {
+    transformCallback: () => 1,
+    async invoke(cmd: string, args: { enabled?: boolean } = {}) {
+      if (cmd === "plugin:event|listen") return 1;
+      if (cmd === "desktop_presence") {
+        return { loginEnabled: currentUserEnabled, loginError: leftoverMessage, relocationOffer: false, pinOffer: false, pinMessage: "" };
+      }
+      if (cmd === "set_login_preference") {
+        currentUserEnabled = args.enabled === true;
+        throw new Error(leftoverMessage);
+      }
+      throw new Error(`Unexpected command ${cmd}`);
+    },
+  };
+  try {
+    dom.window.eval(chunk.code + ";globalThis.presence = presence;");
+    const api = dom.window.presence;
+    await api.startPresence((message: string, error = false) => notices.push({ message, error }));
+    assert.equal(doc.querySelector<HTMLInputElement>("#autostart")!.checked, false);
+    assert.equal(doc.querySelector("#login-error")?.textContent, leftoverMessage);
+    assert.deepEqual(notices, [{ message: leftoverMessage, error: true }]);
+    await assert.rejects(() => api.setLoginPreference(true), new RegExp(leftoverMessage));
+    assert.equal(doc.querySelector<HTMLInputElement>("#autostart")!.checked, true, "toggle reflects true HKCU state even when HKLM removal is denied");
+    assert.equal(doc.querySelector("#login-error")?.textContent, leftoverMessage);
+    const originalInvoke = dom.window.__TAURI_INTERNALS__.invoke;
+    dom.window.__TAURI_INTERNALS__.invoke = async (cmd: string) => {
+      if (cmd === "desktop_presence") return { loginEnabled: true, relocationOffer: false, pinOffer: false, pinMessage: "" };
+      return originalInvoke(cmd);
+    };
+    await api.refreshPresence(true);
+    assert.equal(doc.querySelector("#login-error"), null, "login-error hides when loginError is cleared");
   } finally { dom.window.close(); }
 });

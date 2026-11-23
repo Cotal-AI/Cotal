@@ -1,0 +1,70 @@
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import test from "node:test";
+import { parseDocument } from "yaml";
+
+const read = path => readFileSync(new URL(path, import.meta.url), "utf8");
+
+test("Windows installer presence runs on a fresh profile before the native account fixture", () => {
+  const workflow = parseDocument(read("../../.github/workflows/desktop.yml"));
+  assert.deepEqual(workflow.errors, []);
+  const steps = workflow.toJS().jobs["native-build"].steps;
+  const step = name => steps.findIndex(entry => entry.name === name);
+  const launch = step("Launch the installed release package and capture its first window");
+  const presence = step("Verify installed Windows shortcuts and taskbar presence");
+  const upload = step("Upload Windows native presence evidence");
+  const fixture = step("Build release-isolated real-window test binary");
+  const account = step("Windows connected account Ready, Settings and login-command lifecycle");
+  assert.ok(launch >= 0 && launch < presence && presence < upload && upload < fixture && fixture < account);
+  assert.equal(steps.filter(entry => entry.run === "./desktop/scripts/check-presence-windows.ps1").length, 1);
+  assert.equal(steps[presence].if, "runner.os == 'Windows'");
+  assert.equal(steps[presence]["continue-on-error"], undefined);
+  assert.equal(steps[account]["continue-on-error"], undefined);
+  assert.equal(steps[upload].if, "always() && runner.os == 'Windows'");
+  const other = steps[step("Upload native presence evidence")];
+  assert.equal(other.if, "always() && runner.os != 'Windows'");
+  assert.deepEqual(steps[upload].with, other.with);
+});
+
+test("native Windows presence retains its original UIA name assertion and requires a new unique legacy name", () => {
+  const checker = read("../scripts/check-presence-windows.ps1");
+  const before = checker.indexOf("$beforeLegacy = Read-ExplorerRunningApps $beforeTaskbar");
+  const launch = checker.indexOf("$launch = Start-Process");
+  const after = checker.indexOf("$afterLegacy = Read-ExplorerRunningApps $taskbarHandle");
+  assert.ok(before >= 0 && before < launch && launch < after);
+  assert.ok(checker.includes(String.raw`$taskbarNamed = [bool]($names | Where-Object { $_ -match '^Cotal(?:\b|$)' })`));
+  const admission = checker.slice(checker.indexOf("if (!$taskbarNamed -and !$beforeLegacy.error"), checker.indexOf("$taskbarNameSource = 'explorer-msaa-name'"));
+  for (const condition of ["!$beforeLegacy.error", "!$afterLegacy.error", "$beforeTaskbar -eq $taskbarHandle", "$beforeLegacy.toolbar -eq $afterLegacy.toolbar", "$beforeNamed.Count -eq 0", "$afterNamed.Count -eq 1"]) {
+    assert.ok(admission.includes(condition), condition);
+  }
+  assert.match(checker, /taskbar-accessibility\.json/);
+  assert.match(checker, /passed-with-taskbar-name-unproven/);
+});
+
+test("legacy names come only from visible accessible push buttons under the Explorer running-app toolbar", () => {
+  const helper = read("../scripts/windows-taskbar-accessibility.cs");
+  assert.match(helper, /EnumChildWindows\(taskbar,/);
+  assert.match(helper, /name\.ToString\(\) == "MSTaskListWClass"/);
+  assert.match(helper, /matches\.Count != 1/);
+  assert.match(helper, /AccessibleObjectFromWindow\(toolbar, OBJID_CLIENT,/);
+  assert.match(helper, /\(int\)role == ROLE_SYSTEM_PUSHBUTTON[\s\S]*?STATE_SYSTEM_INVISIBLE \| STATE_SYSTEM_OFFSCREEN/);
+  assert.match(helper, /Name = accessible\.get_accName\(child\)/);
+  assert.match(helper, /remaining = 128/);
+  assert.doesNotMatch(helper, /GetWindowText|Shortcut|AppUserModel|Screenshot|OCR/i);
+});
+
+test("only the legacy reader uses the framework-matched Windows PowerShell", () => {
+  const checker = read("../scripts/check-presence-windows.ps1");
+  const probe = checker.slice(checker.indexOf("function Read-ExplorerRunningApps"), checker.indexOf("$results = @()"));
+  assert.match(probe, /WindowsPowerShell\\v1\.0\\powershell\.exe/);
+  assert.match(probe, /read-windows-taskbar-accessibility\.ps1/);
+  assert.match(probe, /WaitForExit\(8000\)/);
+  assert.match(probe, /\$probe\.Kill\(\$true\)/);
+  assert.match(probe, /status = 'reader unavailable'; toolbar = \$null; buttons = \$null; error =/);
+  assert.match(probe, /status = 'observed'; toolbar = \$reply\.toolbar; buttons = @\(\$reply\.buttons\)/);
+  assert.doesNotMatch(probe, /Add-Type|IgnoreWarnings/);
+  const child = read("../scripts/read-windows-taskbar-accessibility.ps1");
+  assert.match(child, /PSEdition -ne 'Desktop'/);
+  assert.match(child, /Assembly\]::Load\('Accessibility'\)/);
+  assert.match(child, /RunningApps\(\[IntPtr\]\$TaskbarHandle\)/);
+});
