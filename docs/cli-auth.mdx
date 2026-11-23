@@ -156,7 +156,8 @@ credential, are recorded under `credentials/` in the Cotal home so `doctor auth`
 native credential matching the nkey deliberately supplied through `--identity`; unrelated files
 and identities refuse. New outputs use create-only publication. Invalid `--allow-subscribe` or
 `--allow-publish` channel patterns refuse before output folders are created, naming the flag, the
-channel and a corrected example. The output's directories follow
+channel and a corrected example. If the corrected pattern starts with `-`, the example attaches it
+with `=`, as in `--allow-subscribe=-general`. The output's directories follow
 the [`space create`](cli-selection.mdx#selecting-a-space) path rule, which also accepts a root-owned sticky directory
 such as `/tmp`, and the file is owner-only. Unsupported platforms refuse rather than weakening it.
 Mint checks the existing parent folders before creating any missing ones. An unsafe parent leaves

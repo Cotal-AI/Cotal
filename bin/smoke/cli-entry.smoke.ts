@@ -485,6 +485,22 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
     envelopes(bogus).length === 1 && refusal?.outcome === "refused" && refusal.result === null && refusal.error?.code === "USAGE_INVALID" && refusal.error.remedy === "run `cotal help version`",
     shown(bogus),
   );
+  const mint = (args: readonly string[]) => cotal(["auth", "mint", "reader", ...args, "--json"], undefined, noSeed);
+  for (const [input, example, corrected] of [
+    [["--allow-subscribe", "#-general"], "--allow-subscribe=-general", ["--allow-subscribe=-general"]],
+    [["--allow-publish", "#-general"], "--allow-publish=-general", ["--allow-publish=-general"]],
+    [["--allow-subscribe=-gen/eral"], "--allow-subscribe=-gen_eral", ["--allow-subscribe=-gen_eral"]],
+    [["--allow-publish", "#-team.>"], "--allow-publish='-team.>'", ["--allow-publish=-team.>"]],
+    [["--allow-subscribe", "#team.>"], "--allow-subscribe 'team.>'", ["--allow-subscribe", "team.>"]],
+  ] as const) {
+    const invalid = mint(input);
+    const [report] = envelopes(invalid);
+    check(`auth mint suggests ${example} for ${input.join(" ")}`, invalid.status === 1 && invalid.stderr === "" && invalid.wrote.length === 0 &&
+      report?.error?.code === "USAGE_INVALID" && report.error.remedy?.endsWith(`\`${example}\``) === true, shown(invalid));
+    const retry = mint(corrected);
+    check(`auth mint with ${example} reaches target resolution`, retry.status === 2 && retry.stderr === "" && retry.wrote.length === 0 &&
+      envelopes(retry)[0]?.error?.code === "TARGET_NOT_FOUND", shown(retry));
+  }
   // A subcommand's JSON is what it declares, so each actor subcommand declares it too.
   for (const argv of [["actor", "revoke", "bot1", "--sub", "s", "--yes"], ["actor", "list", "--bogus"], ["actor", "grant", "bot1", "--sub", "s", "--full", "--bogus"], ["actor", "label", "bot1", "x", "--sub", "s", "--bogus"]]) {
     const r = cotal([...argv, "--json"], undefined, noSeed);
