@@ -518,8 +518,25 @@ try {
   const offline = native(args, CWD);
   const plannedServer = native([...args, "--server", "nats://127.0.0.1:1"], CWD);
   check("a planned server still lists the named prepared project's local catalog",
-    offline.status === 0 && plannedServer.status === 0 && plannedServer.stdout === offline.stdout &&
-    /offline-audit .* local persona files/.test(plannedServer.stdout) && /\bdefault\b/.test(plannedServer.stdout), plannedServer.stdout + plannedServer.stderr);
+    offline.status === 0 && plannedServer.status === 0 && /offline-audit .* local persona files/.test(plannedServer.stdout) &&
+    /\bdefault\b/.test(plannedServer.stdout), plannedServer.stdout + plannedServer.stderr);
+  const only = "offline-only";
+  writeFileSync(agentFilePath(offlineRoot, only), `---\nname: ${only}\n---\nOnly in the other catalog.\n`);
+  const listReceipt = native(args, CWD);
+  const show = listReceipt.stdout.match(/(?:cotal|pnpm cotal) (p show <name> --space offline-audit)/)?.[1];
+  const showReceipt = show ? native([...show.replace("<name>", only).split(" "), "--plain"], CWD) : undefined;
+  check("persona list's show command reads the explicitly selected catalog",
+    listReceipt.status === 0 && showReceipt?.status === 0 && showReceipt.stdout.includes("Only in the other catalog."), listReceipt.stdout + listReceipt.stderr);
+  const create = plannedServer.stdout.match(/(?:cotal|pnpm cotal) (p create <name> --file <persona.md> --space offline-audit --server nats:\/\/127\.0\.0\.1:1)/)?.[1];
+  const sourcePath = join(scratch, "catalog-input.md");
+  const source = "---\nname: catalog-created\n---\nCreated in the other catalog.\n";
+  writeFileSync(sourcePath, source);
+  const created = create ? native(create.split(" ").map(word => word === "<name>" ? "catalog-created" : word === "<persona.md>" ? sourcePath : word), CWD) : undefined;
+  check("persona list's create command keeps both selectors and writes only to the selected catalog",
+    created?.status === 0 && readFileSync(agentFilePath(offlineRoot, "catalog-created"), "utf8") === source &&
+    !existsSync(agentFilePath(CWD, "catalog-created")), plannedServer.stdout + (created?.stderr ?? ""));
+  check("persona list's process command retains both explicit selectors",
+    ["cotal", "pnpm cotal"].some(cli => plannedServer.stdout.includes(`${cli} ps --space offline-audit --server nats://127.0.0.1:1`)), plannedServer.stdout);
   checkCreateInputGuidance((args, input) => native(args, MESH, childEnv, input), MESH);
   if (process.platform !== "win32") {
     const server = "nats://[::1]:43002";

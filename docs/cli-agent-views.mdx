@@ -42,9 +42,12 @@ harness precedence and physical working directory. If the directory is unavailab
 names the path and suggests passing an existing directory to `--cwd` or omitting `--cwd` to use
 the current directory. The preview does not create a directory. Like the foreground launch, it refuses a
 symbolic-link loop in the persona path with `SCHEMA_INVALID` (exit 1), names the path, and explains
-how to correct or replace the link. It checks the effective name from `--name` or
+how to correct or replace the link. If the link's target crosses a regular file where a folder
+is needed, the preview names the link and the missing target and explains how to restore it or
+replace the link. It checks the effective name from `--name` or
 persona frontmatter with the launch's local name rule, including the actor-token rule for a selected
 user-auth space. An invalid effective name is refused with `USAGE_INVALID` (exit 1).
+If the name came from frontmatter, the preview gives a retry with `--name` and keeps the preview options.
 On a resolved open or user-auth space, a direct preview refuses `--expires-in` and `--expires-at`
 with `USAGE_INVALID` (exit 1), as the launch does.
 An unknown effective harness is refused with

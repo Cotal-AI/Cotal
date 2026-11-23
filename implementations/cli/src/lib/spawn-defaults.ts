@@ -49,7 +49,7 @@ export function missingConnector(name: string, target: object): CommandFailure {
     remedy: pkg ? `add it with \`cotal ext add ${pkg}\`` : "install its integration with `cotal ext add <npm-package>`, or check the name" });
 }
 
-/** After an ENOENT loading a persona, check whether a link still occupies its path. */
+/** After ENOENT or ENOTDIR loading a persona, check whether a link still occupies its path. */
 export function brokenPersonaLink(path: string, target: object, shippedDefault = false): CommandFailure | undefined {
   const link = personaLinkTarget(path);
   if (link === undefined) return undefined;

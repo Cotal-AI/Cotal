@@ -67,7 +67,7 @@ export async function persona(args: ParsedArgs): Promise<void> {
   const target = targetWords(values);
   const { catalog, userMode } = personaCatalogContext(values);
   recordOperationSpace(catalog.space);
-  if (sub === undefined) return list(catalog, presentation);
+  if (sub === undefined) return list(catalog, presentation, target);
   const path = personaPath(catalog.root, name!, sub === "show" ? "show" : "write");
   if (sub === "show") {
     const source = requirePersonaSource(path, target);
@@ -210,7 +210,7 @@ async function createSource(name: string, path: string, values: Values): Promise
   return serializePersona({ name, persona: body, role: values.role, model: values.model, agent: values.harness, subscribe, allowSubscribe, allowPublish: channels("--allow-publish", values["allow-publish"]) });
 }
 
-function list(catalog: PersonaCatalog, presentation: Presentation): void {
+function list(catalog: PersonaCatalog, presentation: Presentation, target: string): void {
   let entries: ReturnType<typeof readPersonas>;
   try { entries = readPersonas(catalog.root); }
   catch (error) { throw catalogReadRefusal(personaDir(catalog.root), error); }
@@ -243,9 +243,9 @@ function list(catalog: PersonaCatalog, presentation: Presentation): void {
       { kind: "lines", lines: [{ text: "Definitions, not running agents. Editing a persona does not change a live session.", tone: "hint" }] },
     ] },
     { title: "Next", blocks: [{ kind: "commands", items: [
-      ...(result.items.length ? [{ command: "cotal p show <name>", description: "Read a definition" }] : []),
-      { command: "cotal p create <name> --file <persona.md>", description: "Create a local persona" },
-      { command: "cotal ps", description: "See running agents" },
+      ...(result.items.length ? [{ command: `cotal p show <name>${target}`, description: "Read a definition" }] : []),
+      { command: `cotal p create <name> --file <persona.md>${target}`, description: "Create a local persona" },
+      { command: `cotal ps${target}`, description: "See running agents" },
     ] }] },
   ] }));
 }
