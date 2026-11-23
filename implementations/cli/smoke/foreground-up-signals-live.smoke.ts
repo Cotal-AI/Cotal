@@ -825,7 +825,10 @@ async function controllerSighupCell(): Promise<void> {
     await until(() => { if (state.error) throw state.error; return state.exited; }, 30_000, () => err.slice(-3000));
     await waitForOwnedChild(() => state.closed, 3_000, `${root}: hangup owner streams drained`);
     assert.equal(state.code, 129, `a hangup exits 129 and leaves the stack: ${err}`); passed++;
-    assert.ok(err.includes(`\`cd ${shellPath(realpathSync(mesh))} && cotal down\` stops it.`), "the hangup stop command selects the project from the invoking folder"); passed++;
+    // The command word depends on whether the host has a `cotal` launcher on PATH; the project selection does not.
+    const stopPrefix = `\`cd ${shellPath(realpathSync(mesh))} && `;
+    const stopAt = err.indexOf(stopPrefix);
+    assert.ok(stopAt !== -1 && /^[^`\n]+ down` stops it\./.test(err.slice(stopAt + stopPrefix.length)), `the hangup stop command selects the project from the invoking folder: ${err}`); passed++;
     assert.equal(await portOpen(port), true, "the broker keeps running after the hangup"); passed++;
     assert.equal(existsSync(hold), false, "the hangup removes this process's hold record"); passed++;
     const status = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["status", "--space", space, "--server", `nats://127.0.0.1:${port}`]);
