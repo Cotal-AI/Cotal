@@ -160,6 +160,7 @@ export const piConnector: Connector = {
   // A variant is a pi thinking level, which pi clamps to what the model supports.
   supportsModelVariant: true,
   supportsAskPermissions: true,
+  supportsReasoningEvents: true,
   prompts: true,
   eventChannel,
   supportsLaunchValidation: true,
@@ -244,7 +245,7 @@ export const piConnector: Connector = {
     if (sessionStatePath) rmSync(sessionStatePath, { force: true });
     const control = controlEndpoint(opts.space, opts.name, artifacts);
     env.COTAL_CONTROL_SOCKET = control.path;
-    Object.assign(env, materialEnv({ creds: opts.creds, servers: opts.servers, control, eventsRequired: opts.eventsRequired, eventPayloads: opts.eventPayloads, askPermissions: opts.askPermissions, userAuth: opts.userAuth }, artifacts));
+    Object.assign(env, materialEnv({ creds: opts.creds, servers: opts.servers, control, eventsRequired: opts.eventsRequired, eventPayloads: opts.eventPayloads, askPermissions: opts.askPermissions, reasoningEvents: opts.reasoningEvents, userAuth: opts.userAuth }, artifacts));
     if (persona) {
       const file = writeLaunchArtifact(artifacts, "cotal-persona-", "persona.md", persona);
       env.COTAL_PI_PERSONA_FILE = file;
