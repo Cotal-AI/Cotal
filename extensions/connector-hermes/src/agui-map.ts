@@ -19,7 +19,7 @@ import {
 
 /** One line of the turn journal the plugin writes (plugin/cotal/journal.py). */
 export interface HermesJournalRecord {
-  k: "start" | "done" | "assistant" | "tool";
+  k: "start" | "done" | "assistant" | "reply" | "tool";
   /** Unique per record, so each observation gets its own message id. */
   rid: string;
   /** Epoch milliseconds, stamped when the plugin wrote the record. */
@@ -27,7 +27,7 @@ export interface HermesJournalRecord {
   /** `start`/`done`: the gateway's processing of one message. */
   key?: string;
   outcome?: "success" | "failure" | "cancelled";
-  /** `assistant`: one model response. */
+  /** `assistant`: one model response. `reply`: an operator-chat reply no model response carried. */
   content?: string;
   reasoning?: string;
   calls?: { id: string; name: string; arguments: string }[];
@@ -46,9 +46,10 @@ export interface HermesJournalRecord {
  * without running the model, and that pass is no turn. A message that fails before any model
  * response opens and fails a run at its `done`, so a client waiting on the turn sees the failure.
  * One gateway runs many sessions at once, and the event plane has one run open at a time, so
- * concurrent messages share the run. Tool calls are tracked by their own ids, and a call still open
- * when the run ends is ended without a result rather than given one. A `failure` ends the run with
- * `RUN_ERROR`, a `cancelled` with an interrupt outcome.
+ * concurrent messages share the run. A `reply`, the gateway's own answer in the operator chat such
+ * as a slash command's output, maps as a model response's text does. Tool calls are tracked by their
+ * own ids, and a call still open when the run ends is ended without a result rather than given one.
+ * A `failure` ends the run with `RUN_ERROR`, a `cancelled` with an interrupt outcome.
  *
  * `consumed` is the journal up to the cursor the event plane has acknowledged. A re-established
  * plane replays it here so the mapper knows which messages are still in progress, and resumes the
@@ -137,7 +138,8 @@ export function createHermesMapper(opts: {
         const runId = mint();
         return { runId, events: [started(runId, rec.ts), ...close(runId, rec.ts)] };
       }
-      case "assistant": {
+      case "assistant":
+      case "reply": {
         if (open === null && pending.size === 0) return null;
         const events = assistant(rec);
         if (events.length === 0) return null;

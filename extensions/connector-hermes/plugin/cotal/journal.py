@@ -3,8 +3,9 @@
 Hermes keeps no append-only record of a turn that an outside reader can resume at a cursor: its
 session store rewrites a transcript in place when it compacts one, and writes a row again when it
 fills a tool-call turn's answer late. So this plugin writes one, from the gateway's per-message
-processing callbacks and the ``post_api_request`` and ``post_tool_call`` hooks, all present across
-the supported 0.18 to 0.21 range. Each record is appended on the thread that reports it, before the
+processing callbacks, the adapter's replies in the operator chat, and the ``pre_llm_call``,
+``post_api_request`` and ``post_tool_call`` hooks, all present across the supported 0.18 to 0.21
+range. Each record is appended on the thread that reports it, before the
 gateway moves past the step it describes. The sidecar reads the file from a cursor and maps each
 record to AG-UI (src/agui-map.ts).
 
@@ -24,10 +25,16 @@ import time
 import uuid
 from typing import Any, Optional
 
+# The user and chat id of the gateway's operator chat, where the owner's turns run (adapter.py).
+OPERATOR = "operator"
+
 _lock = threading.Lock()
 # Tool calls a Cotal-platform model response announced, so a result from another platform's turn
 # in the same gateway is not recorded.
 _calls: set[str] = set()
+# The model was called for the operator chat's message in progress, so its reply is on the journal
+# already as model responses. One operator message runs at a time.
+_operator_model = False
 
 
 def _field(obj: Any, name: str) -> Any:
@@ -104,3 +111,31 @@ def tool_result(tool_call_id: str, result: Any, status: Optional[str]) -> bool:
         _calls.discard(tool_call_id)
     text = result if isinstance(result, str) else json.dumps(result, default=str)
     return _append("tool", id=tool_call_id, result=text, error=status not in (None, "ok"))
+
+
+def operator_turn_started() -> None:
+    """The gateway began processing an operator-chat message."""
+    global _operator_model
+    with _lock:
+        _operator_model = False
+
+
+def model_called(platform: str, sender: str) -> None:
+    """The model was called for a turn (``pre_llm_call``): the operator chat's, when its sender is
+    the operator on the Cotal platform."""
+    global _operator_model
+    if platform == "cotal" and sender == OPERATOR:
+        with _lock:
+            _operator_model = True
+
+
+def operator_reply(content: str) -> bool:
+    """The gateway's reply in the operator chat, recorded when the model was not called for the
+    message in progress: a slash command's output, or a refusal the gateway wrote itself. A reply
+    the model wrote is on the journal already as its responses."""
+    with _lock:
+        if _operator_model:
+            return False
+    if not content.strip():
+        return False
+    return _append("reply", content=content)
