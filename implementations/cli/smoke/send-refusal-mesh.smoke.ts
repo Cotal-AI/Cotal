@@ -39,6 +39,7 @@ if (!existsSync(BIN)) {
 }
 
 interface Envelope {
+  schemaVersion: number;
   outcome: string;
   target: { space?: string; name?: string; post?: string[] | null; file?: string } | null;
   result?: { stored?: boolean; sender?: { principal: string } };
@@ -80,7 +81,7 @@ const shown = (r: ReturnType<typeof run>) => ({ status: r.status, stdout: r.stdo
 const retryFileSend = (refusal: ReturnType<typeof run>, cwd: string, body: string) => {
   const command = /`cotal (send [^`]+) "<message>"`/.exec(refusal.envelope?.error?.remedy ?? "")?.[1];
   if (!command) throw new Error(`missing send retry: ${JSON.stringify(shown(refusal))}`);
-  return run(["-c", `exec "$0" "$1" ${command} "$2" --json`, process.execPath, BIN, body], cwd, true);
+  return run(["-c", `exec "$0" "$1" ${command} "$2"`, process.execPath, BIN, body], cwd, true);
 };
 const firstLine = (text: string) => text.split("\n")[0];
 const credsPath = (label: string) => join(dir, `${label}.creds`);
@@ -257,7 +258,7 @@ try {
   mkdirSync(join(openRoot, ".cotal"), { recursive: true, mode: 0o700 });
   recordMesh({ space: openSpace, server: openServers, root: openRoot, mode: "open", ts: new Date().toISOString() });
   const otherSpace = `${openSpace}-other`;
-  const missing = run(["send", "--server", openServers, "--space", otherSpace, "-c", "general", "--file", "missing.txt", "--json"], openRoot);
+  const missing = run(["send", "--server", openServers, "--space", otherSpace, "-c", "general", "--file", "missing.txt", "-j"], openRoot);
   const retried = retryFileSend(missing, openRoot, "file retry");
   const emptyFile = "./message.txt";
   writeFileSync(join(openRoot, emptyFile), "");
@@ -270,9 +271,9 @@ try {
   const emptyRetry = retryFileSend(emptyBody, openRoot, "empty file retry");
   const targetHistory = run(["history", "general", "--server", openServers, "--space", otherSpace, "--json"], openRoot);
   const folderHistory = run(["history", "general", "--json"], openRoot);
-  check("file retry publishes only to the explicit space, not the project space", missing.status === 2 && missing.envelope?.error?.code === "TARGET_NOT_FOUND"
-    && retried.status === 0 && retried.envelope?.target?.space === otherSpace && retried.envelope.result?.stored === true
-    && emptyRetry.status === 0 && emptyRetry.envelope?.target?.space === otherSpace && emptyRetry.envelope.result?.stored === true
+  check("each printed file retry returns a JSON storage receipt and publishes only to the explicit space", missing.status === 2 && missing.envelope?.error?.code === "TARGET_NOT_FOUND"
+    && retried.status === 0 && retried.envelope?.schemaVersion === 1 && retried.envelope.target?.space === otherSpace && retried.envelope.result?.stored === true
+    && emptyRetry.status === 0 && emptyRetry.envelope?.schemaVersion === 1 && emptyRetry.envelope.target?.space === otherSpace && emptyRetry.envelope.result?.stored === true
     && targetHistory.status === 0 && targetHistory.stdout.includes('"text":"file retry"') && targetHistory.stdout.includes('"text":"empty file retry"')
     && folderHistory.status === 0 && folderHistory.stdout.includes('"text":"first-open"') && !folderHistory.stdout.includes('file retry'),
     { refusal: shown(missing), retry: shown(retried), emptyRetry: shown(emptyRetry), target: shown(targetHistory), folder: shown(folderHistory) });

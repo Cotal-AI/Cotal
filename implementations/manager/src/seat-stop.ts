@@ -79,7 +79,6 @@ export interface SeatStopDeps {
   managerInstanceId: () => Manager["managerInstanceId"];
   remoteAuthority: () => Manager["remoteAuthority"];
   retirement: () => Manager["retirement"];
-  serviceServe: () => Manager["serviceServe"];
   unverifiedStops: () => Manager["unverifiedStops"];
   setUnverifiedStops: (value: Manager["unverifiedStops"]) => void;
   assertGoalWriterEpochCurrent: (...args: Parameters<Manager["assertGoalWriterEpochCurrent"]>) => ReturnType<Manager["assertGoalWriterEpochCurrent"]>;
@@ -115,7 +114,6 @@ export function seatStopDeps(m: Manager): SeatStopDeps {
     managerInstanceId: () => m["managerInstanceId"],
     remoteAuthority: () => m["remoteAuthority"],
     retirement: () => m["retirement"],
-    serviceServe: () => m["serviceServe"],
     unverifiedStops: () => m["unverifiedStops"],
     setUnverifiedStops: (value) => { m["unverifiedStops"] = value; },
     assertGoalWriterEpochCurrent: (...args) => m["assertGoalWriterEpochCurrent"](...args),
@@ -140,7 +138,7 @@ export function seatStopDeps(m: Manager): SeatStopDeps {
 
 /** Stopping a seat, recording why it left, reaping its children, and the named despawn doors. */
 export class SeatStop {
-  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: SeatStopDeps, private readonly parts: Pick<ManagerParts, "goalWriter">) {}
+  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: SeatStopDeps, private readonly parts: Pick<ManagerParts, "goalWriter" | "servePlane">) {}
 
   // The Manager members these bodies read, under their Manager names. Each reads through its dep at
   // use, so a field the Manager assigns later is current and a method a test replaces on the Manager
@@ -155,7 +153,6 @@ export class SeatStop {
   private get managerInstanceId() { return this.deps.managerInstanceId(); }
   private get remoteAuthority() { return this.deps.remoteAuthority(); }
   private get retirement() { return this.deps.retirement(); }
-  private get serviceServe() { return this.deps.serviceServe(); }
   private get unverifiedStops() { return this.deps.unverifiedStops(); }
   private set unverifiedStops(value: Manager["unverifiedStops"]) { this.deps.setUnverifiedStops(value); }
   private assertGoalWriterEpochCurrent(...args: Parameters<Manager["assertGoalWriterEpochCurrent"]>): ReturnType<Manager["assertGoalWriterEpochCurrent"]> { return this.deps.assertGoalWriterEpochCurrent(...args); }
@@ -584,7 +581,7 @@ export class SeatStop {
     const ref = this.agentGoals.get(name);
     if (!gw || !ref) return;
     this.agentGoals.delete(name);
-    const epoch = this.serviceServe?.grant.epoch ?? 0;
+    const epoch = this.parts.servePlane.serviceServe?.grant.epoch ?? 0;
     try {
       await this.assertGoalWriterEpochCurrent(epoch); // a superseded corpse never commits a cancel terminal either
       await transitionGoal(gw.ctx, ref, "cancelling", { fields: { cancelMode: mode } });

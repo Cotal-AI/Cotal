@@ -251,7 +251,8 @@ function extensionsCell(e: StatusResult["extensions"]): Cell | undefined {
  * A row in its good state says nothing a reader acts on, and a piece of an application this machine
  * does not have is what `cotal setup` adds, which the applications line already counts. So an
  * application's own rows (the Claude plugin, Desktop and skills) appear only for an application that
- * IS set up, and only when they are not current; the broker executable appears when it is missing or
+ * IS set up, and only when they are not current; an ACP client's entry appears when it is stale or
+ * cannot be read; the broker executable appears when it is missing or
  * refused and local broker records make it relevant; the dashboard, which is optional, appears
  * when its record cannot be read. `--all` and
  * `--wide` print every row, and `--verbose` adds the installation paths ({@link machineSection}).
@@ -268,7 +269,7 @@ function machineOverview(r: StatusResult, wide: boolean, interactive: boolean, s
   const ownedBySetUp = (label: string) => setUp.some((name) => label.toLowerCase().includes(name.toLowerCase()));
   const rows: [string, Cell][] = wide
     ? m.integrations.map((item) => [item.name, stateCell(item.text, tones[item.state])])
-    : m.integrations.filter((item) => item.state !== "ok" && ownedBySetUp(item.name)).map((item) => [item.name, stateCell(item.text, tones[item.state])]);
+    : m.integrations.filter((item) => item.client ? item.state === "warn" || item.state === "error" : item.state !== "ok" && ownedBySetUp(item.name)).map((item) => [item.name, stateCell(item.text, tones[item.state])]);
   rows.unshift(["Agent applications", applicationsCell(m, interactive)]);
   if (wide)
     for (const connector of m.connectors ?? []) {

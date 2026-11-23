@@ -1,7 +1,7 @@
 import { resolve } from "node:path";
 import * as prompts from "../lib/prompts.js";
 import type { FlagSpec, ParsedArgs } from "@cotal-ai/core";
-import { ConfirmationRequired, CommandFailure, recordOperationSpace, isCommandFailure, isConnectRefusal, isWorkspaceTargetError, oneLine, presentationOf, resolveMeshTarget, targetErrorCode, workspaceErrorParts, writeResult, type Report } from "@cotal-ai/workspace";
+import { codeSpan, ConfirmationRequired, CommandFailure, recordOperationSpace, isCommandFailure, isConnectRefusal, isWorkspaceTargetError, oneLine, presentationOf, resolveMeshTarget, targetErrorCode, workspaceErrorParts, writeResult, type Report } from "@cotal-ai/workspace";
 import { endpointDeregister, validateEndpointDeregisterArguments } from "./endpoint-deregister.js";
 import { endpointAuthoring, validateEndpointAuthoringArguments } from "./endpoint-authoring.js";
 import { readEndpointInventory } from "../lib/endpoint-inventory.js";
@@ -112,7 +112,13 @@ export async function endpoint(args: ParsedArgs): Promise<void> {
   }
   if (mode === "show") {
     const row = readEndpointReference(space, suppliedName!);
-    if (!row) throw new CommandFailure("refused", "TARGET_NOT_FOUND", "no saved reference has this full name in the selected space", { target: { space, name: suppliedName } });
+    if (!row) {
+      const format = presentation === "rich" ? "" : ` --${presentation}`;
+      throw new CommandFailure("refused", "TARGET_NOT_FOUND", "no saved reference has this full name in the selected space", {
+        target: { space, name: suppliedName },
+        remedy: `list the saved references with ${codeSpan(`cotal endpoint${targetWords({ space })}${format}`)}`,
+      });
+    }
     writeResult(presentation, { command: "endpoint", target: { space, name: row.name }, result: projection(row) }, (result): Report => ({ sections: [
       { title: "Saved endpoint reference", blocks: [{ kind: "fields", rows: [["Name", result.name], ["Space", result.reference.space], ["Native class", result.reference.endpoint], ["Instance pin", result.reference.instanceId ?? "none"], ["Revision", result.revision], ["Caller reference", result.reference.credentialRef ? "file reference; protection not checked" : "normal resolved caller"], ["Live state", "not checked"]] }, { kind: "lines", lines: [{ text: "The name is local metadata, not a wire registration, a process controller or an authority grant.", tone: "hint" }] }] },
     ] }));

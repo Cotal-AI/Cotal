@@ -79,7 +79,9 @@ type UngatedExemption = { reason: string; recheckBy: string };
 // arguments, which no CI job supplies.
 // 22 → 23 on 2026-11-17: the retained-reads suite takes three packed closures and a new private root.
 // 23 → 24 on 2026-11-20: the Claude permission prompts suite drives a real, signed-in claude CLI.
-const EXPECTED_EXEMPTIONS = 24;
+// 24 → 25 on 2026-11-23: the Claude command mod cells need Claude Code 2.1.330 for `claude plugin
+// test`, until a CI step installs it.
+const EXPECTED_EXEMPTIONS = 25;
 const standing = (reason: string): UngatedExemption => ({ reason, recheckBy: "2026-11-30" });
 /** Each BROKEN backup entry below names its issue, commit and failed assertion, with a review
  *  date tied to that investigated debt. Premise
@@ -100,6 +102,7 @@ const UNGATED: Record<string, UngatedExemption> = {
   "smoke:down-manifest-usermode:live": standing("needs a claude CLI on PATH to boot a real connector child"),
   "smoke:claude-plugin-refresh:live": standing("drives the real claude CLI on PATH against a scratch Claude config"),
   "smoke:claude-registration-home:live": standing("drives the real claude CLI against isolated profiles and Cotal homes"),
+  "smoke:claude-command-mod": { reason: "needs Claude Code 2.1.330 on PATH for `claude plugin test`; its CI step waits on a token with the workflow scope", recheckBy: "2026-12-07" },
   "smoke:claude-permission-prompts:live": standing("drives a real claude CLI under a PTY with the operator's Claude login and a model; the offline arm is gated as smoke:claude-permission-prompts"),
   "smoke:auth-oracle-order:live": standing("takes an installed npm prefix and a new evidence directory as arguments"),
   "smoke:seed-child:live": standing("takes a source pack, a target pack and a new private root as arguments"),

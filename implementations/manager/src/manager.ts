@@ -580,12 +580,6 @@ export class Manager {
   /** The local instance identity {@link admitExecutionState} already resolved. The ordinary start
    *  adopts it instead of reading the same record again. */
   protected admittedLocalIdentity?: ManagerInstanceIdentity;
-  /** The manager's v0.4 service-endpoint serve state — the serve handle +
-   *  its dedicated connection, the STABLE serve identity (renewals re-mint the same nkey), the
-   *  branded serve grant, and the CURRENT credential (the connection's authenticator reads it on
-   *  every (re)connect, so a renewal is adopted without re-registration). Absent on open meshes,
-   *  in user mode, and before registration completes. */
-  protected serviceServe?: { handle: EpServeHandle; nc: NatsConnection; identity: Identity; grant: EpServeGrant; creds?: string };
   /** #1577: dedicated connections (serve, goal-writer, session-ledger) whose transport is down while
    *  the client reconnects them, tracked by {@link trackTransport}. Such a connection is open
    *  (`isClosed()` is false under unbounded reconnects) yet the broker holds none of its rails, so
@@ -604,7 +598,7 @@ export class Manager {
   protected get turnRelay(): TurnRelay {
     return this.turnRelayInstance ??= new TurnRelay({
       goalWriter: () => this.goalWriterComponent.goalWriter,
-      serviceServe: () => this.serviceServe,
+      serviceServe: () => this.servePlane.serviceServe,
       space: this.config.space,
       managerInstanceId: () => this.managerInstanceId,
       execution: this.execution,
@@ -771,7 +765,7 @@ export class Manager {
   private readonly preservedResumeComponent = new PreservedResume(this.config, preservedResumeDeps(this), this.parts);
 
   /** The goal-writer connection and the goal index it reconciles. Every dependency reads through at its use. */
-  private readonly goalWriterComponent = new GoalWriter(this.config, goalWriterDeps(this));
+  private readonly goalWriterComponent = new GoalWriter(this.config, goalWriterDeps(this), this.parts);
 
   /** Renewal of the manager's standing credentials. Every dependency reads through at its use. */
   private readonly credentialRenewal = new CredentialRenewal(this.config, credentialRenewalDeps(this), this.parts);
@@ -833,7 +827,7 @@ export class Manager {
       if (hasRecord) {
         const local = loadManagerInstanceIdentity(this.config.workspaceRoot, this.config.space);
         if (local && existsSync(this.executionRecordPath(local.instanceId))) {
-          this.claimExecutionRecord(local.instanceId);
+          this.bootComponent.claimExecutionRecord(local.instanceId);
           this.admittedLocalIdentity = local;
         }
       }
@@ -964,7 +958,7 @@ export class Manager {
    *  response, registration-leader read or authorization for another process to act. Wire callers
    *  still use status through its fresh owner/admin visibility gate. No credential or URL leaves. */
   localServiceObservation(): ManagerServiceObservation | undefined {
-    const state = this.serviceServe;
+    const state = this.servePlane.serviceServe;
     if (!state) return undefined;
     const identity = this.serviceIdentityObservation();
     if (state.grant.endpoint !== identity.endpoint || state.grant.instanceId !== identity.instanceId || state.grant.owner !== identity.principal.owner) throw new Error("the manager's local service observation does not match its owned serve incarnation");
@@ -1067,7 +1061,7 @@ export class Manager {
 
   start(): Promise<void> {
     if (this.startTask) return this.startTask;
-    const task = this.runStart();
+    const task = this.bootComponent.runStart();
     let wrapped!: Promise<void>;
     wrapped = task.finally(() => {
       if (this.startTask === wrapped) this.startTask = undefined;
@@ -1080,12 +1074,6 @@ export class Manager {
     return join(this.config.workspaceRoot, ".cotal", `manager-execution.${spaceKey(this.config.space)}.${instanceId}.json`);
   }
 
-  /** {@link ManagerBoot.claimExecutionRecord}. */
-  private claimExecutionRecord(...args: Parameters<ManagerBoot["claimExecutionRecord"]>): ReturnType<ManagerBoot["claimExecutionRecord"]> { return this.bootComponent.claimExecutionRecord(...args); }
-
-
-  /** {@link ManagerBoot.runStart}. */
-  private runStart(...args: Parameters<ManagerBoot["runStart"]>): ReturnType<ManagerBoot["runStart"]> { return this.bootComponent.runStart(...args); }
 
   /** The delivery shard whose lease names the process that reloads the standing credentials.
    *  Delivery is single-shard today and the endpoint's own responder reads row 0; naming it here
@@ -1184,9 +1172,6 @@ export class Manager {
   /** {@link Preservation.isProcessBoundSeat}. */
   protected isProcessBoundSeat(...args: Parameters<Preservation["isProcessBoundSeat"]>): ReturnType<Preservation["isProcessBoundSeat"]> { return this.preservationComponent.isProcessBoundSeat(...args); }
 
-  /** {@link Preservation.releaseManagedAgents}. */
-  private releaseManagedAgents(...args: Parameters<Preservation["releaseManagedAgents"]>): ReturnType<Preservation["releaseManagedAgents"]> { return this.preservationComponent.releaseManagedAgents(...args); }
-
   /** {@link Preservation.adoptReleasedSeats}. */
   protected adoptReleasedSeats(...args: Parameters<Preservation["adoptReleasedSeats"]>): ReturnType<Preservation["adoptReleasedSeats"]> { return this.preservationComponent.adoptReleasedSeats(...args); }
 
@@ -1234,7 +1219,7 @@ export class Manager {
     this.transcripts?.stop();
     this.staticLifecycle.stop();
     const starting = this.startTask;
-    await this.awaitStaticReconcileDrain();
+    await this.staticLifecycle.awaitStaticReconcileDrain();
     await starting?.catch(() => {});
     if (this.lease.leaseTimer) clearInterval(this.lease.leaseTimer);
     if (this.credRenewTimer) clearInterval(this.credRenewTimer);
@@ -1260,7 +1245,7 @@ export class Manager {
           // An in-process seat cannot be detached from the process that is exiting, and a released
           // seat that already exited cannot come back, so the default stop stops and deprovisions
           // both as `withAgents` does instead of orphaning their footprints.
-          const detached = this.releaseManagedAgents();
+          const detached = this.preservationComponent.releaseManagedAgents();
           releaseFailures = detached.failures;
           await this.teardownManagedAgents(detached.stop);
         }
@@ -1284,8 +1269,8 @@ export class Manager {
     // The expiry that would end a chat session stops with this process, and nothing can adopt one,
     // so an active stop retires every session this process admitted, under either agent policy, as
     // it does an in-process seat. A preserving stop leaves them to the next start's sweep.
-    if (this.maintenanceState === "active" && !this.resumeRequired) await step("retire chat sessions", () => this.retireChatSessionsOnStop());
-    else this.reportChatSessionsLeftAtStop(this.resumeRequired ? "this manager is waiting for a resume" : "this manager is preserving its state");
+    if (this.maintenanceState === "active" && !this.resumeRequired) await step("retire chat sessions", () => this.staticLifecycle.retireChatSessionsOnStop());
+    else this.staticLifecycle.reportChatSessionsLeftAtStop(this.resumeRequired ? "this manager is waiting for a resume" : "this manager is preserving its state");
     // A seat that may still be alive keeps this instance's leases and registration (see
     // teardownManagedAgents): they lapse on their TTL instead of being handed to a successor.
     if (seatFailure === undefined) {
@@ -1298,7 +1283,7 @@ export class Manager {
     // being asked here is "which registration did this process write", which only the state
     // before teardown can answer. Deregistration runs AFTER the serve loop has drained, so no
     // in-flight command can write a status back onto the record it just removed.
-    const registrationRevision = this.serviceServe?.grant.registrationRevision;
+    const registrationRevision = this.servePlane.serviceServe?.grant.registrationRevision;
     await step("stop service serve", () => this.stopServiceServe());
     // The drives AFTER the serve loop (no new `run-start` can land) and BEFORE deregistration: a
     // released run's status write is the last thing this incarnation says about it.
@@ -1306,8 +1291,8 @@ export class Manager {
     this.runHosting = undefined;
     if (registrationRevision !== undefined && seatFailure === undefined)
       await step("deregister service", () => this.deregisterServiceOnStop(registrationRevision));
-    await step("stop goal writer", () => this.stopGoalWriter());
-    await step("stop session plane", () => this.stopSessionPlane());
+    await step("stop goal writer", () => this.goalWriterComponent.stopGoalWriter());
+    await step("stop session plane", () => this.servePlane.stopSessionPlane());
     await step("stop endpoint", () => this.ep.stop());
     await step("stop attach endpoint", () => this.attach.stop());
     const also = failures.length ? `; teardown also failed: ${failures.join("; ")}` : "";
@@ -1368,9 +1353,9 @@ export class Manager {
    *  and drop its dedicated connection, or only close the connection while its transport is down.
    *  Best-effort so a graceful stop completes its remaining teardown even when the broker is gone. */
   private async stopServiceServe(): Promise<void> {
-    const s = this.serviceServe;
+    const s = this.servePlane.serviceServe;
     if (!s) return;
-    this.serviceServe = undefined;
+    this.servePlane.serviceServe = undefined;
     await this.retireConnection(s.nc, () => s.handle.stop());
   }
 
@@ -1924,11 +1909,8 @@ export class Manager {
   /** {@link GoalWriter.startGoalWriter}. */
   protected startGoalWriter(...args: Parameters<GoalWriter["startGoalWriter"]>): ReturnType<GoalWriter["startGoalWriter"]> { return this.goalWriterComponent.startGoalWriter(...args); }
 
-  /** {@link GoalWriter.stopGoalWriter}. */
-  private stopGoalWriter(...args: Parameters<GoalWriter["stopGoalWriter"]>): ReturnType<GoalWriter["stopGoalWriter"]> { return this.goalWriterComponent.stopGoalWriter(...args); }
   protected mintAndStageSessionLedger(authKv: KV): Promise<string> { return this.servePlane.mintAndStageSessionLedger(authKv); }
   protected startSessionPlane(): Promise<void> { return this.servePlane.startSessionPlane(); }
-  private stopSessionPlane(): Promise<void> { return this.servePlane.stopSessionPlane(); }
 
   /** {@link GoalWriter.reconcileGoalIndex}. */
   protected reconcileGoalIndex(...args: Parameters<GoalWriter["reconcileGoalIndex"]>): ReturnType<GoalWriter["reconcileGoalIndex"]> { return this.goalWriterComponent.reconcileGoalIndex(...args); }
@@ -1979,7 +1961,7 @@ export class Manager {
    *  connection that holds this instance's reply rows. The notice carries no turn and the seat
    *  pulls on it, so a lost notice delays that seat until its next pull, and nothing else. */
   protected noticeSeatTurns(seat: { name: string; owner: string; actor: string; uid: string }): void {
-    const serve = this.serviceServe;
+    const serve = this.servePlane.serviceServe;
     if (!serve) return;
     // An issued seat credential reads only the versioned rail, under the generation it was issued.
     const a = this.agents.get(seat.name);
@@ -2078,7 +2060,7 @@ export class Manager {
     const cause = { kind: "stopped-once", reason } as const;
     this.stopHandle(a, true, cause);
     this.trackStoppedHandle(a, false, cause);
-    void this.cancelAgentGoal(a.name, "graceful");
+    void this.seatStopComponent.cancelAgentGoal(a.name, "graceful");
   }
 
   /** Stop a seat this spawn just placed and track its exit: the stop first, so the terminalizing
@@ -2140,9 +2122,6 @@ export class Manager {
   /** Make an adopted seat a once seat again: its exit settles its task, and the task is served to
    *  it. A task that ended before the restart owes the stop the predecessor may not have made. */
   protected bindOnceSeat(a: ManagedAgent): Promise<void> { return this.turnRelay.bindOnceSeat(a); }
-
-  /** {@link SeatStop.cancelAgentGoal}. */
-  private cancelAgentGoal(...args: Parameters<SeatStop["cancelAgentGoal"]>): ReturnType<SeatStop["cancelAgentGoal"]> { return this.seatStopComponent.cancelAgentGoal(...args); }
 
   protected recordSlotRuntime(a: ManagedAgent): Promise<void> {
     return this.seatCustody.recordSlotRuntime(a);
@@ -2210,24 +2189,12 @@ export class Manager {
     return this.staticLifecycle.retireStaticChatSession(raw);
   }
 
-  private retireChatSessionsOnStop(): Promise<void> {
-    return this.staticLifecycle.retireChatSessionsOnStop();
-  }
-
-  private reportChatSessionsLeftAtStop(why: string): void {
-    return this.staticLifecycle.reportChatSessionsLeftAtStop(why);
-  }
-
   protected renewManagedStaticCred(a: ManagedAgent): Promise<void> {
     return this.staticLifecycle.renewManagedStaticCred(a);
   }
 
   protected readStaticReconcileSlot(alias: string): Promise<StaticManagedSlotRow | undefined> {
     return this.staticLifecycle.readStaticReconcileSlot(alias);
-  }
-
-  private awaitStaticReconcileDrain(): Promise<void> {
-    return this.staticLifecycle.awaitStaticReconcileDrain();
   }
 
   protected reconcileStaticLifecycles(postAdoption = false): Promise<void> {

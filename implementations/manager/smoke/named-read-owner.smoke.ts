@@ -63,7 +63,7 @@ const root = (tag: string) => {
   return path;
 };
 writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port, storeDir: join(dir, "js") }));
-type Priv = { managerInstanceId: string; serviceServe: { nc: NatsConnection }; leaseStopping: boolean };
+type Priv = { managerInstanceId: string; leaseStopping: boolean; servePlane: { serviceServe: { nc: NatsConnection }; } };
 let broker: ReturnType<typeof spawn> | undefined;
 let release: (() => void) | undefined;
 let m1: InstanceType<typeof Manager> | undefined;
@@ -304,7 +304,7 @@ try {
   check("class-only spawn remains launched with an explicit permission-refused pin audit", deniedSpawn.ok && String((deniedSpawn.data as { pinAudit?: { error?: string } })?.pinAudit?.error).includes("permission-denied"), deniedSpawn);
   // Stop only the owned manager's serving connection while its real seat continues publishing.
   (m1 as unknown as Priv).leaseStopping = true;
-  await (m1 as unknown as Priv).serviceServe.nc.close();
+  await (m1 as unknown as Priv).servePlane.serviceServe.nc.close();
   const unavailable = await granted.tool("cotal_invoke", { endpoint: "manager", command: "inspect", args: { name: "first" }, timeoutMs: 500 });
   check("unanswered owner is TARGET_UNAVAILABLE naming that instance, with no class fallback", unavailable.isError && unavailable.text.includes("TARGET_UNAVAILABLE") && unavailable.text.includes(iid1), unavailable);
   const cliUnavailable = await cli("inspect", { args: JSON.stringify({ name: "first" }), timeout: "500" });
