@@ -1,9 +1,9 @@
-import { readFileSync, writeFileSync, lstatSync, renameSync } from "node:fs";
+import { readFileSync, writeFileSync, lstatSync, mkdirSync, realpathSync, renameSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { dirname, join, resolve } from "node:path";
 import { stringify as stringifyYaml } from "yaml";
 import { z } from "zod";
-import { assertDerivedOwnerToken, assertValidChannel, assertValidName, ensureDirNoSymlink, isConcreteChannel, realDirNoSymlink, unlinkFileNoFollow, type MeshLaunchAgent, type MeshLaunchSpec } from "@cotal-ai/core";
+import { agentFileSourceId, assertDerivedOwnerToken, assertValidChannel, assertValidName, ensureDirNoSymlink, isConcreteChannel, personaDir, realDirNoSymlink, saveAgentFile, unlinkFileNoFollow, type AgentDef, type MeshLaunchAgent, type MeshLaunchSpec } from "@cotal-ai/core";
 
 /**
  * Load + materialize a resolved launch spec for `supervise --launch`.
@@ -187,6 +187,17 @@ export function inlinePersonaDir(root: string): string {
  *  that lifecycle's, as its lifecycle-keyed credential file is. */
 export function inlineSnapshotPath(root: string, lifecycleUid: string): string {
   return join(inlinePersonaDir(root), `${lifecycleUid}.md`);
+}
+
+/** Attribute the saved entry, not the separate snapshot carrying the launched prompt. */
+export function saveInlineCatalogSource(root: string, ref: string, definition: AgentDef): string {
+  const dir = personaDir(root);
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const path = join(realpathSync.native(dir), `${ref}.md`);
+  const source = agentFileSourceId(path);
+  saveAgentFile(path, definition, { createOnly: true });
+  if (agentFileSourceId(join(dir, `${ref}.md`)) !== source) throw new Error(`persona catalog changed while saving: ${dir}`);
+  return source;
 }
 
 /** Write the snapshot an unsaved inline persona launches from, create-only and 0600, and return its

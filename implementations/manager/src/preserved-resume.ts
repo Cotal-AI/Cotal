@@ -1010,6 +1010,7 @@ export class PreservedResume {
           backfillFloor: entry.backfillFloor,
           acceptedToken: entry.identity.mode === "static" ? entry.identity.issued?.acceptedToken : undefined,
           configPath: entry.launch.source.configPath,
+          agentFileSource: entry.launch.source.kind === "inline" ? entry.launch.source.agentFileSource : undefined,
           model: entry.launch.model,
           variant: entry.launch.variant,
           launchOptions,

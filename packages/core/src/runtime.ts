@@ -3,6 +3,7 @@ import type { LaunchSpec } from "./connector.js";
 import type { StartupOutcome } from "./startup-confirm.js";
 import { MANAGED_HANDOFF_FILE_ENV, type ManagedLifecycleHandoff, type ManagedLifecycleTarget } from "./managed-handoff.js";
 import { assertLifecycleToken } from "./subjects.js";
+import { AGENT_FILE_SOURCE_ENV } from "./agent-file.js";
 
 /** Which backend a manager spawns through. Open-ended: `pty` ships with the manager; every other
  *  name is contributed by a {@link RuntimeProvider}. */
@@ -219,6 +220,7 @@ export interface DelegatedSeatLaunch {
   readonly persona: string;
   /** The launching manager's stable instance id (`COTAL_MANAGER_INSTANCE`). */
   readonly managerInstanceId: string;
+  readonly agentFileSource?: string;
   /** The role the manager resolved (the `--role` override, else the persona's `role:`), the same
    *  value the enrollment carried. */
   readonly role?: string;
@@ -251,7 +253,9 @@ export function delegatedSeatCommand(
   for (const [k, v] of Object.entries(launch.launchOptions ?? {})) args.push("--opt", `${k}=${v}`);
   if (launch.events !== undefined) args.push(launch.events ? "--events" : "--no-events");
   if (launch.eventPayloads === false) args.push("--no-event-payloads");
-  return { args, env: { [MANAGED_HANDOFF_FILE_ENV]: files.handoff, COTAL_MANAGER_INSTANCE: managerInstanceId } };
+  const env = { [MANAGED_HANDOFF_FILE_ENV]: files.handoff, COTAL_MANAGER_INSTANCE: managerInstanceId,
+    ...(launch.agentFileSource !== undefined ? { [AGENT_FILE_SOURCE_ENV]: launch.agentFileSource } : {}) };
+  return { args, env };
 }
 
 

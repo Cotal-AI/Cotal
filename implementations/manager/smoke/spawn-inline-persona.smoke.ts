@@ -20,6 +20,7 @@ import { Manager, type FreeSlotCause, type ManagerResumeAgent, type ManagerResum
 import { inlinePersonaDir, inlineSnapshotPath } from "../src/launch.js";
 import { readSeatRecord } from "../src/resume.js";
 import {
+  agentFileSourceId,
   createSpaceAuth,
   eventChannel,
   loadAgentFile,
@@ -426,6 +427,8 @@ try {
     const seat = seatOf(S.M, "scribe");
     check("and its seat still runs from its snapshot", seat?.launch.source.kind === "inline", seat?.launch.source);
     const path = catalog("scribe");
+    check("the launch identifies the saved catalog entry without using it as its config",
+      launched.get("scribe")?.agentFileSource === agentFileSourceId(path) && launched.get("scribe")?.configPath !== path);
     const def = existsSync(path) ? loadAgentFile(path) : undefined;
     check("the catalog copy is private and named as requested", def?.name === "scribe" && (statSync(path).mode & 0o777) === 0o600, def);
     check("it keeps the grant that was checked, every channel field named", JSON.stringify(def?.subscribe) === "[]" && JSON.stringify(def?.allowSubscribe) === JSON.stringify(["review", "ops"]) && JSON.stringify(def?.allowPublish) === JSON.stringify(["review"]), def);
@@ -760,7 +763,7 @@ try {
     mkdirSync(join(root, ".cotal"), { recursive: true });
     const A = managerAt(root, {});
     stoppable(A.mgr);
-    const d = okData(await A.mgr.startAgent({ name: "carried", agent: "smoke-inline", events: false, persona: { prompt: "carried across" } }));
+    const d = okData(await A.mgr.startAgent({ name: "carried", agent: "smoke-inline", events: false, persona: { prompt: "carried across", save: true } }));
     const path = d ? inlineSnapshotPath(root, d.lifecycleUid) : "";
     let inventory: ManagerResumeInventory | undefined;
     const cut = await A.mgr.preserveState({ attemptId: "inline-cut", persistInventory: async (inv) => { inventory = inv; } });
@@ -772,6 +775,7 @@ try {
     const resumed = await B.mgr.resumePreserved(inventory!);
     const seat = seatOf(B.M, "carried");
     check("a replacement manager resumes the inline seat from its snapshot", resumed.ok && seat?.launch.source.kind === "inline" && seat.launch.source.configPath === path && B.spawned.get("carried") === 1, resumed);
+    check("resume retains the original saved catalog source", launched.get("carried")?.agentFileSource === agentFileSourceId(join(root, ".cotal", "agents", "carried.md")));
     await exitAndSettle(B.M, B.seats, "carried");
     check("and the resumed seat's retirement removes the snapshot", !existsSync(path));
   }

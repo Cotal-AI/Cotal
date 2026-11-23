@@ -3,7 +3,6 @@ import { readFileSync } from "node:fs";
 import {
   AGENT_FILE_SOURCE_META_KEY,
   agentFilePath,
-  agentFileSourceId,
   assertValidName,
   assertValidRole,
   isContractDigest,
@@ -143,7 +142,7 @@ async function list(verbose: boolean, running: boolean, values: ConnectValues): 
   recordOperationSpace(space);
   // Only an absent folder is an empty catalog. One that cannot be read is refused, as `persona` refuses it.
   let entries: PersonaEntry[];
-  try { entries = readPersonas(root); }
+  try { entries = readPersonas(root, { includeSource: running }); }
   catch (error) { throw catalogReadRefusal(personaDir(root), error); }
   // An explicit live overlay checks the mesh even when there are no local personas to mark.
   const overlay = running ? await presentSources(values) : undefined;
@@ -170,7 +169,7 @@ async function list(verbose: boolean, running: boolean, values: ConnectValues): 
       continue;
     }
     const d = e.def!;
-    const live = overlay && runningMark(overlay, e.path, d.kind ?? "agent");
+    const live = overlay && runningMark(overlay, e.sourceId, d.kind ?? "agent");
     const meta = [d.role && c.cyan(oneLine(d.role)), d.model && c.dim(`model=${oneLine(d.model)}`), d.owner && c.dim(`owner=${oneLine(d.owner)}`), live]
       .filter(Boolean)
       .join("  ");
@@ -191,8 +190,9 @@ interface RunningOverlay {
   unattributed: Set<EndpointKind>;
 }
 
-function runningMark(overlay: RunningOverlay, path: string, kind: EndpointKind): string {
-  if (overlay.sources.has(agentFileSourceId(path))) return c.green("● running");
+function runningMark(overlay: RunningOverlay, sourceId: string | undefined, kind: EndpointKind): string {
+  if (sourceId === undefined) throw new Error("persona catalog snapshot has no source ID");
+  if (overlay.sources.has(sourceId)) return c.green("● running");
   if (overlay.unattributed.has(kind)) return c.yellow("? running status unknown");
   return c.dim("○ not running");
 }

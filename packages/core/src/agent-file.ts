@@ -162,7 +162,10 @@ export function assertValidKind(kind: unknown, where?: string): EndpointKind {
 /** Load and parse an agent definition file (Markdown + `---` frontmatter). A consumer that
  *  validates the effective role after applying its own overrides can defer role syntax checking. */
 export function loadAgentFile(path: string, options?: { deferRoleValidation?: boolean }): AgentDef {
-  const bytes = readFileSync(path);
+  return parseAgentFileBytes(readFileSync(path), path, options);
+}
+
+function parseAgentFileBytes(bytes: Buffer, path: string, options?: { deferRoleValidation?: boolean }): AgentDef {
   const source = bytes.toString("utf8");
   const encoding = utf8Problem(bytes, source);
   if (encoding) throw new Error(`agent file ${path}: ${encoding}; save it as UTF-8`);
@@ -170,13 +173,19 @@ export function loadAgentFile(path: string, options?: { deferRoleValidation?: bo
 }
 
 export const AGENT_FILE_SOURCE_META_KEY = "ai.cotal.agent-file.source";
+export const AGENT_FILE_SOURCE_ENV = "COTAL_AGENT_FILE_SOURCE";
 
 /** An advisory source ID that does not publish the local path. Identify the named entry in its
  *  physical directory, so edits keep the association and two links to one file remain distinct. */
 export function agentFileSourceId(path: string): string {
-  const dir = realpathSync.native(dirname(path));
-  const { dev, ino } = statSync(dir, { bigint: true });
-  return contractDigest([hostname(), dir, String(dev), String(ino), basename(path)]);
+  return agentFileDirectory(dirname(path)).sourceId(basename(path));
+}
+
+function agentFileDirectory(path: string) {
+  const real = realpathSync.native(path);
+  const { dev, ino, ctimeNs } = statSync(real, { bigint: true });
+  const identity = [hostname(), real, String(dev), String(ino)];
+  return { real, stamp: JSON.stringify([...identity, String(ctimeNs)]), sourceId: (file: string) => contractDigest([...identity, file]) };
 }
 
 /** Parse an agent-file document already in memory. `path` is only for error text. A leading UTF-8
@@ -539,6 +548,8 @@ export interface PersonaCatalogEntry {
   /** The filename stem (`.cotal/agents/<name>.md`), which is also the spawn name. */
   name: string;
   path: string;
+  /** Captured with the definition for a listing that joins it to live presence. */
+  sourceId?: string;
   /** Parsed definition, or undefined when the file failed to parse (see `error`). */
   def?: AgentDef;
   /** Parse error message, if the file is malformed — surfaced rather than crashing the list. */
@@ -576,35 +587,58 @@ export function listPersonaCatalog(root: string): PersonaCatalogEntry[] {
 
 /** Read the catalog in filename order. Only an absent directory is empty; an unreadable or
  *  unsearchable directory throws. Files that fail parsing become error rows. Non-regular files
- *  are not opened, and entries retain encoding and symbolic-link details for local reports. */
-export function readPersonaCatalog(root: string): PersonaCatalogEntry[] {
+ *  are not opened, and entries retain encoding and symbolic-link details for local reports.
+ *  With source IDs requested, reject if the named directory changed during the read. */
+export function readPersonaCatalog(root: string, options?: { includeSource?: boolean }): PersonaCatalogEntry[] {
   const dir = personaDir(root);
   let files: string[];
+  let directory: ReturnType<typeof agentFileDirectory> | undefined;
   try {
-    files = readdirSync(dir).filter((f) => f.endsWith(".md"));
-    accessSync(dir, constants.X_OK);
+    if (options?.includeSource) directory = agentFileDirectory(dir);
+    const readDir = directory?.real ?? dir;
+    files = readdirSync(readDir).filter((f) => f.endsWith(".md"));
+    accessSync(readDir, constants.X_OK);
   } catch (e) {
-    if ((e as NodeJS.ErrnoException).code === "ENOENT" && !lstatSync(dir, { throwIfNoEntry: false })) return [];
+    if ((e as NodeJS.ErrnoException).code === "ENOENT" && !lstatSync(dir, { throwIfNoEntry: false })) {
+      if (directory) throw new AgentFileCatalogChanged(dir);
+      return [];
+    }
     throw e;
   }
-  return files.sort().map((f) => {
+  const entries = files.sort().map((f) => {
     const name = f.slice(0, -3);
     const path = join(dir, f);
-    const link = personaLinkTarget(path);
+    const readPath = directory ? join(directory.real, f) : path;
+    const link = personaLinkTarget(readPath);
     try {
       // A FIFO or a device would block the read, so only a regular file is opened. A link is
       // followed, as the read follows it.
-      if (!statSync(path).isFile()) return { name, path, error: `persona is not a regular file: ${path}`, notRegular: true as const, ...(link !== undefined ? { link } : {}) };
-      return { name, path, def: loadAgentFile(path), ...(link !== undefined ? { link } : {}) };
+      if (!statSync(readPath).isFile()) return { name, path, error: `persona is not a regular file: ${path}`, notRegular: true as const, ...(link !== undefined ? { link } : {}) };
+      return { name, path, def: parseAgentFileBytes(readFileSync(readPath), path), ...(directory ? { sourceId: directory.sourceId(f) } : {}), ...(link !== undefined ? { link } : {}) };
     } catch (e) {
       let encoding: string | undefined;
       try {
-        const bytes = readFileSync(path);
+        const bytes = readFileSync(readPath);
         encoding = utf8Problem(bytes, bytes.toString("utf8"));
       } catch { /* unreadable: `error` says so */ }
       return { name, path, error: (e as Error).message, ...(encoding ? { encoding } : {}), ...(link !== undefined ? { link } : {}) };
     }
   });
+  if (directory) assertCatalogDirectory(dir, directory.stamp);
+  return entries;
+}
+
+function assertCatalogDirectory(dir: string, stamp: string): void {
+  try {
+    if (agentFileDirectory(dir).stamp === stamp) return;
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+  }
+  throw new AgentFileCatalogChanged(dir);
+}
+
+export class AgentFileCatalogChanged extends Error {
+  constructor(path: string) { super(`persona catalog changed while reading: ${path}`); }
 }
 
 /** The one-line description `cotal personas list` prints: `description:` if set, else the

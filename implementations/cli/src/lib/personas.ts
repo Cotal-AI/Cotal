@@ -1,5 +1,5 @@
 import { lstatSync, statSync } from "node:fs";
-import { listPersonaCatalog, personaDir, personaLinkTarget, readPersonaCatalog, type AgentDef, type PersonaCatalogEntry } from "@cotal-ai/core";
+import { AgentFileCatalogChanged, listPersonaCatalog, oneLine, personaDir, personaLinkTarget, readPersonaCatalog, type AgentDef, type PersonaCatalogEntry } from "@cotal-ai/core";
 import { codeSpan, CommandFailure, unsearchableFolder } from "@cotal-ai/workspace";
 import { shellWord } from "./endpoint-errors.js";
 
@@ -56,6 +56,7 @@ export function catalogFolderProblem(dir: string): CommandFailure | undefined {
  *  above it that this account cannot enter, or a folder another account owns, is named without one,
  *  and any other error is refused without a step. */
 export function catalogReadRefusal(dir: string, error: unknown): CommandFailure {
+  if (error instanceof AgentFileCatalogChanged) return new CommandFailure("refused", "CONFLICT", oneLine(error.message), { remedy: "retry once the catalog is stable" });
   const folder = catalogFolderProblem(dir);
   if (folder) return folder;
   const refusal = (remedy?: string) => new CommandFailure("refused", "PERMISSION_DENIED", `cannot read persona catalog: ${dir}`, remedy ? { remedy } : {});
@@ -84,8 +85,8 @@ export function listPersonas(root: string): PersonaEntry[] {
 /** {@link listPersonas}, except that only an absent directory is an empty catalog: one that exists
  *  and cannot be read throws, for a report that must not show it as empty. So does one that lists
  *  but cannot be searched, such as mode 0600, whose files cannot be opened however they are written. */
-export function readPersonas(root: string): PersonaEntry[] {
-  return readPersonaCatalog(root);
+export function readPersonas(root: string, options?: { includeSource?: boolean }): PersonaEntry[] {
+  return readPersonaCatalog(root, options);
 }
 
 /** Just the persona names: the completion source for `cotal spawn`, `persona show` and `personas

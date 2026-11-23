@@ -389,7 +389,7 @@ export interface ManagerResumeAgent {
     source:
       | { kind: "persona"; ref: string; configPath: string; configSha256: string }
       // An inline persona's seat: `ref` is the requested name and `configPath` its lifecycle's snapshot.
-      | { kind: "inline"; ref: string; configPath: string; configSha256: string }
+      | { kind: "inline"; ref: string; configPath: string; configSha256: string; agentFileSource?: string }
       | { kind: "manifest"; runId?: string; requested: string; hash: string; configPath: string; configSha256: string; manifestSha256?: string };
     model?: string;
     variant?: string;

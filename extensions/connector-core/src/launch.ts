@@ -18,9 +18,11 @@
  * moved the credential, the broker address and the control token behind a 0600 file.
  */
 import {
+  AGENT_FILE_SOURCE_ENV,
   eventChannel,
   type PersonaEndpoint,
   LAUNCH_MATERIAL_ENV,
+  isContractDigest,
   parsePrincipalKey,
   principalKey,
   writeLaunchMaterial,
@@ -184,13 +186,15 @@ export function launchEnv(
   return env;
 }
 
-/** The seat's names as `COTAL_*` env: the launch name, and the display name a relaunch restores
- *  when `set-name` changed it. Every connector forwards both, so a seat keeps its actor and shows
- *  its last name. */
-export function nameEnv(opts: { name: string; displayName?: string }): Record<string, string> {
+/** Launch identity as `COTAL_*` env, including any restored display name and catalog source. */
+export function nameEnv(opts: { name: string; displayName?: string; agentFileSource?: string }): Record<string, string> {
   const env: Record<string, string> = {};
   env.COTAL_NAME = opts.name;
   if (opts.displayName !== undefined) env.COTAL_DISPLAY_NAME = opts.displayName;
+  if (opts.agentFileSource !== undefined) {
+    if (!isContractDigest(opts.agentFileSource)) throw new Error(`${AGENT_FILE_SOURCE_ENV} must be a SHA-256 digest`);
+    env[AGENT_FILE_SOURCE_ENV] = opts.agentFileSource;
+  }
   return env;
 }
 

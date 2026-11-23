@@ -1,14 +1,20 @@
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, renameSync, writeFileSync } from "node:fs";
+import { connect, createServer, type Socket } from "node:net";
+import { once } from "node:events";
 import { join } from "node:path";
-import { CotalEndpoint } from "@cotal-ai/core";
-import { configFromEnv, MeshAgent } from "@cotal-ai/connector-core";
+import { CotalEndpoint, registry, type Connector } from "@cotal-ai/core";
+import { configFromEnv, MeshAgent, nameEnv } from "@cotal-ai/connector-core";
 import { recordMesh, removeMesh } from "@cotal-ai/workspace";
+import { Manager } from "@cotal-ai/manager";
+
+type RunCli = (args: string[]) => Promise<{ code: number | null; out: string }>;
+type Check = (name: string, cond: boolean, extra?: unknown) => void;
 
 export async function checkPersonaRunning(
   root: string,
   servers: string,
-  run: (args: string[]) => Promise<{ code: number | null; out: string }>,
-  check: (name: string, cond: boolean, extra?: unknown) => void,
+  run: RunCli,
+  check: Check,
 ): Promise<void> {
   const space = "persona-running";
   const dir = join(root, ".cotal", "agents");
@@ -47,5 +53,95 @@ export async function checkPersonaRunning(
   } finally {
     await Promise.all([legacy.stop(), agent.stop()]);
     removeMesh(space);
+  }
+}
+
+export async function checkPersonaCatalogSwap(root: string, servers: string, run: RunCli, check: Check): Promise<void> {
+  const space = "persona-swap";
+  const dir = join(root, ".cotal", "agents");
+  const path = join(dir, "current.md");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(path, "---\nname: old\ndescription: Old catalog row.\n---\n");
+  const sockets = new Set<Socket>();
+  let release!: () => void;
+  const released = new Promise<void>(resolve => { release = resolve; });
+  const nats = new URL(servers);
+  const proxy = createServer(client => {
+    sockets.add(client);
+    client.on("error", () => client.destroy());
+    void released.then(() => {
+      if (client.destroyed) return;
+      const upstream = connect(Number(nats.port), nats.hostname);
+      sockets.add(upstream);
+      upstream.on("error", () => client.destroy());
+      client.on("close", () => upstream.destroy());
+      upstream.on("close", () => client.destroy());
+      client.pipe(upstream).pipe(client);
+    });
+  });
+  let list: ReturnType<RunCli> | undefined;
+  let agent: MeshAgent | undefined;
+  try {
+    proxy.listen(0, "127.0.0.1");
+    await once(proxy, "listening");
+    const address = proxy.address();
+    if (!address || typeof address === "string") throw new Error("catalog-swap proxy has no TCP address");
+    recordMesh({ space, root, server: `nats://127.0.0.1:${address.port}`, mode: "open", ts: new Date().toISOString() });
+    const dial = once(proxy, "connection", { signal: AbortSignal.timeout(10_000) });
+    list = run(["personas", "list", "--running", "--space", space]);
+    await dial; // The CLI has read the catalog, but the broker has sent no roster yet.
+    renameSync(dir, `${dir}-old`);
+    mkdirSync(dir);
+    writeFileSync(path, "---\nname: live\n---\n");
+    agent = new MeshAgent(configFromEnv({ COTAL_SPACE: space, COTAL_SERVERS: servers, COTAL_AGENT_FILE: path }));
+    agent.on("error", (error) => console.error(error.message));
+    agent.start();
+    await agent.waitUntilConnected(10_000);
+    release();
+    const result = await list;
+    check("a catalog swap cannot pair the old row with the replacement directory's running session",
+      result.code === 0 && /^current\s+○ not running$/m.test(result.out) && result.out.includes("Old catalog row."), result);
+  } finally {
+    release();
+    for (const socket of sockets) socket.destroy();
+    proxy.close();
+    await Promise.allSettled([list, agent?.stop()]);
+    removeMesh(space);
+  }
+}
+
+export async function checkSavedInlineRunning(root: string, servers: string, run: RunCli, check: Check): Promise<void> {
+  const space = "persona-inline-running";
+  const connector: Connector = {
+    kind: "connector", name: "persona-running-probe", requires: ["node"],
+    buildLaunch(opts) {
+      return { command: process.execPath, args: ["--input-type=module", "-e", `
+        import { configFromEnv, MeshAgent } from ${JSON.stringify(import.meta.resolve("@cotal-ai/connector-core"))};
+        const agent = new MeshAgent(configFromEnv());
+        agent.on("error", error => console.error(error.message));
+        process.once("SIGTERM", async () => { await agent.stop(); process.exit(0); });
+        agent.start();
+      `], env: { ...nameEnv(opts), COTAL_SPACE: space, COTAL_SERVERS: servers,
+        COTAL_ID: opts.id!, COTAL_LIFECYCLE_UID: opts.lifecycleUid!, COTAL_AGENT_FILE: opts.configPath! } };
+    },
+  };
+  mkdirSync(join(root, ".cotal"));
+  const manager = new Manager({ space, servers, runtime: "pty", workspaceRoot: root });
+  const caller = new MeshAgent(configFromEnv({ COTAL_SPACE: space, COTAL_SERVERS: servers, COTAL_NAME: "caller" }));
+  caller.on("error", (error) => console.error(error.message));
+  recordMesh({ space, root, server: servers, mode: "open", ts: new Date().toISOString() });
+  registry.register(connector);
+  try {
+    await manager.start();
+    caller.start();
+    await caller.waitUntilConnected(10_000);
+    const reply = await caller.spawn("saved", undefined, { agent: connector.name, events: false, persona: { prompt: "Saved inline persona.", save: true } });
+    check("the served manager launched and saved an inline persona", reply.ok, reply);
+    const listed = await run(["personas", "list", "--running", "--space", space]);
+    check("a saved inline seat is running under its catalog entry",
+      listed.code === 0 && /^saved\s+(?:owner=\S+\s+)?● running$/m.test(listed.out), listed);
+  } finally {
+    try { await caller.stop(); await manager.stop({ withAgents: true }); }
+    finally { registry.unregister("connector", connector.name); removeMesh(space); }
   }
 }

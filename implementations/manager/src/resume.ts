@@ -1,6 +1,6 @@
 import { mkdirSync, readFileSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { assertValidName, parsePersonaEndpoints, parseShareSelection, writeSecretFileAtomic } from "@cotal-ai/core";
+import { assertValidName, isContractDigest, parsePersonaEndpoints, parseShareSelection, writeSecretFileAtomic } from "@cotal-ai/core";
 import { z } from "zod";
 import type { ManagerResumeInventory } from "./manager.js";
 
@@ -63,6 +63,7 @@ const source = z.discriminatedUnion("kind", [
     ref: label,
     configPath: path,
     configSha256: digest,
+    agentFileSource: z.string().refine(isContractDigest, "must be a SHA-256 digest").optional(),
   }),
   z.strictObject({
     kind: z.literal("manifest"),

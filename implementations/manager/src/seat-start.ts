@@ -1,11 +1,11 @@
 import { mkdirSync, readFileSync, rmSync } from "node:fs";
 import { hostname } from "node:os";
 import { join, resolve } from "node:path";
-import { agentFilePath, chatStream, checkEventStartup, controlReplyFromThrown, copyPersonaEndpoints, describeCleanupFailures, DEV_OWNER, EpEnvelopeError, eventChannelPrincipal, EventStateConflictError, grantOverreach, isPermissionDenied, lifecycleBlocked, loadCotalConfig, lowerPersonaEndpoints, managedRetirementOpId, mintAcceptedToken, mintGeneration, mintLifecycleUid, modelPolicyRefusal, newIdentity, parsePrincipalKey, principalKey, provisionAgent, rejectionText, renderLifecycleBlocked, resolveReadAcl, saveAgentFile, STANDING_RENEWABLE_TTL_SEC as MANAGED_STATIC_TTL_SEC, STATIC_GENERATION_HORIZON_SEC, type AgentDef, type CleanupFailure, type Connector, type ControlReply, type CotalConfig, type CotalEndpoint, type EpCaller, type EpCapability, type GoalRef, type IssuedStore, type LaunchOpts, type LaunchSpec, type LifecycleStateTransport, type PersonaEndpoint, type UserAuthLaunch } from "@cotal-ai/core";
+import { chatStream, checkEventStartup, controlReplyFromThrown, copyPersonaEndpoints, describeCleanupFailures, DEV_OWNER, EpEnvelopeError, eventChannelPrincipal, EventStateConflictError, grantOverreach, isPermissionDenied, lifecycleBlocked, loadCotalConfig, lowerPersonaEndpoints, managedRetirementOpId, mintAcceptedToken, mintGeneration, mintLifecycleUid, modelPolicyRefusal, newIdentity, parsePrincipalKey, principalKey, provisionAgent, rejectionText, renderLifecycleBlocked, resolveReadAcl, STANDING_RENEWABLE_TTL_SEC as MANAGED_STATIC_TTL_SEC, STATIC_GENERATION_HORIZON_SEC, type AgentDef, type CleanupFailure, type Connector, type ControlReply, type CotalConfig, type CotalEndpoint, type EpCaller, type EpCapability, type GoalRef, type IssuedStore, type LaunchOpts, type LaunchSpec, type LifecycleStateTransport, type PersonaEndpoint, type UserAuthLaunch } from "@cotal-ai/core";
 import { agentLifecycleSecretFilePaths, agentSecretKeyForFile, materializeSecretToFile, mergeLaunchOptions, retainConnectorSeat } from "@cotal-ai/workspace";
 import type { KV } from "@nats-io/kv";
 import { CHAT_ALIAS_PREFIX } from "./chat-session.js";
-import { readContinuityAssignment, writeInlineSnapshot } from "./launch.js";
+import { readContinuityAssignment, saveInlineCatalogSource, writeInlineSnapshot } from "./launch.js";
 import type { Manager } from "./manager.js";
 import type { ManagerParts } from "./manager-parts.js";
 import { withTimeout } from "./manager-timeout.js";
@@ -836,10 +836,11 @@ export class SeatStart {
       // grant (the static issuance, the user-auth ledger, a hosted enrollment that may replace the
       // uid) and before launch, so a refused grant leaves neither file and the snapshot carries the
       // final uid. A copy that loses a create race throws, and the finally rolls the grant back.
+      let agentFileSource: string | undefined;
       if (inline) {
         configPath = writeInlineSnapshot(this.config.workspaceRoot, lifecycleUid, { name, role, model, variant, description: def.description, body: def.persona });
         snapshotUid = lifecycleUid;
-        if (catalogCopy) saveAgentFile(agentFilePath(this.config.workspaceRoot, ref), catalogCopy, { createOnly: true });
+        if (catalogCopy) agentFileSource = saveInlineCatalogSource(this.config.workspaceRoot, ref, catalogCopy);
       }
       if (configPath === undefined) throw new Error("internal: the persona file is missing at launch");
       const configSha256 = this.fileDigest(configPath);
@@ -862,6 +863,7 @@ export class SeatStart {
         lifecycleUid,
         acceptedToken: issued?.acceptedToken,
         configPath,
+        agentFileSource,
         model,
         variant,
         launchOptions,
@@ -901,7 +903,7 @@ export class SeatStart {
         this.delegatedLaunched.add(lifecycleUid);
         const holder = retainConnectorSeat(this.managerInstanceId, name);
         handle = runtime.spawnDelegated(
-          { agent, persona: readFileSync(configPath, "utf8"), managerInstanceId: this.managerInstanceId, role, model, variant, prompt, launchOptions: launchOptions as Record<string, string> | undefined, events, eventPayloads },
+          { agent, persona: readFileSync(configPath, "utf8"), managerInstanceId: this.managerInstanceId, agentFileSource, role, model, variant, prompt, launchOptions: launchOptions as Record<string, string> | undefined, events, eventPayloads },
           handoff,
         );
         watchConnectorHolder(handle, holder);
@@ -952,7 +954,7 @@ export class SeatStart {
                 manifestSha256,
               }
             : inline
-              ? { kind: "inline", ref, configPath, configSha256 }
+              ? { kind: "inline", ref, configPath, configSha256, ...(agentFileSource ? { agentFileSource } : {}) }
               : { kind: "persona", ref: opts.config ? identityName : ref, configPath, configSha256 },
           cwd,
           model,

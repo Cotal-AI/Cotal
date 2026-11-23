@@ -1229,6 +1229,7 @@
   "env:COTAL_ACCEPTED_TOKEN": "internal:seat session variable the launcher writes for a spawned seat",
   "env:COTAL_ACTOR": "internal:seat session variable the launcher writes for a spawned seat",
   "env:COTAL_AGENT_FILE": "current:spawn --config",
+  "env:COTAL_AGENT_FILE_SOURCE": "internal:catalog attribution for a saved inline seat",
   "env:COTAL_ALLOWED_USERS": "internal:connector plumbing the launcher sets for one harness",
   "env:COTAL_ALLOW_ALL_USERS": "internal:connector plumbing the launcher sets for one harness",
   "env:COTAL_ALLOW_CHECKOUT_SEED": "internal:handoff between a Cotal process and the child it starts",
