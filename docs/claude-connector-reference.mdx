@@ -886,6 +886,7 @@ Tool arguments (`TOOL_CALL_ARGS`) and results (`TOOL_CALL_RESULT`) use the separ
 subject `cotal.<space>.evp.<owner>.<actor>` and stream `EVP_<space>`. The ordinary event channel
 still carries no tool inputs or outputs. It keeps tool boundaries and the `CUSTOM` event
 `cotal.toolResult` with `{ toolCallId, isError }`, so metadata-only readers keep completion status.
+A connector whose harness record does not say whether a call failed leaves `isError` out.
 
 On an older host, a missing payload stream or a publish permission refusal on
 `$JS.API.STREAM.INFO.EVP_<space>` keeps the emitter publishing names and times only.
