@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { mintCreds, newIdentity } from "@cotal-ai/core";
-import { acquireMaintenanceLock, recordOperationSpace, brokerAddressForDisplay, canonicalRoot, CommandFailure, connectOrThrow, findMesh, findPreparedSpace, presentationOf, readMaintenanceJournal, releaseMaintenanceLock, serviceMetadataDigest, userViewAuth, writeResult, type Report, resolveControlTarget } from "@cotal-ai/workspace";
+import { acquireMaintenanceLock, recordOperationSpace, brokerAddressForDisplay, canonicalRoot, CommandFailure, connectOrThrow, findMesh, findPreparedSpace, presentationOf, readMaintenanceJournal, releaseMaintenanceLock, serviceMetadataDigest, shellPath, userViewAuth, writeResult, type Report, resolveControlTarget } from "@cotal-ai/workspace";
 import { buildLaunchSpec, cardOf, genRunId } from "../lib/manifest/apply.js";
 import { verifyOriginalIncarnations } from "../lib/team-retained.js";
 import { hashManifestSource, listLedgerFiles } from "../lib/manifest/ledger.js";
@@ -29,10 +29,16 @@ export async function applyChannelOnlyTeam(file: string, values: TeamValues): Pr
   if (prepared.agents.length || manifest.runtime !== undefined || values.runtime !== undefined || values["allow-stale"] !== undefined)
     throw new CommandFailure("refused", "UNSUPPORTED", "this channel-only route accepts no agent or runtime phase; no channel card was created in place of that request", { target: { space, requestedAgents: prepared.agents.length } });
   if (!manifest.channels.length) throw new CommandFailure("refused", "USAGE_INVALID", "this channel-only additive route needs at least one declared channel; no empty deployment was recorded", { target: { space } });
-  if (manifest.defaults !== undefined || manifest.broker?.host !== undefined || manifest.channels.some((channel) => channel.subscribe.length || channel.allowSubscribe.length || channel.allowPublish.length))
+  if (Object.keys(manifest.defaults ?? {}).length || manifest.broker?.host !== undefined || manifest.channels.some((channel) => channel.subscribe.length || channel.allowSubscribe.length || channel.allowPublish.length))
     throw new CommandFailure("refused", "UNSUPPORTED", "this channel-only route cannot apply a broker bind, space defaults or agent access edges; none was silently dropped", { target: { space } });
   const registered = findMesh(space), preparedSpace = findPreparedSpace(space), root = canonicalRoot(cotalRoot());
-  if (!registered || canonicalRoot(registered.root) !== root || preparedSpace && canonicalRoot(preparedSpace.root) !== root)
+  const registeredRoot = registered && canonicalRoot(registered.root), preparedRoot = preparedSpace && canonicalRoot(preparedSpace.root);
+  if (registeredRoot && registeredRoot !== root && (preparedRoot === undefined || preparedRoot === registeredRoot)) {
+    const format = presentationOf(values), spaceFlag = values.space === undefined ? "" : ` --space ${shellWord(values.space)}`;
+    const remedy = `cd ${shellPath(registeredRoot)} && cotal team deploy ${shellPath(path)}${spaceFlag}${format === "rich" ? "" : ` --${format}`}`;
+    throw new CommandFailure("refused", "CONFLICT", `apply this deployment from the registered project root ${registeredRoot}`, { target: { root, space }, remedy, remedyIsCommand: true });
+  }
+  if (!registered || registeredRoot !== root || preparedRoot !== undefined && preparedRoot !== root)
     throw (!registered ? stoppedTeamDeploy(preparedSpace, root) : undefined) ?? new CommandFailure("refused", "CONFLICT", "additive creation needs an existing registered mesh in this checkout; no foreign root was adopted", { target: { root, space } });
   if (registered.server.includes(","))
     throw new CommandFailure("refused", "UNSUPPORTED", "channel-only additive creation needs one registered broker address; a server list cannot pin one native target", { target: { root, space } });

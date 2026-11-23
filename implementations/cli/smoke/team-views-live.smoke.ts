@@ -54,7 +54,7 @@ const SERVER = `nats://127.0.0.1:${await freePort()}`, SERVER_B = `nats://127.0.
 const SPACE = `team-views-${process.pid}`, SPACE_B = `team-boot-${process.pid}`;
 
 const base = mkdtempSync(join(tmpdir(), "cotal-team-views-"));
-const home = join(base, "home"), configDir = join(base, "xdg"), s = join(base, "s"), b = join(base, "boot project"), c = join(base, "c");
+const home = join(base, "home"), configDir = join(base, "xdg"), s = join(base, "s"), b = join(base, "boot project"), c = join(base, "open project");
 const runtimeDir = join(base, "runtime");
 // The product refuses a local-record store that is not private, so every folder here is 0700.
 for (const dir of [home, configDir, runtimeDir, s, b, c]) mkdirSync(dir, { mode: 0o700 });
@@ -457,13 +457,32 @@ try {
         run.status === 2 && envelope(run.stdout)?.error?.code === "CONFLICT", run.out);
     }
   }
-  manifest("audit.yaml", OTHER, { "audit-team": "    deliveryClass: live\n" }, { ...openOptions, server: SERVER_OTHER.replace("nats:", "NATS:") + "/" });
+  manifest("audit.yaml", OTHER, { "audit-team": "    deliveryClass: live\n" }, { ...openOptions, head: "defaults: {replay: false}\n" });
+  const defaultsRefused = cotal(c, "team", "deploy", "audit.yaml", "--json");
+  const defaultsError = envelope(defaultsRefused.stdout)?.error;
+  check("channel-only apply still refuses a declared default of false",
+    defaultsRefused.status === 2 && defaultsError?.code === "UNSUPPORTED" && defaultsError.message?.includes("space defaults") === true, defaultsRefused.out);
+
+  manifest("audit.yaml", OTHER, { "audit-team": "    deliveryClass: live\n" }, { ...openOptions, head: "defaults: {}\n", server: SERVER_OTHER.replace("nats:", "NATS:") + "/" });
+  const foreignFile = "../open project/audit.yaml", registeredRoot = realpathSync(c);
+  const checkoutHint = `Apply from the registered project root ${registeredRoot}.`;
+  const siblingPreview = cotal(s, "team", "deploy", foreignFile, "--dry-run", "--plain");
+  check("a sibling checkout can preview the channel and sees where apply must run",
+    reported(siblingPreview, checkoutHint) && /New channel candidates:\s+1/.test(siblingPreview.stdout), siblingPreview.out);
+  const siblingApply = cotal(s, "team", "deploy", foreignFile, "--space", OTHER, "--json");
+  const checkoutError = envelope(siblingApply.stdout)?.error;
+  check("a sibling checkout still refuses apply and gives an exact, quoted retry",
+    siblingApply.status === 2 && checkoutError?.code === "CONFLICT" && checkoutError.message?.includes(registeredRoot) === true &&
+    checkoutError.remedy === `cd '${registeredRoot}' && cotal team deploy '${join(c, "audit.yaml")}' --space ${OTHER} --json`, siblingApply.out);
+  const localPreview = cotal(c, "team", "deploy", "audit.yaml", "--dry-run", "--plain");
+  check("the registered checkout still previews without a checkout hint",
+    localPreview.status === 0 && !localPreview.out.includes(checkoutHint) && /New channel candidates:\s+1/.test(localPreview.stdout), localPreview.out);
   check("team deploy preview accepts an equivalent broker URL", answered(cotal(c, "team", "deploy", "audit.yaml", "--dry-run", "--json")));
   const openApplied = cotal(c, "team", "deploy", "audit.yaml", "--json");
   const openResult = envelope(openApplied.stdout);
-  check("team deploy accepts an equivalent broker URL and creates the live card on the open mesh",
+  check("team deploy accepts empty defaults and an equivalent broker URL and creates the live card on the open mesh",
     openApplied.status === 0 && openResult?.outcome === "ok" && Array.isArray(openResult.result?.createdChannels) &&
-      openResult.result.createdChannels.some((card) => card.name === "audit-team"), openApplied.out);
+      openResult.result.createdChannels.some((card) => card.name === "audit-team" && Number.isInteger(card.revision)), openApplied.out);
   const openId = openResult?.result?.deploymentId;
   if (typeof openId !== "string" || !/^[a-f0-9]{16}$/.test(openId)) throw new Error("the open deployment did not return a full ID");
   manifest("audit.yaml", OTHER, { "audit-team": "    deliveryClass: live\n" }, { ...openOptions, open: true });
