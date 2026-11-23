@@ -142,7 +142,7 @@ interface Session {
   /** The manager that held the agent a loaded thread opened with, as the load described it. It stays a
    *  Machine choice, and is not described again. */
   held?: ManagerChoice;
-  /** The seat's open prompts, followed while a turn runs. */
+  /** The seat's open prompts, followed while the thread drives the seat and asked while a turn runs. */
   prompts?: PromptFollower;
   /** The commands and skills the seat runs, as its last `commands` listed them. */
   agentCommands?: CommandEntry[];
@@ -199,7 +199,7 @@ interface Bridge {
   readonly sessions: Map<string, Session>;
   readonly send: (session: Session, update: SessionUpdate, replay?: boolean) => Promise<void>;
   readonly mesh: () => Promise<Mesh>;
-  readonly bind: (session: Session, seat: SeatRef) => void;
+  readonly bind: (session: Session, seat: SeatRef, m: Mesh) => void;
   readonly unbind: (session: Session) => void;
   /** The session here that holds a seat, if any. */
   readonly holder: (seat: SeatRef) => Session | undefined;
@@ -220,6 +220,7 @@ function bridge(options: CotalAgentOptions): Bridge {
   const unclaimed = new Map<string, { at: number; frames: SeatFrame[] }>();
   let opened: Promise<Mesh> | undefined;
   let stopFollowing: (() => void) | undefined;
+  const client: Bridge["client"] = {};
 
   const send = (session: Session, update: SessionUpdate, replay = false): Promise<void> =>
     session.client.notify(methods.client.session.update, { sessionId: session.id, update, ...(replay ? { _meta: { isReplay: true } } : {}) });
@@ -276,8 +277,13 @@ function bridge(options: CotalAgentOptions): Bridge {
     });
   };
 
-  const bind = (session: Session, seat: SeatRef): void => {
+  const bind = (session: Session, seat: SeatRef, m: Mesh): void => {
     session.seat = seat;
+    session.prompts?.stop();
+    if (m.agentEndpoints) {
+      const ask = (p: AgentPrompt) => askPrompt({ options, send, client }, session, m, p);
+      session.prompts = new PromptFollower(m, seat, ask, (line) => options.log(`session ${session.id}: ${line}`), () => session.turn !== undefined, WATCH_MS);
+    }
     const key = principal(seat);
     byPrincipal.set(key, session);
     const held = unclaimed.get(key);
@@ -295,6 +301,7 @@ function bridge(options: CotalAgentOptions): Bridge {
     session.seat = undefined;
     session.mapper = new FrameMapper();
     session.open = new Map();
+    session.prompts?.stop();
     session.prompts = undefined;
     session.agentCommands = undefined;
   };
@@ -342,10 +349,13 @@ function bridge(options: CotalAgentOptions): Bridge {
 
   const close = async (): Promise<void> => {
     stopFollowing?.();
-    for (const s of sessions.values()) if (s.turn) s.turn.fail(new Error("the client disconnected"));
+    for (const s of sessions.values()) {
+      s.prompts?.stop();
+      if (s.turn) s.turn.fail(new Error("the client disconnected"));
+    }
     if (opened) await (await opened.catch(() => undefined))?.close();
   };
-  return { options, sessions, send, mesh, bind, unbind, holder, sessionOf, announce, reportUsage, close, client: {} };
+  return { options, sessions, send, mesh, bind, unbind, holder, sessionOf, announce, reportUsage, close, client };
 }
 
 function launchOffers(options: CotalAgentOptions) {
@@ -412,43 +422,45 @@ interface TurnWait {
   readonly quiet?: boolean;
 }
 
+/** Ask one of the seat's prompts in the thread and send the answer back. A form goes to a client
+ *  that takes forms; anything else is a permission request. A request the client cancels, as when
+ *  the turn is stopped, is not answered. */
+async function askPrompt(b: Pick<Bridge, "options" | "send" | "client">, session: Session, m: Mesh, prompt: AgentPrompt): Promise<void> {
+  const seat = session.seat;
+  if (!seat) return;
+  const { content } = prompt;
+  const formOption = content.form ? content.options.find((o) => o.form === "required" && o.note !== "required") : undefined;
+  if (content.form && formOption && b.client.capabilities?.elicitation?.form) {
+    const reply = await session.client.request(methods.client.elicitation.create, {
+      sessionId: session.id,
+      mode: "form",
+      message: permissionRequest(session.id, seat.name, harnessOf(session), prompt).toolCall.title ?? content.title,
+      requestedSchema: content.form.schema,
+      ...(content.source?.toolCallId ? { toolCallId: content.source.toolCallId } : {}),
+    });
+    const plain = plainOptions(prompt);
+    const option = reply.action === "accept" ? formOption : plain.find((o) => o.effect === (reply.action === "decline" ? "refuse" : "cancel")) ?? plain.find((o) => o.effect !== "proceed");
+    if (!option) return;
+    const values = reply.action === "accept" && "content" in reply && reply.content ? (reply.content as Record<string, unknown>) : undefined;
+    b.options.log(`session ${session.id}: ${seat.name}'s prompt ${prompt.id} answered ${option.id}: ${await answer(m, seat, prompt, option.id, option === formOption ? values ?? {} : undefined)}`);
+    return;
+  }
+  const request = permissionRequest(session.id, seat.name, harnessOf(session), prompt, session.cwd);
+  if (request.options.length === 0) {
+    await b.send(session, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: `${seat.name} asks "${content.title}", which can be answered only at its terminal.` } })
+      .catch((e: Error) => b.options.log(`session ${session.id}: update not sent: ${e.message}`));
+    return;
+  }
+  const reply = await session.client.request(methods.client.session.requestPermission, request);
+  if (reply.outcome.outcome !== "selected") return;
+  b.options.log(`session ${session.id}: ${seat.name}'s prompt ${prompt.id} answered ${reply.outcome.optionId}: ${await answer(m, seat, prompt, reply.outcome.optionId)}`);
+}
+
 function turnRunner(b: Bridge, startMs: number, settleMs: number) {
   const { options, send } = b;
   const say = (session: Session, line: string): Promise<void> =>
     send(session, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: line } }).catch((e: Error) => options.log(`session ${session.id}: update not sent: ${e.message}`));
 
-  /** Ask one of the seat's prompts in the thread and send the answer back. A form goes to a client
-   *  that takes forms; anything else is a permission request. A request the client cancels, as when
-   *  the turn is stopped, is not answered. */
-  const ask = async (session: Session, m: Mesh, prompt: AgentPrompt): Promise<void> => {
-    const seat = session.seat;
-    if (!seat) return;
-    const { content } = prompt;
-    const formOption = content.form ? content.options.find((o) => o.form === "required" && o.note !== "required") : undefined;
-    if (content.form && formOption && b.client.capabilities?.elicitation?.form) {
-      const reply = await session.client.request(methods.client.elicitation.create, {
-        sessionId: session.id,
-        mode: "form",
-        message: permissionRequest(session.id, seat.name, harnessOf(session), prompt).toolCall.title ?? content.title,
-        requestedSchema: content.form.schema,
-        ...(content.source?.toolCallId ? { toolCallId: content.source.toolCallId } : {}),
-      });
-      const plain = plainOptions(prompt);
-      const option = reply.action === "accept" ? formOption : plain.find((o) => o.effect === (reply.action === "decline" ? "refuse" : "cancel")) ?? plain.find((o) => o.effect !== "proceed");
-      if (!option) return;
-      const values = reply.action === "accept" && "content" in reply && reply.content ? (reply.content as Record<string, unknown>) : undefined;
-      options.log(`session ${session.id}: ${seat.name}'s prompt ${prompt.id} answered ${option.id}: ${await answer(m, seat, prompt, option.id, option === formOption ? values ?? {} : undefined)}`);
-      return;
-    }
-    const request = permissionRequest(session.id, seat.name, harnessOf(session), prompt, session.cwd);
-    if (request.options.length === 0) {
-      await say(session, `${seat.name} asks "${content.title}", which can be answered only at its terminal.`);
-      return;
-    }
-    const reply = await session.client.request(methods.client.session.requestPermission, request);
-    if (reply.outcome.outcome !== "selected") return;
-    options.log(`session ${session.id}: ${seat.name}'s prompt ${prompt.id} answered ${reply.outcome.optionId}: ${await answer(m, seat, prompt, reply.outcome.optionId)}`);
-  };
   /** Run one turn to its end. Every update is sent before this resolves. A `run` prompt belongs to the
    *  seat's first run. An `idle` prompt's runs are the ones that start once `start` is called, so a
    *  run that starts and ends before `start` resolves still counts. */
@@ -504,10 +516,6 @@ function turnRunner(b: Bridge, startMs: number, settleMs: number) {
         const seat = session.seat;
         if (!seat) return;
         const now = Date.now();
-        if (m.agentEndpoints) {
-          session.prompts ??= new PromptFollower(m, seat, (p) => ask(session, m, p), (line) => options.log(`session ${session.id}: ${line}`));
-          session.prompts.check();
-        }
         if (typeof turn.cancelled === "number") {
           // Connectors end an interrupted run differently or not at all, so wait briefly for it.
           const running = [...turn.runs].some((id) => session.open.has(id));
@@ -523,7 +531,9 @@ function turnRunner(b: Bridge, startMs: number, settleMs: number) {
         turn.lastSeen = now;
         // Settle only once the prompt was typed, so a refusal still fails the prompt.
         if (until !== "idle" || !begun) return;
-        if (status === "working") turn.started = true;
+        // An ask still open in the client holds the turn, so the request stays within it.
+        const asking = session.prompts?.pending === true;
+        if (status === "working" || asking) turn.started = true;
         if (!turn.started) {
           if (now - after > (wait.startMs ?? startMs)) {
             clearInterval(turn.timer);
@@ -533,7 +543,7 @@ function turnRunner(b: Bridge, startMs: number, settleMs: number) {
           return;
         }
         const running = [...turn.runs].some((id) => session.open.has(id));
-        if (status === "working" || running) turn.quietSince = undefined;
+        if (status === "working" || running || asking) turn.quietSince = undefined;
         else if (now - (turn.quietSince ??= now) >= settleMs) turn.stop("end_turn");
       }, WATCH_MS);
       start().then(() => {
@@ -665,7 +675,7 @@ function openCommand(b: Bridge, offers: Offers) {
     Object.assign(session, opened, { mapper: new FrameMapper(row.agent, row.cwd), open: new Map() });
     const replay = [...(await m.frameHistory(row)).flatMap((frame) => session.mapper.map(frame).updates), ...session.mapper.closeOpen("completed")];
     for (const update of replay) await send(session, update);
-    bind(session, row);
+    bind(session, row, m);
     options.links.add(m.space, { thread: session.id, lifecycleUid: row.lifecycleUid });
     void b.announce(session).catch(() => {});
     void b.reportUsage(session, m);
@@ -760,7 +770,7 @@ function threadHandlers(b: Bridge, offers: Offers, runTurn: ReturnType<typeof tu
         // A session deleted or replaced while the spawn was pending keeps no claim on the seat. A
         // delete hides it.
         if (sessions.get(session.id) !== session) return;
-        bind(session, seat);
+        bind(session, seat, m);
         options.links.add(m.space, { thread: session.id, lifecycleUid: seat.lifecycleUid });
         if (!images.length) return;
         // A seat can serve its endpoint before its harness takes turns, as a Claude Code seat does
@@ -815,7 +825,7 @@ function historyHandlers(b: Bridge, offers: Offers) {
         for (const update of updates) await send(session, update, true);
       }
       for (const update of session.mapper.closeOpen("completed")) await send(session, update, true);
-      bind(session, row);
+      bind(session, row, m);
       setImmediate(() => {
         void announce(session).catch(() => {});
         void reportUsage(session, m);
