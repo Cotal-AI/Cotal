@@ -864,6 +864,16 @@ export async function readSeats(v: ConnectFlags & FlagValues<typeof psFlags>, co
       const store = sameServer && (stopped || entry?.origin === "up") ? rootStoreProblem(root) : undefined;
       if (store) throw new CommandFailure("refused", "PERMISSION_DENIED", store.message, { target: e.target, remedy: store.remedy });
     }
+    if (isConnectRefusal(e) && e.code === "TARGET_UNAVAILABLE" && e.target?.root === undefined && v.space !== undefined && v.server !== undefined) {
+      // The explicit broker did not answer. Check the named local stack's retained address without dialing again.
+      let local: unknown;
+      try { resolveMeshTarget(process.cwd(), { space: v.space, readOnly: true }); } catch (error) { local = error; }
+      if (isWorkspaceTargetError(local) && local.code === "not-started" && local.details.lastRun && local.details.root !== undefined
+        && local.details.server !== undefined && brokerUrlKey(local.details.server) === brokerUrlKey(v.server)) {
+        const store = rootStoreProblem(local.details.root);
+        if (store) throw new CommandFailure("refused", "PERMISSION_DENIED", store.message, { target: e.target, remedy: store.remedy });
+      }
+    }
     // The exchange refused to pick one of your several live managers and named them, so each is
     // read. That is the whole set it counts, not a fallback after a failed read.
     const managers = on === undefined ? await refusedManagers(cliControl, e, v) : undefined;
