@@ -269,7 +269,7 @@ export function managerToolSpecs(config: AgentConfig, source: string, env?: Node
             const state = pending ? "it has not joined the mesh within its readiness window and may still be booting" : "it joined the mesh";
             const audit = unreported ? "was not reported by this manager" : "could not be audited";
             const message = `${lead} (id ${id}, manager ${manager}${mode ? `, runtime ${mode}` : ""})${d.goalId ? `, accepted goal "${d.goalId}"` : ""}: ${state}, but its model pin ${JSON.stringify(requested)} ${audit} (${error}). ` +
-              (pending ? "An identical retry in this session while it is starting returns the same goal. Inspect this seat rather than submitting different spawn options." : "Do not spawn it again: a retry starts a second agent.");
+              (pending ? "An identical retry in this session while it is starting returns the same goal. To check on it, inspect it with cotal_invoke on the manager endpoint rather than spawning with different options." : "It is running, so spawning it again would start a second agent. To check which model it runs, inspect it with cotal_invoke on the manager endpoint.");
             return {
               text: message,
               structured: {
