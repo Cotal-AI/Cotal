@@ -13,6 +13,7 @@
  * over a stack whose holder was killed says it takes the running stack over before a signal stops it.
  * A hangup cell sends SIGHUP to a ready foreground `up`: it exits 129, names `cotal down`, leaves the
  * broker running and removes its hold record, and the next `down --yes` stops the stack.
+ * After the project is moved, SIGHUP instead names a space-scoped stop that works from another folder.
  * A broker crash releases a controller foreground hold with a failed exit and prints a repair
  * command that keeps a broker-only stack broker-only.
  * A legacy foreground stop exits 130 on SIGINT and 143 on SIGTERM.
@@ -899,9 +900,21 @@ async function checkMovedRootStop(moved: string, home: string, env: NodeJS.Proce
   assert.equal(await portOpen(port), false, "the stopped stack's broker is gone"); passed++;
 }
 
-async function movedRootSignalCell(): Promise<void> {
-  const root = join(base, "controller-moved-root-signal"), mesh = join(root, "project"), moved = `${mesh} moved`;
-  const home = join(root, "home"), space = "foreground-moved-root-signal", port = await freePort();
+async function movedRootHangupStop(home: string, env: NodeJS.ProcessEnv, space: string, log: string): Promise<void> {
+  const args = ["down", "--space", space, "--yes"];
+  assert.ok(log.includes(` ${args.join(" ")}\` from another folder to stop it.`), log); passed++;
+  assert.doesNotMatch(log, /The terminal closed\. This stack is still running; `cd /); passed++;
+  const caller = recordSmokeSandbox({ root: home, cotalHome: env.COTAL_HOME!, xdgConfigHome: env.XDG_CONFIG_HOME! });
+  assertSmokeSandboxDown(caller, args, { cwd: home, env });
+  const down = await foregroundCliProbe(cliEntry, tsx, home, env, args, 120_000);
+  assert.equal(down.code, 0, down.out + down.err); passed++;
+  assert.match(down.out, /Stack stopped; its folder was gone/); passed++;
+}
+
+async function movedRootSignalCell(signal: "SIGTERM" | "SIGHUP"): Promise<void> {
+  const name = `controller-moved-root-${signal.toLowerCase()}`;
+  const root = join(base, name), mesh = join(root, "project"), moved = `${mesh} moved`;
+  const home = join(root, "home"), space = `foreground-moved-root-${signal.toLowerCase()}`, port = await freePort();
   const env = { ...cleanEnv, HOME: home, COTAL_HOME: join(home, "machine"), XDG_CONFIG_HOME: join(home, "xdg"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" };
   for (const dir of [mesh, env.COTAL_HOME, env.XDG_CONFIG_HOME]) mkdirSync(dir, { recursive: true, mode: 0o700 });
   const sandbox = recordSmokeSandbox({ root: mesh, cotalHome: env.COTAL_HOME, xdgConfigHome: env.XDG_CONFIG_HOME });
@@ -940,14 +953,19 @@ async function movedRootSignalCell(): Promise<void> {
     assert.ok(pins?.length === 3 && pins.every(live), holder.log());
     assert.equal(await portOpen(port), true, holder.log());
     renameSync(mesh, moved);
-    assert.ok(holder.child.kill("SIGTERM"), holder.log());
+    assert.ok(holder.child.kill(signal), holder.log());
     await until(() => holder.state.closed, 120_000, holder.log);
-    assert.equal(holder.state.code, 143, holder.log()); passed++;
-    assert.match(holder.log(), /Stack stopped; its folder was gone/); passed++;
+    assert.equal(holder.state.code, signal === "SIGHUP" ? 129 : 143, holder.log()); passed++;
+    if (signal === "SIGHUP") {
+      assert.ok(pins.every(live) && await portOpen(port), holder.log()); passed++;
+      await movedRootHangupStop(home, env, space, holder.log());
+    } else {
+      assert.match(holder.log(), /Stack stopped; its folder was gone/); passed++;
+    }
     assert.ok(pins.every((pin) => !live(pin)), holder.log()); passed++;
     assert.equal(await portOpen(port), false, holder.log()); passed++;
     confirmed = true;
-    console.log("PASS foreground-up-signals controller-moved-root-signal");
+    console.log(`PASS foreground-up-signals ${name}`);
   } finally {
     for (const { child, state } of children) if (!state.exited) child.kill("SIGKILL");
     if (!confirmed) {
@@ -1273,6 +1291,7 @@ async function userAuthRestartCell(): Promise<void> {
 }
 
 console.log(`foreground-up-signals retained evidence: ${base}`);
+if (process.platform === "linux") await movedRootSignalCell("SIGHUP");
 await openBrokerOnlyRestartCell();
 await managerNameCell();
 await userAuthRestartCell();
@@ -1312,6 +1331,6 @@ await controllerHoldCell("broker-crash");
 await controllerHoldCell("broker-only-crash");
 if (process.platform === "linux") await controllerHoldCell("time-wait");
 await controllerHoldCell("moved-root");
-if (process.platform === "linux") await movedRootSignalCell();
+if (process.platform === "linux") await movedRootSignalCell("SIGTERM");
 console.log(`foreground-up-signals: ${passed} passed, 0 failed`);
 emitSentinel({ cells: passed, passed, failed: 0 });
