@@ -115,7 +115,7 @@ export function presetDefinition(space: string, root: string, preset: ServicePre
  *  read of `manager` or `stack-manager` reaches that manager, or the log it left once it stopped.
  *  An unpinned manager status can also read the stopped manager's retained records.
  *  Undefined when the name is no preset. */
-export function resolvePresetService(space: string, root: string, requested: string, mode: string, values: ParsedArgs["values"]): PresetServiceTarget | undefined {
+export function resolvePresetService(space: string, root: string, requested: string, mode: string, values: ParsedArgs["values"], prepared = false): PresetServiceTarget | undefined {
   const store = serviceDefinitionStore(space, addedDefinitionStep);
   const exact = store.read(requested);
   const preset = findServicePreset(requested);
@@ -156,7 +156,9 @@ export function resolvePresetService(space: string, root: string, requested: str
   if (mode === "install") throw adapterInstallRefusal(space, requested, preset.adapter, {}, requested === "manager" ? "manager" : undefined, { space, name: requested });
   if (mode !== "start") throw new CommandFailure("refused", "TARGET_NOT_FOUND", `no ${requested} has been started in space ${oneLine(space)}; nothing was ${mode === "status" || mode === "logs" ? "read" : "changed"}`, {
     target: { space, name: requested },
-    remedy: requested === "manager" ? `start it with ${codeSpan(`cotal manager start --space${space.startsWith("-") ? "=" : " "}${shellWord(space)}`)}` : `start it with \`cotal service start ${requested}\``,
+    remedy: requested === "manager"
+      ? mode === "status" && prepared ? `start it with \`cotal up\` in ${oneLine(root)}` : `start it with ${codeSpan(`cotal manager start --space${space.startsWith("-") ? "=" : " "}${shellWord(space)}`)}`
+      : `start it with \`cotal service start ${requested}\``,
   });
   if (values["dry-run"]) return { requested, name: requested, preset: preset.name, saved: null };
   const definition: ServiceDefinitionInput = { ...servicePresetDefinition(preset, space, values, root, "start"), root };

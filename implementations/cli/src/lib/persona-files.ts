@@ -24,7 +24,7 @@ export function personaCatalog(values: { space?: string; server?: string }): Per
   return personaCatalogContext(values).catalog;
 }
 
-export function personaCatalogContext(values: { space?: string; server?: string }): { catalog: PersonaCatalog; userMode: boolean } {
+export function personaCatalogContext(values: { space?: string; server?: string }): { catalog: PersonaCatalog; userMode: boolean; prepared?: boolean } {
   try {
     const target = resolveMeshTarget(process.cwd(), { ...values, readOnly: true });
     // A `--server` that no registration names resolves to this folder's project, as launch does.
@@ -39,7 +39,7 @@ export function personaCatalogContext(values: { space?: string; server?: string 
     if (error.code === "not-started" && error.details.root && error.details.space && !error.details.rootMissing &&
         (!values.server || (values.space === error.details.space && preparedNeverStarted(error.details) &&
           !existsSync(stackJournalPath(error.details.root)) && !retainedLegacyBroker(error.details.root))))
-      return { catalog: catalogAt(error.details.root, error.details.space), userMode: false };
+      return { catalog: catalogAt(error.details.root, error.details.space), userMode: false, prepared: preparedNeverStarted(error.details) };
     if ((error.code === "unknown-space" || error.code === "not-started" && error.details.lastRun) && values.space !== undefined && values.server === undefined) {
       const root = findCotalRoot();
       // Legacy down can drop the registration, but the rendered open config still names the space.
