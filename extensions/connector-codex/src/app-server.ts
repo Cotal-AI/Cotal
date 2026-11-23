@@ -180,6 +180,15 @@ interface RpcMessage {
   error?: { code?: number; message?: string };
 }
 
+/** A request the app-server sent this host, such as an approval. `gen` is the incarnation that
+ *  sent it: an answer reaches only that one. */
+export interface ServerRequest {
+  id: number | string;
+  method: string;
+  params: Record<string, unknown>;
+  gen: number;
+}
+
 interface DriverOpts {
   /** The agent's working directory (the thread's cwd). */
   cwd: string;
@@ -197,6 +206,9 @@ interface DriverOpts {
   /** Binary override (tests point this at a fake server). */
   bin?: string;
   log?: (m: string) => void;
+  /** Takes a server request to answer later with {@link AppServerDriver.respond}, returning true,
+   *  or returns false and the driver declines it at once. */
+  hold?: (request: ServerRequest) => boolean;
 }
 
 /**
@@ -206,8 +218,9 @@ interface DriverOpts {
  *    `owned` is false for a turn the attached TUI started: this host may observe it, but only
  *    a turn it started itself may finalize its own delivery accounting.
  *  - `"itemStarted"` / `"itemCompleted"` (item, turnId) — thread items (feed/presence)
- *  - `"waiting"` (detail)                              — an approval was requested (auto-answered)
+ *  - `"waiting"` (detail)                              — an approval was requested
  *  - `"answered"` (detail)                             — that request's reply is written (→ working)
+ *  - `"resolved"` (requestId)                          — the app-server stopped waiting on a request
  *  - `"closed"` (code)                                 — the child exited
  */
 export class AppServerDriver extends EventEmitter {
@@ -788,24 +801,23 @@ export class AppServerDriver extends EventEmitter {
       return;
     }
     // Server→client request (id AND method): approvals and elicitations.
-    if (msg.id !== undefined && msg.method) return this.onServerRequest(msg.id, msg.method);
+    if (msg.id !== undefined && msg.method) return this.onServerRequest(msg.id, msg.method, msg.params ?? {});
     // Notification (method, no id).
     if (msg.method) this.onNotification(msg.method, msg.params ?? {});
   }
 
-  private onServerRequest(id: number | string, method: string): void {
-    // Approvals. The host enforces approval_policy=never at launch (host.ts refuses an override
-    // to any interactive mode a headless session cannot honestly answer) and pre-approves its
-    // OWN MCP tools (`default_tools_approval_mode=approve`), so these shouldn't fire. If one
-    // arrives anyway, DECLINE with the method's own response shape — an unattended host must
-    // never grant authority the policy didn't, and an unanswered request would hang the turn
-    // forever. Method-specific: a generic suffix match must not answer shapes it doesn't know
-    // (item/permissions/requestApproval wants {permissions, scope}, not a decision).
+  private onServerRequest(id: number | string, method: string, params: Record<string, unknown>): void {
     const approval = method === "execCommandApproval"
       || method === "applyPatchApproval"
       || method === "item/commandExecution/requestApproval"
       || method === "item/fileChange/requestApproval";
     this.emit("waiting", method, approval ? ({ code: "approval", source: method, since: Date.now() } satisfies PresenceCondition) : undefined);
+    // A held request is answered later; its `serverRequest/resolved` ends the wait.
+    if (this.opts.hold?.({ id, method, params, gen: this.generation })) return;
+    // Anything not held is DECLINED with the method's own response shape: an unattended host must
+    // never grant authority the policy didn't, and an unanswered request would hang the turn
+    // forever. Method-specific: a generic suffix match must not answer shapes it doesn't know
+    // (item/permissions/requestApproval wants {permissions, scope}, not a decision).
     if (method === "execCommandApproval" || method === "applyPatchApproval")
       this.writeLine({ jsonrpc: "2.0", id, result: { decision: "denied" } }); // legacy ReviewDecision
     else if (method === "item/commandExecution/requestApproval" || method === "item/fileChange/requestApproval")
@@ -815,6 +827,13 @@ export class AppServerDriver extends EventEmitter {
     // The wait ended with the reply. Without this the turn could end waiting→idle, which is not the
     // working→idle turn boundary, and the condition would outlive the turn (#3840).
     this.emit("answered", method);
+  }
+
+  /** Answer a held server request. False when its incarnation is gone or the socket is closed,
+   *  so nothing was written. */
+  respond(request: ServerRequest, result: unknown): boolean {
+    if (!this.isCurrent(request.gen)) return false;
+    return this.writeLine({ jsonrpc: "2.0", id: request.id, result });
   }
 
   /** Tombstone a turn whose terminal has been seen, keeping only a short recent tail — a late
@@ -896,6 +915,10 @@ export class AppServerDriver extends EventEmitter {
         return;
       }
       case "turn/failed": // terminal, but turn/completed (status:"failed") follows on the same turn
+        return;
+      case "serverRequest/resolved":
+        if (params.threadId === this.threadId && (typeof params.requestId === "number" || typeof params.requestId === "string"))
+          this.emit("resolved", params.requestId);
         return;
       case "turn/completed": {
         // Terminal events are correlated by EXACT turn id: a stale or duplicated terminal for a

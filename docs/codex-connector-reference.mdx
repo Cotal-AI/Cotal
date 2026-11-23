@@ -69,7 +69,7 @@ pipe, which is what lets Codex's own TUI attach to the very thread the mesh is d
   `COTAL_SPACE`, `COTAL_MANAGER_INSTANCE`, `COTAL_NAME`, `COTAL_ID`, `COTAL_LIFECYCLE_UID`,
   `COTAL_ACCEPTED_TOKEN` and `COTAL_HOME`. Broker credentials and the launch-material pointer
   remain private to the connector host.
-- **Autonomy defaults.** Spawned agents run `approval_policy=never`,
+- **Autonomy defaults.** Spawned agents run `approval_policy=never` unless asked otherwise,
   `sandbox_mode=workspace-write`, and `sandbox_workspace_write={network_access=true}`.
   See [Sandbox autonomy](#sandbox-options) for what each one means and how to
   change it.
@@ -169,9 +169,31 @@ terminal. The defaults follow from that, and all three are overridable per spawn
 
 | Default | What it means |
 | --- | --- |
-| `approval_policy="never"` | Never **ask** before running a command. Not "refuse": the agent runs its commands, it just does not stop to prompt. An interactive policy is refused loud rather than honored dishonestly, because a mesh-driven turn would block forever on a prompt nobody sees, and the alternative (auto-answering for you) nullifies the policy you asked for. |
+| `approval_policy="never"` | Never **ask** before running a command. Not "refuse": the agent runs its commands, it just does not stop to prompt. On a space where people sign in, an asking policy is honored through the prompt desk (see [Answering approvals](#answering-approvals)). Elsewhere it is refused loud rather than honored dishonestly, because a mesh-driven turn would block forever on a prompt nobody sees, and the alternative (auto-answering for you) nullifies the policy you asked for. |
 | `sandbox_mode="workspace-write"` | Commands may read anywhere but write only inside the agent's workspace. This, not the prompt, is the part that is actually enforced; see below for the (real) exposure it leaves. |
 | `sandbox_workspace_write={network_access=true}` | Network **on** inside that sandbox. Codex's own default is off, which breaks installing a dependency, pushing a branch, or calling an API, with an error that reads like the task is impossible rather than the sandbox saying no. Applied only when the sandbox is actually `workspace-write`: tighten the mode and no network grant is emitted at all. |
+
+### Answering approvals
+
+With an asking `approval_policy` on a space where people sign in, the seat serves Codex's requests
+on its `agent` endpoint (SPEC 13.22) and declares `prompts`:
+
+- A command approval opens a `permission` prompt for `exec_command` (or `write_stdin` for input to
+  a running command) with the command, its working directory and Codex's reason.
+- A file change approval opens a `permission` prompt for `apply_patch` whose input is the change
+  list Codex proposed on the item, `{ changes: [{ path, kind, diff }] }`.
+- Both offer Codex's decisions: allow, allow for this session, deny, and deny and stop the turn.
+  A server that lists its decisions gets only those.
+- A `request_user_input` call opens a `question` prompt with a form, one field per question. A
+  question with choices and no free answer is a single choice. A question marked secret is not put
+  on the desk, because a form never asks for a secret.
+
+The answer goes back as the request's result. The attached TUI shows the same request, and
+whichever answer reaches Codex first applies. Codex reports only that the request was resolved,
+not who answered, so a prompt the TUI answered first closes `withdrawn`, and one answered remotely
+closes unconfirmed. A request nobody answers stays open for seven days and is then declined, and an
+asking policy on any other space is refused at launch. Permission requests and MCP elicitations
+are still declined.
 
 What the sandbox guarantees, stated literally: it **blocks out-of-workspace local filesystem
 writes**. It does **not** block reads, exfiltration, or networked side effects.

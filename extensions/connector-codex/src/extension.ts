@@ -144,6 +144,8 @@ export const codexConnector: Connector = {
   // It takes the PRINCIPAL: a display name is not an identity on this mesh, and a name-keyed
   // channel would fuse two principals' streams onto one subject.
   eventChannel,
+  // Codex's approval requests and questions open on the agent's prompt desk (prompts.ts).
+  prompts: true,
 
   supportsLaunchValidation: true,
   buildLaunch(opts: LaunchOpts): LaunchSpec {
