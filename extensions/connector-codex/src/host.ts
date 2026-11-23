@@ -85,7 +85,7 @@ import { createCodexPrompts, followDriver, type CodexPrompts } from "./prompts.j
 import { createCodexMapper, type CodexMapper, type CodexRecord } from "./agui-map.js";
 import { waitForRollout } from "./agui-rollout.js";
 import { startCotalMcp, MCP_SERVER_NAME, MCP_TOKEN_ENV, type CotalMcpEndpoint } from "./mcp.js";
-import { configOverrides, mcpOverrides } from "./codex-config.js";
+import { ASKING_THREAD, configOverrides, mcpOverrides } from "./codex-config.js";
 import { launchTui } from "./tui.js";
 
 const ERROR_RETRY_INITIAL_MS = 1_000;
@@ -314,6 +314,7 @@ function createDriver(
     codexHome,
     configOverrides: [...baseOverrides, ...mcpOverrides(mcp)],
     developerInstructions: developerInstructions(config, persona),
+    threadSettings: config.askPermissions ? ASKING_THREAD : undefined,
     extraEnv: { [MCP_TOKEN_ENV]: mcp.token },
     bin: codexBin,
     log,
@@ -339,7 +340,7 @@ export async function runCodexHost(): Promise<void> {
   const codexBin = process.env.COTAL_CODEX_BIN?.trim() || process.env.COTAL_CODEX_RESOLVED_BIN?.trim() || undefined;
   // Validate the operator's launch config BEFORE anything is listening, so a bad launch throws
   // with nothing left behind to reap.
-  const baseOverrides = configOverrides(model, variant, config.userAuth !== undefined);
+  const baseOverrides = configOverrides(model, variant, config.userAuth !== undefined, config.askPermissions === true);
   // The cotal_* tools must be LISTENING before the child spawns: the child's config names this
   // URL and codex dials it while starting the thread.
   const mcp = await startCotalMcp(agent, config, log, () => ready && !driver.stopped ? driver.thread : undefined);

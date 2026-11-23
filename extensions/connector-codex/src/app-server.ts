@@ -198,6 +198,8 @@ interface DriverOpts {
   configOverrides: readonly (readonly [string, string])[];
   /** Persona → `thread/start.developerInstructions`. */
   developerInstructions?: string;
+  /** Settings `thread/start` applies to the thread, such as an asking launch's approval policy. */
+  threadSettings?: Readonly<Record<string, unknown>>;
   /** Extra env for the child, applied AFTER the COTAL_* scrub. The MCP bearer token rides here:
    *  the child genuinely needs that one capability, while everything else COTAL_* stays hidden.
    *  (That token is host-lifetime — the endpoint outlives app-server restarts — unlike the
@@ -479,6 +481,7 @@ export class AppServerDriver extends EventEmitter {
     const started = (await this.request("thread/start", {
       cwd: this.opts.cwd,
       ...(this.opts.developerInstructions ? { developerInstructions: this.opts.developerInstructions } : {}),
+      ...this.opts.threadSettings,
     })) as { thread?: { id?: string }; model?: string };
     const id = started.thread?.id;
     if (!id) throw new Error("thread/start returned no thread id");
