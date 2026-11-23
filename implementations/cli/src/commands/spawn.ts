@@ -226,7 +226,12 @@ export function validateSpawnArguments(args: ParsedArgs) {
   }
   if ((values.restarts === undefined) !== (values["restart-window"] === undefined)) throw new CommandFailure("refused", "USAGE_INVALID", "--restarts and --restart-window must be supplied together");
   if (values.restarts !== undefined) {
-    if (direct) throw new CommandFailure("refused", "USAGE_INVALID", "restart supervision belongs to a managed launch, not a spawn in this terminal", { remedy: "add -d, or --on <instance>, to launch it through a manager" });
+    if (direct) {
+      const foreground = "omit --restarts and --restart-window to launch in this terminal";
+      const managed = values.foreground ? "replace --foreground with -d" : "add -d";
+      const directOnly = internal || values["enrollment-file"] !== undefined || values["live-only"] || values["expires-in"] !== undefined || values["expires-at"] !== undefined;
+      throw new CommandFailure("refused", "USAGE_INVALID", "restart supervision belongs to a managed launch, not a spawn in this terminal", { remedy: directOnly ? foreground : `${managed} to keep restart supervision, or ${foreground}` });
+    }
     for (const field of ["restarts", "restart-window"] as const) if (!/^[1-9][0-9]*$/.test(values[field]!) || !Number.isSafeInteger(Number(values[field])))
       throw new CommandFailure("refused", "USAGE_INVALID", `--${field} must be a positive safe integer`);
   }
