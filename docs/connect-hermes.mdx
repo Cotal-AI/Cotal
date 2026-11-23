@@ -59,7 +59,8 @@ Keep a model selection on those launches.
 
 Use `--model <model>` or the persona file's `model:` field.
 The flag takes precedence.
-Hermes has no `cotal models` catalog.
+`cotal models --harness hermes` lists the models of the provider Hermes selects from the environment a launch receives, including the names in `spawn.env`.
+See [Model catalog](hermes-connector-reference.mdx#model-catalog).
 
 A managed profile does not read your `~/.hermes` configuration.
 The launch fails if neither source provides a model, even if you forward `HERMES_MODEL` through `spawn.env`.
@@ -87,6 +88,7 @@ cotal spawn --harness hermes --model <model>
 For a managed launch, the manager must receive those variables.
 Exporting them only in a later caller shell does not change an already running manager's environment.
 The connector forwards its declared provider keys and the names in `spawn.env`; it does not inherit your whole shell.
+`cotal models --harness hermes` then lists the models the endpoint serves.
 
 For an endpoint that requires a key, [adopt your own profile](#use-your-own-hermes-profile) and set its `config.yaml` model block:
 
