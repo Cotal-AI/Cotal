@@ -94,7 +94,7 @@ const config = {
 const agent = new FakeAgent();
 const TOKEN = "quiet-bridge-token";
 let subscriptions = 0;
-const bridge = startBridgeServer(agent as unknown as MeshAgent, config, socketPath, bridgeKey(socketPath, TOKEN), () => { subscriptions++; });
+const bridge = startBridgeServer(agent as unknown as MeshAgent, config, socketPath, bridgeKey(socketPath, TOKEN), { onSubscribe: () => { subscriptions++; } });
 
 try {
   for (let i = 0; i < 50; i++) {

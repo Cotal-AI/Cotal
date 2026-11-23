@@ -47,6 +47,10 @@ class BridgeClient:
         self._pending: dict[str, tuple[threading.Event, dict]] = {}
         self._on_incoming: Optional[Callable[[dict], None]] = None
         self._on_turn: Optional[Callable[[dict], None]] = None
+        self._on_request: Optional[Callable[[dict], None]] = None
+        # How many Cotal messages and turns the gateway has in progress, as last reported, and
+        # reported again on every (re)subscribe.
+        self._busy = 0
         self._on_refused: Optional[Callable[[str], None]] = None
         # Why this bridge refuses to dial, once its socket's directory has been found present and not
         # private to this user. That is a configuration fault no retry repairs, so it is permanent.
@@ -63,9 +67,11 @@ class BridgeClient:
         on_incoming: Callable[[dict], None],
         on_refused: Optional[Callable[[str], None]] = None,
         on_turn: Optional[Callable[[dict], None]] = None,
+        on_request: Optional[Callable[[dict], None]] = None,
     ) -> None:
         """Begin the reader thread. ``on_incoming`` is called (off-loop) for each mesh message,
-        ``on_turn`` for each turn in the user's own words (``{t:"turn", id, text}``), and
+        ``on_turn`` for each turn in the user's own words (``{t:"turn", id, text, images?}``),
+        ``on_request`` for each ``interrupt`` or ``usage`` request (answered with ``answer``), and
         ``on_refused`` (off-loop, once) if the reader stops because the socket's directory is not
         private to this user.
 
@@ -75,6 +81,7 @@ class BridgeClient:
         """
         self._on_incoming = on_incoming
         self._on_turn = on_turn
+        self._on_request = on_request
         self._on_refused = on_refused
         with self._lock:
             if self._reader is not None:
@@ -111,6 +118,7 @@ class BridgeClient:
                 if self._sock is None:
                     continue
                 self._send({"t": "subscribe", "token": self._token})  # (re)subscribe after every (re)connect
+                self._send({"t": "busy", "count": self._busy})
             # Read through a local handle. Re-reading `self._sock` here would race a concurrent
             # reassignment between the guard above and the recv below.
             sock = self._sock
@@ -215,6 +223,12 @@ class BridgeClient:
             cb = self._on_turn
             if cb:
                 cb(frame)
+        elif t in ("interrupt", "usage"):
+            cb = self._on_request
+            if cb:
+                cb(frame)
+            else:
+                self.answer(str(frame.get("id") or ""), error="the cotal adapter is not started")
         elif t == "tool_result":
             entry = self._pending.get(frame.get("id"))
             if entry:
@@ -250,6 +264,15 @@ class BridgeClient:
     def turn_taken(self, turn_id: str, error: Optional[str] = None) -> None:
         """Tell the sidecar whether the gateway took turn ``turn_id``."""
         self._send({"t": "turn_taken", "id": turn_id} if error is None else {"t": "turn_refused", "id": turn_id, "error": error})
+
+    def busy(self, count: int) -> None:
+        """Report how many Cotal messages and turns the gateway has in progress."""
+        self._busy = count
+        self._send({"t": "busy", "count": count})
+
+    def answer(self, request_id: str, data: Optional[dict] = None, error: Optional[str] = None) -> None:
+        """Answer the sidecar's request ``request_id`` with its data, or why it failed."""
+        self._send({"t": "answer", "id": request_id, "ok": True, "data": data or {}} if error is None else {"t": "answer", "id": request_id, "ok": False, "error": error})
 
     def reply(
         self, target: dict, text: str, reply_to: Optional[str] = None, context_id: Optional[str] = None

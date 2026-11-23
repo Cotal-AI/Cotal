@@ -26,11 +26,15 @@
  *                                              answers that peer
  *     {t:"turn_taken", id} | {t:"turn_refused", id, error}
  *                                              adapter: the gateway took turn <id>, or did not
+ *     {t:"busy", count}                        adapter: Cotal messages and turns in progress, sent on
+ *                                              every subscribe and every change
+ *     {t:"answer", id, ok, data?, error?}      adapter: the answer to request <id>
  *
  *   sidecar → Python
  *     {t:"incoming", msg}                      push one buffered mesh message (for handle_message)
- *     {t:"turn", id, text}                     a turn in the user's own words, run in the
+ *     {t:"turn", id, text, images?}            a turn in the user's own words, run in the
  *                                              adapter's operator chat (see submitTurn)
+ *     {t:"interrupt", id} | {t:"usage", id}    a request the adapter answers (see ask)
  *     {t:"tool_result", id, ok, text?, isError?, error?}   reply to a {t:"tool"} request
  *
  * Delivery is **serial + ack-on-surface**: the sidecar pushes the oldest buffered message, waits
@@ -50,7 +54,9 @@ import { createServer, type Server, type Socket } from "node:net";
 import { existsSync, unlinkSync } from "node:fs";
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { CONTROL_SERVER_AUTH_DEADLINE_MS, MAX_CONTROL_REQUEST_BYTES, assertControlSocketDir, type ControlEndpoint } from "@cotal-ai/core";
+import type { TurnImage } from "@cotal-ai/core";
 import {
+  CommandRefused,
   cotalToolSpecs,
   parseToolArgs,
   NO_TOOL_ARGS,
@@ -111,13 +117,28 @@ function wireItem(agent: MeshAgent, i: InboxItem): Record<string, unknown> {
   };
 }
 
-interface BridgeServer {
+export interface BridgeServer {
   /** Stop accepting, end every accepted connection, and resolve once the server has closed. */
   close(): Promise<void>;
   /** Hand the gateway a turn in the user's own words, once: it waits for an adapter to subscribe,
-   *  and resolves when the gateway took it. A turn handed to an adapter that disconnects before it
-   *  answers is not handed again, because whether the gateway started it cannot be known. */
-  submitTurn(text: string): Promise<void>;
+   *  and resolves when the gateway took it. It rejects with {@link CommandRefused} when the gateway
+   *  refused it. A turn handed to an adapter that disconnects before it answers is not handed again,
+   *  because whether the gateway started it cannot be known. */
+  submitTurn(text: string, images?: readonly TurnImage[]): Promise<void>;
+  /** Ask the subscribed adapter to run a request on the gateway, resolving with its answer's data.
+   *  Rejects when no adapter is subscribed, or it fails or disconnects before it answers. */
+  ask(request: "interrupt" | "usage"): Promise<Record<string, unknown>>;
+  /** An adapter is subscribed, the gateway has no Cotal message or turn in progress, and no turn
+   *  waits for its answer. */
+  idle(): boolean;
+}
+
+/** What the bridge tells its owner. */
+interface BridgeEvents {
+  /** An authenticated adapter subscribed. */
+  onSubscribe?(): void;
+  /** The bridge may have become {@link BridgeServer.idle}. */
+  onIdle?(): void;
 }
 
 /** The token the adapter presents in its first frame: HMAC-SHA256 keyed with the UTF-8 bytes of the
@@ -136,9 +157,8 @@ function tokenMatches(presented: unknown, digest: Buffer): boolean {
 }
 
 /** Start the adapter bridge. Returns a handle whose `close()` stops the server. `control` is the
- *  launch's control endpoint; the first frame must carry {@link bridgeToken} of its key.
- *  `onSubscribe` runs when an authenticated adapter subscribes. */
-export function startBridgeServer(agent: MeshAgent, config: AgentConfig, socketPath: string, control: ControlEndpoint, onSubscribe?: () => void): BridgeServer {
+ *  launch's control endpoint; the first frame must carry {@link bridgeToken} of its key. */
+export function startBridgeServer(agent: MeshAgent, config: AgentConfig, socketPath: string, control: ControlEndpoint, events: BridgeEvents = {}): BridgeServer {
   const digest = createHash("sha256").update(bridgeToken(control)).digest();
   assertControlSocketDir(socketPath);
 
@@ -161,8 +181,12 @@ export function startBridgeServer(agent: MeshAgent, config: AgentConfig, socketP
   /** Receive keys of deliveries the host would not take, each held back until its timer frees it. */
   const deferred = new Set<string>();
   /** Turns not yet answered by the gateway, by id; `to` is the adapter connection a turn went to. */
-  const turns = new Map<string, { text: string; to?: Socket; settle: (error?: Error) => void }>();
-  let turnIds = 0;
+  const turns = new Map<string, { text: string; images: readonly TurnImage[]; to?: Socket; settle: (error?: Error) => void }>();
+  /** Requests not yet answered, by id, each sent to the adapter connection `to`. */
+  const requests = new Map<string, { to: Socket; settle: (answer: { data?: Record<string, unknown>; error?: Error }) => void }>();
+  let frameIds = 0;
+  /** Cotal messages and turns the subscribed adapter has in progress, as it last reported. */
+  let busy = 0;
 
   const sendFrame = (sock: Socket, frame: Record<string, unknown>): void => {
     try {
@@ -200,7 +224,7 @@ export function startBridgeServer(agent: MeshAgent, config: AgentConfig, socketP
     for (const [id, turn] of turns) {
       if (turn.to) continue;
       turn.to = adapter;
-      sendFrame(adapter, { t: "turn", id, text: turn.text });
+      sendFrame(adapter, { t: "turn", id, text: turn.text, ...(turn.images.length ? { images: turn.images } : {}) });
     }
   };
   const settleTurn = (id: unknown, error?: Error): void => {
@@ -208,6 +232,13 @@ export function startBridgeServer(agent: MeshAgent, config: AgentConfig, socketP
     if (!turn) return;
     turns.delete(id as string);
     turn.settle(error);
+    events.onIdle?.();
+  };
+  const settleRequest = (id: unknown, answer: { data?: Record<string, unknown>; error?: Error }): void => {
+    const request = typeof id === "string" ? requests.get(id) : undefined;
+    if (!request) return;
+    requests.delete(id as string);
+    request.settle(answer);
   };
 
   agent.on("incoming", () => pump());
@@ -256,11 +287,21 @@ export function startBridgeServer(agent: MeshAgent, config: AgentConfig, socketP
       case "subscribe":
         adapter = sock;
         awaitingId = undefined;
+        busy = 0;
         pushes++;
         log("adapter subscribed");
-        onSubscribe?.();
+        events.onSubscribe?.();
         pushTurns();
         pump();
+        return;
+      case "busy":
+        if (sock !== adapter || typeof frame.count !== "number") return;
+        busy = frame.count;
+        if (busy === 0) events.onIdle?.();
+        return;
+      case "answer":
+        if (frame.ok === true) settleRequest(frame.id, { data: (frame.data ?? {}) as Record<string, unknown> });
+        else settleRequest(frame.id, { error: new Error(String(frame.error ?? "the gateway did not say why")) });
         return;
       case "delivered":
         // Address by the receive key the sidecar echoes (NOT the wire id: an id-less message's
@@ -293,7 +334,7 @@ export function startBridgeServer(agent: MeshAgent, config: AgentConfig, socketP
         settleTurn(frame.id);
         return;
       case "turn_refused":
-        settleTurn(frame.id, new Error(`the gateway did not take the turn: ${String(frame.error)}`));
+        settleTurn(frame.id, new CommandRefused("failed-precondition", `the gateway did not take the turn: ${String(frame.error)}`));
         return;
       case "reply":
         try {
@@ -389,6 +430,8 @@ export function startBridgeServer(agent: MeshAgent, config: AgentConfig, socketP
       }
       for (const [id, turn] of turns)
         if (turn.to === sock) settleTurn(id, new Error("the gateway disconnected before it answered the turn, so whether it started is unknown"));
+      for (const [id, request] of requests)
+        if (request.to === sock) settleRequest(id, { error: new Error("the gateway disconnected before it answered") });
     });
     sock.on("error", () => {
       /* ignore client errors */
@@ -408,11 +451,22 @@ export function startBridgeServer(agent: MeshAgent, config: AgentConfig, socketP
   });
 
   return {
-    submitTurn(text) {
+    submitTurn(text, images = []) {
       return new Promise<void>((resolve, reject) => {
-        turns.set(`turn-${++turnIds}`, { text, settle: (error) => (error ? reject(error) : resolve()) });
+        turns.set(`turn-${++frameIds}`, { text, images, settle: (error) => (error ? reject(error) : resolve()) });
         pushTurns();
       });
+    },
+    ask(request) {
+      return new Promise((resolve, reject) => {
+        if (!adapter) return reject(new Error("the gateway's cotal adapter is not connected"));
+        const id = `${request}-${++frameIds}`;
+        requests.set(id, { to: adapter, settle: ({ data, error }) => (error ? reject(error) : resolve(data!)) });
+        sendFrame(adapter, { t: request, id });
+      });
+    },
+    idle() {
+      return adapter !== undefined && busy === 0 && turns.size === 0;
     },
     close() {
       // A subscription holds its connection open for the life of the gateway, so close ends each
