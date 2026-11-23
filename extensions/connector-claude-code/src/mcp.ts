@@ -42,6 +42,7 @@ import { createClaudeEventPlane } from "./claude-events.js";
 import { createAppHost } from "./app-host.js";
 import { readCliRecord } from "./cli-record.js";
 import { openWakeFeed } from "./wake-feed.js";
+import { openCommandFeed, type CommandFeed } from "./command-feed.js";
 import { endHost, recordHost } from "./once-exit.js";
 
 /** What a plain session's local server tells the model ahead of the gateway's own steps. */
@@ -82,6 +83,7 @@ async function serveLocal(desktop: boolean): Promise<void> {
   // Desktop Chat runs no native hooks module. In Code, the server and native wake reader are
   // children of the same host process, which names their private feed.
   const feed = desktop ? undefined : await openWakeFeed(process.ppid);
+  const commands = desktop ? undefined : await openCommandFeed(process.ppid, { warn: (msg) => void process.stderr.write(`[cotal-connector] ${msg}\n`) });
   const host = createAppHost({
     cotal: () => readCliRecord(dirname(process.argv[1] ?? "")),
     // Claude Desktop's working directory is not the person's project, so the mesh is found from a
@@ -151,6 +153,7 @@ async function serveLocal(desktop: boolean): Promise<void> {
       .then(() => served.close())
       .finally(() => {
         feed?.close();
+        commands?.close();
         process.exit(0);
       }));
   process.stdin.on("end", end);
@@ -178,6 +181,7 @@ async function main(): Promise<void> {
     output: process.stdout,
     fatalBind: true,
     onShutdown: (code) => process.exit(code),
+    claudePid: process.ppid,
   });
   const stop = () => void session.close().finally(() => process.exit(0));
   process.on("SIGINT", stop);
@@ -195,6 +199,9 @@ export interface ClaudeSessionOptions {
   /** A shutdown frame or the end or closure of `input` ended the session. Called once after teardown;
    *  `code` is 1 if teardown failed, or the requested exit code otherwise. */
   onShutdown?: (code: number) => void;
+  /** The Claude Code process this session's server runs under. Set, the session serves that
+   *  process's command socket for its command mod. A host serving several sessions leaves it unset. */
+  claudePid?: number;
 }
 
 export interface ClaudeSession {
@@ -276,6 +283,7 @@ async function startSession(
   // `wake` is likewise assigned later, so a shutdown frame arriving before the MCP server exists
   // reads `undefined`.
   let controlServer: ReturnType<typeof startControlServer> | undefined;
+  let commands: CommandFeed | undefined;
   let mcp: McpServer | undefined;
   let stopping: Promise<void> | undefined;
   let shuttingDown = false;
@@ -291,6 +299,7 @@ async function startSession(
       } catch {
         /* ignore */
       }
+      commands?.close();
       wake?.stop();
       try {
         await events?.close();
@@ -311,6 +320,7 @@ async function startSession(
     );
   };
   setClose(close);
+  if (opts.claudePid !== undefined) commands = await openCommandFeed(opts.claudePid, { warn });
   controlServer = startControlServer(
     agent,
     control,
