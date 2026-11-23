@@ -12,13 +12,12 @@ import type { Manager } from "./manager.js";
 import type { ManagerParts } from "./manager-parts.js";
 import { appendStaticCredentialRow, recordSlotCredential, staticLifecycleTransport } from "./static-lifecycle.js";
 import type { ManagerConfig } from "./manager-config.js";
-import type { ManagerAuthState } from "./manager-auth-state.js";
+import type { ManagerStartState } from "./manager-start-state.js";
 
 /** What {@link BrokerTransport} reads from the Manager. Every entry is read at use, so a field the Manager
  *  assigns after construction is always current, and a Manager method a test replaces is the one that runs. */
 export interface BrokerTransportDeps {
   leaseStopping: () => Manager["leaseStopping"];
-  managerInstanceId: () => Manager["managerInstanceId"];
   transportDown: () => Manager["transportDown"];
   renewRemoteExecutor: (...args: Parameters<Manager["renewRemoteExecutor"]>) => ReturnType<Manager["renewRemoteExecutor"]>;
   renewRemoteStandingBundle: (...args: Parameters<Manager["renewRemoteStandingBundle"]>) => ReturnType<Manager["renewRemoteStandingBundle"]>;
@@ -32,7 +31,6 @@ export interface BrokerTransportDeps {
 export function brokerTransportDeps(m: Manager): BrokerTransportDeps {
   return {
     leaseStopping: () => m["leaseStopping"],
-    managerInstanceId: () => m["managerInstanceId"],
     transportDown: () => m["transportDown"],
     renewRemoteExecutor: (...args) => m["renewRemoteExecutor"](...args),
     renewRemoteStandingBundle: (...args) => m["renewRemoteStandingBundle"](...args),
@@ -42,14 +40,14 @@ export function brokerTransportDeps(m: Manager): BrokerTransportDeps {
 
 /** Dialing the broker, tracking and retiring connections, and the scoped one-shot executor connections the manager's writes ride. */
 export class BrokerTransport {
-  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: BrokerTransportDeps, private readonly parts: Pick<ManagerParts, "credentialRenewal">, private readonly state: ManagerAuthState) {}
+  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: BrokerTransportDeps, private readonly parts: Pick<ManagerParts, "credentialRenewal">, private readonly state: ManagerStartState) {}
 
   // The Manager members these bodies read, under their Manager names. Each reads through its dep at
   // use, so a field the Manager assigns later is current and a method a test replaces on the Manager
   // is the one that runs.
   private get auth() { return this.state.auth; }
   private get leaseStopping() { return this.deps.leaseStopping(); }
-  private get managerInstanceId() { return this.deps.managerInstanceId(); }
+  private get managerInstanceId() { return this.state.managerInstanceId!; }
   private get remoteAuthority() { return this.config.remoteAuthority; }
   private get transportDown() { return this.deps.transportDown(); }
   private renewRemoteExecutor(...args: Parameters<Manager["renewRemoteExecutor"]>): ReturnType<Manager["renewRemoteExecutor"]> { return this.deps.renewRemoteExecutor(...args); }

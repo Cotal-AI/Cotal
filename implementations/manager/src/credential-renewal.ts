@@ -10,7 +10,7 @@ import { MANAGER_ENDPOINT } from "./manager-service-contract.js";
 import { withTimeout } from "./manager-timeout.js";
 import type { Manager } from "./manager.js";
 import type { ManagerConfig } from "./manager-config.js";
-import type { ManagerAuthState } from "./manager-auth-state.js";
+import type { ManagerStartState } from "./manager-start-state.js";
 import type { ManagerParts } from "./manager-parts.js";
 
 /** The delivery-admin `reloadCreds` request bound — STRICTLY GREATER than the daemon's internal
@@ -74,7 +74,6 @@ export interface CredentialRenewalDeps {
   agents: () => Manager["agents"];
   ep: () => Manager["ep"];
   leaseStopping: () => Manager["leaseStopping"];
-  managerInstanceId: () => Manager["managerInstanceId"];
   runHosting: () => Manager["runHosting"];
   deliveryShard: () => (typeof Manager)["DELIVERY_SHARD"];
   beginLifecycle: (...args: Parameters<Manager["beginLifecycle"]>) => ReturnType<Manager["beginLifecycle"]>;
@@ -96,7 +95,6 @@ export function credentialRenewalDeps(m: Manager): CredentialRenewalDeps {
     agents: () => m["agents"],
     ep: () => m["ep"],
     leaseStopping: () => m["leaseStopping"],
-    managerInstanceId: () => m["managerInstanceId"],
     runHosting: () => m["runHosting"],
     deliveryShard: () => (m.constructor as typeof Manager).DELIVERY_SHARD,
     beginLifecycle: (...args) => m["beginLifecycle"](...args),
@@ -115,7 +113,7 @@ export function credentialRenewalDeps(m: Manager): CredentialRenewalDeps {
 /** Renewal of the manager's own standing credentials: the delivery daemon's reload, the remote
  *  standing bundle, and the pushes of renewed credentials to the live connections. */
 export class CredentialRenewal {
-  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: CredentialRenewalDeps, private readonly parts: Pick<ManagerParts, "goalWriter" | "servePlane">, private readonly state: ManagerAuthState) {}
+  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: CredentialRenewalDeps, private readonly parts: Pick<ManagerParts, "goalWriter" | "servePlane">, private readonly state: ManagerStartState) {}
 
   /** Named identity of {@link ManagerConfig.secrets}: the same coordinate the delivery daemon must reload from.
    *  Set at construction for an injected store; the workspace store is named on first challenge. */
@@ -154,7 +152,7 @@ export class CredentialRenewal {
   private get auth() { return this.state.auth; }
   private get ep() { return this.deps.ep(); }
   private get leaseStopping() { return this.deps.leaseStopping(); }
-  private get managerInstanceId() { return this.deps.managerInstanceId(); }
+  private get managerInstanceId() { return this.state.managerInstanceId!; }
   private get remoteAuthority() { return this.config.remoteAuthority; }
   private get runHosting() { return this.deps.runHosting(); }
   private get userMode() { return this.state.userMode; }

@@ -26,7 +26,7 @@ import { lifecycleBlocked, lifecycleBlockedFrom } from "@cotal-ai/core";
 import { REMOTE_STANDING_BUDGET_MS, remoteStandingTimeLeft } from "./credential-renewal.js";
 import { withTimeout } from "./manager-timeout.js";
 import type { ManagerConfig } from "./manager-config.js";
-import type { ManagerAuthState } from "./manager-auth-state.js";
+import type { ManagerStartState } from "./manager-start-state.js";
 
 type ServiceServe = { handle: EpServeHandle; nc: NatsConnection; identity: Identity; grant: EpServeGrant; creds?: string };
 type SessionLedgerConnection = { nc: NatsConnection; creds?: string };
@@ -57,7 +57,6 @@ function openMeshFrozenGateRefusal(e: unknown, instanceId: string): unknown {
 
 /** Current manager authority and shared renewal state, read when an operation runs. */
 export interface ServePlaneDeps {
-  managerInstanceId(): string;
   managerServeIdentity(): Identity;
   leaseStopping(): boolean;
   remoteStandingBudgetMs: number;
@@ -87,7 +86,6 @@ export interface ServePlaneDeps {
  *  field the Manager assigns later is current and a member a test replaces on the instance is the one that runs. */
 export function servePlaneDeps(m: Manager): ServePlaneDeps {
   return {
-    managerInstanceId: () => m["managerInstanceId"],
     managerServeIdentity: () => m["managerServeIdentity"],
     leaseStopping: () => m["leaseStopping"],
     remoteStandingBudgetMs: REMOTE_STANDING_BUDGET_MS,
@@ -146,12 +144,12 @@ export class ServePlane {
   serviceServe?: ServiceServe;
   sessionLedgerCreds?: string;
 
-  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: ServePlaneDeps, private readonly parts: Pick<ManagerParts, "connectorInventory" | "credentialRenewal" | "goalWriter">, private readonly state: ManagerAuthState) {}
+  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: ServePlaneDeps, private readonly parts: Pick<ManagerParts, "connectorInventory" | "credentialRenewal" | "goalWriter">, private readonly state: ManagerStartState) {}
   private get userMode() { return this.state.userMode; }
 
   private get auth(): SpaceAuth | undefined { return this.state.auth; }
   private get remoteAuthority(): Pick<NonNullable<ManagerOptions["remoteAuthority"]>, "identities" | "goalWriterCreds" | "sessionLedgerCreds" | "serveCreds" | "serveGrant" | "mintSessionServing"> | undefined { return this.config.remoteAuthority; }
-  private get managerInstanceId(): string { return this.deps.managerInstanceId(); }
+  private get managerInstanceId(): string { return this.state.managerInstanceId!; }
   private get managerServeIdentity(): Identity { return this.deps.managerServeIdentity(); }
   private get leaseStopping(): boolean { return this.deps.leaseStopping(); }
   /** The connector rows a status read serves (see {@link servedConnectorStatuses}), after retrying the unavailable ones. */
