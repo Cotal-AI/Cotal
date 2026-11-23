@@ -4,10 +4,11 @@
 import { readFileSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { writeSecretFileAtomic } from "@cotal-ai/core";
-import { assertRecordIdentity, exitCode, findMesh, formatRecord, identityRecord, parseRecord, renderReport, shellPath } from "@cotal-ai/workspace";
+import { assertRecordIdentity, codeSpan, exitCode, findMesh, formatRecord, identityRecord, parseRecord, renderReport, shellPath } from "@cotal-ai/workspace";
+import { shellWord } from "./endpoint-errors.js";
 import { displayCmd } from "./self-exec.js";
 import { observeServiceProcess, serviceInstanceStore } from "./service-instances.js";
-import { readStackJournal, stackDefinitionsAt, type StackJournal } from "./stack-journal.js";
+import { readStackJournal, stackDefinitionsAt, stackRootGone, type StackJournal } from "./stack-journal.js";
 
 /** Where a foreground `up` records the process that holds its stack's lifetime. */
 const foregroundHoldPath = (root: string): string => join(root, ".cotal", "stack-foreground.hold");
@@ -34,6 +35,19 @@ export function releaseForegroundHold(root: string): void {
     const read = parseRecord(readFileSync(foregroundHoldPath(root), "utf8"));
     if (read.kind === "record" && read.record.pid === process.pid) unlinkSync(foregroundHoldPath(root));
   } catch { /* nothing recorded */ }
+}
+
+/** A hangup leaves the stack running. Release the hold before exiting without unwinding finally. */
+export function hangupForegroundStack(root: string, space: string): never {
+  const gone = stackRootGone(space, root);
+  const stop = `${displayCmd({ fromAnyFolder: gone })} down`;
+  const remedy = gone
+    ? `run ${codeSpan(`${stop} --space ${shellWord(space)} --yes`)} from another folder to stop it`
+    : `${codeSpan(`cd ${shellWord(root)} && ${stop}`)} stops it`;
+  process.stderr.write(`The terminal closed. This stack is still running; ${remedy}.\n`);
+  process.exitCode = 129;
+  releaseForegroundHold(root);
+  process.exit(129);
 }
 
 /** Remove a foreground hold whose recorded process is gone, and leave one that still runs or cannot
