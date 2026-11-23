@@ -66,8 +66,13 @@ const MAX_COMMANDS = 2048;
 const MAX_TEXT = 4096;
 const MAX_REASON = 2000;
 
+// How long an interrupt waits for the aborted turn to complete.
+const COMPLETE_MS = 2000;
+
 const described = new Map();
 let turnId;
+// Resolvers for interrupts waiting on a main turn's completion, by turn id.
+const completions = new Map();
 
 const clip = (text, max) => [...text].slice(0, max).join('');
 const messageOf = (error) => String(error?.message ?? error) || 'unknown error';
@@ -143,12 +148,36 @@ async function stopBackgrounded($) {
   return refused ? 'a tool is still running' : undefined;
 }
 
+// Resolves true once the main turn `id` completed, or false after COMPLETE_MS.
+function completion($, id) {
+  return new Promise((resolve) => {
+    const timer = $.clock.after(COMPLETE_MS, () => {
+      completions.delete(id);
+      resolve(false);
+    });
+    completions.set(id, () => {
+      timer.cancel();
+      completions.delete(id);
+      resolve(true);
+    });
+  });
+}
+
 async function interrupt($) {
   if (turnId === undefined) return { op: 'interrupt', outcome: 'idle' };
+  const stopping = turnId;
+  // Claude records the tool results an abort moved to the background after the abort resolves, so
+  // they are read once the aborted turn completed.
+  const completed = completion($, stopping);
   try {
-    await $.turn.abort({ turnId });
+    await $.turn.abort({ turnId: stopping });
   } catch (error) {
+    completions.get(stopping)?.();
     return rejected('interrupt', messageOf(error));
+  }
+  if (!(await completed)) {
+    const reason = `the aborted turn did not complete within ${COMPLETE_MS / 1000} s, so tools it moved to the background may still run`;
+    return { op: 'interrupt', outcome: 'interrupted', reason };
   }
   const reason = await stopBackgrounded($).catch((error) => `could not stop the tools the interrupt left running: ${messageOf(error)}`);
   return { op: 'interrupt', outcome: 'interrupted', ...(reason ? { reason } : {}) };
@@ -208,7 +237,11 @@ export function register(on) {
     return next(e);
   });
   on('turn.complete', { turnId: /./ }, async ($, e, next) => {
-    if (e.agentId === undefined && e.turnId === turnId) turnId = undefined;
-    return next(e);
+    const completed = await next(e);
+    if (e.agentId === undefined) {
+      if (e.turnId === turnId) turnId = undefined;
+      completions.get(e.turnId)?.();
+    }
+    return completed;
   });
 }

@@ -330,7 +330,7 @@
     {
       "name": "keep the turn after it completed",
       "file": "extensions/connector-claude-code/hooks/commands.js",
-      "find": "    if (e.agentId === undefined && e.turnId === turnId) turnId = undefined;\n",
+      "find": "      if (e.turnId === turnId) turnId = undefined;\n",
       "replace": "",
       "expectRed": "idle once the main turn completed",
       "cell": "idle once the main turn completed"
@@ -398,6 +398,30 @@
       "replace": "",
       "expectRed": "a refusing row applies whatever source Claude gives the command",
       "cell": "a refusing row applies whatever source Claude gives the command"
+    },
+    {
+      "name": "read the session without waiting for the aborted turn",
+      "file": "extensions/connector-claude-code/hooks/commands.js",
+      "find": "  if (!(await completed)) {\n",
+      "replace": "  if (!(await Promise.race([completed, true]))) {\n",
+      "expectRed": "stops each tool the abort moved to the background",
+      "cell": "stops each tool the abort moved to the background"
+    },
+    {
+      "name": "never hear the aborted turn complete",
+      "file": "extensions/connector-claude-code/hooks/commands.js",
+      "find": "      completions.get(e.turnId)?.();\n",
+      "replace": "",
+      "expectRed": "stops each tool the abort moved to the background",
+      "cell": "stops each tool the abort moved to the background"
+    },
+    {
+      "name": "say nothing when the aborted turn does not complete",
+      "file": "extensions/connector-claude-code/hooks/commands.js",
+      "find": "    return { op: 'interrupt', outcome: 'interrupted', reason };\n",
+      "replace": "    return { op: 'interrupt', outcome: 'interrupted' };\n",
+      "expectRed": "an aborted turn that does not complete: interrupted, its tools may still run",
+      "cell": "an aborted turn that does not complete: interrupted, its tools may still run"
     }
   ]
 }

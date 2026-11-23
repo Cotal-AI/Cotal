@@ -71,12 +71,18 @@ function seat(on: On, options: Options = {}) {
     return { text: '' }
   })
   on('turn.start', ($, e) => ({ turnId: e.turnId }))
-  on('turn.complete', () => ({ text: '' }))
+  // Claude writes the results an abort moved to the background just after the abort resolves, so
+  // they show only once a turn completed.
+  let settled = false
+  on('turn.complete', () => {
+    settled = true
+    return { text: '' }
+  })
   on('turn.abort', ($, e) => {
     record.aborts.push(e.turnId)
     return options.abort?.(e.turnId) ?? { value: undefined }
   })
-  on('session.messages', () => ({ value: options.messages ?? [] }))
+  on('session.messages', () => ({ value: settled ? options.messages ?? [] : [] }))
   on('tool.call', ($, e) => {
     if (e.tool !== 'TaskStop') return { deny: `this test runs no ${e.tool}` }
     const task = String((e as { task_id?: unknown }).task_id)
@@ -94,6 +100,11 @@ function seat(on: On, options: Options = {}) {
 }
 
 const start = ($: Engine) => $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
+// An abort Claude accepts: the aborted turn completes a moment later.
+const completes = ($: Engine) => (turnId: string): Stub => {
+  setTimeout(() => void $.turn.complete({ turnId, answer: '', durationMs: 5, isAborted: true, reason: 'aborted' }), 1)
+  return undefined
+}
 
 describe('policy', () => {
   for (const name of ALLOWED) {
@@ -193,6 +204,7 @@ describe('rejections', () => {
     })
   })
   test('no turn is running: idle', async ($, on) => {
+    mock.clock(on)
     const { ask, record } = seat(on, { abort: (turnId) => ({ deny: `no turn is running (asked for ${turnId})` }) })
     await start($)
     await $.turn.start({ text: 'hi', turnId: 't1' })
@@ -253,7 +265,8 @@ describe('interrupt', () => {
     expect(record.aborts).toHaveLength(0)
   })
   test('aborts the main-loop turn, not a subagent turn', async ($, on) => {
-    const { ask, record } = seat(on)
+    mock.clock(on)
+    const { ask, record } = seat(on, { abort: completes($) })
     await start($)
     await $.turn.start({ text: 'hi', turnId: 't1' })
     await $.turn.start({ text: 'sub', turnId: 't2', agentId: 'a1' })
@@ -263,18 +276,31 @@ describe('interrupt', () => {
     expect(record.stops).toHaveLength(0)
   })
   test('stops each tool the abort moved to the background', async ($, on) => {
-    const { ask, record } = seat(on, { messages: ABORTED })
+    mock.clock(on)
+    const { ask, record } = seat(on, { messages: ABORTED, abort: completes($) })
     await start($)
     await $.turn.start({ text: 'run the two scripts', turnId: 't1' })
     expect(await ask({ op: 'interrupt' })).toEqual({ id: 'r1', op: 'interrupt', outcome: 'interrupted' })
     expect(record.stops).toEqual(['b1', 'b2'])
   })
   test('a refused TaskStop: interrupted, a tool is still running', async ($, on) => {
-    const { ask, record } = seat(on, { messages: ABORTED, stop: (task) => (task === 'b1' ? { deny: 'not now' } : undefined) })
+    mock.clock(on)
+    const { ask, record } = seat(on, { messages: ABORTED, abort: completes($), stop: (task) => (task === 'b1' ? { deny: 'not now' } : undefined) })
     await start($)
     await $.turn.start({ text: 'run the two scripts', turnId: 't1' })
     expect(await ask({ op: 'interrupt' })).toEqual({ id: 'r1', op: 'interrupt', outcome: 'interrupted', reason: 'a tool is still running' })
     expect(record.stops).toEqual(['b1', 'b2'])
+  })
+  test('an aborted turn that does not complete: interrupted, its tools may still run', async ($, on) => {
+    const clock = mock.clock(on)
+    const { ask, record } = seat(on, { messages: ABORTED, abort: () => void clock.advance(2000) })
+    await start($)
+    await $.turn.start({ text: 'run the two scripts', turnId: 't1' })
+    expect(await ask({ op: 'interrupt' })).toEqual({
+      id: 'r1', op: 'interrupt', outcome: 'interrupted',
+      reason: 'the aborted turn did not complete within 2 s, so tools it moved to the background may still run',
+    })
+    expect(record.stops).toHaveLength(0)
   })
 })
 
