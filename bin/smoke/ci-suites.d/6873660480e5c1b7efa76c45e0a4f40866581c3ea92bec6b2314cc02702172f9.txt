@@ -1,0 +1,3 @@
+# Agent commands and interrupt on OpenCode 1.x through the agent endpoint: one list of commands and skills by name, started at
+# OpenCode's command hook, waiting messages before the next command, refusals that never reach OpenCode, and interrupt from the turn state.
+smoke:opencode1-command:auth

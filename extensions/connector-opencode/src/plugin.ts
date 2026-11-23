@@ -68,6 +68,7 @@ import { createOpenCodeMapper, type OpenCodeMapper } from "./agui-map.js";
 import type { Plugin, Hooks, ToolDefinition } from "@opencode-ai/plugin";
 import { buildCotalTools } from "./tools.js";
 import { opencode1FailureCondition } from "./failure-condition.js";
+import { opencode1Commands } from "./commands1.js";
 import {
   log,
   SWAP_SETTLE_MS,
@@ -126,7 +127,14 @@ export const cotal: Plugin = async () => {
     await verifyServerModel(serverUrl, serverAuth, selectedModel);
   })();
 
-  const agent = new MeshAgent(config);
+  const commands = opencode1Commands({
+    api: <T>(path: string, init?: RequestInit, timeoutMs?: number) => opencodeApi<T>(path, init, timeoutMs),
+    ensureSession,
+    running: () => (busy || batch.open ? sessionID : undefined),
+    markInterrupt: markInterruptIntent,
+    warn: log,
+  });
+  const agent = new MeshAgent(config, undefined, { commands: commands.dispatcher });
   const { reapRetiredWal, opencodeApi, isMessageAbortedError, runErrorOf } = pluginIo({ agent, config, serverUrl, serverAuth });
   // OpenCode answers a reply to an ask it does not hold with a 404.
   const asks = opencode1Asks({
@@ -332,6 +340,7 @@ export const cotal: Plugin = async () => {
   let busy = false; // a turn is running (ours via drive(), OR the human's via session.status) → don't
   // prompt: opencode would COALESCE onto it (no reject). Released at EVERY turn end (completeTurn).
   let driving = false; // re-entrancy guard around an in-flight server prompt
+  let lastTurnWasCommand = false; // the last turn the connector started ran an agent command
   let primed = false; // persona goes out as `system` on the first CONNECTOR-SUBMITTED turn, once
   // Set on the first connector-submitted turn whether or not there was a briefing to send: the flag
   // records that the attempt was made, so an empty briefing is not retried on every later turn.
@@ -523,6 +532,7 @@ export const cotal: Plugin = async () => {
    */
   const quiesce = async (): Promise<void> => {
     stopping = true;
+    commands.close();
     try {
       controlServer?.close();
     } catch {
@@ -741,14 +751,14 @@ export const cotal: Plugin = async () => {
    *  makes the ordinary wake paths pick it up again. */
   const bootPending = (): boolean => bootReady && bootPrompt !== undefined;
 
-  /** Is there anything at all for a drive to carry? Three sources, and a caller that asks only about
-   *  the inbox misses two of them: the boot text and a held wake nudge are both real work that
-   *  `pendingForWake()` cannot see.
+  /** Is there anything at all for a drive to carry? Four sources, and a caller that asks only about
+   *  the inbox misses three of them: the boot text, a held wake nudge and a queued agent command are
+   *  all real work that `pendingForWake()` cannot see.
    *
    *  It answers WHETHER there is work, not HOW MUCH: the nudge slot holds at most one wake, so two
    *  callers' nudges read here as one. That is sound only because a wake is a hint rather than
    *  content; see the note on the slot itself. */
-  const workPending = (): boolean => bootPending() || pendingWake !== undefined || pendingForWake() > 0;
+  const workPending = (): boolean => bootPending() || pendingWake !== undefined || pendingForWake() > 0 || agent.queuedCommands > 0;
 
   /** Drive a turn carrying the current inbox batch (and the boot briefing once) into the visible
    *  session via the server API — server-side, so it can't race like the TUI input box, and the TUI
@@ -799,6 +809,7 @@ export const cotal: Plugin = async () => {
     // there is nothing to compose with. The boot task's own drive reaches this line once the
     // preconditions are met, and a pending wake waits in its slot until then.
     if (bootPrompt !== undefined && boot === undefined) return;
+    if (takeCommandTurn(boot, carried)) return driveCommand();
     driving = true;
     // The turns this submission carries under a claim, released if it fails.
     let turnIds: string[] = [];
@@ -911,7 +922,39 @@ export const cotal: Plugin = async () => {
       scheduleErrorRetry();
     } finally {
       driving = false;
+      // Messages went first after a command turn, and a command still waits when they sent nothing.
+      if (boot === undefined && !busy && agent.queuedCommands > 0) void drive();
     }
+  }
+
+  /** Whether the next idle turn runs a queued command. No boot text may hold the floor, and right
+   *  after a command turn waiting messages go first, so a stream of commands cannot hold the inbox
+   *  back (the rule 2.x keeps). */
+  function takeCommandTurn(boot: string | undefined, carried: string | undefined): boolean {
+    if (boot !== undefined || agent.queuedCommands === 0) return false;
+    const messagesFirst = lastTurnWasCommand && (carried !== undefined || pendingForWake() > 0);
+    lastTurnWasCommand = false;
+    return !messagesFirst;
+  }
+
+  /** Run the oldest queued command as a turn of its own. The batch opens empty, so neither the inbox
+   *  nor the prompt hook's prefix rides it. A command OpenCode did not take leaves the session free,
+   *  and whatever waits behind it drives at once. */
+  async function driveCommand(): Promise<void> {
+    if (!batch.surface([])) return;
+    busy = true;
+    const endsAtSend = turnEndsSeen;
+    if ((await agent.dispatchNextCommand()) === "dispatched") {
+      lastTurnWasCommand = true;
+      return;
+    }
+    // A turn end seen meanwhile, such as the session error OpenCode publishes with a refusal, has
+    // already released the session, and a turn started after it may hold it now.
+    if (turnEndsSeen === endsAtSend) {
+      busy = false;
+      batch.abandon();
+    }
+    if (!busy && workPending()) void drive();
   }
 
   /** Submit the boot prompt as the first CONNECTOR-SUBMITTED turn, and only ever one of those. It
@@ -1034,6 +1077,7 @@ export const cotal: Plugin = async () => {
   agent.on("wake", () => {
     if (!busy) void drive();
   });
+  agent.on("command", () => void drive());
 
   /** Match an event's session against the one we drive. Adopt the first session id we see, then
    *  filter to it; later top-level `session.created` events adopt explicitly as reset-in-place.
@@ -1323,6 +1367,9 @@ export const cotal: Plugin = async () => {
           break;
       }
     },
+
+    // The turn of a command the agent endpoint started is about to start.
+    "command.execute.before": async (input) => commands.starting(input.sessionID, input.command),
 
     // Surface the running tool as presence activity (parity with Claude's PreToolUse). A subagent's
     // call is handed to the asks too, since its permission asks are served.

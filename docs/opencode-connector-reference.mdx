@@ -41,8 +41,22 @@ with `failed-precondition`, and any other failure ends `unknown`. `interrupt` po
 `/api/session/:id/interrupt` and answers what OpenCode answers: `interrupted`, or `idle` when no
 execution ran. A stopped execution ends as `session.execution.interrupted`, which the plugin handles
 as a Stop at the terminal: the messages the turn carried count as delivered, and the next queued
-command runs. The 1.x plugin runs no commands, so its agent answers `supported: false` and
-`interrupt` is `unimplemented`.
+command runs.
+
+The 1.x plugin runs agent commands too. `GET /command` lists commands and skills in one list, a
+skill with `source: "skill"` and an MCP prompt as a command, and only each entry's name and
+description leave the plugin. Both run through `/session/:id/command` by name, only while no other
+turn runs. A name OpenCode does not list ends `refused` with `not-found` without reaching OpenCode,
+because OpenCode 1.19.6 answers an unknown name with a 500. OpenCode answers a command only once the
+turn it started has ended, so the command reads `taken` until OpenCode calls its
+`command.execute.before` hook, right before it submits the command's prompt, and `started` from
+then. An error answer before that hook ends `refused` with `failed-precondition`. The command route
+takes no `system` field, so when a command is the first turn the plugin submits, the persona rides
+the next message turn instead. Waiting messages go before the next queued command, as on 2.x.
+`interrupt` answers `idle` when no turn runs, by the plugin's own turn state, because OpenCode's
+`/session/:id/abort` answers `true` either way. Otherwise it posts that route and answers
+`interrupted`. The stopped turn ends with a `MessageAbortedError`, which the plugin handles as a
+Stop.
 
 ## Tool configuration
 

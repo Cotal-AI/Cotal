@@ -7,8 +7,8 @@
  * "Reconnecting…" reads as immediate TUI status; the rest is the imperative.
  *
  * It is for the agent's own terminal only. Sent through the agent endpoint it cannot help: a broken
- * link never delivers it, and on a working link it drops the connection its answer needs. So the 2.x
- * plugin leaves it out of the endpoint's `commands` list and refuses it on `command`.
+ * link never delivers it, and on a working link it drops the connection its answer needs. So both
+ * plugins leave it out of the endpoint's `commands` list and refuse it on `command`.
  */
 export const RECONNECT_COMMAND = {
   name: "reconnect",
