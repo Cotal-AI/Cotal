@@ -28,7 +28,7 @@ import { createConnection, createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { recordsBucket } from "@cotal-ai/core";
-import { canonicalLocalProcessPath, DELIVERY_PIDFILE, isCommandFailure, MANAGER_PIDFILE, MANAGER_SPARE_CAPABILITY, shellPath, spaceKey, verifyIdentityPin, type ProcessIdentityRecord } from "@cotal-ai/workspace";
+import { canonicalLocalProcessPath, DELIVERY_PIDFILE, isCommandFailure, MANAGER_PIDFILE, MANAGER_SPARE_CAPABILITY, readManagerName, shellPath, spaceKey, verifyIdentityPin, type ProcessIdentityRecord } from "@cotal-ai/workspace";
 import { finishOwnedChild, observeOwnedChild, ownedBirthLive as live, waitForOwnedChild } from "./_foreground-owned-child.js";
 import { foregroundCliProbe } from "./_foreground-cli-probe.js";
 import { observeServiceProcess, serviceInstances } from "../src/lib/service-instances.js";
@@ -1088,6 +1088,69 @@ async function openBrokerOnlyRestartCell(): Promise<void> {
   }
 }
 
+async function managerNameCell(): Promise<void> {
+  const space = "foreground-manager-name", mesh = join(base, space), home = join(mesh, "home");
+  mkdirSync(home, { recursive: true, mode: 0o700 });
+  const env = { ...cleanEnv, HOME: home, COTAL_HOME: join(home, "machine"), XDG_CONFIG_HOME: join(home, "xdg"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" };
+  const sandbox = recordSmokeSandbox({ root: mesh, cotalHome: env.COTAL_HOME, xdgConfigHome: env.XDG_CONFIG_HOME });
+  const probe = (args: string[]) => foregroundCliProbe(cliEntry, tsx, mesh, env, args, 60_000);
+  const created = await probe(["space", "create", space]);
+  assert.equal(created.code, 0, created.out + created.err);
+  const port = await freePort();
+  const up = ["up", "--foreground", "--server", `nats://127.0.0.1:${port}`];
+  const savedName = () => readManagerName({ root: mesh, space });
+
+  const refuseWhileBusy = async (expected: string | undefined, ...names: (string | undefined)[]) => {
+    const listener = createServer((socket) => socket.resetAndDestroy());
+    listener.listen(port, "127.0.0.1");
+    await once(listener, "listening");
+    try {
+      for (const name of names) {
+        const refused = await probe([...up, ...(name === undefined ? [] : ["--manager-name", name])]);
+        assert.equal(refused.code, 2, refused.out + refused.err);
+        assert.match(refused.err, /CONFLICT/);
+        assert.match(refused.err, /no broker was launched/);
+        assert.equal(savedName(), expected);
+      }
+    } finally { await new Promise<void>((done) => listener.close(() => done())); }
+  };
+  const bootAndStop = async (...args: string[]) => {
+    const child = spawn(process.execPath, ["--import", tsx, cliEntry, ...up, ...args], { cwd: mesh, env, stdio: ["ignore", "pipe", "pipe"] });
+    const state = observeOwnedChild(child);
+    let out = "", err = "";
+    child.stdout.on("data", (data: Buffer) => { out += data.toString(); });
+    child.stderr.on("data", (data: Buffer) => { err += data.toString(); });
+    try {
+      await until(() => {
+        if (state.exited || state.error) throw new Error(out + err);
+        return out.includes("Controller stack started");
+      }, 120_000, () => out + err);
+      assert.equal(savedName(), "KeptManager");
+      const who = await probe(["who", "--all"]);
+      assert.equal(who.code, 0, who.out + who.err);
+      assert.match(who.out, /\bKeptManager\b/);
+    } finally {
+      try {
+        if (!state.exited) child.kill("SIGTERM");
+        await waitForOwnedChild(() => state.closed, 60_000, out + err);
+      } finally {
+        if (!state.exited) child.kill("SIGKILL");
+        assertSmokeSandboxDown(sandbox, ["down", "--yes"], { cwd: mesh, env });
+        if (await portOpen(port)) await probe(["down", "--yes"]);
+      }
+    }
+    assert.equal(state.code, 143, out + err);
+    assert.equal(await portOpen(port), false, out + err);
+  };
+
+  await refuseWhileBusy(undefined, undefined, "RefusedManager");
+  await bootAndStop("--manager-name", "KeptManager");
+  await refuseWhileBusy("KeptManager", "RefusedOverride");
+  await bootAndStop();
+  passed++;
+  console.log("PASS foreground-up-signals refused starts leave the manager name unchanged");
+}
+
 async function userAuthRestartCell(): Promise<void> {
   const home = join(base, "user-auth-home"), mesh = join(base, "user-auth-project");
   for (const p of [home, mesh]) mkdirSync(p, { mode: 0o700 });
@@ -1146,6 +1209,7 @@ async function userAuthRestartCell(): Promise<void> {
 
 console.log(`foreground-up-signals retained evidence: ${base}`);
 await openBrokerOnlyRestartCell();
+await managerNameCell();
 await userAuthRestartCell();
 await cell("external-named", { auth: true, ready: true, externalDown: "named" });
 await cell("external-folder", { auth: true, ready: true, externalDown: "folder" });

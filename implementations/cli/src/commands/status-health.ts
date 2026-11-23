@@ -691,7 +691,7 @@ export async function printComponentHealth(selected: Selected, store: StoreWrite
     if (isWorkspaceTargetError(e)) {
       const verdict = e.code === "not-started" ? "absent" : "refused";
       const { message, remedy } = workspaceErrorParts({ kind: "target", error: e });
-      return printComponents([{ name: "target", verdict, facts: [e.code, remedy === undefined ? message : `${message} - ${displayRemedy(remedy)}`] }]);
+      return printComponents([{ name: "target", verdict, facts: [e.code, report.channelSeedBlocksRestart || remedy === undefined ? message : `${message} - ${displayRemedy(remedy)}`] }]);
     }
     if (e instanceof UnregisteredRoot)
       return printComponents([{ name: "target", verdict: "refused", facts: ["unregistered-root", `no space is registered or prepared here for ${e.root}`] }]);

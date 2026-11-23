@@ -505,7 +505,15 @@ const VERBS = ["start", "resume", "ps", "journal", "answer", "amend", "revoke", 
   const missing = await simulate({});
   c("a script with no result for an effect names the step and the entry to add",
     isCommandFailure(missing) && missing.code === "OPERATION_FAILED" && missing.message.includes('no checkpoints entry for "go" (step /checkpoint:go#0)')
-      && (missing.detail().remedy ?? "").includes('{ checkpoints: { "go": <result> } }') && (missing.target as { step?: string } | undefined)?.step === "/checkpoint:go#0", missing);
+      && (missing.detail().remedy ?? "").includes('{ checkpoints: { "go": <result> } }') && (missing.target as { step?: string } | undefined)?.step === "/checkpoint:go#0"
+      && (missing.detail().remedy ?? "").includes(`add it to ${join(dir, "results.json")} and rerun with \`cotal run simulate ${program} --handler ${join(dir, "results.json")}\``), missing);
+  // Without a results file there is nothing to edit: the remedy says to save one and pass it
+  // with --handler, instead of only showing the result object.
+  const noHandler = await runWorkflow({ values: {}, positionals: ["simulate", program], raw: [] }).then(() => undefined, (e: Error) => e);
+  c("a simulation run without a results file is told to save one and pass it with --handler",
+    isCommandFailure(noHandler) && noHandler.code === "OPERATION_FAILED"
+      && (noHandler.detail().remedy ?? "").includes("save it in a results file, for example results.json")
+      && (noHandler.detail().remedy ?? "").includes(`rerun with \`cotal run simulate ${program} --handler results.json\``), noHandler);
   writeFileSync(program, 'await checkpoint("go", "Proceed?", { timeout: "4s" });\n');
   const out: string[] = [];
   const write = process.stdout.write;

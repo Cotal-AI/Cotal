@@ -225,6 +225,10 @@ try {
   ok("the registry backup exited 0", made.status === 0, tail(made).slice(-1200));
 
   const before = readFileSync(journalPath);
+  const brokerOnly = runSync(["up", "--foreground", "--no-manager", "--open", "--space", space, "--server", server]);
+  ok("broker-only startup reports a lifecycle refusal and leaves the preserved cut untouched",
+    brokerOnly.status === 2 && tail(brokerOnly).includes("LIFECYCLE_BLOCKED") && tail(brokerOnly).includes("a maintenance attempt to recover") &&
+    readFileSync(journalPath).equals(before), tail(brokerOnly));
   const identity = lstatSync(store, { bigint: true });
   const attempts = join(root, ".cotal", "maintenance", "attempts");
   const staging = () => JSON.stringify(existsSync(attempts) ? readdirSync(attempts).sort() : null);

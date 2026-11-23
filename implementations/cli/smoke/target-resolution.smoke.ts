@@ -292,6 +292,18 @@ const QUESTION = "Which one?";
     check("bare who and use give the same refusal for an empty selection, without a roster",
       use.status === 1 && who.status === 1 && who.stdout === "" && who.stderr === use.stderr &&
       who.stderr.includes(`${pointer} is empty`) && who.stderr.includes("SCHEMA_INVALID") && who.stderr.includes("`cotal use --clear`"), shown(who));
+    const show = run(["space", "show", "--plain"]);
+    check("bare space show outside a project gives the same refusal as use for an empty selection",
+      show.status === 1 && show.stdout === "" && show.stderr === use.stderr, shown(show));
+    const inventory = run(["space", "--json"]), spaces = envelope(inventory);
+    check("space still lists prepared spaces and flags the unreadable selection",
+      inventory.status === 0 && spaces?.result?.current === null && spaces.result.currentRecorded === false &&
+      spaces.result.prepared.some((p: { space: string }) => p.space === "planned") &&
+      spaces.warnings.some((w: { code: string; target?: { file: string }; message: string }) => w.code === "MESH_REGISTRY_UNREADABLE" &&
+        w.target?.file === pointer && w.message.includes(`${pointer} is empty`) && w.message.includes("`cotal use --clear`")), shown(inventory));
+    const named = run(["space", "show", "planned", "--json"]);
+    check("named space show does not need the damaged selection",
+      named.status === 0 && envelope(named)?.target?.space === "planned", shown(named));
     const local = run(["who", "--json"], join(home, "alpha"));
     check("an empty selection does not fall back to the running project either",
       local.status === 1 && envelope(local)?.error?.code === "SCHEMA_INVALID" && envelope(local)?.target?.file === pointer && envelope(local)?.target?.space === undefined, shown(local));
@@ -308,6 +320,9 @@ const QUESTION = "Which one?";
     const unreadable = run(["who", "--json"]);
     check("an unreadable selection marker is named and does not permit fallback",
       unreadable.status === 1 && envelope(unreadable)?.error?.code === "SCHEMA_INVALID" && envelope(unreadable)?.target?.file === marker, shown(unreadable));
+    const showUnreadable = run(["space", "show", "--json"]);
+    check("bare space show also names the unreadable selection marker",
+      showUnreadable.status === 1 && envelope(showUnreadable)?.error?.code === "SCHEMA_INVALID" && envelope(showUnreadable)?.target?.file === marker, shown(showUnreadable));
     const reselected = run(["use", "planned", "--json"]);
     check("selecting again repairs an unreadable marker without losing its directory contents",
       reselected.status === 0 && getCurrent() === "planned" && !existsSync(marker) &&

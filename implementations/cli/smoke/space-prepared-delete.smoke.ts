@@ -21,6 +21,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpath
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createSuite } from "@cotal-ai/smoke-kit";
+import { spaceSegment } from "@cotal-ai/workspace";
 import { ptySpawn, screen } from "./_console-pty.js";
 
 const BIN = join(import.meta.dirname, "..", "..", "..", "bin", "dist", "cotal.js");
@@ -311,6 +312,23 @@ for (const fix of [[], ["--fix"]]) {
       explicit.status === 0 && explicit.stdout.includes("Credential check skipped") && explicit.stdout.replace(/\s+/g, " ").includes(`Space: ${space}`) &&
       !explicit.stdout.includes("authenticates no one") && explicit.stderr.includes(`cotal space show ${space}`), shown(explicit));
   }
+}
+
+{
+  const record = join(env.COTAL_HOME, "meshes", `${spaceSegment("workshop-a")}.json`);
+  writeFileSync(record, '{"space":\n');
+  const recovery = "restore the record from backup, or remove it with `cotal space forget workshop-a`";
+  const barePlain = run(["doctor", "auth", "--plain"], workshop);
+  const namedPlain = run(["doctor", "auth", "--plain", "--space", "workshop-a"], workshop);
+  check("doctor gives the same damaged registration refusal in plain output with and without --space",
+    barePlain.status === 1 && namedPlain.status === 1 && namedPlain.stderr === barePlain.stderr &&
+    namedPlain.stderr.includes(record) && namedPlain.stderr.includes("SCHEMA_INVALID") && namedPlain.stderr.includes(recovery), [barePlain, namedPlain].map(shown));
+  const bareJson = run(["doctor", "auth", "--json"], workshop);
+  const namedJson = run(["doctor", "auth", "--json", "--space", "workshop-a"], workshop);
+  check("doctor gives the same damaged registration refusal in JSON with and without --space",
+    bareJson.status === 1 && namedJson.status === 1 && namedJson.stdout === bareJson.stdout &&
+    namedJson.envelope?.outcome === "refused" && namedJson.envelope.error?.code === "SCHEMA_INVALID" &&
+    namedJson.envelope.error.message?.includes(record) === true && namedJson.envelope.error.remedy === recovery, [bareJson, namedJson].map(shown));
 }
 
 finish();
