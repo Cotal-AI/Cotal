@@ -180,7 +180,7 @@ try {
     await sleep(DELTA_JOURNAL_INTERVAL_MS + 100);
     const lines = readFileSync(path, "utf8").trim().split("\n").map((l) => JSON.parse(l) as DeltaRecord);
     const gaps = lines.slice(1).map((l, i) => l.ts - lines[i]!.ts);
-    check("at most one line per 250 ms", lines.length <= Math.ceil(1200 / DELTA_JOURNAL_INTERVAL_MS) + 1 && gaps.every((g) => g >= DELTA_JOURNAL_INTERVAL_MS - 1),
+    check("at most one line per 250 ms", lines.length <= Math.ceil(1200 / DELTA_JOURNAL_INTERVAL_MS) + 1 && gaps.every((g) => g >= DELTA_JOURNAL_INTERVAL_MS),
       { lines: lines.length, gaps });
     check("the lines carry every delta, coalesced per key, in order", lines.map((l) => l.deltas.map((d) => d.text).join("")).join("") === sent);
     check("each line woke the reader once", writes === lines.length && errors.length === 0, { writes, errors: errors.map((e) => e.message) });

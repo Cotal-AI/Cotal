@@ -118,14 +118,20 @@ export class DeltaJournal {
   }
 
   private write(): void {
+    // A timer can fire a millisecond early, so the interval is checked against the clock here.
+    const wait = this.lastWrite + DELTA_JOURNAL_INTERVAL_MS - performance.now();
+    if (wait > 0) {
+      this.timer = setTimeout(() => this.write(), Math.ceil(wait));
+      return;
+    }
     this.timer = undefined;
     const deltas = this.pending;
     this.pending = [];
     if (deltas.length === 0 || this.fd === undefined) return;
     try {
+      this.lastWrite = performance.now();
       const line = Buffer.from(`${JSON.stringify({ anchor: this.opts.anchor(), ts: Date.now(), deltas })}\n`);
       for (let at = 0; at < line.length; ) at += writeSync(this.fd, line, at);
-      this.lastWrite = performance.now();
     } catch (e) {
       this.opts.onError(e as Error);
       return;
