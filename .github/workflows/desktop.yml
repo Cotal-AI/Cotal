@@ -313,6 +313,39 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Desktop build failed.' }
           & pnpm --dir desktop check:size
           if ($LASTEXITCODE -ne 0) { throw 'Desktop bundle size budget exceeded.' }
+      # Tauri notarizes and staples the app, then signs the disk image without submitting it. Gatekeeper
+      # assesses a downloaded disk image on open and rejects a signed, unnotarized one, so the image goes to
+      # the notary service too and carries its own ticket.
+      - name: Notarize and staple the macOS disk image
+        if: runner.os == 'macOS' && steps.signing.outputs.signed == 'true'
+        shell: bash
+        env:
+          APPLE_ID: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && secrets.APPLE_ID || '' }}
+          APPLE_PASSWORD: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && secrets.APPLE_PASSWORD || '' }}
+          APPLE_TEAM_ID: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && secrets.APPLE_TEAM_ID || '' }}
+          APPLE_API_ISSUER: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && secrets.APPLE_API_ISSUER || '' }}
+          APPLE_API_KEY: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && secrets.APPLE_API_KEY || '' }}
+        run: |
+          set -euo pipefail
+          dmgs=()
+          while IFS= read -r found; do dmgs+=("$found"); done < <(find desktop/src-tauri/target/release/bundle/dmg -maxdepth 1 -name '*.dmg')
+          [ "${#dmgs[@]}" -eq 1 ] || { echo "expected one disk image, found ${#dmgs[@]}"; exit 1; }
+          dmg=${dmgs[0]}
+          if [ -n "$APPLE_API_KEY" ]; then auth=(--key "$APPLE_API_KEY_PATH" --key-id "$APPLE_API_KEY" --issuer "$APPLE_API_ISSUER")
+          else auth=(--apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" --team-id "$APPLE_TEAM_ID"); fi
+          result="$RUNNER_TEMP/dmg-notarization.json"
+          xcrun notarytool submit "$dmg" "${auth[@]}" --wait --output-format json > "$result"
+          cat "$result"
+          id=$(node -e "process.stdout.write(JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8')).id ?? '')" "$result")
+          status=$(node -e "process.stdout.write(JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8')).status ?? '')" "$result")
+          if [ "$status" != 'Accepted' ]; then
+            [ -n "$id" ] && xcrun notarytool log "$id" "${auth[@]}"
+            echo "disk image notarization ended with status '${status:-none}'"; exit 1
+          fi
+          xcrun stapler staple "$dmg"
+          xcrun stapler validate "$dmg"
+          spctl -a -vv -t open --context context:primary-signature "$dmg" 2>&1 | tee "$RUNNER_TEMP/dmg-spctl.txt"
+          grep -q 'source=Notarized Developer ID' "$RUNNER_TEMP/dmg-spctl.txt"
       - name: Verify compiled updater release inputs
         run: node desktop/scripts/check-updater-release.mjs
       - name: Verify the macOS bundle signature seals the whole app
