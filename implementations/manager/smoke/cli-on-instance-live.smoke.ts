@@ -988,7 +988,7 @@ try {
   m3 = new Manager({ space, servers: `nats://127.0.0.1:${relayPort}`, runtime: "pty", workspaceRoot: root7 });
   await m3.start();
   const IID7 = (m3 as unknown as MgrPriv).managerInstanceId;
-  const epoch7 = () => (m3 as unknown as { serviceServe?: { grant: { epoch: number } } }).serviceServe?.grant.epoch;
+  const epoch7 = () => (m3 as unknown as { servePlane: { serviceServe?: { grant: { epoch: number } }; } }).servePlane.serviceServe?.grant.epoch;
   const epochBefore = epoch7();
   relayArmed = true;
   const gap = await cotal(["spawn", "gap", "--detach", "--on", IID7, "--harness", "ps-census-stub", "--no-events", "--space", space, "--json"], root1);

@@ -79,8 +79,7 @@ type InventorySeat = {
 type Internals = {
   agents: Map<string, InventorySeat>;
   ep: { conn: { nc: NatsConnection }; requestDeliveryAdmin(op: string, args: Record<string, unknown>, timeoutMs: number): Promise<unknown> };
-  serviceServe?: { nc: NatsConnection; creds?: string; grant: { epoch: number } };
-  servePlane: { sessionLedgerConn?: { nc: NatsConnection }; };
+  servePlane: { sessionLedgerConn?: { nc: NatsConnection }; serviceServe?: { nc: NatsConnection; creds?: string; grant: { epoch: number } }; };
   goalWriterComponent: { goalWriter?: { nc: NatsConnection }; };
 };
 type Observation = {
@@ -244,10 +243,10 @@ try {
   const m = manager as unknown as Internals;
   const dispatchObserved = new WeakSet<NatsConnection>();
   const instrument = () => {
-    for (const [duty, nc] of [["supervisor", m.ep.conn.nc], ["serve", m.serviceServe?.nc],
+    for (const [duty, nc] of [["supervisor", m.ep.conn.nc], ["serve", m.servePlane.serviceServe?.nc],
       ["goalWriter", m.goalWriterComponent.goalWriter?.nc], ["sessionLedger", m.servePlane.sessionLedgerConn?.nc]] as const)
       if (nc) observeConnection(nc, duty);
-    const nc = m.serviceServe?.nc;
+    const nc = m.servePlane.serviceServe?.nc;
     if (!nc || dispatchObserved.has(nc)) return;
     dispatchObserved.add(nc);
     // Fixture-only observation of the installed client's actual dispatch boundary.
@@ -272,8 +271,8 @@ try {
   instrument();
   // start() installs subscriptions synchronously, but their SUB frames may still be buffered.
   // Establish broker-side interest before the first measured caller on another connection.
-  assert.ok(m.serviceServe, "SETUP: Manager must install the real service");
-  await m.serviceServe.nc.flush();
+  assert.ok(m.servePlane.serviceServe, "SETUP: Manager must install the real service");
+  await m.servePlane.serviceServe.nc.flush();
   const callerIdentity = newIdentity();
   const caller: EpCaller = { owner, actor: callerIdentity.id, uid: mintLifecycleUid() };
   const callerNc = await connect({ servers, ...standaloneConnectOpts({ tls: false,
@@ -410,7 +409,7 @@ try {
   record("summary", { renewals, requests: calls.length, missing: missing.length, refusals: refusals.length, brokerErrors: errors.length });
   console.log(JSON.stringify({ renewals, requests: calls.length, missing: missing.length, refusals: refusals.length, brokerErrors: errors.length, evidence }));
   assert.ok(renewals >= REQUIRED, `only ${renewals} real authority renewals before deadline`);
-  assert.equal(m.serviceServe?.creds, lastIssuedServe, "last issued family must actually be adopted");
+  assert.equal(m.servePlane.serviceServe?.creds, lastIssuedServe, "last issued family must actually be adopted");
   assert.ok(calls.some((c) => c.command === "stop" && c.executionAt), "real self-stop must execute");
   assert.ok(calls.some((c) => c.command === "despawn" && c.executionAt), "real despawn must execute");
   assert.equal(missing.length, 0, "public requests lost across real renewals, see timestamped evidence");

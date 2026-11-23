@@ -77,7 +77,6 @@ export interface CredentialRenewalDeps {
   managerInstanceId: () => Manager["managerInstanceId"];
   remoteAuthority: () => Manager["remoteAuthority"];
   runHosting: () => Manager["runHosting"];
-  serviceServe: () => Manager["serviceServe"];
   userMode: () => Manager["userMode"];
   deliveryShard: () => (typeof Manager)["DELIVERY_SHARD"];
   beginLifecycle: (...args: Parameters<Manager["beginLifecycle"]>) => ReturnType<Manager["beginLifecycle"]>;
@@ -103,7 +102,6 @@ export function credentialRenewalDeps(m: Manager): CredentialRenewalDeps {
     managerInstanceId: () => m["managerInstanceId"],
     remoteAuthority: () => m["remoteAuthority"],
     runHosting: () => m["runHosting"],
-    serviceServe: () => m["serviceServe"],
     userMode: () => m["userMode"],
     deliveryShard: () => (m.constructor as typeof Manager).DELIVERY_SHARD,
     beginLifecycle: (...args) => m["beginLifecycle"](...args),
@@ -164,7 +162,6 @@ export class CredentialRenewal {
   private get managerInstanceId() { return this.deps.managerInstanceId(); }
   private get remoteAuthority() { return this.deps.remoteAuthority(); }
   private get runHosting() { return this.deps.runHosting(); }
-  private get serviceServe() { return this.deps.serviceServe(); }
   private get userMode() { return this.deps.userMode(); }
   private beginLifecycle(...args: Parameters<Manager["beginLifecycle"]>): ReturnType<Manager["beginLifecycle"]> { return this.deps.beginLifecycle(...args); }
   private dialRemoteStanding(...args: Parameters<Manager["dialRemoteStanding"]>): ReturnType<Manager["dialRemoteStanding"]> { return this.deps.dialRemoteStanding(...args); }
@@ -563,11 +560,11 @@ export class CredentialRenewal {
       // second or idempotently re-staging the active row within the same second, and releasing only
       // on winning the gate CAS; never the standing connection). The serve connection's
       // authenticator presents the refreshed credential on its next (re)connect.
-      if (this.serviceServe?.creds && this.auth) {
-        const s = this.serviceServe;
+      if (this.parts.servePlane.serviceServe?.creds && this.auth) {
+        const s = this.parts.servePlane.serviceServe;
         const authRef = this.auth;
         try {
-          const health = inspectCredHealth(this.serviceServe.creds);
+          const health = inspectCredHealth(this.parts.servePlane.serviceServe.creds);
           if (health.state !== "healthy") {
             s.creds = await this.withEndpointServeExecutor(({ authKv }) =>
               mintCreds(authRef, s.identity, "endpoint-serve", {
@@ -678,8 +675,8 @@ export class CredentialRenewal {
 
   private async renewRemoteStandingBundleOnce(force: boolean, deadline: number): Promise<void> {
     const remote = this.remoteAuthority;
-    if (!remote?.renewStandingBundle || !this.serviceServe) return;
-    const current = [this.remoteSupervisorCreds, this.remoteExecutorCreds, this.serviceServe.creds,
+    if (!remote?.renewStandingBundle || !this.parts.servePlane.serviceServe) return;
+    const current = [this.remoteSupervisorCreds, this.remoteExecutorCreds, this.parts.servePlane.serviceServe.creds,
       this.parts.goalWriter.goalWriterCreds, this.parts.servePlane.sessionLedgerCreds];
     if (!force && current.every((cred) => cred && inspectCredHealth(cred).state === "healthy")) {
       await Promise.all([
@@ -688,9 +685,9 @@ export class CredentialRenewal {
       ]);
       return;
     }
-    const processEpoch = this.serviceServe.grant.epoch;
+    const processEpoch = this.parts.servePlane.serviceServe.grant.epoch;
     let candidate: Awaited<ReturnType<NonNullable<typeof remote.renewStandingBundle>>> | undefined;
-    const serving = this.serviceServe;
+    const serving = this.parts.servePlane.serviceServe;
     const previous = { nc: serving.nc, handle: serving.handle };
     let replacement: { nc: NatsConnection; handle: EpServeHandle } | undefined;
     let adopted = false;
@@ -713,13 +710,13 @@ export class CredentialRenewal {
         await nc.close();
       }
       remoteStandingTimeLeft(deadline);
-      if (this.leaseStopping || this.serviceServe !== serving || serving.nc !== previous.nc || serving.grant.epoch !== processEpoch)
+      if (this.leaseStopping || this.parts.servePlane.serviceServe !== serving || serving.nc !== previous.nc || serving.grant.epoch !== processEpoch)
         throw new Error("manager changed its active serve epoch or connection while standing renewal was in flight");
       const stagedServeCreds = candidate.serve;
       replacement = await this.dialServeConnection({ ...serving, creds: stagedServeCreds },
         () => adopted ? serving.creds! : stagedServeCreds, deadline);
       remoteStandingTimeLeft(deadline);
-      if (this.leaseStopping || this.serviceServe !== serving || serving.nc !== previous.nc || serving.grant.epoch !== processEpoch)
+      if (this.leaseStopping || this.parts.servePlane.serviceServe !== serving || serving.nc !== previous.nc || serving.grant.epoch !== processEpoch)
         throw new Error("manager changed its active serve epoch or connection while standing renewal was in flight");
       if (REMOTE_MANAGER_IDENTITY_NAMES.some((name) => inspectCredHealth(candidate![name]).state !== "healthy"))
         throw new Error("standing candidate is no longer healthy after broker preflight");
@@ -728,7 +725,7 @@ export class CredentialRenewal {
       replacement = undefined;
       this.remoteSupervisorCreds = candidate.supervisor;
       this.remoteExecutorCreds = candidate.executor;
-      this.serviceServe.creds = candidate.serve;
+      this.parts.servePlane.serviceServe.creds = candidate.serve;
       adopted = true;
       this.parts.goalWriter.goalWriterCreds = candidate.goalWriter;
       this.parts.servePlane.sessionLedgerCreds = candidate.sessionLedger;
