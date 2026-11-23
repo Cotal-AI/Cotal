@@ -392,7 +392,7 @@ function adapterContext(definition: ServiceDefinitionSnapshot, instance: Service
   const options = ownedMetadata(value.launch.options);
   const stateDirectory = serviceInstanceStore(value.space).directory();
   if (!stateDirectory) throw new CommandFailure("refused", "CONFLICT", "the reserved service state directory disappeared");
-  return Object.freeze({ space: value.space, definition: definition.name, definitionRevision: definition.record.revision, instanceId: instance.instanceId, launchRequestId: instance.launchRequestId, stateDirectory, ...(cliInvocation ? { cliInvocation: Object.freeze([...cliInvocation]) } : {}), options, ...(value.credentialRef ? { credentialRef: Object.freeze({ ...value.credentialRef }) } : {}), ...(value.envRefs ? { envRefs: ownedMetadata(value.envRefs) } : {}), ...(attempt ? { attempt: ownedMetadata(attempt) } : {}), ...(stack ? { stack: ownedMetadata(stack) } : {}), ...(managerSeatCap !== undefined ? { managerSeatCap } : {}) });
+  return Object.freeze({ space: value.space, definition: definition.name, definitionRevision: definition.record.revision, instanceId: instance.instanceId, launchRequestId: instance.launchRequestId, stateDirectory, ...(cliInvocation ? { cliInvocation: Object.freeze([...cliInvocation]) } : {}), options, ...(value.credentialRef ? { credentialRef: Object.freeze({ ...value.credentialRef }) } : {}), ...(value.envRefs ? { envRefs: ownedMetadata(value.envRefs) } : {}), ...(attempt ? { attempt: ownedMetadata(attempt) } : {}), ...(stack ? { stack: ownedMetadata(stack) } : {}), ...(managerSeatCap !== undefined ? { managerSeatCap } : {}), ...(instance.managerIdleExit !== undefined ? { managerIdleExit: instance.managerIdleExit } : {}) });
 }
 
 /** A deadline bounds our observation, not the provider's work. No timed-out hook is retried. */
@@ -570,11 +570,12 @@ function staleRevisionInstance(definition: ServiceDefinitionSnapshot, selected: 
 }
 
 type DefinitionHold = ReturnType<ReturnType<typeof serviceDefinitionStore>["pin"]>;
-export async function startProcessService(definition: ServiceDefinitionSnapshot, options: { instance?: string; newInstance?: boolean; foreground?: boolean; attempt?: ServiceAdapterAttempt; brokerInstance?: { instanceId: string; launchRequestId: string }; replacement?: { instanceId: string; launchRequestId: string }; managerSeatCap?: SeatCap }, held?: DefinitionHold) {
+export async function startProcessService(definition: ServiceDefinitionSnapshot, options: { instance?: string; newInstance?: boolean; foreground?: boolean; attempt?: ServiceAdapterAttempt; brokerInstance?: { instanceId: string; launchRequestId: string }; replacement?: { instanceId: string; launchRequestId: string }; managerSeatCap?: SeatCap; managerIdleExit?: number }, held?: DefinitionHold) {
   const value = definition.record.value;
   if (options.attempt && (value.launch.type !== "adapter" || options.foreground)) throw new CommandFailure("refused", "UNSUPPORTED", "a maintenance attempt reaches only an adapter launch in the background; no launch was allocated");
   // Only the broker and manager adapters read an attempt; every other adapter refuses it.
   if (options.attempt && value.launch.type === "adapter" && !["nats-broker", "manager-service"].includes(value.launch.adapter)) throw new CommandFailure("refused", "UNSUPPORTED", "this adapter accepts no maintenance attempt; no launch was allocated");
+  if (options.managerIdleExit !== undefined && (value.launch.type !== "adapter" || value.launch.adapter !== "manager-service")) throw new CommandFailure("refused", "USAGE_INVALID", "--idle-exit belongs to the manager; no launch was allocated");
   // A controller attempt whose cut broker is retired starts the new broker
   // instance its maintenance journal names, with the journal's own IDs. The broker adapter admits
   // only that exact pair, and only while every other record of the definition is retired.
@@ -609,6 +610,7 @@ export async function startProcessService(definition: ServiceDefinitionSnapshot,
       const state = observeServiceProcess(selected.record.value);
       if (state === "running") {
         if (options.foreground) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "an existing live instance cannot be converted into this terminal's foreground process; stop it explicitly before a foreground start", { target: instanceProjection(selected) });
+        if (options.managerIdleExit !== undefined && options.managerIdleExit !== selected.record.value.managerIdleExit) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `the manager already runs ${selected.record.value.managerIdleExit === undefined ? "with no idle exit" : `with --idle-exit ${selected.record.value.managerIdleExit}`}; --idle-exit applies to a new start`, { target: instanceProjection(selected), remedy: `stop it first with \`cotal manager stop --space ${value.space}\`` });
         const adapter = declaredAdapter && value.launch.type === "adapter" ? { provider: await loadServiceAdapter(declaredAdapter, value.launch.options), context: adapterContext(definition, selected.record.value, cliInvocation) } : undefined;
         return { instance: await serviceReadiness(selected, value, adapter), noOp: true, child: undefined, exit: undefined };
       }
@@ -636,7 +638,7 @@ export async function startProcessService(definition: ServiceDefinitionSnapshot,
     await seedBeforeLaunch();
     hold.check();
     const now = new Date().toISOString(), id = options.brokerInstance?.instanceId ?? options.replacement?.instanceId ?? selected?.name ?? randomUUID(), launchRequestId = options.brokerInstance?.launchRequestId ?? options.replacement?.launchRequestId ?? randomUUID();
-    const instance: ServiceInstance = { schemaVersion: 1, instanceId: id, definition: definition.name, definitionRevision: definition.record.revision, space: value.space, host: processServiceHost(), requestId: launchRequestId, launchRequestId, state: "starting", launcher, readiness: "not-checked", supervisor: "none", ...(options.attempt ? { attempt: { attemptId: options.attempt.attemptId } } : {}), ...(declaredAdapter ? { adapter: declaredAdapter.pin, ...(declaredAdapter.declaration.stop === "native" ? { nativeStopRequired: true as const } : declaredAdapter.declaration.stop === "kernel-exit" ? { kernelStopRequired: true as const } : {}) } : {}), foreground: options.foreground === true, createdAt: selected?.record.value.createdAt ?? now, updatedAt: now };
+    const instance: ServiceInstance = { schemaVersion: 1, instanceId: id, definition: definition.name, definitionRevision: definition.record.revision, space: value.space, host: processServiceHost(), requestId: launchRequestId, launchRequestId, state: "starting", launcher, readiness: "not-checked", supervisor: "none", ...(options.attempt ? { attempt: { attemptId: options.attempt.attemptId } } : {}), ...(options.managerIdleExit !== undefined ? { managerIdleExit: options.managerIdleExit } : {}), ...(declaredAdapter ? { adapter: declaredAdapter.pin, ...(declaredAdapter.declaration.stop === "native" ? { nativeStopRequired: true as const } : declaredAdapter.declaration.stop === "kernel-exit" ? { kernelStopRequired: true as const } : {}) } : {}), foreground: options.foreground === true, createdAt: selected?.record.value.createdAt ?? now, updatedAt: now };
     const store = serviceInstanceStore(value.space);
     store.commit(id, selected, instance);
     // The replaced incarnation's custodian and launch sidecars are gone once the new launch request is committed.

@@ -18,7 +18,7 @@ cotal service show <name>
 cotal service add <name> --exec "<command>" [--cwd <dir>]
 cotal service add <name> --preset <preset> <preset-options>
 cotal service add <name> --file <definition.json>
-cotal service start <name> [<preset-options>] [--instance <id>|--new-instance] [--foreground] [--dry-run]
+cotal service start <name> [<preset-options>] [--instance <id>|--new-instance] [--idle-exit <seconds>] [--foreground] [--dry-run]
 cotal service stop <name> [--instance <id>] [--with-agents] [--yes|--dry-run]
 cotal service restart <name> [--instance <id>] [--with-agents] [--yes|--dry-run]
 cotal service status <name> [--instance <id>]
@@ -41,6 +41,7 @@ Every form takes `--json` except `start --foreground` without `--dry-run`.
 | `--instance <full-id>` | Select one instance by its full ID, not a prefix |
 | `--new-instance` | start: allocate another instance of a process definition |
 | `--foreground` | start: keep the process in this terminal |
+| `--idle-exit <seconds>` | start of the manager: stop it once it has held no agents for that long; this start only (see [manager](cli-maintenance.mdx#manager)) |
 | `--with-agents` | stop, restart: request the manager's native agent-stop policy |
 | `--dry-run` | start, stop, restart: preview the effect. install, uninstall: inspect the unit |
 | `-y, --yes` | stop, restart, remove, uninstall: confirm in a script |

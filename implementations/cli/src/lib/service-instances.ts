@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { accessSync, constants, existsSync, lstatSync, readFileSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { hostname } from "node:os";
-import { assertRecordIdentity, CommandFailure, darwinProcessBinding, isCustodyPipe, win32ProcessBinding, homeCotalDir, identityRecord, localRecordAccess, oneLine, protectedLocalDirectory, serviceAdapterKernelStopResult, serviceAdapterReadiness, serviceAdapterStopResult, type ServiceAdapterKernelStopResult, type ServiceAdapterStopResult, serviceOperationId, spaceFromSegment, type ServiceAdapterReadiness, type ProcessIdentityRecord, spaceKey } from "@cotal-ai/workspace";
+import { assertRecordIdentity, CommandFailure, darwinProcessBinding, MAX_IDLE_EXIT_SECONDS, readServiceIdleExit, isCustodyPipe, win32ProcessBinding, homeCotalDir, identityRecord, localRecordAccess, oneLine, protectedLocalDirectory, serviceAdapterKernelStopResult, serviceAdapterReadiness, serviceAdapterStopResult, type ServiceAdapterKernelStopResult, type ServiceAdapterStopResult, serviceOperationId, spaceFromSegment, type ServiceAdapterReadiness, type ProcessIdentityRecord, spaceKey } from "@cotal-ai/workspace";
 import { serviceSupervisorProjection } from "./service-supervision.js";
 import type { ServiceAdapterPin } from "./service-adapters.js";
 import { localRecordObject, localRecordText, ProtectedRecordStore, type LocalRecordSnapshot } from "./protected-records.js";
@@ -48,6 +48,8 @@ export interface ServiceInstance {
   /** The maintenance attempt a controller resume launched this incarnation for. Never the
    *  attempt's handoff path or digest. */
   attempt?: { attemptId: string };
+  /** The manager's `--idle-exit` for this launch, in seconds. Never saved in the definition. */
+  managerIdleExit?: number;
   supervisor: "none";
   foreground: boolean;
   createdAt: string;
@@ -131,7 +133,7 @@ function identity(input: unknown): ProcessIdentityRecord {
 }
 
 function validateInstance(input: unknown, space: string): ServiceInstance {
-  const value = localRecordObject(input, ["schemaVersion", "instanceId", "definition", "definitionRevision", "space", "host", "requestId", "launchRequestId", "state", "launcher", "process", "custody", "readiness", "adapter", "adapterReadiness", "nativeStopRequired", "nativeStop", "kernelStopRequired", "kernelStop", "processStop", "attempt", "supervisorInvocationId", "supervisor", "foreground", "createdAt", "updatedAt", "exit"]);
+  const value = localRecordObject(input, ["schemaVersion", "instanceId", "definition", "definitionRevision", "space", "host", "requestId", "launchRequestId", "state", "launcher", "process", "custody", "readiness", "adapter", "adapterReadiness", "nativeStopRequired", "nativeStop", "kernelStopRequired", "kernelStop", "processStop", "attempt", "managerIdleExit", "supervisorInvocationId", "supervisor", "foreground", "createdAt", "updatedAt", "exit"]);
   if (value.schemaVersion !== 1 || value.space !== space || typeof value.state !== "string" || !states.includes(value.state) || value.supervisor !== "none" || typeof value.foreground !== "boolean" || !["not-checked", "process-running", "http-reachable", "adapter-process-running", "endpoint-serving", "broker-listener-reported"].includes(String(value.readiness))) throw new CommandFailure("refused", "SCHEMA_INVALID", "the saved service instance has an unsupported shape; no empty or stopped state was inferred");
   let id: string;
   try { id = serviceInstanceId(localRecordText(value.instanceId, 64)); serviceInstanceId(localRecordText(value.requestId, 64)); serviceInstanceId(localRecordText(value.launchRequestId, 64)); }
@@ -178,11 +180,12 @@ function validateInstance(input: unknown, space: string): ServiceInstance {
   if (processStop && (value.nativeStopRequired === true || value.kernelStopRequired === true || nativeStop || kernelStop || processStop.process.pid !== (value.process as ProcessIdentityRecord | undefined)?.pid || processStop.process.token !== (value.process as ProcessIdentityRecord | undefined)?.token || processStop.requestId !== value.requestId || value.state !== "stopped")) throw new CommandFailure("refused", "SCHEMA_INVALID", "the process stop receipt does not match this retained instance and request");
   const createdAt = localRecordText(value.createdAt, 100), updatedAt = localRecordText(value.updatedAt, 100);
   if (!Number.isFinite(Date.parse(createdAt)) || !Number.isFinite(Date.parse(updatedAt))) throw new CommandFailure("refused", "SCHEMA_INVALID", "the instance timestamps are invalid");
+  if (value.managerIdleExit !== undefined && (!Number.isSafeInteger(value.managerIdleExit) || Number(value.managerIdleExit) < 1 || Number(value.managerIdleExit) > MAX_IDLE_EXIT_SECONDS)) throw new CommandFailure("refused", "SCHEMA_INVALID", "the instance's manager idle exit is invalid");
   if (value.exit !== undefined) {
     const exit = localRecordObject(value.exit, ["code", "signal"]);
     if (!(exit.code === null || Number.isInteger(exit.code)) || !(exit.signal === null || typeof exit.signal === "string")) throw new CommandFailure("refused", "SCHEMA_INVALID", "the instance exit observation is invalid");
   }
-  return { schemaVersion: 1, instanceId: id, definition, definitionRevision: localRecordText(value.definitionRevision, 200), space, host: machine as unknown as ServiceHost, requestId: serviceInstanceId(localRecordText(value.requestId, 64)), launchRequestId: serviceInstanceId(localRecordText(value.launchRequestId, 64)), state: value.state as ServiceInstance["state"], launcher: identity(value.launcher), ...(value.process === undefined ? {} : { process: identity(value.process) }), ...(custody ? { custody } : {}), readiness: value.readiness as ServiceInstance["readiness"], ...(adapter === undefined ? {} : { adapter }), ...(adapterReadiness === undefined ? {} : { adapterReadiness }), ...(typeof value.supervisorInvocationId === "string" ? { supervisorInvocationId: value.supervisorInvocationId } : {}), ...(value.nativeStopRequired ? { nativeStopRequired: true } : {}), ...(nativeStop ? { nativeStop } : {}), ...(value.kernelStopRequired ? { kernelStopRequired: true } : {}), ...(kernelStop ? { kernelStop } : {}), ...(processStop ? { processStop } : {}), ...(attempt ? { attempt } : {}), supervisor: "none", foreground: value.foreground, createdAt, updatedAt, ...(value.exit === undefined ? {} : { exit: value.exit as ServiceInstance["exit"] }) };
+  return { schemaVersion: 1, instanceId: id, definition, definitionRevision: localRecordText(value.definitionRevision, 200), space, host: machine as unknown as ServiceHost, requestId: serviceInstanceId(localRecordText(value.requestId, 64)), launchRequestId: serviceInstanceId(localRecordText(value.launchRequestId, 64)), state: value.state as ServiceInstance["state"], launcher: identity(value.launcher), ...(value.process === undefined ? {} : { process: identity(value.process) }), ...(custody ? { custody } : {}), readiness: value.readiness as ServiceInstance["readiness"], ...(adapter === undefined ? {} : { adapter }), ...(adapterReadiness === undefined ? {} : { adapterReadiness }), ...(typeof value.supervisorInvocationId === "string" ? { supervisorInvocationId: value.supervisorInvocationId } : {}), ...(value.nativeStopRequired ? { nativeStopRequired: true } : {}), ...(nativeStop ? { nativeStop } : {}), ...(value.kernelStopRequired ? { kernelStopRequired: true } : {}), ...(kernelStop ? { kernelStop } : {}), ...(processStop ? { processStop } : {}), ...(attempt ? { attempt } : {}), ...(value.managerIdleExit === undefined ? {} : { managerIdleExit: Number(value.managerIdleExit) }), supervisor: "none", foreground: value.foreground, createdAt, updatedAt, ...(value.exit === undefined ? {} : { exit: value.exit as ServiceInstance["exit"] }) };
 }
 
 export const serviceInstanceStore = (space: string) => new ProtectedRecordStore("services", space, (value) => validateInstance(value, space), "instances");
@@ -248,10 +251,18 @@ export function startInterrupted(value: ServiceInstance): boolean {
   return launcher.kind === "gone" || launcher.kind === "mismatch";
 }
 
+/** The receipt a manager launched with `--idle-exit` left when it stopped itself, once its process is
+ *  gone. A manager that crashed or was killed leaves none. */
+function idleExitReceipt(value: ServiceInstance): { idleSeconds: number; observedAt: string } | undefined {
+  const stateDirectory = value.managerIdleExit !== undefined && value.process && observeServiceProcess(value) !== "running" ? serviceInstanceStore(value.space).directory() : undefined;
+  return stateDirectory ? readServiceIdleExit({ space: value.space, instanceId: value.instanceId, launchRequestId: value.launchRequestId, stateDirectory }, value.process!) : undefined;
+}
+
 export function instanceProjection(row: ServiceInstanceSnapshot) {
   const value = row.record.value;
   const supervisorRecord = serviceSupervisorProjection(value, processServiceHost());
-  return { instanceId: value.instanceId, definition: value.definition, definitionRevision: value.definitionRevision, revision: row.record.revision, space: value.space, executionHost: value.host.name, observedProcess: observeServiceProcess(value), recordedState: value.state, startInterrupted: startInterrupted(value), pid: value.process?.pid ?? null, readinessObservation: value.readiness, readinessAsOf: value.updatedAt, servingResponse: value.adapterReadiness?.native ? value.adapterReadiness.evidence === "local-process-receipt" ? "child-local-receipt-as-of" : "adapter-checked-as-of" : "not-checked", nativeEvidence: value.adapterReadiness?.evidence ?? null, adapter: value.adapter ?? null, nativeEndpoint: value.adapterReadiness?.native ?? null, reportedListener: value.adapterReadiness?.listener ?? null, adapterObservedAt: value.adapterReadiness?.observedAt ?? null, nativeStop: value.nativeStop ?? null, kernelStop: value.kernelStop ?? null, processStop: value.processStop ?? null, stopPolicy: value.nativeStopRequired ? "native" as const : value.kernelStopRequired ? "kernel-exit" as const : "process" as const, supervisor: supervisorRecord.mechanism === "none-recorded" ? value.supervisor : supervisorRecord.mechanism, supervisorRecord, supervisorInvocationId: value.supervisorInvocationId ?? null, supervisorObservation: "not-checked" as const, requestId: value.requestId, launchRequestId: value.launchRequestId, foreground: value.foreground, exit: value.exit ?? null };
+  const idleExited = idleExitReceipt(value);
+  return { instanceId: value.instanceId, definition: value.definition, definitionRevision: value.definitionRevision, revision: row.record.revision, space: value.space, executionHost: value.host.name, observedProcess: observeServiceProcess(value), recordedState: value.state, startInterrupted: startInterrupted(value), pid: value.process?.pid ?? null, readinessObservation: value.readiness, readinessAsOf: value.updatedAt, servingResponse: value.adapterReadiness?.native ? value.adapterReadiness.evidence === "local-process-receipt" ? "child-local-receipt-as-of" : "adapter-checked-as-of" : "not-checked", nativeEvidence: value.adapterReadiness?.evidence ?? null, adapter: value.adapter ?? null, nativeEndpoint: value.adapterReadiness?.native ?? null, reportedListener: value.adapterReadiness?.listener ?? null, adapterObservedAt: value.adapterReadiness?.observedAt ?? null, nativeStop: value.nativeStop ?? null, kernelStop: value.kernelStop ?? null, processStop: value.processStop ?? null, stopPolicy: value.nativeStopRequired ? "native" as const : value.kernelStopRequired ? "kernel-exit" as const : "process" as const, supervisor: supervisorRecord.mechanism === "none-recorded" ? value.supervisor : supervisorRecord.mechanism, supervisorRecord, supervisorInvocationId: value.supervisorInvocationId ?? null, supervisorObservation: "not-checked" as const, requestId: value.requestId, launchRequestId: value.launchRequestId, foreground: value.foreground, exit: value.exit ?? null, managerIdleExit: value.managerIdleExit ?? null, idleExited: idleExited ?? null };
 }
 
 /** Called only while ext remove holds the extension writer lock. Enumerate the case-safe service
