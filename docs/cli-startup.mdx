@@ -333,8 +333,8 @@ folder without read access does not trigger this additional root check. The step
 would split it or read a character in it as syntax, such as a space or a backtick. Without that check the broker
 exited and named the cause only in its log. `status` names the same step for a stopped space whose
 store `up` would refuse. A service record folder of the space, under `services/` in the Cotal home,
-that this account cannot write refuses `up` the same way, naming the folder and `chmod u+w`, before
-any member starts. The broker log `.cotal/nats.log` and the auth service,
+that this account cannot write refuses `up` before any member starts. For `up` and `down`, the
+suggested `chmod u+w` command quotes folder names that contain spaces. The broker log `.cotal/nats.log` and the auth service,
 delivery and manager logs are created owner-private as well, and the process records `up` writes, such as
 `.cotal/nats.pid` and its identity pin, are created `0600` under a fresh name that is never opened
 through a symlink, then renamed into place. The pid record and identity pin of a native service
