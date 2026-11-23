@@ -213,7 +213,8 @@ A named channel is the session's initial channel. On a static or user-auth mesh 
 session's whole read and post list, so a session opened without one can send and receive direct
 messages only. A send, join or channel mode outside that list refuses with `PERMISSION_DENIED`
 before anything reaches the broker. `/leave` does not change that list, so `/join` returns the
-session to a channel it left. `/join` takes one concrete channel name and refuses wildcards before
+session to a channel it left. If the session is already on the channel, `/join` says so.
+`/join` takes one concrete channel name and refuses wildcards before
 checking the grant. A grant refusal says to leave and run `cotal chat <channel>` with the
 flags this session was started with, such as `--stdio` and `--space`. For a channel name starting
 with `-`, the command quotes the name with its `#` prefix, as in `cotal chat '#-audit'`, so it is
@@ -248,8 +249,10 @@ the previous recipient. Enter sends to the recipient shown above the composer.
 In `--plain`, a line you type becomes the draft, and it is sent only when you answer `y` to the
 question that follows. Any other answer keeps the draft unsent. A slash command typed as the answer
 runs, and the question is asked again. A new draft that replaces a kept one says so, with the kept
-draft's length. At the end of input an unsent draft or an unfinished `:multi` message is reported
-by its length and never sent. `:to` lists the recipients by number, and `:to <target>` sets one directly:
+draft's length. A single-line message over 65,536 UTF-16 code units is refused before confirmation
+and leaves any kept draft unchanged. At the end of input an unsent draft or an unfinished `:multi`
+message is reported by its length and never sent. `:to` lists the recipients by number, and
+`:to <target>` sets one directly:
 `#<channel>`, `@<name>`, `@<owner>.<actor>` or `role:<role>`. A target in another form, such as a
 name without `@`, is refused with that list of forms, and the numbered list opens. An `@<name>`
 that names no present peer and no sender the session heard from is refused there with the reason a
@@ -259,8 +262,11 @@ keeps the current recipient, and `/quit` leaves. `:multi` starts a message of se
 holding only `.` ends. A line starting with `/` runs a slash command, and `//` sends a line that
 starts with `/`. `/help` lists the slash commands, in `--plain` and in the terminal view. A slash
 command that takes a channel reads it with or without its `#`.
-`/history` reads the current channel's retained messages. On an open mesh, which runs no delivery
-daemon, it reads them the way `cotal history` does.
+`/history` reads the current channel's retained messages. When the terminal transcript does not fit,
+the view counts the hidden rows and points to `cotal history` for the current channel, or to
+`cotal history --dms` for a direct recipient. Run the command against the same mesh with a grant that
+can read the history. Use `--limit <n>` to read a larger retained window. On an open mesh, which runs
+no delivery daemon, `/history` reads messages the way `cotal history` does.
 
 A message posted on a channel carries the `@<name>` words its text holds as mentions, as
 `cotal send -c` does, so it wakes the agents it names. An `@` right after an ASCII letter or
@@ -542,8 +548,9 @@ This includes the name retained by a directly started local space after it stops
 A missing feed remains unknown rather than an empty confirmed census. Without `--follow`, a
 census with no member for a name that has no saved entry and no retained messages is refused with
 `TARGET_NOT_FOUND`, listing the registered channels, or naming the registered spelling when only the
-case differs. A channel with a saved entry or retained messages and no member reads as empty. A
-follow shows the census again only when it changes: a poll that observes the same members writes no
+case differs. The spelling correction keeps `--json` or `--plain` if given. A channel with a saved
+entry or retained messages and no member reads as empty. A follow shows the census again only when
+it changes: a poll that observes the same members writes no
 record and prints nothing, and the `end` record's `lastAsOf` is the last poll the follow read. A follow's
 view offers no command to follow. A lost connection is
 one `TARGET_UNAVAILABLE` error record, or one line, while the follow re-establishes it, and a `gap`

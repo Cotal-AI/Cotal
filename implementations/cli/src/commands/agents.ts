@@ -115,18 +115,19 @@ export function managedTarget(args: ParsedArgs, operation: "stop" | "attach", al
   const verb = `cotal ${operation}`;
   if (typeof on === "string") onInstance(on, name === undefined ? onRerun(`${verb} <name>`, v, options) : onRemedyVerb(verb, { ...v, name }, options));
   const pin = typeof on === "string" ? ["--on", on] : [];
+  const needsName = operation === "stop" ? !name?.trim() : name === undefined && allowPicker && !canPrompt();
+  if (needsName && typeof on === "string" && !instanceIdShaped(on)) {
+    let mode: string | undefined;
+    try { mode = resolveMeshTarget(process.cwd(), { space: typeof v.space === "string" ? v.space : undefined, server: typeof server === "string" ? server : undefined, readOnly: true }).mode; }
+    catch { /* an unresolved target does not establish support for manager names or hosts */ }
+    if (mode !== "user") {
+      const roster = codeSpan(onRerun("cotal ps", v));
+      const retry = codeSpan(onRerun(`${verb} <name> --on <instance>`, v, options));
+      throw new CommandFailure("refused", "USAGE_INVALID", `--on ${JSON.stringify(on)} is not a valid manager instance id. A manager's name or host is taken only on a user-auth mesh`, { remedy: `run ${roster}, then ${retry}`, selfContained: true });
+    }
+  }
   if (name === undefined && operation === "attach" && allowPicker) {
-    if (!canPrompt()) {
-      if (typeof on === "string" && !instanceIdShaped(on)) {
-        let mode: string | undefined;
-        try { mode = resolveMeshTarget(process.cwd(), { space: typeof v.space === "string" ? v.space : undefined, server: typeof server === "string" ? server : undefined, readOnly: true }).mode; }
-        catch { /* an unresolved target does not establish support for manager names or hosts */ }
-        if (mode !== "user") {
-          const roster = codeSpan(onRerun("cotal ps", v));
-          const retry = codeSpan(onRerun("cotal attach <name> --on <instance>", v, options));
-          throw new CommandFailure("refused", "USAGE_INVALID", `--on ${JSON.stringify(on)} is not a valid manager instance id. A manager's name or host is taken only on a user-auth mesh`, { remedy: `run ${roster}, then ${retry}`, selfContained: true });
-        }
-      }
+    if (needsName) {
       const roster = codeSpan(onRerun("cotal ps", v, pin));
       const retry = codeSpan(onRerun("cotal attach <name>", v, [...pin, ...options]));
       throw new CommandFailure("refused", "USAGE_INVALID", "name the agent to attach without an interactive terminal", { remedy: `run ${roster}, then ${retry}`, selfContained: true });
@@ -746,6 +747,7 @@ async function readNamedSeat(values: FlagValues<typeof psFlags>, name: string): 
   const pin = on === undefined ? await pinForTarget({ ...values, name } as never, "cotal status", [], { openMesh: mode === "open" }) : { instanceId: on };
   const t = await resolveControlTarget(values, "control-caller-privileged", pin.instanceId, { onRefusal: "throw" });
   recordOperationSpace(t.space);
+  if (on !== undefined && !t.auth.bearer) await refuseUnregisteredManager(t.space, t.server, t.auth, on);
   const target = { space: t.space, scope: "agent", managerInstanceId: pin.instanceId ?? null };
   const reply = await askManager(cliControl, t.space, t.server, "status", { name }, t.auth, "any", undefined, pin);
   if (!reply.ok) throw readFailure(reply, target);

@@ -749,7 +749,10 @@ try {
     await pub2.unicast(otto2Id!, "hello via 2.x");
     for (let i = 0; i < 50 && prompts2.length < 1; i++) await sleep(100);
     check("2.x: one DM drives exactly one prompt POST with text", prompts2.length === 1 && prompts2[0]?.body.text?.includes("hello via 2.x") === true, prompts2);
+    // Each DM turn below replies, as a model would, so its clean end drives no reply reminder.
+    const reply2 = () => ctx2.addedTools.find((t) => t.name === "cotal_dm")!.execute({ to: "Pubby2", text: "ok" });
 
+    await reply2();
     ctx2.feed({ type: "session.execution.started", durable: { aggregateID: SID2, seq: 1 }, data: { sessionID: SID2 } });
     ctx2.feed({ type: "session.execution.succeeded", durable: { aggregateID: SID2, seq: 2 }, data: { sessionID: SID2 } });
     await sleep(300);
@@ -769,6 +772,7 @@ try {
     const whileOpen = { sessionID: SID2, prompt: { text: "typed while a batch is open" } };
     await prompt2(whileOpen);
     check("2.x: a native prompt carries nothing while a driven batch is open", whileOpen.prompt.text === "typed while a batch is open", whileOpen);
+    await reply2();
     ctx2.feed({ type: "session.execution.started", durable: { aggregateID: SID2, seq: 3 }, data: { sessionID: SID2 } });
     ctx2.feed({ type: "session.execution.succeeded", durable: { aggregateID: SID2, seq: 4 }, data: { sessionID: SID2 } });
     for (let i = 0; i < 50 && prompts2.length < 3; i++) await sleep(100);
@@ -777,6 +781,7 @@ try {
       prompts2.length === 3 && prompts2[2]?.body.text?.includes("third turn via 2.x") === true && !prompts2[2]?.body.text?.includes("second turn via 2.x"),
       prompts2,
     );
+    await reply2();
     ctx2.feed({ type: "session.execution.started", durable: { aggregateID: SID2, seq: 5 }, data: { sessionID: SID2 } });
     ctx2.feed({ type: "session.execution.succeeded", durable: { aggregateID: SID2, seq: 6 }, data: { sessionID: SID2 } });
     await sleep(300);

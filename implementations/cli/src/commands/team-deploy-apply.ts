@@ -1,13 +1,13 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { mintCreds, newIdentity, validateChannelConfig } from "@cotal-ai/core";
+import { mintCreds, newIdentity } from "@cotal-ai/core";
 import { acquireMaintenanceLock, recordOperationSpace, brokerAddressForDisplay, canonicalRoot, CommandFailure, connectOrThrow, findMesh, findPreparedSpace, presentationOf, readMaintenanceJournal, releaseMaintenanceLock, serviceMetadataDigest, userViewAuth, writeResult, type Report, resolveControlTarget } from "@cotal-ai/workspace";
 import { buildLaunchSpec, cardOf, genRunId } from "../lib/manifest/apply.js";
 import { verifyOriginalIncarnations } from "../lib/team-retained.js";
 import { hashManifestSource, listLedgerFiles } from "../lib/manifest/ledger.js";
 import { loadManifest } from "../lib/manifest/index.js";
 import { additiveChannelAttemptSettled, listAdditiveTeamAttempts, retainedAdditiveTeamAttempts, writeAdditiveChannelReceipt, writeAdditiveChannelStep, writeAdditiveTeamAttempt, type AdditiveChannelReceipt, type AdditiveTeamAttempt } from "../lib/team-additive-attempt.js";
-import { cardsWithoutLiveDelivery, liveDeliveryRemedy, readOwnedChannelRevisions, stoppedTeamDeploy } from "../lib/team-deploy-inspection.js";
+import { cardsWithoutLiveDelivery, invalidTeamChannelCards, liveDeliveryRemedy, readOwnedChannelRevisions, stoppedTeamDeploy } from "../lib/team-deploy-inspection.js";
 import { canonicalServer } from "../lib/broker-service.js";
 import { openAdditiveChannelWriter } from "../lib/team-additive-native.js";
 import { shellWord } from "../lib/endpoint-errors.js";
@@ -44,8 +44,8 @@ export async function applyChannelOnlyTeam(file: string, values: TeamValues): Pr
   const notLive = cardsWithoutLiveDelivery(manifest.channels);
   if (notLive)
     throw new CommandFailure("refused", "UNSUPPORTED", `channel-only additive apply creates a card only with explicit live delivery, and ${notLive.cards} ${notLive.verb} not set deliveryClass: live; inherited or durable delivery needs a verified daemon first, so nothing was created`, { target: { root, space, cards: notLive.names }, remedy: liveDeliveryRemedy(registered.mode) });
-  try { for (const channel of manifest.channels) validateChannelConfig(cardOf(channel)); }
-  catch { throw new CommandFailure("refused", "SCHEMA_INVALID", "a declared channel card exceeds native policy or text limits; no intent or channel was written", { target: { root, space } }); }
+  const invalidCard = invalidTeamChannelCards(manifest.channels).values().next().value;
+  if (invalidCard) throw new CommandFailure("refused", "SCHEMA_INVALID", `${invalidCard}; no intent or channel was written`, { target: { root, space } });
   let source: string;
   try { source = readFileSync(path, "utf8"); }
   catch { throw new CommandFailure("refused", "SCHEMA_INVALID", "the additive manifest source could not be read for an exact pre-effect comparison", { target: { path, space } }); }

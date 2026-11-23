@@ -420,9 +420,9 @@ after `--`, as in `cotal space delete --dry-run -- -old`. If two local registrat
 streams on the same open broker, deletion refuses rather than choosing between them. Its question,
 and the message under a wrong answer, wrap to the
 terminal with each continuation line under the prompt's bar. A script supplies the exact
-positional name with `--yes`;
-`--json` without `--yes` refuses before a connection. After confirmation the command
-reads the broker again and refuses if the stream states, transfer names, presence
+positional name with `--yes`. `--json` without `--yes` refuses before a connection. The confirmation
+refusal keeps `--json` or `--plain` in both suggested commands if given. After confirmation the
+command reads the broker again and refuses if the stream states, transfer names, presence
 identities, registration, trust or broker identity changed. After a typed confirmation it also
 refuses `CONFLICT`, exit 2, when a stream's message count differs from the impact it showed, as
 when a message is posted while the confirmation waits; the refusal names each changed count and

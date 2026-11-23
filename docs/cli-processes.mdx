@@ -840,6 +840,8 @@ before moving it to the current CLI installation. The repair preserves sign-in a
 refuses to stop occupied or unreadable Managers, and keeps an operator-disabled service stopped.
 An interrupted repair retains its source and receipt intent for the next command to finish.
 A modified or unrecorded unit is never adopted by its label.
+If the CLI cannot inspect the recorded unit file, keep its install receipt. Restore access to the
+file’s directory or correct its path, then retry the preview.
 `spaces` lists the registry through the daemon; `--refresh` uses the daemon-held sign-in to refresh
 its catalogs. Catalog rows in the `spaces` reply include optional `kind` and `role` fields from the saved catalog entry. Local entries omit these fields. With no cached sign-in, a refresh reports `not-signed-in`; the CLI refuses with
 `AUTH_REQUIRED` (exit 2) and directs you to `cotal daemon login --idp <url>`. Saved spaces remain
@@ -1287,6 +1289,8 @@ created or repaired. Bash and Zsh completion offer file paths for `--daemon-home
 existing directories; the directory checks still apply when the command runs.
 On Linux, when a foreground daemon is stopped, `daemon status` and `daemon service-connect`
 name the `cotal daemon serve` command for the selected home, including `--daemon-home` if supplied.
+If the daemon is running but its socket is in a different runtime directory, `status` and a second
+`serve` tell you to use the running daemon's `XDG_RUNTIME_DIR` before checking status again.
 
 `serve` holds the lifetime lock `<dir>/daemon.lock` while it runs. The default daemon holds the
 same lock at `<COTAL_HOME>/daemon/daemon.lock`. A second `serve` for the same daemon refuses
@@ -1527,7 +1531,8 @@ credentials, ready records, registration request and service identity. It lists 
 without their contents. A later connection needs a new registration and approval. Stopping the
 daemon alone closes its connections without removing these records. The lifetime lock remains;
 its empty file is not a credential. Local cleanup does not revoke remote authority: remove the
-computer in the dashboard for that, since its remote record may remain.
+computer in the dashboard for that, since its remote record may remain. For a registered open or
+static-auth space with no service records to remove, disconnect reports that there was nothing to do.
 Disconnect and graceful shutdown cancel an in-flight service authority or sign-in proof request,
 including a startup resume, before waiting for the connection attempt to settle.
 This also applies to a pending `daemon register`. If removing any service record fails, disconnect

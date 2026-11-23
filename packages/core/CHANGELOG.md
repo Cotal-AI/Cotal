@@ -1,5 +1,11 @@
 # @cotal-ai/core
 
+## 0.175.3
+
+### Patch Changes
+
+- 35e08ac: Durable channel delivery and the membership feed read only changed registry rows after their initial snapshot instead of listing every membership on each post or connection event.
+
 ## 0.175.2
 
 ### Patch Changes

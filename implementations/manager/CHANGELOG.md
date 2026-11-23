@@ -1,5 +1,19 @@
 # @cotal-ai/manager
 
+## 0.175.3
+
+### Patch Changes
+
+- d3b463e: Batch the workflow inventory at manager startup so a long history of finished runs does not prevent recovery of interrupted runs.
+- Updated dependencies [3e4e94e]
+- Updated dependencies [03b122e]
+- Updated dependencies [35e08ac]
+- Updated dependencies [1d07abd]
+- Updated dependencies [5406c82]
+  - @cotal-ai/workspace@0.175.3
+  - @cotal-ai/core@0.175.3
+  - @cotal-ai/seat@0.175.3
+
 ## 0.175.2
 
 ### Patch Changes

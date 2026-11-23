@@ -311,6 +311,9 @@ try {
   check("generic CLI owner silence names the owner as TARGET_UNAVAILABLE", cliUnavailable.code !== 0 && cliUnavailable.err.includes("TARGET_UNAVAILABLE") && cliUnavailable.err.includes(iid1), cliUnavailable);
   const statusUnavailable = await cliAgent("agentStatus", "first");
   check("actual CLI named status reports its silent owner as TARGET_UNAVAILABLE", statusUnavailable.code === 2 && statusUnavailable.out.includes("TARGET_UNAVAILABLE") && statusUnavailable.out.includes(iid1) && !statusUnavailable.out.includes("all-managers"), statusUnavailable);
+  const pinnedUnavailable = await cliAgent("agentStatus", "first", false, iid1);
+  check("named status still reports that a registered but silent pinned manager did not answer",
+    pinnedUnavailable.code === 2 && pinnedUnavailable.out.includes("TARGET_UNAVAILABLE") && pinnedUnavailable.out.includes(`manager instance ${iid1} did not answer`), pinnedUnavailable);
   const statusOther = await cliAgent("agentStatus", "second");
   check("actual CLI named status does not depend on an unrelated silent manager", statusOther.code === 0 && statusOther.out.includes(iid2) && !statusOther.out.includes(iid1), statusOther);
   const other = await invoke(granted.tool, "second");
