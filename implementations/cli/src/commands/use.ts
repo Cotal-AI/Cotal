@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 import type { CompletionResult, FlagSpec, FlagValues, ParsedArgs } from "@cotal-ai/core";
-import { boundedValue, canonicalRoot, clearCurrent, codeSpan, CommandFailure, cotalDirLink, findCotalRoot, findMesh, findPreparedSpace, folderSpace, folderSpaceHeld, getCurrent, isMeshRegistryError, readCurrentSelection, jsonFlag, loadMeshes, loadPreparedSpaces, plainFlag, preparedLifecycle, preparedRootRemedy, presentationOf, projectRootProblem, projectRootProblemText, readCurrent, setCurrent, shellPath, SHOWN_VALUE_MAX, stackElsewhereRemedy, writeResult, type Cell, type MeshEntry, type OutputWarning, type PreparedSpace, type ProjectRootProblem, type Report } from "@cotal-ai/workspace";
+import { boundedValue, canonicalRoot, clearCurrent, codeSpan, CommandFailure, cotalDirLink, findCotalRoot, findMesh, findPreparedSpace, folderSpace, folderSpaceHeld, getCurrent, isMeshRegistryError, readCurrentSelection, jsonFlag, loadMeshes, loadPreparedSpaces, plainFlag, preparedLifecycle, preparedRootRemedy, presentationOf, projectRootDisplaced, projectRootProblem, projectRootProblemText, readCurrent, setCurrent, shellPath, SHOWN_VALUE_MAX, stackElsewhereRemedy, writeResult, type Cell, type MeshEntry, type OutputWarning, type PreparedSpace, type ProjectRootProblem, type Report } from "@cotal-ai/workspace";
 import { registryFailure } from "../lib/registry-errors.js";
 import { displayRemedy } from "../lib/self-exec.js";
 import { journalRecordedElsewhere } from "../lib/stack-journal.js";
@@ -67,7 +67,7 @@ export async function use(args: ParsedArgs): Promise<void> {
   const cwd = process.cwd(), project = canonicalRoot(findCotalRoot(cwd));
   const problem = p === undefined ? undefined : projectRootProblem(p.root);
   let moved: ReturnType<typeof journalRecordedElsewhere>;
-  if (p && problem === "missing" && cotalDirLink(project) === undefined) {
+  if (p && projectRootDisplaced(problem) && cotalDirLink(project) === undefined) {
     try {
       const found = journalRecordedElsewhere(project);
       if (found?.recordedRoot === p.root && found.journal.space === p.space) moved = found;
@@ -115,6 +115,7 @@ function selectionView(s: Selection, project: string, moved: ReturnType<typeof j
   if (s.server) lines.push({ text: `  ${s.server}`, tone: "hint" });
   const problem = s.currentRecorded ? (s.preparedRoot && !existsSync(s.preparedRoot) ? "missing" : undefined) : preparedProblem;
   if (moved) {
+    if (problem === "not-directory") lines.push(`  ${moved.recordedRoot} ${projectRootProblemText(problem)}`);
     if (s.lastOperation) lines.push({ text: `  ${s.preparedState === "stopped" ? "stopped; its last operation" : "its last operation"}, ${s.lastOperation}`, tone: "waiting" });
     lines.push(
       { text: `  this folder holds the stack journal of "${s.current}" and was moved from ${moved.recordedRoot}`, tone: "waiting" },

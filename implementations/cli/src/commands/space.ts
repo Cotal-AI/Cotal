@@ -1,4 +1,3 @@
-import { existsSync } from "node:fs";
 import type { CompletionResult, FlagSpec, FlagValues, ParsedArgs } from "@cotal-ai/core";
 import {
   CommandFailure,
@@ -29,6 +28,7 @@ import {
   preparedLifecycle,
   preparedRootRemedy,
   presentationOf,
+  projectRootDisplaced,
   projectRootProblem,
   projectRootProblemText,
   readCurrentSelection,
@@ -227,7 +227,7 @@ async function read(sub: "show" | undefined, rest: string[], presentation: Prese
   const project = canonicalRoot(findCotalRoot(process.cwd()));
   const recordedRoot = cotalDirLink(project) === undefined ? stackJournalRoot(project) : undefined;
   let moved: ReturnType<typeof journalRecordedElsewhere>;
-  if (recordedRoot !== undefined && !existsSync(recordedRoot)) {
+  if (recordedRoot !== undefined && projectRootDisplaced(projectRootProblem(recordedRoot))) {
     try { moved = journalRecordedElsewhere(project); } catch { /* An unusable journal does not identify a moved project. */ }
   }
   if (sub === undefined) {
@@ -448,6 +448,7 @@ function spacesView(result: SpacesResult, project: string, moved: ReturnType<typ
 function preparedView(p: PreparedDetail, project: string, moved: ReturnType<typeof journalRecordedElsewhere>): Report {
   const cmd = displayCmd();
   const hints: Cell[] = [];
+  if (moved && p.rootProblem === "not-directory") hints.push(`${p.root} ${projectRootProblemText(p.rootProblem)}`);
   if (moved !== undefined) {
     hints.push(
       { text: `this folder holds the stack journal of "${p.space}" and was moved from ${p.root}`, tone: "waiting" },

@@ -1,5 +1,5 @@
 import { basename, isAbsolute, join } from "node:path";
-import { readFileSync, readdirSync, rmSync, statSync, type Stats } from "node:fs";
+import { accessSync, constants, readFileSync, readdirSync, rmSync, statSync, type Stats } from "node:fs";
 import { mkSecretDir, writeSecretFileAtomic } from "@cotal-ai/core";
 import { spaceFromSegment, spaceSegment } from "./auth-paths.js";
 import { MeshRegistryError, canonicalRoot, homeCotalDir, isMeshRegistryError, registryRecordDirectory } from "./mesh-registry.js";
@@ -26,14 +26,21 @@ export interface PreparedSpace {
 
 export type ProjectRootProblem = "missing" | "not-directory" | "inaccessible";
 
-/** Whether the path resolves to a directory, without treating a failed lookup as a directory. */
+/** Whether this account can reach and enter the recorded project directory. */
 export function projectRootProblem(path: string): ProjectRootProblem | undefined {
   try {
-    return statSync(path).isDirectory() ? undefined : "not-directory";
+    if (!statSync(path).isDirectory()) return "not-directory";
+    accessSync(path, constants.X_OK);
+    return undefined;
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
     return code === "ENOENT" ? "missing" : code === "ENOTDIR" ? "not-directory" : "inaccessible";
   }
+}
+
+/** An unavailable path that cannot contain the original project's journal. */
+export function projectRootDisplaced(problem: ProjectRootProblem | undefined): boolean {
+  return problem === "missing" || problem === "not-directory";
 }
 
 export function projectRootProblemText(problem: ProjectRootProblem): string {

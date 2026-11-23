@@ -12,7 +12,8 @@
  * Run: pnpm smoke:space-reads
  */
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { accessSync, chmodSync, constants, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -96,6 +97,31 @@ const registryFiles = () => readdirSync(meshesDir()).sort().map((f) => `${f}:${r
       intactTarget.env?.error?.code === "TARGET_UNAVAILABLE" && intactTarget.env.error.remedy === startup,
     [intact, intactTarget].map(shown));
 
+  if (process.platform !== "win32") {
+    chmodSync(project, 0);
+    try {
+      let searchable = true;
+      try { accessSync(project, constants.X_OK); } catch { searchable = false; }
+      if (!searchable) {
+        const denied = json(["space", "show", space]), deniedTarget = who();
+        check("a directory this account cannot enter offers restore-access advice instead of startup",
+          denied.status === 0 && denied.env?.result?.rootMissing === true && denied.env.result.rootProblem === "inaccessible" &&
+            deniedTarget.status === 2 && deniedTarget.env?.error?.code === "TARGET_UNAVAILABLE" &&
+            deniedTarget.env.error.remedy.includes("restore access") && !deniedTarget.env.error.remedy.includes("cotal up"), [denied, deniedTarget].map(shown));
+      }
+    } finally { chmodSync(project, 0o700); }
+  }
+
+  const brokerDefinition = join(home, "dormant-broker.json");
+  const config = join(project, ".cotal", "server-open.conf");
+  writeFileSync(config, "", { mode: 0o600 });
+  writeFileSync(brokerDefinition, JSON.stringify({ schemaVersion: 1, space,
+    launch: { type: "adapter", adapter: "nats-broker", options: { root: project, config, binary: process.execPath, server: DEAD } },
+    readiness: { type: "adapter", timeoutMs: 30_000 },
+  }), { mode: 0o600 });
+  const added = json(["service", "add", "stack-broker", "--space", space, "--file", brokerDefinition], project);
+  if (added.status !== 0) throw new Error(`could not save the dormant broker fixture: ${JSON.stringify(shown(added))}`);
+
   renameSync(project, `${project}.saved`);
   const missing = show(), missingTarget = who();
   check("a missing prepared folder is still reported as missing",
@@ -120,6 +146,11 @@ const registryFiles = () => readdirSync(meshesDir()).sort().map((f) => `${f}:${r
   check("who names the non-directory in its TARGET_UNAVAILABLE refusal and offers recovery",
     target.status === 2 && target.env?.error?.code === "TARGET_UNAVAILABLE" && target.env.error.message.includes(fileMessage) &&
       target.env.error.remedy.includes("restore the original project folder") && recovery(target.env.error.remedy), shown(target));
+  const deletion = json(["space", "delete", space, "--dry-run"]);
+  check("deletion preview names the non-directory without offering an unusable store reset",
+    deletion.status === 2 && deletion.env?.error?.code === "TARGET_UNAVAILABLE" && deletion.env.error.message.includes(`${project} is not a directory`) &&
+      deletion.env.error.remedy.includes("restore the original project folder") && deletion.env.error.remedy.includes(`cotal space forget ${space}`) &&
+      !deletion.env.error.remedy.includes("cotal reset store"), shown(deletion));
 
   const selected = run(["use", space, "--plain"]);
   check("selecting the preparation does not offer startup at a file", selected.status === 0 && selected.stdout.includes(fileMessage) && recovery(selected.stdout), shown(selected));
@@ -150,8 +181,47 @@ const registryFiles = () => readdirSync(meshesDir()).sort().map((f) => `${f}:${r
     forgot.status === 0 && !existsSync(record) && readFileSync(project, "utf8") === replacement, shown(forgot));
   const reprepare = json(["space", "create", space, "--root", elsewhere]);
   check("the space can then be prepared in a new directory", reprepare.status === 0 && reprepare.env?.result?.root === elsewhere, shown(reprepare));
+  const definition = json(["service", "show", "stack-broker", "--space", space], elsewhere);
+  check("forget releases the dormant definition bound to the file path",
+    forgot.env?.result?.releasedDefinitions?.join() === "stack-broker" && definition.status === 2 &&
+      definition.env?.error?.code === "TARGET_NOT_FOUND" && definition.env.error.message.includes("no saved service definition"),
+    [forgot, definition].map(shown));
   const cleanup = json(["space", "forget", space]);
   check("the recovery fixture leaves no preparation for the rest of the suite", cleanup.status === 0 && !existsSync(record), shown(cleanup));
+}
+
+// A stopped stack's copied journal must be adopted if the project is kept at its new location.
+{
+  const space = "moved-stack", project = mkdtempSync(join(home, "original-")), moved = `${project}-moved`;
+  const created = json(["space", "create", space, "--root", project]);
+  if (created.status !== 0) throw new Error(`could not prepare the moved fixture: ${JSON.stringify(shown(created))}`);
+  const now = new Date().toISOString();
+  const journal = ".cotal/stack-controller.json";
+  const bytes = JSON.stringify({ schemaVersion: 1, kind: "cotal-stack-controller", root: project, space, mode: "open", server: DEAD,
+    members: ["broker", "auth", "delivery", "manager"].map((role) => ({ role, definition: `stack-${role}`, instanceId: null, state: role === "broker" ? "stopped" : "not-attempted" })),
+    operation: { id: randomUUID(), kind: "down", phase: "completed", recordedAt: now, withAgents: false }, updatedAt: now,
+  });
+  writeFileSync(join(project, journal), bytes, { mode: 0o600 });
+  renameSync(project, moved);
+  writeFileSync(project, "replacement\n");
+
+  const show = run(["space", "show", "--plain"], {}, moved);
+  const list = run(["space", "--plain"], {}, moved);
+  const use = run(["use", space, "--plain"], {}, moved);
+  const who = json(["who", "--space", space], moved);
+  const movedRecovery = (text: string) => text.includes(`space forget ${space}`) &&
+    text.includes(`space create ${space} --adopt --root ${moved}`) && !text.includes("cotal up");
+  check("list, bare show, use and who find the moved journal despite the file at its old path",
+    [list, show, use].every((r) => r.status === 0 && movedRecovery(r.stdout)) &&
+      who.status === 2 && who.env?.error?.code === "TARGET_UNAVAILABLE" && who.env.error.message.includes("is not a directory") &&
+      movedRecovery(who.env.error.remedy) && readFileSync(join(moved, journal), "utf8") === bytes, [list, show, use, who].map(shown));
+  const forgot = json(["space", "forget", space]);
+  const adopted = json(["space", "create", space, "--adopt", "--root", moved], moved);
+  check("the advertised adoption succeeds without modifying the file at the old path",
+    forgot.status === 0 && adopted.status === 0 && adopted.env?.result?.root === moved &&
+      JSON.parse(readFileSync(join(moved, journal), "utf8")).root === moved && readFileSync(project, "utf8") === "replacement\n", [forgot, adopted].map(shown));
+  const cleanup = json(["space", "forget", space]);
+  check("the moved fixture leaves no preparation", cleanup.status === 0, shown(cleanup));
 }
 
 if (process.env.COTAL_SMOKE_PREPARED_ROOT_ONLY === "1") {

@@ -9,7 +9,7 @@ import { readBrokerPolicy } from "./broker-policy.js";
 import { DELIVERY_PIDFILE, localProcessPath, MANAGER_PIDFILE } from "./local-process.js";
 import { CommandFailure, isCommandFailure, recordOperationSpaceNote, recordOperationWarning, SHOWN_VALUE_MAX } from "./output.js";
 import { assertRecordIdentity, parsePid, probeLiveness, readPidfile, type ProcessIdentityRecord } from "./pid.js";
-import { findPreparedSpace, preparedSpaceAt, projectRootProblem, projectRootProblemText, type ProjectRootProblem } from "./prepared-spaces.js";
+import { findPreparedSpace, preparedSpaceAt, projectRootDisplaced, projectRootProblem, projectRootProblemText, type ProjectRootProblem } from "./prepared-spaces.js";
 import {
   canonicalRoot,
   brokerUrlKey,
@@ -446,7 +446,7 @@ function notStarted(space: string, cwd?: string): void {
   if (!prepared) return;
   const rootProblem = projectRootProblem(prepared.root);
   if (rootProblem !== undefined) {
-    const stack = cwd !== undefined && rootProblem === "missing" ? stackRecord(findCotalRoot(cwd)) : undefined;
+    const stack = cwd !== undefined && projectRootDisplaced(rootProblem) ? stackRecord(findCotalRoot(cwd)) : undefined;
     const moved = stack?.stackSpace === space && stack.recordedRoot === prepared.root ? stack.stackRemedy : undefined;
     throw new MeshTargetError("not-started", `"${space}" is prepared in ${prepared.root}, which ${projectRootProblemText(rootProblem)}${moved ? ", and this folder's stack journal was recorded there, so this folder was moved from there" : ""}`, { space, root: prepared.root, rootMissing: true, rootProblem, ...(moved ? { stackRemedy: moved } : {}) });
   }
