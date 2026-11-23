@@ -2,9 +2,9 @@ import { createConnection } from "node:net";
 import { existsSync } from "node:fs";
 import { dialerFor, mintCreds, newIdentity, probeConnect, isReachable, token } from "@cotal-ai/core";
 import { jetstreamManager } from "@nats-io/jetstream";
-import { brokerAddressKey, brokerUrlKey, getCurrent, loadMeshes } from "./mesh-registry.js";
+import { brokerAddressKey, brokerUrlKey, readCurrent, loadMeshes } from "./mesh-registry.js";
 import { isGenuineSpace, type MeshTarget } from "./mesh-target.js";
-import { stoppedLoopbackListener, parsePid, parseRecord, probeLiveness, readPidfile, assertRecordIdentity } from "./pid.js";
+import { stoppedLoopbackListener, hasNonNatsExecutable, parsePid, parseRecord, probeLiveness, readPidfile, assertRecordIdentity } from "./pid.js";
 import { localProcessPath, NATS_PIDFILE } from "./local-process.js";
 import { findCotalRoot, stackJournalPath } from "./auth-paths.js";
 import { readLocalRecordSource, decodeLocalJson } from "./protected-records.js";
@@ -22,7 +22,7 @@ import { isCommandFailure } from "./output.js";
  * and pruning is the caller's explicit act, not a side effect of probing.
  */
 
-/** The six distinct ways a preflight fails. Each also carries whether the target OWNS its registry
+/** The ways a preflight fails. Each also carries whether the target OWNS its registry
  *  entry (→ prune): `fromRegistry` means the server+mode came from a registry record (incl. a
  *  `local-recorded` project matched by root), so a definitive failure is a stale-entry signal. */
 export type PreflightFailure =
@@ -49,8 +49,7 @@ export type PreflightFailure =
    *  `tls-trust`, whose evidence is an actual plaintext INFO greeting; a bare timeout has none, so
    *  it must not borrow that verdict's CA guidance. */
   | "slow-link"
-  /** The first dial timed out and the process holding the loopback listener is stopped, so the
-   *  confirm budget is not spent on it. NEVER a prune signal: the broker is there, only paused. */
+  /** A stopped loopback listener with no evidence that it is another program. Not a prune signal. */
   | "broker-stopped"
   /** A broker answered at this record's address and refused the credentials, and another registered
    *  space names that same address, so the broker answering is that space's. NEVER a prune signal:
@@ -176,9 +175,9 @@ export async function preflightTarget(
   const auth = { ...(creds ? { creds } : {}), ...(target.tlsRequired ? { tls: true as const } : {}) };
   let probe = await probeConnect(target.server, auth);
   if (probe.ok) return await checkBrokerFeatures(target, plain, ownBroker);
-  // A stopped broker never answers, so its pid is named now instead of after the confirm budget.
+  // A stopped listener never answers. Only a readable foreign executable rules out NATS.
   const stopped = probe.reason === "timeout" ? stoppedLoopbackListener(target.server) : undefined;
-  if (stopped !== undefined) return { ok: false, kind: "broker-stopped", prune: false, pid: stopped };
+  if (stopped !== undefined) return { ok: false, kind: hasNonNatsExecutable(stopped) ? "non-nats-listener" : "broker-stopped", prune: false, pid: stopped };
   // CONFIRM BEFORE CONDEMNING. `probeConnect`'s default budget is 1s, and this is a CREDENTIALED
   // connect: TCP, INFO, then the JWT exchange — several round trips. A perfectly healthy broker
   // across a slow or jittery link (a relayed overlay VPN, a loaded host) misses that routinely.
@@ -306,7 +305,8 @@ export type BrokerCheck = "reachable" | "unreachable" | "slow-link" | "broker-st
 export async function brokerCheck(server: string, tlsRequired = false): Promise<BrokerCheck> {
   const auth = tlsRequired ? { tls: true as const } : {};
   if (await isReachable(server, auth)) return "reachable";
-  if (stoppedLoopbackListener(server) !== undefined) return "broker-stopped";
+  const stopped = stoppedLoopbackListener(server);
+  if (stopped !== undefined) return hasNonNatsExecutable(stopped) ? "unreachable" : "broker-stopped";
   const probe = await probeConnect(server, { ...auth, timeoutMs: PRUNE_CONFIRM_TIMEOUT_MS });
   if (probe.ok || probe.reason === "auth-required" || probe.reason === "stale-auth") return "reachable";
   return probe.reason === "timeout" ? "slow-link" : "unreachable";
@@ -350,6 +350,7 @@ export async function brokerAnswers(server: string): Promise<boolean> {
  *  command resolves with, only the records at that address are probed: that resolve reads no other
  *  record's liveness. Other explicitly requested checks, such as status --all, have their own scope. */
 export async function pruneStaleMeshes(server?: string, scope: "brokers" | "targets" = "brokers"): Promise<MeshSweep> {
+  const useInventory = scope === "targets" && server === undefined && readCurrent() === undefined && !isGenuineSpace(findCotalRoot());
   const sweep: MeshSweep = { offline: [] };
   const entries = loadMeshes().filter((m) => server === undefined || m.server === server);
   await Promise.all(
@@ -363,7 +364,7 @@ export async function pruneStaleMeshes(server?: string, scope: "brokers" | "targ
       sweep.offline.push(m.space);
     }),
   );
-  if (scope === "targets" && server === undefined && !getCurrent() && !isGenuineSpace(findCotalRoot())) {
+  if (useInventory) {
     const candidates = entries.filter((m) => !sweep.offline.includes(m.space));
     const inventories = new Map<string, Promise<string[] | undefined>>();
     const openInventory = { served: [] as string[], unserved: [] as string[] };

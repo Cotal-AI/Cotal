@@ -22,8 +22,8 @@ export interface PresetServiceTarget {
   /** A process of the preset's name that `up` or a daemon entry started and recorded by PID alone,
    *  with no saved service: the service controller does not own it and starts none beside it. */
   readonly recorded?: { readonly pid: number; readonly label: string };
-  /** That manager once it has stopped, for a log read of the log it left. Its PID is kept while its
-   *  record still names the dead process. */
+  /** That manager once it has stopped, for status and logs. Its PID is kept while its record names
+   *  the dead process. */
   readonly stopped?: { readonly pid: number | null; readonly label: string };
 }
 
@@ -56,10 +56,11 @@ function stoppedManagerLog(space: string, root: string, requested: string, prese
   const path = managerLogPath(space, root), record = presetPidRecord(space, root, preset);
   if (!existsSync(path)) {
     const target = { space, name: requested, path };
-    if (record?.liveness === "dead" || loadManagerInstanceIdentity(root, space)) throw new CommandFailure("refused", "TARGET_NOT_FOUND", `the manager log at ${path} is no longer there; nothing was read`, { target, remedy: "start the stack again with `cotal up`" });
+    const stack = codeSpan(`cotal up --root ${shellWord(root)} --space ${shellWord(space)}`);
+    if (record?.liveness === "dead" || loadManagerInstanceIdentity(root, space)) throw new CommandFailure("refused", "TARGET_NOT_FOUND", `the manager log at ${path} is no longer there; nothing was read`, { target, remedy: `start the stack again with ${stack}` });
     throw new CommandFailure("refused", "TARGET_NOT_FOUND", `no manager has been started in space ${oneLine(space)}: there is no manager log at ${path}; nothing was read`, {
       target,
-      remedy: "start the stack with `cotal up`, or the manager alone with `cotal manager start`",
+      remedy: `start the stack with ${stack}, or the manager alone with ${codeSpan(`cotal manager start --space ${shellWord(space)}`)}`,
     });
   }
   return { requested, name: requested, preset: preset.name, saved: null, stopped: { pid: record?.liveness === "dead" ? record.pid : null, label: record?.label ?? preset.name } };
@@ -111,6 +112,7 @@ export function presetDefinition(space: string, root: string, preset: ServicePre
  *  existing, stopped one with other options saves it again. With no saved `stack-manager`, stop and
  *  restart identify the manager `up` recorded by PID so their refusal names its stack stop. A log
  *  read of `manager` or `stack-manager` reaches that manager, or the log it left once it stopped.
+ *  An unpinned manager status can also read the stopped manager's retained records.
  *  Undefined when the name is no preset. */
 export function resolvePresetService(space: string, root: string, requested: string, mode: string, values: ParsedArgs["values"]): PresetServiceTarget | undefined {
   const store = serviceDefinitionStore(space, addedDefinitionStep);
@@ -143,13 +145,17 @@ export function resolvePresetService(space: string, root: string, requested: str
     if (recorded) return { requested, name: requested, preset: manager.name, saved: null, recorded };
     return mode === "logs" ? stoppedManagerLog(space, root, requested, manager) : undefined;
   }
-  const recorded = recordedPresetProcess(space, root, preset);
-  if (recorded) return { requested, name: requested, preset: preset.name, saved: null, recorded };
+  const record = presetPidRecord(space, root, preset);
+  if (record?.liveness === "alive") return { requested, name: requested, preset: preset.name, saved: null, recorded: { pid: record.pid, label: record.label } };
   if (mode === "logs" && requested === "manager") return stoppedManagerLog(space, root, requested, preset);
+  if (mode === "status" && requested === "manager") {
+    if (record?.liveness === "dead" || (!record && (existsSync(managerLogPath(space, root)) || loadManagerInstanceIdentity(root, space))))
+      return { requested, name: requested, preset: preset.name, saved: null, stopped: { pid: record?.pid ?? null, label: record?.label ?? preset.name } };
+  }
   if (mode === "install") throw adapterInstallRefusal(space, requested, preset.adapter, {}, requested === "manager" ? "manager" : undefined, { space, name: requested });
   if (mode !== "start") throw new CommandFailure("refused", "TARGET_NOT_FOUND", `no ${requested} has been started in space ${oneLine(space)}; nothing was ${mode === "status" || mode === "logs" ? "read" : "changed"}`, {
     target: { space, name: requested },
-    remedy: requested === "manager" ? "start it with `cotal manager start`" : `start it with \`cotal service start ${requested}\``,
+    remedy: requested === "manager" ? `start it with ${codeSpan(`cotal manager start --space${space.startsWith("-") ? "=" : " "}${shellWord(space)}`)}` : `start it with \`cotal service start ${requested}\``,
   });
   if (values["dry-run"]) return { requested, name: requested, preset: preset.name, saved: null };
   const definition: ServiceDefinitionInput = { ...servicePresetDefinition(preset, space, values, root, "start"), root };

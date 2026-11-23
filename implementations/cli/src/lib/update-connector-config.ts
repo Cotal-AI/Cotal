@@ -1,7 +1,7 @@
 import { existsSync, realpathSync, statSync } from "node:fs";
 import { dirname } from "node:path";
 import { globalConfigDir } from "@cotal-ai/core";
-import { prepareConnectorConfigForUpdate, protectedLocalDirectory, repairConnectorSelection } from "@cotal-ai/workspace";
+import { loadExtensionsManifest, prepareConnectorConfigForUpdate, protectedLocalDirectory, repairConnectorSelection, type UnreadableConnectorSelection } from "@cotal-ai/workspace";
 import { recoverExtensionPromotion } from "./extension-stage.js";
 
 /** Check the closest existing ancestor outside the Cotal folder, whose modes update does not repair. */
@@ -33,4 +33,17 @@ export function repairUpdateConnectorSelection(staged: boolean, report: (line: s
   report(`Set aside unreadable connector selection: ${setAside.map(path => JSON.stringify(path)).join(", ")}`);
   prepareUpdateConnectorConfig(staged);
   return true;
+}
+
+export function repairCurrentUpdateConnectorSelection(staged: boolean, refusal: UnreadableConnectorSelection, report: (line: string) => void): boolean {
+  try {
+    repairUpdateConnectorSelection(staged, report);
+    loadExtensionsManifest();
+    return true;
+  } catch (error) {
+    report(refusal.message);
+    const detail = error instanceof Error ? error.message : String(error);
+    if (detail !== refusal.message) report(detail);
+    return false;
+  }
 }

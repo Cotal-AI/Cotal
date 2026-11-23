@@ -1,5 +1,41 @@
 # @cotal-ai/web
 
+## 0.175.2
+
+### Patch Changes
+
+- beddddf: Read captured delivery logs after stopping a stack, start the read-only dashboard without requesting unauthorized live traffic, and show how to restart a stopped open space when `watch` names it.
+
+## 0.175.1
+
+No changes in this release.
+
+## 0.175.0
+
+No changes in this release.
+
+## 0.174.4
+
+No changes in this release.
+
+## 0.174.3
+
+### Patch Changes
+
+- b171623: Show the private session file when reusing a foreground dashboard and return `405` for unsupported methods on dashboard read endpoints.
+
+## 0.174.2
+
+No changes in this release.
+
+## 0.174.1
+
+No changes in this release.
+
+## 0.174.0
+
+No changes in this release.
+
 ## 0.173.0
 
 No changes in this release.

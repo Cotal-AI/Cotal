@@ -1,6 +1,10 @@
 // The bearer and credential renewal of CotalEndpoint, as an internal component: fetch, prove, adopt
 // and present the auth material, and swap the live connection onto it. Moved verbatim from endpoint.ts;
 // the endpoint keeps the public methods and forwards to them. Not re-exported by the index.
+import type { LifecycleState } from "./endpoint-lifecycle-state.js";
+import type { CredentialState } from "./endpoint-credential-state.js";
+import type { ConnectionState } from "./endpoint-connection-state.js";
+import type { EndpointIdentity } from "./endpoint-identity.js";
 import { randomUUID } from "node:crypto";
 import type { NatsConnection } from "@nats-io/transport-node";
 import { decodeBearerPrincipal, bearerExpiryMs, bearerRenewalDeadlineMs, bearerLifetimeMs, retryAfterMs, dialerFor, authOpts, probeConnect } from "./endpoint-dial.js";
@@ -9,57 +13,13 @@ import { armRenewal, jitteredBackoffMs } from "./renewal.js";
 import { credsClaims, credsFingerprint, credsRenewalDelayMs, idFromCreds } from "./identity.js";
 import { withDeadline } from "./deadline.js";
 import { requestSafeReconnect } from "./request-safe-reconnect.js";
-import type { AgentCard } from "./types.js";
 
 /** What the credentials component reads from its endpoint. State is read when it is used, never
  *  copied, a field it reassigns is written back through its setter, and every method is looked up on
  *  the endpoint at call time. */
 export interface EndpointCredentialsDeps {
-  nc: () => NatsConnection | undefined;
-  bearerSource: () => (() => Promise<string>) | undefined;
-  owner: () => string;
-  actor: () => string;
-  space: () => string;
-  currentBearer: () => string | undefined;
-  setCurrentBearer: (value: string | undefined) => void;
-  bearerAdoptedAtMs: () => number;
-  setBearerAdoptedAtMs: (value: number) => void;
-  bearerRenewalFailures: () => number;
-  setBearerRenewalFailures: (value: number) => void;
-  cancelBearerRenewal: () => (() => void) | undefined;
-  setCancelBearerRenewal: (value: (() => void) | undefined) => void;
-  stopped: () => boolean;
-  presentedExp: () => number | undefined;
-  setPresentedExp: (value: number | undefined) => void;
-  currentCreds: () => string | undefined;
-  setCurrentCreds: (value: string | undefined) => void;
-  credsSource: () => (() => Promise<string>) | undefined;
-  connId: () => string;
-  overlapOnConnectionRenewal: () => boolean;
-  onConnection: () => ((nc: NatsConnection) => void) | undefined;
-  servers: () => string;
-  card: () => AgentCard;
-  token: () => string | undefined;
-  user: () => string | undefined;
-  pass: () => string | undefined;
-  userMode: () => boolean;
-  sentinelCreds: () => string | undefined;
-  tls: () => boolean;
-  ownedConnections: () => Set<NatsConnection>;
-  authExpiryReconnectTimer: () => NodeJS.Timeout | undefined;
-  setAuthExpiryReconnectTimer: (value: NodeJS.Timeout | undefined) => void;
-  credsTxnsRunning: () => number;
-  setCredsTxnsRunning: (value: number) => void;
-  credsTxn: () => Promise<unknown>;
-  setCredsTxn: (value: Promise<unknown>) => void;
-  reconnecting: () => boolean;
-  reestablishing: () => boolean;
-  requestsAwaitingReply: () => Map<NatsConnection, Set<(error: Error) => void>>;
-  residentSwap: () => Promise<void> | undefined;
-  setResidentSwap: (value: Promise<void> | undefined) => void;
   emitRecoverable: (err: Error) => void;
   kickBackoff: () => void;
-  armCredsRefresh: (delayMs: number) => void;
   reconnect: () => Promise<void>;
   emit: (event: string, ...args: unknown[]) => boolean;
   on: (event: "transport", listener: (state: TransportState) => void) => void;
@@ -68,55 +28,20 @@ export interface EndpointCredentialsDeps {
 
 /** One endpoint's bearer and credential renewal: the checked getters every connect attempt presents,
  *  the timed and explicit prove-then-adopt transactions, and the controlled reconnect onto adopted
- *  material. Internal: `CotalEndpoint` keeps the fields and the public methods and forwards to it. */
+ *  material. Internal: it owns its transaction chain and the standing-renewal timer, and `CotalEndpoint`
+ *  keeps the shared fields and the public methods and forwards to it. */
 export class EndpointCredentials {
-  constructor(private readonly deps: EndpointCredentialsDeps) {}
+  /** Serializes every prove-then-adopt transaction (the 75% timer and the explicit reload) so a timer
+   *  tick and an explicit reload can never interleave their fetch/preflight/commit — the design's
+   *  single-flight requirement. Runs `fn` after any in-flight transaction settles, whatever its
+   *  outcome; the internal chain never rejects. */
+  private credsTxn: Promise<unknown> = Promise.resolve();
+  private credsTimer?: NodeJS.Timeout;
 
-  private get nc() { return this.deps.nc(); }
-  private get bearerSource() { return this.deps.bearerSource(); }
-  private get owner() { return this.deps.owner(); }
-  private get actor() { return this.deps.actor(); }
-  private get space() { return this.deps.space(); }
-  private get currentBearer() { return this.deps.currentBearer(); }
-  private set currentBearer(value: string | undefined) { this.deps.setCurrentBearer(value); }
-  private get bearerAdoptedAtMs() { return this.deps.bearerAdoptedAtMs(); }
-  private set bearerAdoptedAtMs(value: number) { this.deps.setBearerAdoptedAtMs(value); }
-  private get bearerRenewalFailures() { return this.deps.bearerRenewalFailures(); }
-  private set bearerRenewalFailures(value: number) { this.deps.setBearerRenewalFailures(value); }
-  private get cancelBearerRenewal() { return this.deps.cancelBearerRenewal(); }
-  private set cancelBearerRenewal(value: (() => void) | undefined) { this.deps.setCancelBearerRenewal(value); }
-  private get stopped() { return this.deps.stopped(); }
-  private get presentedExp() { return this.deps.presentedExp(); }
-  private set presentedExp(value: number | undefined) { this.deps.setPresentedExp(value); }
-  private get currentCreds() { return this.deps.currentCreds(); }
-  private set currentCreds(value: string | undefined) { this.deps.setCurrentCreds(value); }
-  private get credsSource() { return this.deps.credsSource(); }
-  private get connId() { return this.deps.connId(); }
-  private get overlapOnConnectionRenewal() { return this.deps.overlapOnConnectionRenewal(); }
-  private get onConnection() { return this.deps.onConnection(); }
-  private get servers() { return this.deps.servers(); }
-  private get card() { return this.deps.card(); }
-  private get token() { return this.deps.token(); }
-  private get user() { return this.deps.user(); }
-  private get pass() { return this.deps.pass(); }
-  private get userMode() { return this.deps.userMode(); }
-  private get sentinelCreds() { return this.deps.sentinelCreds(); }
-  private get tls() { return this.deps.tls(); }
-  private get ownedConnections() { return this.deps.ownedConnections(); }
-  private get authExpiryReconnectTimer() { return this.deps.authExpiryReconnectTimer(); }
-  private set authExpiryReconnectTimer(value: NodeJS.Timeout | undefined) { this.deps.setAuthExpiryReconnectTimer(value); }
-  private get credsTxnsRunning() { return this.deps.credsTxnsRunning(); }
-  private set credsTxnsRunning(value: number) { this.deps.setCredsTxnsRunning(value); }
-  private get credsTxn() { return this.deps.credsTxn(); }
-  private set credsTxn(value: Promise<unknown>) { this.deps.setCredsTxn(value); }
-  private get reconnecting() { return this.deps.reconnecting(); }
-  private get reestablishing() { return this.deps.reestablishing(); }
-  private get requestsAwaitingReply() { return this.deps.requestsAwaitingReply(); }
-  private get residentSwap() { return this.deps.residentSwap(); }
-  private set residentSwap(value: Promise<void> | undefined) { this.deps.setResidentSwap(value); }
+  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly conn: Readonly<ConnectionState>, private readonly lifecycle: Readonly<LifecycleState>, private readonly cred: CredentialState, private readonly deps: EndpointCredentialsDeps) {}
+
   private emitRecoverable(err: Error) { void this.deps.emitRecoverable(err); }
   private kickBackoff() { void this.deps.kickBackoff(); }
-  private armCredsRefresh(delayMs: number) { void this.deps.armCredsRefresh(delayMs); }
   private reconnect() { return this.deps.reconnect(); }
   private emit(event: string, ...args: unknown[]) { return this.deps.emit(event, ...args); }
   private on(event: "transport", listener: (state: TransportState) => void) { void this.deps.on(event, listener); }
@@ -136,17 +61,17 @@ export class EndpointCredentials {
    *  loud without instantly dropping the mesh, and without a line per attempt. */
   async refreshBearer(initial = false): Promise<void> {
     try {
-      const bearer = await this.bearerSource!();
+      const bearer = await this.identity.bearerSource!();
       const claims = decodeBearerPrincipal(bearer);
-      if (claims.owner !== this.owner || claims.actor !== this.actor)
-        throw new Error(`bearer source returned principal ${claims.owner}.${claims.actor}, expected ${this.owner}.${this.actor}`);
+      if (claims.owner !== this.identity.owner || claims.actor !== this.identity.actor)
+        throw new Error(`bearer source returned principal ${claims.owner}.${claims.actor}, expected ${this.identity.owner}.${this.identity.actor}`);
       // Two refusals, answering different questions, and both of them are about protecting what is
       // ALREADY held. So both are scoped to there BEING something held, which is the same set as
       // `!initial` but names the thing the rules actually depend on: on the first fetch there is no
       // cache to lose, `start()` has to come up on whatever the source has, and the pre-dial guard
       // in {@link bindConnection} is what speaks for a dead first token.
       const expiryMs = bearerExpiryMs(bearer);
-      const held = this.currentBearer;
+      const held = this.cred.currentBearer;
       if (held !== undefined) {
         // ALREADY DEAD, whatever else is true of it. Advancement is deliberately not part of this
         // test: a candidate expiring at now-5s does advance a held one that died at now-60s, so an
@@ -167,25 +92,25 @@ export class EndpointCredentials {
         // `exp` has not moved. That is genuinely re-issued material, which an advancement test
         // refuses and this one adopts. It is the question the creds path asks with
         // `credsFingerprint`: did the source re-issue ANYTHING (#1572).
-        if (bearer === held && Date.now() >= bearerRenewalDeadlineMs(held, this.bearerAdoptedAtMs))
+        if (bearer === held && Date.now() >= bearerRenewalDeadlineMs(held, this.cred.bearerAdoptedAtMs))
           throw new Error("the bearer source re-served the token already held and it cannot carry another cycle (the auth service has not issued a fresh one) - nothing adopted");
       }
-      if (bearer !== held) this.bearerAdoptedAtMs = Date.now();
-      this.currentBearer = bearer;
-      this.bearerRenewalFailures = 0;
+      if (bearer !== held) this.cred.bearerAdoptedAtMs = Date.now();
+      this.cred.currentBearer = bearer;
+      this.cred.bearerRenewalFailures = 0;
       // The renewal point is drawn from the middle of the token's lifetime, spaced from this
       // process's other renewals in the space: a fixed margin before `exp` kept every endpoint
       // issued in one second renewing, and rebinding through the callout, in one second for life.
-      const { issuedAtMs, expiresAtMs } = bearerLifetimeMs(bearer, this.bearerAdoptedAtMs);
-      this.armBearerTimer(armRenewal(this.space, issuedAtMs, expiresAtMs, () => void this.renewBearerOnTimer(), EndpointCredentials.BEARER_MIN_RENEWAL_MS));
+      const { issuedAtMs, expiresAtMs } = bearerLifetimeMs(bearer, this.cred.bearerAdoptedAtMs);
+      this.armBearerTimer(armRenewal(this.identity.space, issuedAtMs, expiresAtMs, () => void this.renewBearerOnTimer(), EndpointCredentials.BEARER_MIN_RENEWAL_MS));
     } catch (e) {
       if (initial) throw e;
-      if (this.bearerRenewalFailures === 0)
+      if (this.cred.bearerRenewalFailures === 0)
         this.emitRecoverable(new Error(`bearer refresh failed (${e instanceof Error ? e.message : String(e)}) - retrying with backoff; this connection dies at its current token's expiry if the auth service stays down`));
       // A wait the source named is kept as named: never retried inside it, nor stretched by the backoff.
       const named = retryAfterMs(e);
-      const delay = named > 0 ? named : jitteredBackoffMs(this.bearerRenewalFailures, EndpointCredentials.BEARER_RETRY_MS, EndpointCredentials.BEARER_RETRY_CAP_MS);
-      this.bearerRenewalFailures++;
+      const delay = named > 0 ? named : jitteredBackoffMs(this.cred.bearerRenewalFailures, EndpointCredentials.BEARER_RETRY_MS, EndpointCredentials.BEARER_RETRY_CAP_MS);
+      this.cred.bearerRenewalFailures++;
       const timer = setTimeout(() => void this.renewBearerOnTimer(), delay);
       timer.unref?.();
       this.armBearerTimer(() => clearTimeout(timer));
@@ -193,9 +118,9 @@ export class EndpointCredentials {
   }
 
   private armBearerTimer(cancel: () => void): void {
-    this.cancelBearerRenewal?.();
-    this.cancelBearerRenewal = cancel;
-    if (this.stopped) cancel();
+    this.cred.cancelBearerRenewal?.();
+    this.cred.cancelBearerRenewal = cancel;
+    if (this.lifecycle.stopped) cancel();
   }
 
   /** The timed renewal. A new token moves the live connection onto itself at once, through the
@@ -203,10 +128,10 @@ export class EndpointCredentials {
    *  this endpoint could renew. With no live connection, it ends the rebuild loop's wait instead:
    *  that loop refuses to dial an expired token and leaves the retries to this timer. */
   private async renewBearerOnTimer(): Promise<void> {
-    const held = this.currentBearer;
+    const held = this.cred.currentBearer;
     await this.refreshBearer();
-    if (this.stopped || this.currentBearer === held) return;
-    if (this.nc && !this.nc.isClosed()) await this.swapConnectionOntoFreshCreds();
+    if (this.lifecycle.stopped || this.cred.currentBearer === held) return;
+    if (this.conn.nc && !this.conn.nc.isClosed()) await this.swapConnectionOntoFreshCreds();
     else this.kickBackoff();
   }
 
@@ -214,10 +139,10 @@ export class EndpointCredentials {
    *  on its own included, so none presents an expired token, which the callout could only deny
    *  after a full round trip. The bearer counterpart of {@link credsForWire}. */
   bearerForWire(): string {
-    const bearer = this.currentBearer;
+    const bearer = this.cred.currentBearer;
     if (bearer !== undefined && bearerExpiryMs(bearer) > Date.now()) return bearer;
     throw new Error(
-      this.bearerSource
+      this.identity.bearerSource
         ? "this endpoint's user bearer has expired and renewal through the auth exchange is failing - not presenting the expired token to the broker; retrying with backoff"
         : "this endpoint's user bearer has expired and it holds no bearer source to renew it - re-authenticate and rebuild the endpoint (construct it with a bearer FUNCTION for standing renewal)",
     );
@@ -260,13 +185,13 @@ export class EndpointCredentials {
    *  return, with its expiry recorded as {@link presentedExp}. */
   presentCreds(): string {
     const creds = this.credsForWire();
-    this.presentedExp = credsClaims(creds).exp;
+    this.cred.presentedExp = credsClaims(creds).exp;
     return creds;
   }
 
   presentBearer(): string {
     const bearer = this.bearerForWire();
-    this.presentedExp = bearerExpiryMs(bearer) / 1000;
+    this.cred.presentedExp = bearerExpiryMs(bearer) / 1000;
     return bearer;
   }
 
@@ -280,13 +205,13 @@ export class EndpointCredentials {
    *  from here would retry the source once per dial attempt, which is the flat load on a dead
    *  broker that {@link RETRY_BACKOFF_CAP_MS} exists to prevent. */
   private credsForWire(): string {
-    if (!this.currentCreds)
+    if (!this.cred.currentCreds)
       throw new Error(
-        this.credsSource
+        this.identity.credsSource
           ? "this endpoint has no credential to present yet (the creds source has not returned one) - not dialing without auth material"
           : "this endpoint was constructed with an empty creds string - not dialing without auth material (an empty credential is not anonymous access)",
       );
-    return EndpointCredentials.presentableCreds(this.currentCreds, { renewable: Boolean(this.credsSource) });
+    return EndpointCredentials.presentableCreds(this.cred.currentCreds, { renewable: Boolean(this.identity.credsSource) });
   }
 
   /** The credential this endpoint presents on its next connect, checked as {@link credsForWire}
@@ -356,15 +281,15 @@ export class EndpointCredentials {
    *  ({@link reloadCreds}) does its own fetch so it can preflight the candidate on a disposable
    *  connection BEFORE mutating this live cache. */
   private async fetchFreshCreds(): Promise<{ iat?: number; exp?: number }> {
-    const creds = await this.credsSource!();
+    const creds = await this.identity.credsSource!();
     const id = idFromCreds(creds);
-    if (id !== this.connId)
-      throw new Error(`creds source returned identity ${id}, expected ${this.connId} - renewal may not swap the connection's nkey`);
+    if (id !== this.identity.connId)
+      throw new Error(`creds source returned identity ${id}, expected ${this.identity.connId} - renewal may not swap the connection's nkey`);
     // Before the commit, so a refusal leaves the cache holding the last generation that was renewable
     // from (and, on the initial fetch, fails loud rather than dialling with dead material).
     const delay = credsRenewalDelayMs(creds);
-    EndpointCredentials.assertRenewableGeneration(creds, this.currentCreds, delay);
-    this.currentCreds = creds;
+    EndpointCredentials.assertRenewableGeneration(creds, this.cred.currentCreds, delay);
+    this.cred.currentCreds = creds;
     this.armCredsRefresh(delay);
     const { iat, exp } = credsClaims(creds);
     return { iat, exp };
@@ -376,9 +301,9 @@ export class EndpointCredentials {
    *  near-dead JWT and the operator never sees a spurious "authentication expired". After the
    *  reconnect succeeds, re-arm the expiry fence for the credential now authenticated on the wire. */
   private async swapConnectionOntoFreshCreds(): Promise<void> {
-    const nc = this.nc;
-    if (!(nc && !this.stopped)) return;
-    const overlap = this.overlapOnConnectionRenewal && this.onConnection
+    const nc = this.conn.nc;
+    if (!(nc && !this.lifecycle.stopped)) return;
+    const overlap = this.identity.overlapOnConnectionRenewal && this.identity.onConnection
       ? await this.openRenewalOverlap().catch(() => undefined)
       : undefined;
     try {
@@ -388,7 +313,7 @@ export class EndpointCredentials {
       await nc.reconnect().catch(() => {});
       if (overlap && !nc.isClosed())
         await withDeadline(nc.flush(), 10_000, () => new Error("resident renewal flush did not finish")).catch(() => {});
-      if (this.nc === nc && !this.stopped) this.armAuthExpiryReconnectFence(nc);
+      if (this.conn.nc === nc && !this.lifecycle.stopped) this.armAuthExpiryReconnectFence(nc);
     } finally {
       if (overlap && !overlap.isClosed()) await this.closeWithoutLibraryReconnect(overlap).catch(() => {});
     }
@@ -398,22 +323,22 @@ export class EndpointCredentials {
    *  reconnect. Its inbox is not the resident connection's inbox. A flush that does not finish
    *  closes it and leaves the caller to reconnect in place. */
   private async openRenewalOverlap(): Promise<NatsConnection> {
-    const overlap = await dialerFor(this.servers)({
-      servers: this.servers,
+    const overlap = await dialerFor(this.identity.servers)({
+      servers: this.identity.servers,
       noAsyncTraces: true,
-      name: `cotal:${this.card.name}:renewal`,
+      name: `cotal:${this.identity.card.name}:renewal`,
       inboxPrefix: `_INBOX_renew_${randomUUID()}`,
       maxReconnectAttempts: 0,
       ...authOpts({
-        token: this.token, user: this.user, pass: this.pass,
-        creds: this.currentCreds !== undefined || this.credsSource ? () => this.presentCreds() : undefined,
-        bearer: this.userMode ? () => this.presentBearer() : undefined,
-        sentinelCreds: this.sentinelCreds, tls: this.tls,
+        token: this.identity.token, user: this.identity.user, pass: this.identity.pass,
+        creds: this.cred.currentCreds !== undefined || this.identity.credsSource ? () => this.presentCreds() : undefined,
+        bearer: this.identity.userMode ? () => this.presentBearer() : undefined,
+        sentinelCreds: this.identity.sentinelCreds, tls: this.identity.tls,
       }),
     });
-    this.ownedConnections.add(overlap);
+    this.conn.ownedConnections.add(overlap);
     try {
-      this.onConnection?.(overlap);
+      this.identity.onConnection?.(overlap);
       await withDeadline(overlap.flush(), 5_000, () => new Error("renewal overlap flush did not finish"));
       return overlap;
     } catch (error) {
@@ -442,7 +367,7 @@ export class EndpointCredentials {
     this.disableLibraryReconnect(nc);
     await nc.close();
     if (!nc.isClosed()) throw new Error("endpoint connection closure is unproved; consumer custody must be retained");
-    this.ownedConnections.delete(nc);
+    this.conn.ownedConnections.delete(nc);
   }
 
   /** Disable nats-core reconnect shortly before the JWT authenticated on this wire expires. The small
@@ -450,22 +375,22 @@ export class EndpointCredentials {
    *  same event-loop turn. A credential adoption does not move this fence until the resident reconnect
    *  is requested, so the old wire remains protected during the prove-then-adopt window. */
   armAuthExpiryReconnectFence(nc: NatsConnection): void {
-    clearTimeout(this.authExpiryReconnectTimer);
-    this.authExpiryReconnectTimer = undefined;
-    const credsExp = this.currentCreds && credsClaims(this.currentCreds).exp;
-    const expiryMs = this.userMode && this.currentBearer
-      ? bearerExpiryMs(this.currentBearer)
+    clearTimeout(this.cred.authExpiryReconnectTimer);
+    this.cred.authExpiryReconnectTimer = undefined;
+    const credsExp = this.cred.currentCreds && credsClaims(this.cred.currentCreds).exp;
+    const expiryMs = this.identity.userMode && this.cred.currentBearer
+      ? bearerExpiryMs(this.cred.currentBearer)
       : typeof credsExp === "number"
         ? credsExp * 1000
         : undefined;
-    if (expiryMs === undefined || this.stopped) return;
+    if (expiryMs === undefined || this.lifecycle.stopped) return;
     // Node fires a delay above 2^31-1 ms (about 24.8 days) after 1 ms, which would disable reconnect
     // at once. A later expiry waits in steps of that bound, and the fence is armed again from there.
     const delay = Math.max(0, expiryMs - Date.now() - 500);
-    this.authExpiryReconnectTimer = delay > MAX_TIMER_MS
-      ? setTimeout(() => { if (this.nc === nc) this.armAuthExpiryReconnectFence(nc); }, MAX_TIMER_MS)
-      : setTimeout(() => { if (this.nc === nc) this.disableLibraryReconnect(nc); }, delay);
-    this.authExpiryReconnectTimer.unref?.();
+    this.cred.authExpiryReconnectTimer = delay > MAX_TIMER_MS
+      ? setTimeout(() => { if (this.conn.nc === nc) this.armAuthExpiryReconnectFence(nc); }, MAX_TIMER_MS)
+      : setTimeout(() => { if (this.conn.nc === nc) this.disableLibraryReconnect(nc); }, delay);
+    this.cred.authExpiryReconnectTimer.unref?.();
   }
 
   /** The connectAndBind PRE-CONNECT fetch: pull the freshest source cred and pin it into
@@ -486,8 +411,8 @@ export class EndpointCredentials {
 
   private runCredsTxn<T>(fn: () => Promise<T>): Promise<T> {
     const counted = async (): Promise<T> => {
-      this.credsTxnsRunning++;
-      try { return await fn(); } finally { this.credsTxnsRunning--; }
+      this.cred.credsTxnsRunning++;
+      try { return await fn(); } finally { this.cred.credsTxnsRunning--; }
     };
     const next = this.credsTxn.then(counted, counted);
     this.credsTxn = next.then(() => undefined, () => undefined);
@@ -511,10 +436,10 @@ export class EndpointCredentials {
     // never touch the store, the preflight, or currentCreds.
     if (Date.now() > deadline)
       throw new Error("reloadCreds: the request deadline elapsed while queued behind another credential transaction; nothing adopted");
-    const candidate = await withDeadline(this.credsSource!(), deadline - Date.now(), () => new Error("reloadCreds: the creds source did not return before the daemon deadline; nothing adopted"));
+    const candidate = await withDeadline(this.identity.credsSource!(), deadline - Date.now(), () => new Error("reloadCreds: the creds source did not return before the daemon deadline; nothing adopted"));
     const id = idFromCreds(candidate);
-    if (id !== this.connId)
-      throw new Error(`creds source returned identity ${id}, expected ${this.connId} - renewal may not swap the connection's nkey`);
+    if (id !== this.identity.connId)
+      throw new Error(`creds source returned identity ${id}, expected ${this.identity.connId} - renewal may not swap the connection's nkey`);
     // Non-material message ON PURPOSE: this text flows to the manager's persisted
     // `RenewalRecord.adoption.error`, so neither the observed nor the expected digest may appear.
     if (opts.expected !== undefined && credsFingerprint(candidate) !== opts.expected)
@@ -527,7 +452,7 @@ export class EndpointCredentials {
     // refused locally instead of spending a round trip to be told so, and — because this throws
     // BEFORE the commit below — it can never become the resident connection's next-presented cred.
     const proven = EndpointCredentials.presentableCreds(candidate, { renewable: true });
-    const probe = await probeConnect(this.servers, { creds: proven, tls: this.tls, timeoutMs: Math.max(500, Math.min(EndpointCredentials.PREFLIGHT_MS, deadline - Date.now())) });
+    const probe = await probeConnect(this.identity.servers, { creds: proven, tls: this.identity.tls, timeoutMs: Math.max(500, Math.min(EndpointCredentials.PREFLIGHT_MS, deadline - Date.now())) });
     if (!probe.ok)
       throw new Error(`reloadCreds: the broker did not accept the re-signed credential (${probe.reason}); nothing adopted`);
     if (Date.now() > deadline)
@@ -536,11 +461,29 @@ export class EndpointCredentials {
     // lacking a numeric `exp`, and that throw must not leave currentCreds flipped to a candidate the
     // authenticator would present on the next reconnect (a post-preflight validation failure is a no-op).
     const delay = credsRenewalDelayMs(candidate);
-    EndpointCredentials.assertRenewableGeneration(candidate, this.currentCreds, delay);
-    this.currentCreds = candidate;
+    EndpointCredentials.assertRenewableGeneration(candidate, this.cred.currentCreds, delay);
+    this.cred.currentCreds = candidate;
     this.armCredsRefresh(delay);
     this.emit("creds-adopted", credsClaims(candidate));
     return credsClaims(candidate);
+  }
+
+  private armCredsRefresh(delayMs: number): void {
+    if (this.lifecycle.stopped) return;
+    clearTimeout(this.credsTimer);
+    // 1s floor (vs the bearer's 5s): standing-renewal smokes exercise second-scale TTLs; production
+    // lifetimes are hours+ so the floor never engages there. Node fires a delay above 2^31-1 ms after
+    // 1 ms, and a terminal seat's credential can run to 2106, so a later renewal waits in steps of
+    // that bound.
+    this.credsTimer = delayMs > MAX_TIMER_MS
+      ? setTimeout(() => this.armCredsRefresh(delayMs - MAX_TIMER_MS), MAX_TIMER_MS)
+      : setTimeout(() => void this.renewCredsOnTimer(), Math.max(1_000, delayMs));
+    this.credsTimer.unref?.();
+  }
+
+  /** Clears the armed standing-renewal timer; stop calls it. */
+  cancelCredsRefresh(): void {
+    if (this.credsTimer) clearTimeout(this.credsTimer);
   }
 
   /** The 75%-of-lifetime renewal timer tick: prove + adopt + swap the LIVE connection. Preflights (it
@@ -565,16 +508,16 @@ export class EndpointCredentials {
    * A dropped connection that is being re-established carries no request, so it redials now
    * instead of after its backoff; the rebuild re-fetches a stale credential from the source. */
   async refreshCredsRequestSafe(): Promise<void> {
-    if (!this.credsSource) throw new Error("credential refresh requires a creds source");
-    const nc = this.nc;
-    if (!nc && !this.stopped && (this.reconnecting || this.reestablishing)) return await this.reconnect();
-    if (!nc || this.stopped) throw new Error("credential refresh requires a running endpoint");
+    if (!this.identity.credsSource) throw new Error("credential refresh requires a creds source");
+    const nc = this.conn.nc;
+    if (!nc && !this.lifecycle.stopped && (this.lifecycle.reconnecting || this.lifecycle.reestablishing)) return await this.reconnect();
+    if (!nc || this.lifecycle.stopped) throw new Error("credential refresh requires a running endpoint");
     const deadline = Date.now() + EndpointCredentials.RELOAD_DEADLINE_MS;
     await this.runCredsTxn(async () => {
       await this.adoptFreshCreds({ deadline });
-      if (this.nc !== nc || this.stopped) throw new Error("endpoint connection changed during credential refresh");
-      await requestSafeReconnect(nc, () => this.requestsAwaitingReply.get(nc)?.size ?? 0);
-      if (this.nc === nc && !this.stopped) this.armAuthExpiryReconnectFence(nc);
+      if (this.conn.nc !== nc || this.lifecycle.stopped) throw new Error("endpoint connection changed during credential refresh");
+      await requestSafeReconnect(nc, () => this.conn.requestsAwaitingReply.get(nc)?.size ?? 0);
+      if (this.conn.nc === nc && !this.lifecycle.stopped) this.armAuthExpiryReconnectFence(nc);
     });
   }
 
@@ -594,7 +537,7 @@ export class EndpointCredentials {
    *  NOT witnessed, so the caller must claim broker acceptance, not verified resident reauth. NEVER a
    *  fingerprint. */
   async reloadCreds(expected?: string): Promise<{ identity: string; iat?: number; exp?: number }> {
-    if (!this.credsSource)
+    if (!this.identity.credsSource)
       throw new Error("reloadCreds: this endpoint has no creds source (a static cred cannot be renewed in place)");
     // Capture the ABSOLUTE deadline at ENTRY, before enqueue, so a reload queued behind a hung-store
     // 75% timer tick is bounded by the SAME window (queue wait included) and cannot commit/swap after
@@ -604,7 +547,7 @@ export class EndpointCredentials {
     // cannot interleave with the 75% timer; the wire swap is scheduled by {@link handleDeliveryAdmin}
     // after the aggregate reply (the responder rides this connection).
     const { iat, exp } = await this.runCredsTxn(() => this.adoptFreshCreds({ expected, deadline }));
-    return { identity: this.connId, iat, exp };
+    return { identity: this.identity.connId, iat, exp };
   }
 
   /** Arm the resident wire swap for the delivery-admin `reloadCreds` path. Called by
@@ -617,15 +560,15 @@ export class EndpointCredentials {
    *  Until the swapped connection is back, {@link residentSwap} holds the delivery-admin requests that
    *  arrive after this reply. */
   scheduleResidentSwap(): void {
-    if (this.stopped) return;
+    if (this.lifecycle.stopped) return;
     const swap: Promise<void> = new Promise<void>((resolve) => { setTimeout(resolve, EndpointCredentials.RESIDENT_SWAP_DEFER_MS).unref?.(); })
       .then(async () => {
         const back = this.transportBack(EndpointCredentials.RESIDENT_SWAP_GATE_MS);
         await this.swapConnectionOntoFreshCreds();
         await back;
       })
-      .finally(() => { if (this.residentSwap === swap) this.residentSwap = undefined; });
-    this.residentSwap = swap;
+      .finally(() => { if (this.cred.residentSwap === swap) this.cred.residentSwap = undefined; });
+    this.cred.residentSwap = swap;
   }
 
   /** Resolve when this endpoint reports its transport connected again, or after `ms`. */

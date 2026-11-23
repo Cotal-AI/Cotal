@@ -12,7 +12,7 @@
  * Run: pnpm smoke:space-reads
  */
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -70,8 +70,8 @@ const run = (args: string[], extraEnv: Record<string, string> = {}, cwd = home) 
   const r = spawnSync(process.execPath, [BIN, ...args], options);
   return { status: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
 };
-const json = (args: string[]) => {
-  const r = run([...args, "--json"]);
+const json = (args: string[], cwd = home) => {
+  const r = run([...args, "--json"], {}, cwd);
   let env: Record<string, any> | undefined;
   try {
     env = JSON.parse(r.stdout);
@@ -310,6 +310,22 @@ recordMesh({ space: "gamma", server: CATALOG, root, mode: "user", origin: "catal
   check("rig: create prepares the hint's project root", prepared.status === 0, shown(prepared));
   try {
     setCurrent("alpha");
+    const selection = json(["use"], project);
+    check("bare use reports the prepared folder without changing the selection or target", selection.status === 0 && selection.env?.target?.space === "alpha" && selection.env?.result?.current === "alpha" && selection.env?.result?.folder === "hint-live" && getCurrent() === "alpha", shown(selection));
+    const selectionPlain = run(["use", "--plain"], {}, project);
+    check("plain use names the selection and how to reach the prepared folder's space", selectionPlain.status === 0 && /^selected: alpha$/m.test(selectionPlain.stdout) && selectionPlain.stdout.includes("--space hint-live") && selectionPlain.stdout.includes("cotal use --clear"), shown(selectionPlain));
+    const preparedDir = join(cotalHome, "prepared");
+    renameSync(preparedDir, `${preparedDir}.saved`);
+    try {
+      writeFileSync(preparedDir, "not a directory\n");
+      const refusedUse = run(["use", "beta", "--plain"], {}, project);
+      check("use refuses when the prepared records path is a file", refusedUse.status === 1 && refusedUse.stderr.includes("SCHEMA_INVALID") && refusedUse.stderr.includes(`${preparedDir} is a file, not a folder`), shown(refusedUse));
+      const retainedUse = json(["use"]);
+      check("a refused selection leaves the previous space selected", retainedUse.status === 0 && retainedUse.env?.result?.current === "alpha", shown(retainedUse));
+    } finally {
+      rmSync(preparedDir, { force: true });
+      renameSync(`${preparedDir}.saved`, preparedDir);
+    }
     const bare = run(["space", "show", "--plain"], {}, project);
     check("bare show prefers the prepared project space to the selection", bare.status === 0 && /^space:\s+hint-live$/m.test(bare.stdout), shown(bare));
     const named = run(["space", "show", "alpha", "--plain"], {}, project);

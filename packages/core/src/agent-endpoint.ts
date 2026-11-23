@@ -1,10 +1,10 @@
 /**
- * The `agent` endpoint, revision 3 (SPEC 13.22): the fixed command set an agent serves about itself
+ * The `agent` endpoint, revision 4 (SPEC 13.22): the fixed command set an agent serves about itself
  * on the principal route (SPEC 13.21). `prompts`, `prompt` and `prompt-answer` serve the questions
  * an agent's harness stops to ask: a tool permission, a question, a plan, a form. `commands` lists
  * the harness commands and skills the agent runs, `command` queues one, `command-cancel` cancels a
  * queued one and `command-state` reads how far one got. `interrupt` stops the turn the agent is
- * running.
+ * running. `set-name` changes the agent's display name.
  *
  * The contract is a core constant, like the registry's: every agent serves the same cluster, a
  * caller embeds these artifacts and pins their digests, and nothing is published to the contract
@@ -14,11 +14,12 @@ import { contractDigest } from "./canonical.js";
 import { buildClusterArtifacts, buildClusterDocument, type ClusterDocument } from "./endpoint-cluster.js";
 import type { ContractClosureManifest } from "./contract-manifest.js";
 import { serviceContractTable } from "./schema-profile.js";
+import { MAX_NAME_LENGTH } from "./resolve.js";
 import type { PrincipalAuthority } from "./endpoint-subjects.js";
 
 export const AGENT_ENDPOINT = "agent";
 export const AGENT_CLUSTER_URN = "ai.cotal.agent";
-export const AGENT_CLUSTER_REVISION = 3;
+export const AGENT_CLUSTER_REVISION = 4;
 
 export const AGENT_CMD_PROMPTS = "prompts";
 export const AGENT_CMD_PROMPT = "prompt";
@@ -28,6 +29,7 @@ export const AGENT_CMD_COMMAND = "command";
 export const AGENT_CMD_COMMAND_CANCEL = "command-cancel";
 export const AGENT_CMD_COMMAND_STATE = "command-state";
 export const AGENT_CMD_INTERRUPT = "interrupt";
+export const AGENT_CMD_SET_NAME = "set-name";
 
 /** The canonical `content` of one prompt is at most this many bytes (SPEC 13.22). */
 export const AGENT_PROMPT_CONTENT_MAX_BYTES = 262144;
@@ -53,6 +55,12 @@ export const AGENT_PROMPT_DIGEST_DETAIL = "ai.cotal.agent.prompt-digest";
 export const AGENT_PROMPT_SIZE_DETAIL = "ai.cotal.agent.prompt-size";
 /** `details[].kind` on a `command-cancel` `conflict`: `{ state }`. */
 export const AGENT_COMMAND_STATE_DETAIL = "ai.cotal.agent.command-state";
+/** `details[].kind` on a refused `set-name`: `{ reason }`, one of {@link AgentNameRefusal}. */
+export const AGENT_NAME_REFUSED_DETAIL = "ai.cotal.agent.name-refused";
+
+/** Why `set-name` refused a name: `name-invalid` (`bad-request`) fails the shared name rule, and
+ *  `name-taken` (`already-exists`) is the name of another live agent in the space. */
+export type AgentNameRefusal = "name-invalid" | "name-taken";
 
 // ---- the prompt (SPEC 13.22) ------------------------------------------------------------------
 
@@ -225,6 +233,12 @@ export interface CommandStateOutput {
  *  turn running and changed nothing. */
 export interface InterruptOutput {
   state: "interrupted" | "idle";
+}
+
+/** What `set-name` takes and answers: the display name, which the answer gives as the card now
+ *  carries it. */
+export interface SetNameIO {
+  name: string;
 }
 
 const COMMAND_NAME_PATTERN = "^[^\\s\\p{C}]{1,128}$";
@@ -412,10 +426,15 @@ export const AGENT_COMMAND_STATE_INPUT_SCHEMA = deepFreeze(closed(["id"], { id: 
 export const AGENT_COMMAND_STATE_OUTPUT_SCHEMA = deepFreeze(closed(["state"], { state: COMMAND_STATE }));
 export const AGENT_INTERRUPT_INPUT_SCHEMA = deepFreeze(closed([], {}));
 export const AGENT_INTERRUPT_OUTPUT_SCHEMA = deepFreeze(closed(["state"], { state: { enum: ["interrupted", "idle"] } }));
+// The input takes any string so that every name the shared rule refuses gets the same typed
+// `name-invalid` refusal from the agent, a long one included.
+export const AGENT_SET_NAME_INPUT_SCHEMA = deepFreeze(closed(["name"], { name: anyString }));
+export const AGENT_SET_NAME_OUTPUT_SCHEMA = deepFreeze(closed(["name"], { name: { type: "string", minLength: 1, maxLength: MAX_NAME_LENGTH } }));
 
-/** The command rows of revision 3. Every command is untargeted. The prompt commands admit both
- *  authority words; `commands`, `command`, `command-cancel`, `command-state` and `interrupt` admit
- *  `owner` only, so only the owner's interactive session runs an agent's commands or stops its turn. */
+/** The command rows of revision 4. Every command is untargeted. The prompt commands admit both
+ *  authority words; `commands`, `command`, `command-cancel`, `command-state`, `interrupt` and
+ *  `set-name` admit `owner` only, so only the owner's interactive session runs an agent's commands,
+ *  stops its turn or renames it. */
 export const AGENT_COMMANDS = deepFreeze([
   { name: AGENT_CMD_PROMPTS, capability: "agent.prompts.read", authorities: ["owner", "grant"], input: AGENT_PROMPTS_INPUT_SCHEMA, output: AGENT_PROMPTS_OUTPUT_SCHEMA },
   { name: AGENT_CMD_PROMPT, capability: "agent.prompts.read", authorities: ["owner", "grant"], input: AGENT_PROMPT_INPUT_SCHEMA, output: AGENT_PROMPT_OUTPUT_SCHEMA },
@@ -425,6 +444,7 @@ export const AGENT_COMMANDS = deepFreeze([
   { name: AGENT_CMD_COMMAND_CANCEL, capability: "agent.commands.run", authorities: ["owner"], input: AGENT_COMMAND_CANCEL_INPUT_SCHEMA, output: AGENT_COMMAND_CANCEL_OUTPUT_SCHEMA },
   { name: AGENT_CMD_COMMAND_STATE, capability: "agent.commands.read", authorities: ["owner"], input: AGENT_COMMAND_STATE_INPUT_SCHEMA, output: AGENT_COMMAND_STATE_OUTPUT_SCHEMA },
   { name: AGENT_CMD_INTERRUPT, capability: "agent.turn.interrupt", authorities: ["owner"], input: AGENT_INTERRUPT_INPUT_SCHEMA, output: AGENT_INTERRUPT_OUTPUT_SCHEMA },
+  { name: AGENT_CMD_SET_NAME, capability: "agent.profile.write", authorities: ["owner"], input: AGENT_SET_NAME_INPUT_SCHEMA, output: AGENT_SET_NAME_OUTPUT_SCHEMA },
 ].map((row) => ({ ...row, targeted: false, authorities: row.authorities as PrincipalAuthority[] })));
 
 const TABLE = serviceContractTable(AGENT_COMMANDS);
@@ -432,7 +452,7 @@ const TABLE = serviceContractTable(AGENT_COMMANDS);
 /** The compiled input and output pair per command, compiled on first access. */
 export const AGENT_CONTRACTS = TABLE.contracts;
 
-/** The cluster document of revision 3, deep-frozen. */
+/** The cluster document of revision 4, deep-frozen. */
 export const AGENT_CLUSTER: Readonly<ClusterDocument> = deepFreeze(buildClusterDocument(AGENT_CLUSTER_URN, AGENT_CLUSTER_REVISION, AGENT_COMMANDS));
 
 /** The cluster document's two digests: the root artifact and the closure manifest a caller pins

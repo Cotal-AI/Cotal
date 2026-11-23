@@ -26,19 +26,10 @@ import { assertContainedIn, removeContained } from "./_scratch.js";
 // BY SOURCE PATH, NOT BY PACKAGE NAME: `@cotal-ai/connector-core` resolves to that package's
 // `dist`, so a mutation against `runtime.ts` would report SURVIVED until someone rebuilt.
 import { controlEndpoint } from "../../extensions/connector-core/src/runtime.js";
+import { createSuite } from "@cotal-ai/smoke-kit";
 
-let pass = 0;
-let fail = 0;
+const { check, finish, passed, failed } = createSuite();
 let skipped = 0;
-const check = (name: string, cond: boolean, extra?: unknown) => {
-  if (cond) {
-    pass++;
-    console.log(`  ✓ ${name}`);
-  } else {
-    fail++;
-    console.log(`  ✗ FAIL: ${name}`, extra ?? "");
-  }
-};
 
 /**
  * A cell that CANNOT be graded here, named and counted rather than silently dropped or attempted.
@@ -423,7 +414,7 @@ try {
 // a suite that dies before emitting it reports no result at all rather than a failure, which is how
 // the unguarded control above turned a too-long TMPDIR into apparent infrastructure trouble.
 console.log(
-  `\nTEMP CONTAINMENT SMOKE ${fail === 0 ? "OK" : "FAILED"} (${pass} passed, ${fail} failed` +
+  `\nTEMP CONTAINMENT SMOKE ${failed() === 0 ? "OK" : "FAILED"} (${passed()} passed, ${failed()} failed` +
     `${skipped ? `, ${skipped} skipped` : ""})`,
 );
-if (fail) process.exitCode = 1;
+finish();

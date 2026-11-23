@@ -18,10 +18,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AuthPrepared } from "@cotal-ai/core";
 import { canonicalLocalProcessPath, localProcessPath } from "@cotal-ai/workspace";
+import { createSuite } from "@cotal-ai/smoke-kit";
 const { AUTH_PROCESS, authServiceUp, claimAuthPidSlot, ensureAuthService, stopAuthService }: typeof import("../src/lib/auth-proc.js") = await import(process.argv[2] ?? "../src/lib/auth-proc.js");
 
-let pass = 0, fail = 0;
-const check = (name: string, cond: boolean, extra?: unknown) => { if (cond) { pass++; console.log(`  ✓ ${name}`); } else { fail++; console.log(`  ✗ FAIL: ${name}`, extra ?? ""); } };
+const { check, finish, passed, failed } = createSuite();
 
 // A throwaway cotal root: cotalPath resolves from cwd, so chdir into it.
 const tmp = mkdtempSync(join(tmpdir(), "cotal-pidbelt-"));
@@ -203,11 +203,12 @@ try {
   }
   check("restoring directory access preserves the live canonical record",
     authServiceUp(SPACE) && readFileSync(PID_FILE, "utf8") === String(process.pid));
-  check("every auth pidfile cell ran", pass + fail === (permissionChecks ? 30 : 27), pass + fail);
+  check("every auth pidfile cell ran", passed() + failed() === (permissionChecks ? 30 : 27), passed() + failed());
 } finally {
   process.chdir(prevCwd);
   rmSync(tmp, { recursive: true, force: true });
 }
 
-console.log(fail === 0 ? `\nAUTH-PIDFILE SMOKE OK ✅  (${pass} passed, ${fail} failed)` : `\nAUTH-PIDFILE SMOKE FAILED ❌  (${pass} passed, ${fail} failed)`);
-if (fail > 0) process.exit(1);
+console.log(failed() === 0 ? `\nAUTH-PIDFILE SMOKE OK ✅  (${passed()} passed, ${failed()} failed)` : `\nAUTH-PIDFILE SMOKE FAILED ❌  (${passed()} passed, ${failed()} failed)`);
+finish();
+if (failed() > 0) process.exit(1);

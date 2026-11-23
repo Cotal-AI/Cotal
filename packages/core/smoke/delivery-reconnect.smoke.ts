@@ -183,7 +183,7 @@ try {
 
   // Invoke the public stop while its broker consumer is live, then terminal-close that epoch.
   // Read-only cleanup must settle and unbind without attempting an ungranted delete on either epoch.
-  const raceNc = (observer as unknown as { nc: import("@nats-io/transport-node").NatsConnection }).nc;
+  const raceNc = (observer as unknown as { conn: { nc: import("@nats-io/transport-node").NatsConnection } }).conn.nc;
   const raceFeed = await new Kvm(raceNc).open(membershipBucket(space));
   const raceBucket = raceFeed as unknown as { js: { consumers: { getPushConsumer: (...a: unknown[]) => Promise<import("@nats-io/jetstream").PushConsumer> } } };
   const raceGet = raceBucket.js.consumers.getPushConsumer.bind(raceBucket.js.consumers);
@@ -192,7 +192,7 @@ try {
     raceConsumer = await raceGet(...args);
     return raceConsumer;
   };
-  (observer as unknown as { membershipFeedKv: unknown }).membershipFeedKv = raceFeed;
+  (observer as unknown as { conn: { membershipFeedKv: unknown } }).conn.membershipFeedKv = raceFeed;
   const raceHandle = await observer.watchMembership(() => {});
   // The broker marks the consumer push-bound only once it sees the subscribe, which can trail the watch.
   for (let i = 0; i < 20 && (await membershipConsumers()).length !== 1; i++) await wait(50);
@@ -247,7 +247,7 @@ try {
   observer = new CotalEndpoint({ space, servers: SERVERS, creds: await mintCreds(auth, newIdentity(), "admin"), channels: [], consume: false, watchPresence: false, registerPresence: false, card: { name: "observer-broker-down", role: "observer", kind: "endpoint" } });
   observer.on("error", () => {}); await observer.start();
   const brokerDownWatch = await observer.watchMembership(() => {});
-  await (observer as unknown as { nc: import("@nats-io/transport-node").NatsConnection }).nc.close();
+  await (observer as unknown as { conn: { nc: import("@nats-io/transport-node").NatsConnection } }).conn.nc.close();
   const brokerDownStop = brokerDownWatch.stop();
   void brokerDownStop.catch(() => {});
   const endpointStopped = await Promise.race([observer.stop().then(() => true), wait(2000).then(() => false)]);
@@ -271,7 +271,7 @@ try {
   const terminalBefore = await membershipConsumers();
   check("the terminal-close control starts with one membership consumer", terminalBefore.length === 1, terminalBefore);
   const healed = reconnected(observer);
-  await (observer as unknown as { nc: import("@nats-io/transport-node").NatsConnection }).nc.close();
+  await (observer as unknown as { conn: { nc: import("@nats-io/transport-node").NatsConnection } }).conn.nc.close();
   await Promise.race([healed, wait(5000)]);
   await wait(200);
   const terminalAfter = await membershipConsumers();
@@ -286,7 +286,7 @@ try {
 
   // A transient failed arm leaves a rejected promise in the per-watch queue. A later rebuild must
   // reset that rejection before appending cleanup/rearm work, or this watch is poisoned forever.
-  const terminalIntent = [...(observer as unknown as { membershipFeedWatches: Set<{ arm: Promise<void> }> }).membershipFeedWatches][0];
+  const terminalIntent = [...(observer as unknown as { conn: { membershipFeedWatches: Set<{ arm: Promise<void> }> } }).conn.membershipFeedWatches][0];
   terminalIntent.arm = Promise.reject(new Error("transient membership arm failure"));
   void terminalIntent.arm.catch(() => {}); // handled, but intentionally still the rejected queue value
   let recoveredFromRejectedArm = false;
@@ -296,10 +296,10 @@ try {
   // A watch iterator closed under a live connection must reach the caller through onClosed,
   // not just the generic endpoint error event.
   const closedReasons: string[] = [];
-  const watchesBeforeClosedCell = new Set([...(observer as unknown as { membershipFeedWatches: Set<{ iter?: { stop(): void } }> }).membershipFeedWatches]);
+  const watchesBeforeClosedCell = new Set([...(observer as unknown as { conn: { membershipFeedWatches: Set<{ iter?: { stop(): void } }> } }).conn.membershipFeedWatches]);
   const closedWatch = await observer.watchMembership(() => {}, (err) => { closedReasons.push(err.message); });
   await wait(200);
-  const closedWatchIntent = [...(observer as unknown as { membershipFeedWatches: Set<{ iter?: { stop(): void } }> }).membershipFeedWatches]
+  const closedWatchIntent = [...(observer as unknown as { conn: { membershipFeedWatches: Set<{ iter?: { stop(): void } }> } }).conn.membershipFeedWatches]
     .find((w) => !watchesBeforeClosedCell.has(w));
   closedWatchIntent?.iter?.stop();
   for (let i = 0; i < 40 && closedReasons.length === 0; i++) await wait(50);

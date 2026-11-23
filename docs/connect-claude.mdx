@@ -415,7 +415,8 @@ An update refreshes existing plugins but preserves disabled ones.
 Inspect the launch error and manager log before retrying.
 Managed startup accepts only recognized trust and development-channel dialogs.
 First-run style, login, and bypass warnings need your own foreground confirmation.
-An unmatched screen fails within the startup bound.
+If Claude reaches neither the development-channels prompt nor its input screen, managed startup fails within the startup bound. `cotal spawn --detach` exits nonzero and reports the startup failure instead of offering an attach command for that seat.
+If Claude opens its input screen without the prompt, the seat stays running and the spawn receipt warns that mesh traffic cannot wake it while idle.
 Use `--foreground` to handle a native dialog yourself.
 
 ### A second session cannot consume an inbox

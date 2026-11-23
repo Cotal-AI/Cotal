@@ -1,5 +1,69 @@
 # @cotal-ai/core
 
+## 0.175.2
+
+### Patch Changes
+
+- 7ca1d02: The service-account and daemon permission builders now live in their own core module, with no change in behavior.
+- d4ecdff: Internal refactor: the endpoint's connection and the handles opened on it (JetStream clients, KV buckets, membership watches, owned connections and pending replies) live in one `ConnectionState` object that the endpoint's internal parts share by reference, replacing per-field getter and setter callbacks. No behaviour change.
+- c940ed9: Internal refactor: the endpoint's start/stop/rebuild state, its presented credential and renewal state, and its channel-registry cache each live in one state object (`LifecycleState`, `CredentialState`, `ChannelRegistryState`) that the endpoint's internal parts share by reference, replacing per-field getter and setter callbacks. No behaviour change.
+- a2486a2: Internal refactor: the endpoint's subscriptions, stream consumers, chat subscriptions, liveness responders, principal serves, durable-backstop channels, goal followers and DM-only handler live in one `DeliveryState` object that the endpoint's internal parts share by reference, replacing per-field getter and setter callbacks. No behaviour change.
+
+## 0.175.1
+
+No changes in this release.
+
+## 0.175.0
+
+### Minor Changes
+
+- e91ed5b: T3 Code, Zed and other Agent Client Protocol clients can now spawn and drive Cotal agents through the new `@cotal-ai/acp` extension and its `cotal acp` command.
+  
+  `cotal acp` serves ACP v1 on standard input and output. A client thread is one managed agent: its first prompt spawns the agent through the space's manager in the thread's folder, with the model, reasoning variant, persona, channel and machine the thread chose, and the agent keeps running when the client closes. The thread follows the agent's event channel, so an application without an event plane is not offered. Session list shows the managed agents in a folder, loading one replays what its event channel still holds, deleting one hides that run, and `/despawn`, `/roster` and `/channels` answer in the thread. A later prompt is typed into the agent's terminal through the manager's `input` command, so it arrives as the user's own words, and its turn ends once the agent has started working and stopped again. An agent whose runtime owns no terminal input, such as tmux, refuses it, and the prompt fails with the manager's reason. A client that runs terminals is offered a sign-in that runs `cotal login` or, with no space recorded, `cotal setup`. Stopping a turn interrupts the agent through the manager's new `interrupt` command, and the turn ends as cancelled, also when the agent cannot be stopped. Forwarding an agent's questions is not available yet. `@cotal-ai/cli` names the package when `cotal acp` runs before the extension is added, and `@cotal-ai/workspace` records `acp` as a Cotal home entry and offers the `input` and `interrupt` control calls.
+  
+  The manager serves a new targeted `interrupt` command, contract revision 53. It writes the key a seat's connector declares in the new `Connector.interruptKey` into the seat's terminal, and it is granted as `input` is. The Claude Code and Pi connectors declare Escape.
+  
+  On a space where people sign in, a person now controls every agent under their own owner without the `admin` scope. Their manager view carries `inspect` and `ps` and owner-mode `input`, `interrupt`, `despawn` and `attach`, whatever their scope, and their sign-in reads those agents' event channels live and through its own history reader. These rights come from the ledger row being a person's, never from a scope token, so no agent credential holds them. They ride the person's sign-in, so a program running as that person where they are signed in can use them. `cotal acp` reads through that sign-in, takes your managers from the auth service's `/manager-instances` list, reads your agents from every live one, sends each agent's commands to the manager that holds it, and names each agent `acp_<id>`, a valid actor name there. A thread loaded without a grant that may spawn offers only the agent's own model and cannot start another, and `cotal acp` stops, sending nothing, when the machine's sign-in is granted again or changes account. `@cotal-ai/core` adds a `publisher` filter to `channelHistoryPage` and an optional `AuthProvider.listManagerInstances`, which `@cotal-ai/auth` implements. `@cotal-ai/workspace` adds `ownManagerInstances`, `userSignInAuth`, `signInChange`, an observer `lifecycleUid` option, and a `gone` list on the `ps` reply for registrations whose host is gone. A control call whose own chosen run was replaced is now reported as refused before submission, with `preSubmitRefusal` and `selectedSeatChanged`, so a picker `cotal attach` exits as a refusal (`TARGET_NOT_FOUND`) and `cotal team agent remove` reports refused where they reported a failure or an unknown outcome; nothing was ever sent in that case.
+
+### Patch Changes
+
+- 4907c2d: The subject token, channel and principal grammar now lives in its own core module, with no change in behavior.
+
+## 0.174.4
+
+### Patch Changes
+
+- 8aceac1: Give each remaining single-owner `CotalEndpoint` field to the internal part that reads and writes it: the connection part owns its timers, the observer taps and its watch-consumer and subscription-denial records; the reconnect part owns the retry count and backoff; the consumer part owns the task epoch, first-connect flag and chat subscription refusals; the control plane owns its service caches and split count; the credential part owns its transaction chain and renewal timer; the principal-serve part owns the `prompts` presence field. The package exports, public methods and wire behaviour are unchanged.
+- bd76aab: Persona listings report broken catalog links, channel errors name the frontmatter key, and local creation rejects invalid launch names while existing personas with hyphen-leading catalog names keep copyable follow-up commands.
+
+## 0.174.3
+
+### Patch Changes
+
+- 8a7bd4b: Persona show prints commands you can copy for names starting with a hyphen, and persona files reject a blank or null endpoints declaration instead of ignoring it.
+- ff4cd00: Persona retries keep the selected catalog and explain when to pipe input again, malformed closing fences are rejected, and blank connector pins use the default unless a harness is specified.
+
+## 0.174.2
+
+### Patch Changes
+
+- 7b7e60c: Agent deprovisioning and the standalone connect options now live in their own core modules, with no change in behavior.
+
+## 0.174.1
+
+No changes in this release.
+
+## 0.174.0
+
+### Minor Changes
+
+- 5053a5e: An agent's owner can now rename the agent, and every client in the space sees the new name while the agent keeps its identity. The `agent` endpoint advances to revision 4 with `set-name` `{ name }`, which only the owner's interactive session may call. The agent checks the name with the shared name rule, refuses the name of another live agent compared lowercased, changes its card's display name and republishes presence at once; refusals are typed with the `ai.cotal.agent.name-refused` detail (`name-invalid` or `name-taken`), and the current name again changes nothing. Messages sent afterwards carry the new `from.name`, and stored history keeps the old one. `CotalEndpoint.setCardName` makes the change, and an endpoint that watches presence reports a changed display name as a `presence` update and a `roster` event. A manager keeps a seat's last shown name apart from its alias and passes it as `COTAL_DISPLAY_NAME` (`LaunchOpts.displayName`) when it starts the seat again after a crash or a preserved resume, so the seat comes back under the same alias and actor with its last name. `ps`, resume commit and name allocation find a renamed seat by its principal, and in user mode a new spawn does not take a renamed agent's actor.
+
+### Patch Changes
+
+- f93db6f: Hold the identity and configuration a `CotalEndpoint` fixes at construction in one internal object that its parts read by reference, instead of passing each value to each part through its own callback. Point the internal parts' imports of `isPublishPermissionDenied`, `isFromSubjectSender`, `deliveryLimitOf` and `fitHistoryPage` at the modules that define them. The package exports, public methods and wire behaviour are unchanged.
+- f6760fa: Keep endpoints without an error listener alive when their broker credential expires, and give each provisioning operation in the send smoke test a fresh credential.
+
 ## 0.173.0
 
 ### Minor Changes

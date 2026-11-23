@@ -112,7 +112,8 @@ cotal run resume <runId>
 
 A program that does not validate is refused before anything is recorded, with every problem in the
 answer as the validator would print it. The driver records the program beside the run, so `resume`
-takes the run id alone and the manager reads the source back; an edited program is a migration or a
+takes the run id alone and the manager reads the source back. If a hosted resume refuses `--file`,
+remove that option and its value and keep the other arguments. An edited program is a migration or a
 `fork`, never a resume. `cotal run check <runId> <program>` is that check: it
 replays the run's journal and walks the edited program over it, prints whether the migration is
 admissible, how many journal rows the walk accounted for, every orphaned step with its verdict and
@@ -254,7 +255,8 @@ request can read the same marker and a current holder, then report its own obser
 ## Revocation [#revocation]
 
 `cotal run revoke <runId> --local --by <who> --reason <text>` writes the run's revocation marker
-from the project folder. An empty `--by` or `--reason` is refused `USAGE_INVALID` before anything is written, naming the empty flag. A run ID with no admission on the endpoint is refused `TARGET_NOT_FOUND`, exit 2, before anything is written. The
+from the project folder. If the run ID is missing, add it after `run revoke` and keep the original
+options. An empty `--by` or `--reason` is refused `USAGE_INVALID` before anything is written, naming the empty flag. A run ID with no admission on the endpoint is refused `TARGET_NOT_FOUND`, exit 2, before anything is written. The
 admission itself is never rewritten. Every host reads the marker
 before its next channel effect, so an open `wait` refuses at its next poll, and no resume,
 takeover or manager restart continues the run. A spawn a hosted run makes after the revoke is
@@ -334,8 +336,9 @@ cotal run --page --on <instance> --cursor <cursor>
 For the MCP surface, use `cotal_run` with `verb: "ps"`, `instance` and `page: { limit: 8 }`.
 Pass a returned `nextCursor` as `page.cursor` to continue. A managed session can use its existing
 manager binding. Keep the same space, endpoint filter, instance and process epoch throughout a scan.
-The CLI requires `--on`; page mode is not available with `--local` or other verbs. An older host
-refuses page mode rather than returning a truncated legacy list.
+The CLI requires `--on`; page mode is not available with `--local` or other verbs. Use
+`cotal run show <run-id> --limit <n>` without `--page` or `--cursor` to limit the text journal.
+An older host refuses page mode rather than returning a truncated legacy list.
 
 Each page has at most 16 rows (default 8), and the complete reply fits 65536 bytes and the broker's
 payload limit. The reader issues at most 64 storage calls and stops issuing them after 2 seconds or

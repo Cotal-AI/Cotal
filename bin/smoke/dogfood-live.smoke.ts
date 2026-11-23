@@ -25,7 +25,7 @@
  * PATH. Sandboxes COTAL_HOME/XDG_CONFIG_HOME + a temp root; kills only its own pids.
  * Run: pnpm smoke:dogfood:live
  */
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
@@ -103,6 +103,75 @@ const bootstrapAfter = async (seen: string[]) => {
 };
 
 const ownPids: number[] = [];
+
+async function checkDefaultObserver() {
+  const foreground = spawn(realNode, [join(REPO, "bin", "dist", "cotal.js"), "service", "start", "web", "--space", SPACE, "--port", String(WEB_PORT), "--read-only", "--foreground", "--no-open", "--plain"],
+    { env, cwd: root, stdio: ["ignore", "pipe", "pipe"] });
+  const closed = new Promise((resolve) => foreground.once("close", resolve));
+  let output = "";
+  for (const stream of [foreground.stdout, foreground.stderr]) stream.on("data", (data) => { output += data.toString(); });
+  try {
+    for (let i = 0; i < 300 && foreground.exitCode === null && !output.includes("Owned service process running"); i++) await sleep(100);
+    const path = /^\s*Read-only dashboard\. Private browser bootstrap file: (.+)$/m.exec(output)?.[1];
+    ok("the default observer dashboard starts without endpoint errors", !!path && output.includes("Owned service process running") && !output.includes("endpoint reported an error"), output);
+    const { launchUrl } = JSON.parse(readFileSync(path!, "utf8")) as { launchUrl: string };
+    const exchange = await fetch(launchUrl, { redirect: "manual", signal: AbortSignal.timeout(15_000) });
+    const cookie = exchange.headers.get("set-cookie")?.split(";")[0];
+    ok("the observer dashboard exchanges its private browser link", exchange.status === 302 && !!cookie);
+    const feed = await web("/feed", { headers: { cookie: cookie! } });
+    ok("the observer dashboard opens its live feed", feed.status === 200 && feed.body !== null);
+    const reader = feed.body!.getReader(), decoder = new TextDecoder();
+    const live = `${NONCE}-observer-live`;
+    try {
+      const sent = cotal(["send", "-c", "general", live, "--space", SPACE]);
+      ok("the CLI publishes a new live channel message", sent.status === 0, out(sent));
+      let data = "";
+      while (!data.includes(live)) {
+        const chunk = await reader.read();
+        if (chunk.done) break;
+        data += decoder.decode(chunk.value, { stream: true });
+      }
+      ok("the default observer still receives live channel messages", data.includes(live));
+    } finally { await reader.cancel().catch(() => {}); }
+    const broker = readFileSync(join(root, ".cotal", "nats.log"), "utf8");
+    ok("the observer requests neither unauthorized messaging rail", !output.includes("endpoint reported an error") && !broker.split("\n").some((line) =>
+      line.includes("Subscription Violation") && ["inst", "svc"].some((plane) => line.includes(`Subject "cotal.${SPACE}.${plane}.>"`))));
+  } finally {
+    foreground.kill("SIGTERM");
+    await closed;
+    cotal(["service", "remove", "web", "--space", SPACE, "--yes"]);
+  }
+}
+
+async function checkForegroundRepeat() {
+  const foreground = spawn(realNode, [join(REPO, "bin", "dist", "cotal.js"), "service", "start", "web", "--space", SPACE, "--foreground", "--no-open", "--plain"],
+    { env, cwd: root, stdio: ["ignore", "pipe", "pipe"] });
+  const closed = new Promise((resolve) => foreground.once("close", resolve));
+  let output = "";
+  foreground.stdout.on("data", (chunk) => { output += chunk; });
+  foreground.stderr.on("data", (chunk) => { output += chunk; });
+  try {
+    const sessionPath = () => /^\s*Read-only dashboard\. Private browser bootstrap file: (.+)$/m.exec(output)?.[1];
+    for (let i = 0; i < 150 && foreground.exitCode === null && (!sessionPath() || !output.includes("Owned service process running")); i++) await sleep(100);
+    const path = sessionPath();
+    ok("foreground startup names its private bootstrap file", path !== undefined && existsSync(path));
+    const readUrl = () => (JSON.parse(readFileSync(path!, "utf8")) as { launchUrl: string }).launchUrl;
+    const exchange = (url: string) => fetch(url, { redirect: "manual", signal: AbortSignal.timeout(15_000) });
+    const firstUrl = readUrl();
+    ok("the first foreground link exchanges for a session", (await exchange(firstUrl)).status === 302);
+    const repeat = cotal(["service", "start", "web", "--space", SPACE, "--no-open", "--plain"]);
+    const freshUrl = readUrl();
+    ok("a repeated foreground dashboard start names the verified file, not the uncaptured log or link",
+      repeat.status === 0 && repeat.stdout.includes("Already running; nothing was started")
+      && repeat.stdout.includes(`Private browser bootstrap file: ${path}`)
+      && !out(repeat).includes("cotal service logs") && !out(repeat).includes(new URL(freshUrl).searchParams.get("k")!));
+    ok("the repeated foreground start refreshes the link", firstUrl !== freshUrl && (await exchange(freshUrl)).status === 302);
+  } finally {
+    foreground.kill("SIGTERM");
+    await closed;
+  }
+}
+
 try {
   // -- A: the dashboard is not core ----------------------------------------------------------------
   const creds = join(sandbox, "dashboard.creds");
@@ -132,6 +201,7 @@ try {
     const record = (t: string) => canonicalLocalProcessPath(t, { root, space: SPACE });
     const meshPids = [join(root, ".cotal", "nats.pid"), record(DELIVERY_PIDFILE), record(MANAGER_PIDFILE)].map((f) => Number(readFileSync(f, "utf8").trim()));
     ownPids.push(...meshPids);
+    await checkDefaultObserver();
     const sent = cotal(["send", "-c", "general", NONCE, "--space", SPACE]);
     ok("a message is sent to #general through the CLI", sent.status === 0 && /Message stored/.test(sent.stdout), out(sent).slice(-400));
 
@@ -275,6 +345,7 @@ try {
 
     const again = cotal(["service", "start", "web", "--space", SPACE]);
     ok("a second start is a no-op on the running instance", again.status === 0 && /Already running; nothing was started/.test(again.stdout) && pidOf(again) === webPid, out(again).slice(-500));
+    ok("a repeated background start still points to the startup log", again.stdout.includes(`cotal service logs web --space ${SPACE} --instance ${log.instanceId}`));
     const removeLive = cotal(["ext", "remove", "@cotal-ai/web"]);
     ok("ext remove refuses to orphan the running dashboard", removeLive.status === 2 && /LIFECYCLE_BLOCKED/.test(out(removeLive)) && alive(webPid), out(removeLive).slice(-500));
     const stop = cotal(["service", "stop", "web", "--space", SPACE, "--yes"]);
@@ -297,6 +368,7 @@ try {
     const stopAgain = cotal(["service", "stop", "web", "--instance", liveBoot!.log.instanceId, "--space", SPACE, "--yes"]);
     for (let i = 0; i < 50 && alive(livePid); i++) await sleep(100);
     ok("the explicit stop ends the dashboard and removes its bootstrap file before the stack", stopAgain.status === 0 && !alive(livePid) && !existsSync(liveBoot!.path) && meshPids.every(alive), out(stopAgain).slice(-500));
+    await checkForegroundRepeat();
     const down = cotal(["down", "--yes"]);
     ok("bare down then stops the auth mesh", down.status === 0 && meshPids.every((pid) => !alive(pid)), out(down).slice(-500));
   }

@@ -157,6 +157,23 @@ async function bearer(w: Who): Promise<string> {
     .sign(privateKey as CryptoKey);
 }
 
+// ---- a person's manager view controls their own agents, from the row kind (SPEC 13.21) ----------
+{
+  const PERSON = mintLifecycleUid(), AGENT = mintLifecycleUid(), INSTANCE = mintLifecycleUid();
+  const kinds = new Map<string, "interactive" | "managed-agent">([[PERSON, "interactive"], [AGENT, "managed-agent"]]);
+  const mintView = calloutPermissions((t) => ({ allowSubscribe: [], allowPublish: [], lifecycleUid: t.act.lifecycleUid!, scope: ["spawn"], kind: kinds.get(t.act.lifecycleUid!) }), async () => {});
+  const view = async (actor: string, uid: string) => ((await mintView({
+    owner: A, space, scope: ["spawn"], ver: USER_TOKEN_VER, exp: Math.floor(Date.now() / 1000) + 600,
+    act: { owner: A, actor, scope: ["spawn"], lifecycleUid: uid, view: "manager-caller", managerInstanceId: INSTANCE },
+  } as ValidatedUserToken, `ibx${hex(16)}`, `rdr${hex(8)}`)) as Perm).pub?.allow ?? [];
+  const seat = (rows: string[], cmd: string) => rows.some((r) => r.includes(`.manager.${INSTANCE}.${cmd}.owner.${A}.`));
+  const person = await view("cli", PERSON), agent = await view("helper", AGENT);
+  check("the callout mints a person's manager view with owner-mode input, interrupt, despawn and attach on their own agents",
+    ["input", "interrupt", "despawn", "attach"].every((cmd) => seat(person, cmd)), person.filter((r) => r.includes(`.manager.${INSTANCE}.`)));
+  check("the callout mints an agent's manager view with no input or interrupt row, at the same scope",
+    !seat(agent, "input") && !seat(agent, "interrupt") && seat(agent, "despawn"));
+}
+
 // ---- raw connections, for the forged publishes and subscriptions ----------------------------
 interface Seat { label: string; nc: NatsConnection; refused: { operation: string; subject: string }[] }
 const raws: NatsConnection[] = [];
@@ -257,6 +274,7 @@ function testAgent(ep: CotalEndpoint, w: Who): TestAgent {
     ...(["command-cancel", "command-state"] as const).map((command) => ({ command, contract: AGENT_CONTRACTS[command],
       handler: () => { throw new EpEnvelopeError("not-found", "this test agent queues no commands", undefined, "not-executed"); } })),
     { command: "interrupt", contract: AGENT_CONTRACTS.interrupt, handler: () => { throw new EpEnvelopeError("unimplemented", "this test agent cannot interrupt a turn", undefined, "not-executed"); } },
+    { command: "set-name", contract: AGENT_CONTRACTS["set-name"], handler: () => { throw new EpEnvelopeError("unimplemented", "this test agent keeps its name", undefined, "not-executed"); } },
   ];
   agent.serve = ep.servePrincipal({ handlers });
   return agent;
@@ -355,7 +373,7 @@ try {
   check("cell 1: describe answers the fixed cluster inline, public, under the agent's owner",
     answer?.public === true && answer.descriptor.endpoint === "agent" && answer.descriptor.owner === A
     && answer.descriptor.clusters[0].digest === agentClusterArtifacts().closureDigest
-    && JSON.stringify(answer.descriptor.clusters[0].commands) === JSON.stringify(["prompts", "prompt", "prompt-answer", "commands", "command", "command-cancel", "command-state", "interrupt"]), describe);
+    && JSON.stringify(answer.descriptor.clusters[0].commands) === JSON.stringify(["prompts", "prompt", "prompt-answer", "commands", "command", "command-cancel", "command-state", "interrupt", "set-name"]), describe);
   check("cell 1: the agent's handlers saw three requests, each under the owner word from alice.web's triple",
     coder.calls.length === 3 && coder.calls.every((c) => c.authority === "owner" && c.caller === `${A}.web.${W.web.uid}`), coder.calls);
   await until(() => webEp.getRoster().find((p) => p.card.id === `${A}.coder`)?.prompts?.seq === coder.seq, 8000);
@@ -521,7 +539,7 @@ try {
     check("control: the same request with deadlineMs 30000 is answered ok", atCap !== "none" && atCap.ok, atCap);
 
     // cell 41: the caller refuses the same deadline before it publishes anything.
-    const webNc = (webEp as unknown as { nc: NatsConnection }).nc;
+    const webNc = (webEp as unknown as { conn: { nc: NatsConnection } }).conn.nc;
     const publish = webNc.publish.bind(webNc);
     let published = 0;
     webNc.publish = (subject, ...rest) => { if (subject.startsWith(`${P}.ep.prin.`)) published++; return publish(subject, ...rest); };
@@ -811,7 +829,7 @@ try {
   }
 
   // ── cell 30: stopping the endpoint ends its principal serve ──
-  const stubHandlers = (prompts?: EpPrincipalCommandDef["handler"]): EpPrincipalCommandDef[] => (["prompts", "prompt", "prompt-answer", "commands", "command", "command-cancel", "command-state", "interrupt"] as const).map((command) => ({
+  const stubHandlers = (prompts?: EpPrincipalCommandDef["handler"]): EpPrincipalCommandDef[] => (["prompts", "prompt", "prompt-answer", "commands", "command", "command-cancel", "command-state", "interrupt", "set-name"] as const).map((command) => ({
     command, contract: AGENT_CONTRACTS[command],
     handler: command === "prompts" && prompts ? prompts : (ctx) => ({ runtime: { id: ctx.principal.runtimeId, startedAt: 1 }, seq: 0, open: [], closed: [] }),
   }));
@@ -873,7 +891,7 @@ try {
   {
     deaf.add(W.deaf.uid);
     const deafEp = await userEndpoint(W.deaf);
-    const nc = (deafEp as unknown as { nc: NatsConnection }).nc;
+    const nc = (deafEp as unknown as { conn: { nc: NatsConnection } }).conn.nc;
     const flush = nc.flush.bind(nc);
     nc.flush = () => new Promise<void>(() => {});
     const r = await settle(call(deafEp, coderAt, "prompts", "owner", {}, 1500));
@@ -982,15 +1000,15 @@ try {
     check("a caller minted before the rows: permission-denied, not-executed", !oldCaller.ok && codeOf(oldCaller.error) === "permission-denied/not-executed", oldCaller);
     const laterContract = { input: AGENT_CONTRACTS.prompts.input, output: compileContract({ root: { type: "object", properties: { runtime: {}, seq: {}, open: {}, closed: {}, interrupted: {} } } }) };
     const pinned = await webEp.callPrincipal({ endpoint: AGENT_ENDPOINT, principal: coderAt, command: "prompts", authority: "owner", args: {}, deadlineMs: 4000, contract: laterContract });
-    check("a revision-4 caller and a revision-3 agent: contract-mismatch, not-executed", !pinned.ok && pinned.error.code === "contract-mismatch" && pinned.error.outcome === "not-executed", pinned);
+    check("a revision-5 caller and a revision-4 agent: contract-mismatch, not-executed", !pinned.ok && pinned.error.code === "contract-mismatch" && pinned.error.outcome === "not-executed", pinned);
     const d = await call(webEp, coderAt, "describe", "owner");
     const doc = d.ok ? (d.data as DescribeAnswer).descriptor.clusters[0] : undefined;
     const parsed = doc?.document ? parseClusterDocument(doc.document) : undefined;
-    check("then describe: the agent serves revision 3, and the document matches the caller's embedded artifacts",
-      parsed?.revision === 3 && doc?.digest === agentClusterArtifacts().closureDigest
+    check("then describe: the agent serves revision 4, and the document matches the caller's embedded artifacts",
+      parsed?.revision === 4 && doc?.digest === agentClusterArtifacts().closureDigest
       && parsed.commands.every((c) => c.inputDigest === AGENT_CONTRACTS[c.name].input.closureDigest && c.outputDigest === AGENT_CONTRACTS[c.name].output.closureDigest), d);
     const current = await call(webEp, coderAt, "prompts", "owner", {});
-    check("then revision 3 answers", current.ok, current);
+    check("then revision 4 answers", current.ok, current);
   }
 
   // ── a reconnect that rebinds ──
@@ -1008,7 +1026,7 @@ try {
     }
     check("a rebuilt connection subscribes again: the agent answers on the same runtime id", after?.ok === true && (after.data as { runtime: { id: string } }).runtime.id === oldRuntime, after);
     // The serve keeps a handle per connection only until that connection is replaced.
-    const handles = () => (coderEp as unknown as { principalServes: Map<string, { handles: unknown[] }> }).principalServes.get(AGENT_ENDPOINT)?.handles.length;
+    const handles = () => (coderEp as unknown as { delivery: { principalServes: Map<string, { handles: unknown[] }> } }).delivery.principalServes.get(AGENT_ENDPOINT)?.handles.length;
     await coderEp.reconnect();
     for (let i = 0, done = false; i < 50 && !done; i++) {
       const r = await settle(call(webEp, coderAt, "prompts", "owner", {}, 1500));
@@ -1022,7 +1040,7 @@ try {
     check("on the new connection presence carried no prompts field until the broker accepted the new subscription, then the field again",
       shown.includes(undefined) && shown.lastIndexOf(coder.seq) > shown.indexOf(undefined) && webEp.getRoster().find((p) => p.card.id === `${A}.coder`)?.prompts?.seq === coder.seq, shown);
     // The library reconnects in place and re-subscribes on a connection the broker authorized again.
-    const raw = (coderEp as unknown as { nc: NatsConnection }).nc;
+    const raw = (coderEp as unknown as { conn: { nc: NatsConnection } }).conn.nc;
     await raw.reconnect();
     let inPlace = false;
     for (let i = 0; i < 50 && !inPlace; i++) {
@@ -1030,7 +1048,7 @@ try {
       inPlace = r.ok && r.value.ok;
       if (!inPlace) await wait(100);
     }
-    check("an in-place reconnect re-runs the check and keeps serving", inPlace && (coderEp as unknown as { nc: NatsConnection }).nc === raw);
+    check("an in-place reconnect re-runs the check and keeps serving", inPlace && (coderEp as unknown as { conn: { nc: NatsConnection } }).conn.nc === raw);
     // The next credential predates the rows: the check fails, the serve ends, the field goes.
     stripped.add(W.coder.uid);
     await raw.reconnect();

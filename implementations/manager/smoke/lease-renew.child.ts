@@ -16,10 +16,10 @@ const [space, servers, workspaceRoot] = process.argv.slice(2);
 const say = (line: string) => writeSync(1, `${line}\n`);
 
 const mgr = new Manager({ space, servers, runtime: "pty", workspaceRoot, consolePort: 0 });
-const held = mgr as unknown as { managerInstanceId: string; leaseRevision?: number };
+const held = mgr as unknown as { managerInstanceId: string; lease: { leaseRevision?: number } };
 
 // The revision the manager was holding when the process ended, for the parent's report.
-process.on("exit", () => say(`HELD ${held.leaseRevision ?? "none"}`));
+process.on("exit", () => say(`HELD ${held.lease.leaseRevision ?? "none"}`));
 
 await mgr.start();
 say(`UP ${held.managerInstanceId} ${process.pid}`);
@@ -27,9 +27,9 @@ say(`UP ${held.managerInstanceId} ${process.pid}`);
 // Report every revision change, so the parent can synchronise its stall with the manager's own renew
 // clock instead of guessing at an offset from `start()` returning (which lands well after the lease
 // timer was armed, and by a margin that varies with the rest of startup).
-let last = held.leaseRevision;
+let last = held.lease.leaseRevision;
 setInterval(() => {
-  if (held.leaseRevision !== last) { last = held.leaseRevision; say(`REV ${last} ${Date.now()}`); }
+  if (held.lease.leaseRevision !== last) { last = held.lease.leaseRevision; say(`REV ${last} ${Date.now()}`); }
 }, 50);
 
 // Idle forever. Only the parent ends this process; the manager never ends it over its lease.

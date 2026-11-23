@@ -28,7 +28,7 @@
 import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, isAbsolute, join } from "node:path";
 import { createSuite } from "@cotal-ai/smoke-kit";
 
 const BIN = join(import.meta.dirname, "..", "..", "..", "bin", "dist", "cotal.js");
@@ -45,7 +45,9 @@ mkdirSync(join(home, ".cotal"), { mode: 0o700 });
 process.on("exit", (code) => { if (code === 0) rmSync(home, { recursive: true, force: true }); });
 
 const HOST_ENV = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("COTAL_") && k !== "FORCE_COLOR" && k !== "NO_COLOR"));
-const env = { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config"), COTAL_HOME: join(home, ".cotal"), COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1", COTAL_TELEMETRY: "off", NO_COLOR: "1" };
+// pnpm can prepend a relative bin directory, which service add refuses for bare executable names.
+const path = (process.env.PATH ?? "").split(delimiter).filter(isAbsolute).join(delimiter);
+const env = { ...HOST_ENV, PATH: path, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config"), COTAL_HOME: join(home, ".cotal"), COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1", COTAL_TELEMETRY: "off", NO_COLOR: "1" };
 const run = (args: string[], cwd = neutral) => {
   const r = spawnSync(process.execPath, [BIN, ...args], { cwd, env, encoding: "utf8", timeout: 120_000 });
   return { status: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
@@ -67,22 +69,6 @@ check("the text refusal carries one mark, not two", !/✗\s*✗/.test(text.stder
 
 const refused = run(["service", "--server", "nats://127.0.0.1:4222"]);
 check("control: service does refuse --server as an unknown option", refused.status === 1 && /Unknown option '--server'/.test(refused.stderr), shown(refused));
-
-const reference = readFileSync(join(import.meta.dirname, "../../../docs/cli-services.mdx"), "utf8");
-const example = /^## Adding a service [^\n]*\n[^#]*?^```bash\ncotal space create ([\w-]+) --root \.\ncotal service add ([\w-]+) --exec "([^"]+)"\n```/m.exec(reference);
-check("the first add example prepares a space in the project folder", example !== null);
-if (example) {
-  const [, space, name, command] = example;
-  const project = join(home, "service-example");
-  mkdirSync(project);
-  const prepared = run(["space", "create", space!, "--root", "."], project);
-  const added = run(["service", "add", name!, "--exec", command!], project);
-  check("the documented space create and service add save a definition", prepared.status === 0 && added.status === 0, [shown(prepared), shown(added)]);
-  const state = run(["service", "--json"], project);
-  const inventory = state.status === 0 ? JSON.parse(state.stdout).result : undefined;
-  check("the inventory has the saved definition but no instances or running broker",
-    inventory?.definitions.some((row: { name: string }) => row.name === name) && inventory.instances.length === 0 && !inventory.processes.some((row: { processState: string }) => row.processState === "alive"), shown(state));
-}
 
 // remove takes --instance to forget one stopped instance record; its help did not list it.
 const removeHelp = run(["help", "service", "remove"]);
@@ -113,6 +99,30 @@ check("help service remove lists --instance <full-id> in its usage and options",
   const again = run(["service", "add", "tick", "--file", forA, "--json"], a);
   check("control: a file for sa under its existing name is still refused as already existing",
     again.status === 2 && again.stdout.includes('"code":"CONFLICT"') && again.stdout.includes("this service definition already exists"), shown(again));
+
+  for (const [flag, value, location] of [["--file", "", []], ["-f", "  ", ["--space", "missing-space"]]] as const) {
+    const empty = run(["service", "add", "blank-file", flag, value, ...location, "--json"], a);
+    const receipt = JSON.parse(empty.stdout);
+    check(`${flag} with a blank path refuses before resolving a target`,
+      empty.status === 1 && empty.stderr === "" && receipt.outcome === "refused" && receipt.target === null &&
+      receipt.error?.code === "USAGE_INVALID" && receipt.error.message.includes("--file") && receipt.error.remedy?.includes("--file <definition.json>"), shown(empty));
+  }
+
+  for (const [flags, dryRun] of [[[], false], [["--yes"], false], [["--dry-run"], true]] as const) {
+    const stop = run(["service", "stop", "tick", "--space", "sa", ...flags, "--json"], b);
+    const receipt = JSON.parse(stop.stdout);
+    check(`stop ${flags.join(" ")} of a saved service without an instance reports no-op`,
+      stop.status === 0 && receipt.outcome === "no-op" && receipt.target?.name === "tick" && receipt.target.space === "sa" &&
+      receipt.target.instanceId === null && receipt.result?.dryRun === dryRun, shown(stop));
+  }
+  const missingStop = run(["service", "stop", "tick", "--space", "sa", "--instance", "00000000-0000-4000-8000-000000000000", "--yes", "--json"], b);
+  check("stop still refuses an explicit instance ID that does not belong to the service",
+    missingStop.status === 2 && JSON.parse(missingStop.stdout).error?.code === "TARGET_NOT_FOUND", shown(missingStop));
+  const after = run(["service", "--space", "sa", "--json"], b);
+  const afterInventory = JSON.parse(after.stdout).result;
+  check("no stop allocates an instance and no blank import saves a definition",
+    after.status === 0 && afterInventory?.instances.length === 0 &&
+    afterInventory.definitions.map((row: { name: string }) => row.name).join() === "tick", shown(after));
 
   const unstartedLogs = run(["service", "logs", "tick", "--space", "sa", "--tail", "30", "--plain"], b);
   const statusStep = /^Next\n\s+(.+ service status tick --space sa --plain)$/m.exec(unstartedLogs.stderr)?.[1];
@@ -150,6 +160,28 @@ check("help service remove lists --instance <full-id> in its usage and options",
   }
   const listed = run(["service", "--space", "sa", "--json"], a);
   check("...and sa lists both", listed.status === 0 && listed.stdout.includes('"name":"viafolder"') && listed.stdout.includes('"name":"viaspace"'), shown(listed));
+}
+
+const reference = readFileSync(join(import.meta.dirname, "../../../docs/cli-services.mdx"), "utf8");
+const example = /^## Adding a service [^\n]*\n[^#]*?^```bash\ncotal space create ([\w-]+) --root \.\ncotal service add ([\w-]+) --space ([\w-]+) --exec "([^"]+)"\n```/m.exec(reference);
+check("the first add example names the same space it prepares", example !== null && example[1] === example[3]);
+if (example) {
+  const [, space, name, target, command] = example;
+  const project = join(home, "service-example");
+  mkdirSync(project);
+  const prepared = run(["space", "create", space!, "--root", "."], project);
+  const added = run(["service", "add", name!, "--space", target!, "--exec", command!], project);
+  check("the documented space create and service add save a definition", prepared.status === 0 && added.status === 0, [shown(prepared), shown(added)]);
+  const state = run(["service", "--space", space!, "--json"], project);
+  const inventory = state.status === 0 ? JSON.parse(state.stdout).result : undefined;
+  check("the prepared space has the saved definition but no instances or running broker",
+    inventory?.definitions.some((row: { name: string }) => row.name === name) && inventory.instances.length === 0 && !inventory.processes.some((row: { processState: string }) => row.processState === "alive"), shown(state));
+  const other = run(["service", "show", name!, "--space", "sa", "--json"], project);
+  check("the selected space does not have the definition",
+    other.status === 2 && JSON.parse(other.stdout).error?.code === "TARGET_NOT_FOUND", shown(other));
+  const current = run(["use", "--json"], project);
+  check("the example leaves the selection on sa",
+    current.status === 0 && JSON.parse(current.stdout).result?.current === "sa", shown(current));
 }
 
 // `service logs` on a log this account cannot read is a refusal with the step that opens it again. It

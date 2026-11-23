@@ -2,7 +2,9 @@
 // delivery-class lookups, and the registry watch or read that fills it), as an internal component.
 // Moved verbatim from endpoint.ts; the endpoint keeps the public methods and forwards to them. Not
 // re-exported by the index.
-import type { NatsConnection } from "@nats-io/transport-node";
+import type { ChannelRegistryState } from "./endpoint-channel-registry-state.js";
+import type { ConnectionState } from "./endpoint-connection-state.js";
+import type { EndpointIdentity } from "./endpoint-identity.js";
 import { JetStreamApiCodes, type ConsumerInfo } from "@nats-io/jetstream";
 import type { KV, KvEntry } from "@nats-io/kv";
 import {
@@ -13,32 +15,15 @@ import {
   readChannelDefaults,
   decodeChannelEntry,
 } from "./channels.js";
-import { isPublishPermissionDenied } from "./endpoint.js";
+import { isPublishPermissionDenied } from "./endpoint-dial.js";
 import { isJetStreamMissing } from "./jetstream-missing.js";
 import { lastKvEntries } from "./kv-scan.js";
 import { CHANNEL_DEFAULTS_KEY, channelBucket, isConcreteChannel } from "./subjects.js";
-import type { AgentCard, ChannelConfig, ChannelDefaults, DeliveryClass } from "./types.js";
+import type { ChannelConfig, ChannelDefaults, DeliveryClass } from "./types.js";
 
 /** What the channel discovery component reads from its endpoint. State is read when it is used,
  *  never copied, and every method is looked up on the endpoint at call time. */
 export interface EndpointChannelDiscoveryDeps {
-  nc: () => NatsConnection | undefined;
-  space: () => string;
-  card: () => AgentCard;
-  doConsume: () => boolean;
-  doWatch: () => boolean;
-  doWatchChannels: () => boolean;
-  channelKv: () => KV | undefined;
-  setChannelWatchIter: (iter: Awaited<ReturnType<KV["watch"]>>) => void;
-  channelConfigs: () => Map<string, ChannelConfig>;
-  channelDefaults: () => ChannelDefaults;
-  setChannelDefaults: (defaults: ChannelDefaults) => void;
-  channelRead: () => Promise<void> | undefined;
-  setChannelRead: (read: Promise<void> | undefined) => void;
-  channelReadGeneration: () => number;
-  setChannelReadGeneration: (n: number) => void;
-  channelReadApplied: () => number;
-  setChannelReadApplied: (n: number) => void;
   notLiveMsg: () => string;
   bindKvWatch: (kv: KV) => Promise<{ iter: Awaited<ReturnType<KV["watch"]>>; info: ConsumerInfo } | undefined>;
   emitRecoverable: (err: Error) => void;
@@ -49,25 +34,8 @@ export interface EndpointChannelDiscoveryDeps {
  *  replay and delivery-class policy they answer, and the registry watch or one-shot read that keeps
  *  the cache. Internal: `CotalEndpoint` keeps the public methods and forwards to it. */
 export class EndpointChannelDiscovery {
-  constructor(private readonly deps: EndpointChannelDiscoveryDeps) {}
+  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly conn: ConnectionState, private readonly channelRegistry: ChannelRegistryState, private readonly deps: EndpointChannelDiscoveryDeps) {}
 
-  private get nc() { return this.deps.nc(); }
-  private get space() { return this.deps.space(); }
-  private get card() { return this.deps.card(); }
-  private get doConsume() { return this.deps.doConsume(); }
-  private get doWatch() { return this.deps.doWatch(); }
-  private get doWatchChannels() { return this.deps.doWatchChannels(); }
-  private get channelKv() { return this.deps.channelKv(); }
-  private set channelWatchIter(iter: Awaited<ReturnType<KV["watch"]>>) { this.deps.setChannelWatchIter(iter); }
-  private get channelConfigs() { return this.deps.channelConfigs(); }
-  private get channelDefaults() { return this.deps.channelDefaults(); }
-  private set channelDefaults(defaults: ChannelDefaults) { this.deps.setChannelDefaults(defaults); }
-  private get channelRead() { return this.deps.channelRead(); }
-  private set channelRead(read: Promise<void> | undefined) { this.deps.setChannelRead(read); }
-  private get channelReadGeneration() { return this.deps.channelReadGeneration(); }
-  private set channelReadGeneration(n: number) { this.deps.setChannelReadGeneration(n); }
-  private get channelReadApplied() { return this.deps.channelReadApplied(); }
-  private set channelReadApplied(n: number) { this.deps.setChannelReadApplied(n); }
   private notLiveMsg() { return this.deps.notLiveMsg(); }
   private bindKvWatch(kv: KV) { return this.deps.bindKvWatch(kv); }
   private emitRecoverable(err: Error) { this.deps.emitRecoverable(err); }
@@ -76,7 +44,7 @@ export class EndpointChannelDiscovery {
   /** A consumer that reads presence on demand reads the channel registry on demand too: it holds no
    *  watch on either, so a seat binds no consumer per member on these buckets (SPEC §6, §7). */
   get readsChannelsOnDemand(): boolean {
-    return this.doConsume && this.doWatchChannels && !this.doWatch;
+    return this.identity.doConsume && this.identity.doWatchChannels && !this.identity.doWatch;
   }
 
   /**
@@ -91,10 +59,10 @@ export class EndpointChannelDiscovery {
   async readChannels(): Promise<void> {
     if (!this.readsChannelsOnDemand)
       throw new Error("readChannels is for a consumer that reads presence on demand; this endpoint watches the channel registry or keeps no cache of it");
-    const kv = this.channelKv;
+    const kv = this.conn.channelKv;
     if (!kv) throw new Error(this.notLiveMsg());
-    if (this.channelRead) return this.channelRead;
-    const generation = ++this.channelReadGeneration;
+    if (this.channelRegistry.channelRead) return this.channelRegistry.channelRead;
+    const generation = ++this.channelRegistry.channelReadGeneration;
     const read = (async () => {
       let entries: KvEntry[];
       try {
@@ -102,37 +70,37 @@ export class EndpointChannelDiscovery {
       } catch (e) {
         if (!isPublishPermissionDenied(e)) throw e;
         throw new Error(
-          `channel registry read refused for ${this.card.id}: this credential may not publish $JS.API.DIRECT.GET.KV_${channelBucket(this.space)}, the on-demand registry read (SPEC Appendix B). A credential minted by an older issuer can lack this grant even when newly minted; upgrade the manager or auth service that issues credentials, then mint a new credential. Reusing credentials or reconnecting does not add the grant.`,
+          `channel registry read refused for ${this.identity.card.id}: this credential may not publish $JS.API.DIRECT.GET.KV_${channelBucket(this.identity.space)}, the on-demand registry read (SPEC Appendix B). A credential minted by an older issuer can lack this grant even when newly minted; upgrade the manager or auth service that issues credentials, then mint a new credential. Reusing credentials or reconnecting does not add the grant.`,
           { cause: e },
         );
       }
-      if (generation <= this.channelReadApplied) return;
-      this.channelReadApplied = generation;
-      this.channelConfigs.clear();
-      this.channelDefaults = {};
+      if (generation <= this.channelRegistry.channelReadApplied) return;
+      this.channelRegistry.channelReadApplied = generation;
+      this.channelRegistry.channelConfigs.clear();
+      this.channelRegistry.channelDefaults = {};
       for (const e of entries) this.handleChannelEntry(e);
     })();
-    this.channelRead = read;
-    const settled = () => { if (this.channelRead === read) this.channelRead = undefined; };
+    this.channelRegistry.channelRead = read;
+    const settled = () => { if (this.channelRegistry.channelRead === read) this.channelRegistry.channelRead = undefined; };
     read.then(settled, settled);
     return read;
   }
 
   /** This channel's registry config from the local cache (undefined if unset). */
   getChannelConfig(channel: string): ChannelConfig | undefined {
-    return this.channelConfigs.get(channel);
+    return this.channelRegistry.channelConfigs.get(channel);
   }
 
   /** Effective replay-on-join policy for a channel: per-channel override ?? space default ??
    *  true. Reads the live cache, so it reflects runtime registry edits. */
   channelReplay(channel: string): boolean {
-    return effectiveReplay(this.channelConfigs.get(channel), this.channelDefaults);
+    return effectiveReplay(this.channelRegistry.channelConfigs.get(channel), this.channelRegistry.channelDefaults);
   }
 
   /** Effective replay window for a channel (per-channel override ?? space default), or undefined
    * for the full retained window. Only meaningful when {@link channelReplay} is true. */
   channelReplayWindow(channel: string): string | undefined {
-    return this.channelConfigs.get(channel)?.replayWindow ?? this.channelDefaults.replayWindow;
+    return this.channelRegistry.channelConfigs.get(channel)?.replayWindow ?? this.channelRegistry.channelDefaults.replayWindow;
   }
 
   /** A channel's effective replay policy read straight from the registry bucket, for a caller that
@@ -140,8 +108,8 @@ export class EndpointChannelDiscovery {
    *  wildcard reads the space defaults only. A space with no registry bucket has the built-in policy.
    *  `registered` says whether the channel has its own registry entry. */
   async channelReplayPolicy(channel: string): Promise<{ replay: boolean; window: string | null; registered: boolean }> {
-    if (!this.nc) throw new Error(this.notLiveMsg());
-    const kv = this.channelKv ?? (await openChannelRegistry(this.nc, this.space, { create: false }));
+    if (!this.conn.nc) throw new Error(this.notLiveMsg());
+    const kv = this.conn.channelKv ?? (await openChannelRegistry(this.conn.nc, this.identity.space, { create: false }));
     let cfg: ChannelConfig | undefined;
     let defaults: ChannelDefaults | undefined;
     try {
@@ -160,18 +128,18 @@ export class EndpointChannelDiscovery {
    *  from the live watch cache — drives the non-gating delivery-health surface (only durable-class
    *  channels have a Plane-3 backstop to report on). */
   channelDeliveryClass(channel: string): DeliveryClass {
-    return effectiveDeliveryClass(this.channelConfigs.get(channel), this.channelDefaults);
+    return effectiveDeliveryClass(this.channelRegistry.channelConfigs.get(channel), this.channelRegistry.channelDefaults);
   }
 
   /** Watch the channel registry: replay existing keys, then stream updates, into the local
    *  cache. A failed bind throws out of connect; an entry that does not decode or validate is
    *  reported as a `warning` and dropped, so its channel resolves to the default policy. */
   async startChannelWatch(): Promise<void> {
-    if (!this.channelKv) return;
-    const bound = await this.bindKvWatch(this.channelKv);
+    if (!this.conn.channelKv) return;
+    const bound = await this.bindKvWatch(this.conn.channelKv);
     if (!bound) return;
     const { iter } = bound;
-    this.channelWatchIter = iter;
+    this.conn.channelWatchIter = iter;
     void (async () => {
       for await (const e of iter) this.handleChannelEntry(e);
     })().catch((e) => this.emit("error", e as Error));
@@ -179,20 +147,20 @@ export class EndpointChannelDiscovery {
 
   /** {@link EndpointOptions.readOnce}: fill the channel cache from one read of the registry. */
   async readChannelsOnce(): Promise<void> {
-    if (!this.channelKv) return;
-    for (const e of await lastKvEntries(this.channelKv)) this.handleChannelEntry(e);
+    if (!this.conn.channelKv) return;
+    for (const e of await lastKvEntries(this.conn.channelKv)) this.handleChannelEntry(e);
   }
 
   private handleChannelEntry(e: KvEntry): void {
     // Cleared before the decode, so an entry that does not decode resolves to the default as the
     // fresh registry reads do.
     const isDefaults = e.key === CHANNEL_DEFAULTS_KEY;
-    if (isDefaults) this.channelDefaults = {};
-    else this.channelConfigs.delete(e.key);
+    if (isDefaults) this.channelRegistry.channelDefaults = {};
+    else this.channelRegistry.channelConfigs.delete(e.key);
     if (e.operation === "DEL" || e.operation === "PURGE") return;
     try {
-      if (isDefaults) this.channelDefaults = decodeChannelEntry(e);
-      else this.channelConfigs.set(e.key, decodeChannelEntry(e));
+      if (isDefaults) this.channelRegistry.channelDefaults = decodeChannelEntry(e);
+      else this.channelRegistry.channelConfigs.set(e.key, decodeChannelEntry(e));
     } catch (err) {
       this.emitRecoverable(new Error(`dropped channel registry entry for key ${JSON.stringify(e.key)}: ${(err as Error).message}`));
     }

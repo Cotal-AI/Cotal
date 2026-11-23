@@ -1,5 +1,7 @@
 // The stream and inbox provisioning of CotalEndpoint, as an internal component. Moved verbatim from
 // endpoint.ts; the endpoint keeps the public methods and forwards to them. Not re-exported by the index.
+import type { ConnectionState } from "./endpoint-connection-state.js";
+import type { EndpointIdentity } from "./endpoint-identity.js";
 import { JetStreamApiCodes, type JetStreamManager } from "@nats-io/jetstream";
 import { isJetStreamMissing } from "./jetstream-missing.js";
 import { isPermissionDenied } from "./permission-denied.js";
@@ -9,8 +11,6 @@ import { dlvStream, dmDurable, dmStream, taskStream } from "./subjects.js";
 /** What the provisioning component reads from its endpoint. State is read when it is used, never
  *  copied, and every method is looked up on the endpoint at call time. */
 export interface EndpointProvisioningDeps {
-  jsm: () => JetStreamManager | undefined;
-  space: () => string;
   authed: () => boolean;
   notLiveMsg: () => string;
   manager: () => Promise<JetStreamManager>;
@@ -20,10 +20,8 @@ export interface EndpointProvisioningDeps {
  *  streams, and the DM inbox, DELIVER and TASK durables an agent binds without creating.
  *  Internal: `CotalEndpoint` keeps the public methods and forwards to it. */
 export class EndpointProvisioning {
-  constructor(private readonly deps: EndpointProvisioningDeps) {}
+  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly conn: Readonly<ConnectionState>, private readonly deps: EndpointProvisioningDeps) {}
 
-  private get jsm() { return this.deps.jsm(); }
-  private get space() { return this.deps.space(); }
   private get authed() { return this.deps.authed(); }
   private notLiveMsg() { return this.deps.notLiveMsg(); }
   private manager() { return this.deps.manager(); }
@@ -31,8 +29,8 @@ export class EndpointProvisioning {
   /** Create the three backing streams for this space (idempotent). Open-mode lazy create;
    *  the same definitions are used by `cotal up` at privileged setup. */
   async ensureStreams(): Promise<void> {
-    if (!this.jsm) throw new Error(this.notLiveMsg());
-    await createSpaceStreams(this.jsm, this.space);
+    if (!this.conn.jsm) throw new Error(this.notLiveMsg());
+    await createSpaceStreams(this.conn.jsm, this.identity.space);
   }
 
   /** Create this open space's message streams if they are not there yet, as a consuming endpoint
@@ -40,8 +38,8 @@ export class EndpointProvisioning {
    *  participant (#7045). An authenticated broker's streams come from its setup, and its agents may
    *  not create them, so this throws there. */
   async ensureOpenSpaceStreams(): Promise<void> {
-    if (this.authed) throw new Error(`the streams of ${this.space} come from its broker's setup on an authenticated space; a sender does not create them`);
-    await createSpaceStreams(await this.manager(), this.space);
+    if (this.authed) throw new Error(`the streams of ${this.identity.space} come from its broker's setup on an authenticated space; a sender does not create them`);
+    await createSpaceStreams(await this.manager(), this.identity.space);
   }
 
   // (v3) The old `provisionMembership` — manager/provisioner-written boot membership at spawn — is GONE.
@@ -82,7 +80,7 @@ export class EndpointProvisioning {
     opts: { ackWaitMs?: number; inactiveThresholdMs?: number },
   ): Promise<void> {
     const jsm = await this.manager();
-    const stream = dmStream(this.space);
+    const stream = dmStream(this.identity.space);
     const name = dmDurable(owner, actor, lifecycleUid);
     try {
       await jsm.consumers.info(stream, name);
@@ -93,7 +91,7 @@ export class EndpointProvisioning {
     }
     const frontier = (await jsm.streams.info(stream)).state.last_seq;
     try {
-      await jsm.consumers.add(stream, dmDurableConfig(this.space, owner, actor, lifecycleUid, { ...opts, activationFrontier: frontier }));
+      await jsm.consumers.add(stream, dmDurableConfig(this.identity.space, owner, actor, lifecycleUid, { ...opts, activationFrontier: frontier }));
     } catch (e) {
       // A concurrent same-lifecycle provisioner may have won the create with an earlier frontier —
       // if the durable now exists it is authoritative; anything else stays a loud failure.
@@ -117,7 +115,7 @@ export class EndpointProvisioning {
    */
   async provisionDlvInbox(owner: string, actor: string, lifecycleUid: string): Promise<void> {
     const jsm = await this.manager();
-    await jsm.consumers.add(dlvStream(this.space), dlvDurableConfig(this.space, owner, actor, lifecycleUid));
+    await jsm.consumers.add(dlvStream(this.identity.space), dlvDurableConfig(this.identity.space, owner, actor, lifecycleUid));
   }
 
   /**
@@ -128,6 +126,6 @@ export class EndpointProvisioning {
    */
   async provisionTaskQueue(role: string): Promise<void> {
     const jsm = await this.manager();
-    await jsm.consumers.add(taskStream(this.space), taskDurableConfig(this.space, role));
+    await jsm.consumers.add(taskStream(this.identity.space), taskDurableConfig(this.identity.space, role));
   }
 }

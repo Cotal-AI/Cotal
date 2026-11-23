@@ -48,11 +48,12 @@ import { createConnection } from "node:net";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
+import { createInterface } from "node:readline";
 import { renderDetachedSummary } from "../../implementations/cli/src/lib/up-report.js";
 import { shellWord } from "../../implementations/cli/src/lib/endpoint-errors.js";
 import { clean, cotalPty } from "../../implementations/cli/smoke/_console-pty.js";
 import { assertSmokeSandboxDown, freePort, killAndAwaitExit, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
-import { canonicalLocalProcessPath, deliveryCredsKey, DELIVERY_PIDFILE, displayWidth, MANAGER_DELIVERY_AWARE_MARKER, MANAGER_LOGFILE, MANAGER_PIDFILE, MANAGER_SPARE_CAPABILITY, resolveOnPath, workspaceSecretStore } from "@cotal-ai/workspace";
+import { canonicalLocalProcessPath, deliveryCredsKey, DELIVERY_PIDFILE, displayWidth, MANAGER_DELIVERY_AWARE_MARKER, MANAGER_LOGFILE, MANAGER_PIDFILE, MANAGER_SPARE_CAPABILITY, readMaintenanceLockHolder, resolveOnPath, workspaceSecretStore } from "@cotal-ai/workspace";
 
 // Ephemeral OS-assigned port: no fixed-port collision across back-to-back / concurrent runs.
 const PORT = await freePort();
@@ -96,6 +97,37 @@ const cliInEnv = (cwd: string, extraEnv: NodeJS.ProcessEnv, ...args: string[]) =
   return spawnSync(TSX, [CLI, ...args], options);
 };
 const cli = (...args: string[]) => cliIn(root, ...args);
+type AcpReply = { id: number; result?: { authMethods?: unknown[]; stopReason?: string }; error?: { code: number; message: string } };
+async function withAcp<T>(cwd: string, test: (rpc: (method: string, params: object) => Promise<AcpReply>) => Promise<T>, server?: string): Promise<T> {
+  const child = spawnProc(process.execPath, ["--import", join(WT, "implementations/acp/dist/index.js"), join(WT, "bin/dist/cotal.js"), "acp", "--space", basename(cwd), ...(server ? ["--server", server] : [])],
+    { cwd, env, stdio: ["pipe", "pipe", "inherit"] });
+  const closed = new Promise((done) => child.once("close", done));
+  const lines = createInterface({ input: child.stdout })[Symbol.asyncIterator]();
+  const deadline = setTimeout(() => child.kill("SIGKILL"), 60_000);
+  let id = 0;
+  try {
+    return await test(async (method, params) => {
+      const requestId = ++id;
+      child.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: requestId, method, params }) + "\n");
+      for (let line = await lines.next(); !line.done; line = await lines.next()) {
+        const reply = JSON.parse(line.value) as AcpReply;
+        if (reply.id === requestId) return reply;
+      }
+      throw new Error(`ACP closed before answering ${method}`);
+    });
+  } finally {
+    child.stdin.end();
+    await closed;
+    clearTimeout(deadline);
+  }
+}
+function acpOnOpenSpace(server?: string) {
+  return withAcp(openRoot, async (rpc) => {
+    const init = await rpc("initialize", { protocolVersion: 1, clientCapabilities: { auth: { terminal: true } } });
+    const opened = await rpc("session/new", { cwd: openRoot, mcpServers: [] });
+    return { init: init.result, refusal: opened.error };
+  }, server);
+}
 const plain = (text: string) => text.replace(/\x1b\[[0-9;]*m/g, "");
 /** The rows of a report's last Next section, each as its command and description. */
 const nextRows = (stdout: string) => {
@@ -420,7 +452,7 @@ try {
   const otherUp = cliIn(other, "up", "--detach", "--server", SERVER);
   if (otherUp.status === 0) cliIn(other, "down", "--yes");
   ok("another folder's up at this stopped space's address refuses CONFLICT, exit 2, naming this one, and writes nothing",
-    otherUp.status === 2 && /Code:\s+CONFLICT/.test(plain(otherUp.stderr)) && plain(otherUp.stderr).includes(`${SERVER} is the broker address of "${SPACE}", registered for ${realpathSync(root)} and stopped`) && !existsSync(join(other, ".cotal")), otherUp.stdout + otherUp.stderr);
+    otherUp.status === 2 && /Code:\s+CONFLICT/.test(plain(otherUp.stderr)) && plain(otherUp.stderr).includes(`${SERVER} is the broker address of "${SPACE}", registered for ${realpathSync(root)}; nothing was started`) && !existsSync(join(other, ".cotal")), otherUp.stdout + otherUp.stderr);
   // A manifest names its broker in `broker.servers`, and that address is held by the same rule, so
   // `up -f` is refused there too and its next step names the field to change.
   const manifestRoot = mkdtempSync(join(tmpdir(), "cotal-upstack-manifest-"));
@@ -429,15 +461,23 @@ try {
   if (manifestUp.status === 0) cliIn(manifestRoot, "down", "--yes");
   ok("an up -f whose broker.servers is this stopped space's address refuses CONFLICT, exit 2, naming this one and broker.servers, and writes nothing",
     manifestUp.status === 2 && /Code:\s+CONFLICT/.test(plain(manifestUp.stderr)) &&
-      plain(manifestUp.stderr).includes(`${SERVER} is the broker address of "${SPACE}", registered for ${realpathSync(root)} and stopped`) &&
+      plain(manifestUp.stderr).includes(`${SERVER} is the broker address of "${SPACE}", registered for ${realpathSync(root)}; nothing was started`) &&
       plain(manifestUp.stderr).includes("point broker.servers in cotal.yaml at another address") &&
-      plain(manifestUp.stderr).includes(`cotal space forget ${SPACE}`) && !existsSync(join(manifestRoot, ".cotal")), manifestUp.stdout + manifestUp.stderr);
-  rmSync(manifestRoot, { recursive: true, force: true });
+      plain(manifestUp.stderr).includes(`cotal status --space ${SPACE}`) && !existsSync(join(manifestRoot, ".cotal")), manifestUp.stdout + manifestUp.stderr);
   const restart = cli("up", "--detach", "--server", SERVER);
   if (existsSync(join(root, ".cotal", "nats.pid"))) pids.push(pidOf("nats.pid"));
   ok("a bare up starts it again on the retained launcher, with no stack journal",
     restart.status === 0 && /^✓ running in the background: nats-server \(pid \d+\), delivery daemon, manager - stop with: `(?:pnpm )?cotal down`$/m.test(plain(restart.stdout)) && !existsSync(join(root, ".cotal", "stack-controller.json")),
     restart.stdout + restart.stderr);
+  const previewAt = (server: string) => cliIn(manifestRoot, "up", "-f", "cotal.yaml", "--server", server, "--dry-run");
+  const refusedPreview = previewAt(SERVER), advice = plain(refusedPreview.stderr);
+  ok("a manifest preview at the running stack's address names its registration and keeps the retry read-only",
+    refusedPreview.status === 2 && advice.includes(`registered for ${realpathSync(root)}; nothing was started`)
+      && advice.includes("choose another address for --server and repeat the same --dry-run") && !advice.includes("space forget"), advice);
+  const freeServer = `nats://127.0.0.1:${await freePort()}`, retriedPreview = previewAt(freeServer);
+  ok("repeating the preview at another address plans the stack without starting it",
+    retriedPreview.status === 0 && retriedPreview.stdout.includes(freeServer) && !existsSync(join(manifestRoot, ".cotal")), retriedPreview.stdout + retriedPreview.stderr);
+  rmSync(manifestRoot, { recursive: true, force: true });
   // A read of a registration whose address this running stack serves is refused by the holder's
   // name, and the record stays: deleting it would leave its folder naming no space at all, and the
   // address is held rather than reused.
@@ -485,6 +525,15 @@ try {
   const openBrokerOnly = openRefresh("--no-manager");
   ok("a --no-manager open refresh stays broker-only and exits 0",
     openBrokerOnly.status === 0 && !existsSync(openRecord(MANAGER_PIDFILE)) && !/restored in the background/.test(openBrokerOnly.stdout), plain(openBrokerOnly.stdout + openBrokerOnly.stderr));
+  const acpOpen = await acpOnOpenSpace();
+  ok("ACP offers no terminal sign-in on an open space", acpOpen.init?.authMethods?.length === 0, acpOpen);
+  ok("ACP names the reachable space and how to add its manager", acpOpen.refusal?.code === -32603 &&
+    acpOpen.refusal.message.includes(`The broker for ${basename(openRoot)} is reachable, but no manager is registered.`) &&
+    acpOpen.refusal.message.includes(`bare \`cotal up\` in ${realpathSync(openRoot)}`), acpOpen);
+  const override = `nats://127.0.0.1:${await freePort()}`;
+  const acpOverride = await acpOnOpenSpace(override);
+  ok("ACP dials the explicit broker instead of the recorded one", acpOverride.refusal?.message.includes(`nothing answered at ${override}`) === true &&
+    acpOverride.refusal.message.includes(`recorded broker at ${openServer}`), acpOverride);
   if (process.platform === "linux") {
     // Only the Node libc evidence is simulated. The built CLI and broker are real.
     const preload = join(fakeBin, "libc.cjs");
@@ -864,7 +913,10 @@ process.report.getReport = () => {
     "lifecycleUid:process.env.COTAL_LIFECYCLE_UID||undefined,channels:[],consume:false,",
     "registerPresence:true,watchPresence:false,",
     "card:{id:process.env.COTAL_ID||undefined,name:process.env.COTAL_NAME,kind:'agent'}});",
-    "ep.on('error',()=>{});await ep.start();setInterval(()=>{},1000);});",
+    "ep.on('error',()=>{});await ep.start();",
+    "process.stdin.on('data',data=>{fs.appendFileSync(process.env.PIDFILE+'.input',data);",
+    "void ep.setStatus('working').then(()=>setTimeout(()=>void ep.setStatus('idle'),500));});",
+    "setInterval(()=>{},1000);});",
   ].join(""));
   writeFileSync(join(fgBin, "claude"), "#!/usr/bin/env node\nrequire(process.env.SHIM_BODY);\n");
   chmodSync(join(fgBin, "claude"), 0o755);
@@ -912,6 +964,16 @@ process.report.getReport = () => {
     ok("the seat is a live OS process", fgSeatPid !== undefined && alive(fgSeatPid), fgSeatPid);
     const fgPs = cliInEnv(fgRoot, fgEnv, "ps");
     ok("cotal ps lists the managed seat", /bard/.test(plain(fgPs.stdout)), fgPs.stdout + fgPs.stderr);
+    const prose = "/despawn is an example, please explain the syntax";
+    const proseReply = await withAcp(fgRoot, async (rpc) => {
+      await rpc("initialize", { protocolVersion: 1 });
+      const load = await rpc("session/load", { sessionId: "bard", cwd: fgRoot, mcpServers: [] });
+      ok("ACP loads the running seat", load.result !== undefined, load);
+      return rpc("session/prompt", { sessionId: "bard", prompt: [{ type: "text", text: prose }] });
+    });
+    const inputFile = `${fgSeatPidFile}.input`;
+    ok("ACP forwards prose beginning with /despawn without stopping the seat", proseReply.result?.stopReason === "end_turn" &&
+      alive(fgSeatPid!) && existsSync(inputFile) && readFileSync(inputFile, "utf8").includes(prose), proseReply);
 
     // Ctrl-C. Bounded wait: the handler must finish its awaited teardown and end the process.
     fgUp.kill("SIGINT");
@@ -961,12 +1023,16 @@ process.report.getReport = () => {
     rgUp.stdout?.on("data", (b: Buffer) => void (rgOutText += b.toString()));
     rgUp.stderr?.on("data", (b: Buffer) => void (rgOutText += b.toString()));
     const rgRecord = (template: string) => canonicalLocalProcessPath(template, { root: rgRoot, space: basename(rgRoot) });
-    let rgManagerUp = false;
-    for (let i = 0; i < 60 && !rgManagerUp; i++) {
-      await sleep(1000);
-      try { rgManagerUp = /✓ manager up/.test(readFileSync(rgRecord(MANAGER_LOGFILE), "utf8")); } catch { /* not yet */ }
-    }
-    ok("refusal rig: foreground up reached manager up", rgManagerUp);
+    // Foreground startup reads the spare capability before releasing its maintenance lock.
+    const rgStartupFinished = () => {
+      try {
+        return /✓ manager up/.test(readFileSync(rgRecord(MANAGER_LOGFILE), "utf8")) &&
+          readMaintenanceLockHolder(rgRoot)?.operation !== "foreground up";
+      } catch { return false; }
+    };
+    const rgStartupDeadline = Date.now() + 60_000;
+    while (!rgStartupFinished() && Date.now() < rgStartupDeadline) await sleep(200);
+    ok("refusal rig: foreground up finished starting", rgStartupFinished(), plain(rgOutText));
     const rgManagerPid = Number(readFileSync(rgRecord(MANAGER_PIDFILE), "utf8").trim());
     // The shape under test: a pinned manager whose spare capability is NOT proven.
     rmSync(rgRecord(MANAGER_SPARE_CAPABILITY), { force: true });
@@ -983,7 +1049,8 @@ process.report.getReport = () => {
       { manager: rgManagerPid, managerAlive: alive(rgManagerPid), upAlive: rgUp ? alive(rgUp.pid ?? 0) : false });
     ok("no spared report is printed on the refusal path", !/left \d+ managed agent/.test(plain(rgOutText)), rgOutText);
     // The operator's route ends the run: down --with-agents, then up exits via the broker-exit path.
-    cliInEnv(rgRoot, rgEnv, "down", "--with-agents", "--yes");
+    const rgDown = cliInEnv(rgRoot, rgEnv, "down", "--with-agents", "--yes");
+    ok("the operator's cotal down --with-agents exits 0", rgDown.status === 0, plain(rgDown.stdout + rgDown.stderr));
     const rgExited = await new Promise<boolean>((res) => {
       const timer = setTimeout(() => res(false), 45_000);
       rgUp?.once("exit", () => { clearTimeout(timer); res(true); });
@@ -1037,7 +1104,7 @@ process.report.getReport = () => {
     const noAppPs = plain(cliInEnv(recRoot, noAppEnv, "ps", "--plain").stdout);
     const noAppPsNext = noAppPs.split("\nNext\n")[1] ?? "";
     ok("with seeded connectors and no agent binary on PATH, empty ps recommends setup instead of spawn",
-      /setup\s+Set up an agent application/.test(noAppPsNext) && !/\bspawn\s+Launch your default agent/.test(noAppPsNext), noAppPs);
+      /setup --help\s+See setup flags for scripts/.test(noAppPsNext) && !/\bspawn\s+Launch your default agent/.test(noAppPsNext), noAppPs);
 
     for (const badArgs of [["status", "nosuch", "--json", "--plain"], ["status", "nosuch", "--wide", "--json"], ["status", "nosuch", "--verbose", "--json"]]) {
       const bad = cliIn(recRoot, ...badArgs);

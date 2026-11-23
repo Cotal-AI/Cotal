@@ -53,13 +53,15 @@ import {
   setupSpaceStreams,
   type CotalMessage,
   type Delivery,
+  type Identity,
+  type ProvisionOpts,
 } from "@cotal-ai/core";
 import { killAndAwaitExit, SMOKE_BROKER_TOKEN, teardownOnSignal, teardownPathOnSignal } from "@cotal-ai/smoke-kit";
 import { authDir, recordMesh, saveSpaceAuth, setCurrent } from "@cotal-ai/workspace";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-const EXPECTED = 113;
+const EXPECTED = 116;
 let pass = 0;
 let fail = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
@@ -111,6 +113,7 @@ const isolatedEnv: NodeJS.ProcessEnv = {
   COTAL_HOME: join(home, ".cotal"),
   XDG_CONFIG_HOME: xdg,
   COTAL_SKIP_CONNECTOR_SEED: "1",
+  DO_NOT_TRACK: "1",
   NO_COLOR: "1",
 };
 
@@ -128,7 +131,27 @@ const run = (
     );
   });
 
-let provisioner: CotalEndpoint | undefined;
+const mintProvisionerCreds = () => mintCreds(auth, newIdentity(), "provisioner");
+
+// Keep a one-shot credential only for the operation that needs it, not the duration of the suite.
+async function provisionPeer(identity: Identity, opts: ProvisionOpts): Promise<string> {
+  const endpoint = new CotalEndpoint({
+    space,
+    servers,
+    creds: await mintProvisionerCreds(),
+    card: { name: "send-provisioner", kind: "endpoint" },
+    consume: false,
+    watchPresence: false,
+    registerPresence: false,
+  });
+  try {
+    await endpoint.start();
+    return await provisionAgent(endpoint, auth, identity, opts);
+  } finally {
+    await endpoint.stop();
+  }
+}
+
 let bob: CotalEndpoint | undefined;
 let carol: CotalEndpoint | undefined;
 let dave: CotalEndpoint | undefined;
@@ -154,7 +177,7 @@ try {
   }
   check("the owned broker is ready before any endpoint connects", ready, servers);
 
-  const provisionerCreds = await mintCreds(auth, newIdentity(), "provisioner");
+  const provisionerCreds = await mintProvisionerCreds();
   await setupSpaceStreams({ servers, space, creds: provisionerCreds });
   await seedChannelRegistry({ servers, space, creds: provisionerCreds, file: { channels: { general: {} } } });
   saveSpaceAuth(authDir(meshRoot), auth);
@@ -168,20 +191,22 @@ try {
     if (priorCotalHome === undefined) delete process.env.COTAL_HOME;
     else process.env.COTAL_HOME = priorCotalHome;
   }
-  provisioner = new CotalEndpoint({
-    space,
-    servers,
-    creds: provisionerCreds,
-    card: { name: "send-provisioner", kind: "endpoint" },
-    consume: false,
-    watchPresence: false,
-    registerPresence: false,
-  });
-  await provisioner.start();
-
+  const help = await run(["send", "-c", "general", "--help"]);
+  check("ASCII --help prints send help", help.code === 0 && help.stdout.startsWith("cotal send\n") && help.stderr === "", help);
+  const pasted = "\u2014help";
+  const pastedHelp = await run(["send", "-c", "general", pasted]);
+  const emptyHistory = await run(["history", "general", "--json"]);
+  check("pasted help is refused without publishing", pastedHelp.code === 1 && pastedHelp.stdout === ""
+    && pastedHelp.stderr.includes("type the option with hyphens: --help") && emptyHistory.code === 0
+    && JSON.parse(emptyHistory.stdout).result.items.length === 0, { pastedHelp, emptyHistory });
+  const literal = await run(["send", "-c", "general", "--", pasted]);
+  const literalHistory = await run(["history", "general", "--json"]);
+  check("pasted help after -- is the only message in history", literal.code === 0 && literalHistory.code === 0
+    && JSON.stringify(JSON.parse(literalHistory.stdout).result.items.map(({ text }: { text: string }) => text)) === JSON.stringify([pasted]),
+  { literal, literalHistory });
   const bobIdentity = newIdentity();
   const bobUid = mintLifecycleUid();
-  const bobCreds = await provisionAgent(provisioner, auth, bobIdentity, {
+  const bobCreds = await provisionPeer(bobIdentity, {
     lifecycleUid: bobUid,
     role: "reviewer",
     subscribe: ["general"],
@@ -472,11 +497,10 @@ try {
 
   // Two participants sharing a name used to be listed by id alone, with nothing saying which is which.
   // Names match without regard to case, so "twin" and "Twin" are one name and each label shows its own.
-  const twinProvisioner = provisioner;
   const twins = await Promise.all([{ name: "twin", kind: "agent" as const }, { name: "Twin", kind: "endpoint" as const, meta: { sessionKind: "chat" } }].map(async (card) => {
     const identity = newIdentity();
     const lifecycleUid = mintLifecycleUid();
-    const creds = await provisionAgent(twinProvisioner, auth, identity, { lifecycleUid, subscribe: [], allowSubscribe: [] });
+    const creds = await provisionPeer(identity, { lifecycleUid, subscribe: [], allowSubscribe: [] });
     const ep = new CotalEndpoint({ space, servers, creds, lifecycleUid, card: { id: identity.id, ...card }, channels: [], heartbeatMs: 500, ttlMs: 10_000 });
     ep.on("error", () => {});
     await ep.start();
@@ -594,7 +618,7 @@ try {
   // read below, and that read must never list it.
   const carolIdentity = newIdentity();
   const carolUid = mintLifecycleUid();
-  const carolCreds = await provisionAgent(provisioner, auth, carolIdentity, {
+  const carolCreds = await provisionPeer(carolIdentity, {
     lifecycleUid: carolUid,
     role: "reviewer",
     subscribe: [],
@@ -625,7 +649,7 @@ try {
   // CLI launch inside whatever window it depends on.
   const daveIdentity = newIdentity();
   const daveUid = mintLifecycleUid();
-  const daveCreds = await provisionAgent(provisioner, auth, daveIdentity, {
+  const daveCreds = await provisionPeer(daveIdentity, {
     lifecycleUid: daveUid,
     role: "holder",
     subscribe: [],
@@ -724,7 +748,7 @@ try {
   // forges dave's card.
   const witnessIdentity = newIdentity();
   const witnessUid = mintLifecycleUid();
-  const witnessCreds = await provisionAgent(provisioner, auth, witnessIdentity, {
+  const witnessCreds = await provisionPeer(witnessIdentity, {
     lifecycleUid: witnessUid,
     role: "witness",
     subscribe: [],
@@ -787,6 +811,7 @@ try {
   check("`deliver pending` on an absent name exits non-zero", pendingMissing.code !== 0, pendingMissing.code);
   check("`deliver pending` on an absent name says not-found", /not-found/i.test(pendingMissing.stderr), pendingMissing.stderr);
 
+  writeFileSync(explicitCreds, await mintCreds(auth, explicitIdentity, "operator"), { mode: 0o600 });
   const pendingWrongCreds = await run(["deliver", "pending", "bob", "--creds", explicitCreds, "--space", space, "--server", servers]);
   check(
     "`deliver pending bob` with an operator (non-admin) credential is refused, never falls back",
@@ -850,7 +875,7 @@ try {
   await dropStream(taskStream(space));
   const roleGone = await run(["send", "-r", "planner", "role-gone", "--json"]);
   check("a role send refuses TARGET_UNAVAILABLE when the task stream is gone", refusedGone(roleGone), roleGone);
-  await setupSpaceStreams({ servers, space, creds: provisionerCreds });
+  await setupSpaceStreams({ servers, space, creds: await mintProvisionerCreds() });
   const restored = await run(["send", "-c", "general", `restored-${randomUUID().slice(0, 6)}`]);
   check("a channel send is stored again after the chat stream is created", stored(restored), restored);
 } finally {
@@ -858,7 +883,6 @@ try {
   await carol?.stop().catch(() => {});
   await dave?.stop().catch(() => {});
   await witness?.stop().catch(() => {});
-  await provisioner?.stop().catch(() => {});
   await killAndAwaitExit(broker);
   check("the owned broker exits before its JetStream tree is removed", broker.exitCode !== null || broker.signalCode !== null);
   rmSync(storeDir, { recursive: true, force: true });

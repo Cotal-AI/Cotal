@@ -114,6 +114,19 @@ const doc = (r: { stdout: string }): { outcome?: string; warnings?: { code: stri
 try {
   const created = cli("space", "create", "crash");
   check("space create prepares the space", created.status === 0, created.out);
+  const missing = cli("endpoint", "--space", "missing-space", "--json");
+  const missingDoc = JSON.parse(missing.stdout);
+  check("saved inventory names the unknown space in JSON and gives a retry without starting it",
+    missing.status === 2 && missing.out === missing.stdout && missingDoc.error.code === "TARGET_NOT_FOUND" && missingDoc.target.requested === "missing-space"
+    && missingDoc.error.message.includes("missing-space") && missingDoc.error.remedy.includes("`cotal space`")
+    && missingDoc.error.remedy.includes("`cotal endpoint --space <name> --json`"), missing.out);
+  const missingPlain = cli("endpoint", "--space", "missing-space", "--plain");
+  check("the plain saved inventory refusal names the space and keeps plain output in its retry", missingPlain.status === 2
+    && missingPlain.stdout === "" && missingPlain.out.includes("missing-space") && missingPlain.out.includes("`cotal endpoint --space <name> --plain`"), missingPlain.out);
+  const offline = cli("endpoint", "--space", "crash", "--json");
+  const savedInventory = JSON.parse(offline.stdout);
+  check("the prepared space's saved inventory is readable without live registration reads", offline.status === 0
+    && savedInventory.target.space === "crash" && savedInventory.result.liveCompleteness === "not-checked", offline.out);
   const agents = join(root, ".cotal", "agents");
   const agentsMode = statSync(agents).mode & 0o777;
   chmodSync(agents, agentsMode & ~0o200);
@@ -137,8 +150,9 @@ try {
   // A `--server` address nothing answers at says nothing about whether this stack runs, so status
   // offers no restart and names that address, as the refusal of other commands does.
   const closed = `nats://127.0.0.1:${await freePort()}`;
+  const remedy = `check that address, or drop --server and retry with \`--space crash\` to reach its recorded broker at nats://127.0.0.1:${PORT}`;
   const elsewhere = cli("status", "--server", closed, "--json");
-  const named = `nothing answered at ${closed}, the broker address --server named; check that address, or drop --server to reach "crash" at nats://127.0.0.1:${PORT}, where it is recorded`;
+  const named = `nothing answered at ${closed}, the broker address --server named; ${remedy}`;
   check("with the stack running, status --server at an address nothing answers at names it and the recorded broker",
     elsewhere.status === 0 && (JSON.parse(elsewhere.stdout).result?.hints as string[] | undefined)?.includes(named) === true, elsewhere.out);
   const elsewhereText = cli("status", "--server", closed);
@@ -148,10 +162,14 @@ try {
   writeFileSync(referenceFile, JSON.stringify({ schemaVersion: 1, space: "crash", endpoint: "manager" }));
   const saved = cli("endpoint", "add", "saved-manager", "--file", referenceFile);
   check("the local manager reference is saved", saved.status === 0, saved.out);
+  const otherRoot = join(base, "other-selection");
+  mkdirSync(otherRoot, { mode: 0o700 });
+  const added = cli("space", "add", "other-selection", "--mode", "open", "--root", otherRoot, "--server", `nats://127.0.0.1:${await freePort()}`, "--force", "--yes");
+  const picked = cli("use", "other-selection");
+  check("a different registered space is selected", added.status === 0 && picked.status === 0, { added, picked });
   const inventory = cli("endpoint", "list", "--live", "--server", closed, "--plain");
   const [unavailable, inventoryNext] = inventory.stdout.split("\nNext\n");
   const diagnostic = `nothing answered at ${closed}, the broker address --server named`;
-  const remedy = `check that address, or drop --server to reach "crash" at nats://127.0.0.1:${PORT}, where it is recorded`;
   check("live endpoint inventory keeps saved references and names the failed override and its remedy",
     inventory.status === 4 && unavailable?.includes("Native registration reads: partial") && unavailable.includes("saved-manager")
     && unavailable.includes(diagnostic) && inventoryNext?.trim() === remedy, inventory.out);
@@ -162,10 +180,17 @@ try {
     && inventoryDoc.result.items.some((item: { name: string }) => item.name === "saved-manager")
     && inventoryDoc.result.live === null && inventoryDoc.result.liveUnavailable?.code === "TARGET_UNAVAILABLE"
     && inventoryDoc.result.liveUnavailable?.message === diagnostic && inventoryDoc.error?.remedy === remedy, partialInventory.out);
-  const retried = cli("endpoint", "list", "--live", "--plain");
-  check("dropping --server gives a complete live inventory with the native manager registration",
-    retried.status === 0 && retried.stdout.includes("Native registration reads: complete")
+  const unpinned = cli("endpoint", "list", "--live", "--plain");
+  check("dropping --server alone would read the other selection", unpinned.status === 4 && unpinned.stdout.includes("Mesh: other-selection\n"), unpinned.out);
+  const pin = /`(--space [^`]+)`/.exec(inventoryNext ?? "")?.[1];
+  const retried = cli("endpoint", "list", "--live", ...(pin?.split(" ") ?? []), "--plain");
+  check("following the printed space pin gives a complete live inventory with the native manager registration",
+    retried.status === 0 && retried.stdout.includes("Mesh: crash\n") && retried.stdout.includes("Native registration reads: complete")
     && /^  manager\s+/m.test(retried.stdout.split("\nNative registrations\n")[1] ?? ""), retried.out);
+  const clearedSelection = cli("use", "--clear");
+  check("the competing selection is cleared", clearedSelection.status === 0, clearedSelection.out);
+  const removed = cli("space", "forget", "other-selection");
+  check("the competing registration is removed", removed.status === 0, removed.out);
 
   const pid = managerPid();
   check("status names the running manager's PID", pid !== undefined && alive(pid), pid);

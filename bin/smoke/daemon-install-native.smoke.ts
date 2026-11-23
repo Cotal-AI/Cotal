@@ -54,13 +54,11 @@ import { renderScheduledTask, scheduledTaskName, scheduledTaskService, windowsAr
 
 import { recoverPausedTask } from "../daemon/restart-recovery.js";
 import { daemonCommandCopy } from "../daemon/guidance.js";
+import { createSuite } from "@cotal-ai/smoke-kit";
 
 for (const key of Object.keys(process.env)) if (key.startsWith("COTAL_")) delete process.env[key];
 
-let pass = 0, fail = 0;
-const check = (name: string, cond: boolean, extra?: unknown) => {
-  if (cond) { pass++; console.log(`  ✓ ${name}`); } else { fail++; console.log(`  ✗ FAIL: ${name}`, extra ?? ""); }
-};
+const { check, finish, passed, failed } = createSuite();
 for (const scenario of ["old", "absent", "ambiguous", "changed", "pending"] as const) {
   let enables = 0;
   let absent = 0;
@@ -372,7 +370,7 @@ try {
     check("built task entry passes preflight", code(() => assertScheduledEntry(nativeEntry)) === "none");
     const refused = spawnSync(process.execPath, [nativeEntry, "daemon", "serve", "--daemon-home", nativeHome, "--json"], {
       cwd: root, encoding: "utf8", timeout: 20_000,
-      env: { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))), XDG_RUNTIME_DIR: root, COTAL_HOME: join(root, "cotal-home"), COTAL_IDP_TIMEOUT_MS: "0", COTAL_SKIP_CONNECTOR_SEED: "1" },
+      env: { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))), XDG_RUNTIME_DIR: root, COTAL_HOME: join(root, "cotal-home"), COTAL_IDP_TIMEOUT_MS: "0", COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1" },
     });
     const log = join(nativeHome, "daemon.log");
     const refusalLog = existsSync(log) ? readFileSync(log, "utf8") : "";
@@ -1008,5 +1006,6 @@ function splitWindows(line: string): string[] {
   return out;
 }
 
-console.log(`\ndaemon-install-native smoke: ${pass} passed, ${fail} failed`);
-process.exit(fail ? 1 : 0);
+console.log(`\ndaemon-install-native smoke: ${passed()} passed, ${failed()} failed`);
+finish();
+process.exit(failed() ? 1 : 0);

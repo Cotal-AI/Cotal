@@ -9,7 +9,7 @@ import { homedir } from "node:os";
 import { basename, isAbsolute, join, relative, sep } from "node:path";
 import { isReachable, registry, writeSecretFileCreateOnly } from "@cotal-ai/core";
 import {
-  CommandFailure, assertRecordIdentity, assertSingleSpaceBroker, authDir, canonicalRoot, decodeLocalJson,
+  CommandFailure, assertRecordIdentity, assertSingleSpaceBroker, authDir, canonicalRoot, codeSpan, decodeLocalJson,
   findMesh, findPreparedSpace, listSpaceAccounts, loadMeshes, localMeshesForRoot, localProcessPath, oneLine,
   localRecordAccess, NATS_PIDFILE, parsePid, readBrokerPolicy, readLocalRecordSource, readMaintenanceJournal, readPidfile,
   controllerAttemptBroker, cutController, maintenanceAdmitsStackWork, serviceAdapterAttempt,
@@ -34,6 +34,15 @@ const refuse = (code: "CONFLICT" | "LIFECYCLE_BLOCKED" | "UNSUPPORTED" | "TARGET
 };
 
 const LISTENER_PROBE_TIMEOUT_MS = 5000;
+
+/** A single broker URL with a lower-case scheme and no bare trailing slash. Leave other inputs as written. */
+export function canonicalServer(server: string): string {
+  let url: URL;
+  try { url = new URL(server); } catch { return server; }
+  if ((url.protocol !== "nats:" && url.protocol !== "tls:") || url.username || url.password || url.search || url.hash || (url.pathname !== "" && url.pathname !== "/") || server.includes(",")) return server;
+  return `${url.protocol}//${url.host}`;
+}
+
 const portsDirectory = (context: ServiceAdapterContext) => join(context.stateDirectory, `.broker-ports-${context.launchRequestId}`);
 const launchReceipt = (context: Pick<ServiceAdapterContext, "stateDirectory" | "launchRequestId">) => join(context.stateDirectory, `.broker-launch-${context.launchRequestId}.json`);
 
@@ -182,7 +191,7 @@ function tableAddress(hex: string): { address: string; family: "ipv4" | "ipv6" }
  *  it names another process. Only sockets on the host's own addresses or a wildcard can hold a
  *  specific host, so a connection elsewhere on the machine that shares the port number is not
  *  counted; any local address can hold a wildcard host. */
-export async function addressHolder(what: string, host: string, port: number): Promise<{ says: string; frees: string }> {
+export async function addressHolder(what: string, host: string, port: number): Promise<{ says: string; frees: string; timeWait?: true }> {
   const bare = host.startsWith("[") ? host.slice(1, -1) : host;
   const holding = new BlockList();
   holding.addAddress("0.0.0.0", "ipv4");
@@ -207,8 +216,24 @@ export async function addressHolder(what: string, host: string, port: number): P
   // 0A is LISTEN and 06 is TIME_WAIT in the kernel's table.
   if (!states.length || states.includes("0A")) return { says: `another process holds ${address}`, frees: `stop the process listening on ${host}:${port}` };
   return states.every((state) => state === "06")
-    ? { says: `nothing listens at ${address}, but a closed connection in TIME-WAIT still holds its port`, frees: "wait up to a minute for the TIME-WAIT to clear" }
+    ? { says: `nothing listens at ${address}, but a closed connection in TIME-WAIT still holds its port`, frees: "wait up to a minute for the TIME-WAIT to clear", timeWait: true }
     : { says: `nothing listens at ${address}, but an open connection's local end holds its port`, frees: `close the connection that holds ${host}:${port}` };
+}
+
+/** An occupied legacy broker bind and the two ways to start without that conflict. */
+export async function brokerAddressConflict(server: string, command: string, bindHost?: string): Promise<{ message: string; remedy: string } | undefined> {
+  const error = await listenerBindError(server, bindHost);
+  if (error === undefined || error === "timeout" || error.code !== "EADDRINUSE") return undefined;
+  const { host, port } = brokerListenAddress(server), address = new URL(server);
+  const { says, frees } = await addressHolder("the broker address", bindHost ?? host, port);
+  return { message: says, remedy: `start it at another address with ${codeSpan(`${command} --server ${address.protocol}//${address.hostname}:<port>`)}, or ${frees} and run ${codeSpan(command)} again` };
+}
+
+/** Bare legacy up binds on loopback. A NATS listener can send that start down its reuse or port-selection path. */
+export async function legacyRestartAddressProblem(server: string | undefined, command: string): ReturnType<typeof brokerAddressConflict> {
+  if (server === undefined || brokerServerProblem(server) !== undefined) return undefined;
+  const conflict = await brokerAddressConflict(server, command, "127.0.0.1");
+  return conflict && !(await isReachable(server)) ? conflict : undefined;
 }
 
 /** Bind the declared client listener once and release it. nats-server exits on a bind failure with

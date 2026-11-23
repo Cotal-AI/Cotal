@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import type { CompletionResult, FlagSpec, FlagValues, ParsedArgs } from "@cotal-ai/core";
 import {
   CommandFailure,
+  MeshTargetError,
   authDir,
   brokerCheck,
   canonicalRoot,
@@ -14,18 +15,22 @@ import {
   folderSpaceHeld,
   folderSpaceOverSelection,
   getCurrent,
+  isGenuineSpace,
   isMeshRegistryError,
   jsonFlag,
   listSpaceAccounts,
   loadMeshes,
   loadPreparedSpaces,
+  meshesForRoot,
   noteFolderSpace,
   noteFolderSpaceShown,
   plainFlag,
   preparedLifecycle,
   presentationOf,
+  readCurrent,
   readCurrentSelection,
   recordOperationSpaceNote,
+  spaceKey,
   stackElsewhereRemedy,
   stackJournalRoot,
   writeResult,
@@ -43,7 +48,7 @@ import { shellWord } from "../lib/endpoint-errors.js";
 import { registryFailure } from "../lib/registry-errors.js";
 import { displayCmd, displayRemedy } from "../lib/self-exec.js";
 import { checkRoot, SPACE_MODES } from "./meshes-add.js";
-import { ADD_FLAGS, spaceAdd, spaceCreate, spaceForget } from "./space-registration.js";
+import { ADD_FLAGS, spaceAdd, spaceCreate, spaceForget, validateLocalSpaceName } from "./space-registration.js";
 import { spaceDelete } from "./space-delete.js";
 import { spaceExport } from "./space-export.js";
 import { journalRecordedElsewhere, stackRootGone } from "../lib/stack-journal.js";
@@ -137,17 +142,28 @@ export interface SpaceDetail extends Omit<SpaceRow, "catalog"> {
   readonly catalog: (NonNullable<SpaceRow["catalog"]> & { readonly id: string | null; readonly slug: string | null; readonly kind: string | null; readonly role: string | null }) | null;
 }
 
-/** Refuse empty names and directory flags before reading or changing space records. */
+/** Refuse invalid create names and empty names or directory flags before changing space records. */
 export function validateSpaceArguments(args: ParsedArgs): void {
   const values = args.values as FlagValues<typeof spaceFlags>;
   presentationOf(values);
   const [sub, name] = args.positionals;
   if ((sub === "show" || sub === "forget") && name !== undefined && !name.trim())
     throw usage(`space ${sub} takes a nonempty space name`);
+  if (sub === "forget" && name !== undefined) {
+    try { spaceKey(name); } catch {
+      throw new CommandFailure("refused", "USAGE_INVALID", `${JSON.stringify(name)} cannot name a space. Nothing was forgotten.`, {
+        remedy: "list the registered and prepared space names with `cotal space`",
+        selfContained: true,
+      });
+    }
+  }
   if ((sub === "add" || sub === "create") && values.root !== undefined && !values.root.trim())
     throw usage("--root cannot be empty");
-  if (sub === "create" && (args.positionals.length !== 2 || !name?.trim()))
-    throw usage("usage: cotal space create <name> [--root <dir>] [--adopt]");
+  if (sub === "create") {
+    if (args.positionals.length !== 2 || !name?.trim())
+      throw usage("usage: cotal space create <name> [--root <dir>] [--adopt]");
+    validateLocalSpaceName(name);
+  }
 }
 
 /**
@@ -187,6 +203,20 @@ export async function space(args: ParsedArgs): Promise<void> {
   catch (e) { throw isMeshRegistryError(e) ? registryFailure(e) : e; }
 }
 
+function spaceShownAt(cwd: string): string | undefined {
+  if (!isGenuineSpace(cwd)) {
+    const matches = meshesForRoot(cwd);
+    if (matches.length > 1) {
+      const spaces = matches.map((m) => m.space);
+      throw new MeshTargetError("ambiguous-target", `this folder has ${spaces.length} registered spaces: ${spaces.join(", ")}`, {
+        available: matches.map((m) => `${m.space} (${m.root})`), spaces,
+      });
+    }
+    if (matches[0]) return matches[0].space;
+  }
+  return folderSpace(cwd, { refuseAmbiguous: true });
+}
+
 async function read(sub: "show" | undefined, rest: string[], presentation: Presentation): Promise<void> {
   if (sub === "show" && rest.length > 1) throw usage("usage: cotal space show [<name>]");
   const project = canonicalRoot(findCotalRoot(process.cwd()));
@@ -196,31 +226,31 @@ async function read(sub: "show" | undefined, rest: string[], presentation: Prese
     try { moved = journalRecordedElsewhere(project); } catch { /* An unusable journal does not identify a moved project. */ }
   }
   if (sub === undefined) {
-    const current = getCurrent() ?? null;
+    let current: string | null = null;
+    let selectionWarning: OutputWarning | undefined;
+    try { current = readCurrent() ?? null; }
+    catch (e) {
+      if (!isMeshRegistryError(e)) throw e;
+      const { message, remedy } = registryFailure(e);
+      selectionWarning = { code: "MESH_REGISTRY_UNREADABLE", target: { file: e.file }, message: `${message}; ${remedy}` };
+    }
     const items = await Promise.all(loadMeshes().map(async (m) => row(m, current, m.origin === "catalog" ? "not-checked" : await brokerCheck(m.server, m.tlsRequired))));
     const offline = items.filter((m) => m.check !== "reachable" && m.check !== "not-checked").map((m) => m.space);
     const prepared = loadPreparedSpaces().map((p) => preparedRow(p, current, moved?.recordedRoot === p.root && moved.journal.space === p.space ? project : undefined));
     const folder = folderSpaceOverSelection(process.cwd(), current, offline) ?? null;
-    const result: SpacesResult = { kind: "spaces", current, currentRecorded: current === null || items.some((s) => s.current), folder, items, prepared };
-    writeResult(presentation, { command: "space", target: null, result, warnings: selectionWarnings(result) }, (rows) => spacesView(rows, project, moved));
+    const result: SpacesResult = { kind: "spaces", current, currentRecorded: !selectionWarning && (current === null || items.some((s) => s.current)), folder, items, prepared };
+    writeResult(presentation, { command: "space", target: null, result, warnings: selectionWarning ? [selectionWarning] : selectionWarnings(result) }, (rows) => spacesView(rows, project, moved));
     return;
   }
   if (sub === "show") {
-    const current = getCurrent() ?? null;
     // With no name it is about this folder: the space it has registered, or the one it holds
     // prepared or stopped, which `show` names even though every other command here targets the
     // selection. Then the selection.
-    const registered = rest[0] === undefined ? folderSpace(process.cwd()) : undefined;
+    const registered = rest[0] === undefined ? spaceShownAt(process.cwd()) : undefined;
     // A journal without a matching local record does not name a space to show.
     const held = rest[0] === undefined && registered === undefined ? folderSpaceHeld(process.cwd()) : undefined;
     const recorded = held !== undefined && (findMesh(held.space) ?? findPreparedSpace(held.space)) !== undefined ? held : undefined;
     const folder = registered ?? recorded?.space;
-    const explicit = folder !== undefined && current !== null && folder !== current && readCurrentSelection()?.source === "explicit";
-    if (explicit) {
-      recordOperationSpaceNote(folder, `this folder's space; the selected space "${current}" applies here to commands such as \`cotal who\`. Use --space ${shellWord(folder)} or \`cotal use --clear\` to target this folder's space`);
-    } else if (current !== null && recorded !== undefined && recorded.space !== current) {
-      noteFolderSpaceShown(recorded.space, recorded.state, current);
-    }
     let movedSpace: string | undefined;
     if (rest[0] === undefined && folder === undefined && moved !== undefined) {
       const { journal, recordedRoot } = moved;
@@ -229,7 +259,10 @@ async function read(sub: "show" | undefined, rest: string[], presentation: Prese
         ? mesh.origin !== "manual" && mesh.origin !== "catalog" && mesh.root === recordedRoot && mesh.server === journal.server
         : findPreparedSpace(journal.space)?.root === recordedRoot) movedSpace = journal.space;
     }
-    const name = rest[0] ?? folder ?? movedSpace ?? current;
+    const shown = rest[0] ?? folder ?? movedSpace;
+    const current = (shown === undefined ? readCurrent() : getCurrent()) ?? null;
+    const explicit = folder !== undefined && current !== null && folder !== current && readCurrentSelection()?.source === "explicit";
+    const name = shown ?? current;
     if (name === null) {
       if (moved !== undefined) {
         const { journal, recordedRoot } = moved;
@@ -238,6 +271,15 @@ async function read(sub: "show" | undefined, rest: string[], presentation: Prese
       throw new CommandFailure("refused", "TARGET_NOT_FOUND", "no space is selected", { remedy: "name one with `cotal space show <name>`, or select one with `cotal use <name>`" });
     }
     const m = findMesh(name);
+    const unmarked = registered !== undefined && m !== undefined && !isGenuineSpace(m.root);
+    if (unmarked) {
+      const selected = current !== null && current !== name ? `; the selected space "${current}" applies here to commands such as \`cotal who\`` : "";
+      recordOperationSpaceNote(name, `this folder's space${selected}`);
+    } else if (explicit) {
+      recordOperationSpaceNote(folder, `this folder's space; the selected space "${current}" applies here to commands such as \`cotal who\`. Use --space ${shellWord(folder)} or \`cotal use --clear\` to target this folder's space`);
+    } else if (current !== null && recorded !== undefined && recorded.space !== current) {
+      noteFolderSpaceShown(recorded.space, recorded.state, current);
+    }
     if (!m) {
       const p = findPreparedSpace(name);
       // No space has the name, so the refusal is not headed with it.
@@ -249,7 +291,7 @@ async function read(sub: "show" | undefined, rest: string[], presentation: Prese
     }
     const check: Check = m.origin === "catalog" ? "not-checked" : await brokerCheck(m.server, m.tlsRequired);
     // A running registered folder takes precedence over an automatically adopted selection only.
-    if (!explicit && current !== null && registered !== undefined && registered !== current) {
+    if (!unmarked && !explicit && current !== null && registered !== undefined && registered !== current) {
       if (check !== "reachable" && check !== "not-checked") noteFolderSpaceShown(registered, "stopped", current);
       else noteFolderSpace(registered, current);
     }

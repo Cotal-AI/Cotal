@@ -260,9 +260,21 @@ try {
         && shellPath(credsFile).startsWith("'") && shellPath(ownRoot).startsWith("'"), shown(running));
     const stoppedOwn = cli(ownRoot, "down", "--yes", "--json");
     check("down --yes stops the folder's own space and leaves the selection", stoppedOwn.status === 0, shown(stoppedOwn));
+    const beforeConfirm = accountDigest(ownRoot);
+    const outside = folder("outside");
+    const plainConfirm = cli(outside, "auth", "revoke-credential", credsFile, "--space", own, "--plain");
+    const jsonConfirm = cli(outside, "auth", "revoke-credential", credsFile, "--space", own, "--json");
+    const retry = `cotal auth revoke-credential ${shellPath(credsFile)} --space ${own}`;
+    check("confirmation from outside the issuing root keeps the explicit space, quoted path and output format without revoking",
+      plainConfirm.status === 1 && plainConfirm.stderr.replace(/\s+/g, " ").includes(codeSpan(`${retry} --plain --yes`)) &&
+      jsonConfirm.status === 1 && jsonConfirm.env?.error?.code === "USAGE_INVALID" && jsonConfirm.env.error.remedy === `run ${codeSpan(`${retry} --json --yes`)}` &&
+      accountDigest(ownRoot) === beforeConfirm, { plain: shown(plainConfirm), json: shown(jsonConfirm) });
+    const explicit = cli(outside, "auth", "revoke-credential", credsFile, "--space", own, "--plain", "--yes");
+    check("the confirmed retry revokes the credential in the explicitly named issuing space",
+      explicit.status === 0 && explicit.stdout.includes("Credential revoked") && explicit.stdout.includes(ownKey), shown(explicit));
     const revokedOwn = cli(ownRoot, "auth", "revoke-credential", credsFile, "--yes", "--json");
-    check("after down, the revoke in that folder revokes its own space, not the selected one",
-      revokedOwn.status === 0 && revokedOwn.env?.result?.space === own && revokedOwn.env.result.publicKey === ownKey && revokedOwn.env.result.takesEffect === "next-up", shown(revokedOwn));
+    check("after down, the revoke in that folder finds its own space's revocation, not the selected space",
+      revokedOwn.status === 0 && revokedOwn.env?.result?.space === own && revokedOwn.env.result.publicKey === ownKey && revokedOwn.env.result.alreadyRevoked === true, shown(revokedOwn));
     const restartedOwn = cli(ownRoot, "up", "--server", ownServer, "--json");
     check("the folder's own space starts again", restartedOwn.status === 0, shown(restartedOwn));
     const refusedOwn = cli(ownRoot, "who", "--json", "--creds", credsFile, "--space", own, "--server", ownServer);
@@ -282,6 +294,33 @@ try {
   } finally {
     if (anchors.has(ownRoot)) cli(ownRoot, "down", "--yes", "--json");
     if (anchors.has(selectedRoot)) cli(selectedRoot, "down", "--yes", "--json");
+  }
+}
+
+{
+  const name = "revoke-retained", project = folder(name);
+  const broker = `nats://127.0.0.1:${await freePort()}`;
+  const key = "UAQGWOEVJKMIO4WXSYOTLARXYOZTCXFK67JASEH6AFFFYK6FOPSKQCAD";
+  mkdirSync(join(project, ".cotal"), { mode: 0o700 });
+  anchors.set(project, recordSmokeSandbox({ root: project, cotalHome: home, xdgConfigHome: configDir }));
+  try {
+    const started = cli(project, "up", "--no-manager", "--space", name, "--server", broker);
+    check("an unprepared static stack starts", started.status === 0, shown(started));
+    const stopped = cli(project, "down", "--yes");
+    check("the unprepared static stack stops", stopped.status === 0, shown(stopped));
+    const digest = accountDigest(project);
+    const args = ["auth", "revoke-credential", key];
+    const named = cli(project, ...args, "--space", name, "--plain");
+    const retry = `cotal auth revoke-credential ${key} --space ${name} --plain --yes`;
+    check("named offline revocation reaches confirmation without changing the account",
+      named.status === 1 && named.stderr.includes("USAGE_INVALID") && named.stderr.replace(/\s+/g, " ").includes(codeSpan(retry)) && accountDigest(project) === digest, shown(named));
+    const wrong = cli(project, ...args, "--space", "other-space", "--plain");
+    check("a different name does not resolve or recommend starting the broker",
+      wrong.status === 2 && wrong.stderr.includes("TARGET_NOT_FOUND") && !wrong.stderr.includes("cotal up"), shown(wrong));
+    const confirmed = cli(project, ...retry.split(" ").slice(1));
+    check("the printed retry revokes the key offline", confirmed.status === 0 && confirmed.stdout.includes("Credential revoked") && accountDigest(project) !== digest, shown(confirmed));
+  } finally {
+    cli(project, "down", "--yes");
   }
 }
 

@@ -66,15 +66,25 @@ setInterval(() => {}, 60_000);
       ["claude", ["--resume=-foo"], /cannot resume/], ["codex", ["--resume=abc"], /resum/], ["opencode", ["--resume=abc"], /resum/],
       ["pi", ["--resume=--help"], /cannot resume/], ["pi", ["--resume=-v"], /cannot resume/], ["pi", ["--prompt=-bad"], /initial prompt cannot start/],
       ["claude", ["--prompt", "   "], /prompt was given but it is empty/], ["pi", ["--opt", "offline=true"], /launch options.*not implemented/], ["claude", ["--variant", "high"], /model variants/],
+      ["hermes", [], /managed Hermes profile needs a model.*--model.*model:.*COTAL_HERMES_ADOPT_HOME/],
     ];
     for (const [harness, flags, diagnostic] of invalid) {
       for (const preview of [true, false]) {
         const result = cli("spawn", "-H", harness, ...flags, ...(preview ? ["--dry-run", "--json"] : []));
-        check(`${harness} ${flags.join(" ")} ${preview ? "preview" : "foreground"} refuses before credentials or a child`,
+        check(`${[harness, ...flags].join(" ")} ${preview ? "preview" : "foreground"} refuses before credentials or a child`,
           result.status === 1 && diagnostic.test(result.out) && (preview ? /"code":\s*"USAGE_INVALID"/.test(result.stdout) : /^✗ /m.test(result.stderr))
           && !/wrote creds|retired creds|spawning .* on the mesh|OPERATION_UNKNOWN/.test(result.out) && creds() === initialCreds, result.out);
       }
     }
+    const hermesPreview = cli("spawn", "-H", "hermes", "--model", "test-model", "--dry-run");
+    check("direct Hermes preview accepts an explicit model without provisioning", hermesPreview.status === 0
+      && /Model:\s+test-model/.test(hermesPreview.out) && /Connector arguments:\s+checked/.test(hermesPreview.out)
+      && creds() === initialCreds, hermesPreview.out);
+    env.COTAL_HERMES_ADOPT_HOME = home;
+    const adoptPreview = cli("spawn", "-H", "hermes", "--dry-run");
+    delete env.COTAL_HERMES_ADOPT_HOME;
+    check("direct Hermes preview does not require a model for profile adoption", adoptPreview.status === 0
+      && /Connector arguments:\s+checked/.test(adoptPreview.out) && creds() === initialCreds, adoptPreview.out);
     check("invalid pi resumes never reach its argv", !existsSync(piCalls));
     const preview = cli("spawn", "-H", "pi", "--resume", "session-valid", "--dry-run");
     check("valid direct preview checks connector arguments without creating launch artifacts or session state", preview.status === 0

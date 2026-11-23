@@ -1,4 +1,4 @@
-import { clearGoalIndex, clearSpaceHistory, commitGoalResult, DEFAULT_SERVER, deprovisionTargetPrincipal, describeCleanupFailures, DEV_OWNER, EpEnvelopeError, fenceLifecycleAcl, isChannelFamily, isConcreteChannel, managedRetirementOpId, mintCreds, newIdentity, parsePrincipalKey, principalKey, rejectionText, transitionGoal } from "@cotal-ai/core";
+import { assertValidName, clearGoalIndex, clearSpaceHistory, commitGoalResult, DEFAULT_SERVER, deprovisionTargetPrincipal, describeCleanupFailures, DEV_OWNER, EpEnvelopeError, fenceLifecycleAcl, isChannelFamily, isConcreteChannel, managedRetirementOpId, mintCreds, newIdentity, parsePrincipalKey, principalKey, rejectionText, transitionGoal } from "@cotal-ai/core";
 import type { CleanupFailure, ControlReply, Presence } from "@cotal-ai/core";
 import { agentLifecycleSecretFilePaths } from "@cotal-ai/workspace";
 import { controlShutdown } from "./control-shutdown.js";
@@ -7,6 +7,8 @@ import { withTimeout } from "./manager-timeout.js";
 import type { FreeSlotCause, Manager } from "./manager.js";
 import type { TeardownTarget } from "./retirement.js";
 import type { ManagedAgent } from "./seat-types.js";
+import type { ManagerConfig } from "./manager-config.js";
+import type { ManagerParts } from "./manager-parts.js";
 
 /** The stop family of {@link FreeSlotCause}: the causes a manager-initiated stop records. */
 type FreeSlotStopCause = Extract<FreeSlotCause, { kind: string }>;
@@ -71,20 +73,15 @@ export interface SeatStopDeps {
   agents: () => Manager["agents"];
   auth: () => Manager["auth"];
   ep: () => Manager["ep"];
-  execution: () => Manager["execution"];
-  goalWriter: () => Manager["goalWriter"];
   lifecycleInFlight: () => Manager["lifecycleInFlight"];
   setLifecycleInFlight: (value: Manager["lifecycleInFlight"]) => void;
   maintenanceState: () => Manager["maintenanceState"];
   managerInstanceId: () => Manager["managerInstanceId"];
   remoteAuthority: () => Manager["remoteAuthority"];
   retirement: () => Manager["retirement"];
-  servers: () => Manager["servers"];
   serviceServe: () => Manager["serviceServe"];
-  space: () => Manager["space"];
   unverifiedStops: () => Manager["unverifiedStops"];
   setUnverifiedStops: (value: Manager["unverifiedStops"]) => void;
-  workspaceRoot: () => Manager["workspaceRoot"];
   assertGoalWriterEpochCurrent: (...args: Parameters<Manager["assertGoalWriterEpochCurrent"]>) => ReturnType<Manager["assertGoalWriterEpochCurrent"]>;
   authorizeNamed: (...args: Parameters<Manager["authorizeNamed"]>) => ReturnType<Manager["authorizeNamed"]>;
   awaitHandleExit: (...args: Parameters<Manager["awaitHandleExit"]>) => ReturnType<Manager["awaitHandleExit"]>;
@@ -98,6 +95,7 @@ export interface SeatStopDeps {
   managedPrincipal: (...args: Parameters<Manager["managedPrincipal"]>) => ReturnType<Manager["managedPrincipal"]>;
   readManagedSessionState: (...args: Parameters<Manager["readManagedSessionState"]>) => ReturnType<Manager["readManagedSessionState"]>;
   recoverManagedSession: (...args: Parameters<Manager["recoverManagedSession"]>) => ReturnType<Manager["recoverManagedSession"]>;
+  refreshSeatRecord: (...args: Parameters<Manager["refreshSeatRecord"]>) => ReturnType<Manager["refreshSeatRecord"]>;
   releaseLifecycle: (...args: Parameters<Manager["releaseLifecycle"]>) => ReturnType<Manager["releaseLifecycle"]>;
   shredUserSecrets: (...args: Parameters<Manager["shredUserSecrets"]>) => ReturnType<Manager["shredUserSecrets"]>;
   trackDeprovision: (...args: Parameters<Manager["trackDeprovision"]>) => ReturnType<Manager["trackDeprovision"]>;
@@ -111,20 +109,15 @@ export function seatStopDeps(m: Manager): SeatStopDeps {
     agents: () => m["agents"],
     auth: () => m["auth"],
     ep: () => m["ep"],
-    execution: () => m["execution"],
-    goalWriter: () => m["goalWriter"],
     lifecycleInFlight: () => m["lifecycleInFlight"],
     setLifecycleInFlight: (value) => { m["lifecycleInFlight"] = value; },
     maintenanceState: () => m["maintenanceState"],
     managerInstanceId: () => m["managerInstanceId"],
     remoteAuthority: () => m["remoteAuthority"],
     retirement: () => m["retirement"],
-    servers: () => m["servers"],
     serviceServe: () => m["serviceServe"],
-    space: () => m["space"],
     unverifiedStops: () => m["unverifiedStops"],
     setUnverifiedStops: (value) => { m["unverifiedStops"] = value; },
-    workspaceRoot: () => m["workspaceRoot"],
     assertGoalWriterEpochCurrent: (...args) => m["assertGoalWriterEpochCurrent"](...args),
     authorizeNamed: (...args) => m["authorizeNamed"](...args),
     awaitHandleExit: (...args) => m["awaitHandleExit"](...args),
@@ -138,6 +131,7 @@ export function seatStopDeps(m: Manager): SeatStopDeps {
     managedPrincipal: (...args) => m["managedPrincipal"](...args),
     readManagedSessionState: (...args) => m["readManagedSessionState"](...args),
     recoverManagedSession: (...args) => m["recoverManagedSession"](...args),
+    refreshSeatRecord: (...args) => m["refreshSeatRecord"](...args),
     releaseLifecycle: (...args) => m["releaseLifecycle"](...args),
     shredUserSecrets: (...args) => m["shredUserSecrets"](...args),
     trackDeprovision: (...args) => m["trackDeprovision"](...args),
@@ -146,7 +140,7 @@ export function seatStopDeps(m: Manager): SeatStopDeps {
 
 /** Stopping a seat, recording why it left, reaping its children, and the named despawn doors. */
 export class SeatStop {
-  constructor(private readonly deps: SeatStopDeps) {}
+  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: SeatStopDeps, private readonly parts: Pick<ManagerParts, "goalWriter">) {}
 
   // The Manager members these bodies read, under their Manager names. Each reads through its dep at
   // use, so a field the Manager assigns later is current and a method a test replaces on the Manager
@@ -155,20 +149,15 @@ export class SeatStop {
   private get agents() { return this.deps.agents(); }
   private get auth() { return this.deps.auth(); }
   private get ep() { return this.deps.ep(); }
-  private get execution() { return this.deps.execution(); }
-  private get goalWriter() { return this.deps.goalWriter(); }
   private get lifecycleInFlight() { return this.deps.lifecycleInFlight(); }
   private set lifecycleInFlight(value: Manager["lifecycleInFlight"]) { this.deps.setLifecycleInFlight(value); }
   private get maintenanceState() { return this.deps.maintenanceState(); }
   private get managerInstanceId() { return this.deps.managerInstanceId(); }
   private get remoteAuthority() { return this.deps.remoteAuthority(); }
   private get retirement() { return this.deps.retirement(); }
-  private get servers() { return this.deps.servers(); }
   private get serviceServe() { return this.deps.serviceServe(); }
-  private get space() { return this.deps.space(); }
   private get unverifiedStops() { return this.deps.unverifiedStops(); }
   private set unverifiedStops(value: Manager["unverifiedStops"]) { this.deps.setUnverifiedStops(value); }
-  private get workspaceRoot() { return this.deps.workspaceRoot(); }
   private assertGoalWriterEpochCurrent(...args: Parameters<Manager["assertGoalWriterEpochCurrent"]>): ReturnType<Manager["assertGoalWriterEpochCurrent"]> { return this.deps.assertGoalWriterEpochCurrent(...args); }
   private authorizeNamed(...args: Parameters<Manager["authorizeNamed"]>): ReturnType<Manager["authorizeNamed"]> { return this.deps.authorizeNamed(...args); }
   private awaitHandleExit(...args: Parameters<Manager["awaitHandleExit"]>): ReturnType<Manager["awaitHandleExit"]> { return this.deps.awaitHandleExit(...args); }
@@ -334,7 +323,8 @@ export class SeatStop {
    * records an already-offline seat quietly. Only a current view is a verdict, so a stale or
    * unpopulated one logs nothing. The match is {@link isOwnPresence}. A seat being stopped is left to
    * the reap line. The heartbeat is the seat's own record and nothing validated it, so an unreadable
-   * one prints as unknown instead of throwing inside the watch.
+   * one prints as unknown instead of throwing inside the watch. A live record also gives the seat's
+   * display name, which {@link noteShownName} keeps with the seat.
    */
   logSeatMeshTransitions(): void {
     if (typeof this.ep.presenceView === "function" && this.ep.presenceView().state !== "current") return;
@@ -342,7 +332,10 @@ export class SeatStop {
     for (const a of this.agents.values()) {
       const seen = roster.get(this.managedPrincipal(a));
       if (a.terminalizing || !this.isOwnPresence(a, seen)) continue;
-      if (seen.status !== "offline") a.joinIssue = undefined;
+      if (seen.status !== "offline") {
+        a.joinIssue = undefined;
+        this.noteShownName(a, seen.card.name);
+      }
       const who = `${a.name} (${a.id}, uid ${a.lifecycleUid}${a.handle.pid !== undefined ? `, pid ${a.handle.pid}` : ""})`;
       if (seen.status === "offline" && !a.offMesh) {
         a.offMesh = true;
@@ -356,6 +349,23 @@ export class SeatStop {
     }
   }
 
+  /** Keep the display name a live seat shows in its own presence (SPEC 13.22 `set-name`), so a
+   *  relaunch under the same alias starts with it. The record is the seat's own write and nothing
+   *  validated it, so a name the shared rule refuses is not kept and the last good one stays. */
+  private noteShownName(a: ManagedAgent, shown: string): void {
+    const displayName = shown === a.name ? undefined : shown;
+    if (displayName === a.displayName) return;
+    if (displayName !== undefined) {
+      try {
+        assertValidName(displayName);
+      } catch {
+        return;
+      }
+    }
+    a.displayName = displayName;
+    this.deps.refreshSeatRecord(a);
+  }
+
   /** Whether a roster record is this seat's own: the readiness fence's exact principal and
    *  incarnation, so a same-named foreign peer or an older incarnation never speaks for it (#1208). */
   isOwnPresence(a: ManagedAgent, p: Presence | undefined): p is Presence {
@@ -367,7 +377,7 @@ export class SeatStop {
    *  failure is logged, never thrown, because the callers must still schedule the teardown. */
   dropInlineSnapshot(name: string, lifecycleUid: string): boolean {
     try {
-      removeInlineSnapshot(this.workspaceRoot, lifecycleUid);
+      removeInlineSnapshot(this.config.workspaceRoot, lifecycleUid);
       return true;
     } catch (e) {
       console.error(`! ${name}: its inline persona snapshot could not be removed: ${rejectionText(e)}`);
@@ -387,7 +397,7 @@ export class SeatStop {
     try {
       const creds = await mintCreds(this.auth!, newIdentity(), "deprovisioner", { deprovisionTarget: { principal: a.id, lifecycleUid: a.lifecycleUid, memberChannels: [] } });
       await withTimeout(
-        fenceLifecycleAcl({ servers: this.servers ?? DEFAULT_SERVER, space: this.space, targetId: a.id, lifecycleUid: a.lifecycleUid, creds }),
+        fenceLifecycleAcl({ servers: this.config.servers ?? DEFAULT_SERVER, space: this.config.space, targetId: a.id, lifecycleUid: a.lifecycleUid, creds }),
         DEPROVISION_TIMEOUT_MS,
         `fence ${a.id}: the ACL fence timed out`,
       );
@@ -537,7 +547,7 @@ export class SeatStop {
       // The host owns the grant and the footprint, but the secret family enrollUserAgent wrote here
       // is this participant's, and no teardown arm of a delegated seat removes it.
       const unshredded: CleanupFailure[] = [];
-      await this.shredUserSecrets(unshredded, (live ?? held?.target)?.secretPaths ?? agentLifecycleSecretFilePaths(this.workspaceRoot, this.space, name, target.lifecycleUid));
+      await this.shredUserSecrets(unshredded, (live ?? held?.target)?.secretPaths ?? agentLifecycleSecretFilePaths(this.config.workspaceRoot, this.config.space, name, target.lifecycleUid));
       if (unshredded.length) {
         const error = `the host retired "${name}" at ${target.lifecycleUid}, but cleanup failed: ${describeCleanupFailures(unshredded)}; the name stays held until a retried retirement intent removes it`;
         const hold = this.retirement.held(name);
@@ -570,7 +580,7 @@ export class SeatStop {
    *  despawn (the process teardown is authoritative for the agent; this settles the GOAL honestly).
    *  Cancel rides the despawn's own authorizeNamed reach - there is no cancel-by-goalId. */
   async cancelAgentGoal(name: string, mode: "graceful" | "terminate"): Promise<void> {
-    const gw = this.goalWriter;
+    const gw = this.parts.goalWriter.goalWriter;
     const ref = this.agentGoals.get(name);
     if (!gw || !ref) return;
     this.agentGoals.delete(name);
@@ -608,13 +618,13 @@ export class SeatStop {
    *  supervisor); regular agents are denied STREAM.PURGE under auth. Cleanup only: leaves live agents and
    *  the TASK queue alone. */
   async opPurge(args: Record<string, unknown>, _caller: string): Promise<ControlReply> {
-    if (this.execution === "none") throw new EpEnvelopeError("unimplemented", this.executionRefusal());
+    if (this.config.execution === "none") throw new EpEnvelopeError("unimplemented", this.executionRefusal());
     const includeDms = args.includeDms === true;
     try {
       const creds = this.auth ? await mintCreds(this.auth, newIdentity(), "purger") : undefined;
       const result = await clearSpaceHistory({
-        servers: this.servers ?? DEFAULT_SERVER,
-        space: this.space,
+        servers: this.config.servers ?? DEFAULT_SERVER,
+        space: this.config.space,
         creds,
         includeDms,
       });

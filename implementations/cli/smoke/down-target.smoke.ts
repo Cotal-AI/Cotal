@@ -353,6 +353,14 @@ try {
   check("...and its preview refuses the same way, naming the preview to run there",
     previewSpace?.code === "TARGET_NOT_FOUND" && previewSpace.message === bareSpace?.message && (previewSpace.remedy ?? "").includes(`run \`cotal down --dry-run\` in ${meshA.root}`),
     previewSpace && { code: previewSpace.code, message: previewSpace.message, remedy: previewSpace.remedy });
+  recordMesh({ ...entry("remote", meshB.root), origin: "manual" });
+  for (const preview of [false, true]) {
+    const remote = await rejection(run([], { space: "remote", ...(preview ? { "dry-run": true } : { yes: true }) }));
+    check(`a connection in another folder does not supply the hosting project for a ${preview ? "preview" : "stop"}`,
+      remote?.code === "TARGET_NOT_FOUND" && remote.message?.includes(`connection to space "remote" is registered at ${meshB.root}`) === true &&
+        ["cotal", "pnpm cotal"].some(cli => remote.remedy === `run \`${cli} down ${preview ? "--dry-run" : "--yes"}\` in the project that started the stack`), remote);
+  }
+  removeMesh("remote");
   const unknown = await rejection(run(["web"], { space: "nosuch" }));
   check("--space with an unknown space refuses TARGET_NOT_FOUND",
     unknown?.code === "TARGET_NOT_FOUND" && /no space named "nosuch" is registered here/.test(unknown.message ?? ""), unknown?.message);

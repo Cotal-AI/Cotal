@@ -21,6 +21,10 @@ export interface LaunchOpts {
   validateOnly?: boolean;
   space: string;
   name: string;
+  /** The display name the seat starts with, when `set-name` (SPEC 13.22) gave it one other than
+   *  `name`. The connector forwards it (`COTAL_DISPLAY_NAME`) and keeps `name` as the launch name,
+   *  which in user mode is also the actor. */
+  displayName?: string;
   role?: string;
   /** Stable agent id (the nkey public key). When set, the launched session adopts it
    *  as its `card.id` instead of generating a random one — so the id the launcher
@@ -366,6 +370,11 @@ export interface Connector extends Extension {
    *  Default-deny, so a prompt on a connector that does not declare it fails before any
    *  provisioning rather than being accepted and never submitted. */
   readonly supportsPrompt?: boolean;
+  /** The bytes a terminal sends for the key that interrupts the harness's live turn, such as
+   *  `"\x1b"` for Escape. The manager's `interrupt` command writes them into a seat's terminal.
+   *  Declare it only after a live check shows the key ending a turn. Absent, the command refuses
+   *  seats on this connector. */
+  readonly interruptKey?: string;
   /** Whether a seat on this connector takes a relayed turn on an idle fresh session, hands it to
    *  the harness at most once, and yields when the turn ends. A `once` spawn needs it. Declare it
    *  only after a live check shows the harness doing all three; serving `turn-pending` is not

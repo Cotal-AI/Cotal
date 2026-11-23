@@ -80,6 +80,7 @@ import { principalKey } from "@cotal-ai/core";
 import { randomUUID } from "node:crypto";
 import type { PresenceCondition } from "@cotal-ai/core";
 import { AppServerDriver, type ThreadItem } from "./app-server.js";
+import { codexCommands } from "./commands.js";
 import { createCodexMapper, type CodexMapper, type CodexRecord } from "./agui-map.js";
 import { waitForRollout } from "./agui-rollout.js";
 import { startCotalMcp, MCP_SERVER_NAME, MCP_TOKEN_ENV, type CotalMcpEndpoint } from "./mcp.js";
@@ -325,6 +326,54 @@ class BoundStartSource<T> implements DurableSource<T> {
   }
 }
 
+/** What a command's turn sets in the drive loop of {@link runCodexHost}. */
+interface CommandTurnFlags {
+  /** Before the dispatch is awaited, a start is in flight and its turn is armed with nothing
+   *  surfaced, because the turn's end can race the start's answer. */
+  starting(): void;
+  /** The dispatch answered. */
+  answered(): void;
+  /** The harness did not take the command, so no turn is open. */
+  notTaken(): void;
+}
+
+/** Start the agent endpoint's queued commands, each as a turn of its own, which carries no inbox
+ *  batch and no briefing. After a command's turn, waiting messages go before the next command.
+ *  `drive` is the host's drive loop. */
+function commandTurns(agent: MeshAgent, drive: () => Promise<void>, flags: CommandTurnFlags) {
+  let lastTurnWasCommand = false;
+  return {
+    /** Whether this drive starts a command instead of taking the inbox. Every drive past the loop's
+     *  guard asks once. */
+    due(override: string | undefined, paused: (item: InboxItem) => boolean): boolean {
+      const due = !override && agent.queuedCommands > 0 && !(lastTurnWasCommand && agent.pendingWake(paused) > 0);
+      lastTurnWasCommand = false;
+      return due;
+    },
+    /** The drive took nothing to send, so a command still queued drives next. */
+    nothingTaken(): void {
+      if (agent.queuedCommands > 0) setImmediate(() => void drive());
+    },
+    /** Start the oldest queued command. One the harness did not take leaves the thread free for
+     *  whatever waits. */
+    async start(): Promise<void> {
+      flags.starting();
+      let outcome;
+      try {
+        outcome = await agent.dispatchNextCommand();
+      } finally {
+        flags.answered();
+      }
+      if (outcome === "dispatched") {
+        lastTurnWasCommand = true;
+        return;
+      }
+      flags.notTaken();
+      void drive();
+    },
+  };
+}
+
 export async function runCodexHost(): Promise<void> {
   const config = configFromEnv(); // throws without an identity — a host launch is always managed
   config.connector = "codex";
@@ -337,7 +386,7 @@ export async function runCodexHost(): Promise<void> {
   // app-server thread is up AND auth is validated — starting it connects and publishes idle
   // presence, and a peer must never advertise online before we know it can actually run a turn
   // (a later auth failure can't retract a presence interval already seen by the roster).
-  const agent = new MeshAgent(config);
+  const agent = new MeshAgent(config, undefined, { commands: codexCommands(() => driver) });
 
   const codexHome = prepareCodexHome(config.space, config.name);
   const codexBin = process.env.COTAL_CODEX_BIN?.trim() || process.env.COTAL_CODEX_RESOLVED_BIN?.trim() || undefined;
@@ -569,6 +618,11 @@ export async function runCodexHost(): Promise<void> {
   let awaitingTurnEnd = false; // a driven turn is open — its surfaced ids ack at the boundary
   let surfaced: string[] = []; // EXACT ids fed into the open turn (start + steered)
   let briefed = false; // the boot channel briefing is prepended once
+  const commands = commandTurns(agent, drive, {
+    starting: () => { driving = true; surfaced = []; awaitingTurnEnd = true; },
+    answered: () => { driving = false; },
+    notTaken: () => { awaitingTurnEnd = false; },
+  });
   let pendingPullHint: string | undefined; // focus @mention latch: its body was ack-dropped at
   // ingest, so a wake that can't run NOW must be remembered until a turn can carry it
   let steerSettled: Promise<unknown> = Promise.resolve(); // the last in-flight steer RPC — the
@@ -623,6 +677,7 @@ export async function runCodexHost(): Promise<void> {
     // "app-server not running" retry that outlives the shutdown. The batch stays un-acked in the
     // stream instead (see the shutdown note below on what that does and does not promise).
     if (shuttingDown || !ready || driving || driver.busy || awaitingTurnEnd) return;
+    if (commands.due(override, paused)) return commands.start();
     driving = true;
     try {
       pruneFailedTurns();
@@ -640,7 +695,7 @@ export async function runCodexHost(): Promise<void> {
         // The take awaits, so the checks above are made again: when a turn began meanwhile, such as
         // one the attached TUI started, its boundary drives the batch.
         if (shuttingDown || driver.busy || awaitingTurnEnd) return;
-        if (items.length === 0 && !turnPeek) { await reportPaused(); return; }
+        if (items.length === 0 && !turnPeek) { await reportPaused(); commands.nothingTaken(); return; }
         if (items.length > 0) {
           ids = items.map((i) => i.recvKey);
           const inj = formatInjection(items);
@@ -745,7 +800,7 @@ export async function runCodexHost(): Promise<void> {
         // happens to wake the loop. `drive()` is self-guarding, so this cannot double-drive.
         if (driver.busy) return;
         if (pendingPullHint) void drive(pendingPullHint);
-        else if (agent.pendingWake(paused) > 0) void drive();
+        else if (agent.pendingWake(paused) > 0 || agent.queuedCommands > 0) void drive();
         else await reportPaused();
       })();
       return;
@@ -781,7 +836,7 @@ export async function runCodexHost(): Promise<void> {
         if (gen !== boundaryGen) return;
         if (pendingPullHint) {
           void drive(pendingPullHint); // the latched focus pull — drive() consumes the latch only on ACCEPT
-        } else if (status !== "failed" && agent.pendingWake(paused) > 0) {
+        } else if ((status !== "failed" && agent.pendingWake(paused) > 0) || agent.queuedCommands > 0) {
           void drive(); // failed batches wait for the backoff timer instead of hot-looping
         }
         if (!driver.busy) await reportPaused();
@@ -1146,6 +1201,7 @@ export async function runCodexHost(): Promise<void> {
   agent.on("wake", () => {
     if (!driver.busy) void drive();
   });
+  agent.on("command", () => void drive());
 
   // ---- the Codex TUI -------------------------------------------------------
   // `cotal spawn --agent codex` opens Codex's own TUI, attached to the very thread this host
@@ -1362,7 +1418,7 @@ export async function runCodexHost(): Promise<void> {
     // An auto-submitted first prompt (`cotal spawn --prompt`), then anything buffered during boot.
     const prompt = process.env.COTAL_CODEX_PROMPT?.trim();
     if (prompt) await drive(prompt);
-    else if (agent.pendingWake() > 0) void drive();
+    else if (agent.pendingWake() > 0 || agent.queuedCommands > 0) void drive();
   } catch (e) {
     // A crash mid-launch is the crash rail's to recover, and it has already started a
     // replacement. Tearing down here would kill it and close the MCP endpoint out from under it.

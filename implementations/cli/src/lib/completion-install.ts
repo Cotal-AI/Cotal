@@ -242,13 +242,13 @@ export function changeCompletion(operation: "install" | "uninstall", shell: stri
     safeParents(dirname(paths.rc));
     // A missing folder holds no startup file to unwire, so uninstall goes on to the stub and its
     // record, which still decide whether anything is left to remove.
-    if (operation === "install") {
+    if (operation === "install" && !(shell === "zsh" && process.env.ZDOTDIR)) {
       try { lstatSync(dirname(paths.rc)); }
       catch {
-        const dir = dirname(paths.rc), fromZdotdir = shell === "zsh" && Boolean(process.env.ZDOTDIR);
-        throw new CommandFailure("refused", "TARGET_NOT_FOUND", `the shell startup folder ${dir}${fromZdotdir ? ", which ZDOTDIR names," : ""} does not exist; nothing was changed`, {
+        const dir = dirname(paths.rc);
+        throw new CommandFailure("refused", "TARGET_NOT_FOUND", `the shell startup folder ${dir} does not exist; nothing was changed`, {
           target: { shell, path: dir },
-          remedy: `create it with (umask 077 && mkdir -p ${shellPath(dir)})${fromZdotdir ? ", or unset ZDOTDIR to use ~/.zshrc" : ""}, then run the command again`,
+          remedy: `create it with (umask 077 && mkdir -p ${shellPath(dir)}), then run the command again`,
         });
       }
     }
@@ -313,8 +313,11 @@ export function changeCompletion(operation: "install" | "uninstall", shell: stri
     // A startup file its owner made read-only is never replaced. Asked once its next content is known.
     const readOnly = () => paths.rc !== undefined && nextStartup !== current && startup !== undefined && (startup.mode & 0o200) === 0;
     if (operation === "uninstall") {
-      if (paths.rc && nextStartup.includes(paths.stub)) {
-        const line = nextStartup.split("\n").find((text) => text.includes(paths.stub))!.trim();
+      // A comment only names the stub; removing the stub cannot break it, so only a line
+      // that is not a comment counts as still wiring the stub in.
+      const liveLine = paths.rc ? nextStartup.split("\n").find((text) => !text.trimStart().startsWith("#") && text.includes(paths.stub)) : undefined;
+      if (liveLine) {
+        const line = liveLine.trim();
         throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `${paths.rc} still names this stub outside the cotal block, in ${JSON.stringify(line)}; removing the stub would break that line`, { target: { shell, path: paths.rc }, remedy: `remove that line from ${paths.rc} yourself, then run \`cotal completion uninstall ${shell}\` again` });
       }
       if (readOnly()) throw new CommandFailure("refused", "PERMISSION_DENIED", `${paths.rc} is read-only, so its completion line was not removed; nothing was changed`, { target: { shell, path: paths.rc }, remedy: `remove the line ${completionSourceLine(paths.stub, shell)} from ${paths.rc} yourself, then run \`cotal completion uninstall ${shell}\` again` });
@@ -339,14 +342,14 @@ export function changeCompletion(operation: "install" | "uninstall", shell: stri
       if (!readOnly()) record.wiring = paths.rc ? { path: paths.rc, block: installedBlock, ...(created ? { created: true as const } : {}) } : null;
       const serialized = JSON.stringify(record, null, 2) + "\n";
       if (text(owned.snapshot) !== serialized) { write(recordPath(paths), owned.snapshot, serialized, 0o600); changed.push(recordPath(paths)); }
-      if (readOnly()) throw new CommandFailure("failed", "OPERATION_FAILED", `${changed.includes(paths.stub) ? "wrote" : "kept the current"} ${paths.stub} but could not add its line to ${paths.rc}, which is read-only; that file was not changed`, { target: { shell, path: paths.rc }, changed: [...changed], remedy: `add this line to ${paths.rc} yourself: ${completionSourceLine(paths.stub, shell)}` });
+      if (readOnly()) throw new CommandFailure("failed", "OPERATION_FAILED", `${changed.includes(paths.stub) ? "wrote" : "kept the current"} ${paths.stub} but could not add its line to ${paths.rc}, which is read-only; that file was not changed`, { target: { shell, path: paths.rc }, remedy: `add this line to ${paths.rc} yourself: ${completionSourceLine(paths.stub, shell)}` });
     }
     return { operation, shell, changed, noOp: !changed.length, forced, stub: paths.stub, startup: paths.rc ?? null, parentShellUnloaded: false };
   } catch (error) {
     const confirmed = [...changed, ...(error instanceof CommandFailure ? error.changed ?? [] : [])];
     if (error instanceof CommandFailure && error.outcome === "unknown") throw new CommandFailure("unknown", "OPERATION_UNKNOWN", error.message, { target: { shell, detail: error.target }, changed: confirmed, remedy: error.remedy });
-    // Only the read-only startup file fails this way, after its stub was written as intended.
-    if (error instanceof CommandFailure && error.outcome === "failed") throw error;
+    if (error instanceof CommandFailure && error.outcome === "failed" && confirmed.length)
+      throw new CommandFailure("partial", "OPERATION_PARTIAL", error.message, { target: error.target, changed: confirmed, remedy: error.remedy });
     if (confirmed.length) throw new CommandFailure("partial", "OPERATION_PARTIAL", "some owned completion material changed, but the remaining integration was preserved after a refusal", { target: { shell }, changed: confirmed, remedy: "inspect completion status and the named paths; do not overwrite modified startup content" });
     if (error instanceof CommandFailure) throw error;
     throw new CommandFailure("refused", "PERMISSION_DENIED", "the owned shell-file operation could not complete; file contents were not printed", { target: { shell }, remedy: "review file access and completion status before another attempt" });

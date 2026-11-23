@@ -104,6 +104,7 @@ const COMMAND_SURFACES = [
   "@cotal-ai/auth",
   "@cotal-ai/web",
   "@cotal-ai/linear",
+  "@cotal-ai/acp",
   "../../docs.js",
   "../../mcp.js",
 ];

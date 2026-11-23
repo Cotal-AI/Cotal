@@ -105,8 +105,8 @@ async function runCase(mode: "open" | "auth", manifest = false) {
     const prepared = cliRun("space", "create", "logrot", "--root", root);
     check("space preparation succeeds", prepared.status === 0, { stdout: prepared.stdout, stderr: prepared.stderr });
     const file = join(root, "cotal.yaml");
-    if (manifest) writeFileSync(file, `apiVersion: cotal/v1\nkind: Mesh\nspace: logrot\nbroker:\n  auth: ${mode !== "open"}\n  servers: ${server}\n  logFile: ./logs/broker.log\nchannels: {}\nagents: {}\n`);
-    const restartArgs = manifest ? ["-f", file, "--logfile-size-limit", "2048", "--logfile-max-num", "3"] : [];
+    if (manifest) writeFileSync(file, `apiVersion: cotal/v1\nkind: Mesh\nspace: logrot\nruntime: example-uninstalled-runtime\nbroker:\n  auth: ${mode !== "open"}\n  servers: ${server}\n  logfileSizeLimit: 2048\n  logfileMaxNum: 3\nchannels: {}\nagents: {}\n`);
+    const restartArgs = manifest ? ["-f", file, "--log-file", "./logs/broker.log"] : [];
     if (!manifest) {
       const missing = cliRun("up", "--no-manager", "--server", server, "--logfile-size-limit", "2048");
       check("rotation without any log path refuses before preparing the broker", missing.status === 1 && missing.stderr.includes("require --log-file") && readStackJournal(root) === undefined && !await portOpen(), missing.stderr);

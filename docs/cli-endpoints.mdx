@@ -22,6 +22,7 @@ it is not limited to child processes owned by the manager. The Participant colum
 that `endpoint describe` takes, and the role has its own column. A name that is only whitespace is
 shown as the id, and a role or activity that is only whitespace is shown as none or not reported.
 `result.items` keeps the name, role, and activity from the presence record.
+The `who` command in Next keeps the explicit target flags from this read.
 
 
 ## who [#who]
@@ -44,8 +45,8 @@ more live participants share is not an address, so each of those rows appends it
 brackets. A lone offline participant beside a live one of the same name does not, because a direct
 message by that name reaches the live one. `cotal_roster` marks the same rows, leaving out the
 session's own, since a direct message to its name reaches the other participant.
-Infrastructure
-endpoints are hidden unless `--all` asks for them; the report says how many it hid. A `cotal chat`
+The report says how many infrastructure endpoints it hid. To list them on the same target, repeat
+that command with `--all`, replacing `--waiting` if present. A `cotal chat`
 session is a participant a person drives, so it is listed with the agents and never counted as
 infrastructure. The report adds a Kind column that names it `chat session`, and its JSON row carries
 `sessionKind: "chat"`. In a user-auth
@@ -75,7 +76,11 @@ A part `who` could not read makes the run `partial` (exit 4): a roster snapshot 
 (`ROSTER_ERROR`), or a manager census it could not read in full (`MANAGERS_UNREAD`, and the warnings
 `ps` names). A credential that may not read the roster is refused with `PERMISSION_DENIED` (exit 2),
 never shown an empty roster.
-A mesh where nobody is present is a complete roster: `who` says so and exits 0.
+A mesh where nobody is present is a complete roster: `who` without `--waiting` says so and exits 0.
+With `--waiting`, an empty report says that no rows match the filter, not that nobody is present.
+If `--server` matches several registered spaces, `who` refuses with `TARGET_AMBIGUOUS` (exit 2).
+Its Next section gives a roster command for each space with the same broker and output flags.
+Run one to read that space without changing the saved selection.
 
 
 ### Watch consumer lifetime
@@ -133,8 +138,12 @@ trust gives it: `space-signer` when the root holds the space's signer, as after 
 `space create` again, and `no-credential` before its first `up`. `server` and `mode` are `null`, the
 `target` names the root, and the report says to start it with `cotal up` there. With `--server`, or
 when the prepared folder no longer exists, it still refuses with `TARGET_UNAVAILABLE`.
-In a folder whose `.cotal/` names no space, as after `space forget`, `whoami` refuses with no space
-selected. The report names the folder and does not assume `main`.
+If a local user-auth space has stopped and lost its registration, the restart command names
+`--user-auth`, the space and its last broker address.
+In a folder whose `.cotal/` names no space, as after `space forget`, `whoami` reports the space
+named by `--space` or, if none is named, the saved selection. If neither names a space, it refuses
+with `TARGET_NOT_FOUND`, names the folder and does not assume `main`. See
+[target resolution](cli-selection.mdx#target-resolution) for the selection order.
 `--creds <file>` reports what a credential file may do instead, with `kind: "credential"`: the space
 its permissions name, the profile it was minted with, its principal, the agent lifecycle its
 delivery and history grants are keyed to (none for the `observer` and `admin` profiles), when it was
@@ -146,10 +155,11 @@ permissions name no single space, `space`, `read`, `post` and `dms` are `null`, 
 `partial` (exit 4) with `CREDENTIAL_SPACE_UNKNOWN`. `--creds` takes no `--space` or `--server`.
 An unregistered `--space` is refused even with `--server`. Server addresses in the identity report
 and connection refusals omit URL user information, query strings and fragments, and escape terminal
-controls. Addresses need a host and a supported broker scheme. TCP addresses cannot have a path;
-WebSocket routes and bare host addresses remain supported. Invalid addresses make `whoami` refuse
-rather than print the raw value. Recovery instructions use a `<url>` placeholder rather than a
-secret-stripped connection address.
+controls. `--server` requires a host and a `nats://`, `tls://`, `ws://` or `wss://` scheme, as in
+`nats://127.0.0.1:4222`. Bare host addresses are refused. TCP addresses cannot have a path.
+WebSocket paths are allowed for proxy routes. Invalid addresses make `whoami` refuse rather than
+print the raw value. Recovery instructions use a `<url>` placeholder rather than a secret-stripped
+connection address.
 
 
 ### Local registry failures
@@ -241,10 +251,10 @@ cotal endpoint check <contract-file> [--json|--plain]
 ```
 
 `init` creates `contract.json` and an executable `handler.mjs` template. The default directory is
-the supplied name. Use `--dir` to choose another one. If its parent is missing, `init` creates
-nothing and prints a command to create the parent and retry. Files are created exclusively,
-without following a pre-planted symlink or replacing an existing file. A partial
-write retains the named created material for review rather than deleting it automatically.
+the supplied name. Use `--dir` to choose another one. `init` creates missing directories with
+mode `0700`. If the path crosses a symlink or a non-directory, `init` names the blocked component.
+Retry with `--dir` set to a real directory path. `init` never replaces an existing file. The receipt
+lists the paths created. A partial write leaves those paths in place for review.
 
 A simple scaffold name such as `reviews` declares `com.example.reviews`. A full reverse-DNS name
 is kept. Choose a namespace you control before requesting serving authority. Scaffolding creates
@@ -394,6 +404,10 @@ auth mesh: the manager registers its service on both static and per-user meshes 
 rides their bearer; each visible or invoked command still requires its existing grant, and cross-agent
 reach needs the `admin` scope). An open mesh has no service registry.
 
+If the selected space is prepared but not started, both `endpoint describe` and `endpoint invoke`
+refuse with `TARGET_UNAVAILABLE` (exit 2) before reading a contract. Run `cotal up` in the named
+project folder, then retry. The top-level `describe` and `invoke` forms report the same refusal.
+
 
 ### Static caller authority
 
@@ -482,8 +496,14 @@ complete endpoint namespace.
 `endpoint` (`ep`) reads local references only and labels live state Not checked. `show <name>`
 shows the saved space, native class, full instance pin and storage revision. These commands do
 not connect to a broker or infer registrations from participant presence.
+If the inventory cannot find the named space, it refuses with `TARGET_NOT_FOUND` and keeps the
+name in JSON as `target.requested`. Run `cotal space` to find the name, then retry with
+`cotal endpoint --space <name>`. The retry guidance keeps `--json` or `--plain` if you passed it.
+If several registered spaces match the project folder, the inventory refuses with `TARGET_AMBIGUOUS`.
+Next names a command for each space and keeps the original inventory options. `show <name>` refuses the same way, naming each matching space and the retry for it.
 
 `endpoint add <name> --file <reference.json>` imports a strict version-1 reference object.
+An empty `--file` is refused with `USAGE_INVALID` (exit 1) before the command resolves a space.
 Guided add is available in an interactive terminal. The class, instance pin and credential path
 are checked at their questions. Invalid answers are asked for again without losing earlier answers.
 Names use case-safe hexadecimal
@@ -495,6 +515,7 @@ Existing names are not silently overwritten.
 `endpoint remove <name>` defaults to cancel, or takes `--yes` for scripted confirmation. It
 compares the held revision and content under the private writer lock before forgetting metadata.
 It never deregisters a native endpoint, stops a process, removes credential files or revokes grants.
+The confirmation command keeps `--json` or `--plain` if you passed it.
 
 Protected no-follow/nonblocking file access supports POSIX hosts. Windows uses its access-list
 model for local records instead: a credential reference there must be a regular file, and its
@@ -524,12 +545,15 @@ instance does not fall back to the class queue. Unknown native effects are not b
 Both read the endpoint's contract first, and so do `describe`, `invoke` and `auth mint --endpoint`.
 `endpoint invoke` and `invoke` give that read their `--timeout` (default 10000 ms), the one deadline
 for the whole call. `endpoint describe`, `describe` and `auth mint --endpoint` have no `--timeout`
-and give it 10 seconds. When no instance answers that read within its deadline, the command refuses
+and give it 10 seconds. When no instance answers an unpinned read within its deadline, the command refuses
 with `TARGET_UNAVAILABLE`: nothing is serving the endpoint, or nothing could reach this caller. Its
 Next says to start the service that serves the endpoint. When you set `--timeout`, the refusal
 names it, because a deadline that short can also end before a served endpoint answers, and its Next
 suggests rerunning the original command with a longer `--timeout` and all other arguments and
 flags unchanged. Nothing was invoked or issued.
+If a pinned instance does not answer an invocation's contract read, the refusal names that instance
+and says no invocation was sent. Check the full instance ID with `cotal endpoint list --live --space <space>`
+on the same broker. Use a longer `--timeout` only if you expect that instance to answer.
 
 A reference's file credential uses the [paired native caller adapter](cli-auth.mdx#endpoint-caller-credentials).
 It must match the selected registered static root, space, endpoint and signed native scope. A
@@ -574,10 +598,12 @@ the leader. The list can lag concurrent changes and is not an atomic whole-space
 The snapshot reads at most 1000 registration keys. Omitted keys, unreadable records or unavailable
 registry access make the requested live portion partial and return exit 4, while preserving the
 local references. If a broker connection fails, the report shows the diagnostic and any recovery
-step. For example, if an explicit `--server` does not answer and the selected space has a recorded
-broker, the report suggests dropping `--server` to reach that broker. Status projection, reported
-state, process ownership and a serving response are separate. No active probe or process control
-is implied by a registration row.
+step. If the selected local space was stopped, the report names the completed stop and the project
+folder where you can restart it. If an explicit `--server` does not answer and the selected space has a recorded
+broker, the report suggests dropping `--server` and using the named `--space` on the retry.
+That keeps the inventory on the same space even if you selected a different one with `cotal use`.
+Status projection, reported state, process ownership and a serving response are separate.
+A registration row does not imply an active probe or process control.
 
 
 ## Following an endpoint action [#following-an-endpoint-action]

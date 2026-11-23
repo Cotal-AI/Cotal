@@ -95,8 +95,8 @@
     {
       "name": "an agent's join asks for a family row only when the space default is durable",
       "file": "packages/core/src/endpoint-subscriptions.ts",
-      "find": "    else if (family || effectiveDeliveryClass(this.channelConfigs.get(channel), this.channelDefaults) === \"durable\") {",
-      "replace": "    else if (effectiveDeliveryClass(this.channelConfigs.get(channel), this.channelDefaults) === \"durable\") {",
+      "find": "    else if (family || effectiveDeliveryClass(this.channelRegistry.channelConfigs.get(channel), this.channelRegistry.channelDefaults) === \"durable\") {",
+      "replace": "    else if (effectiveDeliveryClass(this.channelRegistry.channelConfigs.get(channel), this.channelRegistry.channelDefaults) === \"durable\") {",
       "expectRed": "with a live default, joining team.x.> still asks for and gets its family row",
       "cell": "with a live default, joining team.x.> still asks for and gets its family row",
       "afterRestore": "pnpm --filter @cotal-ai/core build"
@@ -104,8 +104,8 @@
     {
       "name": "an agent's leave closes a family row only when the space default is durable",
       "file": "packages/core/src/endpoint-subscriptions.ts",
-      "find": "    if (this.authed && (isChannelFamily(channel) || effectiveDeliveryClass(this.channelConfigs.get(channel), this.channelDefaults) === \"durable\")) {",
-      "replace": "    if (this.authed && effectiveDeliveryClass(this.channelConfigs.get(channel), this.channelDefaults) === \"durable\") {",
+      "find": "    if (this.authed && (isChannelFamily(channel) || effectiveDeliveryClass(this.channelRegistry.channelConfigs.get(channel), this.channelRegistry.channelDefaults) === \"durable\")) {",
+      "replace": "    if (this.authed && effectiveDeliveryClass(this.channelRegistry.channelConfigs.get(channel), this.channelRegistry.channelDefaults) === \"durable\") {",
       "expectRed": "leaving team.x.> with a live default closes its family row",
       "cell": "leaving team.x.> with a live default closes its family row",
       "afterRestore": "pnpm --filter @cotal-ai/core build"

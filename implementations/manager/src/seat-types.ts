@@ -147,6 +147,10 @@ export interface ManagedLaunch {
 
 export interface ManagedAgent {
   name: string;
+  /** The display name the seat last showed in its own presence, when `set-name` made it differ from
+   *  {@link name}, the alias every manager key and, in user mode, the actor stay on. Kept with the
+   *  seat so a relaunch starts with it (`LaunchOpts.displayName`). */
+  displayName?: string;
   role?: string;
   agent: string;
   /** The seat-private Claude home a carried resume launches in. Removed when the seat is freed. */

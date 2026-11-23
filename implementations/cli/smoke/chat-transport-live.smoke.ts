@@ -41,7 +41,7 @@ function broker(tag: string) {
     writeFileSync(join(root, `broker-${tag}.log`), log);
   } };
 }
-type RecordLine = { type: string; id?: string; scope?: string; outcome?: string; result?: { state?: string; identity?: { principal: string; lifecycleUid: string } }; message?: { text: string } };
+type RecordLine = { type: string; id?: string; scope?: string; outcome?: string; error?: { code: string; message: string }; result?: { state?: string; identity?: { principal: string; lifecycleUid: string } }; message?: { text: string } };
 const clients: { close(): Promise<{ code: number | null; signal: NodeJS.Signals | null }> }[] = [];
 function open(name: string, mode: "stdio" | "plain" = "stdio") {
   const child = spawn(process.execPath, [cli, "chat", "general", `--${mode}`, "--space", space, "--name", name], { cwd: root, env, stdio: ["pipe", "pipe", "pipe"] });
@@ -62,8 +62,7 @@ function open(name: string, mode: "stdio" | "plain" = "stdio") {
   child.stderr.on("data", (b: Buffer) => { err += b.toString(); });
   let serial = 0;
   const client = { child, records, output: () => out.replace(/\x1b\[[0-9;]*m/g, ""),
-    async request(type: string, fields = {}) {
-      const id = `${name}-${++serial}`;
+    async request(type: string, fields = {}, id = `${name}-${++serial}`) {
       child.stdin.write(`${JSON.stringify({ schemaVersion: 1, type, id, ...fields })}\n`);
       await until(() => records.some(({ record }) => record.id === id));
       return records.find(({ record }) => record.id === id)!.record;
@@ -87,6 +86,26 @@ function open(name: string, mode: "stdio" | "plain" = "stdio") {
   return client;
 }
 const gaps = (client: ReturnType<typeof open>) => client.records.filter(({ record }) => record.type === "gap" && record.scope === "live");
+
+async function checkSizeRefusal(chat: ReturnType<typeof open>): Promise<void> {
+  const channel = "size.probe";
+  const limit = 1_048_576;
+  const bodyAtLimit = "é".repeat(limit / 2);
+  const before = await chat.request("send", { channel, text: "before" });
+  for (const text of [bodyAtLimit + "x", bodyAtLimit]) {
+    const over = await chat.request("send", { channel, text });
+    check(`a ${Buffer.byteLength(text)}-byte body that exceeds the limit with its envelope is refused`,
+      over.outcome === "refused" && over.error?.code === "UNSUPPORTED" &&
+      over.error.message.includes(`${limit}-byte message limit`) &&
+      over.error.message.includes("nothing was stored") && /shorten.*split/i.test(over.error.message), over);
+  }
+  const after = await chat.request("send", { channel, text: "after" });
+  check("chat keeps accepting valid posts after a size refusal", before.outcome === "stored" && after.outcome === "stored", { before, after });
+  const history = spawnSync(process.execPath, [cli, "history", channel, "--space", space, "--json"], { cwd: root, env, encoding: "utf8", timeout: 30_000 });
+  const texts = history.status === 0 ? (JSON.parse(history.stdout).result.items as { text: string }[]).map(({ text }) => text) : undefined;
+  check("only the valid posts appear in channel history", JSON.stringify(texts) === JSON.stringify(["before", "after"]), texts ?? history.stderr);
+}
+
 let srv = broker("initial");
 const observations: unknown[] = [];
 try {
@@ -99,10 +118,14 @@ try {
   const peer = open("peer-listener");
   const initial = await chat.request("connection");
   check("positive control: both shipped sessions report connected", initial.result?.state === "connected" && (await peer.request("connection")).result?.state === "connected");
+  const spaced = await chat.request("connection", {}, "request 1");
+  check("a shipped session echoes the exact ID containing an ASCII space", spaced.type === "result" && spaced.id === "request 1"
+    && spaced.outcome === "ok" && spaced.result?.state === "connected", spaced);
   const sent = await peer.request("send", { channel: "general", text: "healthy-control" });
   await until(() => chat.records.some(({ record }) => record.message?.text === "healthy-control"));
   await wait(1_000);
   check("positive control: a stored post arrives without a live gap", sent.outcome === "stored" && gaps(chat).length === 0);
+  await checkSizeRefusal(chat);
 
   for (const [tag, duration] of [["short", 5_000], ["sustained", 23_000]] as const) {
     const before = chat.records.length;

@@ -1,5 +1,5 @@
 import { findCommand, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
-import { cachedUpdateSummary, jsonFlag, paintFor, writeResult } from "@cotal-ai/workspace";
+import { cachedUpdateSummary, CommandFailure, jsonFlag, paintFor, writeResult } from "@cotal-ai/workspace";
 import { commandSurface } from "../ext-loader.js";
 import { printCommandList, printHelpPath } from "../help.js";
 import { unknownCommandMessage } from "../lib/nearest-word.js";
@@ -13,16 +13,16 @@ import { manifestRepair, readUpdatePending } from "../lib/update-pending.js";
 export const helpFlags = [{ name: "all", type: "boolean", description: "accepted for scripts written before help listed every command; it changes nothing" }] as const;
 
 /** `cotal help [command…]`: every command, or the help of the command the words name. The words
- *  are literal nesting: a command (or its alias), then one of its subcommands. A manager lifecycle
+ *  select a command or alias, then its subcommands before any operands. A manager lifecycle
  *  verb is read as the dispatcher reads it, so its help is the one `--help` prints. */
 export async function help(args: ParsedArgs): Promise<void> {
   const [word, ...path] = args.positionals;
   const commands = commandSurface();
   if (word === undefined) return paintFor(process.stdout, () => printCommandList(commands));
   const cmd = findCommand(commands, word);
-  if (!cmd || cmd.name.startsWith("__")) throw new Error(unknownCommandMessage(commands, word));
+  if (!cmd || cmd.name.startsWith("__")) throw new CommandFailure("refused", "USAGE_INVALID", unknownCommandMessage(commands, word), { selfContained: true });
   if (cmd.name === "service" && path.length === 2 && path[0] === "start" && findServicePreset(path[1]!)) {
-    paintFor(process.stdout, () => printHelpPath(servicePresetCommand(cmd, path), ["start"]));
+    paintFor(process.stdout, () => printHelpPath(servicePresetCommand(cmd, path), path));
     return;
   }
   paintFor(process.stdout, () => printHelpPath(managerServiceCommand(cmd, path)?.cmd ?? cmd, path));

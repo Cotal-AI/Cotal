@@ -77,7 +77,7 @@
  */
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { connect } from "@nats-io/transport-node";
@@ -97,7 +97,7 @@ for (const key of Object.keys(process.env)) if (key.startsWith("COTAL_")) delete
 // Set before the stores are imported; they read COTAL_HOME on each call.
 process.env.COTAL_HOME = home;
 const env = { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: configDir, COTAL_SKIP_CONNECTOR_SEED: "1" };
-const { findMesh, findPreparedSpace, getSpaceAuth, recordMesh, removeMesh, workspaceSecretStore } = await import("@cotal-ai/workspace");
+const { deliveryCredsKey, findMesh, findPreparedSpace, getSpaceAuth, recordMesh, removeMesh, workspaceSecretStore } = await import("@cotal-ai/workspace");
 const { observeServiceProcess, serviceInstances, serviceInstanceStore } = await import("../src/lib/service-instances.js");
 const { shellWord } = await import("../src/lib/endpoint-errors.js");
 
@@ -123,6 +123,26 @@ const cli = (cwd: string, ...args: string[]): Run => {
   return { status: run.status, stdout: run.stdout, stderr: run.stderr, env: parsed };
 };
 const shown = (run: Run) => ({ status: run.status, error: run.env?.error, out: run.stdout.slice(-1000), err: run.stderr.slice(-1500) });
+
+function checkStoppedDeliveryLog(root: string, space: string, instanceId: string | null | undefined): void {
+  const credential = join(root, ".cotal", deliveryCredsKey(space, { injected: false, root }));
+  check("the stop removed the delivery launch credential", !existsSync(credential), credential);
+  const args = ["service", "logs", "stack-delivery", "--space", space, "--tail", "30", "--json"];
+  const logs = cli(root, ...args);
+  const result = logs.env?.result as { instance?: { instanceId?: string; observedProcess?: string; recordedState?: string }; lines?: string[]; path?: string } | undefined;
+  check("the stopped delivery instance's captured log is readable without its launch credential",
+    logs.status === 0 && typeof instanceId === "string" && result?.instance?.instanceId === instanceId && result.instance.observedProcess === "gone"
+    && result.instance.recordedState === "stopped" && (result.lines?.length ?? 0) > 0, shown(logs));
+  if (!result?.path) return;
+  const path = result.path, moved = `${path}.moved`;
+  renameSync(path, moved);
+  try {
+    const missing = cli(root, ...args);
+    check("the missing captured file is refused by its log path, not by a launch input",
+      missing.status === 2 && missing.env?.error?.code === "TARGET_NOT_FOUND" && missing.env.error.message.includes(path), shown(missing));
+  } finally { renameSync(moved, path); }
+}
+
 const journalOf = (root: string) => join(root, ".cotal", "stack-controller.json");
 const accountDigest = (root: string) => {
   const dir = join(root, ".cotal", "auth");
@@ -214,6 +234,10 @@ try {
     const deleteStopped = cli(home, "space", "delete", space, "--yes", "--json");
     check("space delete after down refuses TARGET_UNAVAILABLE and names cotal reset store, not cotal up",
       deleteStopped.status === 2 && deleteStopped.env?.error?.code === "TARGET_UNAVAILABLE" && Boolean(deleteStopped.env.error.remedy?.includes(`cotal reset store ${space} --yes`)) && !deleteStopped.env.error.remedy?.includes("cotal up"), shown(deleteStopped));
+    const deletePreview = cli(home, "space", "delete", space, "--dry-run", "--json");
+    check("the stopped stack's deletion preview names reset impact and says a stream inventory needs a running broker",
+      deletePreview.status === 2 && deletePreview.env?.error?.code === "TARGET_UNAVAILABLE" &&
+        deletePreview.env.error.remedy === `preview the impact of resetting its store with \`cotal reset store ${space} --dry-run\`. A stream inventory requires a running broker.`, shown(deletePreview));
 
     // 4. Reset after a normal down (B4-02).
     const storeStopped = cli(root, "reset", "store", space, "--dry-run", "--json");
@@ -323,6 +347,10 @@ try {
       await new Promise((settle) => setTimeout(settle, 250));
     }
     check("the finished run is counted and only the waiting run is listed, with its state", runs?.finished === 1 && runs.unfinished?.length === 1 && runs.unfinished[0]?.runId === runId && runs.unfinished[0].state === "running", runs);
+    const journal = cli(root, "run", "show", runId ?? "-", "--limit", "1", "--space", space);
+    check("run show --limit reads one journal row", journal.status === 0 && journal.stdout.includes("Journal · last 1 of"), shown(journal));
+    const pagedJournal = cli(root, "run", "show", runId ?? "-", "--page", "--limit", "1", "--space", space);
+    check("run show refuses inventory paging even when the journal limit is valid", pagedJournal.status === 1 && pagedJournal.stdout === "" && pagedJournal.stderr.includes("remove --page to read the journal") && pagedJournal.stderr.includes("cotal run --page --on <instance>"), shown(pagedJournal));
     for (const [definition, id] of [["stack-manager", manager], ["stack-delivery", delivery]] as const) {
       const stoppedMember = cli(root, "service", "stop", definition, "--instance", String(id), "--space", space, "--yes", "--json");
       check(`the ${definition} member stops on its own`, stoppedMember.status === 0, shown(stoppedMember));
@@ -512,6 +540,17 @@ try {
       check(`reset ${kind} ${mode} refuses CONFLICT, naming the linked store path and the directory it points to`, reset.status === 2 && reset.env?.error?.code === "CONFLICT" && Boolean(reset.env.error.message.includes(`the recorded store path ${store} is a link to ${moved}`)) && Boolean(reset.env.error.remedy?.includes(`cotal reset ${kind} ${space} --dry-run`)), shown(reset));
     }
     check("nothing is removed through the link", existsSync(join(moved, "notes.txt")) && existsSync(join(moved, "jetstream")));
+    rmSync(store);
+    const missing = `${store}-missing`;
+    symlinkSync(missing, store);
+    for (const kind of ["store", "space"]) for (const mode of ["--dry-run", "--yes"]) {
+      const reset = cli(root, "reset", kind, space, mode, "--json");
+      check(`reset ${kind} ${mode} refuses a dangling store link`, reset.status === 2 && reset.env?.error?.code === "CONFLICT"
+        && reset.env.error.message.includes(`the recorded store path ${store} is a link to ${missing}`)
+        && reset.env.error.message.includes("nothing was removed"), shown(reset));
+    }
+    check("the dangling link and parked store remain", readlinkSync(store) === missing
+      && !existsSync(missing) && existsSync(join(moved, "jetstream")));
   }
 
   // 10. A stack whose folder is deleted stops from another folder, and its name starts again.
@@ -664,7 +703,7 @@ try {
       check("an open space with an overriding auth broker names both addresses and dropping --server, never up here",
         mismatch.status === 2 && mismatch.env?.error?.code === "AUTH_REQUIRED"
           && mismatch.env.error.message.includes(authServer) && mismatch.env.error.message.includes(`"${space}" is recorded as an open mesh at ${server}`)
-          && mismatch.env.error.remedy === `check that address, or drop --server to reach "${space}" at ${server}, where it is recorded`
+          && mismatch.env.error.remedy === `check that address, or drop --server and retry with \`--space ${space}\` to reach its recorded broker at ${server}`
           && !mismatch.env.error.remedy.includes("cotal up"), shown(mismatch));
     }
     const openDown = cli(root, "down", "--yes", "--json");
@@ -822,6 +861,7 @@ try {
       omitted.status === 2 && omitted.env?.error?.code === "LIFECYCLE_BLOCKED" && journalRows().find((row) => row.role === "manager")?.instanceId === manager, shown(omitted));
     const stopped = cli(root, "down", "--yes", "--json");
     check("down --yes stops every member, and no member process is left", stopped.status === 0 && JSON.stringify(ids(rows(stopped))) === JSON.stringify(ids(first)) && gone(firstPids), shown(stopped));
+    checkStoppedDeliveryLog(root, space, first.find((row) => row.role === "delivery")?.instanceId);
     const cycledUp = cli(root, "up", "--json"), cycledRows = rows(cycledUp), cycledPids = pidsOf();
     const cycledDown = cli(root, "down", "--yes", "--json");
     const spaceServiceDir = join(home, "services", Buffer.from(space, "utf8").toString("hex"));

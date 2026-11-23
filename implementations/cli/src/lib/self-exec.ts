@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process";
 import { accessSync, constants, readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { delimiter, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { cmdSpawnSpec, codeSpan, logicalExecutionEntry, resolveOnPath } from "@cotal-ai/workspace";
+import { cmdSpawnSpec, codeSpan, isWorkspaceTargetError, logicalExecutionEntry, resolveOnPath } from "@cotal-ai/workspace";
 import { cliPackageRoot, entryScript, seedWriterKind } from "../seed/paths.js";
 import { shellWord } from "./endpoint-errors.js";
 import { workingFolderRemoved } from "./paths.js";
@@ -197,12 +197,14 @@ function durableCotalsOnPath(env: NodeJS.ProcessEnv): string[] {
 }
 
 /** The copy-paste command prefix for user-facing hints: prefer PATH, npx, or pnpm dlx, then the
- *  installed entry under this Node runtime. A dev clone uses pnpm. Re-execs use {@link selfArgv}. */
-export function displayCmd(): string {
+ *  installed entry under this Node runtime. A dev clone uses pnpm unless the command must run
+ *  from another folder. Re-execs use {@link selfArgv}. */
+export function displayCmd({ fromAnyFolder = false } = {}): string {
   if (cotalOnPath()) return "cotal";
   if (isNpx()) return "npx cotal-ai";
   if (isPnpmDlx()) return "pnpm dlx cotal-ai";
-  if (runsCliEntry() && seedWriterKind() === "released") {
+  if (runsCliEntry() && (fromAnyFolder || seedWriterKind() === "released")) {
+    if (seedWriterKind() !== "released") return selfArgv().map(shellWord).join(" ");
     const command = [process.execPath, entryScript()].map(shellWord).join(" ");
     if (process.platform !== "win32" && process.env.COTAL_LAUNCHER === "1") {
       const prefix = process.env.npm_config_prefix;
@@ -219,6 +221,10 @@ export function displayCmd(): string {
 export function displayRemedy(remedy: string, cmd?: string): string {
   return remedy.replace(/(?<!`)(`+)(?!`)([\s\S]*?)(?<!`)\1(?!`)/g, (span, _fence, command: string) =>
     command.startsWith("cotal ") ? codeSpan(`${cmd ??= displayCmd()}${command.slice("cotal".length)}`) : span);
+}
+
+export function hasMovedStackRemedy(error: unknown): boolean {
+  return isWorkspaceTargetError(error) && error.code === "not-started" && error.details.home === undefined && error.details.stackRemedy !== undefined;
 }
 
 /** The self-invocation as a shell-ready, double-quoted command prefix (for cmux pane commands).

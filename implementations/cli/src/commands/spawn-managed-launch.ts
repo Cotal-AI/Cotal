@@ -54,7 +54,7 @@ import { readManagedLaunch, requestManagedLaunch, type ManagedLaunchResult } fro
 import { c, stderrLine } from "../ui.js";
 import { displayCmd } from "../lib/self-exec.js";
 import { runningStackManagerPid, stackManagerAbsent, stackManagerStarting } from "../lib/stack-journal.js";
-import { cliControl, failIfNotOk } from "../lib/control.js";
+import { cliControl, failIfNotOk, onRerun } from "../lib/control.js";
 import { askManagerFolder, managerPin, managerSelection, managersWithPersona, rerunOn, rerunWithCwd, type FolderCheck } from "../lib/manager-choice.js";
 import { canPrompt } from "./meshes-wizard.js";
 import { callerHarness, missingConnector, spawnPersona } from "../lib/spawn-defaults.js";
@@ -330,6 +330,8 @@ export async function launchManagedPersona(
       const elsewhere = missing ? await managersWithPersona(flags, reply.managerInstanceId ?? on, ref).catch((): string[] => []) : [];
       throw new CommandFailure("refused", code, reply.error ? oneLine(reply.error) : "the manager refused the launch before execution", { target, native, remedy: elsewhere.length
         ? `nothing was launched; ${elsewhere.length === 1 ? "this manager of yours has" : "these managers of yours have"} ${ref === "default" ? "a default persona" : `persona "${ref}"`}: ${elsewhere.map((selector) => rerunOn(process.argv.slice(2), selector)).join(" or ")}`
+        : missing && ref === "default" && reply.error?.startsWith('no persona "default" in the catalog of manager ')
+          ? `nothing was launched; in the project shown above on the manager's host, run ${codeSpan(`cotal persona create default --space ${shellWord(t.space)} --prompt 'You are an agent on the Cotal mesh.' --subscribe ''`)}, then run the spawn again`
         : missing ? "nothing was launched; create that file on the manager's host, then run the spawn again"
         // This CLI refused before sending, so the manager reported nothing; the refusal names the side to update.
         : reply.details?.some((d) => d.kind === EP_UNDECLARED_ARG) ? "nothing was launched; update the side the refusal names, then run the spawn again"
@@ -435,7 +437,7 @@ async function reportStarting(start: { name: string; managerInstanceId: string; 
  *  command that does. */
 export async function reportAlreadyRunning(running: AgentAlreadyRunning, values: { detach?: boolean; creds?: string; json?: boolean; plain?: boolean }, space: string, server: string | undefined): Promise<void> {
   const where = running.manager;
-  const attach = where ? `${displayCmd()} attach ${shellWord(running.agent)} --on ${shellWord(where.selector)}` : null;
+  const attach = where ? `${onRerun(`${displayCmd()} attach`, { space }, [running.agent])} --on ${shellWord(where.selector)}` : null;
   const presentation = presentationOf(values);
   const now = where !== null && !values.detach && presentation !== "json" && canPrompt();
   const place = where ? `on ${where.selector}${where.host && where.host !== where.selector ? ` (${where.host})` : ""}` : "on the mesh, not on a manager of yours";

@@ -81,6 +81,65 @@ function meshRoot(): string {
   return root;
 }
 
+function checkCleanStoreCli(): void {
+  if (process.platform === "win32") return;
+  const root = realpathSync.native(mkdtempSync(join(tmpdir(), "cotal-clean-cli-")));
+  const cli = join(import.meta.dirname, "../../../bin/dist/cotal.js");
+  // The child is this suite's own CLI; it gets none of the runner's connection material.
+  const ambient = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_")));
+  const options = {
+    cwd: root, encoding: "utf8" as const, timeout: 30_000,
+    env: { ...ambient, COTAL_HOME: home, LC_ALL: "C.UTF-8", NO_COLOR: "1", COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_NO_UPDATE_CHECK: "1", COTAL_TELEMETRY: "off", XDG_CONFIG_HOME: join(home, "config") },
+  };
+  const run = (...args: string[]) => spawnSync(process.execPath, [cli, "clean", "store", ...args], options);
+  try {
+    const fixture = "-fixture with spaces";
+    const store = join(root, fixture);
+    const force = `cotal clean store --store-dir='${fixture}' --force`;
+    const flag = `--store-dir=${fixture}`;
+    const data = join(store, "jetstream");
+    mkdirSync(data, { recursive: true });
+    for (const target of ["store", "all"]) {
+      for (const mode of ["--dry-run", "--force"]) {
+        const result = spawnSync(process.execPath, [cli, "clean", target, flag, mode, "--attempt", `restore-${randomUUID()}`], options);
+        check(`clean ${target} ${mode} rejects --attempt and leaves the store intact`,
+          result.status === 1 && result.stdout === "" && result.stderr.includes(`clean ${target} cannot be scoped by --attempt.`) &&
+            result.stderr.includes("That option selects a restore for clean restore-attempt or clean restore-fallback.") && existsSync(data), result.stderr);
+      }
+    }
+    for (const preview of [true, false]) {
+      mkdirSync(data, { recursive: true });
+      const result = preview ? run(flag, "--dry-run") : run(flag);
+      const output = preview ? result.stdout : result.stderr;
+      assert.equal(result.status, preview ? 0 : 1, output);
+      const command = preview ? /`(cotal clean store [^`]+)`/.exec(output)?.[1]
+        : output.split("\n").map((line) => line.trim()).find((line) => line.startsWith("cotal clean store "));
+      assert.equal(command, force, output);
+      assert.ok(existsSync(join(store, "jetstream")), output);
+      const retry = spawnSync("sh", ["-c", 'node=$1; cli=$2; cotal() { "$node" "$cli" "$@"; }; eval "$3"', "sh", process.execPath, cli, command!], options);
+      check(`the ${preview ? "dry run" : "missing-force refusal"} prints a runnable command for a hyphen-led store`, retry.status === 0 && !existsSync(store), retry.stderr);
+    }
+
+    if (process.getuid?.() !== 0) {
+      const parent = join(root, "locked parent");
+      const dir = "./locked parent/store";
+      const data = join(root, dir, "jetstream");
+      mkdirSync(data, { recursive: true, mode: 0o700 });
+      chmodSync(parent, 0o500);
+      try {
+        for (const mode of ["--dry-run", "--force"]) {
+          const result = run("--store-dir", dir, mode);
+          check(`${mode} refuses a read-only store parent without listing or moving the store`,
+            result.status === 2 && result.stdout === "" && result.stderr.includes(`the store parent ${parent}`)
+              && result.stderr.includes(`chmod u+w '${parent}'`) && existsSync(data), result.stderr);
+        }
+      } finally { chmodSync(parent, 0o700); }
+      const result = run("--store-dir", dir, "--force");
+      check("making the parent writable permits the same clean store command", result.status === 0 && !existsSync(join(root, dir)), result.stderr);
+    }
+  } finally { rmSync(root, { recursive: true, force: true }); }
+}
+
 try {
   // --- live-process guard --------------------------------------------------------------------
   const guarded = meshRoot();
@@ -379,6 +438,7 @@ try {
   check("dry run: lists what the real run then removes", JSON.stringify(listed) === JSON.stringify(removedAfterDry), { listed, removedAfterDry });
   await assert.rejects(() => clean({ positionals: ["history"], values: { "dry-run": true }, raw: [] }), /--dry-run previews clean store and clean all only/);
   rmSync(dryRoot, { recursive: true, force: true });
+  checkCleanStoreCli();
 
   // --- stray words cannot narrow a purge or be ignored before local deletion -----------------
   const argsRoot = meshRoot(), argsCwd = process.cwd();

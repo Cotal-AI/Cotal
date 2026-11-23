@@ -1,8 +1,11 @@
 // The principal serve and prompts of CotalEndpoint, as an internal component: binding and arming each
 // principal-route serve, confirming it, re-binding it on a new connection, ending and stopping it, the
-// `prompts` presence field and its `seq`, and calling a principal. Moved verbatim from endpoint.ts; the
-// endpoint keeps servePrincipal, which a smoke replaces, and the fields, and forwards to these. Not
-// re-exported by the index.
+// `prompts` presence field and its `seq`, and calling a principal. Moved verbatim from endpoint.ts. The
+// component owns the `prompts` presence field; the endpoint keeps servePrincipal, which a smoke replaces,
+// and the shared fields, and forwards to these. Not re-exported by the index.
+import type { DeliveryState } from "./endpoint-delivery-state.js";
+import type { ConnectionState } from "./endpoint-connection-state.js";
+import type { EndpointIdentity } from "./endpoint-identity.js";
 import { AGENT_CONTRACTS, AGENT_ENDPOINT } from "./agent-endpoint.js";
 import { epPrincipalCall } from "./endpoint-call.js";
 import { EpEnvelopeError, type EndpointReply } from "./endpoint-envelope.js";
@@ -12,7 +15,7 @@ import type { EpCaller, EpPrincipal, PrincipalAuthority } from "./endpoint-subje
 import { processRuntime } from "./process-runtime.js";
 import type { CompiledContract } from "./schema-profile.js";
 import { spacePrefix } from "./subjects.js";
-import type { AgentCard, PresencePrompts } from "./types.js";
+import type { PresencePrompts } from "./types.js";
 import type { NatsConnection, PermissionViolationError } from "@nats-io/transport-node";
 
 /** The highest `prompts` presence `seq` this process used under each runtime id (SPEC §6). A reader
@@ -24,34 +27,23 @@ const promptsSeqs = new Map<string, number>();
  *  copied, a field it reassigns is written back through its setter, and every method is looked up on the
  *  endpoint at call time, so a member a caller replaced on the endpoint is the one that runs. */
 export interface EndpointPrincipalServeDeps {
-  space: () => string;
-  nc: () => NatsConnection | undefined;
-  owner: () => string;
-  actor: () => string;
-  card: () => AgentCard;
-  principalServes: () => Map<string, PrincipalServeIntent>;
   principalServers: () => Map<string, PrincipalServeIntent>;
-  promptsPresence: () => PresencePrompts | undefined;
-  setPromptsPresence: (value: PresencePrompts | undefined) => void;
   publishPresence: () => Promise<void>;
   emitRecoverable: (err: Error) => void;
   requireLifecycleUid: (what: string) => string;
   notLiveMsg: () => string;
 }
 
-/** One endpoint's principal serve and prompts. Internal: `CotalEndpoint` keeps the fields and forwards to it. */
+/** One endpoint's principal serve and prompts. Internal: it owns the `prompts` presence field, and
+ *  `CotalEndpoint` keeps the shared fields and forwards to it. */
 export class EndpointPrincipalServe {
-  constructor(private readonly deps: EndpointPrincipalServeDeps) {}
+  /** The `prompts` presence field {@link setPromptsPresence} last set. Shown only while the `agent`
+   *  endpoint is served and its subscription was accepted on the current connection. */
+  private promptsPresence?: PresencePrompts;
 
-  private get space() { return this.deps.space(); }
-  private get nc() { return this.deps.nc(); }
-  private get owner() { return this.deps.owner(); }
-  private get actor() { return this.deps.actor(); }
-  private get card() { return this.deps.card(); }
-  private get principalServes() { return this.deps.principalServes(); }
+  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly conn: Readonly<ConnectionState>, private readonly delivery: Readonly<DeliveryState>, private readonly deps: EndpointPrincipalServeDeps) {}
+
   private get principalServers() { return this.deps.principalServers(); }
-  private get promptsPresence() { return this.deps.promptsPresence(); }
-  private set promptsPresence(value: PresencePrompts | undefined) { this.deps.setPromptsPresence(value); }
   private publishPresence(): Promise<void> { return this.deps.publishPresence(); }
   private emitRecoverable(err: Error): void { return this.deps.emitRecoverable(err); }
   private requireLifecycleUid(what: string): string { return this.deps.requireLifecycleUid(what); }
@@ -59,13 +51,13 @@ export class EndpointPrincipalServe {
 
   /** Subscribe `intent` on `nc`. */
   bindPrincipalHandle(intent: PrincipalServeIntent, nc: NatsConnection): EpPrincipalServeHandle {
-    return servePrincipalRoute(nc, this.space, intent.self, intent.serve);
+    return servePrincipalRoute(nc, this.identity.space, intent.self, intent.serve);
   }
 
   /** A principal-route refusal a call or a serve reports itself: a request publish, a serve
    *  subscription or a reply read. Only a reply publish is left, which no call or serve awaits. */
   ownedPrincipalRouteRefusal(err: PermissionViolationError): boolean {
-    const p = `${spacePrefix(this.space)}.ep.`;
+    const p = `${spacePrefix(this.identity.space)}.ep.`;
     if (err.operation === "publish") return err.subject.startsWith(`${p}prin.`);
     return err.subject.startsWith(`${p}prin.`) || err.subject.startsWith(`${p}prin-reply.`);
   }
@@ -98,7 +90,7 @@ export class EndpointPrincipalServe {
   /** The broker accepted `handle` on `nc`. When that is still the current binding, the serve is
    *  ready there. */
   private principalServeConfirmed(intent: PrincipalServeIntent, nc: NatsConnection, handle: EpPrincipalServeHandle): void {
-    if (intent.ended || intent.binding?.handle !== handle || this.nc !== nc) return;
+    if (intent.ended || intent.binding?.handle !== handle || this.conn.nc !== nc) return;
     intent.readyOn = nc;
     if (!intent.readySettled) {
       intent.readySettled = true;
@@ -110,9 +102,9 @@ export class EndpointPrincipalServe {
   /** Re-bind every principal serve on a replaced connection (a rebuild), or re-run the check on the
    *  connection the library reconnected and re-subscribed itself. */
   rebindPrincipalServes(reconnected: boolean): void {
-    const nc = this.nc;
+    const nc = this.conn.nc;
     if (!nc) return;
-    for (const intent of this.principalServes.values()) {
+    for (const intent of this.delivery.principalServes.values()) {
       if (intent.ended) continue;
       const bound = intent.binding;
       if (bound && bound.nc === nc) {
@@ -155,7 +147,7 @@ export class EndpointPrincipalServe {
   private forgetPrincipalServe(intent: PrincipalServeIntent): void {
     intent.ended = true;
     intent.readyOn = undefined;
-    if (this.principalServes.get(intent.serve.endpoint) === intent) this.principalServes.delete(intent.serve.endpoint);
+    if (this.delivery.principalServes.get(intent.serve.endpoint) === intent) this.delivery.principalServes.delete(intent.serve.endpoint);
     if (this.principalServers.get(intent.serverKey) === intent) this.principalServers.delete(intent.serverKey);
   }
 
@@ -189,7 +181,7 @@ export class EndpointPrincipalServe {
   async setPromptsPresence(prompts: PresencePrompts): Promise<void> {
     for (const k of ["open", "seq"] as const)
       if (!Number.isSafeInteger(prompts?.[k]) || prompts[k] < 0) throw new TypeError(`prompts.${k} must be a non-negative safe integer`);
-    const intent = this.principalServes.get(AGENT_ENDPOINT);
+    const intent = this.delivery.principalServes.get(AGENT_ENDPOINT);
     if (!intent)
       throw new Error(`the prompts presence field belongs to a served "${AGENT_ENDPOINT}" endpoint: call servePrincipal first (SPEC §6)`);
     const used = promptsSeqs.get(intent.self.runtimeId) ?? 0;
@@ -198,6 +190,11 @@ export class EndpointPrincipalServe {
     promptsSeqs.set(intent.self.runtimeId, prompts.seq);
     this.promptsPresence = { open: prompts.open, seq: prompts.seq };
     await this.publishPresence();
+  }
+
+  /** Show `open: 0` with a fresh `seq` for a new serve of the `agent` endpoint. */
+  openPrompts(): void {
+    this.promptsPresence = { open: 0, seq: this.nextPromptsSeq() };
   }
 
   /**
@@ -215,8 +212,8 @@ export class EndpointPrincipalServe {
 
   /** The `prompts` field this process's presence carries now, or none. */
   servedPrompts(): PresencePrompts | undefined {
-    const intent = this.principalServes.get(AGENT_ENDPOINT);
-    if (!intent || intent.ended || !this.nc || intent.readyOn !== this.nc) return undefined;
+    const intent = this.delivery.principalServes.get(AGENT_ENDPOINT);
+    if (!intent || intent.ended || !this.conn.nc || intent.readyOn !== this.conn.nc) return undefined;
     return this.promptsPresence;
   }
 
@@ -243,15 +240,15 @@ export class EndpointPrincipalServe {
     contract?: { input: CompiledContract; output: CompiledContract };
     signal?: AbortSignal;
   }): Promise<EndpointReply> {
-    const nc = this.nc;
+    const nc = this.conn.nc;
     if (!nc) throw new Error(this.notLiveMsg());
     const contract = call.contract
       ?? (call.command === "describe" ? describeContracts() : call.endpoint === AGENT_ENDPOINT ? AGENT_CONTRACTS[call.command] : undefined);
     if (contract === undefined)
       throw new EpEnvelopeError("bad-request", `no contract is built in for ${call.endpoint}.${call.command}; pass one`, undefined, "not-executed");
-    const caller: EpCaller = { owner: this.owner, actor: this.actor, uid: this.requireLifecycleUid("callPrincipal") };
-    return epPrincipalCall(nc, this.space, { principal: call.principal, authority: call.authority }, {
-      endpoint: call.endpoint, command: call.command, contract, caller, name: this.card.name,
+    const caller: EpCaller = { owner: this.identity.owner, actor: this.identity.actor, uid: this.requireLifecycleUid("callPrincipal") };
+    return epPrincipalCall(nc, this.identity.space, { principal: call.principal, authority: call.authority }, {
+      endpoint: call.endpoint, command: call.command, contract, caller, name: this.identity.card.name,
       ...(call.args !== undefined ? { args: call.args } : {}),
     }, { deadlineMs: call.deadlineMs, ...(call.signal ? { signal: call.signal } : {}) });
   }

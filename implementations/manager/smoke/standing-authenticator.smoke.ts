@@ -32,15 +32,15 @@ for (const method of ["dialServeConnection", "dialGoalWriter", "dialSessionLedge
     };
     try {
       if (method === "dialGoalWriter") {
-        const component = new GoalWriter({
+        const component = new GoalWriter({} as ConstructorParameters<typeof GoalWriter>[0], {
           auth: () => receiver.auth, remoteAuthority: () => receiver.remoteAuthority, dial: receiver.dial,
-        } as unknown as ConstructorParameters<typeof GoalWriter>[0]);
+        } as unknown as ConstructorParameters<typeof GoalWriter>[1]);
         await component.dialGoalWriter(state as never);
       }
       else {
-        const component = new ServePlane({
+        const component = new ServePlane({} as ConstructorParameters<typeof ServePlane>[0], {
           auth: () => receiver.auth, remoteAuthority: () => receiver.remoteAuthority, dial: receiver.dial,
-        } as unknown as ConstructorParameters<typeof ServePlane>[0]);
+        } as unknown as ConstructorParameters<typeof ServePlane>[1], {} as ConstructorParameters<typeof ServePlane>[2]);
         if (method === "dialServeConnection") await component.dialServeConnection(state as never);
         else await component.dialSessionLedgerConnection(state as never, identity);
       }

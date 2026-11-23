@@ -13,6 +13,7 @@
  * Run: pnpm smoke:service-commands
  */
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -194,7 +195,7 @@ check("supervise is hidden", command("supervise")?.hidden === true);
 // ---- The real binary --------------------------------------------------------------------------
 const env: NodeJS.ProcessEnv = { ...process.env };
 for (const key of Object.keys(env)) if (key.startsWith("COTAL_") || key === "INVOCATION_ID") delete env[key];
-Object.assign(env, { HOME: home, USERPROFILE: home, COTAL_HOME: join(home, ".cotal"), XDG_CONFIG_HOME: xdg, COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1", COLUMNS: "200" });
+Object.assign(env, { HOME: home, USERPROFILE: home, COTAL_HOME: join(home, ".cotal"), XDG_CONFIG_HOME: xdg, COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1", NO_COLOR: "1", COLUMNS: "200" });
 const cotal = (args: string[]) => spawnSync(process.execPath, ["--import", TSX_LOADER, BIN, ...args], { cwd: root, env, encoding: "utf8", timeout: 120_000 });
 const out = (run: ReturnType<typeof cotal>) => `${run.stdout ?? ""}${run.stderr ?? ""}`;
 const definitions = () => {
@@ -223,9 +224,12 @@ try {
         && !out(installHelp).includes("start it at login"), out(installHelp));
   }
 
-  const status = cotal(["manager", "status", "--space", SPACE]);
-  check("cotal manager status with no manager started says so and names manager start",
-    status.status === 2 && out(status).includes("TARGET_NOT_FOUND") && out(status).includes("no manager has been started in space servicecommands") && out(status).includes("cotal manager start"), out(status));
+  for (const verb of ["status", "stop"]) {
+    const absent = cotal(["manager", verb, "--space", SPACE, "--json"]);
+    const error = JSON.parse(absent.stdout).error;
+    check(`cotal manager ${verb} with no manager started names a start in the same space`,
+      absent.status === 2 && error?.code === "TARGET_NOT_FOUND" && error.message.includes(`no manager has been started in space ${SPACE}`) && error.remedy === `start it with \`cotal manager start --space ${SPACE}\``, out(absent));
+  }
 
   const install = cotal(["manager", "install", "--space", SPACE, "--dry-run"]);
   check("cotal manager install refuses before any effect and names a unit of your own running manager start --foreground",
@@ -263,16 +267,65 @@ try {
   check("bare service offers the broker with --server <url> when the space has no registered broker", brokerRow === `cotal service start broker --config <file> --binary <file> --server <url> --space ${PREPARED}`, brokerRow);
   const selected = cotal(["use", SPACE, "--json"]);
   check("the calling project has selected the other space", selected.status === 0, out(selected));
+  for (const verb of ["logs", "status"]) {
+    const missing = cotal(["service", verb, "absent-worker", "--space", PREPARED, "--json"]);
+    const { error, target } = JSON.parse(missing.stdout);
+    const inventory = /`cotal (service --space [^`]+)`/.exec(error?.remedy)?.[1];
+    const listed = inventory ? cotal([...inventory.split(" "), "--json"]) : undefined;
+    check(`a missing custom service ${verb} offers a read of the requested space's definitions`,
+      missing.status === 2 && error?.code === "TARGET_NOT_FOUND" && target.space === PREPARED && error.message.endsWith("nothing was read")
+        && listed?.status === 0 && JSON.parse(listed.stdout).target.space === PREPARED, { missing: out(missing), listed: listed && out(listed) });
+  }
+  const missingLog = cotal(["service", "logs", "stack-manager", "--space", PREPARED, "--tail", "30", "--json"]);
+  const logError = JSON.parse(missingLog.stdout).error;
+  const managerStart = /`cotal (manager start [^`]+)`/.exec(logError.remedy)?.[1];
+  const managerPreview = managerStart ? cotal([...managerStart.split(" "), "--dry-run", "--json"]) : undefined;
+  check("the missing manager log names the stack root and previews starting the manager in the requested space",
+    missingLog.status === 2 && logError.code === "TARGET_NOT_FOUND" && logError.remedy.includes(`\`cotal up --root ${prepared} --space ${PREPARED}\``)
+      && managerPreview?.status === 0 && JSON.parse(managerPreview.stdout).target.space === PREPARED, { missingLog: out(missingLog), preview: managerPreview && out(managerPreview) });
+  const retryWith = (flags: string) => `rerun the original command with \`${flags}\`, keeping all other arguments and flags unchanged`;
+  const fills: Record<string, string> = { "--config": config, "--binary": binary, "--server": `nats://127.0.0.1:${await freePort()}` };
+  const brokerPreviewArgs = ["service", "start", "broker", "--space", PREPARED, "--dry-run", "--server", fills["--server"]!];
+  const brokerPartial = cotal(brokerPreviewArgs);
+  const brokerCorrected = cotal([...brokerPreviewArgs, "--config", config, "--binary", binary]);
+  check("a broker preview asks to add the missing files to the original preview, which then saves and launches nothing",
+    brokerPartial.status === 1 && out(brokerPartial).includes(retryWith("--config <file> --binary <file>"))
+      && brokerCorrected.status === 0 && out(brokerCorrected).includes("Nothing was saved, launched or loaded.")
+      && serviceDefinitionStore(PREPARED).read("broker") === undefined, { refused: out(brokerPartial), corrected: out(brokerCorrected) });
+
   const unready = cotal(["service", "add", "b0", "--preset", "broker", "--space", PREPARED]);
   const printed = out(unready).split("\n").map((line) => line.trim()).find((line) => line.startsWith("cotal service add b0 --preset broker")) ?? "";
   check("a broker add missing its options prints all three options and keeps the explicit space",
     unready.status === 1 && out(unready).includes("the broker preset needs --config, --binary, which have no default, and --server, since space servicecommandsprep has no registered broker; nothing was saved or started")
       && printed === `cotal service add b0 --preset broker --config <file> --binary <file> --server <url> --space ${PREPARED}`, out(unready));
-  const fills: Record<string, string> = { "--config": config, "--binary": binary, "--server": `nats://127.0.0.1:${await freePort()}` };
   const tokens = printed.split(" ").slice(1);
   const followed = cotal(tokens.map((word, index) => /^<[a-z]+>$/.test(word) ? fills[tokens[index - 1]!] ?? word : word));
   check("  filling only its placeholders saves the broker in the requested space, not the selected space",
     followed.status === 0 && serviceDefinitionStore(PREPARED).read("b0") !== undefined && serviceDefinitionStore(SPACE).read("b0") === undefined, out(followed));
+
+  const managerArgs = ["manager", "start", "--space", PREPARED, "--dry-run", "--json"];
+  const launchFile = join(prepared, ".cotal", "manager launch.json"), launchBytes = "{}\n";
+  writeFileSync(launchFile, launchBytes, { mode: 0o600 });
+  const digest = createHash("sha256").update(launchBytes).digest("hex");
+  const managerPartial = cotal([...managerArgs, "--launch-sha256", digest]);
+  const managerError = JSON.parse(managerPartial.stdout);
+  check("a pinned manager preview asks for only its missing launch file and preserves the original command",
+    managerPartial.status === 1 && managerPartial.stderr === "" && managerError.target.space === PREPARED
+      && managerError.error?.code === "USAGE_INVALID" && managerError.error.remedy === retryWith("--launch <file>"), out(managerPartial));
+  const managerCorrected = cotal([...managerArgs, "--launch-sha256", digest, "--launch", launchFile]);
+  const managerResult = JSON.parse(managerCorrected.stdout);
+  check("  adding the launch file previews the requested manager without saving or allocating it",
+    managerCorrected.status === 0 && managerResult.command === "manager" && managerResult.target.space === PREPARED
+      && managerResult.result?.dryRun === true && managerResult.result.saved === false && managerResult.result.allocated === false
+      && serviceDefinitionStore(PREPARED).read("manager") === undefined, out(managerCorrected));
+
+  const brokerAddArgs = ["service", "add", "logs-check", "--preset", "broker", "--space", PREPARED, "--config", config, "--server", fills["--server"]!, "--json"];
+  const addPartial = cotal(brokerAddArgs);
+  const addCorrected = cotal([...brokerAddArgs, "--binary", binary]);
+  const addError = JSON.parse(addPartial.stdout), addResult = JSON.parse(addCorrected.stdout);
+  check("a partial broker add asks for only its missing binary, and the corrected command saves without starting",
+    addPartial.status === 1 && addPartial.stderr === "" && addError.error?.code === "USAGE_INVALID" && addError.error.remedy === retryWith("--binary <file>")
+      && addCorrected.status === 0 && addResult.target.space === PREPARED && addResult.result?.started === false, { refused: out(addPartial), corrected: out(addCorrected) });
 
   const brokerHelp = out(cotal(["service", "add", "b1", "--preset", "broker", "--space", PREPARED, "--help"]));
   check("broker preset help shows --log-file as a path, as `cotal up` does, described for a preset add", /--log-file <path> +the nats-server log file this configuration's log_file names/.test(brokerHelp) && !brokerHelp.includes("prepared by `cotal up`"), brokerHelp);
@@ -325,6 +378,27 @@ try {
   const confirmed = cotal(confirm.split(" ").slice(1));
   check("  and running it forgets that space's service and keeps this folder's",
     confirmed.status === 0 && serviceDefinitionStore(PREPARED).read("hello") === undefined && serviceDefinitionStore(SPACE).read("hello") !== undefined, out(confirmed));
+
+  const definitionFile = join(prepared, "service definition.json");
+  writeFileSync(definitionFile, JSON.stringify({ schemaVersion: 1, space: PREPARED, launch: { type: "process", executable: "echo", args: ["hello"], cwd: prepared }, readiness: { type: "process", timeoutMs: 1000 } }));
+  for (const [name, source, preset] of [
+    ["preset-example", ["--preset", "manager", "--runtime", "pty"], "manager"],
+    ["file-example", ["--file", definitionFile], null],
+    ["exec-example", ["--exec", "echo 'hello world'", "--cwd", prepared], null],
+  ] as const) {
+    const flags = [...source, "--space", PREPARED, "--json"];
+    const refused = cotal(["service", "add", ...flags]);
+    const { outcome, error } = JSON.parse(refused.stdout);
+    check(`${source[0]} without a name asks to insert only the definition name`,
+      refused.status === 1 && refused.stderr === "" && outcome === "refused" && error?.code === "USAGE_INVALID"
+        && error.message === "scripted service add needs a definition name"
+        && error.remedy === "insert your definition name immediately after `add` in the original command, keeping all flags and values unchanged", out(refused));
+    const retry = cotal(["service", "add", name, ...flags]);
+    const { result } = JSON.parse(retry.stdout);
+    check(`adding the name to ${source[0]} saves in the requested space without starting the service`,
+      retry.status === 0 && result?.name === name && result.space === PREPARED && result.preset === preset && result.started === false
+        && serviceDefinitionStore(PREPARED).read(name) !== undefined && serviceDefinitionStore(SPACE).read(name) === undefined, out(retry));
+  }
 } catch (e) {
   check(`suite ran without throwing: ${e instanceof Error ? e.message : String(e)}`, false, e instanceof Error ? e.stack : e);
 } finally {

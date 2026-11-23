@@ -1,3 +1,4 @@
+import { isUtf8 } from "node:buffer";
 import { readFileSync } from "node:fs";
 import {
   agentFilePath,
@@ -13,7 +14,7 @@ import { targetWords } from "../lib/confirmation-required.js";
 import { assertLabels, commitPersona, editPersona, personaCatalog, personaPath, readPersonaSource, requirePersonaSource, reservedPersonaName, serializePersona, validatePersona } from "../lib/persona-files.js";
 import { completedFlagValue, completingFlagValue, positionalsForCompletion } from "../lib/completion.js";
 import { shellWord } from "../lib/endpoint-errors.js";
-import { catalogFolderProblem, catalogReadRefusal, listPersonaNames, readPersonas, type PersonaEntry } from "../lib/personas.js";
+import { catalogReadRefusal, listPersonaNames, readPersonas, type PersonaEntry } from "../lib/personas.js";
 import { openTransient, type ConnectValues } from "../lib/transient.js";
 import { c } from "../ui.js";
 
@@ -136,9 +137,6 @@ async function list(verbose: boolean, running: boolean, values: ConnectValues): 
   // A refusal names the space it read, as `persona` names it.
   const { root, space } = personaCatalog(values);
   recordOperationSpace(space);
-  // A catalog folder that is a file or a looping link is not an empty catalog.
-  const folder = catalogFolderProblem(personaDir(root));
-  if (folder) throw folder;
   // Only an absent folder is an empty catalog. One that cannot be read is refused, as `persona` refuses it.
   let entries: PersonaEntry[];
   try { entries = readPersonas(root); }
@@ -199,7 +197,7 @@ async function presentNames(values: ConnectValues): Promise<{ space: string; nam
 function show(name: string | undefined, values: { space?: string; server?: string }): void {
   if (!name) return usage();
   // A bad name, a missing persona and an invalid definition are refused as `persona show` refuses them.
-  const path = personaPath(targetRoot(values), name);
+  const path = personaPath(targetRoot(values), name, "show");
   const bytes = requirePersonaSource(path).bytes;
   validatePersona(bytes, path);
   // The canonical card (frontmatter + persona body). Piped or redirected it is the file byte for
@@ -220,7 +218,7 @@ async function edit(name: string | undefined, values: { space?: string; server?:
   if (!resolvePreference("editor", { preferences: cachedPreferences() }).value)
     throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "no editor is set", { remedy: "set VISUAL or EDITOR, or run `cotal config set editor vim`" });
   const catalog = personaCatalog(values);
-  const edit = await editPersona(personaPath(catalog.root, name), name, catalog);
+  const edit = await editPersona(personaPath(catalog.root, name), name, catalog, targetWords(values));
   if (edit.action === "saved") console.log(c.green(`✓ saved "${name}"`));
   else if (edit.action === "unchanged") console.log(c.dim(`"${name}" is unchanged, so nothing was saved`));
   else console.log(c.yellow(`edit cancelled: the editor exited with status ${edit.status}, so nothing was saved${edit.draft ? `; your draft is kept in ${edit.draft}` : ""}`));
@@ -250,8 +248,14 @@ async function create(name: string | undefined, v: { role?: string; model?: stri
   // Body from --prompt <text>, or --from <file|-> (- = stdin). No fallback — one must be given.
   let persona: string;
   if (v.prompt !== undefined) persona = v.prompt;
-  else if (v.from !== undefined) persona = readFileSync(v.from === "-" ? 0 : v.from, "utf8");
-  else {
+  else if (v.from !== undefined) {
+    const bytes = readFileSync(v.from === "-" ? 0 : v.from);
+    if (!isUtf8(bytes)) {
+      const source = v.from === "-" ? "standard input" : oneLine(v.from);
+      throw new CommandFailure("refused", "SCHEMA_INVALID", `invalid persona body: ${source} is not valid UTF-8`, { remedy: "convert the input to UTF-8 and retry" });
+    }
+    persona = bytes.toString("utf8");
+  } else {
     console.error(c.red('provide the persona body: --prompt "<text>"  or  --from <file|->'));
     process.exit(1);
   }
@@ -279,14 +283,14 @@ async function create(name: string | undefined, v: { role?: string; model?: stri
   }
 
   const bytes = await serializePersona({ name, role: v.role, model: v.model, persona, subscribe });
-  commitPersona(path, expected, bytes);
+  commitPersona(path, expected, bytes, targetWords(v));
   console.log(c.green(`✓ wrote persona "${name}"`));
   console.log(c.dim(`${path}\nspawn it:  \`cotal spawn ${name}${v.role ? ` --role ${v.role}` : ""}\``));
 }
 
 function remove(name: string | undefined, force: boolean, values: { space?: string; server?: string }): void {
   if (!name) return usage();
-  const path = agentFilePath(targetRoot(values), name);
+  const path = personaPath(targetRoot(values), name, "legacy-remove");
   const expected = requirePersonaSource(path);
   if (!force) {
     console.error(c.red(`refusing to delete "${name}" without --force`));

@@ -11,7 +11,7 @@ import { actionContext, clearGoalIndex, createEndpointStreams, createSpaceAuth, 
 import { openAuthorityClient } from "../src/authority-client.js";
 import { openRecordsScannerCandidate } from "../src/records-scanner.js";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal, createSuite } from "@cotal-ai/smoke-kit";
 import { stopOwnedChild } from "./_owned-child-cleanup.js";
 
 const port = await pickFreePort();
@@ -29,12 +29,7 @@ const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 let fixture: Awaited<ReturnType<typeof openAuthorityClient>> | undefined;
 let candidate: Awaited<ReturnType<typeof openRecordsScannerCandidate>> | undefined;
 
-let passed = 0;
-let failed = 0;
-const check = (name: string, condition: unknown, detail?: unknown) => {
-  if (condition) { passed++; console.log(`  ✓ ${name}`); }
-  else { failed++; console.log(`  ✗ FAIL: ${name}`, detail ?? ""); }
-};
+const { check, finish, passed, failed } = createSuite();
 
 try {
   for (let i = 0; i < 50 && !(await isReachable(servers)); i++) await wait(100);
@@ -128,9 +123,9 @@ try {
   check("host scan consumer is cleaned after terminal and concurrent clears", cleaned);
 
   await scanner.close();
-  check("every native scanner cell ran", passed + failed === 13, { passed, failed });
-  console.log(`manager goal-index scanner native: ${passed} passed, ${failed} failed`);
-  if (failed) process.exitCode = 1;
+  check("every native scanner cell ran", passed() + failed() === 13, { passed: passed(), failed: failed() });
+  console.log(`manager goal-index scanner native: ${passed()} passed, ${failed()} failed`);
+  finish();
 } finally {
   await candidate?.close().catch(() => {});
   await fixture?.close().catch(() => {});

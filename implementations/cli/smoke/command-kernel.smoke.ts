@@ -14,11 +14,14 @@ import type { InstalledExtension } from "@cotal-ai/workspace";
 import "../src/index.js"; // self-register the CLI commands (for the completion check)
 import { complete } from "../src/commands/completion.js";
 import { EXT_UPDATE_PARENT_ENV, ext } from "../src/commands/ext.js";
-import { hostPackageDir, isCommandFailure, MeshTargetError, seededCommandsMismatch, writeUpdateRecovery, readUpdateRecovery, clearUpdateRecovery } from "@cotal-ai/workspace";
+import { hostPackageDir, isCommandFailure, MeshTargetError, seededCommandsMismatch, telemetrySettingsPath, writeUpdateRecovery, readUpdateRecovery, clearUpdateRecovery } from "@cotal-ai/workspace";
 import { executeUpdate, installedUpdatePrefix, parseNpmVersion, printLegacyReport, reportRunningManagers, update, validateUpdateArguments, verifyCurrentExtension, verifyGlobalEntry, type UpdateRuntime } from "../src/commands/update.js";
 import { supervisorMayServe } from "../src/lib/manager-proc.js";
 import { claimExtensionMutation, claimExtensionUpdatePass } from "../src/lib/ext-mutation.js";
 import { compareSemver } from "../src/seed/reconcile.js";
+
+// The probe children strip COTAL_* from their environment; this opt-out survives that filter.
+process.env.DO_NOT_TRACK = "1";
 
 const noop = async (): Promise<void> => {};
 
@@ -67,6 +70,15 @@ const noop = async (): Promise<void> => {};
         assert.ok(!existsSync(join(home, "current-mesh")), "invalid input never selects a space");
       }
     }
+    const invalidWatch = run(["watch", "--view", "bad", "--json"]);
+    assert.equal(invalidWatch.status, 1, invalidWatch.stdout + invalidWatch.stderr);
+    assert.equal(invalidWatch.stderr, "");
+    const watchRecords = invalidWatch.stdout.trimEnd().split("\n").map((line) => JSON.parse(line));
+    assert.deepEqual(watchRecords.map(({ schemaVersion, stream, type }) => [schemaVersion, stream, type]), [[1, "watch", "error"], [1, "watch", "end"]]);
+    assert.equal(watchRecords[0].data.code, "USAGE_INVALID");
+    assert.match(watchRecords[0].data.message, /watch --view takes feed/);
+    assert.equal(watchRecords[1].data.reason, "setup-failed");
+
     const upHelp = run(["up", "--help"]);
     assert.equal(upHelp.status, 0, upHelp.stderr);
     const upText = upHelp.stdout.replace(/\s+/g, " ");
@@ -105,6 +117,19 @@ const noop = async (): Promise<void> => {};
     for (const url of ["https://example.test/auth", "http://127.0.0.1:1234/auth", "http://[::1]:1234/auth"])
       assert.doesNotThrow(() => findCommand(registry.all<Command>("command"), "sync")!.validate!({ values: { idp: url }, positionals: [], raw: [] }));
 
+    for (const verb of ["answer", "amend"]) {
+      const invalid = run(["run", verb, "auditrun", "paused", "--local", "--server", "nats://127.0.0.1:1", "--value", "true", "--by", "  ", "--json"],
+        { COTAL_SKIP_CONNECTOR_SEED: "1" });
+      assert.equal(invalid.status, 1, invalid.stdout + invalid.stderr);
+      assert.equal(invalid.stderr, "");
+      const report = JSON.parse(invalid.stdout);
+      assert.equal(report.outcome, "refused");
+      assert.equal(report.target, null);
+      assert.equal(report.error.code, "USAGE_INVALID");
+      assert.match(report.error.message, /requires --by <who>/);
+      assert.equal(report.error.remedy, "add --by <who> to name the local answerer");
+    }
+
     writeFileSync(join(root, "workflow.cotal.js"), 'const ok = await checkpoint("approve-plan", "Approve the plan?");\nlog(ok.status);\n');
     for (const words of [["start", "workflow.cotal.js"], ["resume", "run_sample"]]) {
       for (const timeout of ["9007199254740992ms", "9007199254740991s"]) {
@@ -125,6 +150,32 @@ const noop = async (): Promise<void> => {};
     assert.match(diagnostic ?? "", /invalid scripted checkpoint 'approve-plan' in \.\/bad-results\.json: status must be "resolved" or "expired"/);
     assert.match(diagnostic ?? "", /SCHEMA_INVALID/);
     assert.match(next?.replace(/\s+/g, " ") ?? "", /set checkpoints\.approve-plan\.status in \.\/bad-results\.json to "resolved" or "expired", then rerun the simulation/);
+
+    writeFileSync(join(root, "warning-fail.js"), 'if (false) {\n  await fanOut(["x", "y"], (x) => sleep("1s", { name: "nap" }), { name: "fo" });\n}\nthrow "boom";\n');
+    writeFileSync(join(root, "results.json"), "{}\n");
+    const failed = run(["run", "simulate", "warning-fail.js", "--handler", "results.json", "--json"]);
+    assert.equal(failed.status, 5, failed.stdout + failed.stderr);
+    assert.equal(failed.stderr, "");
+    const failedReceipt = JSON.parse(failed.stdout);
+    assert.equal(failedReceipt.outcome, "failed");
+    assert.equal(failedReceipt.error.code, "OPERATION_FAILED");
+    assert.deepEqual(failedReceipt.warnings.map(({ code }: { code: string }) => code), ["L3021"]);
+
+    writeFileSync(join(root, "bad-clock.json"), '{"clock":{"checkpoints":"1s"}}');
+    const badScript = ["run", "simulate", "warning-fail.js", "--handler", "bad-clock.json"];
+    const scriptJson = run([...badScript, "--json"]);
+    assert.equal(scriptJson.status, 1, scriptJson.stdout + scriptJson.stderr);
+    assert.equal(scriptJson.stderr, "");
+    const scriptReceipt = JSON.parse(scriptJson.stdout);
+    assert.equal(scriptReceipt.outcome, "refused");
+    assert.equal(scriptReceipt.error.code, "SCHEMA_INVALID");
+    assert.equal(scriptReceipt.target.file, "bad-clock.json");
+    assert.match(scriptReceipt.error.remedy, /use clock\.checkpoint in bad-clock\.json/);
+    assert.deepEqual(scriptReceipt.warnings.map(({ code }: { code: string }) => code), ["L3021"]);
+    const scriptPlain = run([...badScript, "--plain"]);
+    assert.equal(scriptPlain.status, 1, scriptPlain.stdout + scriptPlain.stderr);
+    assert.equal(scriptPlain.stdout, "");
+    assert.match(scriptPlain.stderr.replace(/\s+/g, " "), /L3021 .*Fix: Pass a key function.*unknown clock field 'checkpoints'.*use clock\.checkpoint in bad-clock\.json/);
 
     for (const [field, delay] of [["checkpoint", "soon"], ["turn", 100], ["ask", null], ["wait", "9007199254740992ms"]] as const) {
       writeFileSync(join(root, "bad-clock.json"), JSON.stringify({ checkpoints: { "approve-plan": { status: "resolved" } }, clock: { [field]: delay } }));
@@ -1394,11 +1445,12 @@ async function completionOut(positionals: string[]): Promise<string> {
   assert.ok(observed < wrote, "the running-manager observation precedes the seed store rewrite");
 }
 
-// --- malformed npm fails after local reconcile; extension failures continue and aggregate --------
+// --- Registry metadata is advisory; extension failures continue and aggregate ------------------
 {
   const malformed = updateRuntime({ npm: () => ({ status: 0, stdout: "not-json" }) });
-  assert.equal(await executeUpdate(false, malformed.rt), 1);
+  assert.equal(await executeUpdate(false, malformed.rt), 0);
   assert.ok(malformed.events.includes("reconcile"));
+  assert.ok(malformed.events.some((event) => /Registry latest:\s+not established/.test(event)));
 
   const attempted: string[] = [];
   const continued = updateRuntime({
@@ -2390,4 +2442,5 @@ if (process.platform !== "win32") {
   }
 }
 
+assert.ok(!existsSync(telemetrySettingsPath()), "kernel smoke commands must not create a telemetry install record");
 console.log("✓ command-kernel smoke passed");

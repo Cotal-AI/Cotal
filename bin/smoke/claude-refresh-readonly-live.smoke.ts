@@ -11,7 +11,7 @@ if (process.platform !== "linux" || process.getuid?.() === 0) skipSuite("read-on
 const root = mkdtempSync(join(tmpdir(), "cotal-claude-refresh-live-"));
 const cli = fileURLToPath(new URL("../dist/cotal.js", import.meta.url));
 let passed = 0;
-for (const name of ["absent", "readonly-config", "readonly-plugins"]) {
+for (const name of ["absent", "readonly-config", "readonly-plugins", "readonly-installed-profile", "readonly-installed-cache"]) {
   const base = join(root, name), home = join(base, "home"), project = join(base, "project"), native = join(base, "native");
   const config = join(base, "config"), state = join(base, "state"), runtime = join(base, "runtime");
   for (const dir of [home, project, native, config, state, runtime]) mkdirSync(dir, { recursive: true, mode: 0o700 });
@@ -34,31 +34,49 @@ for (const name of ["absent", "readonly-config", "readonly-plugins"]) {
     return `${result.stdout}${result.stderr}`;
   }
   let calls = 0, running = false;
-  const claude = join(home, ".claude"), plugins = join(claude, "plugins");
+  const installedSkills = name === "readonly-installed-profile" || name === "readonly-installed-cache";
+  const claude = join(home, installedSkills ? "claude-profile" : ".claude"), plugins = join(claude, "plugins");
+  const records = join(plugins, "installed_plugins.json");
+  const protectedDir = name === "readonly-installed-cache" ? plugins : claude;
+  const recordsBytes = JSON.stringify({ version: 2, plugins: { "cotal-skills@cotal-mesh": [{ scope: "user", version: "0.1.0" }] } });
+  if (installedSkills) env.CLAUDE_CONFIG_DIR = claude;
   try {
     run("space", "create", "alpha", "--root", project);
+    if (name === "readonly-installed-cache") run("ext", "seed");
     if (name !== "absent") {
       mkdirSync(claude);
       if (name === "readonly-plugins") { mkdirSync(plugins); chmodSync(plugins, 0o500); }
-      chmodSync(claude, 0o500);
+      if (installedSkills) { mkdirSync(plugins); writeFileSync(records, recordsBytes); }
+      chmodSync(protectedDir, 0o500);
     }
+    if (name === "readonly-installed-cache") env.npm_config_offline = "true";
     const update = run("update");
-    assert.match(update, /Refresh the Claude Code plugin: not installed/);
-    assert.equal(JSON.parse(readFileSync(join(state, "update-recovery.json"), "utf8")), null);
+    if (installedSkills) assert.ok(update.includes(`Claude skills refresh deferred because ${protectedDir} is read-only.`), update);
+    else assert.match(update, /Refresh the Claude Code plugin: not installed/);
+    if (name === "readonly-installed-cache") assert.match(update, /Registry latest:?\s+not established/);
+    const recovery = join(state, "update-recovery.json");
+    if (name !== "readonly-installed-cache" || existsSync(recovery))
+      assert.equal(JSON.parse(readFileSync(recovery, "utf8")), null);
     if (name === "absent") assert.equal(existsSync(claude), false);
     else {
-      assert.equal(statSync(claude).mode & 0o777, 0o500);
-      assert.deepEqual(readdirSync(claude), name === "readonly-plugins" ? ["plugins"] : []);
+      assert.equal(statSync(protectedDir).mode & 0o777, 0o500);
+      assert.deepEqual(readdirSync(claude), name === "readonly-plugins" || installedSkills ? ["plugins"] : []);
       if (name === "readonly-plugins") assert.deepEqual(readdirSync(plugins), []);
+      if (installedSkills) {
+        assert.deepEqual(readdirSync(plugins), ["installed_plugins.json"]);
+        assert.equal(readFileSync(records, "utf8"), recordsBytes);
+      }
     }
     run("status");
     running = true;
     run("up", "--detach", "--server", `nats://127.0.0.1:${await freePort()}`);
     run("send", "-c", "general", "after reconciliation");
     passed++;
-    console.log(`PASS ${name}: update, status, up and send succeed without writing Claude configuration`);
+    console.log(`PASS ${name}: reconciliation, status, up and send leave Claude configuration unchanged${name === "readonly-installed-cache" ? "; the offline version check still exits 1" : ""}`);
   } finally {
     if (running) run("down", "--yes");
+    if (name !== "absent" && existsSync(protectedDir)) chmodSync(protectedDir, 0o700);
+    if (name === "readonly-plugins" && existsSync(plugins)) chmodSync(plugins, 0o700);
   }
 }
 console.log(`CLI evidence retained at ${root}`);

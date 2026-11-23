@@ -14,11 +14,12 @@ First [start a mesh](run-a-mesh.mdx). Use [Watch a mesh](watch-a-mesh.mdx) to co
 
 ```bash
 cotal console --space main       # the TUI for one space
-cotal console --plain            # the passive line stream (also the default when piped)
+cotal console --plain            # the passive line stream with plain formatting
 cotal console                    # no --space on an open mesh → the admin overview first
 ```
 
-A real terminal opens the interactive console. A pipe or `--plain` selects the timestamped line stream.
+A real terminal opens the interactive console by default. Piped output, `--plain` and `--no-input` select the timestamped line stream.
+The line stream does not accept console commands.
 The stream contains presence changes and chat messages, without the console's signal tiles.
 Press Ctrl-C to stop the stream. The broker keeps running and the console reports no outage.
 
@@ -26,7 +27,7 @@ Press Ctrl-C to stop the stream. The broker keeps running and the console report
 
 ### Select a space
 
-On an open mesh, omit `--space` to open the admin overview.
+In the interactive console on an open mesh, omit `--space` to open the admin overview.
 It lists spaces found through the server's `CHAT_*` streams and presence buckets, with agent, channel, and message counts.
 Select a space to open its console. Press `b` to return to the overview.
 Use `--space X` to skip the picker. An authenticated connection opens its selected space directly.
@@ -46,7 +47,8 @@ Other space deletions use the console's connection, either open or supplied with
 
 ### Inspect activity
 
-The console has a roster, live feed, channel tabs, signal tiles, and optional views:
+The console has a roster, live feed, channel tabs, signal tiles, and optional views.
+The `all` tab shows the aggregate feed. A tab labeled `#<channel>` shows posts on that channel only, including `#all` if the space has a channel named `all`.
 
 | Key | Action |
 | --- | --- |

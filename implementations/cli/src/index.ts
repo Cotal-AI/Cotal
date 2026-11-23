@@ -19,10 +19,10 @@ import { setupStartEntry } from "./commands/setup-start.js";
 import { join } from "./commands/join.js";
 import { console_ } from "./commands/console.js";
 import { spawn, spawnComplete, spawnFlags, spawnRequiredExtensions, validateSpawnArguments } from "./commands/spawn.js";
+import { refuseRemovedStart } from "./commands/removed-start.js";
 import { appIdentity, appIdentityFlags } from "./commands/app-identity.js";
 import { attach, attachFlags, input, inputFlags, inputArguments, managedAgentComplete, managedTarget, ps, psFlags, stop, stopFlags, validateStopArguments } from "./commands/agents.js";
 import { models, modelsComplete, modelsFlags, validateModelsArguments } from "./commands/models.js";
-import { c } from "./ui.js";
 import { watch, watchComplete, watchFlags, validateWatchArguments } from "./commands/watch.js";
 import { persona, personaComplete, personaFlags, validatePersonaArguments } from "./commands/persona.js";
 import { personas, personasComplete } from "./commands/personas.js";
@@ -33,7 +33,7 @@ import { mint } from "./commands/mint.js";
 import { revokeCredential } from "./commands/revoke-credential.js";
 import { channels, channelArguments, channelComplete, channelFlags } from "./commands/channels.js";
 import { history, historyComplete, historyFlags, historySubcommands, validateHistoryArguments } from "./commands/history.js";
-import { clean, cleanComplete } from "./commands/clean.js";
+import { clean, cleanComplete, validateCleanArguments } from "./commands/clean.js";
 import { reset, resetComplete, resetFlags, validateResetArguments } from "./commands/reset.js";
 import { feedback, feedbackFlags, validateFeedbackArguments } from "./commands/feedback.js";
 import { send, sendComplete, sendFlags, sendArguments } from "./commands/send.js";
@@ -245,7 +245,7 @@ const baseCommands: Command[] = [
     subcommands: ([
       { name: "list", flagNames: ["space", "json", "plain"], summary: "list the built-in services and the ones you saved, with their state", hidden: true, reads: true, prepareMeshTarget: false },
       { name: "show", flagNames: ["space", "json", "plain"], summary: "read a saved definition without exposing argument or credential contents", examples: [{ command: "cotal service show <name>", note: "read a saved service definition" }], usage: "cotal service show <name>", reads: true, prepareMeshTarget: false },
-      { name: "add", flagNames: ["space", "exec", "cwd", "file", "preset", "json", "plain"], summary: "save your own program (--exec), a preset or a definition file; starts nothing", examples: [{ command: "cotal service add <name> --exec \"<command>\"", note: "save a program as a service" }, { command: "cotal service add <name> --file <definition.json>", note: "save one from a definition file" }], usage: "cotal service add <name> --exec \"<command>\" [--cwd <dir>] | --preset <preset> [<options>] | --file <definition.json>", prepareMeshTarget: false },
+      { name: "add", flagNames: ["space", "exec", "cwd", "file", "preset", "json", "plain"], summary: "save your own program (--exec), a preset or a definition file; starts nothing", examples: [{ command: "cotal service add <name> --exec \"<command>\"", note: "save a program as a service" }, { command: "cotal service add <name> --file <definition.json>", note: "save one from a definition file" }], usage: "cotal service add <name> (--exec \"<command>\" [--cwd <dir>] | --preset <preset> [<options>] | --file <definition.json>)", prepareMeshTarget: false },
       { name: "remove", flagNames: ["space", "instance", "yes", "json", "plain"], aliases: ["rm"], summary: "forget a stopped, unsupervised owned definition", examples: [{ command: "cotal service remove <name>", note: "forget a stopped service" }], usage: "cotal service remove <name> [--instance <full-id>] [--yes]", prepareMeshTarget: false },
       { name: "start", flagNames: ["space", "instance", "new-instance", "foreground", "no-open", "dry-run", "json", "plain"], summary: "start a service; a built-in one is saved from its defaults first, and nothing else is started for it", examples: [{ command: "cotal service start <name>", note: "start a service in the background" }, { command: "cotal service start <name> --foreground", note: "run it in this terminal" }], usage: "cotal service start <name> [<preset options>] [--instance <id>|--new-instance] [--foreground|--dry-run]", prepareMeshTarget: false },
       { name: "stop", flagNames: ["space", "instance", "yes", "with-agents", "dry-run", "json", "plain"], summary: "stop the exact owned process through its declared native policy", examples: [{ command: "cotal service stop <name>", note: "stop a service" }, { command: "cotal service stop <name> --dry-run", note: "show what stopping it affects" }], usage: "cotal service stop <name> [--instance <id>] [--with-agents] [--yes|--dry-run]", prepareMeshTarget: false },
@@ -329,6 +329,7 @@ const baseCommands: Command[] = [
       { name: "force", type: "boolean", description: "required - destructive, no prompting" },
       { name: "dry-run", type: "boolean", description: "store/all: list what would be removed and remove nothing" },
     ],
+    validate: validateCleanArguments,
     run: clean,
     complete: cleanComplete,
   },
@@ -653,20 +654,12 @@ const baseCommands: Command[] = [
     kind: "command",
     name: "start",
     group: "Agents",
-    // Tombstone (stage 2a): the verb is gone, the ability moved. Errors with the replacement —
-    // never a silent alias (no fallbacks). Hidden: not part of the surface, just a signpost.
     hidden: true,
     rawArgs: true,
     positionals: "…",
-    summary: "(removed) `cotal start` was merged into `cotal spawn --detach`",
-    run: async () => {
-      console.error(
-        c.red(
-          "✗ `cotal start` was merged into `cotal spawn --detach` - one launch grammar for foreground and detached (persona positional or --config; --name/--model/--cwd/--prompt/--subscribe/--allow-*/--share-tools all apply)",
-        ),
-      );
-      process.exit(1);
-    },
+    summary: "(removed) launch through a manager with `cotal spawn --detach`",
+    validate: refuseRemovedStart,
+    run: async (args) => refuseRemovedStart(args),
   },
   {
     kind: "command",
@@ -690,6 +683,7 @@ const baseCommands: Command[] = [
     summary: "list managed agents + their mesh status",
     usage: "cotal ps [--json|--plain] [--wide | --slots] [--on <instance>]",
     flags: psFlags,
+    flagNames: psFlags.filter((flag) => flag.name !== "creds").map((flag) => flag.name),
     outputs: ["json", "plain"],
     examples: [{ command: "cotal ps", note: "list your managed agents" }, { command: "cotal ps --wide", note: "add each agent's folder, process and host" }, { command: "cotal ps --json", note: "the same as one JSON document" }],
     reads: true,
@@ -793,8 +787,8 @@ const baseCommands: Command[] = [
       { name: "show", flagNames: ["space", "json", "plain"], summary: "read a local reference and its revision", examples: [{ command: "cotal endpoint show <name>", note: "read a saved reference" }], reads: true, usage: "cotal endpoint show <name>" },
       { name: "describe", flagNames: ["space", "server", "creds", "on", "refresh", "json", "plain"], summary: "read the selected native endpoint's digest-verified contracts", examples: [{ command: "cotal endpoint describe <target>", note: "read an endpoint's commands and schemas" }, { command: "cotal endpoint describe ep:<class>", note: "read them by endpoint class" }], reads: true, usage: "cotal endpoint describe <ref:name | ep:class | target>" },
       { name: "invoke", flagNames: ["space", "server", "creds", "on", "args", "name", "self", "admin", "timeout", "handle", "wait", "cast", "all", "json", "plain"], summary: "invoke one declared command under the existing caller authority", examples: [{ command: "cotal endpoint invoke <target> <command>", note: "call one command" }, { command: "cotal endpoint invoke <target> <command> --args '<json>'", note: "call it with arguments" }], usage: "cotal endpoint invoke <target> <command> [--args '<json>']" },
-      { name: "watch", flagNames: ["space", "server", "creds", "on", "since", "json", "plain"], summary: "declared record/event watch; native declaration adapter unavailable in this author", examples: [{ command: "cotal endpoint watch <target> <record-key-or-topic>", note: "watch a declared record or topic" }], usage: "cotal endpoint watch <target> <record-key-or-topic> [--since <native-sequence>]", reads: true },
-      { name: "session", flagNames: ["space", "server", "creds", "on", "json", "plain"], summary: "declared interactive session; native declaration adapter unavailable in this author", examples: [{ command: "cotal endpoint session <target> <command>", note: "open a declared interactive session" }], usage: "cotal endpoint session <target> <command>" },
+      { name: "watch", flagNames: ["space", "server", "creds", "on", "since", "json", "plain"], summary: "watching declared records or events is unavailable in this CLI", usage: "cotal endpoint watch <target> <record-key-or-topic> [--since <native-sequence>]", reads: true },
+      { name: "session", flagNames: ["space", "server", "creds", "on", "json", "plain"], summary: "declared interactive sessions are unavailable in this CLI", usage: "cotal endpoint session <target> <command>" },
       { name: "work", flagNames: ["space", "server", "creds", "on", "lease", "result", "json", "plain"], summary: "declared work pools are unavailable in this CLI", usage: "cotal endpoint work lease <target> <pool> | work commit <target> <pool> --lease <private-file> --result <JSON>", subcommands: [
         { name: "lease", flagNames: ["space", "server", "creds", "on", "json", "plain"], summary: "leasing from a work pool is unavailable in this CLI", usage: "cotal endpoint work lease <target> <pool>" },
         { name: "commit", flagNames: ["space", "server", "creds", "on", "lease", "result", "json", "plain"], summary: "committing a work result is unavailable in this CLI", usage: "cotal endpoint work commit <target> <pool> --lease <private-file> --result <JSON>" },

@@ -51,8 +51,8 @@ import { pidfileState, pidfileTargets } from "./down.js";
 import { localProcessSurface } from "../ext-loader.js";
 import { readStackJournal, recordResetStore, STACK_DEFINITION, stackJournalPath } from "../lib/stack-journal.js";
 import { rollbackRestoreWithBroker } from "../lib/controller-restore.js";
-import { maintenanceNextStep } from "../lib/restore.js";
-import { displayCmd } from "../lib/self-exec.js";
+import { maintenanceNextStep, restoreNextStep } from "../lib/restore.js";
+import { displayCmd, displayRemedy } from "../lib/self-exec.js";
 import { MissingFlags } from "../lib/missing-flags.js";
 import { attemptProcessesGone } from "../lib/isolated-broker.js";
 import { observeServiceProcess, serviceInstances } from "../lib/service-instances.js";
@@ -83,6 +83,19 @@ function recordedAttemptStep(root: string, journal: ReturnType<typeof readMainte
   return `this root's maintenance record names attempt ${recorded.attemptId} (state ${journal.state})${recorded.next ? `; ${recorded.next}` : ""}`;
 }
 
+export function validateCleanArguments(args: ParsedArgs): void {
+  const target = args.positionals[0];
+  if ((target === "history" || target === "store" || target === "all") && args.values.attempt !== undefined)
+    throw new CommandFailure("refused", "USAGE_INVALID", `clean ${target} cannot be scoped by --attempt. That option selects a restore for clean restore-attempt or clean restore-fallback. Nothing was ${target === "history" ? "purged" : "removed"}.`, { selfContained: true });
+  if (args.values["store-dir"] === undefined) return;
+  if (target === "history")
+    throw new CommandFailure("refused", "USAGE_INVALID", "clean history targets a running mesh. Nothing was purged. Only clean store and clean all take --store-dir.", { selfContained: true });
+  if (target === "restore-fallback" || target === "restore-attempt")
+    throw new CommandFailure("refused", "USAGE_INVALID", `clean ${target} selects a restore by --attempt and does not take --store-dir. Nothing was changed.`, {
+      remedy: "Remove --store-dir and its value only if you intend to act on the restore selected by --attempt.", selfContained: true,
+    });
+}
+
 /** `cotal clean <history|store|all>` - one configurable cleanup verb.
  *   - `history`: purge the retained message backlog on the RUNNING broker (CHAT, plus DMs with
  *     `--dms`) via the least-privilege purger cred. `cotal history clear` is a thin alias.
@@ -104,6 +117,7 @@ export async function clean(args: ParsedArgs): Promise<void> {
     throw new CommandFailure("refused", "USAGE_INVALID", target ? `clean has no target "${target}"; it takes ${TARGETS.join(", ")}` : `clean needs a target: ${TARGETS.join(", ")}`);
   if (args.positionals.length > 1)
     throw new CommandFailure("refused", "USAGE_INVALID", target === "history" ? "clean history takes no channel name; it clears all retained channel history, so nothing was purged" : `clean ${target} takes no extra positional arguments; nothing was removed`);
+  validateCleanArguments(args);
   const dryRun = values["dry-run"] === true;
   if (dryRun && target !== "store" && target !== "all")
     throw new CommandFailure("refused", "USAGE_INVALID", `--dry-run previews clean store and clean all only, not clean ${target}`);
@@ -117,16 +131,18 @@ export async function clean(args: ParsedArgs): Promise<void> {
       remedy: `if you ran this from the project you intend to clean, rerun from the same directory, removing only ${flags} and ${meshFlags.length === 1 ? "its value" : "their values"}`,
     });
   }
+  const explicitStore = values["store-dir"];
+  const storeFlag = explicitStore === undefined ? "" : ` --store-dir${explicitStore.startsWith("-") ? "=" : " "}${shellWord(explicitStore)}`;
   if (!values.force && !dryRun) {
     // The command to run keeps every flag that picks what is deleted; without one it deletes another
     // target than the one asked for. The restore verbs act on one attempt, named as given or as a placeholder.
     const attempt = target === "restore-attempt" || target === "restore-fallback" ? ` --attempt ${values.attempt || "<id>"}` : "";
     const discard = target === "restore-fallback" && values["discard-history"] ? " --discard-history" : "";
-    const flag = (name: "store-dir" | "space" | "server" | "creds"): string => {
+    const flag = (name: "space" | "server" | "creds"): string => {
       const value = values[name];
       return value === undefined ? "" : ` --${name} ${shellWord(value)}`;
     };
-    const picks = target === "store" || target === "all" ? flag("store-dir")
+    const picks = target === "store" || target === "all" ? storeFlag
       : target === "history" ? `${flag("space")}${flag("server")}${flag("creds")}${values.dms ? " --dms" : ""}` : "";
     throw new CommandFailure("refused", "USAGE_INVALID", `clean ${target} deletes without prompting, so it requires --force`, { remedy: `cotal clean ${target}${attempt}${picks} --force${discard}`, remedyIsCommand: true });
   }
@@ -184,6 +200,11 @@ export async function clean(args: ParsedArgs): Promise<void> {
           target: { root, attemptId: values.attempt },
           remedy: recordedAttemptStep(root, journal, "this root holds no restore attempt. Check that you are in the original project folder and verify the attempt ID before retrying"),
         });
+      if (journal.state === "restore-ready")
+        throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `restore attempt ${values.attempt} is still pre-commit; nothing was deleted`, {
+          target: { root, attemptId: values.attempt, state: journal.state },
+          remedy: restoreNextStep(journal.state, values.attempt),
+        });
       const active = journal.state === "active" && journal.restore.attemptId === values.attempt && !journal.restore.cleanup ? journal : undefined;
       const leftOut = active ? restoreLeftOut(active) : undefined;
       const onlyCopy = leftOut ? active?.restore.previousSource?.identity.path : undefined;
@@ -207,7 +228,7 @@ export async function clean(args: ParsedArgs): Promise<void> {
   const elsewhere = recordsElsewhereError(root);
   if (elsewhere) {
     const { message, remedy } = workspaceErrorParts({ kind: "target", error: elsewhere });
-    throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `${message}; nothing was removed`, { target: { ...spaceRootTarget({ root, space: targetErrorSpace(elsewhere.details) }), recordedRoot: elsewhere.details.recordedRoot }, ...(remedy ? { remedy } : {}) });
+    throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `${message}; nothing was removed`, { target: { ...spaceRootTarget({ root, space: targetErrorSpace(elsewhere.details) }), recordedRoot: elsewhere.details.recordedRoot }, ...(remedy ? { remedy: displayRemedy(remedy) } : {}) });
   }
 
   // store | all: the JetStream store delete, plus (for `all`) the space identity. The broker-wide
@@ -215,7 +236,6 @@ export async function clean(args: ParsedArgs): Promise<void> {
   // the lock included, so it reads the same state without one.
   // From here an interrupt says what the clean left, and releases the lock so the next run does not find it held.
   // The handler is in place before the lock is taken: without one, an interrupt ends the process with the lock held.
-  const storeFlag = values["store-dir"] === undefined ? "" : ` --store-dir ${shellWord(values["store-dir"])}`;
   const cleanCommand = (preview: boolean) => codeSpan(`${displayCmd()} clean ${target}${storeFlag} ${preview ? "--dry-run" : "--force"}`);
   let lock: ReturnType<typeof acquireMaintenanceLock> | undefined;
   const progress: string[] = [];
@@ -286,7 +306,7 @@ export async function clean(args: ParsedArgs): Promise<void> {
   const userAuthRemoved = removed.some((path) => path.endsWith(USER_AUTH_TRUST));
   if (dryRun) {
     for (const path of removed) console.log(`would remove ${path}`);
-    console.log(c.dim(`dry run - nothing was removed; ${codeSpan(`cotal clean ${target}${values["store-dir"] ? ` --store-dir ${shellWord(values["store-dir"])}` : ""} --force`)} removes these`));
+    console.log(c.dim(`dry run - nothing was removed; ${codeSpan(`cotal clean ${target}${storeFlag} --force`)} removes these`));
     if (userAuthRemoved) console.error(c.yellow("! this clean would remove the IdP trust and the actor ledger of this user-auth space, so every actor grant would be lost. A later up would need `cotal up --user-auth --idp <auth base URL>`, and each actor `cotal actor grant` again"));
     if (trustRemoved) console.error(c.yellow("! full backups taken before this clean would no longer restore into this root: each is bound to the space trust it removes. Only their registry would restore, with backup restore <dir> --only registry, and chat and DM history would start empty"));
     return;
@@ -621,8 +641,8 @@ function pathContains(parent: string, child: string): boolean {
 /** Inspect the same pinned local store path that the existing guarded cleanup deletes. */
 export function safeStoreCleanupPath(root: string, override: string | undefined): { path: string; identity?: { dev: bigint; ino: bigint } } {
   const requested = resolve(override ?? join(root, ".cotal", "nats"));
-  if (!existsSync(requested)) return { path: requested };
-  const stat = lstatSync(requested, { bigint: true });
+  const stat = lstatSync(requested, { bigint: true, throwIfNoEntry: false });
+  if (!stat) return { path: requested };
   if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error(`store cleanup target is not a real directory: ${requested}`);
   const target = realpathSync.native(requested);
   const canonicalRoot = realpathSync.native(root);
@@ -666,6 +686,13 @@ export function safeStoreCleanupPath(root: string, override: string | undefined)
   };
   checkRemoval(target);
   refuseForeignStoreEntries(target, foreignStoreEntries(target));
+  const parent = dirname(target);
+  try { accessSync(parent, constants.W_OK | constants.X_OK); }
+  catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (!["EACCES", "EPERM", "EROFS"].includes(code ?? "")) throw error;
+    throw new CommandFailure("refused", "PERMISSION_DENIED", `the store parent ${parent} is not writable and searchable by this account (${code}), so the store cannot be moved aside; nothing was moved or removed`, { target: { storeDir: target, path: parent }, remedy: `make the parent writable with chmod u+w ${shellWord(parent)}, then run this command again` });
+  }
   return { path: target, identity: { dev: stat.dev, ino: stat.ino } };
 }
 

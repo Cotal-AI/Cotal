@@ -13,13 +13,13 @@ import { join } from "node:path";
 import { registry, type Connector } from "@cotal-ai/core";
 import { cacheConnector, extensionsDir, saveExtensionsManifest } from "@cotal-ai/workspace";
 import { createSuite } from "@cotal-ai/smoke-kit";
-import { ConnectorInventory, servedConnectorStatuses, type ConnectorInventoryDeps } from "../src/connector-inventory.js";
+import { ConnectorInventory, servedConnectorStatuses } from "../src/connector-inventory.js";
 import { MANAGER_STATUS_CONTRACT, managerShippedSurface, type ManagerConnectorStatus } from "../src/manager-service-contract.js";
 
 const { check, finish } = createSuite();
 
 const shipped = managerShippedSurface();
-check("the Manager cluster advances to revision 52 for the prompts fact", shipped.revision === 52, shipped);
+check("the Manager contract retains the prompts fact after the interrupt command advances it", shipped.revision === 53, shipped);
 
 const base = {
   instanceId: "a".repeat(26), execution: "runtime", runtime: "pty", custody: "legacy", runHosting: false,
@@ -33,15 +33,13 @@ check("status keeps prompts typed as a boolean", !valid(row({ prompts: "yes" }))
 
 /** Take the inventory as boot does, with `installed` choosing the declared-inventory path. */
 async function inspect(installed: boolean): Promise<ManagerConnectorStatus[]> {
-  let rows: ManagerConnectorStatus[] = [];
-  const deps = {
-    bootNotes: () => [], setBootNotes: () => {}, connectorRequirements: () => new Map(), setConnectorRequirements: () => {},
-    connectorStatuses: () => rows, setConnectorStatuses: (value: ManagerConnectorStatus[]) => { rows = value; },
-    execution: () => "runtime", installedExtensions: () => installed, machineSetupCommand: () => undefined,
-    classSpawnEnabled: () => true, prepareClaudeWake: async () => undefined,
-  } as unknown as ConnectorInventoryDeps;
-  await new ConnectorInventory(deps).inspectConnectorsAtBoot();
-  return rows;
+  const inventory = new ConnectorInventory(
+    { execution: "runtime", installedExtensions: installed, machineSetupCommand: undefined, expectedConnectorGeneration: "" },
+    { seatLaunch: { classSpawnEnabled: () => true } } as unknown as ConstructorParameters<typeof ConnectorInventory>[1],
+    () => undefined,
+  );
+  await inventory.inspectConnectorsAtBoot();
+  return inventory.connectorStatuses;
 }
 const fact = (rows: ManagerConnectorStatus[], agent: string, userMode: boolean) =>
   servedConnectorStatuses(rows, userMode).find((r) => r.agent === agent)?.prompts;

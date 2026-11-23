@@ -202,7 +202,15 @@ export function validateSpawnArguments(args: ParsedArgs) {
   if (values.file !== undefined) { try { personaFileReference(values.file); } catch (error) { throw new CommandFailure("refused", "SCHEMA_INVALID", (error as Error).message); } }
   if (values["allow-stale"] !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", "manifest deployment options belong to `cotal team deploy <file>`, not spawn");
   if (values.runtime !== undefined && !values.runtime.trim()) throw new CommandFailure("refused", "USAGE_INVALID", "--runtime cannot be empty");
-  if (values.runtime !== undefined && direct) throw new CommandFailure("refused", "USAGE_INVALID", "--runtime chooses the runtime of one managed seat; a spawn in this terminal has no manager runtime to choose", { remedy: "add -d, or --on <instance>, to launch it through a manager" });
+  if (values.runtime !== undefined && direct) {
+    const receipt = values["dry-run"] ? undefined : values.json ? "--json" : values.plain ? "--plain" : undefined;
+    const without = ["--runtime", receipt, values.detach ? "--detach" : undefined, values.on !== undefined ? "--on" : undefined, values.creds !== undefined ? "--creds" : undefined].filter(Boolean);
+    const foreground = `omit ${without.join(", ")} to launch in this terminal`;
+    const modes = values.on !== undefined ? "-d" : receipt ? "-d (with --on <instance> to select a manager)" : "-d or --on <instance>";
+    const alreadyManaged = values.detach || (values.on !== undefined && !receipt);
+    const managed = values.foreground ? (alreadyManaged ? "omit --foreground" : `replace --foreground with ${modes}`) : `add ${modes}`;
+    throw new CommandFailure("refused", "USAGE_INVALID", "--runtime chooses the runtime of one managed seat; a spawn in this terminal has no manager runtime to choose", { remedy: internal ? foreground : `${foreground}, or ${managed} to launch through a manager` });
+  }
   // Every manager refuses `auto` for one seat, so it is refused here on any host.
   if (values.runtime?.trim() === "auto") throw new CommandFailure("refused", "USAGE_INVALID", "--runtime auto chooses a manager's own runtime, not the runtime of one seat", { remedy: "omit --runtime to use the serving manager's runtime" });
   if (values["enrollment-file"] !== undefined && !values.space) throw new CommandFailure("refused", "USAGE_INVALID", "--enrollment-file requires an explicit --space");
@@ -524,7 +532,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   // persona — `cotal spawn` with no args launches `<root>/.cotal/agents/default.md`.
   const { ref, from: personaFrom } = spawnPersona(values.config, positionals, { space, preferences: cachedPreferences() });
   const personaProject = resolvePath(target.personaRoot, "..", "..");
-  const path = values.file !== undefined || (redeemedEnrollment && values.config) ? resolvePath(ref) : directPersonaPath(personaProject, ref, values.config === undefined && positionals.length > 0);
+  const path = values.file !== undefined || (redeemedEnrollment && values.config) ? resolvePath(ref) : directPersonaPath(personaProject, ref, values.config === undefined);
   // The product default of a catalog nothing prepared, as a Cloud space's is until a spawn, is
   // written from the shipped template here and launched. This also applies to positional `default`.
   // A missing file, preference or other catalog name is still refused.

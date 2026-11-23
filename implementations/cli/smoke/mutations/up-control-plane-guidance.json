@@ -11,7 +11,7 @@
   "mutations": [
     {
       "name": "restore the catch-owned generic supervise remedy",
-      "file": "implementations/cli/src/commands/up.ts",
+      "file": "implementations/cli/src/commands/up-detach.ts",
       "find": "\"Spawn and retirement require a functioning control plane.\"]) stderrLine(\"  \", line, c.dim);",
       "replace": "\"start one with: cotal supervise\"]) stderrLine(\"  \", line, c.dim);",
       "expectRed": "control-plane refusal never appends the fixed supervise remedy",

@@ -91,7 +91,7 @@ import {
   type RunJournalActivation,
   registry,
   standaloneConnectOpts,
-  walkKvEntries,
+  lastKvEntries,
   type Identity,
   type RunHost,
   type RunHostDrive,
@@ -914,9 +914,16 @@ export class RunHosting {
     try {
       inherited = await this.withOperator({}, async (planes, kv) => {
         const out: typeof inherited = [];
-        for (const e of await walkKvEntries(kv, `run.${this.ctx.endpoint}.*.spec`)) {
-          const runId = e.key.split(".")[2];
-          if (runId === undefined) continue;
+        const prefix = `run.${this.ctx.endpoint}.`;
+        const records = new Map((await lastKvEntries(kv))
+          .filter((e) => e.operation === "PUT" && e.key.startsWith(prefix))
+          .map((e) => [e.key, e]));
+        for (const key of records.keys()) {
+          const [, , runId, kind, extra] = key.split(".");
+          if (runId === undefined || kind !== "spec" || extra !== undefined || (retrying && this.runs.has(runId))) continue;
+          if (records.get(`${prefix}${runId}.status`)?.json<RunStatusValue>()?.state !== "running") continue;
+          // The batch only discovers candidates. Re-read their records before checking admission
+          // and deriving the next attempt's epoch and fencing token.
           const record = await readRunRecord(kv, this.ctx.endpoint, runId);
           const note = record?.status;
           if (note === undefined || note.value.state !== "running" || (retrying && this.runs.has(runId))) continue;

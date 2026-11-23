@@ -110,6 +110,7 @@
     "smoke:codex-host": { "seconds": 82.1, "shard": 1 },
     "smoke:codex-installed": { "seconds": 63.6, "shard": 3 },
     "smoke:codex-rollout-path": { "seconds": 1, "shard": 1 },
+    "smoke:codex-skill-command:auth": { "seconds": 20, "shard": 2 },
     "smoke:codex-tool-closed": { "seconds": 1.7, "shard": 2 },
     "smoke:component-health": { "seconds": 101.4, "shard": 0 },
     "smoke:connect-reader-acl:auth": { "seconds": 5.2, "shard": 2 },

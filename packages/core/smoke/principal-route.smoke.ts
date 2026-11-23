@@ -19,7 +19,7 @@ import {
   epPrincipalCallerReplyFilter, epPrincipalGrantRows, epPrincipalNoRespondersSubject, epPrincipalOwnerGrantRows,
   epPrincipalReplySubject, epPrincipalRequestSubject, epPrincipalServeFilter, epPrincipalServeGrantRows, epServeGrantRows,
   isPrincipalAuthority, mintLifecycleUid, parseClusterDocument, parseEndpointRequest, parseEpSubject, permissionsFor,
-  principalRouteCommands, isAgentCommandName, EpEnvelopeError, ContractInvalidError,
+  principalRouteCommands, isAgentCommandName, EpEnvelopeError, ContractInvalidError, chatHistDurable,
   type EndpointRequest, type EpCaller, type EpCapability, type EpPrincipal, type ParsedEpPrincipalRequest, type PromptContent,
 } from "../src/index.js";
 import * as coreRoot from "../src/index.js";
@@ -111,20 +111,20 @@ check("the builder writes authorities, and a row without it writes none",
   buildClusterDocument("ai.cotal.test", 1, [{ name: "a", targeted: false, authorities: ["owner"], capability: "x.y", input: {}, output: {} },
     { name: "b", targeted: false, capability: "x.y", input: {}, output: {} }]).commands.map((c) => c.authorities?.join() ?? "-").join("|") === "owner|-");
 
-// ── the `agent` cluster, revision 3 (SPEC 13.22) ──
+// ── the `agent` cluster, revision 4 (SPEC 13.22) ──
 const agentDoc = parseClusterDocument(structuredClone(AGENT_CLUSTER));
-check("the agent cluster is ai.cotal.agent revision 3 with prompts, prompt, prompt-answer, commands, command, command-cancel, command-state and interrupt",
-  agentDoc.urn === "ai.cotal.agent" && agentDoc.revision === 3
-  && agentDoc.commands.map((c) => c.name).join() === "prompts,prompt,prompt-answer,commands,command,command-cancel,command-state,interrupt", agentDoc.commands.map((c) => c.name));
+check("the agent cluster is ai.cotal.agent revision 4 with prompts, prompt, prompt-answer, commands, command, command-cancel, command-state, interrupt and set-name",
+  agentDoc.urn === "ai.cotal.agent" && agentDoc.revision === 4
+  && agentDoc.commands.map((c) => c.name).join() === "prompts,prompt,prompt-answer,commands,command,command-cancel,command-state,interrupt,set-name", agentDoc.commands.map((c) => c.name));
 check("every command is ephemeral, untargeted and without modes",
   agentDoc.commands.every((c) => c.class === "ephemeral" && c.targeted === false && c.modes === undefined));
-check("the prompt commands admit owner and grant, and the four command commands and interrupt admit owner only",
+check("the prompt commands admit owner and grant, and the four command commands, interrupt and set-name admit owner only",
   agentDoc.commands.map((c) => `${c.name}:${c.authorities?.join("+")}`).join()
-    === "prompts:owner+grant,prompt:owner+grant,prompt-answer:owner+grant,commands:owner,command:owner,command-cancel:owner,command-state:owner,interrupt:owner",
+    === "prompts:owner+grant,prompt:owner+grant,prompt-answer:owner+grant,commands:owner,command:owner,command-cancel:owner,command-state:owner,interrupt:owner,set-name:owner",
   agentDoc.commands.map((c) => `${c.name}:${c.authorities?.join("+")}`));
-check("capabilities: prompt reads, the answer, the command list, a command run, its cancel as a run, its state as a read and the interrupt as its own",
+check("capabilities: prompt reads, the answer, the command list, a command run, its cancel as a run, its state as a read, and the interrupt and the rename as their own",
   agentDoc.commands.map((c) => c.capability).join()
-    === "agent.prompts.read,agent.prompts.read,agent.prompts.answer,agent.commands.read,agent.commands.run,agent.commands.run,agent.commands.read,agent.turn.interrupt",
+    === "agent.prompts.read,agent.prompts.read,agent.prompts.answer,agent.commands.read,agent.commands.run,agent.commands.run,agent.commands.read,agent.turn.interrupt,agent.profile.write",
   agentDoc.commands.map((c) => c.capability));
 check("the declared digests are the compiled contracts' closure digests",
   agentDoc.commands.every((c) => AGENT_CONTRACTS[c.name].input.closureDigest === c.inputDigest && AGENT_CONTRACTS[c.name].output.closureDigest === c.outputDigest));
@@ -171,6 +171,13 @@ const intIn = contractOf("interrupt", "input"), intOut = contractOf("interrupt",
 check("interrupt takes {} and answers { state } of interrupted or idle, and nothing else",
   intIn({}) && !intIn({ id: COMMAND_ID }) && !intIn({ resume: true }) && intOut({ state: "interrupted" }) && intOut({ state: "idle" })
   && !intOut({ state: "running" }) && !intOut({}) && !intOut({ state: "idle", interrupted: false }) && !intOut({ interrupted: true }));
+const nameIn = contractOf("set-name", "input"), nameOut = contractOf("set-name", "output");
+check("set-name takes { name } of any string, so the agent gives every name it refuses the same typed answer, and nothing else",
+  nameIn({ name: "Reviewer Bot" }) && nameIn({ name: "" }) && nameIn({ name: "x".repeat(200) }) && nameIn({ name: " padded " })
+  && !nameIn({}) && !nameIn({ name: 7 }) && !nameIn({ name: "a", role: "b" }));
+check("set-name answers { name }, a name of 1 to 128 characters, and nothing else",
+  nameOut({ name: "Reviewer Bot" }) && nameOut({ name: "x".repeat(128) }) && !nameOut({ name: "" }) && !nameOut({ name: "x".repeat(129) })
+  && !nameOut({}) && !nameOut({ name: "a", changed: true }));
 const entry = (e: Record<string, unknown> = {}) => ({ supported: true, commands: [{ name: "review", target: "command", ...e }] });
 check("commands takes {} and answers { supported: false } or { supported: true, commands }",
   listIn({}) && !listIn({ target: "skill" }) && listOut({ supported: false }) && listOut({ supported: true, commands: [] }) && listOut(entry({ description: "d", inputHint: "[pr]" }))
@@ -279,8 +286,8 @@ check("serve rows: subscribe its own head for every runtime, publish replies und
 check("the serve subscribe row has the request's 15 tokens and the reply row the reply's 13",
   serve.sub[0].split(".").length === 15 && serve.pub[0].split(".").length === 13);
 const own = epPrincipalOwnerGrantRows(SPACE, web);
-check("owner rows: describe, prompts, prompt, prompt-answer, commands, command, command-cancel, command-state and interrupt, the caller's own owner pinned in the head",
-  own.pub.join("|") === ["describe", "prompts", "prompt", "prompt-answer", "commands", "command", "command-cancel", "command-state", "interrupt"]
+check("owner rows: describe, prompts, prompt, prompt-answer, commands, command, command-cancel, command-state, interrupt and set-name, the caller's own owner pinned in the head",
+  own.pub.join("|") === ["describe", "prompts", "prompt", "prompt-answer", "commands", "command", "command-cancel", "command-state", "interrupt", "set-name"]
     .map((cmd) => `${P}.ep.prin.agent.u_alice.*.*.*.${cmd}.owner.u_alice.web.${CUID}.*`).join("|"), own.pub);
 check("owner rows: one reply read with the caller triple pinned", own.sub.join("|") === `${P}.ep.prin-reply.*.*.*.*.*.u_alice.web.${CUID}.*`);
 const grantee: EpCaller = { owner: "u_bob", actor: "builder", uid: UID2 };
@@ -298,8 +305,9 @@ throws("no grant row lists commands: commands admits owner only", () => epPrinci
 throws("no grant row cancels a command: command-cancel admits owner only", () => epPrincipalGrantRows(SPACE, grantee, { owner: "u_alice", actor: "coder", uid: UID }, ["command-cancel"]), "admits");
 throws("no grant row reads a command's state: command-state admits owner only", () => epPrincipalGrantRows(SPACE, grantee, { owner: "u_alice", actor: "coder", uid: UID }, ["command-state"]), "admits");
 throws("no grant row interrupts a turn: interrupt admits owner only", () => epPrincipalGrantRows(SPACE, grantee, { owner: "u_alice", actor: "coder", uid: UID }, ["interrupt"]), "admits");
+throws("no grant row renames an agent: set-name admits owner only", () => epPrincipalGrantRows(SPACE, grantee, { owner: "u_alice", actor: "coder", uid: UID }, ["set-name"]), "admits");
 check("the (command, word) pairs come from the cluster constant",
-  principalRouteCommands("owner").join() === "describe,prompts,prompt,prompt-answer,commands,command,command-cancel,command-state,interrupt"
+  principalRouteCommands("owner").join() === "describe,prompts,prompt,prompt-answer,commands,command,command-cancel,command-state,interrupt,set-name"
   && principalRouteCommands("grant").join() === "describe,prompts,prompt,prompt-answer" && Object.isFrozen(principalRouteCommands("owner")),
   { owner: principalRouteCommands("owner"), grant: principalRouteCommands("grant") });
 
@@ -317,8 +325,8 @@ check("a managed-agent ledger row gets the serve rows and no caller row",
   prinRows(managed).sort().join("|") === [...serve.pub, ...serve.sub].sort().join("|"), prinRows(managed));
 const interactive = mint({ owner: "u_alice", actor: "web" }, { ledgerKind: "interactive" }, CUID);
 const webServe = epPrincipalServeGrantRows(SPACE, web);
-check("an interactive ledger row gets the serve rows, the nine owner rows and the reply read",
-  own.pub.length === 9 && prinRows(interactive).sort().join("|") === [...webServe.pub, ...webServe.sub, ...own.pub, ...own.sub].sort().join("|"), prinRows(interactive));
+check("an interactive ledger row gets the serve rows, the ten owner rows and the reply read",
+  own.pub.length === 10 && prinRows(interactive).sort().join("|") === [...webServe.pub, ...webServe.sub, ...own.pub, ...own.sub].sort().join("|"), prinRows(interactive));
 check("an interactive row's owner rows cover its own actor as a target, so the command must refuse a self-answer (R4)",
   (interactive as { pub: { allow: string[] } }).pub.allow.includes(`${P}.ep.prin.agent.u_alice.*.*.*.prompt-answer.owner.u_alice.web.${CUID}.*`));
 check("a callout mint with no ledger kind (a chat session) gets none", prinRows(mint({ owner: "u_alice", actor: "chat" })).length === 0);
@@ -344,7 +352,43 @@ for (const [name, build] of profiles) {
   if (prinRows(perms).length > 0) holders.push(name);
 }
 check(`no view, infrastructure profile or service credential holds a principal-route row (${profiles.length} checked)`, holders.length === 0, holders);
-throws("ledgerKind on any other profile is refused", () => permissionsFor("observer", SPACE, { owner: "u_alice", actor: "obs", connId: callout.connId, readerId: callout.readerId }, { ledgerKind: "interactive" }), "agent-profile");
+throws("ledgerKind on any other profile is refused", () => permissionsFor("observer", SPACE, { owner: "u_alice", actor: "obs", connId: callout.connId, readerId: callout.readerId }, { ledgerKind: "interactive" }), "agent or manager-caller");
+
+// ── a person controls the agents under their own owner, keyed on the row kind (SPEC 13.21) ──
+const view = (kind?: "interactive" | "managed-agent", capabilities: string[] = ["spawn"], readerId: string | null = callout.readerId) =>
+  permissionsFor("manager-caller", SPACE, { owner: "u_alice", actor: "web", connId: callout.connId, lifecycleUid: CUID, ...(readerId !== null ? { readerId } : {}) },
+    { capabilities, lifecycleUid: CUID, managerInstanceId: UID2, ...(kind ? { ledgerKind: kind } : {}) }) as { pub: { allow: string[] } };
+const seatRows = (perms: { pub: { allow: string[] } }, cmd: string, mode = "owner") => perms.pub.allow.filter((r) => r.includes(`.manager.${UID2}.${cmd}.${mode}.`));
+const person = view("interactive");
+check("a person's manager view stops, attaches to, types into and interrupts their own agents, the owner pinned to their own",
+  ["despawn", "attach", "input", "interrupt"].every((cmd) => seatRows(person, cmd).length === 1 && seatRows(person, cmd)[0]!.includes(`.${cmd}.owner.u_alice.u_alice.web.`)),
+  person.pub.allow.filter((r) => r.includes(`.manager.${UID2}.`)));
+check("a person's manager view holds no any-mode seat row", ["despawn", "attach", "input", "interrupt"].every((cmd) => seatRows(person, cmd, "any").length === 0));
+check("a person holds these rows without the spawn capability", ["despawn", "attach", "input", "interrupt"].every((cmd) => seatRows(view("interactive", []), cmd).length === 1));
+const readRows = (perms: { pub: { allow: string[] } }, cmd: string) => perms.pub.allow.filter((r) => r.includes(`.manager.${UID2}.${cmd}.u_alice.web.`));
+check("a person's manager view carries inspect and ps on its instance whatever their scope",
+  ["inspect", "ps"].every((cmd) => readRows(view("interactive", []), cmd).length === 1), view("interactive", []).pub.allow.filter((r) => r.includes(`.manager.${UID2}.`)));
+check("an agent's manager view without spawn reads neither inspect nor ps",
+  ["inspect", "ps"].every((cmd) => readRows(view("managed-agent", []), cmd).length === 0 && readRows(view(undefined, []), cmd).length === 0));
+check("an agent's manager view gets no input or interrupt row: the rows key on the row kind, never on scope",
+  ["input", "interrupt"].every((cmd) => seatRows(view("managed-agent"), cmd).length === 0 && seatRows(view(undefined), cmd).length === 0));
+check("an agent keeps the owner-mode despawn and attach its spawn capability gives", ["despawn", "attach"].every((cmd) => seatRows(view("managed-agent"), cmd).length === 1));
+check("no row is minted twice when the spawn or admin set holds it too",
+  [person, view("interactive", ["spawn", "admin"])].every((perms) => new Set(perms.pub.allow).size === perms.pub.allow.length));
+throws("a static manager-caller mint carries no ledger kind", () => view("interactive", ["spawn"], null), "static mint");
+
+// ── a person reads the event channels of the agents under their own owner (SPEC 13.21) ──
+const allowOf = (perms: Record<string, unknown>) => perms as { pub: { allow: string[] }; sub: { allow: string[] } };
+const ownEvents = `${P}.chat.u_alice.*.events.u_alice.*`;
+const reads = (perms: Record<string, unknown>) => [...allowOf(perms).pub.allow, ...allowOf(perms).sub.allow].filter((r) => r.includes(".events."));
+const personAgent = allowOf(mint({ owner: "u_alice", actor: "web" }, { ledgerKind: "interactive" }, CUID));
+check("a person's sign-in subscribes the event channels of every agent under their own owner, sent by that owner's agents",
+  personAgent.sub.allow.includes(ownEvents));
+check("a person reads those channels' history through its own lifecycle's reader, and reads no other event channel",
+  reads(personAgent).length === 2 && personAgent.pub.allow.includes(`$JS.API.CONSUMER.CREATE.CHAT_${SPACE}.${chatHistDurable("u_alice", "web", CUID)}.${ownEvents}`)
+    && personAgent.pub.allow.includes(`$JS.API.CONSUMER.MSG.NEXT.CHAT_${SPACE}.${chatHistDurable("u_alice", "web", CUID)}`), reads(personAgent));
+check("an agent's credential and a chat session read no event channel they were not granted",
+  reads(mint({ owner: "u_alice", actor: "coder" }, { ledgerKind: "managed-agent" }, UID)).length === 0 && reads(mint({ owner: "u_alice", actor: "chat" })).length === 0);
 
 // ── the maximum-capability credential (SPEC 13.9 fixture) with the new rows ──
 // The fixture as SPEC 13.9 defines it: every baseline grant plus capabilities on 3 endpoints x 12
@@ -362,9 +406,9 @@ const account = createAccount();
 const jwtBytes = async (perms: Record<string, unknown>) => Buffer.byteLength(await encodeUser(ACTOR, createUser(), account, perms as never, { exp: Math.floor(Date.now() / 1000) + 600 }), "utf8");
 const without = await jwtBytes(fixture());
 const withRows = await jwtBytes(fixture("interactive"));
-console.log(`  maximum-capability fixture as an interactive mint: ${withRows} JWT bytes, ${withRows - without} of them the principal-route rows (mint bound ${MAX_MINTED_JWT_BYTES})`);
-check("the maximum-capability fixture with the principal-route rows stays under the mint bound", withRows < MAX_MINTED_JWT_BYTES, { withRows, without, bound: MAX_MINTED_JWT_BYTES });
-check("the interactive rows add 2 serve rows, 9 owner rows and 1 reply read", prinRows(fixture("interactive")).length - prinRows(fixture()).length === 12,
+console.log(`  maximum-capability fixture as an interactive mint: ${withRows} JWT bytes, ${withRows - without} of them the rows an interactive row adds (mint bound ${MAX_MINTED_JWT_BYTES})`);
+check("the maximum-capability fixture with the rows an interactive row adds stays under the mint bound", withRows < MAX_MINTED_JWT_BYTES, { withRows, without, bound: MAX_MINTED_JWT_BYTES });
+check("the interactive rows add 2 serve rows, 10 owner rows and 1 reply read", prinRows(fixture("interactive")).length - prinRows(fixture()).length === 13,
   prinRows(fixture("interactive")).length - prinRows(fixture()).length);
 
 // ── the entry point: the package root serves the `agent` endpoint only ──
