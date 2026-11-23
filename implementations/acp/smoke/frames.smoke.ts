@@ -17,7 +17,9 @@
  *  - `closeOpen` closes every tool call still open, once;
  *  - `frameOf` reads the frame part of an event-channel message and nothing else;
  *  - `managerPlan` starts new threads where the auth service's own rule would, and reads agents from
- *    every live manager the person may use.
+ *    every live manager the person may use;
+ *  - `runningManagers` offers the listed managers whose rail is not gone, and with none left rejects as
+ *    a space with no manager does.
  *
  * Run: pnpm --filter @cotal-ai/acp test   (needs `pnpm build` of core and workspace first)
  */
@@ -25,7 +27,8 @@ import type { CotalMessage, Presence } from "@cotal-ai/core";
 import type { SessionUpdate } from "@agentclientprotocol/sdk";
 import { FrameMapper } from "../src/frames.js";
 import { patchDiffs } from "../src/tools.js";
-import { answeredReads, frameOf, managerChoice, managerPlan, namesDeregister } from "../src/live-mesh.js";
+import { answeredReads, frameOf, managerChoice, managerPlan, namesDeregister, runningManagers } from "../src/live-mesh.js";
+import { NoLaunchManager } from "../src/mesh.js";
 import type { AguiEventLike, SeatFrame } from "../src/mesh.js";
 
 let pass = 0, fail = 0;
@@ -250,6 +253,15 @@ check("frameOf ignores a frame that another sender put on an agent's event chann
   const empty = managerPlan([L("space", "local", "not open")]);
   check("a manager that is not a candidate is neither started on nor read", empty.launch.length === 0 && empty.read.length === 0 && typeof empty.why === "string", empty);
   check("every registration of the person's is their own, whatever its state, and the space's manager is not", JSON.stringify([...both.own].sort()) === JSON.stringify(["gone", "lapa", "lapb"]), both.own);
+}
+
+// A listed manager whose rail is gone, such as one that died without deregistering, is not offered.
+{
+  check("the managers whose rail is not gone are offered", JSON.stringify(runningManagers("s", ["a", "b"], [undefined, "b"])) === JSON.stringify(["b"]));
+  let thrown: unknown;
+  try { runningManagers("s", ["a", "b"], [undefined, undefined]); } catch (e) { thrown = e; }
+  check("with every one gone, the list rejects as a space with no manager, naming them, so a new thread starts one",
+    thrown instanceof NoLaunchManager && thrown.message === "No manager for s is running: the broker reports nothing on the rail of a, b.", thrown);
 }
 
 // A manager as a choice: only a current presence row describes it.

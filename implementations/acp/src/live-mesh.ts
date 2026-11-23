@@ -322,6 +322,28 @@ function controls(options: LiveMeshOptions, c: Connected) {
 
 type Controls = ReturnType<typeof controls>;
 
+/** A listed manager the broker still routes to, with the host it reports, or undefined when its rail
+ *  is gone: nothing is subscribed on it, as `cotal ps` reports a manager whose computer is gone or
+ *  that died without deregistering. Its host is not waited for. The probe answers only for a gone
+ *  rail, so a live manager's host answer ends it. */
+async function railCheck(p: Controls, instanceId: string): Promise<{ host?: string } | undefined> {
+  // A per-instance call needs an instrument minted for that instance.
+  const pinned = await p.resolve("control-caller-privileged", instanceId);
+  const stop = new AbortController();
+  const reported = reportedManagerHost(p.client, pinned.space, pinned.server, pinned.auth, instanceId).finally(() => stop.abort());
+  if (await managerRailGone(pinned.space, pinned.server, pinned.auth, instanceId, stop.signal)) return undefined;
+  const host = await reported;
+  return host ? { host } : {};
+}
+
+/** The listed managers whose rail is not gone. When every one is gone, none may start a new thread,
+ *  so this rejects as a space with no manager does. */
+export function runningManagers<T>(space: string, listed: readonly string[], checked: readonly (T | undefined)[]): T[] {
+  const running = checked.filter((m): m is T => m !== undefined);
+  if (running.length === 0) throw new NoLaunchManager(`No manager for ${space} is running: the broker reports nothing on the rail of ${listed.join(", ")}.`);
+  return running;
+}
+
 /** The reads a new thread's options come from, and the launch. */
 function launchCalls(c: Connected, p: Controls, defaultPersona: string | null | undefined): Pick<Mesh, "catalogs" | "managers" | "startManager" | "manager" | "personas" | "spawn"> {
   const { target, started } = c;
@@ -354,7 +376,8 @@ function launchCalls(c: Connected, p: Controls, defaultPersona: string | null | 
       if (started) {
         const plan = await yourManagers();
         if (plan.why) throw new NoLaunchManager(plan.why);
-        return plan.launch.map((instanceId) => choice(instanceId));
+        const checked = await Promise.all(plan.launch.map(async (instanceId) => (await railCheck(p, instanceId)) && choice(instanceId)));
+        return runningManagers(target.space, plan.launch, checked);
       }
       const t = await resolve("control-caller-privileged");
       const ids = await liveManagerIds(t.space, t.server, t.auth).catch((e: unknown) => {
@@ -362,19 +385,11 @@ function launchCalls(c: Connected, p: Controls, defaultPersona: string | null | 
         throw new NoLaunchManager(`The broker for ${t.space} is reachable, but no manager is registered. To open a thread, ${startStackManagerRemedy(t.space, t.server)}`);
       });
       const here = hostname();
-      const choices = await Promise.all(ids.map(async (instanceId): Promise<ManagerChoice | undefined> => {
-        // A per-instance call needs an instrument minted for that instance.
-        const pinned = await resolve("control-caller-privileged", instanceId);
-        // A registration whose host is gone has nothing subscribed on its rail, as `cotal ps`
-        // reports it. It is not offered, and its host is not waited for. The probe answers only
-        // for a gone rail, so a live manager's host answer ends it.
-        const stop = new AbortController();
-        const reported = reportedManagerHost(client, pinned.space, pinned.server, pinned.auth, instanceId).finally(() => stop.abort());
-        if (await managerRailGone(pinned.space, pinned.server, pinned.auth, instanceId, stop.signal)) return undefined;
-        const host = await reported;
-        return { instanceId, ...(host ? { host } : {}), local: host === here, live: host !== undefined };
+      const checked = await Promise.all(ids.map(async (instanceId): Promise<ManagerChoice | undefined> => {
+        const seen = await railCheck(p, instanceId);
+        return seen && { instanceId, ...seen, local: seen.host === here, live: seen.host !== undefined };
       }));
-      return choices.filter((m): m is ManagerChoice => m !== undefined);
+      return runningManagers(t.space, ids, checked);
     },
 
     startManager: () => startManager(target.space),
