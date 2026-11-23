@@ -14,6 +14,7 @@ import { definitionRootMatch, execServiceDefinition, importServiceDefinition, se
 import { serviceAction } from "./service-actions.js";
 import { followRecordedLog } from "./service-log-follow.js";
 import { managerLogPath } from "../lib/manager-proc.js";
+import { serviceStartAllowsNoOpen } from "../lib/service-start-options.js";
 import { observeServiceProcess, serviceInstanceId, serviceInstances, instanceProjection } from "../lib/service-instances.js";
 import { readLocalServiceAttempts } from "../lib/service-census.js";
 import { pruneEmptyServiceSpace, readOwnedLogTail, readinessAddressSurvivors, removableServiceInstances, removeServiceLogs, removeStoppedInstanceRecord, removeStoppedInstanceRecords } from "../lib/service-process.js";
@@ -59,7 +60,7 @@ export function validateServiceArguments(args: ParsedArgs): void {
   if (args.values.yes !== undefined && !["remove", "stop", "restart", "uninstall"].includes(mode)) throw new CommandFailure("refused", "USAGE_INVALID", "--yes belongs to service stop, restart, remove or uninstall");
   if (args.values.instance !== undefined) { if (!["start", "stop", "restart", "status", "logs", "install", "uninstall", "remove"].includes(mode)) throw new CommandFailure("refused", "USAGE_INVALID", "--instance belongs to a service instance operation or remove"); serviceInstanceId(String(args.values.instance)); }
   if (args.values["new-instance"] && (mode !== "start" || args.values.instance !== undefined)) throw new CommandFailure("refused", "USAGE_INVALID", "--new-instance belongs to start and cannot be combined with --instance");
-  if (args.values["no-open"] !== undefined && (mode !== "start" || name !== "web")) throw new CommandFailure("refused", "USAGE_INVALID", "--no-open belongs to service start web");
+  if (args.values["no-open"] !== undefined && (mode !== "start" || !serviceStartAllowsNoOpen(name))) throw new CommandFailure("refused", "USAGE_INVALID", "--no-open belongs to service start web");
   if (args.values.foreground && (mode !== "start" || args.values.json && !args.values["dry-run"])) throw new CommandFailure("refused", "USAGE_INVALID", "--foreground belongs to start and cannot produce a JSON receipt stream");
   if (args.values["with-agents"] !== undefined && !["stop", "restart"].includes(mode)) throw new CommandFailure("refused", "USAGE_INVALID", "--with-agents belongs to service stop or restart with a declared native policy");
   if (args.values["dry-run"] && !["start", "stop", "restart", "install", "uninstall"].includes(mode)) throw new CommandFailure("refused", "USAGE_INVALID", "--dry-run belongs to service start, stop, restart, install or uninstall");
