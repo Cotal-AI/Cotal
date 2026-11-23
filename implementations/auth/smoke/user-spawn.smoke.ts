@@ -582,6 +582,25 @@ try {
   const changedScope = await validate({ ...inventory, launch: { ...inventory.launch, capabilities: ["run", "custom"] } });
   check("the local retained authority refuses a genuinely different inventory scope",
     /no longer matches the inventory/.test(changedScope ?? ""), changedScope);
+  {
+    const { writeSeatRecord, writeReleasedSeatReference, removeSeatRecord, removeReleasedSeatReference } = await import("../../manager/src/resume.js");
+    const local = manager as unknown as { preservationComponent: { adoptReleasedSeats(): Promise<void> } };
+    const missingScope = { ...inventory, launch: { ...inventory.launch, capabilities: undefined } };
+    const lifecycleUid = inventory.identity.lifecycleUid;
+    writeSeatRecord(root, { version: "cotal-seat-record/v1", instanceId: manager["managerInstanceId"], crashes: [], agent: missingScope });
+    writeReleasedSeatReference(root, SPACE, inventory.name, { version: "cotal-released-seat/v1", lifecycleUid, kind: "pty", id: "unused-while-seat-held" });
+    const diagnostics: string[] = [];
+    const logError = console.error;
+    console.error = (...args) => { diagnostics.push(args.join(" ")); logError(...args); };
+    try { await local.preservationComponent.adoptReleasedSeats(); }
+    finally {
+      console.error = logError;
+      removeReleasedSeatReference(root, SPACE, inventory.name, lifecycleUid);
+      removeSeatRecord(root, SPACE, inventory.name, lifecycleUid);
+    }
+    check("local released record without a saved list still refuses retained spawn",
+      diagnostics.some((line) => line.startsWith(`! ${inventory.name}:`) && /no longer matches the inventory/.test(line)));
+  }
   const optedOutRequired = await manager.startAgent({ name: "beta", agent: "e2e", owner: OWNER, events: false });
   check("required user-auth policy refuses events false by space name before provisioning",
     optedOutRequired.ok === false && (optedOutRequired.error ?? "").includes(SPACE) && /--no-events/.test(optedOutRequired.error ?? "") && !existsSync(rowFile("managed", OWNER, "beta")), optedOutRequired);
@@ -2083,7 +2102,7 @@ try {
   // These combined expectations still require an actual integrated run.
   // 148 -> 151: D2's spawn and admin views also read ps.
   // Eight hosted-enrollment checks include uncommitted attempts, changed authority and refused replay.
-  const EXPECTED = endpointCliFocus ? 75 : 164;
+  const EXPECTED = endpointCliFocus ? 76 : 165;
   check(`every cell ran - ${EXPECTED} expected`, cells === EXPECTED + 1, `${cells} cells reported`);
 
   console.log(`\n${endpointCliFocus ? "USER-ENDPOINT CLI SMOKE" : "USER-SPAWN SMOKE"} ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);
