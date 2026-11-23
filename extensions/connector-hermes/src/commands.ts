@@ -1,9 +1,10 @@
 /**
  * The Hermes seat's side of its `agent` endpoint (SPEC 13.22): the owner's turns, run in the
- * gateway's operator chat as the user's own words, images included; the stop for the Cotal messages
- * and turns in progress; and the operator chat's context window and cost.
+ * gateway's operator chat as the user's own words, images included; the gateway's slash commands and
+ * skill commands the operator chat may run, each run there as `/<name> <args>`; the stop for the
+ * Cotal messages and turns in progress; and the operator chat's context window and cost.
  */
-import type { CommandTarget, InterruptOutput } from "@cotal-ai/core";
+import type { CommandEntry, CommandTarget, InterruptOutput } from "@cotal-ai/core";
 import { CommandRefused, type AgentUsage, type CommandDispatcher, type MeshAgent } from "@cotal-ai/connector-core";
 import type { BridgeServer } from "./bridge.js";
 
@@ -25,6 +26,22 @@ function usageOf(data: Record<string, unknown>): AgentUsage {
   return usage;
 }
 
+/** The commands the adapter listed, checked entry by entry. */
+function entriesOf(data: Record<string, unknown>): CommandEntry[] {
+  if (!Array.isArray(data.commands)) throw new Error(`the gateway answered no command list: ${JSON.stringify(data).slice(0, 200)}`);
+  return data.commands.map((e: unknown) => {
+    const { name, target, description, inputHint } = (e ?? {}) as Record<string, unknown>;
+    if (typeof name !== "string" || (target !== "command" && target !== "skill"))
+      throw new Error(`the gateway listed an invalid command: ${JSON.stringify(e).slice(0, 200)}`);
+    return {
+      name,
+      target,
+      ...(typeof description === "string" && description ? { description } : {}),
+      ...(typeof inputHint === "string" && inputHint ? { inputHint } : {}),
+    };
+  });
+}
+
 /** `bridge` is read at each call: the sidecar starts the bridge after the agent that serves this. */
 export function hermesCommands(bridge: () => BridgeServer | undefined): CommandDispatcher {
   const live = (): BridgeServer => {
@@ -33,12 +50,16 @@ export function hermesCommands(bridge: () => BridgeServer | undefined): CommandD
     return b;
   };
   return {
-    targets: new Set<CommandTarget>(),
+    targets: new Set<CommandTarget>(["command", "skill"]),
     async list() {
-      return [];
+      return entriesOf(await live().ask("commands"));
     },
-    async dispatch({ name }) {
-      throw new CommandRefused("not-found", `Hermes runs no command named "${name}" from the agent endpoint`);
+    // Hermes runs a skill command by its slash name, as it does a command.
+    async dispatch({ target, name, args }) {
+      const listed = entriesOf(await live().ask("commands"));
+      if (!listed.some((c) => c.target === target && c.name === name))
+        throw new CommandRefused("not-found", `Hermes lists no ${target} named "${name}" for its operator chat`);
+      await live().submitTurn(args ? `/${name} ${args}` : `/${name}`);
     },
     images: true,
     turn: ({ text, images }) => live().submitTurn(text, images),
