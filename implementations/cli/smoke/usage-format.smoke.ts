@@ -140,7 +140,7 @@ check("an unknown short option after grouped -j gives the same JSON refusal as s
   && JSON.parse(groupedJson.stdout).error.message === "Unknown option '-Z'", shown(groupedJson));
 const unknownBeforeJson = run(["config", "get", "harness", "-Zj"]);
 check("an unknown short option before j does not select JSON", usageShape(unknownBeforeJson, /Unknown option '-Z'/), shown(unknownBeforeJson));
-const missingLimit = run(["history", "--json", "--limit", "--follow", "abc"]);
+const missingLimit = run(["history", "--json", "--limit", "--from", "abc"]);
 for (const [global, operand] of [["--no-input", "abc"], ["--no-color", "1"]] as const) {
   const result = run(["history", "--json", "--limit", global, operand]);
   check(`a ${global} flag cannot move an operand into a missing option value`,
@@ -149,6 +149,14 @@ for (const [global, operand] of [["--no-input", "abc"], ["--no-color", "1"]] as 
     && JSON.parse(result.stdout).error.message === "--limit needs a value"
     && JSON.parse(result.stdout).error.remedy === "write --limit <n>", shown(result));
 }
+const followGlobal = run(["history", "--json", "--follow", "--limit", "--no-input", "abc"]);
+const followRecords = followGlobal.stdout.trim().split("\n").filter(Boolean).map((line) => JSON.parse(line));
+check("a global flag after a missing history follow value preserves the stream refusal and channel",
+  followGlobal.status === 1 && followGlobal.stderr === ""
+  && followRecords.map((record) => record.type).join() === "error,end"
+  && followRecords.every((record) => record.stream === "history" && record.target?.channel === "abc")
+  && followRecords[0]?.data?.code === "USAGE_INVALID" && followRecords[0]?.data?.message === "--limit needs a value"
+  && followRecords[0]?.data?.remedy === "write --limit <n>" && followRecords[1]?.data?.reason === "setup-failed", shown(followGlobal));
 const groupedSpace = run(["config", "get", "harness", "-js", "--no-input", "abc"]);
 check("a global flag cannot hide a missing value at the end of a short option group",
   groupedSpace.status === 1 && groupedSpace.stderr === "" && JSON.parse(groupedSpace.stdout).error.message === "--space needs a value", shown(groupedSpace));
