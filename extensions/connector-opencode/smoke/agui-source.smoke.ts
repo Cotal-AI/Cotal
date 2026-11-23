@@ -60,11 +60,15 @@ const user = (id: string, partId: string): OpenCodeMessageWithParts => ({
 
 const drain = async (src: OpenCodeSessionSource, from: string | undefined) => {
   const ids: string[] = [];
+  let calls = 0;
   let cursor = from;
   for (;;) {
     const r = await src.read(cursor);
-    if (r.records.length === 0) return { ids, cursor: r.cursor };
-    for (const rec of r.records) ids.push(rec.value.part.id);
+    if (r.records.length === 0) return { ids, calls, cursor: r.cursor };
+    for (const rec of r.records) {
+      if (rec.value.call) calls += 1;
+      else ids.push(rec.value.part.id);
+    }
     cursor = r.cursor;
   }
 };
@@ -138,11 +142,16 @@ const drain = async (src: OpenCodeSessionSource, from: string | undefined) => {
   const running = [assistant("msg_1", [tool("prt_1", "msg_1", "running")])];
   const done = [assistant("msg_1", [tool("prt_1", "msg_1", "completed")])];
   const errored = [assistant("msg_1", [tool("prt_1", "msg_1", "error")])];
-  const read = async (d: OpenCodeMessageWithParts[]) => (await new OpenCodeSessionSource({ read: async () => d }).read("")).records.length;
-  c("settle:a tool part is withheld while pending", (await read(pending)) === 0);
-  c("settle:a tool part is withheld while running", (await read(running)) === 0);
-  c("settle:a completed tool part is released", (await read(done)) === 1);
-  c("settle:an errored tool part is released, because error IS a terminal state", (await read(errored)) === 1);
+  const read = async (d: OpenCodeMessageWithParts[]) =>
+    (await new OpenCodeSessionSource({ read: async () => d }).read("")).records.map((r) => cursorOf(r.value)).join(" ");
+  c("settle:a tool part is withheld while pending, call and all", (await read(pending)) === "");
+  c("settle:a running tool part hands over its call and withholds its result", (await read(running)) === "msg_1:prt_1:call", await read(running));
+  c("settle:a completed tool part is released, its call before its result", (await read(done)) === "msg_1:prt_1:call msg_1:prt_1", await read(done));
+  c("settle:an errored tool part is released, because error IS a terminal state",
+    (await read(errored)) === "msg_1:prt_1:call msg_1:prt_1", await read(errored));
+  const resumed = await new OpenCodeSessionSource({ read: async () => [...done, user("msg_2", "prt_2")] }).read("msg_1:prt_1:call");
+  c("call:a read resumed at a tool's call hands over its result next, then what follows",
+    resumed.records.map((r) => cursorOf(r.value)).join(" ") === "msg_1:prt_1 msg_2:prt_2", resumed.records.map((r) => cursorOf(r.value)));
 }
 {
   // The turn-level backstop: a part that never got its own end mark is settled once the message says
@@ -243,9 +252,11 @@ const drain = async (src: OpenCodeSessionSource, from: string | undefined) => {
     readFileSync(join(here, "fixtures", "session-shape.json"), "utf8"),
   ) as OpenCodeMessageWithParts[];
   const parts = fixture.reduce((n, m) => n + m.parts.length, 0);
+  const tools = fixture.reduce((n, m) => n + m.parts.filter((p) => p.type === "tool").length, 0);
   const src = new OpenCodeSessionSource({ read: async () => fixture });
   const all = await drain(src, "");
-  c("fixture:the whole derived-from-real session drains", all.ids.length === parts, { drained: all.ids.length, parts });
+  c("fixture:the whole derived-from-real session drains, each tool's call with it",
+    all.ids.length === parts && all.calls === tools && tools > 0, { drained: all.ids.length, parts, calls: all.calls, tools });
   c("fixture:it drains in id order, which is what the cursor claims to guarantee",
     all.ids.join(",") === [...all.ids].sort().join(","), all.ids.length);
   const last = fixture.at(-1)!;
@@ -253,7 +264,7 @@ const drain = async (src: OpenCodeSessionSource, from: string | undefined) => {
     all.cursor === cursorOf({ part: last.parts.at(-1)!, message: last.info }), all.cursor);
 }
 
-const EXPECTED = 31;
+const EXPECTED = 32;
 c(`meta:every cell ran - ${EXPECTED} expected`, pass + fail === EXPECTED, `${pass + fail} cells reported`);
 
 console.log(`agui-opencode-source smoke: ${pass} passed, ${fail} failed`);
