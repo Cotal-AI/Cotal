@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import type { CompletionResult, FlagSpec, FlagValues, ParsedArgs } from "@cotal-ai/core";
 import {
   CommandFailure,
@@ -116,6 +116,8 @@ export interface PreparedRow {
   readonly current: boolean;
   /** Its project folder no longer exists, so `up` cannot start it there. */
   readonly rootMissing: boolean;
+  /** Its recorded path is a file, not a project folder, so `up` cannot start it there. */
+  readonly rootIsFile: boolean;
   /** What its root's stack records, as `status` reports it: never started, stopped, or a last
    *  `up` or `down` with no recorded outcome. */
   readonly state: "prepared" | "stopped" | "unsettled";
@@ -290,8 +292,10 @@ async function read(sub: "show" | undefined, rest: string[], presentation: Prese
 
 function preparedRow(p: PreparedSpace, current: string | null, moved?: string): PreparedRow {
   const rootMissing = !existsSync(p.root);
+  const rootStat = rootMissing ? undefined : statSync(p.root, { throwIfNoEntry: false });
+  const rootIsFile = rootStat !== undefined && !rootStat.isDirectory();
   const lifecycle = moved !== undefined ? preparedLifecycle(moved, p.space) : rootMissing ? undefined : preparedLifecycle(p.root, p.space);
-  return { space: p.space, root: p.root, preparedAt: p.ts, current: p.space === current, rootMissing, state: lifecycle?.state ?? "prepared", lastOperation: lifecycle?.lastOperation ?? null };
+  return { space: p.space, root: p.root, preparedAt: p.ts, current: p.space === current, rootMissing, rootIsFile, state: lifecycle?.state ?? "prepared", lastOperation: lifecycle?.lastOperation ?? null };
 }
 
 /** How a prepared space's own root left it, as a cell. */
@@ -373,13 +377,13 @@ function spacesView(result: SpacesResult, project: string, moved: ReturnType<typ
       {
         kind: "table",
         columns: [{ key: "space", label: "Space" }, ...(ran ? [{ key: "state", label: "State" }] : []), { key: "root", label: "Project" }],
-        rows: result.prepared.map((p) => ({ space: nameCell(p, result.folder), state: lifecycleCell(p), root: p === movedRow ? { text: `${project} (moved from ${p.root})`, tone: "waiting" } : p.rootMissing ? { text: `${p.root} (no longer exists)`, tone: "waiting" } : { text: p.root, tone: "hint" } })),
+        rows: result.prepared.map((p) => ({ space: nameCell(p, result.folder), state: lifecycleCell(p), root: p === movedRow ? { text: `${project} (moved from ${p.root})`, tone: "waiting" } : p.rootMissing ? { text: `${p.root} (no longer exists)`, tone: "waiting" } : p.rootIsFile ? { text: `${p.root} (is a file, not a project folder)`, tone: "waiting" } : { text: p.root, tone: "hint" } })),
       },
       // A folder that is gone cannot be started, so its space names the steps `space show` gives.
       { kind: "commands", items: [
-        ...(result.prepared.some((p) => !p.rootMissing) ? [{ command: `${cmd} up`, description: "Start a prepared space from its project folder" }] : []),
+        ...(result.prepared.some((p) => !p.rootMissing && !p.rootIsFile) ? [{ command: `${cmd} up`, description: "Start a prepared space from its project folder" }] : []),
         ...(result.prepared.some((p) => p.state === "unsettled") ? [{ command: `${cmd} status`, description: "Run in its project folder, it names the step that finishes or settles its last operation" }] : []),
-        ...result.prepared.filter((p) => p.rootMissing && p !== movedRow).map((p) => ({ command: `${cmd} space forget ${shellWord(p.space)}`, description: `Its folder is gone: forget it, then prepare it again with ${codeSpan(`${cmd} space create ${shellWord(p.space)} --root <dir>`)}` })),
+        ...result.prepared.filter((p) => (p.rootMissing || p.rootIsFile) && p !== movedRow).map((p) => ({ command: `${cmd} space forget ${shellWord(p.space)}`, description: p.rootIsFile ? `Its recorded path is a file, not a project folder: forget it, then prepare it again with ${codeSpan(`${cmd} space create ${shellWord(p.space)} --root <dir>`)}` : `Its folder is gone: forget it, then prepare it again with ${codeSpan(`${cmd} space create ${shellWord(p.space)} --root <dir>`)}` })),
       ] },
       ...(movedRow && moved ? [{ kind: "lines" as const, lines: [{ text: movedPreparedRemedy(project, moved), tone: "hint" as const }] }] : []),
     ],
@@ -431,12 +435,14 @@ function preparedView(p: PreparedDetail, project: string, moved: ReturnType<type
       { text: movedPreparedRemedy(project, moved), tone: "hint" });
   } else if (p.rootMissing) {
     hints.push({ text: `prepared in ${p.root}, which no longer exists`, tone: "waiting" }, { text: `forget it with ${codeSpan(`${cmd} space forget ${shellWord(p.space)}`)}, then prepare it again with ${codeSpan(`${cmd} space create ${shellWord(p.space)} --root <dir>`)}`, tone: "hint" });
+  } else if (p.rootIsFile) {
+    hints.push({ text: `prepared in ${p.root}, which is a file, not a project folder`, tone: "waiting" }, { text: `restore the project folder at ${p.root}, or forget it with ${codeSpan(`${cmd} space forget ${shellWord(p.space)}`)}, then prepare it again with ${codeSpan(`${cmd} space create ${shellWord(p.space)} --root <dir>`)}`, tone: "hint" });
   } else if (p.state === "unsettled") {
     hints.push({ text: `run ${codeSpan(`${cmd} status`)} in ${p.root}, which names the step that finishes or settles it`, tone: "hint" });
   } else {
     hints.push({ text: `start it${p.state === "stopped" ? " again" : ""} with ${codeSpan(`${cmd} up`)} in ${p.root}`, tone: "hint" });
   }
-  if (!p.current && !p.rootMissing) hints.push({ text: `select it with ${codeSpan(`${cmd} use ${shellWord(p.space)}`)}`, tone: "hint" });
+  if (!p.current && !p.rootMissing && !p.rootIsFile) hints.push({ text: `select it with ${codeSpan(`${cmd} use ${shellWord(p.space)}`)}`, tone: "hint" });
   return {
     sections: [{
       blocks: [
