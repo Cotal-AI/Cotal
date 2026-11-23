@@ -11,8 +11,20 @@ export interface AgentCatalog {
   readonly available: boolean;
   /** Whether the connector publishes an AG-UI event plane. The bridge needs one. */
   readonly eventPlane: boolean;
+  /** The `agent` endpoint commands the connector's sessions implement, as the manager reports its
+   *  declaration. Absent: none declared, as from a manager that predates the declaration. */
+  readonly endpoint?: EndpointDeclaration;
   readonly reason?: string;
   readonly models: readonly CatalogModel[];
+}
+
+/** Which `agent` endpoint commands a connector declares its sessions implement (SPEC 13.22). The
+ *  bridge picks a seat's paths from it before it sends anything. */
+export interface EndpointDeclaration {
+  readonly interrupt: boolean;
+  readonly turn: boolean;
+  readonly images: boolean;
+  readonly usage: boolean;
 }
 
 export interface CatalogModel {
@@ -168,10 +180,8 @@ export interface Mesh {
   seats(): Promise<SeatList>;
   /** Stop one seat through the manager that holds it. */
   despawn(seat: SeatRef): Promise<void>;
-  /** Interrupt the seat's live turn. Where agents serve their `agent` endpoint, its `interrupt` stops
-   *  the turn; a connector that cannot, and every seat on a space without the endpoint, is stopped
-   *  by its manager writing the connector's interrupt key into its terminal. Rejects, naming why,
-   *  when neither can. */
+  /** Interrupt the seat's live turn through its manager, which writes the connector's interrupt key
+   *  into its terminal. Rejects, naming why, when the manager refuses. */
   interrupt(seat: SeatRef): Promise<void>;
   /** Whether this space's agents serve their `agent` endpoint: only on a space where people sign in
    *  (SPEC 13.21). */

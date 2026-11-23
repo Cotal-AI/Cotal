@@ -87,7 +87,7 @@ That sign-in runs in a terminal. It installs Cotal with `curl -fsSL https://get.
 | --- | --- |
 | A new thread | Nothing yet. A thread that is opened and dropped leaves no agent. |
 | The thread's first prompt | Spawns an agent in the thread's folder, with that prompt as its first task. The agent's name is the thread's id, or the name you gave it with `/name`. The turn ends when that first task's run ends. |
-| A later prompt | Reaches the agent as your own words: through the agent's `turn` where it serves its `agent` endpoint and its connector takes turns, else typed into its terminal through its manager. The turn ends once the agent has started working and stopped again. |
+| A later prompt | Reaches the agent as your own words: through the agent's `turn` where it serves its `agent` endpoint and its connector declares turns, else typed into its terminal through its manager. The thread picks the path before it sends the prompt, and a path that fails is reported, not retried another way. The turn ends once the agent has started working and stopped again. |
 | Listing sessions | The managed agents in that folder, including ones you spawned elsewhere. An agent a thread spawned or opened is listed as that thread. |
 | Importing a session | Shows what the agent's event channel still holds, then follows it live. |
 | Deleting a session | Hides that agent run from the list. The agent keeps running. |
@@ -147,7 +147,7 @@ person controls every agent under their own owner (see
 
 ## Limits [#limits]
 
-- Stopping a turn uses the agent's `interrupt` on a space where people sign in. Codex, OpenCode 2, Pi and Jcode agents stop that way. A Claude Code agent, and every agent on a space where people do not sign in, is sent its interrupt key through its manager instead, which Claude Code and Pi agents support. When neither works, the thread says the agent could not be stopped, the turn ends as cancelled, and the agent keeps working on the mesh.
+- Stopping a turn takes one path, picked from what the agent's connector declares: the agent's `interrupt` on a space where people sign in, which Codex, OpenCode 2, Pi and Jcode agents declare, else the interrupt key through its manager, which Claude Code and Pi agents support. When that path fails, the thread says the agent could not be stopped, the turn ends as cancelled, and the agent keeps working on the mesh.
 - When you stop a Claude Code turn before the agent answered, Claude puts that prompt back in its input box. Your next prompt is typed after it, so the agent gets both.
 - A later prompt that is typed into the agent's terminal is typed as if you typed it into the application, so the application's input shortcuts apply. In Claude Code, a prompt that starts with `!` runs as a shell command and its turn does not show in the thread.
 - A later prompt ends when the agent stops working. When the agent was already busy as the prompt arrived, the turn can end when that earlier work does.
