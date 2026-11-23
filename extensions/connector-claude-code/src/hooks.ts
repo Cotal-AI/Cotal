@@ -172,11 +172,14 @@ function failureCondition(ev: HookEvent): PresenceCondition | undefined {
   };
 }
 
+/** What the hooks call on the session's emitter holder, whatever records its source reads. */
+type EventHolder = Pick<AguiEmitterHolder<unknown, unknown>, "adopt" | "flush" | "closeRun">;
+
 interface ClaudeHandleDeps {
   /** Launch environment for a hosted session's carried-fork record. Omitted uses the process env. */
   env?: NodeJS.ProcessEnv;
   /** The session's AG-UI emitter, read lazily — `mcp.ts` assigns it after the handler exists. */
-  events?: () => AguiEmitterHolder<ClaudeEntry, unknown> | undefined;
+  events?: () => EventHolder | undefined;
   /** Told which inbox items a frame surfaced; pass {@link WakePolicy.surfaced}. */
   surfaced?: (items: readonly InboxItem[]) => void;
   /** False when native ingress owns delivery and these hooks observe lifecycle only. */
@@ -253,7 +256,7 @@ export interface ClaudeHooks {
  * `drive()` OWNS delivery; this connector only hands a reply off, so the ack binds to the handoff.
  */
 export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
-  const events = (): AguiEmitterHolder<ClaudeEntry, unknown> | undefined => deps.events?.();
+  const events = (): EventHolder | undefined => deps.events?.();
 
   /**
    * Claude runs each hook in a separate process. Their control-socket relays can therefore arrive

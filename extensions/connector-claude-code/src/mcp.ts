@@ -23,7 +23,6 @@ import {
   registerCotalTools,
   briefing,
   orientationCard,
-  type AguiEmitterHolder,
   controlFromEnv,
   GATEWAY_CONNECTING,
   GATEWAY_INSTRUCTIONS,
@@ -37,12 +36,12 @@ import { homedir } from "node:os";
 import { dirname, parse } from "node:path";
 import { createClaudeHandle, createWakePolicy, type ClaudeHooks, type WakePolicy } from "./hooks.js";
 import { createClaudePrompts, launchedSessionHooks } from "./prompts.js";
-import type { ClaudeEntry } from "./agui-map.js";
-import { createClaudeEventPlane } from "./claude-events.js";
+import { createClaudeEventPlane, type ClaudeEventHolder } from "./claude-events.js";
 import { createAppHost } from "./app-host.js";
 import { readCliRecord } from "./cli-record.js";
 import { openWakeFeed } from "./wake-feed.js";
 import { openCommandFeed, type CommandFeed } from "./command-feed.js";
+import type { ModDelta } from "./command-frames.js";
 import { claudeCommands, commandTurns } from "./commands.js";
 import { TURN_IMAGES_ENV } from "./turn-images.js";
 import { endHost, recordHost } from "./once-exit.js";
@@ -237,7 +236,7 @@ async function startSession(
   /** Publishes this session's activity as AG-UI events on `events.<owner>.<actor>` — set below
    *  when launch policy arms it. Personal native connections use the same recorder through the
    *  app host, with a boundary captured when that conversation connects. */
-  let events: AguiEmitterHolder<ClaudeEntry> | undefined;
+  let events: ClaudeEventHolder | undefined;
 
   /** The `claude/channel` push side — set below once the MCP server exists. */
   let wake: WakePolicy | undefined;
@@ -326,7 +325,7 @@ async function startSession(
     );
   };
   setClose(close);
-  await commands.open(opts.claudePid);
+  await commands.open(opts.claudePid, plane && ((list) => plane.deltas(list)));
   controlServer = startControlServer(
     agent,
     control,
@@ -400,8 +399,12 @@ function sessionCommands(env: NodeJS.ProcessEnv, claude: Pick<ClaudeHooks, "inte
       feed: () => feed, interrupting: () => claude.interrupting(agent()), warn,
       imageDir: env[TURN_IMAGES_ENV] || undefined, onStop: (stop) => agent().once("stopping", stop),
     }),
-    async open(claudePid: number | undefined): Promise<void> {
-      if (claudePid !== undefined) feed = await openCommandFeed(claudePid, { warn });
+    /** Serve the command socket of the Claude Code process `claudePid`, and, given a sink, ask its
+     *  mod to relay the reply text the session streams. */
+    async open(claudePid: number | undefined, deltas?: (list: ModDelta[]) => void): Promise<void> {
+      if (claudePid === undefined) return;
+      feed = await openCommandFeed(claudePid, { warn });
+      if (deltas) feed.stream(deltas);
     },
     close: (): void => feed?.close(),
   };

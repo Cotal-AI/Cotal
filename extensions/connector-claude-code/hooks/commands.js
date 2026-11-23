@@ -2,6 +2,8 @@
 // socket or write to a running child's stdin, so a reader relays the seat server's requests on its
 // stdout and a one-shot helper carries each answer back.
 
+import { streamTo } from './stream.js';
+
 const ALLOW = 'allow';
 const PANEL = 'refuse-panel';
 const SETTINGS = 'refuse-writes-settings';
@@ -216,6 +218,7 @@ async function answerFor($, request) {
 
 async function serve($, line) {
   const request = JSON.parse(line);
+  if (request.op === 'stream') return streamTo(request);
   const answer = await answerFor($, request);
   if (answer.reason !== undefined) answer.reason = clip(answer.reason, MAX_REASON);
   await $.process.run(['node', $.plugin.root + '/dist/command-reader.cjs', 'answer', request.route], {
