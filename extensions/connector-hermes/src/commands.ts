@@ -4,7 +4,7 @@
  * and turns in progress; and the operator chat's context window and cost.
  */
 import type { CommandTarget, InterruptOutput } from "@cotal-ai/core";
-import { CommandRefused, type AgentUsage, type CommandDispatcher } from "@cotal-ai/connector-core";
+import { CommandRefused, type AgentUsage, type CommandDispatcher, type MeshAgent } from "@cotal-ai/connector-core";
 import type { BridgeServer } from "./bridge.js";
 
 const isCount = (v: unknown): v is number => typeof v === "number" && Number.isInteger(v) && v >= 0;
@@ -50,5 +50,24 @@ export function hermesCommands(bridge: () => BridgeServer | undefined): CommandD
     async usage() {
       return usageOf(await live().ask("usage"));
     },
+  };
+}
+
+/** The owner's queued turns start one at a time, each only once the gateway has no Cotal message
+ *  or turn in progress: the gateway's own busy handling would interrupt a turn in progress. The
+ *  returned wake dispatches until the queue is empty or the bridge is not idle. */
+export function drainWhileIdle(agent: Pick<MeshAgent, "dispatchNextCommand">, bridge: () => BridgeServer | undefined): () => void {
+  let draining = false;
+  return () => {
+    const b = bridge();
+    if (draining || !b?.idle()) return;
+    draining = true;
+    void (async () => {
+      try {
+        while (b.idle() && (await agent.dispatchNextCommand()) !== "empty");
+      } finally {
+        draining = false;
+      }
+    })();
   };
 }
