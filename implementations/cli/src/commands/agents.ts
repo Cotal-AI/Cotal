@@ -1088,7 +1088,12 @@ async function pickAttach(values: FlagValues<typeof attachFlags>): Promise<{ nam
     return { name: row.name, on, expectedTarget: { id: row.id, lifecycleUid: row.lifecycleUid }, status: typeof row.status === "string" ? row.status : "not reported" };
   });
   if (census.partial) console.error(renderReport({ space: census.target.space, sections: [{ title: "Agent list is partial", blocks: [{ kind: "lines", lines: [{ text: census.partial.message, tone: "waiting" }] }] }] }, "rich", process.stderr));
-  if (!choices.length) throw new CommandFailure("refused", census.partial ? "TARGET_UNAVAILABLE" : "TARGET_NOT_FOUND", census.partial ? "no attachable agent was returned; some managers did not answer" : "the answering managers report no agents to attach", { target: census.target, remedy: "run `cotal ps`, or launch an agent with `cotal spawn`" });
+  if (!choices.length) {
+    const remedy = values.server !== undefined && brokerAddressForDisplay(values.server) !== values.server
+      ? "list or launch agents on the same broker"
+      : `run ${psRerun(values)}, or launch an agent with ${codeSpan(onRerun("cotal spawn", values, values.on === undefined ? [] : ["--on", values.on]))}`;
+    throw new CommandFailure("refused", census.partial ? "TARGET_UNAVAILABLE" : "TARGET_NOT_FOUND", census.partial ? "no attachable agent was returned; some managers did not answer" : "the answering managers report no agents to attach", { target: census.target, remedy });
+  }
   const choice = await prompts.select({
     message: `Return to an agent in ${oneLine(census.target.space)}`,
     options: choices.map((item, index) => ({ value: index, label: attachChoiceLabel({ name: item.name, id: item.expectedTarget.id, status: item.status }), hint: oneLine(`${item.expectedTarget.id} · manager ${item.on}`) })),

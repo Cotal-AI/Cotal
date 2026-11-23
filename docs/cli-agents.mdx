@@ -531,6 +531,7 @@ Quote a name with spaces: `cotal persona show 'a b'` reads `.cotal/agents/a b.md
 not `review.md` in the project root.
 If a catalog name starts with `-`, put options before `--` and the name after it, as in `cotal persona show --json -- -reviewer`.
 Local create and show reports use that form in their follow-up commands and keep explicit `--space` and `--server` selectors.
+If `persona show` cannot find the name, its suggested list command keeps those selectors too.
 Local creation uses the catalog name as the default agent name. Choose a name that starts with a
 letter, digit or `_`. A leading hyphen is refused with `USAGE_INVALID` before anything is written.
 Creation accepts one of `--file/-f` (a complete [agent file](agent-files.mdx)), `--prompt`, or

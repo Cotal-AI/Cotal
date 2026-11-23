@@ -70,7 +70,7 @@ export async function persona(args: ParsedArgs): Promise<void> {
   if (sub === undefined) return list(catalog, presentation);
   const path = personaPath(catalog.root, name!, sub === "show" ? "show" : "write");
   if (sub === "show") {
-    const source = requirePersonaSource(path);
+    const source = requirePersonaSource(path, target);
     const definition = validatePersona(source.bytes, path);
     const word = personaNameWords(name!, target);
     const jsonWords = personaNameWords(name!, `${target} --json`);
