@@ -274,6 +274,7 @@ A connector hands `MeshAgent` a dispatcher as the `commands` option:
 The runtime sends only those four fields of an entry. It leaves out a name `command` cannot carry and shortens a longer description or hint.
 Without a dispatcher, `commands` answers `{ supported: false }` and `command` is `unimplemented`.
 In this release OpenCode 2.x, [pi](pi-connector-reference.mdx#agent-commands) 0.84.2 or later and [Claude Code](claude-connector-reference.mdx#agent-commands) 2.1.330 or later with mods on have one, [Codex](codex-connector-reference.mdx#agent-commands) has one that runs skills, and [Jcode](jcode-connector-reference.mdx#agent-commands) has one that runs its native session operations.
+Pi's also takes `turn` with images and answers `usage`, on every Pi version.
 
 `command` and `turn` answer an `id` at once, and the command or turn waits in one queue for the connector's next idle turn.
 `MeshAgent` emits `command`, and the connector calls `dispatchNextCommand()` while no turn runs. It answers `dispatched`, `failed`, or `empty`.
