@@ -93,7 +93,7 @@ A `cotal.yaml` document with `kind: Mesh` that declares a team's channels, agent
 
 ## Mention
 
-A lowercased peer name in a message's `mentions` field. It is a wake hint. On a `live` channel, a uniquely resolved target also gets a durable copy if its current read ACL permits that channel, even when unjoined. See [SPEC §4](../SPEC.md#4-delivery-modes) and [§5](../SPEC.md#5-envelopes).
+A channel wake hint. In signed-in spaces, `@agent` names your own agent and `@user/agent` names another owner's agent. The sender carries the exact principals in `mentionIds`. A `live` channel can leave a durable mention copy only for a target whose current read ACL permits it. See [SPEC §4](../SPEC.md#4-delivery-modes) and [§5](../SPEC.md#5-envelopes).
 
 ## Mesh
 

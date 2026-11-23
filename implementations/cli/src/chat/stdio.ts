@@ -20,7 +20,7 @@
  * error comes back in line order. Unknown types, unknown fields and malformed values refuse with
  * USAGE_INVALID and never reach the session.
  */
-import { assertValidRole, MAX_NAME_LENGTH } from "@cotal-ai/core";
+import { assertValidRole } from "@cotal-ai/core";
 import type { AttentionMode, ChannelMode } from "@cotal-ai/core";
 import type { AdmittedChatSession, CloseReport, PublishResult, Result, SessionEvent, SessionMessage } from "@cotal-ai/workspace/chat";
 import { concreteChannelProblem } from "@cotal-ai/workspace";
@@ -45,7 +45,7 @@ export const REQUEST_TYPES = [
 export type RequestType = (typeof REQUEST_TYPES)[number];
 
 export type StdioRequest =
-  | { readonly type: "send"; readonly id: string; readonly text: string; readonly channel: string; readonly mentions: readonly string[] }
+  | { readonly type: "send"; readonly id: string; readonly text: string; readonly channel: string; readonly mentions?: readonly string[] }
   | { readonly type: "dm"; readonly id: string; readonly to: string; readonly text: string; readonly replyTo?: string }
   | { readonly type: "anycast"; readonly id: string; readonly role: string; readonly text: string }
   | { readonly type: "status"; readonly id: string; readonly status: "idle" | "working" | "waiting"; readonly activity?: string }
@@ -150,10 +150,10 @@ function validateFields(id: string, type: RequestType, r: Record<string, unknown
       if (isErr(text)) return text;
       const problem = channelProblem(type, r.channel);
       if (problem) return usage(id, problem);
-      const mentions = r.mentions ?? [];
-      if (!Array.isArray(mentions) || mentions.some((m) => typeof m !== "string" || m.length === 0 || m.length > MAX_NAME_LENGTH))
-        return usage(id, `send.mentions must be an array of names of 1-${MAX_NAME_LENGTH} characters`);
-      return ok({ type, id, text, channel: r.channel as string, mentions: mentions as string[] });
+      const mentions = r.mentions;
+      if (mentions !== undefined && (!Array.isArray(mentions) || mentions.some((m) => typeof m !== "string" || m.length === 0 || m.length > MAX_DM_TARGET)))
+        return usage(id, `send.mentions must be an array of addresses of 1-${MAX_DM_TARGET} characters`);
+      return ok({ type, id, text, channel: r.channel as string, ...(mentions === undefined ? {} : { mentions }) });
     }
     case "dm": {
       const to = str("to", MAX_DM_TARGET);

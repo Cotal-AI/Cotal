@@ -61,7 +61,7 @@ import { authDir, recordMesh, saveSpaceAuth, setCurrent } from "@cotal-ai/worksp
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-const EXPECTED = 116;
+const EXPECTED = 117;
 let pass = 0;
 let fail = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
@@ -540,6 +540,9 @@ try {
   const mentionDm = await run(["send", "-t", "bob", "--mention", "carol", "x", "--json"]);
   check("`cotal send -t` with --mention is USAGE_INVALID, exit 1, naming the channel-only rule",
     mentionDm.code === 1 && mentionDm.stdout.includes('"code":"USAGE_INVALID"') && mentionDm.stdout.includes("native mention hints belong to channel publications") && mentionDm.stdout.includes("drop --mention, or send to a channel with -c <channel>"), mentionDm);
+  const slashMention = await run(["send", "-c", "general", "malformed CLI mention @bob/reviewer/extra", "--json"]);
+  check("channel send refuses a malformed inline slash mention before storage",
+    slashMention.code === 1 && slashMention.stdout.includes('"code":"USAGE_INVALID"') && /invalid.*(?:mention|address)/i.test(slashMention.stdout), slashMention);
   const badRole = await run(["send", "-r", "bad role!", "x", "--json"]);
   check("`cotal send -r` with a role that is not one NATS-safe token is USAGE_INVALID, exit 1, with the role rule",
     badRole.code === 1 && badRole.stdout.includes('"code":"USAGE_INVALID"') && badRole.stdout.includes('invalid role \\"bad role!\\": must be a single NATS-safe token'), badRole);

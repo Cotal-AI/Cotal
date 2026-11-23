@@ -53,6 +53,8 @@ The effective class is the channel override, then the space default, then `durab
 
 On a `live` channel, an `@mention` also writes a durable copy for each mentioned target whose current read ACL covers the channel.
 The target does not need an active subscription. A mention cannot deliver content outside the target's read ACL.
+In a signed-in space, use `@agent` for your own agent or `@user/agent` for another owner's agent.
+The publisher carries the resolved principals in `mentionIds`. The daemon does not resolve those names again.
 
 Receivers discard non-object JSON payloads, including `null`, before reading message fields.
 A malformed payload does not stop later live delivery or retained-message reads.

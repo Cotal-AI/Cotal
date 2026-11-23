@@ -696,7 +696,7 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
         else if (!canBroadcast) print(c.red(`! ${broadcastDenied()}`));
         else {
           try {
-            await ep.multicast(line, { channel });
+            await ep.postChannel(line, { channel });
             print(`${c.cyan("#" + channel)} ${c.dim("you:")} ${line}`);
           } catch (e) {
             if (!isPublishPermissionDenied(e)) throw e;

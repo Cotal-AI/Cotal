@@ -1,7 +1,7 @@
 // The subscriptions, consumers and responders a CotalEndpoint holds on its connection, in one object
 // the endpoint's internal parts read by reference. Not re-exported by the index.
 import type { ConsumerMessages } from "@nats-io/jetstream";
-import type { LivenessPlane, ResponderState } from "./liveness.js";
+import type { LivenessAnswer, LivenessPlane, ResponderState } from "./liveness.js";
 import type { NatsConnection, Subscription } from "@nats-io/transport-node";
 import type { PrincipalServeIntent } from "./endpoint-options.js";
 
@@ -21,7 +21,7 @@ export interface DeliveryState {
    *  by {@link EndpointLiveness.bindLiveness} on every (re)connect: a rebuild closes the old connection and every
    *  subscription on it, so a responder bound once would leave its plane to the broker's
    *  no-responders answer, which a peer grades `unbound`, while this endpoint is connected and serving. */
-  readonly livenessResponders: Map<LivenessPlane, { readState: () => Promise<ResponderState> | ResponderState; sub?: Subscription; qualifiedDmVersion?: 1 }>;
+  readonly livenessResponders: Map<LivenessPlane, { readState: () => Promise<ResponderState> | ResponderState; sub?: Subscription; versions?: Pick<LivenessAnswer, "qualifiedDmVersion" | "principalMentionsVersion"> }>;
   /** The principal endpoints {@link servePrincipal} serves, by endpoint name: INTENT, re-bound on
    *  every replaced connection. */
   readonly principalServes: Map<string, PrincipalServeIntent>;

@@ -74,6 +74,8 @@ const PRE_EFFECT: Readonly<Record<string, RefusalCode>> = {
 
 function classify(e: unknown): { outcome: "refused"; code: RefusalCode; message: string; native?: { code?: string; detail?: unknown } } | { outcome: "unknown"; message: string } {
   const message = e instanceof Error ? e.message : String(e);
+  if (e instanceof PeerAddressError) return { outcome: "refused", code: e.code, message };
+  if (e instanceof AmbiguousPeerError) return { outcome: "refused", code: "TARGET_AMBIGUOUS", message };
   if (isPublishPermissionDenied(e)) return { outcome: "refused", code: "PERMISSION_DENIED", message, native: { code: "publish-permission-denied" } };
   if (e instanceof EpEnvelopeError) {
     const code = PRE_EFFECT[e.code];
@@ -301,7 +303,7 @@ export class NativeChatSession implements AdmittedChatSession {
 
   // ---- publish ---------------------------------------------------------------------------------
 
-  async send(text: string, channel: string, mentions: readonly string[], replyTo?: string): Promise<PublishResult> {
+  async send(text: string, channel: string, mentions?: readonly string[], replyTo?: string): Promise<PublishResult> {
     if (!isConcreteChannel(channel)) return refusedUsage("a send needs a concrete channel");
     const outside = grantRefusal(this.inputs.identity.allowPublish, channel, "post", this.inputs.words);
     if (outside) return outside;
@@ -310,7 +312,7 @@ export class NativeChatSession implements AdmittedChatSession {
     let registered: boolean;
     try {
       registered = this.inputs.endpoint.getChannelConfig(channel) !== undefined;
-      const msg = await this.inputs.endpoint.multicast(text, { channel, ...(mentions.length ? { mentions: [...mentions] } : {}), ...(replyTo !== undefined ? { replyTo } : {}) });
+      const msg = await this.inputs.endpoint.postChannel(text, { channel, mentions, replyTo });
       // Native multicast awaits the stream ack but does not return it (endpoint.ts:4231-4236): no seq.
       this.streamsGone = undefined;
       return { outcome: "stored", messageId: msg.id, channel, registered };

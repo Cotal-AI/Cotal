@@ -13,6 +13,7 @@ import { isRestoredConsumer } from "./backup.js";
 import { ackWaitOf, authenticatedChannelMessage, durableDelivery, isRecord } from "./endpoint-inbound.js";
 import type { CotalEndpoint } from "./endpoint.js";
 import { isFromSubjectSender } from "./endpoint-messages.js";
+import { claimedMentionTargets } from "./channel-mentions.js";
 import { deliveryLimitOf, fitHistoryPage, type HistoryPage } from "./endpoint-options.js";
 import { EVICT_PRINCIPALS_MAX } from "./evict.js";
 import { issuedPermitsSubject } from "./issued-authority.js";
@@ -124,7 +125,7 @@ export interface EndpointDeliveryPlaneDeps {
   notLiveMsg: () => string;
   plane3MsgId: (entry: Plane3Entry, keySuffix: string) => Partial<JetStreamPublishOptions>;
   publishDinbox: (principal: string, lifecycleUid: string, entry: Plane3Entry) => Promise<void>;
-  resolveOwnerByName: (name: string) => string | undefined;
+  resolveLegacyMention: (name: string) => string | undefined;
   scheduleResidentSwap: () => void;
   sendMentionNotice: (msg: CotalMessage, channel: string, seq: number, names: readonly string[]) => Promise<void>;
   emit: (event: string, ...args: unknown[]) => boolean;
@@ -211,7 +212,7 @@ export class EndpointDeliveryPlane {
   private readonly notLiveMsg: EndpointDeliveryPlaneDeps["notLiveMsg"];
   private readonly plane3MsgId: EndpointDeliveryPlaneDeps["plane3MsgId"];
   private readonly publishDinbox: EndpointDeliveryPlaneDeps["publishDinbox"];
-  private readonly resolveOwnerByName: EndpointDeliveryPlaneDeps["resolveOwnerByName"];
+  private readonly resolveLegacyMention: EndpointDeliveryPlaneDeps["resolveLegacyMention"];
   private readonly scheduleResidentSwap: EndpointDeliveryPlaneDeps["scheduleResidentSwap"];
   private readonly sendMentionNotice: EndpointDeliveryPlaneDeps["sendMentionNotice"];
   private readonly emit: EndpointDeliveryPlaneDeps["emit"];
@@ -237,7 +238,7 @@ export class EndpointDeliveryPlane {
     this.notLiveMsg = deps.notLiveMsg;
     this.plane3MsgId = deps.plane3MsgId;
     this.publishDinbox = deps.publishDinbox;
-    this.resolveOwnerByName = deps.resolveOwnerByName;
+    this.resolveLegacyMention = deps.resolveLegacyMention;
     this.scheduleResidentSwap = deps.scheduleResidentSwap;
     this.sendMentionNotice = deps.sendMentionNotice;
     this.emit = deps.emit;
@@ -877,14 +878,10 @@ export class EndpointDeliveryPlane {
     // and again return without acking so the entry redelivers rather than being consumed here.
     if (!this.plane3MayAct()) return;
     const durable = (await this.deliveryClassFresh(channel)) === "durable";
-    // Each mention is resolved once. A live channel delivers to the agents among them that may read
-    // it, and on either class a mention of an agent that may not read the channel is reported to the
-    // sender below, so a post never claims a reader it cannot have.
     const mentioned: Array<{ name: string; owner: string; row: { allowSubscribe: string[]; lifecycleUid: string } }> = [];
-    for (const name of msg.mentions ?? []) {
-      const owner = this.resolveOwnerByName(name);
-      if (!owner || owner === msg.from.id) continue;
-      // A mention arrives as an ALIAS (the roster names no lifecycle): resolve its single live ACL
+    for (const { name, principal: owner } of claimedMentionTargets(msg, this.resolveLegacyMention)) {
+      if (owner === msg.from.id) continue;
+      // A mention names a principal, not a lifecycle. Read its single live ACL
       // row for BOTH the read-authorization and the lifecycle to address. Ambiguity (two live rows)
       // refuses THIS copy loudly rather than guessing a lifecycle.
       let row: { allowSubscribe: string[]; lifecycleUid: string } | undefined;

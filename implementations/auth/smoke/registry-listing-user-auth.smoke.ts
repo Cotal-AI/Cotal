@@ -67,12 +67,87 @@ async function awaitValue<T>(read: () => T | undefined): Promise<T | undefined> 
   } while (Date.now() < until);
 }
 
+async function checkMentionWriters(
+  sender: MeshAgent, right: MeshAgent, openLeft: () => Promise<MeshAgent>, reopenRight: () => Promise<MeshAgent>,
+  username: string, daemon: CotalEndpoint, writerBearer: () => Promise<string>,
+): Promise<void> {
+  const live = "writer_live";
+  const durable = "writer_durable";
+  const saw = (agent: MeshAgent, text: string) => awaitValue(() => agent.peekInbox().find((i) => i.text === text));
+  const received = (agent: MeshAgent, text: string) => agent.peekInbox().some((i) => i.text === text && i.mentionsMe);
+  const send = async (address: string, note: string, channel: string, list = [address]) => {
+    const text = `${note} @${address}`;
+    const result = await sender.send(text, channel, list).catch((e: Error) => e);
+    return { text, result };
+  };
+  const refused = (result: Error | CotalMessage, why: RegExp) => result instanceof Error && why.test(result.message);
+  const addressed = (result: Error | CotalMessage, id: string) => !(result instanceof Error) && result.mentionIds?.join() === id;
+  const foreign = `${username}/reviewer`;
+  daemon.serveLiveness("delivery", () => "bound");
+  const oldDaemon = await send(foreign, "old delivery responder", live);
+  suite.check("writer: an old delivery responder is not evidence of principal mention support", refused(oldDaemon.result, /upgraded delivery/i), oldDaemon.result);
+  daemon.serveDeliveryLiveness();
+  const missing = await send("reviewer", "no own live", live);
+  suite.check("writer: foreign-only bare live mention is refused", refused(missing.result, /own|could not resolve/i), missing.result);
+  if (!(missing.result instanceof Error)) await saw(right, missing.text);
+  const direct = await send(foreign, "qualified live", live);
+  const directSeen = !(direct.result instanceof Error) && (await saw(right, direct.text))?.mentionsMe === true;
+  suite.check("writer: a qualified live post names and prioritizes the other owner's exact principal", addressed(direct.result, right.id) && directSeen, direct.result);
+  suite.check("writer: a foreign-only bare post never produces live mention priority", !received(right, missing.text));
+  const denied = await send(foreign, "unreadable qualified mention", "writer_restricted");
+  const notice = !(denied.result instanceof Error) && await awaitValue(() => sender.peekInbox().find((i) =>
+    i.notice === "mention" && i.text.includes("#writer_restricted") && i.text.includes(`@${foreign}`)));
+  suite.check("writer: claiming a principal does not grant read access, and the daemon reports the denied copy",
+    addressed(denied.result, right.id) && !!notice && !received(right, denied.text), denied.result);
+  await right.stop();
+  const missingOffline = await send("reviewer", "no own offline", live);
+  suite.check("writer: foreign-only bare mention is refused with recipient offline", refused(missingOffline.result, /own|could not resolve/i), missingOffline.result);
+  const offline = await send(foreign, "qualified offline", live);
+  const legacy = await sendLegacyMention(sender.ep, writerBearer);
+  const bad = await send(`${username}/reviewer/extra`, "malformed slash", live, []);
+  suite.check("writer: a malformed slash fails before publish, even with an empty declaration", refused(bad.result, /invalid.*(?:mention|address)/i), bad.result);
+  const mismatch = await send(foreign, "declared mismatch", live, ["reviewer"]);
+  suite.check("writer: a declaration that disagrees with the text fails before publish", refused(mismatch.result, /match|agree/i), mismatch.result);
+  const duplicate = await send(foreign, "duplicate declaration", live, [foreign, foreign]);
+  suite.check("writer: duplicate declarations fail before publish", refused(duplicate.result, /duplicate/i), duplicate.result);
+  const resumed = await reopenRight();
+  const offlineSeen = !(offline.result instanceof Error) && (await saw(resumed, offline.text))?.mentionsMe === true;
+  suite.check("writer: a qualified mention has a durable copy on a replay-off live channel", addressed(offline.result, resumed.id) && offlineSeen, offline.result);
+  suite.check("writer: an old post without mentionIds still gets a name-based mention copy", (await saw(resumed, legacy))?.mentionsMe === true);
+  suite.check("writer: the foreign-only bare post leaves no offline mention copy", !received(resumed, missingOffline.text));
+  const left = await openLeft();
+  const own = await send("reviewer", "own live", live);
+  const ownSeen = !(own.result instanceof Error) && (await saw(left, own.text))?.mentionsMe === true;
+  suite.check("writer: a bare mention selects the sender's own seat among two live namesakes", addressed(own.result, left.id) && ownSeen && !received(resumed, own.text), own.result);
+  await left.stop();
+  const ownOffline = await send("reviewer", "own durable", durable);
+  const resumedLeft = await openLeft();
+  const ownOfflineSeen = !(ownOffline.result instanceof Error) && (await saw(resumedLeft, ownOffline.text))?.mentionsMe === true;
+  suite.check("writer: a bare mention retains its own target through the durable backstop", addressed(ownOffline.result, resumedLeft.id) && ownOfflineSeen && !received(resumed, ownOffline.text), ownOffline.result);
+}
+
+async function sendLegacyMention(ep: CotalEndpoint, bearer: () => Promise<string>): Promise<string> {
+  const channel = "writer_live";
+  const text = "legacy writer @reviewer";
+  const nc = await dialerFor(fx.servers)({ servers: fx.servers,
+    ...standaloneConnectOpts({ bearer: await bearer(), sentinelCreds: a.sentinelCreds, tls: false }) });
+  try {
+    await nc.request(chatSubject(ep.space, ep.principal.owner, ep.principal.actor, channel), JSON.stringify({
+      id: "writer_legacy_live", ts: Date.now(), space: ep.space, from: ep.ref(), channel,
+      mentions: ["reviewer"], parts: [{ kind: "text", text }],
+    }), { timeout: 2_000 });
+  } finally { await nc.close(); }
+  return text;
+}
+
 async function checkReaders(authService: AuthServiceHandle, username: string): Promise<void> {
   const channel = "reader_test";
-  const allow = [channel];
+  const allow = [channel, "writer_live", "writer_durable"];
   const base = { space: a.space, servers: fx.servers };
   const creds = await mintCreds(a.auth, newIdentity(), "provisioner");
-  await seedChannelRegistry({ ...base, creds, file: { channels: { [channel]: { replay: true, deliveryClass: "durable" } } } });
+  await seedChannelRegistry({ ...base, creds, file: { channels: { [channel]: { replay: true, deliveryClass: "durable" },
+    writer_live: { replay: false, deliveryClass: "live" }, writer_durable: { replay: false, deliveryClass: "durable" },
+    writer_restricted: { replay: false, deliveryClass: "live" } } } });
   const provisioner = new CotalEndpoint({ ...base, creds, channels: [], consume: false, registerPresence: false, watchPresence: false, card: { kind: "endpoint", name: "test_provisioner" } });
   const daemon = new CotalEndpoint({ ...base, creds: await mintCreds(a.auth, newIdentity(), "delivery"), channels: [], consume: false, registerPresence: false, watchPresence: true, card: { kind: "endpoint", name: "delivery" } });
   const agents: MeshAgent[] = [];
@@ -83,9 +158,10 @@ async function checkReaders(authService: AuthServiceHandle, username: string): P
     lease = await daemon.acquireDeliveryLease(0);
     await daemon.startPlane3((id, uid) => daemon.aclForOwner(id, uid));
     lease = await daemon.markDeliveryLeaseReady(0, lease);
-    const prepare = async (subject: string, owner: string, actor: string) => {
+    daemon.serveDeliveryLiveness();
+    const prepare = async (subject: string, owner: string, actor: string, allowPublish = allow) => {
       const lifecycleUid = mintLifecycleUid();
-      grantActor(a.stateDir, { owner, actor, lifecycleUid, scope: [], allowSubscribe: allow, allowPublish: allow });
+      grantActor(a.stateDir, { owner, actor, lifecycleUid, scope: [], allowSubscribe: allow, allowPublish });
       await provisionAgentDurables(provisioner, { owner, actor, lifecycleUid }, { subscribe: allow, allowSubscribe: allow });
       const bearer = async () => {
         const result = await fetch(`${authService.url}/exchange`, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${authService.cap}` },
@@ -94,10 +170,10 @@ async function checkReaders(authService: AuthServiceHandle, username: string): P
         assert.ok(result.ok && body.token, body.error);
         return body.token;
       };
-      return { lifecycleUid, userAuth: { owner, actor, bearer, sentinelCreds: a.sentinelCreds } };
+      return { lifecycleUid, allowPublish, userAuth: { owner, actor, bearer, sentinelCreds: a.sentinelCreds } };
     };
     const start = async (grant: Awaited<ReturnType<typeof prepare>>) => {
-      const config: AgentConfig = { ...base, ...grant, name: grant.userAuth.actor, subscribe: allow, allowSubscribe: allow, allowPublish: allow, kind: "agent", tls: false };
+      const config: AgentConfig = { ...base, ...grant, name: grant.userAuth.actor, subscribe: allow, allowSubscribe: allow, kind: "agent", tls: false };
       const agent = new MeshAgent(config, {}, { eventsArmed: false });
       agents.push(agent);
       agent.on("error", console.error);
@@ -105,9 +181,19 @@ async function checkReaders(authService: AuthServiceHandle, username: string): P
       assert.ok(await awaitValue(() => agent.connected ? true : undefined));
       return agent;
     };
-    const leftGrant = await prepare("lister-human", owner, "reviewer");
+    const senderGrant = await prepare("lister-human", owner, "writer_sender", [...allow, "writer_restricted"]);
+    const writer = await start(senderGrant);
+    const writerRightGrant = await prepare("other-human", otherOwner, "reviewer");
+    const writerRight = await start(writerRightGrant);
+    let writerLeftGrant: Awaited<ReturnType<typeof prepare>> | undefined;
+    const openLeft = async () => start(writerLeftGrant ??= await prepare("lister-human", owner, "reviewer"));
+    const rightUsername = await writer.ep.readUsername(otherOwner);
+    assert.ok(rightUsername);
+    await checkMentionWriters(writer, writerRight, openLeft, () => start(writerRightGrant), rightUsername, daemon, senderGrant.userAuth.bearer);
+    for (const agent of agents.splice(0).reverse()) await agent.stop();
+    const leftGrant = writerLeftGrant!;
     const left = await start(leftGrant);
-    const right = await start(await prepare("other-human", otherOwner, "reviewer"));
+    const right = await start(writerRightGrant);
     for (const agent of [left, right]) await agent.setChannelMode(channel, "quiet");
     const sender = await prepare("lister-human", owner, "sender");
     let nc: NatsConnection | undefined;

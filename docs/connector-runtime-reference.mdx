@@ -171,13 +171,16 @@ The dashboard marks stale presence when its own poll fails.
 `mesh unknown (manager's presence view not yet populated)` instead of a peer liveness verdict when the manager's view is unsafe.
 The [CLI reference](cli.mdx) describes the command.
 
-The shared connector checks DM targets and mentioned names against a fresh presence read.
+The shared connector checks bare DM and mention addresses against a fresh presence read.
 An unknown bare target after a failed read refuses the DM, naming the read failure rather than calling the peer absent.
 A bare target already known from a successful presence read remains usable under the same owner rule.
 An exact known principal still works. In a signed-in space, `user/agent` resolves from the
 username registry without a roster row. The username is case-insensitive and the actor is case-sensitive.
 A qualified send returns the stored sequence without claiming that a recipient exists or read the message.
 The connector refuses qualified input before publishing if the delivery responder does not advertise support.
+For channel posts, `@agent` names an agent of the acting owner and `@user/agent` can name another
+owner's agent. The resolved `mentionIds` stay with the post. The connector refuses a malformed
+address or a declared list that disagrees with the text in a signed-in space.
 Reply to an authenticated sender by its exact principal, not its remembered display name.
 An unknown name after a successful read receives the ordinary unknown-peer refusal.
 
@@ -288,7 +291,8 @@ The states, codes and outcomes are in [SPEC §13.22](../SPEC.md#1322-the-agent-e
 The agent owner's interactive session renames an agent with `set-name` `{ name }` on the agent's endpoint, and gets `{ name }` back.
 No one else can call it: the broker refuses a sibling agent of the same owner, any other owner, and every grant.
 `MeshAgent` serves it with no connector code. It changes the card's display name and republishes presence at once, and every client in the space sees the new name.
-The principal does not change, so the agent's subjects, durables and grants stay as they are, and an `@mention` of the new name reaches it.
+The principal does not change, so the agent's subjects, durables and grants stay as they are.
+Signed-in mentions use the actor, not the display name. Legacy mentions use the display name.
 
 The agent refuses a name the shared name rule refuses as `bad-request`, and the name of another live agent, compared lowercased, as `already-exists`.
 Each refusal is `not-executed` and carries the `ai.cotal.agent.name-refused` detail with the reason `name-invalid` or `name-taken`.

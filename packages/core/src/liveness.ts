@@ -98,6 +98,8 @@ export function isLivenessPlane(plane: string): plane is LivenessPlane {
 export interface LivenessAnswer {
   /** Version of qualified DM compatibility advertised by a delivery responder. */
   qualifiedDmVersion?: 1;
+  /** The bound delivery responder understands principal-based mention copies. */
+  principalMentionsVersion?: 1;
   /** The plane this answer is about, echoed so a reply cannot be mistaken for another plane's. */
   plane: LivenessPlane;
   /** Whether a responder is bound for that plane, in #1594's vocabulary. */
@@ -206,11 +208,13 @@ export function responderFromProbe(outcome: ProbeOutcome, answered?: ResponderSt
  *  readable: it is an answer from a responder that predates the field. */
 export function parseLivenessAnswer(body: unknown, expectPlane: LivenessPlane): LivenessAnswer | undefined {
   if (typeof body !== "object" || body === null) return undefined;
-  const { plane, responder, instance, qualifiedDmVersion } = body as { plane?: unknown; responder?: unknown; instance?: unknown; qualifiedDmVersion?: unknown };
+  const { plane, responder, instance, qualifiedDmVersion, principalMentionsVersion } = body as Partial<Record<keyof LivenessAnswer, unknown>>;
   if (typeof plane !== "string" || !isLivenessPlane(plane) || plane !== expectPlane) return undefined;
   if (responder !== "bound" && responder !== "unbound" && responder !== "stale" && responder !== "unknown") return undefined;
   if (instance !== undefined && (typeof instance !== "string" || instance === "")) return undefined;
-  return { plane, responder, ...(instance === undefined ? {} : { instance }), ...(plane === "delivery" && qualifiedDmVersion === 1 ? { qualifiedDmVersion } : {}) };
+  return { plane, responder, ...(instance === undefined ? {} : { instance }),
+    ...(plane === "delivery" && qualifiedDmVersion === 1 ? { qualifiedDmVersion } : {}),
+    ...(plane === "delivery" && principalMentionsVersion === 1 ? { principalMentionsVersion } : {}) };
 }
 
 /** The consequence of an unbound responder, in the operator's terms rather than the daemon's — per

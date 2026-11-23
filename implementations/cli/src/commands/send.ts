@@ -4,7 +4,6 @@ import { closeSync, fstatSync, openSync, read } from "node:fs";
 import { promisify } from "node:util";
 import { setTimeout as delay } from "node:timers/promises";
 import {
-  resolvePeer,
   assertValidName,
   assertValidRole,
   isPublishPermissionDenied,
@@ -22,7 +21,6 @@ import {
   AmbiguousPeerError,
   PeerAddressError,
   CotalEndpoint,
-  mentionsIn,
   type FlagSpec,
   type FlagValues,
   type PeerCandidate,
@@ -53,7 +51,7 @@ export const sendFlags = [
   { name: "role", short: "r", type: "string", value: "<role>", description: "queue for one agent with this role" },
   { name: "file", short: "f", type: "string", value: "<path>", description: "read the message body from this UTF-8 file (- reads stdin), instead of a positional body" },
   { name: "stdin", type: "boolean", description: "read the message body from explicit stdin, instead of a positional body" },
-  { name: "mention", type: "string", multiple: true, value: "<agent>", description: "channel: wake this authorized peer; repeat for several peers" },
+  { name: "mention", type: "string", multiple: true, value: "<agent>", description: "channel: declare @agent or @user/agent from the text; repeat for several peers" },
   { name: "reply-to", type: "string", value: "<message-id>", description: "direct send: name the message this body answers" },
   { name: "verbose", short: "v", type: "boolean", description: "include the actual sending principal in the receipt" },
 ] as const satisfies readonly FlagSpec[];
@@ -123,8 +121,6 @@ export function sendArguments(args: ParsedArgs): SendInput {
     throw new CommandFailure("refused", "USAGE_INVALID", "--reply-to takes a message identifier and requires --to");
   if (values.mention?.length && destination.mode !== "msg")
     throw new CommandFailure("refused", "USAGE_INVALID", "native mention hints belong to channel publications; they do not change a direct or role destination", { remedy: "drop --mention, or send to a channel with -c <channel>" });
-  if (values.mention?.some((name) => !name.replace(/^@/, "").trim() || /[\/\u0000-\u001f\u007f]/u.test(name)))
-    throw new CommandFailure("refused", "USAGE_INVALID", "each --mention names one agent or full instance id");
   // `--file -` is stdin, as `persona create --from -` reads it.
   return { ...destination, source: values.file !== undefined ? (values.file === "-" ? "stdin" : "file") : values.stdin ? "stdin" : "argument", ...(args.positionals[0] === undefined ? {} : { text: args.positionals[0] }) };
 }
@@ -261,14 +257,6 @@ function decoded(bytes: Buffer, file: string | undefined, { target, instead }: F
   return text;
 }
 
-/** A shared name's remedy names the full identities that carry it. A mention travels as the name, so
- *  only a direct send can reach one of them. */
-function sharedNameRemedy(use: "to" | "mention", identities: readonly string[]): string {
-  return use === "to"
-    ? `send to one full identity instead: ${identities.join(", ")}`
-    : `a mention carries the name, so it cannot single one of them out; send to one with --to <full identity> instead: ${identities.join(", ")}`;
-}
-
 /** A full identity with what tells it apart from another of the same name: its display name, whose
  *  case may differ, its kind and, when its presence reports one, the local time its process started. */
 function identityLabel(candidate: PeerCandidate, p: Presence | undefined): string {
@@ -278,23 +266,23 @@ function identityLabel(candidate: PeerCandidate, p: Presence | undefined): strin
   return `${candidate.id} (${name}, ${kind}${p.runtime ? `, started ${new Date(p.runtime.startedAt).toLocaleTimeString()}` : ""})`;
 }
 
-async function directPeer(ep: Awaited<ReturnType<typeof openTransient>>["ep"], space: string, name: string, use: "to" | "mention", values: ConnectFlags): Promise<ResolvedPeerAddress> {
+async function directPeer(ep: Awaited<ReturnType<typeof openTransient>>["ep"], space: string, name: string, values: ConnectFlags): Promise<ResolvedPeerAddress> {
   // Presence arrives asynchronously. Never turn a partial name into a fuzzy target.
-  if (use === "to" && !name.includes("/")) {
+  if (!name.includes("/")) {
     await ep.waitForPresenceSnapshot(ROSTER_MS);
     if (ep.presenceView().state !== "current" && !ep.getRoster().some((p) => p.card.id === name))
       throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the authorized presence view is not current, so the recipient was not verified", { target: { space, name } });
   }
   for (let attempt = 0; attempt < 20; attempt++) {
     try {
-      const peer = use === "mention" ? resolvePeer(ep.getRoster(), name) : await ep.resolvePeerAddress(name);
+      const peer = await ep.resolvePeerAddress(name);
       if (peer) return peer;
     } catch (error) {
       if (error instanceof PeerAddressError)
         throw new CommandFailure("refused", error.code, error.message, { target: { space, name, ...(error.addresses.length ? { addresses: error.addresses } : {}) } });
       if (!(error instanceof AmbiguousPeerError)) throw error;
       const roster = ep.getRoster();
-      throw new CommandFailure("refused", "TARGET_AMBIGUOUS", "several participants have this name", { target: { space, name, candidates: error.candidates }, remedy: sharedNameRemedy(use, error.candidates.map((candidate) => identityLabel(candidate, roster.find((p) => p.card.id === candidate.id)))) });
+      throw new CommandFailure("refused", "TARGET_AMBIGUOUS", "several participants have this name", { target: { space, name, candidates: error.candidates }, remedy: `send to one full identity instead: ${error.candidates.map((candidate) => identityLabel(candidate, roster.find((p) => p.card.id === candidate.id))).join(", ")}` });
     }
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
@@ -487,18 +475,9 @@ export async function send(args: ParsedArgs): Promise<void> {
         warnings.push({ code: "CHANNEL_METADATA_NOT_CHECKED", target, message: "Channel metadata could not be read. Only the native publish result establishes whether the post was accepted for storage." });
       }
     }
-    const mentions = input.mode === "msg" ? [...mentionsIn(text)] : [];
-    for (const name of values.mention ?? []) {
-      // A mention travels as the peer's name (SPEC §5), the value a receiver compares with its own.
-      // An instance id is accepted only when its name resolves back to that same peer.
-      const peer = await directPeer(ep, space, name.replace(/^@/, ""), "mention", values);
-      let named: Presence | undefined;
-      try { named = resolvePeer(ep.getRoster(), peer.card.name); } catch { named = undefined; }
-      if (named?.card.id !== peer.card.id)
-        throw new CommandFailure("refused", "TARGET_AMBIGUOUS", "a mention carries the agent's name, and this name does not name only that participant", { target: { space, name: peer.card.name }, remedy: `send to that participant with \`cotal send -t ${peer.card.id}\` instead` });
-      mentions.push(peer.card.name);
-    }
-    const peer = input.mode === "dm" ? await directPeer(ep, space, input.target, "to", values) : undefined;
+    const declared = values.mention?.map((name) => name.replace(/^@/, ""));
+    let mentions: string[] = [];
+    const peer = input.mode === "dm" ? await directPeer(ep, space, input.target, values) : undefined;
     let messageId: string;
     let sequence: number | null = null;
     try {
@@ -508,8 +487,16 @@ export async function send(args: ParsedArgs): Promise<void> {
       } else if (input.mode === "ask") {
         const { msg, ack } = await ep.anycastAttributed(input.target, text);
         messageId = msg.id; sequence = ack.seq;
-      } else messageId = (await ep.multicast(text, { channel: input.target, mentions })).id;
+      } else {
+        const msg = await ep.postChannel(text, { channel: input.target, mentions: declared, legacyValidation: "declared-addresses" });
+        messageId = msg.id;
+        mentions = msg.mentions ?? [];
+      }
     } catch (error) {
+      if (error instanceof PeerAddressError)
+        throw new CommandFailure("refused", error.code, error.message, { target: { ...target, ...(error.addresses.length ? { addresses: error.addresses } : {}) } });
+      if (error instanceof AmbiguousPeerError)
+        throw new CommandFailure("refused", "TARGET_AMBIGUOUS", error.message, { target: { ...target, candidates: error.candidates } });
       if (payloadRefused(error)) throw tooLarge(bytes);
       if (isPublishPermissionDenied(error)) {
         if (input.mode === "msg") throw await channelDenied(input.target, target, connection, registered, values.creds !== undefined ? connection.creds : undefined);

@@ -112,7 +112,7 @@ const refused = (line: string, id: string | null, re?: RegExp): boolean => {
 };
 {
   const p = parseRequestLine(req({ type: "send", text: "hi", channel: "general" }));
-  check("a valid send parses, with mentions defaulting to []", p.ok && p.request.type === "send" && p.request.mentions.length === 0, p);
+  check("a valid send parses without an explicit mention declaration", p.ok && p.request.type === "send" && p.request.mentions === undefined, p);
 }
 {
   const p = parseRequestLine(req({ type: "send", text: "line1\nline2", channel: "general" }));

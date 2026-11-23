@@ -16,24 +16,34 @@ export function spacePrefix(space: string): string {
  *  agent who may not read the channel (SPEC §8). */
 export const MENTION_NOTICE_KEY = "cotalMentionNotice";
 
-/** Canonicalize a `mentions` list for the wire: trim, lowercase, drop empties, dedupe.
+/** Canonicalize a `mentions` list for the wire: trim, fold usernames, drop empties, dedupe.
  *  Returns `undefined` for an empty result so the field is omitted rather than sent as `[]`.
- *  Presence-agnostic (no roster lookup) — validation lives in the connector. */
-export function normalizeMentions(mentions?: string[]): string[] | undefined {
+ *  Actor spellings stay exact. Legacy writers can opt into case-insensitive bare names. */
+export function normalizeMentions(mentions?: readonly string[], legacyBare = false): string[] | undefined {
   if (!mentions?.length) return undefined;
-  const out = [...new Set(mentions.map((m) => m.trim().toLowerCase()).filter((m) => m.length > 0))];
+  const out = [...new Set(mentions.map((m) => {
+    const name = m.trim();
+    const slash = name.indexOf("/");
+    return slash === -1 ? (legacyBare ? name.toLowerCase() : name) : name.slice(0, slash).toLowerCase() + name.slice(slash);
+  }).filter(Boolean))];
   return out.length ? out : undefined;
 }
 
-/** The `@name` mentions inside a message body, as bare names, for a multicast's `mentions` (a
- *  priority/wake hint). Every surface that posts typed text derives them the same way. A trailing
- *  `.` or `-` is punctuation, as in `thanks @ops-lead.`, since a chat name cannot end in one. An `@`
+/** The `@name` and `@user/agent` candidates in a message body. Keep slash-shaped candidates whole
+ *  for validation, even when malformed. A trailing `.` or `-` is punctuation for a bare name. An `@`
  *  right after an ASCII letter or digit, `_`, `.`, `-` or `/` starts no mention, so an address such
  *  as `ana@example.com` or a path such as `/@rover` names no one, and neither does `Done.@rover`.
  *  Any other character may precede one, so `你好@rover` mentions `rover` in a script written
  *  without spaces. */
 export function mentionsIn(text: string): string[] {
-  return [...text.matchAll(/(?<![A-Za-z0-9_.\/-])@([A-Za-z0-9_.-]*[A-Za-z0-9_])/g)].map((m) => m[1]);
+  const out: string[] = [];
+  for (const [word] of text.matchAll(/[^\s,;:!?()[\]{}<>"'`\p{Ps}\p{Pe}\p{Pi}\p{Pf}]+/gu)) {
+    const at = word.search(/(?<![A-Za-z0-9_.\/-])@/);
+    if (at < 0) continue;
+    if (word.lastIndexOf("/") > at) out.push(word.slice(at + 1).replace(/\.+$/, ""));
+    else for (const match of word.matchAll(/(?<![A-Za-z0-9_.\/-])@([A-Za-z0-9_.-]*[A-Za-z0-9_])/g)) out.push(match[1]!);
+  }
+  return out;
 }
 
 /**

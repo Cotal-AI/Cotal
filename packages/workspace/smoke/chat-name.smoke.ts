@@ -13,7 +13,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { mentionsIn, registry, type AuthProvider, type UserAuthStatus } from "@cotal-ai/core";
+import { mentionsIn, normalizeMentions, registry, type AuthProvider, type UserAuthStatus } from "@cotal-ai/core";
 import { createSuite } from "@cotal-ai/smoke-kit";
 import { chatNameProblem } from "../src/chat-name.js";
 import { isCommandFailure, type CommandFailure } from "../src/output.js";
@@ -77,6 +77,13 @@ try {
     JSON.stringify(mentionsIn("/assign @rover")) === JSON.stringify(["rover"]), mentionsIn("/assign @rover"));
   check("a message with an email address still mentions the name it @s",
     JSON.stringify(mentionsIn("mail ana@example.com and ask @rover")) === JSON.stringify(["rover"]), mentionsIn("mail ana@example.com and ask @rover"));
+  check("the qualified address is one token with surrounding punctuation removed",
+    JSON.stringify(mentionsIn("ask «@BEN/Build», then @build.")) === JSON.stringify(["BEN/Build", "build"]));
+  check("malformed slash candidates stay whole for validation and never become bare prefixes",
+    JSON.stringify(mentionsIn("@ben/ @/Build @ben/Build/extra @ben/Build@other @ben/Build-")) ===
+      JSON.stringify(["ben/", "/Build", "ben/Build/extra", "ben/Build@other", "ben/Build-"]));
+  check("normalization folds the username, not either actor spelling",
+    JSON.stringify(normalizeMentions(["BEN/Build", "ben/build", "Build", "build"])) === JSON.stringify(["ben/Build", "ben/build", "Build", "build"]));
   check("the name preference is held to the same rule", preferenceValueProblem("name", "Ops Lead")?.endsWith(RULE) === true && preferenceValueProblem("name", "ops_lead") === undefined);
 
   console.log("2. open and static: the OS login, with no suffix");

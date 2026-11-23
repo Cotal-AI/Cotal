@@ -71,6 +71,7 @@ export * from "./endpoint-traits.js";
 export * from "./safe-pattern.js";
 export * from "./resolve.js";
 export * from "./peer-address.js";
+export type { ChannelPostOptions } from "./channel-mentions.js";
 export * from "./presence-ages.js";
 export * from "./process-runtime.js";
 export * from "./presence-text.js";

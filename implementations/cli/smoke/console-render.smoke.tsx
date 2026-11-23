@@ -152,7 +152,7 @@ console.log("4. every send waits for the same participant start, and a refusal r
     ref() { return this.card; }
     async readMembership() { return { asOf: undefined, members: [] }; }
     async watchMembership() { return { stop: async () => {} }; }
-    async multicast(text: string) { this.sent.push(text); }
+    async postChannel(text: string) { this.sent.push(text); }
   }
   let refuseStart!: (e: Error) => void;
   class RefusedParticipant extends EventEmitter {

@@ -3,7 +3,6 @@
  *  remembers who asked what. The mesh agent keeps one forwarder per public member. */
 import { AsyncLocalStorage } from "node:async_hooks";
 import {
-  normalizeMentions,
   isConcreteChannel,
   parsePrincipalKey,
   type AnycastStatus,
@@ -23,9 +22,7 @@ const directedKey = (sender: string, id: string): string => JSON.stringify([send
 /** How many present names a DM miss lists before it starts counting them instead. */
 const NAMED_SIMILAR = 5;
 
-/** Why a roster whose read failed cannot support an absence verdict (#1229). The roster, the
- *  orientation card and the mention and DM refusals all print this clause, so none of them can word
- *  one failure differently. */
+/** Why a roster whose read failed cannot support an absence verdict. */
 export function presenceReadCondition(failure: Error): string {
   return `the presence read failed (${failure.message})`;
 }
@@ -220,9 +217,7 @@ export class AgentMessaging {
     } catch (error) {
       throw new Error(`${(error as Error).message}. The message was not sent.`, { cause: error });
     }
-    const clean = normalizeMentions(mentions);
-    if (clean) await this.assertKnownMentions(clean);
-    return this.ep.multicast(text, { channel, mentions: clean, ...this.stamp().stamp });
+    return this.ep.postChannel(text, { channel, mentions, legacyValidation: "names", ...this.stamp().stamp });
   }
 
   /**
@@ -249,34 +244,7 @@ export class AgentMessaging {
     return unchecked === undefined ? { known: false, hints } : { known: false, hints, unchecked };
   }
 
-  /** Throw if any name isn't a peer we've observed. Validates against the FULL roster
-   *  (incl. self — your own name is a valid participant; resolvePeer's self-filter would
-   *  wrongly reject it), case-insensitively. Send is all-or-nothing: one unknown @name aborts
-   *  the whole broadcast (fail-loud on typos). Caveat: only catches peers THIS client has read
-   *  — an offline peer lingers in the roster, but one no read has seen throws. See
-   *  docs/architecture.mdx.
-   *
-   *  #1229: only a read that succeeded supports an ABSENCE verdict. A name already in the roster
-   *  is accepted whatever the read did; an absent name under a failed read refuses with the read's
-   *  own error (never "no such peer") and the send does not go out. */
-  private async assertKnownMentions(mentions: string[]): Promise<void> {
-    const { roster, failure } = await this.readRoster();
-    const names = new Set(roster.map((p) => p.card.name.toLowerCase()));
-    const unknown = mentions.filter((m) => !names.has(m));
-    if (!unknown.length) return;
-    if (!failure)
-      throw new Error(
-        `unknown mention${unknown.length > 1 ? "s" : ""}: ${unknown.map((u) => `@${u}`).join(", ")} — no such peer observed in space "${this.config.space}"`,
-      );
-    throw this.cannotVerify(
-      `mention${unknown.length > 1 ? "s" : ""} ${unknown.map((u) => `@${u}`).join(", ")}`,
-      failure,
-      "The send was not published.",
-    );
-  }
-
-  /** The mention guard and `dm` refuse an unverifiable name through this one sentence, so the two
-   *  refusals cannot explain one failed read differently. */
+  /** A failed roster read cannot establish that a peer is absent. */
   private cannotVerify(subject: string, failure: Error, outcome: string): Error {
     return new Error(
       `cannot verify ${subject} in space "${this.config.space}": ${presenceReadCondition(failure)}, so absence is not a verdict — the peer may be present but unread. ${outcome}`,

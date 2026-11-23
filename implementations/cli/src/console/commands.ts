@@ -4,7 +4,7 @@
 // they are gated on `canWrite` (open mode, or a privileged --creds). Control commands go through
 // `ctx.control` (one per-action call on the CLI's control path, console/control.ts), gated on
 // `canControl`; the observer endpoint never carries control.
-import { mentionsIn, AmbiguousPeerError, PeerAddressError, type CotalEndpoint, type ResolvedPeerAddress } from "@cotal-ai/core";
+import { AmbiguousPeerError, PeerAddressError, type CotalEndpoint, type ResolvedPeerAddress } from "@cotal-ai/core";
 import { consoleLabel } from "./label.js";
 import type { MeshSnapshot } from "@cotal-ai/workspace/view";
 import { offlineRecipientNotice } from "@cotal-ai/workspace";
@@ -107,7 +107,7 @@ export const COMMANDS: ConsoleCommand[] = [
       }
       if (!text.trim()) return ctx.notify("usage: msg [#channel] <text>");
       if (!(await ctx.ensureParticipant())) return;
-      await ctx.ep.multicast(text, { channel, mentions: mentionsIn(text) });
+      await ctx.ep.postChannel(text, { channel });
       ctx.notify(`→ #${channel}`);
     },
   },

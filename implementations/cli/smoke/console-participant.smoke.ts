@@ -220,6 +220,11 @@ try {
   check("a channel with message text sends to that channel", await cs.waitFor("→ #other", 4_000, mk), clean(cs.out.slice(mk)).slice(-500));
   const sent = await watcher.channelHistory("other");
   check("the explicit channel retains the unchanged body", sent.length === 1 && sent[0].channel === "other" && sent[0].parts[0]?.kind === "text" && sent[0].parts[0].text === "To Other Channel", sent);
+  mk = cs.mark();
+  await cs.command("msg #general malformed-console-mention @alice/reviewer/extra");
+  const slashRefused = await cs.waitFor(/invalid.*(?:mention|address)/i, 4_000, mk);
+  const slashStored = (await watcher.channelHistory("general")).some((msg) => JSON.stringify(msg.parts).includes("malformed-console-mention"));
+  check(":msg refuses a malformed slash mention before storage", slashRefused && !slashStored, { slashStored, screen: clean(cs.out.slice(mk)).slice(-400) });
 
   // Idempotence is NOT visible as a second roster row: a duplicate peer registers under the same
   // card id, so the roster still shows one. What it is visible as is an ORPHAN. Without the guard
