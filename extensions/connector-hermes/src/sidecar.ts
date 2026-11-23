@@ -23,6 +23,7 @@ import {
   type AgentConfig,
 } from "@cotal-ai/connector-core";
 import { createHermesApprovals } from "./approvals.js";
+import { createHermesClarify } from "./clarify.js";
 import { gatewayIdle, hermesHookHandle } from "./hermes-hooks.js";
 import { startBridgeServer, type BridgeServer } from "./bridge.js";
 import { drainWhileIdle, hermesCommands } from "./commands.js";
@@ -90,7 +91,7 @@ export function startSidecar(): Sidecar {
   const approvals = config.askPermissions
     ? createHermesApprovals({
         desk: () => agent.prompts,
-        send: (answer) => bridge?.answerApproval(answer) ?? false,
+        send: (answer) => bridge?.answerPrompt({ t: "approval_answer", ...answer }) ?? false,
         warn: (msg) => process.stderr.write(`[cotal-hermes] ${msg}\n`),
       })
     : undefined;
@@ -98,8 +99,14 @@ export function startSidecar(): Sidecar {
     if (frame.t === "approval") approvals?.request(frame);
     else approvals?.ended(frame);
   };
+  const clarify = createHermesClarify({
+    desk: () => agent.prompts,
+    send: (answer) => bridge?.answerPrompt({ t: "clarify_answer", ...answer }) ?? false,
+    warn: (msg) => process.stderr.write(`[cotal-hermes] ${msg}\n`),
+  });
+  const onClarify = (frame: Record<string, unknown>): void => (frame.t === "clarify" ? clarify.request(frame) : clarify.ended(frame));
   const onDelta = (key: string, text?: string): void => events?.delta(key, text);
-  bridge = startBridgeServer(agent, config, bridgeSock, control, { onSubscribe: startAgent, onIdle, onApproval, onDelta });
+  bridge = startBridgeServer(agent, config, bridgeSock, control, { onSubscribe: startAgent, onIdle, onApproval, onClarify, onDelta });
   // The launch's initial prompt is the gateway's first turn, in the user's own words. Read once and
   // dropped from the environment the gateway inherits.
   const prompt = process.env.COTAL_HERMES_PROMPT;

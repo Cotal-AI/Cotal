@@ -1317,6 +1317,7 @@
     "smoke:hermes-plugin-approvals": "tsx extensions/connector-hermes/smoke/plugin-approvals.smoke.ts",
     "smoke:hermes-models": "tsx extensions/connector-hermes/smoke/models.smoke.ts",
     "smoke:hermes-effort": "tsx extensions/connector-hermes/smoke/effort.smoke.ts",
+    "smoke:hermes-clarify": "tsx extensions/connector-hermes/smoke/clarify.smoke.ts",
     "smoke:hermes-stream": "tsx extensions/connector-hermes/smoke/stream.smoke.ts",
     "smoke:hermes-injection-framing": "tsx extensions/connector-hermes/smoke/injection-framing.smoke.ts",
     "smoke:codex-tool-closed": "tsx extensions/connector-codex/smoke/tool-input-closed.smoke.ts",

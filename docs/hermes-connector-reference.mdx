@@ -265,6 +265,22 @@ An adopted profile keeps the operator's approval settings, so a launch with `ask
 refused there. Hermes's own ACP server also asks before file edits, but its gateway has no such
 step, so a seat asks only for what the gateway asks for.
 
+## Clarify questions [#clarify-questions]
+
+When the model calls Hermes's clarify tool in the operator chat, where the owner's own turns run, the
+question opens a `question` prompt on the seat's
+[agent endpoint](connector-runtime-reference.mdx#agent-commands), which an ACP thread shows as a
+form. The form offers the question's choices with an answer of your own beside them, or takes free
+text when the question offers none. From Hermes 0.21, a question can take several choices, which go
+to Hermes as a JSON array of their labels. A submitted form goes to the model as your reply. A
+dismissed one goes as `[the user dismissed the question without answering]`.
+
+The prompt stays open while Hermes waits, which is `agent.clarify_timeout` (one hour by default).
+When Hermes stops waiting without an answer, or the turn ends, the prompt closes. When the agent
+endpoint does not serve its prompt desk, or the desk is full, Hermes gets the cause at once in place
+of an answer, so the model can ask in its reply. A question in any other chat keeps Hermes's own text
+prompt, which whoever that chat is with answers.
+
 ## Answer routing
 
 One gateway runs many sessions on one seat, so a peer's answer cannot be routed by its sender

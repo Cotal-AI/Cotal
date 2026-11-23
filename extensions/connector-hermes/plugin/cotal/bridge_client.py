@@ -49,6 +49,7 @@ class BridgeClient:
         self._on_turn: Optional[Callable[[dict], None]] = None
         self._on_request: Optional[Callable[[dict], None]] = None
         self._on_approval: Optional[Callable[[dict], None]] = None
+        self._on_clarify: Optional[Callable[[dict], None]] = None
         # How many Cotal messages and turns the gateway has in progress, as last reported, and
         # reported again on every (re)subscribe.
         self._busy = 0
@@ -70,11 +71,13 @@ class BridgeClient:
         on_turn: Optional[Callable[[dict], None]] = None,
         on_request: Optional[Callable[[dict], None]] = None,
         on_approval: Optional[Callable[[dict], None]] = None,
+        on_clarify: Optional[Callable[[dict], None]] = None,
     ) -> None:
         """Begin the reader thread. ``on_incoming`` is called (off-loop) for each mesh message,
         ``on_turn`` for each turn in the user's own words (``{t:"turn", id, text, images?}``),
         ``on_request`` for each ``interrupt``, ``usage`` or ``commands`` request (answered with
-        ``answer``), ``on_approval`` for each owner's answer to an approval (``approval_answer``), and
+        ``answer``), ``on_approval`` for each owner's answer to an approval (``approval_answer``),
+        ``on_clarify`` for each owner's answer to a clarify question (``clarify_answer``), and
         ``on_refused`` (off-loop, once) if the reader stops because the socket's directory is not
         private to this user.
 
@@ -86,6 +89,7 @@ class BridgeClient:
         self._on_turn = on_turn
         self._on_request = on_request
         self._on_approval = on_approval
+        self._on_clarify = on_clarify
         self._on_refused = on_refused
         with self._lock:
             if self._reader is not None:
@@ -233,8 +237,8 @@ class BridgeClient:
                 cb(frame)
             else:
                 self.answer(str(frame.get("id") or ""), error="the cotal adapter is not started")
-        elif t == "approval_answer":
-            cb = self._on_approval
+        elif t in ("approval_answer", "clarify_answer"):
+            cb = self._on_approval if t == "approval_answer" else self._on_clarify
             if cb:
                 cb(frame)
         elif t == "tool_result":
@@ -292,6 +296,16 @@ class BridgeClient:
     def approval_end(self, session_key: str, outcome: str) -> None:
         """Report that the oldest approval waiting in ``session_key`` stopped waiting."""
         self._send({"t": "approval_end", "session": session_key, "outcome": outcome})
+
+    def clarify(self, frame: dict) -> bool:
+        """Ask the sidecar to put one of Hermes's clarify questions on the prompt desk (clarify.py).
+        False when no connection took the frame."""
+        return self._send(frame)
+
+    def clarify_end(self, clarify_id: str, resolved: bool) -> None:
+        """Report that Hermes stopped waiting on question ``clarify_id``, with the owner's answer
+        (``resolved``) or without it."""
+        self._send({"t": "clarify_end", "id": clarify_id, "resolved": resolved})
 
     def delta(self, key: str, text: str) -> None:
         """Text a reply added while the model wrote it, for the event plane's stream ``key``."""
