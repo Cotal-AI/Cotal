@@ -126,6 +126,15 @@ for (const { args, message } of cases) {
   const authManifest = join(manifests, "cotal.yaml"), openManifest = join(manifests, "open.yaml");
   writeFileSync(authManifest, "apiVersion: cotal/v1\nkind: Mesh\nspace: flagaudit\nchannels: {}\n");
   writeFileSync(openManifest, "apiVersion: cotal/v1\nkind: Mesh\nspace: flagauditopen\nbroker:\n  auth: false\nchannels: {}\n");
+  for (const flags of [[], ["--json"], ["--plain"]]) {
+    const refused = run(["up", "--dry-run", ...flags]);
+    const remedy = refused.envelope?.error?.remedy ?? refused.stderr;
+    const retryFlags = flags.filter((flag) => !remedy.includes(`omit ${flag}`));
+    const preview = run(["up", "--dry-run", "-f", openManifest, ...retryFlags]);
+    check(`missing-manifest advice with ${flags[0] ?? "default output"} leads to a read-only plan`,
+      refused.status === 1 && remedy.includes("pass -f <cotal.yaml>") && (flags.length > 0 || !remedy.includes("and omit --"))
+        && preview.status === 0 && preview.stdout.includes("flagauditopen") && readdirSync(folder).length === 0, shown(preview));
+  }
   for (const { label, args, json, help, message, remedy } of [
     { label: "-f --dry-run --max-file-store", args: ["-f", authManifest, "--dry-run", "--max-file-store", "1073741824"], json: true, help: false,
       message: "--max-file-store cannot be combined with --file/-f: a manifest launch does not render a store cap, so nothing was started", remedy: "drop --max-file-store, or start the mesh without -f" },
@@ -359,9 +368,14 @@ if (process.platform !== "win32") {
   check("a bare up in a fresh folder under the home makes the folder's own .cotal and reaches its own checks", runtimeUp.status === 2 && /Code:\s+DEPENDENCY_UNAVAILABLE/.test(runtimeUp.stderr) && runtimeUp.stderr.includes(`made ${nestedRecords} for this folder's records; the machine's home .cotal was not used`), shown(runtimeUp));
   check("that refused up removed the .cotal it made and wrote nothing in the home's", !existsSync(nestedRecords) && homeWrites().length === 0, homeWrites());
   const inherited = "this folder inherits the machine's home .cotal; up did not start a stack in that home root";
-  const prepare = "prepare this folder with `cotal space create <space> --root .`, then run `cotal up` again from this folder";
-  const manifestUp = run(["up", "-f", "cotal.yaml", "--json"], nested);
-  check("up -f there still refuses CONFLICT, exit 2, naming space create and up from the folder, and writes nothing", manifestUp.status === 2 && manifestUp.envelope?.error?.code === "CONFLICT" && manifestUp.envelope.error.message === inherited && manifestUp.envelope.error.remedy === prepare && !existsSync(nestedRecords), shown(manifestUp));
+  const prepare = "prepare this folder with `cotal space create <space> --root .`, then repeat your manifest command from this folder";
+  for (const flag of ["", "--plain", "--json"]) {
+    const manifestUp = run(["up", "-f", "cotal.yaml", ...(flag ? [flag] : [])], nested);
+    const remedy = prepare + (flag ? `, but omit ${flag}` : "");
+    const correct = flag === "--json" ? manifestUp.envelope?.error?.code === "CONFLICT" && manifestUp.envelope.error.message === inherited && manifestUp.envelope.error.remedy === remedy
+      : manifestUp.stderr.includes(inherited) && manifestUp.stderr.includes(remedy) && (flag !== "" || !manifestUp.stderr.includes(", but omit"));
+    check(`up -f under the home with ${flag || "default output"} keeps the manifest in its retry and writes nothing`, manifestUp.status === 2 && correct && !existsSync(nestedRecords), shown(manifestUp));
+  }
   const { displayWidth, findMesh, recordMesh, removeMesh } = await import("@cotal-ai/workspace");
   // On an 80-column terminal the note wraps at spaces to stderr's width, each line dimmed on its own.
   // `redirect` sends one stream to a file, so stdout and stderr can be told apart.
@@ -401,7 +415,7 @@ if (process.platform !== "win32") {
   check("under a home that holds a stack, a bare up there starts the folder's own space and reaches its own checks",
     holdsUp.status === 2 && holdsUp.envelope?.error?.code === "DEPENDENCY_UNAVAILABLE" && holdsUp.envelope.target?.space === "fresh" && holdsUp.envelope.target.root === realpathSync(nested), shown(holdsUp));
   check("it removed the .cotal it made and left the home's registration and records as they were", !existsSync(nestedRecords) && homeAfter === homeEntry && homeWrites().length === 0, { homeEntry, homeAfter, writes: homeWrites() });
-  check("up -f there still refuses CONFLICT the same way", holdsManifest.status === 2 && holdsManifest.envelope?.error?.code === "CONFLICT" && holdsManifest.envelope.error.message === inherited && holdsManifest.envelope.error.remedy === prepare && !existsSync(nestedRecords), shown(holdsManifest));
+  check("up -f there still refuses CONFLICT the same way", holdsManifest.status === 2 && holdsManifest.envelope?.error?.code === "CONFLICT" && holdsManifest.envelope.error.message === inherited && holdsManifest.envelope.error.remedy === `${prepare}, but omit --json` && !existsSync(nestedRecords), shown(holdsManifest));
 }
 
 // A bare up in a new project names its space after the folder. `--runtime nosuch` stops each start
@@ -420,12 +434,15 @@ if (process.platform !== "win32") {
   }
   const spaced = project("My Project");
   const invalid = run(["up", "--server", "nats://127.0.0.1:1", "--json"], spaced);
-  check("a folder name that is no valid space name refuses USAGE_INVALID, exit 1, naming --space, and writes nothing",
-    invalid.status === 1 && invalid.envelope?.error?.code === "USAGE_INVALID" && invalid.envelope.target?.space === undefined && invalid.envelope.error.remedy === "name the space with `cotal up --space <name>`"
+  const prepareNamed = "for a controller-supported start, prepare this folder with `cotal space create <name> --root .` using a valid unused name, then repeat your startup command with the same options; for native startup, add `--space <name>` and omit the output flag instead";
+  check("an invalid folder name refuses without writes and names the preparation needed to keep JSON output",
+    invalid.status === 1 && invalid.envelope?.error?.code === "USAGE_INVALID" && invalid.envelope.target?.space === undefined && invalid.envelope.error.remedy === prepareNamed
       && invalid.envelope.error.message === `${named} the folder name "My Project" cannot be one: a space name is 1 to 64 letters, digits, underscores or hyphens, which \`cotal up\` needs to start it; nothing was started or written` && !records(spaced), shown(invalid));
   const invalidText = run(["up", "--server", "nats://127.0.0.1:1"], spaced);
-  check("its text form is the refusal and the --space step, without the help", invalidText.status === 1 && invalidText.stdout === ""
-    && invalidText.stderr === `✗ ${invalid.envelope?.error?.message}\n  name the space with \`cotal up --space <name>\`\n` && !records(spaced), shown(invalidText));
+  check("the text remedy adds the space without discarding the requested server", invalidText.status === 1 && invalidText.stdout === ""
+    && invalidText.stderr === `✗ ${invalid.envelope?.error?.message}\n  repeat your startup command with the same options, adding \`--space <name>\` with a valid unused name\n` && !records(spaced), shown(invalidText));
+  const invalidPlain = run(["up", "--server", "nats://127.0.0.1:1", "--plain"], spaced);
+  check("plain output also directs the caller to prepare the same folder", invalidPlain.status === 1 && `${invalidPlain.stdout}${invalidPlain.stderr}`.includes(prepareNamed) && !records(spaced), shown(invalidPlain));
   const override = run(["up", "--space", "custom", ...probe], spaced);
   check("--space names the space there", resolved(override, "custom") && !records(spaced), shown(override));
   for (const space of ["bad space", "café", "a.b"]) {
@@ -710,8 +727,8 @@ try {
         && !beside.stderr.includes("cotal team deploy") && !started(journalRoot), shown(beside));
   }
 
-  // A bare up whose folder names a space that runs from another folder names a separate space for
-  // this folder, and the stop for the other one in its own folder. The folder's account names main,
+  // A bare up whose folder names a space that runs elsewhere needs a new project folder for a
+  // separate space, or the stop for the running one in its own folder. The folder's account names main,
   // as one does after an earlier `up --space main` there. A child process that sends the broker's
   // greeting stands in for the other folder's broker, since `run` blocks this process while up probes it.
   const other = realpathSync(mkdtempSync(join(tmpdir(), "cotal-up-usage-other-")));
@@ -727,15 +744,19 @@ try {
   const { recordMesh, removeMesh } = await import("@cotal-ai/workspace");
   process.env.COTAL_HOME = join(home, ".cotal");
   recordMesh({ space: "main", server: `nats://127.0.0.1:${greeting}`, root: other, mode: "auth", origin: "up", ts: now });
-  const inUse = run(["up", "--server", `nats://127.0.0.1:${await freePort()}`], legacy);
+  const requested = `nats://127.0.0.1:${await freePort()}`;
+  const inUse = run(["up", "--server", requested], legacy);
+  const otherNameHere = run(["up", "--space", "separate", "--server", requested], legacy);
   // A regression that took the name over started a stack, which is stopped before the cell fails.
   if (started(legacy)) { sandbox(legacy); run(["down", "--yes"], legacy); }
   removeMesh("main");
   delete process.env.COTAL_HOME;
   greeter.kill();
-  check("a bare up whose folder names a space that runs from another folder refuses CONFLICT, exit 2, naming cotal up --space <name> and the down in that folder",
+  check("a bare up whose folder names a space running elsewhere offers a new project folder or the stop in the running folder",
     inUse.status === 2 && /Code:\s+CONFLICT/.test(inUse.stderr) && inUse.stderr.includes(`space "main" is already in use by a mesh at nats://127.0.0.1:${greeting} (${other})`)
-      && inUse.stderr.includes(`start a separate space in this folder with \`cotal up --space <name>\`, naming one no other folder uses, or stop "main" first with \`cotal down\` in ${other}`), shown(inUse));
+      && inUse.stderr.includes(`start a separate space in a new project folder outside this one with \`cotal up --space <name>\`, using an unused name and keeping --server if you specified a free address, or stop "main" first with \`cotal down\` in ${other}`), shown(inUse));
+  check("changing only the name in the account's folder cannot start that separate space",
+    otherNameHere.status === 2 && /Code:\s+CONFLICT/.test(otherNameHere.stderr) && otherNameHere.stderr.includes(`it can't also run "separate"`), shown(otherNameHere));
 
   // THE SAME SPACE, RUNNING FROM THIS VERY PROJECT, started again at another address. The refusal
   // above belongs to a name another folder holds; here the folder IS that space's project, so the

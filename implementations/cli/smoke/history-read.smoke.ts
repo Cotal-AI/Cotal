@@ -896,13 +896,14 @@ try {
   {
     const channels = ["clear", "limit", "ordinary"];
     const scope = ["--space", openSpace, "--server", openServers];
+    const printedLines = (stdout: string) => stdout.split("\n").map((line) => line.trim().replace(/^pnpm cotal /, "cotal "));
     for (const channel of channels) {
       const saved = await run(["channel", "set", channel, "--desc", "History hint test", ...scope, "--plain"]);
       const posted = await run(["send", "-c", channel, `retained in ${channel}`, "--space", openSpace]);
       if (saved.status !== 0 || posted.status !== 0)
         throw new Error(`could not seed #${channel}: ${JSON.stringify({ saved: shown(saved), posted: shown(posted) })}`);
       if (channel !== "clear") continue;
-      const suggestion = (verb: string) => saved.stdout.split("\n").map((line) => line.trim()).find((line) => line.startsWith(`cotal ${verb} `))?.split(/  +/)[0];
+      const suggestion = (verb: string) => printedLines(saved.stdout).find((line) => line.startsWith(`cotal ${verb} `))?.split(/  +/)[0];
       const inventory = suggestion("ch");
       const history = suggestion("history");
       const target = scope.join(" ");
@@ -915,7 +916,7 @@ try {
     }
     for (const channel of channels) {
       const card = await run(["channel", "show", channel, "--space", openSpace, "--plain"]);
-      const [, word, targetSpace] = card.stdout.match(/^\s+cotal history '(#[\w.-]+)' --space (\S+)\s+Read retained messages within your grant$/m) ?? [];
+      const [, word, targetSpace] = card.stdout.match(/^\s+(?:pnpm )?cotal history '(#[\w.-]+)' --space (\S+)\s+Read retained messages within your grant$/m) ?? [];
       // Only execute the quoted channel form. An unexpected administrative command is a test failure.
       const read = word === `#${channel}` && targetSpace === openSpace ? await run(["history", word, "--space", targetSpace, "--json"]) : undefined;
       const messages = read?.envelope?.result?.items;
@@ -928,7 +929,7 @@ try {
     writeFileSync(writer, await mintCreds(auth, newIdentity(), "channel-writer"), { mode: 0o600 });
     const credentialScope = ["--space", space, "--server", servers, "--creds", writer];
     const saved = await run(["channel", "set", "receipt-test", "--desc", "Scoped credential", ...credentialScope, "--plain"]);
-    const commands = saved.stdout.split("\n").map((line) => line.trim()).filter((line) => line.startsWith("cotal ")).map((line) => execWords(line.split(/  +/)[0]!));
+    const commands = printedLines(saved.stdout).filter((line) => line.startsWith("cotal ")).map((line) => execWords(line.split(/  +/)[0]!));
     check("both receipt commands retain the explicit credential path as one argument", saved.status === 0 &&
       JSON.stringify(commands) === JSON.stringify([["cotal", "ch", ...credentialScope], ["cotal", "history", "#receipt-test", ...credentialScope]]), shown(saved));
     if (saved.status === 0) {

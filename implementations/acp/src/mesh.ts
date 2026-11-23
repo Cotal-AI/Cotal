@@ -44,6 +44,8 @@ export interface SeatRef {
 
 /** A managed seat as a manager's `ps` lists it. */
 export interface SeatRow extends SeatRef {
+  /** The name the agent shows, when `set-name` made it differ from {@link SeatRef.name}. */
+  readonly display?: string;
   readonly agent: string;
   readonly model?: string;
   readonly cwd?: string;
@@ -149,6 +151,11 @@ export interface Mesh {
   /** Interrupt the seat's live turn: its manager writes the connector's interrupt key into the
    *  seat's terminal. Rejects, naming why, when the manager refuses. */
   interrupt(seat: SeatRef): Promise<void>;
+  /** Change the name the seat shows with its agent endpoint's `set-name`, as the seat's owner. Resolves
+   *  with the name its card now carries; rejects, naming why, when the space or the agent refuses. */
+  rename(seat: SeatRef, name: string): Promise<string>;
+  /** Why the manager would refuse `name` for a new seat on this space, or undefined when it would not. */
+  spawnNameError(name: string): string | undefined;
   /** Type `text` into the seat's terminal and press Enter, through its manager's `input` command, so
    *  it arrives as the operator's own words. Rejects, naming why, when the manager refuses. */
   input(seat: SeatRef, text: string): Promise<void>;

@@ -1,7 +1,7 @@
 import { accessSync, constants, existsSync, lstatSync, realpathSync, statSync } from "node:fs";
 import { homedir, hostname } from "node:os";
 import { isAbsolute, join, sep } from "node:path";
-import { agentFilePath, assertLifecycleToken, assertValidChannel, DEFAULT_SERVER, digestIdToken, EpEnvelopeError, eventChannel, eventChannelPrincipal, grantOverreach, grantParts, isIssuedCaller, issuedSpawnerStanding, MAX_SCHEDULE_MS, parsePersonaEndpoints, personaDir, principalKey, registry, rejectionText, renderOnceTask, resolveReadAcl, runDriverCaller, shownSpawner, withIssuerSession, type AgentDef, type Connector, type ControlReply, type CotalEndpoint, type DelegatedGrant, type EpCaller, type EpCapability, type EpServeGrant, type GrantOverreach, type InlinePersona, type IssuedStore, type IssuedSubjectPermissions, type LifecycleStateTransport, type RunAdmission, type RunRevocation, type SpaceAuth } from "@cotal-ai/core";
+import { agentFilePath, assertLifecycleToken, assertValidChannel, DEFAULT_SERVER, digestIdToken, EpEnvelopeError, eventChannel, eventChannelPrincipal, grantOverreach, grantParts, isIssuedCaller, issuedSpawnerStanding, MAX_SCHEDULE_MS, parsePersonaEndpoints, personaDir, principalKey, registry, rejectionText, renderOnceTask, resolveReadAcl, runDriverCaller, shownSpawner, withIssuerSession, type AgentDef, type Connector, type ControlReply, type CotalEndpoint, type DelegatedGrant, type EpCaller, type EpCapability, type GrantOverreach, type InlinePersona, type IssuedStore, type IssuedSubjectPermissions, type LifecycleStateTransport, type RunAdmission, type RunRevocation, type SpaceAuth } from "@cotal-ai/core";
 import { loadLaunchPersonaFile, manifestExtensionNames, PersonaSourceError, resolveAgentType } from "@cotal-ai/workspace";
 import type { KV } from "@nats-io/kv";
 import { inlinePersonaDir } from "./launch.js";
@@ -162,7 +162,6 @@ export interface SeatLaunchDeps {
   auth: () => SpaceAuth | undefined;
   userMode: () => boolean;
   managerInstanceId: () => string;
-  serviceServe: () => { grant: EpServeGrant } | undefined;
   runHosting: () => RunHosting | undefined;
   requiredRuntime: () => Runtime;
   meshMode: () => "open" | "static" | "user";
@@ -191,7 +190,6 @@ export interface SeatLaunchDeps {
   place: (...args: Parameters<Manager["place"]>) => ReturnType<Manager["place"]>;
   provisionUserAgent: (...args: Parameters<Manager["provisionUserAgent"]>) => ReturnType<Manager["provisionUserAgent"]>;
   readerRemedy: (...args: Parameters<Manager["readerRemedy"]>) => ReturnType<Manager["readerRemedy"]>;
-  remoteAuthority: () => Manager["remoteAuthority"];
   resolveConnector: (...args: Parameters<Manager["resolveConnector"]>) => ReturnType<Manager["resolveConnector"]>;
   retirement: () => Manager["retirement"];
   runtimeFor: (...args: Parameters<Manager["runtimeFor"]>) => ReturnType<Manager["runtimeFor"]>;
@@ -220,7 +218,6 @@ export function seatLaunchDeps(m: Manager): SeatLaunchDeps {
     auth: () => m["auth"],
     userMode: () => m["userMode"],
     managerInstanceId: () => m["managerInstanceId"],
-    serviceServe: () => m["serviceServe"],
     runHosting: () => m["runHosting"],
     requiredRuntime: () => m["requiredRuntime"],
     meshMode: () => m["meshMode"],
@@ -250,7 +247,6 @@ export function seatLaunchDeps(m: Manager): SeatLaunchDeps {
     place: (...args) => m["place"](...args),
     provisionUserAgent: (...args) => m["provisionUserAgent"](...args),
     readerRemedy: (...args) => m["readerRemedy"](...args),
-    remoteAuthority: () => m["remoteAuthority"],
     resolveConnector: (...args) => m["resolveConnector"](...args),
     retirement: () => m["retirement"],
     runtimeFor: (...args) => m["runtimeFor"](...args),
@@ -277,7 +273,7 @@ export class SeatLaunch {
   /** The agent-start path. Shares this component's deps, and calls back into it for its leaf steps. */
   private readonly seatStart: SeatStart;
 
-  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: SeatLaunchDeps, private readonly parts: Pick<ManagerParts, "connectorInventory">) {
+  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: SeatLaunchDeps, private readonly parts: Pick<ManagerParts, "connectorInventory" | "servePlane">) {
     this.seatStart = new SeatStart(config, deps, parts, {
       checkSpawnCwd: (...args) => this.checkSpawnCwd(...args),
       harnessUnavailableError: (...args) => this.harnessUnavailableError(...args),
@@ -386,7 +382,7 @@ export class SeatLaunch {
     const { note, payload } = onceTurnNote({
       prompt: launch.prompt, spawner: this.spawnerName(spawner),
       ...(launch.once!.deadlineMs !== undefined ? { deadlineAt: MAX_SCHEDULE_MS, holdToken: turnHoldToken("") } : {}),
-      holdEpoch: this.deps.serviceServe()?.grant.epoch ?? 0,
+      holdEpoch: this.parts.servePlane.serviceServe?.grant.epoch ?? 0,
       ...(connector.retireAfterExit ? { retire: connector.name } : {}),
       // The longest id token core accepts (endpoint-subjects `assertIdToken`).
       spawn: "x".repeat(64),

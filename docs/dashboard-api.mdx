@@ -342,11 +342,11 @@ Merge the newest chat messages selected by stream sequence with recent direct me
 
 ### Parameters
 
-| Name  | Location | Required | Schema                                                                    |
-| ----- | -------- | -------- | ------------------------------------------------------------------------- |
-| limit | query    | no       | `{"type":"integer","minimum":0,"maximum":9007199254740991,"default":200}` |
+| Name  | Location | Required | Schema                                                        |
+| ----- | -------- | -------- | ------------------------------------------------------------- |
+| limit | query    | no       | `{"type":"integer","minimum":0,"maximum":2000,"default":200}` |
 
-**limit:** Maximum requested messages. Absent or empty uses 200. Accepts decimal digits naming a safe integer, including 0; negative, fractional, whitespace-padded and unsafe values are refused.
+**limit:** Maximum requested messages. Absent or empty uses 200. Accepts decimal digits for integers from 0 through 2000. Negative, fractional, whitespace-padded and larger values are refused.
 
 ### Responses
 
@@ -456,11 +456,11 @@ Return recent direct messages visible to the dashboard observer. A failed or lat
 
 ### Parameters
 
-| Name  | Location | Required | Schema                                                                    |
-| ----- | -------- | -------- | ------------------------------------------------------------------------- |
-| limit | query    | no       | `{"type":"integer","minimum":0,"maximum":9007199254740991,"default":500}` |
+| Name  | Location | Required | Schema                                                        |
+| ----- | -------- | -------- | ------------------------------------------------------------- |
+| limit | query    | no       | `{"type":"integer","minimum":0,"maximum":2000,"default":500}` |
 
-**limit:** Maximum requested messages. Absent or empty uses 500. Accepts decimal digits naming a safe integer, including 0; negative, fractional, whitespace-padded and unsafe values are refused.
+**limit:** Maximum requested messages. Absent or empty uses 500. Accepts decimal digits for integers from 0 through 2000. Negative, fractional, whitespace-padded and larger values are refused.
 
 ### Responses
 
@@ -585,14 +585,14 @@ Percent-decode the channel once and validate it using the core channel grammar. 
 
 ### Parameters
 
-| Name    | Location | Required | Schema                                                                    |
-| ------- | -------- | -------- | ------------------------------------------------------------------------- |
-| channel | path     | yes      | `{"type":"string","minLength":1,"maxLength":4096}`                        |
-| limit   | query    | no       | `{"type":"integer","minimum":0,"maximum":9007199254740991,"default":200}` |
+| Name    | Location | Required | Schema                                                        |
+| ------- | -------- | -------- | ------------------------------------------------------------- |
+| channel | path     | yes      | `{"type":"string","minLength":1,"maxLength":4096}`            |
+| limit   | query    | no       | `{"type":"integer","minimum":0,"maximum":2000,"default":200}` |
 
 **channel:** Channel name or pattern accepted by the core channel grammar. Encode it as one URL path component.
 
-**limit:** Maximum requested messages. Absent or empty uses 200. Accepts decimal digits naming a safe integer, including 0; negative, fractional, whitespace-padded and unsafe values are refused.
+**limit:** Maximum requested messages. Absent or empty uses 200. Accepts decimal digits for integers from 0 through 2000. Negative, fractional, whitespace-padded and larger values are refused.
 
 ### Responses
 
@@ -1369,14 +1369,14 @@ Read the newest frames on the agent's event channel, bounded like its siblings: 
 
 ### Parameters
 
-| Name  | Location | Required | Schema                                                                    |
-| ----- | -------- | -------- | ------------------------------------------------------------------------- |
-| agent | path     | yes      | `{"type":"string","minLength":3,"maxLength":4096}`                        |
-| limit | query    | no       | `{"type":"integer","minimum":0,"maximum":9007199254740991,"default":200}` |
+| Name  | Location | Required | Schema                                                        |
+| ----- | -------- | -------- | ------------------------------------------------------------- |
+| agent | path     | yes      | `{"type":"string","minLength":3,"maxLength":4096}`            |
+| limit | query    | no       | `{"type":"integer","minimum":0,"maximum":2000,"default":200}` |
 
 **agent:** The agent's id, \<owner>.\<actor> with each part in \[A-Za-z0-9\_], percent-encoded as one URL path component. Any other text is refused with 400.
 
-**limit:** Maximum requested frames. Absent or empty uses 200. Accepts decimal digits naming a safe integer, including 0; negative, fractional, whitespace-padded and unsafe values are refused.
+**limit:** Maximum requested frames. Absent or empty uses 200. Accepts decimal digits for integers from 0 through 2000. Negative, fractional, whitespace-padded and larger values are refused.
 
 ### Responses
 

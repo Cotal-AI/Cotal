@@ -6,6 +6,9 @@
  */
 import { hostname } from "node:os";
 import {
+  AGENT_CMD_SET_NAME,
+  AGENT_CONTRACTS,
+  AGENT_ENDPOINT,
   AGUI_FRAME_KIND,
   chatSubject,
   DEV_OWNER,
@@ -17,11 +20,13 @@ import {
   parsePrincipalKey,
   principalKey,
   remoteManagerActors,
+  spawnNameError,
   type CotalEndpoint,
   type CotalMessage,
   type ManagerInstanceListing,
   type Presence,
   type Profile,
+  type SetNameIO,
 } from "@cotal-ai/core";
 import { connectTargetOrThrow, isConnectRefusal, ownManagerInstances, resolveControlTarget, resolvePreference, resolveTargetOrThrow, SignInChangedError, signInChange, userSignInAuth, type MeshTarget } from "@cotal-ai/workspace";
 import { askManager, controlPs, liveManagerIds, managerCandidate, managerRailGone, reportedManagerHost, startStackManagerRemedy, START_TIMEOUT_MS, type ControlClient, type ControlCtx, type ManagerReply } from "@cotal-ai/workspace/control";
@@ -32,6 +37,8 @@ import { deregisterRemedy, LaunchListsRefused, NoLaunchManager, SignInRequired, 
 const OBSERVER_NAME = "acp";
 /** A seat's retained event history is read up to this many frames. */
 const HISTORY_FRAMES = 1000;
+/** How long a `set-name` call waits for the agent's answer. */
+const RENAME_MS = 10_000;
 
 export interface LiveMeshOptions {
   readonly space?: string;
@@ -375,8 +382,8 @@ function launchCalls(c: Connected, p: Controls, defaultPersona: string | null | 
 }
 
 /** The agent list and the commands sent to one agent. */
-function seatCalls(options: LiveMeshOptions, c: Connected, p: Controls): Pick<Mesh, "seats" | "despawn" | "interrupt" | "input"> {
-  const { started } = c;
+function seatCalls(options: LiveMeshOptions, c: Connected, p: Controls): Pick<Mesh, "seats" | "despawn" | "interrupt" | "input" | "rename" | "spawnNameError"> {
+  const { started, observer, target } = c;
   const { ctx, client, ask, seatCommand, yourManagers } = p;
   return {
     async seats() {
@@ -413,9 +420,13 @@ function seatCalls(options: LiveMeshOptions, c: Connected, p: Controls): Pick<Me
       const rows = answered.flatMap(({ instanceId, rows }) =>
         rows.map((row): SeatRow => {
           const r = row as unknown as { name: string; id: string; lifecycleUid: string; agent: string; model?: string; cwd?: string; status: string; uptimeMs?: number };
+          const principal = principalOf(r.id);
+          // `set-name` changes the name the agent shows, never the name its manager lists.
+          const shown = observer.getRoster().find((s) => s.card.id === principalKey(principal.owner, principal.actor).key && s.lifecycleUid === r.lifecycleUid)?.card.name;
           return {
             name: r.name,
-            ...principalOf(r.id),
+            ...(shown && shown !== r.name ? { display: shown } : {}),
+            ...principal,
             lifecycleUid: r.lifecycleUid,
             managerInstanceId: instanceId,
             agent: r.agent,
@@ -442,6 +453,29 @@ function seatCalls(options: LiveMeshOptions, c: Connected, p: Controls): Pick<Me
     async input(seat: SeatRef, text: string) {
       const reply = await seatCommand("input", seat, { name: seat.name, text, enter: true });
       if (!reply.ok) throw failure(reply, `${seat.name} did not get the prompt`);
+    },
+
+    async rename(seat: SeatRef, name: string) {
+      // An agent serves its `agent` endpoint only under a user-auth credential (SPEC 13.21).
+      if (!started) throw new Error("renaming a running agent needs a space where people sign in, where the agent serves `set-name`");
+      const id = principalKey(seat.owner, seat.actor).key;
+      const runtime = observer.getRoster().find((s) => s.card.id === id && s.lifecycleUid === seat.lifecycleUid && s.status !== "offline")?.runtime?.id;
+      if (!runtime) throw new Error(`${seat.name} is not on the roster with its runtime, so it cannot be renamed now`);
+      const reply = await observer.callPrincipal({
+        endpoint: AGENT_ENDPOINT,
+        principal: { owner: seat.owner, actor: seat.actor, uid: seat.lifecycleUid, runtimeId: runtime },
+        command: AGENT_CMD_SET_NAME,
+        authority: "owner",
+        args: { name },
+        deadlineMs: RENAME_MS,
+        contract: AGENT_CONTRACTS[AGENT_CMD_SET_NAME]!,
+      }).catch((e: unknown) => Promise.reject(plain(e)));
+      if (!reply.ok) throw new Error(reply.error.message);
+      return (reply.data as SetNameIO).name;
+    },
+
+    spawnNameError(name: string) {
+      return spawnNameError(name, { userMode: target.mode === "user" });
     },
   };
 }

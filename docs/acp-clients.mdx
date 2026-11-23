@@ -15,7 +15,8 @@ The agent belongs to the manager, so it keeps running on the mesh when the clien
 ## Install the extension [#install]
 
 The `cotal acp` command comes from the optional `@cotal-ai/acp` extension.
-Add it on the machine where the client runs its agents:
+`cotal setup` adds it when it finds T3 Code or Zed on this computer.
+To add it yourself, run this on the machine where the client runs its agents:
 
 ```bash
 cotal ext add @cotal-ai/acp
@@ -28,18 +29,34 @@ If no manager is registered, ACP tells you how to start one before opening the t
 
 ## Add Cotal to the client [#add-to-a-client]
 
-Register `cotal` as a local ACP agent command, with `acp --space <name>` as its arguments.
+`cotal setup` adds Cotal to T3 Code and Zed when it finds them on this computer, one entry per space.
+It finds T3 Code from a `t3` command or its `~/.t3` folder (`T3CODE_HOME` when set), and Zed from a `zed` or `zeditor` command or its settings folder.
+Run setup once for each space you want in the client.
 
-In T3 Code, add a provider instance with a local ACP command.
-The provider settings page writes it to T3's `settings.json`:
+Each entry runs this computer's `cotal acp --space <name>` by absolute path, because an app started from the desktop often does not see the folders your shell adds to `PATH`.
+When `COTAL_HOME` or `XDG_CONFIG_HOME` is set, the entry passes it on.
+A new entry is named `Cotal (<name>)`.
+An entry that already runs `cotal acp` for the space, such as one you added by hand, is updated in place.
+Setup keeps your other settings, and in Zed it keeps your comments.
+Before it changes a settings file, it copies it next to the original as `settings.json.cotal-backup-<time>`.
+Both apps load the change without a restart.
+When a settings file cannot be read or written, setup says which one and why, saves the rest, and reports the run as partial.
+
+`cotal update` points every Cotal entry at the Cotal it installed, for example after Cotal moved to another folder.
+`cotal status` lists the spaces each client reaches, and shows an entry whose command is gone.
+
+To add an entry by hand, give the absolute path of `cotal` (`command -v cotal` prints it) and `acp --space <name>` as its arguments.
+In T3 Code, add a provider instance with a local ACP command to T3's `settings.json`.
+Its settings page shows the command but not its arguments:
 
 ```json
 {
   "providerInstances": {
-    "cotal": {
+    "cotal-<name>": {
       "driver": "acpRegistry",
+      "displayName": "Cotal (<name>)",
       "enabled": true,
-      "config": { "source": "local", "commandPath": "cotal", "commandArgs": ["acp", "--space", "<name>"] }
+      "config": { "source": "local", "commandPath": "/home/you/.local/bin/cotal", "commandArgs": ["acp", "--space", "<name>"] }
     }
   }
 }
@@ -50,21 +67,28 @@ In Zed, add it under `agent_servers` in your settings:
 ```json
 {
   "agent_servers": {
-    "Cotal": { "command": "cotal", "args": ["acp", "--space", "<name>"] }
+    "Cotal (<name>)": { "type": "custom", "command": "/home/you/.local/bin/cotal", "args": ["acp", "--space", "<name>"] }
   }
 }
 ```
 
-To work in two spaces, add two instances, one per space.
+## Start it with npx [#npx]
+
+A client that installs agents as npm packages starts Cotal with `npx @cotal-ai/acp`.
+That command keeps nothing of its own. It finds the `cotal` installed on this computer, on `PATH`, in `~/.local/bin` or in npm's global folder, and runs its `cotal acp` with the same arguments.
+Your spaces, sign-in and agents stay the ones that `cotal` already uses.
+
+When this computer has no Cotal, or a Cotal without the ACP extension, the agent offers only **Sign in to Cotal**.
+That sign-in runs in a terminal. It installs Cotal with `curl -fsSL https://get.cotal.ai | sh` (`npm install -g cotal-ai` on Windows) or adds the extension, then signs in to a space or sets one up.
 
 ## How threads map to agents [#threads]
 
 | In the client | On the mesh |
 | --- | --- |
 | A new thread | Nothing yet. A thread that is opened and dropped leaves no agent. |
-| The thread's first prompt | Spawns an agent in the thread's folder, with that prompt as its first task. The thread's id is the agent's name. The turn ends when that first task's run ends. |
+| The thread's first prompt | Spawns an agent in the thread's folder, with that prompt as its first task. The agent's name is the thread's id, or the name you gave it with `/name`. The turn ends when that first task's run ends. |
 | A later prompt | Is typed into the agent's terminal through its manager, so it reaches the agent as your own words. The turn ends once the agent has started working and stopped again. |
-| Listing sessions | The managed agents in that folder, including ones you spawned elsewhere. |
+| Listing sessions | The managed agents in that folder, including ones you spawned elsewhere. An agent a thread spawned or opened is listed as that thread. |
 | Importing a session | Shows what the agent's event channel still holds, then follows it live. |
 | Deleting a session | Hides that agent run from the list. The agent keeps running. |
 
@@ -94,6 +118,8 @@ A select that would hold 64 or more choices is not offered.
 
 | Command | What it does |
 | --- | --- |
+| `/name <new name>` | Before the first prompt, sets the name the agent starts with. On a running agent, changes the name it shows on the mesh. Its manager still lists it by the name it started with. |
+| `/open <name>` | In a thread with no agent, drives an agent that is already running, found by its name or the name it shows. The thread shows what the agent's event channel still holds, then follows it live. When you load the thread again, it opens that agent. |
 | `/despawn` | Send it by itself to stop the thread's agent. The thread stays, and its next prompt spawns a new agent when your grant may spawn agents (see [Sign in](#sign-in)). |
 | `/roster` | Lists who is on the mesh and what each is doing. |
 | `/channels` | Lists the space's channels. |
@@ -125,6 +151,8 @@ person controls every agent under their own owner (see
 - A manager that does not answer leaves its agents out of the list until it answers again. While it does not answer, loading or deleting any thread the list does not show fails, because its agent may run there. On a space where people do not sign in, a registered manager whose host is gone is not waited for. Where they do, it is waited for like one that does not answer, until you remove it with `cotal endpoint deregister manager <id> --space <space> --yes`, which needs the `supervise` scope. The error names that command when one of your own registrations does not answer a read. The space's own manager is not yours to remove; ask the space's operator. A new thread prefers a manager whose presence the bridge sees as current. A manager that died less than a minute ago can still look current, and then a new thread fails reading its lists before the Machine list shows. Try again once its presence lapses, or remove the registration. A sleeping laptop's manager is not gone, so it holds those loads up until the laptop wakes.
 - Every manager read and command opens its own connection. A list opens one for each manager it reads, a new or loaded thread opens about three more, and each prompt, cancel or `/despawn` opens one. A space limits how many connections one sign-in opens a minute (60 by default), and your other `cotal` commands count too. Opening many threads at once can be refused, and the refusal names the limit. The allowance refills through the minute, so a retry a few seconds later can pass.
 - When your sign-in is granted again, or this machine signs in as another account, while `cotal acp` runs, it stops and says why. It sends nothing as the new sign-in. Start the agent again in your client.
+- Renaming a running agent with `/name` needs a space where people sign in, because only there does an agent take a new name from its owner.
+- `/open` finds the agents the thread list would show. If another thread in the same client drives that agent, the agent moves to the new thread.
 - A rollback in T3 Code starts a fresh session, which spawns a new agent.
 - Pi agents publish text as completed messages, so their replies arrive whole.
 - Questions an agent stops to ask, such as tool permissions, are not forwarded to the client yet.
@@ -147,3 +175,4 @@ Logs go to standard error.
 | `--auth` | Sign in to the space, or set one up, then exit. |
 
 Deleted sessions are kept as agent runs in `acp/hidden-runs` under the Cotal home, one per line.
+The link from each thread to the agent run it spawned or opened is kept in `acp/threads`, one per line.

@@ -5,7 +5,6 @@ import {
   provisionAgentDurables, resolveAuthProvider, runAgentBearer, rejectionText, attemptCleanup, describeCleanupFailures,
   type CleanupFailure, type CotalEndpoint, type EpCaller, type EpErrorCode, type EpErrorDetail,
   type ManagedLifecycleHandoff, type RemoteManagedAgentEnrollmentRequest, type RemoteManagedAgentEnrollmentResult,
-  type RemoteDelegatedUserIntentExecutionRequest, type RemoteDelegatedUserIntentExecutionResult,
   type UserAuthLaunch,
 } from "@cotal-ai/core";
 import {
@@ -80,15 +79,6 @@ export interface UserAgentRefusal {
 export interface UserProvisionDeps {
   managerInstanceId(): string;
   runHosting(): Pick<RunHosting, "runAdmission"> | undefined;
-  remoteAuthority(): {
-    owner: string;
-    lifecycleUid: string;
-    agentBearerExchangeUrl: string;
-    enrollManagedAgent?: EnrollManagedAgent;
-    executeDelegatedUserIntent?: (
-      execute: RemoteDelegatedUserIntentExecutionRequest["execute"] & { intentId: string },
-    ) => Promise<RemoteDelegatedUserIntentExecutionResult>;
-  } | undefined;
   deprovision(target: TeardownTarget): Promise<void>;
   withProvisioner<T>(fn: (prov: CotalEndpoint) => Promise<T>): Promise<T>;
   shredUserSecrets(failures: CleanupFailure[], family: { actorToken?: string; sentinelCreds?: string; health?: string }): Promise<void>;
@@ -101,7 +91,6 @@ export function userProvisionDeps(m: Manager): UserProvisionDeps {
   return {
     managerInstanceId: () => m["managerInstanceId"],
     runHosting: () => m["runHosting"],
-    remoteAuthority: () => m["remoteAuthority"],
     deprovision: (target) => m["deprovision"](target),
     withProvisioner: (fn) => m["withProvisioner"](fn),
     shredUserSecrets: (failures, family) => m["shredUserSecrets"](failures, family),
@@ -115,7 +104,7 @@ export class UserProvision {
 
   private get managerInstanceId() { return this.deps.managerInstanceId(); }
   private get runHosting() { return this.deps.runHosting(); }
-  private get remoteAuthority() { return this.deps.remoteAuthority(); }
+  private get remoteAuthority() { return this.config.remoteAuthority; }
 
   /** The served spawn a hosted enrollment forwards. A run's spawn also names its run, so the host
    *  bounds the helper by what the run's starter held when the run was admitted (SPEC 14.8). */

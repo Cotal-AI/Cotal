@@ -159,6 +159,20 @@ const QUESTION = "Which one?";
       const added = run(["endpoint", "add", "probe", "--space", space, "--file", join(home, `${space}-ref.json`), "--plain"], root);
       check(`saving probe in ${space} succeeds`, added.status === 0, shown(added));
     }
+    for (const format of ["--plain", "--json"]) {
+      const missing = run(["endpoint", "show", "prob", "--space", "beta", format], root);
+      const receipt = envelope(missing);
+      const guidance = receipt?.error?.remedy ?? missing.stderr.split("\nNext\n")[1] ?? "";
+      const command = /`([^`]+)`/.exec(guidance)?.[1];
+      check(`missing endpoint show ${format} offers the exact inventory command for beta`, missing.status === 2 &&
+        (format === "--json" ? receipt?.error?.code === "TARGET_NOT_FOUND" && receipt.target?.space === "beta" && receipt.target?.name === "prob"
+          : /Code:\s+TARGET_NOT_FOUND/.test(missing.stderr)) && command === `cotal endpoint --space beta ${format}`, shown(missing));
+      if (command === `cotal endpoint --space beta ${format}`) {
+        const inventory = run(command.split(" ").slice(1), root);
+        check(`the suggested ${format} inventory finds beta's saved reference without live reads`, inventory.status === 0 &&
+          inventory.stdout.includes("example.beta") && !inventory.stdout.includes("example.gamma") && inventory.stdout.includes("not-checked"), shown(inventory));
+      }
+    }
     for (const flags of [["--plain"], ["--json"]]) {
       const show = run(["endpoint", "show", "probe", ...flags], root);
       const error = envelope(show)?.error;

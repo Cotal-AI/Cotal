@@ -28,6 +28,7 @@ and `USAGE_INVALID` (exit 1, without the command's help) for a directory, invali
 that is empty or contains only whitespace.
 The refusal names the mesh the send was aimed at when this machine's records name one. The retry
 uses a quoted body and keeps the destination and any `--space`, `--server` and `--creds` options.
+It also keeps `--json` or `--plain` when requested.
 No destination, several destinations, several body sources or an empty message is refused. A lone
 `-` is refused too, because stdin is read only through `--stdin` or `--file -`. An empty
 `--to`, `--channel` or `--role` value is refused for that flag, and the remedy keeps it.
@@ -569,7 +570,8 @@ Removal keeps retained history unless `--purge` is present. The confirmation nam
 space and history scope. Scripts pass `--yes`. A name with no saved entry and no retained messages
 is refused with `TARGET_NOT_FOUND` before the confirmation, listing the registered channels, or
 naming the registered spelling when only the case differs. In that case the suggested command
-inspects the registered channel without removing it. Removing a channel that has retained
+inspects the registered channel without removing it. Otherwise the suggested list command names
+the resolved space and keeps any explicit `--server` and `--creds`. Removing a channel that has retained
 messages but no saved entry is a `no-op`, and its Metadata row says `no saved entry`. A missing
 channel registry bucket is no saved entry, so that remove is the same `no-op`. `--purge`
 still deletes that channel's retained messages. When the chat stream is not on the broker, that
@@ -845,19 +847,23 @@ without `--creds`, on the operator credential this machine records.
 ## pending [#pending]
 
 ```bash
-cotal pending <agent> [--durable <exact-dm-durable>] [--limit <1..100>] [--space <s>] [--json|--plain]
+cotal pending <agent> [--durable <exact-dm-durable>] [--limit <1..100>] [--space <s>] [--server <url>] [--creds <private-file>] [--json|--plain]
 ```
 
 The finite read reports the selected DM durable's native pending count, ack
 floor, delivered sequence, frontier, retention limits and up to 20 candidate
 IDs by default. JSON and plain output use the common one-document result. A
-name must match one observed roster entry; an exact principal ID wins over a
-display-name match, and an ambiguous display name refuses. `--durable` reads a
-previous lifecycle by its complete durable name without substituting a
-same-named current agent. An absent or unreadable durable is not `pending 0`. A missing DM stream is
+name must match one observed roster entry. An exact principal ID wins over a
+display-name match, and an ambiguous display name refuses. If no recipient matches, the
+refusal names the recipient and space and gives the `cotal who --all` command for that space. It
+keeps an explicit `--server` override. `--durable` reads a previous lifecycle by its complete
+durable name without substituting a same-named current agent. An absent or unreadable durable is not
+`pending 0`. A missing DM stream is
 `TARGET_NOT_FOUND` as well: the durable was not read.
 The caller needs the native admin read authority; user-auth has no equivalent
-view here and refuses without a static or bare fallback. If the local stack is stopped, the
+view here and refuses without a static or bare fallback. To read from a broker not registered on
+this machine, pass its URL with `--server <url>` and a static admin credential with `--creds <private-file>`.
+If the local stack is stopped, the
 refusal names the stopped space and where to start it again. A failed read does not prune a locally
 saved mesh registration.
 

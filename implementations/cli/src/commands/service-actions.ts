@@ -335,7 +335,8 @@ export async function serviceAction(args: ParsedArgs, space: string, root: strin
   const prepared = mode === "start" || mode === "restart" ? prepareProcessService(definition) : undefined;
   if (prepared?.adapter) {
     const adapter = prepared.adapter;
-    if (values["new-instance"] && !adapter.declaration.capabilities.multiInstance || values.foreground && !adapter.declaration.capabilities.foreground) throw new CommandFailure("refused", "UNSUPPORTED", "the adapter does not declare the requested multi-instance or foreground capability; no provider code was loaded", { target });
+    const unsupported = [values["new-instance"] && !adapter.declaration.capabilities.multiInstance ? "--new-instance" : null, values.foreground && !adapter.declaration.capabilities.foreground ? "--foreground" : null].filter(Boolean).join(" and ");
+    if (unsupported) throw new CommandFailure("refused", "UNSUPPORTED", `The adapter does not support ${unsupported}. No provider code was loaded.${values["dry-run"] ? ` Retry without ${unsupported}, keeping --dry-run and the rest of the command unchanged.` : ""}`, { target });
     if (selected && !controlsRecordedAdapter(selected.record.value, adapter)) throw new CommandFailure("refused", "CONFLICT", "the selected instance pins a different adapter declaration or package version; it was not stopped or adopted", { target });
   }
   const declaredStop = prepared?.adapter ?? (definition.record.value.launch.type === "adapter" ? resolveServiceAdapter(definition.record.value.launch.adapter, definition.record.value.launch.options, false) : undefined);
@@ -367,7 +368,7 @@ export async function serviceAction(args: ParsedArgs, space: string, root: strin
   }
   // A restart whose original process is already gone stops nothing, so it asks for nothing.
   const confirmStop = mode === "stop" || mode === "restart" && !["gone", "previous-boot", "foreign-pid"].includes(observeServiceProcess(selected!.record.value));
-  if (confirmStop && !values.yes && (!canPrompt() || presentation === "json")) throw new ConfirmationRequired(yesRequired(mode, presentation === "json"), { target, remedy: `confirm with \`${serviceConfirmCommand(mode, name, space, values)}\`, or preview it with --dry-run` });
+  if (confirmStop && !values.yes && (!canPrompt() || presentation === "json")) throw new ConfirmationRequired(yesRequired(mode, presentation === "json"), { target, remedy: `confirm with \`${serviceConfirmCommand(mode, name, space, values, presentation === "json")}\`, or preview it with --dry-run` });
   if (mode === "restart") assertRestartAdmitted(definition);
   let nativePlan: Awaited<ReturnType<typeof prepareNativeServiceStop>> | undefined;
   try { nativePlan = mode === "stop" || mode === "restart" ? await prepareNativeServiceStop(definition, selected!, values["with-agents"] === true) : undefined; }

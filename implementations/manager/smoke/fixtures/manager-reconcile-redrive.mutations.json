@@ -31,7 +31,7 @@
     {
       "name": "stop returns while accepted startup reconciliation work is still running",
       "file": "implementations/manager/src/manager.ts",
-      "find": "    await this.awaitStaticReconcileDrain();\n    await starting?.catch(() => {});",
+      "find": "    await this.staticLifecycle.awaitStaticReconcileDrain();\n    await starting?.catch(() => {});",
       "replace": "",
       "expectRed": "stop waits for an accepted startup reconciliation terminal",
       "cell": "stop waits for an accepted startup reconciliation terminal"
@@ -47,8 +47,8 @@
     {
       "name": "stop does not join startup after draining reconciliation",
       "file": "implementations/manager/src/manager.ts",
-      "find": "    await this.awaitStaticReconcileDrain();\n    await starting?.catch(() => {});",
-      "replace": "    await this.awaitStaticReconcileDrain();",
+      "find": "    await this.staticLifecycle.awaitStaticReconcileDrain();\n    await starting?.catch(() => {});",
+      "replace": "    await this.staticLifecycle.awaitStaticReconcileDrain();",
       "expectRed": "stop joins startup service registration admitted before shutdown",
       "cell": "stop joins startup service registration admitted before shutdown"
     }

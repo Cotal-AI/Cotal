@@ -365,10 +365,10 @@ async function main() {
     // Serve the legacy view through the public native boundary on the manager's own scoped
     // connection and grant. No caller cache or resolver result is replaced.
     const native = mgr as unknown as {
-      serviceServe: { nc: NatsConnection; grant: EpServeGrant; handle: EpServeHandle };
       managerServiceDefs(): EpCommandDef[];
+      servePlane: { serviceServe: { nc: NatsConnection; grant: EpServeGrant; handle: EpServeHandle }; };
     };
-    const state = native.serviceServe;
+    const state = native.servePlane.serviceServe;
     const defs = native.managerServiceDefs();
     let legacyView = true, hideSpawn = false, admissions = 0;
     const servedDefs = defs.map((def) => def.command === "spawn" ? {
@@ -483,10 +483,10 @@ async function main() {
     compatManager = new Manager({ space: SPACE, servers: SERVERS, runtime: "pty", workspaceRoot: compatRoot, secretStore: workspaceSecretStore(WS_ROOT) });
     await compatManager.start();
     const resolvedCurrent = await epRetryCompat.describeService(BASELINE_LIFECYCLE_ENDPOINT);
-    const second = compatManager as unknown as { serviceServe: { nc: NatsConnection; handle: EpServeHandle }; managerInstanceId: string };
+    const second = compatManager as unknown as { managerInstanceId: string; servePlane: { serviceServe: { nc: NatsConnection; handle: EpServeHandle }; } };
     if (resolvedCurrent.responder.instanceId !== second.managerInstanceId || !resolvedCurrent.commands.has("goal-result"))
       throw new Error("retry control did not resolve the actual modern second manager");
-    await second.serviceServe.handle.stop();
+    await second.servePlane.serviceServe.handle.stop();
     legacyView = true;
     state.handle = serveEndpoint(state.nc, SPACE, state.grant, servedDefs, {
       view: () => ({ commands: defs.map((def) => def.command).filter((command) => command !== "goal-result") }),

@@ -10,7 +10,6 @@ import {
 } from "@cotal-ai/core";
 import { agentLifecycleSecretFilePaths, agentSecretKeyForFile, userAuthStateDir } from "@cotal-ai/workspace";
 import { MANAGER_ENDPOINT } from "./manager-service-contract.js";
-import type { ManagerOptions } from "./manager.js";
 import type { AgentHandle } from "./runtime/index.js";
 import type { Manager } from "./manager.js";
 import { DEPROVISION_TIMEOUT_MS } from "./seat-stop.js";
@@ -57,7 +56,6 @@ export interface RetirementHold {
  * maintenance ownership to its manager. */
 export interface RetirementDeps {
   auth(): SpaceAuth | undefined;
-  remoteAuthority(): Pick<NonNullable<ManagerOptions["remoteAuthority"]>, "owner" | "actors" | "prepareAgentRetirement" | "mintRetirementRequester"> | undefined;
   userMode(): boolean;
   serveIdentity(): Identity | undefined;
   instanceId(): string;
@@ -79,11 +77,10 @@ export interface RetirementDeps {
 export function retirementDeps(m: Manager): RetirementDeps {
   return {
     auth: () => m["auth"],
-    remoteAuthority: () => m["remoteAuthority"],
     userMode: () => m["userMode"],
     serveIdentity: () => m["managerServeIdentity"],
     instanceId: () => m["managerInstanceId"],
-    serveEpoch: () => m["serviceServe"]?.grant.epoch,
+    serveEpoch: () => m["servePlane"].serviceServe?.grant.epoch,
     dial: (opts) => m["dial"](opts),
     withRetirementSlot: (run) => m["withRetirementSlot"](run),
     driveStaticRetirement: (a) => m["driveStaticRetirement"](a),
@@ -138,7 +135,7 @@ export class Retirement {
   constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: RetirementDeps) {}
 
   private get auth() { return this.deps.auth(); }
-  private get remoteAuthority() { return this.deps.remoteAuthority(); }
+  private get remoteAuthority() { return this.config.remoteAuthority; }
   private get userMode() { return this.deps.userMode(); }
   private get managerServeIdentity() { return this.deps.serveIdentity(); }
   private get managerInstanceId() { return this.deps.instanceId(); }

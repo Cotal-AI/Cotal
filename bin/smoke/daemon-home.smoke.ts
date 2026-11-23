@@ -128,7 +128,8 @@ const lockFree = (d: string): boolean => {
 };
 // Every per-user location the CLI could read or write points into this sandbox, never the real user's.
 const childEnv = {
-  ...process.env, HOME: user, XDG_CONFIG_HOME: join(user, "config"), XDG_STATE_HOME: join(user, "state"), XDG_CACHE_HOME: join(user, "cache"),
+  ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))),
+  HOME: user, XDG_CONFIG_HOME: join(user, "config"), XDG_STATE_HOME: join(user, "state"), XDG_CACHE_HOME: join(user, "cache"),
   XDG_RUNTIME_DIR: rt, COTAL_HOME: home, COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_NO_UPDATE_CHECK: "1", NO_COLOR: "1", DO_NOT_TRACK: "1",
 };
 const runtimeEntries = (): string[] => existsSync(runtimeDir) ? readdirSync(runtimeDir, { recursive: true }).map(String).sort() : [];
@@ -321,6 +322,21 @@ try {
       check(`H0d ${mode} names the missing runtime and tells the caller how to select a private one`, doc.error?.message?.includes(missingRuntime) === true && doc.error.remedy?.includes("owned by your user with mode 0700 and set XDG_RUNTIME_DIR to it") === true, result);
     }
     check("H0d neither refusal created the runtime or lifetime lock", !existsSync(missingRuntime) && !existsSync(lockFile(managed)));
+  });
+
+  await cell("a runtime file refuses status and serve before creating state", async () => {
+    const runtimeFile = join(root, "runtime-file");
+    writeFileSync(runtimeFile, "keep this file");
+    const env = { ...childEnv, XDG_RUNTIME_DIR: runtimeFile };
+    for (const mode of ["status", "serve"]) {
+      const result = await cli([mode, "--daemon-home", managed, "--json"], 30_000, env);
+      const { status, doc } = result;
+      check(`${mode} refuses the runtime file and names the remedy`, status === 2 && doc.outcome === "refused"
+        && doc.error?.code === "TARGET_UNAVAILABLE" && doc.error.cause?.code === "NO_RUNTIME_DIR"
+        && doc.error.message?.includes(`XDG_RUNTIME_DIR points to ${runtimeFile}, which is not a directory`) === true
+        && doc.error.remedy?.includes("owned by your user with mode 0700 and set XDG_RUNTIME_DIR to it") === true, result);
+    }
+    check("the runtime file is untouched and no lifetime lock exists", readFileSync(runtimeFile, "utf8") === "keep this file" && !existsSync(lockFile(managed)));
   });
 
   await cell("H0e serve publishes a socket at the Linux pathname limit", async () => {

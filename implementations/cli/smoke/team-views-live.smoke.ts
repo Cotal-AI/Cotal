@@ -34,8 +34,9 @@
  *     submission before its outcome, and the cards in manifest order, in text and JSON.
  *  L. on an open mesh, apply and preview recommend live delivery and name the requirement for
  *     durable channels. Setting the card to live lets the deployment succeed.
- *  M. a confirmation refusal in that space keeps the target and output mode in both commands
- *     even with another space selected. Replaying the JSON commands previews and removes the card.
+ *  M. the deploy receipt's space locates its record even with another space selected.
+ *     The confirmation commands retain the target and output mode, and replay previews and removes the card.
+ *  N. the printed fresh boot summary command works with a different space selected.
  *
  * Channels only, so no agent launches. COTAL_HOME is sandboxed, the child environment carries no
  * `COTAL_` variable of the runner, and each stack stops with `cotal down --yes`.
@@ -78,9 +79,6 @@ const answered = (run: ReturnType<typeof cotal>) => { const e = envelope(run.std
 const reported = (run: ReturnType<typeof cotal>, caveat: string) => run.status === 0 && run.stdout.includes(caveat) && !run.stderr.includes(caveat);
 
 function checkRemovalConfirmation(deployment: string): void {
-  const chosen = cotal(b, "use", SPACE_B);
-  const selection = envelope(cotal(c, "use", "--json").stdout)?.result;
-  check("the saved selection differs from the card's space", chosen.status === 0 && selection?.current === SPACE_B && selection.folder === OTHER, selection);
   const refused = cotal(c, "team", "remove", deployment, "--space", OTHER, "--json");
   const refusal = envelope(refused.stdout);
   check("unconfirmed removal refuses in the explicit space", refused.status === 1 && refusal?.outcome === "refused" && refusal.target?.space === OTHER && refusal.error?.code === "USAGE_INVALID", refused.out);
@@ -322,12 +320,14 @@ try {
   const booted = cotal(b, "team", "boot", "boot.yaml");
   check("team boot starts the fresh stack in b, and its receipt names the auth mode in words",
     booted.status === 0 && /Auth mode:\s+static auth\n/.test(booted.stdout) && !booted.stdout.includes("static-auth"), booted.out.slice(-1200));
+  const bootCommand = booted.stdout.split("\n").map((line) => line.trim()).find((line) => line.startsWith("cotal team show "))?.split(/ {2,}/)[0] ?? "";
+  const bootArgs = bootCommand.split(" ").slice(1);
+  const bootId = bootArgs[2] ?? "";
   const repeat = cotal(b, "team", "boot", "boot.yaml", "--foreground");
   check("repeating the actual boot refuses without recommending deployment of the cards it seeded",
     repeat.status === 2 && repeat.stderr.includes("LIFECYCLE_BLOCKED") && repeat.stderr.includes(`cotal service --space ${SPACE_B}`) && repeat.stderr.includes("cotal down --dry-run") && !repeat.stderr.includes("team deploy"), repeat.out);
   check("the printed inspection and stop preview both work while the booted stack runs",
     cotal(b, "service", "--space", SPACE_B).status === 0 && cotal(b, "down", "--dry-run").status === 0);
-  const bootId = /cotal team show ([0-9a-f]{16})/.exec(booted.stdout)?.[1] ?? "";
   const freshShow = cotal(b, "team", "show", bootId);
   check("team show <boot id> names its kind, state, next action and auth mode in words",
     /Kind:\s+fresh boot\n/.test(freshShow.stdout) && /Auth mode:\s+static auth\n/.test(freshShow.stdout) && /Recorded state:\s+boot returned\n/.test(freshShow.stdout) &&
@@ -510,7 +510,19 @@ try {
     answered(bootWhileRetained) && envelope(bootWhileRetained.stdout)?.warnings?.some((warning) =>
       warning.code === "ADDITIVE_ATTEMPT_REMAINS" && JSON.stringify(warning.target.deploymentIds) === JSON.stringify([openId])) === true, bootWhileRetained.out);
 
-  console.log("\nM. confirmation commands retain the target space and output mode");
+  console.log("\nM. deployment lookup and confirmation commands pin the target space");
+  const chosen = cotal(b, "use", SPACE_B);
+  const selection = envelope(cotal(c, "use", "--json").stdout)?.result;
+  check("the saved selection differs from the deployment's space", chosen.status === 0 && selection?.current === SPACE_B && selection.folder === OTHER, selection);
+  const deploymentSpace = openResult?.target?.space;
+  if (deploymentSpace !== OTHER) throw new Error("the open deployment did not return its space");
+  const deploymentShow = cotal(c, "team", "show", openId, "--space", deploymentSpace, "--json");
+  const shownDeployment = envelope(deploymentShow.stdout);
+  const recordedReceipt = shownDeployment?.result?.receipt as { createdChannels?: unknown } | undefined;
+  check("team show with the receipt's space returns the original card revisions without changing the selection",
+    answered(deploymentShow) && shownDeployment?.target?.space === deploymentSpace && shownDeployment.target.deploymentId === openId &&
+    JSON.stringify(recordedReceipt?.createdChannels) === JSON.stringify(openResult?.result?.createdChannels) &&
+    envelope(cotal(c, "use", "--json").stdout)?.result?.current === SPACE_B, deploymentShow.out);
   checkRemovalConfirmation(openId);
 
   const openDown = cotal(c, "down", "--yes");
@@ -530,6 +542,18 @@ try {
       answered(bootUnreadable) && envelope(bootUnreadable.stdout)?.warnings?.some((warning) => warning.code === "ADDITIVE_ATTEMPT_REMAINS" &&
         JSON.stringify(warning.target.deploymentIds) === "[]" && JSON.stringify(warning.target.unreadable) === JSON.stringify([unreadable])) === true, bootUnreadable.out);
   } finally { rmSync(unreadable); }
+
+  console.log("\nN. the printed launch-summary command pins the boot space");
+  const selected = cotal(s, "use", SPACE);
+  check("the saved selection differs from the boot space", selected.status === 0 &&
+    envelope(cotal(b, "use", "--json").stdout)?.result?.current === SPACE, selected.out);
+  try {
+    const replay = cotal(b, ...bootArgs);
+    check("the printed launch-summary command finds the boot without changing the saved selection",
+      /^[0-9a-f]{16}$/.test(bootId) && bootCommand === `cotal team show ${bootId} --space ${SPACE_B}` &&
+      replay.status === 0 && /^\s+Deployment:\s+([0-9a-f]{16})$/m.exec(replay.stdout)?.[1] === bootId &&
+      envelope(cotal(b, "use", "--json").stdout)?.result?.current === SPACE, { command: bootCommand, replay: replay.out });
+  } finally { cotal(b, "use", SPACE_B); }
 } finally {
   if (openUp) {
     const down = cotal(c, "down", "--yes");

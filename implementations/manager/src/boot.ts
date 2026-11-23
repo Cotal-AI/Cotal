@@ -43,13 +43,11 @@ export interface ManagerBootDeps {
   setManagerInstanceId: (value: Manager["managerInstanceId"]) => void;
   managerServeIdentity: () => Manager["managerServeIdentity"];
   setManagerServeIdentity: (value: Manager["managerServeIdentity"]) => void;
-  remoteAuthority: () => Manager["remoteAuthority"];
   resumeCredRenewal: () => Manager["resumeCredRenewal"];
   setResumeCredRenewal: (value: Manager["resumeCredRenewal"]) => void;
   runHosting: () => Manager["runHosting"];
   setRunHosting: (value: Manager["runHosting"]) => void;
   runtimeKind: () => Manager["runtimeKind"];
-  serviceServe: () => Manager["serviceServe"];
   staticLifecycle: () => Manager["staticLifecycle"];
   streamsTerminal: () => Manager["streamsTerminal"];
   transcripts: () => Manager["transcripts"];
@@ -95,13 +93,11 @@ export function bootDeps(m: Manager): ManagerBootDeps {
     setManagerInstanceId: (value) => { m["managerInstanceId"] = value; },
     managerServeIdentity: () => m["managerServeIdentity"],
     setManagerServeIdentity: (value) => { m["managerServeIdentity"] = value; },
-    remoteAuthority: () => m["remoteAuthority"],
     resumeCredRenewal: () => m["resumeCredRenewal"],
     setResumeCredRenewal: (value) => { m["resumeCredRenewal"] = value; },
     runHosting: () => m["runHosting"],
     setRunHosting: (value) => { m["runHosting"] = value; },
     runtimeKind: () => m["runtimeKind"],
-    serviceServe: () => m["serviceServe"],
     staticLifecycle: () => m["staticLifecycle"],
     streamsTerminal: () => m["streamsTerminal"],
     transcripts: () => m["transcripts"],
@@ -130,7 +126,7 @@ export function bootDeps(m: Manager): ManagerBootDeps {
 
 /** Starting the manager: admitting its execution state, connecting and registering it, taking its instance lease, and healing a predecessor's frozen registration gate. */
 export class ManagerBoot {
-  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: ManagerBootDeps, private readonly parts: Pick<ManagerParts, "connectorInventory" | "credentialRenewal" | "lease">) {}
+  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: ManagerBootDeps, private readonly parts: Pick<ManagerParts, "connectorInventory" | "credentialRenewal" | "lease" | "servePlane">) {}
 
   // The Manager members these bodies read, under their Manager names. Each reads through its dep at
   // use, so a field the Manager assigns later is current and a method a test replaces on the Manager
@@ -151,13 +147,12 @@ export class ManagerBoot {
   private set managerInstanceId(value: Manager["managerInstanceId"]) { this.deps.setManagerInstanceId(value); }
   private get managerServeIdentity() { return this.deps.managerServeIdentity(); }
   private set managerServeIdentity(value: Manager["managerServeIdentity"]) { this.deps.setManagerServeIdentity(value); }
-  private get remoteAuthority() { return this.deps.remoteAuthority(); }
+  private get remoteAuthority() { return this.config.remoteAuthority; }
   private get resumeCredRenewal() { return this.deps.resumeCredRenewal(); }
   private set resumeCredRenewal(value: Manager["resumeCredRenewal"]) { this.deps.setResumeCredRenewal(value); }
   private get runHosting() { return this.deps.runHosting(); }
   private set runHosting(value: Manager["runHosting"]) { this.deps.setRunHosting(value); }
   private get runtimeKind() { return this.deps.runtimeKind(); }
-  private get serviceServe() { return this.deps.serviceServe(); }
   private get staticLifecycle() { return this.deps.staticLifecycle(); }
   private get streamsTerminal() { return this.deps.streamsTerminal(); }
   private get transcripts() { return this.deps.transcripts(); }
@@ -425,7 +420,7 @@ export class ManagerBoot {
     // The lease row is never consulted and never sent: presence is the whole ask, and the row
     // carries the operator's workspace root and pid.
     this.ep.serveLiveness("manager", () => {
-      const s = this.serviceServe;
+      const s = this.parts.servePlane.serviceServe;
       return s?.handle && !s.nc.isClosed() && !this.transportDown.has(s.nc) ? "bound" : "unbound";
     });
     // Static §13.1: after this instance holds its lease, collect the durable static rows
