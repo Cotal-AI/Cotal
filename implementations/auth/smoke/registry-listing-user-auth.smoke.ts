@@ -87,6 +87,8 @@ async function checkMentionWriters(
   const oldDaemon = await send(foreign, "old delivery responder", live);
   suite.check("writer: an old delivery responder is not evidence of principal mention support", refused(oldDaemon.result, /upgraded delivery/i), oldDaemon.result);
   daemon.serveDeliveryLiveness();
+  await right.setChannelMode(live, "quiet");
+  const wakesFor = (agent: MeshAgent, text: string) => agent.inboxWake((item) => item.text !== text);
   const missing = await send("reviewer", "no own live", live);
   suite.check("writer: foreign-only bare live mention is refused", refused(missing.result, /own|could not resolve/i), missing.result);
   if (!(missing.result instanceof Error)) await saw(right, missing.text);
@@ -94,6 +96,13 @@ async function checkMentionWriters(
   const directSeen = !(direct.result instanceof Error) && (await saw(right, direct.text))?.mentionsMe === true;
   suite.check("writer: a qualified live post names and prioritizes the other owner's exact principal", addressed(direct.result, right.id) && directSeen, direct.result);
   suite.check("writer: a foreign-only bare post never produces live mention priority", !received(right, missing.text));
+  suite.check("writer: quiet channel wakes only for the addressed qualified post", wakesFor(right, direct.text) === 1 && wakesFor(right, missing.text) === 0);
+  await right.setChannelMode(live, "muted");
+  const muted = await send(foreign, "muted qualified mention", live);
+  await delay(300);
+  suite.check("writer: a muted channel drops a stored principal mention without waking the recipient",
+    addressed(muted.result, right.id) && !right.peekInbox().some((i) => i.text === muted.text) && wakesFor(right, muted.text) === 0);
+  await right.setChannelMode(live, "quiet");
   const denied = await send(foreign, "unreadable qualified mention", "writer_restricted");
   const notice = !(denied.result instanceof Error) && await awaitValue(() => sender.peekInbox().find((i) =>
     i.notice === "mention" && i.text.includes("#writer_restricted") && i.text.includes(`@${foreign}`)));
@@ -113,6 +122,8 @@ async function checkMentionWriters(
   const resumed = await reopenRight();
   const offlineSeen = !(offline.result instanceof Error) && (await saw(resumed, offline.text))?.mentionsMe === true;
   suite.check("writer: a qualified mention has a durable copy on a replay-off live channel", addressed(offline.result, resumed.id) && offlineSeen, offline.result);
+  suite.check("writer: the offline copy is wake-eligible on return and a refused bare post is not",
+    wakesFor(resumed, offline.text) === 1 && wakesFor(resumed, missingOffline.text) === 0);
   suite.check("writer: an old post without mentionIds still gets a name-based mention copy", (await saw(resumed, legacy))?.mentionsMe === true);
   suite.check("writer: the foreign-only bare post leaves no offline mention copy", !received(resumed, missingOffline.text));
   const left = await openLeft();
@@ -124,6 +135,22 @@ async function checkMentionWriters(
   const resumedLeft = await openLeft();
   const ownOfflineSeen = !(ownOffline.result instanceof Error) && (await saw(resumedLeft, ownOffline.text))?.mentionsMe === true;
   suite.check("writer: a bare mention retains its own target through the durable backstop", addressed(ownOffline.result, resumedLeft.id) && ownOfflineSeen && !received(resumed, ownOffline.text), ownOffline.result);
+  await checkSharedWriter(sender, resumed, resumedLeft, username, live);
+}
+
+async function checkSharedWriter(sender: MeshAgent, right: MeshAgent, left: MeshAgent, username: string, channel: string): Promise<void> {
+  const text = `API reply @${username.toUpperCase()}/reviewer, then @reviewer.`;
+  const heard: CotalMessage[] = [];
+  const record = (m: CotalMessage) => { if (core.partsToText(m.parts) === text) heard.push(m); };
+  right.ep.on("message", record);
+  try {
+    const publish = sender.ep.postChannel?.bind(sender.ep) ?? sender.ep.multicast.bind(sender.ep);
+    const sent = await publish(text, { channel, replyTo: "test-parent", contextId: "test-thread" }).catch(() => undefined);
+    const wire = await awaitValue(() => heard[0]);
+    suite.check("writer API: exact principals appear in text order on the received envelope beside legacy fields and reply metadata",
+      !!sent && wire?.id === sent.id && wire.mentions?.join() === `${username}/reviewer,reviewer` &&
+      wire.mentionIds?.join() === `${right.id},${left.id}` && wire.replyTo === "test-parent" && wire.contextId === "test-thread", wire);
+  } finally { right.ep.off("message", record); }
 }
 
 async function sendLegacyMention(ep: CotalEndpoint, bearer: () => Promise<string>): Promise<string> {
