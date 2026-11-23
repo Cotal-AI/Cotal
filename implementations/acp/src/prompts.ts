@@ -61,8 +61,8 @@ export function permissionRequest(sessionId: string, seatName: string, harness: 
   };
 }
 
-/** One seat's prompts as the bridge follows them: the counter it last read, and the prompts already
- *  shown, so each is asked once. */
+/** One seat's prompts as the bridge follows them: the counter it last read in full, and the prompts
+ *  already read, so each is asked once. */
 export class PromptFollower {
   private read?: { runtime: string; seq: number };
   private readonly asked = new Set<string>();
@@ -75,8 +75,9 @@ export class PromptFollower {
     private readonly log: (line: string) => void,
   ) {}
 
-  /** Read the seat's open prompts when its presence counter moved past the last list read, and ask
-   *  each new one. A failed read stays dirty and is tried again on the next check. */
+  /** Read the seat's open prompts when its presence counter moved past the last list read in full,
+   *  and ask each new one. A failed read of the list or of a prompt is logged and leaves the list
+   *  unread, so the next check reads it again. */
   check(): void {
     const now = this.m.promptCounter(this.seat);
     if (!now || this.reading) return;
@@ -95,28 +96,28 @@ export class PromptFollower {
     }
     // A list older than one already taken for this runtime is stale.
     if (this.read && this.read.runtime === out.runtime.id && out.seq < this.read.seq) return;
-    this.read = { runtime: out.runtime.id, seq: out.seq };
-    for (const summary of out.open) {
-      if (summary.state.kind !== "open" || this.asked.has(summary.id)) continue;
-      this.asked.add(summary.id);
-      void this.fetch(summary.id);
-    }
+    const fresh = out.open.filter((summary) => summary.state.kind === "open" && !this.asked.has(summary.id));
+    const read = await Promise.all(fresh.map((summary) => this.fetch(summary.id)));
+    if (read.every(Boolean)) this.read = { runtime: out.runtime.id, seq: out.seq };
   }
 
-  private async fetch(id: string): Promise<void> {
+  /** Read one prompt and ask it without waiting for the answer. False when the read failed. */
+  private async fetch(id: string): Promise<boolean> {
     let prompt: AgentPrompt;
     try {
       prompt = ((await this.m.agentCall(this.seat, AGENT_CMD_PROMPT, { id })) as { prompt: AgentPrompt }).prompt;
     } catch (e) {
       this.log(`${this.seat.name}: prompt ${id} not read: ${(e as Error).message}`);
-      return;
+      return false;
     }
+    this.asked.add(id);
     // SPEC 13.22: never render or answer content whose digest does not match.
     if (agentPromptDigest(prompt.content) !== prompt.digest) {
       this.log(`${this.seat.name}: prompt ${id} dropped: its content does not match its digest`);
-      return;
+      return true;
     }
-    await this.ask(prompt).catch((e: Error) => this.log(`${this.seat.name}: prompt ${id}: ${e.message}`));
+    void this.ask(prompt).catch((e: Error) => this.log(`${this.seat.name}: prompt ${id}: ${e.message}`));
+    return true;
   }
 }
 
