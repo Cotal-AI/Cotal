@@ -48,7 +48,7 @@ const home = mkdtempSync(join(tmpdir(), "cotal-869-home-"));
 process.env.COTAL_HOME = home;
 process.env.XDG_CONFIG_HOME = join(home, "xdg");
 
-const { parseCommandArgs, probeConnect, registry } = await import("@cotal-ai/core");
+const { CotalEndpoint, parseCommandArgs, probeConnect, registry } = await import("@cotal-ai/core");
 const { recordMesh } = await import("@cotal-ai/workspace");
 const { spawnRequiredExtensions, runCli } = await import("@cotal-ai/cli");
 await import("@cotal-ai/cli"); // registers the CLI commands (spawn/stop/ps) into the registry
@@ -164,6 +164,26 @@ try {
     await sleep(100);
   }
   recordMesh({ space: SPACE, server: SERVER, root: workspaceRoot, mode: "open", ts: new Date().toISOString() });
+
+  // The filename selects the catalog entry, while presence reports the display name.
+  const mismatch = join(workspaceRoot, ".cotal", "agents", "mismatch.md");
+  const filenameOnly = join(workspaceRoot, ".cotal", "agents", "displayed.md");
+  writeFileSync(mismatch, "---\nname: displayed\n---\n");
+  writeFileSync(filenameOnly, "---\nname: absent\n---\n");
+  const displayed = new CotalEndpoint({
+    space: SPACE, servers: SERVER, channels: [], consume: false, registerPresence: true, watchPresence: false,
+    card: { name: "displayed", kind: "agent" },
+  });
+  try {
+    await displayed.start();
+    const out = unstyled(await capture(() => run("personas", ["list", "--running", "--space", SPACE])));
+    ok("personas list marks a catalog entry running by its live display name", /^mismatch\s+● running$/m.test(out), out);
+    ok("personas list does not match a live display name to a filename alone", /^displayed\s+○ not running$/m.test(out), out);
+  } finally {
+    await displayed.stop();
+    rmSync(mismatch);
+    rmSync(filenameOnly);
+  }
 
   mgr = new Manager({ space: SPACE, servers: SERVER, runtime: "pty", workspaceRoot });
   await mgr.start();
