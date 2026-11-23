@@ -8,6 +8,8 @@ import { logicalExecutionEntry, resolveOnPath } from "@cotal-ai/workspace";
 
 const { satisfies } = createRequire(import.meta.url)("semver") as { satisfies: (version: string, range: string) => boolean };
 export const npmProjectDirectory = new AsyncLocalStorage<string | undefined>();
+const UPDATE_NPM_NODE = "COTAL_UPDATE_NPM_NODE";
+const windows = process.platform === "win32";
 
 function npmEngine(file: string): { entry: string; range: string } | undefined {
   try {
@@ -48,11 +50,44 @@ function probeNode(file: string, cwd: string, env: NodeJS.ProcessEnv): { path: s
   } catch { return undefined; }
 }
 
+function compatibleNode(candidate: string, directory: string, cwd: string, env: NodeJS.ProcessEnv, range: string): string | undefined {
+  // Version-manager shims can select the tool by the invoked filename.
+  const selected = probeNode(candidate, directory, env);
+  if (!selected || !satisfies(selected.version, range)) return;
+  if (directory === cwd && candidate === selected.path) return selected.path;
+  // npm uses the same executable from its isolated cwd without the shim.
+  const verified = probeNode(selected.path, cwd, env);
+  if (verified?.path === selected.path && verified.version === selected.version) return verified.path;
+}
+
+function pathVariable(env: NodeJS.ProcessEnv): string {
+  return windows ? Object.keys(env).find(key => key.toLowerCase() === "path") ?? "PATH" : "PATH";
+}
+
+export function npmUpdateChildEnvironment(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  if (!npmProjectDirectory.getStore() && env[UPDATE_NPM_NODE] === undefined) return env;
+  const { node } = npmInvocation(env, []);
+  if (!node) {
+    if (env[UPDATE_NPM_NODE] === undefined) return env;
+    const next = { ...env };
+    delete next[UPDATE_NPM_NODE];
+    return next;
+  }
+  const pathKey = pathVariable(env);
+  const path = env[pathKey]!;
+  const bin = dirname(node);
+  // Older reconcile and rollback children can find Node on PATH without shadowing the selected npm.
+  return { ...env, [UPDATE_NPM_NODE]: node, [pathKey]: path.split(delimiter).includes(bin) ? path : `${path}${delimiter}${bin}` };
+}
+
 export function npmInvocation(env: NodeJS.ProcessEnv, args: string[]) {
   const cwd = parse(homedir()).root;
-  const windows = process.platform === "win32";
-  const pathKey = windows
-    ? Object.keys(env).find(key => key.toLowerCase() === "path") ?? "PATH" : "PATH";
+  const pathKey = pathVariable(env);
+  const inheritedNode = env[UPDATE_NPM_NODE];
+  if (inheritedNode !== undefined) {
+    env = { ...env };
+    delete env[UPDATE_NPM_NODE];
+  }
   const path = env[pathKey];
   if (path === undefined) return { file: "npm", args, env, cwd };
   const directories = path.split(delimiter).map(dir => resolve(cwd, dir));
@@ -67,17 +102,18 @@ export function npmInvocation(env: NodeJS.ProcessEnv, args: string[]) {
     const probeEnv = { ...env };
     delete probeEnv.NODE_OPTIONS;
     const project = npmProjectDirectory.getStore() ?? cwd;
+    if (inheritedNode && isAbsolute(inheritedNode) && directories.includes(dirname(inheritedNode)) &&
+        resolveOnPath("node", { ...env, [pathKey]: dirname(inheritedNode) }) === inheritedNode) {
+      const node = compatibleNode(inheritedNode, cwd, cwd, probeEnv, engine.range);
+      if (node === inheritedNode) return { file: node, args: [engine.entry, ...args], env: withNode(node), cwd, node };
+    }
     for (const candidate of [recordedNode(), ...[dirname(file), ...directories].map(dir => resolveOnPath("node", { ...env, [pathKey]: dir }))]) {
       if (!candidate || seen.has(candidate)) continue;
       seen.add(candidate);
       try { if (realpathSync(candidate) === current) continue; } catch { continue; }
-      // Version-manager shims can select the tool by the invoked filename.
-      const selected = probeNode(candidate, project, probeEnv);
-      if (!selected || !satisfies(selected.version, engine.range)) continue;
-      // Confirm npm can use the same executable without the shim or its project context.
-      const verified = candidate === selected.path && project === cwd ? selected : probeNode(selected.path, cwd, probeEnv);
-      if (verified?.path === selected.path && verified.version === selected.version)
-        return { file: verified.path, args: [engine.entry, ...args], env: withNode(verified.path), cwd };
+      const node = compatibleNode(candidate, project, cwd, probeEnv, engine.range)
+        ?? (project !== cwd ? compatibleNode(candidate, cwd, cwd, probeEnv, engine.range) : undefined);
+      if (node) return { file: node, args: [engine.entry, ...args], env: withNode(node), cwd, node };
     }
   }
   if (windows) return { file: "npm", args, env, cwd };

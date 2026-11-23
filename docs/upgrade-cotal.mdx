@@ -126,7 +126,9 @@ If that npm requires a different Node version, Cotal tries the Node recorded by 
 launcher, when present, and then looks for a compatible Node alongside npm or on `PATH`.
 This also applies when npm is selected through Corepack or a compatible Node is available through Volta's `node` shim.
 If the `node` shim on `PATH` selects a compatible version from the current project, as with asdf,
-Cotal verifies that executable and runs npm with it outside the project.
+Cotal verifies that executable and runs npm with it outside the project, including during
+reconciliation after a release changes. If the project's selection cannot run npm, Cotal also
+checks what the shim selects from npm's isolated directory.
 This does not change the Node running Cotal or the caller's `PATH`.
 A timestamp-only change to the npm package manifest keeps the verified release in use.
 After a staged update, npm's listing can be behind; `cotal --version` is the version in use, and

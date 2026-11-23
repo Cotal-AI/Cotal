@@ -6,8 +6,11 @@ import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join, parse } from "node:path";
 import { pathToFileURL } from "node:url";
+import { claimGlobalNpmUpdateLock } from "@cotal-ai/workspace";
 import { countedAssert, emitSentinel } from "../../../bin/smoke/sentinel.mjs";
 import { executeUpdate, updateRuntime, type UpdateRuntime } from "../src/commands/update.js";
+import { runGlobalProcess, runProcess } from "../src/commands/update-process.js";
+import { npmProjectDirectory } from "../src/lib/npm-invocation.js";
 import { SEED_BUILTINS } from "../src/seed/paths.js";
 const counted = countedAssert(strictAssert);
 const assert: typeof strictAssert = counted.assert as typeof strictAssert;
@@ -125,7 +128,7 @@ const { registryArrivalCell } = await import("../../../bin/smoke/update-registry
 const cacheUpdate = await registryArrivalCell({ scenario: "cache" });
 assert.equal(cacheUpdate.code, 0, "real CLI and npm update succeed with a user-owned cache that is not writable");
 
-function npmNodeEngine(): void {
+async function npmNodeEngine(): Promise<void> {
   const root = mkdtempSync(join(tmpdir(), "cotal-npm-node-"));
   try {
     const repoBin = join(import.meta.dirname, "../../../bin");
@@ -169,19 +172,21 @@ console.log(JSON.stringify(${JSON.stringify(version)}));
     }
     // Vary the running CLI's Node version without downloading a second runtime onto every runner.
     const versionOverride = join(root, "project-node.mjs");
-    writeFileSync(versionOverride, `if (process.argv[1]?.endsWith('cotal.js')) Object.defineProperty(process, 'version', { value: '${process.version === "v22.10.0" ? "v22.10.1" : "v22.10.0"}' });\n`);
+    const incompatibleVersion = process.version === "v22.10.0" ? "v22.10.1" : "v22.10.0";
+    writeFileSync(versionOverride, `if (process.argv[1]?.endsWith('cotal.js')) Object.defineProperty(process, 'version', { value: '${incompatibleVersion}' });\n`);
     const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^(cotal_|npm_config_|path$)/i.test(key)));
     const onlyNode = join(root, "project-bin");
     mkdirSync(onlyNode);
     if (process.platform === "win32") copyFileSync(process.execPath, join(onlyNode, exe));
     else symlinkSync(process.execPath, join(onlyNode, exe));
+    const cliEnv = (extraPath: string[], npmPath = npmBin) => ({
+      ...env, HOME: root, USERPROFILE: root, APPDATA: join(root, "config"), LOCALAPPDATA: join(root, "config"),
+      COTAL_HOME: join(root, "cotal"), XDG_CONFIG_HOME: join(root, "config"), XDG_RUNTIME_DIR: root, npm_config_prefix: prefix,
+      COTAL_TELEMETRY: "off", COTAL_NO_UPDATE_CHECK: "1", COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_ALLOW_CHECKOUT_SEED: "1",
+      NODE_OPTIONS: `--import=${pathToFileURL(versionOverride).href}`, PATH: [onlyNode, npmPath, ...extraPath].join(delimiter),
+    });
     const run = (flag: string, extraPath: string[] = [], npmPath = npmBin, cwd = root) => spawnSync(join(onlyNode, exe), [entry, "update", flag], {
-      cwd, encoding: "utf8", timeout: 60_000,
-      env: { ...env, HOME: root, USERPROFILE: root, APPDATA: join(root, "config"), LOCALAPPDATA: join(root, "config"),
-        COTAL_HOME: join(root, "cotal"), XDG_CONFIG_HOME: join(root, "config"), XDG_RUNTIME_DIR: root, npm_config_prefix: prefix,
-        COTAL_TELEMETRY: "off", COTAL_NO_UPDATE_CHECK: "1", COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_ALLOW_CHECKOUT_SEED: "1",
-        NODE_OPTIONS: `--import=${pathToFileURL(versionOverride).href}`,
-        PATH: [onlyNode, npmPath, ...extraPath].join(delimiter) },
+      cwd, encoding: "utf8", timeout: 60_000, env: cliEnv(extraPath, npmPath),
     });
     const first = run("--check", posixLauncher ? [] : [dirname(alternate)]);
     assert.equal(first.status, 0, first.stdout + first.stderr);
@@ -234,6 +239,26 @@ console.log(JSON.stringify(${JSON.stringify(version)}));
       assert.deepEqual(recordedLaunches().slice(before), [{
         node: realpathSync(projectNode), cwd: parse(root).root, pathHead: dirname(realpathSync(projectNode)),
       }], "npm uses the project-selected executable and its bin directory outside the project");
+
+      writeFileSync(dispatcher, `#!/bin/sh\nif [ -f .tool-versions ]; then exec "${projectNode}" "$@"; fi\nexec "${alternate}.gone" "$@"\n`);
+      const original = process.version;
+      Object.defineProperty(process, "version", { value: incompatibleVersion });
+      try {
+        const file = join(onlyNode, exe), args = [entry, "update", "--check"], env = cliEnv([shimDir]);
+        const release = claimGlobalNpmUpdateLock(root);
+        try {
+          for (const launch of [() => runGlobalProcess(root, "reconcile", file, args, env), () => runProcess(file, args, env)]) {
+            const child = await npmProjectDirectory.run(project, () => launch());
+            assert.equal(child.status, 0, child.stdout + child.stderr);
+            assert.equal(recordedLaunches().at(-1)!.node, realpathSync(projectNode), "the child keeps the selected runtime when its shim would choose another Node");
+          }
+        } finally { release(); }
+      } finally { Object.defineProperty(process, "version", { value: original }); }
+
+      writeFileSync(dispatcher, `#!/bin/sh\n[ -f .tool-versions ] && exit 126\nexec "${alternate}.gone" "$@"\n`);
+      const viaIsolatedShim = run("--check", [shimDir], npmBin, project);
+      assert.equal(viaIsolatedShim.status, 0, viaIsolatedShim.stdout + viaIsolatedShim.stderr);
+      assert.equal(realpathSync(recordedLaunches().at(-1)!.node), realpathSync(`${alternate}.gone`), "the same shim can select Node from the isolated npm directory");
     }
     const updated = run("--self");
     assert.equal(updated.status, 0, updated.stdout + updated.stderr);
@@ -244,7 +269,7 @@ console.log(JSON.stringify(${JSON.stringify(version)}));
   } finally { rmSync(root, { recursive: true, force: true }); }
 }
 
-npmNodeEngine();
+await npmNodeEngine();
 if (process.platform !== "win32") {
   const home = mkdtempSync(join(tmpdir(), "cotal-update-cwd-"));
   try {
