@@ -29,7 +29,7 @@ from gateway.platforms.base import (
 from gateway.config import Platform, PlatformConfig
 from gateway.session import build_session_key
 
-from . import approvals, hooks, journal, replies, streams
+from . import approvals, clarify, hooks, journal, replies, streams
 from .bridge_client import get_client
 from .commands import operator_commands
 from .resume import seed_chat
@@ -138,7 +138,10 @@ class CotalAdapter(BasePlatformAdapter):
             # reader, which is exactly the kind of pause an operator would report as the gateway
             # hanging on reconnect. `to_thread` keeps the loop free while the join runs.
             await asyncio.to_thread(self._client.reopen)
-        self._client.start(self._on_incoming, self._on_bridge_refused, self._on_turn, self._on_request, approvals.answered)  # reader thread
+        self._client.start(
+            self._on_incoming, self._on_bridge_refused, self._on_turn, self._on_request, approvals.answered,
+            lambda frame: clarify.answered(self._client, frame),
+        )  # reader thread
 
         # THE BRIDGE MUST BE PROVED LIVE BEFORE THE PLATFORM IS CALLED CONNECTED.
         #
@@ -241,6 +244,17 @@ class CotalAdapter(BasePlatformAdapter):
         sent = approvals.request(self._client, command, session_key, description or "", flags)
         return SendResult(success=True, message_id=uuid.uuid4().hex) if sent else SendResult(success=False, error="the sidecar is not connected")
 
+    async def send_clarify(
+        self, chat_id: str, question: str, choices: Optional[list], clarify_id: str, session_key: str, metadata: Any = None
+    ) -> SendResult:
+        """The model asks a clarify question: on the agent's prompt desk in the operator chat
+        (clarify.py), and as Hermes's own text prompt in any other chat."""
+        if chat_id != OPERATOR_CHAT:
+            return await super().send_clarify(chat_id, question, choices, clarify_id, session_key, metadata)
+        if clarify.ask(self._client, chat_id, question, choices, clarify_id, session_key):
+            return SendResult(success=True, message_id=uuid.uuid4().hex)
+        return SendResult(success=False, error="the sidecar is not connected")
+
     async def on_processing_start(self, event: MessageEvent) -> None:
         """The gateway began processing a message: a turn starts (journal.py)."""
         if getattr(event.source, "chat_id", None) == OPERATOR_CHAT:
@@ -257,7 +271,9 @@ class CotalAdapter(BasePlatformAdapter):
         entry = self._busy.pop(id(event), None)
         key = entry[1] if entry else None
         ended = str(getattr(outcome, "value", outcome))
-        streams.turn_done(self._client, str(getattr(event.source, "chat_id", "")))
+        chat_id = str(getattr(event.source, "chat_id", ""))
+        streams.turn_done(self._client, chat_id)
+        clarify.turn_done(self._client, chat_id)
         wake = getattr(event.source, "chat_id", None) == OPERATOR_CHAT and journal.operator_done(ended)
         if key and journal.processing_done(key, ended):
             wake = True
