@@ -1318,8 +1318,10 @@ export const cotal: Plugin = async () => {
       }
     },
 
-    // Surface the running tool as presence activity (parity with Claude's PreToolUse).
-    "tool.execute.before": async (input) => {
+    // Surface the running tool as presence activity (parity with Claude's PreToolUse). A subagent's
+    // call is handed to the asks too, since its permission asks are served.
+    "tool.execute.before": async (input, output) => {
+      asks.toolStarted(input.callID, { name: input.tool, input: () => output.args });
       if (!ours(input.sessionID)) return;
       agent.noteActivity();
       await safeStatus("working", input.tool);

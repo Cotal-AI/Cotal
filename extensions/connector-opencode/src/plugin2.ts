@@ -646,6 +646,7 @@ async function setupSession(ctx: OpenCode2Context): Promise<() => Promise<void>>
 
   // Surface the running tool as presence activity — parity with 1.x's `tool.execute.before`.
   await ctx.tool.hook("execute.before", (e) => {
+    asks.toolStarted(e.id, { name: e.tool, input: () => e.input }); // a subagent's call too: its asks are served
     if (sessionID && e.sessionID !== sessionID) return;
     agent.noteActivity();
     void safeStatus("working", e.tool);
