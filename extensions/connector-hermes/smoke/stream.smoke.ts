@@ -38,7 +38,7 @@ const line = res.stdout.split("\n").find((l) => l.startsWith("RESULT "));
 if (res.status !== 0 || !line) throw new Error(`the probe did not run:\n${res.stdout}\n${res.stderr}`);
 type Frame = { t: string; key: string; text?: string };
 type Draft = { success?: boolean; frames: Frame[]; error?: string };
-const out = JSON.parse(line.slice("RESULT ".length)) as Record<string, unknown> & Record<"d1" | "d2" | "same" | "other_chat" | "late" | "n1" | "n2" | "broken1" | "broken2" | "ws1" | "ws2" | "ws3" | "cut" | "after_done" | "unarmed", Draft> & { done: Frame[]; peer_done: Frame[] };
+const out = JSON.parse(line.slice("RESULT ".length)) as Record<string, unknown> & Record<"d1" | "d2" | "same" | "other_chat" | "late" | "n1" | "n2" | "broken1" | "broken2" | "ws1" | "ws2" | "ws3" | "cut" | "after_done" | "unarmed", Draft> & { done: Frame[]; peer_done: Frame[]; reply: Record<string, unknown>[] };
 const saved = readFileSync(journalPath, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l) as HermesJournalRecord);
 
 check("the adapter takes Hermes's drafts, the chat id Hermes 0.21 passes included", out.buttons === true);
@@ -68,6 +68,8 @@ const kCut = out.cut.frames[0]?.key;
 check("a message that ends with its stream open ends the stream", kCut !== undefined && isDeepStrictEqual(out.done, [{ t: "delta_end", key: kCut }]), out.done);
 check("and a draft of it after that is dropped", kCut !== undefined && out.after_done.error === undefined && out.after_done.frames.length === 0, out.after_done);
 check("a peer chat's stream no response closed ends when its message does", out.other_chat.frames.length === 1 && isDeepStrictEqual(out.peer_done, [{ t: "delta_end", key: out.other_chat.frames[0]!.key }]), out.peer_done);
+check("a reply a peer gets is trimmed, as Hermes trims a reply it does not stream",
+  isDeepStrictEqual(out.reply, [{ t: "reply", target: { peerId: "peer" }, text: "Output: ok" }]), out.reply);
 check("an unarmed seat streams nothing, and the gateway still hears the draft was shown", out.unarmed.success === true && out.unarmed.frames.length === 0, out.unarmed);
 
 // ---- the mapper: delta lines among the records ------------------------------------------------

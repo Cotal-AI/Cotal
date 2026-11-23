@@ -201,8 +201,10 @@ class CotalAdapter(BasePlatformAdapter):
         answered = str(reply_to) if reply_to is not None else None
         if answered not in self._answering:
             answered = None
+        # Trimmed as Hermes trims a reply it does not stream: a streamed one keeps the blank lines the
+        # model wrote around it.
         self._client.reply(
-            _target_for(chat_id), content, answered, self._answering.get(answered) if answered else None
+            _target_for(chat_id), content.strip(), answered, self._answering.get(answered) if answered else None
         )
         return SendResult(success=True, message_id=uuid.uuid4().hex)
 
