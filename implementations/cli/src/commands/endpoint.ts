@@ -34,7 +34,10 @@ export function validateEndpointReferenceArguments(args: ParsedArgs): void {
   if (args.values.dir !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", "--dir belongs to endpoint init");
   if (mode === "describe" || mode === "invoke") {
     if (mode !== "describe" && args.values.refresh !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", "--refresh belongs to endpoint describe");
-    if (args.values.file !== undefined || args.values.yes !== undefined || args.values.live !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", "--file and --yes belong to local reference changes, not native calls");
+    if (args.values.live !== undefined) throw new CommandFailure("refused", "USAGE_INVALID",
+      mode === "describe" ? "endpoint describe already reads the contract live and does not take --live" : "--live does not belong to endpoint invoke",
+      { remedy: "remove --live, or use `cotal endpoint list --live` to list registrations" });
+    if (args.values.file !== undefined || args.values.yes !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", "--file and --yes belong to local reference changes, not native calls");
     if (mode === "describe" && ["args", "name", "self", "admin", "timeout", "wait", "cast", "all", "handle"].some((flag) => args.values[flag] !== undefined)) throw new CommandFailure("refused", "USAGE_INVALID", "invocation flags do not belong to endpoint describe");
     validateEndpointArguments({ ...args, positionals: args.positionals.slice(1) }, mode);
     return;

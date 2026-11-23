@@ -115,6 +115,24 @@ function journalOperation(): { kind: string; phase: string } {
   return journal.operation;
 }
 
+async function checkContractShortcut(space: string, server: string): Promise<void> {
+  const offline = mkdtempSync(join(scratch, "offline-"));
+  const offlineServer = `nats://127.0.0.1:${await freePort()}`;
+  const added = await run(["space", "add", "shortcut-other", "--server", offlineServer, "--root", ".", "--mode", "open", "--force", "--plain"], offline);
+  ok("a second space is registered for the contract shortcut check", added.status === 0, added.out);
+  const selected = await run(["use", "shortcut-other", "--plain"], caller);
+  ok("the caller selects the other space", selected.status === 0, selected.out);
+  const listed = await run(["endpoints", "--space", space, "--server", server, "--plain"], caller);
+  const shortcut = /^  (cotal endpoint describe .*?) {2,}Resolve a native endpoint/m.exec(listed.stdout)?.[1];
+  ok("live presence prints a contract shortcut with the same space and broker",
+    listed.status === 0 && shortcut === `cotal endpoint describe <endpoint> --plain --space ${space} --server ${server}`, listed.out);
+  const contract = await run(shortcut!.replace("<endpoint>", "manager").split(" ").slice(1), caller);
+  ok("following the shortcut reads the original space's verified contract",
+    contract.status === 0 && contract.stdout.startsWith(`Mesh: ${space}\n`) && contract.stdout.includes("Verified endpoint contract"), contract.out);
+  const restored = await run(["use", space, "--plain"], caller);
+  ok("the lifecycle checks keep the original space selected", restored.status === 0, restored.out);
+}
+
 let listener: net.Server | undefined;
 try {
   assertScratchHeld(root, "down refused-restart fixture");
@@ -144,6 +162,7 @@ try {
   const fg = runForeground(["up", "--foreground", "--server", server]);
   ok("foreground stack starts and reports readiness",
     await waitFor(fg.out, "Controller stack started", 120_000) && await waitServing(port, true), fg.out().slice(-800));
+  await checkContractShortcut(space, server);
 
   const described = await run(["endpoint", "describe", "manager", "--space", space, "--json"]);
   const instance = JSON.parse(described.stdout).result?.responder.instanceId;

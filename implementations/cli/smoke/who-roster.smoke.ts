@@ -327,6 +327,10 @@ try {
     credsRead.status === 0 && credsRead.envelope?.outcome === "ok" && credsRead.envelope.completeness === "complete" && credsRead.envelope.result?.managers === "denied" &&
     credsRead.envelope.warnings.some((w) => w.code === "MANAGERS_DENIED") && !credsRead.envelope.warnings.some((w) => w.code === "MANAGERS_UNREAD") &&
     rowsOf(credsRead).alice?.managed === null, shown(credsRead));
+  const credentialPresence = await run(["endpoints", "--plain", "--creds", reader, "--space", space, "--server", servers]);
+  check("live endpoint presence with a raw caller names the selectors for describe instead of printing a contract shortcut",
+    credentialPresence.status === 0 && credentialPresence.stdout.includes("with the same `--space` and `--server`") &&
+    credentialPresence.stdout.includes("use a paired native caller file") && !/^  cotal endpoint describe /m.test(credentialPresence.stdout), shown(credentialPresence));
 
   // ── whoami ──────────────────────────────────────────────────────────────────────────────────────
   const me = await run(["whoami", "--json"]);

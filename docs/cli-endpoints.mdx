@@ -22,6 +22,9 @@ it is not limited to child processes owned by the manager. The Participant colum
 that `endpoint describe` takes, and the role has its own column. A name that is only whitespace is
 shown as the id, and a role or activity that is only whitespace is shown as none or not reported.
 `result.items` keeps the name, role, and activity from the presence record.
+The plain and terminal reports keep the same space and broker in the `endpoint describe` shortcut.
+If the target or caller cannot be carried over, the report names the selectors to supply. A raw
+presence credential is not a paired native caller file.
 The `who` command in Next keeps the explicit target flags from this read.
 
 
@@ -587,6 +590,8 @@ and is not a substitute for that gate.
 
 `endpoint describe --refresh` performs the same fresh native resolution and contract fetch as bare
 `endpoint describe`, because this CLI keeps no resolved contract cache between calls.
+Use `endpoint describe` without `--live` to read a contract, or use `cotal endpoint list --live`
+to list registrations.
 
 A saved-reference or paired-file invocation uses the described instance and epoch without bind-repair
 to a different handle. A pre-effect bind refusal remains a refusal, not permission to choose another
