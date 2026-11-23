@@ -12,6 +12,7 @@ import { controlSession } from "./control-session.js";
 import { RESTART_WORK_EXIT_MS, withTimeout } from "./manager-timeout.js";
 import type { Manager } from "./manager.js";
 import type { ManagerConfig } from "./manager-config.js";
+import type { ManagerStartState } from "./manager-start-state.js";
 
 const SESSION_RESTART_LIMIT = 3;
 const SESSION_RESTART_WINDOW_MS = 120_000;
@@ -21,7 +22,6 @@ type Readiness = { ok: true; operator?: string } | { ok: false; uncertain?: bool
 /** Lifecycle and runtime operations used to prove and recover one managed host session. */
 export interface SessionRecoveryDeps {
   executionRefusal: () => string;
-  instanceId: () => string;
   endpoint: () => CotalEndpoint;
   beginLifecycle: () => (() => void) | undefined;
   freeSlot: (agent: ManagedAgent, floor: boolean, cause: FreeSlotCause) => void;
@@ -49,7 +49,6 @@ export interface SessionRecoveryDeps {
 export function sessionRecoveryDeps(m: Manager): SessionRecoveryDeps {
   return {
     executionRefusal: () => m["executionRefusal"](),
-    instanceId: () => m["managerInstanceId"],
     endpoint: () => m["ep"],
     beginLifecycle: () => m["beginLifecycle"](),
     freeSlot: (agent, floor, cause) => m["freeSlot"](agent, floor, cause),
@@ -75,7 +74,8 @@ export function sessionRecoveryDeps(m: Manager): SessionRecoveryDeps {
 
 /** Session-state proof, transcript provenance, continuity assignments and bounded crash recovery. */
 export class SessionRecovery {
-  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: SessionRecoveryDeps) {}
+  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: SessionRecoveryDeps, private readonly state: ManagerStartState) {}
+  private get managerInstanceId(): string { return this.state.managerInstanceId!; }
 
   readSessionStatePath(path: string):
     | { sessionId: string; status: "running" | "quit" }
@@ -320,7 +320,7 @@ export class SessionRecovery {
         const named = { ...restart.opts, displayName: a.displayName, resume: undefined, reopenSession: undefined, prompt: undefined };
         const opts: LaunchOpts = continueSession !== undefined ? { ...named, continueSession } : named;
         const spec = connector.buildLaunch(opts);
-        spec.env = { ...spec.env, COTAL_MANAGER_INSTANCE: this.deps.instanceId() };
+        spec.env = { ...spec.env, COTAL_MANAGER_INSTANCE: this.managerInstanceId };
         const wanted = this.deps.managedPrincipal(a);
         const joinedAfter = this.deps.endpoint().getRoster()
           .filter((p) => p.card.id === wanted && p.lifecycleUid === a.lifecycleUid)

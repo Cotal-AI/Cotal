@@ -15,7 +15,7 @@ import { foreignEventChannels } from "./seat-launch.js";
 import type { ManagedAgent } from "./seat-types.js";
 import { ownedBySibling } from "./static-lifecycle.js";
 import type { ManagerConfig } from "./manager-config.js";
-import type { ManagerAuthState } from "./manager-auth-state.js";
+import type { ManagerStartState } from "./manager-start-state.js";
 
 /** How often a resumed seat whose readiness was uncertain is checked for a join its predecessor's
  *  presence row hides (see {@link Manager.watchResumeAdoption}). The wait has no end of its own, so
@@ -59,7 +59,6 @@ interface PreparedResume {
 export interface PreservedResumeDeps {
   agents: () => Manager["agents"];
   ep: () => Manager["ep"];
-  managerInstanceId: () => Manager["managerInstanceId"];
   namesCapacity: () => Manager["namesCapacity"];
   resumeDurableCommitToken: () => Manager["resumeDurableCommitToken"];
   setResumeDurableCommitToken: (value: Manager["resumeDurableCommitToken"]) => void;
@@ -115,7 +114,6 @@ export function preservedResumeDeps(m: Manager): PreservedResumeDeps {
   return {
     agents: () => m["agents"],
     ep: () => m["ep"],
-    managerInstanceId: () => m["managerInstanceId"],
     namesCapacity: () => m["namesCapacity"],
     resumeDurableCommitToken: () => m["resumeDurableCommitToken"],
     setResumeDurableCommitToken: (value) => { m["resumeDurableCommitToken"] = value; },
@@ -168,7 +166,7 @@ export function preservedResumeDeps(m: Manager): PreservedResumeDeps {
 
 /** Resuming a preserved manager: the bound inventory, validating each retained seat's authority, relaunching or adopting it, and the commit and finalize doors. */
 export class PreservedResume {
-  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: PreservedResumeDeps, private readonly parts: Pick<ManagerParts, "connectorInventory">, private readonly state: ManagerAuthState) {}
+  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: PreservedResumeDeps, private readonly parts: Pick<ManagerParts, "connectorInventory">, private readonly state: ManagerStartState) {}
 
   // The Manager members these bodies read, under their Manager names. Each reads through its dep at
   // use, so a field the Manager assigns later is current and a method a test replaces on the Manager
@@ -176,7 +174,7 @@ export class PreservedResume {
   private get agents() { return this.deps.agents(); }
   private get auth() { return this.state.auth; }
   private get ep() { return this.deps.ep(); }
-  private get managerInstanceId() { return this.deps.managerInstanceId(); }
+  private get managerInstanceId() { return this.state.managerInstanceId!; }
   private get namesCapacity() { return this.deps.namesCapacity(); }
   private get remoteAuthority() { return this.config.remoteAuthority; }
   private get resumeDurableCommitToken() { return this.deps.resumeDurableCommitToken(); }

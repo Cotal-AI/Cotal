@@ -3,6 +3,7 @@ import { MANAGER_LEASE_TTL_MS, awaitLeaseExpiry, leaseRemainingMs, rejectionText
 import { probeLiveness } from "@cotal-ai/workspace";
 import type { Manager } from "./manager.js";
 import type { ManagerConfig } from "./manager-config.js";
+import type { ManagerStartState } from "./manager-start-state.js";
 
 /** How long a clean stop keeps trying to release its liveness lease when the broker does not answer
  *  (#3916). The client redials a lost broker every 2 s, so a connection dropped by an outage of up to
@@ -39,7 +40,6 @@ type LeaseState = "held" | "held-unrenewed" | "gone" | "unknown";
  *  the endpoint and the instance id after construction, and `stopping` is the manager's stop fence. */
 export interface LeaseKeeperDeps {
   endpoint: () => CotalEndpoint;
-  instanceId: () => string;
   stopping: () => boolean;
 }
 
@@ -48,7 +48,6 @@ export interface LeaseKeeperDeps {
 export function leaseKeeperDeps(m: Manager): LeaseKeeperDeps {
   return {
     endpoint: () => m["ep"],
-    instanceId: () => m["managerInstanceId"],
     stopping: () => m["leaseStopping"],
   };
 }
@@ -70,10 +69,10 @@ export class LeaseKeeper {
    *  for release would otherwise move the row out from under a same-cached-revision CAS delete. */
   leaseRenewTask?: Promise<void>;
 
-  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: LeaseKeeperDeps) {}
+  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: LeaseKeeperDeps, private readonly state: ManagerStartState) {}
 
   private get ep(): CotalEndpoint { return this.deps.endpoint(); }
-  private get managerInstanceId(): string { return this.deps.instanceId(); }
+  private get managerInstanceId(): string { return this.state.managerInstanceId!; }
   private get leaseStopping(): boolean { return this.deps.stopping(); }
 
   /** Create THIS instance's lease key, waiting out a dead predecessor's row first (#4092).

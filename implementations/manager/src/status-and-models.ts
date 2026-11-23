@@ -10,7 +10,7 @@ import type { Manager } from "./manager.js";
 import type { ManagerParts } from "./manager-parts.js";
 import type { ManagedAgent } from "./seat-types.js";
 import type { ManagerConfig } from "./manager-config.js";
-import type { ManagerAuthState } from "./manager-auth-state.js";
+import type { ManagerStartState } from "./manager-start-state.js";
 
 // Capture the loaded package version before an installation can replace its files.
 export const MANAGER_VERSION = (JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string }).version;
@@ -28,7 +28,6 @@ export interface StatusAndModelsDeps {
   leaseStopping: () => Manager["leaseStopping"];
   lifecycleInFlight: () => Manager["lifecycleInFlight"];
   maintenanceState: () => Manager["maintenanceState"];
-  managerInstanceId: () => Manager["managerInstanceId"];
   namesCapacity: () => Manager["namesCapacity"];
   preservationAttemptId: () => Manager["preservationAttemptId"];
   preservationInventory: () => Manager["preservationInventory"];
@@ -58,7 +57,6 @@ export function statusAndModelsDeps(m: Manager): StatusAndModelsDeps {
     leaseStopping: () => m["leaseStopping"],
     lifecycleInFlight: () => m["lifecycleInFlight"],
     maintenanceState: () => m["maintenanceState"],
-    managerInstanceId: () => m["managerInstanceId"],
     namesCapacity: () => m["namesCapacity"],
     preservationAttemptId: () => m["preservationAttemptId"],
     preservationInventory: () => m["preservationInventory"],
@@ -82,7 +80,7 @@ export function statusAndModelsDeps(m: Manager): StatusAndModelsDeps {
 
 /** What the manager reports about itself: status, the seat list and its owner filter, local seat facts, and the model catalog. */
 export class StatusAndModels {
-  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: StatusAndModelsDeps, private readonly parts: Pick<ManagerParts, "connectorInventory">, private readonly state: ManagerAuthState) {}
+  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: StatusAndModelsDeps, private readonly parts: Pick<ManagerParts, "connectorInventory">, private readonly state: ManagerStartState) {}
 
   // The Manager members these bodies read, under their Manager names. Each reads through its dep at
   // use, so a field the Manager assigns later is current and a method a test replaces on the Manager
@@ -93,7 +91,7 @@ export class StatusAndModels {
   private get leaseStopping() { return this.deps.leaseStopping(); }
   private get lifecycleInFlight() { return this.deps.lifecycleInFlight(); }
   private get maintenanceState() { return this.deps.maintenanceState(); }
-  private get managerInstanceId() { return this.deps.managerInstanceId(); }
+  private get managerInstanceId() { return this.state.managerInstanceId!; }
   private get namesCapacity() { return this.deps.namesCapacity(); }
   private get preservationAttemptId() { return this.deps.preservationAttemptId(); }
   private get preservationInventory() { return this.deps.preservationInventory(); }

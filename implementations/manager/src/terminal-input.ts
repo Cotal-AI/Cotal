@@ -6,7 +6,7 @@ import { MANAGER_ENDPOINT } from "./manager-service-contract.js";
 import type { Manager } from "./manager.js";
 import type { ManagedAgent } from "./seat-types.js";
 import type { ManagerConfig } from "./manager-config.js";
-import type { ManagerAuthState } from "./manager-auth-state.js";
+import type { ManagerStartState } from "./manager-start-state.js";
 import type { ManagerParts } from "./manager-parts.js";
 
 /** How much of an `input` text is written to a seat's pty at a time. Comfortably under the 4096-byte
@@ -50,7 +50,7 @@ export function terminalInputDeps(m: Manager): TerminalInputDeps {
 
 /** Typing into a seat's terminal and opening an attach or console session on it, after authorization. */
 export class TerminalInput {
-  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: TerminalInputDeps, private readonly parts: Pick<ManagerParts, "servePlane">, private readonly state: ManagerAuthState) {}
+  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: TerminalInputDeps, private readonly parts: Pick<ManagerParts, "servePlane">, private readonly state: ManagerStartState) {}
 
   // The Manager members these bodies read, under their Manager names. Each reads through its dep at
   // use, so a field the Manager assigns later is current and a method a test replaces on the Manager
