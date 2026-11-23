@@ -732,7 +732,7 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
   // Each member's start is recorded under the space's service records. A folder there this account
   // cannot write refuses here, naming it, instead of an unknown outcome after a member started.
   const unwritable = serviceRecordsWriteProblem(space, ["definitions", "instances"]);
-  if (unwritable) throw new CommandFailure("refused", "PERMISSION_DENIED", `this account cannot write ${unwritable}, where up records the stack's services; nothing was started or written`, { target: { root, space, path: unwritable }, remedy: `make it writable with chmod u+w ${shellWord(unwritable)}, then run \`cotal up\` again` });
+  if (unwritable) throw new CommandFailure("refused", "PERMISSION_DENIED", `this account cannot write ${unwritable}, where up records the stack's services; nothing was started or written`, { target: { root, space, path: unwritable }, remedy: `make it writable with chmod u+wx ${shellWord(unwritable)}, then run \`cotal up\` again` });
   const recorded = readStackJournal(root);
   if (request.expectPriorDown && (!recorded || recorded.sha256 !== request.expectPriorDown.journalSha256 || recorded.journal.operation.id !== request.expectPriorDown.operationId))
     throw new CommandFailure("refused", "CONFLICT", "the stopped stack changed after the team boot checked it; nothing was started", { target: { root, space, expected: request.expectPriorDown.operationId } });
