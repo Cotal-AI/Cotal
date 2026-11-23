@@ -51,7 +51,7 @@ const assert: typeof nodeAssert = new Proxy(nodeAssert, {
  * guarantee is the false-green shape this package keeps being bitten by. Pinning the floor turns a
  * smaller green into a red. Raise it deliberately when you add a cell; a drop means one vanished.
  */
-const EXPECTED_CELLS = 185;
+const EXPECTED_CELLS = 188;
 
 if (process.platform === "win32") skipSuite("the Hermes connector is Unix-only; buildLaunch throws");
 
@@ -114,6 +114,12 @@ assert.ok(spec.artifacts?.includes(dirname(env.COTAL_LAUNCH_MATERIAL!)), "the ca
 assert.ok(spec.artifacts?.includes(dirname(dirname(env.COTAL_HERMES_SEAT_HOME!))), "the disposable profile is tracked");
 assert.notEqual(env.COTAL_HERMES_SEAT_HOME, process.env.COTAL_HERMES_SEAT_HOME, "the child receives its own profile");
 assert.ok(readLaunchMaterial(env.COTAL_LAUNCH_MATERIAL!).controlKey, "the same carrier contains the control key");
+assert.equal(hermesConnector.supportsReasoningEvents, true, "the connector takes reasoningEvents: its journal records the reasoning a provider returns");
+assert.equal(readLaunchMaterial(env.COTAL_LAUNCH_MATERIAL!).reasoningEvents, undefined, "a launch that does not ask carries no reasoningEvents");
+{
+  const reasoned = buildLaunch({ space: "smoke", name: "hermes-reasoning", events: undefined, workspaceRoot: "/srv/smoke-root", reasoningEvents: true });
+  assert.equal(readLaunchMaterial(reasoned.env!.COTAL_LAUNCH_MATERIAL!).reasoningEvents, true, "a launch that asks carries reasoningEvents to the seat");
+}
 
 for (const k of PROVIDER_KEYS)
   assert.equal(env[k], `smoke-${k}`, `${k} must reach the child: this connector declares it`);
