@@ -1,0 +1,225 @@
+/**
+ * The Hermes seat's agent endpoint over the bridge (src/commands.ts, src/bridge.ts): the owner's
+ * turns with their images, interrupt and usage, each answered by the adapter, and the busy gate that
+ * starts a queued turn only while the gateway has no Cotal message or turn in progress. The adapter
+ * here is a socket speaking the bridge frames; the dispatcher, the bridge and the drain are the
+ * shipped ones.
+ */
+import { EventEmitter, once } from "node:events";
+import { mkdtempSync, rmSync } from "node:fs";
+import { connect, type Socket } from "node:net";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { CommandRefused, type AgentConfig, type AgentTurn, type MeshAgent } from "@cotal-ai/connector-core";
+import { skipSuite } from "@cotal-ai/smoke-kit";
+import { startBridgeServer, type BridgeServer } from "../src/bridge.js";
+import { drainWhileIdle, hermesCommands } from "../src/commands.js";
+import { bridgeKey, openBridge } from "./bridge-open.js";
+
+if (process.platform === "win32") skipSuite("the Hermes connector is Unix-only");
+
+let pass = 0;
+let fail = 0;
+const check = (name: string, ok: boolean, extra?: unknown): void => {
+  if (ok) pass += 1;
+  else {
+    fail += 1;
+    console.error(`  x FAIL: ${name}${extra === undefined ? "" : ` ${JSON.stringify(extra)}`}`);
+  }
+};
+
+/** An agent with an empty inbox and a turn queue: `dispatchNextCommand` takes the oldest queued turn
+ *  before it awaits the dispatcher, as connector-core's command lane does. */
+class QueueAgent extends EventEmitter {
+  readonly queue: AgentTurn[] = [];
+  readonly started: string[] = [];
+  turn?: (t: AgentTurn) => Promise<void>;
+  inboxPreview() {
+    return [];
+  }
+  async dispatchNextCommand(): Promise<"empty" | "dispatched" | "failed"> {
+    const t = this.queue.shift();
+    if (!t) return "empty";
+    this.started.push(t.text);
+    try {
+      await this.turn!(t);
+      return "dispatched";
+    } catch {
+      return "failed";
+    }
+  }
+  enqueue(text: string): void {
+    this.queue.push({ text, images: [] });
+    this.emit("command");
+  }
+}
+
+const dir = mkdtempSync(join(tmpdir(), "cotal-hermes-commands-"));
+const socketPath = join(dir, "bridge.sock");
+const key = "commands-smoke-control-key";
+const config = {
+  space: "hermes-commands", name: "Hermes", servers: "nats://127.0.0.1:1", subscribe: ["general"],
+  allowSubscribe: ["general"], allowPublish: ["general"], kind: "agent" as const, tls: false,
+};
+const agent = new QueueAgent();
+let bridge: BridgeServer | undefined;
+const commands = hermesCommands(() => bridge);
+agent.turn = commands.turn;
+const drain = drainWhileIdle(agent as unknown as MeshAgent, () => bridge);
+agent.on("command", drain);
+let subscribed = 0;
+let idled = 0;
+bridge = startBridgeServer(agent as unknown as MeshAgent, config as AgentConfig, socketPath, bridgeKey(socketPath, key), {
+  onSubscribe: () => (subscribed += 1),
+  onIdle: () => {
+    idled += 1;
+    drain();
+  },
+});
+
+interface Adapter {
+  sock: Socket;
+  next: () => Promise<Record<string, unknown>>;
+  pending: () => number;
+}
+
+/** Connect and subscribe as the adapter; read the frames the sidecar sends, one at a time. */
+async function adapter(): Promise<Adapter> {
+  const sock = connect(socketPath);
+  await once(sock, "connect");
+  const frames: Record<string, unknown>[] = [];
+  let read = 0;
+  let waiter: (() => void) | undefined;
+  let buf = "";
+  sock.on("data", (d) => {
+    buf += d.toString("utf8");
+    for (let nl = buf.indexOf("\n"); nl >= 0; nl = buf.indexOf("\n")) {
+      frames.push(JSON.parse(buf.slice(0, nl)) as Record<string, unknown>);
+      buf = buf.slice(nl + 1);
+    }
+    waiter?.();
+  });
+  await openBridge(sock, key);
+  const next = async (): Promise<Record<string, unknown>> => {
+    while (read >= frames.length) await new Promise<void>((resolve) => (waiter = resolve));
+    return frames[read++]!;
+  };
+  return { sock, next, pending: () => frames.length - read };
+}
+const send = (sock: Socket, frame: Record<string, unknown>) => sock.write(`${JSON.stringify(frame)}\n`);
+type Settled<T> = { ok: true; v: T } | { ok: false; e: Error };
+const settled = <T>(p: Promise<T>): Promise<Settled<T>> => p.then((v) => ({ ok: true as const, v }), (e: Error) => ({ ok: false as const, e }));
+/** Let the bridge read what the adapter wrote, and the drain run what that woke. */
+const tick = () => new Promise((resolve) => setTimeout(resolve, 50));
+
+/** Ask through the dispatcher, answer as the adapter, and return what the dispatcher made of it. */
+async function answered<T>(a: Adapter, call: () => Promise<T>, answer: Record<string, unknown>): Promise<{ frame: Record<string, unknown>; out: Settled<T> }> {
+  const out = settled(call());
+  const frame = await a.next();
+  send(a.sock, { t: "answer", id: frame.id, ...answer });
+  return { frame, out: await out };
+}
+
+async function frames(a: Adapter): Promise<void> {
+  const png = { mimeType: "image/png" as const, data: "iVBORw0KGgo=" };
+  const turn = settled(commands.turn!({ text: "what is this?", images: [png] }));
+  const frame = await a.next();
+  check("a turn goes to the adapter with its text and images", frame.t === "turn" && frame.text === "what is this?" && JSON.stringify(frame.images) === JSON.stringify([png]), frame);
+  check("the bridge is not idle while a turn waits for its answer", bridge!.idle() === false);
+  const before = idled;
+  send(a.sock, { t: "turn_taken", id: frame.id });
+  check("the turn resolves when the gateway took it", (await turn).ok);
+  check("a settled turn wakes the drain", idled > before && bridge!.idle());
+
+  const text = settled(commands.turn!({ text: "plain", images: [] }));
+  const plain = await a.next();
+  check("a turn without images carries no images field", plain.t === "turn" && !("images" in plain), plain);
+  send(a.sock, { t: "turn_refused", id: plain.id, error: "no session" });
+  const refused = await text;
+  check("a turn the gateway refused is refused as failed-precondition", !refused.ok && refused.e instanceof CommandRefused && refused.e.code === "failed-precondition" && refused.e.message.includes("no session"), !refused.ok && refused.e.message);
+}
+
+async function usage(a: Adapter): Promise<void> {
+  const full = await answered(a, () => commands.usage!(), { ok: true, data: { context: { used: 1200, size: 200000 }, cost: { amount: 0.25, currency: "USD" } } });
+  check("usage asks the adapter with a usage frame", full.frame.t === "usage" && typeof full.frame.id === "string", full.frame);
+  check("usage reports the context and cost the gateway gave", full.out.ok && JSON.stringify(full.out.v) === JSON.stringify({ context: { used: 1200, size: 200000 }, cost: { amount: 0.25, currency: "USD" } }), full.out);
+  const none = await answered(a, () => commands.usage!(), { ok: true, data: {} });
+  check("usage leaves out what the gateway did not report", none.out.ok && JSON.stringify(none.out.v) === "{}", none.out);
+  const bad = await answered(a, () => commands.usage!(), { ok: true, data: { context: { used: -1, size: 10 } } });
+  check("an invalid context is an error, never a number passed on", !bad.out.ok && bad.out.e.message.includes("invalid context"), bad.out);
+  const failed = await answered(a, () => commands.usage!(), { ok: false, error: "no runner" });
+  check("a failed answer rejects with the gateway's reason", !failed.out.ok && failed.out.e.message === "no runner", failed.out);
+}
+
+async function interrupt(a: Adapter): Promise<void> {
+  const stopped = await answered(a, () => commands.interrupt!(), { ok: true, data: { state: "interrupted" } });
+  check("interrupt asks the adapter with an interrupt frame", stopped.frame.t === "interrupt", stopped.frame);
+  check("interrupt reports interrupted when the gateway stopped a session", stopped.out.ok && stopped.out.v === "interrupted", stopped.out);
+  const idle = await answered(a, () => commands.interrupt!(), { ok: true, data: { state: "idle" } });
+  check("interrupt reports idle when nothing was in progress", idle.out.ok && idle.out.v === "idle", idle.out);
+  const odd = await answered(a, () => commands.interrupt!(), { ok: true, data: { state: "paused" } });
+  check("an unknown interrupt state is an error", !odd.out.ok && odd.out.e.message.includes("unknown interrupt state"), odd.out);
+}
+
+async function busyGate(a: Adapter): Promise<void> {
+  send(a.sock, { t: "busy", count: 1 });
+  await tick();
+  check("a busy count makes the bridge not idle", bridge!.idle() === false);
+  agent.enqueue("first");
+  agent.enqueue("second");
+  await tick();
+  check("no queued turn starts while the gateway is busy", agent.started.length === 0 && a.pending() === 0, agent.started);
+  send(a.sock, { t: "busy", count: 0 });
+  const first = await a.next();
+  check("the oldest queued turn starts once the gateway is idle", first.t === "turn" && first.text === "first", first);
+  await tick();
+  check("the next turn waits while the first waits for its answer", agent.started.length === 1 && a.pending() === 0, agent.started);
+  send(a.sock, { t: "busy", count: 1 });
+  send(a.sock, { t: "turn_taken", id: first.id });
+  await tick();
+  check("the next turn waits while the first one runs", agent.started.length === 1 && a.pending() === 0, agent.started);
+  send(a.sock, { t: "busy", count: 0 });
+  const second = await a.next();
+  check("the next turn starts when the gateway is idle again", second.t === "turn" && second.text === "second", second);
+  send(a.sock, { t: "turn_taken", id: second.id });
+  await tick();
+  agent.enqueue("third");
+  const third = await a.next();
+  check("a turn queued while idle starts at once", third.t === "turn" && third.text === "third", third);
+  send(a.sock, { t: "turn_taken", id: third.id });
+  await tick();
+}
+
+async function disconnect(a: Adapter): Promise<void> {
+  const turn = settled(commands.turn!({ text: "unanswered", images: [] }));
+  await a.next();
+  const asked = settled(commands.usage!());
+  await a.next();
+  a.sock.destroy();
+  const [t, u] = await Promise.all([turn, asked]);
+  check("a turn whose adapter disconnects rejects as unknown, never handed again", !t.ok && t.e.message.includes("whether it started is unknown"), !t.ok && t.e.message);
+  check("a request whose adapter disconnects rejects", !u.ok && u.e.message.includes("disconnected before it answered"), !u.ok && u.e.message);
+  const none = await settled(commands.usage!());
+  check("with no adapter subscribed, a request rejects at once", !none.ok && none.e.message.includes("not connected"), !none.ok && none.e.message);
+  check("with no adapter subscribed, the bridge is not idle", bridge!.idle() === false);
+}
+
+try {
+  check("the bridge is not idle before an adapter subscribes", bridge.idle() === false);
+  const a = await adapter();
+  await tick();
+  check("an authenticated subscribe is reported", subscribed === 1);
+  check("a subscribed adapter with nothing in progress is idle", bridge.idle() === true);
+  await frames(a);
+  await usage(a);
+  await interrupt(a);
+  await busyGate(a);
+  await disconnect(a);
+} finally {
+  await bridge.close();
+  rmSync(dir, { recursive: true, force: true });
+}
+
+console.log(`hermes agent commands: ${pass} passed, ${fail} failed`);
+console.log(`COTAL_SMOKE_SENTINEL cells=${pass + fail} passed=${pass} failed=${fail}`);
+process.exit(fail ? 1 : 0);
