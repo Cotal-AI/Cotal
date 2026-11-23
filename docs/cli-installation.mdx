@@ -287,8 +287,8 @@ directory to fix and stops before staging.
 If you move your home or configuration directory while Cotal and its updates are stopped, an
 installed CLI at the same path can use the moved connector set. The former configuration folder
 must be absent, and the private connector set must still be at the same relative path under the
-new configuration folder. Update `HOME`, `COTAL_HOME`, and `XDG_CONFIG_HOME` as needed before running
-Cotal again.
+new configuration folder, including its seed directory and extensions manifest. Update `HOME`,
+`COTAL_HOME`, and `XDG_CONFIG_HOME` as needed before running Cotal again.
 If Cotal cannot verify the move, restore access to the original location, then return the intact
 configuration there or restore it from a backup. Set `XDG_CONFIG_HOME` to the parent of that `cotal`
 folder before retrying.

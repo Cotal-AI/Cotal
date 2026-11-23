@@ -150,6 +150,7 @@ export function pruneRetainedConnectorConfig(holders: readonly (string | undefin
 }
 
 interface Selection { readonly v: 1; readonly entry: string; readonly version: string; readonly root: string; readonly snapshot?: string }
+const selectionDiffers = "connector retention selection differs from this installation";
 
 function writeSelection(path: string, record: Selection): void {
   const pending = join(dirname(path), `.selection-${randomBytes(8).toString("hex")}`);
@@ -242,52 +243,79 @@ function resolveSelectedRoot(saved: string, set: string, expected: string): stri
   return expected;
 }
 
-function selectionMismatch(saved: string, destination: string, mismatch: string, cause?: unknown): Error {
-  const detail = cause instanceof Error ? ` (${JSON.stringify(cause.message)})` : "";
+function selectionMismatch(saved: string, expected: string, mismatch: string, cause?: unknown): Error {
+  const reason = cause instanceof Error ? cause.message : typeof cause === "string" ? cause : undefined;
+  const detail = reason ? ` (${JSON.stringify(reason)})` : "";
   return new Error(
-    `${mismatch}: recorded root ${JSON.stringify(saved)}, ${destination}${detail}. ` +
+    `${mismatch}: recorded root ${JSON.stringify(saved)}, expected path ${JSON.stringify(expected)}${detail}. ` +
     "Restore access to the original location, then return the intact Cotal configuration there or restore it there from a backup. " +
     "Set XDG_CONFIG_HOME to the parent of that cotal configuration folder before retrying. Keep the selection records with the connector set",
     { cause },
   );
 }
 
-function selectedRoot(saved: string, set: string, mismatch: string, prepare?: (path: string) => void): string {
+function resolveSelection(saved: string, set: string, mismatch: string): { root: string; expected: string } {
   const name = basename(saved), expected = join(set, name);
-  if (saved === join(dirname(saved), name) && /^cotal(?:-[a-f0-9]{16})?$/.test(name)) {
-    const destination = `expected connector root ${JSON.stringify(expected)}`;
-    try {
-      const root = resolveSelectedRoot(saved, set, expected);
-      if (root !== undefined) {
-        prepare?.(expected);
-        ownedDirectory(set);
-        ownedDirectory(root);
-        for (const name of ["seed", "extensions"]) {
-          const path = join(root, name), stat = lstatSync(path, { throwIfNoEntry: false });
-          if (stat && !stat.isDirectory()) throw new Error(`retained connector state is not a real directory: ${path}`);
-        }
-        return root;
-      }
-    } catch (cause) {
-      if (saved === expected) throw cause;
-      throw selectionMismatch(saved, destination, mismatch, cause);
-    }
-    throw selectionMismatch(saved, destination, mismatch);
+  if (saved !== join(dirname(saved), name) || !/^cotal(?:-[a-f0-9]{16})?$/.test(name))
+    throw selectionMismatch(saved, set, mismatch);
+  let root: string | undefined;
+  try { root = resolveSelectedRoot(saved, set, expected); }
+  catch (cause) { throw selectionMismatch(saved, expected, mismatch, cause); }
+  if (root === undefined) throw selectionMismatch(saved, expected, mismatch);
+  return { root, expected };
+}
+
+function selectedRoot(saved: string, set: string, mismatch: string, prepare?: (path: string) => void): string {
+  const { root, expected } = resolveSelection(saved, set, mismatch);
+  const moved = root !== saved;
+  prepare?.(expected);
+  ownedDirectory(set);
+  try { ownedDirectory(root); }
+  catch (cause) {
+    if (moved && (cause as NodeJS.ErrnoException).code === "ENOENT")
+      throw selectionMismatch(saved, expected, mismatch, cause);
+    throw cause;
   }
-  throw selectionMismatch(saved, `expected a connector root under ${JSON.stringify(set)}`, mismatch);
+  for (const name of ["seed", "extensions"]) {
+    const path = join(root, name), stat = lstatSync(path, { throwIfNoEntry: false });
+    if (!stat && moved) throw selectionMismatch(saved, expected, mismatch, `the moved ${name} directory is missing`);
+    if (stat && !stat.isDirectory()) throw new Error(`retained connector state is not a real directory: ${path}`);
+  }
+  if (moved && !lstatSync(join(root, "extensions", "extensions.json"), { throwIfNoEntry: false })?.isFile())
+    throw selectionMismatch(saved, expected, mismatch, "the moved extensions manifest is missing or not a real file");
+  return root;
+}
+
+function readLineage(sets: string): Selection | undefined {
+  const path = join(sets, "current.json");
+  if (!lstatSync(sets, { throwIfNoEntry: false })) return;
+  ownedAncestors(sets);
+  const bytes = readLocalRecordSource(path, 8192, true);
+  return bytes ? parseSelection(bytes, path) : undefined;
 }
 
 function previousConfig(id: { entry: string; path: string }, prepare?: (path: string) => void): string | undefined {
   const sets = dirname(id.path);
-  const path = join(sets, "current.json");
-  const bytes = readLocalRecordSource(path, 8192, true);
-  if (!bytes) return;
-  ownedAncestors(sets);
-  const record = parseSelection(bytes, path);
+  const record = readLineage(sets);
+  if (!record) return;
   const versionDir = join(sets, record.version);
   const mismatch = "invalid previous connector retention selection";
   if (record.entry !== id.entry || !/^\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?$/.test(record.version)) throw new Error(mismatch);
   return selectedRoot(record.root, versionDir, mismatch, prepare);
+}
+
+function rejectLinkedSet(id: { entry: string; version: string; path: string }, refuse: () => never): void {
+  if (!lstatSync(id.path, { throwIfNoEntry: false })?.isSymbolicLink()) return;
+  // The version directory cannot attest to its own selection when it is a link.
+  let record: Selection | undefined;
+  try { record = readLineage(dirname(id.path)); }
+  catch { /* Without protected lineage, report the link without guessing its former location. */ }
+  if (record?.entry === id.entry && record.version === id.version) {
+    const { root, expected } = resolveSelection(record.root, id.path, selectionDiffers);
+    if (root !== record.root)
+      throw selectionMismatch(record.root, expected, selectionDiffers, `the moved version directory ${id.path} is a symbolic link`);
+  }
+  refuse();
 }
 
 /** Identify the snapshot's config root without following links inside a retained set. */
@@ -332,6 +360,7 @@ function updateSnapshot(id: { entry: string; version: string; path: string }): s
 }
 
 function currentConfig(id: { entry: string; version: string; path: string }, prepare?: (path: string) => void): string | undefined {
+  rejectLinkedSet(id, () => { throw new Error(`connector retention directory is not private: ${id.path}`); });
   if (existsSync(id.path)) ownedAncestors(id.path);
   const path = join(id.path, "selection.json");
   const bytes = readLocalRecordSource(path, 8192, true);
@@ -343,11 +372,10 @@ function currentConfig(id: { entry: string; version: string; path: string }, pre
   }
   ownedAncestors(id.path);
   const record = parseSelection(bytes, path);
-  const mismatch = "connector retention selection differs from this installation";
-  if (record.entry !== id.entry || record.version !== id.version) throw new Error(mismatch);
+  if (record.entry !== id.entry || record.version !== id.version) throw new Error(selectionDiffers);
   const snapshot = updateSnapshot(id);
   const selected = !snapshot || record.snapshot === snapshot;
-  const root = selectedRoot(record.root, id.path, mismatch, selected ? prepare : undefined);
+  const root = selectedRoot(record.root, id.path, selectionDiffers, selected ? prepare : undefined);
   return selected ? root : undefined;
 }
 
@@ -400,6 +428,7 @@ export function prepareConnectorConfigForUpdate(): void {
   };
   const id = identity();
   if (id) {
+    rejectLinkedSet(id, () => refuse(id.path, "is not a real directory owned by this account"));
     repairPath(id.path);
     recoverRetiredCanonical(id.path);
   }

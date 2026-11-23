@@ -130,6 +130,11 @@ fs.chmodSync(selected,0o500);
 prepareConnectorConfigForUpdate();
 assert.equal(fs.statSync(selected).mode&0o777,0o700);
 assert.equal(readFileSync(selectionFile,'utf8'),selection,'alias use does not republish the record');
+fs.chmodSync(selected,0o200);
+try {
+  assert.throws(()=>connectorConfigDir(),error=>error.code==='EACCES' && !error.message.includes('restore it there from a backup'));
+  assert.throws(()=>prepareConnectorConfigForUpdate(),error=>error.code==='PERMISSION_DENIED' && error.remedy.includes('owned and writable'));
+} finally { fs.chmodSync(selected,0o700); }
 const record=JSON.parse(selection), foreign=mkdtempSync(join(physical,'foreign-'));
 writeFileSync(selectionFile,JSON.stringify({...record,root:join(foreign,selected.slice(join(safe,'cotal').length))}));
 assert.throws(()=>connectorConfigDir(),/differs/,'the same retained suffix under a different config is refused');
@@ -145,6 +150,7 @@ const selectedAt=path=>to+path.slice(from.length);
 const selection=selectedAt(join(dirname(selected),'selection.json'));
 const lineage=join(dirname(dirname(selection)),'current.json');
 const moved=selectedAt(selected);
+writeFileSync(join(selected,'extensions','extensions.json'),' {"extensions":[]}');
 renameSync(from,to);
 process.env.XDG_CONFIG_HOME=to;
 const before=snapshot(to);
@@ -167,6 +173,28 @@ renameSync(selection+'.saved',selection);
 const explainsMove=reason=>error=>error.message.includes(JSON.stringify(selected)) &&
   error.message.includes(JSON.stringify(moved)) && error.message.includes(reason) &&
   error.message.includes('restore it there from a backup') && error.message.includes('Set XDG_CONFIG_HOME');
+const extensions=join(moved,'extensions'), manifest=join(extensions,'extensions.json');
+renameSync(extensions,extensions+'.saved');
+assert.throws(()=>connectorConfigDir(),explainsMove('extensions directory is missing'));
+renameSync(extensions+'.saved',extensions);
+renameSync(manifest,manifest+'.saved');
+assert.throws(()=>connectorConfigDir(),explainsMove('extensions manifest is missing'));
+renameSync(manifest+'.saved',manifest);
+fs.chmodSync(moved,0o200);
+try {
+  assert.throws(()=>connectorConfigDir(),error=>error.code==='EACCES' && !error.message.includes('restore it there from a backup'));
+  assert.throws(()=>prepareConnectorConfigForUpdate(),error=>error.code==='PERMISSION_DENIED' && error.remedy.includes('owned and writable'));
+} finally { fs.chmodSync(moved,0o700); }
+const versionDir=dirname(moved);
+renameSync(versionDir,versionDir+'.saved');
+symlinkSync(versionDir+'.saved',versionDir);
+assert.throws(()=>connectorConfigDir(),explainsMove('is a symbolic link'));
+assert.throws(()=>prepareConnectorConfigForUpdate(),explainsMove('is a symbolic link'));
+renameSync(lineage,lineage+'.saved');
+assert.throws(()=>connectorConfigDir(),error=>error.message.includes('not private') && !error.message.includes(selected),'never read selection.json through a linked version directory');
+renameSync(lineage+'.saved',lineage);
+rmSync(versionDir);
+renameSync(versionDir+'.saved',versionDir);
 mkdirSync(join(from,'cotal'),{recursive:true,mode:0o700});
 assert.throws(()=>connectorConfigDir(),explainsMove('differs'),'a separate existing config is not a move');
 rmSync(join(from,'cotal'),{recursive:true});
