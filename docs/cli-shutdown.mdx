@@ -1003,7 +1003,8 @@ the same section. A preview that passes every check opens with a verdict, as the
 does: the apply is offered, with `cotal reset space <space> --yes` as Next.
 
 Apply shows the path inventory and defaults to cancellation, or requires
-`--yes` in a script. Under the maintenance lock it repeats the eligibility
+`--yes` in a script. The confirmation refusal keeps `--json` or `--plain` in both suggested commands
+if given. Under the maintenance lock it repeats the eligibility
 checks and compares the reviewed file identities. Native secret deletion is
 restricted to the planned keys; each filesystem removal checks the remaining
 reviewed tree. Added paths and changed files do not enlarge the confirmed scope.

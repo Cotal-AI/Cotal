@@ -228,9 +228,10 @@ export async function refuseUnknownChannel(name: string, values: Values, target:
   const spelled = registered.find((channel) => channel.toLowerCase() === name.toLowerCase());
   const known = registered.length ? `registered channels: ${registered.map((channel) => `#${channel}`).join(", ")}` : "this space registers no channels";
   const word = spelled === undefined ? undefined : shellWord(spelled.startsWith("-") ? `#${spelled}` : spelled);
+  const output = values.json ? " --json" : values.plain ? " --plain" : "";
   const remedy = word === undefined ? "name a channel the space has; `cotal ch` lists the registered ones"
     : action === "remove" ? `inspect the registered spelling: ${codeSpan(`cotal channel show ${word}${targetWords({ ...values, space: reader.space })}`)}`
-    : `name it as registered: ${codeSpan(`cotal channel members ${word}${targetWords(values)}`)}`;
+    : `name it as registered: ${codeSpan(`cotal channel members ${word}${targetWords(values)}${output}`)}`;
   throw new CommandFailure("refused", "TARGET_NOT_FOUND",
     `#${name} has ${action === "members" ? "no observed members, " : ""}no saved entry and no retained messages; ${spelled ? `channel names are case-sensitive, and the registered one is #${spelled}` : known}`,
     { target, remedy });

@@ -542,8 +542,9 @@ This includes the name retained by a directly started local space after it stops
 A missing feed remains unknown rather than an empty confirmed census. Without `--follow`, a
 census with no member for a name that has no saved entry and no retained messages is refused with
 `TARGET_NOT_FOUND`, listing the registered channels, or naming the registered spelling when only the
-case differs. A channel with a saved entry or retained messages and no member reads as empty. A
-follow shows the census again only when it changes: a poll that observes the same members writes no
+case differs. The spelling correction keeps `--json` or `--plain` if given. A channel with a saved
+entry or retained messages and no member reads as empty. A follow shows the census again only when
+it changes: a poll that observes the same members writes no
 record and prints nothing, and the `end` record's `lastAsOf` is the last poll the follow read. A follow's
 view offers no command to follow. A lost connection is
 one `TARGET_UNAVAILABLE` error record, or one line, while the follow re-establishes it, and a `gap`
