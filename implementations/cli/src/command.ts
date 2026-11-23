@@ -962,7 +962,12 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
       // them says so, with the change that protects their folder.
       if (!cmd.name.startsWith("__") && !["help", "completion", "version", "docs"].includes(cmd.name)) {
         const folder = preferencesFolderWarning();
-        if (folder) recordOperationWarning(folder.warning);
+        // Under --json the warning lives in the envelope only: an immediate echo would put it on
+        // stderr as well, so a JSON refusal would break the "envelope on stdout, nothing on
+        // stderr" contract (docs/UPGRADING.md, "JSON refusals after 0.100.2"). Human mode still
+        // prints it at once, as before.
+        const jsonOutput = structured(cmd, parsed.positionals[0]) && parsed.values.json === true;
+        if (folder) recordOperationWarning(folder.warning, { echo: !jsonOutput });
       }
       if (cmd.prepare) await cmd.prepare(parsed);
       await cmd.run(parsed);
