@@ -1,5 +1,5 @@
 import { hostname } from "node:os";
-import { type DmDurableMissingError, type Presence } from "@cotal-ai/core";
+import { PERSONA_SOURCE_META_KEY, type DmDurableMissingError, type Presence } from "@cotal-ai/core";
 import { eventPlaneArmed, type AgentConfig } from "./config.js";
 import type { CommandDispatcher } from "./agent-commands.js";
 
@@ -32,6 +32,8 @@ export function buildMeta(config: AgentConfig, processCwd: boolean, eventsArmed?
   // A routing hint only. The broker's instance grants and the manager's live map still decide.
   delete meta["ai.cotal.manager.instance"];
   if (config.managerInstanceId) meta["ai.cotal.manager.instance"] = config.managerInstanceId;
+  delete meta[PERSONA_SOURCE_META_KEY];
+  if (config.personaSource !== undefined) meta[PERSONA_SOURCE_META_KEY] = config.personaSource;
   // Whether the session arms its event plane, from the predicate the emitting connectors branch on.
   // Overlaid with the other connector-owned keys, so an agent file cannot declare it. Advisory.
   meta[EVENTS_META_KEY] = (eventsArmed ?? eventPlaneArmed(config)) ? "on" : "off";

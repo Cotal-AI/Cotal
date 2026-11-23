@@ -184,6 +184,8 @@ Prepared spaces have a catalog before startup.
 In the project folder of a stopped open space, `--space <name>` can select the catalog when the last run recorded that name.
 Use `--json` or `--plain` for finite reports.
 
-The legacy `personas` parser remains available during migration; its `--running` overlay is live.
+The legacy `cotal personas list --running` checks which files in the local catalog have live sessions in the selected space.
+It uses the file a connector reports loading, so changing the session's display name does not change the match.
+When the roster is incomplete or a live peer of the same participation kind does not report its source, unconfirmed entries show `running status unknown`.
 Inside an agent session, use `cotal_persona` to write a persona and `cotal_personas` to read the catalog through the manager's ownership checks.
 See [Agent files](agent-files.mdx) for the fields.

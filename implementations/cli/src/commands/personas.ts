@@ -14,8 +14,9 @@ import { targetWords } from "../lib/confirmation-required.js";
 import { assertLabels, commitPersona, editPersona, personaCatalog, personaPath, readPersonaSource, requirePersonaSource, reservedPersonaName, serializePersona, validatePersona } from "../lib/persona-files.js";
 import { completedFlagValue, completingFlagValue, positionalsForCompletion } from "../lib/completion.js";
 import { shellWord } from "../lib/endpoint-errors.js";
+import { readPersonaPresence } from "../lib/persona-presence.js";
 import { catalogReadRefusal, listPersonaNames, readPersonas, type PersonaEntry } from "../lib/personas.js";
-import { openTransient, type ConnectValues } from "../lib/transient.js";
+import type { ConnectValues } from "../lib/transient.js";
 import { c } from "../ui.js";
 
 /**
@@ -142,8 +143,7 @@ async function list(verbose: boolean, running: boolean, values: ConnectValues): 
   try { entries = readPersonas(root); }
   catch (error) { throw catalogReadRefusal(personaDir(root), error); }
   // An explicit live overlay checks the mesh even when there are no local personas to mark.
-  const overlay = running ? await presentNames(values) : undefined;
-  const present = overlay?.names;
+  const overlay = running ? await readPersonaPresence(values) : undefined;
   if (overlay) console.log(`${renderReport({ space: overlay.space, sections: [] }, "rich", process.stdout)}\n`);
   if (!entries.length) {
     const spaceFlag = values.space === undefined ? "" : ` --space ${shellWord(values.space)}`;
@@ -167,7 +167,10 @@ async function list(verbose: boolean, running: boolean, values: ConnectValues): 
       continue;
     }
     const d = e.def!;
-    const live = present ? (present.has(e.name) ? c.green("● running") : c.dim("○ not running")) : undefined;
+    const status = overlay?.status(e.path, d.kind ?? "agent");
+    const live = status === "running" ? c.green("● running")
+      : status === "not running" ? c.dim("○ not running")
+      : status === "unknown" ? c.yellow("? running status unknown") : undefined;
     const meta = [d.role && c.cyan(oneLine(d.role)), d.model && c.dim(`model=${oneLine(d.model)}`), d.owner && c.dim(`owner=${oneLine(d.owner)}`), live]
       .filter(Boolean)
       .join("  ");
@@ -180,18 +183,6 @@ async function list(verbose: boolean, running: boolean, values: ConnectValues): 
     if (verbose && d.persona) console.log(d.persona.split(/\r?\n/).map((line) => `    ${oneLine(line)}`).join("\n") + "\n");
   }
   if (entries.some((entry) => entry.error)) process.exitCode = exitCode("partial", "OPERATION_PARTIAL");
-}
-
-/** Snapshot the names currently present on the mesh — the live overlay behind `personas list
- *  --running` — with the space they were read from. The transient endpoint reads the roster once at
- *  start. A name is "running" when an agent of exactly that name is present and not offline. */
-async function presentNames(values: ConnectValues): Promise<{ space: string; names: Set<string> }> {
-  const { ep, space } = await openTransient(values, "personas");
-  try {
-    return { space, names: new Set(ep.getRoster().filter((p) => p.status !== "offline").map((p) => p.card.name)) };
-  } finally {
-    await ep.stop();
-  }
 }
 
 function show(name: string | undefined, values: { space?: string; server?: string }): void {

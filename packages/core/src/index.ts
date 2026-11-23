@@ -96,6 +96,7 @@ export * from "./evict.js";
 export * from "./lease.js";
 export * from "./liveness.js";
 export * from "./agent-file.js";
+export * from "./persona-source.js";
 export * from "./launch.js";
 export * from "./fs-safe.js";
 // Explicit, NOT `export *`, and deliberately so: a star export would put the test-only seam
