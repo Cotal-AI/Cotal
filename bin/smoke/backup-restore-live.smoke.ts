@@ -4,7 +4,7 @@ import { spawn, spawnSync, type ChildProcess, type SpawnSyncReturns } from "node
 import { createHash } from "node:crypto";
 import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, join, relative, resolve } from "node:path";
+import { basename, dirname, join, relative, resolve } from "node:path";
 import { hostname } from "node:os";
 import { createSpaceAuth, eventPayloadStream, mintCreds, newIdentity, probeConnect, rotateSystemAccount, taskStream } from "@cotal-ai/core";
 import type { BackupManifest } from "../../implementations/cli/src/lib/backup-artifact.js";
