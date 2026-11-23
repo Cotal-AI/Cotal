@@ -441,7 +441,8 @@ Jcode saves for that call sends the rest of the text and ends it. Reasoning publ
 block Jcode stores it in, Anthropic's signed thinking included. When the saved reply does not
 continue what streamed, as after a provider retry, the streamed message ends and the saved text
 publishes as a message of its own. A provider call that fails after it streamed leaves no saved
-reply, so the turn's end ends its streamed message. A delta that arrives while a checkpoint has left
+reply, so the turn's end ends its streamed message. A turn's run ends with `RUN_FINISHED`, or with
+`RUN_ERROR` when Jcode failed the turn, whether the seat or the attached TUI started it. A delta that arrives while a checkpoint has left
 no journal waits until Jcode writes the next one. Tool activity arrives when Jcode persists the
 tool-use and result blocks. User prompt text is not republished onto the event channel. The launcher sets
 `COTAL_EVENTS` by default; pass `--no-events` to opt out on an unrestricted space. A registration

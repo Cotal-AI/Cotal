@@ -3,7 +3,8 @@
  * as typed and the images as Jcode's attachments, in a turn of its own that carries no inbox traffic.
  * The turn starts once Jcode acknowledges the send, Jcode refusing it first is a refusal, and a send
  * Jcode never acknowledged leaves the outcome unknown. Its `usage` is the context Jcode's last call
- * used against the budget Jcode reported with it, read by Jcode's own rule.
+ * used against the budget Jcode reported with it, read by Jcode's own rule. A turn's run closes with
+ * the turn's outcome: one Jcode failed closes with its error, whether the host or the TUI drove it.
  *
  * The shipped turn closures and dispatcher run over a fake client that answers `run()` as Jcode
  * 0.99.0 was measured to: `message_accepted` for the session, then the turn's end. The command queue
@@ -31,10 +32,12 @@ const SESSION = "session_owner";
 const PNG = "iVBORw0KGgo=";
 
 type Answer = "ack" | "refuse" | "silent";
-interface Sent { content: string; options: RunOptions | undefined; end(): void }
+interface Sent { content: string; options: RunOptions | undefined; end(): void; finish(): void; fail(code: string, message: string): void }
 
 /** Answers each run() as told: acknowledged then held until ended, refused before any
- *  acknowledgement, or never acknowledged and held until ended. */
+ *  acknowledgement, or never acknowledged and held until ended. `finish` and `fail` end the turn as
+ *  Jcode does, with its frames: a failed turn's error frame, then its turn_done, both delivered to
+ *  the listeners before run() rejects. */
 class FakeClient extends EventEmitter {
   answer: Answer = "ack";
   readonly sent: Sent[] = [];
@@ -42,7 +45,14 @@ class FakeClient extends EventEmitter {
     const answer = this.answer;
     return new Promise((resolve, reject) => {
       const end = () => resolve({ text: "", reasoning: "", toolCalls: [] });
-      this.sent.push({ content, options, end });
+      const done = () => this.emit("turn_done", { ev: "turn_done", session_id: sessionId });
+      const finish = () => { done(); end(); };
+      const fail = (code: string, message: string) => {
+        this.emit("harness_error", { ev: "error", session_id: sessionId, code, message });
+        done();
+        reject(new HarnessError(code, message));
+      };
+      this.sent.push({ content, options, end, finish, fail });
       if (answer === "refuse") reject(new HarnessError("invalid_request", "the model takes no images"));
       else if (answer === "ack") setTimeout(() => this.emit("message_accepted", { ev: "message_accepted", session_id: sessionId }), 5);
     });
@@ -52,6 +62,7 @@ class FakeClient extends EventEmitter {
 function seat() {
   const client = new FakeClient();
   const outcomes: string[] = [];
+  const closes: string[] = [];
   const jobs: AgentTurn[] = [];
   let inbox: InboxItem[] = [];
   const hostState = {
@@ -102,7 +113,8 @@ function seat() {
   });
   const refuseCall = () => { throw new Error("not reached in this smoke"); };
   const deps = {
-    agent, events: undefined, deltaStream: new JcodeDeltaStream(), closeEventRun: () => {}, ensureEventsBound: async () => {},
+    agent, events: undefined, deltaStream: new JcodeDeltaStream(),
+    closeEventRun: (error?: Error) => { closes.push(error ? `error: ${error.message}` : "finished"); }, ensureEventsBound: async () => {},
     unansweredSteers: new Set(), releaseUnansweredSteers: () => {}, oweAcceptanceDebt: () => {},
     withExclusiveDispatch: (operation: () => Promise<unknown>) => operation(), onceAccepted,
     heldReservations: new Set(), releaseUnheldReservations: () => {}, promoteToSurfaced: () => {}, reserveForHandover: () => () => {},
@@ -117,7 +129,8 @@ function seat() {
   const queue = (turn: AgentTurn) => jobs.push(turn);
   const dm = (text: string) => inbox.push({ id: text, recvKey: text, ts: Date.now(), fromId: "u_peer.peer", fromName: "peer", kind: "dm", mentionsMe: false, historical: false, text } as InboxItem);
   const stop = () => { hostState.stopping = true; };
-  return { client, outcomes, hostState, dispatcher, drive: turns.drive, queue, dm, stop };
+  const frame = (ev: string, extra: Record<string, unknown> = {}) => client.emit(ev === "error" ? "harness_error" : ev, { ev, session_id: SESSION, ...extra });
+  return { client, outcomes, closes, hostState, dispatcher, drive: turns.drive, queue, dm, stop, frame };
 }
 
 console.log("Jcode owner's turn");
@@ -201,6 +214,44 @@ console.log("Jcode owner's turn");
   const refused = await s.dispatcher.turn!({ text: "hi", images: [] }).then(() => "started", (e) => (e instanceof CommandRefused ? `${e.code}: ${e.message}` : String(e)));
   check("a turn before Jcode's session is ready is refused and sends nothing",
     refused === "failed-precondition: Jcode's session is not ready" && s.client.sent.length === 0, refused);
+  s.stop();
+}
+
+console.log("a turn's run closes with the turn's outcome");
+{
+  const s = seat();
+  s.hostState.briefed = true;
+  s.queue({ text: "FAILSTREAM please", images: [] });
+  await s.drive();
+  await tick();
+  s.client.sent[0].fail("internal", "fake provider refused this request");
+  await tick();
+  check("an owner's turn Jcode fails closes its run with the error, not as finished",
+    s.closes.length === 1 && /^error: .*fake provider refused this request$/.test(s.closes[0]!), s.closes);
+  s.closes.length = 0;
+  s.queue({ text: "Say hello.", images: [] });
+  await s.drive();
+  await tick();
+  s.client.sent[1].finish();
+  await tick();
+  check("an owner's turn that ends well closes its run as finished", s.closes.length > 0 && s.closes.every((c) => c === "finished"), s.closes);
+  s.stop();
+}
+{
+  const s = seat();
+  s.frame("session_status", { status: "busy" });
+  s.frame("error", { code: "internal", message: "provider refused" });
+  s.frame("turn_done");
+  check("a turn the TUI owns that Jcode fails closes its run with the error", s.closes.length === 1 && /^error: .*provider refused$/.test(s.closes[0]!), s.closes);
+  s.closes.length = 0;
+  s.frame("session_status", { status: "busy" });
+  s.frame("turn_done");
+  check("a turn the TUI owns that ends well closes its run as finished", JSON.stringify(s.closes) === '["finished"]', s.closes);
+  s.closes.length = 0;
+  s.frame("error", { code: "internal", message: "between turns" });
+  s.frame("session_status", { status: "busy" });
+  s.frame("turn_done");
+  check("an error frame between turns does not fail the next turn", JSON.stringify(s.closes) === '["finished"]', s.closes);
   s.stop();
 }
 

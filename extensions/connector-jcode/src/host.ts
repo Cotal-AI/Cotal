@@ -187,6 +187,7 @@ export async function runJcodeHost(): Promise<void> {
   hostState.bridgeRecoveryUsed = false;
   hostState.sessionId = undefined;
   hostState.driving = false;
+  hostState.hostRun = false;
   hostState.turnActive = false;
   hostState.briefed = false;
   hostState.initialized = false;
