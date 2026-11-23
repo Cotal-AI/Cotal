@@ -15,12 +15,13 @@
  * The manager runs this in a PTY; stdio is inherited so the gateway's output is what you attach to.
  */
 import { execFileSync, spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { mkdirSync, writeFileSync, cpSync, rmSync, existsSync, readFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { LAUNCH_MATERIAL_ENV, discardLaunchArtifacts, discardLaunchMaterial, loadAgentFile, peerLabel, readLaunchMaterial, writeLaunchMaterial } from "@cotal-ai/core";
-import { hasIdentity, configFromEnv, controlEndpoint, controlFromEnv, SUN_PATH_MAX_BYTES, briefing, type AgentConfig } from "@cotal-ai/connector-core";
+import { hasIdentity, configFromEnv, controlEndpoint, controlFromEnv, eventPlaneArmed, SUN_PATH_MAX_BYTES, briefing, type AgentConfig } from "@cotal-ai/connector-core";
 import { hermesUvCommand, spawnHermesGateway } from "./binary.js";
 import { startSidecar } from "./sidecar.js";
 import { HERMES_FORK_RECORD, hermesSeatHome, moveLegacyHermesFork } from "./seat-home.js";
@@ -300,6 +301,16 @@ function forkHermesSession(opts: { sourceHome: string; source: string; seatHome:
 /** Files the launcher itself created, rather than those already tracked by `buildLaunch`. */
 const localArtifacts: string[] = [];
 
+/** Create this launch's empty turn journal (plugin/cotal/journal.py) in the profile. Its name is
+ *  the event plane's thread id. */
+function createTurnJournal(home: string): string {
+  const dir = join(home, "cotal-events");
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const path = join(dir, `${randomUUID()}.jsonl`);
+  writeFileSync(path, "", { flag: "wx", mode: 0o600 });
+  return path;
+}
+
 async function main(): Promise<void> {
   // No identity → a plain run, not a launcher-spawned agent. Stay off the mesh.
   if (!hasIdentity()) {
@@ -377,6 +388,8 @@ async function main(): Promise<void> {
   process.env.COTAL_CONTROL_SOCKET = control.path;
   process.env.COTAL_BRIDGE_SOCKET = bridgeSock;
   process.env.COTAL_TOOLS_FILE = toolsFile;
+  const journal = eventPlaneArmed(config) ? createTurnJournal(home) : undefined;
+  if (journal) process.env.COTAL_HERMES_EVENTS = journal;
 
   const sidecar = startSidecar();
 
@@ -448,6 +461,12 @@ async function main(): Promise<void> {
       log(`could not prove the gateway exited (${String((drained.reason as Error).message).replace(/\s+/g, " ").trim()}), so ${left} is left on disk; remove it once the gateway has exited`);
       if (suppliedControl && inherited) await gatewayExit;
       else process.exit(code);
+    }
+    // The journal is this launch's alone; an adopted or forked profile outlives it.
+    try {
+      if (journal) rmSync(journal, { force: true });
+    } catch (e) {
+      log(`could not remove the turn journal ${journal}, so it is left on disk: ${(e as Error).message}`);
     }
     if (disposable) {
       try {

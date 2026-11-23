@@ -17,12 +17,14 @@ import { writeFileSync } from "node:fs";
 import {
   configFromEnv,
   controlFromEnv,
+  eventPlaneArmed,
   MeshAgent,
   startControlServer,
   type AgentConfig,
 } from "@cotal-ai/connector-core";
 import { hermesHookHandle } from "./hermes-hooks.js";
 import { startBridgeServer } from "./bridge.js";
+import { startHermesEvents, type HermesEvents } from "./events.js";
 import { hermesToolDescriptors } from "./tool-schema.js";
 
 interface Sidecar {
@@ -47,11 +49,19 @@ export function startSidecar(): Sidecar {
   // to the message that started the turn. A peer's reply is therefore never a new task for us.
   config.channelRepliesPullOnly = true;
   const agent = new MeshAgent(config);
+  // The launcher names the turn journal only for an armed event plane; an armed plane without one
+  // (a standalone sidecar) has nothing to publish from, so it is refused.
+  const armed = eventPlaneArmed(config);
+  const journal = armed ? process.env.COTAL_HERMES_EVENTS : undefined;
+  if (armed && !journal)
+    throw new Error("the event plane is armed but the sidecar was given no turn journal (COTAL_HERMES_EVENTS); a standalone Hermes sidecar publishes no event plane");
+  let events: HermesEvents | undefined;
   let started = false;
   const startAgent = (): void => {
     if (started) return;
     started = true;
     agent.start();
+    if (journal) events = startHermesEvents(agent, config, journal);
   };
 
   // Socket path from the env, key and version from the launch material the launcher merged them
@@ -63,7 +73,11 @@ export function startSidecar(): Sidecar {
   const toolsFile = need("COTAL_TOOLS_FILE");
 
   // Managed listener: own the endpoint (fatal bind) and prove every connection through the exchange.
-  const controlServer = startControlServer(agent, control, hermesHookHandle, { fatalBind: true });
+  // Every hook event is also a wake for the event plane's reader: the journal is the data.
+  const controlServer = startControlServer(agent, control, (a, ev) => {
+    if (journal) events?.holder.flush(journal);
+    return hermesHookHandle(a, ev);
+  }, { fatalBind: true });
   const bridge = startBridgeServer(agent, config, bridgeSock, control, startAgent);
 
   // The plugin reads this at register(ctx) time to declare the cotal_* tools (full shared parity).
@@ -77,6 +91,7 @@ export function startSidecar(): Sidecar {
       // launcher that removes their directory next leaves nothing listening or connected in it. A
       // control connection ends on its own within the exchange's deadlines.
       await Promise.all([bridge.close(), new Promise<void>((resolve) => controlServer.close(() => resolve()))]);
+      await events?.close();
       await agent.stop();
     },
   };

@@ -2,7 +2,8 @@
 
 Registers three things on the Hermes plugin context:
   - a **gateway platform adapter** (``cotal``) — inbound wake/drive + outbound reply routing,
-  - **lifecycle hooks** → Cotal presence (over connector-core's control socket),
+  - **lifecycle hooks** → Cotal presence (over connector-core's control socket), and, when the
+    launcher armed the seat's event plane, the turn journal it publishes from (journal.py),
   - the **cotal_* tools** — proactive mesh actions for the agent (full shared parity).
 
 All three talk to the TS sidecar (which owns the mesh endpoint) over the sockets the launcher set
@@ -199,6 +200,10 @@ def register(ctx: Any) -> None:
     ctx.register_hook("pre_tool_call", hooks.pre_tool_call)
     ctx.register_hook("post_llm_call", hooks.post_llm_call)
     ctx.register_hook("on_session_end", hooks.on_session_end)
+    # The event journal (journal.py), written only when the launcher armed the seat's event plane.
+    if os.environ.get("COTAL_HERMES_EVENTS"):
+        ctx.register_hook("post_api_request", hooks.post_api_request)
+        ctx.register_hook("post_tool_call", hooks.post_tool_call)
 
     # Proactive mesh tools (declared from the descriptors the sidecar wrote to COTAL_TOOLS_FILE).
     register_tools(ctx)

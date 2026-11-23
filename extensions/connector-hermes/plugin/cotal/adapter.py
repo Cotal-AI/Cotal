@@ -25,7 +25,7 @@ from gateway.platforms.base import (
 )
 from gateway.config import Platform, PlatformConfig
 
-from . import hooks, replies
+from . import hooks, journal, replies
 from .bridge_client import get_client
 from .resume import seed_chat
 from .framing import format_injection, shown_sender
@@ -72,6 +72,9 @@ class CotalAdapter(BasePlatformAdapter):
         # message id -> the contextId of a message delivered into its sender's own chat, for the
         # turn reply that names it (the gateway's ``reply_to``).
         self._answering: dict[str, Optional[str]] = {}
+        # id(event) -> the event journal's key for a message the gateway is processing. The gateway
+        # holds the event from its processing start to its completion, so the id is not reused.
+        self._processing: dict[int, str] = {}
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         """Connect the bridge and start receiving.
@@ -179,6 +182,19 @@ class CotalAdapter(BasePlatformAdapter):
             _target_for(chat_id), content, answered, self._answering.get(answered) if answered else None
         )
         return SendResult(success=True, message_id=uuid.uuid4().hex)
+
+    async def on_processing_start(self, event: MessageEvent) -> None:
+        """The gateway began processing a message: a turn starts (journal.py)."""
+        key = uuid.uuid4().hex
+        if journal.processing_started(key):
+            self._processing[id(event)] = key
+            await asyncio.to_thread(hooks.journal_wake)
+
+    async def on_processing_complete(self, event: MessageEvent, outcome: Any) -> None:
+        """The gateway finished a message, however it ended, its reply delivered or not."""
+        key = self._processing.pop(id(event), None)
+        if key and journal.processing_done(key, str(getattr(outcome, "value", outcome))):
+            await asyncio.to_thread(hooks.journal_wake)
 
     async def get_chat_info(self, chat_id: str) -> dict:
         if chat_id.startswith("channel:"):
