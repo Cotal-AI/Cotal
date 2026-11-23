@@ -8,9 +8,11 @@ import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { SignJWT, exportJWK, generateKeyPair } from "jose";
 import { PermissionViolationError, type NatsConnection } from "@nats-io/transport-node";
 import { CotalEndpoint, dialerFor, mintCreds, mintLifecycleUid, newIdentity, readUsername, readUsernameOwner, setupSpaceStreams, standaloneConnectOpts, usernameBucket, type IssuedCaller } from "@cotal-ai/core";
+import * as core from "@cotal-ai/core";
 import { createSuite } from "@cotal-ai/smoke-kit";
 import { deriveOwnerForIdpSubject, grantActor, loadOwnerSecret, startAuthService, type AuthServiceHandle } from "../src/index.js";
 import { startHostedAuthFixture } from "./_hosted-auth-fixture.js";
@@ -37,6 +39,7 @@ const supplied = `9_${"d".repeat(38)}`;
 const row = grantActor(a.stateDir, { owner, actor: "lister", scope: [], allowSubscribe: [], allowPublish: [] });
 const narrow = { actor: "lister", scope: [], allowSubscribe: [], allowPublish: [] };
 const otherRow = grantActor(a.stateDir, { owner: otherOwner, ...narrow });
+const senderRow = grantActor(a.stateDir, { owner, ...narrow, actor: "sender" });
 grantActor(a.stateDir, { owner: directoryOwner, ...narrow, username: supplied });
 grantActor(a.stateDir, { owner: unnamedOwner, ...narrow });
 const idpToken = (subject: string, claims: Record<string, unknown>) => {
@@ -49,8 +52,72 @@ let service: AuthServiceHandle | undefined;
 let registry: { stop(): Promise<void> } | undefined;
 const endpoints: CotalEndpoint[] = [];
 let readerNc: NatsConnection | undefined;
+
+async function checkAddresses(sender: CotalEndpoint, nc: NatsConnection, own: CotalEndpoint, foreign: CotalEndpoint, foreignName: string, received: string[], failedReader: NatsConnection): Promise<void> {
+  const resolve = core.resolvePeerAddress;
+  const authority = { mode: "user" as const, ...sender.principal, space: sender.space, nc };
+  const target = (roster: core.Presence[], name: string) => resolve(roster, name, { authority });
+  const select = async (roster: core.Presence[], name: string) => target(roster, name).then(
+    (peer) => peer?.card.id ?? "no match", (error: Error) => error.message);
+  const ids = [own.card.id, foreign.card.id];
+  let roster: core.Presence[] = [];
+  for (let attempt = 0; attempt < 30; attempt++) {
+    roster = sender.getRoster();
+    if (ids.every((id) => roster.some((peer) => peer.card.id === id && peer.status !== "offline"))) break;
+    await delay(100);
+  }
+  assert(ids.every((id) => roster.some((peer) => peer.card.id === id)), "both signed-in peers published presence");
+  const ownMatch = await select(roster, "lister");
+  suite.check("a bare name selects the sender's own live agent among two signed-in owners", ownMatch === own.card.id, ownMatch);
+  suite.check("one owner's visible roster accepts its bare own name", await select(roster.filter((p) => p.card.id !== foreign.card.id), "lister") === own.card.id);
+  await own.stop();
+  for (let attempt = 0; attempt < 30; attempt++) {
+    roster = sender.getRoster();
+    if (!roster.some((p) => p.card.id === own.card.id && p.status !== "offline")) break;
+    await delay(100);
+  }
+  assert(!roster.some((p) => p.card.id === own.card.id && p.status !== "offline"), "own peer is offline");
+  const send = async (address: string, text: string) => {
+    const selected = await target(roster, address);
+    if (!selected) throw new Error(`no matching participant for ${address}`);
+    await sender.unicast(selected.card.id, text);
+    return selected.card.id;
+  };
+  const refused = await send("lister", "bare-must-not-cross-owners").catch((error: Error) => error.message);
+  const qualified = `${foreignName}/lister`;
+  suite.check("with the own agent offline a bare send refuses and names the other owner's qualified address", refused.includes(qualified), refused);
+  const delivered = await send(qualified, "qualified-recipient").catch((error: Error) => error.message);
+  for (let i = 0; i < 30 && !received.includes("qualified-recipient") && !received.includes("bare-must-not-cross-owners"); i++) await delay(100);
+  suite.check("the other owner never receives the refused bare DM", !received.includes("bare-must-not-cross-owners"), received);
+  suite.check("the other owner receives the explicitly qualified DM", delivered === foreign.card.id && received.includes("qualified-recipient"), { delivered, received });
+  const missing = await select(roster, `${foreignName}/absent`);
+  suite.check("a known username with no such agent fails clearly", /has no agent.*absent/i.test(missing), missing);
+  const unknown = await select(roster, "unknown_address_user/lister");
+  suite.check("an unknown username fails clearly", /unknown username.*unknown_address_user/i.test(unknown), unknown);
+  const wrongCase = await select(roster, `${foreignName}/Lister`);
+  suite.check("the actor half is byte-exact", /has no agent.*Lister/.test(wrongCase), wrongCase);
+  const folded = await select(roster, `${foreignName.toUpperCase()}/lister`);
+  suite.check("only the username half folds case", folded === foreign.card.id, folded);
+  const noPresence = await select([], qualified);
+  suite.check("a registered principal resolves without presence", noPresence === foreign.card.id, noPresence);
+  const unavailable = await resolve([], qualified, { authority: { ...authority, nc: failedReader } })
+    .then((peer) => peer?.card.id ?? "no match", (error: Error) => error.message);
+  suite.check("a failed registry read is visibly unavailable, not an unknown username", /cannot read.*username registry/i.test(unavailable), unavailable);
+  suite.check("an exact ID still selects a foreign peer", await select(roster, foreign.card.id) === foreign.card.id);
+  suite.check("a bare name absent from all owners still returns no match", await select(roster, "missing_actor") === "no match");
+}
+
 try {
-  await setupSpaceStreams({ servers: fx.servers, space: a.space, creds: await mintCreds(a.auth, newIdentity(), "provisioner") });
+  const creds = await mintCreds(a.auth, newIdentity(), "provisioner");
+  await setupSpaceStreams({ servers: fx.servers, space: a.space, creds });
+  const provisioner = new CotalEndpoint({ space: a.space, servers: fx.servers, creds, channels: [], consume: false,
+    watchPresence: false, registerPresence: false, watchChannels: false, card: { name: "provisioner", kind: "endpoint" } });
+  endpoints.push(provisioner);
+  await provisioner.start();
+  for (const grant of [row, otherRow, senderRow]) {
+    await provisioner.provisionDmInbox(grant.owner, grant.actor, grant.lifecycleUid!);
+    await provisioner.provisionDlvInbox(grant.owner, grant.actor, grant.lifecycleUid!);
+  }
   service = await startAuthService({
     context: { accountPublicKey: a.accountPublicKey, lifecycleUid: mintLifecycleUid() }, space: a.space, servers: fx.servers,
     stateDir: a.stateDir, store: a.store, storeIdentity: a.store.identity, publicFace: { port: 0, trustedProxy: false },
@@ -58,29 +125,30 @@ try {
   await registerFixture(mesh, "alpha.example", fixtureCluster("ai.example.alpha", ["read"]));
   registry = await runRegistryFixture(mesh);
 
-  const exchange = async (subject: string, claims: Record<string, unknown>, username?: string) => {
+  const exchange = async (subject: string, claims: Record<string, unknown>, username?: string, actor = "lister") => {
     const res = await fetch(`${service!.url}/exchange`, {
       method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${service!.cap}` },
-      body: JSON.stringify({ idpToken: await idpToken(subject, claims), actor: "lister", username }),
+      body: JSON.stringify({ idpToken: await idpToken(subject, claims), actor, username }),
     });
     return { res, body: await res.json() as { token?: string; error?: string } };
   };
-  const bearer = async (subject: string, claims: Record<string, unknown>, username?: string): Promise<string> => {
-    const { res, body } = await exchange(subject, claims, username);
+  const bearer = async (subject: string, claims: Record<string, unknown>, username?: string, actor?: string): Promise<string> => {
+    const { res, body } = await exchange(subject, claims, username, actor);
     if (res.status !== 200 || typeof body.token !== "string") throw new Error(`exchange refused: ${res.status} ${JSON.stringify(body)}`);
     return body.token;
   };
-  const connect = async (token: string, grant = row): Promise<{ ep: CotalEndpoint; nc: NatsConnection }> => {
+  const connect = async (token: string, grant = row, presence = false, received?: string[]): Promise<{ ep: CotalEndpoint; nc: NatsConnection }> => {
     let nc: NatsConnection | undefined;
     const ep = new CotalEndpoint({
       space: a.space, servers: fx.servers, bearer: token, sentinelCreds: a.sentinelCreds, lifecycleUid: grant.lifecycleUid!,
-      channels: [], consume: false, watchPresence: false, registerPresence: false, watchChannels: false,
-      card: { owner: grant.owner, actor: "lister", name: "lister", kind: "agent" },
+      channels: [], consume: received !== undefined, watchPresence: grant === senderRow, registerPresence: presence, watchChannels: false,
+      card: { owner: grant.owner, actor: grant.actor, name: grant.actor, kind: "agent" },
       onConnection: (connected) => { nc = connected; },
     });
     endpoints.push(ep);
     ep.on("error", () => {});
     ep.on("warning", () => {});
+    if (received) ep.on("message", (message, delivery) => { received.push(core.partsToText(message.parts)); delivery.ack(); });
     await ep.start();
     if (!nc) throw new Error("the user-auth endpoint did not report its broker connection");
     return { ep, nc };
@@ -90,7 +158,7 @@ try {
     bearer("lister-human", { preferred_username: `7-${"N".repeat(41)}`, email: "ignored@example.test" }, "caller_chosen"),
     bearer("other-human", { email: `7-${"n".repeat(38)}@example.test`, name: "Ignored Other" }),
   ]);
-  const { ep: first, nc } = await connect(firstToken);
+  const { ep: first, nc } = await connect(firstToken, row, true);
   const { nc: otherNc } = await connect(otherToken, otherRow);
   const names = await Promise.all([readUsername(nc, a.space, owner), readUsername(nc, a.space, otherOwner)]);
   suite.check("two owners with concurrent first grants receive distinct names from their preferred username and email claims",
@@ -143,11 +211,17 @@ try {
   suite.check("the callout bound the listing generation to the agent's actor-ledger row",
     evidence?.sources.length === 1 && evidence.sources[0]!.key === `actor.${owner}.lister.${row.lifecycleUid}`, evidence?.sources);
 
-  const { ep: second } = await connect(changed);
+  const { ep: second, nc: ncOfSecond } = await connect(changed);
   const other = await second.listingCaller().catch((e: unknown) => e as Error);
   const generationOf = (c: IssuedCaller | Error | undefined) => (c instanceof Error || c === undefined ? undefined : c.generation);
   suite.check("each connection gets its own listing generation",
     generationOf(other) !== undefined && generationOf(caller) !== undefined && generationOf(other) !== generationOf(caller), [generationOf(caller), generationOf(other)]);
+
+  const received: string[] = [];
+  const { ep: foreign } = await connect(otherToken, otherRow, true, received);
+  const { ep: sender, nc: senderNc } = await connect(await bearer("lister-human", {}, undefined, "sender"), senderRow);
+  await second.stop();
+  await checkAddresses(sender, senderNc, first, foreign, names[1]!, received, ncOfSecond);
 } finally {
   for (const ep of endpoints) await ep.stop().catch(() => {});
   await registry?.stop().catch(() => {});

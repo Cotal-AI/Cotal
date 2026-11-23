@@ -12,6 +12,7 @@ import { runDriverGrants, runMediatorGrants, runOperatorGrants } from "./run-dri
 import { transferReaderGrants, transferWriterGrants } from "./transfer.js";
 import { environmentManagerPermissions, isEnvironmentManagerProfile } from "./environment-manager-grants.js";
 import { backupProfilePermissions, restoreProfilePermissions } from "./backup.js";
+import { withPeerAddressLookup } from "./peer-address.js";
 import type { MintOpts, MintPrincipal } from "./provision-jwt.js";
 import { managerCallerPermissions, supervisorPermissions, remoteManagerPermissions, operatorPermissions, probePermissions, channelWriterPermissions, channelPurgerPermissions, teardownPermissions, membershipStoreRecreatePermissions, issuedStoreRecreatePermissions, controlCallerPermissions, issuedCallerFor, listingGrantRows, deployerPermissions, purgerPermissions, provisionerPermissions, issuerPermissions, registryReaderPermissions, runAdmitterPermissions, lifecycleExecutorPermissions, goalWriterPermissions, sessionCallerPermissions, dmReaderPermissions, sessionServingPermissions, sessionLedgerPermissions, endpointServeExecutorPermissions, deprovisionerPermissions, deliveryPermissions, membershipRwPermissions, withUsernameRegistryRead } from "./provision-permission-builders.js";
 
@@ -161,7 +162,9 @@ const INSTRUMENT_PROFILES: ReadonlySet<Profile> = new Set<Profile>(["control-cal
 export function permissionsFor(profile: Profile, space: string, pr: MintPrincipal, opts: MintOpts): Record<string, unknown> {
   const permissions = profilePermissions(profile, space, pr, opts);
   // Only a per-user callout binds a broker-assigned reader identity to a member connection.
-  return pr.readerId === undefined ? permissions : withUsernameRegistryRead(space, permissions);
+  if (pr.readerId === undefined) return permissions;
+  const registry = withUsernameRegistryRead(space, permissions);
+  return withPeerAddressLookup(space, pr, registry);
 }
 
 function profilePermissions(
