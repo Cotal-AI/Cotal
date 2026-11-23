@@ -772,6 +772,9 @@ While no mod serves the session, `commands` answers `supported: false`, and `com
 `interrupt` are `unimplemented` with the cause:
 
 - Claude Code is older than 2.1.330.
+- The seat runs on Windows. A Windows pipe lives in a namespace every account on the machine
+  shares, so another account could pose as the session's command pipe. Agent commands do not run
+  there yet.
 - Mods are off: `--bare`, `--safe-mode`, `disableAllHooks`, or an organization's
   `allowManagedModsOnly` or `allowManagedHooksOnly`.
 - The plugin's mod comes from another connector version than its MCP server. Reload the plugin or
