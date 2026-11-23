@@ -24,7 +24,10 @@
  * once taken; a turn with nothing in it is bad-request, a turn to a connector that takes none, or with
  * images to one that takes no images, is unimplemented, and an agent never gives itself a turn.
  * `usage` answers the harness's numbers, `supported: false` without a hook, and unavailable when the
- * harness fails; the broker refuses both to everyone but the owner's sessions.
+ * harness fails; the broker refuses both to everyone but the owner's sessions. Presence shows
+ * `agentEndpoint` with all four for a pi-like dispatcher and all false with none, follows the
+ * dispatcher's `watch` as its `unsupported()` flips (and `turn` is then unimplemented), and carries
+ * none on an offline record or on an open mesh.
  *
  * Run: pnpm smoke:agent-commands:auth   (needs nats-server on PATH; operator-mode callout, local-only)
  */
@@ -100,6 +103,7 @@ const W = {
   foreignSession: who(B, "web", "interactive"),
   meshWithDispatcher: who(A, "agent", "managed-agent"),
   meshNoDispatcher: who(A, "agentplain", "managed-agent"),
+  meshServed: who(A, "agentserved", "managed-agent"),
   meshEarly: who(A, "agentearly", "managed-agent"),
   meshStopping: who(A, "agentstop", "managed-agent"),
   foreignGrantee: who(B, "builder", "managed-agent"),
@@ -246,7 +250,7 @@ try {
   provisioner.on("error", () => {});
   stops.push(() => provisioner.stop());
   await provisioner.start();
-  for (const w of [W.withDispatcher, W.noDispatcher, W.byHand, W.sibling, W.meshWithDispatcher, W.meshNoDispatcher, W.meshEarly, W.meshStopping])
+  for (const w of [W.withDispatcher, W.noDispatcher, W.byHand, W.sibling, W.meshWithDispatcher, W.meshNoDispatcher, W.meshServed, W.meshEarly, W.meshStopping])
     await provisionAgentDurables(provisioner, { owner: w.owner, actor: w.actor, lifecycleUid: w.uid }, { durableMembership: false });
   calloutNc = await connect({ servers: SERVERS, authenticator: credsAuthenticator(enc(callout.calloutCreds)) });
   startAuthCallout(calloutNc as never, {
@@ -660,7 +664,8 @@ try {
   }
 
   console.log("\na MeshAgent on a per-user mesh");
-  const servedBy = (w: Who) => until(() => webEp.getRoster().find((p: Presence) => p.card.id === `${w.owner}.${w.actor}`)?.prompts !== undefined, 10_000);
+  const rosterOf = (w: Who) => webEp.getRoster().find((p: Presence) => p.card.id === `${w.owner}.${w.actor}`);
+  const servedBy = (w: Who) => until(() => rosterOf(w)?.prompts !== undefined, 10_000);
   {
     const harness = fake();
     const agent = new MeshAgent(meshConfig(W.meshWithDispatcher), {}, { commands: harness });
@@ -695,6 +700,32 @@ try {
     check("a MeshAgent with no dispatcher answers { supported: false } and refuses command unimplemented, not-executed",
       list.ok && list.value.ok && same(list.value.data, { supported: false }) && verdict(run) === "unimplemented/not-executed", [verdict(list), verdict(run)]);
     check("...and has nothing waiting to dispatch", plain.queuedCommands === 0 && await plain.dispatchNextCommand() === "empty");
+    const shown = rosterOf(W.meshNoDispatcher)?.agentEndpoint;
+    check("...and its presence shows agentEndpoint with all four false", same(shown, { interrupt: false, turn: false, images: false, usage: false }), shown);
+  }
+  {
+    let cause: string | undefined;
+    let changed: (() => void) | undefined;
+    const harness = { ...fake({ interrupt: async () => "idle", turn: async () => {}, images: true, usage: async () => ({}) }), unsupported: () => cause, watch: (c: () => void) => { changed = c; } };
+    const agent = new MeshAgent(meshConfig(W.meshServed), {}, { commands: harness });
+    agent.on("error", () => {});
+    stops.push(() => agent.stop());
+    await agent.start();
+    const shown = () => rosterOf(W.meshServed)?.agentEndpoint;
+    const ALL = { interrupt: true, turn: true, images: true, usage: true };
+    check("a MeshAgent with a pi-like dispatcher shows agentEndpoint with interrupt, turn, images and usage once it serves", await until(() => same(shown(), ALL), 10_000), shown());
+    cause = "the command mod is not running";
+    changed?.();
+    check("when its dispatcher reports that unsupported() names a cause, presence shows only usage",
+      await until(() => same(shown(), { interrupt: false, turn: false, images: false, usage: true })), shown());
+    const turn = await settled(call(webEp, W.meshServed, "turn", { text: "hello" }));
+    check("...and the owner's turn is unimplemented, not-executed, and the harness never got it", verdict(turn) === "unimplemented/not-executed" && harness.turns.length === 0, verdict(turn));
+    cause = undefined;
+    changed?.();
+    check("once it names none again, presence shows all four", await until(() => same(shown(), ALL)), shown());
+    await agent.stop();
+    const gone = await until(() => rosterOf(W.meshServed)?.status === "offline");
+    check("its offline record carries no agentEndpoint", gone && rosterOf(W.meshServed)?.agentEndpoint === undefined, rosterOf(W.meshServed));
   }
 
   {
@@ -761,8 +792,9 @@ try {
       const seen = await until(() => watcher.getRoster().some((p: Presence) => p.card.id === open.id), 8000);
       await wait(500);
       const presence = watcher.getRoster().find((p: Presence) => p.card.id === open.id);
-      check("a MeshAgent with a dispatcher on an open mesh starts and connects as before, serves nothing, logs nothing about it, and its presence has no prompts field",
-        open.connected && seen && presence !== undefined && presence.prompts === undefined && open.queuedCommands === 0 && said.length === 0, { prompts: presence?.prompts, said });
+      check("a MeshAgent with a dispatcher on an open mesh starts and connects as before, serves nothing, logs nothing about it, and its presence has no prompts or agentEndpoint field",
+        open.connected && seen && presence !== undefined && presence.prompts === undefined && presence.agentEndpoint === undefined && open.queuedCommands === 0 && said.length === 0,
+        { prompts: presence?.prompts, agentEndpoint: presence?.agentEndpoint, said });
     } finally {
       process.stderr.write = write;
     }

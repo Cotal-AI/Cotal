@@ -435,5 +435,8 @@ const schema = JSON.parse(readFileSync(fileURLToPath(new URL("../../../spec/cota
 const counts = schema.definitions.PresencePrompts?.properties;
 check("spec/cotal.schema.json gives prompts.open and prompts.seq as non-negative integers",
   ["open", "seq"].every((k) => counts?.[k]?.type === "integer" && counts[k].minimum === 0), counts);
+const served = schema.definitions.PresenceAgentEndpoint as { properties: Record<string, { type?: string }>; required?: string[] } | undefined;
+check("spec/cotal.schema.json gives the presence agentEndpoint field four required booleans",
+  ["interrupt", "turn", "images", "usage"].every((k) => served?.properties[k]?.type === "boolean" && served.required?.includes(k)) && Object.keys(served?.properties ?? {}).length === 4, served);
 
 finish();

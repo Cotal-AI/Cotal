@@ -1,0 +1,3 @@
+# What a seat's presence says its agent endpoint serves, derived from its dispatcher, and the turn refusal
+# while the dispatcher names a cause. No broker.
+smoke:agent-endpoint-served
