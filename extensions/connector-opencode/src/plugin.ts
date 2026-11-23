@@ -1115,6 +1115,12 @@ export const cotal: Plugin = async () => {
         if (!p.sessionID || ours(p.sessionID)) await safeStatus("waiting", p.title);
         return;
       }
+      // A question waits on a person as a permission ask does.
+      if ((event.type as string) === "question.asked") {
+        const q = event.properties as { sessionID?: string; questions?: Array<{ header?: string }> };
+        if (q.sessionID && ours(q.sessionID)) await safeStatus("waiting", q.questions?.length === 1 ? q.questions[0]?.header : "Questions");
+        return;
+      }
       switch (event.type) {
         case "session.created": {
           // Adopt every top-level session created in this OpenCode process. That makes `/new` a
