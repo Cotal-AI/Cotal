@@ -6,6 +6,7 @@
  */
 import { hostname } from "node:os";
 import {
+  AGENT_CMD_INTERRUPT,
   AGENT_CMD_SET_NAME,
   AGENT_CONTRACTS,
   AGENT_ENDPOINT,
@@ -14,12 +15,14 @@ import {
   DEV_OWNER,
   EVENT_CHANNEL_PREFIX,
   eventChannel,
+  eventPayloadSubject,
   eventChannelPrincipal,
   isEventChannel,
   noLiveInstances,
   parsePrincipalKey,
   principalKey,
   remoteManagerActors,
+  spacePrefix,
   spawnNameError,
   type CotalEndpoint,
   type CotalMessage,
@@ -32,13 +35,14 @@ import { connectTargetOrThrow, isConnectRefusal, ownManagerInstances, resolveCon
 import { askManager, controlPs, liveManagerIds, managerCandidate, managerRailGone, reportedManagerHost, startStackManagerRemedy, START_TIMEOUT_MS, type ControlClient, type ControlCtx, type ManagerReply } from "@cotal-ai/workspace/control";
 import { readManagedLaunch, requestManagedLaunch } from "@cotal-ai/workspace/launch";
 import { openObserver } from "@cotal-ai/workspace/view";
-import { deregisterRemedy, LaunchListsRefused, NoLaunchManager, SignInRequired, type AgentCatalog, type AguiEventLike, type ManagerChoice, type Mesh, type RosterEntry, type SeatFrame, type SeatRef, type SeatRow, type SpawnRequest } from "./mesh.js";
+import { AgentCallFailed, deregisterRemedy, LaunchListsRefused, NoLaunchManager, SignInRequired, type AgentCatalog, type AguiEventLike, type ManagerChoice, type Mesh, type RosterEntry, type SeatFrame, type SeatRef, type SeatRow, type SpawnRequest } from "./mesh.js";
 
 const OBSERVER_NAME = "acp";
 /** A seat's retained event history is read up to this many frames. */
 const HISTORY_FRAMES = 1000;
-/** How long a `set-name` call waits for the agent's answer. */
-const RENAME_MS = 10_000;
+/** How long an `agent` endpoint call waits for the agent's answer: longer than the agent's own 10 s
+ *  bounds, as SPEC 13.22 asks of a reader. */
+const AGENT_CALL_MS = 20_000;
 
 export interface LiveMeshOptions {
   readonly space?: string;
@@ -120,13 +124,15 @@ function listFailure(reply: ManagerReply, what: string): Error {
 }
 
 /** The frame a message carries, or undefined when it carries none. Only the agent publishes on
- *  its own event channel, so a frame from any other sender is none. */
-export function frameOf(msg: CotalMessage): SeatFrame | undefined {
+ *  its own event channel and payload rail, so a frame from any other sender is none. A payload
+ *  frame's envelope names the event channel it belongs to. */
+export function frameOf(msg: CotalMessage, plane: SeatFrame["plane"] = "events"): SeatFrame | undefined {
   const seat = msg.channel === undefined ? null : eventChannelPrincipal(msg.channel);
   if (!seat || msg.from?.id !== principalKey(seat.owner, seat.actor).key) return undefined;
   const part = (msg.parts as readonly Record<string, unknown>[]).find((p) => p.kind === AGUI_FRAME_KIND);
   if (!part || typeof part.runId !== "string" || typeof part.threadId !== "string" || typeof part.seq !== "number" || !Array.isArray(part.events)) return undefined;
   return {
+    plane,
     owner: seat.owner,
     actor: seat.actor,
     threadId: part.threadId,
@@ -154,6 +160,7 @@ interface Connected {
   readonly target: MeshTarget;
   readonly observer: CotalEndpoint;
   readonly events: string;
+  readonly payloads: string;
   readonly started: { owner: string; actor: string; lifecycleUid: string } | undefined;
   readonly signInNow: (() => Promise<string>) | undefined;
   readonly ownManagers: (() => Promise<ManagerInstanceListing[]>) | undefined;
@@ -165,6 +172,8 @@ async function connect(options: LiveMeshOptions): Promise<Connected> {
   /** The event channels the observer follows, as a subject: every agent's on a static or open
    *  space, and the agents under the person's own owner on a user-auth space. */
   let events: string;
+  /** The payload rails the observer follows: every agent's, or those under the person's owner. */
+  let payloads: string;
   /** The person's sign-in on a user-auth space. The bridge acts as this sign-in throughout. */
   let started: { owner: string; actor: string; lifecycleUid: string } | undefined;
   /** On a user-auth space: asks the exchange for the sign-in again, and stops the bridge when it changed. */
@@ -189,6 +198,7 @@ async function connect(options: LiveMeshOptions): Promise<Connected> {
     // Only an agent publishes on its own event channel, so on a user-auth space the sender's owner
     // is the person's too.
     events = user ? chatSubject(conn.space, user.owner, "*", `${EVENT_CHANNEL_PREFIX}${user.owner}.*`) : chatSubject(conn.space, "*", "*", `${EVENT_CHANNEL_PREFIX}*.*`);
+    payloads = user ? eventPayloadSubject(conn.space, user.owner, "*") : `${spacePrefix(conn.space)}.evp.*.*`;
     observer = openObserver({ space: conn.space, server: conn.server, name: OBSERVER_NAME, ...(user ? { auth: { user }, lifecycleUid: user.lifecycleUid } : { auth: { creds: conn.creds } }) });
     // A re-grant ends the connection at once, while the endpoint renews its sign-in only mid-way
     // through the token. So a connection error asks the exchange now. The old lifecycle may still be
@@ -220,7 +230,7 @@ async function connect(options: LiveMeshOptions): Promise<Connected> {
   } catch (e) {
     throw plain(e);
   }
-  return { target, observer, events, started, signInNow, ownManagers };
+  return { target, observer, events, payloads, started, signInNow, ownManagers };
 }
 
 /** The manager control calls, made as the person's sign-in when there is one. */
@@ -381,8 +391,52 @@ function launchCalls(c: Connected, p: Controls, defaultPersona: string | null | 
   };
 }
 
+/** The seat's `agent` endpoint (SPEC 13.22), called as its owner. An agent serves it only under a
+ *  user-auth credential (SPEC 13.21), so a space where people do not sign in has none. */
+function agentCalls(c: Connected): Pick<Mesh, "agentEndpoints" | "agentCall" | "promptCounter"> {
+  const { started, observer } = c;
+  /** The seat's current presence row, when it is live and is the incarnation the bridge holds. */
+  const row = (seat: SeatRef) => {
+    const id = principalKey(seat.owner, seat.actor).key;
+    return observer.getRoster().find((s) => s.card.id === id && s.lifecycleUid === seat.lifecycleUid && s.status !== "offline");
+  };
+  return {
+    agentEndpoints: started !== undefined,
+
+    async agentCall(seat, command, args) {
+      if (!started) throw new AgentCallFailed(`${seat.name} serves no agent endpoint: agents serve it only on a space where people sign in`, "unavailable");
+      const runtime = row(seat)?.runtime?.id;
+      if (!runtime) throw new AgentCallFailed(`${seat.name} is not on the roster with its runtime`, "unavailable");
+      const contract = AGENT_CONTRACTS[command];
+      if (!contract) throw new AgentCallFailed(`the agent endpoint has no command ${command}`, "unimplemented");
+      let reply;
+      try {
+        reply = await observer.callPrincipal({
+          endpoint: AGENT_ENDPOINT,
+          principal: { owner: seat.owner, actor: seat.actor, uid: seat.lifecycleUid, runtimeId: runtime },
+          command,
+          authority: "owner",
+          args,
+          deadlineMs: AGENT_CALL_MS,
+          contract,
+        });
+      } catch (e) {
+        const code = (e as { code?: unknown }).code;
+        throw new AgentCallFailed(plain(e).message, typeof code === "string" ? code : "internal");
+      }
+      if (!reply.ok) throw new AgentCallFailed(reply.error.message, reply.error.code, reply.error.details);
+      return reply.data;
+    },
+
+    promptCounter(seat) {
+      const r = row(seat);
+      return r?.prompts && r.runtime ? { runtime: r.runtime.id, open: r.prompts.open, seq: r.prompts.seq } : undefined;
+    },
+  };
+}
+
 /** The agent list and the commands sent to one agent. */
-function seatCalls(options: LiveMeshOptions, c: Connected, p: Controls): Pick<Mesh, "seats" | "despawn" | "interrupt" | "input" | "rename" | "spawnNameError"> {
+function seatCalls(options: LiveMeshOptions, c: Connected, p: Controls, agent: ReturnType<typeof agentCalls>): Pick<Mesh, "seats" | "despawn" | "interrupt" | "input" | "rename" | "spawnNameError"> {
   const { started, observer, target } = c;
   const { ctx, client, ask, seatCommand, yourManagers } = p;
   return {
@@ -446,6 +500,16 @@ function seatCalls(options: LiveMeshOptions, c: Connected, p: Controls): Pick<Me
     },
 
     async interrupt(seat: SeatRef) {
+      // The agent's own endpoint stops the turn whatever runtime holds it. A connector that has no
+      // in-process stop answers `unimplemented`, and its manager's terminal key is the stop it has.
+      if (agent.agentEndpoints) {
+        try {
+          await agent.agentCall(seat, AGENT_CMD_INTERRUPT, {});
+          return;
+        } catch (e) {
+          if (!(e instanceof AgentCallFailed) || e.code !== "unimplemented") throw new Error(`${seat.name} was not interrupted: ${(e as Error).message}`);
+        }
+      }
       const reply = await seatCommand("interrupt", seat, { name: seat.name });
       if (!reply.ok) throw failure(reply, `${seat.name} was not interrupted`);
     },
@@ -456,22 +520,8 @@ function seatCalls(options: LiveMeshOptions, c: Connected, p: Controls): Pick<Me
     },
 
     async rename(seat: SeatRef, name: string) {
-      // An agent serves its `agent` endpoint only under a user-auth credential (SPEC 13.21).
       if (!started) throw new Error("renaming a running agent needs a space where people sign in, where the agent serves `set-name`");
-      const id = principalKey(seat.owner, seat.actor).key;
-      const runtime = observer.getRoster().find((s) => s.card.id === id && s.lifecycleUid === seat.lifecycleUid && s.status !== "offline")?.runtime?.id;
-      if (!runtime) throw new Error(`${seat.name} is not on the roster with its runtime, so it cannot be renamed now`);
-      const reply = await observer.callPrincipal({
-        endpoint: AGENT_ENDPOINT,
-        principal: { owner: seat.owner, actor: seat.actor, uid: seat.lifecycleUid, runtimeId: runtime },
-        command: AGENT_CMD_SET_NAME,
-        authority: "owner",
-        args: { name },
-        deadlineMs: RENAME_MS,
-        contract: AGENT_CONTRACTS[AGENT_CMD_SET_NAME]!,
-      }).catch((e: unknown) => Promise.reject(plain(e)));
-      if (!reply.ok) throw new Error(reply.error.message);
-      return (reply.data as SetNameIO).name;
+      return ((await agent.agentCall(seat, AGENT_CMD_SET_NAME, { name })) as SetNameIO).name;
     },
 
     spawnNameError(name: string) {
@@ -482,7 +532,7 @@ function seatCalls(options: LiveMeshOptions, c: Connected, p: Controls): Pick<Me
 
 /** What the observer reads: the agents' frames and presence, the roster and the channels. */
 function spaceReads(c: Connected): Pick<Mesh, "followFrames" | "frameHistory" | "presence" | "roster" | "channels" | "close"> {
-  const { observer, events, started } = c;
+  const { observer, events, payloads, started } = c;
   return {
     followFrames(onFrame) {
       let live = true;
@@ -491,15 +541,28 @@ function spaceReads(c: Connected): Pick<Mesh, "followFrames" | "frameHistory" | 
         const frame = frameOf(msg);
         if (frame) onFrame(frame);
       }, { subject: events });
+      observer.tap((_subject, msg) => {
+        if (!live || !msg || !isEventChannel(msg.channel)) return;
+        const frame = frameOf(msg, "payloads");
+        if (frame) onFrame(frame);
+      }, { subject: payloads });
       return () => (live = false);
     },
 
     async frameHistory(seat: SeatRef) {
       // A person's sign-in reads history through its own lifecycle's reader.
-      const rows = started
-        ? (await observer.channelHistoryPage(eventChannel(seat), { limit: HISTORY_FRAMES, publisher: seat })).items
-        : await observer.channelHistory(eventChannel(seat), { limit: HISTORY_FRAMES, publisher: seat });
-      return rows.map(frameOf).filter((f): f is SeatFrame => f !== undefined);
+      const [rows, payloadRows] = await Promise.all([
+        started
+          ? observer.channelHistoryPage(eventChannel(seat), { limit: HISTORY_FRAMES, publisher: seat }).then((page) => page.items)
+          : observer.channelHistory(eventChannel(seat), { limit: HISTORY_FRAMES, publisher: seat }),
+        observer.eventPayloadHistory(seat.owner, seat.actor, { limit: HISTORY_FRAMES }),
+      ]);
+      // A payload frame shares its event frame's epoch and seq, and goes right before it. One whose
+      // event frame the space no longer holds belongs to no call the thread shows.
+      const key = (f: SeatFrame) => `${f.epoch}:${f.seq}`;
+      const before = new Map<string, SeatFrame[]>();
+      for (const f of payloadRows.map((m) => frameOf(m, "payloads"))) if (f) before.set(key(f), [...(before.get(key(f)) ?? []), f]);
+      return rows.map((m) => frameOf(m)).filter((f): f is SeatFrame => f !== undefined).flatMap((f) => [...(before.get(key(f)) ?? []), f]);
     },
 
     presence(seat: SeatRef) {
@@ -528,6 +591,7 @@ export async function openLiveMesh(options: LiveMeshOptions): Promise<Mesh> {
   const c = await connect(options);
   const { target } = c;
   const p = controls(options, c);
+  const agent = agentCalls(c);
   const defaultPersona = resolvePreference("persona", { space: target.space }).value;
   const defaultAgent = resolvePreference("harness", { space: target.space }).value;
 
@@ -535,7 +599,8 @@ export async function openLiveMesh(options: LiveMeshOptions): Promise<Mesh> {
     space: target.space,
     ...(defaultAgent ? { defaultAgent } : {}),
     ...launchCalls(c, p, defaultPersona),
-    ...seatCalls(options, c, p),
+    ...agent,
+    ...seatCalls(options, c, p, agent),
     ...spaceReads(c),
   };
 }
