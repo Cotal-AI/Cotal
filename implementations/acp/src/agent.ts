@@ -32,6 +32,7 @@ import { TERMINAL_AUTH } from "./auth-method.js";
 import { FrameMapper, type RunSignal } from "./frames.js";
 import { answer, permissionRequest, plainOptions, PromptFollower } from "./prompts.js";
 import { deregisterRemedy, LaunchListsRefused, NoLaunchManager, SignInRequired, type ManagerChoice, type Mesh, type SeatFrame, type SeatList, type SeatRef, type SeatRow } from "./mesh.js";
+import { launchManagers } from "./manager-start.js";
 import { awaitTaken, promptParts, takeTurn, usageUpdate } from "./turns.js";
 import { applyOption, configOptions, cutShort, modelState, DEFAULT_PERSONA, DEFAULT_VARIANT, defaultManager, initialSelection, NO_CHANNEL, noMachine, parseModel, reconcile, refusal, type Offer, type Selection } from "./options.js";
 
@@ -393,18 +394,6 @@ function launchOffers(options: CotalAgentOptions) {
     seatOnly: true,
   });
 
-  /** The managers a new agent may start on. When none may, this machine's manager is started and the
-   *  list read again, and `onStart` gets the line the thread shows. */
-  const launchManagers = async (m: Mesh, onStart: (line: string) => void): Promise<ManagerChoice[]> => {
-    try {
-      return await m.managers();
-    } catch (e) {
-      if (!(e instanceof NoLaunchManager)) throw e;
-      onStart(await m.startManager());
-      return m.managers();
-    }
-  };
-
   /** The launch lists of the manager a thread starts on. A loaded thread passes the manager that
    *  `held` its agent: it stays a choice, and the thread opens while no manager may start a new one.
    *  The load passes its id; a later change passes the choice the load described. */
@@ -443,7 +432,7 @@ function launchOffers(options: CotalAgentOptions) {
     const selection = { ...initialSelection(offer), model: `${row.agent}/${row.model ?? "default"}`, ...(row.managerInstanceId ? { machine: row.managerInstanceId } : {}) };
     return { offer, selection, ...(held ? { held } : {}) };
   };
-  return { seatOffer, offerFor, seatThread, launchManagers };
+  return { seatOffer, offerFor, seatThread };
 }
 
 type Offers = ReturnType<typeof launchOffers>;
@@ -774,7 +763,7 @@ function openCommand(b: Bridge, offers: Offers) {
 /** The handlers that open a thread, change its options and run its prompts. */
 function threadHandlers(b: Bridge, offers: Offers, runTurn: ReturnType<typeof turnRunner>, slash: ReturnType<typeof slashCommands>, newName: () => string) {
   const { options, sessions, send, mesh, bind, sessionOf, announce, reportUsage } = b;
-  const { offerFor, launchManagers } = offers;
+  const { offerFor } = offers;
   /** Show a line in the thread once the current reply is out, so a new thread's client knows its id. */
   const tell = (session: Session) => (line: string): void => {
     setImmediate(() => void send(session, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: line } }).catch((e: Error) => options.log(`session ${session.id}: update not sent: ${e.message}`)));

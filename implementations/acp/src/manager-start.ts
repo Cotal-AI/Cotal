@@ -3,7 +3,7 @@
  * person never has to keep a manager running for their client.
  */
 import { spawn } from "node:child_process";
-import { NoLaunchManager } from "./mesh.js";
+import { NoLaunchManager, type ManagerChoice, type Mesh } from "./mesh.js";
 
 /** How long a manager the bridge starts waits with no agents before it stops itself. */
 const IDLE_EXIT_SECONDS = 600;
@@ -51,4 +51,16 @@ export async function startManager(space: string): Promise<string> {
   });
   if (code !== 0) throw failed(startFailure(code, stdout, stderr));
   return startLine(space, stdout);
+}
+
+/** The managers a new agent may start on. When none may, this machine's manager is started and the
+ *  list read again, and `onStart` gets the line the thread shows. */
+export async function launchManagers(m: Pick<Mesh, "managers" | "startManager">, onStart: (line: string) => void): Promise<ManagerChoice[]> {
+  try {
+    return await m.managers();
+  } catch (e) {
+    if (!(e instanceof NoLaunchManager)) throw e;
+    onStart(await m.startManager());
+    return m.managers();
+  }
 }
