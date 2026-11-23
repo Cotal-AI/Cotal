@@ -20,6 +20,33 @@ const PLUGIN_DIR = fileURLToPath(new URL("./plugin", import.meta.url));
  *  foreground `opencode` TUI to the exact session the plugin drives (see launch.ts). */
 const SERVE_SHIM = fileURLToPath(new URL("./serve.js", import.meta.url));
 
+/** The permission rules of a launch with `askPermissions`: T3 Code's OpenCode approval-required
+ *  rules (`openCodePermissionRules`), in the config shape 1.x reads and 2.x translates. Every tool
+ *  asks except the ones T3 always allows and the agent's own `cotal_*` tools, and reading an `.env`
+ *  file asks. The last matching rule wins, so the catch-all comes first. */
+const ASKING_PERMISSION = {
+  "*": "ask",
+  question: "allow",
+  read: { "*": "allow", "*.env": "ask", "*.env.*": "ask", "*.env.example": "allow" },
+  glob: "allow",
+  grep: "allow",
+  lsp: "allow",
+  todowrite: "allow",
+  task: "allow",
+  skill: "allow",
+  "cotal_*": "allow",
+};
+
+/** The permission rules a launch runs under: everything allowed, so a supervised agent does not stall
+ *  on an approval no one is there to give, or {@link ASKING_PERMISSION} for an `askPermissions`
+ *  launch. Such a launch may not set `permission` in its launch options, which would override them. */
+function launchPermission(opts: LaunchOpts): unknown {
+  if (!opts.askPermissions) return "allow";
+  if (connectorLaunchOptions("opencode", opts.launchOptions).some(([k]) => k === "permission"))
+    throw new Error("opencode connector: askPermissions sets the permission rules, so the launch options may not set `permission` too");
+  return ASKING_PERMISSION;
+}
+
 function discoveryEnv(): NodeJS.ProcessEnv {
   const env = { ...process.env };
   delete env.OPENCODE_CONFIG_CONTENT;
@@ -188,7 +215,8 @@ function listOpenCodeModels(opts: ModelCatalogOpts = {}): ModelCatalog | Promise
  * Config rides in `OPENCODE_CONFIG_CONTENT` (inline JSON, the highest merge layer), so the
  * operator's `~/.config/opencode` is never written.
  * `permission:"allow"` keeps a supervised agent from stalling on a tool approval the human may not
- * be at the keyboard to grant. Self-registers on import; the manager resolves it by type "opencode".
+ * be at the keyboard to grant, unless the launch asks first (`askPermissions`). Self-registers on
+ * import; the manager resolves it by type "opencode".
  */
 export const opencodeConnector: Connector = {
   kind: "connector",
@@ -216,6 +244,7 @@ export const opencodeConnector: Connector = {
   eventChannel,
   // A session serves OpenCode's permission asks and questions on the agent endpoint (prompts.ts).
   prompts: true,
+  supportsAskPermissions: true,
   supportsLaunchValidation: true,
   buildLaunch(opts: LaunchOpts): LaunchSpec {
     if (opts.continueSession) throw new Error("opencode connector does not support exact-session continuation");
@@ -304,7 +333,7 @@ export const opencodeConnector: Connector = {
 
     const config: Record<string, unknown> = {
       $schema: "https://opencode.ai/config.json",
-      permission: "allow",
+      permission: launchPermission(opts),
       plugin: [PLUGIN_DIR],
       // `/reconnect`: see reconnect-command.ts.
       command: { [RECONNECT_COMMAND.name]: { description: RECONNECT_COMMAND.description, template: RECONNECT_COMMAND.template } },

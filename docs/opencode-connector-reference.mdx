@@ -180,17 +180,21 @@ in-process plugin does everything.
   `command` that names it ends `refused` with `failed-precondition`, because a broken link never
   delivers it and a working one would drop the connection its answer needs.
 - Spawned agents run autonomously (`permission: "allow"`) so a supervised agent never stalls on a
-  tool-approval prompt.
+  tool-approval prompt, unless the launch sets `askPermissions` (see [prompts](#prompts)).
 
 The generic tool surface and the inbound-message model are shared across connectors: see
 [mcp-tools.md](mcp-tools.mdx) and [connect-claude.md](connect-claude.mdx).
 
 ## Prompts
 
-A seat launches with OpenCode's `permission` set to `allow`, so it asks nothing. A persona whose
-`launchOptions` set an asking permission, such as `{permission: {bash: ask}}`, makes OpenCode ask.
-On a signed-in space each ask then opens a prompt on the agent's `agent` endpoint, on 1.x and 2.x,
-while OpenCode's own dialog stays open. The first reply wins.
+A seat launches with OpenCode's `permission` set to `allow`, so it asks nothing. A launch with
+[`askPermissions`](connectors.mdx#opt-in-launch-fields) sets T3 Code's approval-required rules
+instead: every tool asks except question, read, glob, grep, lsp, todowrite, task, skill and the
+agent's own `cotal_*` tools, and reading an `.env` file other than `.env.example` asks. Such a
+launch refuses a `permission` launch option, which would override those rules. A persona whose
+`launchOptions` set an asking permission, such as `{permission: {bash: ask}}`, also makes OpenCode
+ask. On a signed-in space each ask then opens a prompt on the agent's `agent` endpoint, on 1.x and
+2.x, while OpenCode's own dialog stays open. The first reply wins.
 
 - **A permission ask** offers Allow once, Allow always and Reject. Its subject is the tool call it
   gates, with the tool's name and input as the call started, so a client can show the command or
