@@ -103,7 +103,7 @@ import {
   reasoningMessageContent,
   reasoningMessageEnd,
 } from "@cotal-ai/connector-core";
-import { mapStreamLine, savedText, type ClaudeStreamState } from "./claude-stream.js";
+import { hiddenText, mapStreamLine, savedText, type ClaudeStreamState } from "./claude-stream.js";
 
 /**
  * One JSONL entry, typed to what the mapping actually reads and no further.
@@ -281,6 +281,25 @@ export function userInterrupt(entry: ClaudeEntry): string | undefined {
   if (!Array.isArray(content) || content.length !== 1 || content[0]?.type !== "text") return undefined;
   const text = content[0].text;
   return text !== undefined && USER_INTERRUPT_TEXTS.has(text) ? text : undefined;
+}
+
+// The texts Claude Code writes for a reply it has none of: when it closes a turn itself, as on a
+// resume after the reply was cut off, and for a message with no content.
+const NO_RESPONSE = "No response requested.";
+const NO_CONTENT = "(no content)";
+// What Claude Code drops from a reply's text before it shows it.
+const DROPPED_BLOCKS = /<(commit_analysis|context|function_analysis|pr_analysis)>.*?<\/\1>\n?/gs;
+const MEMORY_TAGS = /<\/?(?:cc-memory|cc_memory|ccmemory|CC-MEMORY|CC_MEMORY|CCMEMORY)(?=[\s/>])[^>]{0,1024}>/g;
+
+/**
+ * Whether Claude Code's terminal shows nothing for an assistant text block, whoever wrote it. Its
+ * renderer (2.1.331) returns no row for {@link NO_RESPONSE}, for {@link NO_CONTENT}, and for a text
+ * that is blank once it drops {@link DROPPED_BLOCKS} and {@link MEMORY_TAGS}. Every other text shows,
+ * an API error included.
+ */
+function hiddenByClaude(text: string): boolean {
+  if (text === NO_RESPONSE || text.trim() === NO_CONTENT) return true;
+  return (text.includes("<") ? text.replace(DROPPED_BLOCKS, "").replace(MEMORY_TAGS, "") : text).trim() === "";
 }
 
 /** A content block. Same reasoning as above: shape-tolerant, read narrowly. */
@@ -552,7 +571,7 @@ export function createClaudeMapper(opts: ClaudeMapperOptions): ClaudeMapper {
       const cotal = Object.keys(meta).length > 0 ? { cotal: meta } : {};
 
       if (b.type === "text" && typeof b.text === "string") {
-        events.push(...savedText(opts.stream, entry, messageId, b.text, ts, cotal));
+        events.push(...(hiddenByClaude(b.text) ? hiddenText(opts.stream, entry, b.text, ts) : savedText(opts.stream, entry, messageId, b.text, ts, cotal)));
         return;
       }
       // A block whose display Claude omitted has empty text; it maps to nothing, not an empty message.
