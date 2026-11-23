@@ -1311,6 +1311,7 @@
     "smoke:hermes-lifecycle-idle": "tsx extensions/connector-hermes/smoke/lifecycle-idle.smoke.ts",
     "smoke:hermes-approvals": "tsx extensions/connector-hermes/smoke/approvals.smoke.ts",
     "smoke:hermes-plugin-approvals": "tsx extensions/connector-hermes/smoke/plugin-approvals.smoke.ts",
+    "smoke:hermes-models": "tsx extensions/connector-hermes/smoke/models.smoke.ts",
     "smoke:hermes-injection-framing": "tsx extensions/connector-hermes/smoke/injection-framing.smoke.ts",
     "smoke:codex-tool-closed": "tsx extensions/connector-codex/smoke/tool-input-closed.smoke.ts",
     "smoke:cli-on-instance": "tsx implementations/manager/smoke/cli-on-instance-live.smoke.ts",

@@ -193,6 +193,24 @@ field Hermes has not reported is left out. That is the case before the first tur
 releases the session's agent, and for the cost when Hermes reports it as unknown, as it does for a
 custom endpoint.
 
+## Model catalog [#model-catalog]
+
+`cotal models` and the manager's model selector read the catalog from the connector's pinned
+Hermes. Each read runs `plugin/cotal/models.py` once through `uv`, with the environment a launch
+receives: the seat allow-list, the provider keys the connector forwards, and the names in
+`spawn.env`. The script asks Hermes's `resolve_runtime_provider` which provider that environment
+selects, as the gateway does when it starts an agent. For the `custom` provider it lists the models
+the endpoint's `/models` route returns. For a named provider it lists the models Hermes knows for
+that provider. Nothing is cached, so every read asks Hermes again.
+
+A managed seat reads nothing from `~/.hermes`, so the read runs on a new empty profile and deletes
+it afterwards. With `COTAL_HERMES_ADOPT_HOME` set, it runs on that profile instead.
+
+When Hermes resolves no provider, or cannot read the endpoint's model list, the catalog is empty and
+its `unavailable` field gives Hermes's reason. A read fails after 10 seconds, and its processes are
+stopped. The first read after the connector is installed may also build the connector's Python
+environment.
+
 ## Command approvals [#command-approvals]
 
 A managed profile turns Hermes's command approvals off, unless the launch sets
