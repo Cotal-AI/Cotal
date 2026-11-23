@@ -373,7 +373,8 @@ export { preparedUpRoot } from "./up-target.js";
  *  the command that stops it. Release this process's hold before the immediate exit, which does not
  *  unwind the surrounding finally, so a later foreground `up` can take the running stack over. */
 function hangupForegroundStack(root: string): never {
-  process.stderr.write(`The terminal closed. This stack is still running; ${codeSpan(`cd ${shellWord(root)} && cotal down`)} stops it.\n`);
+  const stop = `${displayCmd()} down`;
+  process.stderr.write(`The terminal closed. This stack is still running; ${codeSpan(`cd ${shellWord(root)} && ${stop}`)} stops it.\n`);
   process.exitCode = 129;
   releaseForegroundHold(root);
   process.exit(129);
