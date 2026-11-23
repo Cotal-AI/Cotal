@@ -1,0 +1,3 @@
+# The opt-in launch fields on OpenCode: askPermissions writes T3 Code's approval-required permission rules into the
+# launch config, keeps other launch options, and refuses a `permission` launch option that would override them.
+smoke:opencode-launch-fields

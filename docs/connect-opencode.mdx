@@ -14,7 +14,7 @@ First [start a mesh](run-a-mesh.mdx).
 <Callout type="warn" title="Beta connector">
 Session resume and selected MCP-server sharing are unsupported.
 Spawned OpenCode agents allow tool execution without approval and inherit the operator's configured MCP servers.
-A persona that makes OpenCode ask, through its `launchOptions` `permission`, has its asks and questions answered from a signed-in client (see [prompts](opencode-connector-reference.mdx#prompts)).
+A launch with `askPermissions`, or a persona that makes OpenCode ask through its `launchOptions` `permission`, has its asks and questions answered from a signed-in client (see [prompts](opencode-connector-reference.mdx#prompts)).
 </Callout>
 
 ## Prepare OpenCode [#no-install-needed]
@@ -106,7 +106,7 @@ On a space that permits opting out, add `--no-events` to disable publication.
 
 - Session resume and exact-session continuation are unsupported.
 - `connectors.opencode.mcpServers` is unsupported. Agents inherit the operator's MCP servers through the config merge, without a Cotal filter for selecting a subset.
-- Spawned agents use `permission: "allow"`. Tool calls do not wait for human approval.
+- Spawned agents use `permission: "allow"` unless the launch sets `askPermissions`. Without it, tool calls do not wait for human approval.
 - OpenCode 2.x has no `/new` session handoff.
 
 ## Continue [#see-also]
