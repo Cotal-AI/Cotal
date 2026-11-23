@@ -1369,6 +1369,8 @@ That exit replaces the report's own, so a partial report followed by a clean pas
   failure in its facts, even if that URL is reachable.
   For a locally owned stack, a missing or dead broker process is `absent`, not `not-serving`.
   A cleanly stopped controller target reports `absent` and exits `1` without dialing another space.
+  If its store is not writable or its broker address is occupied, the target row names what to fix
+  before restarting.
   For open and static-auth plaintext NATS targets with no absent local process, the probe also checks JetStream and the
   recorded authentication requirement. An unauthenticated substitute for a static-auth broker
   is not reported as serving. When the address and process identity match this space's running
