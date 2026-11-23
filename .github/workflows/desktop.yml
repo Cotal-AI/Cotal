@@ -334,7 +334,8 @@ jobs:
           if [ -n "$APPLE_API_KEY" ]; then auth=(--key "$APPLE_API_KEY_PATH" --key-id "$APPLE_API_KEY" --issuer "$APPLE_API_ISSUER")
           else auth=(--apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" --team-id "$APPLE_TEAM_ID"); fi
           result="$RUNNER_TEMP/dmg-notarization.json"
-          xcrun notarytool submit "$dmg" "${auth[@]}" --wait --output-format json > "$result"
+          # A rejected submission can exit nonzero; the status check below handles every outcome and prints the log.
+          xcrun notarytool submit "$dmg" "${auth[@]}" --wait --output-format json > "$result" || true
           cat "$result"
           id=$(node -e "process.stdout.write(JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8')).id ?? '')" "$result")
           status=$(node -e "process.stdout.write(JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8')).status ?? '')" "$result")
