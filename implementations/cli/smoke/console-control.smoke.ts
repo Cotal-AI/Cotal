@@ -177,15 +177,15 @@ try {
   await wait(3_300);
   m = s.mark();
   await s.command("status w1");
-  const qualified = await s.waitFor(/w1\/worker.*mesh working · progress unknown/, 20_000, m);
+  const qualified = await s.waitFor(/w1 \(role: worker\).*mesh working · progress unknown/, 20_000, m);
   check(":status on a seat the mesh reports WORKING says progress unknown, not a bare working",
     qualified, clean(s.out.slice(m)).match(/status: [^│\n]*/)?.[0] ?? clean(s.out.slice(m)).slice(-200));
   await wait(3_300);
   m = s.mark();
   await s.command("status w2");
-  const idleNoticeRe = /w2\/worker · seat · pty · running · mesh idle[^│\n]*? · up \d+m/;
+  const idleNoticeRe = /w2 \(role: worker\) · seat · pty · running · mesh idle[^│\n]*? · up \d+m/;
   const idle = await s.waitFor(idleNoticeRe, 20_000, m);
-  const idleNoticeRows = clean(s.out.slice(m)).match(/w2\/worker · seat · pty · running · mesh idle[^│\n]*? · up \d+m/g) ?? [];
+  const idleNoticeRows = clean(s.out.slice(m)).match(/w2 \(role: worker\) · seat · pty · running · mesh idle[^│\n]*? · up \d+m/g) ?? [];
   check("...while an idle seat is reported plainly, so the qualifier is not printed unconditionally",
     idle && idleNoticeRows.length > 0 && idleNoticeRows.every((row) => !row.includes("progress unknown")),
     idleNoticeRows.length ? idleNoticeRows : clean(s.out.slice(m)).slice(-200));

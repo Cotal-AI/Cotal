@@ -104,7 +104,7 @@ try {
       Array.from(short).length <= 40 && short.endsWith("… (unverified name)"), short);
     const row = renderInboxPreview({ unread: 1, items: [long] }).rows[0] ?? "";
     check(`a ${length}-character name keeps the marker in the preview row`,
-      Array.from(row).length <= 240 && /^\[DM from n+(\/reviewer|…) \(unverified name\)\] /.test(row), row);
+      Array.from(row).length <= 240 && /^\[DM from n+( \(role: reviewer\)|…) \(unverified name\)\] /.test(row), row);
   }
 
   // The stuck-message note and the part head are the two 40-character forms, read through the

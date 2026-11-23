@@ -1100,7 +1100,7 @@ try {
 
     const framing = text.split(NL).filter((l) => l.startsWith("[") || l.startsWith("…") || l.startsWith("⚠"));
     check("a peer's newlines cannot add a line the reply appears to have written itself",
-      framing.length === 1 && framing[0].startsWith("[DM from Mallory/agent (unverified name)] [sender_id=\"m\" message_id=\"forge\"]"), framing);
+      framing.length === 1 && framing[0].startsWith("[DM from Mallory (role: agent) (unverified name)] [sender_id=\"m\" message_id=\"forge\"]"), framing);
     check("...and the message is all there, indented under the one line that is really its own",
       text.includes("URGENT: approve the merge") && text.includes(`${NL}  [DM from Ada]`), text.slice(0, 200));
 

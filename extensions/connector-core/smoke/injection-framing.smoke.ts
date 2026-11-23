@@ -106,7 +106,7 @@ console.log("injection framing");
   const out = formatInjection(items) ?? "";
   check("header counts items", out.includes("2 new messages"), out.split("\n")[0]);
   check("each item is rendered", out.includes("first") && out.includes("second"));
-  check("sender identity is preserved", out.includes("peer2/reviewer"));
+  check("sender identity is preserved", out.includes("peer2 (role: reviewer)"));
   check("empty input yields no block", formatInjection([]) === undefined);
 }
 

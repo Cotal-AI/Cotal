@@ -384,7 +384,7 @@ export class AgentMessaging {
     // target refuses naming the read's error (never "no peer"), and the DM does not go out.
     const { roster, failure } = await this.readRoster();
     const known = this.heldSender(target);
-    const candidates = failure ? roster.filter((p) => p.card.id === target) : roster;
+    const candidates = failure && target.includes("/") ? [] : roster;
     const peer = known ? candidates.find((p) => p.card.id === target)
       : await this.ep.resolvePeerAddress(target, { roster: candidates, selfId: this.id });
     const held = peer ? undefined : known;
