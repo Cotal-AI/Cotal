@@ -541,20 +541,25 @@ space setup creates the bucket before members connect.
 Only the auth service writes these keys during ordinary operation. It uses create-only revision
 checks to reserve the username key before writing the owner key. A reader MUST observe both keys
 agreeing before it reports an assignment. Not found, permission denied, and unavailable are
-distinct results. At startup the auth service completes an existing reservation for an owner with
-no binding. Further reservations for that owner stay reserved and unused. Grant revocation and
+distinct results. At startup the auth service reports every orphan key by name and deletes none.
+It completes a reservation only for the owner named by that key and only while that owner has no
+binding. Further reservations for that owner stay reserved and unused. Grant revocation and
 owner deletion MUST leave both keys in place. The service MUST NOT rewrite a binding, delete a
 reservation, or reassign a reserved username to a different owner.
 
 A space selects exactly one username source. The default uses verified `preferred_username`,
-then a verified `name`, then a generated `user_<short>` name. The operator MAY opt in to using
-the email local part before the generated name. The derived name may gain a suffix on collision.
+then a verified `name`, then a generated `user_<short>` name. Email addresses in name claims are
+not username candidates. The operator MAY opt in to using the email local part before the
+generated name. The derived name may gain a suffix on collision.
 A claims-source grant MUST refuse a supplied username. A directory-source grant can carry a
 trusted username. At the next exchange the service validates and binds that exact value or
 refuses an invalid, conflicting, or different binding. A directory row without a supplied value
-can exchange without creating a binding. Participants cannot set or rename a username.
+can exchange without creating a binding. Replacing an existing grant with a row that omits the
+username MUST leave any existing binding intact. Participants cannot set or rename a username.
 
-The broker grants each member credential in a per-user-auth space publish access to the two
+Space membership is the visibility boundary for username reads. Any member may read both
+directions in its space. Credentials outside the space cannot read either direction. The broker
+grants each member credential in a per-user-auth space publish access to the two
 Direct Get request subjects below, with responses on its existing connection inbox:
 
 - `$JS.API.DIRECT.GET.KV_cotal_usernames_<space>.$KV.cotal_usernames_<space>.owner.*`

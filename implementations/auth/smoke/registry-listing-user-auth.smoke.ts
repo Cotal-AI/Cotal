@@ -164,6 +164,13 @@ async function boot(account: HostedAuthAccount) {
   return handle;
 }
 
+async function bootWithDiagnostics(account: HostedAuthAccount, lines: string[]) {
+  const error = console.error;
+  console.error = (...args: unknown[]) => { lines.push(args.map(String).join(" ")); error(...args); };
+  try { return await boot(account); }
+  finally { console.error = error; }
+}
+
 async function setup(account: HostedAuthAccount) {
   const creds = await mintCreds(account.auth, newIdentity(), "provisioner");
   await setupSpaceStreams({ servers: fx.servers, space: account.space, userAuth: true, creds });
@@ -228,6 +235,15 @@ async function directoryCases(): Promise<void> {
   grantActor(directory.stateDir, named);
   const regranted = await exchange(handle, "directory-human", { preferred_username: "changed_profile" });
   suite.check("regrant returns the same name", regranted.res.ok && await readUsername(nc, directory.space, owner) === supplied, regranted.body.error);
+  const replaced = grantActor(directory.stateDir, { owner, ...narrow, lifecycleUid: named.lifecycleUid });
+  const withoutUsername = await exchange(handle, "directory-human", { preferred_username: "never_derived" });
+  suite.check("whole-row replacement without a username preserves both existing bindings after exchange",
+    replaced.username === undefined && withoutUsername.res.ok && typeof withoutUsername.body.token === "string" &&
+    await readUsername(nc, directory.space, owner) === supplied && await readUsernameOwner(nc, directory.space, supplied) === owner,
+    withoutUsername.body.error);
+  for (const lookup of [() => readUsername(nc, a.space, otherOwner), () => readUsernameOwner(nc, a.space, base)])
+    await assert.rejects(lookup, (error: unknown) => error instanceof UsernameRegistryReadError && error.code === "denied");
+  suite.check("a member of a different space cannot read either direction in this space", true);
 
   const writer = await openAuthorityClient({ server: fx.servers, space: directory.space,
     dataAccount: { pub: directory.accountPublicKey, signingSeed: directory.auth.account.signingSeed! },
@@ -239,10 +255,14 @@ async function directoryCases(): Promise<void> {
     suite.check("a half-written reservation is not a complete binding before restart",
       await readUsername(nc, directory.space, pending) === undefined && await readUsernameOwner(nc, directory.space, "interrupted") === undefined);
     await handle.close();
-    handle = await boot(directory);
+    const restartLog: string[] = [];
+    handle = await bootWithDiagnostics(directory, restartLog);
     suite.check("service restart completes both directions without a sign-in for the affected owner",
       await readUsername(nc, directory.space, pending) === "interrupted" && await readUsernameOwner(nc, directory.space, "interrupted") === pending);
     suite.check("startup leaves a second reservation unused for an owner already bound", await readUsernameOwner(nc, directory.space, "unused_alias") === undefined && await readUsername(nc, directory.space, owner) === supplied);
+    suite.check("startup reports both repaired and unused orphan keys with their named owners",
+      [["interrupted", pending], ["unused_alias", owner]].every(([name, reservedFor]) =>
+        restartLog.some((line) => line.includes(`orphan key username.${name}: owner.${reservedFor}`))), restartLog);
     grantActor(directory.stateDir, { owner: rival, ...narrow, username: "unused_alias" });
     const reserved = await exchange(handle, "directory-rival", {});
     suite.check("an unused reservation still cannot be assigned to another owner", !reserved.res.ok && /already reserved/.test(reserved.body.error ?? ""));
@@ -299,10 +319,11 @@ try {
   }
   assert.throws(() => grantActor(a.stateDir, { owner: unnamedOwner, ...narrow, username: supplied }), /requires the space username source "directory"/);
   suite.check("claims source rejects supplied names at the grant write", true);
-  await bearer("unnamed-human", { preferred_username: "--", name: "--", email: "private_local@example.test" });
+  await bearer("unnamed-human", { preferred_username: "first_private@example.test", name: "second_private@example.test", email: "private_local@example.test" });
   const generated = await readUsername(nc, a.space, unnamedOwner);
   suite.check("claims without a usable name get a generated username and do not expose email by default",
-    /^user_[0-9a-f]{10}$/.test(generated ?? "") && await readUsernameOwner(nc, a.space, "private_local") === undefined);
+    /^user_[0-9a-f]{10}$/.test(generated ?? "") && await readUsernameOwner(nc, a.space, "private_local") === undefined &&
+    await readUsernameOwner(nc, a.space, "first_private_example_test") === undefined && await readUsernameOwner(nc, a.space, "second_private_example_test") === undefined);
   const changed = await bearer("lister-human", { preferred_username: "Changed Name" });
   suite.check("a later identity profile does not rename an owner", await readUsername(nc, a.space, owner) === names[0] &&
     await readUsernameOwner(nc, a.space, "changed_name") === undefined);
