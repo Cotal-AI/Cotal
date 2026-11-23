@@ -1,6 +1,9 @@
 import { join } from "node:path";
 import { jetstreamManager, type MsgRequest } from "@nats-io/jetstream";
-import { isStreamNotFound, parseRunJournalRecord, spacePrefix, wfjStreamName, type SpaceAuth } from "@cotal-ai/core";
+import {
+  admissionBucket, isStreamNotFound, parseRunJournalRecord, spacePrefix, validateBackupStreamState,
+  validateCanonicalBackupStreamConfig, validateSpaceBackupInventory, wfjStreamName, type SpaceAuth,
+} from "@cotal-ai/core";
 import type { AttemptOwnedPath, MaintenanceAuthMode, ProcessOwner, RolledBackRun } from "@cotal-ai/workspace";
 import { connectIsolatedBroker, createAttemptClone, ensurePrivateAttemptsDir, startIsolatedBroker, type IsolatedBroker } from "./isolated-broker.js";
 
@@ -65,11 +68,37 @@ export function rolledBackRuns(previous: ReadonlyMap<string, RunJournalView>, re
   return { runs: all.slice(0, MAX_LISTED_RUNS), more: Math.max(0, all.length - MAX_LISTED_RUNS) };
 }
 
-/** The step journals of the store a restore set aside, read from a private clone on its own
- *  isolated broker, never from the store itself: a broker start can purge by age or limits, and
- *  that store holds the only copy. `record` journals each path and process before it exists, so an
- *  interrupted restore leaves them to its recovery. The clone is removed once it was read. */
-export async function readPreviousRunJournals(options: {
+async function previousHistoryIsEmpty(broker: IsolatedBroker, space: string): Promise<boolean> {
+  try {
+    const nc = await connectIsolatedBroker(broker, broker.initialLogin);
+    try {
+      const jsm = await jetstreamManager(nc, { checkAPI: false });
+      const names: string[] = [];
+      for await (const name of jsm.streams.names()) names.push(name);
+      const { backedUp } = validateSpaceBackupInventory(space, names, { atRest: true });
+      // The records KV also holds control records. Run evidence is in the journal and admission streams.
+      const journal = wfjStreamName(space), admissions = `KV_${admissionBucket(space)}`;
+      const history = backedUp.filter((stream) => stream.class === "messages" || stream.name === journal || stream.name === admissions);
+      for (const { name } of history) {
+        const { config, state } = await jsm.streams.info(name);
+        validateCanonicalBackupStreamConfig(space, name, config as unknown as Readonly<Record<string, unknown>>);
+        const stored = validateBackupStreamState(state as unknown as Readonly<Record<string, unknown>>);
+        // A clone can expire messages at startup. Zero messages is only proof if no sequence was assigned.
+        if (stored.messages !== 0 || stored.bytes !== 0 || stored.last_seq !== 0 || stored.lost) return false;
+      }
+      return true;
+    } finally {
+      await nc.close();
+    }
+  } catch {
+    // An incomplete read does not authorize deleting the original store without consent.
+    return false;
+  }
+}
+
+/** Inspect the store a restore set aside from a private clone, never the original. Record the clone
+ *  and its broker so an interrupted restore leaves them to recovery. */
+export async function inspectPreviousHistory(options: {
   root: string;
   previousStore: string;
   attemptId: string;
@@ -78,7 +107,7 @@ export async function readPreviousRunJournals(options: {
   auth?: SpaceAuth;
   deadline: Date;
   record: (input: { owners?: readonly ProcessOwner[]; ownedPaths?: readonly AttemptOwnedPath[] }) => void;
-}): Promise<Map<string, RunJournalView>> {
+}): Promise<{ empty: true } | { empty: false; runs: Map<string, RunJournalView> }> {
   options.record({ ownedPaths: [{ label: "clone", path: join(ensurePrivateAttemptsDir(options.root).path, `${options.attemptId}-clone`) }] });
   const clone = createAttemptClone(options.root, options.previousStore, options.attemptId);
   options.record({ ownedPaths: [{ label: "clone", path: clone.path, dev: clone.identity.dev.toString(), ino: clone.identity.ino.toString() }] });
@@ -92,11 +121,12 @@ export async function readPreviousRunJournals(options: {
       ...(options.auth ? { auth: options.auth } : {}),
       deadline: options.deadline,
       label: "previous",
-      initialScope: { profile: "restore", scope: { operation: "journal" } },
+      initialScope: { profile: "backup", scope: { operation: "inspect", selection: "full" } },
       attemptId: options.attemptId,
     });
     options.record({ owners: [broker.brokerOwner, broker.watchdogOwner], ownedPaths: broker.runFiles.map((file) => ({ label: "config" as const, ...file })) });
-    return await readRunJournals(broker, options.space);
+    if (await previousHistoryIsEmpty(broker, options.space)) return { empty: true };
+    return { empty: false, runs: await readRunJournals(broker, options.space) };
   } finally {
     if (broker) await broker.stop();
     clone.cleanup();

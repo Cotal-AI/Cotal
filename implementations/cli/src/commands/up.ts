@@ -184,13 +184,12 @@ import {
   rehydratePreparedRestore,
   journaledMaxFileStore,
   journaledRestoredStreams,
-  leftOutNotes,
+  restoreHistoryNotes,
   rearmUnboundRestore,
   replacePreparedDeadRestoreListener,
   restoreComposition,
   restoreInterruptNotice,
   restoreNextStep,
-  restoreOnlyCopy,
   type PreparedRestore,
   type RestoreFlags,
 } from "../lib/restore.js";
@@ -2205,7 +2204,7 @@ function printRestoreReceipt(restored: PreparedRestore, invokedRoot?: string): v
   if (composition.note) console.log(c.yellow(composition.note));
   const cleanupRoot = invokedRoot && invokedRoot !== canonicalRoot(restored.root) ? restored.root : undefined;
   const cmd = displayCmd();
-  for (const line of leftOutNotes(restored.attemptId, restored.selection, restoreOnlyCopy(restored.root, restored.attemptId), cleanupRoot, cmd)) console.log(c.yellow(line));
+  for (const line of restoreHistoryNotes(restored.root, restored.attemptId, restored.selection, cleanupRoot, cmd)) console.log(c.yellow(line));
   const journal = readMaintenanceJournal(restored.root);
   if (journal && "restore" in journal && journal.restore.attemptId === restored.attemptId)
     console.log(c.dim(`next: ${restoreNextStep(journal.state, restored.attemptId, restoreLeftOut(journal), cleanupRoot, cmd)}`));
@@ -2594,7 +2593,7 @@ async function resumeControllerStack(lock: MaintenanceLock, root: string, values
     if (restoreSink) restoreSink(result);
     else writeResult(presentationOf(values), { command: "up", target: { root, space, server: launch.server }, result: { kind: "controller-stack-restore", root, space, server: launch.server, attemptId, targetPath, selection: result.selection, restored: composition.restored, recreatedEmpty: composition.recreatedEmpty, retiredBrokerRemoved: attempt.brokerRequired } }, (row) => ({ sections: [{ title: "Controller stack restored", blocks: [
       { kind: "fields", rows: [["Space", row.space], ["Root", row.root], ["Broker", row.server], ["Attempt", row.attemptId], ["Store", row.targetPath], ["Selection", row.selection], ["Restored", composition.restoredWords], ["Recreated empty", composition.emptyWords]] },
-      { kind: "lines", lines: ["Each recorded member was started or adopted for this attempt, and the retained agents were resumed under the same principals. The restore journal stays active until its fallback is cleaned up. This is not agent or task readiness.", ...(composition.note ? [composition.note] : []), ...leftOutNotes(attemptId, result.selection, restoreOnlyCopy(root, attemptId))] },
+      { kind: "lines", lines: ["Each recorded member was started or adopted for this attempt, and the retained agents were resumed under the same principals. The restore journal stays active until its fallback is cleaned up. This is not agent or task readiness.", ...(composition.note ? [composition.note] : []), ...restoreHistoryNotes(root, attemptId, result.selection)] },
     ] }] }));
     return values.foreground === true && !restoreSink;
   }

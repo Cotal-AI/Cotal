@@ -6,7 +6,9 @@ import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, rea
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { hostname } from "node:os";
-import { createSpaceAuth, eventPayloadStream, mintCreds, newIdentity, probeConnect, rotateSystemAccount, taskStream } from "@cotal-ai/core";
+import { chatStream, createSpaceAuth, eventPayloadStream, mintCreds, newIdentity, probeConnect, rotateSystemAccount, taskStream } from "@cotal-ai/core";
+import { connect } from "@nats-io/transport-node";
+import { jetstreamManager, StorageType } from "@nats-io/jetstream";
 import type { BackupManifest } from "../../implementations/cli/src/lib/backup-artifact.js";
 import {
   acquireMaintenanceLock,
@@ -384,6 +386,7 @@ async function scenario(mode: "open" | "auth"): Promise<void> {
       const legacyJournal = readMaintenanceJournal(root);
       assert.ok(legacyJournal?.state === "active");
       must("retire adapted v2 restore", run("backup", "cleanup-fallback", legacyJournal.restore.attemptId, "--discard-history", "--yes"));
+      must("send after adapted v2 restore", run("send", "-c", "general", "post-backup history", "--space", space));
       must("preserve after adapted v2 restore", run("down", "--preserve-state"));
     }
     const restored = run("up", "--restore", restoreArtifact, "--detach", "--server", server, "--space", space);
@@ -399,9 +402,8 @@ async function scenario(mode: "open" | "auth"): Promise<void> {
     };
     assert.equal(active.state, "active");
     assert.equal(active.restore.selection, restoreArtifact === registryArtifact ? "registry" : "full", `${mode} restore journals its selection`);
-    // Both artifacts predate the cut this restore replaced, which was preserved after the resume
-    // above. So each restore leaves something only in the store it set aside: the registry restore
-    // every other stream, and the full restore what that resume wrote.
+    // The registry restore leaves the seeded payload out. The full restore leaves the post-backup
+    // channel message out. Both cuts were preserved after the artifacts were made.
     assert.equal(active.launch?.previousCutNewer, true, `${mode} restore journals that the cut it replaced is newer than its artifact`);
     const leftOut = restoreArtifact === registryArtifact ? "chat and DM history and workflow runs" : "newer chat and DM history and workflow runs";
     // The receipt names the restore attempt and the cleanup that retires it, with --discard-history.
@@ -1240,6 +1242,63 @@ async function backupRestoreCycleScenario(): Promise<void> {
   }
 }
 
+async function laterFallbackHistoryScenario(): Promise<void> {
+  const scratch = realpathSync.native(mkdtempSync(join(tmpdir(), "cotal-later-fallback-")));
+  const space = "backup_later_fallback", artifact = join(scratch, "artifact");
+  for (const kind of ["artifact", "empty", "populated", "unknown"] as const) {
+    const root = join(scratch, `${kind}-project`), server = `nats://127.0.0.1:${await freePort()}`;
+    mkdirSync(root);
+    const { run } = sandboxRun(root, join(scratch, `${kind}-home`));
+    const must = (...args: string[]) => {
+      const result = run(...args);
+      assert.equal(result.status, 0, `${kind} ${args.join(" ")}\n${result.stdout}${result.stderr}`);
+      return result.stdout;
+    };
+    try {
+      must("up", "--detach", "--open", "--server", server, "--space", space);
+      if (kind === "populated") must("send", "-c", "general", "only in the later cut", "--space", space);
+      const nc = await connect({ servers: server });
+      try {
+        const streams = (await jetstreamManager(nc)).streams;
+        assert.equal((await streams.info(chatStream(space))).state.messages, kind === "populated" ? 1 : 0);
+        if (kind === "unknown") await streams.add({ name: "UNRECOGNIZED", storage: StorageType.File, subjects: ["unrecognized.>"] });
+      } finally { await nc.close(); }
+      must("down", "--preserve-state", "--yes");
+      if (kind === "artifact") {
+        must("backup", "create", artifact);
+        continue;
+      }
+      const cut = readMaintenanceJournal(root);
+      const manifest = JSON.parse(readFileSync(join(artifact, "manifest.json"), "utf8")) as BackupManifest;
+      assert.ok(cut?.state === "ready" && Date.parse(cut.cut.intentAt) > Date.parse(manifest.createdAt));
+      const target = join(scratch, `${kind}-restore`);
+      const receipt = must("backup", "restore", artifact, "--store-dir", target, "--plain");
+      const active = readMaintenanceJournal(root);
+      assert.equal(active?.state, "active");
+      if (active?.state !== "active") throw new Error("expected an active restore");
+      const previous = active.restore.previousSource?.identity.path;
+      assert.ok(previous && existsSync(previous));
+      assert.equal(active.launch.previousHistoryEmpty === true, kind === "empty");
+      const cleanup = ["backup", "cleanup-fallback", active.restore.attemptId];
+      const preview = JSON.parse(must(...cleanup, "--dry-run", "--json")) as { warnings: { code: string }[] };
+      assert.equal(preview.warnings.some((warning) => warning.code === "HISTORY_ONLY_IN_PREVIOUS_STORE"), kind !== "empty");
+      if (kind === "empty") {
+        assert.match(receipt, /The previous store had no chat or DM history or workflow runs for this space\./);
+        must(...cleanup, "--yes");
+        assert.ok(!existsSync(previous) && existsSync(target));
+        assert.equal(readMaintenanceJournal(root), undefined);
+        must("down", "--preserve-state", "--yes");
+      } else {
+        const refused = run(...cleanup, "--yes", "--json");
+        assert.equal(refused.status, 1, `${kind} cleanup requires consent\n${refused.stdout}${refused.stderr}`);
+        assert.equal(JSON.parse(refused.stdout).error.code, "USAGE_INVALID");
+        assert.ok(existsSync(previous));
+        assert.equal(readMaintenanceJournal(root)?.revision, active.revision);
+      }
+    } finally { run("down", "--yes"); }
+  }
+}
+
 /** A full restore of a backup made before a run's checkpoint was answered rolls the run back. It names
  *  the run and the reopened step in its receipt, in `status` and in the cleanup preview, reads the
  *  set-aside store only from a clone it removes, and the step accepts an answer again. */
@@ -1401,6 +1460,7 @@ await preservationCommitCrashScenario();
 await preservationStopCrashRecoveryScenario();
 await restoreClaimRaceScenario();
 await backupRestoreCycleScenario();
+await laterFallbackHistoryScenario();
 await rolledBackRunsScenario();
 await otherAccountScenario();
 await scenario("open");
