@@ -59,6 +59,20 @@ export class StreamedParts {
     return { events: [...(rest ? [content(s.kind, key, rest, timestamp)] : []), end(s.kind, key, timestamp)], mapAsNew: false };
   }
 
+  /** END for each of `keys` still open: the harness abandoned those streams, and no saved record will
+   *  close them. A key already closed, or one that never streamed, sends nothing and stays closed. */
+  end(keys: readonly string[], timestamp: number): AguiEvent[] {
+    const events: AguiEvent[] = [];
+    for (const key of keys) {
+      const s = this.open.get(key);
+      this.closed.add(key);
+      if (!s) continue;
+      this.open.delete(key);
+      events.push(end(s.kind, key, timestamp));
+    }
+    return events;
+  }
+
   /** END for every part still open, as a saved message whose record names none of them leaves. */
   endAll(timestamp: number): AguiEvent[] {
     const events = [...this.open].map(([key, s]) => end(s.kind, key, timestamp));

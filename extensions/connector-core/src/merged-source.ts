@@ -12,8 +12,9 @@ import { assertDeltaRecord, type DeltaRecord, type StreamDelta } from "./delta-j
 import type { BracketState } from "./agui.js";
 import type { StreamSeed } from "./streamed-parts.js";
 
-/** One record of a {@link DeltaMergedSource}: a harness record, or one journal line. */
-export type Merged<T> = { harness: T } | { deltas: StreamDelta[]; timestamp: number };
+/** One record of a {@link DeltaMergedSource}: a harness record, or one journal line, whose `ends` names
+ *  the streams the harness abandoned. */
+export type Merged<T> = { harness: T } | { deltas: StreamDelta[]; timestamp: number; ends?: string[] };
 
 const pack = (harness: string, journal: string): string => JSON.stringify([harness, journal]);
 
@@ -85,7 +86,7 @@ export class DeltaMergedSource<T> implements DurableSource<Merged<T>> {
     const line = (r: SourceRecord<DeltaRecord>): void => {
       if (this.harness.compare(r.value.anchor, hPos) > 0) hPos = r.value.anchor;
       jPos = r.cursor;
-      records.push({ value: { deltas: r.value.deltas, timestamp: r.value.ts }, cursor: pack(hPos, jPos) });
+      records.push({ value: { deltas: r.value.deltas, timestamp: r.value.ts, ...(r.value.ends ? { ends: r.value.ends } : {}) }, cursor: pack(hPos, jPos) });
     };
     for (const rec of h.records) {
       while (k < j.records.length && this.harness.compare(j.records[k]!.value.anchor, rec.cursor) < 0) line(j.records[k++]!);
