@@ -1236,22 +1236,28 @@ async function reconcileOtherConnectorSkills(
   }
 }
 
-/** Run every present connector's refresh, so what an earlier setup installed in its harness moves to
- *  this release. Returns one line per connector that declares one; a refresh that fails throws. */
-export async function refreshConnectorInstalls(): Promise<string[]> {
-  const lines: string[] = [];
+/** Report each successful refresh and fail reconciliation after trying every connector. */
+export async function refreshConnectorInstalls(report: (line: string) => void): Promise<void> {
+  const failures: Error[] = [];
   for (const connector of await setupConnectorSurface()) {
-    // Refresh owns installed state even when a harness executable disappeared. Its provider must
-    // distinguish an absent integration from one it cannot update; availability must not hide it.
-    const refresh = (await connectorSetupProvider(connector))?.refresh;
-    if (refresh) {
+    let label = connector.name;
+    let line: string;
+    try {
+      // A missing executable does not tell us whether an installed integration needs attention.
+      const refresh = (await connectorSetupProvider(connector))?.refresh;
+      if (!refresh) continue;
+      label = refresh.title;
       const started = Date.now();
       console.error(`Refreshing ${refresh.title}`);
-      lines.push(`${refresh.title}: ${await refresh.run({ cotal: selfArgv(), skills: connectorSkillsInput() })}`);
+      line = `${refresh.title}: ${await refresh.run({ cotal: selfArgv(), skills: connectorSkillsInput() })}`;
       console.error(`✓ integration ${connector.name} refreshed (${((Date.now() - started) / 1000).toFixed(1)} s)`);
+    } catch (error) {
+      failures.push(new Error(`${label}: ${error instanceof Error ? error.message : String(error)}`, { cause: error }));
+      continue;
     }
+    report(line);
   }
-  return lines;
+  if (failures.length) throw new AggregateError(failures, failures.map((error) => error.message).join("\n"));
 }
 
 /** The debug handoffs a failed step may offer: every connector on the setup surface whose provider

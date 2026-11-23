@@ -11,11 +11,12 @@ import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, 
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { commandUsage, findCommand, parseCommandArgs, registry, type Command } from "@cotal-ai/core";
+import { commandUsage, findCommand, parseCommandArgs, registry, type Command, type Connector, type ConnectorSetupProvider } from "@cotal-ai/core";
 import type { InstalledExtension } from "@cotal-ai/workspace";
 import "../src/index.js"; // self-register the CLI commands (for the completion check)
 import { complete } from "../src/commands/completion.js";
 import { EXT_UPDATE_PARENT_ENV, ext } from "../src/commands/ext.js";
+import { refreshConnectorInstalls } from "../src/commands/setup.js";
 import { hostPackageDir, isCommandFailure, MeshTargetError, seededCommandsMismatch, telemetrySettingsPath, writeUpdateRecovery, readUpdateRecovery, clearUpdateRecovery } from "@cotal-ai/workspace";
 import { executeUpdate, installedUpdatePrefix, parseNpmVersion, printLegacyReport, reportRunningManagers, update, validateUpdateArguments, verifyCurrentExtension, verifyGlobalEntry, type UpdateRuntime } from "../src/commands/update.js";
 import { runNpmAsync } from "../src/commands/update-process.js";
@@ -300,7 +301,7 @@ function updateRuntime(opts: {
     nodePath: "/node",
     version: () => opts.version ?? "0.13.1",
     reconcile: async () => void events.push("reconcile"),
-    refreshConnectors: async () => (events.push("refresh-connectors"), []),
+    refreshConnectors: async () => { events.push("refresh-connectors"); },
     automaticUpdateAdvice: async () => undefined,
     reportRunningManager: async () => {
       events.push("report-running-manager");
@@ -1140,13 +1141,45 @@ async function completionOut(positionals: string[]): Promise<string> {
   }
 }
 
-// --- a connector refresh that fails fails the update ----------------------------------------------
+// --- independent connector refreshes still run when some fail -------------------------------------
 {
   const failing = updateRuntime({});
-  failing.rt = { ...failing.rt, refreshConnectors: async () => { throw new Error("plugin update failed (cotal, /p)"); } };
-  const code = await executeUpdate(false, failing.rt);
-  assert.equal(code, 1, "a stale harness copy is not reported as a finished update");
-  assert.ok(failing.events.some((event) => event.includes("✗ connector installs: plugin update failed (cotal, /p)")));
+  const attempts: string[] = [];
+  const names = ["fixture-a", "fixture-b", "fixture-c"];
+  for (const name of names) {
+    const provider: ConnectorSetupProvider = {
+      kind: "connector-setup", name,
+      refresh: {
+        name: "refresh", title: `Refresh ${name}`, explain: "Reconcile the installed integration.",
+        async run() {
+          attempts.push(name);
+          if (name !== "fixture-c") throw new Error(`${name} refused its refresh`);
+          return "repaired";
+        },
+      },
+    };
+    const connector: Connector = {
+      kind: "connector", name, setup: { kind: "connector-setup", name },
+      buildLaunch: () => ({ command: name, args: [] }),
+    };
+    registry.register(connector, provider);
+  }
+  try {
+    failing.rt = { ...failing.rt, refreshConnectors: refreshConnectorInstalls };
+    assert.equal(await executeUpdate(false, failing.rt), 1, "a partial refresh fails the update");
+    assert.deepEqual(attempts, names);
+    assert.ok(failing.events.some((event) => event.includes("out:✓ Refresh fixture-c: repaired")));
+    for (const name of names.slice(0, 2)) {
+      assert.ok(failing.events.some((event) => event.startsWith("err:") && event.includes(`Refresh ${name}: ${name} refused its refresh`)));
+    }
+    assert.ok(!failing.events.some((event) => event.includes("✓ connector integrations refreshed")));
+    assert.ok(!failing.events.includes("claim-mutation"), "an incomplete refresh does not commit the update");
+  } finally {
+    for (const name of names) {
+      registry.unregister("connector", name);
+      registry.unregister("connector-setup", name);
+    }
+  }
 }
 
 // --- a running legacy manager is reported, then blocks an update before replay --------------------

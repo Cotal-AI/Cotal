@@ -51,7 +51,7 @@ for (const code of ["ENOTCACHED", "EAI_AGAIN", "E401"]) {
   const lines: string[] = [], errors: string[] = [];
   const plain: UpdateRuntime = { ...rt,
     reportRunningManager: async () => "none", preflightReplacement: async () => {},
-    refreshConnectors: async () => [], extensions: () => [], claimUpdatePass: () => () => {},
+    refreshConnectors: async () => {}, extensions: () => [], claimUpdatePass: () => () => {},
     npm: () => ({ status: 1, stdout: JSON.stringify({ error: { code } }), stderr: `npm error ${code}` }),
     out: line => { lines.push(line); }, err: line => { errors.push(line); },
   };
