@@ -736,7 +736,8 @@ connector version and Claude Code's version, and each answer goes back through a
 The list is Claude Code's own `/` list, without the entries it hides and the commands that do not
 run remotely. Claude does not say which entries are skills, and it runs a skill the same way as a
 command, so every entry has the target `command`. An entry carries Claude's argument hint as its
-`inputHint` once Claude has described the command to the mod.
+`inputHint`. Claude describes its commands to the mod when the session starts, so the hints are there
+before anyone types `/`.
 
 A command runs as if the person typed `/<name> <args>`, and only under a name the list holds now.
 Claude itself resolves aliases, which could reach a refused command under another name, so an alias
@@ -772,7 +773,7 @@ While no mod serves the session, `commands` answers `supported: false`, and `com
 
 - Claude Code is older than 2.1.330.
 - Mods are off: `--bare`, `--safe-mode`, `disableAllHooks`, or an organization's
-  `allowManagedModsOnly`.
+  `allowManagedModsOnly` or `allowManagedHooksOnly`.
 - The plugin's mod comes from another connector version than its MCP server. Reload the plugin or
   restart the session.
 - A host serving several sessions in one process ([below](#host-sessions-in-one-process)) names no
