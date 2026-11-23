@@ -280,6 +280,41 @@ const kinds = (evts: AguiEvent[]): Record<string, number> => {
   c("shape:toolCallId is the NATIVE call_id, not a synthesized key", res.toolCallId === "call-9", { toolCallId: res.toolCallId });
   c("shape:TOOL_CALL_RESULT carries the messageId every connector owes, derived from the call id", res.messageId === "res:call-9", { messageId: res.messageId });
 
+  // The result marker rides in the same unit as the result, so a read that starts with the output
+  // still holds a public event. `isError` comes only from an end record the mapper saw for the call.
+  const markerOf = (u: { events: AguiEvent[] } | null) => u?.events.find((e) => (e as { type: string; name?: string }).type === "CUSTOM") as { name: string; value: Record<string, unknown> } | undefined;
+  const resultOf = (u: { events: AguiEvent[] } | null) => u?.events.find((e) => (e as { type: string }).type === "TOOL_CALL_RESULT") as { cotal?: { isError?: boolean } } | undefined;
+  const outputUnit = withTool.perRecord[2] ?? null;
+  c("shape:the output's unit holds RESULT and the cotal.toolResult marker", markerOf(outputUnit)?.name === "cotal.toolResult" && resultOf(outputUnit) !== undefined, outputUnit?.events.map((e) => (e as { type: string }).type));
+  c("shape:with no end record the marker and the RESULT leave isError out",
+    JSON.stringify(markerOf(outputUnit)?.value) === JSON.stringify({ toolCallId: "call-9" }) && resultOf(outputUnit)?.cotal === undefined, { marker: markerOf(outputUnit)?.value, cotal: resultOf(outputUnit)?.cotal });
+  const ended = (call: string, end: CodexRecord["payload"]) => {
+    const r = replay([
+      start,
+      { timestamp: ts, type: "response_item", payload: { type: "function_call", call_id: call, name: "exec_command", arguments: "{}" } },
+      { timestamp: ts, type: "event_msg", payload: end },
+      { timestamp: ts, type: "response_item", payload: { type: "function_call_output", call_id: call, output: "out" } },
+      done,
+    ]);
+    const unit = r.perRecord[3] ?? null;
+    return { marker: markerOf(unit)?.value.isError, result: resultOf(unit)?.cotal?.isError, err: r.bracketError };
+  };
+  const endCases: [string, CodexRecord["payload"], boolean][] = [
+    ["exec_command_end with exit code 0", { type: "exec_command_end", call_id: "e0", exit_code: 0 }, false],
+    ["exec_command_end with exit code 1", { type: "exec_command_end", call_id: "e1", exit_code: 1 }, true],
+    ["patch_apply_end that succeeded", { type: "patch_apply_end", call_id: "p0", success: true }, false],
+    ["patch_apply_end that failed", { type: "patch_apply_end", call_id: "p1", success: false }, true],
+    ["mcp_tool_call_end with an Err result", { type: "mcp_tool_call_end", call_id: "m1", result: { Err: "boom" } }, true],
+    ["mcp_tool_call_end with an Ok result marked isError", { type: "mcp_tool_call_end", call_id: "m2", result: { Ok: { content: [], isError: true } } }, true],
+    ["mcp_tool_call_end with an Ok result", { type: "mcp_tool_call_end", call_id: "m3", result: { Ok: { content: [] } } }, false],
+  ];
+  for (const [label, end, want] of endCases) {
+    const got = ended((end as { call_id: string }).call_id, end);
+    c(`shape:${label} sets isError ${want} on the marker and the RESULT`, got.marker === want && got.result === want && got.err === null, got);
+  }
+  const otherCall = ended("x1", { type: "exec_command_end", call_id: "someone-else", exit_code: 1 });
+  c("shape:an end record for another call says nothing about this one", otherCall.marker === undefined && otherCall.result === undefined, otherCall);
+
   // THE UNION. `output` is a string on 6 353 `function_call_output` records and a list on 380, and
   // the other output family leans the other way, 664 string against 1 660 list. A mapper that
   // assumes one throws on the other, and a thrown mapper is a dead event plane, not a dropped record.

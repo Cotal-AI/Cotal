@@ -5,8 +5,9 @@
  * `function_call_output` once the command ends (the order of a real rollout on this machine). The
  * host flushes on every `itemCompleted`, and the command's item completes with its
  * `exec_command_end`, so the read it starts can end before the output is written. The output then
- * opens the next read. It maps to TOOL_CALL_RESULT alone, which the public fence strips, so with the
- * payload rail on, the emitter needs an earlier public unit of the same run in that read.
+ * opens the next read. The public fence strips its TOOL_CALL_RESULT, so with the payload rail on, the
+ * emitter needs a public event of the same run in that read: the result marker the mapper emits
+ * beside it.
  *
  * The records go through the shipped mapper and the shared emitter over a fake endpoint with the
  * payload rail available, first in two reads split as above, then in one read as a control. No
@@ -91,6 +92,8 @@ async function publish(batches: CodexRecord[][]) {
 
 const result = (p: Awaited<ReturnType<typeof publish>>) =>
   p.published.filter((x) => x.rail === "payload").flatMap((x) => x.events).find((e) => e.type === "TOOL_CALL_RESULT") as { content?: string } | undefined;
+const marker = (p: Awaited<ReturnType<typeof publish>>) =>
+  p.published.filter((x) => x.rail === "public").flatMap((x) => x.events).find((e) => e.type === "CUSTOM") as { value?: unknown } | undefined;
 const finished = (p: Awaited<ReturnType<typeof publish>>) =>
   p.published.filter((x) => x.rail === "public").flatMap((x) => x.events).some((e) => e.type === "RUN_FINISHED");
 
@@ -103,6 +106,8 @@ console.log("Codex tool result in the read after its call");
 const split = await publish([call, output]);
 check("the read that starts with the result publishes without error", split.errors.length === 0, split.errors);
 check("the result reaches the payload rail", result(split)?.content === "notes.txt");
+check("the public channel marks the call finished, with the exit code read in the earlier read",
+  JSON.stringify(marker(split)?.value) === JSON.stringify({ toolCallId: "call_ls", isError: false }), marker(split)?.value);
 check("the run finishes on the public channel", finished(split));
 
 console.log(`\n${failed === 0 ? "AGUI-CODEX-RESULT-SPLIT SMOKE OK" : "AGUI-CODEX-RESULT-SPLIT SMOKE FAILED"}  (${passed} passed, ${failed} failed)`);
