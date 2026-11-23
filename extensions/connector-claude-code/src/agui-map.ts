@@ -231,8 +231,10 @@ const ABSENT_ORIGIN_RULE: Record<string, "sdk" | "human" | null> = {
 const runOpeningAttribution = (entry: ClaudeEntry): "human" | "channel" | "sdk" | "auto-continuation" | null => {
   const kind = entry.origin?.kind;
   // Native wake and inline prompts use the plugin's own attribution, not a human's.
-  // Match the same origin as native-wake.js so their bodies stay off the event channel.
-  if (kind === "plugin" && entry.origin?.name === "cotal" && !entry.origin.asUser) return "channel";
+  // Match the same origin as native-wake.js so their bodies stay off the event channel. The plugin
+  // submits as the user only an owner's `turn` (hooks/commands.js): the owner's own words, recorded
+  // on 2.1.330 as origin {kind: "plugin", name: "cotal", asUser: true} with promptSource "system".
+  if (kind === "plugin" && entry.origin?.name === "cotal") return entry.origin.asUser ? "human" : "channel";
   if (kind === undefined) {
     // ABSENT origin. Not an error — absence is a known shape — and not a blanket refusal either,
     // because a headless prompt has no `origin` and IS a turn.
