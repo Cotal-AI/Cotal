@@ -446,7 +446,9 @@ failure. A command run from a folder that no longer exists refuses with `USAGE_I
 before it does anything, and says to `cd` to an existing folder. It prints that line and the `cd`
 remedy without the command's help, because the command itself was not mistyped. A command whose folder has a
 `.cotal` that is a file rather than a directory, such as a notes file, refuses with `CONFLICT`, exit
-2, before it does anything, names that file and says to rename or move it. `help`, `version` and
+2, before it does anything, names that file and says to rename or move it. With `--json`,
+`watch`, `history --follow` and `channel members --follow` write an `error` record and then an
+`end` record with reason `setup-failed`, without a snapshot. `help`, `version` and
 `completion` still work in both. `docs` and `telemetry` also work from a folder that no longer
 exists. There, bare `cotal` and `cotal help` exit 0 and say the folder is gone, even if `PATH`
 contains relative entries.
