@@ -27,6 +27,7 @@ import {
   isJcodeBusyRefusal,
 } from "./host-support.js";
 import { createBridgeRecovery } from "./host-recovery.js";
+import { readTokenUsage, type JcodeTokenUsage } from "./usage.js";
 
 /** Turn state of one jcode host session, shared by the closures that drive its turns. */
 export interface HostTurnState {
@@ -65,6 +66,9 @@ export interface HostTurnState {
   fallbackDelayMs: number;
   fallbackRunning: boolean;
   fallbackTimer: ReturnType<typeof setTimeout> | undefined;
+  /** The session's last provider call, as Jcode's `token_usage` reported it, and its provider. */
+  tokenUsage?: JcodeTokenUsage;
+  provider?: string;
 }
 
 /** One prompt a host-owned turn hands to Jcode. */
@@ -907,6 +911,14 @@ export function createHostTurns(hostState: HostTurnState, deps: HostTurnDeps) {
       "token_usage",
     ] as const)
       connected.on(kind, flushNativeEvent);
+    connected.on("token_usage", (event: ApiEvent) => {
+      if (!("session_id" in event) || event.session_id !== hostState.sessionId) return;
+      hostState.tokenUsage = readTokenUsage(event as unknown as Record<string, unknown>) ?? hostState.tokenUsage;
+    });
+    for (const kind of ["runtime_info", "model_info"] as const)
+      connected.on(kind, (event: ApiEvent) => {
+        if ("session_id" in event && event.session_id === hostState.sessionId && "provider" in event && typeof event.provider === "string") hostState.provider = event.provider;
+      });
     connected.on("session_status", (event: ApiEvent) => {
       if (!("session_id" in event) || event.session_id !== hostState.sessionId || event.ev !== "session_status") return;
       // Advisory idle between tool rounds does not mean the Cotal-owned run() has ended.

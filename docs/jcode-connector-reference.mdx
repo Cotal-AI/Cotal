@@ -291,6 +291,12 @@ as a command does, and reads `started` once Jcode acknowledges the send. Jcode r
 first ends it `refused` with Jcode's reason. A send Jcode does not acknowledge within 10 seconds
 ends `unknown`, because the turn may still run.
 
+`usage` reports the context Jcode's last provider call used, against the context budget Jcode
+reported with that call. The count follows Jcode's own context meter: the input alone where the
+provider counts cache reads inside it, as OpenAI does, and the input plus cache reads and writes
+where the provider reports them apart, as Anthropic does. A Jcode that reports no budget, such as
+0.99.0, answers with no context. Jcode reports no cost.
+
 ## Model selection
 
 `--model` is passed to Jcode's session-level Harness API model selector. Jcode validates the model
