@@ -226,7 +226,7 @@ export async function assertResetEligible(target: ResetTarget, command: ResetCom
       ? stoppedByDown
         ? `a member exited without a recorded stop: start the stack with \`cotal up\` and stop it with \`cotal down --yes\` from ${root}, then run \`${review}\``
         : `a member exited without a recorded stop: record it with \`cotal down --yes\` from ${root}, then run \`${review}\``
-      : `stop it with \`cotal down\` from ${root}, then ${afterStop}` });
+      : `from ${root}, review the stop with \`cotal down --dry-run\`, confirm it with \`cotal down --yes\`, then ${afterStop}` });
   try {
     assertNoRecordedServiceOwner(space);
     assertNoAdditiveLedger(root, space);

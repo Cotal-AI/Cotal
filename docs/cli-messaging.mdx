@@ -845,7 +845,7 @@ without `--creds`, on the operator credential this machine records.
 ## pending [#pending]
 
 ```bash
-cotal pending <agent> [--durable <exact-dm-durable>] [--limit <1..100>] [--space <s>] [--json|--plain]
+cotal pending <agent> [--durable <exact-dm-durable>] [--limit <1..100>] [--space <s>] [--server <url>] [--creds <private-file>] [--json|--plain]
 ```
 
 The finite read reports the selected DM durable's native pending count, ack
@@ -859,7 +859,9 @@ durable name without substituting a same-named current agent. An absent or unrea
 `pending 0`. A missing DM stream is
 `TARGET_NOT_FOUND` as well: the durable was not read.
 The caller needs the native admin read authority; user-auth has no equivalent
-view here and refuses without a static or bare fallback. If the local stack is stopped, the
+view here and refuses without a static or bare fallback. To read from a broker not registered on
+this machine, pass its URL with `--server <url>` and a static admin credential with `--creds <private-file>`.
+If the local stack is stopped, the
 refusal names the stopped space and where to start it again. A failed read does not prune a locally
 saved mesh registration.
 

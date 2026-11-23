@@ -214,15 +214,16 @@ try {
     check("its remedy names cotal down and cotal reset store", Boolean(deleted.env?.error?.remedy?.includes("cotal down")) && Boolean(deleted.env?.error?.remedy?.includes(`cotal reset store ${space}`)), deleted.env?.error);
 
     // 3. Reset previews and refusals carry a verdict, one reason and a Next (B4-04).
+    const stopReview = `from ${root}, review the stop with \`cotal down --dry-run\`, confirm it with \`cotal down --yes\``;
     const storeLive = cli(root, "reset", "store", space, "--dry-run", "--json");
     check("reset store --dry-run on a live stack exits 0 with a refused verdict", storeLive.status === 0 && storeLive.env?.result?.applyVerdict?.offered === false && storeLive.env.result.applyVerdict.code === "LIFECYCLE_BLOCKED", shown(storeLive));
-    check("that verdict's remedy names cotal down and the review, each in backticks", Boolean(storeLive.env?.result?.applyVerdict?.remedy?.startsWith("stop it with `cotal down` from ")) && Boolean(storeLive.env?.result?.applyVerdict?.remedy?.endsWith(`, then run \`cotal reset store ${space} --dry-run\``)), storeLive.env?.result?.applyVerdict);
+    check("that verdict names how to review and confirm the stop, then retry the store preview", storeLive.env?.result?.applyVerdict?.remedy === `${stopReview}, then run \`cotal reset store ${space} --dry-run\``, storeLive.env?.result?.applyVerdict);
     const storeLiveText = cli(root, "reset", "store", space, "--dry-run", "--plain");
     check("a live store preview without a recorded run list suggests the live inventory, not a start",
       storeLiveText.status === 0 && storeLiveText.stdout.includes("would refuse (LIFECYCLE_BLOCKED)") && storeLiveText.stdout.includes("No run list was recorded") &&
       storeLiveText.stdout.includes(`If a manager is available, list live runs with \`cotal run --space ${space}\``) && !storeLiveText.stdout.includes("`cotal up`"), shown(storeLiveText));
     const spaceLive = cli(root, "reset", "space", space, "--dry-run", "--json");
-    check("reset space --dry-run on a live stack refuses with a remedy naming cotal down and the review, each in backticks", spaceLive.status === 2 && spaceLive.env?.error?.code === "LIFECYCLE_BLOCKED" && Boolean(spaceLive.env.error.remedy?.startsWith("stop it with `cotal down` from ")) && Boolean(spaceLive.env.error.remedy?.endsWith(`, then run \`cotal reset space ${space} --dry-run\``)), shown(spaceLive));
+    check("reset space --dry-run refuses and names how to review and confirm the stop, then retry the space preview", spaceLive.status === 2 && spaceLive.env?.error?.code === "LIFECYCLE_BLOCKED" && spaceLive.env.error.remedy === `${stopReview}, then run \`cotal reset space ${space} --dry-run\``, shown(spaceLive));
     // The delivery daemon's own pidfile names the process its stack member runs, so it is listed once.
     const processes = spaceLive.env?.target?.processes ?? [];
     const pids = processes.flatMap((row) => /\bpid (\d+)/.exec(row)?.[1] ?? []);
@@ -230,6 +231,8 @@ try {
       processes.length === 2 && !processes.some((row) => row.startsWith("delivery daemon")) && /^stack-delivery, pid \d+, instance [0-9a-f-]+$/.test(processes.find((row) => row.startsWith("stack-delivery")) ?? "")
         && processes.some((row) => /^stack-broker, instance [0-9a-f-]+$/.test(row)) && new Set(pids).size === pids.length && spaceLive.env?.error?.message.split("delivery").length === 2, processes);
 
+    const stopPreview = cli(root, "down", "--dry-run", "--json");
+    check("down --dry-run reviews the stop and leaves the stack running", stopPreview.status === 0 && findMesh(space) !== undefined, shown(stopPreview));
     const stopped = cli(root, "down", "--yes", "--json");
     check("the refused delete left a stack that down --yes stops", stopped.status === 0, shown(stopped));
     check("down removed the registration and kept the prepared record", findMesh(space) === undefined && findPreparedSpace(space) !== undefined);

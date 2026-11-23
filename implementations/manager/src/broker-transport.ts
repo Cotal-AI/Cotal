@@ -19,7 +19,6 @@ export interface BrokerTransportDeps {
   auth: () => Manager["auth"];
   leaseStopping: () => Manager["leaseStopping"];
   managerInstanceId: () => Manager["managerInstanceId"];
-  remoteAuthority: () => Manager["remoteAuthority"];
   transportDown: () => Manager["transportDown"];
   renewRemoteExecutor: (...args: Parameters<Manager["renewRemoteExecutor"]>) => ReturnType<Manager["renewRemoteExecutor"]>;
   renewRemoteStandingBundle: (...args: Parameters<Manager["renewRemoteStandingBundle"]>) => ReturnType<Manager["renewRemoteStandingBundle"]>;
@@ -35,7 +34,6 @@ export function brokerTransportDeps(m: Manager): BrokerTransportDeps {
     auth: () => m["auth"],
     leaseStopping: () => m["leaseStopping"],
     managerInstanceId: () => m["managerInstanceId"],
-    remoteAuthority: () => m["remoteAuthority"],
     transportDown: () => m["transportDown"],
     renewRemoteExecutor: (...args) => m["renewRemoteExecutor"](...args),
     renewRemoteStandingBundle: (...args) => m["renewRemoteStandingBundle"](...args),
@@ -53,7 +51,7 @@ export class BrokerTransport {
   private get auth() { return this.deps.auth(); }
   private get leaseStopping() { return this.deps.leaseStopping(); }
   private get managerInstanceId() { return this.deps.managerInstanceId(); }
-  private get remoteAuthority() { return this.deps.remoteAuthority(); }
+  private get remoteAuthority() { return this.config.remoteAuthority; }
   private get transportDown() { return this.deps.transportDown(); }
   private renewRemoteExecutor(...args: Parameters<Manager["renewRemoteExecutor"]>): ReturnType<Manager["renewRemoteExecutor"]> { return this.deps.renewRemoteExecutor(...args); }
   private renewRemoteStandingBundle(...args: Parameters<Manager["renewRemoteStandingBundle"]>): ReturnType<Manager["renewRemoteStandingBundle"]> { return this.deps.renewRemoteStandingBundle(...args); }

@@ -32,7 +32,6 @@ export interface StatusAndModelsDeps {
   namesCapacity: () => Manager["namesCapacity"];
   preservationAttemptId: () => Manager["preservationAttemptId"];
   preservationInventory: () => Manager["preservationInventory"];
-  remoteAuthority: () => Manager["remoteAuthority"];
   requiredRuntime: () => Manager["requiredRuntime"];
   resumeRequired: () => Manager["resumeRequired"];
   retirement: () => Manager["retirement"];
@@ -65,7 +64,6 @@ export function statusAndModelsDeps(m: Manager): StatusAndModelsDeps {
     namesCapacity: () => m["namesCapacity"],
     preservationAttemptId: () => m["preservationAttemptId"],
     preservationInventory: () => m["preservationInventory"],
-    remoteAuthority: () => m["remoteAuthority"],
     requiredRuntime: () => m["requiredRuntime"],
     resumeRequired: () => m["resumeRequired"],
     retirement: () => m["retirement"],
@@ -102,7 +100,7 @@ export class StatusAndModels {
   private get namesCapacity() { return this.deps.namesCapacity(); }
   private get preservationAttemptId() { return this.deps.preservationAttemptId(); }
   private get preservationInventory() { return this.deps.preservationInventory(); }
-  private get remoteAuthority() { return this.deps.remoteAuthority(); }
+  private get remoteAuthority() { return this.config.remoteAuthority; }
   private get requiredRuntime() { return this.deps.requiredRuntime(); }
   private get resumeRequired() { return this.deps.resumeRequired(); }
   private get retirement() { return this.deps.retirement(); }

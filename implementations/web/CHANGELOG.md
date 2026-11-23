@@ -1,5 +1,11 @@
 # @cotal-ai/web
 
+## 0.176.0
+
+### Patch Changes
+
+- 9f3f3c9: Clarify which workflow commands accept credentials, when preference layers omit fields, how `team check --space` works, and the dashboard's history limit.
+
 ## 0.175.3
 
 ### Patch Changes

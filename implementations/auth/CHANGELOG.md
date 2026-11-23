@@ -1,5 +1,20 @@
 # @cotal-ai/auth
 
+## 0.176.0
+
+### Patch Changes
+
+- efe525c: Report permission denials when `cotal attach` cannot access the selected manager, and bound the live attach smoke test without changing who may attach.
+- Updated dependencies [e9bcb31]
+- Updated dependencies [56b6dc1]
+- Updated dependencies [5c49fdd]
+- Updated dependencies [089f68d]
+- Updated dependencies [7266240]
+- Updated dependencies [28b97c7]
+  - @cotal-ai/core@0.176.0
+  - @cotal-ai/workspace@0.176.0
+  - @cotal-ai/lang@0.176.0
+
 ## 0.175.3
 
 ### Patch Changes

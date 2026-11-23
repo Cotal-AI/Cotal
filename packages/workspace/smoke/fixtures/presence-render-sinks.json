@@ -1,10 +1,10 @@
 {
   "expected": {
-    "total": 1118,
+    "total": 1136,
     "honest-text": 71,
     "presence-only-glyph/count": 138,
     "command-ack": 13,
-    "non-render/control": 896
+    "non-render/control": 914
   },
   "classRationales": {
     "non-render/control": "This candidate handles presence state without making a human work-progress claim. Status tokens, routing, component inputs and presentation metadata are control data; exceptions that report a different kind of status carry an entry-specific reason."
@@ -7925,6 +7925,132 @@
       "anchor": "`npm terminated by ${closed.signal}`",
       "class": "non-render/control",
       "rationale": "This command diagnostic reports operational state and recovery, not peer work progress."
+    },
+    {
+      "path": "implementations/cli/src/commands/down-preserve.ts",
+      "kind": "derived-output",
+      "anchor": "of wedging.\n            abortMaintenanceCut(lock);\n            clearPrese",
+      "class": "non-render/control",
+      "rationale": "Preserve control flow: aborts the maintenance cut through the maintenance lock handle; a local lock, not presence, and no rendering."
+    },
+    {
+      "path": "implementations/cli/src/commands/down-preserve.ts",
+      "kind": "derived-output",
+      "anchor": "eCut(lock);\n            clearPreservationPrepareIntent(lock);\n            throw new ",
+      "class": "non-render/control",
+      "rationale": "Preserve control flow: clears the prepare intent through the maintenance lock handle; a local lock, not presence, and no rendering."
+    },
+    {
+      "path": "implementations/cli/src/commands/down-preserve.ts",
+      "kind": "derived-output",
+      "anchor": "}\n          }\n          recordPreservationManagerCommit(lock, { operation: \"commitPreservation\", attemptId, state: \"preserved\" });\n          clearPreserv",
+      "class": "non-render/control",
+      "rationale": "Preserve control flow: records the Manager commit through the maintenance lock handle; a local lock, not presence, and no rendering."
+    },
+    {
+      "path": "implementations/cli/src/commands/down-preserve.ts",
+      "kind": "derived-output",
+      "anchor": "reserved\" });\n          clearPreservationCommitIntent(lock);\n          clearPreserv",
+      "class": "non-render/control",
+      "rationale": "Preserve control flow: clears the commit intent through the maintenance lock handle; a local lock, not presence, and no rendering."
+    },
+    {
+      "path": "implementations/cli/src/commands/down-preserve.ts",
+      "kind": "derived-output",
+      "anchor": "Intent(lock);\n          clearPreservationPrepareIntent(lock);\n          managerCommi",
+      "class": "non-render/control",
+      "rationale": "Preserve control flow: clears the prepare intent through the maintenance lock handle; a local lock, not presence, and no rendering."
+    },
+    {
+      "path": "implementations/cli/src/commands/down-preserve.ts",
+      "kind": "derived-output",
+      "anchor": "writeMaintenanceResumeDocument(lock, {\n            version: MAINTENANCE_RESUME_DOCUMENT_VERSION,\n            inventory: replan.inventory as JsonValue,\n            launch: { attemptId, space: mesh.space, server: mesh.server, storeDir, ...cap, mode: mesh.mode },\n          })",
+      "class": "non-render/control",
+      "rationale": "Preserve control flow: writes the resume document through the maintenance lock handle; the inventory is stored, not rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/down-preserve.ts",
+      "kind": "derived-output",
+      "anchor": " manager */ }\n          abortMaintenanceCut(lock);\n          clearPreserv",
+      "class": "non-render/control",
+      "rationale": "Preserve control flow: aborts the maintenance cut through the maintenance lock handle; a local lock, not presence, and no rendering."
+    },
+    {
+      "path": "implementations/cli/src/commands/down-preserve.ts",
+      "kind": "derived-output",
+      "anchor": "nceCut(lock);\n          clearPreservationPrepareIntent(lock);\n          throw new Er",
+      "class": "non-render/control",
+      "rationale": "Preserve control flow: clears the prepare intent through the maintenance lock handle; a local lock, not presence, and no rendering."
+    },
+    {
+      "path": "implementations/cli/src/commands/down-preserve.ts",
+      "kind": "derived-output",
+      "anchor": "writePreservationPrepareIntent(lock, {\n          attemptId, space: mesh.space, mode: mesh.mode, server: mesh.server, storeDir,\n        })",
+      "class": "non-render/control",
+      "rationale": "Preserve control flow: writes the prepare intent through the maintenance lock handle; a registration record is stored, not rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/down-preserve.ts",
+      "kind": "derived-output",
+      "anchor": "he manager */ }\n        clearPreservationPrepareIntent(lock);\n        // The deliver",
+      "class": "non-render/control",
+      "rationale": "Preserve control flow: clears the prepare intent through the maintenance lock handle; a local lock, not presence, and no rendering."
+    },
+    {
+      "path": "implementations/cli/src/commands/down-preserve.ts",
+      "kind": "derived-output",
+      "anchor": "writeMaintenanceResumeDocument(lock, {\n        version: MAINTENANCE_RESUME_DOCUMENT_VERSION,\n        inventory: plan.inventory as JsonValue,\n        launch: {\n          attemptId,\n          space: mesh.space,\n          server: mesh.server,\n          storeDir,\n          ...cap,\n          mode: mesh.mode,\n        },\n      })",
+      "class": "non-render/control",
+      "rationale": "Preserve control flow: writes the resume document through the maintenance lock handle; the inventory is stored, not rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/down-preserve.ts",
+      "kind": "derived-output",
+      "anchor": "beginMaintenanceCut(lock, {\n        attemptId,\n        space: mesh.space,\n        mode: mesh.mode,\n        sourcePath: storeDir,\n        resume,\n        launch: { server: mesh.server, storeDir, ...cap },\n      })",
+      "class": "non-render/control",
+      "rationale": "Preserve control flow: begins the maintenance cut through the maintenance lock handle; a registration record is stored, not rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/down-preserve.ts",
+      "kind": "derived-output",
+      "anchor": ".cap },\n      });\n      clearPreservationPrepareIntent(lock);\n    }\n\n    // Stop the",
+      "class": "non-render/control",
+      "rationale": "Preserve control flow: clears the prepare intent through the maintenance lock handle; a local lock, not presence, and no rendering."
+    },
+    {
+      "path": "implementations/cli/src/commands/down-preserve.ts",
+      "kind": "derived-output",
+      "anchor": "writePreservationCommitIntent(lock, { attemptId })",
+      "class": "non-render/control",
+      "rationale": "Preserve control flow: writes the commit intent through the maintenance lock handle; a local lock, not presence, and no rendering."
+    },
+    {
+      "path": "implementations/cli/src/commands/down-preserve.ts",
+      "kind": "derived-output",
+      "anchor": "process.exit(92);\n      recordPreservationManagerCommit(lock, { operation: \"commitPreservation\", attemptId, state: \"preserved\" });\n      clearPreservatio",
+      "class": "non-render/control",
+      "rationale": "Preserve control flow: records the Manager commit through the maintenance lock handle; a local lock, not presence, and no rendering."
+    },
+    {
+      "path": "implementations/cli/src/commands/down-preserve.ts",
+      "kind": "derived-output",
+      "anchor": ": \"preserved\" });\n      clearPreservationCommitIntent(lock);\n      if (process.env.",
+      "class": "non-render/control",
+      "rationale": "Preserve control flow: clears the commit intent through the maintenance lock handle; a local lock, not presence, and no rendering."
+    },
+    {
+      "path": "implementations/cli/src/commands/down-preserve.ts",
+      "kind": "derived-output",
+      "anchor": "completeMaintenanceCut(lock, {\n      attemptId,\n      observedAt: new Date().toISOString(),\n      managerCommit: { operation: \"commitPreservation\", attemptId, state: \"preserved\" },\n      stopped: { manager: true, broker: true, localProcesses: true },\n      listener: { endpoint: mesh.server, unreachable: true },\n    })",
+      "class": "non-render/control",
+      "rationale": "Preserve control flow: completes the maintenance cut through the maintenance lock handle; a local lock, not presence, and no rendering."
+    },
+    {
+      "path": "implementations/cli/src/commands/down-preserve.ts",
+      "kind": "derived-output",
+      "anchor": "releaseMaintenanceLock(lock)",
+      "class": "non-render/control",
+      "rationale": "Preserve control flow: releases the maintenance lock; a local lock, not presence, and no rendering."
     }
   ]
 }
