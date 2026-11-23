@@ -1,8 +1,10 @@
 import * as core from "../../../packages/core/dist/index.js";
 import * as auth from "../../auth/dist/index.js";
 // A person's manager-caller view on their own Manager, minted by the real auth service and
-// enforced by the broker. The spawn reads (status, models, resolve-cwd, ps) answer for a
-// spawn-scoped view and are refused for a run-only or no-scope view. No view gains slots by them.
+// enforced by the broker. The spawn reads (status, models, resolve-cwd, list-dir) answer for a
+// spawn-scoped view and are refused for a run-only or no-scope view. `ps` answers on every view of
+// a person's own row whatever its scope, bounded by the Manager to the caller's owner (SPEC 13.21).
+// No view gains slots by them.
 // Every cell runs and is counted, so a refused read shows as a FAIL line rather than an abort.
 const assert: typeof import("node:assert/strict") = (await import("node:assert/strict")).default;
 const { createServer } = await import("node:http");
@@ -165,11 +167,16 @@ try {
   cell("launcher: resolve-cwd returns the canonical directory on this host",
     l["resolve-cwd"].kind === "answered" && l["resolve-cwd"].data.cwd === cwd && l["resolve-cwd"].data.host === hostname(), l["resolve-cwd"]);
   const r = seen.runner!;
-  cell("runner: status, models, resolve-cwd, ps and slots stay broker-refused",
-    [r.status, r.models, r["resolve-cwd"], r["list-dir"], r.ps, r.slots].every((o) => o.kind === "broker-refused"), [r.status, r.models, r["resolve-cwd"], r["list-dir"], r.ps, r.slots].map(kind));
+  cell("runner: status, models, resolve-cwd, list-dir and slots stay broker-refused",
+    [r.status, r.models, r["resolve-cwd"], r["list-dir"], r.slots].every((o) => o.kind === "broker-refused"), [r.status, r.models, r["resolve-cwd"], r["list-dir"], r.slots].map(kind));
   cell("runner: list-personas answers", r["list-personas"].kind === "answered", r["list-personas"]);
   const d = seen.reader!;
-  cell("reader: every read stays broker-refused", Object.values(d).every((o) => o.kind === "broker-refused"), Object.values(d).map(kind));
+  cell("reader: every read but ps stays broker-refused",
+    Object.entries(d).every(([command, o]) => command === "ps" || o.kind === "broker-refused"), Object.values(d).map(kind));
+  for (const actor of ["runner", "reader"]) {
+    const ps = seen[actor]!.ps;
+    cell(`${actor}: ps answers, as on every view of a person's own row`, ps.kind === "answered" && Array.isArray(ps.data), ps);
+  }
   const o = seen.operator!;
   cell("operator: status, models, resolve-cwd, list-personas and ps answer",
     [o.status, o.models, o["resolve-cwd"], o["list-dir"], o["list-personas"], o.ps].every((x) => x.kind === "answered"), [o.status, o.models, o["resolve-cwd"], o["list-dir"], o["list-personas"], o.ps].map(kind));

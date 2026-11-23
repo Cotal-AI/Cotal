@@ -37,7 +37,7 @@ const mkRoot = (): string => { const r = mkdtempSync(join(tmpdir(), "cotal-coexi
 const root1 = mkRoot();
 const root2 = mkRoot();
 
-type MgrPriv = { managerInstanceId: string; serviceServe?: { grant: { instanceId: string } } };
+type MgrPriv = { managerInstanceId: string; servePlane: { serviceServe?: { grant: { instanceId: string } }; } };
 const kids: ChildProcess[] = [];
 let m1: InstanceType<typeof Manager> | undefined;
 let m2: InstanceType<typeof Manager> | undefined;
@@ -52,7 +52,7 @@ try {
   m1 = new Manager({ space: SPACE, servers: SERVER, runtime: "pty", workspaceRoot: root1 });
   await m1.start();
   const M1 = m1 as unknown as MgrPriv;
-  check("manager 1 registered its own logical instance", M1.serviceServe !== undefined);
+  check("manager 1 registered its own logical instance", M1.servePlane.serviceServe !== undefined);
 
   // Manager 2 (workspace root 2, SAME space) — must COEXIST, not refuse at a per-space singleton lease.
   m2 = new Manager({ space: SPACE, servers: SERVER, runtime: "pty", workspaceRoot: root2 });
@@ -61,11 +61,11 @@ try {
   const M2 = m2 as unknown as MgrPriv;
   check("manager 2 in a SECOND workspace root COEXISTS (no per-space singleton refusal)", m2Err === undefined, m2Err);
   check("the two managers hold DISTINCT logical instance ids (two roots = two ids)",
-    M1.serviceServe !== undefined && M2.serviceServe !== undefined
+    M1.servePlane.serviceServe !== undefined && M2.servePlane.serviceServe !== undefined
     && M1.managerInstanceId !== M2.managerInstanceId, { i1: M1.managerInstanceId, i2: M2.managerInstanceId });
   check("both registrations are live under their own instance id (neither superseded the other)",
-    M1.serviceServe?.grant.instanceId === M1.managerInstanceId
-    && M2.serviceServe?.grant.instanceId === M2.managerInstanceId);
+    M1.servePlane.serviceServe?.grant.instanceId === M1.managerInstanceId
+    && M2.servePlane.serviceServe?.grant.instanceId === M2.managerInstanceId);
 } finally {
   await m2?.stop({ withAgents: true }).catch(() => {});
   await m1?.stop({ withAgents: true }).catch(() => {});

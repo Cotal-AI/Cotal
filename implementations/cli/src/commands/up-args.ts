@@ -172,8 +172,10 @@ export function validateUpArguments(args: ParsedArgs): void {
   else if (!(args.values.file && args.values["dry-run"] === true)) {
     const inheritedRoot = inheritedMachineHomeRoot();
     if (inheritedRoot) {
-      if (!freshFolderRoot(args.values))
-        throw new CommandFailure("refused", "CONFLICT", "this folder inherits the machine's home .cotal; up did not start a stack in that home root", { target: { root: process.cwd(), inheritedRoot }, remedy: "prepare this folder with `cotal space create <space> --root .`, then run `cotal up` again from this folder" });
+      if (!freshFolderRoot(args.values)) {
+        const retry = args.values.file ? `repeat your manifest command from this folder${presentation === "rich" ? "" : `, but omit --${presentation}`}` : "run `cotal up` again from this folder";
+        throw new CommandFailure("refused", "CONFLICT", "this folder inherits the machine's home .cotal; up did not start a stack in that home root", { target: { root: process.cwd(), inheritedRoot }, remedy: `prepare this folder with \`cotal space create <space> --root .\`, then ${retry}` });
+      }
     } else {
       const home = machineHomeRoot();
       if (home && !homeHoldsStack(home))

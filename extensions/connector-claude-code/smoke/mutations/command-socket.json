@@ -124,8 +124,8 @@
     {
       "name": "S11 opening keeps sockets whose server exited",
       "file": "extensions/connector-claude-code/src/command-feed.ts",
-      "find": "  if (process.platform === \"win32\") return;\n  const dir = commandDir();\n",
-      "replace": "  if (process.platform !== \"win32\") return;\n  const dir = commandDir();\n",
+      "find": "    if (server && !alive(Number(server))) rmSync(join(dir, name), { force: true });\n",
+      "replace": "    if (server && !alive(Number(server)) && false) rmSync(join(dir, name), { force: true });\n",
       "expectRed": "opening removes a socket whose server has exited",
       "cell": "opening removes a socket whose server has exited",
       "command": "pnpm --filter @cotal-ai/connector-claude-code build && pnpm exec tsx extensions/connector-claude-code/smoke/command-socket.smoke.ts",
@@ -133,10 +133,10 @@
       "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code build"
     },
     {
-      "name": "S12 the socket keeps the umask's mode",
+      "name": "S12 the socket is left open to other users",
       "file": "extensions/connector-claude-code/src/command-feed.ts",
-      "find": "    if (process.platform !== \"win32\") chmodSync(path, 0o600);\n",
-      "replace": "    if (process.platform === \"win32\") chmodSync(path, 0o600);\n",
+      "find": "    chmodSync(path, 0o600);\n",
+      "replace": "    chmodSync(path, 0o666);\n",
       "expectRed": "the socket file is 0600",
       "cell": "the socket file is 0600",
       "command": "pnpm --filter @cotal-ai/connector-claude-code build && pnpm exec tsx extensions/connector-claude-code/smoke/command-socket.smoke.ts",

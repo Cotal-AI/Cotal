@@ -170,6 +170,19 @@ for (const [args, space] of [[[], null], [["--space", "watch-test"], "watch-test
 }
 check("a global flag cannot hide a missing value at the end of a short option group",
   groupedSpace.status === 1 && groupedSpace.stderr === "" && JSON.parse(groupedSpace.stdout).error.message === "--space needs a value", shown(groupedSpace));
+for (const global of ["--no-input", "--no-color"]) {
+  const args = [global, "config", "get", "harness", "--space", global];
+  const text = run(args);
+  const json = run([...args, "--json"]);
+  const complete = run([global, "config", "get", "harness", "--space", "demo", global, "--json"]);
+  check(`a repeated ${global} in the value slot reports the missing value in text and JSON`,
+    usageShape(text, /--space needs a value/) && text.stderr.includes("write --space <name>")
+    && json.status === 1 && json.stderr === "" && JSON.parse(json.stdout).error.code === "USAGE_INVALID"
+    && JSON.parse(json.stdout).error.message === "--space needs a value" && JSON.parse(json.stdout).error.remedy === "write --space <name>",
+    { text: shown(text), json: shown(json) });
+  check(`a repeated ${global} with the value supplied still refuses the duplicate`, complete.status === 1 && complete.stderr === ""
+    && JSON.parse(complete.stdout).error.message === `Option '${global}' cannot be repeated`, shown(complete));
+}
 const completeValue = run(["docs", "--json", "--search", "usage", "--no-input"]);
 check("a global flag after a supplied value is accepted", completeValue.status === 0 && completeValue.stderr === ""
   && JSON.parse(completeValue.stdout).result.query === "usage", shown(completeValue));
@@ -237,6 +250,9 @@ for (const [args, flag] of [
   [["\u2013\u2013plain", "status"], "--plain"],
   [["\u2013no-input", "status"], "--no-input"],
   [["\u2014json", "status"], "--json"],
+  [["\u2013j", "version"], "-j"],
+  [["\u2013h"], "-h"],
+  [["\u2013V"], "-V"],
 ] as const) {
   const r = run([...args]);
   check(`${args.join(" ")} is refused as a typographic dash before the command word, naming ${flag}`, r.status === 1 && r.stdout === ""
@@ -947,6 +963,23 @@ if (process.platform !== "win32") {
   const json = at(["status", "--json"]);
   const envelope = json.stdout.startsWith("{") ? JSON.parse(json.stdout) : undefined;
   check("with --json it is one CONFLICT refusal", json.status === 2 && envelope?.outcome === "refused" && envelope.error?.code === "CONFLICT", shown(json));
+  for (const [stream, args, target] of [
+    ["history", ["history", "review", "--follow"], { space: null, channel: "review", dms: false }],
+    ["membership", ["channel", "members", "review", "--follow"], { space: null, channel: "review" }],
+    ["watch", ["watch"], { requestedSpace: null }],
+  ] as const) {
+    const r = at([...args, "--json"]);
+    const records = r.stdout.trimEnd().split("\n").map((line) => JSON.parse(line || "{}"));
+    check(`${stream} reports the project conflict as a setup failure without a snapshot`, r.status === 2 && r.stderr === ""
+      && records.length === 2 && records.every((record) => record.schemaVersion === 1 && record.stream === stream && Object.entries(target).every(([key, value]) => record.target?.[key] === value))
+      && records[0]?.type === "error" && records[0].data?.code === "CONFLICT" && records[0].data?.message?.includes(join(notes, ".cotal"))
+      && records[0].data?.remedy === "rename or move that file, then run the command again"
+      && records[1]?.type === "end" && records[1].data?.reason === "setup-failed" && (stream !== "membership" || records[1].data.lastAsOf === null), shown(r));
+  }
+  const history = at(["history", "review", "--json"]);
+  const receipt = JSON.parse(history.stdout || "{}");
+  check("finite history still reports one CONFLICT receipt", history.status === 2 && history.stderr === ""
+    && receipt.command === "history" && receipt.outcome === "refused" && receipt.error?.code === "CONFLICT", shown(history));
   const rooted = at(["space", "create", "notes", "--root", notes], neutral);
   check("--root naming that folder refuses the same way", named(rooted), shown(rooted));
   for (const args of [["--version"], ["version"]]) {
