@@ -37,7 +37,6 @@ export interface CommandDispatchDeps {
   interruptAuthorized: (...args: Parameters<TerminalInput["interruptAuthorized"]>) => ReturnType<TerminalInput["interruptAuthorized"]>;
   lifecycleMembershipRefusal: (...args: Parameters<Manager["lifecycleMembershipRefusal"]>) => ReturnType<Manager["lifecycleMembershipRefusal"]>;
   list: (...args: Parameters<Manager["list"]>) => ReturnType<Manager["list"]>;
-  listSpawnDirectory: (...args: Parameters<Manager["listSpawnDirectory"]>) => ReturnType<Manager["listSpawnDirectory"]>;
   loggedSpawnRefusal: <T>(ctx: EpServeContext, serve: () => Promise<T>) => Promise<T>;
   maintenanceError: (...args: Parameters<Manager["maintenanceError"]>) => ReturnType<Manager["maintenanceError"]>;
   managedPrincipal: (...args: Parameters<Manager["managedPrincipal"]>) => ReturnType<Manager["managedPrincipal"]>;
@@ -46,17 +45,14 @@ export interface CommandDispatchDeps {
   opDefinePersona: (...args: Parameters<Manager["opDefinePersona"]>) => ReturnType<Manager["opDefinePersona"]>;
   opFinalizeResume: (...args: Parameters<Manager["opFinalizeResume"]>) => ReturnType<Manager["opFinalizeResume"]>;
   opLaunch: (...args: Parameters<Manager["opLaunch"]>) => ReturnType<Manager["opLaunch"]>;
-  opListPersonas: (...args: Parameters<Manager["opListPersonas"]>) => ReturnType<Manager["opListPersonas"]>;
   opModels: (...args: Parameters<Manager["opModels"]>) => ReturnType<Manager["opModels"]>;
   opPreservationCtl: (...args: Parameters<Manager["opPreservationCtl"]>) => ReturnType<Manager["opPreservationCtl"]>;
   opPurge: (...args: Parameters<Manager["opPurge"]>) => ReturnType<Manager["opPurge"]>;
   opRemovePersona: (...args: Parameters<Manager["opRemovePersona"]>) => ReturnType<Manager["opRemovePersona"]>;
   opResumePreserved: (...args: Parameters<Manager["opResumePreserved"]>) => ReturnType<Manager["opResumePreserved"]>;
-  opShowPersona: (...args: Parameters<Manager["opShowPersona"]>) => ReturnType<Manager["opShowPersona"]>;
   opStart: (...args: Parameters<Manager["opStart"]>) => ReturnType<Manager["opStart"]>;
   openStaticChatSession: (...args: Parameters<Manager["openStaticChatSession"]>) => ReturnType<Manager["openStaticChatSession"]>;
   psOwnerFilter: (...args: Parameters<Manager["psOwnerFilter"]>) => ReturnType<Manager["psOwnerFilter"]>;
-  resolveSpawnCwd: (...args: Parameters<Manager["resolveSpawnCwd"]>) => ReturnType<Manager["resolveSpawnCwd"]>;
   retireStaticChatSession: (...args: Parameters<Manager["retireStaticChatSession"]>) => ReturnType<Manager["retireStaticChatSession"]>;
   runAnswerer: (...args: Parameters<Manager["runAnswerer"]>) => ReturnType<Manager["runAnswerer"]>;
   runHost: (...args: Parameters<Manager["runHost"]>) => ReturnType<Manager["runHost"]>;
@@ -71,7 +67,6 @@ export interface CommandDispatchDeps {
   spawnPersona: (...args: Parameters<Manager["spawnPersona"]>) => ReturnType<Manager["spawnPersona"]>;
   stopHandle: (...args: Parameters<Manager["stopHandle"]>) => ReturnType<Manager["stopHandle"]>;
   stopWindowsSeat: (...args: Parameters<Manager["stopWindowsSeat"]>) => ReturnType<Manager["stopWindowsSeat"]>;
-  trackStoppedHandle: (...args: Parameters<Manager["trackStoppedHandle"]>) => ReturnType<Manager["trackStoppedHandle"]>;
   turnPendingFor: (...args: Parameters<Manager["turnPendingFor"]>) => ReturnType<Manager["turnPendingFor"]>;
   turnTarget: (...args: Parameters<Manager["turnTarget"]>) => ReturnType<Manager["turnTarget"]>;
 }
@@ -97,7 +92,6 @@ export function commandDispatchDeps(m: Manager): CommandDispatchDeps {
     interruptAuthorized: (...args) => m["terminalInputComponent"].interruptAuthorized(...args),
     lifecycleMembershipRefusal: (...args) => m["lifecycleMembershipRefusal"](...args),
     list: (...args) => m["list"](...args),
-    listSpawnDirectory: (...args) => m["listSpawnDirectory"](...args),
     loggedSpawnRefusal: (ctx, fn) => m["loggedSpawnRefusal"](ctx, fn),
     maintenanceError: (...args) => m["maintenanceError"](...args),
     managedPrincipal: (...args) => m["managedPrincipal"](...args),
@@ -106,17 +100,14 @@ export function commandDispatchDeps(m: Manager): CommandDispatchDeps {
     opDefinePersona: (...args) => m["opDefinePersona"](...args),
     opFinalizeResume: (...args) => m["opFinalizeResume"](...args),
     opLaunch: (...args) => m["opLaunch"](...args),
-    opListPersonas: (...args) => m["opListPersonas"](...args),
     opModels: (...args) => m["opModels"](...args),
     opPreservationCtl: (...args) => m["opPreservationCtl"](...args),
     opPurge: (...args) => m["opPurge"](...args),
     opRemovePersona: (...args) => m["opRemovePersona"](...args),
     opResumePreserved: (...args) => m["opResumePreserved"](...args),
-    opShowPersona: (...args) => m["opShowPersona"](...args),
     opStart: (...args) => m["opStart"](...args),
     openStaticChatSession: (...args) => m["openStaticChatSession"](...args),
     psOwnerFilter: (...args) => m["psOwnerFilter"](...args),
-    resolveSpawnCwd: (...args) => m["resolveSpawnCwd"](...args),
     retireStaticChatSession: (...args) => m["retireStaticChatSession"](...args),
     runAnswerer: (...args) => m["runAnswerer"](...args),
     runHost: (...args) => m["runHost"](...args),
@@ -131,7 +122,6 @@ export function commandDispatchDeps(m: Manager): CommandDispatchDeps {
     spawnPersona: (...args) => m["spawnPersona"](...args),
     stopHandle: (...args) => m["stopHandle"](...args),
     stopWindowsSeat: (...args) => m["stopWindowsSeat"](...args),
-    trackStoppedHandle: (...args) => m["trackStoppedHandle"](...args),
     turnPendingFor: (...args) => m["turnPendingFor"](...args),
     turnTarget: (...args) => m["turnTarget"](...args),
   };
@@ -139,7 +129,7 @@ export function commandDispatchDeps(m: Manager): CommandDispatchDeps {
 
 /** The typed manager command table, the control admission both doors share, and the admin reach it reads. */
 export class CommandDispatch {
-  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: CommandDispatchDeps, private readonly parts: Pick<ManagerParts, "goalWriter">, private readonly state: ManagerStartState) {}
+  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: CommandDispatchDeps, private readonly parts: Pick<ManagerParts, "goalWriter" | "personaCatalog" | "seatLaunch" | "seatStop">, private readonly state: ManagerStartState) {}
 
   // The Manager members these bodies read, under their Manager names. Each reads through its dep at
   // use, so a field the Manager assigns later is current and a method a test replaces on the Manager
@@ -165,7 +155,6 @@ export class CommandDispatch {
   private interruptAuthorized(...args: Parameters<TerminalInput["interruptAuthorized"]>): ReturnType<TerminalInput["interruptAuthorized"]> { return this.deps.interruptAuthorized(...args); }
   private lifecycleMembershipRefusal(...args: Parameters<Manager["lifecycleMembershipRefusal"]>): ReturnType<Manager["lifecycleMembershipRefusal"]> { return this.deps.lifecycleMembershipRefusal(...args); }
   private list(...args: Parameters<Manager["list"]>): ReturnType<Manager["list"]> { return this.deps.list(...args); }
-  private listSpawnDirectory(...args: Parameters<Manager["listSpawnDirectory"]>): ReturnType<Manager["listSpawnDirectory"]> { return this.deps.listSpawnDirectory(...args); }
   private loggedSpawnRefusal<T>(ctx: EpServeContext, serve: () => Promise<T>): Promise<T> { return this.deps.loggedSpawnRefusal(ctx, serve); }
   private maintenanceError(...args: Parameters<Manager["maintenanceError"]>): ReturnType<Manager["maintenanceError"]> { return this.deps.maintenanceError(...args); }
   private managedPrincipal(...args: Parameters<Manager["managedPrincipal"]>): ReturnType<Manager["managedPrincipal"]> { return this.deps.managedPrincipal(...args); }
@@ -174,17 +163,14 @@ export class CommandDispatch {
   private opDefinePersona(...args: Parameters<Manager["opDefinePersona"]>): ReturnType<Manager["opDefinePersona"]> { return this.deps.opDefinePersona(...args); }
   private opFinalizeResume(...args: Parameters<Manager["opFinalizeResume"]>): ReturnType<Manager["opFinalizeResume"]> { return this.deps.opFinalizeResume(...args); }
   private opLaunch(...args: Parameters<Manager["opLaunch"]>): ReturnType<Manager["opLaunch"]> { return this.deps.opLaunch(...args); }
-  private opListPersonas(...args: Parameters<Manager["opListPersonas"]>): ReturnType<Manager["opListPersonas"]> { return this.deps.opListPersonas(...args); }
   private opModels(...args: Parameters<Manager["opModels"]>): ReturnType<Manager["opModels"]> { return this.deps.opModels(...args); }
   private opPreservationCtl(...args: Parameters<Manager["opPreservationCtl"]>): ReturnType<Manager["opPreservationCtl"]> { return this.deps.opPreservationCtl(...args); }
   private opPurge(...args: Parameters<Manager["opPurge"]>): ReturnType<Manager["opPurge"]> { return this.deps.opPurge(...args); }
   private opRemovePersona(...args: Parameters<Manager["opRemovePersona"]>): ReturnType<Manager["opRemovePersona"]> { return this.deps.opRemovePersona(...args); }
   private opResumePreserved(...args: Parameters<Manager["opResumePreserved"]>): ReturnType<Manager["opResumePreserved"]> { return this.deps.opResumePreserved(...args); }
-  private opShowPersona(...args: Parameters<Manager["opShowPersona"]>): ReturnType<Manager["opShowPersona"]> { return this.deps.opShowPersona(...args); }
   private opStart(...args: Parameters<Manager["opStart"]>): ReturnType<Manager["opStart"]> { return this.deps.opStart(...args); }
   private openStaticChatSession(...args: Parameters<Manager["openStaticChatSession"]>): ReturnType<Manager["openStaticChatSession"]> { return this.deps.openStaticChatSession(...args); }
   private psOwnerFilter(...args: Parameters<Manager["psOwnerFilter"]>): ReturnType<Manager["psOwnerFilter"]> { return this.deps.psOwnerFilter(...args); }
-  private resolveSpawnCwd(...args: Parameters<Manager["resolveSpawnCwd"]>): ReturnType<Manager["resolveSpawnCwd"]> { return this.deps.resolveSpawnCwd(...args); }
   private retireStaticChatSession(...args: Parameters<Manager["retireStaticChatSession"]>): ReturnType<Manager["retireStaticChatSession"]> { return this.deps.retireStaticChatSession(...args); }
   private runAnswerer(...args: Parameters<Manager["runAnswerer"]>): ReturnType<Manager["runAnswerer"]> { return this.deps.runAnswerer(...args); }
   private runHost(...args: Parameters<Manager["runHost"]>): ReturnType<Manager["runHost"]> { return this.deps.runHost(...args); }
@@ -199,7 +185,6 @@ export class CommandDispatch {
   private spawnPersona(...args: Parameters<Manager["spawnPersona"]>): ReturnType<Manager["spawnPersona"]> { return this.deps.spawnPersona(...args); }
   private stopHandle(...args: Parameters<Manager["stopHandle"]>): ReturnType<Manager["stopHandle"]> { return this.deps.stopHandle(...args); }
   private stopWindowsSeat(...args: Parameters<Manager["stopWindowsSeat"]>): ReturnType<Manager["stopWindowsSeat"]> { return this.deps.stopWindowsSeat(...args); }
-  private trackStoppedHandle(...args: Parameters<Manager["trackStoppedHandle"]>): ReturnType<Manager["trackStoppedHandle"]> { return this.deps.trackStoppedHandle(...args); }
   private turnPendingFor(...args: Parameters<Manager["turnPendingFor"]>): ReturnType<Manager["turnPendingFor"]> { return this.deps.turnPendingFor(...args); }
   private turnTarget(...args: Parameters<Manager["turnTarget"]>): ReturnType<Manager["turnTarget"]> { return this.deps.turnTarget(...args); }
 
@@ -418,8 +403,8 @@ export class CommandDispatch {
         const result = await readGoalResult(gw.ctx, goalRefOf(ctx.subject, goalId));
         return { goalId, ...(result === undefined ? {} : { result }) };
       }),
-      listDir: (ctx) => this.serveGated(ctx, () => this.listSpawnDirectory(args(ctx))),
-      resolveCwd: (ctx) => this.serveGated(ctx, () => this.resolveSpawnCwd(args(ctx).cwd)),
+      listDir: (ctx) => this.serveGated(ctx, () => this.parts.seatLaunch.listSpawnDirectory(args(ctx))),
+      resolveCwd: (ctx) => this.serveGated(ctx, () => this.parts.seatLaunch.resolveSpawnCwd(args(ctx).cwd)),
       resolveAgent: (ctx) => this.serveGated(ctx, async () => {
         if (this.config.execution === "none") throw new EpEnvelopeError("unimplemented", this.executionRefusal());
         const persona = await this.spawnPersona(args(ctx) as Pick<StartAgentOpts, "name" | "config" | "agent" | "defaultAgent">, callerOf(ctx), ctx.subject.caller);
@@ -509,9 +494,9 @@ export class CommandDispatch {
       // maintenance fence, so neither runs while a shutdown or resume holds control.
       chatSessionOpen: (ctx) => this.serveGated(ctx, () => this.openStaticChatSession(args(ctx))),
       chatSessionRetire: (ctx) => this.serveGated(ctx, () => this.retireStaticChatSession(args(ctx))),
-      listPersonas: (ctx) => this.serveGated(ctx, () => unwrap(this.opListPersonas(callerOf(ctx), false))),
+      listPersonas: (ctx) => this.serveGated(ctx, () => unwrap(this.parts.personaCatalog.opListPersonas(callerOf(ctx), false))),
       showPersona: (ctx) => this.serveGated(ctx, () => {
-        const r = this.opShowPersona(args(ctx), callerOf(ctx), false);
+        const r = this.parts.personaCatalog.opShowPersona(args(ctx), callerOf(ctx), false);
         if (!r.ok) {
           const msg = r.error ?? "not found";
           if (msg.startsWith("no persona")) throw new EpEnvelopeError("not-found", msg);
@@ -581,7 +566,7 @@ export class CommandDispatch {
       return this.stopWindowsSeat(target, graceful, true, { kind: "stopped-self" }).then(() => ({ ok: true, data: { name: target.name, stopped: true, graceful } }));
     }
     this.stopHandle(target, graceful, { kind: "stopped-self" });
-    this.trackStoppedHandle(target, true, { kind: "stopped-self" });
+    this.parts.seatStop.trackStoppedHandle(target, true, { kind: "stopped-self" });
     return { ok: true, data: { name: target.name, stopped: true, graceful } };
   }
 }

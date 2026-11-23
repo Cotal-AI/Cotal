@@ -6,6 +6,7 @@ import { parse as parseYaml } from "yaml";
 import type { Manager } from "./manager.js";
 import { userMeshEndpointsRefusal } from "./seat-launch.js";
 import type { ManagerConfig } from "./manager-config.js";
+import type { ManagerParts } from "./manager-parts.js";
 import type { ManagerStartState } from "./manager-start-state.js";
 
 /** What {@link PersonaCatalog} reads from the Manager. Every entry is read at use, so a field the Manager
@@ -16,7 +17,6 @@ export interface PersonaCatalogDeps {
   executionRefusal: (...args: Parameters<Manager["executionRefusal"]>) => ReturnType<Manager["executionRefusal"]>;
   managedPrincipal: (...args: Parameters<Manager["managedPrincipal"]>) => ReturnType<Manager["managedPrincipal"]>;
   nameError: (...args: Parameters<Manager["nameError"]>) => ReturnType<Manager["nameError"]>;
-  spawnBoundRefusal: (...args: Parameters<Manager["spawnBoundRefusal"]>) => ReturnType<Manager["spawnBoundRefusal"]>;
   spawnRun: (...args: Parameters<Manager["spawnRun"]>) => ReturnType<Manager["spawnRun"]>;
   staticSpawnBound: (...args: Parameters<Manager["staticSpawnBound"]>) => ReturnType<Manager["staticSpawnBound"]>;
 }
@@ -30,7 +30,6 @@ export function personaCatalogDeps(m: Manager): PersonaCatalogDeps {
     executionRefusal: (...args) => m["executionRefusal"](...args),
     managedPrincipal: (...args) => m["managedPrincipal"](...args),
     nameError: (...args) => m["nameError"](...args),
-    spawnBoundRefusal: (...args) => m["spawnBoundRefusal"](...args),
     spawnRun: (...args) => m["spawnRun"](...args),
     staticSpawnBound: (...args) => m["staticSpawnBound"](...args),
   };
@@ -38,7 +37,7 @@ export function personaCatalogDeps(m: Manager): PersonaCatalogDeps {
 
 /** The persona catalog doors: define, remove, list and show, with the definer's grant check and read reach. */
 export class PersonaCatalog {
-  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: PersonaCatalogDeps, private readonly state: ManagerStartState) {}
+  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: PersonaCatalogDeps, private readonly state: ManagerStartState, private readonly parts: Pick<ManagerParts, "seatLaunch">) {}
 
   // The Manager members these bodies read, under their Manager names. Each reads through its dep at
   // use, so a field the Manager assigns later is current and a method a test replaces on the Manager
@@ -50,7 +49,6 @@ export class PersonaCatalog {
   private executionRefusal(...args: Parameters<Manager["executionRefusal"]>): ReturnType<Manager["executionRefusal"]> { return this.deps.executionRefusal(...args); }
   private managedPrincipal(...args: Parameters<Manager["managedPrincipal"]>): ReturnType<Manager["managedPrincipal"]> { return this.deps.managedPrincipal(...args); }
   private nameError(...args: Parameters<Manager["nameError"]>): ReturnType<Manager["nameError"]> { return this.deps.nameError(...args); }
-  private spawnBoundRefusal(...args: Parameters<Manager["spawnBoundRefusal"]>): ReturnType<Manager["spawnBoundRefusal"]> { return this.deps.spawnBoundRefusal(...args); }
   private spawnRun(...args: Parameters<Manager["spawnRun"]>): ReturnType<Manager["spawnRun"]> { return this.deps.spawnRun(...args); }
   private staticSpawnBound(...args: Parameters<Manager["staticSpawnBound"]>): ReturnType<Manager["staticSpawnBound"]> { return this.deps.staticSpawnBound(...args); }
 
@@ -180,7 +178,7 @@ export class PersonaCatalog {
     if (this.meshMode === "static") {
       const run = await this.spawnRun(authenticated, undefined);
       const bound = await this.staticSpawnBound(authenticated, run !== undefined && "admission" in run ? run : undefined);
-      return ({ capabilities, endpoints }) => this.spawnBoundRefusal(bound, { capabilities, ...(endpoints.length ? { endpoints } : {}) }, false, "define-persona");
+      return ({ capabilities, endpoints }) => this.parts.seatLaunch.spawnBoundRefusal(bound, { capabilities, ...(endpoints.length ? { endpoints } : {}) }, false, "define-persona");
     }
     if (this.remoteAuthority)
       return ({ capabilities, namesEndpoints }) => namesEndpoints

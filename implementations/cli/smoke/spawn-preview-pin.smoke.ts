@@ -77,7 +77,13 @@ try {
   check.equal(bad.envelope.error?.code, "USAGE_INVALID");
   check.match(bad.envelope.error?.message ?? "", /instanceId "not-a-pin" is not a valid lifecycle token/);
   check.match(bad.envelope.error?.message ?? "", /A manager's name or host is taken only on a user-auth mesh/);
-  check.match(bad.envelope.error?.remedy ?? "", /cotal ps prints each manager's instance id/);
+  const roster = `\`cotal ps --space samplemesh --server ${server}\``;
+  check.ok(bad.envelope.error?.remedy?.includes(`${roster} prints each manager's instance id`));
+  for (const pin of ["", "local.sample", "not-a-pin"]) {
+    const read = preview(["ps", "--space", "samplemesh", "--server", server, "--on", pin, "--json"]);
+    check.equal(read.status, 1);
+    check.ok(read.envelope.error?.message?.includes(roster));
+  }
 
   const empty = preview([...base, "--on", ""]);
   check.equal(empty.status, 1, JSON.stringify(empty.envelope));

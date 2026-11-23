@@ -195,6 +195,16 @@ const gate = (positionals: string[], values: Record<string, string | boolean> = 
   const refused = malformed.map(([positionals, values]) => [positionals.join(" "), gate(positionals, values)] as const);
   c("a malformed run id is refused USAGE_INVALID, naming the id format, on every verb that takes one",
     refused.every(([, got]) => usageRefusal(got, idFormat)), refused.filter(([, got]) => !usageRefusal(got, idFormat)).map(([line, got]) => [line, (got as Error)?.message ?? got]));
+  const server = "nats://127.0.0.1:4422", on = "a".repeat(26);
+  for (const operands of [[], ["bad/id"], ["first", "second"]]) {
+    const got = gate(["show", ...operands], { space: "beta", server, on, json: true });
+    const target = ` --space beta --server '${server}' --on ${on} --json`;
+    c("the suggested list and show read the requested manager", isCommandFailure(got) && got.remedy === `\`cotal run${target}\` lists the runs; run \`cotal run show <run-id>${target}\``, got);
+  }
+  const local = gate(["journal"], { local: true, space: "beta", endpoint: "worker", limit: "5", plain: true });
+  c("the local lookup retains its endpoint and leaves the journal limit for the read", isCommandFailure(local) && local.remedy === "`cotal run --local --space beta --endpoint worker --plain` lists the runs; run `cotal run journal <run-id> --local --space beta --endpoint worker --limit 5 --plain`", local);
+  const hidden = gate(["show"], { space: "beta", server: "wss://example.invalid/socket?test=private" });
+  c("a broker address that cannot be displayed is not copied or replaced by an unscoped lookup", isCommandFailure(hidden) && hidden.remedy?.includes("same broker") === true && !hidden.remedy.includes("private") && !hidden.remedy.includes("`cotal run`"), hidden);
   const unknown = gate(["show", "RUN-0123"]);
   c("and a well-formed id passes the gate, so an unknown run is still the manager's TARGET_NOT_FOUND", !(unknown instanceof Error) && unknown.a === "RUN-0123", unknown);
 }

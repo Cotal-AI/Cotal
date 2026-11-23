@@ -6,7 +6,7 @@ import { shellWord } from "./endpoint-errors.js";
 import { serviceDefinitionStore, validateServiceDefinition, type ServiceDefinitionSnapshot } from "./service-definitions.js";
 import { observeServiceProcess, serviceInstances } from "./service-instances.js";
 import { resolveServiceAdapter } from "./service-adapters.js";
-import { assertManagerStartOptions, findServicePreset, presetStartFlags, servicePresetDefinition } from "./service-presets.js";
+import { assertManagerStartOptions, findServicePreset, presetRequiredInputs, presetStartFlags, servicePresetDefinition } from "./service-presets.js";
 import { selfArgv } from "./self-exec.js";
 import { pruneEmptyServiceSpace, removableServiceInstances, removeServiceLogs, removeStoppedInstanceRecords } from "./service-process.js";
 import { addedDefinitionStep, STACK_ADAPTER, STACK_DEFINITION } from "./stack-journal.js";
@@ -154,12 +154,17 @@ export function resolvePresetService(space: string, root: string, requested: str
       return { requested, name: requested, preset: preset.name, saved: null, stopped: { pid: record?.pid ?? null, label: record?.label ?? preset.name } };
   }
   if (mode === "install") throw adapterInstallRefusal(space, requested, preset.adapter, {}, requested === "manager" ? "manager" : undefined, { space, name: requested });
-  if (mode !== "start") throw new CommandFailure("refused", "TARGET_NOT_FOUND", `no ${requested} has been started in space ${oneLine(space)}; nothing was ${mode === "status" || mode === "logs" ? "read" : "changed"}`, {
-    target: { space, name: requested },
-    remedy: requested === "manager"
-      ? mode === "status" && prepared ? `start it with \`cotal up\` in ${oneLine(root)}` : `start it with ${codeSpan(`cotal manager start --space${space.startsWith("-") ? "=" : " "}${shellWord(space)}`)}`
-      : `start it with \`cotal service start ${requested}\``,
-  });
+  if (mode !== "start") {
+    const onSpace = ` --space${space.startsWith("-") ? "=" : " "}${shellWord(space)}`;
+    const start = requested === "manager" ? `cotal manager start${onSpace}` : requested === "broker"
+      ? [`cotal service start ${requested}`, ...presetRequiredInputs(preset, space, root)].join(" ") + (values.space === undefined ? "" : onSpace)
+      : `cotal service start ${requested}`;
+    throw new CommandFailure("refused", "TARGET_NOT_FOUND", `no ${requested} has been started in space ${oneLine(space)}; nothing was ${mode === "status" || mode === "logs" ? "read" : "changed"}`, {
+      target: { space, name: requested },
+      remedy: requested === "manager" && mode === "status" && prepared
+        ? `start it with \`cotal up\` in ${oneLine(root)}` : `start it with ${codeSpan(start)}`,
+    });
+  }
   if (values["dry-run"]) return { requested, name: requested, preset: preset.name, saved: null };
   const definition: ServiceDefinitionInput = { ...servicePresetDefinition(preset, space, values, root, "start"), root };
   if (definition.launch.type === "adapter" && definition.launch.adapter === STACK_ADAPTER.manager) assertManagerStartOptions(space, definition.launch.options);

@@ -11,6 +11,7 @@ import { requireRuntimeReap } from "./runtime/index.js";
 import type { AgentHandle } from "./runtime/index.js";
 import type { ManagedAgent } from "./seat-types.js";
 import type { ManagerConfig } from "./manager-config.js";
+import type { ManagerParts } from "./manager-parts.js";
 import type { ManagerStartState } from "./manager-start-state.js";
 
 /** What {@link Preservation} reads from the Manager. Every entry is read at use, so a field the Manager
@@ -47,7 +48,6 @@ export interface PreservationDeps {
   resumeEntryOf: (...args: Parameters<Manager["resumeEntryOf"]>) => ReturnType<Manager["resumeEntryOf"]>;
   runtimeFor: (...args: Parameters<Manager["runtimeFor"]>) => ReturnType<Manager["runtimeFor"]>;
   stopHandle: (...args: Parameters<Manager["stopHandle"]>) => ReturnType<Manager["stopHandle"]>;
-  teardownTarget: (...args: Parameters<Manager["teardownTarget"]>) => ReturnType<Manager["teardownTarget"]>;
   validateRetainedAuthority: (...args: Parameters<Manager["validateRetainedAuthority"]>) => ReturnType<Manager["validateRetainedAuthority"]>;
   watchExit: (...args: Parameters<Manager["watchExit"]>) => ReturnType<Manager["watchExit"]>;
   withProvisioner: <T>(fn: (prov: CotalEndpoint) => Promise<T>) => Promise<T>;
@@ -88,7 +88,6 @@ export function preservationDeps(m: Manager): PreservationDeps {
     resumeEntryOf: (...args) => m["resumeEntryOf"](...args),
     runtimeFor: (...args) => m["runtimeFor"](...args),
     stopHandle: (...args) => m["stopHandle"](...args),
-    teardownTarget: (...args) => m["teardownTarget"](...args),
     validateRetainedAuthority: (...args) => m["validateRetainedAuthority"](...args),
     watchExit: (...args) => m["watchExit"](...args),
     withProvisioner: (fn) => m["withProvisioner"](fn),
@@ -97,7 +96,7 @@ export function preservationDeps(m: Manager): PreservationDeps {
 
 /** Preserving the manager for a restart: prepare, commit and abort, the cut that releases or tears down each seat, and adoption of released seats at the next start. */
 export class Preservation {
-  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: PreservationDeps, private readonly state: ManagerStartState) {}
+  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: PreservationDeps, private readonly state: ManagerStartState, private readonly parts: Pick<ManagerParts, "seatStop">) {}
 
   // The Manager members these bodies read, under their Manager names. Each reads through its dep at
   // use, so a field the Manager assigns later is current and a method a test replaces on the Manager
@@ -136,7 +135,6 @@ export class Preservation {
   private resumeEntryOf(...args: Parameters<Manager["resumeEntryOf"]>): ReturnType<Manager["resumeEntryOf"]> { return this.deps.resumeEntryOf(...args); }
   private runtimeFor(...args: Parameters<Manager["runtimeFor"]>): ReturnType<Manager["runtimeFor"]> { return this.deps.runtimeFor(...args); }
   private stopHandle(...args: Parameters<Manager["stopHandle"]>): ReturnType<Manager["stopHandle"]> { return this.deps.stopHandle(...args); }
-  private teardownTarget(...args: Parameters<Manager["teardownTarget"]>): ReturnType<Manager["teardownTarget"]> { return this.deps.teardownTarget(...args); }
   private validateRetainedAuthority(...args: Parameters<Manager["validateRetainedAuthority"]>): ReturnType<Manager["validateRetainedAuthority"]> { return this.deps.validateRetainedAuthority(...args); }
   private watchExit(...args: Parameters<Manager["watchExit"]>): ReturnType<Manager["watchExit"]> { return this.deps.watchExit(...args); }
   private withProvisioner<T>(fn: (prov: CotalEndpoint) => Promise<T>): Promise<T> { return this.deps.withProvisioner(fn); }
@@ -489,7 +487,7 @@ export class Preservation {
       managed.filter((a) => !a.suppressCleanup).map((a) => {
         // Retired here on every mesh, the open mesh included, which runs no teardown of its own.
         const settled = a.launch.source.kind !== "inline" || this.dropInlineSnapshot(a.name, a.lifecycleUid);
-        return this.deprovision({ ...this.teardownTarget(a), ...(settled ? { snapshotSettled: true as const } : {}) }).catch((e) => console.error(`deprovision ${a.name} (${a.id}) on shutdown: ${rejectionText(e)}`));
+        return this.deprovision({ ...this.parts.seatStop.teardownTarget(a), ...(settled ? { snapshotSettled: true as const } : {}) }).catch((e) => console.error(`deprovision ${a.name} (${a.id}) on shutdown: ${rejectionText(e)}`));
       }),
     );
     if (failures.length)
