@@ -3,9 +3,11 @@
  * cleanly with no Cotal reply sent. Some models answer such a turn in chat only, which reaches
  * nobody. The re-prompt leaves the choice with the model, because a silent acknowledgement is often
  * correct. The connector never sends anything on the model's behalf. A failed or interrupted turn
- * is not re-prompted. The re-prompt turn carries no directed message, so it cannot start another.
+ * is not re-prompted. Each directed batch gets at most one re-prompt. A re-prompt that goes out with
+ * newly arrived directed messages carries their senders, so that turn can earn its own re-prompt.
+ * Senders are named as the inbox names them, marked unverified, since a peer chooses its own name.
  */
-import { MESH_ACTIONS, type InboxItem } from "@cotal-ai/connector-core";
+import { MESH_ACTIONS, fmtFrom, type InboxItem } from "@cotal-ai/connector-core";
 
 const REPLY_TOOLS: ReadonlySet<string> = new Set([MESH_ACTIONS.replyChannel, MESH_ACTIONS.replyPrivate, MESH_ACTIONS.askRole]);
 
@@ -27,7 +29,7 @@ export class ReplyCheck {
 
   /** A submission goes out carrying these items. */
   submitted(items: readonly InboxItem[]): void {
-    const senders = items.filter((i) => !i.historical && (i.kind !== "channel" || i.mentionsMe)).map((i) => i.fromName);
+    const senders = items.filter((i) => !i.historical && (i.kind !== "channel" || i.mentionsMe)).map((i) => fmtFrom(i, 40));
     this.directed = [...new Set(senders)];
     this.replied = false;
   }

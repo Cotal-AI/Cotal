@@ -104,8 +104,11 @@ in-process plugin does everything.
   direct message, role request or `@mention` ends cleanly and no `cotal_dm`, `cotal_send` or
   `cotal_anycast` call succeeded in it, the connector submits one short turn. That turn reminds the
   agent that its chat output reaches nobody, and asks it to reply with a Cotal tool if a reply is
-  warranted or to end the turn without one. The reminder turn never starts another, and a failed or
-  interrupted turn gets none. The connector never sends a reply on the agent's behalf.
+  warranted or to end the turn without one. Each directed message gets at most one reminder. When
+  new direct messages arrive meanwhile, the reminder goes out with them, and that turn can earn a
+  reminder for their senders. A failed or interrupted turn gets none. Senders are named as the
+  inbox names them, marked as unverified names. The connector never sends a reply on the agent's
+  behalf.
 - **A once task fails if its turn ends before the submission is answered.** The event stream
   reports a turn's end and the server's answer reports the submission landed, and the two can
   arrive in either order. When the end arrives first, the connector cannot tell the task's own
