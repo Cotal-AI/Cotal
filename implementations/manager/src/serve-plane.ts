@@ -138,7 +138,7 @@ export class ServePlane {
   serviceServe?: ServiceServe;
   sessionLedgerCreds?: string;
 
-  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: ServePlaneDeps, private readonly parts: Pick<ManagerParts, "brokerTransport" | "credentialRenewal" | "goalWriter">, private readonly state: ManagerStartState) {}
+  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: ServePlaneDeps, private readonly parts: Pick<ManagerParts, "brokerTransport" | "connectorInventory" | "credentialRenewal" | "goalWriter">, private readonly state: ManagerStartState) {}
   private get userMode() { return this.state.userMode; }
 
   private get auth(): SpaceAuth | undefined { return this.state.auth; }

@@ -104,7 +104,7 @@ export function bootDeps(m: Manager): ManagerBootDeps {
 
 /** Starting the manager: admitting its execution state, connecting and registering it, taking its instance lease, and healing a predecessor's frozen registration gate. */
 export class ManagerBoot {
-  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: ManagerBootDeps, private readonly parts: Pick<ManagerParts, "brokerTransport" | "connectorInventory" | "credentialRenewal" | "goalWriter" | "preservation" | "servePlane">, private readonly state: ManagerStartState) {}
+  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: ManagerBootDeps, private readonly parts: Pick<ManagerParts, "brokerTransport" | "connectorInventory" | "credentialRenewal" | "goalWriter" | "lease" | "preservation" | "servePlane">, private readonly state: ManagerStartState) {}
 
   // The Manager members these bodies read, under their Manager names. Each reads through its dep at
   // use, so a field the Manager assigns later is current and a method a test replaces on the Manager
