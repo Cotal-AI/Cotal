@@ -47,6 +47,7 @@ import {
   startControlServer,
   ensureEventWalDir,
   resolveEventsStateRoot,
+  type AgentTurn,
   type InboxItem,
   type PrincipalLock,
 } from "@cotal-ai/connector-core";
@@ -163,7 +164,8 @@ export async function runJcodeHost(): Promise<void> {
   }
 
   // The card reports the captured event-plane decision because COTAL_EVENTS is stripped above.
-  const agent = new MeshAgent(config, undefined, { eventsArmed, eventsWorkspaceRoot, commands: jcodeCommands(hostState) });
+  let runOwnerTurn: ((turn: AgentTurn) => Promise<void>) | undefined;
+  const agent = new MeshAgent(config, undefined, { eventsArmed, eventsWorkspaceRoot, commands: jcodeCommands(hostState, (turn) => runOwnerTurn!(turn)) });
   const relayServer = await startRelay(agent, config, relay);
   writeMcpConfig(home, relay, config);
 
@@ -766,7 +768,7 @@ export async function runJcodeHost(): Promise<void> {
     if (!sessionBusy() && !hostState.reconnecting && hasDriveWork()) void drive();
   };
 
-  const { drive, steerPending, armQueueFallback, watchClient } = createHostTurns(hostState, {
+  const { drive, runOwnerTurn: ownerTurn, steerPending, armQueueFallback, watchClient } = createHostTurns(hostState, {
     agent,
     events,
     closeEventRun,
@@ -794,6 +796,7 @@ export async function runJcodeHost(): Promise<void> {
     publishInboundHealth,
     finishHostIdleTurn,
   });
+  runOwnerTurn = ownerTurn;
 
   // A run turn arriving on a quiet seat has no "incoming" item to ride — the intake poll asks
   // for a wake instead. drive()'s own head guards re-entry and a busy session.

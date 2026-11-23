@@ -284,6 +284,13 @@ are set through [model selection](#model-selection), not as commands.
 turn runs. Jcode ends a cancelled turn as it ends
 one its user stopped, and the host closes that turn on its usual path.
 
+`turn` sends the owner's words as typed, with their images, as the user's own message in a turn of
+its own. That turn carries no inbox traffic, which waits for the next turn, and a seat's first turn
+opens with its channel briefing. Images go as Jcode's attachments. A turn starts while no turn runs,
+as a command does, and reads `started` once Jcode acknowledges the send. Jcode refusing the send
+first ends it `refused` with Jcode's reason. A send Jcode does not acknowledge within 10 seconds
+ends `unknown`, because the turn may still run.
+
 ## Model selection
 
 `--model` is passed to Jcode's session-level Harness API model selector. Jcode validates the model
