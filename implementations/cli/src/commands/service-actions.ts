@@ -335,7 +335,8 @@ export async function serviceAction(args: ParsedArgs, space: string, root: strin
   const prepared = mode === "start" || mode === "restart" ? prepareProcessService(definition) : undefined;
   if (prepared?.adapter) {
     const adapter = prepared.adapter;
-    if (values["new-instance"] && !adapter.declaration.capabilities.multiInstance || values.foreground && !adapter.declaration.capabilities.foreground) throw new CommandFailure("refused", "UNSUPPORTED", "the adapter does not declare the requested multi-instance or foreground capability; no provider code was loaded", { target });
+    const unsupported = [values["new-instance"] && !adapter.declaration.capabilities.multiInstance ? "--new-instance" : null, values.foreground && !adapter.declaration.capabilities.foreground ? "--foreground" : null].filter(Boolean).join(" and ");
+    if (unsupported) throw new CommandFailure("refused", "UNSUPPORTED", `The adapter does not support ${unsupported}. No provider code was loaded.${values["dry-run"] ? ` Retry without ${unsupported}, keeping --dry-run and the rest of the command unchanged.` : ""}`, { target });
     if (selected && !controlsRecordedAdapter(selected.record.value, adapter)) throw new CommandFailure("refused", "CONFLICT", "the selected instance pins a different adapter declaration or package version; it was not stopped or adopted", { target });
   }
   const declaredStop = prepared?.adapter ?? (definition.record.value.launch.type === "adapter" ? resolveServiceAdapter(definition.record.value.launch.adapter, definition.record.value.launch.options, false) : undefined);

@@ -1252,7 +1252,9 @@ ends when the connection closes.
 
 `status` with no daemon running refuses `TARGET_UNAVAILABLE` (`NOT_RUNNING`).
 SIGTERM and SIGINT shut down cleanly and remove only the daemon's own socket. SIGKILL or SIGHUP,
-including closing the terminal, leaves a stale socket, and the next `serve` recovers it by itself.
+including closing the terminal, leaves a stale socket. On Linux, a `serve` in a different runtime
+directory also removes the recorded stale socket if it can verify the old private path and that
+nothing listens there. A missing, inaccessible or foreign endpoint there does not block the start.
 
 That recovery rests on the lifetime lock below. Each `serve` holds a kernel lock on its lock file
 (`flock` on Linux and macOS, `LockFileEx` on Windows), which the system releases when the holder

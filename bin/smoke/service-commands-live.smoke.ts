@@ -65,6 +65,44 @@ const presetRoot = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}service-comm
 const PRESET_SPACE = "servicecommandspreset";
 const upCotal = (args: string[]) => cotal(args, 180_000, upAt);
 const out = (run: ReturnType<typeof cotal>) => `${run.stdout ?? ""}${run.stderr ?? ""}`;
+function checkBlankServiceCwd(): void {
+  const add = ["service", "add", "cwd-check", "--space", PRESET_SPACE, "--exec", "/bin/sleep 600"];
+  const show = ["service", "show", "cwd-check", "--space", PRESET_SPACE, "--json"];
+  const blank = cotal([...add, "--cwd", " ", "--json"]);
+  const refusal = JSON.parse(blank.stdout);
+  const plain = cotal([...add, "--cwd", " ", "--plain"]);
+  const missing = cotal(show);
+  check("blank --cwd refuses without saving and explains both retries in JSON and plain output",
+    blank.status === 1 && refusal.error?.code === "USAGE_INVALID" && missing.status === 2
+    && JSON.parse(missing.stdout).error?.code === "TARGET_NOT_FOUND" && plain.status === 1
+    && [refusal.error.message, out(plain)].every((text) => text.includes("Omit --cwd to use the directory where you run the command") && text.includes("pass --cwd <dir> to use another directory")),
+    { blank: out(blank), plain: out(plain), missing: out(missing) });
+  const retry = cotal([...add, "--json"]);
+  const saved = cotal(show);
+  check("omitting --cwd saves the invoking directory without starting the service",
+    retry.status === 0 && JSON.parse(retry.stdout).result?.started === false
+    && saved.status === 0 && JSON.parse(saved.stdout).result?.launch?.cwd === realpathSync(root), { retry: out(retry), saved: out(saved) });
+}
+
+function checkBrokerForegroundPreview(): void {
+  const start = ["service", "start", "b0", "--space", PRESET_SPACE, "--dry-run"];
+  const foreground = cotal([...start, "--foreground", "--json"]);
+  const refusal = JSON.parse(foreground.stdout);
+  const plain = cotal([...start, "--foreground", "--plain"]);
+  const retry = "Retry without --foreground, keeping --dry-run and the rest of the command unchanged.";
+  check("the broker foreground preview names the flag to drop and preserves --dry-run in its guidance",
+    foreground.status === 2 && refusal.error?.code === "UNSUPPORTED" && refusal.error.message.includes(retry)
+    && !refusal.error.message.includes("--new-instance") && plain.status === 2 && out(plain).includes(retry),
+    { foreground: out(foreground), plain: out(plain) });
+  const preview = cotal([...start, "--json"]);
+  const result = JSON.parse(preview.stdout).result;
+  const status = cotal(["service", "status", "b0", "--space", PRESET_SPACE, "--plain"]);
+  check("dropping --foreground previews the broker without loading it or starting an instance",
+    preview.status === 0 && result?.kind === "service-operation-preview" && result.dryRun === true
+    && result.allocated === false && result.providerCodeLoaded === false
+    && status.status === 0 && /Recorded state:\s+not started/.test(out(status)), { preview: out(preview), status: out(status) });
+}
+
 /** A plain `logs --follow` in `at`, read until it exits. */
 function followText(args: string[], at = { root, env }) {
   const child = spawn(process.execPath, ["--import", TSX_LOADER, BIN, ...args, "--follow"], { cwd: at.root, env: at.env, stdio: ["ignore", "pipe", "pipe"] });
@@ -397,6 +435,7 @@ try {
     // ---- A preset broker stops even when its log file was moved away -----------------------------
     const presetSpace = cotal(["space", "create", PRESET_SPACE, "--root", presetRoot]);
     check("space create prepares a space for a preset broker", presetSpace.status === 0, out(presetSpace));
+    checkBlankServiceCwd();
     const neverStarted = cotal(["manager", "status", "--space", PRESET_SPACE, "--json"]);
     const neverStartedError = JSON.parse(neverStarted.stdout).error;
     check("manager status still distinguishes a space with no manager history", neverStarted.status === 2
@@ -527,6 +566,7 @@ try {
     writeFileSync(config, `listen: ${new URL(presetServer).host}\nlog_file: ${JSON.stringify(log)}\n`, { mode: 0o600 });
     const presetAdd = cotal(["service", "add", "b0", "--preset", "broker", "--space", PRESET_SPACE, "--config", config, "--binary", realpathSync((await findNatsServer()).path), "--server", presetServer, "--log-file", log]);
     check("service add b0 --preset broker saves it with a --log-file", presetAdd.status === 0, out(presetAdd));
+    checkBrokerForegroundPreview();
     const presetStart = cotal(["service", "start", "b0", "--space", PRESET_SPACE]);
     presetBrokerUp = presetStart.status === 0;
     check("  and service start b0 starts it", presetBrokerUp, out(presetStart));
