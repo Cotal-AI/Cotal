@@ -798,7 +798,7 @@ async function completionOut(positionals: string[]): Promise<string> {
   }
 }
 
-// --- endpoint init's Next is the check command for the contract it created ------------------------
+// --- endpoint authoring names the contract explicitly in init and check --------------------------
 {
   const { scaffoldCheckCommand } = await import("../src/commands/endpoint-authoring.js");
   assert.equal(scaffoldCheckCommand("/run/ep/reviews"), "cotal ep check /run/ep/reviews/contract.json", "the scaffold's Next names its own contract, not a placeholder");
@@ -818,6 +818,40 @@ async function completionOut(positionals: string[]): Promise<string> {
       process.stdout.write = real;
     }
     assert.ok(out.includes(scaffoldCheckCommand(dir)), "endpoint init's Next is the check command for the contract it created");
+
+    const runCheck = (path: string, ...flags: string[]) => spawnSync(process.execPath,
+      [join(import.meta.dirname, "../../../bin/dist/cotal.js"), "endpoint", "check", path, ...flags], {
+        cwd: scaffold, env: { ...process.env, COTAL_SKIP_CONNECTOR_SEED: "1" }, encoding: "utf8", timeout: 30_000,
+      });
+    const contractPath = join(dir, "contract.json");
+    const original = readFileSync(contractPath, "utf8");
+    const directory = runCheck("it's here", "--json");
+    assert.equal(directory.status, 1, directory.stdout + directory.stderr);
+    assert.equal(directory.stderr, "");
+    const { target, error } = JSON.parse(directory.stdout);
+    assert.equal(target.path, dir);
+    assert.equal(error.code, "SCHEMA_INVALID");
+    assert.match(error.message, /is a directory; endpoint check requires a contract file/u);
+    assert.equal(error.remedy, scaffoldCheckCommand(dir));
+    for (const flags of [[], ["--plain"]]) {
+      const text = runCheck("it's here", ...flags);
+      assert.equal(text.status, 1, text.stdout + text.stderr);
+      assert.equal(text.stdout, "");
+      assert.ok(text.stderr.includes(error.message));
+      assert.ok(text.stderr.includes(`\nNext\n  ${error.remedy}\n`));
+    }
+    const checked = runCheck(contractPath, "--json");
+    assert.equal(checked.status, 0, checked.stdout + checked.stderr);
+    assert.equal(JSON.parse(checked.stdout).result.handlerExecuted, false);
+    assert.equal(readFileSync(contractPath, "utf8"), original);
+
+    mkdirSync(join(scaffold, "unrelated"));
+    writeFileSync(join(scaffold, "unrelated", "contract.json"), original);
+    const unrelated = runCheck("unrelated", "--json");
+    assert.equal(unrelated.status, 1, unrelated.stdout + unrelated.stderr);
+    const refusal = JSON.parse(unrelated.stdout);
+    assert.equal(refusal.target.path, join(scaffold, "unrelated"));
+    assert.equal(refusal.error.remedy, "retry with the path to an existing endpoint contract file");
   } finally {
     if (priorXdg === undefined) delete process.env.XDG_CONFIG_HOME;
     else process.env.XDG_CONFIG_HOME = priorXdg;
