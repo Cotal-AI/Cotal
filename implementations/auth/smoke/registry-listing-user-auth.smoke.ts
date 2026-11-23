@@ -12,7 +12,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { SignJWT, exportJWK, generateKeyPair } from "jose";
 import { jetstream, jetstreamManager } from "@nats-io/jetstream";
 import { PermissionViolationError, type NatsConnection } from "@nats-io/transport-node";
-import { CotalEndpoint, chatSubject, dialerFor, mintCreds, mintLifecycleUid, newIdentity, provisionAgentDurables, readUsername, readUsernameOwner, seedChannelRegistry, setupSpaceStreams, standaloneConnectOpts, usernameBucket, type CotalMessage, type IssuedCaller } from "@cotal-ai/core";
+import { CotalEndpoint, chatSubject, dialerFor, mintCreds, mintLifecycleUid, newIdentity, provisionAgentDurables, readUsername, readUsernameOwner, seedChannelRegistry, setupSpaceStreams, standaloneConnectOpts, usernameBucket, UsernameRegistryReadError, type CotalMessage, type IssuedCaller } from "@cotal-ai/core";
 import * as core from "@cotal-ai/core";
 import { NativeChatSession } from "@cotal-ai/workspace/chat";
 import { createSuite } from "@cotal-ai/smoke-kit";
