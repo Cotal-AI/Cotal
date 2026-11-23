@@ -584,8 +584,9 @@ export async function adoptProvenListener(
   storeDir: string,
   listener: string,
   heldLock?: MaintenanceLock,
+  channels?: string,
 ): Promise<void> {
-  await recreateAdoptedMemoryBuckets(attempt.root, attempt.space, attempt.server, attempt.mode);
+  await recreateAdoptedMemoryBuckets(attempt.root, attempt.space, attempt.server, attempt.mode, channels);
   const svc = await ensureRecoveredUserAuth(attempt);
   // Read the recorded exposure BEFORE re-recording: `recordOurMesh` writes the entry whole, so a
   // record built without this field would erase the operator's decision, and the adopted manager

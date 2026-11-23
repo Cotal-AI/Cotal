@@ -360,7 +360,8 @@ export async function serveReadyListener(l: {
   try {
     if (l.resumeAttempt) {
       const ordinaryResume = pendingOrdinaryResumes.has(l.resumeAttempt);
-      await recreateMemoryBuckets(server, space, setup, ordinaryResume ? { convertMembership: l.recreateMembershipStore === true } : undefined);
+      await recreateMemoryBuckets(server, space, setup, ordinaryResume ? { convertMembership: l.recreateMembershipStore === true } : undefined,
+        ordinaryResume ? l.seedFile : undefined);
     } else {
       await postStart(server, space, setup, l.seedFile, l.recreateIssuedStores, l.recreateMembershipStore, true);
     }
@@ -587,7 +588,7 @@ export async function startMeshDetached(
 
   await awaitSpawnedListener({ child, executable: { path: bin, source, version }, server, space, creds: setup?.creds, tls: transport.kind === "tls-required", log: logPath, boundListener: opts.boundListener });
   const { authService, controlPlane } = await serveReadyListener({
-    child, server, space, storeDir, setup, seedFile, transport, maxPayload,
+    child, server, space, storeDir, setup, seedFile: !opts.resumeAttempt || opts.channels ? seedFile : undefined, transport, maxPayload,
     ...(opts.recreateIssuedStores !== undefined ? { recreateIssuedStores: opts.recreateIssuedStores } : {}),
     ...(opts.recreateMembershipStore ? { recreateMembershipStore: true } : {}),
     host: opts.host,

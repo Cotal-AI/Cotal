@@ -47,10 +47,10 @@ import { copyFileSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSy
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { assertSmokeSandboxDown, createSuite, freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
+import { shellPath } from "@cotal-ai/workspace";
 
 const WT = resolve(import.meta.dirname, "..", "..", "..");
-const CLI = join(WT, "bin", "cotal.ts");
-const TSX = join(WT, "node_modules", ".bin", "tsx");
+const CLI = join(WT, "bin", "dist", "cotal.js");
 const SERVER = `nats://127.0.0.1:${await freePort()}`, SERVER_B = `nats://127.0.0.1:${await freePort()}`;
 const SPACE = `team-views-${process.pid}`, SPACE_B = `team-boot-${process.pid}`;
 
@@ -68,7 +68,7 @@ const { check, finish } = createSuite();
 const cotal = (cwd: string, ...args: string[]) => {
   const options = { cwd, env, encoding: "utf8" as const, timeout: 180_000 };
   assertSmokeSandboxDown(sandboxes.get(cwd), args, options);
-  const run = spawnSync(TSX, [CLI, ...args], options);
+  const run = spawnSync(process.execPath, [CLI, ...args], options);
   return { status: run.status, stdout: run.stdout, stderr: run.stderr, out: `${run.stdout}${run.stderr}` };
 };
 type Envelope = { outcome?: string; completeness?: string; target?: Record<string, unknown>; error?: { code?: string; message?: string; remedy?: string }; warnings?: { code: string; target: Record<string, unknown>; message: string }[]; result?: Record<string, unknown> };
@@ -297,7 +297,7 @@ try {
     second.status === 2 && blocked?.code === "LIFECYCLE_BLOCKED" && blocked.message === `"${SPACE}" is already up at this root and no \`cotal down\` has stopped it; a team boot starts only a stopped stack, so nothing was booted`, second.out.slice(-800));
   const remedy = blocked?.remedy ?? "";
   check("its Next offers inspection, stop preview and ordinary restart",
-    remedy.includes(`cotal service --space ${SPACE}`) && remedy.includes("cotal down --dry-run") && remedy.includes("`cotal up`") && !remedy.includes("team deploy"), blocked);
+    remedy.includes(`cotal service --space ${SPACE}`) && remedy.includes(`cd ${shellPath(realpathSync(s))} && cotal down --space ${SPACE} --dry-run`) && remedy.includes(`cd ${shellPath(realpathSync(s))} && cotal up --space ${SPACE}`) && !remedy.includes("team deploy"), blocked);
   const spacedFile = "team add.yaml";
   manifest(spacedFile, SPACE, { alerts: "    deliveryClass: live\n" });
   const conflict = cotal(s, "up", "-f", spacedFile, "--dry-run");
@@ -308,7 +308,7 @@ try {
   check("up -f quotes the whole manifest path in its preview and does not suggest redeployment",
     command === expectedPreview && !conflict.stderr.includes("team deploy"), conflict.out);
   if (command === expectedPreview && process.platform !== "win32") {
-    const preview = spawnSync("sh", ["-c", `cli=$1\ncotal() { "$0" "$cli" "$@"; }\n${command}`, TSX, CLI],
+    const preview = spawnSync("sh", ["-c", `cli=$1\ncotal() { "$0" "$cli" "$@"; }\n${command}`, process.execPath, CLI],
       { cwd: s, env, encoding: "utf8", timeout: 180_000 });
     check("the printed command previews the intended manifest in a POSIX shell",
       preview.status === 0 && preview.stdout.includes("#alerts"), preview);
@@ -320,12 +320,21 @@ try {
   const booted = cotal(b, "team", "boot", "boot.yaml");
   check("team boot starts the fresh stack in b, and its receipt names the auth mode in words",
     booted.status === 0 && /Auth mode:\s+static auth\n/.test(booted.stdout) && !booted.stdout.includes("static-auth"), booted.out.slice(-1200));
-  const bootCommand = booted.stdout.split("\n").map((line) => line.trim()).find((line) => line.startsWith("cotal team show "))?.split(/ {2,}/)[0] ?? "";
-  const bootArgs = bootCommand.split(" ").slice(1);
+  const bootCommand = booted.stdout.split("\n").map((line) => line.trim()).find((line) => /^(?:pnpm )?cotal team show /.test(line))?.split(/ {2,}/)[0] ?? "";
+  const bootArgs = bootCommand.replace(/^(?:pnpm )?cotal /, "").split(" ");
   const bootId = bootArgs[2] ?? "";
-  const repeat = cotal(b, "team", "boot", "boot.yaml", "--foreground");
+  const repeat = cotal(c, "team", "boot", "../boot project/boot.yaml", "--foreground");
+  const repeatPreview = repeat.stderr.split("`").find((part) => part.startsWith("cd ") && part.includes("--dry-run"));
+  const scopedPreview = `cd ${shellPath(realpathSync(b))} && cotal down --space ${SPACE_B} --dry-run`;
   check("repeating the actual boot refuses without recommending deployment of the cards it seeded",
-    repeat.status === 2 && repeat.stderr.includes("LIFECYCLE_BLOCKED") && repeat.stderr.includes(`cotal service --space ${SPACE_B}`) && repeat.stderr.includes("cotal down --dry-run") && !repeat.stderr.includes("team deploy"), repeat.out);
+    repeat.status === 2 && repeat.stderr.includes("LIFECYCLE_BLOCKED") && repeat.stderr.includes(`cotal service --space ${SPACE_B}`) && repeatPreview === scopedPreview &&
+      repeat.stderr.includes(`cd ${shellPath(realpathSync(b))} && cotal up --space ${SPACE_B}`) && !repeat.stderr.includes("team deploy"), repeat.out);
+  if (repeatPreview === scopedPreview && process.platform !== "win32") {
+    assertSmokeSandboxDown(sandboxes.get(b), ["down", "--space", SPACE_B, "--dry-run"], { cwd: b, env });
+    const replayed = spawnSync("sh", ["-c", `cli=$1\ncotal() { "$0" "$cli" "$@"; }\n${repeatPreview}`, process.execPath, CLI],
+      { cwd: c, env, encoding: "utf8", timeout: 180_000 });
+    check("the printed stop preview works from the sibling and targets the running stack", replayed.status === 0 && replayed.stdout.includes(SPACE_B), replayed);
+  }
   check("the printed inspection and stop preview both work while the booted stack runs",
     cotal(b, "service", "--space", SPACE_B).status === 0 && cotal(b, "down", "--dry-run").status === 0);
   const freshShow = cotal(b, "team", "show", bootId);
@@ -569,7 +578,7 @@ try {
   try {
     const replay = cotal(b, ...bootArgs);
     check("the printed launch-summary command finds the boot without changing the saved selection",
-      /^[0-9a-f]{16}$/.test(bootId) && bootCommand === `cotal team show ${bootId} --space ${SPACE_B}` &&
+      /^[0-9a-f]{16}$/.test(bootId) && ["cotal", "pnpm cotal"].some((launcher) => bootCommand === `${launcher} team show ${bootId} --space ${SPACE_B}`) &&
       replay.status === 0 && /^\s+Deployment:\s+([0-9a-f]{16})$/m.exec(replay.stdout)?.[1] === bootId &&
       envelope(cotal(b, "use", "--json").stdout)?.result?.current === SPACE, { command: bootCommand, replay: replay.out });
   } finally { cotal(b, "use", SPACE_B); }
