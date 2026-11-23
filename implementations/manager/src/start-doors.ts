@@ -115,6 +115,8 @@ export class StartDoors {
         resumeAgent: args.resumeAgent as string | undefined,
         events,
         eventPayloads: args.eventPayloads as boolean | undefined,
+        askPermissions: args.askPermissions as boolean | undefined,
+        reasoningEvents: args.reasoningEvents as boolean | undefined,
         eventsNotice,
         cwd: args.cwd as string | undefined,
         prompt: args.prompt as string | undefined,

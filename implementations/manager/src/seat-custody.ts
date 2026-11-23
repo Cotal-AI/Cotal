@@ -8,6 +8,7 @@ import { isCustodialRuntime, requireRuntimeReap, RuntimeReapUnproven, watchProve
 import type { RuntimeReference } from "@cotal-ai/core";
 import type { ManagedAgent, ManagerResumeAgent, SupervisedRestart } from "./manager.js";
 import { readSeatRecord, removeReleasedSeatReference, removeSeatRecord, writeSeatRecord, type SeatRecord } from "./resume.js";
+import { optInLaunchFields } from "./harness-resolution.js";
 import { casStaticSlot, readStaticSlot } from "./static-lifecycle.js";
 import { RESTART_WORK_EXIT_MS, withTimeout } from "./manager-timeout.js";
 import type { Manager } from "./manager.js";
@@ -271,6 +272,7 @@ export class SeatCustody {
         ...(entry.launch.endpoints?.length ? { endpoints: copyPersonaEndpoints(entry.launch.endpoints) } : {}),
         events: entry.launch.events,
         eventPayloads: this.config.eventPayloadsWithheld ? false : entry.launch.eventPayloads,
+        ...optInLaunchFields(entry.launch),
         shareTools: entry.launch.shareTools,
         forkSource: entry.launch.forkSource,
         ...(entry.launch.resumed ? { resumed: entry.launch.resumed } : {}),

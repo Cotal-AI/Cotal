@@ -14,6 +14,7 @@ import { MAX_AGENTS, supervisePolicy } from "./resume.js";
 import type { TeardownTarget } from "./retirement.js";
 import type { AgentHandle, Runtime } from "./runtime/index.js";
 import { watchConnectorHolder } from "./seat-custody.js";
+import { optInLaunchFields } from "./harness-resolution.js";
 import { foreignEventChannels, ownLists, ownPersona, userMeshEndpointsRefusal, type SeatLaunch, type SeatLaunchDeps } from "./seat-launch.js";
 import type { ManagedAgent, SpawnHooks, StartAgentOpts } from "./seat-types.js";
 import { activateStaticLifecycle, casStaticSlot, readStaticSlot } from "./static-lifecycle.js";
@@ -253,6 +254,8 @@ export class SeatStart {
       }
       if (opts.resume)
         return { ok: false, error: `${delegatedBy}, so it cannot resume a session held on this host (resume)` };
+      if (opts.askPermissions || opts.reasoningEvents)
+        return { ok: false, error: `${delegatedBy}, and its child launch takes neither askPermissions nor reasoningEvents` };
       if (opts.resolved?.continuity === "exact")
         return { ok: false, error: `${delegatedBy}, so it cannot reopen a session held on this host (continuity: exact)` };
       if (typeof opts.cwd === "string" && opts.cwd !== "")
@@ -489,7 +492,7 @@ export class SeatStart {
     // declared name. Refused before any reserve or mint when the connector cannot reopen an exact
     // session or the recorded assignment does not match this declaration.
     const exact = opts.resolved?.continuity === "exact";
-    const unsupported = this.capabilityRefusal(connector, { variant, prompt, exact });
+    const unsupported = this.capabilityRefusal(connector, { variant, prompt, exact, askPermissions: opts.askPermissions, reasoningEvents: opts.reasoningEvents, events });
     if (unsupported) return { ok: false, error: unsupported };
     const onceRefused = opts.once && this.onceRefusal(connector, runtime, { ...opts, launchOptions, prompt }, spawner, hooks);
     if (onceRefused) return { ok: false, error: onceRefused };
@@ -888,6 +891,7 @@ export class SeatStart {
         endpoints: copyPersonaEndpoints(personaEndpoints) ?? [],
         events,
         eventPayloads,
+        ...optInLaunchFields(opts),
         cwd,
       };
       // A delegated seat gets no local launch at all: no launch-material file, control token or
@@ -968,6 +972,7 @@ export class SeatStart {
           ...(personaEndpoints?.length ? { endpoints: copyPersonaEndpoints(personaEndpoints) } : {}),
           events,
           eventPayloads,
+          ...optInLaunchFields(opts),
           shareTools: opts.shareTools,
           forkSource: opts.resume,
           ...(opts.resume !== undefined && spec?.resumeRecordPath ? { resumeRecordPath: spec.resumeRecordPath } : {}),

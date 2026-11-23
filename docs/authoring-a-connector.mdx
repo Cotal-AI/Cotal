@@ -64,6 +64,11 @@ Declare only the features your connector implements:
 - Set `supportsPrompt`, `supportsModelVariant`, or `supportsResume` only when the application can honor that request.
   Unsupported requests are refused before provisioning.
   Resume creates a new session from the source transcript and leaves the source unchanged.
+- Set `supportsAskPermissions` when the connector can launch the application in its mode that asks before it uses a tool.
+  The launch then carries `askPermissions: true`, and the session reads `config.askPermissions` from its launch material.
+  Serve the application's prompts on the agent endpoint and declare `prompts` as well, so a client can answer them.
+- Set `supportsReasoningEvents` when the connector's event mapper can publish the model's reasoning as `REASONING_*` events.
+  The session reads `config.reasoningEvents` and publishes reasoning only when it is true.
 - Set `interruptKey` to the bytes of the key that stops the application's live turn, such as `"\x1b"` for Escape.
   The manager's `interrupt` command writes it into the seat's terminal. Declare it only after a live check shows the key ending a turn.
 - Use `supportsSessionContinuation` for recovery of the same meshed session after a process restart.

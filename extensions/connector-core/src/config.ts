@@ -88,6 +88,10 @@ export interface AgentConfig {
   eventsRequired?: boolean;
   /** Trusted or explicit local decision to retain status without tool payloads. */
   eventPayloadsWithheld?: boolean;
+  /** The launcher asked the harness to ask before it uses a tool (launch material only). */
+  askPermissions?: boolean;
+  /** The launcher asked for the model's reasoning on the event plane (launch material only). */
+  reasoningEvents?: boolean;
   /** Per-channel attention DEFAULTS (operator, one-way from the agent file): channels to receive but
    *  never wake on ({@link quiet}) / to drop on receive ({@link muted}). Seeds {@link MeshAgent}'s
    *  runtime map; the runtime never writes them back. Concrete channels within {@link allowSubscribe}.
@@ -404,6 +408,7 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): AgentConfig
     allowPublish: resolvedAllowPub,
     eventsRequired,
     eventPayloadsWithheld: material?.eventPayloadsWithheld === true || envFlag(env, "COTAL_EVENT_PAYLOADS") === false,
+    askPermissions: material?.askPermissions === true, reasoningEvents: material?.reasoningEvents === true,
     quiet: resolvedQuiet,
     muted: resolvedMuted,
     kind: assertValidKind(env.COTAL_KIND?.trim() || def?.kind || "agent"),
