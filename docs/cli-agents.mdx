@@ -359,11 +359,11 @@ sent. Any provisioning failure after the request, an endpoint 401 or 403 include
 `OPERATION_UNKNOWN` (exit 3): the endpoint belongs to the deployment, and nothing says what its
 refusal left behind. A `--share-tools` selection that names a server the config does not declare is
 refused before anything is provisioned; on a managed spawn the manager refuses it before accepting.
-A managed spawn is an
-**action**: the manager accepts it and allocates the identity, and the CLI waits for a real outcome
-(the agent joins, exits, or about 30 seconds pass) before it reports or attaches (see
-[the control surface](control-surface.mdx)). On a user-auth mesh the manager enrolls the agent with
-the host first. When the host refuses that enrollment, for example for a role or a channel your grant
+A managed spawn is an **action**: the manager accepts it and allocates the identity. The CLI waits
+for the manager's readiness result before it reports or attaches. The readiness window can vary by
+connector. See [the control surface](control-surface.mdx).
+On a user-auth mesh the manager enrolls the agent with the host first. When the host refuses that
+enrollment, for example for a role or a channel your grant
 does not carry, and the manager removes the secrets it staged for the agent, the spawn is refused
 with the host's reason and `PERMISSION_DENIED` (exit 2). A host that fails or does not answer leaves
 `OPERATION_UNKNOWN`. See [Connect Claude Code](connect-claude.mdx) and
