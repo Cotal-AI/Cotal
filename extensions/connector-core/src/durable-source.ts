@@ -61,6 +61,8 @@ export interface SourceGap {
    *  Never built from the parser's message: that message quotes a span of the line, which is the
    *  record's own text, and even a number read out of it can come from that span. */
   reason: "not valid UTF-8" | "not a JSON record";
+  /** Which file the line is in, set by a source that reads more than one. */
+  file?: string;
 }
 
 /** One read: the records that became available, and the cursor to resume from AFTER them. */
@@ -105,6 +107,16 @@ export interface DurableSource<T> {
   end(): Promise<string>;
 }
 
+/**
+ * A durable source whose cursors name ordered positions, so a record kept outside the source can be
+ * placed among its records: see {@link DeltaMergedSource}.
+ */
+export interface OrderedSource<T> extends DurableSource<T> {
+  /** Negative when position `a` is before `b`, zero at the same position, positive after. Throws
+   *  when the two cursors name different files, which no order relates. */
+  compare(a: string, b: string): number;
+}
+
 /** The file no longer has the identity or consumed prefix recorded by its cursor. */
 export class JsonlFileResetError extends Error {
   constructor(message: string) {
@@ -129,7 +141,7 @@ export class JsonlFileResetError extends Error {
  * met it again. A reader that halts for good on one torn line of a file it does not write loses
  * every record after it, which is the larger hole.
  */
-export class JsonlFileSource<T = unknown> implements DurableSource<T> {
+export class JsonlFileSource<T = unknown> implements OrderedSource<T> {
   readonly kind = "jsonl-file";
 
   constructor(private readonly path: string) {}
@@ -244,6 +256,11 @@ export class JsonlFileSource<T = unknown> implements DurableSource<T> {
    * few small reads of a local file, the same bytes `read` reads.
    */
   end(): Promise<string> {
+    return Promise.resolve(this.endSync());
+  }
+
+  /** {@link end} for a caller that must take the position and act in one synchronous step. */
+  endSync(): string {
     const fd = openSync(this.path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
     try {
       const st = fstatSync(fd);
@@ -267,10 +284,26 @@ export class JsonlFileSource<T = unknown> implements DurableSource<T> {
       // The seal over the window before it, as `sealAt` computes it.
       const span = Math.min(at, 512);
       const seal = createHash("sha256").update(readAt(span, at - span)).digest("hex").slice(0, 16);
-      return Promise.resolve(`${String(st.dev)}:${String(st.ino)}:${at}:${seal}`);
+      return `${String(st.dev)}:${String(st.ino)}:${at}:${seal}`;
     } finally {
       closeSync(fd);
     }
+  }
+
+  /** Orders two cursors of this file by offset. Cursors of different files throw
+   *  {@link JsonlFileResetError}: the file was replaced between them. */
+  compare(a: string, b: string): number {
+    const x = JsonlFileSource.parseCursor(a);
+    const y = JsonlFileSource.parseCursor(b);
+    if (x.dev !== y.dev || x.ino !== y.ino)
+      throw new JsonlFileResetError(`JsonlFileSource: cursors ${a} and ${b} name different files`);
+    return x.offset - y.offset;
+  }
+
+  /** The byte offset a cursor names, for a connector that orders a position of its own before
+   *  this file exists. */
+  static offsetOf(cursor: string): number {
+    return JsonlFileSource.parseCursor(cursor).offset;
   }
 
   async read(cursor: string | undefined): Promise<SourceRead<T>> {
