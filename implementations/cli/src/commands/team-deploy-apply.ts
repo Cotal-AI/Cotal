@@ -35,7 +35,8 @@ export async function applyChannelOnlyTeam(file: string, values: TeamValues): Pr
   const registeredRoot = registered && canonicalRoot(registered.root), preparedRoot = preparedSpace && canonicalRoot(preparedSpace.root);
   if (registeredRoot && registeredRoot !== root && (preparedRoot === undefined || preparedRoot === registeredRoot)) {
     const format = presentationOf(values), spaceFlag = values.space === undefined ? "" : ` --space ${shellWord(values.space)}`;
-    const remedy = `cd ${shellPath(registeredRoot)} && cotal team deploy ${shellPath(path)}${spaceFlag}${format === "rich" ? "" : ` --${format}`}`;
+    const atRoot = `cd ${shellPath(registeredRoot)} && `;
+    const remedy = `${atRoot}cotal team deploy ${shellPath(path)}${spaceFlag}${format === "rich" ? "" : ` --${format}`}`;
     throw new CommandFailure("refused", "CONFLICT", `apply this deployment from the registered project root ${registeredRoot}`, { target: { root, space }, remedy, remedyIsCommand: true });
   }
   if (!registered || registeredRoot !== root || preparedRoot !== undefined && preparedRoot !== root)
