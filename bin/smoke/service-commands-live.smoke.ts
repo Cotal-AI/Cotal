@@ -485,8 +485,8 @@ try {
     const startHelp = controller(["manager", "start", "--help"]);
     const helpText = out(startHelp).replace(/\s+/g, " ");
     check("manager start help limits name selection to user-auth spaces and points open and static spaces to cotal ps",
-      startHelp.status === 0 && helpText.includes("--name <name> select by name with --on only on user-auth spaces. On open and static spaces, use the instance ID from cotal ps") &&
-      helpText.includes("--name <string> manager name for presence and, on user-auth spaces only, --on"), out(startHelp));
+      startHelp.status === 0 && helpText.includes("--name <name> select by name with --on only on user-auth spaces") &&
+      helpText.includes("--name <string> manager name for presence and, on user-auth spaces only, --on. On open and static spaces, use the instance ID from `cotal ps`"), out(startHelp));
     const listed = controller(["ps", "--space", controllerSpace, "--plain"]);
     const managerId = listed.stdout.match(/^\s*instance:\s+([a-z0-9]{26,32})\b/m)?.[1];
     const byName = controller(["ps", "--space", controllerSpace, "--on", "standalone", "--plain"]);
