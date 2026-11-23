@@ -63,7 +63,7 @@ function assertIssuedBackupDirArgument(raw: string): void {
 /** Launch intent is checked by the kernel before seed or effect preparation. A recovery
  *  re-entry supplies its recorded mode explicitly rather than inheriting the new public default. */
 export function validateUpArguments(args: ParsedArgs): void {
-  presentationOf(args.values);
+  const presentation = presentationOf(args.values);
   if (typeof args.values.file === "string" && !args.values.file.trim())
     throw new CommandFailure("refused", "USAGE_INVALID", "--file is empty, so it names no manifest; nothing was started or written", { remedy: "name a manifest with --file <cotal.yaml>, or omit --file to start the folder's stack" });
   if (args.values.restore === "")
@@ -92,7 +92,7 @@ export function validateUpArguments(args: ParsedArgs): void {
   if (args.values.foreground === true && args.values.detach === true) throw new CommandFailure("refused", "USAGE_INVALID", "choose --foreground or --detach, not both");
   // Only a manifest launch has a plan to print; without -f every route would start the stack.
   if (args.values["dry-run"] === true && !args.values.file)
-    throw new CommandFailure("refused", "USAGE_INVALID", "--dry-run previews a manifest launch and needs -f <cotal.yaml>; nothing was started or written", { remedy: "pass -f <cotal.yaml> to print that manifest's plan; `cotal status` shows what this folder records" });
+    throw new CommandFailure("refused", "USAGE_INVALID", "--dry-run previews a manifest launch and needs -f <cotal.yaml>; nothing was started or written", { remedy: `pass -f <cotal.yaml>${presentation === "rich" ? "" : ` and omit --${presentation}`} to print that manifest's plan; \`cotal status\` shows what this folder records` });
   // The stack passes its space to its own children as `--space <name>`, which a leading - breaks.
   const named = typeof args.values.space === "string" ? checkSpaceFlagValue(args.values.space) : undefined;
   if (named && !named.ok) throw new CommandFailure("refused", "USAGE_INVALID", `${named.message.replace(/^✗ /, "")}; nothing was started or written`, { remedy: named.remedy });
