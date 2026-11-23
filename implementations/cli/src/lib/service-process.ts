@@ -386,13 +386,13 @@ function ownedMetadata<T>(value: T): T {
   return copy;
 }
 
-function adapterContext(definition: ServiceDefinitionSnapshot, instance: ServiceInstance, cliInvocation?: readonly string[], attempt?: ServiceAdapterAttempt, stack?: ControllerStackView, managerSeatCap?: SeatCap): ServiceAdapterContext {
+function adapterContext(definition: ServiceDefinitionSnapshot, instance: ServiceInstance, cliInvocation?: readonly string[], attempt?: ServiceAdapterAttempt, stack?: ControllerStackView, managerSeatCap?: SeatCap, managerName?: string): ServiceAdapterContext {
   const value = definition.record.value;
   if (value.launch.type !== "adapter") throw new CommandFailure("refused", "UNSUPPORTED", "a process definition has no adapter context");
   const options = ownedMetadata(value.launch.options);
   const stateDirectory = serviceInstanceStore(value.space).directory();
   if (!stateDirectory) throw new CommandFailure("refused", "CONFLICT", "the reserved service state directory disappeared");
-  return Object.freeze({ space: value.space, definition: definition.name, definitionRevision: definition.record.revision, instanceId: instance.instanceId, launchRequestId: instance.launchRequestId, stateDirectory, ...(cliInvocation ? { cliInvocation: Object.freeze([...cliInvocation]) } : {}), options, ...(value.credentialRef ? { credentialRef: Object.freeze({ ...value.credentialRef }) } : {}), ...(value.envRefs ? { envRefs: ownedMetadata(value.envRefs) } : {}), ...(attempt ? { attempt: ownedMetadata(attempt) } : {}), ...(stack ? { stack: ownedMetadata(stack) } : {}), ...(managerSeatCap !== undefined ? { managerSeatCap } : {}) });
+  return Object.freeze({ space: value.space, definition: definition.name, definitionRevision: definition.record.revision, instanceId: instance.instanceId, launchRequestId: instance.launchRequestId, stateDirectory, ...(cliInvocation ? { cliInvocation: Object.freeze([...cliInvocation]) } : {}), options, ...(value.credentialRef ? { credentialRef: Object.freeze({ ...value.credentialRef }) } : {}), ...(value.envRefs ? { envRefs: ownedMetadata(value.envRefs) } : {}), ...(attempt ? { attempt: ownedMetadata(attempt) } : {}), ...(stack ? { stack: ownedMetadata(stack) } : {}), ...(managerSeatCap !== undefined ? { managerSeatCap } : {}), ...(managerName !== undefined ? { managerName } : {}) });
 }
 
 /** A deadline bounds our observation, not the provider's work. No timed-out hook is retried. */
@@ -570,7 +570,7 @@ function staleRevisionInstance(definition: ServiceDefinitionSnapshot, selected: 
 }
 
 type DefinitionHold = ReturnType<ReturnType<typeof serviceDefinitionStore>["pin"]>;
-export async function startProcessService(definition: ServiceDefinitionSnapshot, options: { instance?: string; newInstance?: boolean; foreground?: boolean; attempt?: ServiceAdapterAttempt; brokerInstance?: { instanceId: string; launchRequestId: string }; replacement?: { instanceId: string; launchRequestId: string }; managerSeatCap?: SeatCap }, held?: DefinitionHold) {
+export async function startProcessService(definition: ServiceDefinitionSnapshot, options: { instance?: string; newInstance?: boolean; foreground?: boolean; attempt?: ServiceAdapterAttempt; brokerInstance?: { instanceId: string; launchRequestId: string }; replacement?: { instanceId: string; launchRequestId: string }; managerSeatCap?: SeatCap; managerName?: string }, held?: DefinitionHold) {
   const value = definition.record.value;
   if (options.attempt && (value.launch.type !== "adapter" || options.foreground)) throw new CommandFailure("refused", "UNSUPPORTED", "a maintenance attempt reaches only an adapter launch in the background; no launch was allocated");
   // Only the broker and manager adapters read an attempt; every other adapter refuses it.
@@ -662,7 +662,7 @@ export async function startProcessService(definition: ServiceDefinitionSnapshot,
       else {
         // The manager adapter reads no stack journal, so its launch carries the facts it admits a settled restore against.
         const stack = value.launch.adapter === "manager-service" && typeof value.launch.options.root === "string" ? maintenanceStackView(value.launch.options.root, value.space) : undefined;
-        const context = adapterContext(definition, instance, cliInvocation, options.attempt, stack, options.managerSeatCap);
+        const context = adapterContext(definition, instance, cliInvocation, options.attempt, stack, options.managerSeatCap, options.managerName);
         const provider = await loadServiceAdapter(declaredAdapter!, value.launch.options);
         hold.check();
         const plan = await adapterCall(() => provider.build(context), Math.min(10000, value.readiness.timeoutMs));

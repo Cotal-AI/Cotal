@@ -171,6 +171,7 @@ export interface StackUpRequest {
   /** How the broker resolves space accounts (`--account-resolver`). Absent: the recorded one. */
   accountResolver?: "memory" | "full";
   maxSessions?: number;
+  managerName?: string;
   managerSeatCap?: SeatCap;
   channels?: string;
   foreground: boolean;
@@ -1001,6 +1002,7 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
     // A redefined member starts its replacement under the IDs the journal already names.
     const started = await startProcessService(definition, {
       ...(replacement ? { replacement: { instanceId: replacement.instanceId, launchRequestId: replacement.launchRequestId } } : current[0] ? { instance: current[0].name } : {}),
+      ...(role === "manager" && request.managerName !== undefined ? { managerName: request.managerName } : {}),
       ...(role === "manager" && request.managerSeatCap !== undefined ? { managerSeatCap: request.managerSeatCap } : {}),
     });
     mark(role, { instanceId: started.instance.name, state: started.noOp ? "reused" : "started", replacement: undefined, process: started.instance.record.value.process });
