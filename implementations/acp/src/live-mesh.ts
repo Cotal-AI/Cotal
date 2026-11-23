@@ -6,7 +6,6 @@
  */
 import { hostname } from "node:os";
 import {
-  AGENT_CMD_INTERRUPT,
   AGENT_CMD_SET_NAME,
   AGENT_CONTRACTS,
   AGENT_ENDPOINT,
@@ -35,7 +34,7 @@ import { connectTargetOrThrow, isConnectRefusal, ownManagerInstances, resolveCon
 import { askManager, controlPs, liveManagerIds, managerCandidate, managerRailGone, reportedManagerHost, startStackManagerRemedy, START_TIMEOUT_MS, type ControlClient, type ControlCtx, type ManagerReply } from "@cotal-ai/workspace/control";
 import { readManagedLaunch, requestManagedLaunch } from "@cotal-ai/workspace/launch";
 import { openObserver } from "@cotal-ai/workspace/view";
-import { AgentCallFailed, deregisterRemedy, LaunchListsRefused, NoLaunchManager, SignInRequired, type AgentCatalog, type AguiEventLike, type ManagerChoice, type Mesh, type RosterEntry, type SeatFrame, type SeatRef, type SeatRow, type SpawnRequest } from "./mesh.js";
+import { AgentCallFailed, deregisterRemedy, LaunchListsRefused, NoLaunchManager, SignInRequired, type AgentCatalog, type AguiEventLike, type EndpointDeclaration, type ManagerChoice, type Mesh, type RosterEntry, type SeatFrame, type SeatRef, type SeatRow, type SpawnRequest } from "./mesh.js";
 
 const OBSERVER_NAME = "acp";
 /** A seat's retained event history is read up to this many frames. */
@@ -320,13 +319,14 @@ function launchCalls(c: Connected, p: Controls, defaultPersona: string | null | 
       const [status, models] = await Promise.all([ask("managerStatus", undefined, instanceId), ask("models", undefined, instanceId)]);
       if (!status.ok) throw listFailure(status, "the manager did not report its applications");
       if (!models.ok) throw listFailure(models, "the manager did not list its models");
-      const rows = (status.data as { connectors?: { agent: string; state: string; eventPlane: boolean; reason?: string }[] } | undefined)?.connectors ?? [];
+      const rows = (status.data as { connectors?: { agent: string; state: string; eventPlane: boolean; agentEndpoint?: EndpointDeclaration; reason?: string }[] } | undefined)?.connectors ?? [];
       if (!Array.isArray(models.data)) throw new Error("the manager did not list its models");
       const catalogs = models.data as { agent: string; models?: { id: string; name?: string; variants?: { name: string }[] }[] }[];
       return rows.map((row): AgentCatalog => ({
         agent: row.agent,
         available: row.state === "available",
         eventPlane: row.eventPlane,
+        ...(row.agentEndpoint ? { endpoint: row.agentEndpoint } : {}),
         ...(row.reason ? { reason: row.reason } : {}),
         models: (catalogs.find((c) => c.agent === row.agent)?.models ?? []).map((m) => ({
           id: m.id,
@@ -500,16 +500,6 @@ function seatCalls(options: LiveMeshOptions, c: Connected, p: Controls, agent: R
     },
 
     async interrupt(seat: SeatRef) {
-      // The agent's own endpoint stops the turn whatever runtime holds it. A connector that has no
-      // in-process stop answers `unimplemented`, and its manager's terminal key is the stop it has.
-      if (agent.agentEndpoints) {
-        try {
-          await agent.agentCall(seat, AGENT_CMD_INTERRUPT, {});
-          return;
-        } catch (e) {
-          if (!(e instanceof AgentCallFailed) || e.code !== "unimplemented") throw new Error(`${seat.name} was not interrupted: ${(e as Error).message}`);
-        }
-      }
       const reply = await seatCommand("interrupt", seat, { name: seat.name });
       if (!reply.ok) throw failure(reply, `${seat.name} was not interrupted`);
     },

@@ -106,10 +106,11 @@ class FakeMesh implements Mesh {
     for (const l of this.listeners) l(f);
   }
   catalogsAsked: (string | undefined)[] = [];
+  catalogList: AgentCatalog[] = CATALOGS;
   async catalogs(instanceId?: string) {
     this.catalogsAsked.push(instanceId);
     if (this.launchRefused) throw new LaunchListsRefused("the manager did not report its applications: permission-denied");
-    return CATALOGS;
+    return this.catalogList;
   }
   managerList: ManagerChoice[] = [{ instanceId: "m1", host: "here", local: true }, { instanceId: "m2", host: "there", local: false }];
   /** The managers described one at a time, in order. */
@@ -627,6 +628,9 @@ check("a thread's agent name is a valid user-mode actor token", (() => { try { r
 {
   const space = new FakeMesh();
   space.agentEndpoints = true;
+  // The bridge reads the declaration from the catalog it was given, so the test changes it in place.
+  const declared = { interrupt: true, turn: true, images: true, usage: true };
+  space.catalogList = CATALOGS.map((cat) => (cat.agent === "claude" ? { ...cat, endpoint: declared } : cat));
   const c = connect(async () => space);
   await c.init;
   const at = new Date().toISOString();
@@ -661,6 +665,7 @@ check("a thread's agent name is a valid user-mode actor token", (() => { try { r
         if (turnRefusal) throw turnRefusal;
         return { id: "turn1" };
       case "usage": return usage;
+      case "interrupt": return { state: "interrupted" };
     }
     throw new AgentCallFailed(`unexpected ${command}`, "unimplemented");
   };
@@ -721,13 +726,29 @@ check("a thread's agent name is a valid user-mode actor token", (() => { try { r
   const turned = callsOf("turn").at(-1);
   check("a later prompt is a turn with the owner's words and images, and nothing is typed", later !== undefined && turned?.args.text === "and now this" && JSON.stringify(turned.args.images) === JSON.stringify([{ mimeType: "image/png", data: "iVBORw0KGgo=" }]) && space.typed.length === typedBefore, { later, turned, typed: space.typed.slice(typedBefore) });
   turnRefusal = new AgentCallFailed("this agent's connector takes no turn from its owner", "unimplemented");
-  await within(c.agent.request(methods.agent.session.prompt, { sessionId: s.sessionId, prompt: [{ type: "text", text: "typed instead" }] }));
-  check("a seat whose connector takes no turn is typed into through its manager", space.typed.at(-1)?.text === "typed instead", space.typed.slice(typedBefore));
-  c.updates.length = 0;
-  const noImages = await errorOf(c.agent.request(methods.agent.session.prompt, { sessionId: s.sessionId, prompt: [{ type: "text", text: "see" }, { type: "image", data: "iVBORw0KGgo=", mimeType: "image/png" }] }));
-  check("images to such a seat fail the prompt with its reason, and nothing is typed", noImages?.message?.includes("takes no turn") === true && space.typed.at(-1)?.text === "typed instead", noImages);
+  const turnsAt = callsOf("turn").length;
+  const failedTurn = await errorOf(c.agent.request(methods.agent.session.prompt, { sessionId: s.sessionId, prompt: [{ type: "text", text: "not typed" }] }));
+  check("a turn the seat refuses fails the prompt with its reason, and nothing is typed in its place",
+    failedTurn?.message?.includes("takes no turn") === true && callsOf("turn").length === turnsAt + 1 && space.typed.length === typedBefore, { failedTurn, typed: space.typed.slice(typedBefore) });
   turnRefusal = undefined;
+  declared.turn = false;
+  await within(c.agent.request(methods.agent.session.prompt, { sessionId: s.sessionId, prompt: [{ type: "text", text: "typed instead" }] }));
+  check("a seat whose connector declares no turn is typed into through its manager, and no turn is asked", space.typed.at(-1)?.text === "typed instead" && callsOf("turn").length === turnsAt + 1, space.typed.slice(typedBefore));
+  const typedAt = space.typed.length;
+  const noImages = await errorOf(c.agent.request(methods.agent.session.prompt, { sessionId: s.sessionId, prompt: [{ type: "text", text: "see" }, { type: "image", data: "iVBORw0KGgo=", mimeType: "image/png" }] }));
+  check("images to such a seat fail the prompt before anything is sent", noImages?.message?.includes("does not declare") === true && space.typed.length === typedAt && callsOf("turn").length === turnsAt + 1, noImages);
+  declared.turn = true;
   space.onInput = () => {};
+
+  const stopsAt = space.interrupted.length;
+  space.present.set("actor-acp-s1", "working");
+  const stopped = within(c.agent.request(methods.agent.session.prompt, { sessionId: s.sessionId, prompt: [{ type: "text", text: "long job" }] }));
+  await tick(400);
+  await c.agent.notify(methods.agent.session.cancel, { sessionId: s.sessionId });
+  await tick(400);
+  space.present.set("actor-acp-s1", "idle");
+  check("a cancel goes to the seat's own interrupt where its connector declares it, and not to its manager",
+    (await stopped)?.stopReason === "cancelled" && callsOf("interrupt").length === 1 && space.interrupted.length === stopsAt, { interrupts: callsOf("interrupt"), manager: space.interrupted.slice(stopsAt) });
 
   usage = { supported: false };
   const pictured = await c.agent.request(methods.agent.session.new, { cwd: dir, mcpServers: [] });
