@@ -9,12 +9,15 @@ import type { UpdateRuntime } from "./update.js";
 
 /** The registry's latest tag, read through a throwaway npm cache with npm's log files and update
  *  notifier off, so the read leaves nothing in npm's own cache, log directory or notifier stamp. */
-export function latestVersion(rt: UpdateRuntime): { ok: true; version: string } | { ok: false; error: string; missingNpm?: true; npmResult?: CommandResult } {
+export function latestVersion(rt: UpdateRuntime): { ok: true; version: string } | { ok: false; error: string; missingNpm?: true; offline?: true; npmResult?: CommandResult } {
   const cache = mkdtempSync(join(tmpdir(), "cotal-npm-view-"));
   try {
     const result = rt.npm(["view", "cotal-ai@latest", "version", "--json", "--cache", cache, "--logs-max=0", "--update-notifier=false", "--fetch-retries=0", "--fetch-timeout=15000"]);
     if (result.errorCode === "ENOENT") return { ok: false, error: "npm is not on PATH", missingNpm: true };
-    if (result.status !== 0) return { ok: false, error: failure(result), npmResult: result };
+    if (result.status !== 0) {
+      if (npmOfflineCacheMiss(result)) return { ok: false, error: "npm is in offline mode", offline: true };
+      return { ok: false, error: failure(result), npmResult: result };
+    }
     try {
       return { ok: true, version: parseNpmVersion(result.stdout) };
     } catch (e) {
@@ -23,6 +26,12 @@ export function latestVersion(rt: UpdateRuntime): { ok: true; version: string } 
   } finally {
     rmSync(cache, { recursive: true, force: true, maxRetries: 3 });
   }
+}
+
+function npmOfflineCacheMiss(result: CommandResult): boolean {
+  if (result.status === null || result.error) return false;
+  try { return JSON.parse(result.stdout)?.error?.code === "ENOTCACHED"; }
+  catch { return false; }
 }
 
 /** npm gives a generic proxy hint even for direct failures. Match the refused socket instead. */

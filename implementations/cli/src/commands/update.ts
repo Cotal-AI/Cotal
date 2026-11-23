@@ -200,6 +200,8 @@ export interface UpdateRuntime {
   err(message: string): void;
   stdout(message: string): void;
   stderr(message: string): void;
+  /** The offline latest-version check selected no release, so there is nothing to activate. */
+  onOfflineVersionCheckSkipped?(): void;
   /** Set when a manual version-changing update has already waited for the installed generation. */
   generationWaited?: boolean;
 }
@@ -622,6 +624,12 @@ export async function executeUpdate(self: boolean, rt: UpdateRuntime = updateRun
         if (rt.env.COTAL_AUTO_UPDATE === "1") recordUpdateDeferral(current, "waiting for npm availability", true);
         rt.err(c.red(`✗ cotal-ai version check failed: ${latest.error}. ${MISSING_NPM_REMEDY}`));
         return 1;
+      }
+      if (latest.offline) {
+        if (rt.env.COTAL_AUTO_UPDATE === "1") recordUpdateDeferral(current, "waiting for npm offline mode to be disabled", true);
+        rt.onOfflineVersionCheckSkipped?.();
+        rt.out(`${latest.error}. The latest-version check was skipped; no installed packages were replaced.`);
+        return 0;
       }
       if (!latest.npmResult || !(releaseReadError(latest.npmResult, "cotal-ai version check failed") instanceof RegistryUnavailable)) {
         rt.err(c.red(`✗ cotal-ai version check failed: ${oneLine(latest.error.split(/\r?\n/, 1)[0]!)}`));
