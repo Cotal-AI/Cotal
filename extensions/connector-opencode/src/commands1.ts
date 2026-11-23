@@ -39,15 +39,17 @@ const isReconnect = (c: { target: CommandTarget; name: string }) => c.target ===
 
 interface StepTokens { input: number; output: number; cache: { read: number; write: number } }
 interface UsageMessage {
-  info: { role?: unknown; cost?: unknown; providerID?: unknown; modelID?: unknown };
+  info: { id: string; role?: unknown; cost?: unknown; providerID?: unknown; modelID?: unknown };
   parts: { type?: unknown; tokens?: StepTokens }[];
 }
 
 /** What the session's messages report: the last step's tokens and the model that took it, and the
- *  sum of the assistant messages' cost. */
+ *  sum of the assistant messages' cost. The last step is the one in the newest message by id, the
+ *  session order agui-source.ts reads, whatever order the list came in: 1.19.6 lists by creation
+ *  time. */
 function readUsage(messages: UsageMessage[]): { step?: StepTokens; model?: string; cost: number } {
   const out: { step?: StepTokens; model?: string; cost: number } = { cost: 0 };
-  for (const { info, parts } of messages) {
+  for (const { info, parts } of [...messages].sort((a, b) => (a.info.id < b.info.id ? -1 : a.info.id > b.info.id ? 1 : 0))) {
     if (info.role !== "assistant") continue;
     if (typeof info.cost === "number" && Number.isFinite(info.cost)) out.cost += info.cost;
     for (const part of parts) {
