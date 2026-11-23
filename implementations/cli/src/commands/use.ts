@@ -95,14 +95,19 @@ function clearSelection(named: boolean, presentation: ReturnType<typeof presenta
   if (named) throw new CommandFailure("refused", "USAGE_INVALID", "--clear removes the selection, so it takes no space name", { remedy: "run `cotal use --clear`, or `cotal use <space>` to select another" });
   let previous: string | null, damaged = false;
   try { previous = readCurrent() ?? null; } catch { previous = null; damaged = true; }
+  if (previous !== null || damaged) clearCurrent();
   let folder: string | null = null;
-  if (presentation === "json") {
+  const warnings: OutputWarning[] = [];
+  try {
     const cwd = process.cwd();
     folder = folderSpace(cwd) ?? folderSpaceHeld(cwd)?.space ?? null;
+  } catch (error) {
+    const failure = isMeshRegistryError(error) ? registryFailure(error) : undefined;
+    warnings.push({ code: failure?.code ?? "OPERATION_FAILED", target: failure?.target ?? null,
+      message: `Could not determine this folder's space${failure ? `: ${failure.message}${failure.remedy ? `. To fix it, ${failure.remedy}` : ""}` : ""}.` });
   }
-  if (previous !== null || damaged) clearCurrent();
   const result: Selection = { kind: "selection", current: null, previous, currentRecorded: true, server: null, preparedRoot: null, preparedState: null, lastOperation: null, folder };
-  writeResult(presentation, { command: "use", target: null, result, noOp: previous === null && !damaged }, (s) => ({ sections: [{ blocks: [{ kind: "lines", lines: [
+  writeResult(presentation, { command: "use", target: null, result, noOp: previous === null && !damaged, completeness: warnings.length ? "partial" : "complete", warnings }, (s) => ({ sections: [{ blocks: [{ kind: "lines", lines: [
     s.previous === null ? { text: damaged ? "cleared the selection" : "no space was selected; nothing changed", tone: damaged ? "ok" : "hint", ...(damaged ? { mark: "✓" } : {}) } : { text: `cleared the selection (was ${s.previous})`, tone: "ok", mark: "✓" },
     { text: "  a command now targets the space in its folder, or the one named with --space", tone: "hint" },
   ] }] }] }));

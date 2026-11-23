@@ -1,7 +1,7 @@
 import { lstatSync } from "node:fs";
 import { isAbsolute, join, relative } from "node:path";
 import { agentFilePath, personaDir, personaLinkTarget } from "@cotal-ai/core";
-import { cachedPreferences, canonicalRoot, CommandFailure, describeLayer, isWorkspaceTargetError, OFFICIAL_CONNECTORS, preparedNeverStarted, resolveMeshTarget, resolvePreference, type MeshTarget, type PreferenceContext } from "@cotal-ai/workspace";
+import { cachedPreferences, canonicalRoot, CommandFailure, describeLayer, isWorkspaceTargetError, OFFICIAL_CONNECTORS, preparedNeverStarted, pruneStaleMeshes, resolveMeshTarget, resolvePreference, resolveReadsLiveness, type MeshTarget, type PreferenceContext } from "@cotal-ai/workspace";
 import { defaultPersonaFix } from "./default-persona.js";
 
 /** Persona selection shared by foreground and detached spawn: `--config`, then the positional, then
@@ -64,9 +64,10 @@ export function brokenPersonaLink(path: string, target: object, shippedDefault =
  *  target resolves to, or the space prepared in this folder that no `up` has started, which
  *  `spawn --dry-run` previews. A selected space that is only prepared somewhere else is not one.
  *  Undefined when nothing here resolves to one space. */
-export function launchSpace(cwd: string): { space: string; source: MeshTarget["source"] | "prepared" } | undefined {
+export async function launchSpace(cwd: string): Promise<{ space: string; source: MeshTarget["source"] | "prepared" } | undefined> {
   try {
-    const target = resolveMeshTarget(cwd, { readOnly: true });
+    const sweep = resolveReadsLiveness(cwd) ? await pruneStaleMeshes(undefined, "targets") : {};
+    const target = resolveMeshTarget(cwd, { readOnly: true, ...sweep });
     return { space: target.space, source: target.source };
   } catch (error) {
     if (!isWorkspaceTargetError(error)) throw error;
