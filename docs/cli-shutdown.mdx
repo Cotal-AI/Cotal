@@ -391,6 +391,8 @@ instead of reporting a stopped stack. Press Ctrl-C in the first terminal, or wai
 retry `cotal down --yes`. Once the broker is registered, `down` waits up to 20 seconds for startup
 to finish before stopping the stack. If it cannot finish waiting, it gives the same next step and
 stops nothing. A refused manager stop leaves delivery and the broker running.
+When a legacy open broker stops cleanly and its saved payload limit is below the manager's
+minimum, the receipt shows `cotal up --no-manager`. That starts the broker at the same limit.
 The machine home is not an isolated project root, so bare `down` refuses the home stack. Stop it
 with `cotal down --preserve-state`, which keeps its state for the next `cotal up`. The refusal names
 that command. `--preserve-state` takes its agent inventory from the manager that serves the space.

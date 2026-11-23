@@ -1042,6 +1042,52 @@ async function controllerHoldCell(kind: "takeover" | "other-home" | "broker-cras
   }
 }
 
+async function openBrokerOnlyRestartCell(): Promise<void> {
+  const home = join(base, "open-restart-home"), mesh = join(base, "open-restart-project");
+  for (const p of [home, mesh]) mkdirSync(p, { mode: 0o700 });
+  const env = { ...cleanEnv, HOME: home, COTAL_HOME: join(home, "machine"), XDG_CONFIG_HOME: join(home, "xdg"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" };
+  const sandbox = recordSmokeSandbox({ root: mesh, cotalHome: env.COTAL_HOME, xdgConfigHome: env.XDG_CONFIG_HOME });
+  const space = "open-restart", port = await freePort();
+  const child = spawn(process.execPath, ["--import", tsx, cliEntry, "up", "--foreground", "--open", "--no-manager", "--max-payload", "262144", "--space", space, "--server", `nats://127.0.0.1:${port}`], { cwd: mesh, env, stdio: ["ignore", "pipe", "pipe"] });
+  const state = observeOwnedChild(child);
+  let output = "";
+  for (const stream of [child.stdout, child.stderr]) stream.on("data", (chunk: Buffer) => { output += chunk.toString(); });
+  const downArgs = ["down", "--yes"];
+  const config = join(mesh, ".cotal", "server-open.conf");
+  try {
+    await until(async () => {
+      if (state.error) throw state.error;
+      if (state.exited) throw new Error(output);
+      return output.includes("Press Ctrl-C to stop.") && await portOpen(port);
+    }, 30_000, () => output);
+    assertSmokeSandboxDown(sandbox, downArgs, { cwd: mesh, env });
+    const down = await foregroundCliProbe(cliEntry, tsx, mesh, env, downArgs);
+    assert.equal(down.code, 0, down.out + down.err);
+    await waitForOwnedChild(() => state.closed, 15_000, output);
+    assert.equal(state.code, 0, output);
+    assert.equal(await portOpen(port), false);
+    const restart = /^\s*(?:pnpm )?cotal (up.*?)\s+Start it again$/m.exec(down.out)?.[1];
+    assert.equal(restart, "up --no-manager", down.out);
+    const bare = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["up"]);
+    assert.equal(bare.code, 1, bare.out + bare.err);
+    assert.match(bare.err, /--max-payload 262144 is below 263168 bytes/);
+    const started = await foregroundCliProbe(cliEntry, tsx, mesh, env, restart.split(" "));
+    assert.equal(started.code, 0, started.out + started.err);
+    assert.match(started.out, new RegExp(`^Mesh: ${space}$`, "m"));
+    assert.match(started.out, /running in the background: nats-server \(pid \d+\) - stop with:/);
+    assert.equal(await portOpen(port), true);
+    assert.match(readFileSync(config, "utf8"), /^max_payload:\s*262144$/m);
+    passed++;
+    console.log("PASS foreground-up-signals legacy open stop restarts broker-only at its saved payload limit");
+  } finally {
+    if (!state.exited) child.kill("SIGTERM");
+    await waitForOwnedChild(() => state.closed, 30_000, output);
+    assertSmokeSandboxDown(sandbox, downArgs, { cwd: mesh, env });
+    if (await portOpen(port)) await foregroundCliProbe(cliEntry, tsx, mesh, env, downArgs);
+    assert.equal(await portOpen(port), false, "the owned broker stopped");
+  }
+}
+
 async function userAuthRestartCell(): Promise<void> {
   const home = join(base, "user-auth-home"), mesh = join(base, "user-auth-project");
   for (const p of [home, mesh]) mkdirSync(p, { mode: 0o700 });
@@ -1099,6 +1145,7 @@ async function userAuthRestartCell(): Promise<void> {
 }
 
 console.log(`foreground-up-signals retained evidence: ${base}`);
+await openBrokerOnlyRestartCell();
 await userAuthRestartCell();
 await cell("external-named", { auth: true, ready: true, externalDown: "named" });
 await cell("external-folder", { auth: true, ready: true, externalDown: "folder" });
