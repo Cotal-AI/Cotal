@@ -41,6 +41,7 @@ cotal spawn --harness hermes --model <model>
 
 A bare spawn runs the gateway in this terminal.
 Add `--detach` to launch through a manager and return after readiness. `--on <instance>` selects a manager and attaches where supported.
+`--prompt <text>` gives the seat its first turn. Its reply shows on the [event plane](#event-plane) and is not posted to the mesh.
 
 For a persona file on the execution host, use:
 
@@ -211,7 +212,7 @@ See [Answer routing](hermes-connector-reference.mdx#answer-routing) for correlat
 
 ## Unsupported launches [#limits]
 
-Hermes refuses an initial `--prompt`, model variants, arbitrary `--opt` values, and exact-session continuation.
+Hermes refuses model variants, arbitrary `--opt` values, and exact-session continuation.
 It cannot run on Windows or in the current deployment image.
 You supply `uv` and the supported Python environment.
 

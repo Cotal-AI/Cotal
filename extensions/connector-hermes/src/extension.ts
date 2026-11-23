@@ -45,6 +45,7 @@ export const hermesConnector: Connector = {
   name: "hermes",
   supportsFreshStart: true,
   supportsResume: true,
+  supportsPrompt: true,
   // `uv` is the external harness. It provisions the project-pinned `hermes` command below, so a
   // separately installed `hermes` on PATH is neither required nor sufficient to launch this seat.
   requires: ["uv"],
@@ -69,10 +70,11 @@ export const hermesConnector: Connector = {
         throw new Error("the Hermes connector cannot resume into COTAL_HERMES_ADOPT_HOME: that profile already holds the session, so continue it there with Hermes' own /resume");
     }
     if (opts.variant) throw new Error("the Hermes connector does not support model variants (variant)");
-    // Same rule for the initial prompt: the gateway has no first-turn carrier wired, and a prompt
-    // that is accepted and never submitted leaves the operator waiting on a turn that never starts.
-    if (opts.prompt !== undefined)
-      throw new Error("the Hermes connector does not support an initial prompt (prompt): its first turn is not wired yet");
+    // The initial prompt becomes the gateway's first turn (see submitTurn in bridge.ts). An empty one
+    // would start no turn while the operator waits on it.
+    const prompt = opts.prompt?.trim();
+    if (opts.prompt !== undefined && !prompt)
+      throw new Error("the Hermes connector was given an empty initial prompt (prompt): there is no first turn to submit");
     // The Hermes launcher reads a FIXED set of env vars, so it has no generic launch-option surface —
     // rendering arbitrary options to env would silently drop them. Fail loud rather than pretend.
     if (opts.launchOptions && Object.keys(opts.launchOptions).length)
@@ -85,6 +87,7 @@ export const hermesConnector: Connector = {
       COTAL_SPACE: opts.space,
       ...nameEnv(opts),
     };
+    if (prompt) env.COTAL_HERMES_PROMPT = prompt;
     if (opts.resolvedBinaries?.uv) env.COTAL_HERMES_UV_BIN = opts.resolvedBinaries.uv;
     // Adopt-home is a machine-wide operator decision ("put MY Hermes on the mesh"), not a
     // per-session value the manager assigns, so it crosses from this process like the other

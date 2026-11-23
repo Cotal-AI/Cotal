@@ -79,6 +79,12 @@ export function startSidecar(): Sidecar {
     return hermesHookHandle(a, ev);
   }, { fatalBind: true });
   const bridge = startBridgeServer(agent, config, bridgeSock, control, startAgent);
+  // The launch's initial prompt is the gateway's first turn, in the user's own words. Read once and
+  // dropped from the environment the gateway inherits.
+  const prompt = process.env.COTAL_HERMES_PROMPT;
+  delete process.env.COTAL_HERMES_PROMPT;
+  if (prompt)
+    bridge.submitTurn(prompt).catch((e: Error) => process.stderr.write(`[cotal-hermes] the initial prompt was not run: ${e.message}\n`));
 
   // The plugin reads this at register(ctx) time to declare the cotal_* tools (full shared parity).
   writeFileSync(toolsFile, JSON.stringify(hermesToolDescriptors(config)));
