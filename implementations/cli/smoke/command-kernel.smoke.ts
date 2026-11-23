@@ -6,7 +6,9 @@
 import "./update-isolation.js";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { once } from "node:events";
 import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { commandUsage, findCommand, parseCommandArgs, registry, type Command } from "@cotal-ai/core";
@@ -16,6 +18,7 @@ import { complete } from "../src/commands/completion.js";
 import { EXT_UPDATE_PARENT_ENV, ext } from "../src/commands/ext.js";
 import { hostPackageDir, isCommandFailure, MeshTargetError, seededCommandsMismatch, telemetrySettingsPath, writeUpdateRecovery, readUpdateRecovery, clearUpdateRecovery } from "@cotal-ai/workspace";
 import { executeUpdate, installedUpdatePrefix, parseNpmVersion, printLegacyReport, reportRunningManagers, update, validateUpdateArguments, verifyCurrentExtension, verifyGlobalEntry, type UpdateRuntime } from "../src/commands/update.js";
+import { runNpmAsync } from "../src/commands/update-process.js";
 import { supervisorMayServe } from "../src/lib/manager-proc.js";
 import { claimExtensionMutation, claimExtensionUpdatePass } from "../src/lib/ext-mutation.js";
 import { compareSemver } from "../src/seed/reconcile.js";
@@ -1548,7 +1551,7 @@ async function completionOut(positionals: string[]): Promise<string> {
         }
         if (name === "@cotal-ai/cli" && ["connection-refused", "unsafe-code"].includes(scenario)) return { status: 1, stdout: JSON.stringify({ error: { code: scenario === "connection-refused" ? "ECONNREFUSED" : "E401\nsecret-token", summary: "https://user:secret@registry.example/?token=secret" } }), stderr: "npm error secret-token" };
         if (scenario === "date-metadata") return { status: 1, stdout: JSON.stringify({ error: { code: "ETARGET", summary: `No matching version found for ${spec} with a date before 1/1/2020.` } }) };
-        if (name === "@cotal-ai/core" && scenario === "metadata-404") return { status: 1, stdout: JSON.stringify({ error: { code: "E404" } }) };
+        if (name === "@cotal-ai/core" && scenario === "metadata-404") return { status: 1, stdout: JSON.stringify({ error: { code: "E404", summary: "Not Found - GET https://user:secret@registry.example/private-key/@cotal-ai%2fcore?token=secret - Not found" } }) };
         if (name === "@cotal-ai/core" && scenario === "invalid-json") return { status: 0, stdout: "not json" };
         const metadata = {
           name, version: scenario === "wrong-version" || scenario === "array-wrong-version" ? "0.13.3" : requestedVersion,
@@ -1578,8 +1581,13 @@ async function completionOut(positionals: string[]): Promise<string> {
     } else {
       assert.ok(!fixture.events.some(event => /^(global:|claim-global:|reconcile|refresh-connectors)/.test(event)), "refusal starts no installation or reconciliation");
       const error = fixture.events.filter(event => event.startsWith(arriving ? "out:" : "err:")).join("\n");
-      if (arriving) assert.ok(error.includes("Waiting for cotal-ai@0.13.2") && error.includes("Keeping cotal-ai@0.13.1"), error);
-      else if (scenario.startsWith("date-")) {
+      if (arriving) {
+        assert.ok(error.includes("Waiting for cotal-ai@0.13.2") && error.includes("Keeping cotal-ai@0.13.1"), error);
+        if (scenario === "metadata-404") {
+          assert.match(error, /npm E404 from https:\/\/registry\.example\)/);
+          assert.doesNotMatch(error, /secret|private-key/);
+        }
+      } else if (scenario.startsWith("date-")) {
         assert.match(error, /min-release-age.*before.*Adjust that date filter/);
         assert.doesNotMatch(error, /still reaching the registry|again in a few minutes/);
       } else {
@@ -1599,6 +1607,50 @@ async function completionOut(positionals: string[]): Promise<string> {
 {
   const result = spawnSync(process.execPath, [join(import.meta.dirname, "../../../bin/smoke/update-registry-arrival.smoke.mjs"), "closed-scope"], { encoding: "utf8", timeout: 90_000 });
   assert.equal(result.status, 0, result.stdout + result.stderr);
+}
+
+// A reachable scoped mirror can serve one first-party package and return HTTP 404 for another.
+{
+  const root = mkdtempSync(join(tmpdir(), "cotal-scoped-404-"));
+  const version = "0.13.2", npmrc = join(root, "mirror.npmrc");
+  const requests: string[] = [];
+  const mirror = createServer((request, response) => {
+    const path = decodeURIComponent(request.url ?? "");
+    requests.push(path);
+    response.setHeader("content-type", "application/json");
+    if (path !== "/@cotal-ai/cli") return response.writeHead(404).end('{"error":"Not found"}');
+    response.end(JSON.stringify({ name: "@cotal-ai/cli", "dist-tags": { latest: version }, versions: {
+      [version]: { name: "@cotal-ai/cli", version, dist: { tarball: "https://registry.invalid/cli.tgz", integrity: "sha512-fixture" } },
+    } }));
+  });
+  try {
+    await once(mirror.listen(0, "127.0.0.1"), "listening");
+    const address = mirror.address();
+    assert.ok(address && typeof address !== "string");
+    const origin = `http://127.0.0.1:${address.port}`;
+    const config = `@cotal-ai:registry=${origin}/\n`;
+    writeFileSync(npmrc, config);
+    const fixture = updateRuntime({
+      npm: args => ({ status: 0, stdout: args[0] === "view" ? JSON.stringify(version) : "/global/node_modules" }),
+      releaseNpm: () => ({ status: 0, stdout: JSON.stringify({ name: "cotal-ai", version, dependencies: { "@cotal-ai/cli": version, "@cotal-ai/core": version }, dist: { tarball: "https://registry.invalid/root.tgz", integrity: "sha512-fixture" } }) }),
+    });
+    fixture.rt.npmAsync = (args, cache) => args[1].startsWith("@cotal-ai/")
+      ? runNpmAsync([...args, "--userconfig", npmrc], cache) : Promise.resolve(fixture.rt.npm(args));
+    let clock = 0;
+    fixture.rt.now = () => clock;
+    fixture.rt.sleep = async () => { clock += 600_000; };
+    assert.equal(await executeUpdate(true, fixture.rt), 0);
+    assert.deepEqual(requests.sort(), ["/@cotal-ai/cli", "/@cotal-ai/cli", "/@cotal-ai/core", "/@cotal-ai/core"]);
+    const output = fixture.events.filter(event => event.startsWith("out:"));
+    const diagnostic = `@cotal-ai/core@${version} was not found (npm E404 from ${origin}). Check @cotal-ai:registry in .npmrc`;
+    assert.ok(output.some(line => line.startsWith("out:Waiting for ") && line.includes(diagnostic)), output.join("\n"));
+    assert.ok(output.at(-1)?.includes(`${diagnostic}. Keeping cotal-ai@0.13.1; no global install was attempted.`), output.join("\n"));
+    assert.ok(!fixture.events.some(event => /^(global:|claim-global:|reconcile|refresh-connectors)/.test(event)));
+    assert.equal(readFileSync(npmrc, "utf8"), config);
+  } finally {
+    await new Promise<void>(done => mirror.close(() => done()));
+    rmSync(root, { recursive: true, force: true });
+  }
 }
 
 // A listed release that becomes downloadable during the wait installs through the normal path.

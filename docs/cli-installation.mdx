@@ -493,7 +493,10 @@ first diagnostic line and exits with status 1.
 
 Missing release archives and missing target versions of installed first-party extensions share a
 ten-minute wait. If CLI release archives are still missing, Cotal keeps the installed version and
-exits successfully. If an installed extension's target version is still missing, Cotal names it,
+exits successfully. If npm returns `E404` for a first-party package's release metadata, the wait
+and final message name the package, npm error code and registry origin when npm reports it.
+Check `@cotal-ai:registry` in `.npmrc` if the registry does not serve the package.
+If an installed extension's target version is still missing, Cotal names it,
 leaves the installation unchanged and exits with status 1. Invalid metadata, integrity failures
 and scoped registry access errors refuse before global installation or connector reconciliation.
 Since 0.167.1, registry access refusals report npm's error
