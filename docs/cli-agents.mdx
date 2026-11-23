@@ -76,6 +76,9 @@ with `TARGET_NOT_FOUND` and a missing connector with `DEPENDENCY_UNAVAILABLE`, b
 and the connector refusal names the `cotal ext add` that installs it. `--file` (`-f`) names a
 persona file, never a manifest: manifests deploy with `cotal team deploy <file>`, and a manifest
 passed to `--file` is refused with that command. An invalid persona file is refused with `SCHEMA_INVALID` (exit 1), naming the field or YAML position without echoing YAML source excerpts.
+An unreadable persona file is refused with `PERMISSION_DENIED` (exit 2) before the application starts.
+On POSIX, if you own the regular file and it lacks owner read permission, the refusal suggests
+`chmod u+r <path>` and a retry. The CLI does not change the file's permissions.
 A persona path with a symbolic-link loop also refuses with `SCHEMA_INVALID`, naming the path.
 Correct the link's target, or move the link aside and put a regular persona file in its place.
 
@@ -527,7 +530,9 @@ belongs to `persona create --on`; without `--on` it refuses with `USAGE_INVALID`
 
 Persona names for create, edit and remove use letters, digits, `_` and `-`, up to 128 characters.
 A local `persona show` takes the exact filename stem from the catalog, including punctuation,
-Unicode and spaces. It refuses paths and control characters.
+Unicode and spaces. It refuses paths, control characters and blank stems.
+The local listing marks a file with an empty or whitespace-only stem as an invalid selector.
+Rename that file or pass its path to `cotal spawn --file <persona.md>`.
 Quote a name with spaces: `cotal persona show 'a b'` reads `.cotal/agents/a b.md`.
 `cotal persona show review.md` reads `.cotal/agents/review.md.md` in the selected space,
 not `review.md` in the project root.
@@ -591,6 +596,9 @@ Restore the target or move the broken link aside. A catalog path that is absent 
 Show and edit accept a definition whose `name` is not its catalog name. The seeded `default`
 persona is one: its file is `default.md` and its agents launch as `default_agent`. That name is
 reserved, so a create under it is refused with `USAGE_INVALID`.
+If a definition's frontmatter `name` cannot be used to launch the agent, `persona show` still
+shows the definition and suggests a launch with `--name`. If `persona show` cannot read an owned
+regular file that lacks owner read permission, it gives the same `chmod` guidance as foreground spawn.
 
 Editing opens a private draft using the editor preference (`VISUAL`, then `EDITOR`, then saved
 preferences). You can open a draft to repair invalid frontmatter in an existing persona file.

@@ -18,7 +18,7 @@
  * Run: pnpm smoke:claude-prompt-argv:live
  */
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { assertSmokeSandboxDown, createSuite, freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
@@ -86,11 +86,66 @@ writeFileSync(join(root, ".cotal", "agents", "probe.md"), "---\nname: probe\nrol
 // `cotal setup` would leave it.
 writeFileSync(join(home, ".claude.json"), JSON.stringify({ mcpServers: { cotal: { command: "node", args: ["cotal-seat"] } } }));
 const anchor = recordSmokeSandbox({ root, cotalHome, xdgConfigHome: xdg });
+
+function checkLocalPersonaLaunches(server: string): void {
+  const run = (...args: string[]) => cotal(root, anchor, ...args);
+  const agents = join(root, ".cotal", "agents");
+  const definition = (name: string) => `---\nname: ${name}\nagent: claude\n---\nFixture.\n`;
+  const sample = join(agents, "sample.md");
+  writeFileSync(sample, definition("sample"));
+  if (process.platform !== "win32" && process.getuid?.() !== 0) {
+    chmodSync(sample, 0o000);
+    const denied = run("spawn", "--foreground", "--server", server, "sample");
+    const show = run("persona", "show", "--plain", "sample");
+    for (const [command, result] of [["foreground spawn", denied], ["persona show", show]] as const) {
+      check(`${command} names the unreadable file and explains how to restore access`, result.status === 2 &&
+        result.out.includes("PERMISSION_DENIED") && result.out.includes("EACCES") &&
+        result.out.includes(`chmod u+r ${sample}`) && result.out.includes("then retry"), result);
+    }
+    check("a permission refusal neither starts Claude nor changes the persona mode", launches().length === 0 && (statSync(sample).mode & 0o777) === 0);
+    chmodSync(sample, 0o400);
+    const retry = run("spawn", "--foreground", "--server", server, "sample");
+    check("restoring owner read access makes the same command start Claude", retry.status === 0 && launches().length === 1, retry);
+  }
+
+  writeFileSync(join(agents, "reviewer.md"), definition("Review Bot"));
+  const show = run("persona", "show", "--plain", "reviewer");
+  const launch = /^\s*cotal spawn (reviewer --name reviewer)\s+Launch with a valid agent name$/m.exec(show.out);
+  check("show keeps the definition readable and replaces the invalid bare launch with a name override",
+    show.status === 0 && show.out.includes("Fixture.") && show.out.includes("the frontmatter name cannot be used") &&
+    !/^\s*cotal spawn reviewer\s+Launch an agent from it$/m.test(show.out) && !!launch, show);
+  if (launch) {
+    const launched = run("spawn", ...launch[1]!.split(" "));
+    check("the launch printed by show starts Claude", launched.status === 0 && launches().length === 1, launched);
+  }
+
+  for (const name of ["", "   "]) writeFileSync(join(agents, `${name}.md`), definition("sample"));
+  const listed = run("persona", "--json");
+  const receipt = JSON.parse(listed.out) as {
+    result: { items: { name: string; path: string; valid: boolean }[] };
+    warnings: { code: string; target: { path: string }; message: string }[];
+  };
+  check("the catalog is partial but still lists valid selectors", listed.status === 4 && receipt.result.items.some(item => item.name === "sample" && item.valid), listed);
+  for (const name of ["", "   "]) {
+    const path = join(agents, `${name}.md`);
+    check(`catalog marks ${JSON.stringify(name)} as an invalid selector with a recovery step`,
+      receipt.result.items.some(item => item.name === name && item.path === path && !item.valid) &&
+      receipt.warnings.some(warning => warning.code === "USAGE_INVALID" && warning.target.path === path && warning.message.includes("Rename the file") && warning.message.includes("spawn --file")), listed);
+    const blank = run("persona", "show", "--plain", "--", name);
+    check("show names the blank selector rule", blank.status === 1 && blank.out.includes("nonblank catalog filename stem"), blank);
+    const spawn = run("spawn", "--foreground", "--server", server, "--", name);
+    check("spawn refuses a blank selector before starting Claude", spawn.status === 1 && spawn.out.includes("persona cannot be empty") && launches().length === 0, spawn);
+  }
+  const byFile = run("spawn", "--foreground", "--server", server, "--file", ".cotal/agents/   .md");
+  check("the persona with a blank selector can still launch through its file path", byFile.status === 0 && launches().length === 1, byFile);
+}
+
 let up = false;
 try {
   const seeded = cotal(scratch, undefined, "ext", "seed");
   if (seeded.status !== 0) throw new Error(`ext seed failed:\n${seeded.out}`);
-  const started = cotal(root, anchor, "up", "--detach", "--open", "--server", `nats://127.0.0.1:${await freePort()}`);
+  const server = `nats://127.0.0.1:${await freePort()}`;
+  const started = cotal(root, anchor, "up", "--detach", "--open", "--server", server);
   if (started.status !== 0) throw new Error(`up failed:\n${started.out}`);
   up = true;
 
@@ -145,6 +200,7 @@ try {
     check("a resume id that starts with '-' is refused before claude starts", r.status !== 0 && argv.length === 0, { status: r.status, argv, out: r.out });
     check("...and the refusal names the rule", r.out.includes("a session id cannot start with '-'"), r.out);
   }
+  checkLocalPersonaLaunches(server);
 } finally {
   if (up) {
     const down = cotal(root, anchor, "down", "--yes");

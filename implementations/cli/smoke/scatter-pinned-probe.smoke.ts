@@ -75,7 +75,7 @@ const mkRoot = (tag: string): string => {
 };
 writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: join(dir, "js") }));
 
-type MgrPriv = { managerInstanceId: string; serviceServe?: { nc: NatsConnection }; leaseStopping: boolean };
+type MgrPriv = { managerInstanceId: string; leaseStopping: boolean; servePlane: { serviceServe?: { nc: NatsConnection }; } };
 const kids: ReturnType<typeof spawn>[] = [];
 const conns: NatsConnection[] = [];
 let releaseBroker: (() => void) | undefined;
@@ -103,7 +103,7 @@ try {
   // re-dials it (#2073), which would bring this corpse back to answer. Set the stop fence first,
   // as a host that dies mid-teardown does, so the close stays a close and nothing deregisters.
   (corpse as unknown as MgrPriv).leaseStopping = true;
-  await ((corpse as unknown as MgrPriv).serviceServe as { nc: NatsConnection }).nc.close();
+  await ((corpse as unknown as MgrPriv).servePlane.serviceServe as { nc: NatsConnection }).nc.close();
   await wait(500);
 
   /** One connection under a `control-caller-privileged` instrument pinned to exactly `pins` — the
@@ -302,7 +302,7 @@ try {
   console.log("9. with every registered manager gone, an unpinned launch's describe draws no answer and nothing is sent");
   // The live manager now crashes the same way, so the registry lists two managers and neither answers.
   (live as unknown as MgrPriv).leaseStopping = true;
-  await ((live as unknown as MgrPriv).serviceServe as { nc: NatsConnection }).nc.close();
+  await ((live as unknown as MgrPriv).servePlane.serviceServe as { nc: NatsConnection }).nc.close();
   await wait(500);
   const unanswered = await cli(["spawn", "nobody", "-d", "--json", "--space", SPACE]);
   let silent: { target?: { requestId?: string }; error?: { code?: string; message?: string } } | undefined;

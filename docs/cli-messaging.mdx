@@ -28,6 +28,7 @@ and `USAGE_INVALID` (exit 1, without the command's help) for a directory, invali
 that is empty or contains only whitespace.
 The refusal names the mesh the send was aimed at when this machine's records name one. The retry
 uses a quoted body and keeps the destination and any `--space`, `--server` and `--creds` options.
+It also keeps `--json` or `--plain` when requested.
 No destination, several destinations, several body sources or an empty message is refused. A lone
 `-` is refused too, because stdin is read only through `--stdin` or `--file -`. An empty
 `--to`, `--channel` or `--role` value is refused for that flag, and the remedy keeps it.

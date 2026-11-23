@@ -61,8 +61,6 @@ export interface ServePlaneDeps {
   managerInstanceId(): string;
   managerServeIdentity(): Identity;
   leaseStopping(): boolean;
-  serviceServe(): ServiceServe | undefined;
-  setServiceServe(value: ServiceServe | undefined): void;
   userMode(): boolean;
   remoteStandingBudgetMs: number;
   dial: (opts: Parameters<ReturnType<typeof dialerFor>>[0]) => Promise<NatsConnection>;
@@ -96,8 +94,6 @@ export function servePlaneDeps(m: Manager): ServePlaneDeps {
     managerInstanceId: () => m["managerInstanceId"],
     managerServeIdentity: () => m["managerServeIdentity"],
     leaseStopping: () => m["leaseStopping"],
-    serviceServe: () => m["serviceServe"],
-    setServiceServe: (value) => { m["serviceServe"] = value; },
     userMode: () => m["userMode"],
     remoteStandingBudgetMs: REMOTE_STANDING_BUDGET_MS,
     dial: (...args) => m["dial"](...args),
@@ -147,6 +143,12 @@ export class ServePlane {
    *  bounded exp and re-stages its distinct credId into the §13.1 revocation family. The current
    *  credential is minted INSIDE {@link registerManagerService}'s run block and stashed here. */
   sessionLedgerIdentity?: Identity;
+  /** The manager's v0.4 service-endpoint serve state — the serve handle +
+   *  its dedicated connection, the STABLE serve identity (renewals re-mint the same nkey), the
+   *  branded serve grant, and the CURRENT credential (the connection's authenticator reads it on
+   *  every (re)connect, so a renewal is adopted without re-registration). Absent on open meshes,
+   *  in user mode, and before registration completes. */
+  serviceServe?: ServiceServe;
   sessionLedgerCreds?: string;
 
   constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: ServePlaneDeps, private readonly parts: Pick<ManagerParts, "connectorInventory" | "credentialRenewal" | "goalWriter">) {}
@@ -156,8 +158,6 @@ export class ServePlane {
   private get managerInstanceId(): string { return this.deps.managerInstanceId(); }
   private get managerServeIdentity(): Identity { return this.deps.managerServeIdentity(); }
   private get leaseStopping(): boolean { return this.deps.leaseStopping(); }
-  private get serviceServe(): ServiceServe | undefined { return this.deps.serviceServe(); }
-  private set serviceServe(value: ServiceServe | undefined) { this.deps.setServiceServe(value); }
   /** The connector rows a status read serves (see {@link servedConnectorStatuses}), after retrying the unavailable ones. */
   private get connectorStatuses(): readonly ManagerConnectorStatus[] {
     const inventory = this.parts.connectorInventory;

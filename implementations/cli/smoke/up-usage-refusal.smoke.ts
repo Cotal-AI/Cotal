@@ -126,6 +126,15 @@ for (const { args, message } of cases) {
   const authManifest = join(manifests, "cotal.yaml"), openManifest = join(manifests, "open.yaml");
   writeFileSync(authManifest, "apiVersion: cotal/v1\nkind: Mesh\nspace: flagaudit\nchannels: {}\n");
   writeFileSync(openManifest, "apiVersion: cotal/v1\nkind: Mesh\nspace: flagauditopen\nbroker:\n  auth: false\nchannels: {}\n");
+  for (const flags of [[], ["--json"], ["--plain"]]) {
+    const refused = run(["up", "--dry-run", ...flags]);
+    const remedy = refused.envelope?.error?.remedy ?? refused.stderr;
+    const retryFlags = flags.filter((flag) => !remedy.includes(`omit ${flag}`));
+    const preview = run(["up", "--dry-run", "-f", openManifest, ...retryFlags]);
+    check(`missing-manifest advice with ${flags[0] ?? "default output"} leads to a read-only plan`,
+      refused.status === 1 && remedy.includes("pass -f <cotal.yaml>") && (flags.length > 0 || !remedy.includes("and omit --"))
+        && preview.status === 0 && preview.stdout.includes("flagauditopen") && readdirSync(folder).length === 0, shown(preview));
+  }
   for (const { label, args, json, help, message, remedy } of [
     { label: "-f --dry-run --max-file-store", args: ["-f", authManifest, "--dry-run", "--max-file-store", "1073741824"], json: true, help: false,
       message: "--max-file-store cannot be combined with --file/-f: a manifest launch does not render a store cap, so nothing was started", remedy: "drop --max-file-store, or start the mesh without -f" },
@@ -359,9 +368,14 @@ if (process.platform !== "win32") {
   check("a bare up in a fresh folder under the home makes the folder's own .cotal and reaches its own checks", runtimeUp.status === 2 && /Code:\s+DEPENDENCY_UNAVAILABLE/.test(runtimeUp.stderr) && runtimeUp.stderr.includes(`made ${nestedRecords} for this folder's records; the machine's home .cotal was not used`), shown(runtimeUp));
   check("that refused up removed the .cotal it made and wrote nothing in the home's", !existsSync(nestedRecords) && homeWrites().length === 0, homeWrites());
   const inherited = "this folder inherits the machine's home .cotal; up did not start a stack in that home root";
-  const prepare = "prepare this folder with `cotal space create <space> --root .`, then run `cotal up` again from this folder";
-  const manifestUp = run(["up", "-f", "cotal.yaml", "--json"], nested);
-  check("up -f there still refuses CONFLICT, exit 2, naming space create and up from the folder, and writes nothing", manifestUp.status === 2 && manifestUp.envelope?.error?.code === "CONFLICT" && manifestUp.envelope.error.message === inherited && manifestUp.envelope.error.remedy === prepare && !existsSync(nestedRecords), shown(manifestUp));
+  const prepare = "prepare this folder with `cotal space create <space> --root .`, then repeat your manifest command from this folder";
+  for (const flag of ["", "--plain", "--json"]) {
+    const manifestUp = run(["up", "-f", "cotal.yaml", ...(flag ? [flag] : [])], nested);
+    const remedy = prepare + (flag ? `, but omit ${flag}` : "");
+    const correct = flag === "--json" ? manifestUp.envelope?.error?.code === "CONFLICT" && manifestUp.envelope.error.message === inherited && manifestUp.envelope.error.remedy === remedy
+      : manifestUp.stderr.includes(inherited) && manifestUp.stderr.includes(remedy) && (flag !== "" || !manifestUp.stderr.includes(", but omit"));
+    check(`up -f under the home with ${flag || "default output"} keeps the manifest in its retry and writes nothing`, manifestUp.status === 2 && correct && !existsSync(nestedRecords), shown(manifestUp));
+  }
   const { displayWidth, findMesh, recordMesh, removeMesh } = await import("@cotal-ai/workspace");
   // On an 80-column terminal the note wraps at spaces to stderr's width, each line dimmed on its own.
   // `redirect` sends one stream to a file, so stdout and stderr can be told apart.
@@ -401,7 +415,7 @@ if (process.platform !== "win32") {
   check("under a home that holds a stack, a bare up there starts the folder's own space and reaches its own checks",
     holdsUp.status === 2 && holdsUp.envelope?.error?.code === "DEPENDENCY_UNAVAILABLE" && holdsUp.envelope.target?.space === "fresh" && holdsUp.envelope.target.root === realpathSync(nested), shown(holdsUp));
   check("it removed the .cotal it made and left the home's registration and records as they were", !existsSync(nestedRecords) && homeAfter === homeEntry && homeWrites().length === 0, { homeEntry, homeAfter, writes: homeWrites() });
-  check("up -f there still refuses CONFLICT the same way", holdsManifest.status === 2 && holdsManifest.envelope?.error?.code === "CONFLICT" && holdsManifest.envelope.error.message === inherited && holdsManifest.envelope.error.remedy === prepare && !existsSync(nestedRecords), shown(holdsManifest));
+  check("up -f there still refuses CONFLICT the same way", holdsManifest.status === 2 && holdsManifest.envelope?.error?.code === "CONFLICT" && holdsManifest.envelope.error.message === inherited && holdsManifest.envelope.error.remedy === `${prepare}, but omit --json` && !existsSync(nestedRecords), shown(holdsManifest));
 }
 
 // A bare up in a new project names its space after the folder. `--runtime nosuch` stops each start
