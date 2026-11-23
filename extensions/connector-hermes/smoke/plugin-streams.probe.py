@@ -2,8 +2,8 @@
 (plugin/cotal/streams.py, journal.py) and report the frames and records they produce.
 
 Invoked by `stream.smoke.ts`. The upstream ``gateway`` package is not installed in CI, so the probe
-stubs the names the plugin imports from it, the session context included, whose chat id the test
-sets per call. The adapter, the hooks, the stream tracker and the journal are the connector's own.
+stubs the names the plugin imports from it: the session context, whose chat id the test sets per
+call, and the stream consumer's draft id counter, which the test sets as Hermes would have advanced it. The adapter, the hooks, the stream tracker and the journal are the connector's own.
 The probe prints what happened and the TypeScript side grades it.
 """
 from __future__ import annotations
@@ -45,6 +45,8 @@ _cfg.PlatformConfig = type("PlatformConfig", (), {})
 CHAT = {"id": ""}
 _context = types.ModuleType("gateway.session_context")
 _context.get_session_env = lambda name, default="": CHAT["id"] if name == "HERMES_SESSION_CHAT_ID" else default
+_consumer = types.ModuleType("gateway.stream_consumer")
+_consumer.GatewayStreamConsumer = type("GatewayStreamConsumer", (), {"_draft_id_counter": 6})
 
 sys.modules.update({
     "gateway": types.ModuleType("gateway"),
@@ -52,6 +54,8 @@ sys.modules.update({
     "gateway.platforms.base": _base,
     "gateway.config": _cfg,
     "gateway.session": _session,
+    "gateway.session_context": _context,
+    "gateway.stream_consumer": _consumer,
 })
 
 _dir = tempfile.mkdtemp(prefix="cotal-streams-probe-")
@@ -128,9 +132,7 @@ def done(chat):
 
 
 out = {}
-# A response before any draft reads no session context: the stub is not even installed yet.
 out["first"] = respond("operator", "before any stream")
-sys.modules["gateway.session_context"] = _context
 out["buttons"] = guarded(lambda: adapter.supports_draft_streaming(chat_id="operator", chat_type="dm", metadata=None))()
 out["limit"] = guarded(lambda: adapter.streaming_overflow_limit())()
 
@@ -156,6 +158,13 @@ respond("operator", "Output: ok \nDone.")
 out["cut"] = draft("operator", 14, "Interrupted rep")
 out["done"] = done("operator")
 out["after_done"] = draft("operator", 14, "Interrupted reply")
+
+# A short reply saved before Hermes sent a draft of it, with draft ids taken up to 20.
+_consumer.GatewayStreamConsumer._draft_id_counter = 20
+respond("operator", "Quick reply.")
+out["early_late"] = draft("operator", 20, "Quick reply.")
+out["early_next"] = draft("operator", 21, "Next stretch")
+respond("operator", "Next stretch, saved.")
 out["peer_done"] = done("dm:peer")
 
 before = len(client.frames)

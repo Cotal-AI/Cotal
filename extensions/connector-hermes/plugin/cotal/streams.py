@@ -7,6 +7,11 @@ stream under a key minted here. The sidecar journals the new text of each draft 
 the ``assistant`` record of the model response that carries the text names the key
 (``journal.model_response``), which closes the stream. A draft of a closed stream is dropped.
 
+The stream consumer sends drafts on the gateway's event loop, behind the agent thread that writes
+the record, so a short reply can be saved before its first draft. The record then carries the text
+and every draft id Hermes has taken is closed in that chat (``response_saved``), so the late draft
+is dropped rather than streamed a second time. Hermes takes the next stretch's id after the record.
+
 Drafts arrive on the gateway's event loop and the record is written on the agent's thread, so the
 key is closed under the lock before the record is appended: no delta of a stream is sent after the
 record that closes it.
@@ -79,14 +84,21 @@ def turn_done(client: Any, chat_id: str) -> None:
         client.delta_end(stream["key"])
 
 
-def response_saved(platform: str) -> Optional[str]:
+def response_saved(platform: str, text: bool) -> Optional[str]:
     """Close the stream of the model response about to be recorded on ``platform``, in the chat of
-    the turn this thread runs, and return its key."""
+    the turn this thread runs, and return its key. A response whose record carries ``text`` with no
+    stream open closes every draft id Hermes has taken in that chat."""
     with _lock:
-        if platform != "cotal" or not _open:
+        if platform != "cotal" or not (_open or text):
             return None
-    # Hermes's session context names the chat. It is read only once a reply streamed, so a Hermes
-    # without it fails there and nowhere else.
     from gateway.session_context import get_session_env
 
-    return saved(get_session_env("HERMES_SESSION_CHAT_ID", ""))
+    chat = get_session_env("HERMES_SESSION_CHAT_ID", "")
+    key = saved(chat)
+    if key is None and text and chat:
+        # Hermes counts draft ids up across the process, in a class attribute of its consumer.
+        from gateway.stream_consumer import GatewayStreamConsumer
+
+        with _lock:
+            _closed[chat] = max(_closed.get(chat, 0), int(GatewayStreamConsumer._draft_id_counter))
+    return key

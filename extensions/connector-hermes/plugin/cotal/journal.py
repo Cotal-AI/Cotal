@@ -59,6 +59,11 @@ def _path() -> Optional[str]:
     return os.environ.get("COTAL_HERMES_EVENTS") or None
 
 
+def has_text(message: Any) -> bool:
+    """Whether a model response carries text a record of it would show."""
+    return bool(_text(_field(message, "content")).strip())
+
+
 def armed() -> bool:
     """Whether the seat's event plane is armed, so its records are written."""
     return _path() is not None

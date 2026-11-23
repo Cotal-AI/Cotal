@@ -167,7 +167,9 @@ the text it adds to the sidecar, which writes it to connector-core's delta journ
 each stretch of text between tool calls. The saved response names the key, and closes the message
 with the text that did not stream. A delta while a message is in progress opens the run, and a
 stream still open when the run ends is ended there. A provider that returns a response whole
-streams nothing, and the text arrives when Hermes saves it. Hermes keeps reasoning out of its
+streams nothing, and the text arrives when Hermes saves it. So does a reply that Hermes saves
+before it sends a draft of it, as a short one can be, and a draft of it that comes after is
+dropped. Hermes keeps reasoning out of its
 drafts, so reasoning arrives with the saved response.
 
 With streaming on, Hermes delivers each reply through its stream consumer, as it does on its other
