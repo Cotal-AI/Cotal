@@ -313,10 +313,10 @@ export const codexSetupProvider: ConnectorSetupProvider = {
           const missing = missingMarketplace(listed);
           if (missing) {
             const deferred = repairMovedMarketplace(missing);
-            if (deferred) return `Codex marketplace ${MARKETPLACE} could not be refreshed. ${deferred}`;
+            if (deferred) throw new Error(`Codex marketplace ${MARKETPLACE} could not be refreshed. ${deferred}`);
             listed = codex("plugin", "list");
             if (missingMarketplace(listed)) {
-              return `Codex still cannot load marketplace ${MARKETPLACE}. Restore the Cotal marketplace at ${missing}, then run \`cotal update\`.`;
+              throw new Error(`Codex still cannot load marketplace ${MARKETPLACE}. Restore the Cotal marketplace at ${missing}, then run \`cotal update\`.`);
             }
           }
           installed = installedPlugin(listed);

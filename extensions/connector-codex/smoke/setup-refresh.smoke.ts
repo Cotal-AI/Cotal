@@ -267,13 +267,13 @@ if (args === "plugin list") {
         const broken = codex("plugin", "list");
         assert.notEqual(broken.status, 0);
         assert.match(broken.stderr, /marketplace root does not contain a supported manifest/);
-        assert.match(await refresh(), /Restore the Cotal marketplace/);
+        await assert.rejects(async () => refresh(), /Codex marketplace cotal-mesh could not be refreshed\. Restore the Cotal marketplace/);
         assert.equal(readFileSync(config, "utf8"), originalConfig);
         renameSync(missing, replacement);
 
         const changed = [process.execPath, join(ROOT, "updated-cotal.js")];
         chmodSync(config, 0o444);
-        assert.match(await codexSetupProvider.refresh!.run({ cotal: changed }), /read-only/);
+        await assert.rejects(async () => codexSetupProvider.refresh!.run({ cotal: changed }), /Codex marketplace cotal-mesh could not be refreshed\..*read-only/);
         assert.equal(statSync(config).mode & 0o777, 0o444);
         assert.equal(readFileSync(config, "utf8"), originalConfig);
         chmodSync(config, 0o600);
