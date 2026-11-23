@@ -51,7 +51,7 @@ const assert: typeof nodeAssert = new Proxy(nodeAssert, {
  * guarantee is the false-green shape this package keeps being bitten by. Pinning the floor turns a
  * smaller green into a red. Raise it deliberately when you add a cell; a drop means one vanished.
  */
-const EXPECTED_CELLS = 190;
+const EXPECTED_CELLS = 191;
 
 if (process.platform === "win32") skipSuite("the Hermes connector is Unix-only; buildLaunch throws");
 
@@ -379,6 +379,25 @@ const mgdSet = mkdtempSync(join(tmpdir(), "cotal-hermes-managed-set-"));
 setupProfile(mgdSet, { model: "vendor/some-model", config: mgdConfig });
 assert.match(readFileSync(join(mgdSet, "config.yaml"), "utf8"), /^model: "vendor\/some-model"$/m, "a resolved model is written as a quoted scalar");
 assert.doesNotMatch(readFileSync(join(mgdSet, "config.yaml"), "utf8"), /^streaming:/m, "with no event plane to stream to, the profile leaves Hermes's streaming off");
+// The gateway inherits the launcher's folder, but Hermes runs its terminal and file tools in
+// `terminal.cwd` and gives a gateway with none set the home folder.
+const seatFolder = mkdtempSync(join(tmpdir(), 'cotal-hermes-seat "folder"-'));
+const mgdCwd = mkdtempSync(join(tmpdir(), "cotal-hermes-managed-cwd-"));
+const smokeCwd = process.cwd();
+process.chdir(seatFolder);
+const seatCwd = process.cwd();
+try {
+  setupProfile(mgdCwd, { model: "vendor/some-model", config: mgdConfig });
+} finally {
+  process.chdir(smokeCwd);
+}
+assert.match(
+  readFileSync(join(mgdCwd, "config.yaml"), "utf8"),
+  new RegExp(`^terminal:\\n  cwd: ${JSON.stringify(seatCwd).replace(/[\\^$.*+?()[\]{}|]/g, "\\$&")}$`, "m"),
+  "the profile runs Hermes's terminal and file tools in the folder the seat was launched in",
+);
+rmSync(mgdCwd, { recursive: true, force: true });
+rmSync(seatFolder, { recursive: true, force: true });
 const mgdStream = mkdtempSync(join(tmpdir(), "cotal-hermes-managed-stream-"));
 setupProfile(mgdStream, { model: "vendor/some-model", config: { ...mgdConfig, eventsRequired: true } });
 assert.match(
