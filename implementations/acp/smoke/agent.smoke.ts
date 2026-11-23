@@ -698,7 +698,8 @@ check("a thread's agent name is a valid user-mode actor token", (() => { try { r
       case "turn":
         if (turnRefusal) throw turnRefusal;
         return { id: "turn1" };
-      case "usage": return usage;
+      // Slower than the rest, as a harness read is, so a usage sent after the answer shows.
+      case "usage": return tick(100).then(() => usage);
       case "interrupt": return { state: "interrupted" };
     }
     throw new AgentCallFailed(`unexpected ${command}`, "unimplemented");
@@ -739,9 +740,14 @@ check("a thread's agent name is a valid user-mode actor token", (() => { try { r
   check("a seat command keeps its description and input hint", offered?.availableCommands.some((x) => x.name === "review" && x.description === "Review the diff" && x.input?.hint === "what to review") === true, offered);
   check("a seat command named like a session command is not offered", names.filter((n) => n === "name").length === 1, names);
   const run = (text: string) => within(c.agent.request(methods.agent.session.prompt, { sessionId: s.sessionId, prompt: [{ type: "text", text }] }));
+  const usages = () => c.updates.filter((u) => u.sessionId === s.sessionId && u.update.sessionUpdate === "usage_update").length;
+  await tick(200);
+  const usageBefore = usages();
   const ran = await run("/review the last commit");
+  const usageAtAnswer = usages() - usageBefore;
   check("a seat command runs through command with its target, name and args", ran?.stopReason === "end_turn" && JSON.stringify(callsOf("command").at(-1)?.args) === JSON.stringify({ target: "command", name: "review", args: "the last commit" }), callsOf("command"));
   check("and waits until the seat took it", callsOf("command-state").length >= 1);
+  check("the turn's usage reaches the client before its prompt answers", usageAtAnswer === 1, usageAtAnswer);
   await run("$humanizer");
   await tick(50);
   const usageSent = c.updates.filter((u) => u.sessionId === s.sessionId && u.update.sessionUpdate === "usage_update").map((u) => u.update as unknown as { used: number; size: number; cost?: { amount: number } });
