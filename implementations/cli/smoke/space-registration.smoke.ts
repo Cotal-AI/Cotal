@@ -396,6 +396,8 @@ setCurrent("keep");
   check("the human report says it was added and how to select it", human.status === 0 && /✓ added open4/.test(text) && /broker answered and serves this space/.test(text) && /select it with `cotal use open4`/.test(text), shown(human));
   const emptyRoot = mkdtempSync(join(home, "empty-registration-"));
   const addedAtEmptyRoot = await json(["space", "add", "open4", "--server", LIVE, "--root", emptyRoot, "--mode", "open", "--force"]);
+  const linkedRoot = `${emptyRoot}-link`;
+  symlinkSync(emptyRoot, linkedRoot, "junction");
   setCurrent("open4");
   const sameRegistration = ["space", "add", "open4", "--server", `${LIVE}/`, "--root", `${emptyRoot}/.`, "--mode", "open"];
   const differentTls = await json([...sameRegistration, "--tls"]);
@@ -405,26 +407,43 @@ setCurrent("keep");
   check("a trailing slash verifies the same unchecked broker in place and preserves the selection",
     addedAtEmptyRoot.status === 0 && checkedAtEmptyRoot.status === 0 && checkedAtEmptyRoot.env?.result.replaced === true &&
       checkedAtEmptyRoot.env.result.verified === true && findMesh("open4")?.unchecked !== true && getCurrent() === "open4", shown(checkedAtEmptyRoot));
+  const addedThroughLink = await json(["space", "add", "open4", "--server", LIVE, "--root", linkedRoot, "--mode", "open", "--force"]);
+  const checkedThroughRealPath = await json(["space", "add", "open4", "--server", LIVE, "--root", emptyRoot, "--mode", "open"]);
+  check("the physical root verifies an unchecked registration made through a link and preserves the selection",
+    addedThroughLink.status === 0 && addedThroughLink.env?.result.space.root === linkedRoot &&
+      checkedThroughRealPath.status === 0 && checkedThroughRealPath.env?.result.replaced === true && checkedThroughRealPath.env.result.verified === true &&
+      findMesh("open4")?.unchecked !== true && getCurrent() === "open4", shown(checkedThroughRealPath));
   clearCurrent();
   const fromEmptyRoot = await run(["space", "show", "--plain"], {}, emptyRoot);
   check("bare show uses the empty registered folder with no selection",
     fromEmptyRoot.status === 0 && fromEmptyRoot.stdout.includes("Mesh: open4") && fromEmptyRoot.stdout.includes("this folder's space") &&
       !existsSync(join(emptyRoot, ".cotal")), shown(fromEmptyRoot));
+  const nested = join(emptyRoot, "nested");
+  const leaf = join(nested, "leaf");
+  mkdirSync(leaf, { recursive: true });
+  const fromNested = await run(["space", "show", "--plain"], {}, leaf);
+  check("bare show finds an enclosing registered root with no .cotal and no selection",
+    fromNested.status === 0 && fromNested.stdout.includes("Mesh: open4") && fromNested.stdout.includes("this folder's space") &&
+      !existsSync(join(emptyRoot, ".cotal")) && getCurrent() === undefined, shown(fromNested));
   setCurrent("keep");
-  const withSelection = await json(["space", "show"], emptyRoot);
-  check("bare show prefers the empty registered folder to an explicit selection without changing it",
+  const withSelection = await json(["space", "show"], leaf);
+  check("bare show prefers the enclosing registered folder to an explicit selection without changing it",
     withSelection.status === 0 && withSelection.env?.result.space === "open4" && withSelection.env.result.root === emptyRoot &&
       withSelection.env.result.check === "reachable" && getCurrent() === "keep", shown(withSelection));
   const plain = await run(["space", "add", "open5", "--server", LIVE, "--root", root, "--plain"], { FORCE_COLOR: "1" });
   check("--plain writes it with no ANSI", plain.status === 0 && !/\x1b\[/.test(plain.stdout) && /added open5/.test(plain.stdout), shown(plain));
 
   const secondAtEmptyRoot = await json(["space", "add", "open5", "--server", LIVE, "--root", emptyRoot, "--mode", "open", "--force"]);
-  const ambiguous = await json(["space", "show"], emptyRoot);
-  const named = await json(["space", "show", "open4"], emptyRoot);
-  check("bare show refuses two registrations at an empty root and names both explicit choices",
+  const ambiguous = await json(["space", "show"], leaf);
+  const named = await json(["space", "show", "open4"], leaf);
+  check("bare show refuses two registrations at the enclosing root and names both explicit choices",
     secondAtEmptyRoot.status === 0 && refused(ambiguous, 2, "TARGET_AMBIGUOUS") &&
       ["open4", "open5"].every((name) => ambiguous.env?.error?.remedy.includes(` space show ${name}\``)) &&
       named.status === 0 && named.env?.result.space === "open4" && getCurrent() === "keep", shown(ambiguous));
+  const secondAtNestedRoot = await json(["space", "add", "open5", "--server", LIVE, "--root", nested, "--mode", "open", "--force"]);
+  const nearest = await json(["space", "show"], leaf);
+  check("bare show uses the nearer registered root when both ancestors have registrations",
+    secondAtNestedRoot.status === 0 && nearest.status === 0 && nearest.env?.result.space === "open5" && nearest.env.result.root === nested, shown(nearest));
   check("forget the second registration without changing its root", (await json(["space", "forget", "open5"])).status === 0);
 
   if (process.platform !== "win32") {

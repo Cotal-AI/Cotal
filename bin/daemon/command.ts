@@ -35,7 +35,7 @@ import { loginFromCli } from "./cli-login.js";
 import { connectCheckViaDaemon, managerViaDaemon, queryDaemon, registerViaDaemon, serviceViaDaemon } from "./client.js";
 import { admitWindowsNativeDaemon, applyInstall, applyUninstall, observeDaemonOwnedService, type DaemonOwnershipObservation, planInstall, planUninstall, repairMissingInstalledProgram, startInstalled } from "./install.js";
 import { exchangeDesktopRequest, runDesktopBridge } from "./desktop.js";
-import { runAccountSetup, runSetup } from "./setup.js";
+import { installedUnitForSetup, runAccountSetup, runSetup } from "./setup.js";
 import { daemonCommandCopy, daemonServiceRequirement } from "./guidance.js";
 import { forgetHostedManagerIntents } from "./manager.js";
 import { automaticUpdates } from "./auto-update.js";
@@ -438,23 +438,17 @@ async function setupCommand(args: ParsedArgs): Promise<void> {
   let idp = choice?.url;
   const { paths, home } = resolveTarget(args);
   let newSignIn = values.idp !== undefined || args.values.cloud === true;
-  if (!space && !idp) {
-    let installed = true;
-    try { planUninstall(paths, home); } catch { installed = false; }
-    if (!installed) {
-      choice = await daemonAccountChoice(args);
-      idp = choice?.url;
-      if (idp === undefined) return;
-      newSignIn = true;
-    }
+  if (!space && !idp && installedUnitForSetup(paths, home) === undefined) {
+    choice = await daemonAccountChoice(args);
+    idp = choice?.url;
+    if (idp === undefined) return;
+    newSignIn = true;
   }
   const plain = presentation === "plain";
   // Progress goes to stderr so a --json caller still reads one document on stdout.
   const report = (line: string) => { process.stderr.write(`${line}\n`); };
   if (!space) {
     if (!idp) {
-      try { planUninstall(paths, home); }
-      catch { throw new CommandFailure("refused", "USAGE_INVALID", "No daemon is installed; pass --idp <url> to connect an account"); }
       let discovery;
       try { discovery = await exchangeDesktopRequest({ paths, peerUid, peerPid }, { op: "spaces", refresh: true }); }
       catch { throw new CommandFailure("refused", "AUTH_REQUIRED", "The daemon cannot report its sign-in; pass --idp <url> to connect an account"); }

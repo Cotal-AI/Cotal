@@ -159,6 +159,15 @@ check("a global flag after a missing history follow value preserves the stream r
   && followRecords[0]?.data?.code === "USAGE_INVALID" && followRecords[0]?.data?.message === "--limit needs a value"
   && followRecords[0]?.data?.remedy === "write --limit <n>" && followRecords[1]?.data?.reason === "setup-failed", shown(followGlobal));
 const groupedSpace = run(["config", "get", "harness", "-js", "--no-input", "abc"]);
+for (const [args, space] of [[[], null], [["--space", "watch-test"], "watch-test"]] as const) {
+  const result = run(["watch", ...args, "--view", "--json"]);
+  const records = result.stdout.trim().split("\n").map((line) => JSON.parse(line));
+  check("a missing watch view emits a stream refusal and end record",
+    result.status === 1 && result.stderr === "" && records.map((record) => record.type).join() === "error,end"
+    && records.every((record) => record.stream === "watch" && record.target?.requestedSpace === space)
+    && records[0]?.data?.code === "USAGE_INVALID" && records[0]?.data?.message === "--view needs a value"
+    && records[0]?.data?.remedy === "write --view <view>" && records[1]?.data?.reason === "setup-failed", shown(result));
+}
 check("a global flag cannot hide a missing value at the end of a short option group",
   groupedSpace.status === 1 && groupedSpace.stderr === "" && JSON.parse(groupedSpace.stdout).error.message === "--space needs a value", shown(groupedSpace));
 const completeValue = run(["docs", "--json", "--search", "usage", "--no-input"]);
@@ -938,6 +947,23 @@ if (process.platform !== "win32") {
   const json = at(["status", "--json"]);
   const envelope = json.stdout.startsWith("{") ? JSON.parse(json.stdout) : undefined;
   check("with --json it is one CONFLICT refusal", json.status === 2 && envelope?.outcome === "refused" && envelope.error?.code === "CONFLICT", shown(json));
+  for (const [stream, args, target] of [
+    ["history", ["history", "review", "--follow"], { space: null, channel: "review", dms: false }],
+    ["membership", ["channel", "members", "review", "--follow"], { space: null, channel: "review" }],
+    ["watch", ["watch"], { requestedSpace: null }],
+  ] as const) {
+    const r = at([...args, "--json"]);
+    const records = r.stdout.trimEnd().split("\n").map((line) => JSON.parse(line || "{}"));
+    check(`${stream} reports the project conflict as a setup failure without a snapshot`, r.status === 2 && r.stderr === ""
+      && records.length === 2 && records.every((record) => record.schemaVersion === 1 && record.stream === stream && Object.entries(target).every(([key, value]) => record.target?.[key] === value))
+      && records[0]?.type === "error" && records[0].data?.code === "CONFLICT" && records[0].data?.message?.includes(join(notes, ".cotal"))
+      && records[0].data?.remedy === "rename or move that file, then run the command again"
+      && records[1]?.type === "end" && records[1].data?.reason === "setup-failed" && (stream !== "membership" || records[1].data.lastAsOf === null), shown(r));
+  }
+  const history = at(["history", "review", "--json"]);
+  const receipt = JSON.parse(history.stdout || "{}");
+  check("finite history still reports one CONFLICT receipt", history.status === 2 && history.stderr === ""
+    && receipt.command === "history" && receipt.outcome === "refused" && receipt.error?.code === "CONFLICT", shown(history));
   const rooted = at(["space", "create", "notes", "--root", notes], neutral);
   check("--root naming that folder refuses the same way", named(rooted), shown(rooted));
   for (const args of [["--version"], ["version"]]) {

@@ -90,7 +90,7 @@ const NOT_A_HANDLER_FIELD: Readonly<Record<string, string>> = {
 // ---- 1) the capture instrument sees what it claims to see ---------------------------------------
 
 {
-  const sim = new SimHandler({ turns: { probe: { status: "done" } } });
+  const sim = new SimHandler({ turns: { probe: { status: "done" } }, clock: { turn: "1m" } });
   const { handler, seen } = capturing(sim);
   await run('const a = await spawn("p", { name: "a", role: "r" });\nawait turn(a, { name: "probe", deadline: "5m" });\n', {
     runId: "o-0",
@@ -149,6 +149,7 @@ const NOT_A_HANDLER_FIELD: Readonly<Record<string, string>> = {
     asks: { q: { days: 3 } },
     checkpoints: { approve: { status: "resolved", value: true, by: "sim" } },
     events: { w: [null] },
+    clock: { turn: "1m" },
   } as const;
 
   const dropped: string[] = [];
@@ -357,7 +358,7 @@ const NOT_A_HANDLER_FIELD: Readonly<Record<string, string>> = {
     // Resolved on the first mint, so no probe accidentally depends on an escalation hop.
     checkpoints: { gate: { status: "resolved", value: true, by: "sim" } },
     events: { w: ["hello"] },
-    clock: { start: 0 },
+    clock: { start: 0, turn: "30s", ask: "30s" },
   } as const;
 
   let audited = 0;

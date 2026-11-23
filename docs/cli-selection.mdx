@@ -43,8 +43,8 @@ An unoccupied folder still offers `cotal space create <name>` for this folder.
 A discovered space is never dialed by a listing and
 reads `not checked`. `space show [<name>]` shows one space in full and probes only that broker.
 With no name it is about this folder: the space it has registered, else the one it holds prepared or
-stopped, else the selected one. A registration for the current directory does not need a `.cotal`
-folder to appear in `space show`. If the folder has several registrations, `space show` refuses with
+stopped, else the selected one. `space show` also finds a registration at the nearest enclosing
+root without a `.cotal` folder. If that root has several registrations, `space show` refuses with
 `TARGET_AMBIGUOUS`, exit 2, and gives a `cotal space show <name>` command for each instead of using
 the selection. This does not change what other commands target. If `cotal use`
 explicitly selected a different space, `space show` says that commands such as `cotal who` still
@@ -128,8 +128,8 @@ its mode was not checked: `space` and `space show` show the mode as not checked,
 `modeChecked: false` in `--json`. `whoami` reports conditional access and points to `cotal space show <name>`.
 If its broker does not answer, `space show` tells you to wait and check again. Once the broker
 answers, `space show` prints a `space add` command without `--force` that checks the recorded broker,
-root, mode and transport settings in place. A trailing slash on a NATS URL does not prevent this
-check. The command quotes the root when the shell would otherwise split
+root, mode and transport settings in place. A trailing slash on a NATS URL or another path to the
+same root directory does not prevent this check. The command quotes the root when the shell would otherwise split
 or expand it. A failed check keeps the unchecked record and the selection.
 Declining the question is a `no-op` with a `USER_CANCELLED` warning. `--json` gives the registration under `space`, in the
 shape `space show` gives, with `verified` and `replaced`.
@@ -489,7 +489,8 @@ It names the file without changing it. Clear it with `cotal use --clear`, or sel
 If a directory occupies a saved selection file's path, either repair moves the directory aside and leaves its contents intact.
 `use --clear` removes the selection, so a command targets its folder's space again. Its receipt
 names the space that was selected, and `--json` gives `current: null` with that `previous`. With
-nothing selected it is a `no-op`, exit 0. It takes no space name.
+nothing selected it is a `no-op`, exit 0. In both cases, `folder` still identifies the local
+folder's space or is null when none is recorded. `use --clear` takes no space name.
 A space stays selected through its `cotal down`: `use` then reports it as stopped, with its last
 operation, such as `` `cotal down`, completed ``, and names `cotal up` in its root. This also applies
 when a legacy space named after its folder keeps its registration after `down`. For that space,

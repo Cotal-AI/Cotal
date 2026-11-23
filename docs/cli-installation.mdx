@@ -493,7 +493,10 @@ first diagnostic line and exits with status 1.
 
 Missing release archives and missing target versions of installed first-party extensions share a
 ten-minute wait. If CLI release archives are still missing, Cotal keeps the installed version and
-exits successfully. If an installed extension's target version is still missing, Cotal names it,
+exits successfully. If npm returns `E404` for a first-party package's release metadata, the wait
+and final message name the package, npm error code and registry origin when npm reports it.
+Check `@cotal-ai:registry` in `.npmrc` if the registry does not serve the package.
+If an installed extension's target version is still missing, Cotal names it,
 leaves the installation unchanged and exits with status 1. Invalid metadata, integrity failures
 and scoped registry access errors refuse before global installation or connector reconciliation.
 Since 0.167.1, registry access refusals report npm's error
@@ -688,6 +691,8 @@ reading; `--allow-publish` is optional when the session will not post. A credent
 permission joins read-only, and the prompt says so instead of inviting broadcasts. Attempting to
 post confirms that nothing was sent and names the mint with `--allow-publish` for that channel.
 Reading, roster commands and DMs remain available. Use the intended channel in both commands.
+For a channel that starts with `-`, attach the values with `=`, as in `--allow-subscribe=-general`
+when minting and `--channel=-general` when joining.
 A subscription pattern such as `team.>` can be the landing channel when the read grant covers it.
 The session can follow the pattern, but broadcasts from the join prompt require a concrete landing channel.
 If the file is missing or incomplete, `join` refuses it before connecting. Check the path for a
@@ -1013,7 +1018,8 @@ If `config get` already has a key, remove an unknown option rather than moving i
 Both commands work without installing or refreshing connectors. Only `harness`
 and `persona` have per-space values. `set --space` takes a space registered or prepared on this
 machine. A valid name that does not match a space refuses with `TARGET_NOT_FOUND` (exit 2) and the
-known spaces. A name `space create` cannot use, such as one starting with `-`, refuses with
+known spaces. To prepare a new space from an occupied project, run `cotal space create <name> --root <dir>`
+with another folder. A name `space create` cannot use, such as one starting with `-`, refuses with
 `USAGE_INVALID` (exit 1) before any space lookup.
 A read and `unset --space` also take a space that still holds a saved value, so a value left for
 a space you removed can be read and removed, and refuse any other name the same way. A write that

@@ -150,7 +150,7 @@ recordMesh({ space: "gamma", server: CATALOG, root, mode: "user", origin: "catal
   check("use names the space it selected and the one it replaced", human.status === 0 && /selected beta \(was alpha\)/.test(human.stdout.replace(/\x1b\[[0-9;]*m/g, "")), shown(human));
   // --clear removes the selection; nothing else could, so a folder's space could not apply again.
   const cleared = json(["use", "--clear"]);
-  check("use --clear removes the selection and names the one it removed", cleared.status === 0 && cleared.env?.outcome === "ok" && cleared.env.result.current === null && cleared.env.result.previous === "beta" && cleared.env.target === null && getCurrent() === undefined, shown(cleared));
+  check("use --clear removes the selection and reports no folder space outside a project", cleared.status === 0 && cleared.env?.outcome === "ok" && cleared.env.result.current === null && cleared.env.result.previous === "beta" && cleared.env.result.folder === null && cleared.env.target === null && getCurrent() === undefined, shown(cleared));
   const clearedAgain = json(["use", "--clear"]);
   check("use --clear with nothing selected is a no-op", clearedAgain.status === 0 && clearedAgain.env?.outcome === "no-op" && clearedAgain.env.result.previous === null, shown(clearedAgain));
   const named = json(["use", "alpha", "--clear"]);
@@ -314,6 +314,13 @@ recordMesh({ space: "gamma", server: CATALOG, root, mode: "user", origin: "catal
     check("bare use reports the prepared folder without changing the selection or target", selection.status === 0 && selection.env?.target?.space === "alpha" && selection.env?.result?.current === "alpha" && selection.env?.result?.folder === "hint-live" && getCurrent() === "alpha", shown(selection));
     const selectionPlain = run(["use", "--plain"], {}, project);
     check("plain use names the selection and how to reach the prepared folder's space", selectionPlain.status === 0 && /^selected: alpha$/m.test(selectionPlain.stdout) && selectionPlain.stdout.includes("--space hint-live") && selectionPlain.stdout.includes("cotal use --clear"), shown(selectionPlain));
+    const cleared = json(["use", "--clear"], project);
+    const clearedAgain = json(["use", "--clear"], project);
+    check("use --clear reports the prepared folder's space with and without a selection to remove",
+      cleared.status === 0 && cleared.env?.outcome === "ok" && cleared.env.result.current === null && cleared.env.result.previous === "alpha" && cleared.env.result.folder === "hint-live"
+      && clearedAgain.status === 0 && clearedAgain.env?.outcome === "no-op" && clearedAgain.env.result.current === null && clearedAgain.env.result.previous === null && clearedAgain.env.result.folder === "hint-live"
+      && getCurrent() === undefined, { cleared: shown(cleared), clearedAgain: shown(clearedAgain) });
+    setCurrent("alpha");
     const preparedDir = join(cotalHome, "prepared");
     renameSync(preparedDir, `${preparedDir}.saved`);
     try {
