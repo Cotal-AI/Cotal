@@ -278,6 +278,11 @@ async function checkStoppedBrokerOnly(space: string, port: number): Promise<void
   const status = await run(["status", "--components", "--space", space]);
   const health = status.out.split("Component Health")[1] ?? "";
   ok("component health keeps the broker-only restart advice", status.status === 1 && /start it again with `(?:pnpm )?cotal up --no-manager` in /.test(health), status.out);
+  for (const args of [["space", "show", space], ["use", space]]) {
+    const result = await run(args);
+    const advice = result.out.replace("`pnpm cotal up", "`cotal up");
+    ok(`${args.join(" ")} names the broker-only restart in the saved project`, result.status === 0 && advice.includes(next), result.out);
+  }
 
   const restart = await run(["up", "--no-manager"]);
   try {

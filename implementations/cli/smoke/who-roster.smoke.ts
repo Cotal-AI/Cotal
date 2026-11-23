@@ -476,7 +476,7 @@ try {
   check("whoami on a prepared space whose folder holds its signer reports the signer", signed.status === 0 && signed.envelope?.result?.identity?.kind === "space-signer" && signed.envelope.result.read === "all" && signed.envelope.result.server === null, shown(signed));
   const freshPlain = await run(["whoami", "--space", "prep-fresh", "--plain"]);
   check("its report says the space is not started and where to start it",
-    freshPlain.status === 0 && /server:\s+not started/.test(freshPlain.stdout) && freshPlain.stdout.includes(`start it with \`cotal up\` in ${prepFresh}`) && !freshPlain.stdout.includes("--creds"), shown(freshPlain));
+    freshPlain.status === 0 && /server:\s+not started/.test(freshPlain.stdout) && ["cotal", "pnpm cotal"].some((cli) => freshPlain.stdout.includes(`start it with \`${cli} up\` in ${prepFresh}`)) && !freshPlain.stdout.includes("--creds"), shown(freshPlain));
   const preparedServer = await run(["whoami", "--space", "prep-fresh", "--server", "nats://127.0.0.1:3", "--json"]);
   check("control: a prepared space with --server is still refused", preparedServer.status === 2 && preparedServer.envelope?.error?.code === "TARGET_UNAVAILABLE", shown(preparedServer));
   const both = await run(["who", "--json", "--plain"]);

@@ -113,6 +113,10 @@ export async function spawnLaunchPreview(args: Pick<ParsedArgs, "positionals"> &
       throw new CommandFailure("refused", "TARGET_NOT_FOUND", missing.message, { target: { ...target, path }, ...(missing.remedy ? { remedy: missing.remedy } : {}) });
     } else if (error instanceof PersonaSourceError) {
       throw new CommandFailure("refused", "SCHEMA_INVALID", error.message, { target: { ...target, path }, ...(error.remedy ? { remedy: error.remedy } : {}) });
+    } else if ((error as NodeJS.ErrnoException).code === "ELOOP") {
+      throw new CommandFailure("refused", "SCHEMA_INVALID", `the persona path contains a symbolic-link loop: ${path}`, {
+        target: { ...target, path }, remedy: "correct the link's target, or move the link aside and put a regular persona file in its place",
+      });
     } else {
       throw new CommandFailure("refused", "PERMISSION_DENIED", `cannot read persona: ${path}`, { target: { ...target, path } });
     }
