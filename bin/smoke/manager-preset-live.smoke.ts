@@ -175,6 +175,9 @@ function cotal(args: string[], timeout = 120_000) {
 const out = (r: ReturnType<typeof cotal>) => `${r.stdout ?? ""}${r.stderr ?? ""}`;
 function launchPreview(space: string): void {
   const args = ["manager", "start", "--space", space, "--dry-run", "--json"];
+  const badHost = cotal([...args, "--console-host", "bad host"]);
+  check("a fresh manager preview refuses a console host containing whitespace",
+    badHost.status === 1 && JSON.parse(badHost.stdout).error?.code === "USAGE_INVALID", out(badHost));
   const launch = join(root, "absent-launch.json");
   const spec = JSON.stringify({ apiVersion: "cotal-launch/v1", space, runId: "preview", agents: [] });
   const digest = createHash("sha256").update(spec).digest("hex");
@@ -193,7 +196,7 @@ function launchPreview(space: string): void {
       && error.remedy.includes("keeping all other arguments and flags unchanged"), out(missing));
   check("refused previews neither save the manager nor allocate an instance", !serviceDefinitionStore(space).read("manager") && !serviceInstances(space, "manager").length);
   writeFileSync(launch, spec, { mode: 0o600 });
-  const retry = cotal(retryArgs);
+  const retry = cotal([...retryArgs, "--console-host", "127.0.0.1"]);
   const { result } = JSON.parse(retry.stdout);
   check("the corrected launch preview succeeds without saving or starting a manager",
     retry.status === 0 && result?.dryRun === true && result.saved === false && result.allocated === false
@@ -217,6 +220,30 @@ try {
     stackUp = up.status === 0;
     check("a broker-only open stack starts", stackUp, out(up));
     launchPreview(SPACE);
+    const manager = ["manager", "start", "--space", SPACE, "--json"];
+    const stopManager = ["manager", "stop", "--space", SPACE, "--yes", "--with-agents"];
+    const launch = join(root, "absent-launch.json");
+    const digest = createHash("sha256").update(readFileSync(launch)).digest("hex");
+    try {
+      const initial = cotal([...manager, "--launch", launch, "--launch-sha256", digest]);
+      check("a manager starts with the correct launch digest", initial.status === 0, out(initial));
+      const stopped = cotal(stopManager);
+      check("the manager stops before the override", stopped.status === 0, out(stopped));
+      const definition = () => serviceDefinitionStore(SPACE).read("manager");
+      const instances = () => serviceInstances(SPACE, "manager");
+      const before = definition(), stoppedBefore = instances();
+      const wrong = cotal([...manager, "--launch", launch, "--launch-sha256", "0".repeat(64)]);
+      check("a mismatched digest refuses without replacing the definition or stopped instance",
+        wrong.status === 2 && JSON.parse(wrong.stdout).error?.code === "CONFLICT"
+          && before !== undefined && stoppedBefore.length === 1 && stoppedBefore[0]?.record.value.state === "stopped"
+          && JSON.stringify(definition()?.record) === JSON.stringify(before.record)
+          && JSON.stringify(instances().map((row) => row.record)) === JSON.stringify(stoppedBefore.map((row) => row.record)), out(wrong));
+      const retry = cotal(manager);
+      check("plain start still uses the saved launch digest and reaches readiness", retry.status === 0 && instances()[0]?.record.value.state === "running", out(retry));
+    } finally {
+      cotal(stopManager);
+      cotal(["service", "remove", "manager", "--space", SPACE, "--yes"]);
+    }
     const add = cotal(["service", "add", "mgr", "--preset", "manager", "--space", SPACE, "--root", root, "--runtime", "pty", "--roster", roster]);
     check("service add saves the manager preset with its roster", add.status === 0, out(add));
     const fg = spawnProc(process.execPath, ["--import", TSX_LOADER, BIN, "service", "start", "mgr", "--space", SPACE, "--foreground"], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
