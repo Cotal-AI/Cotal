@@ -14,7 +14,7 @@ interface ExecutionTransaction {
 }
 
 /** Restore owner write on owned update directories before creating staging, records or configuration. */
-export function assertExecutionDestination(installed: string): void {
+export function assertExecutionDestination(installed: string): boolean {
   if (existsSync(join(installed, "desktop-runtime.json"))) throw new Error("staged execution updates are unavailable on the desktop runtime");
   if (process.platform !== "linux" && process.platform !== "darwin") throw new Error("staged execution updates are unavailable on this platform");
   for (const path of [installed, join(installed, "dist"), dirname(installed), dirname(dirname(installed)), dirname(dirname(dirname(installed)))]) {
@@ -22,9 +22,11 @@ export function assertExecutionDestination(installed: string): void {
     if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error(`unsafe staged update destination: ${path}`);
     executionLocation(path);
   }
+  let repaired = false;
   for (const path of [installed, join(installed, "dist"), dirname(installed), dirname(dirname(installed))])
-    assertWritableExecutionDirectory(path, installed);
+    if (assertWritableExecutionDirectory(path, installed)) repaired = true;
   selectExecutionProgram(installed);
+  return repaired;
 }
 
 function atomicFile(path: string, bytes: string | Buffer, mode: number, flush = false): void {

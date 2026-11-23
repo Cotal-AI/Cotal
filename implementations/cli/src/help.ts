@@ -8,7 +8,9 @@ import { cachedPreferences, canonicalRoot, displayWidth, findCotalRoot, findPrep
 import { shellWord } from "./lib/endpoint-errors.js";
 import { unknownSubcommandMessage } from "./lib/nearest-word.js";
 import { workingFolderRemoved } from "./lib/paths.js";
-import { displayCmd } from "./lib/self-exec.js";
+import { displayCmd, displayRemedy } from "./lib/self-exec.js";
+import { serviceStartAllowsNoOpen } from "./lib/service-start-options.js";
+import { recordTelemetryFailure } from "./telemetry.js";
 import { c, hang } from "./ui.js";
 
 /** Display order for the help groups — an explicit ranking, NOT registration order: modules
@@ -202,7 +204,7 @@ export function printEntry(commands: readonly Command[], listing = false): void 
     // commands here refuse, with the selection too, and name that folder.
     const records = recordsElsewhereError(root)?.details;
     const holds = records && recordsElsewhereText(records);
-    if (holds) elsewhere = `${holds}; ${records!.stackRemedy}`;
+    if (holds) elsewhere = `${holds}; ${displayRemedy(records!.stackRemedy!, cmd)}`;
     const explicit = selected && readCurrentSelection()?.source === "explicit";
     space = (explicit ? selected : folder) ?? selected ?? (preparedHere && canonicalRoot(preparedHere.root) === canonicalRoot(held!.root) ? held!.space : undefined);
     if (!explicit && selected && folder !== undefined && folder !== selected) outside = selected;
@@ -309,7 +311,7 @@ export function printCommandHelp(cmd: Command, sub?: Subcommand, out: (line: str
   out(renderReport({ sections }, "rich", width));
 }
 
-/** Resolve declared subcommands and aliases, stopping at operands and hidden public spellings. */
+/** Resolve declared subcommands and aliases, then use operands to scope their help where applicable. */
 export function printHelpPath(cmd: Command, words: readonly string[], out: (line: string) => void = console.log, width = terminalWidth(process.stdout)): void {
   if (cmd.positionals !== undefined && !cmd.subcommands?.length) return printCommandHelp(cmd, undefined, out, width);
   let surface: Pick<Command, "subcommands"> = cmd;
@@ -321,6 +323,7 @@ export function printHelpPath(cmd: Command, words: readonly string[], out: (line
     if (!sub || (sub.hidden && sub.name.startsWith("__"))) {
       // The parser's usage error for the same word: the reason, then the help of the path that exists,
       // both on stderr, so painted for it whatever stream the caller paints for.
+      recordTelemetryFailure("refused", "USAGE_INVALID");
       const at = [cmd.name, ...path].join(" ");
       paintFor(process.stderr, () => {
         for (const line of hang("✗ ", unknownSubcommandMessage(at, surface, word), terminalWidth(process.stderr))) console.error(c.red(line));
@@ -332,5 +335,7 @@ export function printHelpPath(cmd: Command, words: readonly string[], out: (line
     path.push(sub.name); selected = sub; surface = sub;
     if (!sub.subcommands?.length) break;
   }
+  if (cmd.name === "service" && selected?.name === "start" && words[1] !== undefined && !serviceStartAllowsNoOpen(words[1]))
+    selected = { ...selected, flagNames: selected.flagNames?.filter((flag) => flag !== "no-open") };
   printCommandHelp(cmd, selected ? { ...selected, name: path.join(" ") } : undefined, out, width);
 }

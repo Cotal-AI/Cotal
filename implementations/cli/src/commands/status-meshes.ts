@@ -27,11 +27,13 @@ import {
   type MeshEntry,
   type MeshTarget,
   movedProject,
+  operationWarnings,
   spaceStreamsExpected,
+  withdrawOperationNote,
 } from "@cotal-ai/workspace";
 import { type DeliveryResponderState } from "../lib/delivery-responder.js";
 import { chatStreamGone, stackState } from "../lib/space-streams.js";
-import { stoppedStackAddressProblem } from "./stack-up.js";
+import { stackStartAddressProblem } from "./stack-up.js";
 import { legacyRestartAddressProblem } from "../lib/broker-service.js";
 import { displayCmd, displayRemedy } from "../lib/self-exec.js";
 import { readPersonas, type PersonaEntry } from "../lib/personas.js";
@@ -44,6 +46,17 @@ import { rootStoreProblem } from "../lib/store-dir.js";
 import { stackStoreWarnings } from "../lib/store-identity.js";
 import { statusFlags, type Selected, type SelectedPreflight, UnregisteredRoot, type PersonaCatalog, type StatusResult, type SelectedResult, Gaps, displayStatusBroker } from "./status-model.js";
 import { servedStack } from "./status-render.js";
+
+/** Replace the current folder's restart banner only when its own broker store blocks startup. */
+export function reportHeldStoreProblem(root: string, hints: string[]): boolean {
+  const held = operationWarnings().find((warning) => warning.code === "FOLDER_SPACE_NOT_RUNNING")?.target as { space: string; root: string } | undefined;
+  if (held?.root !== root) return false;
+  const store = rootStoreProblem(root);
+  if (!store) return false;
+  withdrawOperationNote("FOLDER_SPACE_NOT_RUNNING", held.space);
+  hints.push(`${store.message}; ${store.remedy}`);
+  return true;
+}
 
 /** Outside a project, only the all-broker report has liveness evidence for the registry fallback. */
 export async function registryFallbackChecks(root: string, values: FlagValues<typeof statusFlags>) {
@@ -234,7 +247,7 @@ export async function readSelected(selected: Selected, responder: { state: Deliv
     // A copy or a moved folder is reported under the space its records name, as the commands run here
     // refuse under it, and says what the folder holds; Next gives the step they name.
     const elsewhere = e.code === "not-started" ? recordsElsewhereText(d) : undefined;
-    const held = e.code === "not-started" && d.stopped && !d.unsettled && d.root && d.space ? await stoppedStackAddressProblem(d.root, d.space) : undefined;
+    const held = e.code === "not-started" && !d.rootMissing && !d.unsettled && d.root && d.space ? await stackStartAddressProblem(d.root, d.space) : undefined;
     const result: SelectedResult = {
       resolved: false, code: e.code, message: elsewhere ?? (held ? `${message}; ${held.message}` : message),
       ...(e.code === "not-started" && d.space !== undefined && d.root !== undefined && !d.rootMissing ? { space: d.space, root: d.root } : {}),
@@ -256,7 +269,7 @@ export async function readSelected(selected: Selected, responder: { state: Deliv
       const block = channelSeedRestartBlock(restartRoot);
       if (block) {
         Object.assign(result, { channelSeedBlocksRestart: true, root: restartRoot });
-        hints.push(`Restart blocked: ${block.message}. ${block.remedy}`);
+        hints.push(`${d.space && !d.stopped ? "First start" : "Restart"} blocked: ${block.message}. ${block.remedy}`);
       } else {
         const legacy = d.lastRun ? await legacyRestartAddressProblem(d.server, `${cmd} up`) : undefined;
         if (legacy) result.message += `; ${legacy.message}`;

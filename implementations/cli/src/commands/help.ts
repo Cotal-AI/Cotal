@@ -1,5 +1,5 @@
 import { findCommand, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
-import { cachedUpdateSummary, jsonFlag, paintFor, writeResult } from "@cotal-ai/workspace";
+import { cachedUpdateSummary, CommandFailure, jsonFlag, paintFor, writeResult } from "@cotal-ai/workspace";
 import { commandSurface } from "../ext-loader.js";
 import { printCommandList, printHelpPath } from "../help.js";
 import { unknownCommandMessage } from "../lib/nearest-word.js";
@@ -20,9 +20,9 @@ export async function help(args: ParsedArgs): Promise<void> {
   const commands = commandSurface();
   if (word === undefined) return paintFor(process.stdout, () => printCommandList(commands));
   const cmd = findCommand(commands, word);
-  if (!cmd || cmd.name.startsWith("__")) throw new Error(unknownCommandMessage(commands, word));
+  if (!cmd || cmd.name.startsWith("__")) throw new CommandFailure("refused", "USAGE_INVALID", unknownCommandMessage(commands, word), { selfContained: true });
   if (cmd.name === "service" && path.length === 2 && path[0] === "start" && findServicePreset(path[1]!)) {
-    paintFor(process.stdout, () => printHelpPath(servicePresetCommand(cmd, path), ["start"]));
+    paintFor(process.stdout, () => printHelpPath(servicePresetCommand(cmd, path), path));
     return;
   }
   paintFor(process.stdout, () => printHelpPath(managerServiceCommand(cmd, path)?.cmd ?? cmd, path));

@@ -140,7 +140,13 @@ export const cotalAuthProvider: AuthProvider = {
   },
   async requestRemoteRunAttempt({ store, dir, request }: { store: SecretStore; dir: string; request: RemoteRunAttemptRequest }): Promise<RemoteRunAttemptResult> {
     const { endpoint, idpUrl, authorization } = await managerAuthorityEndpoint(store, dir, request.space, "issuing hosted run credentials");
-    return postManagerAuthority(endpoint, idpUrl, authorization, request, "manager run issuance") as Promise<RemoteRunAttemptResult>;
+    try {
+      return await postManagerAuthority(endpoint, idpUrl, authorization, request, "manager run issuance") as RemoteRunAttemptResult;
+    } catch (error) {
+      if (error instanceof ManagerAuthorityRefusal && error.status === 503 && request.operator && request.operator.answers === undefined)
+        throw new EpEnvelopeError("unavailable", "the run authority is temporarily unavailable; retry the read in a few seconds", undefined, "not-executed");
+      throw error;
+    }
   },
   async requestRemoteRunCancel({ store, dir, request }) {
     const { endpoint, idpUrl, authorization } = await managerAuthorityEndpoint(store, dir, request.space, "cancelling a hosted run");
@@ -429,7 +435,13 @@ export const cotalAuthProvider: AuthProvider = {
 
   async managerServiceAuthority({ store, dir, request }: { store: SecretStore; dir: string; request: RemoteManagerAuthorityRequest }): Promise<RemoteManagerAuthorityMaterial> {
     const { endpoint, idpUrl, authorization } = await managerAuthorityEndpoint(store, dir, request.space, "requesting manager-service authority");
-    return postManagerAuthority(endpoint, idpUrl, authorization, request, "manager-service authority") as Promise<RemoteManagerAuthorityMaterial>;
+    try {
+      return await postManagerAuthority(endpoint, idpUrl, authorization, request, "manager-service authority") as RemoteManagerAuthorityMaterial;
+    } catch (error) {
+      if (error instanceof ManagerAuthorityRefusal && error.status === 503 && request.operation === "renewStandingBundle")
+        throw new EpEnvelopeError("unavailable", error.message, undefined, "unknown");
+      throw error;
+    }
   },
 
   async maintainRemoteManager({ store, dir, request }: { store: SecretStore; dir: string; request: RemoteManagerMaintenanceRequest }): Promise<RemoteManagerMaintenanceResult> {
@@ -948,7 +960,11 @@ async function postManagerAuthority(
   if (response.status >= 300 && response.status < 400)
     throw new Error(`the ${what} endpoint answered ${response.status} with redirect Location ${JSON.stringify(response.headers.get("location") ?? "")} - redirects are refused`);
   // A stand-in object would reach the caller as a result the endpoint never sent.
-  const body = await response.json().catch(() => { throw new Error(`the ${what} endpoint at ${endpoint} answered HTTP ${response.status} with a body that could not be read as JSON`); });
+  const body = await response.json().catch(() => {
+    const message = `the ${what} endpoint at ${endpoint} answered HTTP ${response.status} with a body that could not be read as JSON`;
+    if (response.status === 503) throw new ManagerAuthorityRefusal(message, response.status, undefined);
+    throw new Error(message);
+  });
   signal?.throwIfAborted();
   if (!response.ok) throw managerAuthorityRefusal(what, request, body, response.status);
   return body;
@@ -976,7 +992,8 @@ function heldConflict(message: string, body: unknown, actor: string): EpEnvelope
  *  that names a field this request carries as unknown predates that field: say it is version skew
  *  and which side has to move. The field is never dropped to fit the older host. */
 function managerAuthorityRefusal(what: string, request: unknown, body: unknown, status: number): ManagerAuthorityRefusal {
-  const reason = (body as { error?: string }).error ?? `HTTP ${status}`;
+  const why = (body as { error?: unknown } | null)?.error;
+  const reason = typeof why === "string" ? why : `HTTP ${status}`;
   const field = /unknown field "?([A-Za-z_$][\w$]*)"?/.exec(reason)?.[1];
   const skew = field !== undefined && carriesField(request, field)
     ? ` - version skew: this manager runs Cotal ${COTAL_VERSION} and the host's auth service predates the field "${field}" it sends; it needs a host at Cotal ${COTAL_VERSION} or later`

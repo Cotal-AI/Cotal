@@ -127,6 +127,7 @@ function resolveSpaceDeletionEntry(name: string, dryRun = false): MeshEntry {
       const target = { space: name, root: prepared.root };
       const resetFlag = dryRun ? "--dry-run" : "--yes";
       const reset = codeSpan(name.startsWith("-") ? `cotal reset store ${resetFlag} -- ${shellPath(name)}` : `cotal reset store ${shellPath(name)} ${resetFlag}`);
+      const preview = `preview the impact of resetting its store with ${reset}. A stream inventory requires a running broker.`;
       const forget = codeSpan(spaceForgetCommand(name));
       if (!existsSync(prepared.root)) {
         const project = canonicalRoot(findCotalRoot());
@@ -139,7 +140,7 @@ function resolveSpaceDeletionEntry(name: string, dryRun = false): MeshEntry {
           const afterAdoption = recovery.includes("--adopt --root") ? " If you adopt it instead, run `cotal up` and then `cotal down --yes` in the adopted root before resetting its store." : "";
           throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `this folder holds the stack journal of "${oneLine(name)}" moved from ${oneLine(prepared.root)}; there is no live broker to delete from and no broker was contacted`, {
             target, remedy: dryRun
-              ? `move this folder back to ${oneLine(prepared.root)}, then inspect its stored streams with ${reset}`
+              ? `move this folder back to ${oneLine(prepared.root)}, then ${preview}`
               : displayRemedy(`${recovery}. Once the original root is restored, remove its stored streams with ${reset}.${afterAdoption}`),
           });
         }
@@ -147,11 +148,11 @@ function resolveSpaceDeletionEntry(name: string, dryRun = false): MeshEntry {
           target, remedy: `locate the project folder and restore it to ${oneLine(prepared.root)}, then run ${codeSpan(spaceDeleteCommand(name, " --dry-run"))} again`,
         });
       }
-      // A stopped stack's streams can be inspected or removed without starting its broker.
+      // A stopped stack's store can be previewed or reset without starting its broker.
       let stopped: boolean;
       try { stopped = readStackJournal(prepared.root)?.journal.space === name; } catch { stopped = true; }
       throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `"${oneLine(name)}" is prepared and not running, so it has no live broker to delete from; no broker was contacted`, { target, remedy: stopped
-        ? dryRun ? `inspect its stored streams with ${reset}` : `remove its stored streams with ${reset}, or remove only the local record with ${forget}`
+        ? dryRun ? preview : `remove its stored streams with ${reset}, or remove only the local record with ${forget}`
         : `no stack has run for it in ${oneLine(prepared.root)}, so it has no stored streams; remove its local record with ${forget}` });
     }
     throw new CommandFailure("refused", "TARGET_NOT_FOUND", "no registered space has this exact name; no broker was contacted", { target: { space: name }, remedy: "see the registered spaces with `cotal space`" });
@@ -403,8 +404,10 @@ export async function spaceDelete(args: ParsedArgs): Promise<void> {
   const registered = resolveSpaceDeletionEntry(name);
   const blocked = liveStackRefusal(registered, name);
   if (blocked) throw blocked;
-  if (!yes && (!canPrompt() || presentation === "json"))
-    throw new ConfirmationRequired("live space deletion requires a terminal to type the exact space name, or --yes with an exact positional name in a script", { target: { space: name }, remedy: `inspect ${codeSpan(spaceDeleteCommand(name, " --dry-run"))} first, then run ${codeSpan(spaceDeleteCommand(name, " --yes"))}` });
+  if (!yes && (!canPrompt() || presentation === "json")) {
+    const output = presentation === "rich" ? "" : ` --${presentation}`;
+    throw new ConfirmationRequired("live space deletion requires a terminal to type the exact space name, or --yes with an exact positional name in a script", { target: { space: name }, remedy: `inspect ${codeSpan(spaceDeleteCommand(name, ` --dry-run${output}`))} first, then run ${codeSpan(spaceDeleteCommand(name, ` --yes${output}`))}` });
+  }
   // From here an interrupt says what the deletion left, as `progress` records it.
   const progress: DeletionProgress = { acknowledged: [], alreadyAbsent: [], submitted: null, postReadStarted: false };
   const stopReporting = reportOnInterrupt(presentation, "space delete", () => interruptedDeletion(name, progress));

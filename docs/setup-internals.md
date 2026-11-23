@@ -52,7 +52,8 @@ official runtime whose tool is not on PATH.
 ### Setup checks everything before it writes
 
 `validateSetupArguments` runs before connector seeding and before any preparation write. It rejects
-conflicting startup flags and a scripted startup that does not detach.
+conflicting startup flags, a scripted startup that does not detach, and any explicit harness name
+absent from both the official connector list and the available connector metadata.
 
 `planSetup` checks the preparation before it writes: the space name, the application against the
 setup connector surface, and the space at its destination.

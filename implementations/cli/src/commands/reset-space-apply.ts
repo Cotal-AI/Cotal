@@ -34,7 +34,10 @@ function credentialRefsIssuedBy(space: string, accountPub: string): ServiceDefin
  * an IdP account. Native secret deprovisioning remains ahead of raw identity/trust removal. */
 export async function resetSpaceApply(space: string, args: ParsedArgs): Promise<void> {
   const presentation = presentationOf(args.values), dryRun = args.values["dry-run"] === true, yes = args.values.yes === true;
-  if (!dryRun && !yes && (!canPrompt() || presentation === "json")) throw new ConfirmationRequired("reset space needs a terminal confirmation or --yes with the exact space name", { target: { space }, remedy: `review \`cotal reset space ${space} --dry-run\` first, then run \`cotal reset space ${space} --yes\`` });
+  if (!dryRun && !yes && (!canPrompt() || presentation === "json")) {
+    const output = presentation === "rich" ? "" : ` --${presentation}`;
+    throw new ConfirmationRequired("reset space needs a terminal confirmation or --yes with the exact space name", { target: { space }, remedy: `review \`cotal reset space ${space} --dry-run${output}\` first, then run \`cotal reset space ${space} --yes${output}\`` });
+  }
   const selected = selectResetTarget(space, "reset space", dryRun);
   const root = selected.root, target = { space, root };
   if (process.platform !== "linux") throw new CommandFailure("refused", "UNSUPPORTED", "this guarded identity reset currently needs Linux process-custody observations; no other platform was treated as stopped", { target });

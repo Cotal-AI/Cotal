@@ -1,5 +1,15 @@
 # @cotal-ai/lang
 
+## 0.175.3
+
+No changes in this release.
+
+## 0.175.2
+
+### Patch Changes
+
+- 8cf0871: The interpreter's run state types (environments, branch frames and run options) now live in their own lang module, with no change in behavior.
+
 ## 0.175.1
 
 No changes in this release.

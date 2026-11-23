@@ -3,6 +3,7 @@
 // out, check a lifecycle's ACL row and copy the catch-up window for a privileged join. Moved verbatim from
 // endpoint.ts; the component owns its pending leaves, reads the endpoint's identity and remaining shared
 // fields through its dependencies, and the endpoint forwards to it. Not re-exported by the index.
+import type { DeliveryState } from "./endpoint-delivery-state.js";
 import type { LifecycleState } from "./endpoint-lifecycle-state.js";
 import type { ConnectionState } from "./endpoint-connection-state.js";
 import type { EndpointIdentity } from "./endpoint-identity.js";
@@ -18,7 +19,6 @@ import { nanos } from "@nats-io/transport-node";
  *  copied, and every method is looked up on the endpoint at call time, so a member a caller replaced on
  *  the endpoint is the one that runs. */
 export interface EndpointDurableDeps {
-  plane3Channels: () => Map<string, number>;
   aclRegistry: () => Promise<KV>;
   deliveryClassFresh: (channel: string) => Promise<DeliveryClass>;
   deleteConsumerIfPresent: (stream: string, durable: string) => Promise<void>;
@@ -38,9 +38,8 @@ export class EndpointDurable {
    *  absence). Persists across reconnect; cleared on tombstone success or full stop. */
   private readonly pendingDurableLeave = new Map<string, number>();
 
-  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly conn: Readonly<ConnectionState>, private readonly lifecycle: Readonly<LifecycleState>, private readonly deps: EndpointDurableDeps) {}
+  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly conn: Readonly<ConnectionState>, private readonly lifecycle: Readonly<LifecycleState>, private readonly delivery: Readonly<DeliveryState>, private readonly deps: EndpointDurableDeps) {}
 
-  private get plane3Channels() { return this.deps.plane3Channels(); }
   private aclRegistry(): Promise<KV> { return this.deps.aclRegistry(); }
   private deliveryClassFresh(channel: string): Promise<DeliveryClass> { return this.deps.deliveryClassFresh(channel); }
   private deleteConsumerIfPresent(stream: string, durable: string): Promise<void> { return this.deps.deleteConsumerIfPresent(stream, durable); }
@@ -156,7 +155,7 @@ export class EndpointDurable {
       if (this.lifecycle.stopped) return;
       try {
         await this.durableLeaveChannel(channel, generation);
-        this.plane3Channels.delete(channel);
+        this.delivery.plane3Channels.delete(channel);
         this.pendingDurableLeave.delete(channel);
         return;
       } catch (e) {

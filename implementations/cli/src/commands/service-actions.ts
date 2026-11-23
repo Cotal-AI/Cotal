@@ -177,6 +177,8 @@ export async function serviceAction(args: ParsedArgs, space: string, root: strin
   if (mode === "start" || mode === "restart" || mode === "install") assertDefinitionRoot(definition, space, root, mode);
   const rows = serviceInstances(space, name);
   let id = values.instance;
+  if (mode === "restart" && id === undefined && rows.length === 0)
+    throw new CommandFailure("refused", "TARGET_NOT_FOUND", "no instance is recorded for this service definition", { target: { space, name }, remedy: `cotal service start ${shellWord(name)} --space ${shellWord(space)}`, remedyIsCommand: true });
   if (!id && rows.length > 1 && !values["new-instance"] && canPrompt() && presentation !== "json") {
     const selected = await prompts.select({ message: `Choose the full owned instance of ${oneLine(name)}`, options: rows.map((row) => ({ value: row.name, label: row.name, hint: `${row.record.value.host.name} · ${observeServiceProcess(row.record.value)}` })) });
     if (prompts.isCancel(selected)) return cancelled();

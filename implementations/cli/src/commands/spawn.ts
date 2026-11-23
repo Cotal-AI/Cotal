@@ -233,7 +233,7 @@ export function validateSpawnArguments(args: ParsedArgs) {
   if (values["live-only"] && !direct) throw new CommandFailure("refused", "USAGE_INVALID", "--live-only belongs to direct foreground execution");
   seatExpiry(values, direct);
   if (!values["dry-run"] && !direct && !values.detach && (values.json || values.plain || inputDisabledByFlag() || !process.stdin.isTTY || !process.stdout.isTTY))
-    throw new CommandFailure("refused", "USAGE_INVALID", "attaching to a manager's launch needs usable input and output terminals before an identity is allocated", { remedy: "add -d to wait for readiness without attaching, or drop --on to run it in this terminal", selfContained: true });
+    throw new CommandFailure("refused", "USAGE_INVALID", "attaching to a manager's launch needs usable input and output terminals before an identity is allocated", { remedy: values.json || values.plain ? "add -d to wait for readiness without attaching" : "add -d to wait for readiness without attaching, or drop --on to run it in this terminal", selfContained: true });
   for (const field of ["harness", "agent", "model", "variant", "name", "cwd"] as const) if (values[field] !== undefined && !values[field]!.trim())
     throw new CommandFailure("refused", "USAGE_INVALID", `--${field} cannot be empty`);
   if (values.events && values["no-events"]) throw new CommandFailure("refused", "USAGE_INVALID", "choose --events or --no-events, not both");
@@ -532,7 +532,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   // persona — `cotal spawn` with no args launches `<root>/.cotal/agents/default.md`.
   const { ref, from: personaFrom } = spawnPersona(values.config, positionals, { space, preferences: cachedPreferences() });
   const personaProject = resolvePath(target.personaRoot, "..", "..");
-  const path = values.file !== undefined || (redeemedEnrollment && values.config) ? resolvePath(ref) : directPersonaPath(personaProject, ref, values.config === undefined && positionals.length > 0);
+  const path = values.file !== undefined || (redeemedEnrollment && values.config) ? resolvePath(ref) : directPersonaPath(personaProject, ref, values.config === undefined);
   // The product default of a catalog nothing prepared, as a Cloud space's is until a spawn, is
   // written from the shipped template here and launched. This also applies to positional `default`.
   // A missing file, preference or other catalog name is still refused.
@@ -550,6 +550,10 @@ export async function spawn(args: ParsedArgs): Promise<void> {
       } else if (code === "ENOENT") {
         const missing = missingPersona(target, ref, personaFrom, path);
         throw new CommandFailure("refused", "TARGET_NOT_FOUND", missing.message, { target: { space, path }, remedy: missing.remedy });
+      } else if (code === "ELOOP") {
+        throw new CommandFailure("refused", "SCHEMA_INVALID", `the persona path contains a symbolic-link loop: ${path}`, {
+          target: { space, path }, remedy: "correct the link's target, or move the link aside and put a regular persona file in its place",
+        });
       } else {
         stderrLine("✗ ", `${(e as Error).message}`, c.red);
       }

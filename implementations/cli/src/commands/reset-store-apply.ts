@@ -22,6 +22,7 @@ import { freshTeamAttemptSettled, listFreshTeamAttempts, listFreshTeamSummaries 
 import { listAdditiveTeamAttempts, retainedAdditiveTeamAttempts } from "../lib/team-additive-attempt.js";
 import { reportOnInterrupt } from "../lib/interrupt-report.js";
 import { shellWord } from "../lib/endpoint-errors.js";
+import { maintenanceNextStep, preservedSourceState } from "../lib/restore.js";
 
 /** What a named reset acts on. A running or crashed space is selected by its locally started
  *  registration. A controller stack that a completed `down` stopped has none: its prepared record
@@ -206,13 +207,18 @@ export async function assertResetEligible(target: ResetTarget, command: ResetCom
   // A legacy root's `down` drops its registration, so no reset can select it afterwards. The step
   // after that stop is the clean the reset runs, from the root, naming only a custom store.
   const storeFlag = target.storeDir !== undefined && resolve(target.storeDir) !== join(root, ".cotal", "nats") ? ` --store-dir ${shellWord(target.storeDir)}` : "";
-  const clean = codeSpan(`cotal clean ${command === "reset store" ? "store" : "all"}${storeFlag} ${dryRun ? "--dry-run" : "--force"}`);
+  const cleanTarget = command === "reset store" ? "store" : "all";
+  const clean = codeSpan(`cotal clean ${cleanTarget}${storeFlag} ${dryRun ? "--dry-run" : "--force"}`);
   const afterStop = !legacy ? `run \`${review}\``
     : dryRun ? `preview cleanup with ${clean} there`
     : command === "reset store" ? `remove its stored streams with ${clean} there`
     : `remove its store and identity with ${clean} there`;
-  if (maintenance)
-    throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `this root retains a maintenance attempt in state ${maintenance.state}; a reset does not override it`, { target: where, remedy: "finish it, or recover it with its recorded restore recovery or fallback cleanup, before a reset" });
+  if (maintenance) {
+    const remedy = legacy && maintenance.state === "ready" && preservedSourceState(root, maintenance.source).state === "present"
+      ? `from ${root}, resume the preserved store with \`cotal up\`, stop it without preserving with \`cotal down --yes\`, then preview cleanup with ${codeSpan(`cotal clean ${cleanTarget}${storeFlag} --dry-run`)}`
+      : maintenanceNextStep(root, maintenance).next ?? `run \`cotal status\` from ${root} to inspect the maintenance attempt before a reset`;
+    throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `this root retains a maintenance attempt in state ${maintenance.state}; a reset does not override it`, { target: where, remedy });
+  }
   // A `down` records a member that exited without a stop as already stopped, which settles it for a
   // reset. One that a completed `down` did not record gets its receipt only from a full restart.
   if (running.length)
@@ -241,8 +247,10 @@ export async function assertResetEligible(target: ResetTarget, command: ResetCom
 export async function resetStoreApply(space: string, args: ParsedArgs): Promise<void> {
   const presentation = presentationOf(args.values);
   const yes = args.values.yes === true;
-  if (!yes && (!canPrompt() || presentation === "json"))
-    throw new ConfirmationRequired("reset store needs a terminal confirmation or --yes with an exact space name in a script", { target: { space }, remedy: `inspect \`cotal reset store ${space} --dry-run\` first, then run \`cotal reset store ${space} --yes\`` });
+  if (!yes && (!canPrompt() || presentation === "json")) {
+    const format = presentation === "json" ? " --json" : "";
+    throw new ConfirmationRequired("reset store needs a terminal confirmation or --yes with an exact space name in a script", { target: { space }, remedy: `inspect \`cotal reset store ${space} --dry-run${format}\` first, then run \`cotal reset store ${space} --yes${format}\`` });
+  }
   const selected = selectResetTarget(space, "reset store");
   if (selected.tlsRequired || /^(?:tls|wss):\/\//i.test(selected.server))
     throw new CommandFailure("refused", "UNSUPPORTED", "a credless broker probe cannot establish that a TLS-first listener is stopped; no store reset was attempted", { target: { space }, remedy: "use a trusted TLS-aware stopped-broker check before a guarded reset can be offered" });

@@ -1,6 +1,6 @@
 import { dirname, isAbsolute } from "node:path";
 import { existsSync } from "node:fs";
-import { agentFilePath, type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs, type Subcommand } from "@cotal-ai/core";
+import { type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs, type Subcommand } from "@cotal-ai/core";
 import {
   COLOR_VALUES,
   CommandFailure,
@@ -41,7 +41,7 @@ import { checkSpaceFlagValue } from "./meshes-add.js";
 import { completingFlagValue, positionalsForCompletion } from "../lib/completion.js";
 import { personaCatalog, personaNameProblem } from "../lib/persona-files.js";
 import { registryFailure } from "../lib/registry-errors.js";
-import { launchSpace } from "../lib/spawn-defaults.js";
+import { directPersonaPath, launchSpace } from "../lib/spawn-defaults.js";
 
 export const configFlags = [
   { name: "user", type: "boolean", description: "read or write your own defaults, with no space's values" },
@@ -204,7 +204,7 @@ function assertKnownSpace(space: string, prefs: Preferences, saved: boolean): vo
   if (findMesh(space) || findPreparedSpace(space) || (saved && holdsValue(space))) return;
   const known = [...new Set([...loadMeshes().map((mesh) => mesh.space), ...loadPreparedSpaces().map((prepared) => prepared.space), ...(saved ? Object.keys(prefs.spaces).filter(holdsValue) : [])])].sort();
   throw new CommandFailure("refused", "TARGET_NOT_FOUND", `no space named ${JSON.stringify(space)} is ${saved ? "registered, prepared or holding a saved value here" : "registered or prepared here"}${known.length ? `; known spaces: ${known.join(", ")}` : ""}`, {
-    remedy: `name a known space with --space, or prepare it first with \`cotal space create ${space}\` or register it with \`cotal space add ${space} --server <url>\``,
+    remedy: `name a known space with --space, or prepare it first with \`cotal space create ${space} --root <dir>\` or register it with \`cotal space add ${space} --server <url>\``,
   });
 }
 
@@ -280,7 +280,7 @@ function missingPersona(value: string, scope: Scope): OutputWarning | undefined 
   let catalog;
   try { catalog = personaCatalog({ space: scope.space }); }
   catch (error) { if (isCommandFailure(error)) return undefined; throw error; }
-  const path = agentFilePath(catalog.root, value);
+  const path = directPersonaPath(catalog.root, value);
   if (existsSync(path)) return undefined;
   const missing = isPersonaPath(value) ? `no persona file ${path}` : `no persona "${value}" in space ${catalog.space}'s catalog ${dirname(path)}`;
   return { code: "PERSONA_NOT_FOUND", target: { space: catalog.space, path }, message: `${missing}; the preference was saved, and a launch there needs that file` };

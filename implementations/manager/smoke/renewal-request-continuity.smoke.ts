@@ -78,8 +78,8 @@ type Internals = {
   agents: Map<string, InventorySeat>;
   ep: { conn: { nc: NatsConnection } };
   serviceServe?: { nc: NatsConnection; creds?: string; grant: { epoch: number } };
-  goalWriter?: { nc: NatsConnection };
   servePlane: { sessionLedgerConn?: { nc: NatsConnection }; };
+  goalWriterComponent: { goalWriter?: { nc: NatsConnection }; };
 };
 type Observation = {
   id: string; command: string; start: number; end?: number; ok?: boolean;
@@ -199,7 +199,7 @@ try {
   const dispatchObserved = new WeakSet<NatsConnection>();
   const instrument = () => {
     for (const [duty, nc] of [["supervisor", m.ep.conn.nc], ["serve", m.serviceServe?.nc],
-      ["goalWriter", m.goalWriter?.nc], ["sessionLedger", m.servePlane.sessionLedgerConn?.nc]] as const)
+      ["goalWriter", m.goalWriterComponent.goalWriter?.nc], ["sessionLedger", m.servePlane.sessionLedgerConn?.nc]] as const)
       if (nc) observeConnection(nc, duty);
     const nc = m.serviceServe?.nc;
     if (!nc || dispatchObserved.has(nc)) return;

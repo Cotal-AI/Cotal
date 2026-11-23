@@ -1,12 +1,14 @@
 import "./update-isolation.js";
 import strictAssert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmdirSync, rmSync, symlinkSync } from "node:fs";
+import { copyFileSync, cpSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, renameSync, rmdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { countedAssert, emitSentinel } from "../../../bin/smoke/sentinel.mjs";
 import { executeUpdate, updateRuntime, type UpdateRuntime } from "../src/commands/update.js";
+import { SEED_BUILTINS } from "../src/seed/paths.js";
 const counted = countedAssert(strictAssert);
 const assert: typeof strictAssert = counted.assert as typeof strictAssert;
 const effects: string[] = [], output: string[] = [];
@@ -122,6 +124,105 @@ assert.equal(seedInstallationCurrent(), false, "an unseeded checkout is not prov
 const { registryArrivalCell } = await import("../../../bin/smoke/update-registry-arrival.smoke.mjs");
 const cacheUpdate = await registryArrivalCell({ scenario: "cache" });
 assert.equal(cacheUpdate.code, 0, "real CLI and npm update succeed with a user-owned cache that is not writable");
+
+function npmNodeEngine(): void {
+  const root = mkdtempSync(join(tmpdir(), "cotal-npm-node-"));
+  try {
+    const repoBin = join(import.meta.dirname, "../../../bin");
+    const posixLauncher = process.platform === "linux" || process.platform === "darwin";
+    const exe = process.platform === "win32" ? "node.exe" : "node";
+    const alternate = join(root, "alternate Node", exe);
+    const npmBin = join(root, "npm-bin");
+    const npmRoot = join(npmBin, "node_modules", "npm");
+    const cli = join(npmRoot, "bin", "npm-cli.js");
+    for (const dir of [dirname(alternate), dirname(cli)]) mkdirSync(dir, { recursive: true });
+    copyFileSync(process.execPath, alternate);
+    const version = JSON.parse(readFileSync(join(repoBin, "package.json"), "utf8")).version;
+    const record = join(root, "npm-runtime");
+    const recordedRuntimes = () => readFileSync(record, "utf8").trim().split(/\r?\n/);
+    writeFileSync(join(npmRoot, "package.json"), JSON.stringify({ name: "npm", bin: { npm: "bin/npm-cli.js" }, engines: { node: process.version } }));
+    writeFileSync(cli, `#!/usr/bin/env node\nrequire('node:fs').appendFileSync(${JSON.stringify(record)}, process.execPath + '\\n');\nconsole.log(JSON.stringify(${JSON.stringify(version)}));\n`, { mode: 0o755 });
+    if (process.platform === "win32") writeFileSync(join(npmBin, "npm.cmd"), '@node "%~dp0node_modules\\npm\\bin\\npm-cli.js" %*\r\n');
+    else symlinkSync(cli, join(npmBin, "npm"));
+    const prefix = join(root, "prefix");
+    let entry = join(repoBin, "dist", "cotal.js");
+    if (posixLauncher) {
+      const installed = join(prefix, "lib/node_modules/cotal-ai");
+      mkdirSync(join(prefix, "bin"), { recursive: true });
+      mkdirSync(join(installed, "scripts"), { recursive: true });
+      cpSync(join(repoBin, "dist"), join(installed, "dist"), { recursive: true });
+      copyFileSync(join(repoBin, "package.json"), join(installed, "package.json"));
+      symlinkSync(join(repoBin, "node_modules"), join(installed, "node_modules"));
+      entry = join(installed, "dist", "cotal.js");
+      symlinkSync(entry, join(prefix, "bin", "cotal"));
+      const pin = join(installed, "scripts", "pin-npm-node.cjs");
+      copyFileSync(join(repoBin, "scripts", "pin-npm-node.cjs"), pin);
+      const result = spawnSync(alternate, [pin], { cwd: root, encoding: "utf8" });
+      assert.equal(result.status, 0, result.stdout + result.stderr);
+      assert.match(readlinkSync(join(prefix, "bin", "cotal")), /cotal-npm$/);
+    }
+    // Vary the running CLI's Node version without downloading a second runtime onto every runner.
+    const versionOverride = join(root, "project-node.mjs");
+    writeFileSync(versionOverride, `if (process.argv[1]?.endsWith('cotal.js')) Object.defineProperty(process, 'version', { value: '${process.version === "v22.10.0" ? "v22.10.1" : "v22.10.0"}' });\n`);
+    const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^(cotal_|npm_config_|path$)/i.test(key)));
+    const onlyNode = join(root, "project-bin");
+    mkdirSync(onlyNode);
+    if (process.platform === "win32") copyFileSync(process.execPath, join(onlyNode, exe));
+    else symlinkSync(process.execPath, join(onlyNode, exe));
+    const run = (flag: string, extraPath: string[] = [], npmPath = npmBin) => spawnSync(join(onlyNode, exe), [entry, "update", flag], {
+      cwd: root, encoding: "utf8", timeout: 60_000,
+      env: { ...env, HOME: root, USERPROFILE: root, APPDATA: join(root, "config"), LOCALAPPDATA: join(root, "config"),
+        COTAL_HOME: join(root, "cotal"), XDG_CONFIG_HOME: join(root, "config"), XDG_RUNTIME_DIR: root, npm_config_prefix: prefix,
+        COTAL_TELEMETRY: "off", COTAL_NO_UPDATE_CHECK: "1", COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_ALLOW_CHECKOUT_SEED: "1",
+        NODE_OPTIONS: `--import=${pathToFileURL(versionOverride).href}`,
+        PATH: [onlyNode, npmPath, ...extraPath].join(delimiter) },
+    });
+    const first = run("--check", posixLauncher ? [] : [dirname(alternate)]);
+    assert.equal(first.status, 0, first.stdout + first.stderr);
+    assert.match(first.stdout, /Registry latest:/);
+    assert.ok(recordedRuntimes().every(node => realpathSync(node) === realpathSync(alternate)));
+    // Record all built-ins as deliberately removed so self-update needs no fixture npm installs.
+    const seed = join(root, "config", "cotal", "seed");
+    mkdirSync(seed, { recursive: true });
+    writeFileSync(join(seed, "authority.json"), JSON.stringify({ everSeeded: SEED_BUILTINS }));
+    writeFileSync(join(seed, "witness.json"), JSON.stringify({ initialized: true, firstGeneration: version }));
+    writeFileSync(join(seed, "stamp.json"), JSON.stringify({ generation: version }));
+    const before = readFileSync(entry);
+    const corepackDir = join(root, "corepack-bin");
+    const corepackRoot = join(root, "node_modules", "corepack");
+    const corepackNpm = join(corepackRoot, "dist", "npm.js");
+    mkdirSync(corepackDir);
+    mkdirSync(dirname(corepackNpm), { recursive: true });
+    writeFileSync(join(corepackRoot, "package.json"), JSON.stringify({ name: "corepack", engines: { node: process.version } }));
+    writeFileSync(corepackNpm, `#!/usr/bin/env node\nconst { realpathSync } = require('node:fs');\nif (realpathSync(process.execPath) !== ${JSON.stringify(realpathSync(alternate))}) process.exit(1);\nrequire(${JSON.stringify(cli)});\n`, { mode: 0o755 });
+    if (process.platform === "win32") writeFileSync(join(corepackDir, "npm.cmd"), '@node "%~dp0\\..\\node_modules\\corepack\\dist\\npm.js" %*\r\n');
+    else symlinkSync(corepackNpm, join(corepackDir, "npm"));
+    const viaCorepack = run("--self", [dirname(alternate)], corepackDir);
+    assert.equal(viaCorepack.status, 0, viaCorepack.stdout + viaCorepack.stderr);
+    assert.match(viaCorepack.stdout, /Registry latest:/);
+    assert.equal(realpathSync(recordedRuntimes().at(-1)!), realpathSync(alternate), "npm's Corepack entry runs on the compatible Node");
+    renameSync(alternate, `${alternate}.gone`);
+    if (process.platform !== "win32") {
+      const shimDir = join(root, "shim-bin");
+      mkdirSync(shimDir);
+      const dispatcher = join(shimDir, "tool-shim");
+      writeFileSync(dispatcher, `#!/bin/sh\n[ "\${0##*/}" = node ] || exit 1\nexec "${alternate}.gone" "$@"\n`, { mode: 0o755 });
+      symlinkSync(dispatcher, join(shimDir, "node"));
+      const viaShim = run("--self", [shimDir]);
+      assert.equal(viaShim.status, 0, viaShim.stdout + viaShim.stderr);
+      assert.match(viaShim.stdout, /Registry latest:/);
+      assert.equal(realpathSync(recordedRuntimes().at(-1)!), realpathSync(`${alternate}.gone`), "npm runs through the compatible Node shim");
+    }
+    const updated = run("--self");
+    assert.equal(updated.status, 0, updated.stdout + updated.stderr);
+    assert.match(updated.stdout, /Registry latest:/);
+    assert.deepEqual(readFileSync(entry), before);
+    const projectNode = process.platform === "win32" ? join(onlyNode, exe) : process.execPath;
+    assert.equal(realpathSync(recordedRuntimes().at(-1)!), realpathSync(projectNode), "npm can succeed on the project Node even when its declared range excludes it");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+}
+
+npmNodeEngine();
 if (process.platform !== "win32") {
   const home = mkdtempSync(join(tmpdir(), "cotal-update-cwd-"));
   try {

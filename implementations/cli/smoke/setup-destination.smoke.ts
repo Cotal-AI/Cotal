@@ -265,6 +265,19 @@ const installed = (pkg: string) => loadExtensionsManifest().extensions.find((e) 
 
 const FULL = (space: string, dir: string, harness = "codex") => ["setup", "--destination", "local", "--harness", harness, "--project", dir, "--space", space];
 
+if (process.getuid && process.getuid() !== 0) {
+  const dir = project("p-readonly");
+  chmodSync(dir, 0o500);
+  try {
+    const setup = await json([...FULL("readonly-test", dir), "--yes"], dir);
+    check("setup recommends --project for a writable destination", refused(setup, 2, "PERMISSION_DENIED")
+      && setup.env?.error?.remedy?.endsWith("pass --project <dir>") && !existsSync(join(dir, ".cotal")), shown(setup));
+    const create = await json(["space", "create", "readonly-test", "--root", dir], dir);
+    check("space create recommends --root for a writable destination", refused(create, 2, "PERMISSION_DENIED")
+      && create.env?.error?.remedy?.endsWith("pass --root <dir>") && !existsSync(join(dir, ".cotal")), shown(create));
+  } finally { chmodSync(dir, 0o700); }
+}
+
 // ── A script names every input, and a refusal writes nothing ──────────────────────────────────────
 {
   const dirs = { cloud: project("p-cloud"), mars: project("p-mars"), harness: project("p-harness"), name: project("p-name"), file: project("p-file"), runtime: project("p-runtime") };

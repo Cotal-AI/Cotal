@@ -29,6 +29,7 @@ import {
 } from "./view.js";
 import { closeSession, runPublish, runSlash } from "./controller.js";
 import { listChoices, refusedDm, type Choice } from "./picker.js";
+import { channelHistoryCommand } from "../lib/history-command.js";
 
 const TONE_COLOR: Record<Tone, string | undefined> = {
   ok: "green",
@@ -200,11 +201,16 @@ export function ChatView({ session, initialRecipient, notice, words, shiftEnterD
       ]
     : composerRows(state, size.width, shiftEnterDistinct);
   const bodyHeight = Math.max(1, size.height - header.length - composer.length - 2);
-  const body = transcriptRows(state, size.width).slice(-bodyHeight);
+  const transcript = transcriptRows(state, size.width);
+  const body = transcript.slice(-bodyHeight);
+  const hidden = transcript.length - body.length;
+  const recipient = state.recipient;
+  const history = recipient?.kind === "channel" ? channelHistoryCommand(recipient.channel)
+    : recipient?.kind === "role" ? undefined : "cotal history --dms";
 
   return <Box flexDirection="column" width={size.width} height={size.height}>
     <RowsView rows={header} keyPrefix="h" />
-    <Text dimColor>{"─".repeat(size.width)}</Text>
+    <Text dimColor wrap="truncate-end">{hidden ? `${hidden} earlier ${hidden === 1 ? "row" : "rows"} hidden${history ? `. See \`${history}\`` : ""}` : "─".repeat(size.width)}</Text>
     <Box flexDirection="column" height={bodyHeight}>
       {body.length ? <RowsView rows={body} keyPrefix="t" /> : <Text dimColor>No messages yet in this session.</Text>}
     </Box>

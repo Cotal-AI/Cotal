@@ -76,8 +76,8 @@ export function verifyGlobalEntry(root: string, expectedVersion: string): string
 
 export async function runNpmAsync(args: string[], archiveCache?: string): Promise<CommandResult> {
   try {
-    const npm = npmInvocation(process.env);
-    const { file, args: spawnArgs, windowsVerbatimArguments } = cmdSpawnSpec(npm.file, args);
+    const npm = npmInvocation(process.env, args);
+    const { file, args: spawnArgs, windowsVerbatimArguments } = cmdSpawnSpec(npm.file, npm.args, npm.env);
     const gated = archiveCache !== undefined && (process.platform === "linux" || process.platform === "darwin");
     const gate = 'IFS= read -r permit <&3 && [ "$permit" = run ] || exit 1; exec 3<&-; exec "$@"';
     const child = spawn(gated ? "/bin/sh" : file, gated ? ["-c", gate, "cotal-release-check", file, ...spawnArgs] : spawnArgs, {
@@ -108,8 +108,8 @@ export async function runNpmAsync(args: string[], archiveCache?: string): Promis
 
 export function runNpm(args: string[], inherit = false): CommandResult {
   try {
-    const npm = npmInvocation(process.env);
-    const { file, args: spawnArgs, windowsVerbatimArguments } = cmdSpawnSpec(npm.file, args);
+    const npm = npmInvocation(process.env, args);
+    const { file, args: spawnArgs, windowsVerbatimArguments } = cmdSpawnSpec(npm.file, npm.args, npm.env);
     const result = spawnSync(file, spawnArgs, {
       cwd: npm.cwd, env: npm.env, windowsVerbatimArguments,
       ...(inherit ? { stdio: "inherit" as const } : { encoding: "utf8" as const }),
@@ -157,8 +157,8 @@ export async function runGlobalProcess(
   let idle: ReturnType<typeof setTimeout> | undefined;
   let stopping: Promise<void> | undefined;
   try {
-    const npm = operation === "install" && file === "npm" ? npmInvocation(env) : undefined;
-    file = npm?.file ?? file;
+    const npm = operation === "install" && file === "npm" ? npmInvocation(env, args) : undefined;
+    if (npm) ({ file, args, windowsVerbatimArguments } = cmdSpawnSpec(npm.file, npm.args, npm.env));
     cache = mkdtempSync(join(tmpdir(), "cotal-update-npm-"));
     const recordCache = gated && staging !== undefined;
     if (recordCache) {

@@ -195,18 +195,18 @@ import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createServer } from "node:net";
 import { appendFileSync, chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, watch, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { delimiter, dirname, join, resolve } from "node:path";
 import { assertSmokeSandboxDown, createSuite, freePort, listenOn, recordSmokeSandbox, type SmokeSandboxAnchor } from "@cotal-ai/smoke-kit";
 import { CotalEndpoint, deliveryLeaseHolderFor, idFromCreds, LEASE_TTL_MS, leaseKey, mintCreds, mintLifecycleUid, newIdentity, openDeliveryRegistry, type DeliveryLeaseInfo } from "@cotal-ai/core";
 import { connect, credsAuthenticator } from "@nats-io/transport-node";
-import { agentLifecycleSecretFilePaths, canonicalLocalProcessPath, codeSpan, shellPath, deliveryCredsKey, findMesh, getSpaceAuth, isCommandFailure, processStopped, workspaceSecretStore, MANAGER_DELIVERY_AWARE_MARKER, MANAGER_PIDFILE, MANAGER_SHUTDOWN_INTENT, readServiceStopRequest, spaceSegment, stopReservationPath, acquireMaintenanceLock, releaseMaintenanceLock } from "@cotal-ai/workspace";
+import { agentLifecycleSecretFilePaths, canonicalLocalProcessPath, codeSpan, shellPath, deliveryCredsKey, findMesh, getSpaceAuth, isCommandFailure, processStopped, resolveOnPath, workspaceSecretStore, MANAGER_DELIVERY_AWARE_MARKER, MANAGER_PIDFILE, MANAGER_SHUTDOWN_INTENT, readServiceStopRequest, spaceSegment, stopReservationPath, acquireMaintenanceLock, releaseMaintenanceLock } from "@cotal-ai/workspace";
 import { execWords } from "../src/lib/exec-words.js";
 
 const WT = resolve(import.meta.dirname, "..", "..", "..");
 const CLI = join(WT, "bin", "cotal.ts");
 // One process per command, so a SIGKILL reaches the CLI itself and not a wrapper.
 const TSX_IMPORT = import.meta.resolve("tsx");
-const home = mkdtempSync(join(tmpdir(), "cotal-stack-settle-"));
+const home = mkdtempSync(join(tmpdir(), "cotal-stack-settle-home with spaces-"));
 // A --store-dir outside the Cotal home, which is a control directory.
 const storeDirs = mkdtempSync(join(tmpdir(), "cotal-stack-settle-stores-"));
 // Project folders outside it too: a project folder may not be in a control directory.
@@ -439,9 +439,13 @@ try {
         const stop = cli(root, "down", "--yes", "--json");
         const running = ["stack-broker", "stack-delivery", "stack-manager"].every((definition) => { const pid = pidOf(space, definition); return pid !== null && alive(pid); });
         check("down --yes with an unwritable instances folder refuses PERMISSION_DENIED, exit 2, naming it and chmod, and stops nothing",
-          stop.status === 2 && stop.env?.error?.code === "PERMISSION_DENIED" && stop.env.error.message.includes(instancesDir) && Boolean(stop.env.error.remedy?.includes(`chmod u+w ${instancesDir}`)) && running, shown(stop));
+          stop.status === 2 && stop.env?.error?.code === "PERMISSION_DENIED" && stop.env.error.message.includes(instancesDir) && Boolean(stop.env.error.remedy?.includes(`chmod u+w ${shellPath(instancesDir)}`)) && running, shown(stop));
+        chmodSync(instancesDir, 0o400);
         const start = cli(root, "up", "--json");
-        check("up with it refuses the same way", start.status === 2 && start.env?.error?.code === "PERMISSION_DENIED" && Boolean(start.env.error.remedy?.includes(`chmod u+w ${instancesDir}`)), shown(start));
+        const repair = start.env?.error?.remedy?.match(/^make it writable with (.+), then run /)?.[1];
+        const words = repair ? execWords(repair) : [];
+        const repaired = words.length === 3 && words[0] === "chmod" && words[1] === "u+wx" && words[2] === instancesDir && spawnSync("chmod", words.slice(1)).status === 0;
+        check("up refuses until the printed repair restores write and search access", start.status === 2 && start.env?.error?.code === "PERMISSION_DENIED" && repaired && cli(root, "up", "--json").status === 0, shown(start));
       } finally { chmodSync(instancesDir, 0o700); }
     }
     // The receipt and service status name every listener the stack opened: the broker's client and
@@ -1037,17 +1041,17 @@ try {
     check("after the move back, down --yes stops it", cli(root, "down", "--yes", "--json").status === 0);
     // Stopped and moved again: every command offers moving back or adopting the new location.
     renameSync(root, moved);
-    const way = `move this folder back to ${root}, then run the command again there; or, to run it from this folder, forget it with \`cotal space forget ${space}\`, then run \`cotal space create ${space} --adopt --root ${moved}\``;
-    const routes = [cli(moved, "up", "--json"), cli(moved, "send", "--space", space, "-c", "general", "after the stop", "--json"), cli(moved, "history", "general", "--space", space, "--json")];
-    const status = cli(moved, "status", "--space", space, "--json");
+    const pathWithoutCotal = (process.env.PATH ?? "").split(delimiter).filter((dir) => dir && !resolveOnPath(join(resolve(moved, dir), "cotal"))).join(delimiter);
+    const launcherDir = mkdtempSync(join(home, "launcher-"));
+    writeFileSync(join(launcherDir, "cotal"), `#!/bin/sh\nexec ${shellPath(process.execPath)} --import ${shellPath(TSX_IMPORT)} ${shellPath(CLI)} "$@"\n`, { mode: 0o700 });
+    const status = checkMovedStackRemedies(root, moved, space, pathWithoutCotal, "pnpm cotal");
+    checkMovedStackRemedies(root, moved, space, `${launcherDir}${delimiter}${pathWithoutCotal}`, "cotal");
     renameSync(moved, root);
     // A copy keeps the journal too. Clean store refuses in both, so status does not offer it there.
     const copy = `${root}-copy`;
     spawnSync("cp", ["-a", root, copy]);
     const copyStatus = cli(copy, "status", "--space", space, "--json");
     rmSync(copy, { recursive: true, force: true });
-    check("stopped and moved, up, send and history offer moving back or adoption", routes.every((r) => r.status === 2 && r.env?.error?.remedy === way), routes.map(shown));
-    check("status --space there names the same step", ((status.env?.result?.hints as string[] | undefined) ?? []).includes(way), shown(status));
     const offersNoReset = (r: Run) => {
       const result = r.env?.result as { folder?: { storedState?: boolean }; hints?: string[] } | undefined;
       return result?.folder?.storedState === false && Array.isArray(result.hints) && !result.hints.some((hint) => hint.includes("clean store"));
@@ -1113,11 +1117,19 @@ try {
     check("the refusal says the stack started no member", Boolean(refused.env?.error?.message.startsWith("the controller stack started no member (broker: ")) && !refused.env?.error?.message.includes("started members were kept"), shown(refused));
     const retry = /\bcotal up --server nats:\/\/127\.0\.0\.1:(\d+) --no-manager --json`/.exec(refused.env?.error?.remedy ?? "");
     check("its next step keeps the options with another port, or stops that program", !!retry && Number(retry[1]) !== port && refused.env?.error?.remedy?.includes(`stop the process listening on 127.0.0.1:${port}`) === true, shown(refused));
+    const status = cli(root, "status", "--space", space, "--json");
+    const selected = status.env?.result?.selected as { code?: string; message?: string } | undefined;
+    const hints = (status.env?.result?.hints as string[] | undefined) ?? [];
+    const statusRetry = /\bcotal up --foreground --server nats:\/\/127\.0\.0\.1:(\d+)`/.exec(hints.join("\n"));
+    check("status keeps the prepared verdict and names how to free or change the refused first-start address",
+      status.status === 0 && selected?.code === "not-started" && selected.message?.includes(`"${space}" is prepared but not started; another process holds that address 127.0.0.1:${port}`) === true && !!statusRetry && Number(statusRetry[1]) !== port && hints.some((hint) => hint.includes(`stop the process listening on 127.0.0.1:${port}`)) && !hints.some((hint) => hint.startsWith("start it with")), shown(status));
+    const bareRetry = cli(root, "up", "--no-manager", "--json");
+    check("retrying without a server override refuses at the same address", bareRetry.status === 2 && bareRetry.env?.error?.code === "CONFLICT" && bareRetry.env.error.message.includes(`127.0.0.1:${port}`), shown(bareRetry));
     check("no broker instance was recorded", serviceInstances(space, "stack-broker").length === 0, serviceInstances(space, "stack-broker").map((row) => row.record.value.state));
     const nothing = cli(root, "down", "--yes", "--json");
     check("down --yes there stops nothing and exits 0", nothing.status === 0 && nothing.env?.outcome === "no-op", shown(nothing));
     // Nor a mode: the refused up asked for static auth, and the next one may ask for an open stack.
-    const moved = cli(root, "up", "--server", `nats://127.0.0.1:${await freePort()}`, "--open", "--no-manager", "--json");
+    const moved = cli(root, "up", "--server", `nats://127.0.0.1:${statusRetry?.[1] ?? await freePort()}`, "--open", "--no-manager", "--json");
     track(space);
     check("the next up starts at another address while the program still holds the first", moved.status === 0, shown(moved));
     check("and in the open mode it asked for, which the refused up did not pin", moved.env?.result !== undefined && JSON.stringify(moved.env.result).includes('"mode":"open"'), shown(moved));
@@ -2260,3 +2272,15 @@ try {
   for (const root of roots) cli(root, "down", "--yes", "--json");
 }
 finish();
+
+function checkMovedStackRemedies(root: string, moved: string, space: string, path: string, launcher: string): Run {
+  const run = (...args: string[]) => cliAs({ ...env, PATH: path }, moved, ...args, "--json");
+  const way = `move this folder back to ${root}, then run the command again there; or, to run it from this folder, forget it with ${codeSpan(`${launcher} space forget ${space}`)}, then run ${codeSpan(`${launcher} space create ${space} --adopt --root ${shellPath(moved)}`)}`;
+  const routes = [run("up"), run("send", "--space", space, "-c", "general", "after the stop"), run("history", "general", "--space", space)];
+  const status = run("status", "--space", space);
+  const follow = run("history", "general", "--space", space, "--follow");
+  check(`stopped and moved, up, send and history offer moving back or adoption with ${launcher}`, routes.every((r) => r.status === 2 && r.env?.error?.remedy === way), routes.map(shown));
+  check(`status --space there names the same step with ${launcher}`, status.status === 0 && ((status.env?.result?.hints as string[] | undefined) ?? []).includes(way), status.env?.result?.hints ?? shown(status));
+  check(`history --follow there names the same step with ${launcher}`, follow.status === 2 && follow.stdout.includes(JSON.stringify(way)), follow.stdout || shown(follow));
+  return status;
+}

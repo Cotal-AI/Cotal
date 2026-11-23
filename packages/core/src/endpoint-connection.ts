@@ -4,6 +4,7 @@
 // endpoint.ts. It owns its timers, the taps, the record of its own watch consumers and the subscription
 // denials it reported, and it opens and clears the endpoint's ConnectionState; the endpoint keeps
 // connectAndBind, the supervisor and the retry loop and forwards to these. Not re-exported by the index.
+import type { DeliveryState } from "./endpoint-delivery-state.js";
 import type { LifecycleState } from "./endpoint-lifecycle-state.js";
 import type { CredentialState } from "./endpoint-credential-state.js";
 import type { ChannelRegistryState } from "./endpoint-channel-registry-state.js";
@@ -22,16 +23,16 @@ import type { MembershipFeedWatch } from "./endpoint-subscriptions.js";
 import { credsRenewalDelayMs, credsClaims } from "./identity.js";
 import { type IssuedSubjectPermission, importNativeSubjectPermissions, readAcceptedRow } from "./issued-authority.js";
 import { isStreamNotFound } from "./jetstream-missing.js";
-import type { LivenessPlane, ResponderState } from "./liveness.js";
+import type { LivenessPlane } from "./liveness.js";
 import { type NativeConnectionBinding, nativeConnectionBinding } from "./native-connection.js";
 import { nextHeartbeat } from "./presence-heartbeat.js";
 import { PRESENCE_STORAGE } from "./streams.js";
 import { presenceBucket, dmStream, dmDurable, parseSubject } from "./subjects.js";
 import { isFromSubjectSender, authenticatedMessage, isReadableMessagePart } from "./endpoint-messages.js";
 import type { CotalMessage } from "./types.js";
-import { type ConsumerMessages, type ConsumerInfo, jetstream, jetstreamManager } from "@nats-io/jetstream";
+import { type ConsumerInfo, jetstream, jetstreamManager } from "@nats-io/jetstream";
 import { type KV, Kvm } from "@nats-io/kv";
-import { type NatsConnection, type Subscription, PermissionViolationError } from "@nats-io/transport-node";
+import { type NatsConnection, PermissionViolationError } from "@nats-io/transport-node";
 
 /** A Direct Get cannot distinguish a missing bucket from an unanswered read. Ask for the
  *  bucket's status and accept only a broker-confirmed absence. */
@@ -52,16 +53,8 @@ export interface EndpointConnectionDeps {
   authed: () => boolean;
   readsChannelsOnDemand: () => boolean;
   deliveryLease: () => EndpointDeliveryLease;
-  livenessResponders: () => Map<LivenessPlane, { readState: () => Promise<ResponderState> | ResponderState; sub?: Subscription }>;
-  activeGoalFollowers: () => Set<{ cancel: () => void; reconnected: (nc: NatsConnection) => void; }>;
-  streamMsgs: () => ConsumerMessages[];
   presence: () => EndpointPresence;
-  chatSubs: () => Map<string, Subscription>;
-  chatSubDenied: () => Set<string>;
   deliveryPlane: () => EndpointDeliveryPlane;
-  subs: () => Subscription[];
-  principalServes: () => Map<string, PrincipalServeIntent>;
-  dmOnlyInFlight: () => Promise<void> | undefined;
   refreshBearer: (initial?: boolean) => Promise<void>;
   refreshCreds: (initial?: boolean) => Promise<void>;
   cancelCredsRefresh: () => void;
@@ -121,21 +114,13 @@ export class EndpointConnection {
   /** Service iterators and connection status can receive the same subscription denial. */
   private readonly reportedSubRefusals = new WeakSet<PermissionViolationError>();
 
-  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly conn: ConnectionState, private readonly lifecycle: LifecycleState, private readonly cred: CredentialState, private readonly channelRegistry: ChannelRegistryState, private readonly deps: EndpointConnectionDeps) {}
+  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly conn: ConnectionState, private readonly lifecycle: LifecycleState, private readonly cred: CredentialState, private readonly channelRegistry: ChannelRegistryState, private readonly delivery: Readonly<DeliveryState>, private readonly deps: EndpointConnectionDeps) {}
 
   private get authed() { return this.deps.authed(); }
   private get readsChannelsOnDemand() { return this.deps.readsChannelsOnDemand(); }
   private get deliveryLease() { return this.deps.deliveryLease(); }
-  private get livenessResponders() { return this.deps.livenessResponders(); }
-  private get activeGoalFollowers() { return this.deps.activeGoalFollowers(); }
-  private get streamMsgs() { return this.deps.streamMsgs(); }
   private get presence() { return this.deps.presence(); }
-  private get chatSubs() { return this.deps.chatSubs(); }
-  private get chatSubDenied() { return this.deps.chatSubDenied(); }
   private get deliveryPlane() { return this.deps.deliveryPlane(); }
-  private get subs() { return this.deps.subs(); }
-  private get principalServes() { return this.deps.principalServes(); }
-  private get dmOnlyInFlight() { return this.deps.dmOnlyInFlight(); }
   private refreshBearer(initial?: boolean): Promise<void> { return this.deps.refreshBearer(initial); }
   private refreshCreds(initial?: boolean): Promise<void> { return this.deps.refreshCreds(initial); }
   private cancelCredsRefresh(): void { this.deps.cancelCredsRefresh(); }
@@ -430,7 +415,7 @@ export class EndpointConnection {
 
     // Re-bind the liveness responders on this connection, for armPlane3's reason: the rebuild closed
     // the old connection and the responders with it.
-    for (const plane of this.livenessResponders.keys()) this.bindLiveness(plane);
+    for (const plane of this.delivery.livenessResponders.keys()) this.bindLiveness(plane);
     // The principal serves subscribe again on the new connection and run their check again.
     this.rebindPrincipalServes(false);
     for (const tap of this.taps) this.bindTap(tap);
@@ -452,7 +437,7 @@ export class EndpointConnection {
     if (this.lifecycle.stopped) return;
     this.emit("connection", { connected: true });
     if (this.conn.nc) {
-      for (const follower of this.activeGoalFollowers) {
+      for (const follower of this.delivery.activeGoalFollowers) {
         follower.reconnected(this.conn.nc);
       }
     }
@@ -468,7 +453,7 @@ export class EndpointConnection {
   private bindTap(tap: (typeof this.taps)[number]): void {
     if (!this.conn.nc) return;
     const sub = this.conn.nc.subscribe(tap.subject);
-    this.subs.push(sub);
+    this.delivery.subs.push(sub);
     void (async () => {
       for await (const m of sub) {
         let decoded: CotalMessage | undefined;
@@ -542,29 +527,29 @@ export class EndpointConnection {
       clearInterval(this.sweepTimer);
       this.sweepTimer = undefined;
     }
-    for (const msgs of this.streamMsgs) {
+    for (const msgs of this.delivery.streamMsgs) {
       try {
         msgs.stop();
       } catch {
         /* already closed with the connection */
       }
     }
-    this.streamMsgs.length = 0;
+    this.delivery.streamMsgs.length = 0;
     this.lifecycle.presenceEpoch++;
     this.presence.cancelRebind();
     this.presence.retireWatch();
     if (this.conn.channelWatchIter) this.retireKvWatch(this.conn.channelWatchIter);
     this.conn.channelWatchIter = undefined;
     this.stopDeliveryLeaseWatch();
-    for (const sub of this.chatSubs.values()) {
+    for (const sub of this.delivery.chatSubs.values()) {
       try {
         sub.unsubscribe();
       } catch {
         /* already closed with the connection */
       }
     }
-    this.chatSubs.clear();
-    this.chatSubDenied.clear();
+    this.delivery.chatSubs.clear();
+    this.delivery.chatSubDenied.clear();
     this.ownWatchDeletePrefixes.clear();
     this.presence.resetConnection();
     this.channelRegistry.channelConfigs.clear();
@@ -627,10 +612,10 @@ export class EndpointConnection {
       this.deliveryPlane.deliveryAdminServeSub = undefined;
     }
     this.dropAnycastRequests();
-    for (const sub of this.subs) {
+    for (const sub of this.delivery.subs) {
       try { sub.unsubscribe(); } catch { /* dead with the old connection */ }
     }
-    this.subs.length = 0;
+    this.delivery.subs.length = 0;
     if (!failedNc) return;
     // The old status iterator is stale after nc is cleared, so its close cannot report this edge.
     // As in doRebuild, teardown itself must announce the no-nc window before closing the socket.
@@ -693,15 +678,15 @@ export class EndpointConnection {
   async stopOnce(): Promise<void> {
     if (this.conn.nc) this.disableLibraryReconnect(this.conn.nc);
     this.lifecycle.stopped = true;
-    for (const follower of this.activeGoalFollowers) {
+    for (const follower of this.delivery.activeGoalFollowers) {
       follower.cancel();
     }
-    this.activeGoalFollowers.clear();
+    this.delivery.activeGoalFollowers.clear();
     this.lifecycle.presenceEpoch++;
     // Every principal serve ends now, so a `ready` still waiting for the broker rejects and no new
     // request is taken. Its handlers in flight finish below, before the connection they reply on
     // closes, or their requests' deadlines pass.
-    const principalStops = [...this.principalServes.values()].map((intent) => this.stopPrincipalServe(intent, false));
+    const principalStops = [...this.delivery.principalServes.values()].map((intent) => this.stopPrincipalServe(intent, false));
     this.presence.cancelRebind();
     // Wake a reestablishLoop sitting in backoff so it sees `stopped` and exits instead of
     // sleeping out retryMs; also clears the timer so it can't fire later.
@@ -730,7 +715,7 @@ export class EndpointConnection {
       watch.rejectStop = undefined;
     }
     this.conn.membershipFeedWatches.clear();
-    for (const msgs of this.streamMsgs) {
+    for (const msgs of this.delivery.streamMsgs) {
       try {
         msgs.stop();
       } catch {
@@ -753,9 +738,9 @@ export class EndpointConnection {
     // DM-only: the pull above is stopped, so no new copy reaches the handler. Let a running handler
     // settle while the connection is still open, so its ack can reach the broker; close either way.
     let dmOnlyUnsettled = false;
-    if (this.identity.dmOnly && this.dmOnlyInFlight) {
+    if (this.identity.dmOnly && this.delivery.dmOnlyInFlight) {
       const settleMs = this.identity.dmOnly.settleTimeoutMs ?? 30_000;
-      dmOnlyUnsettled = await withDeadline(this.dmOnlyInFlight.then(() => false), settleMs, () => new Error("unsettled"))
+      dmOnlyUnsettled = await withDeadline(this.delivery.dmOnlyInFlight.then(() => false), settleMs, () => new Error("unsettled"))
         .catch(() => true);
     }
     await this.closeWithoutLibraryReconnect(this.conn.nc);

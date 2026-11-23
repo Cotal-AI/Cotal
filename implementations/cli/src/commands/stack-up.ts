@@ -20,6 +20,7 @@ import {
   CommandFailure,
   accountInventory,
   authDir,
+  brokerUrlKey,
   canonicalRoot,
   codeSpan,
   deliveryCredsKey,
@@ -60,7 +61,7 @@ import {
   processStopped,
 } from "@cotal-ai/workspace";
 import { liveMeshProcesses } from "./clean.js";
-import { addressHolder, brokerListenAddress, listenerBindError } from "../lib/broker-service.js";
+import { addressHolder, brokerListenAddress, canonicalServer, listenerBindError } from "../lib/broker-service.js";
 import { brokerStoreWrite, jetStreamDisabled, jetStreamDisabledRefusal, readStoredBytes, storeDamageNotice, storeFull } from "../lib/broker-store-health.js";
 import { shellWord } from "../lib/endpoint-errors.js";
 import { seedDefaultPersona } from "../lib/default-persona.js";
@@ -73,6 +74,8 @@ import { listLedgerFiles } from "../lib/manifest/ledger.js";
 import { listAdditiveTeamAttempts, retainedAdditiveTeamAttempts, type AdditiveTeamAttempt } from "../lib/team-additive-attempt.js";
 import { freshTeamAttemptSettled, listFreshTeamAttempts, listFreshTeamSummaries } from "../lib/team-fresh.js";
 import { foreignLocalProcesses, newStackOperation, readStackJournal, removeStaleLocalRecords, runningStackRoles, serviceHeldRecords, settleRetainedStackStops, settleStackOperation, STACK_ADAPTER, STACK_DEFINITION, STACK_ROLES, stackDefinitionsAt, stackMaintenanceFence, stackNeverStarted, stackRecoveryHost, stackOperationUnsettled, stackRoleApplies, stackSettlementNotice, staleRecordWarning, withSettledMembers, writeStackJournal, type LocalRecord, type StackJournal, type StackJournalSnapshot, type StackMember, type StackMode, type StackRole, type StackSettlement } from "../lib/stack-journal.js";
+import { retryStackAddress } from "../lib/up-broker-address.js";
+import { withManagerName } from "../lib/up-manager-name.js";
 import { NATS_DEFAULT_MAX_PAYLOAD, natsServerLabel, type NatsServer } from "../lib/nats-bin.js";
 import { sharedStoreAtStart, sharedStoreWarning, type StoreTenant } from "../lib/store-dir.js";
 import { readStoreIdentity, stackStoreWarnings } from "../lib/store-identity.js";
@@ -170,6 +173,7 @@ export interface StackUpRequest {
   /** How the broker resolves space accounts (`--account-resolver`). Absent: the recorded one. */
   accountResolver?: "memory" | "full";
   maxSessions?: number;
+  managerName?: string;
   managerSeatCap?: SeatCap;
   channels?: string;
   foreground: boolean;
@@ -243,15 +247,6 @@ const CONTROLLER_UNSUPPORTED = ["file", "dry-run", "restore", "restore-only", "a
 const TLS_INPUTS: readonly string[] = ["tls-cert", "tls-key", "server tls://"];
 
 const namesTlsServer = (values: ParsedArgs["values"]): boolean => typeof values.server === "string" && /^tls:\/\//i.test(values.server);
-
-/** A `--server` broker URL as `up` records and compares it: the scheme in lower case, with no bare
- *  trailing `/`. Any other value comes back as given, for the address checks to refuse. */
-export function canonicalServer(server: string): string {
-  let url: URL;
-  try { url = new URL(server); } catch { return server; }
-  if ((url.protocol !== "nats:" && url.protocol !== "tls:") || url.username || url.password || url.search || url.hash || (url.pathname !== "" && url.pathname !== "/") || server.includes(",")) return server;
-  return `${url.protocol}//${url.host}`;
-}
 
 /** Whether an `up` invocation asks for a TLS broker. */
 export function requestsTls(values: ParsedArgs["values"]): boolean {
@@ -360,7 +355,7 @@ export function refuseForegroundStackHolder(root: string, space: string, holderP
 }
 
 /** Returns a settled active restore of the recorded stack that was admitted, for the result to name. */
-function stackPreflight({ root, space, noManager, invokedRoot, manifest }: StackUpRequest, recorded: StackJournal | undefined): string | undefined {
+function stackPreflight({ root, space, noManager, invokedRoot, foreground, manifest }: StackUpRequest, recorded: StackJournal | undefined): string | undefined {
   // Its members' own pidfiles would read as legacy processes under a Cotal home with no record of them.
   if (recorded && stackRunsUnderOtherHome(root, recorded)) throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "this root's controller stack has missing member records in this Cotal home; nothing was started, adopted or replaced", { target: { root, space, cotalHome: homeCotalDir() }, remedy: stackHomeRemedy(recorded.recovery?.home) });
   const maintenance: { fenced: boolean; admittedRestore?: string } = recorded ? stackMaintenanceFence(root, recorded) : { fenced: readMaintenanceJournal(root) !== undefined };
@@ -373,9 +368,10 @@ function stackPreflight({ root, space, noManager, invokedRoot, manifest }: Stack
     const cmd = displayCmd();
     const retryRoot = invokedRoot !== undefined && invokedRoot !== root ? ` --root ${shellWord(root)}` : "";
     const retry = noManager || retryRoot ? `${cmd} up --space ${shellWord(space)}${noManager ? " --no-manager" : ""}${retryRoot}` : `${cmd} up`;
+    const next = foreground ? "repeat your original foreground startup command from the same folder with the same options" : `run ${codeSpan(retry)} again`;
     throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `${held.map((row) => `the ${row.definition} service of this space runs this root's ${row.record.name} (pid ${row.record.pid}, instance ${row.instanceId})`).join("; ")}, outside the controller stack, which neither adopts nor replaces it`, {
       target: { root, space, processes: legacy, services: held.map((row) => ({ definition: row.definition, instanceId: row.instanceId })) },
-      remedy: `stop ${held.length === 1 ? "it" : "each"} with ${held.map((row) => codeSpan(`${cmd} svc stop ${row.definition} --instance ${row.instanceId} --space ${shellWord(space)} --yes`)).join(", ")}, then run ${codeSpan(retry)} again`,
+      remedy: `stop ${held.length === 1 ? "it" : "each"} with ${held.map((row) => codeSpan(`${cmd} svc stop ${row.definition} --instance ${row.instanceId} --space ${shellWord(space)} --yes`)).join(", ")}, then ${next}`,
     });
   }
   if (legacy.length || existsSync(join(root, ".cotal", NATS_PIDFILE))) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "legacy pidfile-owned processes or records remain under this root; the controller stack neither adopts nor replaces them", { target: { root, space, processes: legacy } });
@@ -501,10 +497,10 @@ export function keptOnUp(space: string, kept: string): string {
     : `"${space}" up; "${kept}" stays automatically selected outside this folder - \`cotal use ${space}\` selects this space in every folder`;
 }
 
-/** `cotal up`'s controller route: start, seed the default persona into the root, then write its
- *  own receipt, which names the saved services it does not start. The stack is up by then, so a
- *  persona that cannot be written, or saved services that cannot be listed, is a warning. */
-export async function stackUp(request: StackUpRequest, native: StackUpNative): Promise<void> {
+/** `cotal up`'s controller route: start, seed the default persona into the root, then prepare its
+ *  receipt, which the caller prints after releasing the startup lock. A persona that cannot be
+ *  written, or saved services that cannot be listed, is a warning. */
+export async function stackUp(request: StackUpRequest, native: StackUpNative): Promise<{ journal: StackJournal; writeReceipt: () => void }> {
   const before = usableSelection();
   const { journal, changed, allReused, admittedRestore, settled, brokerExecutable, streamsRecreated, rotation, storeShared, storeWarnings, clearedRecords } = await startControllerStack(request, native);
   const { root, space, server, mode } = journal;
@@ -542,7 +538,10 @@ export async function stackUp(request: StackUpRequest, native: StackUpNative): P
   } catch (error) {
     warnings.push({ code: "SAVED_SERVICES_NOT_READ", target: { root, space }, message: `the saved services of ${space} could not be listed: ${(error as Error).message}` });
   }
-  writeResult(request.presentation, { command: "up", target: { root, space, server }, result: { kind: "controller-stack-up", root, space, server, mode, operation: journal.operation, members: journal.members, changed, foreground: request.foreground, admittedRestore: admittedRestore ?? null, settledOperation: settled ?? null, brokerExecutable: brokerExecutable ?? null, streamsRecreated: streamsRecreated === true, rotatedSystemAccount: rotation ?? null, listeners: stackListeners(journal), written, savedServices, inheritedServices, selection: { current: current ?? null, changed: current === space && before !== space } }, warnings, ...(allReused && written.length === 0 && !streamsRecreated ? { noOp: true } : {}) }, (result) => {
+  const listeners = stackListeners(journal);
+  const elsewhere = request.invokedRoot !== undefined && request.invokedRoot !== canonicalRoot(root);
+  const brokerPayload = request.maxPayload ?? (request.presentation === "json" ? undefined : readBrokerPolicy(root)?.maxPayload);
+  const writeReceipt = () => writeResult(request.presentation, { command: "up", target: { root, space, server }, result: { kind: "controller-stack-up", root, space, server, mode, operation: journal.operation, members: journal.members, changed, foreground: request.foreground, admittedRestore: admittedRestore ?? null, settledOperation: settled ?? null, brokerExecutable: brokerExecutable ?? null, streamsRecreated: streamsRecreated === true, rotatedSystemAccount: rotation ?? null, listeners, written, savedServices, inheritedServices, selection: { current: current ?? null, changed: current === space && before !== space } }, warnings, ...(allReused && written.length === 0 && !streamsRecreated ? { noOp: true } : {}) }, (result) => {
     const members = membersView({ ...journal, members: result.members }, allReused ? "Controller stack already running" : "Controller stack started", result.brokerExecutable, result.streamsRecreated);
     const exposed = result.listeners && exposedPlaintext(result.listeners);
     const listening: Report["sections"] = [{ title: "Listeners", blocks: [
@@ -550,12 +549,9 @@ export async function stackUp(request: StackUpRequest, native: StackUpNative): P
       ...(exposed ? [{ kind: "lines" as const, lines: [{ text: exposed, tone: "waiting" as const }] }] : []),
     ] }];
     const view: Report = { ...members, sections: [...members.sections, ...listening, ...(result.written.length ? [{ blocks: [{ kind: "fields" as const, rows: result.written.map((w): [string, string] => ["wrote", `${w.what}: ${w.path}`]) }] }] : [])] };
-    // `down` stops only the stack of the folder it runs in, so from another folder the Next says where.
-    const elsewhere = request.invokedRoot !== undefined && request.invokedRoot !== canonicalRoot(root);
     // The payload limit is fixed at the broker's start, so a bare up cannot add a manager to a
     // broker-only stack whose limit is below the floor the manager starts on: the Next names the
     // stop and restart that can, instead of the bare up that would refuse.
-    const brokerPayload = request.maxPayload ?? readBrokerPolicy(root)?.maxPayload;
     const managerBelowFloor = !managed && brokerPayload !== undefined && brokerPayload < MANAGER_START_PAYLOAD_FLOOR;
     const next: Report["sections"] = request.foreground ? [] : [{ title: "Next", blocks: [{ kind: "commands", items: [
       // A bare spawn targets the selected space, which this up does not change when one is set.
@@ -575,6 +571,7 @@ export async function stackUp(request: StackUpRequest, native: StackUpNative): P
     ] }] : [];
     return { ...view, sections: [...view.sections, ...rotated, ...(admittedRestore ? [{ title: "Retained restore journal", blocks: [{ kind: "lines" as const, lines: [`Active restore ${admittedRestore} stays in this root's maintenance journal. It was read and not changed.`] }] }] : []), ...saved, ...kept, ...next] };
   });
+  return { journal, writeReceipt };
 }
 
 /** The refusal of an up whose running broker disabled JetStream after a store write failure: no
@@ -587,7 +584,7 @@ function reusedWithoutJetStream(caught: unknown, brokerReused: boolean, root: st
   return jetStreamDisabledRefusal(disabled, root, space, "up cannot check the space's streams on it", "its running members were left as they are", { root, space }, manager?.process?.pid);
 }
 
-/** What holds a stopped stack's recorded broker address, as bare up's own bind check finds it, with
+/** What holds a stack's recorded broker address, as bare up's own bind check finds it, with
  *  the listening processes of this account named. Undefined while the address is free, could not be
  *  checked, or this stack's broker runs there. */
 async function recordedAddressHeld(space: string, server: string, bindHost?: string): Promise<{ says: string; frees: string } | undefined> {
@@ -605,18 +602,22 @@ async function recordedAddressHeld(space: string, server: string, bindHost?: str
   return holders.length ? { says: `${held.says}, where process ${holders.join(", ")} of this account listens`, frees: held.frees } : held;
 }
 
-/** The live address blocker for a stopped controller stack with a recorded broker. */
-export async function stoppedStackAddressProblem(root: string, space: string): Promise<{ message: string; remedy: string } | undefined> {
+/** The live address blocker for a stopped stack or refused first start at its recorded broker address. */
+export async function stackStartAddressProblem(root: string, space: string, server?: string): Promise<{ message: string; remedy: string } | undefined> {
   try {
     const journal = readStackJournal(root)?.journal;
-    if (journal?.space !== space) return undefined;
+    if (journal?.space !== space || (server !== undefined && brokerUrlKey(server) !== brokerUrlKey(journal.server))) return undefined;
     const { kind, phase } = journal.operation;
     const cleanStop = kind === "down" && phase === "completed";
-    const refusedRestart = kind === "up" && phase === "refused" && !stackNeverStarted(journal)
+    const refusedStart = kind === "up" && phase === "refused"
       && journal.members.some((row) => row.role === "broker" && row.state === "refused");
-    if (!cleanStop && !refusedRestart) return undefined;
+    if (!cleanStop && !refusedStart) return undefined;
     const held = await recordedAddressHeld(space, journal.server, journal.broker?.host);
     if (!held) return undefined;
+    if (refusedStart && stackNeverStarted(journal)) {
+      const retry = await retryStackAddress(["--foreground"], root, journal.server, journal.broker?.host ?? brokerListenAddress(journal.server).host);
+      return { message: held.says, remedy: `${retry ? `${retry}, or ` : ""}${held.frees}, then run ${codeSpan(`${displayCmd()} up`)} in ${root}` };
+    }
     const noManager = journal.members.some((row) => row.role === "manager" && row.state === "not-attempted" && (cleanStop || row.instanceId === null));
     const restart = `${displayCmd()} up${noManager ? " --no-manager" : ""}`;
     return { message: held.says, remedy: `${held.frees}, then run ${codeSpan(restart)} in ${root}; this stack keeps its recorded address` };
@@ -731,7 +732,7 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
   // Each member's start is recorded under the space's service records. A folder there this account
   // cannot write refuses here, naming it, instead of an unknown outcome after a member started.
   const unwritable = serviceRecordsWriteProblem(space, ["definitions", "instances"]);
-  if (unwritable) throw new CommandFailure("refused", "PERMISSION_DENIED", `this account cannot write ${unwritable}, where up records the stack's services; nothing was started or written`, { target: { root, space, path: unwritable }, remedy: `make it writable with chmod u+w ${unwritable}, then run \`cotal up\` again` });
+  if (unwritable) throw new CommandFailure("refused", "PERMISSION_DENIED", `this account cannot write ${unwritable}, where up records the stack's services; nothing was started or written`, { target: { root, space, path: unwritable }, remedy: `make it writable with chmod u+wx ${shellWord(unwritable)}, then run \`cotal up\` again` });
   const recorded = readStackJournal(root);
   if (request.expectPriorDown && (!recorded || recorded.sha256 !== request.expectPriorDown.journalSha256 || recorded.journal.operation.id !== request.expectPriorDown.operationId))
     throw new CommandFailure("refused", "CONFLICT", "the stopped stack changed after the team boot checked it; nothing was started", { target: { root, space, expected: request.expectPriorDown.operationId } });
@@ -1204,7 +1205,7 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
         options["launch-sha256"] = launch.sha256;
       }
       const manager = ensureDefinition(space, "manager", adapterDefinition(space, STACK_ADAPTER.manager, options, 60000), root, replace("manager"));
-      await start("manager", manager);
+      await withManagerName({ root, space }, request.managerName, () => start("manager", manager));
     }
     if (!loginBlock) settle("completed");
   } catch (caught) {

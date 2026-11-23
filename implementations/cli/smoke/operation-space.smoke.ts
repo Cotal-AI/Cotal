@@ -47,7 +47,7 @@ const home = mkdtempSync(join(tmpdir(), "cotal-operation-space-"));
 const root = realpathSync(mkdtempSync(join(home, "project-")));
 process.on("exit", () => rmSync(home, { recursive: true, force: true }));
 const HOST_ENV = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("COTAL_") && k !== "FORCE_COLOR" && k !== "NO_COLOR"));
-const env = { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config"), COTAL_HOME: join(home, ".cotal"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" };
+const env: NodeJS.ProcessEnv & { XDG_CONFIG_HOME: string } = { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config"), COTAL_HOME: join(home, ".cotal"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" };
 
 const outcome = (r: ReturnType<typeof spawnSync>) => {
   const stdout = String(r.stdout ?? ""), stderr = String(r.stderr ?? "");
@@ -57,7 +57,8 @@ const outcome = (r: ReturnType<typeof spawnSync>) => {
 };
 const fixture = join(import.meta.dirname, "operation-space.fixture.ts");
 const kernel = (...words: string[]) => outcome(spawnSync(process.execPath, [...process.execArgv, fixture, ...words], { cwd: root, env, encoding: "utf8", timeout: 60_000 }));
-const cotal = (...words: string[]) => outcome(spawnSync(process.execPath, [BIN, ...words], { cwd: root, env, encoding: "utf8", timeout: 120_000 }));
+const cotalAt = (cwd: string, ...words: string[]) => outcome(spawnSync(process.execPath, [BIN, ...words], { cwd, env, encoding: "utf8", timeout: 120_000 }));
+const cotal = (...words: string[]) => cotalAt(root, ...words);
 const shown = (r: ReturnType<typeof kernel>) => ({ status: r.status, stdout: r.stdout.slice(0, 600), stderr: r.stderr.slice(0, 600) });
 const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
 
@@ -111,6 +112,15 @@ for (const args of [["show", "nosuch"], ["remove", "nosuch", "--yes"]]) {
   const missing = cotal("persona", ...args, "--json");
   check(`persona ${args[0]} of a missing persona is TARGET_NOT_FOUND with a remedy`, missing.status === 2 && missing.envelope?.error?.code === "TARGET_NOT_FOUND" && missing.envelope.error.remedy === "see the personas here with `cotal persona`", shown(missing));
 }
+const alternate = mkdtempSync(join(home, "alternate-"));
+const alternatePrepared = cotalAt(alternate, "space", "create", "alternate-catalog", "--root", ".");
+check("fixture: a second catalog is prepared", alternatePrepared.status === 0, shown(alternatePrepared));
+const alternateMiss = cotal("persona", "show", "nosuch", "--space", "alternate-catalog", "--json");
+const alternateList = alternateMiss.envelope?.error?.remedy?.match(/`([^`]+)`/)?.[1];
+check("persona show in a different catalog refuses and its recovery lists that catalog",
+  alternateMiss.status === 2 && alternateMiss.envelope?.error?.code === "TARGET_NOT_FOUND"
+    && alternateMiss.envelope.target?.space === "alternate-catalog" && alternateList === "cotal persona --space alternate-catalog"
+    && cotal(...alternateList.split(" ").slice(1), "--json").envelope?.target?.space === "alternate-catalog", shown(alternateMiss));
 // A complete file that names another persona: the refusal names the file's name and the create that keeps it.
 const otherFile = join(root, "bernie.md");
 writeFileSync(otherFile, "---\nname: bernie\nrole: reviewer\nsubscribe: []\n---\n");
@@ -306,6 +316,12 @@ try {
   const preview = cotal("spawn", "review.md", "--dry-run", "--plain");
   check("spawn --dry-run previews the dotted catalog name instead of the project file",
     preview.status === 0 && preview.stdout.includes(dottedCatalog) && preview.stdout.includes("reviewer"), shown(preview));
+  for (const [ref, path, name] of [["review.md", dottedCatalog, "reviewer"], ["./review.md", dottedFile, "other"]]) {
+    env.COTAL_DEFAULT_PERSONA = ref;
+    const preferred = cotal("spawn", "--dry-run", "--plain");
+    check(`spawn --dry-run with COTAL_DEFAULT_PERSONA=${ref} selects ${name}`,
+      preferred.status === 0 && preferred.stdout.includes(path) && new RegExp(`Requested name:\\s+${name}$`, "m").test(preferred.stdout), shown(preferred));
+  }
   const remove = cotal("personas", "rm", "review.md", "--space", "opsp");
   check("legacy personas rm asks for confirmation without changing either file",
     remove.status === 1 && remove.stderr.includes("cotal personas rm review.md --space opsp --force") &&
@@ -315,6 +331,7 @@ try {
     forced.status === 0 && !existsSync(dottedCatalog) && existsSync(dottedFile) &&
     readFileSync(dottedFile, "utf8") === projectSource, shown(forced));
 } finally {
+  delete env.COTAL_DEFAULT_PERSONA;
   rmSync(dottedCatalog, { force: true });
   rmSync(dottedFile, { force: true });
 }

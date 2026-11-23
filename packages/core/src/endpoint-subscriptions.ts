@@ -1,6 +1,7 @@
 // The dynamic subscription region of CotalEndpoint (join, leave, channel listing and the membership
 // feed watches), as an internal component. Moved verbatim from endpoint.ts; the endpoint keeps the
 // public methods and forwards to them. Not re-exported by the index.
+import type { DeliveryState } from "./endpoint-delivery-state.js";
 import type { LifecycleState } from "./endpoint-lifecycle-state.js";
 import type { ChannelRegistryState } from "./endpoint-channel-registry-state.js";
 import type { ConnectionState } from "./endpoint-connection-state.js";
@@ -56,8 +57,6 @@ export type MembershipFeedWatch = {
  *  of those methods on the endpoint is seen here. */
 export interface EndpointSubscriptionsDeps {
   authed: () => boolean;
-  chatSubDenied: () => Set<string>;
-  plane3Channels: () => Map<string, number>;
   readsChannelsOnDemand: () => boolean;
   notLiveMsg: () => string;
   readChannels: () => Promise<void>;
@@ -82,11 +81,9 @@ export interface EndpointSubscriptionsDeps {
  *  listings, and the membership feed's snapshot read and watches with their consumer cleanup.
  *  Internal: `CotalEndpoint` keeps the public methods and forwards to it. */
 export class EndpointSubscriptions {
-  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly conn: ConnectionState, private readonly lifecycle: Readonly<LifecycleState>, private readonly channelRegistry: Readonly<ChannelRegistryState>, private readonly deps: EndpointSubscriptionsDeps) {}
+  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly conn: ConnectionState, private readonly lifecycle: Readonly<LifecycleState>, private readonly channelRegistry: Readonly<ChannelRegistryState>, private readonly delivery: Readonly<DeliveryState>, private readonly deps: EndpointSubscriptionsDeps) {}
 
   private get authed() { return this.deps.authed(); }
-  private get chatSubDenied() { return this.deps.chatSubDenied(); }
-  private get plane3Channels() { return this.deps.plane3Channels(); }
   private get readsChannelsOnDemand() { return this.deps.readsChannelsOnDemand(); }
   private notLiveMsg() { return this.deps.notLiveMsg(); }
   private readChannels() { return this.deps.readChannels(); }
@@ -125,7 +122,7 @@ export class EndpointSubscriptions {
   ): Promise<{ joined: boolean; backfilled: number; durable: boolean; reason?: string }> {
     if (!this.conn.jsm) throw new Error(this.notLiveMsg());
     if (this.identity.channels.includes(channel))
-      return { joined: false, backfilled: 0, durable: this.plane3Channels.has(channel) };
+      return { joined: false, backfilled: 0, durable: this.delivery.plane3Channels.has(channel) };
     // The delivery class below comes from the cache, so a seat reads it current before joining.
     if (this.readsChannelsOnDemand) await this.readChannels();
     // Arm the watermark BEFORE going live: the backfill reads ≤ frontier and the core-sub only ever
@@ -146,7 +143,7 @@ export class EndpointSubscriptions {
       this.unsubscribeChat(channel);
       throw new Error(`cannot join "${channel}": live subscription could not be confirmed (${(e as Error).message})`);
     }
-    if (this.chatSubDenied.has(channel)) {
+    if (this.delivery.chatSubDenied.has(channel)) {
       this.unsubscribeChat(channel);
       throw new Error(`cannot join "${channel}": not within this agent's read ACL (allowSubscribe)`);
     }
@@ -167,7 +164,7 @@ export class EndpointSubscriptions {
       try {
         const r = await this.durableJoinChannel(channel);
         if (r.durable) {
-          this.plane3Channels.set(channel, r.generation ?? 0);
+          this.delivery.plane3Channels.set(channel, r.generation ?? 0);
           durable = true;
         } else {
           reason = r.reason ?? "durable backstop unavailable";
@@ -201,8 +198,8 @@ export class EndpointSubscriptions {
     // genuine no-responder (open / no delivery daemon, no Plane-3) means there is no membership to tombstone.
     if (this.authed && (isChannelFamily(channel) || isConcreteChannel(channel))) {
       const memberships = await this.fetchMemberships(channel);
-      if (memberships === undefined && this.plane3Channels.has(channel))
-        await this.durableLeaveChannel(channel, this.plane3Channels.get(channel));
+      if (memberships === undefined && this.delivery.plane3Channels.has(channel))
+        await this.durableLeaveChannel(channel, this.delivery.plane3Channels.get(channel));
       for (const member of memberships ?? []) {
         // A daemon before 0.166.0 answers with this lifecycle's rows and no lifecycleUid, so it cannot
         // show an earlier lifecycle's row. Refuse with the remedy rather than leave that row open.
@@ -211,7 +208,7 @@ export class EndpointSubscriptions {
         await this.durableLeaveChannel(channel, member.generation, member.lifecycleUid);
         left = true;
       }
-      if (memberships !== undefined) this.plane3Channels.delete(channel);
+      if (memberships !== undefined) this.delivery.plane3Channels.delete(channel);
     }
     this.unsubscribeChat(channel);
     const i = this.identity.channels.indexOf(channel);

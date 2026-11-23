@@ -216,6 +216,24 @@ try {
     startHelp.status === 0 && out(startHelp).includes("cotal manager start [--runtime <name>]") && out(startHelp).includes('(default: "pty")') && out(startHelp).includes("--roster"), out(startHelp));
   check("  and none of service add's definition flags", !/--preset\b|--file\b|--new-instance\b|--exec\b/.test(out(startHelp)), out(startHelp));
 
+  const managerStartPath = ["service", "start", "manager"];
+  const managerPresetHelp = cotal([...managerStartPath, "--help"]);
+  const managerHelpCommand = cotal(["help", ...managerStartPath]);
+  const managerStartRefusal = cotal([...managerStartPath, "--no-open", "--dry-run"]);
+  const noOpenOption = /^  --no-open\b/m;
+  check("both manager preset help forms keep --runtime and omit the web-only option",
+    managerPresetHelp.status === 0 && managerHelpCommand.status === 0 && managerPresetHelp.stdout === managerHelpCommand.stdout
+    && /^  --runtime <string>/m.test(managerPresetHelp.stdout) && !noOpenOption.test(managerPresetHelp.stdout), out(managerPresetHelp));
+  check("the manager preset refuses --no-open without listing it in the usage help",
+    managerStartRefusal.status === 1 && managerStartRefusal.stdout === "" && managerStartRefusal.stderr.includes("--no-open belongs to service start web")
+    && managerStartRefusal.stderr.endsWith(managerPresetHelp.stdout) && !noOpenOption.test(managerStartRefusal.stderr), out(managerStartRefusal));
+  for (const [name, showsNoOpen] of [[undefined, true], ["web", true], ["broker", false], ["hello", false]] as const) {
+    const args = ["service", "start", ...(name === undefined ? [] : [name]), "--help"];
+    const result = cotal(args);
+    check(`cotal ${args.join(" ")} ${showsNoOpen ? "lists" : "omits"} --no-open`,
+      result.status === 0 && noOpenOption.test(result.stdout) === showsNoOpen, out(result));
+  }
+
   for (const args of [["manager", "install", "--help"], ["help", "manager", "install"]]) {
     const installHelp = cotal(args);
     check(`cotal ${args.join(" ")} explains that Manager unit installation is unsupported and shows the foreground command`,
@@ -375,9 +393,35 @@ try {
   const confirm = /`(cotal svc remove [^`]*)`/.exec(out(unconfirmed))?.[1] ?? "";
   check("service remove --space <other> --no-input prints a confirmation that names that space",
     second.status === 0 && unconfirmed.status === 1 && confirm === `cotal svc remove hello --space ${PREPARED} --yes`, out(unconfirmed));
-  const confirmed = cotal(confirm.split(" ").slice(1));
-  check("  and running it forgets that space's service and keeps this folder's",
-    confirmed.status === 0 && serviceDefinitionStore(PREPARED).read("hello") === undefined && serviceDefinitionStore(SPACE).read("hello") !== undefined, out(confirmed));
+  const refusedJson = cotal(["service", "remove", "hello", "--space", PREPARED, "--json"]);
+  const confirmJson: string | undefined = JSON.parse(refusedJson.stdout).error?.remedy?.match(/^confirm with `cotal (.+)`$/)?.[1];
+  check("service remove with --json keeps the definition until confirmed and prints a JSON confirmation",
+    refusedJson.status === 1 && serviceDefinitionStore(PREPARED).read("hello") !== undefined && confirmJson === `svc remove hello --space ${PREPARED} --yes --json`, out(refusedJson));
+  const confirmed = confirmJson ? cotal(confirmJson.split(" ")) : undefined;
+  check("the printed confirmation returns a JSON receipt, forgets that space's service and keeps this folder's",
+    confirmed?.status === 0 && JSON.parse(confirmed.stdout).result?.kind === "service-definition-removed"
+      && serviceDefinitionStore(PREPARED).read("hello") === undefined && serviceDefinitionStore(SPACE).read("hello") !== undefined, confirmed && out(confirmed));
+
+  const definitionFile = join(prepared, "service definition.json");
+  writeFileSync(definitionFile, JSON.stringify({ schemaVersion: 1, space: PREPARED, launch: { type: "process", executable: "echo", args: ["hello"], cwd: prepared }, readiness: { type: "process", timeoutMs: 1000 } }));
+  for (const [name, source, preset] of [
+    ["preset-example", ["--preset", "manager", "--runtime", "pty"], "manager"],
+    ["file-example", ["--file", definitionFile], null],
+    ["exec-example", ["--exec", "echo 'hello world'", "--cwd", prepared], null],
+  ] as const) {
+    const flags = [...source, "--space", PREPARED, "--json"];
+    const refused = cotal(["service", "add", ...flags]);
+    const { outcome, error } = JSON.parse(refused.stdout);
+    check(`${source[0]} without a name asks to insert only the definition name`,
+      refused.status === 1 && refused.stderr === "" && outcome === "refused" && error?.code === "USAGE_INVALID"
+        && error.message === "scripted service add needs a definition name"
+        && error.remedy === "insert your definition name immediately after `add` in the original command, keeping all flags and values unchanged", out(refused));
+    const retry = cotal(["service", "add", name, ...flags]);
+    const { result } = JSON.parse(retry.stdout);
+    check(`adding the name to ${source[0]} saves in the requested space without starting the service`,
+      retry.status === 0 && result?.name === name && result.space === PREPARED && result.preset === preset && result.started === false
+        && serviceDefinitionStore(PREPARED).read(name) !== undefined && serviceDefinitionStore(SPACE).read(name) === undefined, out(retry));
+  }
 } catch (e) {
   check(`suite ran without throwing: ${e instanceof Error ? e.message : String(e)}`, false, e instanceof Error ? e.stack : e);
 } finally {

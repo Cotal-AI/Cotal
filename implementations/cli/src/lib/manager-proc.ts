@@ -20,6 +20,7 @@ import { stopLocalProcess } from "./local-process-stop.js";
 import { listManagerSeatsForSpare, printLegacyManagerSpareUncertainty, printSparedAgents, type SpareSeatRow } from "./teardown-spare.js";
 import { seedBeforeLaunch } from "../seed/launch.js";
 import { lastLoggedLine, type LogStart } from "./private-log.js";
+import { withManagerName } from "./up-manager-name.js";
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -313,6 +314,7 @@ export type ManagerStartOpts = {
   wsPort?: number;
   /** Live-session ceiling forwarded as `supervise --max-sessions`. */
   maxSessions?: number;
+  managerName?: string;
   managerSeatCap?: SeatCap;
 };
 
@@ -473,10 +475,12 @@ export async function ensureManager(
   if (state === "alive") return { running: true, started: false };
   assertManagerRecordReplaceable(space, root, seams); // refuses on unknown / unattributable, reports foreign
   await seedBeforeLaunch();
-  let logStart: LogStart | undefined;
-  const pid = startManagerDetached(o, (start) => { logStart = start; });
-  await awaitManagerUp(space, identityRecord(pid), logStart);
-  return { running: true, started: true, pid };
+  return withManagerName({ root, space }, o.managerName, async () => {
+    let logStart: LogStart | undefined;
+    const pid = startManagerDetached(o, (start) => { logStart = start; });
+    await awaitManagerUp(space, identityRecord(pid), logStart);
+    return { running: true, started: true, pid };
+  });
 }
 
 /** A signal, injectable for the same reason the probe is: `EPERM` from `kill` is producible only by

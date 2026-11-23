@@ -8,7 +8,7 @@ import {
   type AgentDef,
 } from "@cotal-ai/core";
 import {
-  cachedPreferences, CommandFailure, ConfirmationRequired, cotalDirLink, explicitNoInputFlag, findCotalRoot, isCommandFailure, isGenuineSpace, isWorkspaceTargetError, legacyStackOtherHome, loadMeshes, meshesForRoot, movedProject,
+  cachedPreferences, codeSpan, CommandFailure, ConfirmationRequired, cotalDirLink, explicitNoInputFlag, findCotalRoot, isCommandFailure, isGenuineSpace, isWorkspaceTargetError, legacyStackOtherHome, loadMeshes, meshesForRoot, movedProject,
   localWriteFailure, personaDefinitionProblem, preparedSpaceAt, resolveMeshTarget, resolvePreference, retainedLegacyBroker, retainedOpenSpace, stackJournalPath, targetErrorCode, workspaceErrorParts,
 } from "@cotal-ai/workspace";
 import { DEFAULT_AGENT_NAME } from "./default-persona.js";
@@ -82,11 +82,29 @@ export function personaNameWords(name: string, flags = ""): string {
   return name.startsWith("-") ? `${flags} -- ${word}` : ` ${word}${flags}`;
 }
 
-export function personaPath(root: string, name: string, access: "show" | "write" = "write"): string {
-  const allowDots = access === "show" && name !== "." && name !== "..";
-  const problem = personaNameProblem(allowDots ? name.replaceAll(".", "_") : name);
+export function personaPath(root: string, name: string, access: "show" | "legacy-remove" | "write" = "write"): string {
+  const problem = access === "show"
+    ? (!name.trim() || /[\\/\u0000-\u001f\u007f]/u.test(name) || (process.platform === "win32" && name.includes(":"))
+      ? "persona show needs a catalog filename stem, not a path or a name with control characters" : undefined)
+    : personaNameProblem(access === "legacy-remove" && name !== "." && name !== ".." ? name.replaceAll(".", "_") : name);
   if (problem) throw new CommandFailure("refused", "USAGE_INVALID", problem);
   return join(personaDir(root), `${name}.md`);
+}
+
+function personaLinkRemedy(path: string): string | undefined {
+  const link = linkTarget(path);
+  if (link === undefined) return undefined;
+  try {
+    if (statSync(path).isFile()) {
+      accessSync(path, constants.R_OK);
+      return `${path} is a link to ${link}; replace the link with a copy of that file`;
+    }
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT" || code === "ENOTDIR")
+      return `${path} is a link to ${link}, but its target is missing. Restore the target if you still need it, or move the broken link aside and put a regular persona file in its place.`;
+  }
+  return `${path} is a link to ${link}, but its target is not a readable regular file. Move the link aside and put a regular persona file in its place.`;
 }
 
 /** Only absence is absent. Unreadable and non-regular sources refuse rather than becoming empty. */
@@ -94,8 +112,8 @@ export function readPersonaSource(path: string): PersonaSource | undefined {
   try {
     const stat = lstatSync(path);
     if (!stat.isFile()) {
-      const link = stat.isSymbolicLink() ? linkTarget(path) : undefined;
-      throw new CommandFailure("refused", "PERMISSION_DENIED", `persona is not a regular file: ${path}`, link === undefined ? {} : { remedy: `${path} is a link to ${link}; replace the link with a copy of that file` });
+      const remedy = stat.isSymbolicLink() ? personaLinkRemedy(path) : undefined;
+      throw new CommandFailure("refused", "PERMISSION_DENIED", `persona is not a regular file: ${path}`, remedy === undefined ? {} : { remedy });
     }
     return { bytes: readFileSync(path), ino: stat.ino, dev: stat.dev, mtimeMs: stat.mtimeMs };
   } catch (error) {
@@ -108,9 +126,9 @@ export function readPersonaSource(path: string): PersonaSource | undefined {
   }
 }
 
-export function requirePersonaSource(path: string): PersonaSource {
+export function requirePersonaSource(path: string, target = ""): PersonaSource {
   const source = readPersonaSource(path);
-  if (!source) throw new CommandFailure("refused", "TARGET_NOT_FOUND", `no persona at ${path}`, { remedy: "see the personas here with `cotal persona`" });
+  if (!source) throw new CommandFailure("refused", "TARGET_NOT_FOUND", `no persona at ${path}`, { remedy: `see the personas here with ${codeSpan(`cotal persona${target}`)}` });
   return source;
 }
 
@@ -346,8 +364,13 @@ export async function editPersona(path: string, name: string, catalog: PersonaCa
       keep = true;
       if (isCommandFailure(error) && error.code === "CONFLICT") {
         const removed = readPersonaSource(path) === undefined;
+        const next = removed
+          ? process.platform === "win32"
+            ? `copy the draft to ${path} without replacing any file there`
+            : `restore it with ${codeSpan(`cp -n ${shellWord(draft)} ${shellWord(dirname(path) + sep)}`)}, which leaves an existing file untouched`
+          : `compare it with ${codeSpan(`cotal persona show${personaNameWords(name, target)}`)}, then edit again`;
         throw new CommandFailure("refused", "CONFLICT", error.message, {
-          remedy: `your edit is kept in ${draft}; ${removed ? `restore it with \`cotal persona create ${name} --file ${draft}\`` : `compare it with \`cotal persona show ${name}\`, then edit again`}, and remove ${dirname(draft)} when you are done`,
+          remedy: `your edit is kept in ${draft}; ${next}, and remove ${dirname(draft)} when you are done`,
         });
       }
       const failure = isCommandFailure(error) ? error : new CommandFailure("unknown", "OPERATION_UNKNOWN", error instanceof Error ? error.message : String(error), { cause: error });

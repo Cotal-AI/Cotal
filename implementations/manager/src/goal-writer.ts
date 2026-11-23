@@ -9,24 +9,17 @@ import { Kvm } from "@nats-io/kv";
 import type { KV } from "@nats-io/kv";
 import type { NatsConnection } from "@nats-io/transport-node";
 import type { ManagerConfig } from "./manager-config.js";
+import type { SpawnAcceptance } from "./seat-types.js";
 
 /** What {@link GoalWriter} reads from the Manager. Every entry is read at use, so a field the Manager
  *  assigns after construction is always current, and a Manager method a test replaces is the one that runs. */
 export interface GoalWriterDeps {
   auth: () => Manager["auth"];
-  goalAcceptances: () => Manager["goalAcceptances"];
-  goalWriter: () => Manager["goalWriter"];
-  setGoalWriter: (value: Manager["goalWriter"]) => void;
-  goalWriterCreds: () => Manager["goalWriterCreds"];
-  setGoalWriterCreds: (value: Manager["goalWriterCreds"]) => void;
-  goalWriterIdentity: () => Manager["goalWriterIdentity"];
   leaseStopping: () => Manager["leaseStopping"];
   managerInstanceId: () => Manager["managerInstanceId"];
   remoteAuthority: () => Manager["remoteAuthority"];
   serviceServe: () => Manager["serviceServe"];
   turnRelay: () => Manager["turnRelay"];
-  goalReconcileDone: () => Manager["goalReconcileDone"];
-  setGoalReconcileDone: (value: Manager["goalReconcileDone"]) => void;
   adoptTurnGoal: (...args: Parameters<Manager["adoptTurnGoal"]>) => ReturnType<Manager["adoptTurnGoal"]>;
   boundedReconnect: (...args: Parameters<Manager["boundedReconnect"]>) => ReturnType<Manager["boundedReconnect"]>;
   dial: (...args: Parameters<Manager["dial"]>) => ReturnType<Manager["dial"]>;
@@ -42,19 +35,11 @@ export interface GoalWriterDeps {
 export function goalWriterDeps(m: Manager): GoalWriterDeps {
   return {
     auth: () => m["auth"],
-    goalAcceptances: () => m["goalAcceptances"],
-    goalWriter: () => m["goalWriter"],
-    setGoalWriter: (value) => { m["goalWriter"] = value; },
-    goalWriterCreds: () => m["goalWriterCreds"],
-    setGoalWriterCreds: (value) => { m["goalWriterCreds"] = value; },
-    goalWriterIdentity: () => m["goalWriterIdentity"],
     leaseStopping: () => m["leaseStopping"],
     managerInstanceId: () => m["managerInstanceId"],
     remoteAuthority: () => m["remoteAuthority"],
     serviceServe: () => m["serviceServe"],
     turnRelay: () => m["turnRelay"],
-    goalReconcileDone: () => m["goalReconcileDone"],
-    setGoalReconcileDone: (value) => { m["goalReconcileDone"] = value; },
     adoptTurnGoal: (...args) => m["adoptTurnGoal"](...args),
     boundedReconnect: (...args) => m["boundedReconnect"](...args),
     dial: (...args) => m["dial"](...args),
@@ -70,23 +55,43 @@ export function goalWriterDeps(m: Manager): GoalWriterDeps {
 export class GoalWriter {
   constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: GoalWriterDeps) {}
 
+  /** The spawn-as-action SELF-MEDIATED goal-writer connection + ActionContext — a
+   *  standing connection DISJOINT from the serve credential, scoped to exactly this endpoint's
+   *  goal bind/terminal facts + goal-record writes ({@link goalWriterGrants}). Auth mode mints the
+   *  `goal-writer` cred; an open mesh uses a bare connection (no credential system to mint from).
+   *  `gate` (auth mode) is the own-issuance-gate READER for the own-gate currency belt — the
+   *  manager reads its OWN `epgate.<e>.<iid>` epoch over this connection before a terminal commit
+   *  and skips a superseded commit (the fast-fail belt paired with the (b) barrier-revoke fence). */
+  goalWriter?: { nc: NatsConnection; ctx: ActionContext; creds?: string; identity: Identity; gate?: EpIssuanceGate };
+  /** The STABLE goal-writer identity (auth mode) — minted once at
+   *  registration alongside the serve identity; a renewal re-mints the SAME nkey with a fresh
+   *  bounded exp and re-stages its distinct credId into the §13.1 revocation family. The current
+   *  goal-writer credential is minted INSIDE {@link registerManagerService}'s run block (fence
+   *  live) and stashed here for {@link startGoalWriter} to build the standing connection from. */
+  goalWriterIdentity?: Identity;
+  goalWriterCreds?: string;
+  /** The acceptance replied for each goal this incarnation accepted, by {@link goalKey}, so an
+   *  idempotent same-goalId retry serves the IDENTICAL acceptance (same allocated name/triple)
+   *  without a second spawn. An entry lives while its goal is in flight and for
+   *  {@link ManagerConfig.goalAcceptanceRetentionMs} after its terminal commits; a later retry, or one at another
+   *  incarnation, is answered from the goal index while the goal runs and from its committed
+   *  result fact once it has ended. */
+  goalAcceptances = new Map<string, SpawnAcceptance>();
+  /** The boot reconcile of the durable goal index runs ONCE at start (a
+   *  fresh incarnation inherits the endpoint's accepted-but-unterminal goals from any predecessor).
+   *  Spawn-as-action REFUSES to accept until it completes, so the sweep never races a live goal's
+   *  acceptance (settling one mid-flight would steal its real terminal). */
+  goalReconcileDone = false;
+
   // The Manager members these bodies read, under their Manager names. Each reads through its dep at
   // use, so a field the Manager assigns later is current and a method a test replaces on the Manager
   // is the one that runs.
   private get auth() { return this.deps.auth(); }
-  private get goalAcceptances() { return this.deps.goalAcceptances(); }
-  private get goalWriter() { return this.deps.goalWriter(); }
-  private set goalWriter(value: Manager["goalWriter"]) { this.deps.setGoalWriter(value); }
-  private get goalWriterCreds() { return this.deps.goalWriterCreds(); }
-  private set goalWriterCreds(value: Manager["goalWriterCreds"]) { this.deps.setGoalWriterCreds(value); }
-  private get goalWriterIdentity() { return this.deps.goalWriterIdentity(); }
   private get leaseStopping() { return this.deps.leaseStopping(); }
   private get managerInstanceId() { return this.deps.managerInstanceId(); }
   private get remoteAuthority() { return this.deps.remoteAuthority(); }
   private get serviceServe() { return this.deps.serviceServe(); }
   private get turnRelay() { return this.deps.turnRelay(); }
-  private get goalReconcileDone() { return this.deps.goalReconcileDone(); }
-  private set goalReconcileDone(value: Manager["goalReconcileDone"]) { this.deps.setGoalReconcileDone(value); }
   private adoptTurnGoal(...args: Parameters<Manager["adoptTurnGoal"]>): ReturnType<Manager["adoptTurnGoal"]> { return this.deps.adoptTurnGoal(...args); }
   private boundedReconnect(...args: Parameters<Manager["boundedReconnect"]>): ReturnType<Manager["boundedReconnect"]> { return this.deps.boundedReconnect(...args); }
   private dial(...args: Parameters<Manager["dial"]>): ReturnType<Manager["dial"]> { return this.deps.dial(...args); }

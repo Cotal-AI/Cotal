@@ -69,8 +69,9 @@ The install id is a persistent identifier for the settings file. The `account` f
 `regular` hashes the cached sign-in's IdP URL and subject id; it allows correlation across
 machines without sending those raw identifiers. The daemon, manager,
 connectors and workflow runtime send nothing; neither do internal
-entries (including extension update helpers), hidden daemon runners, `agent-bearer` and
-`cotal telemetry` itself.
+entries, hidden daemon runners, `agent-bearer` and `cotal telemetry` itself.
+Extension update helpers and the `ext add` processes that prepare built-in connectors send no events.
+Running `cotal ext add` yourself still reports the command at the configured level.
 The standalone `cotal --version` and `cotal -V` flags send no events.
 
 The intake receives the request's IP address even though the CLI does not put it in the
@@ -81,8 +82,10 @@ opt-outs; it does not establish the receiving service's IP handling or retention
 ## Delivery
 
 One `command` event is posted as the CLI process exits, whatever the exit path. At `regular`, the
-first eligible command of each UTC day also posts an `install` event first. `cotal docs` leaves
-that event for another command so it can run without reading the extension inventory. Each event
+first eligible command to finish each UTC day also posts an `install` event first. Commands that
+overlap share the same daily record. `cotal docs` leaves that event for another command so it
+can run without reading the extension inventory. If another process is still creating the install
+ID, the command runs without sending telemetry. Each event
 is one `POST` of JSON, `content-type: application/json`, to `https://cotal.ai/v1/telemetry`. The
 command and install posts share one 1.5 second send deadline, with no retry. Send failures are
 ignored and do not change the command's exit code; the exit hook waits at most 1.5 seconds for delivery.
@@ -105,7 +108,7 @@ a later terminal run still shows it. An environment-selected level does not trig
 | `level` | `"minimal"` or `"regular"` | The level the event was sent at. |
 | `event` | `"command"` | |
 | `command` | string | The registered top-level command name (`up`, `spawn`, `ext`), never a user word. |
-| `outcome` | `"ok"`, `"error"` or `"refused"` | Exit 0 is `ok`; a typed refusal, or exit 2 without one, is `refused`; anything else is `error`. |
+| `outcome` | `"ok"`, `"error"` or `"refused"` | Exit 0 is `ok`. For `status --components`, a refused check gives `refused`; an absent or non-serving component gives `error` unless another check was refused. Other commands use their reported failure outcome, or `refused` for exit 2 and `error` for other nonzero exits when none was reported. |
 | `exitCode` | integer | The process exit code. |
 | `durationMs` | integer | Milliseconds from dispatch to exit. |
 | `version` | string | The `cotal-ai` version. |
@@ -113,6 +116,8 @@ a later terminal run still shows it. An environment-selected level does not trig
 | `arch` | string | `process.arch`. |
 | `node` | integer | The Node major version. |
 | `ci` | boolean | Whether `CI` is set to anything but `0` or `false`. |
+
+When the `help` command encounters an unknown command or subcommand, it reports `refused` and exits 1. At `regular`, its code is `USAGE_INVALID`. The event omits the requested topic, diagnostic text and stack.
 
 At `regular` the event also carries:
 

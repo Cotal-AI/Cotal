@@ -117,8 +117,10 @@ command's help: `sp` (spawn), `a` (attach), `s` (status), `r` (run), `x` (ext), 
 `cotal ext rm` for `cotal ext remove`. An alias behaves the same as its command. A command or
 subcommand is never selected by a prefix, so `cotal spaw` is an unknown command. The refusal for an
 unknown command, leading flag, subcommand or option names the nearest one when it is one edit away,
-or two for a word longer than four characters, so `cotal spaw` suggests `spawn`. Option suggestions
-use the flags for the selected subcommand. `cotal despawn`
+or two for a word longer than four characters, so `cotal spaw` suggests `spawn`. For a nested
+subcommand, the CLI names the unrecognized word and suggests a match under its parent, just as
+`--help` does. For example, it suggests `inspect` for `inspec` under `cotal auth handle`.
+Option suggestions use the flags for the selected subcommand. `cotal despawn`
 suggests `stop`, the command Cotal's own text calls a despawn. A command, alias,
 or extension command that would claim a word another one already claims is refused when it
 registers or installs.
@@ -182,7 +184,8 @@ connectors or writes configuration. Help, version and completion never do either
 A word that starts with `-` reads as an option. A message or name that starts with one goes after
 `--`. The refusal names `--` when the command takes an operand and there is no spelling suggestion.
 When the refusal suggests an option spelling, replace the mistyped option and keep its value,
-as in `cotal docs --search <query>`.
+as in `cotal docs --search <query>`. If the suggested switch is already set and cannot be repeated,
+the refusal tells you to drop the unknown option instead.
 An option value that starts with `-` is written `--limit=-1`,
 which the refusal gives. The refusal quotes values that a POSIX shell would split or expand, as in
 `--search='-help usage'`. An option given with no value at the end of the command or just before
@@ -220,8 +223,9 @@ prompt behaves as it does without a terminal, `web` prints its link without open
 `personas edit` is refused. A refusal for a missing `--yes` names what kept the command from asking:
 `--json`, `--no-input`, `COTAL_NO_PROMPT=1` or no interactive terminal. `--json` implies `--no-input`. `--no-color` and `--no-input` work before
 the command word on every command, and after it on every command except one that takes its words
-raw. After `--` they are ordinary words. Each is given once, as any flag is, before or after the
-command word. No command may declare a flag with either name. The output
+raw. A global flag just after an option that needs a value leaves that value missing. After `--`
+global flags are ordinary words. Each is given once, as any flag is, before or after the command
+word. No command may declare a flag with either name. The output
 flags `--json` (`-j`) and `--plain` may also come before the command word, as in
 `cotal --json status`; they are read as the command's own flags, so a command without that output
 refuses them as it does after the command word. A command that takes its words raw, such as the
@@ -288,7 +292,8 @@ envelope alone and writes no text report on stderr. If the reader closes stdout 
 keeps its exit code without printing a text report. Other failures to write the envelope send the
 text report to stderr and keep the same exit code. A usage error under
 `--json` is a `refused` envelope with code `USAGE_INVALID`, and the help it names stays off stdout.
-This also applies to `-j` grouped before a short option that needs a value, as in `cotal config get harness -js`.
+This also applies when `-j` comes before a short option that is unknown or needs a value, as in
+`cotal config get harness -jZ` or `cotal config get harness -js`.
 A word that names none of a command's subcommands and is near none of them is a usage error that
 lists the subcommands the command takes.
 A command without a JSON output refuses `--json` as an unknown option.
@@ -365,7 +370,7 @@ answer at once, and Enter takes the selection.
 Without a terminal, or with `--no-input` or `--json`, `history clear`, `channel remove`,
 `persona remove` and `endpoint remove` refuse and print the command that confirms them with
 `--yes`. That command keeps the `--space`, `--server` and `--creds` you gave, so it acts on the
-same space.
+same space. For `channel remove` and `persona remove`, it also keeps `--json` when requested.
 
 A usage line breaks only between options, never between an option and its argument. A ` | ` stays
 on the line before it whenever it fits there. A compact `|`, such as the one in

@@ -199,6 +199,15 @@ const ansi = /\x1b\[/;
     check(`\`${args.join(" ")}\` is refused, naming the known spaces, and writes nothing`,
       r.status === 2 && r.envelope?.outcome === "refused" && r.envelope.error?.code === "TARGET_NOT_FOUND" && /no space named "nope" is registered, prepared or holding a saved value here; known spaces: demo$/.test(r.envelope.error.message) && fileText() === before, shown(r));
   }
+  const occupied = join(home, "demo");
+  const missing = run(["config", "get", "persona", "--space", "other_lab", "--json"], {}, occupied);
+  const create = /`cotal (space create other_lab --root) <dir>`/.exec(missing.envelope?.error?.remedy ?? "")?.[1];
+  const prepared = create === undefined ? undefined : run([...create.split(" "), join(home, "other-lab"), "--json"], {}, occupied);
+  const found = run(["config", "get", "persona", "--space", "other_lab", "--json"], {}, occupied);
+  check("config keeps the unknown-space refusal and gives a preparation command usable from an occupied root",
+    missing.status === 2 && missing.envelope?.error?.code === "TARGET_NOT_FOUND" && prepared?.status === 0 &&
+      found.status === 0 && (found.envelope?.result?.scope as { space?: string } | undefined)?.space === "other_lab" && fileText() === before, shown(missing));
+  run(["space", "forget", "other_lab", "--json"]);
   writeFileSync(file, JSON.stringify({ ...saved(), spaces: { ...saved().spaces, gone: { persona: "old" } } }));
   const goneGet = run(["config", "get", "persona", "--space", "gone", "--json"]);
   check("a value left for a removed space can still be read", goneGet.status === 0 && (goneGet.envelope?.result as { setting?: Setting } | null)?.setting?.winner?.source === "space" && (goneGet.envelope?.result as { setting?: Setting } | null)?.setting?.value === "old", shown(goneGet));
@@ -384,6 +393,10 @@ const ansi = /\x1b\[/;
   writeFileSync(join(catalog, "real.md"), "---\nname: real\n---\nhi\n");
   const real = run(["config", "set", "persona", "real", "--space", "cat", "--json"]);
   check("a name the catalog holds raises no warning", real.status === 0 && warned(real) === undefined, real.envelope);
+  writeFileSync(join(catalog, "review.md.md"), "---\nname: reviewer\n---\nReview changes.\n");
+  const dotted = run(["config", "set", "persona", "review.md", "--space", "cat", "--json"]);
+  check("a dotted catalog name can be saved without a missing file warning",
+    dotted.status === 0 && saved().spaces.cat?.persona === "review.md" && warned(dotted) === undefined, dotted.envelope);
   const path = run(["config", "set", "persona", "./nosuch.md", "--space", "cat", "--json"]);
   check("a persona file path that is missing names the file", path.status === 0 && warned(path)?.message.startsWith(`no persona file ${join(realpathSync(catProject), "nosuch.md")};`) === true, path.envelope);
   const broken = run(["config", "set", "persona", "bad name", "--space", "cat", "--json"]);
@@ -510,12 +523,12 @@ if (process.platform !== "win32") {
   chmodSync(dir, 0o757);
   try {
     const write = run(["config", "set", "editor", "ed", "--json"]);
-    check("a write into a world-writable preferences folder is refused with PERMISSION_DENIED, exit 2, naming the folder and its chmod",
-      write.status === 2 && write.envelope?.error?.code === "PERMISSION_DENIED" && (write.envelope.error.message ?? "").includes(`the preferences folder is not protected against other local writers: ${dir} is writable by every local account`) && write.envelope.error.remedy === `chmod o-w ${dir}`, shown(write));
+    check("a write into a world-writable preferences folder is refused with PERMISSION_DENIED, exit 2, naming the folder and its chmod, and leaves stderr empty",
+      write.status === 2 && write.envelope?.error?.code === "PERMISSION_DENIED" && (write.envelope.error.message ?? "").includes(`the preferences folder is not protected against other local writers: ${dir} is writable by every local account`) && write.envelope.error.remedy === `chmod o-w ${dir}` && write.stderr === "", shown(write));
     check("and the file is left as it was", fileText() === before);
     const read = run(["config", "--json"]);
-    check("a read applies the saved values with a PREFERENCES_FOLDER_UNPROTECTED warning naming the folder and its chmod",
-      read.status === 0 && read.envelope?.outcome === "ok" && settingOf(read, "editor")?.value === "vi" && read.envelope.warnings.filter(unprotected).length === 1 && read.stderr.includes("! the preferences folder is not protected"), shown(read));
+    check("a read applies the saved values with a PREFERENCES_FOLDER_UNPROTECTED warning naming the folder and its chmod, and keeps it off stderr",
+      read.status === 0 && read.envelope?.outcome === "ok" && settingOf(read, "editor")?.value === "vi" && read.envelope.warnings.filter(unprotected).length === 1 && read.stderr === "", shown(read));
     const status = run(["status", "--json"]);
     const hints = ((status.envelope?.result as { hints?: string[] } | null)?.hints ?? []);
     check("status warns too, and its Next protects the folder", status.status === 0 && (status.envelope?.warnings ?? []).some(unprotected) && hints.includes(`protect the preferences folder: chmod o-w ${dir}`), shown(status));

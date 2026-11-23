@@ -184,10 +184,23 @@ try {
   ok("stopped live inventory names the completed stop and restart folder in plain output",
     inventoryText.status === 4 && inventoryText.stdout.includes("retained") && inventoryText.stdout.includes(stoppedMessage) &&
     inventoryText.stdout.split("\nNext\n")[1]?.trim() === restart, inventoryText.out);
+  const clear = await run(["ps", "--plain", "--space", space], caller);
+  ok("ps offers the normal restart while the saved address is free",
+    clear.status === 2 && /Code:\s+TARGET_UNAVAILABLE/.test(clear.out) && clear.out.includes(restart), clear.out);
 
   listener = net.createServer((socket) => socket.destroy());
   await new Promise<void>((resolve, reject) => { listener!.once("error", reject); listener!.listen(port, "127.0.0.1", () => resolve()); });
   ok("a non-NATS listener holds the old address", await serving(port));
+  const remedy = `stop the process listening on 127.0.0.1:${port}, then run \`cotal up\` in ${realpathSync(root)}; this stack keeps its recorded address`;
+  for (const [label, flags, cwd] of [
+    ["from the stopped project", [], root],
+    ["with the saved broker", ["--space", space, "--server", server], caller],
+  ] as const) {
+    const ps = await run(["ps", "--plain", ...flags], cwd);
+    ok(`ps ${label} names the occupied address and how to restart`,
+      ps.status === 2 && /Code:\s+TARGET_UNAVAILABLE/.test(ps.out) && ps.out.includes(`another process holds that address 127.0.0.1:${port}`)
+      && ps.out.includes(remedy) && !ps.out.includes(restart), ps.out);
+  }
 
   const first = await run(["down", "--dry-run"]);
   ok("first stop preview exits 0 and reports the no-op",

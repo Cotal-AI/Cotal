@@ -100,6 +100,9 @@ try {
   check("an ordinary retry from another folder names the requested stack",
     rooted.status === 2 && rooted.env?.error?.code === "LIFECYCLE_BLOCKED" && launcher !== undefined
       && rooted.env.error.remedy === `${stop}, then run ${codeSpan(`${launcher} up --space ${space} --root ${shellWord(root)}`)} again`, shown(rooted));
+  const foreground = cotal("up", "--foreground", "--server", server);
+  check("a blocked foreground start keeps its service stop and retries the original invocation",
+    foreground.status === 2 && foreground.stderr.replace(/\s+/g, " ").includes(`${stop}, then repeat your original foreground startup command from the same folder with the same options`), shown(foreground));
   const brokerOnly = cotal("up", "--no-manager", "--json");
   const retry = /then run `([^`]+)` again$/.exec(brokerOnly.env?.error?.remedy ?? "")?.[1];
   const expectedRetry = `${launcher} up --space ${space} --no-manager`;

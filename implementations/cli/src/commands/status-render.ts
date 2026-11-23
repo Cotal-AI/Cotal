@@ -601,10 +601,11 @@ function nextActions(r: StatusResult, seedFailed: boolean, interactive: boolean,
       extra.push(`${absent.message}; ${absent.remedy}`);
     }
   } else if (!storeBlocked && !seedBlocksRestart && own && r.selected.resolved && r.store?.state !== "full" && (memberGone || !elsewhere && r.selected.connection !== "ok" && r.selected.connection !== "reachable")) {
+    restartBlock = channelSeedRestartBlock(stack.root);
     // `up` neither adopts nor replaces a service outside the stack that runs one of this root's
     // records, so each is stopped first, with the stop `up` names.
     const held = r.folder.heldServices ?? [], space = r.selected.space;
-    items.unshift(...held.map((row) => ({ command: `${cmd} svc stop ${row.definition} --instance ${row.instanceId} --space ${shellWord(space)} --yes`, description: `Stop the ${row.definition} service, which runs this root's ${row.record} (pid ${row.pid}) outside the stack` })),
+    if (!restartBlock) items.unshift(...held.map((row) => ({ command: `${cmd} svc stop ${row.definition} --instance ${row.instanceId} --space ${shellWord(space)} --yes`, description: `Stop the ${row.definition} service, which runs this root's ${row.record} (pid ${row.pid}) outside the stack` })),
       { command: `${cmd} up --root ${shellWord(r.selected.root)}${r.folder.noManager ? " --no-manager" : ""}`, description: held.length ? "Then restart this stack's stopped members from its recorded inputs" : "Restart this stack's stopped members from its recorded inputs" });
   } else if (!elsewhere && legacy && dialed.mode === "open" && dialed.connection === "ok" && origin === "up" && exited.includes("manager") && r.folder.processes?.some((row) => row.name === "nats" && row.state === "running")) {
     restartBlock = channelSeedRestartBlock(dialed.root);

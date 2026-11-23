@@ -31,7 +31,7 @@ export const spawnFlags = [
 ] as const satisfies readonly FlagSpec[];
 
 /** Keep shell words on one line even when a kickoff prompt contains terminal control characters. */
-function retryWord(value: string): string {
+export function retryWord(value: string): string {
   if (oneLine(value) === value) return shellWord(value);
   return `$'${[...value].map((ch) => oneLine(ch) !== ch ? `\\U${ch.codePointAt(0)!.toString(16).padStart(8, "0")}` : ch.replace(/[\\']/g, "\\$&")).join("")}'`;
 }

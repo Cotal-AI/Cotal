@@ -1,5 +1,29 @@
 # @cotal-ai/workspace
 
+## 0.175.3
+
+### Patch Changes
+
+- 3e4e94e: Extension add now installs packages whose entry points at a directory, resolving it to the directory's index file the way Node does instead of failing the import and rolling the install back.
+- 03b122e: Show a usable `cotal auth mint` correction for channel names that start with a hyphen. The suggested `--allow-subscribe` or `--allow-publish` flag uses `=` so the channel is read as its value.
+- 1d07abd: A file-only credential mint names its stopped space with the broker address the space last ran at. The retained local signing authority resolves when the given address matches the recorded one instead of refusing the space as unknown.
+- 5406c82: Use the same CLI launcher in moved-folder recovery instructions, including `pnpm cotal` in a source checkout without `cotal` on PATH.
+- Updated dependencies [35e08ac]
+  - @cotal-ai/core@0.175.3
+
+## 0.175.2
+
+### Patch Changes
+
+- 138db65: Show how to fix blocked first starts, recover a space record path occupied by a directory, or start a service that has no instance to restart.
+- 5bf58dd: The store symlink and prepared registry recovery instructions now quote paths with spaces or shell special characters so the commands can be pasted as printed.
+- beddddf: Read captured delivery logs after stopping a stack, start the read-only dashboard without requesting unauthorized live traffic, and show how to restart a stopped open space when `watch` names it.
+- Updated dependencies [7ca1d02]
+- Updated dependencies [d4ecdff]
+- Updated dependencies [c940ed9]
+- Updated dependencies [a2486a2]
+  - @cotal-ai/core@0.175.2
+
 ## 0.175.1
 
 ### Patch Changes

@@ -16,7 +16,7 @@ import { stackRunsRecord, type StackRuns } from "./stack-runs.js";
 import { shellWord } from "./endpoint-errors.js";
 import { readStoreIdentity, type StoreIdentity } from "./store-identity.js";
 import { readMaintenanceLockHolder } from "@cotal-ai/workspace";
-import { displayCmd } from "./self-exec.js";
+import { displayCmd, displayRemedy } from "./self-exec.js";
 
 export const STACK_ROLES = ["broker", "auth", "delivery", "manager"] as const;
 export type StackRole = (typeof STACK_ROLES)[number];
@@ -99,7 +99,7 @@ function invalid(root: string): never {
  *  or this folder was moved or copied after that stack started there. Its members and instances
  *  belong to that folder, so nothing here uses them. The next step is the one every command there names. */
 function recordedElsewhere(root: string, recordedRoot: string, space: string, members: readonly StackMember[], operation: unknown): never {
-  const link = cotalDirLink(root), remedy = stackElsewhereRemedy(root, recordedRoot, space, members, operation);
+  const link = cotalDirLink(root), remedy = displayRemedy(stackElsewhereRemedy(root, recordedRoot, space, members, operation));
   if (link !== undefined)
     throw new CommandFailure("refused", "CONFLICT", `${join(root, ".cotal")} is a link to ${link}, whose stack journal was recorded at ${recordedRoot}; a controller stack runs only from the folder it started in`, { target: { root, recordedRoot, space, link }, remedy });
   if (recordsMovedTo(recordedRoot, root))

@@ -101,7 +101,8 @@ Setup needs an installed connector. When `--harness` names a built-in connector 
 installed, setup reports `DEPENDENCY_UNAVAILABLE`. The remedy names the `cotal ext add` command
 for that connector. Setup does not reinstall removed connectors. If none are installed in a source
 checkout, setup instead points to a released install or to `COTAL_ALLOW_CHECKOUT_SEED=1` for a
-sandboxed release test. An unknown harness name reports `USAGE_INVALID`.
+sandboxed release test. An unknown harness name reports `USAGE_INVALID` before setup installs any
+extensions.
 
 After successful preparation, the terminal asks separately whether to start, and only a typed `y`
 or `yes` starts it. An explicit
@@ -496,9 +497,12 @@ without a confirmed proxy refusal remains a no-op.
 If the latest-version check fails for a non-network reason, `cotal update --self` reports npm's
 first diagnostic line and exits with status 1.
 
-Missing release archives wait up to ten minutes before keeping the installed
-version. Invalid metadata, integrity failures and scoped registry access errors refuse before global
-installation or connector reconciliation. Since 0.167.1, registry access refusals report npm's error
+Missing release archives and missing target versions of installed first-party extensions share a
+ten-minute wait. If CLI release archives are still missing, Cotal keeps the installed version and
+exits successfully. If an installed extension's target version is still missing, Cotal names it,
+leaves the installation unchanged and exits with status 1. Invalid metadata, integrity failures
+and scoped registry access errors refuse before global installation or connector reconciliation.
+Since 0.167.1, registry access refusals report npm's error
 code rather than asking you to wait for publication. For a refused scoped connection, check the
 `@cotal-ai:registry` line in `.npmrc` and restore that registry's connectivity or correct the setting
 before retrying. The updater does not bypass your configured registry. This preflight does not
@@ -577,9 +581,10 @@ and names `chmod g-w <path>` as the next step.
 Third-party extensions are listed with their installed version and recorded spec but are not
 auto-updated in v1. Floating third-party updates require `@cotal-ai/*` peer-range validation and are
 a future follow-up. When `update --self` cannot reach the registry before selecting a release,
-it reports that nothing changed and exits 0 without reconciling packages or inspecting Manager
-custody. It does not create an update recovery record. From 0.167.1, losing registry connectivity during release checks, extension-dependency
-checks or target staging also reports that nothing changed and exits 0 before replacement.
+it exits 0 without reconciling packages, inspecting Manager custody or creating an update recovery
+record. If self-update already restored write access to an installation directory, it reports that
+no installed packages were replaced. Losing registry connectivity during release checks,
+extension-dependency checks or target staging also exits 0 before replacement.
 On Linux and macOS, the updater stops a staging install that stops making progress or reaches
 its five-minute limit. It removes the disposable staging copy and leaves the running installation
 and local spaces unchanged. Automatic updates defer the attempt without counting it as a failure.
@@ -691,9 +696,10 @@ post confirms that nothing was sent and names the mint with `--allow-publish` fo
 Reading, roster commands and DMs remain available. Use the intended channel in both commands.
 A subscription pattern such as `team.>` can be the landing channel when the read grant covers it.
 The session can follow the pattern, but broadcasts from the join prompt require a concrete landing channel.
-If the file is incomplete, `join` refuses it before connecting. Pass the complete file as issued,
-or ask the space's owner to mint a replacement with `--provision`, `--allow-subscribe` for the
-landing channel, and `--out`. Use the lifecycle UID that the replacement mint reports.
+If the file is missing or incomplete, `join` refuses it before connecting. Check the path for a
+missing file, or pass the complete file as issued. If you need a replacement, ask the space's
+owner to follow the suggested mint command. It provisions the inbox and grants read access to the
+landing channel. Use the lifecycle UID that the replacement mint reports.
 `--provision` alone grants no channel access. A missing read grant is refused with
 `PERMISSION_DENIED` naming the channel and `--allow-subscribe`. A mismatched lifecycle UID is
 refused separately, naming the UID and the mint that reported its pair. Neither refusal points at
@@ -1007,12 +1013,14 @@ from this folder. An explicit `cotal use` selection wins even in a running space
 Only an automatically adopted selection yields to a running space registered for this folder.
 With no space running here it is the selected space, or the only running one.
 With none of those it reads your defaults. `--user` reads your defaults alone.
+If `config get` already has a key, remove an unknown option rather than moving it after `--`.
 
 `set` and `unset` change your defaults, or your values for one space with `--space`.
 Both commands work without installing or refreshing connectors. Only `harness`
 and `persona` have per-space values. `set --space` takes a space registered or prepared on this
 machine. A valid name that does not match a space refuses with `TARGET_NOT_FOUND` (exit 2) and the
-known spaces. A name `space create` cannot use, such as one starting with `-`, refuses with
+known spaces. To prepare a new space from an occupied project, run `cotal space create <name> --root <dir>`
+with another folder. A name `space create` cannot use, such as one starting with `-`, refuses with
 `USAGE_INVALID` (exit 1) before any space lookup.
 A read and `unset --space` also take a space that still holds a saved value, so a value left for
 a space you removed can be read and removed, and refuse any other name the same way. A write that
@@ -1142,7 +1150,7 @@ completion does not support, such as tcsh, is refused with `UNSUPPORTED` (exit 2
   invalid profile reply or missing profile directory refuses without guessing a path.
 
 An absolute `XDG_CONFIG_HOME` replaces `~/.config` for the owned stubs; a relative value is
-ignored. Mutation refuses a relative `ZDOTDIR`, symlink, untrusted owner or unsafe file access
+ignored. Mutation refuses a relative `ZDOTDIR`, untrusted owner or unsafe file access
 before it creates anything. Zsh installation creates a missing absolute `ZDOTDIR` with private
 permissions. For other startup paths, a missing directory is refused and the remedy names the
 `mkdir` that creates it. `uninstall`
@@ -1157,14 +1165,17 @@ ACL. Replacements keep the existing file's group and mode, including under a set
 The temporary file starts private, and its final access is checked before it receives shell content.
 A file you do not own stays refused. A startup file that is a
 symlink, as a dotfile manager such as stow links it, is never written through: `install` refuses
-it, exit 2, names it and gives the line to add to the file it points to yourself. Bare `completion`
-warns that it is a symlink and does not read it. A startup file its owner made read-only is never
-replaced. `install`
-can still write its stub and ownership record. When it writes either file without adding the
-startup line, it reports `OPERATION_PARTIAL`, exit 4, and names the line to add yourself.
-`uninstall` refuses it, exit 2, and changes nothing until you remove that line. On Windows, PowerShell script generation works but automatic
-profile editing remains unsupported: the guarded POSIX file writer cannot safely replace
-Windows reparse-point paths. Installing files does not establish that the host runs its
+it, exit 2, names it and gives the line to add to the file it points to yourself. When neither a
+stub nor an ownership record exists for that shell, `uninstall` reports no changes without opening
+the linked startup file. If either exists, `uninstall` refuses the linked startup file. Bare
+`completion` warns that it is a symlink and does not read it. Completion never replaces a startup
+file its owner made read-only. `install` can still write its stub and ownership record. When it
+writes either file without adding the startup line, it reports `OPERATION_PARTIAL`, exit 4, and
+names the line to add yourself.
+`uninstall` refuses to remove a block from it, exit 2, and changes nothing. Restore owner write
+permission and retry without editing the startup block. On Windows, PowerShell script generation
+works but automatic profile editing remains unsupported: the guarded POSIX file writer cannot
+safely replace Windows reparse-point paths. Installing files does not establish that the host runs its
 profile or permits scripts under its execution policy.
 
 

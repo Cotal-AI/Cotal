@@ -297,7 +297,8 @@ const partial = await spawnWith(new Error("timeout"));
 check(
   "cotal_spawn reports it as a partial outcome naming the seat, its id, manager and runtime",
   partial.isError !== true && !/Couldn't spawn/.test(partial.text) && /it joined the mesh/.test(partial.text) && partial.text.includes("(id u_x.rev, manager " + MANAGER + ", runtime orca)")
-    && partial.text.includes(`model pin "${PIN}" could not be audited (timeout)`) && /Do not spawn it again/.test(partial.text) && !partial.text.includes("cotal ps"),
+    && partial.text.includes(`model pin "${PIN}" could not be audited (timeout)`)
+    && partial.text.endsWith("It is running, so spawning it again would start a second agent. To check which model it runs, inspect it with cotal_invoke on the manager endpoint."),
   partial,
 );
 const st = partial.structured;
@@ -335,6 +336,7 @@ const booting = await spawnWith(new Error("timeout"), { id: "g", ok: false, erro
 check(
   "a launch still booting with its pin unaudited is the same partial, marked as not joined",
   booting.isError !== true && /has not joined the mesh within its readiness window/.test(booting.text) && booting.text.includes(`(id rev, manager ${MANAGER})`)
+    && booting.text.endsWith("An identical retry in this session while it is starting returns the same goal. To check on it, inspect it with cotal_invoke on the manager endpoint rather than spawning with different options.")
     && booting.structured?.joined === false && booting.structured.manager === MANAGER && !("runtime" in booting.structured),
   booting,
 );
