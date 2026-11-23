@@ -85,6 +85,7 @@ const run = (args: string[], extra: Record<string, string> = {}, cwd = neutral) 
 const runShell = (args: string, extra: Record<string, string> = {}, cwd = neutral) =>
   spawnSync("sh", ["-c", `exec "$0" "$1" ${args}`, process.execPath, BIN], { cwd, env: { ...env, ...extra }, encoding: "utf8", timeout: 120_000 });
 const shown = (r: ReturnType<typeof run>) => ({ status: r.status, stdout: r.stdout.slice(0, 600), stderr: r.stderr.slice(0, 900) });
+const parsed = (r: ReturnType<typeof run>) => { try { return JSON.parse(r.stdout) as { target?: unknown; error?: { code?: string; message?: string } }; } catch { return undefined; } };
 const usageShape = (r: ReturnType<typeof run>, message: RegExp) =>
   r.status === 1 && r.stdout === "" && /^✗ /m.test(r.stderr) && message.test(r.stderr) && /Usage/.test(r.stderr) && !/Request refused|Code:/.test(r.stderr);
 
@@ -132,6 +133,37 @@ const noValue = run(["history", "--limit"]);
 check("an option given last with no value is refused naming it and its placeholder", usageShape(noValue, /--limit needs a value/) && /write --limit <n>/.test(noValue.stderr) && !/argument missing/.test(noValue.stderr), shown(noValue));
 const flagValue = run(["history", "--limit", "--from", "bob"]);
 check("an option followed by another of the command's options is refused as missing its value", usageShape(flagValue, /--limit needs a value/) && /write --limit <n>/.test(flagValue.stderr), shown(flagValue));
+const separateJson = run(["config", "get", "harness", "--json", "-Z"]);
+const groupedJson = run(["config", "get", "harness", "-jZ"]);
+check("an unknown short option after grouped -j gives the same JSON refusal as separate options",
+  groupedJson.status === 1 && groupedJson.stderr === "" && groupedJson.stdout === separateJson.stdout
+  && JSON.parse(groupedJson.stdout).error.code === "USAGE_INVALID"
+  && JSON.parse(groupedJson.stdout).error.message === "Unknown option '-Z'", shown(groupedJson));
+const unknownBeforeJson = run(["config", "get", "harness", "-Zj"]);
+check("an unknown short option before j does not select JSON", usageShape(unknownBeforeJson, /Unknown option '-Z'/), shown(unknownBeforeJson));
+const missingLimit = run(["history", "--json", "--limit", "--from", "abc"]);
+for (const [global, operand] of [["--no-input", "abc"], ["--no-color", "1"]] as const) {
+  const result = run(["history", "--json", "--limit", global, operand]);
+  check(`a ${global} flag cannot move an operand into a missing option value`,
+    result.status === 1 && result.stderr === "" && result.stdout === missingLimit.stdout
+    && JSON.parse(result.stdout).error.code === "USAGE_INVALID"
+    && JSON.parse(result.stdout).error.message === "--limit needs a value"
+    && JSON.parse(result.stdout).error.remedy === "write --limit <n>", shown(result));
+}
+const followGlobal = run(["history", "--json", "--follow", "--limit", "--no-input", "abc"]);
+const followRecords = followGlobal.stdout.trim().split("\n").filter(Boolean).map((line) => JSON.parse(line));
+check("a global flag after a missing history follow value preserves the stream refusal and channel",
+  followGlobal.status === 1 && followGlobal.stderr === ""
+  && followRecords.map((record) => record.type).join() === "error,end"
+  && followRecords.every((record) => record.stream === "history" && record.target?.channel === "abc")
+  && followRecords[0]?.data?.code === "USAGE_INVALID" && followRecords[0]?.data?.message === "--limit needs a value"
+  && followRecords[0]?.data?.remedy === "write --limit <n>" && followRecords[1]?.data?.reason === "setup-failed", shown(followGlobal));
+const groupedSpace = run(["config", "get", "harness", "-js", "--no-input", "abc"]);
+check("a global flag cannot hide a missing value at the end of a short option group",
+  groupedSpace.status === 1 && groupedSpace.stderr === "" && JSON.parse(groupedSpace.stdout).error.message === "--space needs a value", shown(groupedSpace));
+const completeValue = run(["docs", "--json", "--search", "usage", "--no-input"]);
+check("a global flag after a supplied value is accepted", completeValue.status === 0 && completeValue.stderr === ""
+  && JSON.parse(completeValue.stdout).result.query === "usage", shown(completeValue));
 const groupedServer = run(["status", "--server", "-jv"]);
 const separateServer = run(["status", "--server", "-j", "-v"]);
 const groupedError = JSON.parse(groupedServer.stdout).error;
@@ -365,6 +397,15 @@ check("models help explains the registration requirement without offering --cred
   && modelsHelpText.includes("Raw credential files are not accepted.")
   && /--space <s>/.test(modelsHelp.stdout) && /--server <url>/.test(modelsHelp.stdout)
   && !/--creds/.test(modelsHelp.stdout), shown(modelsHelp));
+
+const psHelp = run(["ps", "--help"]);
+check("ps help shows the supported target selectors without offering --creds",
+  psHelp.status === 0 && /--space <s>/.test(psHelp.stdout) && /--server <url>/.test(psHelp.stdout)
+  && !/--creds/.test(psHelp.stdout), shown(psHelp));
+const psCreds = run(["ps", "--plain", "--server", "nats://127.0.0.1:37943", "--creds", join(neutral, "not-created")]);
+check("ps refuses a raw credential file and points to the project folder or registered space",
+  psCreds.status === 2 && /Code:\s+UNSUPPORTED/.test(psCreds.stderr)
+  && psCreds.stderr.includes("run the command again without --creds: in the mesh's project folder, or with --space naming its registry entry"), shown(psCreds));
 
 // A subcommand's help gives its whole usage, name argument included, and only its own options.
 for (const [args, usage, foreign] of [
@@ -743,6 +784,27 @@ check("history clear does not suggest a flag only history reads take",
 const far = run(["frobnicate"]);
 check("control: a word near nothing gets no suggestion", far.status === 1 && /unknown command: frobnicate - run `cotal help` to list commands/.test(far.stderr) && !/did you mean/.test(far.stderr), shown(far));
 
+for (const [args, suggestion] of [
+  [["auth", "handle", "inspec"], "inspect"],
+  [["endpoint", "work", "commti"], "commit"],
+] as const) {
+  const [command, parent, typo] = args;
+  const message = `cotal ${command} ${parent} has no subcommand "${typo}" - did you mean ${suggestion}? Or run \`cotal help ${command} ${parent}\``;
+  const text = run([...args]);
+  const help = run([...args, "--help"]);
+  const json = run([...args, "--json"]);
+  check(`${args.join(" ")} refuses with the same text and parent help as --help`,
+    text.status === 1 && help.status === 1 && text.stdout === "" && help.stdout === ""
+    && text.stderr.startsWith(`✗ ${message}\n`) && text.stderr === help.stderr, { text: shown(text), help: shown(help) });
+  check(`${args.join(" ")} --json reports the nested typo as USAGE_INVALID`,
+    json.status === 1 && json.stderr === "" && parsed(json)?.error?.code === "USAGE_INVALID"
+    && parsed(json)?.error?.message === message, shown(json));
+}
+const missingHandleFile = run(["auth", "handle", "inspect", "--json"]);
+check("auth handle inspect without a file still reports the missing operand",
+  missingHandleFile.status === 1 && missingHandleFile.stderr === "" && parsed(missingHandleFile)?.error?.code === "USAGE_INVALID"
+  && parsed(missingHandleFile)?.error?.message === "use auth handle inspect <private-file>", shown(missingHandleFile));
+
 // A word that is no subcommand is refused naming the subcommands the command takes, as telemetry
 // names its levels, and a hidden subcommand is not offered.
 const level = run(["telemetry", "bogus"]);
@@ -764,7 +826,6 @@ check("an over-long unknown command is repeated as its first 128 characters and 
 const longSub = run(["telemetry", long]);
 check("an over-long unknown subcommand is repeated the same way", usageShape(longSub, /cotal telemetry has no subcommand "x{128}… \(100000 characters\)"; it takes off, minimal or regular/) && longest(longSub.stderr) < 400, shown(longSub));
 const longSubJson = run(["telemetry", long, "--json"]);
-const parsed = (r: ReturnType<typeof run>) => { try { return JSON.parse(r.stdout) as { target?: unknown; error?: { code?: string; message?: string } }; } catch { return undefined; } };
 check("its --json message is repeated the same way", longSubJson.status === 1 && parsed(longSubJson)?.error?.code === "USAGE_INVALID" && parsed(longSubJson)?.error?.message?.startsWith(`cotal telemetry has no subcommand "${"x".repeat(128)}… (100000 characters)"`) === true && longSubJson.stdout.length < 1_000, shown(longSubJson));
 check("its --json target is what a short word's refusal carries", JSON.stringify(parsed(longSubJson)?.target) === JSON.stringify(parsed(levelJson)?.target), { long: parsed(longSubJson)?.target, short: parsed(levelJson)?.target });
 const longRun = run(["run", "show", `run-${long}`]);

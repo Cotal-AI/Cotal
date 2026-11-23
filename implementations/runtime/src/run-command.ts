@@ -1223,6 +1223,14 @@ export function workflowArguments(args: ParsedArgs): { values: RunValues; verb: 
       try { assertValidChannel(entry); } catch (error) { usage(`--${flag}: ${oneLine((error as Error).message)}`); }
     }
   }
+  // A local start is admitted under the ceiling the operator names, so a missing or empty
+  // admission option is a usage error here, before any broker contact or connector setup.
+  if (verb === "start" && values.local === true) {
+    for (const flag of ["admit-read", "admit-publish"] as const) {
+      if (values[flag] === undefined || !values[flag].trim())
+        usage(`run start --local requires --${flag} <channels>; a local run is admitted under the ceiling you name`, `pass --${flag} <channels> (comma-separated channel patterns, or \`none\`)`);
+    }
+  }
   // Revoke is local only and needs --by, so its own requirement is named before the hosted --by refusal.
   // An empty --by or --reason on an otherwise whole revoke names that flag and prints no help.
   if (verb === "revoke" && values.local === true) {
@@ -1241,6 +1249,8 @@ export function workflowArguments(args: ParsedArgs): { values: RunValues; verb: 
   if (values.value !== undefined) checkAnswerValue(values.value, usage);
   if (values.artifact !== undefined && !values.artifact.trim()) usage("--artifact names the artifact the answer cites, so it cannot be empty");
   if (values.handler !== undefined && verb !== "simulate") usage("--handler belongs to run simulate");
+  if (verb === "simulate" && values.handler !== undefined && !values.handler.trim())
+    usage("--handler names the simulation results file, so it cannot be empty", "pass `--handler <results.json>` to name the results file, or omit `--handler` when no results file is needed");
   if ((values.status !== undefined || values.to !== undefined || values.note !== undefined) && verb !== "yield") usage("--status, --to and --note belong to run yield");
   if (verb === "yield") {
     if (!["done", "blocked", "handoff"].includes(values.status ?? "")) usage("run yield requires --status done, blocked or handoff");

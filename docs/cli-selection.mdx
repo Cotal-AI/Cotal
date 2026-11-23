@@ -79,9 +79,11 @@ whose stack ran and was stopped, and `unsettled` when its last `up` or `down` re
 gone and the current project holds the matching stack journal, `cotal space` and `cotal space show`
 identify the moved project and give the same recovery steps as `cotal up` and `cotal status`. For a
 confirmed stopped stack, run the displayed `cotal space forget <name>` and `cotal space create <name> --adopt --root <dir>`
-commands to keep the new location, then run `cotal up` from that folder. Forget releases the stopped
-stack definitions and leaves the project data in place. When no matching journal is found, the
-listing marks the missing folder `(no longer exists)` and names forget and plain create instead.
+commands to keep the new location, then run `cotal up` from that folder. The recovery steps use the
+same launcher name across commands, such as `pnpm cotal` in a source checkout without `cotal` on PATH.
+Forget releases the stopped stack definitions and leaves the project data in place.
+When no matching journal is found, the listing marks the missing folder `(no longer exists)` and
+names forget and plain create instead.
 
 `space add` registers a space that runs elsewhere, so `--space` and `use` can reach it. A name
 `space create` refuses, such as one that starts with `-` or holds a `*`, given or named by a bundle,
@@ -1097,8 +1099,9 @@ mesh to inspect; it starts nothing.
 When `status` would suggest restarting the selected stopped local stack,
 `status` checks the recorded root's default `.cotal/channels.json` with the same validation as `up`.
 This includes a foreground stack whose `down` removed its registration. Next names an invalid file
-and how to fix it before restarting. The broker still
-reports as unreachable when dialed. The check does not change the file or start the stack.
+and how to fix it before restarting. In `status --components`, the target still reports `absent`
+without a restart command. The broker still reports as unreachable when dialed. The check does not
+change the file or start the stack.
 In `--json`, `selected.channelSeedBlocksRestart` is `true` when this check finds a blocker, and
 `hints` names the file and its repair.
 

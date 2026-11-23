@@ -79,6 +79,8 @@ interface ErrorText {
 }
 
 export function telemetryErrorText(command: string, error: unknown): ErrorText {
+  // Help shows the requested topic and can suggest commands from local extensions.
+  if (command === "help" && isCommandFailure(error) && error.code === "USAGE_INVALID") return { message: null, stack: null };
   // A spawn diagnostic can include native terminal output or the original launch arguments.
   if (command === "spawn" && isCommandFailure(error) && (error.native !== undefined
       || (error.code === "USAGE_INVALID" && error.message.includes("--on <instance>")))) return { message: null, stack: null };

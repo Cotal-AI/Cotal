@@ -86,7 +86,9 @@ root can keep using these flags.
 
 If a separately started manager service blocks `up`, the refusal names the command to stop that
 instance. When you used `--root` from another project, the retry keeps the target root and space.
-A broker-only retry also keeps `--no-manager`.
+A broker-only retry also keeps `--no-manager`. For a foreground start, stop the named service
+instance and repeat your original command from the same folder. This keeps the stack attached to
+your terminal and preserves the broker options you chose.
 
 A stopped controller stack that used the default bind accepts `--host 127.0.0.1` on restart without saving a bind override.
 A running broker that used the default payload limit accepts `--max-payload 1048576` without restarting.

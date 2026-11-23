@@ -5,8 +5,8 @@ import { OFFICIAL_RUNTIMES, materializeExtension } from "../ext-loader.js";
 export const runtimesFlags = [jsonFlag, plainFlag] as const satisfies readonly FlagSpec[];
 
 /** One runtime the manager can spawn agents through. `reachable` is the provider's own
- *  `available()` answer, or null when it was not asked: the built-in `pty`, an official provider
- *  that is not installed, or one whose package failed to load (`error`). */
+ *  `available()` answer, or null for the built-in `pty`, a provider that is not installed,
+ *  or one that failed to load or answer its availability check (`error`). */
 export interface RuntimeRow {
   readonly name: string;
   readonly state: "built-in" | "installed" | "not-installed";
@@ -26,6 +26,7 @@ export async function runtimes(args: ParsedArgs): Promise<void> {
   const presentation = presentationOf(args.values as FlagValues<typeof runtimesFlags>);
   const providers = runtimeProviders();
   const items: RuntimeRow[] = [{ name: "pty", state: "built-in", package: null, reachable: null, error: null }];
+  const failedProbes = new Set<string>();
   // Officials first in a stable order, then any custom (non-official) installed/registered provider.
   // `pty` is the built-in row above; a stray extension advertising `runtime:pty` must not add a second,
   // unusable row (both preflightRuntime and the manager's createRuntime special-case pty and never
@@ -38,11 +39,13 @@ export async function runtimes(args: ParsedArgs): Promise<void> {
       continue;
     }
     const pkg = providers.get(name) ?? OFFICIAL_RUNTIMES[name] ?? null;
+    let provider: RuntimeProvider | undefined;
     try {
-      const provider = await materializeExtension<RuntimeProvider>({ kind: "runtime", name });
+      provider = await materializeExtension<RuntimeProvider>({ kind: "runtime", name });
       items.push({ name, state: "installed", package: pkg, reachable: provider.available(), error: null });
     } catch (e) {
-      items.push({ name, state: "installed", package: pkg, reachable: null, error: (e as Error).message });
+      if (provider) failedProbes.add(name);
+      items.push({ name, state: "installed", package: pkg, reachable: null, error: e instanceof Error ? e.message : String(e) });
     }
   }
   const failed = items.filter((row) => row.error !== null);
@@ -53,11 +56,25 @@ export async function runtimes(args: ParsedArgs): Promise<void> {
       target: null,
       result: { items },
       completeness: failed.length ? "partial" : "complete",
-      warnings: failed.map((row) => ({ code: "RUNTIME_LOAD_FAILED", target: { runtime: row.name }, message: `${row.name}: load failed: ${row.error}` })),
-      ...(failed.length ? { partial: { message: `${failed.length} installed runtime provider${failed.length === 1 ? "" : "s"} could not be loaded`, remedy: "reinstall it with `cotal ext add <package>`" } } : {}),
+      warnings: failed.map((row) => ({
+        code: failedProbes.has(row.name) ? "RUNTIME_UNAVAILABLE" : "RUNTIME_LOAD_FAILED",
+        target: { runtime: row.name }, message: `${row.name}: ${failureLabel(failedProbes.has(row.name))}: ${row.error}`,
+      })),
+      ...(failed.length ? { partial: partialSummary(failed.length - failedProbes.size, failedProbes.size) } : {}),
     },
-    runtimesView,
+    (result) => runtimesView(result, failedProbes),
   );
+}
+
+function failureLabel(probe: boolean): string {
+  return probe ? "availability check failed" : "load failed";
+}
+
+function partialSummary(loads: number, probes: number) {
+  const parts = [];
+  if (loads) parts.push(`${loads} installed runtime provider${loads === 1 ? "" : "s"} could not be loaded`);
+  if (probes) parts.push(`${probes} runtime availability check${probes === 1 ? "" : "s"} failed`);
+  return { message: parts.join("; "), remedy: probes ? "check the errors for the affected runtimes, then run `cotal runtimes` again" : "reinstall it with `cotal ext add <package>`" };
 }
 
 /** Name → owning package, for every runtime provider an installed extension advertises (read from
@@ -71,15 +88,14 @@ export function runtimeProviders(): Map<string, string | undefined> {
   return providers;
 }
 
-function stateCell(row: RuntimeRow): Styled {
+function stateCell(row: RuntimeRow, probeFailed: boolean): Styled {
   if (row.state === "built-in") return { text: "built in", tone: "hint", mark: "●" };
   if (row.state === "not-installed") return { text: "not installed", tone: "hint", mark: "○" };
-  // The load error itself follows the report as a warning, so the row keeps to the state.
-  if (row.error !== null) return { text: "installed · load failed", tone: "failed", mark: "●" };
+  if (row.error !== null) return { text: `installed · ${failureLabel(probeFailed)}`, tone: "failed", mark: "●" };
   return row.reachable ? { text: "installed · reachable", tone: "ok", mark: "●" } : { text: "installed · unreachable", tone: "waiting", mark: "●" };
 }
 
-function runtimesView(result: { items: readonly RuntimeRow[] }): Report {
+function runtimesView(result: { items: readonly RuntimeRow[] }, failedProbes: ReadonlySet<string>): Report {
   return {
     sections: [
       {
@@ -87,7 +103,7 @@ function runtimesView(result: { items: readonly RuntimeRow[] }): Report {
         blocks: [{
           kind: "table",
           columns: [{ key: "name", label: "Runtime" }, { key: "state", label: "State" }, { key: "package", label: "Extension" }],
-          rows: result.items.map((row) => ({ name: row.name, state: stateCell(row), package: { text: row.package ?? "included with Cotal", tone: "hint" } })),
+          rows: result.items.map((row) => ({ name: row.name, state: stateCell(row, failedProbes.has(row.name)), package: { text: row.package ?? "included with Cotal", tone: "hint" } })),
         }],
       },
       { title: "Next", blocks: [{ kind: "commands", items: [

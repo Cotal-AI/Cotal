@@ -55,7 +55,7 @@ function selectedSpace(args: ParsedArgs): string {
   catch (error) {
     if (!isWorkspaceTargetError(error)) throw error;
     if (error.code === "not-started" && error.details.space) return error.details.space;
-    if (error.code === "ambiguous-target" && (args.positionals[0] ?? "list") === "list") throw error;
+    if (error.code === "ambiguous-target" && ["list", "show"].includes(args.positionals[0] ?? "list")) throw error;
     if (error.code === "unknown-space") {
       const { message, remedy } = workspaceErrorParts({ kind: "target", error });
       const savedInventory = (args.positionals[0] ?? "list") === "list" && !args.values.live;

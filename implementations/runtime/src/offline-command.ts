@@ -88,6 +88,11 @@ function scriptOf(file: string | undefined): SimScript {
   const start = clock?.start;
   if (start !== undefined && (typeof start !== "number" || !Number.isFinite(start)))
     throw new CommandFailure("refused", "SCHEMA_INVALID", "clock.start must be a finite number in milliseconds", { target: { file } });
+  // A start the clock cannot step from by whole milliseconds reports a successful simulation
+  // with the delay lost: 9007199254740992 + 1ms rounds back to the start, so elapsedMs is 0.
+  // Refuse it before simulation, naming the supported range.
+  if (start !== undefined && typeof start === "number" && Number.isFinite(start) && !Number.isSafeInteger(start))
+    throw new CommandFailure("refused", "SCHEMA_INVALID", `clock.start must be a safe integer in milliseconds so the clock can advance by whole milliseconds; ${start} cannot represent a one-millisecond step`, { target: { file }, remedy: `use a clock.start between -9007199254740991 and 9007199254740991 in ${file}, then rerun the simulation` });
   // A misspelled clock key is silently ignored: the simulator falls back to the 1m default,
   // so `clock.checkpoints` measures a delay the author never asked for. Refuse it before
   // simulation, naming the singular key when the typo is a plural of one.
@@ -229,14 +234,22 @@ function faultParts(error: unknown): { title: string; cause?: string; fix?: stri
 
 /** Why a simulation did not complete. An L6xxx code is the simulator's: the script does not cover
  *  the program, and `target.step` names the step it stopped at. */
-function simulationFailure(error: unknown, file: string, journal: Journal): CommandFailure {
+function simulationFailure(error: unknown, file: string, journal: Journal, handler?: string): CommandFailure {
   const code = (error as { code?: unknown }).code;
   const native = typeof code === "string" && /^L[0-9]+$/.test(code) ? code : undefined;
   const failed = journal.entries().findLast((e) => e.state === "settled" && e.status === "failed" && e.error?.code === native);
   const step = failed === undefined ? undefined : journalEntryKeyString(failed);
   const { title, cause, fix } = faultParts(error);
   const why = (cause ?? title).replace(/\.$/, "");
-  const remedy = fix ?? (native?.startsWith("L6") ? "script a result for that step; unscripted effects are not invented" : undefined);
+  // A missing scripted result has no file to edit yet when no results file was passed: the
+  // remedy names the file to save and the command that passes it to the simulator, instead of
+  // only showing the result object. When a results file was passed, it names that file.
+  const rerun = handler !== undefined
+    ? `add it to ${handler} and rerun with \`cotal run simulate ${file} --handler ${handler}\``
+    : `save it in a results file, for example results.json, and rerun with \`cotal run simulate ${file} --handler results.json\``;
+  const remedy = native?.startsWith("L6")
+    ? `${fix ?? "script a result for that step; unscripted effects are not invented"}; ${rerun}`
+    : fix;
   return new CommandFailure("failed", "OPERATION_FAILED", `the offline simulation did not complete: ${why.charAt(0).toLowerCase()}${why.slice(1)}`, {
     target: { file, ...(step !== undefined ? { step } : {}) }, ...(native !== undefined ? { native: { code: native } } : {}), ...(remedy !== undefined ? { remedy } : {}),
   });
@@ -315,7 +328,7 @@ export async function offlineWorkflow(mode: "validate" | "plan" | "simulate", fi
   catch (error) {
     for (const warning of warnings) recordOperationWarning(warning, { echo: presentation !== "json" });
     if (isCommandFailure(error)) throw error;
-    throw simulationFailure(error, file, journal);
+    throw simulationFailure(error, file, journal, values.handler);
   }
   // A program that fails under its script is a completed simulation, and the failure is its outcome.
   const failure = "fault" in report ? programFailure(report.fault, journal) : null;

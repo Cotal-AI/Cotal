@@ -122,6 +122,48 @@ async function checkStoppedRestartAdvice(mesh: string, env: NodeJS.ProcessEnv, p
   }
 }
 
+async function checkStoppedOpenDiagnosis(mesh: string, env: NodeJS.ProcessEnv, space: string, port: number): Promise<void> {
+  const config = join(mesh, ".cotal", "server-open.conf");
+  const original = readFileSync(config);
+  const journal = join(mesh, ".cotal", "stack-controller.json");
+  const diagnose = (...args: string[]) => foregroundCliProbe(cliEntry, tsx, mesh, env, ["doctor", "auth", ...args]);
+  assert.equal(existsSync(journal), false, "foreground up has no controller journal");
+  for (const flags of [[], ["--space", space, "--fix"]]) {
+    const plain = await diagnose(...flags, "--plain");
+    assert.equal(plain.code, 0, plain.out + plain.err);
+    assert.match(plain.out, /No credentials to check/);
+    assert.match(plain.out, /Mode:\s+open, as recorded/);
+    const json = await diagnose(...flags, "--json");
+    assert.equal(json.code, 0, json.out + json.err);
+    const report = JSON.parse(json.out);
+    assert.equal(report.outcome, "no-op");
+    assert.deepEqual(report.target, { root: realpathSync(mesh), space });
+    assert.equal(report.result.credentialScope, "open-space");
+    assert.equal(report.result.brokerAuthorization, "not-checked");
+    assert.equal(report.result.repair.attempted, false);
+    passed++;
+  }
+  const wrong = await diagnose("--space", "another-open-space", "--json");
+  assert.equal(wrong.code, 2, wrong.out + wrong.err);
+  assert.equal(JSON.parse(wrong.out).error.code, "AUTH_REQUIRED");
+  renameSync(config, `${config}.saved`);
+  try {
+    for (const [flags, code] of [[[], 4], [["--space", space], 2]] as const) {
+      const missing = await diagnose(...flags, "--plain");
+      assert.equal(missing.code, code, missing.out + missing.err);
+      assert.ok((missing.out + missing.err).includes(config), missing.out + missing.err);
+      assert.doesNotMatch(missing.out + missing.err, /root folder|space create|No credentials to check/);
+      passed++;
+    }
+    assert.equal(existsSync(config), false, "doctor does not recreate the broker configuration");
+  } finally { renameSync(`${config}.saved`, config); }
+  assert.deepEqual(readFileSync(config), original, "doctor leaves the retained broker record alone");
+  assert.equal(existsSync(journal), false, "doctor does not prepare a stack");
+  assert.equal(await portOpen(port), false, "doctor does not restart the broker");
+  assert.equal(existsSync(join(env.COTAL_HOME!, "meshes", `space.${spaceKey(space)}.json`)), false, "doctor does not register the space");
+  passed++;
+}
+
 async function cell(name: string, options: { auth?: boolean; ready?: boolean; refusal?: boolean; managerCrash?: boolean; signal?: "SIGINT" | "SIGTERM"; twice?: boolean; crash?: boolean; nativeLog?: boolean; externalDown?: "named" | "folder"; repairDelivery?: boolean; openBrokerExit?: boolean; openManagerExit?: boolean }): Promise<boolean> {
   const root = join(base, name), home = join(root, "home"), folderNamed = options.externalDown === "folder" || options.openManagerExit;
   const mesh = join(root, folderNamed ? name : "mesh"), store = join(mesh, "store");
@@ -143,7 +185,7 @@ async function cell(name: string, options: { auth?: boolean; ready?: boolean; re
       connectors: [{ name: "status-fixture", requires: ["node"], eventPlane: false, setup: null }],
     }] }), { mode: 0o600 });
   }
-  const args = ["--import", tsx, cliEntry, "up", "--foreground", "--server", `nats://127.0.0.1:${port}`, ...(folderNamed ? [] : ["--space", space]), ...(options.auth ? [] : options.openBrokerExit || options.openManagerExit || options.externalDown ? ["--open"] : ["--open", "--no-manager"]), ...(options.openManagerExit ? ["--store-dir", store] : []), ...(options.nativeLog ? ["--log-file", "./broker.log", "--logfile-size-limit", "1048576"] : [])];
+  const args = ["--import", tsx, cliEntry, "up", "--foreground", "--server", `nats://127.0.0.1:${port}`, ...(folderNamed ? [] : ["--space", space]), ...(options.auth ? [] : options.openBrokerExit || options.openManagerExit || options.externalDown ? ["--open"] : ["--open", "--no-manager"]), ...(options.openManagerExit || (!options.auth && options.externalDown) ? ["--store-dir", store] : []), ...(options.nativeLog ? ["--log-file", "./broker.log", "--logfile-size-limit", "1048576"] : [])];
   const child: ChildProcess = spawn(process.execPath, args, { cwd: mesh, env, detached: true, stdio: ["ignore", "pipe", "pipe"] });
   let out = "", err = "", timeline = "";
   child.stdout?.on("data", (b: Buffer) => { const text = b.toString(); out += text; timeline += text; });
@@ -386,9 +428,13 @@ async function cell(name: string, options: { auth?: boolean; ready?: boolean; re
         } else {
           assert.match(meshes.out, /no meshes registered/); passed++;
           assert.match(spaces.out, /No spaces registered/); passed++;
+          if (!options.auth) await checkStoppedOpenDiagnosis(mesh, env, space, port);
           await checkStoppedRestartAdvice(mesh, env, port);
         }
-        if (!options.auth) await checkStoppedPreview(mesh, env, space, port);
+        if (!options.auth) {
+          await checkStoppedPreview(mesh, env, space, port);
+          if (options.externalDown === "named" && process.getuid?.() !== 0) await checkStoppedStore(mesh, env, space, port, store);
+        }
         console.log(`PASS foreground-up-signals ${name}: clean external down and expected registration`);
         return true;
       }
@@ -455,6 +501,32 @@ async function cell(name: string, options: { auth?: boolean; ready?: boolean; re
       writeFileSync(join(root, "exit.json"), JSON.stringify({ code: state.code, signal: state.signal, closed: state.closed, port, owned: [...owned.values()], storesDeleted: false }), { mode: 0o600 });
     }
   }
+}
+
+async function checkStoppedStore(mesh: string, env: NodeJS.ProcessEnv, space: string, port: number, store: string): Promise<void> {
+  const jetstream = join(store, "jetstream");
+  const mode = statSync(jetstream).mode & 0o777;
+  const saved = `nats://127.0.0.1:${port}`;
+  let other: number;
+  do { other = await freePort(); } while (other === port);
+  const ps = (...flags: string[]) => foregroundCliProbe(cliEntry, tsx, mesh, env, ["ps", "--plain", ...flags]);
+  chmodSync(jetstream, mode & ~0o200);
+  try {
+    for (const flags of [[], ["--space", space, "--server", saved]]) {
+      const { code, out, err } = await ps(...flags);
+      assert.equal(code, 2, out + err);
+      assert.match(err, /PERMISSION_DENIED/);
+      assert.ok(err.includes(`${jetstream} is not writable`) && err.includes(`chmod -R u+w ${jetstream}`), err);
+      passed++;
+    }
+    for (const [name, address] of [[space, `nats://127.0.0.1:${other}`], ["other-open-space", saved]]) {
+      const { code, out, err } = await ps("--space", name, "--server", address);
+      assert.equal(code, 2, out + err);
+      assert.match(err, /TARGET_UNAVAILABLE/);
+      assert.ok(!err.includes(jetstream), err);
+      passed++;
+    }
+  } finally { chmodSync(jetstream, mode); }
 }
 async function restoreStartupCell(): Promise<void> {
   const mesh = join(base, "restore-startup"), home = join(mesh, "home");

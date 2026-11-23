@@ -137,6 +137,8 @@ interrupted a journal append, the same manager can resume the run after recordin
 It replays the journal under a new attempt instead of retrying the interrupted append. It does
 not take over a run that was revoked or that another attempt already holds. If the manager
 stops first, its next boot takes back runs still recorded `running`.
+The manager scans run records in batches. It checks programs, admissions and journals only for
+runs recorded `running`, so finished runs do not each require a separate broker round trip.
 
 A run recorded `released` has no recorded reason. Its `Released` section points to the executing
 manager's log for a hosted run or the driving process's output for a locally driven run. A journal
@@ -383,7 +385,7 @@ prompts an `unblock` turn, and the unnamed wait reads the `wait` entry.
 | `asks` | `ask` replies, each checked against the step's `schema` |
 | `checkpoints` | `checkpoint` results: `{status, value, by, artifact}`, where `status` is `resolved` or `expired` |
 | `events` | `wait` results. `null` is a timeout |
-| `clock` | `{start, turn, ask, checkpoint, wait}`: `start` is a finite number in milliseconds. Effect durations take values such as `"5m"`. A turn takes 5 minutes and the others 1 minute unless set |
+| `clock` | `{start, turn, ask, checkpoint, wait}`: `start` is a safe integer in milliseconds, between -9007199254740991 and 9007199254740991, so the virtual clock can advance by whole milliseconds. Effect durations take values such as `"5m"`. A turn takes 5 minutes and the others 1 minute unless set |
 | `faults` | `[{at, kind, code, message}]`: the step at `at`, a step key such as `turn:build#1`, fails with that error |
 
 An invalid clock duration is refused before simulation with `SCHEMA_INVALID`, exit 1, even if the

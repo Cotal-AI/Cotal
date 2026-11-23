@@ -18,7 +18,9 @@ cotal runtimes [--json | --plain]
 
 Lists every agent runtime the manager can spawn through: the built-in `pty`, the official providers
 (`orca`, `tmux`, `cmux`, `herdr`), and any custom provider installed via `cotal ext add`. Each installed
-provider is probed so you can see what is actually reachable on this machine before selecting it:
+provider is probed so you can see what is reachable on this machine. A provider that reports
+itself unreachable still gives a complete result. If the provider fails to load or its availability
+check throws, the report exits 4. The row and warning identify which step failed.
 
 ```
 RUNTIME  STATE                  PACKAGE
@@ -250,7 +252,9 @@ If the installed connector supports direct preview validation, it checks resume,
 native options without creating launch files or checking its binary or login. Otherwise the preview
 reports connector arguments as not checked.
 A managed preview warns about an unknown local harness and reports `not-checked`, since the
-selected manager checks its own connectors at launch.
+selected manager checks its own connectors at launch. On an open or static space, a managed
+preview refuses a `--on` value that cannot be a manager instance id with `USAGE_INVALID`
+(exit 1). On a user-auth space, a manager name or host stays a valid pin.
 Both launch and preview reject a blank `--resume` value with `USAGE_INVALID` (exit 1) before preparing the launch.
 
 With `-d --json`, an invalid agent name or a local resume that needs `--on` produces a
@@ -471,7 +475,7 @@ and launch can still refuse one.
 A connector without a catalog says so with `supported: false`, and one whose install has no
 catalog it can list, such as a logged-out Claude Code or a pi without provider credentials, gives
 the reason in `unavailable`; neither is a failed read. A connector whose catalog could not be
-read, or that the manager could not load, makes the read `partial` (exit 4) with one `MODEL_CATALOG_UNREADABLE` warning naming its cause. The
+read, or that the manager could not load, makes an all-catalog read `partial` (exit 4) with one `MODEL_CATALOG_UNREADABLE` warning naming its cause. When `--harness` names that one catalog, the read fails instead (exit 5, `OPERATION_FAILED`) with the connector's reason. The
 screen points to that warning without repeating it inline. The remedy is to correct the stated
 cause before retrying; a refresh cannot repair missing connector configuration. A manager-level
 refusal is reported separately. When the space's service registry lists no live manager, an

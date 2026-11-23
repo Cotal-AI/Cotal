@@ -170,6 +170,15 @@ for (const level of ["regular", "minimal"]) {
   await settled();
   check("a usage refusal is an event too: refused, USAGE_INVALID, exit 1", usage.status === 1 && usage.sent.length === 1 && usage.sent[0]?.outcome === "refused" && usage.sent[0]?.errorCode === "USAGE_INVALID" && usage.sent[0]?.subcommand === null, { ...shown(usage), sent: usage.sent });
   check("…whose message masks the unknown word the user typed", typeof usage.sent[0]?.errorMessage === "string" && !(usage.sent[0]!.errorMessage as string).includes("frobnicate") && (usage.sent[0]!.errorMessage as string).includes("<value>"), usage.sent[0]?.errorMessage);
+  for (const path of [[], ["ext"]]) {
+    const help = await s.run(["help", ...path, "frobnicate"]);
+    await settled();
+    const event = help.sent[0];
+    check(`unknown ${path.length ? "subcommand" : "command"} in help keeps the requested topic local`,
+      help.status === 1 && help.stderr.includes(path.length ? 'no subcommand "frobnicate"' : "unknown command: frobnicate") && help.sent.length === 1
+      && event?.command === "help" && event.outcome === "refused" && event.errorCode === "USAGE_INVALID" && event.errorMessage === null && event.errorStack === null
+      && !JSON.stringify(help.sent).includes("frobnicate"), shown(help));
+  }
   const prompt = "private `prompt` text";
   const spawn = await s.run(["spawn", "-d", "--on=", "--prompt", prompt]);
   await settled();

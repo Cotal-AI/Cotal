@@ -195,11 +195,11 @@ import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createServer } from "node:net";
 import { appendFileSync, chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, watch, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { delimiter, dirname, join, resolve } from "node:path";
 import { assertSmokeSandboxDown, createSuite, freePort, listenOn, recordSmokeSandbox, type SmokeSandboxAnchor } from "@cotal-ai/smoke-kit";
 import { CotalEndpoint, deliveryLeaseHolderFor, idFromCreds, LEASE_TTL_MS, leaseKey, mintCreds, mintLifecycleUid, newIdentity, openDeliveryRegistry, type DeliveryLeaseInfo } from "@cotal-ai/core";
 import { connect, credsAuthenticator } from "@nats-io/transport-node";
-import { agentLifecycleSecretFilePaths, canonicalLocalProcessPath, codeSpan, shellPath, deliveryCredsKey, findMesh, getSpaceAuth, isCommandFailure, processStopped, workspaceSecretStore, MANAGER_DELIVERY_AWARE_MARKER, MANAGER_PIDFILE, MANAGER_SHUTDOWN_INTENT, readServiceStopRequest, spaceSegment, stopReservationPath, acquireMaintenanceLock, releaseMaintenanceLock } from "@cotal-ai/workspace";
+import { agentLifecycleSecretFilePaths, canonicalLocalProcessPath, codeSpan, shellPath, deliveryCredsKey, findMesh, getSpaceAuth, isCommandFailure, processStopped, resolveOnPath, workspaceSecretStore, MANAGER_DELIVERY_AWARE_MARKER, MANAGER_PIDFILE, MANAGER_SHUTDOWN_INTENT, readServiceStopRequest, spaceSegment, stopReservationPath, acquireMaintenanceLock, releaseMaintenanceLock } from "@cotal-ai/workspace";
 import { execWords } from "../src/lib/exec-words.js";
 
 const WT = resolve(import.meta.dirname, "..", "..", "..");
@@ -1037,19 +1037,17 @@ try {
     check("after the move back, down --yes stops it", cli(root, "down", "--yes", "--json").status === 0);
     // Stopped and moved again: every command offers moving back or adopting the new location.
     renameSync(root, moved);
-    const way = `move this folder back to ${root}, then run the command again there; or, to run it from this folder, forget it with \`cotal space forget ${space}\`, then run \`cotal space create ${space} --adopt --root ${moved}\``;
-    const routes = [cli(moved, "up", "--json"), cli(moved, "send", "--space", space, "-c", "general", "after the stop", "--json"), cli(moved, "history", "general", "--space", space, "--json")];
-    const status = cli(moved, "status", "--space", space, "--json");
-    const launcher = launcherAt(moved);
+    const pathWithoutCotal = (process.env.PATH ?? "").split(delimiter).filter((dir) => dir && !resolveOnPath(join(resolve(moved, dir), "cotal"))).join(delimiter);
+    const launcherDir = mkdtempSync(join(home, "launcher-"));
+    writeFileSync(join(launcherDir, "cotal"), `#!/bin/sh\nexec ${shellPath(process.execPath)} --import ${shellPath(TSX_IMPORT)} ${shellPath(CLI)} "$@"\n`, { mode: 0o700 });
+    const status = checkMovedStackRemedies(root, moved, space, pathWithoutCotal, "pnpm cotal");
+    checkMovedStackRemedies(root, moved, space, `${launcherDir}${delimiter}${pathWithoutCotal}`, "cotal");
     renameSync(moved, root);
     // A copy keeps the journal too. Clean store refuses in both, so status does not offer it there.
     const copy = `${root}-copy`;
     spawnSync("cp", ["-a", root, copy]);
     const copyStatus = cli(copy, "status", "--space", space, "--json");
     rmSync(copy, { recursive: true, force: true });
-    check("stopped and moved, up, send and history offer moving back or adoption", routes.every((r) => r.status === 2 && r.env?.error?.remedy === way), routes.map(shown));
-    const hintsAfterStop = (status.env?.result?.hints as string[] | undefined) ?? [];
-    check("status --space there names the same step", launcher !== undefined && hintsAfterStop.includes(way.replaceAll("`cotal ", `\`${launcher} `)), { launcher, hints: hintsAfterStop });
     const offersNoReset = (r: Run) => {
       const result = r.env?.result as { folder?: { storedState?: boolean }; hints?: string[] } | undefined;
       return result?.folder?.storedState === false && Array.isArray(result.hints) && !result.hints.some((hint) => hint.includes("clean store"));
@@ -2278,3 +2276,15 @@ try {
   for (const root of roots) cli(root, "down", "--yes", "--json");
 }
 finish();
+
+function checkMovedStackRemedies(root: string, moved: string, space: string, path: string, launcher: string): Run {
+  const run = (...args: string[]) => cliAs({ ...env, PATH: path }, moved, ...args, "--json");
+  const way = `move this folder back to ${root}, then run the command again there; or, to run it from this folder, forget it with ${codeSpan(`${launcher} space forget ${space}`)}, then run ${codeSpan(`${launcher} space create ${space} --adopt --root ${shellPath(moved)}`)}`;
+  const routes = [run("up"), run("send", "--space", space, "-c", "general", "after the stop"), run("history", "general", "--space", space)];
+  const status = run("status", "--space", space);
+  const follow = run("history", "general", "--space", space, "--follow");
+  check(`stopped and moved, up, send and history offer moving back or adoption with ${launcher}`, routes.every((r) => r.status === 2 && r.env?.error?.remedy === way), routes.map(shown));
+  check(`status --space there names the same step with ${launcher}`, status.status === 0 && ((status.env?.result?.hints as string[] | undefined) ?? []).includes(way), status.env?.result?.hints ?? shown(status));
+  check(`history --follow there names the same step with ${launcher}`, follow.status === 2 && follow.stdout.includes(JSON.stringify(way)), follow.stdout || shown(follow));
+  return status;
+}
