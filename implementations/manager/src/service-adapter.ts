@@ -249,8 +249,7 @@ export const managerService: LocalProcess = {
       extra.push("--launch", context.options.launch, "--launch-sha256", context.options["launch-sha256"]);
     }
     if (context.options.roster !== undefined) extra.push("--roster", String(context.options.roster));
-    if (context.managerName !== undefined) extra.push(`--name=${assertManagerName(context.managerName)}`);
-    else if (context.options.name !== undefined) extra.push("--name", assertManagerName(String(context.options.name)));
+    if (context.options.name !== undefined) extra.push("--name", assertManagerName(String(context.options.name)));
     // A killed child leaves its custody record, and the next child claims the slot create-only and
     // never reclaims. A record whose pid is dead is retired here, under the controller's definition
     // lock, after every refusal above; a live, foreign or unreadable one refused there.

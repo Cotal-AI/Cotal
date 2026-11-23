@@ -155,6 +155,9 @@ A legacy ledger preview supplies no authority for a new `team remove`, and legac
 ## Deploy to a running mesh [#deploying-onto-a-shared-mesh-spawn--f]
 
 Register the mesh locally and run the deployment from the project root that owns that registration.
+If you stopped a local stack, run `cotal up` from its recorded project root before previewing or applying a deployment.
+If the manifest names a single broker URL, its scheme can use either case and its trailing slash is optional.
+The URL must still name the registered broker and transport.
 For an agent or mixed deployment, use a static-auth or open mesh and set `deliveryClass: live` on every declared channel.
 A new deployment accepts one to 100 new agents and at most 100 new live channel cards.
 It refuses user-auth agent apply, default or bind changes, existing-card mutation, and a registered list of brokers.

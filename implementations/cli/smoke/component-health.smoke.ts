@@ -57,6 +57,7 @@ import {
 import { DELIVERY_PIDFILE, MANAGER_PIDFILE, WEB_PIDFILE, WEB_SERVICE_ADAPTER, WEB_SESSION_FILE, canonicalLocalProcessPath, defaultStartToken, deliveryCredsKey, processStopped, renewalRecordPath, spaceKey, writeRenewalRecord } from "@cotal-ai/workspace";
 import { SMOKE_BROKER_TOKEN, assertSmokeSandboxDown, freePort, recordSmokeSandbox, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import type { StatusResult } from "../src/commands/status.js";
+import { openTelemetryIntake } from "./_telemetry-intake.js";
 
 const WT = resolve(import.meta.dirname, "..", "..", "..");
 const CLI = join(WT, "bin", "cotal.ts");
@@ -121,8 +122,8 @@ function cliIn(cwd: string, args: string[], timeout = 30_000, childEnv = env) {
   return spawnSync(TSX, [CLI, ...args], { cwd, env: childEnv, encoding: "utf8", timeout });
 }
 
-async function cliAsync(...args: string[]): Promise<{ status: number | null; stdout: string; stderr: string }> {
-  const child = spawn(process.execPath, ["--import", TSX_LOADER, CLI, ...args], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
+async function cliAsync(args: string[], childEnv = env): Promise<{ status: number | null; stdout: string; stderr: string }> {
+  const child = spawn(process.execPath, ["--import", TSX_LOADER, CLI, ...args], { cwd: root, env: childEnv, stdio: ["ignore", "pipe", "pipe"] });
   let stdout = "";
   let stderr = "";
   child.stdout?.setEncoding("utf8");
@@ -379,7 +380,12 @@ try {
   check("REPRO: existing ps cannot identify the live lease-holder as a component",
     oldPresent.status !== 0 && /service registry.*stream not found|no manager reachable/i.test(oldPresentText), oldPresentText);
 
-  const present = cli("status", "--components", "--space", SPACE, "--server", server);
+  const intake = await openTelemetryIntake();
+  const present = await cliAsync(["status", "--components", "--space", SPACE, "--server", server], {
+    ...env, HOME: home, USERPROFILE: home, LOCALAPPDATA: home, DO_NOT_TRACK: undefined, COTAL_TELEMETRY: "regular", COTAL_TELEMETRY_URL: intake.url,
+  }).finally(() => intake.server.close());
+  const events = intake.received.filter((body) => body.event === "command");
+  check("a non-serving component reports an error without sending component facts", events.length === 1 && events[0]?.command === "status" && events[0]?.exitCode === 2 && events[0]?.outcome === "error" && events[0]?.errorCode === null && events[0]?.errorMessage === null && events[0]?.errorStack === null);
   const presentText = `${present.stdout}${present.stderr}`;
   check("live lease-holder that never serves exits present-not-serving (2)", present.status === 2, presentText);
   check("manager row names not-serving and its PID, and blames no manager build that never answered",
@@ -783,7 +789,7 @@ try {
   await sleep(10_500);
 
   servingManager = await serveManagerWithForeignRefusal();
-  const benignRefusal = await cliAsync("status", "--components", "--space", SPACE, "--server", server);
+  const benignRefusal = await cliAsync(["status", "--components", "--space", SPACE, "--server", server]);
   const benignRefusalText = `${benignRefusal.stdout}${benignRefusal.stderr}`;
   // No dashboard was started on this open mesh. Its installed extension is optional, so it must
   // not fail an otherwise serving stack.

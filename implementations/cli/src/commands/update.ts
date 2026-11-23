@@ -81,7 +81,6 @@ import {
 import {
   latestVersion,
   npmProxyRefused,
-  checkInstalledClosure,
   checkReleaseArchives,
   ReleaseNotAvailable,
   ReleaseDateExcluded,
@@ -89,7 +88,7 @@ import {
   DependencyCheckNoSpace,
   registryNetworkFailure,
   releaseReadError,
-  waitForReleaseArchives,
+  waitForReleasePreflight,
 } from "./update-release.js";
 import { refusal, reportRunningManagers } from "./update-continuity.js";
 export { isStoppedLocalMesh, reportRunningManagers, readUpdateManagerContinuity, readManagerContinuity, printLegacyReport } from "./update-continuity.js";
@@ -877,19 +876,17 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
   let repairedSelection = false;
   const releaseChecksStarted = Date.now();
   try {
-    rt.out(`Checking cotal-ai@${targetVersion} release archives`);
-    const releasePackages = await waitForReleaseArchives(targetVersion, current, rt);
-    if (!releasePackages) return 0;
-    // Dependency checks and the rollback snapshot need a readable connector graph.
-    try {
-      repairedSelection = repairUpdateConnectorSelection(Boolean(rt.prepareExecution), line => rt.err(line));
-    } catch (error) {
-      recordUpdateDeferral(targetVersion, `connector configuration preflight: ${preflightDetail(error)}`);
-      rt.err(`Cannot prepare the Cotal connector configuration: ${message(error)}. No CLI update was staged.`);
-      return 1;
-    }
-    rt.out(`Checking installed extension dependencies for ${targetVersion}`);
-    checkInstalledClosure(targetVersion, releasePackages, rt);
+    const release = await waitForReleasePreflight(targetVersion, current, rt, () => {
+      try {
+        repairedSelection = repairUpdateConnectorSelection(Boolean(rt.prepareExecution), line => rt.err(line));
+        return true;
+      } catch (error) {
+        recordUpdateDeferral(targetVersion, `connector configuration preflight: ${preflightDetail(error)}`);
+        rt.err(`Cannot prepare the Cotal connector configuration: ${message(error)}. No CLI update was staged.`);
+        return false;
+      }
+    });
+    if (release !== "ready") return release === "deferred" ? 0 : 1;
     // In-place rollback downloads the previous release. Staged rollback retains its complete graph.
     if (!rt.prepareExecution) {
       rt.out(`Checking cotal-ai@${current} recovery archives`);

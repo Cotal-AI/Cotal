@@ -48,8 +48,6 @@ export interface ServiceAdapterContext {
    *  while that root holds a maintenance journal. The adapter compares them through
    *  `admittedControllerRestore`; they grant nothing by themselves and are never saved. */
   readonly stack?: ControllerStackView;
-  /** This start's explicit manager name. The manager records it only once it starts serving. */
-  readonly managerName?: string;
   /** This start's explicit manager cap. The manager records it only once it starts serving. */
   readonly managerSeatCap?: SeatCap;
 }
