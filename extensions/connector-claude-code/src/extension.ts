@@ -7,7 +7,7 @@ import { CLAUDE_READY_TEXTS, CLAUDE_STARTUP_BLOCKERS, CLAUDE_WORKSPACE_TRUST_REP
 import { assertChannelServerDeclared, claudeUserMcpEnvKeys } from "./user-mcp.js";
 import { HOST_EXE_ENV, resolveHostExe } from "./once-exit.js";
 import { HOOK_CONTEXT_CHARS } from "./hooks.js";
-import { listClaudeModels } from "./models.js";
+import { CLAUDE_EFFORT_LEVELS, listClaudeModels } from "./models.js";
 import { CLAUDE_PROVIDER_KEYS } from "./provider-keys.js";
 
 export { CLAUDE_PROVIDER_KEYS };
@@ -88,6 +88,8 @@ export const claudeConnector: Connector = {
   pluginRoot: PLUGIN_ROOT,
   requires: ["claude"],
   listModels: listClaudeModels,
+  // A variant is a Claude effort level, rendered as `--effort`.
+  supportsModelVariant: true,
   supportsResume: true, // renders `--resume <id> --fork-session` (fork-from, never hijack) — see buildLaunch
   resumeTranscript: claudeResumeTranscript,
   supportsToolListAnnounce: true, // MCP McpServer.registerTool; SDK fires tools/list_changed
@@ -110,7 +112,8 @@ export const claudeConnector: Connector = {
   supportsLaunchValidation: true,
   buildLaunch(opts: LaunchOpts): LaunchSpec {
     if (opts.continueSession) throw new Error("claude connector does not support exact-session continuation");
-    if (opts.variant) throw new Error("claude connector: model variants are not supported");
+    if (opts.variant !== undefined && !CLAUDE_EFFORT_LEVELS.includes(opts.variant))
+      throw new Error(`claude connector: variant ${JSON.stringify(opts.variant)} is not a Claude effort level (${CLAUDE_EFFORT_LEVELS.join(", ")})`);
     // Operator MCP servers shared with this agent: the cotal config's list (see the --mcp-config block).
     const shared = opts.mcpServers ?? {};
     const exclusive = opts.mcpServersExclusive === true || opts.carried !== undefined;
@@ -231,6 +234,8 @@ export const claudeConnector: Connector = {
     // exists. After the first write, only writeLaunchArtifact can throw, and it removes every file
     // this launch wrote before it does.
     const passthrough = connectorLaunchOptions("claude", opts.launchOptions).map(([k, v]) => [k, String(v)] as const);
+    if (opts.variant !== undefined && passthrough.some(([k]) => k === "effort"))
+      throw new Error("claude connector: the variant sets --effort, and the launch options set effort too; pass one of them");
     // The private files this launch writes. The launcher that spawns the spec removes them once the
     // child has exited (core launch-artifacts).
     // Creds, broker URL and the control token ride a 0600 file; only its path is exported, so the
@@ -278,6 +283,10 @@ export const claudeConnector: Connector = {
       if (opts.model) {
         args.push("--model", opts.model);
         env.COTAL_MODEL = opts.model;
+      }
+      if (opts.variant) {
+        args.push("--effort", opts.variant);
+        env.COTAL_VARIANT = opts.variant;
       }
 
       // Fork an existing session INTO the mesh (opts.resume, an opaque host-local id). `--fork-session`
