@@ -11,6 +11,7 @@ import { MAX_AGENTS, parseResumeCommitArgs, parseResumeControlArgs, parseResumeF
 import { requireRuntimeReap } from "./runtime/index.js";
 import type { CustodialRuntime } from "./runtime/index.js";
 import type { ManagerParts } from "./manager-parts.js";
+import { optInLaunchFields } from "./harness-resolution.js";
 import { foreignEventChannels } from "./seat-launch.js";
 import type { ManagedAgent } from "./seat-types.js";
 import { ownedBySibling } from "./static-lifecycle.js";
@@ -285,6 +286,7 @@ export class PreservedResume {
         ...(a.launch.endpoints?.length ? { endpoints: copyPersonaEndpoints(a.launch.endpoints) } : {}),
         events: a.launch.events,
         eventPayloads: a.launch.eventPayloads,
+        ...optInLaunchFields(a.launch),
         shareTools: a.launch.shareTools,
         forkSource: a.launch.forkSource,
         ...(this.forkProvenance(a) ? { resumed: this.forkProvenance(a) } : {}),
@@ -961,7 +963,7 @@ export class PreservedResume {
       }
       // Asked once `exact` is known: an exact seat reopens its retained session or fails, like its
       // manifest launch, so the connector must honor reopenSession before the batch starts any child.
-      const unsupported = this.capabilityRefusal(connector, { variant: entry.launch.variant, prompt: entry.launch.prompt, exact });
+      const unsupported = this.capabilityRefusal(connector, { ...entry.launch, exact });
       if (unsupported) return { ok: false, error: unsupported };
       const eventsRefused = this.eventsRefusal(connector, entry.launch.events);
       if (eventsRefused) return { ok: false, error: eventsRefused };
@@ -1004,6 +1006,7 @@ export class PreservedResume {
           endpoints: copyPersonaEndpoints(entry.launch.endpoints) ?? [],
           events: entry.launch.events,
           eventPayloads: this.config.eventPayloadsWithheld ? false : entry.launch.eventPayloads,
+          ...optInLaunchFields(entry.launch),
           cwd: entry.launch.cwd,
         };
         const spec = connector.buildLaunch(launchOpts);
@@ -1091,6 +1094,7 @@ export class PreservedResume {
           ...(entry.launch.endpoints?.length ? { endpoints: copyPersonaEndpoints(entry.launch.endpoints) } : {}),
           events: entry.launch.events,
           eventPayloads: this.config.eventPayloadsWithheld ? false : entry.launch.eventPayloads,
+          ...optInLaunchFields(entry.launch),
           shareTools: entry.launch.shareTools,
           forkSource: entry.launch.forkSource,
           ...(entry.launch.resumed ? { resumed: entry.launch.resumed } : {}),

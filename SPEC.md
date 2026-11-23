@@ -1081,7 +1081,7 @@ path. Broken and non-directory symlinks MUST be omitted. Roots MUST list existin
 Windows (a root whose inspection fails MUST be omitted), `/` and `/Volumes` on macOS, and `/` on other hosts. Invalid or inaccessible directories
 MUST refuse with `failed-precondition`. Delegated execution MUST refuse before any filesystem
 lookup with the same execution-mode refusal as `resolve-cwd`; NONE MUST refuse with `unimplemented`.
-The Manager cluster revision is 53. The closed `spawn` input accepts optional boolean
+The Manager cluster revision is 54. The closed `spawn` input accepts optional boolean
 `eventPayloads`; revision 48 rejects this field. Revision 50 required `permissionRequests` on every
 `status.connectors` row. Revision 51 removes that field, and its closed status schema rejects a row
 that carries it. Revision 52 requires `prompts` on every `status.connectors` row (§13.7), and the
@@ -1091,6 +1091,9 @@ interrupt key the seat's connector declares into the seat's terminal, and answer
 granted as `input` is: to operator credentials, and in owner mode to a person's own manager-caller
 view (§13.21). It refuses with `unimplemented` when the connector declares no key or the runtime owns
 no terminal input.
+Revision 54 adds the optional booleans `askPermissions` and `reasoningEvents` to the closed `spawn`
+input and requires both on every `status.connectors` row (§13.7). The closed schemas of revision 53
+reject either.
 
 On such a runtime, a caller-supplied persona `config` override MUST be refused before resolving,
 checking or reading its host path. Every path shape MUST receive `failed-precondition` and the
@@ -4093,6 +4096,21 @@ the only mode whose credentials name a caller (§13.21). On an open or static me
 false. The fact MUST be present on rows built from declared extension inventory, and a missing
 declaration MUST be read as false. It is a launch capability: it does not say that a given session's
 endpoint will open. A reader learns that from the session's presence (§6) and from a call.
+
+**Manager opt-in launch fields.** The reference manager's `spawn` input takes two optional booleans.
+`askPermissions` launches the harness in its mode that asks before it uses a tool, so its permission
+prompts reach the session's `agent` endpoint (§13.22) where the session serves one. `reasoningEvents`
+publishes the model's reasoning as `REASONING_*` events on the session's event plane. Both default
+off: nothing turns them on but the caller, and a launch without them MUST be built and recorded as if
+the fields did not exist. A connector declares each one it honours. The manager MUST refuse a launch
+that sets a field to true on a connector that does not declare it, before any provisioning, naming the
+connector and the field, and MUST refuse `reasoningEvents` on a launch without the event plane. A
+runtime that starts seats outside the manager's host MUST refuse either field. The manager keeps a
+field it accepted with the seat, so a restart or resume of the seat launches it the same way. Every
+row of `status.connectors` carries required `askPermissions: boolean` and `reasoningEvents: boolean`,
+the connector's declarations on any mesh, so a caller passes a field only where the row reports true.
+A row built from declared extension inventory carries them too, and a missing declaration MUST be
+read as false.
 
 **Manager inline persona.** The reference manager's `spawn` input takes an optional closed `persona`
 record: `prompt` (required, the persona body), `role`, `model`, `variant`, `description`,
@@ -8131,6 +8149,7 @@ Normative revisions of this document, newest first. Dated snapshots per §11; th
 
 | Date | Revision |
 | --- | --- |
+| 2026-11-23 | **Opt-in launch fields for permission prompts and reasoning (§9, §13.7), additive.** The Manager cluster advances to revision 54. Its `spawn` input takes the optional booleans `askPermissions`, which launches the harness asking before it uses a tool so its prompts reach the `agent` endpoint, and `reasoningEvents`, which publishes the model's reasoning on the event plane. Both default off. The manager refuses a field the connector does not declare before any provisioning, refuses `reasoningEvents` without the event plane, and keeps an accepted field with the seat across restarts. Every `status.connectors` row requires both as the connector's declarations, read as false when an installed extension's cache lacks them. No subject changes. |
 | 2026-11-23 | **The owner gives an agent a turn and reads its usage (§13.21, §13.22, Appendix B), additive.** The `agent` cluster advances to revision 5 with `turn`, capability `agent.turn.start`, input `{ text, images? }` and output `{ id }`, and `usage`, capability `agent.usage.read`, input `{}` and output `{ supported: false }` or `{ supported: true, context?: { used, size }, cost?: { amount, currency } }`, both `authorities: ["owner"]`. `turn` queues the owner's own words, with up to 16 images, on the queue `command` uses, so `command-state` and `command-cancel` take its id and the bound of 8 counts both. It refuses the agent itself as `permission-denied`, a connector that takes no turn, or images where the harness takes none, as `unimplemented`, and a turn with no text and no image as `bad-request`. `usage` answers what the harness reported, waiting at most 10 s, and `unavailable` when it did not. An `interactive` ledger row gains the `owner` rows for both; no `grant` row admits them. Earlier commands and their digests are unchanged. |
 | 2026-11-23 | **`commands` can answer `supported: false` for a while (§13.22), clarification.** `{ supported: false }` means the connector runs no commands now. It can change within a lifecycle, as for a Claude Code seat whose command mod is not running, so a reader asks again later. `command` and `interrupt` then answer `unimplemented`, `not-executed`, with the cause in the message. No subject, schema or digest changes. |
 | 2026-11-21 | **A person controls their own agents without `admin` (§9, §13.9, §13.21), additive.** A signed-in person could not type into or interrupt their own agents through the Manager unless their actor row held `admin`, and could read their agents' event channels only through a channel grant. Both are now keyed on the ledger row being `interactive`, as the principal route's `owner` rows are. The person's `manager-caller` view carries `inspect` and `ps`, and owner-mode `despawn`, `attach`, `input` and `interrupt`, on its instance whatever the row's scope, the target owner pinned to their own. Their `agent` credential subscribes `chat.<owner>.*.events.<owner>.*` and holds one create of its own `chathist_` reader with that filter. A `managed-agent` row gets none of these, so the Manager's `input` and `interrupt` stay out of every agent credential, and a person cannot hand them on. They ride the person's sign-in, so a process using that sign-in uses them. |

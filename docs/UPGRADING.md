@@ -1,5 +1,12 @@
 # Upgrading a running deployment
 
+## Opt-in launch fields
+
+The Manager cluster advances to revision 54. Its `spawn` takes the optional `askPermissions` and
+`reasoningEvents`, and every `status.connectors` row carries both. The closed schemas of revision 53
+reject either, so update Managers and their callers together. A launch without the fields runs as
+before.
+
 ## A person's control of their own agents
 
 On a space where people sign in, a person can now stop, attach to, type into and interrupt every
