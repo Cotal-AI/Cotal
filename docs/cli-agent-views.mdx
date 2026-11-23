@@ -245,9 +245,10 @@ but the full run ID selects the ledger; an edited manifest is not new teardown a
 the native plan before a separate apply. Listing ownership does not confer permission to stop
 anything. One guarded `team deploy <file>` route accepts a
 channel-only manifest whose declared cards are all absent and explicitly set
-`deliveryClass: live`. It refuses agents, runtime requests, defaults,
+`deliveryClass: live`. It refuses agents, runtime requests, nonempty defaults,
 broker bind changes, access edges, existing cards,
 a changed re-apply, registered broker lists and unresolved prior attempts before an effect.
+An empty `defaults: {}` requests no changes to space defaults.
 A card that does not set `deliveryClass: live` is refused with `UNSUPPORTED`. The refusal names
 the cards and asks you to set `deliveryClass: live` on each card. On an open mesh, durable channels
 require a different authenticated mesh with a delivery service. On an authenticated mesh, the
@@ -452,7 +453,9 @@ extensions may produce their own output outside the finite result.
 ### Additive deployment verification
 
 `team deploy <file> --dry-run` resolves the manifest and personas and requires a
-registration for the declared space in this root. It shows the declared
+local registration for the declared space. From another checkout, the text preview names
+the registered project root required for apply. A channel-only apply from another checkout
+refuses and gives the command to retry from that root. The preview shows the declared
 channel delivery/replay/window values separately from its non-atomic live
 registry classification. If the selected running mesh is open, an explicit
 durable channel declaration is warned as unsupported by its missing delivery
