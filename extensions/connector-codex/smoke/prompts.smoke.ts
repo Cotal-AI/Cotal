@@ -4,9 +4,10 @@
  * App-server requests, in the shape codex 0.162 sends them, drive the shipped prompt module against
  * the shipped prompt desk. An answer is a `prompt-answer` call on the desk's own handler, and what the
  * module writes back is what the driver would send as the request's JSON-RPC result. Covered: the
- * command, stdin and file change approvals, the decisions a server lists, questions as a form, a
- * secret question, a request nobody resolves until the desk closes, a request the app-server
- * resolves first, an answer after the app-server is gone, no desk, and the Connector's declaration.
+ * command, stdin and file change approvals, a file change too large to show, the decisions a server
+ * lists, questions as a form, a secret question, a request nobody resolves until the desk closes, a
+ * request the app-server resolves first, an answer after the app-server is gone, no desk, and the
+ * Connector's declaration.
  *
  * Run: pnpm smoke:codex-prompts
  */
@@ -129,6 +130,22 @@ function hold(w: World, req: ServerRequest): string | undefined {
   const later = request("item/fileChange/requestApproval", { itemId: "call_3" });
   const laterId = hold(w, later)!;
   check("a completed item's changes are not kept", isDeepStrictEqual((read(w, laterId).content.subject as { input: unknown }).input, { kind: "shown", value: { changes: [] } }));
+}
+
+// ---- a file change too large to show ------------------------------------------------------------
+{
+  const w = world();
+  // A deleted file's diff is its whole content, so deleting a 300 KB file passes the desk's limit.
+  const changes = [{ path: "/work/big.txt", kind: { type: "delete" }, diff: "x".repeat(300 * 1024) }];
+  w.prompts.itemStarted({ type: "fileChange", id: "call_big", changes, status: "inProgress" });
+  const req = request("item/fileChange/requestApproval", { itemId: "call_big" });
+  const id = hold(w, req);
+  const c = id ? read(w, id).content : undefined;
+  check("a file change too large to show still opens a prompt, with its input omitted",
+    (c?.subject as { input?: { kind: string } } | undefined)?.input?.kind === "omitted", { id, warnings: w.warnings });
+  check("and it offers only the decisions that refuse", isDeepStrictEqual(c?.options.map((o) => o.id), ["decline", "cancel"]), c?.options);
+  if (id) await answer(w, id, "cancel");
+  check("a remote answer reaches Codex as its decision", isDeepStrictEqual(w.written.at(-1), { id: req.id, result: { decision: "cancel" } }), w.written);
 }
 
 // ---- questions ---------------------------------------------------------------------------------
