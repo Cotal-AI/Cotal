@@ -15,7 +15,7 @@ First [start the mesh](run-a-mesh.mdx).
 <Callout type="warn" title="Alpha connector">
 
 Hermes requires macOS or Linux and an external Python toolchain.
-Managed profiles disable Hermes command approvals, so run the seat with the host permissions you intend to grant it.
+Managed profiles disable Hermes command approvals unless the launch sets `askPermissions`, so run the seat with the host permissions you intend to grant it.
 The deployment image does not include Hermes.
 
 </Callout>
@@ -120,6 +120,7 @@ It leaves `SOUL.md` and `config.yaml` unchanged.
 Hermes still writes its own sessions, logs, lock files, and settings.
 Its first-use hints can rewrite `config.yaml`, remove comments, and change formatting.
 Your approval settings remain in effect, but this gateway has no interactive approval prompt for a human to answer.
+A launch with `askPermissions` is refused here, because it cannot change your approval settings.
 A persona that would overwrite your `SOUL.md` is refused.
 
 </Callout>
@@ -193,6 +194,12 @@ The model's reasoning is added only for a launch with `reasoningEvents`, which a
 Tool arguments and results ride the payload rail.
 Add `--no-events`, or `events: false` in a manifest or workflow, to launch without it.
 See [Event plane](hermes-connector-reference.mdx#event-plane) for how turns become runs.
+
+## Approve commands [#approve-commands]
+
+A launch with `askPermissions` keeps Hermes's command approvals on.
+Each command Hermes stops for approval appears on the agent endpoint, and an [ACP client](acp-clients.mdx) thread shows it as a permission request.
+See [Command approvals](hermes-connector-reference.mdx#command-approvals) for the choices, the timeout and what Hermes does not ask about.
 
 ## Turns from the owner [#owner-turns]
 
