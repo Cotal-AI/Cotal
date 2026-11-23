@@ -153,7 +153,7 @@ async function checkChannelReplayRetry(): Promise<void> {
     { command, retried: retried && shown(retried), after: shown(after) });
 }
 
-async function checkHistoryFollowValidation(): Promise<void> {
+async function checkFollowUsageRefusals(): Promise<void> {
   let connections = 0;
   const listener = createServer((socket) => { connections++; socket.destroy(); });
   await new Promise<void>((resolve, reject) => {
@@ -164,23 +164,40 @@ async function checkHistoryFollowValidation(): Promise<void> {
     const address = listener.address();
     if (!address || typeof address === "string") throw new Error("expected a loopback TCP listener");
     const server = `nats://127.0.0.1:${address.port}`;
-    const args = ["history", "--json", "--limit", "0"];
-    const finite = await run(args);
-    const stream = await run([...args, "--follow", "--server", server]);
-    const records = stream.stdout.trim().split("\n").filter(Boolean).map((line) => JSON.parse(line) as {
-      schemaVersion?: number; stream?: string; type?: string; target?: { space: string | null; channel: string | null; dms: boolean };
-      data?: { code?: string; message?: string; reason?: string };
-    });
-    check("finite history with --limit 0 writes one USAGE_INVALID receipt, exit 1",
-      finite.status === 1 && finite.stderr === "" && finite.envelope?.command === "history"
-        && finite.envelope.outcome === "refused" && finite.envelope.error?.code === "USAGE_INVALID", shown(finite));
-    check("invalid JSON history follow writes only error and setup-failed end, exit 1, without connecting",
-      stream.status === 1 && stream.stderr === "" && connections === 0
-        && records.map((r) => r.type).join() === "error,end"
-        && records.every((r) => r.schemaVersion === 1 && r.stream === "history" && r.target?.space === null && r.target?.channel === null && r.target?.dms === false)
-        && records[0]?.data?.code === "USAGE_INVALID" && records[0]?.data?.message === finite.envelope?.error?.message
-        && records[1]?.data?.reason === "setup-failed",
-      { stream: shown(stream), finite: shown(finite), connections });
+    const historyTarget = { space: null, channel: "general", dms: false };
+    const membershipTarget = { space: "triage", channel: "volume.posts" };
+    for (const { base, invalid, stream, target, followAfter } of [
+      { base: ["history", "--json"], invalid: ["--limit", "0"], stream: "history", target: { ...historyTarget, channel: null } },
+      { base: ["history", "general", "--json"], invalid: ["--limit"], stream: "history", target: historyTarget, followAfter: true },
+      { base: ["history", "general", "-j"], invalid: ["--unknown-option"], stream: "history", target: historyTarget },
+      { base: ["channel", "members", "#volume.posts", "--space", "triage", "--json"], invalid: ["--purge"], stream: "membership", target: membershipTarget },
+      { base: ["ch", "members", "volume.posts", "--space", "triage", "-j"], invalid: ["--creds"], stream: "membership", target: membershipTarget },
+    ]) {
+      const args = [...base, "--server", server];
+      const finite = await run([...args, ...invalid]);
+      const followed = await run(followAfter ? [...args, ...invalid, "--follow"] : [...args, "--follow", ...invalid]);
+      const records = followed.stdout.trim().split("\n").filter(Boolean).map((line) => JSON.parse(line) as {
+        schemaVersion?: number; stream?: string; type?: string; target?: Record<string, unknown>;
+        data?: { code?: string; message?: string; remedy?: string; reason?: string; lastAsOf?: number | null };
+      });
+      const error = finite.envelope?.error;
+      check(`${stream} ${invalid.join(" ")} refuses with a receipt for finite reads and error then end for follows`,
+        finite.status === 1 && finite.stderr === "" && finite.envelope?.command === (stream === "history" ? "history" : "channel")
+          && finite.envelope.outcome === "refused" && error?.code === "USAGE_INVALID"
+          && followed.status === 1 && followed.stderr === "" && connections === 0
+          && records.map((record) => record.type).join() === "error,end"
+          && records.every((record) => record.schemaVersion === 1 && record.stream === stream
+            && Object.entries(target).every(([key, value]) => record.target?.[key] === value))
+          && records[0]?.data?.code === error.code && records[0]?.data?.message === error.message && records[0]?.data?.remedy === error.remedy
+          && records[1]?.data?.reason === "setup-failed" && (stream !== "membership" || records[1].data.lastAsOf === null),
+        { follow: shown(followed), finite: shown(finite), connections });
+    }
+    for (const args of [["history", "--json", "--limit", "--", "--follow"], ["history", "clear", "--json", "--follow", "--limit"],
+      ["channel", "show", "volume.posts", "--json", "--follow", "--creds"]]) {
+      const result = await run(args);
+      check(`${args.join(" ")} is not a follow stream`, result.status === 1 && result.stderr === ""
+        && result.envelope?.outcome === "refused" && result.envelope.error?.code === "USAGE_INVALID", shown(result));
+    }
   } finally {
     await new Promise<void>((resolve) => listener.close(() => resolve()));
   }
@@ -465,7 +482,7 @@ try {
     const r = await run(["history", ...args, "--json"]);
     check(`history ${args.join(" ")} is one USAGE_INVALID envelope, exit 1`, r.status === 1 && r.envelope?.error?.code === "USAGE_INVALID", shown(r));
   }
-  await checkHistoryFollowValidation();
+  await checkFollowUsageRefusals();
 
   const unavailable = `nats://127.0.0.1:${await pickFreePort()}`;
   await checkUnreachableHistoryFollow(unavailable);

@@ -1,5 +1,14 @@
 # @cotal-ai/core
 
+## 0.175.2
+
+### Patch Changes
+
+- 7ca1d02: The service-account and daemon permission builders now live in their own core module, with no change in behavior.
+- d4ecdff: Internal refactor: the endpoint's connection and the handles opened on it (JetStream clients, KV buckets, membership watches, owned connections and pending replies) live in one `ConnectionState` object that the endpoint's internal parts share by reference, replacing per-field getter and setter callbacks. No behaviour change.
+- c940ed9: Internal refactor: the endpoint's start/stop/rebuild state, its presented credential and renewal state, and its channel-registry cache each live in one state object (`LifecycleState`, `CredentialState`, `ChannelRegistryState`) that the endpoint's internal parts share by reference, replacing per-field getter and setter callbacks. No behaviour change.
+- a2486a2: Internal refactor: the endpoint's subscriptions, stream consumers, chat subscriptions, liveness responders, principal serves, durable-backstop channels, goal followers and DM-only handler live in one `DeliveryState` object that the endpoint's internal parts share by reference, replacing per-field getter and setter callbacks. No behaviour change.
+
 ## 0.175.1
 
 No changes in this release.

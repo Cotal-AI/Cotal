@@ -374,7 +374,10 @@ or unknown outcome and never repeats effects. A failed summary write also keeps 
 
 `team boot --foreground` holds the stack's lifetime in the terminal. Ctrl-C or SIGTERM invokes the
 same guarded whole-stack stop as bare `cotal down`, without force killing members. A stop signal
-during startup lets the start settle before running that stop. Terminal loss
+during startup lets the start settle before running that stop. If the manager still has pending
+agent launches, the terminal waits briefly for them to settle before it proceeds with the stop.
+If they do not settle in time, the refusal reports that the stack is still running and says how to stop it.
+Terminal loss
 or an external kill is not a confirmed stop. When a `cotal down` from another terminal completes,
 it prints `Foreground stack released` and exits 0, as a foreground `up` does, although its start
 receipt was partial. Foreground apply takes neither JSON nor plain output;

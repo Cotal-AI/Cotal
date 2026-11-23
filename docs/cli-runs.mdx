@@ -137,6 +137,8 @@ interrupted a journal append, the same manager can resume the run after recordin
 It replays the journal under a new attempt instead of retrying the interrupted append. It does
 not take over a run that was revoked or that another attempt already holds. If the manager
 stops first, its next boot takes back runs still recorded `running`.
+The manager scans run records in batches. It checks programs, admissions and journals only for
+runs recorded `running`, so finished runs do not each require a separate broker round trip.
 
 A run recorded `released` has no recorded reason. Its `Released` section points to the executing
 manager's log for a hosted run or the driving process's output for a locally driven run. A journal
@@ -311,11 +313,13 @@ These three forms are offline and reject mesh or caller selection. Validation ch
 language and nothing a broker decides, so a valid program over the broker's message limit is still
 refused by a hosted `start`. A program that does not validate is refused by all three with every problem listed: its
 code, position, cause and fix, as a hosted `start` lists them. `--json` carries them under
-`result.problems`. For a JavaScript syntax error, use the reported position. Its line and column
+`result.problems`. If the JSON cannot be written, the CLI prints the problems on stderr unless the
+reader closed the pipe. For a JavaScript syntax error, use the reported position. Its line and column
 both start at 1, and the cause describes the error without repeating the position.
 A warning leaves the program valid. Text output prints it on stderr with its code, position, cause
-and fix. JSON output puts it in the envelope's `warnings` and leaves stderr empty, including when
-simulation fails after validation. `validate --json` also lists it under `result.warnings`. One is
+and fix. JSON output puts it in the envelope's `warnings` and leaves stderr empty. The warning stays
+in the output if the CLI refuses the results script or the simulator fails after validation.
+`validate --json` also lists it under `result.warnings`. One is
 L3021, a `fanOut` over a list written in the call whose items carry no
 `id` and that passes no `key`, which the run refuses when it reaches it. A list held in a variable
 gets no warning, because it can change before the call; the run refuses it the same way.

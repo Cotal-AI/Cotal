@@ -62,6 +62,7 @@ import { SeedChildFailure, deferredSeedRefusal, reconcileSeededConnectors, seedD
 import { deferSeedToLaunch } from "./seed/launch.js";
 import { isAuthenticSeedChild } from "./seed/lock.js";
 import { printHelpPath, printEntry } from "./help.js";
+import { membershipSetupFailureRecords } from "./commands/channel-members.js";
 import { historySetupFailureRecords } from "./commands/history.js";
 import { watchSetupFailureRecords } from "./commands/watch.js";
 import { HISTORY_LIMIT_FLAGS } from "./commands/history-limit.js";
@@ -74,7 +75,7 @@ import { FlagValueRefusal } from "./lib/flag-value-refusal.js";
 import { workingFolderRemoved } from "./lib/paths.js";
 import { reportLostOutput, writeAllSync } from "./lib/stdout-owner.js";
 import { shellWord } from "./lib/endpoint-errors.js";
-import { displayRemedy } from "./lib/self-exec.js";
+import { displayRemedy, hasMovedStackRemedy } from "./lib/self-exec.js";
 import { GLOBAL_FLAG_WORDS, OUTPUT_FLAG_WORDS } from "./lib/leading-flags.js";
 import { takeManagedHandoffCustody } from "./managed-handoff.js";
 import { nearestWords, LEADING_FLAGS, unknownCommandMessage, unknownSubcommandMessage } from "./lib/nearest-word.js";
@@ -192,9 +193,16 @@ function failureExit(cmd: Command, failure: CommandFailure, json: boolean, plain
     // Mint receipts identify the operation, not the auth namespace used by account reports.
     const command = cmd.name === "auth" && findSubcommand(cmd, metadataPositionals(cmd, words).positionals[0]?.value)?.name === "mint"
       ? "auth mint" : cmd.name;
-    const historyFollow = cmd.name === "history" && validationArgs?.values.follow === true && !plain
+    const follow = validationArgs?.values.follow === true && validationArgs.values.plain !== true && !plain;
+    const historyFollow = cmd.name === "history" && follow
       && !findSubcommand(cmd, validationArgs.positionals[0]);
+    const membershipFollow = cmd.name === "channel" && follow && validationArgs.positionals[0] === "members";
+    const space = validationArgs?.values.space;
     const records = historyFollow ? historySetupFailureRecords(validationArgs, failure)
+      : membershipFollow ? membershipSetupFailureRecords({
+        space: typeof space === "string" && space.trim() ? space : null,
+        channel: validationArgs.positionals[1]?.replace(/^#/, "") ?? null,
+      }, failure)
       : cmd.name === "watch" && validationArgs && !plain ? watchSetupFailureRecords(validationArgs, failure) : undefined;
     const lines = records ? records.map((record) => `${JSON.stringify(record)}\n`).join("") : envelopeLine(failureEnvelope(command, failure, warnings, scope));
     writeAllSync(1, Buffer.from(lines));
@@ -392,12 +400,29 @@ function usageRefusal(failure: CommandFailure, plain: boolean, cmd?: Command, wo
   paintFor(process.stderr, () => printHelpPath(cmd, helpPath(cmd, words).path, (line) => console.error(line), terminalWidth(process.stderr)));
 }
 
+/** Recover the requested follow output and target for a refusal, without running the command. */
+function followRefusalArgs(cmd: Command, words: readonly string[]): ParsedArgs | undefined {
+  if (cmd.name !== "history" && cmd.name !== "channel") return undefined;
+  const options = Object.fromEntries((cmd.flags ?? []).map(({ name, type, short }) => [name, { type, ...(short ? { short } : {}) }]));
+  const args = [...words];
+  for (;;) {
+    const { values, positionals, tokens } = parseArgs({ args, options, strict: false, allowPositionals: true, tokens: true });
+    // The loose parser consumes an option-looking word after a missing value. Leave that word
+    // available as an option (or the separator), as it is in the usage diagnostic.
+    const missing = tokens.find((token) => token.kind === "option" && token.inlineValue === false
+      && token.value?.startsWith("-") && token.value !== "-"
+      && !(args[token.index] === token.rawName && /^-\d/.test(token.value)));
+    if (!missing) return values.json === true && values.follow === true
+      ? { values: values as ParsedArgs["values"], positionals, raw: words } : undefined;
+    args.splice(missing.index + 1, 0, "");
+  }
+}
+
 /** A usage error, written by {@link usageRefusal} with the help of the command or subcommand `words`
  *  name when there is one, and with `remedy` under the message when the parser can name one. Exit 1. */
 function usageExit(message: string, cmd?: Command, json = false, plain = false, remedy?: string, words: readonly string[] = []): never {
-  // A JSON caller gets the refusal as an envelope, so stdout stays one document and the help text
-  // the remedy names stays out of it.
-  if (cmd && json) failureExit(cmd, new CommandFailure("refused", "USAGE_INVALID", message, { remedy: remedy ?? `run \`cotal help ${cmd.name}\`` }), true, false, undefined, words);
+  // A JSON caller gets only its receipt or stream records, without help text on stdout.
+  if (cmd && json) failureExit(cmd, new CommandFailure("refused", "USAGE_INVALID", message, { remedy: remedy ?? `run \`cotal help ${cmd.name}\`` }), true, false, undefined, words, followRefusalArgs(cmd, words));
   recordTelemetryFailure("refused", "USAGE_INVALID", message);
   // The help goes to stderr with the reason, so a refused run leaves stdout empty and a script that
   // sources or parses it gets nothing.
@@ -637,8 +662,8 @@ function canonicalSubcommand(cmd: Command, parsed: ParsedArgs): ParsedArgs {
   return changed ? { ...parsed, positionals } : parsed;
 }
 
-/** The subcommand path the words in `rest` name under `cmd`, and the first word where a subcommand
- *  belongs that names none. Read from the declared specs, so a stub's help never imports its package. */
+/** The subcommand path and its operands for help, and the first word where a subcommand belongs
+ *  that names none. Read from the declared specs, so a stub's help never imports its package. */
 function helpPath(cmd: Command, rest: readonly string[]): { path: string[]; unknown?: string } {
   const words = metadataPositionals(cmd, rest).positionals.map((item) => item.value);
   let surface: Pick<Command, "subcommands"> = cmd;
@@ -649,7 +674,7 @@ function helpPath(cmd: Command, rest: readonly string[]): { path: string[]; unkn
     if (!sub && surface.subcommands?.length && !(surface === cmd && cmd.name === "history")) return { path, unknown: word };
     if (!sub || sub.hidden) break;
     path.push(sub.name); surface = sub;
-    if (!sub.subcommands?.length) break;
+    if (!sub.subcommands?.length) return { path: [...path, ...words.slice(path.length)] };
   }
   return { path };
 }
@@ -674,7 +699,7 @@ async function serviceSurface(found: Command | undefined, words: string[], forRe
   } catch (error) {
     if (forRefusal || asksForHelp(words)) return { cmd: found, rest: words };
     const failure = isCommandFailure(error) ? error : new CommandFailure("refused", "SCHEMA_INVALID", "service preset metadata could not be read; no provider was imported or installed");
-    return failureExit(found, failure, asksForJson(found, words), words.includes("--plain"));
+    return failureExit(found, failure, asksForJson(found, words), words.includes("--plain"), undefined, words);
   }
 }
 
@@ -984,8 +1009,10 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
     // not resolve or connect to is refused before any request, under the refusal's own code; a
     // failure it did not classify is unknown: it may have had effects that cannot be attributed.
     if (structured(cmd, mode)) {
-      const spaceRemedy = spaceChoiceRemedy(isConnectRefusal(e) ? e.cause : e, cmd.name, parsed, rest);
-      const renderRemedy = spaceRemedy !== undefined ? () => spaceRemedy : ["status", "ps", "space", "whoami"].includes(cmd.name) ? displayRemedy : undefined;
+      const targetError = isConnectRefusal(e) ? e.cause : e;
+      const spaceRemedy = spaceChoiceRemedy(targetError, cmd.name, parsed, rest);
+      const renderRemedy = spaceRemedy !== undefined ? () => spaceRemedy
+        : hasMovedStackRemedy(targetError) || ["status", "ps", "space", "whoami"].includes(cmd.name) ? displayRemedy : undefined;
       if (isConnectRefusal(e)) {
         const failure = e.failure(renderRemedy), cause = e.cause;
         if (isWorkspaceTargetError(cause) && cause.code === "not-started" && cause.details.stopped && !cause.details.unsettled && cause.details.root && cause.details.space) {

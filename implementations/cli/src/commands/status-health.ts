@@ -51,6 +51,7 @@ import {
   terminalWidth,
   wrapWords,
   workspaceErrorParts,
+  type ErrorCode,
   type LocalProcessContext,
   type MeshTarget,
   resolveControlTarget,
@@ -61,13 +62,14 @@ import { deliveryResponderFromLease, RESPONDER_UNBOUND_CONSEQUENCE } from "../li
 import { type StoreWriteObservation } from "../lib/broker-store-health.js";
 import { pidfileState } from "./down.js";
 import { displayRemedy } from "../lib/self-exec.js";
+import { recordTelemetryFailure } from "../telemetry.js";
 import { c } from "../ui.js";
 import { cliControl } from "../lib/control.js";
 import { instanceProjection, serviceInstances } from "../lib/service-instances.js";
 import { readStackJournal, STACK_DEFINITION, stackStartedWithoutManager, unusableStackJournal } from "../lib/stack-journal.js";
 import { askManager } from "@cotal-ai/workspace/control";
 import { managerStopImpactFacts } from "./status-stop-impact.js";
-import { type Selected, UnregisteredRoot } from "./status-model.js";
+import { type Selected, type SelectedResult, type StatusResult, UnregisteredRoot } from "./status-model.js";
 
 /** The lease `holder` the delivery daemon THIS WORKSPACE launched would write, or `undefined` when it
  *  cannot be known (#1576, and the reason is #837).
@@ -191,12 +193,11 @@ function printComponent(component: ComponentHealth): void {
   }
 }
 
-function componentExit(components: readonly ComponentHealth[]): number {
-  // Refusal outranks every state: an unreadable control surface is not a clean zero even if some
-  // other component answered.  A process that exists but lacks its serving answer is next, then
-  // genuine absence.  The order is intentionally one place so a new component cannot accidentally
-  // collapse these states by choosing its own exit code.
-  return Math.max(...components.map((component) => COMPONENT_EXIT[component.verdict]));
+function printComponents(components: readonly ComponentHealth[], code: ErrorCode | null = null): void {
+  for (const component of components) printComponent(component);
+  const exit = Math.max(...components.map((component) => COMPONENT_EXIT[component.verdict]));
+  if (exit !== 0) recordTelemetryFailure(exit === COMPONENT_EXIT.refused ? "refused" : "failed", code);
+  process.exitCode = exit;
 }
 
 export function processRecord(template: string, context: LocalProcessContext): { kind: "absent" } | { kind: "unreadable"; error: string } | { kind: "dead"; pid: number } | { kind: "unattributable"; raw: string } | { kind: "live"; pid: number } | { kind: "unknown"; pid: number } {
@@ -666,38 +667,42 @@ async function brokerHealth(target: MeshTarget, store: StoreWriteObservation | u
   }
 }
 
-export async function printComponentHealth(selected: Selected, store: StoreWriteObservation | undefined, brokerUnreachable: boolean): Promise<void> {
+/** The listener can answer even when the original folder's health evidence is unavailable. */
+function movedStackComponentHealth(target: MeshTarget, meshes: StatusResult["meshes"]): [ComponentHealth, ComponentHealth, ComponentHealth] {
+  const reason = "stack health cannot be checked at the recorded project folder";
+  const refused = (name: string, facts: string[] = []): ComponentHealth => ({ name, verdict: "refused", facts: [...facts, reason] });
+  const address = brokerAddressForDisplay(target.server);
+  const reachable = meshes.items.some((mesh) => mesh.space === target.space && mesh.server === address && mesh.check === "reachable");
+  return [refused("manager"), refused("delivery"), refused("broker", [
+    ...(address === undefined ? [] : [`registered ${address}`]), ...(reachable ? ["reachable"] : []),
+  ])];
+}
+
+export async function printComponentHealth(selected: Selected, store: StoreWriteObservation | undefined, report: SelectedResult, meshes: StatusResult["meshes"]): Promise<void> {
   section("Component Health");
   if (!selected.ok) {
     const error = selected.error;
     const e = isWorkspaceTargetError(error) && error.code === "not-started" && error.details.root !== undefined && !error.details.rootMissing
       ? unusableStackJournal(error.details.root) ?? error : error;
-    if (isCommandFailure(e) && (e.code === "SCHEMA_INVALID" || e.code === "PERMISSION_DENIED")) {
-      printComponent({ name: "target", verdict: "refused", facts: [e.code, e.message, ...(e.remedy ? [e.remedy] : [])] });
-      process.exitCode = COMPONENT_EXIT.refused;
-      return;
-    }
-    if (isMeshRegistryError(e)) {
-      printComponent({ name: "target", verdict: "refused", facts: ["SCHEMA_INVALID", e.message] });
-      process.exitCode = COMPONENT_EXIT.refused;
-      return;
-    }
+    if (isCommandFailure(e) && (e.code === "SCHEMA_INVALID" || e.code === "PERMISSION_DENIED"))
+      return printComponents([{ name: "target", verdict: "refused", facts: [e.code, e.message, ...(e.remedy ? [e.remedy] : [])] }], e.code);
+    if (isMeshRegistryError(e))
+      return printComponents([{ name: "target", verdict: "refused", facts: ["SCHEMA_INVALID", e.message] }], "SCHEMA_INVALID");
     if (isWorkspaceTargetError(e)) {
       const verdict = e.code === "not-started" ? "absent" : "refused";
       const { message, remedy } = workspaceErrorParts({ kind: "target", error: e });
-      printComponent({ name: "target", verdict, facts: [e.code, remedy === undefined ? message : `${message} - ${displayRemedy(remedy)}`] });
-      process.exitCode = COMPONENT_EXIT[verdict];
-      return;
+      return printComponents([{ name: "target", verdict, facts: [e.code, remedy === undefined ? message : `${message} - ${displayRemedy(remedy)}`] }]);
     }
-    if (e instanceof UnregisteredRoot) {
-      printComponent({ name: "target", verdict: "refused", facts: ["unregistered-root", `no space is registered or prepared here for ${e.root}`] });
-      process.exitCode = COMPONENT_EXIT.refused;
-      return;
-    }
+    if (e instanceof UnregisteredRoot)
+      return printComponents([{ name: "target", verdict: "refused", facts: ["unregistered-root", `no space is registered or prepared here for ${e.root}`] }]);
     throw e;
   }
   const target = selected.target;
   const context: LocalProcessContext = { root: target.root, space: target.space, userAuth: target.mode === "user" };
+  if (target.mode === "auth" && (report.resolved ? report.connection === "root-gone" : report.code === "moved-folder") && target.source !== "flag-space-override") {
+    const [manager, delivery, broker] = movedStackComponentHealth(target, meshes);
+    return printComponents([manager, delivery, await webHealth(context), broker]);
+  }
   // ONE credential read for the whole pass (user mode resolves the signed-in login once; the
   // static shape is just the target's own auth material), shared by the manager and delivery
   // probes so the two rows cannot disagree about whose credential they probed with.
@@ -705,10 +710,9 @@ export async function printComponentHealth(selected: Selected, store: StoreWrite
   const broker = await brokerHealth(target, store);
   const components = await Promise.all([
     managerHealth(target, context, credential, broker),
-    deliveryHealth(target, context, credential, brokerUnreachable && broker.verdict === "absent"),
+    deliveryHealth(target, context, credential, report.resolved && report.connection === "unreachable" && broker.verdict === "absent"),
     webHealth(context),
     broker,
   ]);
-  for (const component of components) printComponent(component);
-  process.exitCode = componentExit(components);
+  printComponents(components);
 }
