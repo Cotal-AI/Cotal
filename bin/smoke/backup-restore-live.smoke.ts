@@ -21,6 +21,7 @@ import {
   resolveOnPath,
   rollbackRestore,
   saveSpaceAuth,
+  shellPath,
   spaceAccountPath,
   type ProcessOwner,
 } from "@cotal-ai/workspace";
@@ -979,7 +980,8 @@ async function restoredStoreRestartScenario(): Promise<void> {
   const twoStores = realpathSync.native(mkdtempSync(join(tmpdir(), "cotal-two-stores-root-")));
   const twoHome = realpathSync.native(mkdtempSync(join(tmpdir(), "cotal-two-stores-home-")));
   const artifact = join(root, "registry-backup");
-  const parent = join(root, "store parent");
+  const blocked = join(root, "owner's store parent");
+  const parent = join(blocked, "child");
   const store = join(parent, "registry-target");
   const server = `nats://127.0.0.1:${await freePort()}`;
   const space = "backup_restored_store_restart";
@@ -993,7 +995,8 @@ async function restoredStoreRestartScenario(): Promise<void> {
     must("seed registry", run("channel", "set", "preserved", "--desc", "survives", "--space", space));
     must("down --preserve-state", run("down", "--preserve-state"));
     must("registry backup", run("backup", "create", artifact, "--only", "registry"));
-    mkdirSync(parent);
+    mkdirSync(parent, { recursive: true, mode: 0o700 });
+    await assertUnsearchableRestoreStore(run, { root, artifact, store, blocked, server });
     if (process.platform !== "win32" && process.getuid?.() !== 0) {
       const journal = join(root, ".cotal", "maintenance", "v1", "journal.json");
       const ready = readFileSync(journal, "utf8");
@@ -1044,6 +1047,38 @@ async function restoredStoreRestartScenario(): Promise<void> {
     run("down", "--yes");
     for (const dir of [root, home, twoStores, twoHome]) rmSync(dir, { recursive: true, force: true });
   }
+}
+
+async function assertUnsearchableRestoreStore(run: ReturnType<typeof sandboxRun>["run"], paths: {
+  root: string; artifact: string; store: string; blocked: string; server: string;
+}): Promise<void> {
+  if (process.platform === "win32" || process.getuid?.() === 0) return;
+  const { root, artifact, store, blocked, server } = paths;
+  const maintenance = join(root, ".cotal", "maintenance");
+  const journal = join(maintenance, "v1", "journal.json");
+  const resume = join(maintenance, "v1", "resume.json");
+  const attempts = join(maintenance, "attempts");
+  const snapshot = () => [readFileSync(journal), readFileSync(resume), existsSync(attempts) ? readdirSync(attempts).sort() : null];
+  const before = snapshot();
+  chmodSync(blocked, 0o600);
+  try {
+    for (const args of [["backup", "restore", artifact], ["up", "--restore", artifact, "--detach"]]) {
+      const refused = run(...args, "--store-dir", store, "--json");
+      assert.equal(refused.status, 2, `${refused.stdout}${refused.stderr}`);
+      const { outcome, error, target } = JSON.parse(refused.stdout);
+      assert.equal(outcome, "refused");
+      assert.equal(error.code, "PERMISSION_DENIED");
+      assert.ok(error.message.includes(`cannot search ${blocked}`), error.message);
+      assert.match(error.message, /no restore was started/);
+      assert.ok(error.remedy.includes(`chmod u+x ${shellPath(blocked)}`), error.remedy);
+      assert.match(error.remedy, /choose a new store path/);
+      assert.equal(target.path, blocked);
+      assert.equal(target.storeDir, store);
+      assert.deepEqual(snapshot(), before, "preflight refusal leaves the preserved cut untouched");
+      assert.equal((await probeConnect(server, { timeoutMs: 500 })).ok, false);
+    }
+  } finally { chmodSync(blocked, 0o700); }
+  assert.equal(existsSync(store), false, "the blocked restore did not create a store");
 }
 
 async function preservationCommitCrashScenario(): Promise<void> {

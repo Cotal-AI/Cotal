@@ -247,10 +247,13 @@ creates its store at `.cotal/nats`, also when the cut's store is elsewhere, as a
 where it is until `backup cleanup-fallback` deletes it, so to keep the space on another disk, name a
 new store there with `--store-dir`. `--store-dir` names a store the restore creates, so a path that
 already exists, or whose parent directory does not, refuses `USAGE_INVALID` (exit 1) before anything
-is staged. If this account cannot write the parent, the restore refuses `PERMISSION_DENIED` (exit 2).
-Make the parent writable or choose a path under a writable parent. Leave the new store directory
-absent so the restore can create it. Restore needs the stopped preserved cut from
-`down --preserve-state`. A root with no maintenance journal refuses before the restore takes its
+is staged. If this account cannot search a parent of `--store-dir`, both restore forms refuse
+`PERMISSION_DENIED` (exit 2), name the blocking directory and leave the preserved cut unchanged.
+Restore search access there or choose a new store path under a parent this account can search and
+write. A parent this account can search but cannot write also causes `PERMISSION_DENIED`. Make it
+writable or choose a different parent. Leave the new store directory absent so the restore can
+create it. Restore needs the stopped preserved cut from `down --preserve-state`. A root with no
+maintenance journal refuses before the restore takes its
 maintenance lock. Both `backup restore`
 and `up --restore` leave the project folder and the connector installation unchanged in that case.
 The refusal says to start a stack a plain `cotal down` stopped with `cotal up` first, since that stop

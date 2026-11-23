@@ -1,7 +1,7 @@
 import { accessSync, constants, existsSync, lstatSync, readdirSync, readFileSync, readlinkSync, realpathSync, statSync, type Stats } from "node:fs";
 import { dirname, join, relative, resolve, sep, isAbsolute } from "node:path";
 import { token } from "@cotal-ai/core";
-import { authDir, c, CommandFailure, controlDirectory, foreignStoreEntries, loadMeshes, loadPreparedSpaces, localMeshesForRoot, protectedLocalDirectory, shellPath } from "@cotal-ai/workspace";
+import { authDir, c, codeSpan, CommandFailure, controlDirectory, foreignStoreEntries, loadMeshes, loadPreparedSpaces, localMeshesForRoot, oneLine, protectedLocalDirectory, shellPath, unsearchableFolder } from "@cotal-ai/workspace";
 import { readStackJournal } from "./stack-journal.js";
 
 /** The stores the broker configurations `root`'s starts rendered name. */
@@ -147,6 +147,16 @@ function statIfPresent(path: string, stat: (path: string) => Stats = statSync): 
   catch (error) { if (["ENOENT", "ENOTDIR"].includes((error as NodeJS.ErrnoException).code ?? "")) return undefined; throw error; }
 }
 
+function searchAccessCommand(folder: string): string | undefined {
+  if (process.getuid === undefined || oneLine(folder) !== folder) return undefined;
+  try {
+    const stat = statSync(folder);
+    if (stat.isDirectory() && stat.uid === process.getuid() && !(stat.mode & constants.S_IXUSR))
+      return codeSpan(`chmod u+x ${shellPath(folder)}`);
+  } catch { /* Do not suggest chmod if ownership cannot be checked. */ }
+  return undefined;
+}
+
 /** Check an explicit `--store-dir` before anything is written. Its nearest existing part must be a
  *  directory, so a regular file there is a usage refusal that names it, and that directory's chain
  *  is held to the project-root rule for other local writers. A path still to create needs that
@@ -157,6 +167,26 @@ function statIfPresent(path: string, stat: (path: string) => Stats = statSync): 
  *  the broker config records the path as given, and a reset removes only a real directory. */
 export function assertStoreDirArgument(value: string, root: string, purpose: "start" | "restore" = "start"): void {
   const path = resolve(value);
+  try { checkStoreDirPath(path, root, purpose); }
+  catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code !== "EACCES" && code !== "EPERM") throw error;
+    const blocked = unsearchableFolder(path);
+    const chmod = blocked === undefined ? undefined : searchAccessCommand(blocked);
+    const message = blocked === undefined
+      ? `this account was denied access to the --store-dir path ${path}`
+      : `this account cannot search ${blocked}, in the --store-dir path ${path}`;
+    const outcome = purpose === "restore" ? "no restore was started" : "nothing was started or written";
+    const remedy = blocked === undefined ? "check access to the store path" : `restore search access${chmod === undefined ? "" : ` with ${chmod}`}`;
+    throw new CommandFailure("refused", "PERMISSION_DENIED", `${message}; ${outcome}`, {
+      target: { storeDir: path, ...(blocked === undefined ? {} : { path: blocked }) },
+      native: { code },
+      remedy: `${remedy}, or choose a new store path under a parent this account can search and write`,
+    });
+  }
+}
+
+function checkStoreDirPath(path: string, root: string, purpose: "start" | "restore"): void {
   // A dangling link has no real path, so its own target is named instead.
   if (statIfPresent(path, lstatSync)?.isSymbolicLink()) {
     let real: string | undefined;
