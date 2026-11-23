@@ -247,7 +247,7 @@ try {
     const noModel = await hermesWithoutUv();
     ok("foreground Hermes without uv or a model reports both and gives a basic launch example",
       isCommandFailure(noModel) && noModel.code === "DEPENDENCY_UNAVAILABLE" && noModel.message.includes("needs uv on PATH")
-        && noModel.message.includes("needs a model") && noModel.remedy?.includes("spawn --harness hermes --no-events --model <model>") === true
+        && noModel.message.includes("needs a model") && noModel.remedy?.includes("spawn --harness hermes --model <model>") === true
         && !noModel.remedy.includes("then retry:"), noModel);
     const hasModel = await hermesWithoutUv(["--model", "test-model"]);
     ok("foreground Hermes with a model retains the missing-uv retry",
