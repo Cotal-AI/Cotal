@@ -3,13 +3,41 @@ import { createHash, randomBytes } from 'node:crypto';
 import { spawn, spawnSync } from 'node:child_process';
 import { createServer } from 'node:http';
 import { connect } from 'node:net';
-import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
+import { chmodSync, cpSync, existsSync, lutimesSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { delimiter, dirname, join, resolve } from 'node:path';
+import { basename, delimiter, dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { emitSentinel } from './sentinel.mjs';
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
+
+function reconciliationScratch(parent) {
+  const old = new Date(Date.now() - 61 * 60_000);
+  const fixture = shape => {
+    const outer = mkdtempSync(join(parent, 'cotal-update-'));
+    const cache = join(outer, 'node-compile-cache');
+    const compiled = join(cache, 'compiled');
+    mkdirSync(cache, { mode: 0o700 });
+    writeFileSync(compiled, 'cache');
+    if (shape === 'link') {
+      const link = join(outer, 'cotal-update-npm-linked');
+      symlinkSync(cache, link);
+      lutimesSync(link, old, old);
+    } else if (shape !== 'compile-only') {
+      const npm = mkdtempSync(join(outer, 'cotal-update-npm-'));
+      if (shape === 'nonempty') writeFileSync(join(npm, '.keep'), 'other content');
+      if (shape === 'shared') chmodSync(npm, 0o750);
+      if (shape === 'mixed') writeFileSync(join(outer, 'keep'), 'other content');
+      if (shape !== 'recent') utimesSync(npm, old, old);
+    }
+    for (const path of [compiled, cache, outer]) utimesSync(path, old, old);
+    return outer;
+  };
+  const expired = ['compile-only', ...(process.getuid ? ['empty'] : [])].map(fixture);
+  const retained = (process.getuid ? ['nonempty', 'shared', 'link', 'mixed', 'recent'] : ['empty'])
+    .map(fixture).map(path => [path, readdirSync(path, { recursive: true }).sort()]);
+  return { expired, retained };
+}
 
 /** Runs real npm and the built public entry against a registry with missing archives. */
 export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/dist/cotal.js'), parent = tmpdir() }) {
@@ -679,6 +707,7 @@ exec npm "$@"
       }
       assert.throws(() => process.kill(record.owner, 0), { code: 'ESRCH' });
     }
+    const scratchFixtures = scenario === 'cache' ? reconciliationScratch(join(root, 'tmp')) : undefined;
     const updates = await Promise.all(Array.from({ length: scenario === 'concurrent' ? 2 : 1 }, () => run(process.execPath, [entry, 'update', '--self'], 660000)));
     const update = updates[0];
     if (abandoned) await abandoned;
@@ -780,7 +809,12 @@ exec npm "$@"
         assert.equal(statSync(configuredCache).mode & 0o777, 0o500);
         assert.deepEqual(readdirSync(configuredCache), []);
         assert.equal(readFileSync(join(home, '.npmrc'), 'utf8'), `cache=${configuredCache}\n`);
-        assert.deepEqual(readdirSync(join(root, 'tmp')).filter(name => name.startsWith('cotal-')), [], 'all private update caches and closure staging are removed');
+        for (const path of scratchFixtures.expired)
+          assert(!existsSync(path), `successful self-update removes expired compile scratch: ${path}`);
+        assert.deepEqual(readdirSync(join(root, 'tmp')).filter(name => name.startsWith('cotal-')).sort(),
+          scratchFixtures.retained.map(([path]) => basename(path)).sort(), 'ineligible scratch stays and new update scratch is removed');
+        for (const [path, contents] of scratchFixtures.retained)
+          assert.deepEqual(readdirSync(path, { recursive: true }).sort(), contents, `ineligible scratch is unchanged: ${path}`);
         assert(requests.some(request => decodeURIComponent(request.path).startsWith(`/${extension}`)), 'the installed extension closure was downloaded');
       } else if (scenario === 'archive-interrupted') {
         assert.equal(selected, target, update.output);

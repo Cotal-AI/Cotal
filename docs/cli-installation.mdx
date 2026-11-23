@@ -226,8 +226,10 @@ disposable prefix. The dependency check, package installation and reconciliation
 npm caches that are removed afterwards. After a successful self-update on Linux or macOS, Cotal also
 removes earlier archive caches in its temporary location when it can verify that their owner and
 npm workers have exited. On Linux, the same cleanup removes earlier staged npm install caches
-after their recorded owner and npm process group have exited. Unrecorded caches and active work
-are left alone.
+after their recorded owner and npm process group have exited. A successful retry also reclaims
+private update scratch idle for more than an hour when it contains only the Node compile cache or,
+on Linux and macOS, that cache and an empty private npm cache left by reconciliation. Other
+unrecorded caches are left alone.
 An unwritable cache configured in `.npmrc` does not block the update. Cotal leaves that cache and
 its permissions unchanged and still applies your registry,
 authentication, proxy and TLS settings. An unavailable dependency stops the update before replacement.
