@@ -9,6 +9,7 @@ import { shellWord } from "./lib/endpoint-errors.js";
 import { unknownSubcommandMessage } from "./lib/nearest-word.js";
 import { workingFolderRemoved } from "./lib/paths.js";
 import { displayCmd, displayRemedy } from "./lib/self-exec.js";
+import { serviceStartAllowsNoOpen } from "./lib/service-start-options.js";
 import { recordTelemetryFailure } from "./telemetry.js";
 import { c, hang } from "./ui.js";
 
@@ -334,7 +335,7 @@ export function printHelpPath(cmd: Command, words: readonly string[], out: (line
     path.push(sub.name); selected = sub; surface = sub;
     if (!sub.subcommands?.length) break;
   }
-  if (cmd.name === "service" && selected?.name === "start" && words[1] === "broker")
+  if (cmd.name === "service" && selected?.name === "start" && words[1] !== undefined && !serviceStartAllowsNoOpen(words[1]))
     selected = { ...selected, flagNames: selected.flagNames?.filter((flag) => flag !== "no-open") };
   printCommandHelp(cmd, selected ? { ...selected, name: path.join(" ") } : undefined, out, width);
 }

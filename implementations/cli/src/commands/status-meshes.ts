@@ -27,7 +27,9 @@ import {
   type MeshEntry,
   type MeshTarget,
   movedProject,
+  operationWarnings,
   spaceStreamsExpected,
+  withdrawOperationNote,
 } from "@cotal-ai/workspace";
 import { type DeliveryResponderState } from "../lib/delivery-responder.js";
 import { chatStreamGone, stackState } from "../lib/space-streams.js";
@@ -44,6 +46,17 @@ import { rootStoreProblem } from "../lib/store-dir.js";
 import { stackStoreWarnings } from "../lib/store-identity.js";
 import { statusFlags, type Selected, type SelectedPreflight, UnregisteredRoot, type PersonaCatalog, type StatusResult, type SelectedResult, Gaps, displayStatusBroker } from "./status-model.js";
 import { servedStack } from "./status-render.js";
+
+/** Replace the current folder's restart banner only when its own broker store blocks startup. */
+export function reportHeldStoreProblem(root: string, hints: string[]): boolean {
+  const held = operationWarnings().find((warning) => warning.code === "FOLDER_SPACE_NOT_RUNNING")?.target as { space: string; root: string } | undefined;
+  if (held?.root !== root) return false;
+  const store = rootStoreProblem(root);
+  if (!store) return false;
+  withdrawOperationNote("FOLDER_SPACE_NOT_RUNNING", held.space);
+  hints.push(`${store.message}; ${store.remedy}`);
+  return true;
+}
 
 /** Outside a project, only the all-broker report has liveness evidence for the registry fallback. */
 export async function registryFallbackChecks(root: string, values: FlagValues<typeof statusFlags>) {

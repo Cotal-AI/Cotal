@@ -1,7 +1,7 @@
 import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, statSync, writeSync, type Stats } from "node:fs";
 import { hasDuplicateNames } from "@cotal-ai/core";
 import { dryRunOutcome, DurationError, Journal, journalEntryKeyString, LangErrors, parseDuration, validate, type SimScript } from "@cotal-ai/lang";
-import { CommandFailure, envelopeLine, exitCode, failureEnvelope, isCommandFailure, oneLine, presentationOf, recordOperationWarning, renderReport, writeResult, type Report } from "@cotal-ai/workspace";
+import { codeSpan, CommandFailure, envelopeLine, exitCode, failureEnvelope, isCommandFailure, oneLine, presentationOf, recordOperationWarning, renderReport, shellPath, writeResult, type Report } from "@cotal-ai/workspace";
 import { logLineText } from "./log-line.js";
 
 interface OfflineValues {
@@ -214,7 +214,9 @@ function callSites(ast: ReturnType<typeof validate>["ast"]): { call: string; lin
       const simple = callee.type === "Identifier" ? callee.name : undefined;
       const object = callee.object as Record<string, unknown> | undefined;
       const property = callee.property as Record<string, unknown> | undefined;
-      const call = typeof simple === "string" ? simple : object?.type === "Identifier" && typeof object.name === "string" && property?.type === "Identifier" && typeof property.name === "string" ? `${object.name}.${property.name}` : "derived call";
+      const call = typeof simple === "string" ? simple : callee.type === "MemberExpression" && callee.computed === false
+        && object?.type === "Identifier" && typeof object.name === "string" && property?.type === "Identifier" && typeof property.name === "string"
+        ? `${object.name}.${property.name}` : "derived call";
       const { start, loc } = node as typeof ast;
       if (!loc) throw new Error("validated call is missing its source location");
       sites.push({ call, offset: start, line: loc.start.line });
@@ -244,9 +246,12 @@ function simulationFailure(error: unknown, file: string, journal: Journal, handl
   // A missing scripted result has no file to edit yet when no results file was passed: the
   // remedy names the file to save and the command that passes it to the simulator, instead of
   // only showing the result object. When a results file was passed, it names that file.
+  const sourceWord = shellPath(file.startsWith("-") ? `./${file}` : file);
+  const handlerArg = `${handler?.startsWith("-") ? "=" : " "}${shellPath(handler ?? "results.json")}`;
+  const command = codeSpan(`cotal run simulate ${sourceWord} --handler${handlerArg}`);
   const rerun = handler !== undefined
-    ? `add it to ${handler} and rerun with \`cotal run simulate ${file} --handler ${handler}\``
-    : `save it in a results file, for example results.json, and rerun with \`cotal run simulate ${file} --handler results.json\``;
+    ? `add it to ${oneLine(handler)} and rerun with ${command}`
+    : `save it in a results file, for example results.json, and rerun with ${command}`;
   const remedy = native?.startsWith("L6")
     ? `${fix ?? "script a result for that step; unscripted effects are not invented"}; ${rerun}`
     : fix;

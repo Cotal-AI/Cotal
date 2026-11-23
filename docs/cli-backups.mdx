@@ -56,6 +56,7 @@ attempt tree. Restore artifacts and targets likewise cannot nest inside or conta
 preserved source, or the maintenance attempt tree.
 
 `backup create` checks its preconditions before it claims the cut or creates any maintenance state.
+If it receives an option it does not accept, such as `--yes`, it names the option and asks you to remove it.
 A root with no preserved cut refuses. A plain `cotal down` records no cut, and `down --preserve-state`
 only cuts a running stack, so the refusal says to start the stack with `cotal up`, stop it with
 `cotal down --preserve-state`, then create the backup. A cut in another state

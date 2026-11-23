@@ -184,7 +184,8 @@ connectors or writes configuration. Help, version and completion never do either
 A word that starts with `-` reads as an option. A message or name that starts with one goes after
 `--`. The refusal names `--` when the command takes an operand and there is no spelling suggestion.
 When the refusal suggests an option spelling, replace the mistyped option and keep its value,
-as in `cotal docs --search <query>`.
+as in `cotal docs --search <query>`. If the suggested switch is already set and cannot be repeated,
+the refusal tells you to drop the unknown option instead.
 An option value that starts with `-` is written `--limit=-1`,
 which the refusal gives. The refusal quotes values that a POSIX shell would split or expand, as in
 `--search='-help usage'`. An option given with no value at the end of the command or just before
@@ -369,7 +370,7 @@ answer at once, and Enter takes the selection.
 Without a terminal, or with `--no-input` or `--json`, `history clear`, `channel remove`,
 `persona remove` and `endpoint remove` refuse and print the command that confirms them with
 `--yes`. That command keeps the `--space`, `--server` and `--creds` you gave, so it acts on the
-same space.
+same space. For `channel remove` and `persona remove`, it also keeps `--json` when requested.
 
 A usage line breaks only between options, never between an option and its argument. A ` | ` stays
 on the line before it whenever it fits there. A compact `|`, such as the one in

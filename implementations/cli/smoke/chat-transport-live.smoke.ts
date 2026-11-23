@@ -121,6 +121,17 @@ try {
   const spaced = await chat.request("connection", {}, "request 1");
   check("a shipped session echoes the exact ID containing an ASCII space", spaced.type === "result" && spaced.id === "request 1"
     && spaced.outcome === "ok" && spaced.result?.state === "connected", spaced);
+  const fromBoundary = chat.records.length;
+  const cases = [["limit-lf", "\n"], ["limit-crlf", "\r\n"]] as const;
+  for (const [id, eol] of cases) {
+    const request = JSON.stringify({ schemaVersion: 1, type: "connection", id });
+    chat.child.stdin.write(request.padEnd(1_048_576) + eol);
+  }
+  const afterBoundary = await chat.request("connection");
+  const boundary = chat.records.slice(fromBoundary).map(({ record }) => record)
+    .filter((r) => r !== afterBoundary && (r.type === "result" || r.type === "error"));
+  check("a shipped session accepts requests at the line limit with LF and CRLF", boundary.length === 2
+    && boundary.every((r, i) => r.type === "result" && r.id === cases[i]?.[0] && r.outcome === "ok"), boundary);
   const sent = await peer.request("send", { channel: "general", text: "healthy-control" });
   await until(() => chat.records.some(({ record }) => record.message?.text === "healthy-control"));
   await wait(1_000);

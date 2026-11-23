@@ -199,6 +199,15 @@ const ansi = /\x1b\[/;
     check(`\`${args.join(" ")}\` is refused, naming the known spaces, and writes nothing`,
       r.status === 2 && r.envelope?.outcome === "refused" && r.envelope.error?.code === "TARGET_NOT_FOUND" && /no space named "nope" is registered, prepared or holding a saved value here; known spaces: demo$/.test(r.envelope.error.message) && fileText() === before, shown(r));
   }
+  const occupied = join(home, "demo");
+  const missing = run(["config", "get", "persona", "--space", "other_lab", "--json"], {}, occupied);
+  const create = /`cotal (space create other_lab --root) <dir>`/.exec(missing.envelope?.error?.remedy ?? "")?.[1];
+  const prepared = create === undefined ? undefined : run([...create.split(" "), join(home, "other-lab"), "--json"], {}, occupied);
+  const found = run(["config", "get", "persona", "--space", "other_lab", "--json"], {}, occupied);
+  check("config keeps the unknown-space refusal and gives a preparation command usable from an occupied root",
+    missing.status === 2 && missing.envelope?.error?.code === "TARGET_NOT_FOUND" && prepared?.status === 0 &&
+      found.status === 0 && (found.envelope?.result?.scope as { space?: string } | undefined)?.space === "other_lab" && fileText() === before, shown(missing));
+  run(["space", "forget", "other_lab", "--json"]);
   writeFileSync(file, JSON.stringify({ ...saved(), spaces: { ...saved().spaces, gone: { persona: "old" } } }));
   const goneGet = run(["config", "get", "persona", "--space", "gone", "--json"]);
   check("a value left for a removed space can still be read", goneGet.status === 0 && (goneGet.envelope?.result as { setting?: Setting } | null)?.setting?.winner?.source === "space" && (goneGet.envelope?.result as { setting?: Setting } | null)?.setting?.value === "old", shown(goneGet));

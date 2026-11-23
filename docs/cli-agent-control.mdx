@@ -68,6 +68,9 @@ still alive but does not answer, they name its PID and, if it stays unresponsive
 that process with `kill -KILL <pid>` before starting it again with bare `cotal up`. Neither command
 stops or restarts the manager.
 
+When managers answer but the `attach` picker has no agents to offer, its suggested `cotal ps` and
+`cotal spawn` commands keep the explicit space, broker and manager selectors.
+
 When no manager runs or is registered, the refusal's Next names the root of this machine's own stack
 for the space, as bare `cotal up` in that folder, because bare `up` in another project acts on that
 project's stack. When this machine only registered the space, records no stack for it, or reached
@@ -400,6 +403,8 @@ Pressing the detach key ends the view with `Detached`. A remote terminal-session
 process exit or manager shutdown, prints `Attach session ended`. Neither report claims the agent
 is still running or that its cleanup completed. Use `cotal ps` to check its current state.
 `--no-reconnect` restores the single-session behaviour.
+If the auth service refuses access to the selected manager before the first session, `attach`
+reports `PERMISSION_DENIED` and exits 2 without opening a terminal session.
 
 Each reconnect also hands the abandoned session back to the manager, over the first link that can
 carry the message, so an attach that flaps does not eat the manager's session slots one outage at a
@@ -600,6 +605,8 @@ its message.
 A retry for a malformed manager ID keeps `--force` if you requested it.
 Without an agent name, `stop` refuses before contacting the space. The suggested roster and stop
 commands keep the explicit `--space` and `--server`, and the stop retry keeps the output format.
+On an open or static space, if `--on` is not a valid manager instance ID, the retry asks for both
+the agent name and the manager instance ID from the roster.
 `stop --self` uses only a verified managed seat caller and its attributed manager. It accepts no
 other target or credential. Missing, mismatched and unsupported user-auth seat context refuses
 without switching to the operator. JSON and plain modes show the acknowledged native result,

@@ -85,7 +85,7 @@ const run = (args: string[], extra: Record<string, string> = {}, cwd = neutral) 
 const runShell = (args: string, extra: Record<string, string> = {}, cwd = neutral) =>
   spawnSync("sh", ["-c", `exec "$0" "$1" ${args}`, process.execPath, BIN], { cwd, env: { ...env, ...extra }, encoding: "utf8", timeout: 120_000 });
 const shown = (r: ReturnType<typeof run>) => ({ status: r.status, stdout: r.stdout.slice(0, 600), stderr: r.stderr.slice(0, 900) });
-const parsed = (r: ReturnType<typeof run>) => { try { return JSON.parse(r.stdout) as { target?: unknown; error?: { code?: string; message?: string } }; } catch { return undefined; } };
+const parsed = (r: ReturnType<typeof run>) => { try { return JSON.parse(r.stdout) as { target?: unknown; error?: { code?: string; message?: string; remedy?: string } }; } catch { return undefined; } };
 const usageShape = (r: ReturnType<typeof run>, message: RegExp) =>
   r.status === 1 && r.stdout === "" && /^✗ /m.test(r.stderr) && message.test(r.stderr) && /Usage/.test(r.stderr) && !/Request refused|Code:/.test(r.stderr);
 
@@ -114,7 +114,7 @@ check("linear serve --json is refused naming the flag, that serve has no --json 
 // after a space, and an option typed with a typographic dash is named with hyphens.
 const dashWord = run(["send", "-c", "general", "-n is a flag here"]);
 check("an unknown option names -- for a word that starts with -", usageShape(dashWord, /Unknown option '-n'/) && /put -- before it/.test(dashWord.stderr), shown(dashWord));
-const spaceTypo = run(["space", "--json", "--jso"]);
+const spaceTypo = run(["space", "--json", "--unlisted-option"]);
 check("an unknown option cannot become the space subcommand", spaceTypo.status === 1 && spaceTypo.stderr === ""
   && JSON.parse(spaceTypo.stdout).error.remedy === "run `cotal help space`", shown(spaceTypo));
 const dashValue = run(["history", "--from", "-bob"]);
@@ -159,6 +159,15 @@ check("a global flag after a missing history follow value preserves the stream r
   && followRecords[0]?.data?.code === "USAGE_INVALID" && followRecords[0]?.data?.message === "--limit needs a value"
   && followRecords[0]?.data?.remedy === "write --limit <n>" && followRecords[1]?.data?.reason === "setup-failed", shown(followGlobal));
 const groupedSpace = run(["config", "get", "harness", "-js", "--no-input", "abc"]);
+for (const [args, space] of [[[], null], [["--space", "watch-test"], "watch-test"]] as const) {
+  const result = run(["watch", ...args, "--view", "--json"]);
+  const records = result.stdout.trim().split("\n").map((line) => JSON.parse(line));
+  check("a missing watch view emits a stream refusal and end record",
+    result.status === 1 && result.stderr === "" && records.map((record) => record.type).join() === "error,end"
+    && records.every((record) => record.stream === "watch" && record.target?.requestedSpace === space)
+    && records[0]?.data?.code === "USAGE_INVALID" && records[0]?.data?.message === "--view needs a value"
+    && records[0]?.data?.remedy === "write --view <view>" && records[1]?.data?.reason === "setup-failed", shown(result));
+}
 check("a global flag cannot hide a missing value at the end of a short option group",
   groupedSpace.status === 1 && groupedSpace.stderr === "" && JSON.parse(groupedSpace.stdout).error.message === "--space needs a value", shown(groupedSpace));
 const completeValue = run(["docs", "--json", "--search", "usage", "--no-input"]);
@@ -736,6 +745,11 @@ check("under a locale without UTF-8 an unknown command is the report, with no wa
 // --yes are the whole fix, so the command's help is left out, as `down` already did.
 const project = join(home, "proj");
 mkdirSync(project, { mode: 0o700 });
+const backupDestination = join(home, "unused");
+const backupCreate = run(["backup", "create", "../unused", "--yes", "--plain"], {}, project);
+check("backup create names the unsupported option and refuses before writing",
+  reportShape(backupCreate, /backup create does not accept --yes/) && backupCreate.stderr.includes("remove --yes to create the backup")
+  && !existsSync(backupDestination), shown(backupCreate));
 const confirmationSpace = run(["space", "create", "confirmation", "--root", project]);
 check("confirmation refusals use a prepared local space", confirmationSpace.status === 0, shown(confirmationSpace));
 const deleteTarget = run(["space", "add", "delete-target", "--root", project, "--mode", "open", "--server", "nats://127.0.0.1:43028", "--force", "--yes"]);
@@ -775,9 +789,25 @@ for (const [args, message] of [
   const r = run([...args]);
   check(`${args.join(" ")} names the nearest word`, r.status === 1 && message.test(r.stderr), shown(r));
 }
+for (const words of [["--json", "--jsn"], ["--jsn", "-j"]]) {
+  const r = run(["version", ...words]);
+  const error = parsed(r)?.error;
+  check(`version ${words.join(" ")} keeps the JSON switch already supplied`, r.status === 1 && error?.message === "Unknown option '--jsn'" && error.remedy === "drop the unknown option; --json is already set", shown(r));
+}
+const afterEnd = run(["version", "--jsn", "--", "--json"]);
+check("an operand after -- is not a switch already set", afterEnd.status === 1 && afterEnd.stderr.includes("did you mean --json?"), shown(afterEnd));
 const configTypo = run(["config", "get", "harness", "--verbsoe", "--json"]);
 check("config get does not suggest a flag only bare config takes",
   configTypo.status === 1 && configTypo.stderr === "" && JSON.parse(configTypo.stdout).error.message === "Unknown option '--verbsoe'", shown(configTypo));
+const configGet = ["config", "get", "harness", "--user", "--json"];
+const configUnknown = run([...configGet, "--mystery-flag"]);
+const { error: configError } = JSON.parse(configUnknown.stdout);
+const configRetry = run(configGet);
+check("config get with its key filled says to drop the unknown option, and dropping it returns the setting",
+  configUnknown.status === 1 && configUnknown.stderr === "" && configError?.code === "USAGE_INVALID"
+  && configError.message === "Unknown option '--mystery-flag'" && configError.remedy === "drop the unknown option"
+  && configRetry.status === 0 && JSON.parse(configRetry.stdout).result?.setting?.key === "harness",
+  { refusal: shown(configUnknown), retry: shown(configRetry) });
 const clearTypo = run(["history", "clear", "--folow"]);
 check("history clear does not suggest a flag only history reads take",
   usageShape(clearTypo, /Unknown option '--folow'/) && !/did you mean/.test(clearTypo.stderr), shown(clearTypo));

@@ -762,6 +762,12 @@ process.report.getReport = () => {
     clientPs.status === 2 && remedyOf(clientPs)?.code === "TARGET_UNAVAILABLE" &&
       remedyOf(clientPs)?.remedy === "start this space's manager where its stack runs; a stack started with --no-manager has none",
     clientPs.stdout + clientPs.stderr);
+  const localRuns = cliIn(autoRoot, "run", "list", "--space", SPACE, "--json");
+  ok("the workflow list from another project names the broker-only stack's folder",
+    localRuns.status === 2 && remedyOf(localRuns)?.code === "TARGET_UNAVAILABLE" && remedyOf(localRuns)?.remedy?.includes(`bare \`cotal up\` in ${realpathSync(root)};`) === true, localRuns.stdout);
+  const clientRuns = cliInEnv(clientHome, clientEnv, "run", "list", "--space", SPACE, "--json");
+  ok("the workflow list on a manually registered space points to the host, not a local start",
+    clientRuns.status === 2 && remedyOf(clientRuns)?.code === "TARGET_UNAVAILABLE" && remedyOf(clientRuns)?.remedy === "start this space's manager where its stack runs; a stack started with --no-manager has none", clientRuns.stdout);
   rmSync(clientHome, { recursive: true, force: true });
   // --preserve-state takes its inventory from a manager. With none serving the space it refuses
   // before any stop, where it used to stop the delivery daemon and then wait on a manager that never ran.

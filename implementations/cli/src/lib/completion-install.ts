@@ -254,7 +254,8 @@ export function changeCompletion(operation: "install" | "uninstall", shell: stri
     }
     // A startup file linked from elsewhere, as a dotfile manager such as stow links it, is never
     // written through. The load line needs no stub, so it works from the file the link points to.
-    if (lstatSync(paths.rc, { throwIfNoEntry: false })?.isSymbolicLink())
+    if (lstatSync(paths.rc, { throwIfNoEntry: false })?.isSymbolicLink() && (operation === "install" ||
+      lstatSync(paths.stub, { throwIfNoEntry: false }) || lstatSync(recordPath(paths), { throwIfNoEntry: false })))
       throw new CommandFailure("refused", "PERMISSION_DENIED", `${paths.rc} is a symlink, and completion does not write through one; nothing was changed`, {
         target: { shell, path: paths.rc },
         remedy: operation === "install" ? `add this line to the file it points to yourself: ${LOAD_NOW[shell]}` : "remove the `cotal completion` lines from the file it points to yourself",
@@ -267,7 +268,8 @@ export function changeCompletion(operation: "install" | "uninstall", shell: stri
   const held = acquireLock(`${recordPath(paths)}.lock`, { label: "shell completion ownership", waitMs: 0, onTimeout: () => new CommandFailure("refused", "CONFLICT", "another completion writer holds this shell integration") });
   const changed: string[] = [];
   try {
-    const owned = ownership(paths, shell), stub = read(paths.stub), startup = paths.rc ? read(paths.rc) : undefined;
+    const owned = ownership(paths, shell), stub = read(paths.stub);
+    const startup = paths.rc && (operation === "install" || owned.record || stub) ? read(paths.rc) : undefined;
     const current = text(startup) ?? "";
     let record = owned.record;
     if (!record && operation === "uninstall") {
@@ -320,7 +322,10 @@ export function changeCompletion(operation: "install" | "uninstall", shell: stri
         const line = liveLine.trim();
         throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `${paths.rc} still names this stub outside the cotal block, in ${JSON.stringify(line)}; removing the stub would break that line`, { target: { shell, path: paths.rc }, remedy: `remove that line from ${paths.rc} yourself, then run \`cotal completion uninstall ${shell}\` again` });
       }
-      if (readOnly()) throw new CommandFailure("refused", "PERMISSION_DENIED", `${paths.rc} is read-only, so its completion line was not removed; nothing was changed`, { target: { shell, path: paths.rc }, remedy: `remove the line ${completionSourceLine(paths.stub, shell)} from ${paths.rc} yourself, then run \`cotal completion uninstall ${shell}\` again` });
+      if (paths.rc && readOnly()) throw new CommandFailure("refused", "PERMISSION_DENIED", `${paths.rc} is read-only, so its completion block was not removed; nothing was changed`, {
+        target: { shell, path: paths.rc },
+        remedy: `restore owner write permission with ${codeSpan(`chmod u+w ${shellPath(paths.rc)}`)}, then run ${codeSpan(`cotal completion uninstall ${shell}${force ? " --force" : ""}`)} again without editing the startup block`,
+      });
       if (paths.rc && nextStartup !== current) {
         // A startup file install created, with nothing else in it now, goes rather than staying empty.
         if (created && nextStartup === "" && startup) remove(paths.rc, startup);

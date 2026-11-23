@@ -228,9 +228,10 @@ export async function refuseUnknownChannel(name: string, values: Values, target:
   const spelled = registered.find((channel) => channel.toLowerCase() === name.toLowerCase());
   const known = registered.length ? `registered channels: ${registered.map((channel) => `#${channel}`).join(", ")}` : "this space registers no channels";
   const word = spelled === undefined ? undefined : shellWord(spelled.startsWith("-") ? `#${spelled}` : spelled);
+  const output = values.json ? " --json" : values.plain ? " --plain" : "";
   const remedy = word === undefined ? "name a channel the space has; `cotal ch` lists the registered ones"
     : action === "remove" ? `inspect the registered spelling: ${codeSpan(`cotal channel show ${word}${targetWords({ ...values, space: reader.space })}`)}`
-    : `name it as registered: ${codeSpan(`cotal channel members ${word}${targetWords(values)}`)}`;
+    : `name it as registered: ${codeSpan(`cotal channel members ${word}${targetWords(values)}${output}`)}`;
   throw new CommandFailure("refused", "TARGET_NOT_FOUND",
     `#${name} has ${action === "members" ? "no observed members, " : ""}no saved entry and no retained messages; ${spelled ? `channel names are case-sensitive, and the registered one is #${spelled}` : known}`,
     { target, remedy });
@@ -315,7 +316,7 @@ function registryView(result: { action: string; name?: string; space: string; re
 
 async function confirmRemoval(name: string, space: string, values: Values, presentation: Presentation): Promise<boolean> {
   if (values.yes) return true;
-  if (presentation === "json" || !canPrompt()) throw new ConfirmationRequired(`${yesRequired("channel removal", presentation === "json")}; --purge also deletes retained history for that channel`, { remedy: `confirm with ${codeSpan(`cotal channel remove ${shellWord(name.startsWith("-") ? `#${name}` : name)}${targetWords(values)}${values.purge ? " --purge" : ""} --yes`)}` });
+  if (presentation === "json" || !canPrompt()) throw new ConfirmationRequired(`${yesRequired("channel removal", presentation === "json")}; --purge also deletes retained history for that channel`, { remedy: `confirm with ${codeSpan(`cotal channel remove ${shellWord(name.startsWith("-") ? `#${name}` : name)}${targetWords(values)}${values.purge ? " --purge" : ""} --yes${presentation === "json" ? " --json" : ""}`)}` });
   const question = `Remove #${name} from ${space}? ${values.purge ? "Its retained history will also be deleted." : "Its retained history will be kept."} Access grants and members are unchanged.`;
   if (presentation === "plain") return (await prompts.askLine(`${question}\n1) Cancel\n2) Remove\nChoice [1]: `))?.trim() === "2";
   const answer = await prompts.confirm({ message: question, initialValue: false });

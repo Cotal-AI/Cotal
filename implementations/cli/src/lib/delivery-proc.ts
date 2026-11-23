@@ -49,7 +49,7 @@ const deliveryCredsKeysToClear = (space: string) => [segmentedKey(DELIVERY_CREDS
  *  the launch (foreground `up`) can act on it.
  *  `open` is the mesh's mode, decided by the caller. An open mesh runs no delivery daemon, whatever
  *  trust material the root still holds from an earlier static stack. */
-type Opts = { space?: string; server?: string; tls?: boolean; open?: boolean; spawn?: string[]; runtime?: string; launch?: string; attachHost?: string; resumeAttempt?: string; resumeCommit?: { path: string; sha256: string }; wsPort?: number; maxSessions?: number; managerSeatCap?: ManagerStartOpts["managerSeatCap"]; noManager?: boolean; onDeliveryExit?: (code: number | null, signal: NodeJS.Signals | null) => void };
+type Opts = { space?: string; server?: string; tls?: boolean; open?: boolean; spawn?: string[]; runtime?: string; launch?: string; attachHost?: string; resumeAttempt?: string; resumeCommit?: { path: string; sha256: string }; wsPort?: number; maxSessions?: number; managerName?: string; managerSeatCap?: ManagerStartOpts["managerSeatCap"]; noManager?: boolean; onDeliveryExit?: (code: number | null, signal: NodeJS.Signals | null) => void };
 
 /** The recorded daemon, attributed by {@link readProcessRecord} to a `cotal deliver` process.
  *  Same order as {@link managerRecordState}: the space and root, then the test seams. */

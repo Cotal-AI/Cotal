@@ -187,6 +187,7 @@ export async function startDeliveryWithBroker(
     /** P2 item 6: broker ws listener port for the console session client. */
     wsPort?: number;
     maxSessions?: number;
+    managerName?: string;
     managerSeatCap?: SeatCap;
     /** #1417 broker-only mode: ensure the delivery daemon and not the manager. */
     noManager?: boolean;
@@ -341,6 +342,7 @@ export async function serveReadyListener(l: {
   /** The raw `--host` flag, so the record can tell an operator's address from the loopback default. */
   host?: string;
   maxSessions?: number;
+  managerName?: string;
   managerSeatCap?: SeatCap;
   maxFileStore?: number;
   publicExchange?: string[];
@@ -413,6 +415,7 @@ export async function serveReadyListener(l: {
     // is never a side effect of anything but the operator binding the mesh somewhere reachable.
     attachHost,
     maxSessions,
+    managerName: l.managerName,
     managerSeatCap: l.managerSeatCap,
     noManager: l.noManager,
     resumeAttempt: l.resumeAttempt,
@@ -486,6 +489,7 @@ export interface DetachOpts {
   resumeAttempt?: string;
   resumeCommit?: { path: string; sha256: string };
   maxSessions?: number;
+  managerName?: string;
   managerSeatCap?: SeatCap;
   /** #1417 broker-only boot (`--no-manager`): no manager starts with this broker. An `up -f` under
    *  the flag boots the broker + channels and launches NO agents from this host — a manifest's
@@ -588,6 +592,7 @@ export async function startMeshDetached(
     ...(opts.recreateMembershipStore ? { recreateMembershipStore: true } : {}),
     host: opts.host,
     maxSessions: opts.maxSessions,
+    managerName: opts.managerName,
     managerSeatCap: opts.managerSeatCap,
     maxFileStore: opts.maxFileStore,
     publicExchange: opts.publicExchange,

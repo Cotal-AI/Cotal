@@ -202,6 +202,37 @@ log("reply", reply === null ? "timed out" : "received", "elapsed", now() - start
     assert.match(timedOut.stdout, /Virtual time:\s+1000 ms/);
     assert.match(timedOut.stdout, /reply timed out elapsed 1000/);
 
+    for (const { effect, call, log, table, reply, code, deadlineMs, late, exact, timely, timelyMs, value } of [
+      { effect: "turn", call: 'turn(agent, { name: "review", deadline: "1s" })', log: "status",
+        table: "turns", reply: { status: "done" }, code: "L4003", deadlineMs: 1000,
+        late: "2s", exact: "1s", timely: "500ms", timelyMs: 500, value: "done" },
+      { effect: "ask", call: 'ask(agent, { name: "review", schema: { ok: "boolean" }, deadline: "3s", attempts: 2 })', log: "ok",
+        table: "asks", reply: [{ ok: "wrong type" }, { ok: true }], code: "L4006", deadlineMs: 3000,
+        late: "2s", exact: "1500ms", timely: "1s", timelyMs: 2000, value: true },
+    ]) {
+      writeFileSync(join(root, "review.js"), `const agent = await spawn("reviewer");\nconst result = await ${call};\nlog(result.${log});\n`);
+      for (const delay of [late, exact, timely]) {
+        const label = `${effect} with ${delay} per reply`;
+        writeFileSync(join(root, "results.json"), JSON.stringify({ [table]: { review: reply }, clock: { [effect]: delay } }));
+        const simulated = run(["run", "simulate", "review.js", "--handler", "results.json", "--json"]);
+        assert.equal(simulated.status, 0, `${label}: ${simulated.stdout}${simulated.stderr}`);
+        assert.equal(simulated.stderr, "", label);
+        const { outcome, completeness, result } = JSON.parse(simulated.stdout);
+        assert.equal(outcome, "ok", label);
+        assert.equal(completeness, "complete", label);
+        assert.equal(result.elapsedMs, delay === timely ? timelyMs : deadlineMs, label);
+        if (delay === timely) {
+          assert.equal(result.outcome, "completed", label);
+          assert.deepEqual(result.log, [{ scope: "", values: [value] }], label);
+        } else {
+          assert.equal(result.outcome, "failed", label);
+          assert.equal(result.failure.code, code, label);
+          assert.equal(result.failure.step, `/${effect}:review#0`, label);
+          assert.deepEqual(result.log, [], label);
+        }
+      }
+    }
+
     writeFileSync(join(root, "expiry-race.js"), `
 const raceResult = await race({
   approval: async () => await checkpoint("approve", "Approve?", { timeout: "1s", onExpiry: "proceed" }),

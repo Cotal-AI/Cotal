@@ -485,6 +485,22 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
     envelopes(bogus).length === 1 && refusal?.outcome === "refused" && refusal.result === null && refusal.error?.code === "USAGE_INVALID" && refusal.error.remedy === "run `cotal help version`",
     shown(bogus),
   );
+  const mint = (args: readonly string[]) => cotal(["auth", "mint", "reader", ...args, "--json"], undefined, noSeed);
+  for (const [input, example, corrected] of [
+    [["--allow-subscribe", "#-general"], "--allow-subscribe=-general", ["--allow-subscribe=-general"]],
+    [["--allow-publish", "#-general"], "--allow-publish=-general", ["--allow-publish=-general"]],
+    [["--allow-subscribe=-gen/eral"], "--allow-subscribe=-gen_eral", ["--allow-subscribe=-gen_eral"]],
+    [["--allow-publish", "#-team.>"], "--allow-publish='-team.>'", ["--allow-publish=-team.>"]],
+    [["--allow-subscribe", "#team.>"], "--allow-subscribe 'team.>'", ["--allow-subscribe", "team.>"]],
+  ] as const) {
+    const invalid = mint(input);
+    const [report] = envelopes(invalid);
+    check(`auth mint suggests ${example} for ${input.join(" ")}`, invalid.status === 1 && invalid.stderr === "" && invalid.wrote.length === 0 &&
+      report?.error?.code === "USAGE_INVALID" && report.error.remedy?.endsWith(`\`${example}\``) === true, shown(invalid));
+    const retry = mint(corrected);
+    check(`auth mint with ${example} reaches target resolution`, retry.status === 2 && retry.stderr === "" && retry.wrote.length === 0 &&
+      envelopes(retry)[0]?.error?.code === "TARGET_NOT_FOUND", shown(retry));
+  }
   // A subcommand's JSON is what it declares, so each actor subcommand declares it too.
   for (const argv of [["actor", "revoke", "bot1", "--sub", "s", "--yes"], ["actor", "list", "--bogus"], ["actor", "grant", "bot1", "--sub", "s", "--full", "--bogus"], ["actor", "label", "bot1", "x", "--sub", "s", "--bogus"]]) {
     const r = cotal([...argv, "--json"], undefined, noSeed);
@@ -651,6 +667,15 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
   check("foreground spawn keeps its mode and offers two compatible ways past --json",
     foregroundJson.status === 1 && foregroundReceipt.error?.code === "USAGE_INVALID" &&
     foregroundReceipt.error.remedy.includes("omit --json to launch in this terminal, or replace --foreground with -d"), shown(foregroundJson));
+  const pinnedSpawn = ["spawn", "dev", "--on", "a".repeat(30)];
+  const pinnedJson = cotal([...pinnedSpawn, "--json"], undefined, noSeed);
+  const pinnedReceipt = JSON.parse(pinnedJson.stdout);
+  const detachRemedy = "add -d to wait for readiness without attaching";
+  check("pinned spawn with --json refuses attachment and suggests retaining the pin and receipt with -d",
+    pinnedJson.status === 1 && pinnedReceipt.error?.code === "USAGE_INVALID" && pinnedReceipt.error?.remedy === detachRemedy, shown(pinnedJson));
+  const pinnedPlain = cotal([...pinnedSpawn, "--plain"], undefined, noSeed);
+  check("pinned spawn with --plain gives the same compatible remedy",
+    pinnedPlain.status === 1 && /Code:\s+USAGE_INVALID/.test(pinnedPlain.stderr) && pinnedPlain.stderr.trimEnd().endsWith(`\n  ${detachRemedy}`), shown(pinnedPlain));
   const missingTurn = cotal(["run", "yield"], undefined, noSeed);
   const yieldForm = /^✗ run yield takes one identifier\n {2}`cotal run turns` lists your turns\. Run `(cotal run yield <turn-id> --status <done\|blocked\|handoff>)`\. For a handoff, add `(--to <agent>)`\./.exec(missingTurn.stderr);
   check("run yield without an id names the required status and handoff destination without printing help",
@@ -672,7 +697,8 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
   check("persona edit runs an editor whose path holds a space", spaced.status === 0 && spaced.stdout.includes("Persona saved") && readFileSync(spacedFile, "utf8").includes("edit-B") && !spaced.stderr.includes("not found"), shown(spaced));
   // An edit refused because the persona changed or was removed while the editor was open keeps the
   // draft and names it. The editors write to the draft, then change the catalog file behind it.
-  for (const [what, behind, next] of [["changed", "printf B >> .cotal/agents/x.md", /compare it with `cotal persona show x`/], ["was removed", "rm .cotal/agents/x.md", /restore it with `cotal persona create x --file /]] as const) {
+  const restoreStep = process.platform === "win32" ? /copy the draft to .* without replacing any file there/ : /restore it with `cp -n /;
+  for (const [what, behind, next] of [["changed", "printf B >> .cotal/agents/x.md", /compare it with `cotal persona show x`/], ["was removed", "rm .cotal/agents/x.md", restoreStep]] as const) {
     const racing = `sh -c 'printf "edit-A\\n" >> "$1"; ${behind}' sh`;
     const r = cotal(["persona", "edit", "x"], persona, { ...noSeed, VISUAL: racing, EDITOR: racing });
     const draft = /your edit is kept in (\S+\.md);/.exec(r.stderr)?.[1];
@@ -910,7 +936,7 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
     persona(home);
     writeFileSync(join(home, "..", ".cotal", "agents", "bad.md"), "---\nname: bad\nsubscribe: [\n---\nbody\n");
   };
-  for (const [what, name, status, reason] of [["missing", "nosuch", 2, "TARGET_NOT_FOUND"], ["malformed", "bad", 1, "SCHEMA_INVALID"], ["badly named", "a/b", 1, "persona names use letters"]] as const) {
+  for (const [what, name, status, reason] of [["missing", "nosuch", 2, "TARGET_NOT_FOUND"], ["malformed", "bad", 1, "SCHEMA_INVALID"], ["badly named", "a/b", 1, "persona show needs a catalog filename stem"]] as const) {
     const legacy = cotal(["personas", "show", name], malformed, noSeed);
     const current = cotal(["persona", "show", name], malformed, noSeed);
     check(`personas show refuses a ${what} persona as persona show does`,

@@ -43,14 +43,18 @@ An unoccupied folder still offers `cotal space create <name>` for this folder.
 A discovered space is never dialed by a listing and
 reads `not checked`. `space show [<name>]` shows one space in full and probes only that broker.
 With no name it is about this folder: the space it has registered, else the one it holds prepared or
-stopped, else the selected one. A registration for the current directory does not need a `.cotal`
-folder to appear in `space show`. If the folder has several registrations, `space show` refuses with
+stopped, else the selected one. `space show` also finds a registration at the nearest enclosing
+root without a `.cotal` folder. If that root has several registrations, `space show` refuses with
 `TARGET_AMBIGUOUS`, exit 2, and gives a `cotal space show <name>` command for each instead of using
 the selection. This does not change what other commands target. If `cotal use`
 explicitly selected a different space, `space show` says that commands such as `cotal who` still
 target the selection here. Pass `--space <name>` to target the folder's space instead. Neither
 `space` nor `space show` writes anything. A registry record that cannot be
 read refuses both with `SCHEMA_INVALID`, exit 1, naming its file.
+If bare `space show` needs the saved selection and its file is empty or unreadable, it refuses with
+`SCHEMA_INVALID`, exit 1, like bare `cotal use`. Clear the selection with `cotal use --clear` or
+select a known space again. The inventory still lists spaces and warns with `MESH_REGISTRY_UNREADABLE`.
+Its JSON reports `current: null` and `currentRecorded: false` in that case.
 Inside a renamed project's folder, bare `space show` uses the stack journal to find the local
 registration that matches its name, original root and broker. If neither a matching record nor a
 selection is available, the refusal names the space and the move.
@@ -124,8 +128,8 @@ its mode was not checked: `space` and `space show` show the mode as not checked,
 `modeChecked: false` in `--json`. `whoami` reports conditional access and points to `cotal space show <name>`.
 If its broker does not answer, `space show` tells you to wait and check again. Once the broker
 answers, `space show` prints a `space add` command without `--force` that checks the recorded broker,
-root, mode and transport settings in place. A trailing slash on a NATS URL does not prevent this
-check. The command quotes the root when the shell would otherwise split
+root, mode and transport settings in place. A trailing slash on a NATS URL or another path to the
+same root directory does not prevent this check. The command quotes the root when the shell would otherwise split
 or expand it. A failed check keeps the unchecked record and the selection.
 Declining the question is a `no-op` with a `USER_CANCELLED` warning. `--json` gives the registration under `space`, in the
 shape `space show` gives, with `verified` and `replaced`.
@@ -260,7 +264,9 @@ For a discovered space, the next step names removal from the provider's catalog 
 
 `space forget <name>` removes a registration this machine keeps. It stops nothing, deletes nothing on
 the broker, and keeps the files under its root. A name of `.` or `..` refuses with `USAGE_INVALID`,
-exit 1, before reading the registry. It refuses a space this machine is running with
+exit 1, before reading the registry. If this account lacks access to check a prepared project for
+running processes, `space forget` exits 2 with `PERMISSION_DENIED` and keeps the record. Restore
+access to the project folder and its process records before retrying. It refuses a space this machine is running with
 `LIFECYCLE_BLOCKED`, because `cotal down` stops it, and a discovered space with `CONFLICT`, because
 its catalog keeps it. A stack `cotal up` started stays a prepared space at its root after that
 `down`, so the refusal names `cotal down` and then `space forget` again. A legacy root's `down` drops
@@ -278,9 +284,11 @@ folder is gone, it names `cotal down --space <space> --yes` instead. If no stop 
 without the registration, it tells you to restore it first. A member whose process
 is gone without its stop receipt does not block, and the result warns with `STACK_MEMBER_UNSETTLED`
 that it was never stopped cleanly. A prepared space is forgotten the same way, and the `.cotal/`
-that `space create` made stays. A prepared record that cannot be read names no folder, so forgetting
-its space removes only that file, and the result's `root` is null. A damaged registration is removed
-with any prepared record of the same name in one forget. The prepared root still names stopped
+that `space create` made stays. A malformed prepared record names no folder, so forgetting its space
+removes only that file, and the result's `root` is null. If the account cannot read the prepared record,
+`space forget` refuses with `PERMISSION_DENIED` and keeps it. Restore read access, then retry.
+A damaged registration is removed with a prepared record of the same name in one forget when that
+prepared record can be forgotten. The prepared root still names stopped
 stack definitions to release, and recorded running stack members still block the forget before
 anything is removed. This also covers an unreadable pre-hex registration whose filename names the
 space unambiguously. If several registrations are damaged, forget them one at a time by exact
@@ -412,9 +420,9 @@ after `--`, as in `cotal space delete --dry-run -- -old`. If two local registrat
 streams on the same open broker, deletion refuses rather than choosing between them. Its question,
 and the message under a wrong answer, wrap to the
 terminal with each continuation line under the prompt's bar. A script supplies the exact
-positional name with `--yes`;
-`--json` without `--yes` refuses before a connection. After confirmation the command
-reads the broker again and refuses if the stream states, transfer names, presence
+positional name with `--yes`. `--json` without `--yes` refuses before a connection. The confirmation
+refusal keeps `--json` or `--plain` in both suggested commands if given. After confirmation the
+command reads the broker again and refuses if the stream states, transfer names, presence
 identities, registration, trust or broker identity changed. After a typed confirmation it also
 refuses `CONFLICT`, exit 2, when a stream's message count differs from the impact it showed, as
 when a message is posted while the confirmation waits; the refusal names each changed count and

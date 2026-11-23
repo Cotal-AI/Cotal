@@ -1007,12 +1007,14 @@ from this folder. An explicit `cotal use` selection wins even in a running space
 Only an automatically adopted selection yields to a running space registered for this folder.
 With no space running here it is the selected space, or the only running one.
 With none of those it reads your defaults. `--user` reads your defaults alone.
+If `config get` already has a key, remove an unknown option rather than moving it after `--`.
 
 `set` and `unset` change your defaults, or your values for one space with `--space`.
 Both commands work without installing or refreshing connectors. Only `harness`
 and `persona` have per-space values. `set --space` takes a space registered or prepared on this
 machine. A valid name that does not match a space refuses with `TARGET_NOT_FOUND` (exit 2) and the
-known spaces. A name `space create` cannot use, such as one starting with `-`, refuses with
+known spaces. To prepare a new space from an occupied project, run `cotal space create <name> --root <dir>`
+with another folder. A name `space create` cannot use, such as one starting with `-`, refuses with
 `USAGE_INVALID` (exit 1) before any space lookup.
 A read and `unset --space` also take a space that still holds a saved value, so a value left for
 a space you removed can be read and removed, and refuse any other name the same way. A write that
@@ -1142,7 +1144,7 @@ completion does not support, such as tcsh, is refused with `UNSUPPORTED` (exit 2
   invalid profile reply or missing profile directory refuses without guessing a path.
 
 An absolute `XDG_CONFIG_HOME` replaces `~/.config` for the owned stubs; a relative value is
-ignored. Mutation refuses a relative `ZDOTDIR`, symlink, untrusted owner or unsafe file access
+ignored. Mutation refuses a relative `ZDOTDIR`, untrusted owner or unsafe file access
 before it creates anything. Zsh installation creates a missing absolute `ZDOTDIR` with private
 permissions. For other startup paths, a missing directory is refused and the remedy names the
 `mkdir` that creates it. `uninstall`
@@ -1157,14 +1159,17 @@ ACL. Replacements keep the existing file's group and mode, including under a set
 The temporary file starts private, and its final access is checked before it receives shell content.
 A file you do not own stays refused. A startup file that is a
 symlink, as a dotfile manager such as stow links it, is never written through: `install` refuses
-it, exit 2, names it and gives the line to add to the file it points to yourself. Bare `completion`
-warns that it is a symlink and does not read it. A startup file its owner made read-only is never
-replaced. `install`
-can still write its stub and ownership record. When it writes either file without adding the
-startup line, it reports `OPERATION_PARTIAL`, exit 4, and names the line to add yourself.
-`uninstall` refuses it, exit 2, and changes nothing until you remove that line. On Windows, PowerShell script generation works but automatic
-profile editing remains unsupported: the guarded POSIX file writer cannot safely replace
-Windows reparse-point paths. Installing files does not establish that the host runs its
+it, exit 2, names it and gives the line to add to the file it points to yourself. When neither a
+stub nor an ownership record exists for that shell, `uninstall` reports no changes without opening
+the linked startup file. If either exists, `uninstall` refuses the linked startup file. Bare
+`completion` warns that it is a symlink and does not read it. Completion never replaces a startup
+file its owner made read-only. `install` can still write its stub and ownership record. When it
+writes either file without adding the startup line, it reports `OPERATION_PARTIAL`, exit 4, and
+names the line to add yourself.
+`uninstall` refuses to remove a block from it, exit 2, and changes nothing. Restore owner write
+permission and retry without editing the startup block. On Windows, PowerShell script generation
+works but automatic profile editing remains unsupported: the guarded POSIX file writer cannot
+safely replace Windows reparse-point paths. Installing files does not establish that the host runs its
 profile or permits scripts under its execution policy.
 
 
