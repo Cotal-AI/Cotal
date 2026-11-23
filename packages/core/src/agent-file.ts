@@ -25,7 +25,7 @@
  * session reads its own card from it. Part of the wire contract's onboarding
  * half, alongside the join link.
  */
-import { accessSync, constants, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, statSync } from "node:fs";
+import { accessSync, constants, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { AgentFileCatalogChanged, AgentFileNotRegular, agentFileDirectory, assertAgentFileDirectory, createdAgentFileSource, readAgentFileBytes, readAgentFileSnapshot } from "./agent-file-source.js";
