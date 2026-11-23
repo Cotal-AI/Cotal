@@ -68,6 +68,7 @@ import {
   noCotalEnv,
 } from "./host-support.js";
 import { createHostTurns, type HostTurnState } from "./host-turns.js";
+import { jcodeCommands } from "./commands.js";
 export {
   BRIDGE_RECOVERY_WINDOW_MS,
   PERMANENT_BRIDGE_RECOVERY_CODES,
@@ -162,7 +163,7 @@ export async function runJcodeHost(): Promise<void> {
   }
 
   // The card reports the captured event-plane decision because COTAL_EVENTS is stripped above.
-  const agent = new MeshAgent(config, undefined, { eventsArmed, eventsWorkspaceRoot });
+  const agent = new MeshAgent(config, undefined, { eventsArmed, eventsWorkspaceRoot, commands: jcodeCommands(hostState) });
   const relayServer = await startRelay(agent, config, relay);
   writeMcpConfig(home, relay, config);
 
@@ -698,7 +699,7 @@ export async function runJcodeHost(): Promise<void> {
   // pendingKickoff implies consecutiveFailures === 0: it is cleared before the only run() that can
   // increment failures and is never re-armed. The error-retry timer therefore never owns kickoff
   // liveness; idle and bridge recovery below are the reachable pre-dispatch triggers.
-  const hasDriveWork = (): boolean => hostState.pendingKickoff !== undefined || hostState.pendingMentionWake !== undefined || agent.pendingWake() > 0 || hostState.wakeQueued;
+  const hasDriveWork = (): boolean => hostState.pendingKickoff !== undefined || hostState.pendingMentionWake !== undefined || agent.pendingWake() > 0 || hostState.wakeQueued || agent.queuedCommands > 0;
 
   /** Re-drive after a growing delay, at most one timer in flight, never while shutting down. */
   const scheduleErrorRetry = (): void => {
@@ -797,6 +798,10 @@ export async function runJcodeHost(): Promise<void> {
   // A run turn arriving on a quiet seat has no "incoming" item to ride — the intake poll asks
   // for a wake instead. drive()'s own head guards re-entry and a busy session.
   agent.on("wake", () => {
+    if (!sessionBusy() && !hostState.reconnecting && !hostState.stopping) void drive();
+  });
+  // An agent-endpoint command waits for the next idle drive, which runs it before the inbox turn.
+  agent.on("command", () => {
     if (!sessionBusy() && !hostState.reconnecting && !hostState.stopping) void drive();
   });
 
