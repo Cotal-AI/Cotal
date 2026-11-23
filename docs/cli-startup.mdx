@@ -244,7 +244,8 @@ start fails, the stop still runs before the start failure is printed. A hangup, 
 terminal, leaves the stack running and exits 129. If the project folder is still there, the printed
 stop command changes to that folder before running `cotal down`. If Cotal still records the stack
 but its project folder is gone, the notice gives `cotal down --space <space> --yes` to run from
-another folder. A hangup during startup lets the start settle, prints stop guidance and exits 129.
+another folder. It can name the CLI by its absolute path if a bare `cotal` depends on the current
+folder. A hangup during startup lets the start settle, prints stop guidance and exits 129.
 While a foreground `up` holds the stack, it records its process in `.cotal/stack-foreground.hold`,
 and a second foreground `up` on that stack refuses `CONFLICT`, exit 2, names that process, and
 starts nothing. If the journal records a different launching `COTAL_HOME`, the suggested stop and

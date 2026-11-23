@@ -186,21 +186,25 @@ export function verifiedCotalExecutables(env: NodeJS.ProcessEnv = process.env): 
 
 /** Every durable `cotal` executable on `env`'s PATH, in PATH order. Each entry is probed as an
  *  absolute path because `join(".", "cotal")` is the bare name `cotal`, which {@link resolveOnPath}
- *  would scan the whole PATH for, npx and pnpm dlx transient bins included. A relative entry is
- *  unusable when the working folder has been removed. */
-function durableCotalsOnPath(env: NodeJS.ProcessEnv): string[] {
-  return (env.PATH ?? "")
-    .split(delimiter)
-    .filter((dir) => dir && (isAbsolute(dir) || !workingFolderRemoved()))
-    .filter((dir) => !/[/\\]_npx[/\\]/.test(dir) && !inPnpmDlxCache(dir, env))
-    .flatMap((dir) => resolveOnPath(resolve(dir, "cotal"), env) ?? []);
+ *  would scan the whole PATH for, npx and pnpm dlx transient bins included. */
+function durableCotalsOnPath(env: NodeJS.ProcessEnv, fromAnyFolder = false): string[] {
+  const paths: string[] = [];
+  for (const dir of (env.PATH ?? "").split(delimiter)) {
+    // Even a missing relative candidate can shadow a later absolute one in the next directory.
+    if (fromAnyFolder && !isAbsolute(dir)) break;
+    if (!dir || (!isAbsolute(dir) && workingFolderRemoved())) continue;
+    if (/[/\\]_npx[/\\]/.test(dir) || inPnpmDlxCache(dir, env)) continue;
+    const path = resolveOnPath(resolve(dir, "cotal"), env);
+    if (path !== undefined) paths.push(path);
+  }
+  return paths;
 }
 
 /** The copy-paste command prefix for user-facing hints: prefer PATH, npx, or pnpm dlx, then the
  *  installed entry under this Node runtime. A dev clone uses pnpm unless the command must run
  *  from another folder. Re-execs use {@link selfArgv}. */
 export function displayCmd({ fromAnyFolder = false } = {}): string {
-  if (cotalOnPath()) return "cotal";
+  if (durableCotalsOnPath(process.env, fromAnyFolder).length > 0) return "cotal";
   if (isNpx()) return "npx cotal-ai";
   if (isPnpmDlx()) return "pnpm dlx cotal-ai";
   if (runsCliEntry() && (fromAnyFolder || seedWriterKind() === "released")) {

@@ -13,7 +13,8 @@
  * over a stack whose holder was killed says it takes the running stack over before a signal stops it.
  * A hangup cell sends SIGHUP to a ready foreground `up`: it exits 129, names `cotal down`, leaves the
  * broker running and removes its hold record. With the project moved, the notice gives the named
- * stop from another folder and that stop shuts down every member.
+ * stop from another folder even when only a relative PATH entry finds `cotal`. The copied command
+ * shuts down every member.
  * A broker crash releases a controller foreground hold with a failed exit and prints a repair
  * command that keeps a broker-only stack broker-only.
  * A legacy foreground stop exits 130 on SIGINT and 143 on SIGTERM.
@@ -27,11 +28,12 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSyn
 import { createServer as createHttpServer } from "node:http";
 import { createConnection, createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { delimiter, isAbsolute, join, resolve } from "node:path";
 import { recordsBucket } from "@cotal-ai/core";
-import { canonicalLocalProcessPath, DELIVERY_PIDFILE, isCommandFailure, MANAGER_PIDFILE, MANAGER_SPARE_CAPABILITY, readManagerName, shellPath, spaceKey, verifyIdentityPin, type ProcessIdentityRecord } from "@cotal-ai/workspace";
+import { canonicalLocalProcessPath, codeSpan, DELIVERY_PIDFILE, isCommandFailure, MANAGER_PIDFILE, MANAGER_SPARE_CAPABILITY, readManagerName, resolveOnPath, shellPath, spaceKey, verifyIdentityPin, type ProcessIdentityRecord } from "@cotal-ai/workspace";
 import { finishOwnedChild, observeOwnedChild, ownedBirthLive as live, waitForOwnedChild } from "./_foreground-owned-child.js";
 import { foregroundCliProbe } from "./_foreground-cli-probe.js";
+import { shellWord } from "../src/lib/endpoint-errors.js";
 import { observeServiceProcess, serviceInstances } from "../src/lib/service-instances.js";
 import { readStackJournal } from "../src/lib/stack-journal.js";
 import { checkInheritedPipeCleanup } from "./_foreground-pipe-fixture.js";
@@ -814,6 +816,19 @@ async function controllerHangupCell(): Promise<void> {
   }
 }
 
+const sighupDevCli = [process.execPath, "--import", tsx, cliEntry].map(shellWord).join(" ");
+
+function sighupRelativePath(root: string, mesh: string, outside: string, env: NodeJS.ProcessEnv): string {
+  const launcherDir = join(root, "launch-bin");
+  mkdirSync(launcherDir, { mode: 0o700 });
+  const launcher = join(launcherDir, "cotal");
+  writeFileSync(launcher, `#!/bin/sh\nexec ${sighupDevCli} "$@"\n`, { mode: 0o700 });
+  const tools = (env.PATH ?? "").split(delimiter).filter(dir => isAbsolute(dir) && !resolveOnPath(join(dir, "cotal"), env));
+  assert.equal(resolveOnPath(resolve(mesh, "../launch-bin/cotal"), env), launcher);
+  assert.equal(resolveOnPath(resolve(outside, "../launch-bin/cotal"), env), undefined);
+  return ["../launch-bin", ...tools].join(delimiter);
+}
+
 async function controllerSighupCell(renameRoot = false): Promise<void> {
   const name = renameRoot ? "controller-sighup-moved-root" : "controller-sighup";
   const root = join(base, name), home = join(root, "home"), caller = join(root, "caller");
@@ -823,17 +838,25 @@ async function controllerSighupCell(renameRoot = false): Promise<void> {
   const space = `foreground-${name}`;
   const env = { ...cleanEnv, HOME: home, COTAL_HOME: join(home, "machine"), XDG_CONFIG_HOME: join(home, "xdg"), XDG_DATA_HOME: join(home, "data"), XDG_CACHE_HOME: join(home, "cache"), XDG_STATE_HOME: join(home, "state"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" };
   const meshSandbox = recordSmokeSandbox({ root: mesh, cotalHome: env.COTAL_HOME, xdgConfigHome: env.XDG_CONFIG_HOME });
-  const callerSandbox = recordSmokeSandbox({ root: caller, cotalHome: env.COTAL_HOME, xdgConfigHome: env.XDG_CONFIG_HOME });
-  const down = (folderGone: boolean) => {
+  const outside = join(caller, "outside");
+  const outsideSandbox = renameRoot ? recordSmokeSandbox({ root: outside, cotalHome: env.COTAL_HOME, xdgConfigHome: env.XDG_CONFIG_HOME }) : undefined;
+  const launchEnv = renameRoot ? { ...env, PATH: sighupRelativePath(root, mesh, outside, env) } : env;
+  const down = (folderGone: boolean, notice?: string) => {
     const args = folderGone ? ["down", "--space", space, "--yes"] : ["down", "--yes"];
-    const cwd = folderGone ? caller : mesh;
-    assertSmokeSandboxDown(folderGone ? callerSandbox : meshSandbox, args, { cwd, env });
-    return foregroundCliProbe(cliEntry, tsx, cwd, env, args, 120_000);
+    const cwd = folderGone ? outside : mesh;
+    assertSmokeSandboxDown(folderGone ? outsideSandbox : meshSandbox, args, { cwd, env: launchEnv });
+    if (notice === undefined) return foregroundCliProbe(cliEntry, tsx, cwd, launchEnv, args, 120_000);
+    const command = `${sighupDevCli} ${args.join(" ")}`;
+    const span = /Run (`+)(.+?)\1 from another folder to stop the stack\./.exec(notice);
+    assert.ok(span && span[0] === `Run ${codeSpan(command)} from another folder to stop the stack.`, notice); passed++;
+    const result = spawnSync("/bin/sh", ["-c", span[2]!], { cwd, env: launchEnv, encoding: "utf8", timeout: 120_000 });
+    if (result.error) throw result.error;
+    return { code: result.status, out: result.stdout, err: result.stderr };
   };
   const created = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["space", "create", space, "--root", mesh]);
   assert.equal(created.code, 0, `space create prepares the controller root: ${created.err}`); passed++;
   const modeArgs = renameRoot ? [] : ["--open", "--no-manager", "--store-dir", "./relative-store", "--log-file", "./broker.log"];
-  const child: ChildProcess = spawn(process.execPath, ["--import", tsx, cliEntry, "up", "--foreground", "--server", `nats://127.0.0.1:${port}`, "--root", selected, ...modeArgs], { cwd: caller, env, detached: true, stdio: ["ignore", "pipe", "pipe"] });
+  const child: ChildProcess = spawn(process.execPath, ["--import", tsx, cliEntry, "up", "--foreground", "--server", `nats://127.0.0.1:${port}`, "--root", selected, ...modeArgs], { cwd: caller, env: launchEnv, detached: true, stdio: ["ignore", "pipe", "pipe"] });
   let out = "", err = "";
   child.stdout?.on("data", (b: Buffer) => { out += b.toString(); });
   child.stderr?.on("data", (b: Buffer) => { err += b.toString(); });
@@ -859,7 +882,6 @@ async function controllerSighupCell(renameRoot = false): Promise<void> {
     assert.equal(state.code, 129, `a hangup exits 129 and leaves the stack: ${err}`); passed++;
     assert.equal(await portOpen(port), true, "the broker keeps running after the hangup"); passed++;
     if (renameRoot) {
-      assert.ok(err.includes(` down --space ${space} --yes\` from another folder`), err); passed++;
       assert.doesNotMatch(err, /`cd /); passed++;
     } else {
       // The launcher depends on PATH; the project selection does not.
@@ -870,7 +892,7 @@ async function controllerSighupCell(renameRoot = false): Promise<void> {
       const status = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["status", "--space", space, "--server", `nats://127.0.0.1:${port}`]);
       assert.ok(status.code === 0 && /reachable/.test(status.out), `status still shows the broker reachable: ${status.out}${status.err}`); passed++;
     }
-    const stopped = await down(renameRoot);
+    const stopped = await down(renameRoot, renameRoot ? err : undefined);
     assert.equal(stopped.code, 0, `the next down stops the stack the hangup left: ${stopped.out}${stopped.err}`); passed++;
     if (renameRoot) {
       assert.match(stopped.out, /Stack stopped; its folder was gone/); passed++;
