@@ -97,8 +97,8 @@ judge("an empty ps on a terminal offers bare setup",
 const headlessNext = nextOf(psView(emptyPs, false, new Map(), true, undefined, false));
 judge("an empty ps without a terminal offers setup --help instead of bare setup",
   headlessNext.length === 1 && headlessNext[0]!.command.endsWith(" setup --help") && headlessNext[0]!.description === "See setup flags for scripts. Bare setup needs a terminal.", headlessNext);
-const appNext = nextOf(psView(emptyPs, false, new Map(), false, undefined, false));
+const appNext = nextOf(psView(emptyPs, false, new Map(), false, undefined, false, "cotal spawn --space roster-check"));
 judge("an empty ps with an application set up still offers spawn without a terminal",
-  appNext.length === 1 && appNext[0]!.command.endsWith(" spawn") && appNext[0]!.description === "Launch your default agent", appNext);
+  appNext.length === 1 && appNext[0]!.command === "cotal spawn --space roster-check" && appNext[0]!.description === "Launch your default agent", appNext);
 console.log(`\nps mesh column smoke: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

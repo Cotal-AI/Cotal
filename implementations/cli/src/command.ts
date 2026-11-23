@@ -622,8 +622,8 @@ function canonicalSubcommand(cmd: Command, parsed: ParsedArgs): ParsedArgs {
   return changed ? { ...parsed, positionals } : parsed;
 }
 
-/** The subcommand path the words in `rest` name under `cmd`, and the first word where a subcommand
- *  belongs that names none. Read from the declared specs, so a stub's help never imports its package. */
+/** The subcommand path and its operands for help, and the first word where a subcommand belongs
+ *  that names none. Read from the declared specs, so a stub's help never imports its package. */
 function helpPath(cmd: Command, rest: readonly string[]): { path: string[]; unknown?: string } {
   const words = metadataPositionals(cmd, rest).positionals.map((item) => item.value);
   let surface: Pick<Command, "subcommands"> = cmd;
@@ -634,7 +634,7 @@ function helpPath(cmd: Command, rest: readonly string[]): { path: string[]; unkn
     if (!sub && surface.subcommands?.length && !(surface === cmd && cmd.name === "history")) return { path, unknown: word };
     if (!sub || sub.hidden) break;
     path.push(sub.name); surface = sub;
-    if (!sub.subcommands?.length) break;
+    if (!sub.subcommands?.length) return { path: [...path, ...words.slice(path.length)] };
   }
   return { path };
 }
@@ -659,7 +659,7 @@ async function serviceSurface(found: Command | undefined, words: string[], forRe
   } catch (error) {
     if (forRefusal || asksForHelp(words)) return { cmd: found, rest: words };
     const failure = isCommandFailure(error) ? error : new CommandFailure("refused", "SCHEMA_INVALID", "service preset metadata could not be read; no provider was imported or installed");
-    return failureExit(found, failure, asksForJson(found, words), words.includes("--plain"));
+    return failureExit(found, failure, asksForJson(found, words), words.includes("--plain"), undefined, words);
   }
 }
 

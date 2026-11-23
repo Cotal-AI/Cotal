@@ -68,6 +68,8 @@ Its Machine section identifies the running installation and version.
 Check the connector rows before launching an agent.
 
 The component check distinguishes absent processes, components that are not serving, and refused requests.
+If the project folder of a locally started static-auth stack is moved or deleted, checks that need its
+records report `refused` (exit 3), not `absent`. The broker row still notes when its registered address is reachable.
 An open mesh needs no delivery daemon, so its absence does not fail the check.
 An observed store write failure or full store makes the broker `not-serving` even when its listener answers.
 On a stopped local stack, `status` and `ps` name an unwritable store and its permission repair before recommending a restart.
@@ -119,6 +121,7 @@ Stop an older manager's managed agents explicitly before whole-stack shutdown wh
 
 On POSIX, a foreground broker has its own session and process group.
 Ctrl-C reaches the CLI owner first, which uses the same stop procedure and report as bare `cotal down`.
+If you interrupt startup, the terminal waits for startup to settle and gives pending agent launches time to finish before stopping the stack.
 A refused stop leaves the stack running. Use `cotal down --with-agents` when you intend to stop its agents too.
 
 ## Watching [#watching]

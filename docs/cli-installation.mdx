@@ -490,9 +490,12 @@ without a confirmed proxy refusal remains a no-op.
 If the latest-version check fails for a non-network reason, `cotal update --self` reports npm's
 first diagnostic line and exits with status 1.
 
-Missing release archives wait up to ten minutes before keeping the installed
-version. Invalid metadata, integrity failures and scoped registry access errors refuse before global
-installation or connector reconciliation. Since 0.167.1, registry access refusals report npm's error
+Missing release archives and missing target versions of installed first-party extensions share a
+ten-minute wait. If CLI release archives are still missing, Cotal keeps the installed version and
+exits successfully. If an installed extension's target version is still missing, Cotal names it,
+leaves the installation unchanged and exits with status 1. Invalid metadata, integrity failures
+and scoped registry access errors refuse before global installation or connector reconciliation.
+Since 0.167.1, registry access refusals report npm's error
 code rather than asking you to wait for publication. For a refused scoped connection, check the
 `@cotal-ai:registry` line in `.npmrc` and restore that registry's connectivity or correct the setting
 before retrying. The updater does not bypass your configured registry. This preflight does not
