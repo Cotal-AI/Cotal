@@ -27,12 +27,13 @@
  */
 import { randomBytes } from "node:crypto";
 import { realpathSync } from "node:fs";
-import { AGENT_CMD_COMMAND, AGENT_CMD_COMMAND_STATE, AGENT_CMD_COMMANDS, type AgentPrompt, type CommandEntry, type CommandState, type CommandsOutput } from "@cotal-ai/core";
-import { agent, methods, PROTOCOL_VERSION, RequestError, type AgentApp, type AgentContext, type AvailableCommand, type ClientCapabilities, type ContentBlock, type DeleteSessionRequest, type ListSessionsRequest, type LoadSessionRequest, type NewSessionRequest, type PromptRequest, type SessionUpdate, type SetSessionConfigOptionRequest, type StopReason } from "@agentclientprotocol/sdk";
+import { AGENT_CMD_COMMAND, AGENT_CMD_COMMANDS, type AgentPrompt, type CommandEntry, type CommandsOutput } from "@cotal-ai/core";
+import { agent, methods, PROTOCOL_VERSION, RequestError, type AgentApp, type AgentContext, type AvailableCommand, type ClientCapabilities, type DeleteSessionRequest, type ListSessionsRequest, type LoadSessionRequest, type NewSessionRequest, type PromptRequest, type SessionUpdate, type SetSessionConfigOptionRequest, type StopReason } from "@agentclientprotocol/sdk";
 import { TERMINAL_AUTH } from "./auth-method.js";
 import { FrameMapper, type RunSignal } from "./frames.js";
 import { answer, permissionRequest, plainOptions, PromptFollower } from "./prompts.js";
 import { deregisterRemedy, LaunchListsRefused, NoLaunchManager, SignInRequired, type ManagerChoice, type Mesh, type SeatFrame, type SeatList, type SeatRef, type SeatRow } from "./mesh.js";
+import { awaitTaken, promptParts, takeTurn, usageUpdate } from "./turns.js";
 import { applyOption, configOptions, DEFAULT_PERSONA, DEFAULT_VARIANT, defaultManager, initialSelection, MAX_CHOICES, NO_CHANNEL, parseModel, reconcile, refusal, type Offer, type Selection } from "./options.js";
 
 /** The slash commands every session offers. */
@@ -52,9 +53,9 @@ export const START_MS = 30_000;
 /** How long a seat must stay stopped, with no run open, before a later prompt answers. Presence and
  *  the last frames travel separately, so this lets the last frames arrive first. */
 export const SETTLE_MS = 2_000;
-/** How long a seat command may wait in the seat's queue before its prompt stops waiting for it to
- *  start and follows the seat instead. */
-const COMMAND_TAKE_MS = 10_000;
+/** How long a seat spawned for a prompt with images may take to serve its agent endpoint, which
+ *  carries the images. */
+const SERVE_MS = 20_000;
 /** Frames from a seat no session holds are kept this long, in case a spawn reply names it next. */
 const UNCLAIMED_MS = 120_000;
 const UNCLAIMED_FRAMES = 500;
@@ -183,16 +184,6 @@ function canonical(path: string): string {
   }
 }
 
-/** A prompt's blocks as the text a seat receives. A link names its target; other kinds are refused
- *  by the capabilities `initialize` declares. */
-export function promptText(blocks: readonly ContentBlock[]): string {
-  return blocks.map((b) => {
-    if (b.type === "text") return b.text;
-    if (b.type === "resource_link") return b.name && b.name !== b.uri ? `[${b.name}](${b.uri})` : b.uri;
-    throw RequestError.invalidParams(undefined, `${b.type} content is not supported`);
-  }).join("\n\n").trim();
-}
-
 export function defaultName(): string {
   // Lowercase base32 keeps the name a valid user-mode actor token.
   const alphabet = "abcdefghijklmnopqrstuvwxyz234567";
@@ -211,6 +202,8 @@ interface Bridge {
   readonly holder: (seat: SeatRef) => Session | undefined;
   readonly sessionOf: (id: string) => Session;
   readonly announce: (session: Session) => Promise<void>;
+  /** Send the seat's context usage, when its connector reports it. */
+  readonly reportUsage: (session: Session, m: Mesh) => void;
   /** What the client said it can do when it initialized. */
   readonly client: { capabilities?: ClientCapabilities };
   /** Fails the running prompts and closes the space, once the client disconnected. */
@@ -333,12 +326,20 @@ function bridge(options: CotalAgentOptions): Bridge {
     await send(session, { sessionUpdate: "available_commands_update", availableCommands: [...COMMANDS.map((c) => ({ ...c })), ...theirs] });
   };
 
+  const reportUsage = (session: Session, m: Mesh): void => {
+    const seat = session.seat;
+    if (!seat) return;
+    void usageUpdate(m, seat)
+      .then((u) => (u && session.seat === seat ? send(session, u) : undefined))
+      .catch((e: Error) => options.log(`session ${session.id}: ${seat.name}'s usage not read: ${e.message}`));
+  };
+
   const close = async (): Promise<void> => {
     stopFollowing?.();
     for (const s of sessions.values()) if (s.turn) s.turn.fail(new Error("the client disconnected"));
     if (opened) await (await opened.catch(() => undefined))?.close();
   };
-  return { options, sessions, send, mesh, bind, unbind, holder, sessionOf, announce, close, client: {} };
+  return { options, sessions, send, mesh, bind, unbind, holder, sessionOf, announce, reportUsage, close, client: {} };
 }
 
 function launchOffers(options: CotalAgentOptions) {
@@ -548,19 +549,11 @@ function slashCommands(b: Bridge, offers: Offers, runTurn: ReturnType<typeof tur
   const name = nameCommand(b);
   const open = openCommand(b, offers);
 
-  /** Queue a seat command and wait until the seat takes it: the harness started it, refused it, or
-   *  it still waits behind a turn after {@link COMMAND_TAKE_MS}. */
+  /** Queue a seat command and wait until the seat takes it. */
   const queue = async (m: Mesh, seat: SeatRef, entry: CommandEntry, args: string): Promise<void> => {
     const label = entry.target === "skill" ? `the ${entry.name} skill` : `/${entry.name}`;
     const { id } = (await m.agentCall(seat, AGENT_CMD_COMMAND, { target: entry.target, name: entry.name, ...(args ? { args } : {}) })) as { id: string };
-    const until = Date.now() + COMMAND_TAKE_MS;
-    for (;;) {
-      const { state } = (await m.agentCall(seat, AGENT_CMD_COMMAND_STATE, { id })) as { state: CommandState };
-      if (state.kind === "started" || Date.now() > until) return;
-      if (state.kind === "refused" || state.kind === "unknown") throw new Error(`${seat.name} did not run ${label}: ${state.message}`);
-      if (state.kind === "cancelled") throw new Error(`${label} was cancelled before ${seat.name} started it`);
-      await new Promise((r) => setTimeout(r, WATCH_MS));
-    }
+    await awaitTaken(m, seat, id, label);
   };
 
   const slash = async (session: Session, m: Mesh, text: string): Promise<StopReason | undefined> => {
@@ -572,7 +565,10 @@ function slashCommands(b: Bridge, offers: Offers, runTurn: ReturnType<typeof tur
       const seat = session.seat;
       b.options.log(`session ${session.id}: ${seat.name} runs its ${theirs.entry.target} ${theirs.entry.name}`);
       // A command that runs no turn, such as one that clears the session, ends its prompt soon.
-      return runTurn(session, m, "idle", () => queue(m, seat, theirs.entry, theirs.args), { startMs: settleMs * 2, quiet: true }).catch(async (e: Error) => {
+      return runTurn(session, m, "idle", () => queue(m, seat, theirs.entry, theirs.args), { startMs: settleMs * 2, quiet: true }).then((stop) => {
+        b.reportUsage(session, m);
+        return stop;
+      }, async (e: Error) => {
         await say(e.message);
         return "end_turn" as const;
       });
@@ -662,14 +658,15 @@ function openCommand(b: Bridge, offers: Offers) {
     bind(session, row);
     options.links.add(m.space, { thread: session.id, lifecycleUid: row.lifecycleUid });
     void b.announce(session).catch(() => {});
+    b.reportUsage(session, m);
     // A client joins consecutive message chunks into one message, so the line keeps clear of the replay.
-    return `${replay.length > 0 ? "\n\n" : ""}This session now drives ${row.display ?? row.name} (${row.agent}${row.model ? ` ${row.model}` : ""}). A prompt here is typed into its terminal.`;
+    return `${replay.length > 0 ? "\n\n" : ""}This session now drives ${row.display ?? row.name} (${row.agent}${row.model ? ` ${row.model}` : ""}). A prompt here reaches it as your own words.`;
   };
 }
 
 /** The handlers that open a thread, change its options and run its prompts. */
 function threadHandlers(b: Bridge, offers: Offers, runTurn: ReturnType<typeof turnRunner>, slash: ReturnType<typeof slashCommands>, newName: () => string) {
-  const { options, sessions, mesh, bind, sessionOf, announce } = b;
+  const { options, sessions, mesh, bind, sessionOf, announce, reportUsage } = b;
   const { offerFor } = offers;
   return {
     newSession: async (params: NewSessionRequest, client: AgentContext) => {
@@ -714,22 +711,27 @@ function threadHandlers(b: Bridge, offers: Offers, runTurn: ReturnType<typeof tu
     prompt: async (params: PromptRequest) => {
       const session = sessionOf(params.sessionId);
       if (session.turn) throw RequestError.invalidRequest(undefined, "a prompt is already running in this session");
-      const text = promptText(params.prompt);
+      const { text, images } = promptParts(params.prompt);
       const m = await mesh();
-      const handled = await slash(session, m, text);
+      const handled = images.length ? undefined : await slash(session, m, text);
       if (handled) return { stopReason: handled };
-      if (!text) throw RequestError.invalidParams(undefined, "the prompt is empty");
+      if (!text && !images.length) throw RequestError.invalidParams(undefined, "the prompt is empty");
       const running = session.seat;
       if (running) {
-        const stopReason = await runTurn(session, m, "idle", () => m.input(running, text));
+        const stopReason = await runTurn(session, m, "idle", () => takeTurn(m, running, text, images));
+        reportUsage(session, m);
         return { stopReason };
       }
+      if (images.length && !m.agentEndpoints)
+        throw RequestError.invalidParams(undefined, "images need the agent endpoint, which a space serves only where people sign in");
       if (session.offer.seatOnly) throw RequestError.invalidParams(undefined, `${session.id} opened without a grant that may spawn, so this thread cannot start another agent`);
       const { agent: harness, model } = parseModel(session.selection.model);
       const why = refusal(session.offer.catalogs, harness);
       if (why) throw RequestError.invalidParams(undefined, why);
       session.mapper = new FrameMapper(harness, session.cwd);
-      const stopReason = await runTurn(session, m, "run", async () => {
+      // Images ride a turn, so a first prompt with images starts the seat with none and gives it the
+      // prompt once it serves its agent endpoint.
+      const stopReason = await runTurn(session, m, images.length ? "idle" : "run", async () => {
         const spawning = m.spawn({
           name: session.name ?? session.id,
           agent: harness,
@@ -738,7 +740,7 @@ function threadHandlers(b: Bridge, offers: Offers, runTurn: ReturnType<typeof tu
           ...(session.selection.persona !== DEFAULT_PERSONA ? { persona: session.selection.persona } : {}),
           ...(session.selection.channel !== NO_CHANNEL ? { subscribe: [session.selection.channel] } : {}),
           cwd: session.cwd,
-          prompt: text,
+          ...(images.length ? {} : { prompt: text }),
           ...(session.selection.machine ? { managerInstanceId: session.selection.machine } : {}),
         });
         session.spawning = spawning;
@@ -748,9 +750,14 @@ function threadHandlers(b: Bridge, offers: Offers, runTurn: ReturnType<typeof tu
         if (sessions.get(session.id) !== session) return;
         bind(session, seat);
         options.links.add(m.space, { thread: session.id, lifecycleUid: seat.lifecycleUid });
+        if (!images.length) return;
+        for (const until = Date.now() + SERVE_MS; !m.promptCounter(seat); await new Promise((r) => setTimeout(r, WATCH_MS)))
+          if (Date.now() > until) throw new Error(`${seat.name} started but does not serve its agent endpoint, so it cannot take the prompt's images`);
+        await takeTurn(m, seat, text, images);
       });
       // The seat's own commands can be read once it runs.
       if (session.seat) void announce(session).catch(() => {});
+      reportUsage(session, m);
       return { stopReason };
     },
   };
@@ -758,7 +765,7 @@ function threadHandlers(b: Bridge, offers: Offers, runTurn: ReturnType<typeof tu
 
 /** The handlers that list, load and delete threads. */
 function historyHandlers(b: Bridge, offers: Offers) {
-  const { options, sessions, send, mesh, bind, unbind, holder, announce } = b;
+  const { options, sessions, send, mesh, bind, unbind, holder, announce, reportUsage } = b;
   return {
     list: async (params: ListSessionsRequest) => {
       const m = await mesh();
@@ -795,7 +802,10 @@ function historyHandlers(b: Bridge, offers: Offers) {
       }
       for (const update of session.mapper.closeOpen("completed")) await send(session, update, true);
       bind(session, row);
-      setImmediate(() => void announce(session).catch(() => {}));
+      setImmediate(() => {
+        void announce(session).catch(() => {});
+        reportUsage(session, m);
+      });
       return { configOptions: configOptions(session.offer, session.selection) };
     },
     delete: async (params: DeleteSessionRequest) => {
@@ -836,7 +846,7 @@ export function cotalAgent(options: CotalAgentOptions): AgentApp {
         agentInfo: { name: "cotal", title: "Cotal", version: options.version },
         agentCapabilities: {
           loadSession: true,
-          promptCapabilities: { image: false, audio: false, embeddedContext: false },
+          promptCapabilities: { image: true, audio: false, embeddedContext: false },
           sessionCapabilities: { list: {}, delete: {} },
         },
         authMethods: params.clientCapabilities?.auth?.terminal && (await options.canSignIn?.() ?? true) ? [TERMINAL_AUTH] : [],
