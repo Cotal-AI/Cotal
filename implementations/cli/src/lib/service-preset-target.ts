@@ -212,7 +212,11 @@ function redefine(space: string, root: string, preset: ServicePreset, row: Servi
       if (!/^[0-9a-f]{64}$/.test(digest)) throw new CommandFailure("refused", "USAGE_INVALID", "an owned manager launch requires an absolute private spec and its full SHA-256");
       protectedCredentialReference(path);
       const bytes = readLocalRecordSource(path, 256 * 1024, true);
-      if (!bytes || createHash("sha256").update(bytes).digest("hex") !== digest) throw new CommandFailure("refused", "CONFLICT", "the owned manager launch spec is absent or changed from its declared digest; no agent launch was selected", { target: { space, name: row.name }, selfContained: true });
+      if (!bytes || createHash("sha256").update(bytes).digest("hex") !== digest) throw new CommandFailure("refused", "CONFLICT", "the owned manager launch spec is absent or changed from its declared digest; no agent launch was selected", {
+        target: { space, name: row.name },
+        remedy: "To keep the saved launch settings, rerun the same command and omit both `--launch` and `--launch-sha256`. To apply the override, verify the launch file and rerun with its matching SHA-256 in `--launch-sha256`.",
+        selfContained: true,
+      });
     }
   }
   if (values["dry-run"]) return { requested, name: row.name, preset: preset.name, saved: null };

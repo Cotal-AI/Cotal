@@ -239,11 +239,15 @@ try {
       const instances = () => serviceInstances(SPACE, "manager");
       const before = definition(), stoppedBefore = instances();
       const wrong = cotal([...manager, "--launch", launch, "--launch-sha256", "0".repeat(64)]);
+      const { error } = JSON.parse(wrong.stdout);
       check("a mismatched digest refuses without replacing the definition or stopped instance",
-        wrong.status === 2 && JSON.parse(wrong.stdout).error?.code === "CONFLICT"
+        wrong.status === 2 && error?.code === "CONFLICT"
           && before !== undefined && stoppedBefore.length === 1 && stoppedBefore[0]?.record.value.state === "stopped"
           && JSON.stringify(definition()?.record) === JSON.stringify(before.record)
           && JSON.stringify(instances().map((row) => row.record)) === JSON.stringify(stoppedBefore.map((row) => row.record)), out(wrong));
+      check("the digest refusal explains how to keep the saved launch or apply the override",
+        error?.remedy?.includes("omit both `--launch` and `--launch-sha256`") === true
+          && error.remedy.includes("matching SHA-256 in `--launch-sha256`"), out(wrong));
       const retry = cotal(manager);
       check("plain start still uses the saved launch digest and reaches readiness", retry.status === 0 && instances()[0]?.record.value.state === "running", out(retry));
     } finally {
