@@ -37,6 +37,7 @@ import {
   type StreamSeed,
 } from "@cotal-ai/connector-core";
 import type { PresenceCondition, PresenceConditionCode } from "@cotal-ai/core";
+import { createCodeMode, type NestedCall } from "./agui-nested.js";
 
 /** One rollout line. `payload` is `unknown` on purpose: it crosses in from a file this process did
  *  not write, so every field is checked at the point it is read rather than trusted by its type. */
@@ -190,6 +191,16 @@ function resultEvents(toolCallId: string, payload: Record<string, unknown>, isEr
   ];
 }
 
+/** A call code mode's script made, published whole: Codex records it once it has ended. */
+function nestedEvents(call: NestedCall, ts: number): AguiEvent[] {
+  return [
+    toolCallStart({ toolCallId: call.id, toolCallName: call.name, timestamp: ts }),
+    toolCallArgs({ toolCallId: call.id, delta: JSON.stringify(call.args), timestamp: ts }),
+    toolCallEnd({ toolCallId: call.id, timestamp: ts }),
+    ...resultEvents(call.id, { output: call.output }, call.isError, ts),
+  ];
+}
+
 /** The delta journal's key for the agent message or reasoning summary Codex streams as item `itemId`.
  *  The item id is the saved record's `id`, which a part mapped whole publishes under, so the key adds
  *  a prefix. */
@@ -247,6 +258,7 @@ export function createCodexMapper(opts: { threadId: string; mintRunId: () => str
   let openTurn: string | undefined;
   let last = 0;
   const failedCalls = createFailedCalls();
+  const codeMode = createCodeMode();
 
   const map = (record: CodexRecord): Mapped => {
     // A LINE THAT IS NOT AN OBJECT IS A DROP, NOT A THROW, and the difference is the whole plane.
@@ -274,6 +286,7 @@ export function createCodexMapper(opts: { threadId: string; mintRunId: () => str
       open = runId;
       openTurn = asString(payload.turn_id);
       failedCalls.clear();
+      codeMode.clear();
       return { runId, events: [runStarted({ threadId, runId, timestamp: ts })] };
     }
 
@@ -331,6 +344,13 @@ export function createCodexMapper(opts: { threadId: string; mintRunId: () => str
     const runId = open;
 
     if (envelope === "event_msg") failedCalls.note(inner, payload);
+
+    // ---- code mode (agui-nested.ts) -------------------------------------------------------
+    if (envelope === "response_item" && codeMode.hides(inner, payload)) return null;
+    if (envelope === "event_msg" && inner === "item_completed") {
+      const call = codeMode.nested(payload);
+      return call === undefined ? null : { runId, events: nestedEvents(call, ts) };
+    }
 
     // ---- assistant text -----------------------------------------------------------------
     if (envelope === "response_item" && inner === "message") {
