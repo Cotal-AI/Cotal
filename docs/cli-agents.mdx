@@ -18,7 +18,9 @@ cotal runtimes [--json | --plain]
 
 Lists every agent runtime the manager can spawn through: the built-in `pty`, the official providers
 (`orca`, `tmux`, `cmux`, `herdr`), and any custom provider installed via `cotal ext add`. Each installed
-provider is probed so you can see what is actually reachable on this machine before selecting it:
+provider is probed so you can see what is reachable on this machine. A provider that reports
+itself unreachable still gives a complete result. If the provider fails to load or its availability
+check throws, the report exits 4. The row and warning identify which step failed.
 
 ```
 RUNTIME  STATE                  PACKAGE
