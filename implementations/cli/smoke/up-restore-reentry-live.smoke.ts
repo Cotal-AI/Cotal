@@ -203,6 +203,19 @@ try {
   }
   ok("the refused previews left the preserved cut ready", journal().state === "ready");
   const store = join(root, ".cotal", "nats"), savedStore = join(root, "saved-store");
+  const readyJournal = readFileSync(journalPath);
+  const readyStore = lstatSync(store, { bigint: true });
+  for (const [target, mode, cleanTarget] of [["store", "--yes", "store"], ["space", "--dry-run", "all"]] as const) {
+    const reset = runSync(["reset", target, space, mode, "--plain"]);
+    const text = tail(reset);
+    ok(`reset ${target} ${mode} names the resume, stop and matching cleanup preview from the project root`,
+      reset.status === 2 && text.includes("LIFECYCLE_BLOCKED") && text.includes(`from ${root}`)
+        && text.includes("resume the preserved store with `cotal up`") && text.includes("stop it without preserving with `cotal down --yes`")
+        && text.includes(`cotal clean ${cleanTarget} --dry-run`) && !/restore recovery|fallback cleanup|--force/.test(text), text);
+  }
+  const afterReset = lstatSync(store, { bigint: true });
+  ok("both refused resets leave the ready journal and store identity unchanged",
+    readyJournal.equals(readFileSync(journalPath)) && readyStore.dev === afterReset.dev && readyStore.ino === afterReset.ino);
   renameSync(store, savedStore);
   try {
     const missing = runSync(["status", "--space", space, "--plain"]);
