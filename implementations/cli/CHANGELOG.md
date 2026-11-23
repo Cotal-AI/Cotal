@@ -1,5 +1,17 @@
 # @cotal-ai/cli
 
+## 0.176.3
+
+### Patch Changes
+
+- 3cc24ee: Clear the selected space even when a registration is unreadable, and use your defaults when the only candidate for an unqualified `cotal config` read is offline.
+- a461dd2: When a status component check requests both JSON and plain output, suggest the component check without either flag and keep the selected target.
+- 542c965: When a team summary was recorded in another project, its status hint now inspects the folder and space holding the copy.
+- 9b757d5: Spawn and its preview explain how to recover from unreadable persona files and dangling links, and persona edit suggests a valid launch name when the saved display name cannot be used.
+- a99a26e: Keep `--json` in the retry suggested when `cotal send` is missing a message body, so the retry returns a JSON storage receipt.
+- @cotal-ai/core@0.176.3
+  - @cotal-ai/workspace@0.176.3
+
 ## 0.176.2
 
 ### Patch Changes

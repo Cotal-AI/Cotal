@@ -260,7 +260,9 @@ that names no present peer and no sender the session heard from is refused there
 send to it would get, and the numbered list opens. A `#<channel>`
 holding `*` or `>` is refused with the sentence `cotal send -c` gives. In the list, an empty line
 keeps the current recipient, and `/quit` leaves. `:multi` starts a message of several lines, which a line
-holding only `.` ends. A line starting with `/` runs a slash command, and `//` sends a line that
+holding only `.` ends. A multiline draft holds up to 65,536 UTF-16 code units, including the line breaks
+between its lines. If a line would exceed that limit, chat says it was not added and keeps the rest of
+the draft. A line starting with `/` runs a slash command, and `//` sends a line that
 starts with `/`. `/help` lists the slash commands, in `--plain` and in the terminal view. A slash
 command that takes a channel reads it with or without its `#`.
 `/history` reads the current channel's retained messages. When the terminal transcript does not fit,
@@ -306,9 +308,10 @@ nothing. `--kind agent` refuses with exit 1 because a chat session never present
 so does any other kind.
 
 `--role`, `--link`, `--token`, `--creds` and `--lifecycle-uid` are declared but no admission
-supports them yet, so each refuses with exit 2. A role would put the session on that role's work
-queue, and the view has no way yet to answer the sender of a task. The static and user-auth
-admissions take no role.
+supports them yet, so each refuses with exit 2. Remove only the named option and its value, then
+rerun the original command to keep the channel, space and session view. A role would put the session
+on that role's work queue, and the view has no way yet to answer the sender of a task. The static
+and user-auth admissions take no role.
 
 
 ### Session close
@@ -523,6 +526,8 @@ Explicit settings are unmarked even when they equal the defaults. In `channel de
 mark identifies values supplied by the built-in policy.
 The suggested membership and history commands name the space inspected and keep any explicit
 `--server` and `--creds` options. A membership report's suggested follow command does the same.
+Channel write receipts also keep the target space and those options in their suggested inventory
+and history commands. For a named channel the history command includes the quoted `#` channel name.
 
 `channel show <name> --json` returns the raw space defaults in `result.registry.defaults` when
 saved and decodable. `result.registry.channels` contains only the named channel's saved entry, or

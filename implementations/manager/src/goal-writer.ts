@@ -24,7 +24,6 @@ export interface GoalWriterDeps {
   noticeSeatTurns: (...args: Parameters<Manager["noticeSeatTurns"]>) => ReturnType<Manager["noticeSeatTurns"]>;
   renewRemoteBeforeRedial: (...args: Parameters<Manager["renewRemoteBeforeRedial"]>) => ReturnType<Manager["renewRemoteBeforeRedial"]>;
   retireConnection: (...args: Parameters<Manager["retireConnection"]>) => ReturnType<Manager["retireConnection"]>;
-  trackTransport: (...args: Parameters<Manager["trackTransport"]>) => ReturnType<Manager["trackTransport"]>;
   withEndpointServeExecutor: <T>(fn: (kvs: { recordsKv: KV; authKv: KV; nc: NatsConnection }) => Promise<T>) => Promise<T>;
 }
 
@@ -40,14 +39,13 @@ export function goalWriterDeps(m: Manager): GoalWriterDeps {
     noticeSeatTurns: (...args) => m["noticeSeatTurns"](...args),
     renewRemoteBeforeRedial: (...args) => m["renewRemoteBeforeRedial"](...args),
     retireConnection: (...args) => m["retireConnection"](...args),
-    trackTransport: (...args) => m["trackTransport"](...args),
     withEndpointServeExecutor: (fn) => m["withEndpointServeExecutor"](fn),
   };
 }
 
 /** The goal-writer's standing connection, its credential, and the goal index it reconciles at boot. */
 export class GoalWriter {
-  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: GoalWriterDeps, private readonly parts: Pick<ManagerParts, "servePlane">, private readonly state: ManagerStartState) {}
+  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: GoalWriterDeps, private readonly parts: Pick<ManagerParts, "brokerTransport" | "servePlane">, private readonly state: ManagerStartState) {}
 
   /** The spawn-as-action SELF-MEDIATED goal-writer connection + ActionContext — a
    *  standing connection DISJOINT from the serve credential, scoped to exactly this endpoint's
@@ -91,7 +89,6 @@ export class GoalWriter {
   private noticeSeatTurns(...args: Parameters<Manager["noticeSeatTurns"]>): ReturnType<Manager["noticeSeatTurns"]> { return this.deps.noticeSeatTurns(...args); }
   private renewRemoteBeforeRedial(...args: Parameters<Manager["renewRemoteBeforeRedial"]>): ReturnType<Manager["renewRemoteBeforeRedial"]> { return this.deps.renewRemoteBeforeRedial(...args); }
   private retireConnection(...args: Parameters<Manager["retireConnection"]>): ReturnType<Manager["retireConnection"]> { return this.deps.retireConnection(...args); }
-  private trackTransport(...args: Parameters<Manager["trackTransport"]>): ReturnType<Manager["trackTransport"]> { return this.deps.trackTransport(...args); }
   private withEndpointServeExecutor<T>(fn: (kvs: { recordsKv: KV; authKv: KV; nc: NatsConnection }) => Promise<T>): Promise<T> { return this.deps.withEndpointServeExecutor(fn); }
 
   /** Mint the standing `goal-writer` credential and STAGE it into this
@@ -146,7 +143,7 @@ export class GoalWriter {
       maxReconnectAttempts: -1,
     });
     nc.closed().then((err) => { void this.onGoalWriterConnectionClosed(err ?? undefined); });
-    this.trackTransport(nc);
+    this.parts.brokerTransport.trackTransport(nc);
     gw.nc = nc;
     // The (i) fence resolver (SPEC 13.6): resolve an executing instance's CURRENT gate
     // epoch. This manager reconciles only ITS OWN goals, so it resolves its own

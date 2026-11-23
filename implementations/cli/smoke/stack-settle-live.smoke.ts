@@ -1239,13 +1239,21 @@ try {
     check("and its plain refusal names the same code and bare down, with no stop policy wording",
       plainBroker.status === 2 && plainText.includes(`stack-broker matches no service a set of names can stop in space ${space}; no service was stopped`)
         && plainText.includes("TARGET_NOT_FOUND") && plainText.includes(brokerNext) && !plainText.includes("kernel-exit") && !plainText.includes("UNSUPPORTED"), plainText);
-    const unknownOne = cli(root, "down", "nosuch", "--space", space, "--dry-run", "--json");
-    const unknownSet = cli(root, "down", "nosuch", "delivery", "--space", space, "--yes", "--json");
-    check("any other name in the set that matches nothing refuses the whole set with the step a single named down names",
-      unknownSet.status === 2 && unknownSet.env?.error?.code === "TARGET_NOT_FOUND" && unknownSet.env.target?.name === "nosuch"
+    const otherRoot = join(projects, "settle");
+    const unknownOne = cli(otherRoot, "down", "nosuch", "--space", space, "--dry-run", "--json");
+    const unknownSet = cli(otherRoot, "down", "delivery", "nosuch", "--space", space, "--yes", "--json");
+    const remedy = unknownSet.env?.error?.remedy;
+    check("a missing name refuses the whole set and names the same scoped inventory as single named down",
+      unknownSet.status === 2 && unknownSet.env?.error?.code === "TARGET_NOT_FOUND" && unknownSet.env.target?.space === space && unknownSet.env.target.name === "nosuch"
         && unknownSet.env.error.message === `nosuch matches no saved definition or preset in space ${space}; no service was stopped`
-        && unknownSet.env.error.remedy === "list this space's saved definitions with `cotal service`" && unknownSet.env.error.remedy === unknownOne.env?.error?.remedy
+        && remedy === `list this space's saved definitions with \`cotal service --space ${space}\`` && remedy === unknownOne.env?.error?.remedy
         && setManager !== null && alive(setManager) && setDelivery !== null && alive(setDelivery), { set: shown(unknownSet), one: shown(unknownOne) });
+    const plainSet = cli(otherRoot, "down", "delivery", "nosuch", "--space", space, "--yes", "--plain");
+    const remedyArgs = /list this space's saved definitions with `(?:pnpm )?cotal ([^`]+)`/.exec(plainSet.stderr)?.[1];
+    const scopedInventory = remedyArgs ? cli(otherRoot, ...execWords(remedyArgs), "--json") : undefined;
+    check("running the printed inventory command from another project opens the refused set's space",
+      plainSet.status === 2 && plainSet.stderr.includes("TARGET_NOT_FOUND") && remedyArgs === `service --space ${space}`
+        && scopedInventory?.status === 0 && scopedInventory.env?.target?.space === space, { plain: shown(plainSet), inventory: scopedInventory?.env?.target });
     const setStop = cli(root, "down", "manager", "delivery", "--space", space, "--yes", "--json");
     const stopMembers = (setStop.env?.target?.members ?? []) as { name: string; requested?: string }[];
     check("down manager delivery --yes stops stack-manager and stack-delivery, and its target keeps each requested name",

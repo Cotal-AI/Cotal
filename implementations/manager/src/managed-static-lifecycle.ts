@@ -1,8 +1,8 @@
 import { drainAndClose } from "@cotal-ai/core";
 import { rmSync } from "node:fs";
-import { CotalEndpoint, lowerPersonaEndpoints, DEFAULT_SERVER, DEV_OWNER, dialerFor, DeprovisionError, addDeprovisionAccounting, type DeprovisionResourceAccounting, mintCreds, type IssuanceSeam, type IssuedStore, mintLifecycleUid, managedRetirementOpId, newIdentity, principalKey, provisionAgent, grantOverreach, withIssuerSession } from "@cotal-ai/core";
+import { CotalEndpoint, lowerPersonaEndpoints, DEFAULT_SERVER, DEV_OWNER, dialerFor, DeprovisionError, addDeprovisionAccounting, type DeprovisionResourceAccounting, mintCreds, type IssuedStore, mintLifecycleUid, managedRetirementOpId, newIdentity, principalKey, provisionAgent, grantOverreach, withIssuerSession } from "@cotal-ai/core";
 import { agentLifecycleSecretFilePaths, agentSecretKeyForFile, materializeSecretToFile } from "@cotal-ai/workspace";
-import type { EpCapability, RuntimeReference } from "@cotal-ai/core";
+import type { RuntimeReference } from "@cotal-ai/core";
 import { makeManagerEndpointEvictionEvidence } from "./endpoint-evict.js";
 import { inlineSnapshotPath, removeInlineSnapshot } from "./launch.js";
 import { rejectionText, attemptCleanup, describeCleanupFailures, type CleanupFailure } from "@cotal-ai/core";
@@ -21,6 +21,7 @@ import type { TeardownTarget, RetirementHold } from "./retirement.js";
 import type { EvictionResult } from "@cotal-ai/core";
 import { foreignEventChannels } from "./seat-launch.js";
 import type { ManagerConfig } from "./manager-config.js";
+import type { ManagerParts } from "./manager-parts.js";
 import type { ManagerStartState } from "./manager-start-state.js";
 
 
@@ -69,8 +70,6 @@ export interface ManagedStaticLifecycleDeps {
   beginLifecycle: (resumeOperation?: boolean) => (() => void) | undefined;
   maintenanceError: () => string;
   withRetirementSlot: <T>(run: () => Promise<T>) => Promise<T>;
-  managedStaticInstanceReads: (capabilities: readonly string[] | undefined) => EpCapability[];
-  issuanceSeam: (i: { store: IssuedStore; accepted: KV }, mode: "issue" | "renew", a: { name: string; id: string; lifecycleUid: string }, exp: number) => IssuanceSeam;
   refreshSeatRecord: (a: ManagedAgent) => void;
   dial: (opts: Parameters<ReturnType<typeof dialerFor>>[0]) => Promise<NatsConnection>;
   seatRecordFor: (row: StaticManagedSlotRow) => SeatRecord | undefined;
@@ -101,8 +100,6 @@ export function managedStaticLifecycleDeps(m: Manager): ManagedStaticLifecycleDe
     beginLifecycle: (resumeOperation) => m["beginLifecycle"](resumeOperation),
     maintenanceError: () => m["maintenanceError"](),
     withRetirementSlot: (run) => m["withRetirementSlot"](run),
-    managedStaticInstanceReads: (capabilities) => m["managedStaticInstanceReads"](capabilities),
-    issuanceSeam: (i, mode, a, exp) => m["issuanceSeam"](i, mode, a, exp),
     refreshSeatRecord: (a) => m["refreshSeatRecord"](a),
     dial: (opts) => m["dial"](opts),
     seatRecordFor: (row) => m["seatRecordFor"](row),
@@ -146,7 +143,7 @@ export class ManagedStaticLifecycle {
   private staticReconcileSweepsInFlight = 0;
   private staticReconcileDrainWaiters: Array<() => void> = [];
   private staticReconcileStopping = false;
-  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: ManagedStaticLifecycleDeps, private readonly state: ManagerStartState) {}
+  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: ManagedStaticLifecycleDeps, private readonly state: ManagerStartState, private readonly parts: Pick<ManagerParts, "brokerTransport" | "seatLaunch">) {}
   private get managerInstanceId(): string { return this.state.managerInstanceId!; }
   private get auth() { return this.state.auth; }
   private get userMode() { return this.state.userMode; }
@@ -519,7 +516,7 @@ export class ManagedStaticLifecycle {
     // changed ceiling is refused there: that is a fresh issuance on a new connection, never a renewal.
     const issued = a.issued;
     const endpoints = lowerPersonaEndpoints(a.launch.endpoints);
-    const reads = this.deps.managedStaticInstanceReads(a.launch.capabilities);
+    const reads = this.parts.seatLaunch.managedStaticInstanceReads(a.launch.capabilities);
     if (reads.length) {
       // Resolve this incarnation's original issuance, not its current spawner or a reconstructed
       // run admission. Old seats and run helpers keep the exact ceiling they were minted with.
@@ -540,7 +537,7 @@ export class ManagedStaticLifecycle {
         lifecycleUid: a.lifecycleUid,
         expiresAt: exp,
         issued,
-        issuance: this.deps.issuanceSeam(i, "renew", a, exp),
+        issuance: this.parts.brokerTransport.issuanceSeam(i, "renew", a, exp),
       }),
     );
     const secrets = this.config.secrets;

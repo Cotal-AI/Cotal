@@ -32,8 +32,8 @@ names the member and the name you gave as `requested`. Several names in one `dow
 same way, so `cotal down manager delivery` stops `stack-manager` and `stack-delivery`, and each
 member of the target carries its own `requested`. A name that is no preset, such as `nats`,
 refuses `TARGET_NOT_FOUND` there and names the `stack-` member to use, and a name with no member
-names `cotal service`, which lists the saved definitions. Among several names such a name refuses
-the whole set with the same next step, so no service stops. A set never stops the broker, so
+names `cotal service --space <space>` to list the saved definitions in the space the stop targeted.
+This refusal stops no service, even when several names are given. A set never stops the broker, so
 `nats`, `broker` and `stack-broker` each refuse the whole set `TARGET_NOT_FOUND` before any member
 resolves, with the same message for each name. The next step is a bare `cotal down`, which stops
 the broker with the whole stack. A saved service of your own named `nats` or `broker` is that
@@ -918,12 +918,14 @@ with `cotal clean store --dry-run` or `cotal clean all --dry-run`.
 
 Removing the store removes what the broker kept in it: workflow runs and their journals, channel
 history, stored messages and every other record. A run still waiting for an answer goes with it and
-cannot be answered or resumed afterwards. Only the broker reads the store, and it is stopped, so
-`cotal down` reads the stack's runs from its manager before stopping it and records them in the
-stack journal with the steps they wait on. The preview, the confirmation and the receipt list those
-runs as of the last down, and `--json` carries them as `storeContents.runsAtLastDown` and
+cannot be answered or resumed afterwards. `cotal down` reads the stack's runs from its manager
+before stopping it and records them in the stack journal with the steps they wait on. The preview,
+the confirmation and the receipt list those runs as of the last down, and `--json` carries them as
+`storeContents.runsAtLastDown` and
 `removedRuns`. When that down could not read them, or no down recorded them, the preview says so.
-To see the runs then, run `cotal up` and `cotal run`, then `cotal down --yes`.
+If the broker is running and a manager is available, see live runs with `cotal run --space <space>`.
+For a stopped stack eligible for reset, run `cotal up` and `cotal run` in its project root to see
+the runs, then `cotal down --yes`.
 
 On a controller stack, both resets leave an empty private store directory in place of the one they
 removed and record it in the stack journal, as `up` records a store it prepares. `status`, `down`

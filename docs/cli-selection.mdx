@@ -494,8 +494,9 @@ It names the file without changing it. Clear it with `cotal use --clear`, or sel
 If a directory occupies a saved selection file's path, either repair moves the directory aside and leaves its contents intact.
 `use --clear` removes the selection, so a command targets its folder's space again. Its receipt
 names the space that was selected, and `--json` gives `current: null` with that `previous`. With
-nothing selected it is a `no-op`, exit 0. In both cases, `folder` still identifies the local
-folder's space or is null when none is recorded. `use --clear` takes no space name.
+nothing selected it is a `no-op`, exit 0. In both cases, `folder` identifies the local folder's
+space or is null when none is recorded. If the folder's space cannot be read, the command still
+succeeds, reports a warning, and sets `folder` to null in JSON. `use --clear` takes no space name.
 A space stays selected through its `cotal down`: `use` then reports it as stopped, with its last
 operation, such as `` `cotal down`, completed ``, and names `cotal up` in its root. This also applies
 when a legacy space named after its folder keeps its registration after `down`. For that space,

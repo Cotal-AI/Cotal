@@ -17,6 +17,11 @@ import { ownedBySibling } from "./static-lifecycle.js";
 import type { ManagerConfig } from "./manager-config.js";
 import type { ManagerStartState } from "./manager-start-state.js";
 
+/** Scope written by local user-mode provisioning from the persona capabilities. */
+export function localUserAgentScope(capabilities: readonly string[] = []): string[] {
+  return capabilities.filter((c) => c === "spawn" || c === "run" || c === "admin" || /^role:[A-Za-z0-9_-]+$/.test(c));
+}
+
 /** How often a resumed seat whose readiness was uncertain is checked for a join its predecessor's
  *  presence row hides (see {@link Manager.watchResumeAdoption}). The wait has no end of its own, so
  *  it asks less often than the readiness fence's 50 ms poll. */
@@ -71,23 +76,19 @@ export interface PreservedResumeDeps {
   awaitReadiness: (...args: Parameters<Manager["awaitReadiness"]>) => ReturnType<Manager["awaitReadiness"]>;
   beginLifecycle: (...args: Parameters<Manager["beginLifecycle"]>) => ReturnType<Manager["beginLifecycle"]>;
   capabilityRefusal: (...args: Parameters<Manager["capabilityRefusal"]>) => ReturnType<Manager["capabilityRefusal"]>;
-  capacityRefusal: (...args: Parameters<Manager["capacityRefusal"]>) => ReturnType<Manager["capacityRefusal"]>;
   commitPreservation: (...args: Parameters<Manager["commitPreservation"]>) => ReturnType<Manager["commitPreservation"]>;
   deprovision: (...args: Parameters<Manager["deprovision"]>) => ReturnType<Manager["deprovision"]>;
   eventsRefusal: (...args: Parameters<Manager["eventsRefusal"]>) => ReturnType<Manager["eventsRefusal"]>;
   executionRefusal: (...args: Parameters<Manager["executionRefusal"]>) => ReturnType<Manager["executionRefusal"]>;
-  fileDigestOrEmpty: (...args: Parameters<Manager["fileDigestOrEmpty"]>) => ReturnType<Manager["fileDigestOrEmpty"]>;
   forkProvenance: (...args: Parameters<Manager["forkProvenance"]>) => ReturnType<Manager["forkProvenance"]>;
   freeSlot: (...args: Parameters<Manager["freeSlot"]>) => ReturnType<Manager["freeSlot"]>;
   hostLaunchFields: (...args: Parameters<Manager["hostLaunchFields"]>) => ReturnType<Manager["hostLaunchFields"]>;
   inventoryReferenceError: (...args: Parameters<Manager["inventoryReferenceError"]>) => ReturnType<Manager["inventoryReferenceError"]>;
-  launchHarness: (...args: Parameters<Manager["launchHarness"]>) => ReturnType<Manager["launchHarness"]>;
   loadSeatRuntime: (...args: Parameters<Manager["loadSeatRuntime"]>) => ReturnType<Manager["loadSeatRuntime"]>;
   maintenanceError: (...args: Parameters<Manager["maintenanceError"]>) => ReturnType<Manager["maintenanceError"]>;
   managedPrincipal: (...args: Parameters<Manager["managedPrincipal"]>) => ReturnType<Manager["managedPrincipal"]>;
   nameError: (...args: Parameters<Manager["nameError"]>) => ReturnType<Manager["nameError"]>;
   occupancy: (...args: Parameters<Manager["occupancy"]>) => ReturnType<Manager["occupancy"]>;
-  occupancyText: (...args: Parameters<Manager["occupancyText"]>) => ReturnType<Manager["occupancyText"]>;
   preparePreservation: (...args: Parameters<Manager["preparePreservation"]>) => ReturnType<Manager["preparePreservation"]>;
   probeStaticCredential: (...args: Parameters<Manager["probeStaticCredential"]>) => ReturnType<Manager["probeStaticCredential"]>;
   readManagedSession: (...args: Parameters<Manager["readManagedSession"]>) => ReturnType<Manager["readManagedSession"]>;
@@ -126,23 +127,19 @@ export function preservedResumeDeps(m: Manager): PreservedResumeDeps {
     awaitReadiness: (...args) => m["awaitReadiness"](...args),
     beginLifecycle: (...args) => m["beginLifecycle"](...args),
     capabilityRefusal: (...args) => m["capabilityRefusal"](...args),
-    capacityRefusal: (...args) => m["capacityRefusal"](...args),
     commitPreservation: (...args) => m["commitPreservation"](...args),
     deprovision: (...args) => m["deprovision"](...args),
     eventsRefusal: (...args) => m["eventsRefusal"](...args),
     executionRefusal: (...args) => m["executionRefusal"](...args),
-    fileDigestOrEmpty: (...args) => m["fileDigestOrEmpty"](...args),
     forkProvenance: (...args) => m["forkProvenance"](...args),
     freeSlot: (...args) => m["freeSlot"](...args),
     hostLaunchFields: (...args) => m["hostLaunchFields"](...args),
     inventoryReferenceError: (...args) => m["inventoryReferenceError"](...args),
-    launchHarness: (...args) => m["launchHarness"](...args),
     loadSeatRuntime: (...args) => m["loadSeatRuntime"](...args),
     maintenanceError: (...args) => m["maintenanceError"](...args),
     managedPrincipal: (...args) => m["managedPrincipal"](...args),
     nameError: (...args) => m["nameError"](...args),
     occupancy: (...args) => m["occupancy"](...args),
-    occupancyText: (...args) => m["occupancyText"](...args),
     preparePreservation: (...args) => m["preparePreservation"](...args),
     probeStaticCredential: (...args) => m["probeStaticCredential"](...args),
     readManagedSession: (...args) => m["readManagedSession"](...args),
@@ -166,7 +163,7 @@ export function preservedResumeDeps(m: Manager): PreservedResumeDeps {
 
 /** Resuming a preserved manager: the bound inventory, validating each retained seat's authority, relaunching or adopting it, and the commit and finalize doors. */
 export class PreservedResume {
-  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: PreservedResumeDeps, private readonly parts: Pick<ManagerParts, "connectorInventory">, private readonly state: ManagerStartState) {}
+  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: PreservedResumeDeps, private readonly parts: Pick<ManagerParts, "connectorInventory" | "harnessResolution" | "namesCapacity" | "preservation">, private readonly state: ManagerStartState) {}
 
   // The Manager members these bodies read, under their Manager names. Each reads through its dep at
   // use, so a field the Manager assigns later is current and a method a test replaces on the Manager
@@ -189,23 +186,19 @@ export class PreservedResume {
   private awaitReadiness(...args: Parameters<Manager["awaitReadiness"]>): ReturnType<Manager["awaitReadiness"]> { return this.deps.awaitReadiness(...args); }
   private beginLifecycle(...args: Parameters<Manager["beginLifecycle"]>): ReturnType<Manager["beginLifecycle"]> { return this.deps.beginLifecycle(...args); }
   private capabilityRefusal(...args: Parameters<Manager["capabilityRefusal"]>): ReturnType<Manager["capabilityRefusal"]> { return this.deps.capabilityRefusal(...args); }
-  private capacityRefusal(...args: Parameters<Manager["capacityRefusal"]>): ReturnType<Manager["capacityRefusal"]> { return this.deps.capacityRefusal(...args); }
   private commitPreservation(...args: Parameters<Manager["commitPreservation"]>): ReturnType<Manager["commitPreservation"]> { return this.deps.commitPreservation(...args); }
   private deprovision(...args: Parameters<Manager["deprovision"]>): ReturnType<Manager["deprovision"]> { return this.deps.deprovision(...args); }
   private eventsRefusal(...args: Parameters<Manager["eventsRefusal"]>): ReturnType<Manager["eventsRefusal"]> { return this.deps.eventsRefusal(...args); }
   private executionRefusal(...args: Parameters<Manager["executionRefusal"]>): ReturnType<Manager["executionRefusal"]> { return this.deps.executionRefusal(...args); }
-  private fileDigestOrEmpty(...args: Parameters<Manager["fileDigestOrEmpty"]>): ReturnType<Manager["fileDigestOrEmpty"]> { return this.deps.fileDigestOrEmpty(...args); }
   private forkProvenance(...args: Parameters<Manager["forkProvenance"]>): ReturnType<Manager["forkProvenance"]> { return this.deps.forkProvenance(...args); }
   private freeSlot(...args: Parameters<Manager["freeSlot"]>): ReturnType<Manager["freeSlot"]> { return this.deps.freeSlot(...args); }
   private hostLaunchFields(...args: Parameters<Manager["hostLaunchFields"]>): ReturnType<Manager["hostLaunchFields"]> { return this.deps.hostLaunchFields(...args); }
   private inventoryReferenceError(...args: Parameters<Manager["inventoryReferenceError"]>): ReturnType<Manager["inventoryReferenceError"]> { return this.deps.inventoryReferenceError(...args); }
-  private launchHarness(...args: Parameters<Manager["launchHarness"]>): ReturnType<Manager["launchHarness"]> { return this.deps.launchHarness(...args); }
   private loadSeatRuntime(...args: Parameters<Manager["loadSeatRuntime"]>): ReturnType<Manager["loadSeatRuntime"]> { return this.deps.loadSeatRuntime(...args); }
   private maintenanceError(...args: Parameters<Manager["maintenanceError"]>): ReturnType<Manager["maintenanceError"]> { return this.deps.maintenanceError(...args); }
   private managedPrincipal(...args: Parameters<Manager["managedPrincipal"]>): ReturnType<Manager["managedPrincipal"]> { return this.deps.managedPrincipal(...args); }
   private nameError(...args: Parameters<Manager["nameError"]>): ReturnType<Manager["nameError"]> { return this.deps.nameError(...args); }
   private occupancy(...args: Parameters<Manager["occupancy"]>): ReturnType<Manager["occupancy"]> { return this.deps.occupancy(...args); }
-  private occupancyText(...args: Parameters<Manager["occupancyText"]>): ReturnType<Manager["occupancyText"]> { return this.deps.occupancyText(...args); }
   private preparePreservation(...args: Parameters<Manager["preparePreservation"]>): ReturnType<Manager["preparePreservation"]> { return this.deps.preparePreservation(...args); }
   private probeStaticCredential(...args: Parameters<Manager["probeStaticCredential"]>): ReturnType<Manager["probeStaticCredential"]> { return this.deps.probeStaticCredential(...args); }
   private readManagedSession(...args: Parameters<Manager["readManagedSession"]>): ReturnType<Manager["readManagedSession"]> { return this.deps.readManagedSession(...args); }
@@ -262,8 +255,8 @@ export class PreservedResume {
             owner: principal.owner,
             actor: principal.actor,
             lifecycleUid: a.lifecycleUid,
-            actorToken: { kind: "file" as const, path: files.actorToken, sha256: this.fileDigestOrEmpty(files.actorToken) },
-            sentinelCredential: { kind: "file" as const, path: files.sentinelCreds, sha256: this.fileDigestOrEmpty(files.sentinelCreds) },
+            actorToken: { kind: "file" as const, path: files.actorToken, sha256: this.parts.preservation.fileDigestOrEmpty(files.actorToken) },
+            sentinelCredential: { kind: "file" as const, path: files.sentinelCreds, sha256: this.parts.preservation.fileDigestOrEmpty(files.sentinelCreds) },
             health: { kind: "file" as const, path: files.health },
           };
         })()
@@ -271,7 +264,7 @@ export class PreservedResume {
         ? (() => {
             if (!files?.creds)
               throw new Error(`managed agent ${a.name} is static-auth but its credential path was not recorded`);
-            return { mode: "static" as const, id: principal.actor, lifecycleUid: a.lifecycleUid, credential: { kind: "file" as const, path: files.creds, sha256: this.fileDigestOrEmpty(files.creds) }, ...(a.issued ? { issued: a.issued } : {}) };
+            return { mode: "static" as const, id: principal.actor, lifecycleUid: a.lifecycleUid, credential: { kind: "file" as const, path: files.creds, sha256: this.parts.preservation.fileDigestOrEmpty(files.creds) }, ...(a.issued ? { issued: a.issued } : {}) };
           })()
         : { mode: "open", id: principal.actor, lifecycleUid: a.lifecycleUid };
     const dependencies = [a.launch.source.configPath];
@@ -566,7 +559,7 @@ export class PreservedResume {
       const liveRoster = this.ep.getRoster().filter((presence) => presence.status !== "offline");
       const occupancy = this.occupancy();
       if (occupancy.used + entries.length > MAX_AGENTS)
-        return { ok: false, agents: [], error: `resume inventory of ${entries.length} would exceed manager capacity (${this.occupancyText(occupancy)})` };
+        return { ok: false, agents: [], error: `resume inventory of ${entries.length} would exceed manager capacity (${this.parts.namesCapacity.occupancyText(occupancy)})` };
       for (const entry of entries) {
         if (seen.has(entry.name))
           return { ok: false, agents: [], error: `resume inventory contains duplicate agent name "${entry.name}"` };
@@ -805,14 +798,19 @@ export class PreservedResume {
       // never left to broker-fail after the child is already running (SPEC §13.1).
       if (adopted.lifecycleUid !== entry.identity.lifecycleUid)
         throw new Error(`retained user authority for ${entry.identity.owner}.${entry.identity.actor} is incarnation ${adopted.lifecycleUid}, not the inventory's ${entry.identity.lifecycleUid}; a resume binds the exact recovered uid before any spawn (SPEC 13.1)`);
-      // A released hosted record with no saved scope can retain only the issuer's default
-      // spawn and own-role tokens, or a narrowed subset. Supplied inventories stay exact.
-      const hostedDefaultScopeMatches = releasedRecordVersion === "cotal-seat-record/v1" &&
-        this.remoteAuthority !== undefined && entry.launch.capabilities === undefined &&
+      const capabilities = entry.launch.capabilities;
+      // Local inventories carry persona capabilities, while the local ledger records only the
+      // scope derived from them. Hosted scope is exact except for a released record with no list.
+      const hostedDefaultScopeMatches = this.remoteAuthority !== undefined &&
+        releasedRecordVersion === "cotal-seat-record/v1" && capabilities === undefined &&
+        new Set(adopted.scope).size === adopted.scope.length &&
         adopted.scope.every((token) => token === "spawn" || (entry.role !== undefined && token === `role:${entry.role}`));
+      const scopeMatches = sameStrings(adopted.scope, capabilities) ||
+        (!this.remoteAuthority && sameStrings(adopted.scope, localUserAgentScope(capabilities))) ||
+        hostedDefaultScopeMatches;
       if (!sameStrings(adopted.allowSubscribe, entry.launch.allowSubscribe) ||
           !sameStrings(adopted.allowPublish, entry.launch.allowPublish) ||
-          !(sameStrings(adopted.scope, entry.launch.capabilities) || hostedDefaultScopeMatches) ||
+          !scopeMatches ||
           adopted.role !== entry.role || adopted.parent !== entry.authorityParent)
         throw new Error(`retained user authority for ${entry.identity.owner}.${entry.identity.actor} no longer matches the inventory`);
       return {
@@ -905,7 +903,7 @@ export class PreservedResume {
         return { ok: false, error: `retained agent "${entry.name}" is already managed or reserved; same-principal resume never auto-numbers` };
       const occupancy = batchReserved ? undefined : this.occupancy();
       if (occupancy && occupancy.used >= MAX_AGENTS)
-        return { ok: false, error: `${this.capacityRefusal(occupancy)}; same-principal resume refused` };
+        return { ok: false, error: `${this.parts.namesCapacity.capacityRefusal(occupancy)}; same-principal resume refused` };
       const cached = prepared?.get(entry.name);
       if (!preflightOnly && cached) {
         try {
@@ -938,7 +936,7 @@ export class PreservedResume {
         return { ok: false, error: rejectionText(e) };
       }
       await this.parts.connectorInventory.refreshUnavailableConnectors(connector.name, true);
-      const harness = this.launchHarness(connector);
+      const harness = this.parts.harnessResolution.launchHarness(connector);
       if ("refusal" in harness) return { ok: false, error: harness.refusal };
       let retainedSession: string | undefined;
       try {

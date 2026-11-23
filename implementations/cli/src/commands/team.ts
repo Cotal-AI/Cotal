@@ -129,8 +129,8 @@ function cardStepText(phase: string): string {
 function assertSummaryNotElsewhere({ root, space }: PersonaCatalog, deploymentId: string): void {
   const recordedRoot = freshTeamSummaryRecordedElsewhere(root, deploymentId);
   if (!recordedRoot) return;
-  const inspect = `cd ${shellPath(root)} && cotal status --space=${shellWord(space)}`;
-  throw new CommandFailure("refused", "CONFLICT", `the fresh launch summary ${deploymentId} was recorded at ${recordedRoot}, not at this folder; the folder was moved or copied since, so it reports only that earlier boot`, { target: { root, recordedRoot, deploymentId }, remedy: `nothing in this folder depends on it; inspect this project's stack with ${codeSpan(inspect)}` });
+  const atRoot = `cd ${shellPath(root)} && `;
+  throw new CommandFailure("refused", "CONFLICT", `the fresh launch summary ${deploymentId} was recorded at ${recordedRoot}, not at this folder; the folder was moved or copied since, so it reports only that earlier boot`, { target: { root, recordedRoot, deploymentId }, remedy: `nothing in this folder depends on it; inspect this project's stack with ${codeSpan(`${atRoot}cotal status --space=${shellWord(space)}`)}` });
 }
 
 function freshRecorded(summary: FreshTeamSummary) {
@@ -331,6 +331,9 @@ async function previewDeploy(file: string, values: TeamValues): Promise<void> {
   if (!local) throw stoppedTeamDeploy(waiting) ?? new CommandFailure("refused", "TARGET_UNAVAILABLE", waiting ? "the selected space is only prepared; additive deploy requires an existing registered mesh" : "the selected space has no local registration; no broker or authorization target was inferred", { target: { space }, remedy: "register an existing authorized mesh before reviewing an additive deployment" });
   if (waiting && canonicalRoot(waiting.root) !== canonicalRoot(local.root)) throw new CommandFailure("refused", "CONFLICT", "prepared and registered records disagree on this space's root; no additive target was chosen", { target: { space } });
   const runtimeRequest = values.runtime ?? prepared.manifest.runtime ?? "pty";
+  const auth = prepared.manifest.broker?.auth;
+  const requestedMode = auth === false ? "open" : auth === "user" ? "user" : "auth";
+  const authConflict = auth !== undefined && requestedMode !== local.mode;
   const openDurable = local.mode === "open" && prepared.manifest.channels.some((channel) => channel.deliveryClass === "durable");
   const notLive = cardsWithoutLiveDelivery(prepared.manifest.channels);
   let attempts: ReturnType<typeof listAdditiveTeamAttempts>;
@@ -341,13 +344,14 @@ async function previewDeploy(file: string, values: TeamValues): Promise<void> {
     retainedAdditiveAttempts: attempts.valid.map((attempt) => ({ deploymentId: attempt.deploymentId, space: attempt.space, server: brokerAddressForDisplay(attempt.server) ?? "not displayable", createdAt: attempt.createdAt, recordedState: additiveTeamRecordedState(attempt, attempts) })), unreadableAdditiveAttempts: attempts.refused.map(({ path }) => path),
     registrationOrigin: local.origin ?? "not recorded", recordedBroker: brokerAddressForDisplay(local.server) ?? null,
     recordedMode: local.mode, recordedTlsRequired: local.tlsRequired === true,
-    runtimeRequest, native, openDurableUnsupported: openDurable,
+    runtimeRequest, native: authConflict ? { ...native, channels: { ...native.channels, create: [] } } : native, openDurableUnsupported: openDurable,
     agents: prepared.agents.map((agent) => ({ name: agent.name, application: agent.agentType, role: agent.role ?? null, requestedModel: agent.model ?? null })),
     channels: prepared.manifest.channels.map((channel) => ({ name: channel.name, deliveryClass: channel.deliveryClass ?? null, replay: channel.replay ?? null, replayWindow: channel.replayWindow ?? null })),
     targetReachability: "native-reads-established", brokerPolicy: "not-checked", authorization: "read-established-not-deploy-authority", ownershipClassification: "native-roster-and-registry-snapshot", connectorAvailability: "not-checked", effectAttempted: false, persisted: false };
   writeResult(presentationOf(values), { command: "team deploy", target: { space, root: local.root, path }, result,
     completeness: "partial",
-    warnings: [...prepared.warnings.map((warning) => ({ code: "MANIFEST_WARNING", target: { agent: warning.agent }, message: warning.message })),
+    warnings: [...(authConflict ? [{ code: "MANIFEST_WARNING", target: { space }, message: `Apply refuses: broker.auth requests ${authModeText(requestedMode)}, but this space is registered with mode ${authModeText(local.mode)}. Omit broker.auth or set it to match the registered mode.` }] : []),
+      ...prepared.warnings.map((warning) => ({ code: "MANIFEST_WARNING", target: { agent: warning.agent }, message: warning.message })),
       ...Array.from(invalidCards, ([name, message]) => ({ code: "MANIFEST_WARNING", target: { space, cards: [name] }, message })),
       ...(unverifiedCards.length ? [{ code: "CURRENT_CHANNEL_STATE_UNCHECKED", target: { space, cards: unverifiedCards }, message: "Some declared channels have a retained intent but do not match a verified create receipt. Their ownership is not classified." }] : []),
       ...(openDurable ? [{ code: "OPEN_DURABLE_UNSUPPORTED", target: { space }, message: "The selected running mesh is open and has no delivery daemon; this manifest's durable declaration cannot acquire a per-member backstop." }] : []), ...(notLive ? [{ code: "LIVE_DELIVERY_REQUIRED", target: { space, cards: notLive.names }, message: `Apply refuses: ${notLive.cards} ${notLive.verb} not set deliveryClass: live. To deploy, ${liveDeliveryRemedy(local.mode)}.` }] : []), ...(!native.unmanaged.feedAvailable ? [{ code: "MEMBERSHIP_FEED_UNAVAILABLE", target: { space }, message: "Other readers are a lower bound because the derived membership feed has no observed heartbeat." }] : []), ...(attempts.valid.length || attempts.refused.length ? [{ code: "ADDITIVE_ATTEMPT_REMAINS", target: { root: local.root, space, deploymentIds: attempts.valid.map((attempt) => attempt.deploymentId), unreadable: attempts.refused.map(({ path }) => path) }, message: "An additive deployment intent is retained at this root; the preview does not settle or retry it." }] : [])] }, (data): Report => ({ sections: [

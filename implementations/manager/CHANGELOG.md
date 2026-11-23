@@ -1,5 +1,14 @@
 # @cotal-ai/manager
 
+## 0.176.3
+
+### Patch Changes
+
+- 4d8b2e3: The Manager's start-time state object now also holds its instance id, and is renamed for what it holds: what start learns about the manager. The internal parts read the instance id from it instead of through a callback each. Exports, commands and wire behaviour are unchanged.
+- @cotal-ai/core@0.176.3
+  - @cotal-ai/seat@0.176.3
+  - @cotal-ai/workspace@0.176.3
+
 ## 0.176.2
 
 ### Patch Changes
