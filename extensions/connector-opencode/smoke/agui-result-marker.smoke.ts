@@ -111,7 +111,7 @@ console.log("OpenCode 2.x: each redacted real session, one record per read");
   let failedResults = 0;
   for (const s of sessions.filter((x) => x.snapshots.at(-1)!.some((m) => (m.content ?? []).some((c) => c.type === "tool")))) {
     let n = 0;
-    const map = createOpenCode2Mapper({ threadId: "ses_fixture", mintRunId: () => `run-${++n}` });
+    const { map } = createOpenCode2Mapper({ threadId: "ses_fixture", mintRunId: () => `run-${++n}` });
     const inner = new OpenCode2SessionSource({ page: async () => ({ data: s.snapshots.at(-1)!, cursor: { next: null } }) });
     const source: DurableSource<Parameters<typeof map>[0]> = { ...oneAtATime(inner), read: (c) => oneAtATime(inner).read(c ?? "") };
     failedResults += grade(`2.x ${s.name}`, await publish(source, map)).failedResults;

@@ -175,6 +175,7 @@ try {
   check("condition:a turn someone stopped is not a failure, and the seat that ran it reports no condition",
     after?.status === "idle" && after.condition === undefined, { status: after?.status, condition: after?.condition });
 
+  // Read from here on, so a close can be told from one the next prompt makes.
   const reader = new CotalEndpoint({ space: SPACE, servers, card: { name: "Reader", kind: "agent", id: "reader" }, channels: [CHANNEL] });
   reader.on("error", () => {});
   type Ev = Record<string, unknown> & { type: string };
@@ -184,6 +185,42 @@ try {
     for (const p of m.parts ?? []) for (const e of ((p.data ?? p) as { events?: Ev[] }).events ?? []) seen.push(e);
   });
   await reader.start();
+
+  // A rejected permission ends the execution as interrupted and records no `idle` (measured on
+  // OpenCode 2.0.24); the declined call's record is the live one, its text replaced.
+  const stopped = snapshotsOf("interrupted while streaming").at(-1)!;
+  const userRecord = (id: string, created: number, text: string) => ({ id, type: "user", time: { created }, text });
+  const rejected: OpenCode2Message[] = [
+    ...stopped,
+    userRecord("msg_05", 1794314120000, "[user 2]"),
+    { id: "msg_06", type: "assistant", time: { created: 1794314120010, streamed: 1794314120020, completed: 1794314120030 }, error: { type: "aborted", message: "Step interrupted" },
+      content: [{ type: "tool", id: "call_2", name: "shell", state: { status: "error", input: { command: "[input 2]" }, error: { type: "aborted", message: "The user declined this tool call" } }, time: { created: 1794314120011, ran: 1794314120015, completed: 1794314120029 } }] },
+  ];
+  await grow(second, SESSIONS[1]!, [rejected], "session.execution.interrupted");
+  const rejectedRun = () => seen.filter((e) => e.type === "RUN_STARTED" && e.threadId === SESSIONS[1]).at(-1)?.runId;
+  const closedBeforeNext = async () => {
+    for (let i = 0; i < 15; i++, await sleep(200)) if (seen.some((e) => e.type === "RUN_FINISHED" && e.runId === rejectedRun())) return true;
+    return false;
+  };
+  check("interrupted:a turn interrupted with no idle record closes its run before any next prompt", await closedBeforeNext(), { run: rejectedRun(), seen: seen.slice(-6) });
+  // A stop whose `idle` record lands after the interrupted event: the run is closed by then.
+  const lateStop: OpenCode2Message[] = [
+    ...rejected,
+    userRecord("msg_07", 1794314130000, "[user 3]"),
+    { id: "msg_08", type: "assistant", time: { created: 1794314130010, streamed: 1794314130020, completed: 1794314130030 }, content: [{ type: "text", text: "[text 2]" }] },
+  ];
+  await grow(second, SESSIONS[1]!, [lateStop], "session.execution.interrupted");
+  lists.set(SESSIONS[1]!, [...lateStop, { id: "msg_09", type: "idle", time: { created: 1794314130040 }, outcome: "interrupted" }]);
+  second.feed({ type: "session.updated", durable: { aggregateID: SESSIONS[1]!, seq: seq++ }, data: { sessionID: SESSIONS[1]! } });
+  await sleep(500);
+  const nextTurn: OpenCode2Message[] = [
+    ...lists.get(SESSIONS[1]!)!,
+    userRecord("msg_10", 1794314140000, "[user 4]"),
+    { id: "msg_11", type: "assistant", time: { created: 1794314140010, streamed: 1794314140020, completed: 1794314140030 }, content: [{ type: "text", text: "[text 3]" }] },
+    { id: "msg_12", type: "idle", time: { created: 1794314140040 }, outcome: "succeeded" },
+  ];
+  await grow(second, SESSIONS[1]!, [nextTurn], "session.execution.succeeded");
+
   await sleep(3_000);
   await reader.stop().catch(() => {});
 
@@ -193,6 +230,9 @@ try {
     "RUN_STARTED", "TOOL_CALL_START", "TOOL_CALL_END", "CUSTOM", ...TEXT, "RUN_FINISHED",
     "RUN_STARTED", ...TEXT, "RUN_FINISHED",
     "RUN_STARTED", ...TEXT, "RUN_ERROR",
+    "RUN_STARTED", ...TEXT, "RUN_FINISHED",
+    "RUN_STARTED", "TOOL_CALL_START", "TOOL_CALL_END", "CUSTOM", "RUN_FINISHED",
+    "RUN_STARTED", ...TEXT, "RUN_FINISHED",
     "RUN_STARTED", ...TEXT, "RUN_FINISHED",
   ];
   check("control:the stream reads back from the subject, so the cells below grade something", seen.length > 0, { frames: seen.length });
@@ -205,13 +245,17 @@ try {
   const wire = JSON.stringify(seen);
   check("withheld:no prompt, tool input, tool result, reasoning or upstream error text reaches the subject",
     !["[user", "[input", "[result", "[reasoning", "secret-detail", "provider.auth"].some((p) => wire.includes(p)));
+  const restarted = seen.filter((e) => e.threadId === SESSIONS[1] && e.type === "RUN_STARTED").map((e) => e.runId);
+  const closes = seen.filter((e) => e.type === "RUN_FINISHED" && restarted.includes(e.runId)).map((e) => e.runId);
+  check("late-idle:an idle recorded after an out-of-band close closes nothing, and each run of the restarted session closes once",
+    restarted.length === 4 && new Set(restarted).size === 4 && JSON.stringify(closes) === JSON.stringify(restarted), { restarted, closes });
   const error = seen.find((e) => e.type === "RUN_ERROR");
   check("fail:the failed turn ends its run with RUN_ERROR carrying only the fixed message", error?.message === "run failed" && error.code === undefined, error);
   const starts = seen.filter((e) => e.type === "RUN_STARTED").map((e) => e.threadId);
   check("restart:the same principal started again publishes its new session after the first, on its channel",
-    JSON.stringify(starts) === JSON.stringify([sid, sid, sid, SESSIONS[1]]), starts);
+    JSON.stringify(starts) === JSON.stringify([sid, sid, sid, SESSIONS[1], SESSIONS[1], SESSIONS[1], SESSIONS[1]]), starts);
   check("deltas:each assistant text is published whole",
-    JSON.stringify(seen.filter((e) => e.type === "TEXT_MESSAGE_CONTENT").map((e) => e.delta)) === JSON.stringify(["[text 1]", "[text 2]", "[text 3]", "[text 1]"]));
+    JSON.stringify(seen.filter((e) => e.type === "TEXT_MESSAGE_CONTENT").map((e) => e.delta)) === JSON.stringify(["[text 1]", "[text 2]", "[text 3]", "[text 1]", "[text 2]", "[text 3]"]));
   check("arm:no seat exited at any point", exits.length === 0, { exits });
 } finally {
   for (const stop of stops) await stop().catch(() => {});
@@ -224,7 +268,7 @@ try {
   process.exit = exit;
 }
 
-const EXPECTED = 15;
+const EXPECTED = 17;
 check(`meta:every cell ran - ${EXPECTED} expected`, passed() + failed() === EXPECTED, `${passed() + failed()} cells reported`);
 finish();
 process.exit();

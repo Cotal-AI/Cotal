@@ -28,7 +28,7 @@ const THREAD = "ses_fixture";
 /** What a session publishes: each mapped unit through egress and the brackets, in order. */
 async function publish(messages: OpenCode2Message[], opts: Partial<OpenCode2MapperOptions> = {}) {
   let n = 0;
-  const map = createOpenCode2Mapper({ threadId: THREAD, mintRunId: () => `run-${++n}`, ...opts });
+  const { map } = createOpenCode2Mapper({ threadId: THREAD, mintRunId: () => `run-${++n}`, ...opts });
   const read = await new OpenCode2SessionSource({ page: async () => ({ data: messages, cursor: { next: null } }) }).read("");
   const brackets = new AguiBrackets();
   const mapped: AguiEvent[] = [];
@@ -137,7 +137,7 @@ for (const s of all) {
 }
 
 {
-  const map = createOpenCode2Mapper({ threadId: THREAD, mintRunId: () => "run-new", resumeRunId: "run-open" });
+  const { map } = createOpenCode2Mapper({ threadId: THREAD, mintRunId: () => "run-new", resumeRunId: "run-open" });
   const step: OpenCode2Message = { id: "msg_2", type: "assistant", time: { created: 21, streamed: 22, completed: 23 }, content: [{ type: "text", text: "after a restart" }] };
   const a = map({ message: step, index: 0, element: step.content![0] });
   const b = map({ message: { id: "msg_3", type: "idle", time: { created: 24 }, outcome: "succeeded" }, index: -1 });
@@ -145,6 +145,20 @@ for (const s of all) {
     a !== null && "runId" in a && a.runId === "run-open" && !a.events.some((e) => e.type === T.RUN_STARTED)
       && b !== null && "runId" in b && b.runId === "run-open" && b.events[0]?.type === T.RUN_FINISHED,
     { a, b });
+}
+
+{
+  const { map, forgetOpenRun } = createOpenCode2Mapper({ threadId: THREAD, mintRunId: () => "run-1" });
+  const step: OpenCode2Message = { id: "msg_2", type: "assistant", time: { created: 21, streamed: 22, completed: 23 }, content: [{ type: "text", text: "stopped" }] };
+  const idle: OpenCode2Message = { id: "msg_3", type: "idle", time: { created: 24 }, outcome: "interrupted" };
+  map({ message: step, index: 0, element: step.content![0] });
+  forgetOpenRun("run-other");
+  const kept = map({ message: step, index: 0, element: step.content![0] });
+  forgetOpenRun("run-1");
+  const late = map({ message: idle, index: -1 });
+  check("forget:a run closed out of band is forgotten by its id alone, and a later idle closes nothing",
+    kept !== null && "runId" in kept && kept.runId === "run-1" && !kept.events.some((e) => e.type === T.RUN_STARTED) && late === null,
+    { kept, late });
 }
 
 {
@@ -160,6 +174,6 @@ for (const s of all) {
     { tool: stamp(T.TOOL_CALL_START), text: stamp(T.TEXT_MESSAGE_START), end: stamp(T.RUN_FINISHED) });
 }
 
-const EXPECTED = 21;
+const EXPECTED = 22;
 check(`meta:every cell ran - ${EXPECTED} expected`, passed() + failed() === EXPECTED, `${passed() + failed()} cells reported`);
 finish();
