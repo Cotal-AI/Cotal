@@ -78,8 +78,10 @@ const uv = join(root, "uv");
 writeFileSync(uv, `#!/bin/sh\nprintf '%s\\n' "$@" > ${JSON.stringify(uvArgs)}\nshift 5\nPYTHONPATH=${JSON.stringify(join(root, "py"))} ${python} "$@"\n`, { mode: 0o755 });
 
 const SPAWN_ENV = ["HERMES_INFERENCE_PROVIDER", "CUSTOM_BASE_URL"];
-// The run's own provider choice would decide the cells that expect none.
-for (const k of [...SPAWN_ENV, "OPENROUTER_API_KEY", "COTAL_HERMES_ADOPT_HOME"]) delete process.env[k];
+// The run's own provider choice would decide the cells that expect none, and a managed session's
+// connection material must not reach the children.
+for (const k of Object.keys(process.env)) if (k.startsWith("COTAL_")) delete process.env[k];
+for (const k of [...SPAWN_ENV, "OPENROUTER_API_KEY"]) delete process.env[k];
 type Recorded = { env: string[]; home: string; homeExists: boolean; safePath: boolean };
 const recorded = (): Recorded => JSON.parse(readFileSync(record, "utf8")) as Recorded;
 const read = (env: Record<string, string>, opts: { envAllow?: string[]; uv?: string } = {}) => {
