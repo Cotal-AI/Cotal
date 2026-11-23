@@ -104,12 +104,17 @@ interface Turn {
   /** `run`: the first run that starts at or after `after` answers the prompt. `idle`: the prompt
    *  answers once the seat started working and stopped again. */
   readonly until: "run" | "idle";
-  /** Runs that start at or after this time belong to the prompt. */
-  readonly after: number;
+  /** Runs that start at or after this time belong to the prompt. For a prompt the seat queued, the
+   *  last time it was seen still waiting. */
+  after: number;
   /** The run that answers a `run` prompt, once it started. */
   runId?: string;
-  /** The runs that started at or after `after`. One that fails fails the prompt. */
-  readonly runs: Set<string>;
+  /** The runs that started at or after `after`, with when each started. One that fails fails the
+   *  prompt. */
+  readonly runs: Map<string, number>;
+  /** Until an `idle` prompt's `start` resolved: the runs that failed meanwhile. Whether one was the
+   *  prompt's own shows only once the seat took it. */
+  waiting?: Map<string, Error>;
   /** The seat has been seen working since the prompt was sent. */
   started: boolean;
   /** Since when the seat has been stopped with no run open. */
@@ -255,14 +260,17 @@ function bridge(options: CotalAgentOptions): Bridge {
     if (!turn) return;
     if (run.kind === "start") {
       if (run.ts < turn.after) return;
-      turn.runs.add(run.runId);
+      turn.runs.set(run.runId, run.ts);
       turn.started = true;
       turn.runId ??= run.runId;
       return;
     }
     if (!turn.runs.has(run.runId)) return;
-    if (run.outcome === "error") turn.fail(new Error(`${session.seat?.name ?? session.id}'s turn failed${run.message ? `: ${run.message}` : ""}`));
-    else if (turn.until === "run" && run.runId === turn.runId) turn.stop("end_turn");
+    if (run.outcome === "error") {
+      const failed = new Error(`${session.seat?.name ?? session.id}'s turn failed${run.message ? `: ${run.message}` : ""}`);
+      if (turn.waiting) turn.waiting.set(run.runId, failed);
+      else turn.fail(failed);
+    } else if (turn.until === "run" && run.runId === turn.runId) turn.stop("end_turn");
   };
 
   const mesh = (): Promise<Mesh> => {
@@ -411,6 +419,20 @@ interface TurnWait {
   readonly quiet?: boolean;
 }
 
+/** What a turn owns once its `start` resolved, with the time a queued prompt was taken when it was one:
+ *  only the runs that started after that time. Returns the failure of one of them that failed before,
+ *  if any. */
+function taken(turn: Turn, since: number | void): Error | undefined {
+  if (since !== undefined) {
+    turn.after = since;
+    for (const [id, ts] of turn.runs) if (ts < since) turn.runs.delete(id);
+    turn.started = turn.runs.size > 0;
+  }
+  const failed = [...(turn.waiting ?? [])].find(([id]) => turn.runs.has(id))?.[1];
+  turn.waiting = undefined;
+  return failed;
+}
+
 function turnRunner(b: Bridge, startMs: number, settleMs: number) {
   const { options, send } = b;
   const say = (session: Session, line: string): Promise<void> =>
@@ -450,8 +472,10 @@ function turnRunner(b: Bridge, startMs: number, settleMs: number) {
   };
   /** Run one turn to its end. Every update is sent before this resolves. A `run` prompt belongs to the
    *  seat's first run. An `idle` prompt's runs are the ones that start once `start` is called, so a
-   *  run that starts and ends before `start` resolves still counts. */
-  const runTurn = (session: Session, m: Mesh, until: Turn["until"], start: () => Promise<void>, wait: TurnWait = {}): Promise<StopReason> =>
+   *  run that starts and ends before `start` resolves still counts. A `start` that resolves with a
+   *  time gave the seat a queued prompt, which owns only the runs that start after that time; until it
+   *  resolves, a cancel aborts its signal. */
+  const runTurn = (session: Session, m: Mesh, until: Turn["until"], start: (signal: AbortSignal) => Promise<number | void>, wait: TurnWait = {}): Promise<StopReason> =>
     new Promise<StopReason>((resolve, reject) => {
       let settled = false;
       const finish = (close: "completed" | "failed", then: () => void) => {
@@ -462,9 +486,8 @@ function turnRunner(b: Bridge, startMs: number, settleMs: number) {
         const closes = session.mapper.closeOpen(close).map((u) => send(session, u));
         void Promise.allSettled(closes).then(then);
       };
-      // A fresh seat's first run answers its kickoff prompt, whatever its clock says.
-      const after = until === "run" ? 0 : Date.now();
       let begun = false;
+      const queued = new AbortController();
       // One path, read once from the seat's presence: the endpoint's `interrupt` where the seat says
       // it serves it now, else the manager's interrupt key.
       const interrupt = (): void => {
@@ -485,8 +508,10 @@ function turnRunner(b: Bridge, startMs: number, settleMs: number) {
       // After a cancel, the prompt answers `cancelled` however the turn ends.
       const turn: Turn = {
         until,
-        after,
-        runs: new Set(),
+        // A fresh seat's first run answers its kickoff prompt, whatever its clock says.
+        after: until === "run" ? 0 : Date.now(),
+        runs: new Map(),
+        ...(until === "idle" ? { waiting: new Map() } : {}),
         started: false,
         lastSeen: Date.now(),
         stop: (reason) => turn.cancelled !== undefined ? finish("failed", () => resolve("cancelled")) : finish("completed", () => resolve(reason)),
@@ -494,8 +519,10 @@ function turnRunner(b: Bridge, startMs: number, settleMs: number) {
         cancel: () => {
           if (turn.cancelled !== undefined) return;
           turn.cancelled = "requested";
-          // A cancel that beats the spawn reply or the typed prompt interrupts once that lands.
+          // A cancel that beats the spawn reply or the typed prompt interrupts once that lands. One
+          // whose prompt waits in the seat's queue takes it out of the queue.
           if (begun) interrupt();
+          else queued.abort();
         },
       };
       session.turn = turn;
@@ -509,7 +536,7 @@ function turnRunner(b: Bridge, startMs: number, settleMs: number) {
         }
         if (typeof turn.cancelled === "number") {
           // Connectors end an interrupted run differently or not at all, so wait briefly for it.
-          const running = [...turn.runs].some((id) => session.open.has(id));
+          const running = [...turn.runs.keys()].some((id) => session.open.has(id));
           if (!running || now - turn.cancelled >= settleMs) turn.stop("cancelled");
           return;
         }
@@ -524,20 +551,22 @@ function turnRunner(b: Bridge, startMs: number, settleMs: number) {
         if (until !== "idle" || !begun) return;
         if (status === "working") turn.started = true;
         if (!turn.started) {
-          if (now - after > (wait.startMs ?? startMs)) {
+          if (now - turn.after > (wait.startMs ?? startMs)) {
             clearInterval(turn.timer);
             if (wait.quiet) return turn.stop("end_turn");
             void say(session, `${seat.name} has the prompt but has not started on it yet.`).finally(() => turn.stop("end_turn"));
           }
           return;
         }
-        const running = [...turn.runs].some((id) => session.open.has(id));
+        const running = [...turn.runs.keys()].some((id) => session.open.has(id));
         if (status === "working" || running) turn.quietSince = undefined;
         else if (now - (turn.quietSince ??= now) >= settleMs) turn.stop("end_turn");
       }, WATCH_MS);
-      start().then(() => {
+      start(queued.signal).then((since) => {
+        const failed = taken(turn, since);
         begun = true;
-        if (turn.cancelled === "requested") interrupt();
+        if (failed) turn.fail(failed);
+        else if (turn.cancelled === "requested") interrupt();
       }, (e: Error) => turn.fail(e));
     });
   return runTurn;
@@ -558,11 +587,12 @@ function slashCommands(b: Bridge, offers: Offers, runTurn: ReturnType<typeof tur
   const name = nameCommand(b);
   const open = openCommand(b, offers);
 
-  /** Queue a seat command and wait until the seat takes it. */
-  const queue = async (m: Mesh, seat: SeatRef, entry: CommandEntry, args: string): Promise<void> => {
+  /** Queue a seat command and wait until the seat started it, as {@link awaitTaken} does. */
+  const queue = async (m: Mesh, seat: SeatRef, entry: CommandEntry, args: string, signal: AbortSignal): Promise<number> => {
     const label = entry.target === "skill" ? `the ${entry.name} skill` : `/${entry.name}`;
+    const since = Date.now();
     const { id } = (await m.agentCall(seat, AGENT_CMD_COMMAND, { target: entry.target, name: entry.name, ...(args ? { args } : {}) })) as { id: string };
-    await awaitTaken(m, seat, id, label);
+    return awaitTaken(m, seat, id, label, since, signal);
   };
 
   const slash = async (session: Session, m: Mesh, text: string): Promise<StopReason | undefined> => {
@@ -574,7 +604,7 @@ function slashCommands(b: Bridge, offers: Offers, runTurn: ReturnType<typeof tur
       const seat = session.seat;
       b.options.log(`session ${session.id}: ${seat.name} runs its ${theirs.entry.target} ${theirs.entry.name}`);
       // A command that runs no turn, such as one that clears the session, ends its prompt soon.
-      return runTurn(session, m, "idle", () => queue(m, seat, theirs.entry, theirs.args), { startMs: settleMs * 2, quiet: true }).then(async (stop) => {
+      return runTurn(session, m, "idle", (signal) => queue(m, seat, theirs.entry, theirs.args, signal), { startMs: settleMs * 2, quiet: true }).then(async (stop) => {
         await b.reportUsage(session, m);
         return stop;
       }, async (e: Error) => {
@@ -727,7 +757,7 @@ function threadHandlers(b: Bridge, offers: Offers, runTurn: ReturnType<typeof tu
       if (!text && !images.length) throw RequestError.invalidParams(undefined, "the prompt is empty");
       const running = session.seat;
       if (running) {
-        const stopReason = await runTurn(session, m, "idle", () => takeTurn(m, running, text, images));
+        const stopReason = await runTurn(session, m, "idle", (signal) => takeTurn(m, running, text, images, signal));
         await reportUsage(session, m);
         return { stopReason };
       }
@@ -739,7 +769,7 @@ function threadHandlers(b: Bridge, offers: Offers, runTurn: ReturnType<typeof tu
       session.mapper = new FrameMapper(harness, session.cwd);
       // Images ride a turn, so a first prompt with images starts the seat with none and gives it the
       // prompt once it takes a turn.
-      const stopReason = await runTurn(session, m, images.length ? "idle" : "run", async () => {
+      const stopReason = await runTurn(session, m, images.length ? "idle" : "run", async (signal) => {
         const spawning = m.spawn({
           name: session.name ?? session.id,
           agent: harness,
@@ -765,7 +795,7 @@ function threadHandlers(b: Bridge, offers: Offers, runTurn: ReturnType<typeof tu
         // until its command mod connects, so wait for `turn` before the one read that picks the path.
         for (const until = Date.now() + SERVE_MS; !m.served(seat)?.turn; await new Promise((r) => setTimeout(r, WATCH_MS)))
           if (Date.now() > until) throw new Error(`${seat.name} started but does not take a turn on its agent endpoint, so it cannot take the prompt's images`);
-        await takeTurn(m, seat, text, images);
+        return takeTurn(m, seat, text, images, signal);
       });
       // The seat's own commands can be read once it runs.
       if (session.seat) void announce(session).catch(() => {});

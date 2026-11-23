@@ -6,13 +6,10 @@
  * and images queued on the seat's command lane; otherwise it is typed into the seat through its
  * manager's `input`, which takes text only. A path that fails is reported, never retried another way.
  */
-import { AGENT_CMD_COMMAND_STATE, AGENT_CMD_TURN, AGENT_CMD_USAGE, AGENT_TURN_IMAGE_TYPES, type CommandState, type TurnImage, type UsageOutput } from "@cotal-ai/core";
+import { AGENT_CMD_COMMAND_CANCEL, AGENT_CMD_COMMAND_STATE, AGENT_CMD_TURN, AGENT_CMD_USAGE, AGENT_TURN_IMAGE_TYPES, type CommandState, type TurnImage, type UsageOutput } from "@cotal-ai/core";
 import { RequestError, type ContentBlock, type SessionUpdate } from "@agentclientprotocol/sdk";
-import type { Mesh, SeatRef } from "./mesh.js";
+import { AgentCallFailed, type Mesh, type SeatRef } from "./mesh.js";
 
-/** How long a queued command or turn may wait behind a running turn before its prompt carries on
- *  without seeing it start. */
-export const TAKE_MS = 10_000;
 const POLL_MS = 250;
 
 /** A prompt's blocks as the text and images a seat receives. A link names its target; other kinds
@@ -33,18 +30,55 @@ export function promptParts(blocks: readonly ContentBlock[]): { text: string; im
   return { text: texts.join("\n\n").trim(), images };
 }
 
-/** Wait until the seat took a queued command or turn: it started, it ended without starting, or it
- *  still waits behind a running turn after {@link TAKE_MS}. Rejects, naming why, when it did not
- *  start. */
-export async function awaitTaken(m: Mesh, seat: SeatRef, id: string, label: string): Promise<void> {
-  const until = Date.now() + TAKE_MS;
+/** Wait until the seat started a queued command or turn. A queued one waits behind the seat's running
+ *  turn with no time bound (SPEC 13.22), and so does this. An aborted `signal` takes it out of the
+ *  queue with `command-cancel`; one the seat already took goes on to start. `since` is a time before
+ *  it was sent. Resolves with the last time it was still seen waiting, so its run starts after that.
+ *  Rejects, naming why, when it did not start. */
+export async function awaitTaken(m: Mesh, seat: SeatRef, id: string, label: string, since: number, signal?: AbortSignal): Promise<number> {
+  let cancelled = false;
   for (;;) {
-    const { state } = (await m.agentCall(seat, AGENT_CMD_COMMAND_STATE, { id })) as { state: CommandState };
-    if (state.kind === "started" || Date.now() > until) return;
+    const sent = Date.now();
+    const cancel: boolean = signal?.aborted === true && !cancelled;
+    cancelled ||= cancel;
+    const state = await (cancel ? cancelQueued(m, seat, id) : stateOf(m, seat, id)).catch((e: unknown) => {
+      // The seat stopped or left: a stopping seat refuses its queue, and one that exits takes it along.
+      throw e instanceof AgentCallFailed && e.code === "unavailable" ? new Error(`${seat.name} left before it took ${label}: ${e.message}`) : e;
+    });
+    if (state.kind === "started") return since;
     if (state.kind === "refused" || state.kind === "unknown") throw new Error(`${seat.name} did not run ${label}: ${state.message}`);
     if (state.kind === "cancelled") throw new Error(`${label} was cancelled before ${seat.name} started it`);
-    await new Promise((r) => setTimeout(r, POLL_MS));
+    since = sent;
+    await pause(POLL_MS, cancelled ? undefined : signal);
   }
+}
+
+async function stateOf(m: Mesh, seat: SeatRef, id: string): Promise<CommandState> {
+  return ((await m.agentCall(seat, AGENT_CMD_COMMAND_STATE, { id })) as { state: CommandState }).state;
+}
+
+/** Take a queued command out of the queue. One the seat took already is `conflict`, and its state is
+ *  read instead. */
+async function cancelQueued(m: Mesh, seat: SeatRef, id: string): Promise<CommandState> {
+  try {
+    return ((await m.agentCall(seat, AGENT_CMD_COMMAND_CANCEL, { id })) as { state: CommandState }).state;
+  } catch (e) {
+    if (!(e instanceof AgentCallFailed && e.code === "conflict")) throw e;
+    return stateOf(m, seat, id);
+  }
+}
+
+/** Wait `ms`, or until `signal` aborts. */
+function pause(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    const done = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", done);
+      resolve();
+    };
+    const timer = setTimeout(done, ms);
+    signal?.addEventListener("abort", done, { once: true });
+  });
 }
 
 /** Why no seat on this space can take images: it serves no `agent` endpoint. Undefined when it does. */
@@ -54,17 +88,19 @@ export function spaceImageRefusal(m: Mesh, seat: string): string | undefined {
 
 /** Give a running seat a prompt on the one path its presence picks now: a `turn`, or its manager's
  *  `input`. Images go only where the seat says it takes them with a turn, and are refused before
- *  anything is sent otherwise. Resolves once the seat took it. Rejects, naming why, when that path
- *  refuses it. */
-export async function takeTurn(m: Mesh, seat: SeatRef, text: string, images: readonly TurnImage[]): Promise<void> {
+ *  anything is sent otherwise. A turn resolves once the seat started it, with the time
+ *  {@link awaitTaken} gives, and `signal` cancels it while it waits in the seat's queue. Rejects,
+ *  naming why, when that path refuses it. */
+export async function takeTurn(m: Mesh, seat: SeatRef, text: string, images: readonly TurnImage[], signal?: AbortSignal): Promise<number | void> {
   const served = m.served(seat);
   if (images.length) {
     const why = spaceImageRefusal(m, seat.name) ?? (served?.turn && served.images ? undefined : `${seat.name} does not take images with a turn now`);
     if (why) throw new Error(why);
   }
   if (!served?.turn) return m.input(seat, text);
+  const since = Date.now();
   const { id } = (await m.agentCall(seat, AGENT_CMD_TURN, { text, ...(images.length ? { images } : {}) })) as { id: string };
-  await awaitTaken(m, seat, id, "the prompt");
+  return awaitTaken(m, seat, id, "the prompt", since, signal);
 }
 
 /** The seat's context usage as an ACP `usage_update`, or undefined when its presence does not say it
