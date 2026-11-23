@@ -1320,7 +1320,7 @@ catalogs, status names both and marks which one spawn launches from. A green `de
 passes the same agent-file loader spawn uses; a present but invalid file is reported as invalid.
 
 `cotal status --components` prints the report, then a fail-loud per-component health pass. It takes
-no `--json`, `--plain` or `--all`. The refusal's retry keeps the explicit space and broker address.
+no `--json`, `--plain` or `--all`. If you pass both output flags, remove both to run the component check. The refusal's retry keeps the explicit space and broker address.
 It reads **each
 component's own control surface**, rather than treating a PID, a lease, or a successful probe of a
 sibling as proof that the component serves. It prints one of `serving`, `absent`, `not-serving`, or
