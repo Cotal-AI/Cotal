@@ -3,7 +3,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { discardLaunchArtifacts, registry, type Connector, type LaunchOpts, type LaunchSpec } from "@cotal-ai/core";
-import { aclEnv, nameEnv, controlEndpoint, launchEnv, MODEL_PROVIDER_KEYS, materialEnv } from "@cotal-ai/connector-core";
+import { aclEnv, nameEnv, controlEndpoint, eventChannel, launchArmsEvents, launchEnv, MODEL_PROVIDER_KEYS, materialEnv } from "@cotal-ai/connector-core";
 import { HERMES_FORK_RECORD, hermesSeatHome } from "./seat-home.js";
 
 /** The launcher owns the mesh endpoint and supervises the Hermes gateway as a child — see launch.ts.
@@ -49,6 +49,8 @@ export const hermesConnector: Connector = {
   // separately installed `hermes` on PATH is neither required nor sufficient to launch this seat.
   requires: ["uv"],
   supportsLaunchValidation: true,
+  // The AG-UI event plane, published from the plugin's turn journal (plugin/cotal/journal.py).
+  eventChannel,
   buildLaunch(opts: LaunchOpts): LaunchSpec {
     if (opts.continueSession) throw new Error("the Hermes connector does not support exact-session continuation");
     // Hermes is Unix-only: its sidecar bridge + hook relay use AF_UNIX `.sock` paths and a Python
@@ -90,6 +92,13 @@ export const hermesConnector: Connector = {
     // per-session; this one has no per-spawn meaning and would otherwise be unreachable, since a
     // seat cannot opt in to its own profile.
     const adoptHome = process.env.COTAL_HERMES_ADOPT_HOME?.trim();
+    // Armed by default, `events: false` opts out. The event plane's write-ahead log lives under the
+    // workspace root.
+    if (launchArmsEvents(opts)) {
+      if (!opts.workspaceRoot) throw new Error("the Hermes connector needs a workspace root for its event plane's state");
+      env.COTAL_EVENTS = "1";
+      env.COTAL_WORKSPACE_ROOT = opts.workspaceRoot;
+    }
     if (opts.validateOnly) {
       if (!adoptHome && !opts.model)
         throw new Error("A managed Hermes profile needs a model. Set one with --model or the agent file's model: field, or use your own profile with COTAL_HERMES_ADOPT_HOME=$HOME/.hermes.");

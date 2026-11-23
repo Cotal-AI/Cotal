@@ -27,6 +27,7 @@ import socket
 import sys
 from typing import Any
 
+from . import journal
 from .control_exchange import ClientExchange, ControlConfigError, ExchangeRefused, control_key, socket_dir_problem
 
 _TIMEOUT_S = 2.0
@@ -119,3 +120,19 @@ def post_llm_call(*args: Any, **kwargs: Any) -> None:
 
 def on_session_end(*args: Any, **kwargs: Any) -> None:
     relay("on_session_end")
+
+
+# ---- event journal (see journal.py); each record wakes the sidecar's reader -----------------
+
+def journal_wake() -> None:
+    relay("event_journal")
+
+
+def post_api_request(*args: Any, **kwargs: Any) -> None:
+    if journal.model_response(str(kwargs.get("platform") or ""), kwargs.get("assistant_message")):
+        journal_wake()
+
+
+def post_tool_call(*args: Any, **kwargs: Any) -> None:
+    if journal.tool_result(str(kwargs.get("tool_call_id") or ""), kwargs.get("result"), kwargs.get("status")):
+        journal_wake()

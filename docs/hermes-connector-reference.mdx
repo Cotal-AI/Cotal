@@ -77,7 +77,7 @@ Set `COTAL_HERMES_ADOPT_HOME` to your profile directory to run the gateway there
 
 ```bash
 export COTAL_HERMES_ADOPT_HOME="$HOME/.hermes"
-cotal spawn --agent hermes --no-events
+cotal spawn --agent hermes
 ```
 
 The value must be an absolute path. The launcher refuses a relative path, and a `~` your shell did
@@ -126,6 +126,29 @@ working-to-idle transition is the turn boundary the run relay reads (a surfaced 
 `done` there), so `gateway_startup` and `on_session_start` write their `idle` through a path that
 moves presence and nothing else: an adapter reconnect or a session start that lands mid-turn is a
 lifecycle event, and treating it as an ending would yield work the model had not finished.
+
+## Event plane
+
+Hermes keeps no append-only record of a turn that a reader can resume at a cursor. Its session
+store rewrites a transcript when it compacts one. So when the event plane is armed, the plugin
+writes a turn journal, `cotal-events/<thread>.jsonl` in the seat's profile, new for each launch.
+The launcher creates it before the gateway starts and removes it when the seat stops. The sidecar
+reads it from a cursor and publishes through connector-core's emitter, as the other connectors
+publish from their transcripts.
+
+The plugin appends one record when the gateway starts or finishes processing a Cotal message
+(the adapter's `on_processing_start` and `on_processing_complete`), one per model response
+(`post_api_request`) and one per tool result (`post_tool_call`). It records only Cotal-platform
+work, so an adopted profile's other platforms stay off the mesh. Each record also wakes the
+sidecar's reader over the control socket.
+
+A run opens at the first model response while a message is in progress and finishes when no
+message is in progress. The gateway processes a message that arrives during its startup once
+without running the model, and that pass opens no run. Messages processed at the same time share
+one run, because the plane has one run open at a time. A message that fails ends the run with
+`RUN_ERROR`, even when it failed before any model response, and a cancelled one ends it as an
+interrupt. A tool call still open when its run ends is ended without a result. Reasoning text is
+not published.
 
 ## Answer routing
 

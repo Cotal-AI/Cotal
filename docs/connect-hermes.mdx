@@ -15,8 +15,6 @@ First [start the mesh](run-a-mesh.mdx).
 <Callout type="warn" title="Alpha connector">
 
 Hermes requires macOS or Linux and an external Python toolchain.
-Its event plane stays off automatically. An explicit `--events` request is refused.
-It cannot join a space that requires the event plane.
 Managed profiles disable Hermes command approvals, so run the seat with the host permissions you intend to grant it.
 The deployment image does not include Hermes.
 
@@ -38,7 +36,7 @@ The picker considers Hermes available when it finds `uv`; selecting Hermes does 
 Set a supported provider's API key on the execution host, then choose a model:
 
 ```bash
-cotal spawn --harness hermes --no-events --model <model>
+cotal spawn --harness hermes --model <model>
 ```
 
 A bare spawn runs the gateway in this terminal.
@@ -47,15 +45,14 @@ Add `--detach` to launch through a manager and return after readiness. `--on <in
 For a persona file on the execution host, use:
 
 ```bash
-cotal spawn --file <persona-file> --harness hermes --no-events --model <model>
+cotal spawn --file <persona-file> --harness hermes --model <model>
 ```
 
-A team manifest uses `agent: hermes` and `events: false`.
-A workflow uses `spawn("<persona>", { events: false })`.
+A team manifest uses `agent: hermes`.
 See [Define a team](define-a-team.mdx) and [Workflows](workflows.mdx).
 
 To prefer Hermes when neither a flag nor a persona selects another connector, set `COTAL_DEFAULT_AGENT=hermes`.
-Keep a model selection on those launches. `--no-events` is optional.
+Keep a model selection on those launches.
 
 ## Choose a model [#choose-a-model]
 
@@ -83,7 +80,7 @@ Then set the variables on the host that builds the launch:
 ```bash
 export HERMES_INFERENCE_PROVIDER=custom
 export CUSTOM_BASE_URL=http://127.0.0.1:8000/v1
-cotal spawn --harness hermes --no-events --model <model>
+cotal spawn --harness hermes --model <model>
 ```
 
 For a managed launch, the manager must receive those variables.
@@ -151,7 +148,7 @@ Set the absolute profile path in the environment of the process that builds the 
 
 ```bash
 export COTAL_HERMES_ADOPT_HOME="$HOME/.hermes"
-cotal spawn --foreground --harness hermes --no-events
+cotal spawn --foreground --harness hermes
 ```
 
 This example uses direct execution so the launcher reads this shell's setting.
@@ -167,7 +164,7 @@ It does not append to the source transcript.
 SQLite can still create `state.db-wal` and `state.db-shm` beside the source database.
 
 ```bash
-cotal spawn --harness hermes --no-events --model <model> --resume <session-id>
+cotal spawn --harness hermes --model <model> --resume <session-id>
 ```
 
 Use the same seat name to continue its saved fork on a later launch.
@@ -185,6 +182,14 @@ See [Session forks](hermes-connector-reference.mdx#session-forks) for per-chat b
 Hermes reports `working` for model and tool calls, `waiting` for approvals, and `idle` at turn completion.
 Gateway reconnects and session starts do not finish a run turn.
 See the [presence mapping](hermes-connector-reference.mdx#presence-mapping) for hook details.
+
+## Event plane [#event-plane]
+
+Each seat publishes its turns as AG-UI events on its event channel, so an [ACP client](acp-clients.mdx) or a dashboard can show them.
+The events carry runs, the model's text, and tool calls with their status.
+Tool arguments and results ride the payload rail.
+Add `--no-events`, or `events: false` in a manifest or workflow, to launch without it.
+See [Event plane](hermes-connector-reference.mdx#event-plane) for how turns become runs.
 
 ## Route answers to the right session [#how-an-answer-finds-its-session]
 
@@ -207,7 +212,7 @@ See [Answer routing](hermes-connector-reference.mdx#answer-routing) for correlat
 ## Unsupported launches [#limits]
 
 Hermes refuses an initial `--prompt`, model variants, arbitrary `--opt` values, and exact-session continuation.
-It has no AG-UI event plane and cannot run on Windows or in the current deployment image.
+It cannot run on Windows or in the current deployment image.
 You supply `uv` and the supported Python environment.
 
 ## Continue [#see-also]
