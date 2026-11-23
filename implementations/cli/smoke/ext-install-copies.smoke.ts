@@ -83,7 +83,7 @@ function main(): void {
       check("remove: invalid remove keeps the manifest and installed package", readFileSync(join(prefix, "extensions.json"), "utf8") === manifestBefore && existsSync(join(kept, "dist", "index.js")));
       const before = digest(join(kept, "dist", "index.js"));
       check("remove: installed bytes match built source", before === sourceDigest);
-      const siblingName = "@cotal-test/_copy-remove";
+      const siblingName = "@_cotal-test/_copy-remove";
       const sibling = join(dir, "sibling");
       mkdirSync(sibling);
       writeFileSync(join(sibling, "package.json"), JSON.stringify({ name: siblingName, version: "1.0.0", type: "module", main: "index.js", peerDependencies: { "@cotal-ai/core": "*" } }));
@@ -93,7 +93,7 @@ function main(): void {
       check("remove: adding a sibling preserves the built-in copy", !lstatSync(kept).isSymbolicLink());
       const removed = cli(["ext", "remove", siblingName], offline);
       if (removed.status !== 0) console.error(removed.stderr.trim());
-      check("remove: a scoped package with a leading underscore is removed offline with an empty npm cache", removed.status === 0);
+      check("remove: a package with leading underscores in its scope and name is removed offline with an empty npm cache", removed.status === 0);
       check("remove: unrelated built-in remains a copy", !lstatSync(kept).isSymbolicLink() && realpathSync(kept) !== realpathSync(source));
       check("remove: unrelated built-in bytes are unchanged", digest(join(kept, "dist", "index.js")) === before);
       check("remove: operated package is absent", !existsSync(join(prefix, "node_modules", siblingName)));

@@ -159,6 +159,15 @@ check("a global flag after a missing history follow value preserves the stream r
   && followRecords[0]?.data?.code === "USAGE_INVALID" && followRecords[0]?.data?.message === "--limit needs a value"
   && followRecords[0]?.data?.remedy === "write --limit <n>" && followRecords[1]?.data?.reason === "setup-failed", shown(followGlobal));
 const groupedSpace = run(["config", "get", "harness", "-js", "--no-input", "abc"]);
+for (const [args, space] of [[[], null], [["--space", "watch-test"], "watch-test"]] as const) {
+  const result = run(["watch", ...args, "--view", "--json"]);
+  const records = result.stdout.trim().split("\n").map((line) => JSON.parse(line));
+  check("a missing watch view emits a stream refusal and end record",
+    result.status === 1 && result.stderr === "" && records.map((record) => record.type).join() === "error,end"
+    && records.every((record) => record.stream === "watch" && record.target?.requestedSpace === space)
+    && records[0]?.data?.code === "USAGE_INVALID" && records[0]?.data?.message === "--view needs a value"
+    && records[0]?.data?.remedy === "write --view <view>" && records[1]?.data?.reason === "setup-failed", shown(result));
+}
 check("a global flag cannot hide a missing value at the end of a short option group",
   groupedSpace.status === 1 && groupedSpace.stderr === "" && JSON.parse(groupedSpace.stdout).error.message === "--space needs a value", shown(groupedSpace));
 const completeValue = run(["docs", "--json", "--search", "usage", "--no-input"]);
