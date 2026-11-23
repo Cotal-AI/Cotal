@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { helpRequested } from "@cotal-ai/cli/dispatch";
 import { checkForUpdate, newerUpdate, readUpdateCheck, readUpdateRecovery, readUpdateSettings, recoveryDisposition, UPDATE_DAY_MS, UPDATE_HOUR_MS } from "@cotal-ai/workspace";
 
 /** The detached worker holds no terminal and has a bounded registry read. */
@@ -10,6 +11,7 @@ export async function updateCheckWorker(): Promise<void> {
 
 export function installUpdateNotice(argv: readonly string[], current: string): void {
   if (process.env.COTAL_NO_UPDATE_CHECK === "1" || process.env.CI || process.env.CONTINUOUS_INTEGRATION || process.env.BUILD_NUMBER || !process.stdout.isTTY || !process.stderr.isTTY || argv.some(arg => ["--json", "-j", "--plain"].includes(arg))) return;
+  if (helpRequested(argv)) return;
   const word = argv.find(arg => !arg.startsWith("-"));
   if (word === "update" || word === "daemon" || word?.startsWith("__") || ["supervise", "deliver", "agent-bearer"].includes(word ?? "")) return;
   try {

@@ -5,7 +5,7 @@ import type { runCli as dispatch } from "./command.js";
  *  command word with `commandWord` and dispatches with `runCli` from here instead, so none of the
  *  others load. Importing this module loads no command and not the dispatcher itself: `runCli`
  *  imports it when called, after the root has imported the commands it chose. */
-export { commandWord } from "./lib/leading-flags.js";
+export { commandWord, helpRequested } from "./lib/leading-flags.js";
 export { completeFileWrites, ownStdoutErrors, stdoutError } from "./lib/stdout-owner.js";
 
 export async function runCli(...args: Parameters<typeof dispatch>): ReturnType<typeof dispatch> {
