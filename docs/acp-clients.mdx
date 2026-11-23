@@ -87,7 +87,7 @@ That sign-in runs in a terminal. It installs Cotal with `curl -fsSL https://get.
 | --- | --- |
 | A new thread | Nothing yet. A thread that is opened and dropped leaves no agent. |
 | The thread's first prompt | Spawns an agent in the thread's folder, with that prompt as its first task. The agent's name is the thread's id, or the name you gave it with `/name`. The turn ends when that first task's run ends. |
-| A later prompt | Reaches the agent as your own words: through the agent's `turn` where it serves its `agent` endpoint and its connector declares turns, else typed into its terminal through its manager. The thread picks the path before it sends the prompt, and a path that fails is reported, not retried another way. The turn ends once the agent has started working and stopped again. |
+| A later prompt | Reaches the agent as your own words: through the agent's `turn` where its presence says it takes one now, else typed into its terminal through its manager. The thread picks the path from the agent's presence before it sends the prompt, and a path that fails is reported, not retried another way. The turn ends once the agent has started working and stopped again. |
 | Listing sessions | The managed agents in that folder, including ones you spawned elsewhere. An agent a thread spawned or opened is listed as that thread. |
 | Importing a session | Shows what the agent's event channel still holds, then follows it live. |
 | Deleting a session | Hides that agent run from the list. The agent keeps running. |
@@ -104,8 +104,8 @@ On a space where people sign in, the thread also uses the agent's `agent` endpoi
 
 - A question the agent stops to ask, such as a tool permission, shows as a permission request in the client, which may answer it from the thread's mode. A question with a form is shown as a form when the client takes forms. The answer goes back to the agent. An option that needs a written note is not offered; answer it at the agent's terminal.
 - The agent's own commands and skills join the command list. A skill is listed with a leading `$`. Sending one runs it through the agent's `command`.
-- A prompt can carry images (PNG, JPEG, GIF or WebP) when the agent's harness takes them. A first prompt with images starts the agent with no task and then gives it the prompt.
-- After each turn, the client's context meter shows how full the agent's context window is, when its connector reports it.
+- A prompt can carry images (PNG, JPEG, GIF or WebP) when the agent's presence says it takes them with a turn. Otherwise the prompt fails before anything is sent. A first prompt with images starts the agent with no task, waits up to 20 seconds until it takes a turn, and then gives it the prompt.
+- After each turn, the client's context meter shows how full the agent's context window is, when the agent's presence says it reports its usage.
 
 ## Choose the agent [#options]
 
@@ -147,7 +147,7 @@ person controls every agent under their own owner (see
 
 ## Limits [#limits]
 
-- Stopping a turn takes one path, picked from what the agent's connector declares: the agent's `interrupt` on a space where people sign in, which Codex, OpenCode 2, Pi and Jcode agents declare, else the interrupt key through its manager, which Claude Code and Pi agents support. When that path fails, the thread says the agent could not be stopped, the turn ends as cancelled, and the agent keeps working on the mesh.
+- Stopping a turn takes one path, picked from the agent's presence when you stop it: the agent's own `interrupt` where its presence says it serves it now, else the interrupt key through its manager, which Claude Code and Pi agents support. A Claude Code agent serves `interrupt` only while its command mod runs. When that path fails, the thread says the agent could not be stopped, the turn ends as cancelled, and the agent keeps working on the mesh.
 - When you stop a Claude Code turn before the agent answered, Claude puts that prompt back in its input box. Your next prompt is typed after it, so the agent gets both.
 - A later prompt that is typed into the agent's terminal is typed as if you typed it into the application, so the application's input shortcuts apply. In Claude Code, a prompt that starts with `!` runs as a shell command and its turn does not show in the thread.
 - A later prompt ends when the agent stops working. When the agent was already busy as the prompt arrived, the turn can end when that earlier work does.

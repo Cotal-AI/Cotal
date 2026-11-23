@@ -11,16 +11,13 @@ export interface AgentCatalog {
   readonly available: boolean;
   /** Whether the connector publishes an AG-UI event plane. The bridge needs one. */
   readonly eventPlane: boolean;
-  /** The `agent` endpoint commands the connector's sessions implement, as the manager reports its
-   *  declaration. Absent: none declared, as from a manager that predates the declaration. */
-  readonly endpoint?: EndpointDeclaration;
   readonly reason?: string;
   readonly models: readonly CatalogModel[];
 }
 
-/** Which `agent` endpoint commands a connector declares its sessions implement (SPEC 13.22). The
- *  bridge picks a seat's paths from it before it sends anything. */
-export interface EndpointDeclaration {
+/** Which `agent` endpoint commands a seat serves now, as its presence `agentEndpoint` field says
+ *  (SPEC §6). */
+export interface AgentEndpointServes {
   readonly interrupt: boolean;
   readonly turn: boolean;
   readonly images: boolean;
@@ -191,6 +188,10 @@ export interface Mesh {
   agentCall(seat: SeatRef, command: string, args: Record<string, unknown>): Promise<unknown>;
   /** The seat's prompt counter from its presence, or undefined when it serves no `agent` endpoint. */
   promptCounter(seat: SeatRef): PromptCounter | undefined;
+  /** Which `agent` endpoint commands the seat's presence says it serves now (SPEC §6), or undefined
+   *  when it shows none or the space has no agent endpoint. The bridge reads it once to pick a path
+   *  before it sends anything. */
+  served(seat: SeatRef): AgentEndpointServes | undefined;
   /** Change the name the seat shows with its agent endpoint's `set-name`, as the seat's owner. Resolves
    *  with the name its card now carries; rejects, naming why, when the space or the agent refuses. */
   rename(seat: SeatRef, name: string): Promise<string>;

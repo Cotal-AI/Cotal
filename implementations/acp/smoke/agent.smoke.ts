@@ -43,7 +43,7 @@ import { client, methods, PROTOCOL_VERSION, type RequestPermissionRequest, type 
 import { agentPromptDigest, assertValidOwnerToken, type AgentPrompt, type PromptContent, type PromptSummary } from "@cotal-ai/core";
 import { cotalAgent, defaultName, type HiddenSessions, type ThreadLink, type ThreadLinks } from "../src/agent.js";
 import { promptParts } from "../src/turns.js";
-import { AgentCallFailed, LaunchListsRefused, NoLaunchManager, SignInRequired, type AgentCatalog, type AguiEventLike, type ManagerChoice, type Mesh, type PromptCounter, type SeatFrame, type SeatRef, type SeatRow, type SpawnRequest } from "../src/mesh.js";
+import { AgentCallFailed, LaunchListsRefused, NoLaunchManager, SignInRequired, type AgentCatalog, type AgentEndpointServes, type AguiEventLike, type ManagerChoice, type Mesh, type PromptCounter, type SeatFrame, type SeatRef, type SeatRow, type SpawnRequest } from "../src/mesh.js";
 
 let pass = 0, fail = 0;
 const check = (n: string, c: boolean, x?: unknown): void => { if (c) { pass++; console.log(`  ✓ ${n}`); } else { fail++; console.log(`  ✗ FAIL: ${n}`, x ?? ""); } };
@@ -96,6 +96,10 @@ class FakeMesh implements Mesh {
   onAgentCall: (seat: SeatRef, command: string, args: Record<string, unknown>) => unknown = () => { throw new AgentCallFailed("no agent endpoint here", "unavailable"); };
   /** Prompt counters by actor, as presence carries them. */
   counters = new Map<string, PromptCounter>();
+  /** What a seat's presence says its agent endpoint serves, shown with its prompt counter as presence
+   *  shows both under one gate: by actor, else `serving`. */
+  serves = new Map<string, AgentEndpointServes>();
+  serving: AgentEndpointServes | undefined;
   /** Frames a spawned seat publishes: `before` ahead of the spawn reply, `after` once it answered. */
   script: { before: AguiEventLike[][]; after: AguiEventLike[][] } = { before: [], after: [] };
   private listeners: ((f: SeatFrame) => void)[] = [];
@@ -162,6 +166,7 @@ class FakeMesh implements Mesh {
     return this.onAgentCall(seat, command, args);
   }
   promptCounter(seat: SeatRef) { return this.counters.get(seat.actor); }
+  served(seat: SeatRef) { return this.agentEndpoints && this.counters.has(seat.actor) ? this.serves.get(seat.actor) ?? this.serving : undefined; }
   async input(seat: SeatRef, text: string) {
     this.onInput(seat);
     if (this.inputDelay) await tick(this.inputDelay);
@@ -629,9 +634,9 @@ check("a thread's agent name is a valid user-mode actor token", (() => { try { r
 {
   const space = new FakeMesh();
   space.agentEndpoints = true;
-  // The bridge reads the declaration from the catalog it was given, so the test changes it in place.
-  const declared = { interrupt: true, turn: true, images: true, usage: true };
-  space.catalogList = CATALOGS.map((cat) => (cat.agent === "claude" ? { ...cat, endpoint: declared } : cat));
+  // The bridge reads the seat's presence at each choice, so the test changes it in place.
+  const shown = { interrupt: true, turn: true, images: true, usage: true };
+  space.serving = shown;
   const c = connect(async () => space);
   await c.init;
   const at = new Date().toISOString();
@@ -732,24 +737,45 @@ check("a thread's agent name is a valid user-mode actor token", (() => { try { r
   check("a turn the seat refuses fails the prompt with its reason, and nothing is typed in its place",
     failedTurn?.message?.includes("takes no turn") === true && callsOf("turn").length === turnsAt + 1 && space.typed.length === typedBefore, { failedTurn, typed: space.typed.slice(typedBefore) });
   turnRefusal = undefined;
-  declared.turn = false;
+  shown.turn = false;
   await within(c.agent.request(methods.agent.session.prompt, { sessionId: s.sessionId, prompt: [{ type: "text", text: "typed instead" }] }));
-  check("a seat whose connector declares no turn is typed into through its manager, and no turn is asked", space.typed.at(-1)?.text === "typed instead" && callsOf("turn").length === turnsAt + 1, space.typed.slice(typedBefore));
+  check("a seat whose presence does not show turn now is typed into through its manager, and no turn is asked", space.typed.at(-1)?.text === "typed instead" && callsOf("turn").length === turnsAt + 1, space.typed.slice(typedBefore));
   const typedAt = space.typed.length;
   const noImages = await errorOf(c.agent.request(methods.agent.session.prompt, { sessionId: s.sessionId, prompt: [{ type: "text", text: "see" }, { type: "image", data: "iVBORw0KGgo=", mimeType: "image/png" }] }));
-  check("images to such a seat fail the prompt before anything is sent", noImages?.message?.includes("does not declare") === true && space.typed.length === typedAt && callsOf("turn").length === turnsAt + 1, noImages);
-  declared.turn = true;
+  check("images to such a seat fail the prompt before anything is sent", noImages?.message?.includes("does not take images with a turn now") === true && space.typed.length === typedAt && callsOf("turn").length === turnsAt + 1, noImages);
+  shown.turn = true;
+  shown.images = false;
+  const noPictures = await errorOf(c.agent.request(methods.agent.session.prompt, { sessionId: s.sessionId, prompt: [{ type: "text", text: "see" }, { type: "image", data: "iVBORw0KGgo=", mimeType: "image/png" }] }));
+  check("images to a seat that takes turns but shows no images fail before anything is sent", noPictures?.message?.includes("does not take images") === true && space.typed.length === typedAt && callsOf("turn").length === turnsAt + 1, noPictures);
+  shown.images = true;
   space.onInput = () => {};
 
-  const stopsAt = space.interrupted.length;
+  let stopsAt = space.interrupted.length;
   space.present.set("actor-acp-s1", "working");
   const stopped = within(c.agent.request(methods.agent.session.prompt, { sessionId: s.sessionId, prompt: [{ type: "text", text: "long job" }] }));
   await tick(400);
   await c.agent.notify(methods.agent.session.cancel, { sessionId: s.sessionId });
   await tick(400);
   space.present.set("actor-acp-s1", "idle");
-  check("a cancel goes to the seat's own interrupt where its connector declares it, and not to its manager",
+  check("a cancel goes to the seat's own interrupt where its presence says it serves it, and not to its manager",
     (await stopped)?.stopReason === "cancelled" && callsOf("interrupt").length === 1 && space.interrupted.length === stopsAt, { interrupts: callsOf("interrupt"), manager: space.interrupted.slice(stopsAt) });
+  for (const [label, set] of [["shows interrupt false", () => { shown.interrupt = false; }], ["shows no agentEndpoint field", () => { space.serving = undefined; }]] as const) {
+    set();
+    const usagesAt = callsOf("usage").length;
+    space.present.set("actor-acp-s1", "working");
+    const keyed = within(c.agent.request(methods.agent.session.prompt, { sessionId: s.sessionId, prompt: [{ type: "text", text: "long job" }] }));
+    await tick(400);
+    await c.agent.notify(methods.agent.session.cancel, { sessionId: s.sessionId });
+    await tick(400);
+    space.present.set("actor-acp-s1", "idle");
+    check(`a cancel to a seat whose presence ${label} goes to its manager's interrupt key, and not to the endpoint`,
+      (await keyed)?.stopReason === "cancelled" && callsOf("interrupt").length === 1 && space.interrupted.length === stopsAt + 1, { interrupts: callsOf("interrupt").length, manager: space.interrupted.slice(stopsAt) });
+    stopsAt++;
+    if (label === "shows no agentEndpoint field")
+      check("...and its usage is not read", callsOf("usage").length === usagesAt, callsOf("usage").length - usagesAt);
+  }
+  space.serving = shown;
+  shown.interrupt = true;
 
   usage = { supported: false };
   const pictured = await c.agent.request(methods.agent.session.new, { cwd: dir, mcpServers: [] });
@@ -759,7 +785,11 @@ check("a thread's agent name is a valid user-mode actor token", (() => { try { r
   const firstPicture = within(c.agent.request(methods.agent.session.prompt, { sessionId: pictured.sessionId, prompt: [{ type: "text", text: "what is this" }, { type: "image", data: "iVBORw0KGgo=", mimeType: "image/png" }] }));
   await tick(400);
   check("a first prompt with images spawns the seat with no first turn, and waits until it serves its endpoint", space.spawned.at(-1)?.prompt === undefined && callsOf("turn").length === turnsBefore, { spawned: space.spawned.at(-1), turns: callsOf("turn").length - turnsBefore });
+  space.serves.set(pictureSeat.actor, { interrupt: false, turn: false, images: false, usage: false });
   space.counters.set(pictureSeat.actor, { runtime: "rt3", open: 0, seq: 0 });
+  await tick(400);
+  check("while it serves its endpoint but shows no turn yet, it still waits", callsOf("turn").length === turnsBefore, callsOf("turn").length - turnsBefore);
+  space.serves.set(pictureSeat.actor, { interrupt: true, turn: true, images: true, usage: false });
   setTimeout(() => space.present.set(pictureSeat.actor, "idle"), 600);
   await firstPicture;
   check("then gives it the prompt as a turn with the images", callsOf("turn").length === turnsBefore + 1 && callsOf("turn").at(-1)?.args.text === "what is this" && callsOf("turn").at(-1)?.seat === "acp-s2", callsOf("turn").slice(turnsBefore));
