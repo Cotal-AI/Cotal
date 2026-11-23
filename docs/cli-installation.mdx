@@ -577,8 +577,9 @@ auto-updated in v1. Floating third-party updates require `@cotal-ai/*` peer-rang
 a future follow-up. When `update --self` cannot reach the registry before selecting a release,
 it exits 0 without reconciling packages, inspecting Manager custody or creating an update recovery
 record. If self-update already repaired permissions in the installation or connector configuration,
-it reports that no installed packages were replaced. Losing registry connectivity during release
-checks, extension-dependency checks or target staging also exits 0 before replacement.
+or recovered an interrupted extension promotion, it reports that no installed packages were replaced.
+Losing registry connectivity during release checks, extension-dependency checks or target staging
+also exits 0 before replacement.
 On Linux and macOS, the updater stops a staging install that stops making progress or reaches
 its five-minute limit. It removes the disposable staging copy and leaves the running installation
 and local spaces unchanged. Automatic updates defer the attempt without counting it as a failure.

@@ -27,6 +27,9 @@ for (const path of [home, config, cotal, runtime]) mkdirSync(path, { mode: 0o700
 const clean = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_")));
 const env: NodeJS.ProcessEnv = { ...clean, HOME: home, XDG_CONFIG_HOME: config, XDG_RUNTIME_DIR: runtime, COTAL_HOME: cotal, COTAL_NO_UPDATE_CHECK: "1", DO_NOT_TRACK: "1", NO_COLOR: "1", npm_config_prefix: prefix };
 const run = (overrides: NodeJS.ProcessEnv = {}) => spawnSync(process.execPath, [join(installed, "dist/cotal.js"), "update", "--self"], { cwd: root, env: { ...env, ...overrides }, encoding: "utf8", timeout: 30_000 });
+const offlineRegistry = { npm_config_registry: "http://127.0.0.1:1", npm_config_fetch_retries: "0", npm_config_fetch_timeout: "1000" };
+const packagesKept = "The registry cannot be reached; no installed packages were replaced.";
+const noChange = "The registry cannot be reached; nothing was changed.";
 const packageBefore = readFileSync(join(installed, "package.json"), "utf8");
 const connectorRoot = join(config, "cotal"), extensions = join(connectorRoot, "extensions"), seed = join(connectorRoot, "seed");
 mkdirSync(extensions, { recursive: true, mode: 0o700 });
@@ -35,9 +38,9 @@ try {
   for (const paths of [directories, [join(prefix, "lib/node_modules")], [extensions], []]) {
     for (const path of paths) chmodSync(path, 0o500);
     // Registry unavailability returns success after permission preflight without replacing packages.
-    const repaired = run({ npm_config_registry: "http://127.0.0.1:1", npm_config_fetch_retries: "0", npm_config_fetch_timeout: "1000" });
+    const repaired = run(offlineRegistry);
     check.equal(repaired.status, 0, repaired.stderr);
-    check.equal(repaired.stdout.trim(), paths.length ? "The registry cannot be reached; no installed packages were replaced." : "The registry cannot be reached; nothing was changed.");
+    check.equal(repaired.stdout.trim(), paths.length ? packagesKept : noChange);
     check.equal(existsSync(join(cotal, "update-recovery.json")), false, "offline update leaves an absent recovery file absent");
     check.doesNotMatch(repaired.stderr, /sudo npm|EACCES|Request refused/);
     for (const path of paths) check.equal(lstatSync(path).mode & 0o777, 0o700, "only owner write is restored");
@@ -46,6 +49,35 @@ try {
     check.equal(readFileSync(join(installed, "package.json"), "utf8"), packageBefore);
     check.equal(existsSync(join(prefix, "lib/.cotal-generations")), false);
   }
+  // The verified prefix is already live. Only a directory in the old rollback tree needs repair.
+  const journal = join(connectorRoot, ".extensions-promotion.json");
+  const old = join(connectorRoot, ".extensions.rollback-fixture"), oldChild = join(old, "child");
+  mkdirSync(oldChild, { recursive: true, mode: 0o700 });
+  writeFileSync(join(oldChild, "state"), "old");
+  chmodSync(oldChild, 0o500);
+  const liveState = join(extensions, "state");
+  writeFileSync(liveState, "live");
+  const identity = (path: string) => {
+    const { dev, ino, birthtimeMs } = lstatSync(path);
+    return { dev: String(dev), ino: String(ino), birth: birthtimeMs };
+  };
+  const liveIdentity = identity(extensions);
+  writeFileSync(journal, JSON.stringify({ v: 1, root: extensions, stage: join(connectorRoot, ".extensions.stage-fixture"), old, stageIdentity: liveIdentity, oldIdentity: identity(old) }));
+  const recovered = run(offlineRegistry);
+  check.equal(recovered.status, 0, recovered.stderr);
+  check.equal(recovered.stderr, "");
+  check.equal(recovered.stdout.trim(), packagesKept);
+  check.equal(existsSync(old), false);
+  check.equal(existsSync(journal), false);
+  check.deepEqual(identity(extensions), liveIdentity);
+  check.equal(readFileSync(liveState, "utf8"), "live");
+  check.equal(readFileSync(join(installed, "package.json"), "utf8"), packageBefore);
+  check.equal(existsSync(join(cotal, "update-recovery.json")), false);
+  check.equal(existsSync(join(prefix, "lib/.cotal-generations")), false);
+  const unchanged = run(offlineRegistry);
+  check.equal(unchanged.status, 0, unchanged.stderr);
+  check.equal(unchanged.stdout.trim(), noChange);
+  console.log("Offline self-update reports completed extension promotion recovery and an unchanged retry.");
   // A read-only filesystem still refuses. Inject only chmod's EROFS, keeping the real access check.
   const readOnly = join(root, "read-only.mjs");
   writeFileSync(readOnly, `import fs from 'node:fs'; import { syncBuiltinESMExports } from 'node:module';
@@ -56,7 +88,7 @@ syncBuiltinESMExports();\n`);
   mkdirSync(seed, { recursive: true, mode: 0o700 });
   chmodSync(seed, 0o500);
   chmodSync(connectorRoot, 0o500);
-  const repairedConfig = run({ npm_config_registry: "http://127.0.0.1:1", npm_config_fetch_retries: "0", npm_config_fetch_timeout: "1000" });
+  const repairedConfig = run(offlineRegistry);
   check.equal(repairedConfig.status, 0, repairedConfig.stderr);
   check.equal(lstatSync(seed).mode & 0o777, 0o700);
   check.equal(lstatSync(connectorRoot).mode & 0o777, 0o700);
