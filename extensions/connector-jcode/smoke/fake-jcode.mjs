@@ -68,7 +68,13 @@ if (process.argv[2] === "respawned-server") {
 if (process.argv.includes("--resume")) {
   // The foreground client is an observer of the Harness API socket. It must be created while the
   // mandatory readiness request is running, rather than leaving an operator at a blank terminal.
-  log({ ev: "tui", argv: process.argv.slice(2), companionAutostart: process.env.JCODE_COMPANION_AUTOSTART ?? null });
+  log({
+    ev: "tui",
+    argv: process.argv.slice(2),
+    companionAutostart: process.env.JCODE_COMPANION_AUTOSTART ?? null,
+    jcodeHome: process.env.JCODE_HOME ?? null,
+    runtimeDir: process.env.JCODE_RUNTIME_DIR ?? null,
+  });
   process.on("SIGTERM", () => process.exit(0));
   setInterval(() => {}, 1_000);
   if (process.env.FAKE_JCODE_TUI_RESPAWN === "1") {

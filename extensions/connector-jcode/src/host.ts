@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { realpathSync } from "node:fs";
 import { join } from "node:path";
 import { JcodeClient, launchInstance, type ApiEvent } from "@1jehuang/jcode-sdk";
 import { loadAgentFile, type PresenceCondition } from "@cotal-ai/core";
@@ -133,6 +134,9 @@ export async function runJcodeHost(): Promise<void> {
     // wedged seat from a broken connector (#1211).
     throw new JcodeConnectorError("private_state", "jcode connector: the seat's private Jcode state could not be prepared", { cause: error });
   }
+  // Jcode gets its home by real path: from 1.1 a shell command loads the project's saved environment
+  // through JCODE_HOME and fails if any part of that path is a symlink. The alias names only sockets.
+  const jcodeHome = realpathSync(home);
   /** Only after a verified stop: nothing of this lifecycle can read the seat's credential copies any
    *  more, and the next launch mirrors them afresh (#5641). The home itself stays for its resume record. */
   const removeCredentials = (): void => {
@@ -463,6 +467,7 @@ export async function runJcodeHost(): Promise<void> {
       // agent.
       env: {
         ...seatEnv,
+        JCODE_HOME: jcodeHome,
         JCODE_DISABLE_CLAUDE_MCP: "1",
         JCODE_NO_AUTO_UPDATE: "1",
         [launchBound.key]: launchBound.value,
@@ -495,7 +500,7 @@ export async function runJcodeHost(): Promise<void> {
       env: {
         ...noCotalEnv(),
         ...seatEnv,
-        JCODE_HOME: socketHome.jcodeHome,
+        JCODE_HOME: jcodeHome,
         JCODE_RUNTIME_DIR: runtime,
         JCODE_SOCKET: join(runtime, "jcode.sock"),
         JCODE_COMPANION_AUTOSTART: "0",

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { once } from "node:events";
 import { spawn, type ChildProcess, type SpawnOptions } from "node:child_process";
 import { tmpdir } from "node:os";
@@ -400,13 +400,27 @@ try {
       argv.env?.COTAL_HOME === join(root, "cotal-home"),
     argv.env,
   );
-  check("private JCODE_HOME is passed to the harness", Boolean(argv.env?.JCODE_HOME?.includes("/tmp/jc-") && argv.env?.JCODE_HOME?.endsWith("/home")), argv.env);
+  // From Jcode 1.1 a shell command loads the project's saved environment through JCODE_HOME and
+  // fails when any part of that path is a symlink, so the harness gets the seat's real home.
+  const peerHome = managedHome("jcodehost", "jcodepeer");
+  check(
+    "the harness gets the seat's own home as JCODE_HOME, with no symlink on the path",
+    argv.env?.JCODE_HOME === peerHome && realpathSync(peerHome) === peerHome,
+    { env: argv.env, peerHome },
+  );
+  const runtimeDir = argv.env?.JCODE_RUNTIME_DIR ?? "";
+  check(
+    "the harness's runtime directory and API socket stay under the short private alias",
+    /^\/tmp\/jc-[0-9a-f]{12}\/home\/run$/.test(runtimeDir) &&
+      argv.argv?.[2] === join(runtimeDir, "jcode-api.sock") &&
+      argv.env?.JCODE_SOCKET === join(runtimeDir, "jcode.sock"),
+    { argv: argv.argv, env: argv.env },
+  );
   check("host disables SDK symlinked credential inheritance", argv.env?.JCODE_HOME !== undefined && !Object.keys(argv.env ?? {}).some((key) => key === "COTAL_JCODE_HOME"), argv.env);
   // A seat that updates its own binary restarts its process tree, which drops the only connection
   // the Jcode server counts as a client; nothing re-attaches, and the server's idle reaper kills
   // the seat mid-turn five minutes later. The seat's version is fixed at spawn time.
   check("host pins the seat binary against background self-update", argv.env?.JCODE_NO_AUTO_UPDATE === "1", argv.env);
-  const peerHome = managedHome("jcodehost", "jcodepeer");
   const peerLog = connectorLog(peerHome);
   check(
     "a successful join with no spawn --prompt names that outcome",
@@ -1574,13 +1588,31 @@ try {
   let foregroundErr = "";
   foreground.stderr?.on("data", (chunk: Buffer) => (foregroundErr += chunk.toString()));
   await waitFor("foreground readiness proof", () => existsSync(tuiLog) && readFileSync(tuiLog, "utf8").includes('"ev":"orientation_done"') ? true : undefined);
-  const tuiEntries = readJsonLines<{ ev: string; companionAutostart?: string | null; frame?: { req?: string; content?: string; no_reply?: boolean } }>(tuiLog);
+  const tuiEntries = readJsonLines<{
+    ev: string;
+    argv?: string[];
+    companionAutostart?: string | null;
+    jcodeHome?: string | null;
+    runtimeDir?: string | null;
+    frame?: { req?: string; content?: string; no_reply?: boolean };
+  }>(tuiLog);
   const tuiAt = tuiEntries.findIndex((entry) => entry.ev === "tui");
   const readinessDoneAt = tuiEntries.findIndex((entry) => entry.ev === "orientation_done");
   check("foreground TUI starts before its readiness turn finishes", tuiAt >= 0 && tuiAt < readinessDoneAt, { tuiAt, readinessDoneAt, entries: tuiEntries });
   await stopHostTree(foreground, "SIGTERM");
   check("the early foreground TUI launch exits cleanly", foreground.exitCode === 0, { code: foreground.exitCode, stderr: foregroundErr });
   check("the foreground TUI starts with Jcode's companion autostart off", tuiEntries.find((entry) => entry.ev === "tui")?.companionAutostart === "0", tuiEntries.filter((entry) => entry.ev === "tui"));
+  const tui = tuiEntries.find((entry) => entry.ev === "tui");
+  const tuiHome = managedHome("jcodehost", "tuipeer");
+  check(
+    "the TUI gets the seat's own home as JCODE_HOME and its socket under the short private alias",
+    tui?.jcodeHome === tuiHome &&
+      realpathSync(tuiHome) === tuiHome &&
+      /^\/tmp\/jc-[0-9a-f]{12}\/home\/run$/.test(tui?.runtimeDir ?? "") &&
+      tui?.argv?.[0] === "--socket" &&
+      tui?.argv?.[1] === join(tui?.runtimeDir ?? "", "jcode.sock"),
+    { tui, tuiHome },
+  );
 
   // #7950: from Jcode 0.99.1 a TUI that outlives its server starts a new one on the seat's socket,
   // which blocks the next launch of the same name. A stop, and a failed launch, must end the TUI
