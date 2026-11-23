@@ -9,6 +9,7 @@ import { shellWord } from "./lib/endpoint-errors.js";
 import { unknownSubcommandMessage } from "./lib/nearest-word.js";
 import { workingFolderRemoved } from "./lib/paths.js";
 import { displayCmd, displayRemedy } from "./lib/self-exec.js";
+import { recordTelemetryFailure } from "./telemetry.js";
 import { c, hang } from "./ui.js";
 
 /** Display order for the help groups — an explicit ranking, NOT registration order: modules
@@ -321,6 +322,7 @@ export function printHelpPath(cmd: Command, words: readonly string[], out: (line
     if (!sub || (sub.hidden && sub.name.startsWith("__"))) {
       // The parser's usage error for the same word: the reason, then the help of the path that exists,
       // both on stderr, so painted for it whatever stream the caller paints for.
+      recordTelemetryFailure("refused", "USAGE_INVALID");
       const at = [cmd.name, ...path].join(" ");
       paintFor(process.stderr, () => {
         for (const line of hang("✗ ", unknownSubcommandMessage(at, surface, word), terminalWidth(process.stderr))) console.error(c.red(line));

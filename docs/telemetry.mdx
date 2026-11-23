@@ -115,6 +115,8 @@ a later terminal run still shows it. An environment-selected level does not trig
 | `node` | integer | The Node major version. |
 | `ci` | boolean | Whether `CI` is set to anything but `0` or `false`. |
 
+When the `help` command encounters an unknown subcommand, it reports `refused` and exits 1. At `regular`, its code is `USAGE_INVALID`; the event omits the requested topic and diagnostic text.
+
 At `regular` the event also carries:
 
 | Field | Type | Meaning |
