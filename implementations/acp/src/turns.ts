@@ -1,14 +1,15 @@
 /**
  * A prompt to a seat that already runs, and what the seat reports of its usage.
  *
- * Where the seat serves its `agent` endpoint (SPEC 13.22), a prompt is a `turn`: the owner's own
- * words and images, queued on the seat's command lane. A seat whose connector takes no turn, and
- * every seat on a space without the endpoint, is typed into through its manager's `input` instead,
- * which takes text only.
+ * Each seat gets one path, chosen from its connector's declaration before anything is sent: where
+ * the space serves the `agent` endpoint (SPEC 13.22) and the connector declares `turn`, a prompt is
+ * a `turn`, the owner's own words and images queued on the seat's command lane; otherwise it is typed
+ * into the seat through its manager's `input`, which takes text only. A path that fails is reported,
+ * never retried another way.
  */
 import { AGENT_CMD_COMMAND_STATE, AGENT_CMD_TURN, AGENT_CMD_USAGE, AGENT_TURN_IMAGE_TYPES, type CommandState, type TurnImage, type UsageOutput } from "@cotal-ai/core";
 import { RequestError, type ContentBlock, type SessionUpdate } from "@agentclientprotocol/sdk";
-import { AgentCallFailed, type Mesh, type SeatRef } from "./mesh.js";
+import type { EndpointDeclaration, Mesh, SeatRef } from "./mesh.js";
 
 /** How long a queued command or turn may wait behind a running turn before its prompt carries on
  *  without seeing it start. */
@@ -47,37 +48,35 @@ export async function awaitTaken(m: Mesh, seat: SeatRef, id: string, label: stri
   }
 }
 
-/** Give a running seat a prompt: a `turn` where it takes one, else its manager's `input`. Resolves
- *  once the seat took it. Rejects, naming why, when neither can carry it, as for images to a seat
- *  that takes none. */
-export async function takeTurn(m: Mesh, seat: SeatRef, text: string, images: readonly TurnImage[]): Promise<void> {
-  if (m.agentEndpoints) {
-    try {
-      const { id } = (await m.agentCall(seat, AGENT_CMD_TURN, { text, ...(images.length ? { images } : {}) })) as { id: string };
-      return await awaitTaken(m, seat, id, "the prompt");
-    } catch (e) {
-      // A connector that takes no turn is typed into, as on a space without the endpoint. Images
-      // need the turn, so they fail with the seat's reason.
-      if (!(e instanceof AgentCallFailed && e.code === "unimplemented") || images.length) throw e;
-    }
-  } else if (images.length) {
-    throw new Error(`${seat.name} cannot take images here: images need the agent endpoint, which a space serves only where people sign in`);
-  }
-  await m.input(seat, text);
+/** Whether the seat takes a `turn`: the space serves the endpoint and its connector declares it. */
+export function takesTurns(m: Mesh, declared: EndpointDeclaration | undefined): boolean {
+  return m.agentEndpoints && declared?.turn === true;
 }
 
-/** The seat's context usage as an ACP `usage_update`, or undefined when its connector reports none,
- *  the harness has reported no context yet, or the space has no agent endpoint. */
-export async function usageUpdate(m: Mesh, seat: SeatRef): Promise<SessionUpdate | undefined> {
-  if (!m.agentEndpoints) return undefined;
-  let out: UsageOutput;
-  try {
-    out = (await m.agentCall(seat, AGENT_CMD_USAGE, {})) as UsageOutput;
-  } catch (e) {
-    // An agent of an earlier revision has no `usage`; it reports nothing, like one without the hook.
-    if (e instanceof AgentCallFailed && e.code === "unimplemented") return undefined;
-    throw e;
+/** Why the seat cannot take these images, or undefined when it can. */
+export function imageRefusal(m: Mesh, seat: string, declared: EndpointDeclaration | undefined): string | undefined {
+  if (!m.agentEndpoints) return `${seat} cannot take images here: images need the agent endpoint, which a space serves only where people sign in`;
+  if (!declared?.turn || !declared.images) return `${seat}'s connector does not declare that it takes images with a turn`;
+  return undefined;
+}
+
+/** Give a running seat a prompt on the one path its declaration picks: a `turn`, or its manager's
+ *  `input`. Resolves once the seat took it. Rejects, naming why, when that path refuses it. */
+export async function takeTurn(m: Mesh, seat: SeatRef, declared: EndpointDeclaration | undefined, text: string, images: readonly TurnImage[]): Promise<void> {
+  if (images.length) {
+    const why = imageRefusal(m, seat.name, declared);
+    if (why) throw new Error(why);
   }
+  if (!takesTurns(m, declared)) return m.input(seat, text);
+  const { id } = (await m.agentCall(seat, AGENT_CMD_TURN, { text, ...(images.length ? { images } : {}) })) as { id: string };
+  await awaitTaken(m, seat, id, "the prompt");
+}
+
+/** The seat's context usage as an ACP `usage_update`, or undefined when its connector declares no
+ *  usage, the space has no agent endpoint, or the harness has reported no context yet. */
+export async function usageUpdate(m: Mesh, seat: SeatRef, declared: EndpointDeclaration | undefined): Promise<SessionUpdate | undefined> {
+  if (!m.agentEndpoints || !declared?.usage) return undefined;
+  const out = (await m.agentCall(seat, AGENT_CMD_USAGE, {})) as UsageOutput;
   if (!out.supported || !out.context) return undefined;
   return { sessionUpdate: "usage_update", used: out.context.used, size: out.context.size, ...(out.cost ? { cost: out.cost } : {}) };
 }
