@@ -460,6 +460,18 @@ const VERBS = ["start", "resume", "ps", "journal", "answer", "amend", "revoke", 
       } finally { process.stdout.write = write; }
       const out = JSON.parse(shown.join("").trim());
       c("a well-formed fault still raises at its step (L4002)", fired === undefined && out.result?.failure?.code === "L4002", { fired, out });
+
+      shown.length = 0;
+      process.stdout.write = ((chunk: string | Uint8Array) => { shown.push(String(chunk)); return true; }) as typeof process.stdout.write;
+      try {
+        writeFileSync(program, 'const winner = await race({ slow: () => sleep("3s"), fast: () => sleep("1s") }, { name: "first" });\nlog(winner.index);\n');
+        fired = await simulate({ faults: [{ at: "/race:first#0", kind: "test-refusal", code: "L4002", message: "injected race failure" }] }, { json: true });
+      } finally { process.stdout.write = write; }
+      const race = JSON.parse(shown.join("").trim());
+      c("a scripted race fault fails the race itself before any arm runs", fired === undefined && race.outcome === "ok"
+        && race.result.outcome === "failed" && race.result.failure.code === "L4002" && race.result.failure.title === "injected race failure"
+        && race.result.failure.step === "/race:first#0" && race.result.effects.length === 1 && race.result.effects[0].status === "failed"
+        && race.result.elapsedMs === 0 && race.result.log.length === 0, { fired, race });
       writeFileSync(program, 'await checkpoint("go", "Proceed?", { timeout: "4s", onExpiry: "proceed" });\n');
     }
     writeFileSync(program, 'const answer = await checkpoint("approve", "Approve the example?", { timeout: "10m", onExpiry: "proceed" });\nlog(answer.status);\n');
@@ -756,7 +768,7 @@ log([].filter(() => true), [].find(() => true) === undefined, [].findLast(() => 
   const text: string[] = [], json: string[] = [];
   const log = console.log, write = process.stdout.write;
   try {
-    writeFileSync(program, 'log(1)\rlog(2)\r\nlog(3)\nlog(4)\u2028log(5)\u2029log(6); log(7)');
+    writeFileSync(program, 'log(1)\rlog(2)\r\nlog(3)\nlog(4)\u2028log(5)\u2029log(6); log(7)\nconst numbers = [1, 2]\nconst fn = "join"\nlog(numbers[fn]("-"), numbers.join("-"))');
     console.log = (...args: unknown[]) => { text.push(args.map(String).join(" ")); };
     process.stdout.write = ((chunk: string | Uint8Array) => { json.push(String(chunk)); return true; }) as typeof process.stdout.write;
     await runWorkflow({ values: { plain: true }, positionals: ["plan", program], raw: [] });
@@ -766,12 +778,16 @@ log([].filter(() => true), [].find(() => true) === undefined, [].findLast(() => 
     process.stdout.write = write;
     rmSync(dir, { recursive: true, force: true });
   }
-  const expected = [1, 2, 3, 4, 5, 6, 6];
-  const rows = Array.from(text.join("\n").matchAll(/^[ \t]*(\d+)[ \t]+log[ \t]*$/gm), (match) => Number(match[1]));
+  const expected = [1, 2, 3, 4, 5, 6, 6, 9];
+  const textPlan = text.join("\n");
+  const rows = Array.from(textPlan.matchAll(/^[ \t]*(\d+)[ \t]+log[ \t]*$/gm), (match) => Number(match[1]));
   const envelope = JSON.parse(json.join("")) as { outcome: string; result: { calls: unknown } };
   c("plan text counts each JavaScript line break once", rows.join() === expected.join(), rows);
-  c("plan JSON counts each JavaScript line break once", envelope.outcome === "ok"
-    && JSON.stringify(envelope.result.calls) === JSON.stringify(expected.map((line) => ({ call: "log", line }))), envelope);
+  c("plan text distinguishes computed access from a named method", textPlan.includes("derived call")
+    && textPlan.includes("numbers.join") && !textPlan.includes("numbers.fn"), textPlan);
+  c("plan JSON keeps line numbers and distinguishes computed access from a named method", envelope.outcome === "ok"
+    && JSON.stringify(envelope.result.calls) === JSON.stringify([...expected.map((line) => ({ call: "log", line })),
+      { call: "derived call", line: 9 }, { call: "numbers.join", line: 9 }]), envelope);
 }
 
 // A workflow source that cannot be read is refused naming its path and the cause, before any plane.

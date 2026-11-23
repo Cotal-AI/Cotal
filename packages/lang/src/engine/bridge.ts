@@ -60,6 +60,7 @@ const METHODS = [
   "monitor",
   "openConclave",
   "closeConclave",
+  "checkScope",
 ] as const;
 type Method = (typeof METHODS)[number];
 
@@ -186,7 +187,7 @@ function rehydrate(w: WireError): Error {
  * so a host-initiated `bind` reaches the real context (and through it, the real journal), and so
  * a cancellation fires at the host the moment the thread's signal fires.
  */
-export function bridgedSeam(port: MessagePort, clock: SharedArrayBuffer): { handler: EffectHandler; store: JournalStore } {
+export function bridgedSeam(port: MessagePort, clock: SharedArrayBuffer, checksScopes = false): { handler: EffectHandler; store: JournalStore } {
   const flag = new Int32Array(clock, 0, 1);
   const value = new Float64Array(clock, 8, 1);
   let seq = 0;
@@ -270,6 +271,7 @@ export function bridgedSeam(port: MessagePort, clock: SharedArrayBuffer): { hand
     },
   } as EffectHandler;
   for (const m of METHODS) {
+    if (m === "checkScope" && !checksScopes) continue;
     (handler as Record<Method, (req: unknown, ctx: EffectContext) => Promise<unknown>>)[m] = (req, ctx) => call(m, req, ctx);
   }
 

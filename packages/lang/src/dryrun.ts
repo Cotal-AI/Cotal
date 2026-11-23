@@ -124,12 +124,16 @@ export interface DryRunFailure extends Omit<DryRunReport, "steps"> {
  * It implements every member, the optional ones included, so a member added to the contract is a
  * type error here until it is forwarded rather than a hook the wrapper silently drops.
  */
-export class RecordingHandler implements Required<EffectHandler> {
+export class RecordingHandler implements Omit<Required<EffectHandler>, "checkScope">, Pick<EffectHandler, "checkScope"> {
   readonly spawns: SpawnRequest[] = [];
   readonly checkpointsAsked: { req: CheckpointRequest; step: string }[] = [];
   readonly waits: { req: ObserveRequest; step: string }[] = [];
 
-  constructor(private readonly inner: EffectHandler) {}
+  readonly checkScope?: (req: null, ctx: EffectContext) => Promise<void>;
+
+  constructor(private readonly inner: EffectHandler) {
+    if (inner.checkScope) this.checkScope = inner.checkScope.bind(inner);
+  }
 
   now(): number {
     return this.inner.now();

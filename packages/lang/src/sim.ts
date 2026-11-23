@@ -142,9 +142,14 @@ export class SimHandler implements EffectHandler {
   private parkSeq = 0;
   private pumpScheduled = false;
   private settled: (() => Promise<void>) | undefined;
+  readonly checkScope?: (req: null, ctx: EffectContext) => Promise<void>;
 
   constructor(readonly script: SimScript = {}) {
     this.virtualNow = script.clock?.start ?? 0;
+    if (script.faults?.length) this.checkScope = async (_req, ctx) => {
+      if (ctx.signal.cancelled) throw new Cancelled(ctx.signal.reason ?? "cancelled");
+      this.checkFault(ctx);
+    };
   }
 
   now(): number {

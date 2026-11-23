@@ -102,6 +102,16 @@ try {
   up = true;
   const managers = JSON.parse(await succeed("ps", "--json")).result.managers;
   const selection = ["--space", "project", "--on", managers[0].instanceId];
+  const unknownShow = await call("run", "show", "run-missing", "--local", "--space", "project", "--server", server, "--endpoint", "manager", "--json");
+  const unknownShowError = JSON.parse(unknownShow.text).error;
+  assert.equal(unknownShow.code, 2, unknownShow.text);
+  assert.equal(unknownShowError.code, "TARGET_NOT_FOUND", unknownShow.text);
+  const showRetry = retryWords(unknownShowError.remedy);
+  assert.deepEqual(showRetry, ["run", "list", "--local", "--space", "project", "--server", server, "--endpoint", "manager", "--json"]);
+  const listed = JSON.parse(await succeed(...showRetry));
+  check("the local show retry lists the recorded runs on the same target", listed.target.space === "project"
+    && listed.warnings.some((warning: { code: string; target?: { endpoint?: string } }) => warning.code === "ENDPOINT_HAS_NO_RUNS" && warning.target?.endpoint === "manager")
+    && Array.isArray(listed.result.items) && listed.result.items.length === 0, JSON.stringify(listed));
   for (const verb of ["answer", "amend"]) for (const local of [false, true]) {
     const flags = local ? ["--space", "project", "--local", "--by", "operator"] : selection;
     const out = await call("run", verb, "run-missing", "/checkpoint:approve#0", "--value", "true", ...flags, "--json");

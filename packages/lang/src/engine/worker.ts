@@ -229,14 +229,14 @@ export function runInWorker(request: WorkerRunRequest, options: WorkerRunOptions
   }
   const stop = new SharedArrayBuffer(STOP_HEADER + STOP_CAPACITY);
   let host: { readonly clock: SharedArrayBuffer; close(): void } | undefined;
-  let bridge: { port: MessagePort; clock: SharedArrayBuffer } | undefined;
+  let bridge: { port: MessagePort; clock: SharedArrayBuffer; checksScopes: boolean } | undefined;
   // Assigned when the run's answer is set up below; the bridge hears only the thread, which does
   // not exist yet, so no disagreement can arrive before the assignment.
   let disagree: (e: Error) => void = () => {};
   if (options.bridge !== undefined) {
     const channel = new MessageChannel();
     host = serviceBridge(channel.port1, options.bridge, (e) => disagree(e));
-    bridge = { port: channel.port2, clock: host.clock };
+    bridge = { port: channel.port2, clock: host.clock, checksScopes: options.bridge.handler.checkScope !== undefined };
   }
   // Two literal spellings rather than one spread, so the crossing audit in the engine suite reads
   // exactly what the thread is handed in each route off this source.

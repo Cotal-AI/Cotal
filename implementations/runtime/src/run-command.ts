@@ -508,7 +508,16 @@ async function journal(values: RunValues, planes: Planes, endpoint: string, runI
   }
   // The replay durable is named by the takeover id this call's credential was minted for.
   const view = await runHost.status(planes, { endpoint, runId, takeoverId });
-  if (!view) throw new CommandFailure("refused", "TARGET_NOT_FOUND", "no workflow record was returned for this run", { target: { space: planes.space, endpoint, run: runId } });
+  if (!view) {
+    const selectors = retryFlag("space", planes.space) + (["server", "creds", "endpoint"] as const).map((flag) => retryFlag(flag, values[flag])).join("");
+    const output = values.json ? " --json" : values.plain ? " --plain" : "";
+    const privateServer = values.server !== undefined && brokerAddressForDisplay(values.server) !== oneLine(values.server);
+    throw new CommandFailure("refused", "TARGET_NOT_FOUND", "no workflow record was returned for this run", {
+      target: { space: planes.space, endpoint, run: runId },
+      remedy: privateServer ? "replace the subcommand and run ID with `list` in the original command, and omit `--limit` if given"
+        : `list the recorded runs with ${codeSpan(`cotal run list --local${selectors}${output}`)}`,
+    });
+  }
   printRunDetail(planes.space, view, values);
 }
 

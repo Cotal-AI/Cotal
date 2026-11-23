@@ -809,6 +809,7 @@ export async function performScope(
   // branches all succeeded and whose settling append was refused must not be recorded as failed.
   let outcome: ScopeOutcome;
   try {
+    if (!dispatches && host.options.handler.checkScope) await host.options.handler.checkScope(null, ctx);
     outcome = await body(ctx);
   } catch (raw) {
     // The interpreter's facts come out of the envelope; the program's thrown value comes out
