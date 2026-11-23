@@ -705,6 +705,11 @@ check("under a locale without UTF-8 an unknown command is the report, with no wa
 // --yes are the whole fix, so the command's help is left out, as `down` already did.
 const project = join(home, "proj");
 mkdirSync(project, { mode: 0o700 });
+const backupDestination = join(home, "unused");
+const backupCreate = run(["backup", "create", "../unused", "--yes", "--plain"], {}, project);
+check("backup create names the unsupported option and refuses before writing",
+  reportShape(backupCreate, /backup create does not accept --yes/) && backupCreate.stderr.includes("remove --yes to create the backup")
+  && !existsSync(backupDestination), shown(backupCreate));
 const confirmationSpace = run(["space", "create", "confirmation", "--root", project]);
 check("confirmation refusals use a prepared local space", confirmationSpace.status === 0, shown(confirmationSpace));
 const deleteTarget = run(["space", "add", "delete-target", "--root", project, "--mode", "open", "--server", "nats://127.0.0.1:43028", "--force", "--yes"]);
@@ -747,6 +752,15 @@ for (const [args, message] of [
 const configTypo = run(["config", "get", "harness", "--verbsoe", "--json"]);
 check("config get does not suggest a flag only bare config takes",
   configTypo.status === 1 && configTypo.stderr === "" && JSON.parse(configTypo.stdout).error.message === "Unknown option '--verbsoe'", shown(configTypo));
+const configGet = ["config", "get", "harness", "--user", "--json"];
+const configUnknown = run([...configGet, "--mystery-flag"]);
+const { error: configError } = JSON.parse(configUnknown.stdout);
+const configRetry = run(configGet);
+check("config get with its key filled says to drop the unknown option, and dropping it returns the setting",
+  configUnknown.status === 1 && configUnknown.stderr === "" && configError?.code === "USAGE_INVALID"
+  && configError.message === "Unknown option '--mystery-flag'" && configError.remedy === "drop the unknown option"
+  && configRetry.status === 0 && JSON.parse(configRetry.stdout).result?.setting?.key === "harness",
+  { refusal: shown(configUnknown), retry: shown(configRetry) });
 const clearTypo = run(["history", "clear", "--folow"]);
 check("history clear does not suggest a flag only history reads take",
   usageShape(clearTypo, /Unknown option '--folow'/) && !/did you mean/.test(clearTypo.stderr), shown(clearTypo));

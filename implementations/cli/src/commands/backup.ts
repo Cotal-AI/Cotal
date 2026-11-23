@@ -490,9 +490,13 @@ export function validateBackupArguments(args: ParsedArgs): void {
   const allowed = new Set(["json", "plain", ...(mode === "create" ? ["only", "store-dir"] : mode === "restore" ? ["only", "store-dir", "accept-missing-source"] : maintenance ? ["yes", "dry-run", ...(mode === "cleanup-fallback" ? ["discard-history"] : [])] : [])]);
   const unsupported = Object.keys(args.values).filter((flag) => !allowed.has(flag));
   if (unsupported.length) {
+    const flags = unsupported.map((flag) => `--${flag}`).join(", ");
+    if (mode === "create") {
+      throw new CommandFailure("refused", "USAGE_INVALID", `backup create does not accept ${flags}`, { remedy: `remove ${flags} to create the backup` });
+    }
     if (maintenance) {
       const selection = mode === "cleanup-fallback" && unsupported.includes("store-dir") ? ". The full attempt ID alone selects its recorded fallback" : "";
-      throw new CommandFailure("refused", "USAGE_INVALID", `backup ${mode} does not accept ${unsupported.map((flag) => `--${flag}`).join(", ")}${selection}`);
+      throw new CommandFailure("refused", "USAGE_INVALID", `backup ${mode} does not accept ${flags}${selection}`);
     }
     throw new CommandFailure("refused", "USAGE_INVALID", mode === "restore" ? "backup restore accepts only --only, --store-dir and --accept-missing-source; the space, broker and runtime come from the preserved cut" : "backup inspection and verification accept no creation, target or restore inputs");
   }

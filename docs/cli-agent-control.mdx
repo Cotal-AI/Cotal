@@ -600,6 +600,8 @@ its message.
 A retry for a malformed manager ID keeps `--force` if you requested it.
 Without an agent name, `stop` refuses before contacting the space. The suggested roster and stop
 commands keep the explicit `--space` and `--server`, and the stop retry keeps the output format.
+On an open or static space, if `--on` is not a valid manager instance ID, the retry asks for both
+the agent name and the manager instance ID from the roster.
 `stop --self` uses only a verified managed seat caller and its attributed manager. It accepts no
 other target or credential. Missing, mismatched and unsupported user-auth seat context refuses
 without switching to the operator. JSON and plain modes show the acknowledged native result,

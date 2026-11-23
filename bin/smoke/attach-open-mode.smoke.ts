@@ -228,7 +228,7 @@ async function attachFrom(cwd: string, args: string[], ms = 25_000): Promise<str
   return out.replace(/\x1b\[[0-9;]*m/g, "");
 }
 
-async function checkPinnedAttachRetry(): Promise<void> {
+async function checkPinnedRetries(): Promise<void> {
   const route = ["--space", SPACE, "--server", OPEN_SERVER];
   const options = { cwd: rootOpen, env: cliEnv, encoding: "utf8" as const, timeout: 20_000 };
   const run = (args: string[]) => new Promise<{ status: number | string | null | undefined; stdout: string; stderr: string }>((resolve) => {
@@ -248,6 +248,20 @@ async function checkPinnedAttachRetry(): Promise<void> {
   if (!retries[0] || !instance) return;
   const attached = await attachFrom(rootOpen, retries[0].replace("<instance>", instance).split(" ").slice(2));
   ok("the printed attach retry opens the seat with the manager instance from ps", attached.includes(`attached to ${SEAT}`), attached);
+
+  const stop = await run(["stop", "--force", "--json", "--on", "not-a-pin", ...route]);
+  const stopError = JSON.parse(stop.stdout).error;
+  const stopRetry = `cotal stop <name> --on <instance> --force --json ${route.join(" ")}`;
+  ok("nameless stop replaces an invalid open-mesh pin with the instance from ps",
+    stop.status === 1 && stop.stderr === "" && stopError?.code === "USAGE_INVALID"
+    && stopError.message.includes('--on "not-a-pin" is not a valid manager instance id')
+    && stopError.remedy === `run \`cotal ps ${route.join(" ")}\`, then \`${stopRetry}\``, stop);
+  const retry = /then `(cotal stop [^`]+)`/.exec(stopError?.remedy ?? "")?.[1];
+  if (retry !== stopRetry) return;
+  const stopped = await run(retry.replace("<name>", SEAT).replace("<instance>", instance).split(" ").slice(1));
+  const receipt = stopped.status === 0 ? JSON.parse(stopped.stdout) : undefined;
+  ok("the printed stop retry stops the seat with the manager instance from ps",
+    receipt?.target?.managerInstanceId === instance && receipt?.result?.stopped === true, stopped);
 }
 
 let mgr: InstanceType<typeof Manager> | undefined;
@@ -553,7 +567,7 @@ try {
     /attached to seat1/.test(fromOpen) && !/needs this space's local seed/.test(fromOpen) && !/re-register the mesh/.test(fromOpen),
     fromOpen.slice(-900),
   );
-  await checkPinnedAttachRetry();
+  await checkPinnedRetries();
 
   console.log(`\nattach open-mode: ${pass} passed, ${fail} failed`);
   if (!fail) exitCode = 0;
