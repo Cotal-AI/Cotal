@@ -3,7 +3,8 @@
 // FAKE_CODEX_LOG (JSONL) so the smoke can assert on it. Turn behavior is scripted by
 // the injected text: TOOL:roster → call the cotal_* MCP endpoint the host is serving;
 // TOOLREC → also leave in the rollout the two records a real tool call leaves; PERMREQ → ask for
-// more permissions as the `request_permissions` tool does;
+// more permissions as the `request_permissions` tool does; ELICIT → ask for an MCP tool-call
+// approval and then an MCP server's form;
 // SLOW → hold the turn open ~1.2s (a steer window); HANG → hold until an interrupt
 // arrives, else self-interrupt after ~1s; FAIL → fail in the same frame the turn started in;
 // THINK → stream a reasoning summary as summary deltas before saving it;
@@ -385,6 +386,20 @@ async function runTurn(text) {
       reason: "fetch a page", permissions: { network: { enabled: true }, fileSystem: null },
     });
     journal({ ev: "permissionsAnswer", answer });
+  }
+  if (text.includes("ELICIT")) {
+    // What codex 0.162 sends when the model calls an MCP server's tool: the tool-call approval, then
+    // the form the server asks for while its tool runs.
+    const base = { threadId: THREAD, turnId, serverName: "elicit", mode: "form" };
+    const approval = await serverRequest("mcpServer/elicitation/request", {
+      ...base, message: 'Allow the elicit MCP server to run tool "pick_color"?', requestedSchema: { type: "object", properties: {} },
+      _meta: { codex_approval_kind: "mcp_tool_call", persist: ["session", "always"], tool_description: "Pick a color.", tool_params: {}, tool_params_display: [] },
+    });
+    journal({ ev: "elicitationAnswer", kind: "approval", answer: approval });
+    const form = await serverRequest("mcpServer/elicitation/request", {
+      ...base, _meta: null, message: "Which color?", requestedSchema: { type: "object", properties: { color: { type: "string", enum: ["red", "green"] } }, required: ["color"] },
+    });
+    journal({ ev: "elicitationAnswer", kind: "form", answer: form });
   }
   if (text.includes("SOLOTUI") && !soloUsed) {
     // A turn the human started with NOTHING of ours open. The host must still pump its buffered
