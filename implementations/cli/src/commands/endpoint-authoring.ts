@@ -22,6 +22,8 @@ try {
   process.exitCode = 1;
 }
 `;
+const CONTRACT_FILE = "contract.json";
+const RETRY_WITH_CONTRACT = "retry with the path to an existing endpoint contract file";
 
 export function validateEndpointAuthoringArguments(args: ParsedArgs): void {
   presentationOf(args.values);
@@ -64,8 +66,21 @@ function createDirectories(destination: string, changed: ScaffoldChange[]): void
 }
 /** The check command for a created scaffold's contract, quoted for a POSIX shell when the path needs it. */
 export function scaffoldCheckCommand(directory: string): string {
-  const file = join(directory, "contract.json");
-  return `cotal ep check ${/^[A-Za-z0-9_./+-]+$/.test(file) ? file : `'${file.replace(/'/g, `'\\''`)}'`}`;
+  return `cotal endpoint check ${shellWord(join(directory, CONTRACT_FILE))}`;
+}
+
+function inspectPath(path: string) {
+  // Metadata is only for the diagnosis. The protected reader owns file access and its errors.
+  try { return lstatSync(path); } catch { return undefined; }
+}
+
+function refuseContractDirectory(path: string): void {
+  if (!inspectPath(path)?.isDirectory()) return;
+  const hasContract = inspectPath(join(path, CONTRACT_FILE))?.isFile();
+  throw new CommandFailure("refused", "SCHEMA_INVALID", `${codeSpan(shellWord(path))} is a directory. Pass an endpoint contract file.`, {
+    target: { path },
+    ...(hasContract ? { remedy: scaffoldCheckCommand(path), remedyIsCommand: true } : { remedy: RETRY_WITH_CONTRACT }),
+  });
 }
 function missing(path: string, name: string): void {
   try { lstatSync(path); }
@@ -82,10 +97,11 @@ export async function endpointAuthoring(args: ParsedArgs): Promise<void> {
   const presentation = presentationOf(args.values);
   if (mode === "check") {
     const file = resolve(name);
+    refuseContractDirectory(file);
     const bytes = readLocalRecordSource(file, MAX_ENDPOINT_CONTRACT_BYTES);
     if (!bytes) throw new CommandFailure("refused", "TARGET_NOT_FOUND", `the endpoint contract file was not found at ${codeSpan(shellWord(file))}`, {
       target: { path: file },
-      remedy: "retry with the path to an existing endpoint contract file",
+      remedy: RETRY_WITH_CONTRACT,
     });
     let text: string;
     try { text = new TextDecoder("utf-8", { fatal: true }).decode(bytes); }
@@ -103,7 +119,7 @@ export async function endpointAuthoring(args: ParsedArgs): Promise<void> {
   const source = endpointContractTemplate(name);
   parseEndpointContract(JSON.stringify(source));
   const existing = directory(destination);
-  const files = [{ path: join(destination, "contract.json"), bytes: JSON.stringify(source, null, 2) + "\n", mode: 0o600 }, { path: join(destination, "handler.mjs"), bytes: HANDLER, mode: 0o700 }];
+  const files = [{ path: join(destination, CONTRACT_FILE), bytes: JSON.stringify(source, null, 2) + "\n", mode: 0o600 }, { path: join(destination, "handler.mjs"), bytes: HANDLER, mode: 0o700 }];
   if (existing) for (const file of files) missing(file.path, name);
   const changed: ScaffoldChange[] = [];
   try {

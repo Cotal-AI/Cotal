@@ -277,7 +277,9 @@ with the installed schema profile and reports the derived cluster closure. All s
 must resolve inside their bundle; no URL or adjacent file is fetched. Attribute and event
 semantics remain opaque to the native parser, so a file declaring them produces a partial result,
 exit 4, rather than a claim that those semantics were checked. If the file is missing, `check`
-names the path and asks you to retry with an existing contract file.
+names the path and asks you to retry with an existing contract file. If you pass a directory,
+`check` names it and asks for a contract file. If the directory contains a regular `contract.json`,
+the refusal shows a command to check that file. `check` never selects a file for you.
 
 Neither authoring command contacts a broker, loads the handler, starts a service or registers an
 endpoint. Authoring takes no space, broker, caller or invocation flags.

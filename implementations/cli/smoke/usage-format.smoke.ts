@@ -329,6 +329,35 @@ if (process.platform !== "win32") {
     && partialReceipt.error?.code === "OPERATION_PARTIAL" && JSON.stringify(partialReceipt.changed) === JSON.stringify([{ path: join(cwd, "partial-parent"), kind: "directory", complete: true }])
     && (statSync(join(cwd, "partial-parent")).mode & 0o777) === 0o700, shown(partial));
 
+  const directoryArgs = ["endpoint", "check", dir];
+  const directoryText = [run(directoryArgs, {}, cwd), run([...directoryArgs, "--plain"], {}, cwd)];
+  const directoryJson = run([...directoryArgs, "--json"], {}, cwd);
+  const refusal = parsed(directoryJson);
+  const quotedDir = join(cwd, dir).replace(/'/g, `'\\''`);
+  const message = `\`'${quotedDir}'\` is a directory. Pass an endpoint contract file.`;
+  const remedy = `cotal endpoint check '${quotedDir}/contract.json'`;
+  const retried = refusal?.error?.remedy === remedy ? runShell(remedy.slice("cotal ".length), {}, cwd) : undefined;
+  check("endpoint check names its scaffold directory and prints a working contract-file command in each format",
+    directoryJson.status === 1 && directoryJson.stderr === "" && refusal?.error?.code === "SCHEMA_INVALID"
+    && (refusal.target as { path?: string } | undefined)?.path === join(cwd, dir)
+    && refusal.error.message === message && refusal.error.remedy === remedy
+    && directoryText.every((r) => r.status === 1 && r.stdout === "" && r.stderr.includes(message) && r.stderr.includes(`Next\n  ${remedy}\n`))
+    && retried?.status === 0 && retried.stderr === "" && retried.stdout.includes("Endpoint contract valid locally")
+    && files.every((path, index) => readFileSync(path).equals(original[index]!)),
+    { text: directoryText.map(shown), json: shown(directoryJson), retried: retried && shown(retried) });
+
+  const other = join(cwd, "other-contracts");
+  mkdirSync(other);
+  writeFileSync(join(other, "custom.json"), original[0]!);
+  symlinkSync(files[0]!, join(other, "contract.json"));
+  const unrelated = run(["endpoint", "check", other, "--json"], {}, cwd);
+  const unrelatedRefusal = parsed(unrelated);
+  check("endpoint check neither picks another JSON file nor suggests a symlink as the contract",
+    unrelated.status === 1 && unrelated.stderr === "" && unrelatedRefusal?.error?.code === "SCHEMA_INVALID"
+    && (unrelatedRefusal.target as { path?: string } | undefined)?.path === other
+    && unrelatedRefusal.error.message?.includes("is a directory. Pass an endpoint contract file.") === true
+    && unrelatedRefusal.error.remedy === "retry with the path to an existing endpoint contract file", shown(unrelated));
+
   const authoring = run(["endpoint", "init", "reviews"], {}, cwd);
   const wrong = "reviews/wrong.json";
   const path = join(cwd, wrong);

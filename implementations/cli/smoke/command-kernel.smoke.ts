@@ -836,8 +836,8 @@ async function completionOut(positionals: string[]): Promise<string> {
 // --- endpoint init's Next is the check command for the contract it created ------------------------
 {
   const { scaffoldCheckCommand } = await import("../src/commands/endpoint-authoring.js");
-  assert.equal(scaffoldCheckCommand("/run/ep/reviews"), "cotal ep check /run/ep/reviews/contract.json", "the scaffold's Next names its own contract, not a placeholder");
-  assert.equal(scaffoldCheckCommand("/run/it's here"), "cotal ep check '/run/it'\\''s here/contract.json'", "a scaffold path a shell would split is quoted");
+  assert.equal(scaffoldCheckCommand("/run/ep/reviews"), "cotal endpoint check /run/ep/reviews/contract.json", "the scaffold's Next names its own contract, not a placeholder");
+  assert.equal(scaffoldCheckCommand("/run/it's here"), "cotal endpoint check '/run/it'\\''s here/contract.json'", "a scaffold path a shell would split is quoted");
   const { runCli } = await import("../src/command.js");
   const priorXdg = process.env.XDG_CONFIG_HOME;
   const scaffold = realpathSync(mkdtempSync(join(tmpdir(), "cotal-ep-init-")));
