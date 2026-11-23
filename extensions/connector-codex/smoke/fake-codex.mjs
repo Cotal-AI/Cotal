@@ -5,6 +5,7 @@
 // TOOLREC → also leave in the rollout the two records a real tool call leaves;
 // SLOW → hold the turn open ~1.2s (a steer window); HANG → hold until an interrupt
 // arrives, else self-interrupt after ~1s; FAIL → fail in the same frame the turn started in;
+// STREAM → stream the reply as agent-message deltas before saving it;
 // WAITEND → hold the turn until FAKE_CODEX_END_MARK exists; default → complete.
 //
 // Like the real thing, this fake is an MCP *client*: the cotal_* tools are not on the
@@ -421,6 +422,18 @@ async function runTurn(text) {
     notify("turn/completed", { threadId: THREAD, turn: { id: turnId, status: "interrupted" } });
     return;
   }
+  // STREAM: the reply streams as agent-message deltas under the item id its saved record carries,
+  // one piece every 400 ms, as Codex sends them before it saves the message.
+  let reply = `ok:${turnSeq}`;
+  if (text.includes("STREAM")) {
+    reply = "";
+    for (const piece of [`streamed:${turnSeq}:`, "one ", "two ", "three"]) {
+      reply += piece;
+      notify("item/agentMessage/delta", { threadId: THREAD, turnId, itemId: `msg_${turnSeq}`, delta: piece });
+      journal({ ev: "streamDelta", turnId, at: Date.now() });
+      await new Promise((r) => setTimeout(r, 400));
+    }
+  }
   if (text.includes("WAITEND")) {
     // Hold the turn open until FAKE_CODEX_END_MARK exists, so a smoke decides when it ends.
     while (!existsSync(process.env.FAKE_CODEX_END_MARK)) await new Promise((r) => setTimeout(r, 25));
@@ -455,11 +468,12 @@ async function runTurn(text) {
     journal({ ev: "died", turnId });
     process.exit(3);
   }
+  journal({ ev: "saved", turnId, at: Date.now() });
   rolloutRecord("response_item", {
     type: "message",
     role: "assistant",
     id: `msg_${turnSeq}`,
-    content: [{ type: "output_text", text: `ok:${turnSeq}` }],
+    content: [{ type: "output_text", text: reply }],
   });
   rolloutRecord("event_msg", { type: "task_complete", turn_id: turnId, completed_at: stamp(), error: null });
   // The SECOND turn is what materializes the file in `late` mode: the first turn's records are
@@ -468,7 +482,7 @@ async function runTurn(text) {
   notify("item/completed", {
     threadId: THREAD,
     turnId,
-    item: { type: "agentMessage", id: `msg_${turnSeq}`, text: `ok:${turnSeq}`, phase: "final_answer" },
+    item: { type: "agentMessage", id: `msg_${turnSeq}`, text: reply, phase: "final_answer" },
   });
   activeTurn = undefined;
   notify("turn/completed", { threadId: THREAD, turn: { id: turnId, status: "completed" } });
