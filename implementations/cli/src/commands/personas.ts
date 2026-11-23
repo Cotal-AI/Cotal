@@ -1,12 +1,16 @@
 import { isUtf8 } from "node:buffer";
 import { readFileSync } from "node:fs";
 import {
+  AGENT_FILE_SOURCE_META_KEY,
   agentFilePath,
+  agentFileSourceId,
   assertValidName,
   assertValidRole,
+  isContractDigest,
   oneLine,
   personaDir,
   type CompletionResult,
+  type EndpointKind,
   type ParsedArgs,
 } from "@cotal-ai/core";
 import { cachedPreferences, codeSpan, CommandFailure, exitCode, resolvePreference, parseCommaList, personaDefinitionProblem, recordOperationSpace, renderReport, targetFlags, terminalWidth, wrapWords } from "@cotal-ai/workspace";
@@ -142,8 +146,7 @@ async function list(verbose: boolean, running: boolean, values: ConnectValues): 
   try { entries = readPersonas(root); }
   catch (error) { throw catalogReadRefusal(personaDir(root), error); }
   // An explicit live overlay checks the mesh even when there are no local personas to mark.
-  const overlay = running ? await presentNames(values) : undefined;
-  const present = overlay?.names;
+  const overlay = running ? await presentSources(values) : undefined;
   if (overlay) console.log(`${renderReport({ space: overlay.space, sections: [] }, "rich", process.stdout)}\n`);
   if (!entries.length) {
     const spaceFlag = values.space === undefined ? "" : ` --space ${shellWord(values.space)}`;
@@ -167,7 +170,7 @@ async function list(verbose: boolean, running: boolean, values: ConnectValues): 
       continue;
     }
     const d = e.def!;
-    const live = present ? (present.has(e.name) ? c.green("● running") : c.dim("○ not running")) : undefined;
+    const live = overlay && runningMark(overlay, e.path, d.kind ?? "agent");
     const meta = [d.role && c.cyan(oneLine(d.role)), d.model && c.dim(`model=${oneLine(d.model)}`), d.owner && c.dim(`owner=${oneLine(d.owner)}`), live]
       .filter(Boolean)
       .join("  ");
@@ -182,13 +185,35 @@ async function list(verbose: boolean, running: boolean, values: ConnectValues): 
   if (entries.some((entry) => entry.error)) process.exitCode = exitCode("partial", "OPERATION_PARTIAL");
 }
 
-/** Snapshot the names currently present on the mesh — the live overlay behind `personas list
- *  --running` — with the space they were read from. The transient endpoint reads the roster once at
- *  start. A name is "running" when an agent of exactly that name is present and not offline. */
-async function presentNames(values: ConnectValues): Promise<{ space: string; names: Set<string> }> {
-  const { ep, space } = await openTransient(values, "personas");
+interface RunningOverlay {
+  space: string;
+  sources: Set<string>;
+  unattributed: Set<EndpointKind>;
+}
+
+function runningMark(overlay: RunningOverlay, path: string, kind: EndpointKind): string {
+  if (overlay.sources.has(agentFileSourceId(path))) return c.green("● running");
+  if (overlay.unattributed.has(kind)) return c.yellow("? running status unknown");
+  return c.dim("○ not running");
+}
+
+async function presentSources(values: ConnectValues): Promise<RunningOverlay> {
+  const { ep, space } = await openTransient(values, "personas", { presenceOnly: true });
   try {
-    return { space, names: new Set(ep.getRoster().filter((p) => p.status !== "offline").map((p) => p.card.name)) };
+    if (!ep.presenceView().fresh)
+      throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `could not read a current roster for ${oneLine(space)}`, { target: { space } });
+    const sources = new Set<string>();
+    const unattributed = new Set<EndpointKind>();
+    for (const { status, card } of ep.getRoster()) {
+      if (status === "offline") continue;
+      const source = card.meta?.[AGENT_FILE_SOURCE_META_KEY];
+      if (isContractDigest(source)) sources.add(source);
+      else {
+        if (card.kind !== "endpoint") unattributed.add("agent");
+        if (card.kind !== "agent") unattributed.add("endpoint");
+      }
+    }
+    return { space, sources, unattributed };
   } finally {
     await ep.stop();
   }

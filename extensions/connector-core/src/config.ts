@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { userInfo } from "node:os";
-import { DEFAULT_SERVER, DEV_OWNER, LAUNCH_MATERIAL_ENV, assertValidName, brokerUrlHasUserinfo, discardLaunchMaterial, assertLifecycleToken, assertValidChannel, assertValidKind, channelInAllow, credsClaims, eventChannel, idFromCreds, isConcreteChannel, loadAgentFile, parseJoinLink, parsePersonaEndpoints, resolveReadAcl, type AgentDef, type EndpointKind, type PersonaEndpoint } from "@cotal-ai/core";
+import { DEFAULT_SERVER, DEV_OWNER, LAUNCH_MATERIAL_ENV, agentFileSourceId, assertValidName, brokerUrlHasUserinfo, discardLaunchMaterial, assertLifecycleToken, assertValidChannel, assertValidKind, channelInAllow, credsClaims, eventChannel, idFromCreds, isConcreteChannel, loadAgentFile, parseJoinLink, parsePersonaEndpoints, resolveReadAcl, type AgentDef, type EndpointKind, type PersonaEndpoint } from "@cotal-ai/core";
 import { readMaterial } from "./session-env.js";
 
 /** Keyed beta intake — used when a `COTAL_FEEDBACK_KEY` is configured. */
@@ -57,6 +57,8 @@ export interface AgentConfig {
   /** Display-only metadata from unmodelled agent-file frontmatter keys (for example `theme`).
    *  Connector-owned keys such as `connector` and `model` are overlaid later and cannot be spoofed here. */
   meta?: Record<string, string>;
+  /** Advisory identity of the loaded agent-file entry, independent of the displayed name. */
+  agentFileSource?: string;
   /** Control-plane capabilities this session declares (from the agent file's `capabilities:`); today
    *  only `spawn`. Used to gate the manager-op tools (cotal_spawn / cotal_persona / cotal_personas) so the advertised
    *  surface matches what the agent can actually invoke. The auth layer is the real boundary on any
@@ -235,9 +237,8 @@ export function scrubLaunchMaterial(env: NodeJS.ProcessEnv = process.env): void 
  *  unless a link is present — guard with {@link hasIdentity} first. */
 export function configFromEnv(env: NodeJS.ProcessEnv = process.env): AgentConfig {
   const link = env.COTAL_LINK?.trim() ? parseJoinLink(env.COTAL_LINK.trim()) : undefined;
-  const def: AgentDef | undefined = env.COTAL_AGENT_FILE?.trim()
-    ? loadAgentFile(env.COTAL_AGENT_FILE.trim())
-    : undefined;
+  const agentFile = env.COTAL_AGENT_FILE?.trim();
+  const def: AgentDef | undefined = agentFile ? loadAgentFile(agentFile) : undefined;
   const name = env.COTAL_NAME?.trim() || def?.name || (link ? userInfo().username : undefined);
   if (!name)
     throw new Error("COTAL_NAME, COTAL_AGENT_FILE or COTAL_LINK is required — a Cotal session needs an explicit identity from its launcher");
@@ -392,6 +393,7 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): AgentConfig
     description: def?.description,
     tags: def?.tags,
     meta: def?.meta,
+    agentFileSource: agentFile ? agentFileSourceId(agentFile) : undefined,
     capabilities: splitList(env.COTAL_CAPABILITIES).length ? splitList(env.COTAL_CAPABILITIES) : def?.capabilities,
     endpoints: env.COTAL_ENDPOINTS !== undefined ? endpointsEnv(env.COTAL_ENDPOINTS) : def?.endpoints,
     model: env.COTAL_MODEL?.trim() || undefined,

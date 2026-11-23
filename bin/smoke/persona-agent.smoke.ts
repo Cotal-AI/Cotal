@@ -39,6 +39,7 @@ import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Command, Connector, LaunchOpts } from "@cotal-ai/core";
+import { checkPersonaRunning } from "./persona-running.js";
 
 // Seat-env hygiene: nothing COTAL_* may leak in from the caller and steer resolution. #869 is
 // ABOUT COTAL_DEFAULT_AGENT, so a stale one corrupts the repro in either direction.
@@ -163,6 +164,10 @@ try {
     if ((await probeConnect(SERVER, { timeoutMs: 400 })).ok) break;
     await sleep(100);
   }
+  await checkPersonaRunning(mkdtempSync(join(tmpdir(), "cotal-persona-running-")), SERVER,
+    (args) => captureProcess(process.execPath, [join(import.meta.dirname, "..", "dist", "cotal.js"), ...args], {
+      ...process.env, COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1",
+    }), ok);
   recordMesh({ space: SPACE, server: SERVER, root: workspaceRoot, mode: "open", ts: new Date().toISOString() });
 
   mgr = new Manager({ space: SPACE, servers: SERVER, runtime: "pty", workspaceRoot });

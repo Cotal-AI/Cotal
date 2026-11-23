@@ -1,5 +1,5 @@
 import { hostname } from "node:os";
-import { type DmDurableMissingError, type Presence } from "@cotal-ai/core";
+import { AGENT_FILE_SOURCE_META_KEY, type DmDurableMissingError, type Presence } from "@cotal-ai/core";
 import { eventPlaneArmed, type AgentConfig } from "./config.js";
 import type { CommandDispatcher } from "./agent-commands.js";
 
@@ -20,6 +20,8 @@ export const EVENTS_META_KEY = "ai.cotal.events";
  *  connector-owned fields are overlaid so files cannot spoof the hosting harness. */
 export function buildMeta(config: AgentConfig, processCwd: boolean, eventsArmed?: boolean): Record<string, string> | undefined {
   const meta: Record<string, string> = { ...(config.meta ?? {}) };
+  delete meta[AGENT_FILE_SOURCE_META_KEY];
+  if (config.agentFileSource) meta[AGENT_FILE_SOURCE_META_KEY] = config.agentFileSource;
   if (config.model) meta.model = config.model;
   if (config.variant) meta.variant = config.variant;
   if (config.connector) meta.connector = config.connector;

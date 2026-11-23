@@ -665,7 +665,10 @@ when its output is piped or redirected, so
 name no persona can have with the codes `persona show` uses. Only its explicit `--running` overlay
 connects to the mesh.
 That overlay checks the mesh even if the local catalog is empty and refuses if the mesh cannot be reached.
-It heads the list with the mesh it read and marks each persona `running` or `not running`.
+It heads the list with the mesh it read and marks a persona `running` when a live session reports
+using that catalog entry on this host, even if its display name differs. If there is no match and
+a live participant of the same kind lacks source information, the overlay says `running status unknown`.
+Otherwise it says `not running`. Display names do not establish which file a session used.
 
 
 ### Personas on an exact manager [#personas-on-an-exact-manager]

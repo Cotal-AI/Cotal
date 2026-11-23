@@ -26,8 +26,10 @@
  * half, alongside the join link.
  */
 import { accessSync, constants, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, statSync } from "node:fs";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { hostname } from "node:os";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
+import { contractDigest } from "./canonical.js";
 import type { EndpointKind } from "./types.js";
 import { assertValidName } from "./resolve.js";
 import { createPrivateRecord, writePrivateRecord } from "./secret-fs.js";
@@ -165,6 +167,16 @@ export function loadAgentFile(path: string, options?: { deferRoleValidation?: bo
   const encoding = utf8Problem(bytes, source);
   if (encoding) throw new Error(`agent file ${path}: ${encoding}; save it as UTF-8`);
   return parseAgentFileSource(source, path, options);
+}
+
+export const AGENT_FILE_SOURCE_META_KEY = "ai.cotal.agent-file.source";
+
+/** An advisory source ID that does not publish the local path. Identify the named entry in its
+ *  physical directory, so edits keep the association and two links to one file remain distinct. */
+export function agentFileSourceId(path: string): string {
+  const dir = realpathSync.native(dirname(path));
+  const { dev, ino } = statSync(dir, { bigint: true });
+  return contractDigest([hostname(), dir, String(dev), String(ino), basename(path)]);
 }
 
 /** Parse an agent-file document already in memory. `path` is only for error text. A leading UTF-8
