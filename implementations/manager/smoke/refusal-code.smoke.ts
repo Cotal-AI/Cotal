@@ -121,10 +121,10 @@ try {
   await import("@cotal-ai/auth"); // register the real provider used by enrollUserAgent
   const hostState = manager as unknown as {
     userMode: boolean;
-    remoteAuthority: { owner: string; authorizeAdmin(): Promise<boolean>; enrollManagedAgent(): Promise<never> } | undefined;
+    config: { remoteAuthority: { owner: string; authorizeAdmin(): Promise<boolean>; enrollManagedAgent(): Promise<never> } | undefined };
   };
   const savedMode = hostState.userMode;
-  const savedAuthority = hostState.remoteAuthority;
+  const savedAuthority = hostState.config.remoteAuthority;
   const owner = "u_aaaaaaaaaaaaaaaaaaaaaaaaaa";
   let enrollments = 0;
   const enrollmentDetails = [{ kind: "org.example.enrollment-refusal", retryable: false }];
@@ -139,7 +139,8 @@ try {
   try {
     refuseReservation = false;
     hostState.userMode = true;
-    hostState.remoteAuthority = {
+    // Fakes a hosted manager on a manager built without one, through the config cast.
+    hostState.config.remoteAuthority = {
       owner,
       authorizeAdmin: async () => true,
       enrollManagedAgent: async () => { enrollments++; throw refusal; },
@@ -190,7 +191,8 @@ try {
     }
   } finally {
     hostState.userMode = savedMode;
-    hostState.remoteAuthority = savedAuthority;
+    // Restores the config of the manager built without a hosting authority.
+    hostState.config.remoteAuthority = savedAuthority;
     refuseReservation = true;
   }
 

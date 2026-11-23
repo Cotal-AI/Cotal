@@ -618,8 +618,10 @@ this folder, adoption refreshes the recorded store identity from it, so a moved 
 no replacement warning before startup, while a missing store or a replacement made after adoption
 still warns. It refuses with `CONFLICT`, writing nothing, when the folder's `.cotal` is a
 link, when the recorded folder still holds the journal, when this machine records an instance of
-that stack, or when the space is prepared or registered on this machine. For a confirmed stopped
-stack at a missing path, follow the forget and adopt commands shown by `cotal status`. A copy brought from another machine and a
+that stack, or when the space is prepared or registered on this machine. If this machine still
+records an instance, moving the folder back to its recorded path makes the existing stack usable
+there without adoption. For a confirmed stopped stack at a missing path, follow the forget and
+adopt commands shown by `cotal status`. A copy brought from another machine and a
 folder moved after its record was forgotten are adopted. A folder renamed from a path that `cotal up`
 refuses, such as one with a tab in it, is told only to adopt, since moving it back would not start
 the stack. Without `--adopt`, nothing rewrites a journal.
@@ -1372,6 +1374,8 @@ That exit replaces the report's own, so a partial report followed by a clean pas
   failure in its facts, even if that URL is reachable.
   For a locally owned stack, a missing or dead broker process is `absent`, not `not-serving`.
   A cleanly stopped controller target reports `absent` and exits `1` without dialing another space.
+  If its store is not writable or its broker address is occupied, the target row names what to fix
+  before restarting.
   For open and static-auth plaintext NATS targets with no absent local process, the probe also checks JetStream and the
   recorded authentication requirement. An unauthenticated substitute for a static-auth broker
   is not reported as serving. When the address and process identity match this space's running

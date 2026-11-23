@@ -95,6 +95,18 @@ const dottedOperand = run(["version", "release.3"]);
 check("an unexpected positional keeps the full value in its refusal",
   usageShape(dottedOperand, /^✗ Unexpected argument 'release\.3'\n/m) && dottedOperand.stderr.includes("\ncotal version\n"), shown(dottedOperand));
 
+for (const verb of ["start", "stop", "restart", "status", "logs", "install", "uninstall"]) {
+  const extra = run(["manager", verb, "extra", "--json"]);
+  const error = parsed(extra)?.error;
+  check(`manager ${verb} names the extra operand and its own selectors`, extra.status === 1 && error?.code === "USAGE_INVALID" &&
+    error.message === `unexpected argument "extra" for \`cotal manager ${verb}\`` &&
+    error.remedy?.includes("remove the extra argument") === true && error.remedy.includes("--space <space> or --instance <full-id>"), shown(extra));
+}
+const managerExtra = run(["manager", "status", "extra", "--plain"]);
+check("a plain manager operand refusal keeps the manager status help", managerExtra.status === 1 &&
+  managerExtra.stderr.includes('unexpected argument "extra" for `cotal manager status`') &&
+  managerExtra.stderr.includes("Usage\n  cotal manager status") && !managerExtra.stderr.includes("use service"), shown(managerExtra));
+
 // The linear extension declares one usage form per line.
 const LINEAR = join(import.meta.dirname, "..", "..", "linear", "dist", "index.js");
 const linear = (args: string[]) => {

@@ -147,13 +147,22 @@ async function checkStoppedOpenDiagnosis(mesh: string, env: NodeJS.ProcessEnv, s
   const wrong = await diagnose("--space", "another-open-space", "--json");
   assert.equal(wrong.code, 2, wrong.out + wrong.err);
   assert.equal(JSON.parse(wrong.out).error.code, "AUTH_REQUIRED");
+  const unnamed = original.toString("utf8").replace(/^# space key: [0-9a-f]+\n/m, "");
+  assert.notEqual(unnamed, original.toString("utf8"));
+  writeFileSync(config, unnamed);
+  try {
+    const missingName = await diagnose("--plain");
+    assert.equal(missingName.code, 4, missingName.out + missingName.err);
+    assert.ok(missingName.err.includes(`restore \`${config}\` with its recorded space name`), missingName.out + missingName.err);
+    passed++;
+  } finally { writeFileSync(config, original); }
   renameSync(config, `${config}.saved`);
   try {
     for (const [flags, code] of [[[], 4], [["--space", space], 2]] as const) {
       const missing = await diagnose(...flags, "--plain");
       assert.equal(missing.code, code, missing.out + missing.err);
-      assert.ok((missing.out + missing.err).includes(config), missing.out + missing.err);
-      assert.doesNotMatch(missing.out + missing.err, /root folder|space create|No credentials to check/);
+      assert.match(missing.err, flags.length ? /Run `cotal space` to check the name/ : /`cotal space` lists each space's root/);
+      assert.doesNotMatch(missing.out + missing.err, /server-open\.conf|No credentials to check/);
       passed++;
     }
     assert.equal(existsSync(config), false, "doctor does not recreate the broker configuration");
