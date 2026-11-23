@@ -160,6 +160,11 @@ terminalizing, and so does a runtime that cannot reap by reference. While the na
 same-name spawn or a resume re-drives that teardown with the same recorded reference, so it reaps
 the seat again or keeps the name held.
 
+A participant manager can adopt a released seat whose `cotal-seat-record/v1` has no saved capability
+list if the retained scope contains only `spawn` and the token for the seat's recorded role. The
+principal, lifecycle, read and post grants, role, and parent must still match. An explicit empty list
+is not a missing list. This check does not issue or change a grant.
+
 
 ### Participant manager authority
 

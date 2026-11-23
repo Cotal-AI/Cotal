@@ -236,7 +236,7 @@ import {
 import { authDir, userAuthStateDir, workspaceSecretStore, saveSpaceAuth, recordMesh, assertUserAuthInfo } from "@cotal-ai/workspace";
 import {
   cotalAuthProvider, saveIdpSession, grantActor, loadAuthServiceInfo, saveAuthServiceInfo, loadOwnerSecret, loadPinnedIdp,
-  deriveOwnerForIdpSubject, findActorUnified, revokeActor,
+  deriveOwnerForIdpSubject, findActorUnified, findManagedActor, grantManagedActor, revokeActor,
 } from "@cotal-ai/auth";
 import { Manager, type ManagerOptions } from "../src/manager.js";
 import { managerClusterArtifacts } from "../src/manager-service-contract.js";
@@ -277,6 +277,39 @@ const wait = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 async function until(fn: () => boolean | Promise<boolean>, label: string, ms = 25_000): Promise<void> {
   const end = Date.now() + ms;
   while (!await fn()) { if (Date.now() > end) throw new Error(label); await wait(100); }
+}
+async function checkReleasedHostedScope(manager: Manager, root: string, hostDir: string, owner: string): Promise<void> {
+  const name = "released_scope";
+  writeFileSync(join(root, ".cotal", "agents", `${name}.md`), `---\nname: ${name}\nagent: u4-seat\nrole: default\nsubscribe: []\nallowSubscribe: []\nallowPublish: []\n---\nRetained scope fixture.\n`);
+  assert.equal((await manager.startAgent({ name }, `${owner}.cli`)).ok, true);
+  const seat = manager["agents"].get(name)!;
+  const entry = manager["resumeEntryOf"](seat);
+  assert.equal(entry.launch.capabilities, undefined);
+  assert.equal(entry.role, "default");
+  const row = findManagedActor(hostDir, owner, name)!;
+  assert.ok(row.tokenHash && row.custody);
+  const grant = { ...row, tokenHash: row.tokenHash, custody: row.custody };
+  const version = "cotal-seat-record/v1";
+  const rejected = /retained user authority .* no longer matches the inventory/;
+  const validate = (record = entry) => manager["validateRetainedAuthority"](record, version);
+  try {
+    grantManagedActor(hostDir, { ...grant, scope: ["spawn", "role:default"] });
+    await validate();
+    await assert.rejects(manager["validateRetainedAuthority"](entry), rejected);
+    await assert.rejects(validate({ ...entry, launch: { ...entry.launch, capabilities: [] } }), rejected);
+    await assert.rejects(validate({ ...entry, launch: { ...entry.launch, capabilities: ["custom"] } }), rejected);
+    grantManagedActor(hostDir, { ...grant, scope: ["role:default"] });
+    await validate();
+    await assert.rejects(validate({ ...entry, role: "other", launch: { ...entry.launch, capabilities: ["role:default"] } }), rejected);
+    await assert.rejects(validate({ ...entry, authorityParent: `${owner}.other` }), rejected);
+    for (const token of ["admin", "role:other"]) {
+      grantManagedActor(hostDir, { ...grant, scope: ["role:default", token] });
+      await assert.rejects(validate(), rejected);
+    }
+  } finally {
+    grantManagedActor(hostDir, grant);
+  }
+  check("released hosted scope accepts only the default grant or its subset and preserves exact inventory, role and parent checks", true);
 }
 function successful(r: EpAttributedReply): Record<string, unknown> {
   if (!r.reply.ok) throw new Error(`endpoint refused ${r.reply.error?.code}: ${r.reply.error?.message}; ${JSON.stringify(r.reply.error?.details)}`);
@@ -415,7 +448,10 @@ try {
         registrationProof: remoteManagerRegistrationProof(owner, state),
         session: { id: session.identity.id, endpoint: session.endpoint, sessionId: session.sessionId, epoch: session.epoch, exp: session.exp },
       })), "sessionServing", session.identity),
-      validateRetainedAgent: async () => { throw new Error("fixture starts no retained seat"); },
+      validateRetainedAgent: async ({ owner: heldOwner, actor, lifecycleUid, actorToken, sentinelCreds }) => {
+        const request = remote.remoteRetainedAgentValidationRequest(state, "cli", proof, registered.processEpoch, { owner: heldOwner, actor, lifecycleUid }, actorToken, sentinelCreds);
+        return remote.retainedAgentAuthority(await cotalAuthProvider.validateRemoteRetainedAgent!({ ...callArgs, request }), request);
+      },
       scanGoalIndex: async () => {
         const request = remote.remoteManagerGoalIndexScanRequest(state, "cli", proof, registered.processEpoch);
         return remote.remoteManagerGoalIndexEntries(await cotalAuthProvider.scanRemoteManagerGoalIndex!({ ...callArgs, request }), request, owner);
@@ -918,6 +954,7 @@ try {
     }
   }
   console.log(`INVENTORY_SCOPE: ${pageCount} pages, ${observedRuns.size} observed records, max reply ${Math.max(...wireLengths)} bytes; synthetic fixture records are not active lanes. No absence, restore or ownership proof.`);
+  await checkReleasedHostedScope(manager, root, hostDir, owner);
   console.log("U4_SCOPE: preserved native persona cells plus genuine managed PTY cotal_run start/status/answer/released-resume using its own bearerCmd; no provider/model, production or full Cloud composition acceptance.");
 } catch (error) {
   fatal = error instanceof Error ? error.message : String(error);

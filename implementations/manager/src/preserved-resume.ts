@@ -670,6 +670,7 @@ export class PreservedResume {
    * during whole-inventory preflight, immediately before each individual spawn, and at commit. */
   async validateRetainedAuthority(
     entry: ManagerResumeAgent,
+    releasedRecordVersion?: "cotal-seat-record/v1",
   ): Promise<Pick<PreparedResume, "id" | "creds" | "userAuth">> {
     const referenceError = this.inventoryReferenceError(entry);
     if (referenceError) throw new Error(`retained agent ${entry.name}: ${referenceError}`);
@@ -804,9 +805,14 @@ export class PreservedResume {
       // never left to broker-fail after the child is already running (SPEC §13.1).
       if (adopted.lifecycleUid !== entry.identity.lifecycleUid)
         throw new Error(`retained user authority for ${entry.identity.owner}.${entry.identity.actor} is incarnation ${adopted.lifecycleUid}, not the inventory's ${entry.identity.lifecycleUid}; a resume binds the exact recovered uid before any spawn (SPEC 13.1)`);
+      // A released hosted record with no saved scope can retain only the issuer's default
+      // spawn and own-role tokens, or a narrowed subset. Supplied inventories stay exact.
+      const hostedDefaultScopeMatches = releasedRecordVersion === "cotal-seat-record/v1" &&
+        this.remoteAuthority !== undefined && entry.launch.capabilities === undefined &&
+        adopted.scope.every((token) => token === "spawn" || (entry.role !== undefined && token === `role:${entry.role}`));
       if (!sameStrings(adopted.allowSubscribe, entry.launch.allowSubscribe) ||
           !sameStrings(adopted.allowPublish, entry.launch.allowPublish) ||
-          !sameStrings(adopted.scope, entry.launch.capabilities) ||
+          !(sameStrings(adopted.scope, entry.launch.capabilities) || hostedDefaultScopeMatches) ||
           adopted.role !== entry.role || adopted.parent !== entry.authorityParent)
         throw new Error(`retained user authority for ${entry.identity.owner}.${entry.identity.actor} no longer matches the inventory`);
       return {
