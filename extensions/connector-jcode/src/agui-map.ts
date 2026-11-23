@@ -13,13 +13,19 @@ import {
   toolCallResult,
   toolResultMarker,
   toolCallStart,
+  StreamedParts,
   type AguiEvent,
+  type Merged,
   type RecordMapper,
+  type StreamDelta,
+  type StreamSeed,
 } from "@cotal-ai/connector-core";
 
 interface JcodeContentBlock {
   type?: string;
   text?: string;
+  /** An `anthropic_thinking` block's reasoning. */
+  thinking?: string;
   id?: string;
   name?: string;
   input?: unknown;
@@ -45,7 +51,7 @@ export interface PositionedJcodeJournalRecord {
 }
 
 export interface JcodeMapper {
-  map: RecordMapper<PositionedJcodeJournalRecord>;
+  map: RecordMapper<Merged<PositionedJcodeJournalRecord>>;
   forgetOpenRun: (runId: string) => void;
 }
 
@@ -68,15 +74,19 @@ interface JcodeMapState {
   now: () => number;
   open: string | null;
   tools: Set<string>;
+  streams: StreamedParts;
+  /** The latest key each kind streamed under: Jcode's next saved reply carries that part. */
+  current: Keys;
 }
 
-type Mapped = ReturnType<RecordMapper<PositionedJcodeJournalRecord>>;
+type Keys = Partial<Record<StreamDelta["kind"], string>>;
+type Mapped = ReturnType<RecordMapper<Merged<PositionedJcodeJournalRecord>>>;
 type TimeMeta = { cotal?: { tsSource: "arrival" } };
 
 function interrupt(s: JcodeMapState, message: string, code: string, timestamp: number): AguiEvent[] {
   // End the interrupted observations, not the underlying tool executions. The terminal error
   // names the loss; neither a successful result nor a successful run is manufactured.
-  const events = [...s.tools].sort().map((toolCallId) => toolCallEnd({ toolCallId, timestamp }));
+  const events = [...s.streams.endAll(timestamp), ...[...s.tools].sort().map((toolCallId) => toolCallEnd({ toolCallId, timestamp }))];
   s.tools.clear();
   s.open = null;
   return [...events, runError({ message, code, timestamp })];
@@ -97,21 +107,45 @@ function mapFold(s: JcodeMapState): Mapped {
       };
 }
 
-function partEvents(s: JcodeMapState, message: JcodeMessage, part: JcodeContentBlock, observationId: string, timestamp: number, timeMeta: TimeMeta): AguiEvent[] {
-  if (message.role === "assistant" && part.type === "text" && typeof part.text === "string" && part.text.length > 0) {
-    return [
-      textMessageStart({ messageId: observationId, role: "assistant", timestamp, ...timeMeta }),
-      textMessageContent({ messageId: observationId, delta: part.text, timestamp }),
-      textMessageEnd({ messageId: observationId, timestamp }),
-    ];
-  }
-  if (message.role === "assistant" && (part.type === "reasoning" || part.type === "reasoning_trace") && typeof part.text === "string" && part.text.length > 0) {
-    return [
-      reasoningMessageStart({ messageId: observationId, timestamp, ...timeMeta }),
-      reasoningMessageContent({ messageId: observationId, delta: part.text, timestamp }),
-      reasoningMessageEnd({ messageId: observationId, timestamp }),
-    ];
-  }
+/** The readable reasoning of a saved block: Jcode stores it as `reasoning`, `reasoning_trace` or, for
+ *  Anthropic's signed thinking, `anthropic_thinking`. */
+function reasoningText(part: JcodeContentBlock): string | undefined {
+  const text = part.type === "anthropic_thinking" ? part.thinking : part.type === "reasoning" || part.type === "reasoning_trace" ? part.text : undefined;
+  return typeof text === "string" && text.length > 0 ? text : undefined;
+}
+
+/** A saved text or reasoning part: the close of what streamed under `key`, then the part as a
+ *  message of its own when nothing streamed or the saved text does not continue what did. */
+function savedPart(s: JcodeMapState, kind: StreamDelta["kind"], key: string | undefined, text: string, observationId: string, timestamp: number, timeMeta: TimeMeta): AguiEvent[] {
+  const closed = key === undefined ? { events: [], mapAsNew: true } : s.streams.saved(key, text, timestamp);
+  if (!closed.mapAsNew) return closed.events;
+  return kind === "text"
+    ? [
+        ...closed.events,
+        textMessageStart({ messageId: observationId, role: "assistant", timestamp, ...timeMeta }),
+        textMessageContent({ messageId: observationId, delta: text, timestamp }),
+        textMessageEnd({ messageId: observationId, timestamp }),
+      ]
+    : [
+        ...closed.events,
+        reasoningMessageStart({ messageId: observationId, timestamp, ...timeMeta }),
+        reasoningMessageContent({ messageId: observationId, delta: text, timestamp }),
+        reasoningMessageEnd({ messageId: observationId, timestamp }),
+      ];
+}
+
+/** The streamed key of a saved reply's first part of `kind`; its later parts of that kind stream none. */
+function takeKey(keys: Keys, kind: StreamDelta["kind"]): string | undefined {
+  const key = keys[kind];
+  delete keys[kind];
+  return key;
+}
+
+function partEvents(s: JcodeMapState, message: JcodeMessage, part: JcodeContentBlock, keys: Keys, observationId: string, timestamp: number, timeMeta: TimeMeta): AguiEvent[] {
+  if (message.role === "assistant" && part.type === "text" && typeof part.text === "string" && part.text.length > 0)
+    return savedPart(s, "text", takeKey(keys, "text"), part.text, observationId, timestamp, timeMeta);
+  const reasoning = message.role === "assistant" ? reasoningText(part) : undefined;
+  if (reasoning !== undefined) return savedPart(s, "reasoning", takeKey(keys, "reasoning"), reasoning, observationId, timestamp, timeMeta);
   if (message.role === "assistant" && part.type === "tool_use" && typeof part.id === "string" && part.id.length > 0) {
     s.tools.add(part.id);
     return [
@@ -148,7 +182,7 @@ function mapMessages(s: JcodeMapState, cursor: string, record: JcodeJournalRecor
     const parts = message.content;
     const durableOutput = parts.some((part) =>
       message.role === "assistant"
-        ? part?.type === "text" || part?.type === "reasoning" || part?.type === "reasoning_trace" || part?.type === "tool_use"
+        ? part?.type === "text" || part?.type === "reasoning" || part?.type === "reasoning_trace" || part?.type === "anthropic_thinking" || part?.type === "tool_use"
         : message.role === "user" && part?.type === "tool_result",
     );
 
@@ -184,20 +218,45 @@ function mapMessages(s: JcodeMapState, cursor: string, record: JcodeJournalRecor
       }
     }
 
+    // Jcode saves one assistant message per provider call, after the call's last delta: a part
+    // still open once it is mapped is one this reply left out.
+    const keys: Keys = message.role === "assistant" ? { ...s.current } : {};
     parts.forEach((part, partIndex) => {
       if (part === null || typeof part !== "object") return;
-      events.push(...partEvents(s, message, part, messageId(s.threadId, cursor, messageIndex, partIndex), timestamp, timeMeta));
+      events.push(...partEvents(s, message, part, keys, messageId(s.threadId, cursor, messageIndex, partIndex), timestamp, timeMeta));
     });
+    if (message.role === "assistant") {
+      events.push(...s.streams.endAll(timestamp));
+      s.current = {};
+    }
   }
 
   return runId === null || events.length === 0 ? null : { runId, events };
 }
 
+/** A journal line: the parts it streams, opening the turn's run at its first delta, and the end of
+ *  each part Jcode abandoned. */
+function mapDeltas(s: JcodeMapState, line: Extract<Merged<PositionedJcodeJournalRecord>, { deltas: unknown }>): Mapped {
+  const events = line.deltas.flatMap((d) => {
+    s.current[d.kind] = d.key;
+    return s.streams.delta(d, line.timestamp);
+  });
+  events.push(...s.streams.end(line.ends ?? [], line.timestamp));
+  if (events.length === 0) return null;
+  if (s.open === null) {
+    s.open = s.mintRunId();
+    events.unshift(runStarted({ threadId: s.threadId, runId: s.open, timestamp: line.timestamp, cotal: { runIdSource: "connector" } }));
+  }
+  return { runId: s.open, events };
+}
+
+/** `seed` is the stream state {@link streamSeed} rebuilt for a restarted emitter. */
 export function createJcodeMapper(opts: {
   threadId: string;
   mintRunId: () => string;
   resumeRunId?: string;
   resumeTools?: readonly string[];
+  seed?: StreamSeed;
   now?: () => number;
 }): JcodeMapper {
   const s: JcodeMapState = {
@@ -206,9 +265,15 @@ export function createJcodeMapper(opts: {
     now: opts.now ?? (() => Date.now()),
     open: opts.resumeRunId ?? null,
     tools: new Set(opts.resumeTools ?? []),
+    streams: new StreamedParts(opts.seed),
+    current: Object.fromEntries((opts.seed?.open ?? []).map((part) => [part.kind, part.key])),
   };
   return {
-    map: ({ cursor, record }) => (record?.journal_fold ? mapFold(s) : mapMessages(s, cursor, record)),
+    map: (r) => {
+      if ("deltas" in r) return mapDeltas(s, r);
+      const { cursor, record } = r.harness;
+      return record?.journal_fold ? mapFold(s) : mapMessages(s, cursor, record);
+    },
     forgetOpenRun(runId: string): void {
       if (s.open === runId) {
         s.open = null;

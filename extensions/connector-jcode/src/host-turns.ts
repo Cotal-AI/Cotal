@@ -18,8 +18,9 @@ import {
   nextFallbackDelay,
   type FallbackState,
 } from "./queue-fallback.js";
-import { type MeshAgent, type AguiEmitterHolder, type AgentTurn, CommandRefused, formatInjection, type InboxItem } from "@cotal-ai/connector-core";
+import { type MeshAgent, type AguiEmitterHolder, type AgentTurn, CommandRefused, formatInjection, type InboxItem, type Merged } from "@cotal-ai/connector-core";
 import { type PositionedJcodeJournalRecord } from "./agui-map.js";
+import type { JcodeDeltaStream } from "./stream-deltas.js";
 import {
   RUN_ACCEPT_WINDOW_MS,
   jcodeTurnCondition,
@@ -87,7 +88,8 @@ interface HostPrompt {
 /** What the turn closures read from the host that owns them, bound before they are created. */
 export interface HostTurnDeps {
   agent: MeshAgent;
-  events: AguiEmitterHolder<PositionedJcodeJournalRecord> | undefined;
+  events: AguiEmitterHolder<Merged<PositionedJcodeJournalRecord>> | undefined;
+  deltaStream: JcodeDeltaStream;
   closeEventRun: (error?: Error) => void;
   ensureEventsBound: () => Promise<void>;
   unansweredSteers: Set<() => void>;
@@ -119,6 +121,7 @@ export function createHostTurns(hostState: HostTurnState, deps: HostTurnDeps) {
   const {
     agent,
     events,
+    deltaStream,
     closeEventRun,
     ensureEventsBound,
     unansweredSteers,
@@ -889,6 +892,7 @@ export function createHostTurns(hostState: HostTurnState, deps: HostTurnDeps) {
 
   const watchClient = (connected: JcodeClient): void => {
     connected.on("close", () => void recoverBridge(connected));
+    deltaStream.watch(connected, () => hostState.sessionId);
     const flushNativeEvent = (event: ApiEvent): void => {
       if (!("session_id" in event) || event.session_id !== hostState.sessionId) return;
       // Every work event of this seat's session, host- or TUI-owned, is progress the Harness reported:
