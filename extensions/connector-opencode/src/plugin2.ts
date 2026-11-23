@@ -28,17 +28,21 @@ import {
   AguiEmitterHolder,
   eventPlaneStopped,
   BoundStartSource,
+  DeltaMergedSource,
+  streamSeed,
   EventWal,
   FileSubjectFrontier,
   ensureEventWalDir,
   resolveEventsStateRoot,
   type InboxItem,
+  type Merged,
   type PrincipalLock,
 } from "@cotal-ai/connector-core";
 import { modelRefusalSentence, SurfacedBatch, settleWithin } from "./plugin.js";
 import type { OpenCode2Context, OpenCode2Event } from "./opencode2-types.js";
 import { OpenCode2SessionSource, type OpenCode2MessagePage, type OpenCode2Record } from "./agui-source2.js";
 import { createOpenCode2Mapper, type OpenCode2Mapper } from "./agui-map2.js";
+import { OpenCode2DeltaStream } from "./stream2.js";
 import { buildCotalTools2 } from "./tools.js";
 import { ReplyCheck } from "./reply-check.js";
 import { opencode2FailureCondition } from "./failure-condition.js";
@@ -144,7 +148,7 @@ function askSender(opencodeApi: OpenCodeApi): Send {
  *  turn's last records land in the run before it closes. The promise resolves once the source
  *  position the terminal is placed at has been read; a next turn admitted before that would take
  *  the terminal (see `turnEnded` in plugin.ts). */
-function closeRunOutOfBand(events: AguiEmitterHolder<OpenCode2Record> | undefined): Promise<void> | undefined {
+function closeRunOutOfBand(events: AguiEmitterHolder<Merged<OpenCode2Record>> | undefined): Promise<void> | undefined {
   if (events?.path === undefined) return undefined;
   events.flush(events.path);
   return events.closeRun(Date.now());
@@ -218,15 +222,18 @@ async function setupSession(ctx: OpenCode2Context): Promise<() => Promise<void>>
    * an interrupted execution's, which {@link completeTurn} closes out of band. The emitter starts on
    * the first adopt and the holder starts it again after a failure, from the same source.
    */
-  function eventHolder(): AguiEmitterHolder<OpenCode2Record> {
-    let bound: BoundStartSource<OpenCode2Record> | undefined;
+  function eventHolder(): { holder: AguiEmitterHolder<Merged<OpenCode2Record>>; stream: OpenCode2DeltaStream } {
+    let harness: OpenCode2SessionSource | undefined;
+    let merged: DeltaMergedSource<OpenCode2Record> | undefined;
+    let bound: BoundStartSource<Merged<OpenCode2Record>> | undefined;
     let mapper: OpenCode2Mapper | undefined;
-    return new AguiEmitterHolder<OpenCode2Record>(
+    const stream = new OpenCode2DeltaStream(config.reasoningEvents === true);
+    const holder = new AguiEmitterHolder<Merged<OpenCode2Record>>(
       async (id: string) => {
-        bound ??= new BoundStartSource(sessionSource(id), "");
+        const session = (harness ??= sessionSource(id));
         await agent.whenConnected(20_000);
         const principal = principalKey(agent.ep.principal.owner, agent.ep.principal.actor).key;
-        const { walPath, subjectPath, lock } = await ensureEventWalDir({
+        const { walPath, subjectPath, deltaJournalPath, lock } = await ensureEventWalDir({
           workspaceRoot: resolveEventsStateRoot(process.env),
           space: config.space,
           principal,
@@ -235,22 +242,48 @@ async function setupSession(ctx: OpenCode2Context): Promise<() => Promise<void>>
         eventLock = lock;
         const subjectFrontier = await FileSubjectFrontier.open(subjectPath, { space: config.space, principal });
         const wal = await EventWal.open(walPath, { space: config.space, threadId: id, principal, subjectMayExist: false });
+        if (!bound) {
+          stream.open(id, session, {
+            path: deltaJournalPath,
+            onWrite: () => holder.flush(id),
+            onError: (e) => log(`AG-UI: streamed text could not be journaled, the saved element carries it: ${e.message}`),
+          });
+          merged = new DeltaMergedSource(session, deltaJournalPath);
+          bound = new BoundStartSource(merged, merged.start(""));
+        }
         // A re-established plane starts with the log's run open, so the mapper continues it.
-        const resumeRunId = wal.pending === null ? wal.brackets?.run : wal.pending.brackets.run;
-        mapper = createOpenCode2Mapper({ threadId: id, mintRunId: () => randomUUID(), resumeRunId, reasoning: config.reasoningEvents });
-        return AguiEmitter.start<OpenCode2Record>({
+        const brackets = wal.pending === null ? wal.brackets : wal.pending.brackets;
+        const seed = await streamSeed(deltaJournalPath, wal.pending === null ? wal.frontier.sourceCursor : wal.pending.sourceCursor, brackets);
+        mapper = createOpenCode2Mapper({ threadId: id, mintRunId: () => randomUUID(), resumeRunId: brackets?.run, reasoning: config.reasoningEvents, seed });
+        return AguiEmitter.start<Merged<OpenCode2Record>>({
           endpoint: agent.ep,
           withholdPayloads: config.eventPayloadsWithheld,
           wal,
           subjectFrontier,
           source: bound,
-          map: mapper.map,
+          map: mapper.mapMerged,
+          onUnreadable: (gap) =>
+            log(`AG-UI source: skipped an unreadable ${gap.file ? "delta journal line" : "session record"} at offset ${gap.offset} (${gap.bytes} bytes): ${gap.reason}`),
         });
       },
-      { onError: eventPlaneStopped({ log }), sourceEnd: (id) => sessionSource(id).end(), onRunClosed: (runId) => mapper?.forgetOpenRun(runId) },
+      {
+        onError: eventPlaneStopped({ log }),
+        // Before the first start opens the journal nothing is journaled, so the session's end is the
+        // whole position: the merged source reads a session cursor alone as that position.
+        sourceEnd: async (id) => {
+          const end = await sessionSource(id).end();
+          if (!merged) return end;
+          // The streams no saved element will close end here, before the run does.
+          stream.turnEnded(end);
+          return merged.start(end);
+        },
+        onRunClosed: (runId) => mapper?.forgetOpenRun(runId),
+      },
     );
+    return { holder, stream };
   }
-  const events = eventsArmed ? eventHolder() : undefined;
+  const plane = eventsArmed ? eventHolder() : undefined;
+  const events = plane?.holder;
 
   const def = process.env.COTAL_AGENT_FILE?.trim() ? loadAgentFile(process.env.COTAL_AGENT_FILE.trim()) : undefined;
   const persona = def?.persona || undefined;
@@ -615,6 +648,7 @@ async function setupSession(ctx: OpenCode2Context): Promise<() => Promise<void>>
         // the change when the event arrives (measured), so each one is the wake to read it again.
         if (events?.path !== undefined && ev.durable?.aggregateID === events.path) events.flush(events.path);
         commands.event(ev.type);
+        plane?.stream.event(ev);
         asks.event(ev.type, data);
         switch (ev.type) {
           case "session.created": {
@@ -705,6 +739,7 @@ async function setupSession(ctx: OpenCode2Context): Promise<() => Promise<void>>
     await settleWithin(eventLoop, EVENT_QUIESCE_MS, "opencode 2.x event loop at teardown");
     // The reads already queued still publish while the endpoint is up; the lock goes back after them.
     await settleWithin(events?.close(), EVENT_QUIESCE_MS, "event holder at teardown");
+    plane?.stream.close();
     await eventLock?.release().catch((e: Error) => log(`event WAL lock release failed: ${e.message}`));
     await agent.stop();
   };

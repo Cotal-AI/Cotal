@@ -94,7 +94,7 @@ See the [OpenCode connector reference](opencode-connector-reference.mdx) for con
 ## Watch structured events [#event-plane]
 
 OpenCode publishes run boundaries, assistant text, and tool activity to `events.<owner>.<actor>` by default, on 1.x and 2.x.
-On 1.x assistant text streams there as OpenCode writes it.
+Assistant text streams there as OpenCode writes it.
 Each finished tool call is marked there with whether it failed.
 It excludes user text, tool arguments, and tool results.
 It publishes reasoning only for a seat launched with the [`reasoningEvents` field](connectors.mdx#opt-in-launch-fields).

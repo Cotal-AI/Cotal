@@ -457,6 +457,7 @@
     "smoke:opencode1-command:auth": "tsx extensions/connector-opencode/smoke/opencode1-command-auth.smoke.ts",
     "smoke:opencode1-stream": "tsx extensions/connector-opencode/smoke/stream1.smoke.ts",
     "smoke:opencode2-command:auth": "tsx extensions/connector-opencode/smoke/opencode2-command-auth.smoke.ts",
+    "smoke:opencode2-stream": "tsx extensions/connector-opencode/smoke/stream2.smoke.ts",
     "smoke:opencode-setup-guard": "pnpm --filter @cotal-ai/connector-opencode build && tsx extensions/connector-opencode/smoke/setup-guard.smoke.ts",
     "smoke:attach": "pnpm --filter @cotal-ai/seat --filter @cotal-ai/core --filter @cotal-ai/workspace --filter @cotal-ai/manager --filter @cotal-ai/cmux --filter @cotal-ai/tmux build && tsx implementations/manager/smoke/attach.smoke.ts",
     "smoke:mesh-attach": "tsx implementations/manager/smoke/mesh-attach.smoke.ts",
