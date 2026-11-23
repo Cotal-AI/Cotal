@@ -31,7 +31,8 @@
  *   1. first bind: an armed seat publishes its thread's activity, and the frames carry the run.
  *   2. restart: the app-server dies, the host brings up a NEW thread, and the plane KEEPS
  *      PUBLISHING, with every run the dead thread opened closed before the swap.
- *   1b. streaming: a reply's text is on the wire before Codex saves it, and it is the saved text.
+ *   1b. streaming: a reasoning summary and a reply are on the wire before Codex saves them, and each
+ *       is the saved text.
  *   3. shutdown: a mid-turn exit closes the run the record stream never got to close, ending the
  *      reply it was streaming first.
  *   4. late file: a seat whose rollout did not exist when the launch looked still binds later, and
@@ -339,20 +340,21 @@ const stoppedOnPurpose = new Set<number>();
 const fakeLog = (path: string): { ev: string; turnId?: string; at?: number }[] =>
   existsSync(path) ? readFileSync(path, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)) : [];
 
-/** The streamed message in `list`: its key, its text on the wire, how often it started and ended, and
- *  when its first content arrived. `from` is the index of `list[0]` in `frames`. */
-function streamedMessage(list: AguiFramePart[], from: number) {
+/** The streamed message in `list` (`TEXT` or `REASONING`): its key, its text on the wire, how often
+ *  it started and ended, and when its first content arrived. `from` is the index of `list[0]` in
+ *  `frames`. */
+function streamedMessage(list: AguiFramePart[], from: number, kind: "TEXT" | "REASONING" = "TEXT") {
   const evs = list.flatMap((f, i) => f.events.map((e) => ({ e, at: frameAt[from + i]! })));
-  const key = evs.find(({ e }) => e.type === "TEXT_MESSAGE_START" && String(e.messageId).startsWith("stream:"))?.e.messageId as string | undefined;
-  const of = (type: string) => evs.filter(({ e }) => e.type === type && e.messageId === key);
-  const contents = of("TEXT_MESSAGE_CONTENT");
+  const key = evs.find(({ e }) => e.type === `${kind}_MESSAGE_START` && String(e.messageId).startsWith("stream:"))?.e.messageId as string | undefined;
+  const of = (type: string) => evs.filter(({ e }) => e.type === `${kind}_MESSAGE_${type}` && e.messageId === key);
+  const contents = of("CONTENT");
   return {
     key,
     text: contents.map(({ e }) => String(e.delta)).join(""),
     contents: contents.length,
     firstContentAt: contents[0]?.at,
-    starts: of("TEXT_MESSAGE_START").length,
-    ends: of("TEXT_MESSAGE_END").length,
+    starts: of("START").length,
+    ends: of("END").length,
     types: evs.map(({ e }) => (e.messageId === key ? `${e.type}*` : e.type)),
   };
 }
@@ -403,6 +405,8 @@ try {
       "every frame so far carries ONE thread",
       "a streamed reply reaches the wire before Codex saves it",
       "and the wire carries the saved text once, as one message",
+      "a streamed reasoning summary reaches the wire before Codex saves it",
+      "and the wire carries the saved summary once, before the reply",
       "the restarted app-server really is a NEW thread",
       "the plane KEEPS PUBLISHING after the restart",
       "and no run the dead thread opened was left open",
@@ -422,10 +426,11 @@ try {
     check("every frame so far carries ONE thread", threadsSeen().length === 1, threadsSeen());
 
   // ---- (1b) a streamed reply -------------------------------------------------------------------
-  // The fake streams the reply in four deltas, 400 ms apart, and only then saves the message. The
-  // seat journals the deltas, so the reply is on the wire before the record that carries it exists.
+  // The fake streams a reasoning summary in three deltas and the reply in four, 400 ms apart, and
+  // saves each only after its deltas. The seat journals them, so each is on the wire before the
+  // record that carries it exists.
   const streamFrom = frames.length;
-  await dm(A, "STREAM a reply");
+  await dm(A, "THINK then STREAM a reply");
   const streamDone = await settle("A:the streamed run finished", () => frames.slice(streamFrom).some((f) => f.events.some((e) => e.type === "RUN_FINISHED")));
   const sm = streamedMessage(frames.slice(streamFrom), streamFrom);
   const n = sm.key?.match(/^stream:msg_(\d+)$/)?.[1];
@@ -433,6 +438,12 @@ try {
   check("a streamed reply reaches the wire before Codex saves it", streamDone && sm.contents >= 2 && savedAt !== undefined && sm.firstContentAt! < savedAt, { ...sm, savedAt, ...margin("A:the streamed run finished") });
   check("and the wire carries the saved text once, as one message", sm.starts === 1 && sm.ends === 1 && sm.text === `streamed:${n}:one two three` &&
     !frames.slice(streamFrom).some((f) => f.events.some((e) => e.type === "TEXT_MESSAGE_START" && e.messageId === `msg_${n}`)), sm);
+  const rm = streamedMessage(frames.slice(streamFrom), streamFrom, "REASONING");
+  const reasoningSavedAt = fakeLog(join(dir, "a.log.jsonl")).find((r) => r.ev === "reasoningSaved" && r.turnId === `turn_${n}`)?.at;
+  check("a streamed reasoning summary reaches the wire before Codex saves it", rm.key === `stream:rs_${n}` && rm.contents >= 2 && reasoningSavedAt !== undefined && rm.firstContentAt! < reasoningSavedAt, { ...rm, reasoningSavedAt });
+  check("and the wire carries the saved summary once, before the reply", rm.starts === 1 && rm.ends === 1 && rm.text === `weighing:${n}:the rivers` &&
+    rm.types.indexOf("REASONING_MESSAGE_END*") < rm.types.indexOf("TEXT_MESSAGE_START") &&
+    !frames.slice(streamFrom).some((f) => f.events.some((e) => e.type === "REASONING_MESSAGE_START" && e.messageId === `rs_${n}`)), rm);
 
   // ---- (2) restart: the defect that killed the plane ------------------------------------------
   // `DIE now` kills the app-server mid-turn. The host's crash rail brings up a replacement, which

@@ -87,7 +87,7 @@ export class CodexEventBinding {
   private journal?: DeltaJournal;
   private merged?: DeltaMergedSource<CodexRecord>;
   private mapper?: CodexMapper;
-  /** Messages with text in the journal that Codex has not finished. */
+  /** Agent messages and reasoning summaries with text in the journal that Codex has not finished. */
   private readonly streaming = new Set<string>();
   /** Messages that began before the journal opened. None of their text is journaled, so no stream
    *  opens partway through a message. */
@@ -110,15 +110,15 @@ export class CodexEventBinding {
     });
   }
 
-  /** Journal a piece of the agent message `itemId` that Codex is streaming. */
-  delta(itemId: string, text: string): void {
+  /** Journal a piece of the agent message or reasoning summary `itemId` that Codex is streaming. */
+  delta(itemId: string, text: string, kind: "text" | "reasoning"): void {
     if (this.journal === undefined) this.unjournaled.add(itemId);
     if (this.journal === undefined || this.unjournaled.has(itemId)) return;
     this.streaming.add(itemId);
-    this.journal.append({ key: codexStreamKey(itemId), kind: "text", text });
+    this.journal.append({ key: codexStreamKey(itemId), kind, text });
   }
 
-  /** Codex finished the agent message `itemId`: the record it saves carries the text not journaled yet. */
+  /** Codex finished the item `itemId`: the record it saves carries the text not journaled yet. */
   settle(itemId: string): void {
     this.unjournaled.delete(itemId);
     if (this.streaming.delete(itemId)) this.journal?.settle();
