@@ -661,7 +661,7 @@ cotal history limit [--max-age <age|none>] [--per-sender <n|none>] [--inbox-max-
 | `--dm-max-age <age\|none>` | none | `limit`: delete a DM once it is older than this, from `2m` to `3650d`, or `none` |
 | `--dm-per-sender <n\|none>` | none | `limit`: keep this many of each sender's newest DMs to each recipient, at least 1, or `none` |
 
-`history limit` reads the broker address and signing authority from the selected space's records.
+`history limit` reads the broker address from the selected space's records.
 
 Reads the newest retained messages in the selected space, newest last. Name a channel to read
 only that channel. Without a channel, `history` reads every accessible channel, including names
@@ -754,9 +754,10 @@ writes nothing, and asks for no `--yes`. `result.kind` is `history-limits`, and 
 `--force` is refused. Omit it from history reads, including reads of the current limits. When
 setting limits, use `--yes` to confirm without prompting and keep the target and limit flags.
 
-Run it on the broker host from the space's root: it mints a one-shot provisioner credential from the
-root's trust, as `up` does, and a root without that trust is refused with `PERMISSION_DENIED`. A
-space missing one of the streams is refused with `TARGET_NOT_FOUND`; `cotal up` creates them. A
+Run it on the broker host from the space's root. For an open space, the command connects without
+credentials. In other spaces, the command mints a one-shot provisioner credential from the root's
+signing trust and refuses with `PERMISSION_DENIED` if that trust is missing.
+A space missing one of the streams is refused with `TARGET_NOT_FOUND`; `cotal up` creates them. A
 stream whose other settings differ from the ones `cotal up` creates is refused with `CONFLICT`. Every
 requested stream is read and checked before the first one changes.
 

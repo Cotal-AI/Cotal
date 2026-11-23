@@ -496,6 +496,10 @@ try {
     check("the controller control starts its broker and manager", controllerUp.status === 0, out(controllerUp));
     const controllerDown = controller(["down", "--yes"]);
     check("the controller control stops its whole stack", controllerDown.status === 0, out(controllerDown));
+    const brokerLog = controller(["service", "logs", "stack-broker", "--space", controllerSpace, "--tail", "5"]);
+    check("the prepared stack's broker shutdown log is available through service logs",
+      brokerLog.status === 0 && brokerLog.stdout.includes("Initiating JetStream Shutdown") &&
+      brokerLog.stdout.includes("Server Exiting") && !existsSync(join(controllerRoot, ".cotal", "nats.log")), out(brokerLog));
     const controllerList = controller(["service", "--space", controllerSpace, "--json"]);
     const controllerRows = (JSON.parse(controllerList.stdout) as { result: { services: Row[] } }).result.services;
     check("a stopped controller member's Next remains cotal up", row(controllerRows, "stack-broker")?.next === "cotal up", controllerRows);

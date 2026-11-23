@@ -552,6 +552,9 @@ try {
     JSON.stringify(recordedReceipt?.createdChannels) === JSON.stringify(openResult?.result?.createdChannels) &&
     envelope(cotal(c, "use", "--json").stdout)?.result?.current === SPACE_B, deploymentShow.out);
   checkRemovalConfirmation(openId);
+  const afterRemovalSelection = envelope(cotal(c, "use", "--json").stdout)?.result;
+  check("removal scoped to the deployment space leaves the saved selection unchanged",
+    afterRemovalSelection?.current === SPACE_B, afterRemovalSelection);
 
   const openDown = cotal(c, "down", "--yes");
   if (openDown.status === 0) openUp = false;
