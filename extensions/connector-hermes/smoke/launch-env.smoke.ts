@@ -51,7 +51,7 @@ const assert: typeof nodeAssert = new Proxy(nodeAssert, {
  * guarantee is the false-green shape this package keeps being bitten by. Pinning the floor turns a
  * smaller green into a red. Raise it deliberately when you add a cell; a drop means one vanished.
  */
-const EXPECTED_CELLS = 179;
+const EXPECTED_CELLS = 183;
 
 if (process.platform === "win32") skipSuite("the Hermes connector is Unix-only; buildLaunch throws");
 
@@ -99,7 +99,7 @@ process.env.COTAL_HERMES_SEAT_HOME = "parent-profile";
 const owned: string[] = [];
 process.once("exit", () => discardLaunchArtifacts(owned));
 function buildLaunch(opts: LaunchOpts) {
-  const spec = hermesConnector.buildLaunch(opts);
+  const spec = hermesConnector.buildLaunch({ events: false, ...opts });
   owned.push(...spec.artifacts ?? []);
   return spec;
 }
@@ -132,6 +132,13 @@ assert.ok(env.PATH !== undefined, "PATH is forwarded so the seat can still launc
 
 for (const k of OPERATOR_KNOBS)
   assert.equal(env[k], `parent-${k}`, `${k} is a machine-wide operator knob and must cross`);
+
+// The event plane is armed unless the launch opts out, and its state needs the workspace root.
+assert.equal(env.COTAL_EVENTS, undefined, "events: false leaves the event plane unarmed");
+const armed = buildLaunch({ space: "smoke", name: "hermes-events", events: undefined, workspaceRoot: "/srv/smoke-root" }).env ?? {};
+assert.equal(armed.COTAL_EVENTS, "1", "a launch that does not opt out arms the event plane");
+assert.equal(armed.COTAL_WORKSPACE_ROOT, "/srv/smoke-root", "the event plane's write-ahead log lives under the workspace root");
+assert.throws(() => hermesConnector.buildLaunch({ space: "smoke", name: "hermes-events" }), /workspace root/, "an armed launch without a workspace root is refused");
 
 // A floor request DOES forward, distinct from the per-session ambient reset asserted above.
 const withFloor = buildLaunch({ space: "smoke", name: "hermes-1", backfillFloor: 42 }).env ?? {};
