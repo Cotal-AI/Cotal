@@ -1363,6 +1363,7 @@
     "smoke:native-conversation-capabilities": "tsx implementations/manager/smoke/native-conversation-capabilities.smoke.ts",
     "smoke:native-conversation-run": "tsx implementations/manager/smoke/native-conversation-run.smoke.ts",
     "smoke:claude-mcp-default": "tsx extensions/connector-claude-code/smoke/mcp-default.smoke.ts",
+    "smoke:claude-command-mod": "tsx extensions/connector-claude-code/smoke/command-mod.smoke.ts",
     "smoke:connector-activity": "tsx bin/smoke/connector-activity.smoke.ts",
     "smoke:presence-runtime": "tsx packages/core/smoke/presence-runtime.smoke.ts",
     "smoke:auto-update-cache": "tsx bin/smoke/auto-update-cache.smoke.ts",
