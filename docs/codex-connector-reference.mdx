@@ -211,6 +211,15 @@ The prompts:
   does not give. The input is what it asks for, `{ permissions: { network?, fileSystem? } }`, and the
   body gives the model's reason and names the access. Allow for this turn or for this session
   grants what it asked for, and deny grants nothing.
+- An MCP tool-call approval opens a `permission` prompt. Codex sends one, as an MCP elicitation,
+  before it runs a tool of an MCP server other than cotal, such as a server that a trusted project's
+  `.codex/config.toml` defines. Its subject is the running call, with the tool's arguments and the
+  server. It offers allow, the persistence Codex lists, deny and cancel. Allow for this session
+  lasts until Codex's session ends, and always allow is saved in the config that defines the
+  server. Deny and cancel both stop that call, and the turn goes on.
+- A form that an MCP server asks for opens a `form` prompt with the server's fields, and its body
+  names the server. Submit sends the values, and decline and cancel send none. A url elicitation,
+  an OpenAI form, or a form outside the desk's form profile is not put on the desk.
 - A `request_user_input` call opens a `question` prompt with a form, one field per question. A
   question with choices and no free answer is a single choice. A question marked secret is not put
   on the desk, because a form never asks for a secret.
@@ -218,9 +227,10 @@ The prompts:
 The answer goes back as the request's result. The attached TUI shows the same request, and
 whichever answer reaches Codex first applies. Codex reports only that the request was resolved,
 not who answered, so a prompt the TUI answered first closes `withdrawn`, and one answered remotely
-closes unconfirmed. A request nobody answers stays open for seven days and is then declined, and an
-asking policy on any other space is refused at launch. A permissions request that no prompt
-desk holds grants nothing. MCP elicitations are still declined.
+closes unconfirmed. A request nobody answers stays open for seven days and is then declined, or
+cancelled when it is an MCP elicitation. An asking policy on any other space is refused at launch. A
+permissions request that no prompt desk holds grants nothing, and an MCP elicitation that no prompt
+desk holds is cancelled.
 
 What the sandbox guarantees, stated literally: it **blocks out-of-workspace local filesystem
 writes**. It does **not** block reads, exfiltration, or networked side effects.
