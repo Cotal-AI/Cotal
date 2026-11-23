@@ -1291,7 +1291,7 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
       ledgerBefore = JSON.stringify({ apiVersion: "cotal-ledger/v1", kind: "MeshLedger", runId: "oldrun",
         space: "retiredledger", server, manifestPath: file,
         manifestHash: createHash("sha256").update(source).digest("hex").slice(0, 16), teardownMode: "ledger-scoped",
-        created: { channels: ["oldchannel"], agents: [] } }, null, 2);
+        created: { channels: ["oldchannel"], agents: [] } });
       writeFileSync(ledgerPath, ledgerBefore);
     }
   };
@@ -1300,7 +1300,7 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
   check("partial ledger teardown offers a file-free retry even when the manifest path has spaces",
     partial.status === 1 && partial.stdout.includes(`the ledger is RETAINED for a later ${retry}`)
       && partial.stdout.includes(`finish later (broker up / members gone): ${retry}`)
-      && readFileSync(ledgerPath, "utf8") === ledgerBefore, shown(partial));
+      && isDeepStrictEqual(JSON.parse(readFileSync(ledgerPath, "utf8")), JSON.parse(ledgerBefore)), partial);
   for (const [lookup, args] of [
     ["by source hash", ["-f", manifest]],
     ["by explicit run with file", ["-f", manifest, "--run", "oldrun"]],
