@@ -44,6 +44,7 @@ export function validateEndpointReferenceArguments(args: ParsedArgs): void {
   if (!["list", "show", "add", "remove"].includes(mode) || extra.length || (mode === "list" ? name !== undefined : mode !== "add" && name === undefined)) throw new CommandFailure("refused", "USAGE_INVALID", "use endpoint, endpoint show <name>, endpoint add [name] [--file <reference.json>], or endpoint remove <name>");
   if (name !== undefined) referenceName(name);
   if (args.values.file !== undefined && mode !== "add") throw new CommandFailure("refused", "USAGE_INVALID", "--file belongs to endpoint add");
+  if (args.values.file === "") throw new CommandFailure("refused", "USAGE_INVALID", "--file is empty", { remedy: "pass the path to a reference JSON file with --file" });
   if (args.values.yes && mode !== "remove") throw new CommandFailure("refused", "USAGE_INVALID", "--yes belongs to endpoint remove");
   if (mode === "add" && (!name || args.values.file === undefined) && (!canPrompt() || args.values.json)) throw new CommandFailure("refused", "USAGE_INVALID", "scripted endpoint add needs a name and --file; guided input requires an interactive terminal");
 }
@@ -54,7 +55,7 @@ function selectedSpace(args: ParsedArgs): string {
   catch (error) {
     if (!isWorkspaceTargetError(error)) throw error;
     if (error.code === "not-started" && error.details.space) return error.details.space;
-    if (error.code === "ambiguous-target" && (args.positionals[0] ?? "list") === "list") throw error;
+    if (error.code === "ambiguous-target" && ["list", "show"].includes(args.positionals[0] ?? "list")) throw error;
     if (error.code === "unknown-space") {
       const { message, remedy } = workspaceErrorParts({ kind: "target", error });
       const savedInventory = (args.positionals[0] ?? "list") === "list" && !args.values.live;
