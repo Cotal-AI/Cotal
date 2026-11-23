@@ -74,6 +74,8 @@ per-agent ACLs. It runs in the background by default and records the mesh so `co
 any directory can find it; `--detach` explicitly names the same mode. `--foreground` keeps the
 native stack in this terminal. Omit `--json` and `--plain` in foreground mode. For a finite
 startup receipt from a controller-owned stack, use `--json` or `--plain` without `--foreground`.
+For a manifest, use `cotal team boot <file> --foreground` in its prepared project. Add `--dry-run`
+to preview terminal custody without starting the stack.
 
 `--open` with `--service-endpoints` or any public exchange flag refuses `USAGE_INVALID` (exit 1)
 before startup. Remove those flags for an open space, or use them with `--user-auth` instead of `--open`.

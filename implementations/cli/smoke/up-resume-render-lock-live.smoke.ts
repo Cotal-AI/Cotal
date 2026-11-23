@@ -146,7 +146,7 @@ async function cutPreserved(space: string): Promise<void> {
     else await sleep(5_000);
   }
   ok("the manager answers on the ep rails before the cut", railsUp);
-  const cut = run(["down", "--preserve-state"]);
+  const cut = run(["down", "--preserve-state", "--yes"]);
   await within(once(cut, "exit"), 240_000);
   ok("the cut exited 0", cut.exitCode === 0, logOf(cut).slice(-1500));
   ok("the journal is `ready` (the state a bare `cotal up` recovers)", journalState() === "ready", journalState());

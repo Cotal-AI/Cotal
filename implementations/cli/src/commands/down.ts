@@ -540,6 +540,19 @@ export async function down(args: ParsedArgs): Promise<void> {
   finally { releaseOutput(); }
 }
 
+async function confirmPreservedStop(values: ParsedArgs["values"], target: LocalProcessContext, store?: string, sessions: readonly string[] = []): Promise<boolean> {
+  if (values.yes === true) return true;
+  if (!canPrompt()) {
+    const retry = [sameDown({ ...values, yes: true }), ...(store === undefined ? [] : [`--store-dir=${shellWord(store)}`]),
+      ...sessions.map((path) => `--session-store=${shellWord(path)}`)].join(" ");
+    throw new ConfirmationRequired(yesRequired("stopping the whole local stack", false), { target, remedy: `run ${codeSpan(retry)} to preserve its state and stop it` });
+  }
+  const answer = await prompts.confirm({ message: `Preserve state and stop ${oneLine(target.space)}'s whole local stack?`, initialValue: false });
+  if (answer === true) return true;
+  console.log("Cancelled; no process was stopped.");
+  return false;
+}
+
 /** One named service is a thin native-controller alias. The retained bare-stack and manifest
  *  paths below have not yet been replaced by the approved whole-stack controller. */
 async function downCommand(args: ParsedArgs): Promise<void> {
@@ -601,7 +614,8 @@ async function downCommand(args: ParsedArgs): Promise<void> {
     throw new CommandFailure("refused", "USAGE_INVALID", "--with-agents is bare-whole-stack only and cannot be combined with components, --space, --file, or --run");
   if (values["preserve-state"]) {
     assertSingleSpaceBroker(authDir(cotalRoot()), "cotal down");
-    await preserveStateDown(values["store-dir"], assertSessionStores(values["session-store"] ?? []));
+    await preserveStateDown(values["store-dir"], assertSessionStores(values["session-store"] ?? []),
+      (target) => confirmPreservedStop(args.values, target, values["store-dir"], values["session-store"]));
     return;
   }
   if (values["store-dir"]) throw new CommandFailure("refused", "USAGE_INVALID", "--store-dir is only valid with down --preserve-state");
