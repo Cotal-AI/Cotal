@@ -114,7 +114,7 @@ check("linear serve --json is refused naming the flag, that serve has no --json 
 // after a space, and an option typed with a typographic dash is named with hyphens.
 const dashWord = run(["send", "-c", "general", "-n is a flag here"]);
 check("an unknown option names -- for a word that starts with -", usageShape(dashWord, /Unknown option '-n'/) && /put -- before it/.test(dashWord.stderr), shown(dashWord));
-const spaceTypo = run(["space", "--json", "--jso"]);
+const spaceTypo = run(["space", "--json", "--unlisted-option"]);
 check("an unknown option cannot become the space subcommand", spaceTypo.status === 1 && spaceTypo.stderr === ""
   && JSON.parse(spaceTypo.stdout).error.remedy === "run `cotal help space`", shown(spaceTypo));
 const dashValue = run(["history", "--from", "-bob"]);
