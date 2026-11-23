@@ -7,7 +7,8 @@
  * plus the rest equal to the saved text; a seat that restarts mid-reply closing the part with the
  * rest of its saved text; a provider retry ending the streamed part and publishing the saved text
  * as its own message; a reply that streamed nothing publishing as it always did; thinking journaled
- * only when reasoning is published.
+ * only when reasoning is published, which the `reasoningEvents` launch field turns on, and never the
+ * placeholder of a redacted block.
  *
  * Run: pnpm smoke:pi-events-stream
  */
@@ -15,7 +16,9 @@ import { appendFileSync, mkdtempSync, readFileSync, rmSync, statSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Part } from "@cotal-ai/core";
+import { LAUNCH_MATERIAL_ENV, readLaunchMaterial } from "@cotal-ai/core";
 import { eventWalLocation, type AguiEvent, type MeshAgent } from "@cotal-ai/connector-core";
+import { piConnector } from "../src/connector.js";
 import { PiEvents } from "../src/events.js";
 
 let passed = 0;
@@ -172,6 +175,26 @@ console.log("thinking");
   const reasoning = on.broker.events.filter((e) => e.type === "REASONING_MESSAGE_CONTENT").map((e) => (e as { delta: string }).delta).join("");
   check("streams as reasoning when it is published", reasoning === "Let me check the file." && on.of("REASONING_MESSAGE_START").length === 1, reasoning);
   await on.events.shutdown();
+  // Pi's Bedrock provider streams this placeholder as a thinking delta once a block turns redacted.
+  const redacted = rig("think-redacted", true);
+  await redacted.events.start(redacted.session, redacted.path, true);
+  redacted.events.delta({ type: "thinking_delta", contentIndex: 0, delta: "[Reasoning redacted]", partial: { timestamp: T, content: [{ type: "thinking", redacted: true }] } });
+  redacted.text("Done.", 1);
+  await redacted.streamed();
+  redacted.saved("m1", [{ type: "thinking", thinking: "[Reasoning redacted]", redacted: true }, { type: "text", text: "Done." }]);
+  await redacted.flush();
+  check("a redacted block's placeholder is never published", redacted.of("REASONING_MESSAGE_START").length === 0 &&
+    redacted.content(`${T}:text:1`).join("") === "Done." && redacted.errors.length === 0, { events: redacted.broker.events.map((e) => e.type), errors: redacted.errors });
+  await redacted.events.shutdown();
+}
+
+console.log("the reasoningEvents launch field");
+{
+  const material = (reasoningEvents?: boolean) =>
+    readLaunchMaterial(piConnector.buildLaunch({ space: "test", name: "pi", events: false, creds: "creds", ...(reasoningEvents ? { reasoningEvents } : {}) }).env![LAUNCH_MATERIAL_ENV]!);
+  check("pi declares reasoningEvents", piConnector.supportsReasoningEvents === true);
+  check("a launch with it carries the field to the seat", material(true).reasoningEvents === true);
+  check("a launch without it carries nothing", material().reasoningEvents === undefined);
 }
 
 for (const root of roots) rmSync(root, { recursive: true, force: true });

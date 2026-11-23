@@ -195,9 +195,10 @@ abort text. Any other error ends the run with `RUN_ERROR`.
 Text streams: each journal line publishes as content of the reply's message, and the saved reply
 sends the rest and ends it. A reply whose saved text does not begin with what streamed, as a
 provider retry leaves, ends the streamed message and publishes the saved text as a message of its
-own. Reasoning is off by default; when it is published, thinking streams the same way. A reply
-that streamed nothing publishes from its saved record. Usage, branch and compaction entries are not
-published. User text is never published: Pi's native user record cannot separate
+own. Reasoning is off by default. A seat launched with the `reasoningEvents` field publishes
+Pi's thinking as `REASONING_*` events, streamed the same way. Redacted thinking is never published.
+A reply that streamed nothing publishes from its saved record. Usage, branch and compaction
+entries are not published. User text is never published: Pi's native user record cannot separate
 peer-authored content from human-authored content. A reload keeps the same native session
 and event frontier. A new, resumed or forked session gets its own thread and log on the same
 principal channel.
