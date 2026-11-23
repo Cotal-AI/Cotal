@@ -125,6 +125,40 @@ manifest("boot.yaml", SPACE_B, { bootch: "    deliveryClass: live\n" }, { dir: b
 manifest("open.yaml", SPACE, { lobby: "    deliveryClass: live\n" }, { open: true });
 manifest("defaults.yaml", SPACE, { dops: "", own: "    replay: true\n" }, { head: "defaults:\n  replay: false\n  replayWindow: 2h\n  deliveryClass: live\n" });
 
+function checkForegroundPreview(): void {
+  const help = cotal(b, "team", "boot", "--help");
+  const helpText = help.stdout.replace(/\s+/g, " ");
+  check("team boot help shows independent foreground and dry-run flags and their output rules",
+    help.status === 0 && helpText.includes("cotal team boot <file> [--dry-run] [--foreground]") &&
+    helpText.includes("A foreground preview accepts --json or --plain. A foreground apply accepts neither."), help.out);
+  const args = ["team", "boot", "boot.yaml", "--foreground"];
+  const json = cotal(b, ...args, "--dry-run", "--json");
+  const result = envelope(json.stdout)?.result;
+  check("the foreground JSON preview finishes without effects or records", answered(json) && result?.kind === "fresh-team-boot-preview" &&
+    result.lifetimeRequest === "terminal-bound" && result.effectAttempted === false && result.persisted === false, json.out);
+  const plain = cotal(b, ...args, "--dry-run", "--plain");
+  check("the foreground plain preview also finishes", plain.status === 0 && /Lifetime request:\s+terminal-bound/.test(plain.stdout), plain.out);
+  const apply = cotal(b, ...args, "--json");
+  check("a foreground apply still refuses structured output", apply.status === 1 && envelope(apply.stdout)?.error?.code === "USAGE_INVALID", apply.out);
+}
+
+function checkDeployAuthConflict(): void {
+  const args = ["team", "deploy", "open.yaml"];
+  const preview = cotal(s, ...args, "--dry-run", "--json");
+  const parsed = envelope(preview.stdout);
+  const native = parsed?.result?.native as { channels?: { create?: string[] } } | undefined;
+  const warning = parsed?.warnings?.find((w) => w.code === "MANIFEST_WARNING" && w.message.startsWith("Apply refuses: broker.auth"));
+  check("the deploy preview completes, warns about the explicit mode conflict and has no creation candidates",
+    answered(preview) && warning?.target.space === SPACE && warning.message.includes("requests open") &&
+    warning.message.includes("static auth") && warning.message.includes("Omit broker.auth or set it to match") &&
+    native?.channels?.create?.length === 0, preview.out);
+  const plain = cotal(s, ...args, "--dry-run", "--plain");
+  check("the plain deploy preview shows the warning and no candidates", plain.status === 0 &&
+    plain.stderr.includes("Apply refuses: broker.auth requests open") && /New channel candidates:\s+0/.test(plain.stdout), plain.out);
+  const apply = cotal(s, ...args, "--json");
+  check("deploy apply still refuses the auth mismatch", apply.status === 2 && envelope(apply.stdout)?.error?.code === "CONFLICT", apply.out);
+}
+
 let up = false, bUp = false, openUp = false;
 try {
   const noApplications = join(base, "no-applications");
@@ -150,11 +184,15 @@ try {
   const started = cotal(s, "up", "--server", SERVER);
   check("up starts the static-auth stack", started.status === 0, started.out.slice(-600));
   if (started.status !== 0) throw new Error("the stack did not start; no later cell can run");
+  checkForegroundPreview();
+  checkDeployAuthConflict();
 
   console.log("\nA. reads and previews that complete exit 0");
   const deployPreview = cotal(s, "team", "deploy", "live.yaml", "--dry-run");
   check("team deploy --dry-run exits 0 and says its read is not a deployment plan",
     reported(deployPreview, "not an authorized deployment plan"), deployPreview.out.slice(-800));
+  check("without broker.auth the deploy preview retains the new channel candidates",
+    /New channel candidates:\s+2/.test(deployPreview.stdout) && !deployPreview.stderr.includes("broker.auth requests"), deployPreview.out);
   check("team deploy --dry-run --json is ok and partial in completeness", answered(cotal(s, "team", "deploy", "live.yaml", "--dry-run", "--json")));
   const applied = cotal(s, "team", "deploy", "live.yaml", "--json");
   const id = envelope(applied.stdout)?.result?.deploymentId;

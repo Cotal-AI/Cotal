@@ -892,18 +892,31 @@ try {
       fromCarol.status === 0 && fromCarol.stdout.includes("--from carol searched only the 1000 read; older retained messages were not searched\n"), shown(fromCarol));
   }
 
-  // `channel show` recommends a scoped read even when the channel name is a history verb.
+  // Channel receipts and reads recommend scoped commands even when the channel name is a history verb.
   {
     const channels = ["clear", "limit", "ordinary"];
+    const scope = ["--space", openSpace, "--server", openServers];
+    const printedLines = (stdout: string) => stdout.split("\n").map((line) => line.trim().replace(/^pnpm cotal /, "cotal "));
     for (const channel of channels) {
-      const saved = await run(["channel", "set", channel, "--desc", "History hint test", "--space", openSpace]);
+      const saved = await run(["channel", "set", channel, "--desc", "History hint test", ...scope, "--plain"]);
       const posted = await run(["send", "-c", channel, `retained in ${channel}`, "--space", openSpace]);
       if (saved.status !== 0 || posted.status !== 0)
         throw new Error(`could not seed #${channel}: ${JSON.stringify({ saved: shown(saved), posted: shown(posted) })}`);
+      if (channel !== "clear") continue;
+      const suggestion = (verb: string) => printedLines(saved.stdout).find((line) => line.startsWith(`cotal ${verb} `))?.split(/  +/)[0];
+      const inventory = suggestion("ch");
+      const history = suggestion("history");
+      const target = scope.join(" ");
+      const listed = inventory === `cotal ch ${target}` ? await run([...execWords(inventory).slice(1), "--plain"]) : undefined;
+      const read = history === `cotal history '#clear' ${target}` ? await run([...execWords(history).slice(1), "--json"]) : undefined;
+      check("channel set receipt inventory keeps the explicit target when another space is selected",
+        listed?.status === 0 && listed.stdout.includes(`Mesh: ${openSpace}`) && listed.stdout.includes("#clear"), { receipt: shown(saved), listed });
+      check("channel set receipt history reads the quoted channel instead of the history verb",
+        read?.status === 0 && texts(read).includes("retained in clear"), { receipt: shown(saved), read });
     }
     for (const channel of channels) {
       const card = await run(["channel", "show", channel, "--space", openSpace, "--plain"]);
-      const [, word, targetSpace] = card.stdout.match(/^\s+cotal history '(#[\w.-]+)' --space (\S+)\s+Read retained messages within your grant$/m) ?? [];
+      const [, word, targetSpace] = card.stdout.match(/^\s+(?:pnpm )?cotal history '(#[\w.-]+)' --space (\S+)\s+Read retained messages within your grant$/m) ?? [];
       // Only execute the quoted channel form. An unexpected administrative command is a test failure.
       const read = word === `#${channel}` && targetSpace === openSpace ? await run(["history", word, "--space", targetSpace, "--json"]) : undefined;
       const messages = read?.envelope?.result?.items;
@@ -911,6 +924,17 @@ try {
         card.status === 0 && read?.status === 0 && messages?.length === 1
           && messages[0]?.channel === channel && messages[0].text === `retained in ${channel}`,
         { card: shown(card), read: read && shown(read) });
+    }
+    const writer = join(home, "channel writer.creds");
+    writeFileSync(writer, await mintCreds(auth, newIdentity(), "channel-writer"), { mode: 0o600 });
+    const credentialScope = ["--space", space, "--server", servers, "--creds", writer];
+    const saved = await run(["channel", "set", "receipt-test", "--desc", "Scoped credential", ...credentialScope, "--plain"]);
+    const commands = printedLines(saved.stdout).filter((line) => line.startsWith("cotal ")).map((line) => execWords(line.split(/  +/)[0]!));
+    check("both receipt commands retain the explicit credential path as one argument", saved.status === 0 &&
+      JSON.stringify(commands) === JSON.stringify([["cotal", "ch", ...credentialScope], ["cotal", "history", "#receipt-test", ...credentialScope]]), shown(saved));
+    if (saved.status === 0) {
+      const removed = await run(["channel", "remove", "receipt-test", "--space", space, "--yes", "--json"]);
+      check("the credential receipt fixture is removed", removed.status === 0, shown(removed));
     }
   }
 

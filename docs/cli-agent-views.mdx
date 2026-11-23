@@ -397,8 +397,9 @@ If they do not settle in time, the refusal reports that the stack is still runni
 Terminal loss
 or an external kill is not a confirmed stop. When a `cotal down` from another terminal completes,
 it prints `Foreground stack released` and exits 0, as a foreground `up` does, although its start
-receipt was partial. Foreground apply takes neither JSON nor plain output;
-a dry-run remains a finite preview. It does not establish native apply readiness or platform support.
+receipt was partial. Foreground apply takes neither `--json` nor `--plain`.
+`cotal team boot <file> --foreground --dry-run` is a finite preview and accepts either output flag.
+It does not establish native apply readiness or platform support.
 `up -f --foreground` still refuses on its retained launcher path.
 
 
@@ -465,6 +466,9 @@ durable channel declaration is warned as unsupported by its missing delivery
 daemon; the read-only preview remains available. The preview warns about invalid
 channel card fields, such as an invalid replay window, and does not list those cards
 as creation candidates. Apply reports the invalid field before writing any cards.
+If the manifest's explicit `broker.auth` differs from the registered mode, the preview
+warns that apply would refuse and lists no channel creation candidates. Omit `broker.auth`
+or set it to match the registered mode.
 Additive deploy does not
 seed manifest-wide defaults. For an existing
 unmanaged card, it names only explicitly declared fields that differ from the live value, never the live

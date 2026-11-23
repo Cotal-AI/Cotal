@@ -523,6 +523,8 @@ Explicit settings are unmarked even when they equal the defaults. In `channel de
 mark identifies values supplied by the built-in policy.
 The suggested membership and history commands name the space inspected and keep any explicit
 `--server` and `--creds` options. A membership report's suggested follow command does the same.
+Channel write receipts also keep the target space and those options in their suggested inventory
+and history commands. For a named channel the history command includes the quoted `#` channel name.
 
 `channel show <name> --json` returns the raw space defaults in `result.registry.defaults` when
 saved and decodable. `result.registry.channels` contains only the named channel's saved entry, or
