@@ -153,9 +153,13 @@ export async function runPlain(opts: {
   };
 
   const stage = (text: string): void => {
+    if (text.length > MAX_DRAFT) {
+      state = addNotice(state, "failed", `draft exceeds the ${MAX_DRAFT} UTF-16 code unit limit. Shorten it and try again.`);
+      return;
+    }
     const recipient = state.recipient;
-    const kept = state.draft && state.draft !== text.slice(0, MAX_DRAFT) ? [...state.draft].length : 0;
-    state = { ...state, draft: text.slice(0, MAX_DRAFT) };
+    const kept = state.draft && state.draft !== text ? [...state.draft].length : 0;
+    state = { ...state, draft: text };
     if (kept) state = addNotice(state, "hint", `this replaces the kept draft (${kept} characters)`);
     if (!recipient) {
       state = addNotice(state, "hint", "choose a recipient first (:to); your text is kept as the draft");

@@ -78,6 +78,15 @@ function frame(chunks: (string | Buffer)[], close = true): { lines: string[]; ov
   check("a line of exactly MAX_REQUEST_LINE code units is accepted", r.lines.length === 1 && r.lines[0].length === MAX_REQUEST_LINE && r.oversize === 0);
 }
 {
+  const line = "x".repeat(MAX_REQUEST_LINE);
+  const split = frame([line + "\r", "\n"]);
+  check("a line at the limit accepts CRLF split across chunks", split.lines[0] === line && split.oversize === 0);
+  const eof = frame([line + "\r"]);
+  check("a CR without LF counts toward the limit at end of input", eof.lines.length === 0 && eof.oversize === 1);
+  const over = frame([line + "\r", "\r\nok\n"]);
+  check("only the CR next to LF is excluded from the limit", JSON.stringify(over.lines) === '["ok"]' && over.oversize === 1);
+}
+{
   const r = frame(["x".repeat(MAX_REQUEST_LINE + 1) + "\nok\n"]);
   check("an oversize line in one chunk is dropped, reported once, and the next line survives", JSON.stringify(r.lines) === '["ok"]' && r.oversize === 1, { n: r.lines.length, o: r.oversize });
 }

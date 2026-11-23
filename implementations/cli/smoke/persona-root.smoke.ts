@@ -650,6 +650,53 @@ try {
     unlinkSync(path);
   }
 
+  for (const name of ["qa+plus", "révision", "qa trailing "]) {
+    const path = agentFilePath(MESH, name);
+    const source = "---\nname: reviewer\nagent: claude\n---\nFixture body.\n";
+    writeFileSync(path, source);
+    const listed = native(["persona", "--json"]);
+    const shown = native(["persona", "show", "--json", "--", name]);
+    const preview = native(["spawn", "--dry-run", "--json", "--", name]);
+    check(`persona list, show and spawn preview agree on ${JSON.stringify(name)}`,
+      listed.status === 0 && JSON.parse(listed.stdout).result.items.some((item: { name: string }) => item.name === name) &&
+      shown.status === 0 && JSON.parse(shown.stdout).result.source === source &&
+      preview.status === 0 && JSON.parse(preview.stdout).result.persona.path === path, shown.stdout + preview.stdout);
+    unlinkSync(path);
+  }
+
+  if (process.platform !== "win32") {
+    const original = agentFilePath(ALPHA, "mismatch");
+    const decoy = agentFilePath(MESH, "mismatch");
+    const source = "---\nname: displayed\n---\nOriginal instructions.\n";
+    const added = "Edited instructions.\n";
+    const temp = join(scratch, "draft folder's space");
+    const editor = join(scratch, "remove-source-editor");
+    mkdirSync(temp);
+    writeFileSync(original, source);
+    writeFileSync(decoy, source);
+    writeFileSync(editor, `#!/bin/sh\nmv "$SOURCE" "$SOURCE.moved"\nprintf '%s\\n' 'Edited instructions.' >> "$1"\n`, { mode: 0o700 });
+    const refused = native(["persona", "edit", "mismatch", "--space", "alpha", "--json"], scratch,
+      { ...childEnv, TMPDIR: temp, VISUAL: editor, SOURCE: original });
+    const receipt = JSON.parse(refused.stdout);
+    const draft = receipt.error?.remedy.match(/kept in (.*?);/)?.[1];
+    const retry = receipt.error?.remedy.match(/restore it with `([^`]+)`/)?.[1];
+    check("a removed persona preserves the edited draft and prints a recovery command",
+      refused.status === 2 && receipt.error?.code === "CONFLICT" && !existsSync(original) &&
+      draft && readFileSync(draft, "utf8") === source + added && retry, refused.stdout);
+    const restore = () => spawnSync("sh", ["-c", retry], { cwd: scratch, env: childEnv, encoding: "utf8", timeout: 30_000 });
+    writeFileSync(original, "Concurrent replacement\n");
+    restore();
+    check("draft recovery leaves a concurrent replacement untouched", readFileSync(original, "utf8") === "Concurrent replacement\n");
+    unlinkSync(original);
+    const restored = restore();
+    const shown = native(["persona", "show", "mismatch", "--space", "alpha", "--json"], scratch);
+    check("the printed command restores the exact draft to the original catalog without changing the display name",
+      restored.status === 0 && shown.status === 0 && JSON.parse(shown.stdout).result.definition.name === "displayed" &&
+      readFileSync(original, "utf8") === source + added && readFileSync(decoy, "utf8") === source, restored.stderr + shown.stdout);
+    unlinkSync(original);
+    unlinkSync(decoy);
+  }
+
   const spacedSource = "sample card.md";
   const importBytes = Buffer.from("---\nname: sample\nsubscribe: []\n---\nReview a sample.\n");
   writeFileSync(join(scratch, spacedSource), importBytes);

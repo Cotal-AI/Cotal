@@ -1,5 +1,11 @@
 # @cotal-ai/connector-core
 
+## 0.175.3
+
+### Patch Changes
+
+- 450ccb6: Explain when retrying `cotal_spawn` would start a duplicate helper and point callers to `cotal_invoke` to inspect a helper whose model pin could not be audited.
+
 ## 0.175.2
 
 No changes in this release.

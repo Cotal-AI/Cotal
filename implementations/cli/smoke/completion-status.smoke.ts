@@ -2,8 +2,8 @@
  * `cotal completion`: the status of each shell's stub, `completion script <shell>` as raw shell code,
  * and the refusal of the form it replaced (`completion <shell>`), driven through the built binary in
  * a fresh sandbox per case. HOME, XDG_CONFIG_HOME and COTAL_HOME are sandboxed, so the status reads
- * and `completion install` writes only there. A symlinked startup file is refused by name with the
- * line to add where it points, and a group-writable one with the chmod that fixes it. An edited owned
+ * and `completion install` writes only there. Install refuses a symlinked startup file by name with
+ * the line to add where it points, and a group-writable one with the chmod that fixes it. An edited owned
  * stub or block is refused with `--force` as its way out, which keeps startup content outside the
  * markers. A completer that fails writes its reason to stderr only under COTAL_COMPLETE_DEBUG, which
  * an empty value, `0`, `false` or `off`, in any case, leaves off, and so does the warning for a
@@ -268,6 +268,28 @@ if (process.platform !== "win32") {
   const report = s.run(["completion", "--json"]);
   const reportEnv = report.stdout.startsWith("{") ? JSON.parse(report.stdout) : undefined;
   check("the report warns that the rc is a symlink", report.status === 4 && reportEnv?.warnings.some((w: { code: string; message: string }) => w.code === "COMPLETION_UNREADABLE" && w.message === `${rc} is a symlink, which completion does not follow; its contents were not printed`) === true, shown(report));
+  const folder = join(s.xdg, "cotal"), stub = join(folder, "completion.bash"), record = `${stub}.ownership.json`;
+  const absent = s.run(["completion", "uninstall", "bash", "--plain"]);
+  check("uninstall with no stub or record leaves a symlinked rc untouched and reports zero changes",
+    absent.status === 0 && absent.stdout.includes("Shell completion unchanged") && absent.stdout.includes("Changed files: 0") &&
+      !existsSync(folder) && realpathSync(rc) === realpathSync(linked) && readFileSync(linked, "utf8") === "# mine\n", shown(absent));
+  rmSync(rc);
+  const installed = s.run(["completion", "install", "bash"]);
+  rmSync(rc, { force: true });
+  symlinkSync(linked, rc);
+  const kept = s.run(["completion", "uninstall", "bash", "--json"]);
+  check("uninstall with an installed stub and record still refuses a symlinked rc and keeps both files",
+    installed.status === 0 && kept.status === 2 && codeOf(kept.stdout) === "PERMISSION_DENIED" && existsSync(stub) && existsSync(record) &&
+      realpathSync(rc) === realpathSync(linked) && readFileSync(linked, "utf8") === "# mine\n", { install: shown(installed), uninstall: shown(kept) });
+  rmSync(stub, { force: true });
+  const recordOnly = s.run(["completion", "uninstall", "bash", "--json"]);
+  check("a record alone still requires the real startup file",
+    recordOnly.status === 2 && codeOf(recordOnly.stdout) === "PERMISSION_DENIED" && existsSync(record), shown(recordOnly));
+  rmSync(record, { force: true });
+  const empty = s.run(["completion", "uninstall", "bash", "--json"]);
+  check("an existing stub directory does not make uninstall open the symlinked rc",
+    empty.status === 0 && outcomeOf(empty.stdout) === "no-op" && readdirSync(folder).length === 0 &&
+      realpathSync(rc) === realpathSync(linked) && readFileSync(linked, "utf8") === "# mine\n", shown(empty));
 }
 
 // ── a startup file another local account could write, and a stub folder it could write, share one refusal ─
@@ -471,10 +493,20 @@ if (process.platform !== "win32" && process.getuid?.() !== 0) {
     const record = `${stub}.ownership.json`;
     check("the partial report lists both files written and does not list the startup file", existsSync(stub) && existsSync(record) && readOnly.stderr.includes(`Confirmed changes\n  ${stub}\n  ${record}\n\n`), shown(readOnly));
     const installed = s.run(["completion", "install", "zsh"]);
+    const wired = readFileSync(rc, "utf8");
     chmodSync(rc, 0o400);
-    const lockedOut = s.run(["completion", "uninstall", "zsh"]);
+    const lockedOut = s.run(["completion", "uninstall", "zsh", "--plain"]);
+    check("uninstall refuses a read-only rc and keeps its mode, startup block, stub and record",
+      installed.status === 0 && lockedOut.status === 2 && lockedOut.stderr.includes(`${rc} is read-only, so its completion block was not removed`) &&
+        lockedOut.stderr.includes("PERMISSION_DENIED") && (statSync(rc).mode & 0o777) === 0o400 && readFileSync(rc, "utf8") === wired &&
+        existsSync(stub) && existsSync(record), { install: shown(installed), uninstall: shown(lockedOut) });
+    const chmod = `chmod u+w ${rc}`;
+    check("uninstall tells the user to restore write permission and retry without editing the block",
+      lockedOut.stderr.includes(`restore owner write permission with \`${chmod}\`, then run \`cotal completion uninstall zsh\` again without editing the startup block`), shown(lockedOut));
     chmodSync(rc, 0o600);
-    check("uninstall refuses an rc it cannot write, exit 2, and keeps the stub and its line", installed.status === 0 && lockedOut.status === 2 && /is read-only, so its completion line was not removed/.test(lockedOut.stderr) && existsSync(stub) && readFileSync(rc, "utf8").includes(stub), { install: shown(installed), uninstall: shown(lockedOut) });
+    const retried = s.run(["completion", "uninstall", "zsh", "--plain"]);
+    check("uninstall succeeds after restoring owner write permission without editing the block",
+      retried.status === 0 && !existsSync(stub) && !existsSync(record) && readFileSync(rc, "utf8") === "# mine\n", shown(retried));
   }
 }
 

@@ -550,6 +550,10 @@ export async function spawn(args: ParsedArgs): Promise<void> {
       } else if (code === "ENOENT") {
         const missing = missingPersona(target, ref, personaFrom, path);
         throw new CommandFailure("refused", "TARGET_NOT_FOUND", missing.message, { target: { space, path }, remedy: missing.remedy });
+      } else if (code === "ELOOP") {
+        throw new CommandFailure("refused", "SCHEMA_INVALID", `the persona path contains a symbolic-link loop: ${path}`, {
+          target: { space, path }, remedy: "correct the link's target, or move the link aside and put a regular persona file in its place",
+        });
       } else {
         stderrLine("✗ ", `${(e as Error).message}`, c.red);
       }

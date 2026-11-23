@@ -644,9 +644,10 @@ export async function spaceForget(rest: readonly string[], presentation: Present
     try {
       p = findPreparedSpace(name);
     } catch (e) {
-      // Its own record cannot be read, so it names no root to release definitions at: remove the file.
       if (!isMeshRegistryError(e) || preparedRecordSpace(e.file) !== name) throw e;
       if (e.recordDirectory) throw refuse("SCHEMA_INVALID", `${e.summary}; nothing was forgotten`, { ...target, file: e.file }, e.remedy);
+      if (e.refusal === "PERMISSION_DENIED") throw e;
+      // A malformed record names no root to release definitions at, so remove only the record.
       removeDamaged();
       removePreparedSpace(name);
       return forgotten(presentation, { space: name, server: null, root: null, origin: "prepared", releasedDefinitions: [], keptServices: savedServicesLeft(name, undefined) }, preferencesRevision, damagedWarnings);
@@ -657,7 +658,14 @@ export async function spaceForget(rest: readonly string[], presentation: Present
       removeMesh(name);
       return forgotten(presentation, { space: name, server: null, root: null, origin: null, releasedDefinitions: [], keptServices: savedServicesLeft(name, undefined) }, preferencesRevision, damagedWarnings);
     }
-    const runningOwner = liveMeshOwner(p.root, name);
+    let runningOwner: string | undefined;
+    try { runningOwner = liveMeshOwner(p.root, name); }
+    catch (error) {
+      const code = (error as NodeJS.ErrnoException)?.code ?? ((error as Error)?.cause as NodeJS.ErrnoException | undefined)?.code;
+      if (code !== "EACCES" && code !== "EPERM") throw error;
+      throw refuse("PERMISSION_DENIED", "this account cannot check whether the prepared space is running; nothing was forgotten", { ...target, root: p.root },
+        "restore access to the project folder and its process records, then try again");
+    }
     if (runningOwner) throw refuse("LIFECYCLE_BLOCKED", `"${name}" is running from ${p.root} (${runningOwner}); nothing was forgotten`, target, `stop it with \`cotal down\` in ${p.root}, then run \`cotal space forget ${name}\` again`);
     const release = releaseStackDefinitions(p.root, name), keptServices = savedServicesLeft(name, release.kept);
     removeDamaged();
