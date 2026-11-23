@@ -82,7 +82,7 @@ import { askSpawnPlace } from "../lib/manager-choice.js";
 import { canPrompt } from "./meshes-wizard.js";
 import { listDeclaredChannels, listDeclaredRoles, listPersonaNames } from "../lib/personas.js";
 import { personaCatalog } from "../lib/persona-files.js";
-import { callerHarness, checkSpawnExpiryTarget, directPersonaPath, missingConnector, missingPersona, spawnPersona, spawnUsesManager } from "../lib/spawn-defaults.js";
+import { brokenDefaultPersona, callerHarness, checkSpawnExpiryTarget, directPersonaPath, missingConnector, missingPersona, spawnPersona, spawnUsesManager } from "../lib/spawn-defaults.js";
 import { writeDefaultPersonaForLaunch } from "../lib/default-persona.js";
 import { spawnLaunchPreview } from "./spawn-preview.js";
 import { protectedCredentialReference, readLocalRecordSource } from "../lib/protected-records.js";
@@ -567,7 +567,12 @@ export async function spawn(args: ParsedArgs): Promise<void> {
       throw new CommandFailure("refused", "PERMISSION_DENIED", `${missing.message}, and the shipped one could not be written there: ${(writeError as Error).message}`, { target: { space, path }, remedy: missing.remedy });
     }
     if (written !== undefined) provenance.wrote("default persona", written);
-    def = loadLaunchPersonaFile(path);
+    try { def = loadLaunchPersonaFile(path); }
+    catch (retryError) {
+      if (written === undefined && (retryError as NodeJS.ErrnoException).code === "ENOENT")
+        throw brokenDefaultPersona(path, { space, path }) ?? retryError;
+      throw retryError;
+    }
   }
 
   // Provenance: say which persona file WON resolution (--config > positional > preference > default)

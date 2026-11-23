@@ -322,7 +322,10 @@ persona `default`. Add `--space <name>` if the target space is not selected. If 
 or `--from` instead of `--file`, pass `--subscribe` explicitly (use `--subscribe ""` for no channels).
 For an ordinary launch in this terminal, a missing catalog default is written from the shipped
 template when the persona is omitted or named as `default`. The preview uses that template and
-reports the planned write without creating the file. A direct preview refuses other missing
+reports the planned write without creating the file. If `default.md` is a symbolic link to a
+missing target, the preview warns that the launch cannot write the default and exits 0. The
+launch refuses with `TARGET_NOT_FOUND` (exit 2). Restore the target or move the link aside before
+retrying. Neither command replaces the link. A direct preview refuses other missing
 personas with `TARGET_NOT_FOUND` (exit 2).
 When a managed launch is refused because the chosen
 manager's catalog has no such persona, the refusal names that manager, its host and the catalog file
