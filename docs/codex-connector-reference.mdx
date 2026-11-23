@@ -286,7 +286,7 @@ it. A plugin connection publishes its own activity from the moment you approve i
 cotal spawn watcher --agent codex -d   # event plane armed; read it with `cotal console`
 ```
 
-Eleven things are specific to Codex and worth knowing before you read a stream:
+Twelve things are specific to Codex and worth knowing before you read a stream:
 
 - **The thread's rollout file is the durable record.** The seat's
   rollout lives inside its own isolated `CODEX_HOME`, under
@@ -372,6 +372,13 @@ Eleven things are specific to Codex and worth knowing before you read a stream:
   and MCP call the script makes is published as its own tool call, `exec_command`, `apply_patch`
   with Codex's change list, or the MCP tool's name. Codex records such a call only once it has
   ended, so it is published whole at its end and is not shown while it runs.
+- **The plan tool is off unless a launch turns it on.** Codex 0.162 offers `update_plan` only when
+  its config enables the tool, as T3 Code's own Codex provider does for every thread. A seat gets
+  it with `--opt 'tools={update_plan={enabled=true}}'`, since a launch-option key names one config
+  field. A direct `update_plan` call is published from the rollout. A plan a code-mode script sets
+  reaches app-server clients only as `turn/plan/updated`, so the seat journals it and publishes it
+  as the `update_plan` call the script made, with the plan in `update_plan`'s own arguments. A plan
+  Codex reports before the seat opens its journal is not published.
 
 ## Trust boundaries
 

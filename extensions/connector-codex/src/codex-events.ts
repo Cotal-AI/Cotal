@@ -24,6 +24,7 @@ import {
   type SourceRead,
 } from "@cotal-ai/connector-core";
 import { codexStreamKey, createCodexMapper, type CodexMapper, type CodexRecord } from "./agui-map.js";
+import type { PlanRecord } from "./agui-nested.js";
 
 /**
  * The rollout source, positioned where the BIND was taken rather than where the emitter's own
@@ -118,6 +119,15 @@ export class CodexEventBinding {
     if (this.journal === undefined || this.unjournaled.has(itemId)) return;
     this.streaming.add(itemId);
     this.journal.append({ key: codexStreamKey(itemId), kind, text });
+  }
+
+  /** Journal a plan Codex reported with `turn/plan/updated`. A plan a code-mode script sets has no
+   *  record in the rollout, so the plane reads it here. One reported before the journal opened is
+   *  not published. */
+  plan(update: { explanation: unknown; plan: unknown }): void {
+    if (this.journal === undefined || !Array.isArray(update.plan)) return;
+    const explanation = typeof update.explanation === "string" ? update.explanation : null;
+    this.journal.record({ type: "plan", id: `plan_${randomUUID()}`, explanation, plan: update.plan } satisfies PlanRecord);
   }
 
   /** Codex finished the item `itemId`: the record it saves carries the text not journaled yet. */

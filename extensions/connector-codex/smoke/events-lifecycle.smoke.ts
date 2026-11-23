@@ -411,6 +411,7 @@ try {
       "and the wire carries the saved text once, as one message",
       "a streamed reasoning summary reaches the wire before Codex saves it",
       "and the wire carries the saved summary once, before the reply",
+      "a plan a code-mode script sets reaches the wire as an update_plan call, and the script does not",
       "the restarted app-server really is a NEW thread",
       "the plane KEEPS PUBLISHING after the restart",
       "and no run the dead thread opened was left open",
@@ -448,6 +449,18 @@ try {
   check("and the wire carries the saved summary once, before the reply", rm.starts === 1 && rm.ends === 1 && rm.text === `weighing:${n}:the rivers` &&
     rm.types.indexOf("REASONING_MESSAGE_END*") < rm.types.indexOf("TEXT_MESSAGE_START") &&
     !frames.slice(streamFrom).some((f) => f.events.some((e) => e.type === "REASONING_MESSAGE_START" && e.messageId === `rs_${n}`)), rm);
+
+  // ---- (1c) a plan a code-mode script sets ----------------------------------------------------
+  // Codex sends it only as turn/plan/updated. The seat journals it, and the plane publishes it as
+  // the update_plan call the script made. Arguments go to the payload plane, so the call's start
+  // is what this channel shows.
+  const planFrom = frames.length;
+  await dm(A, "PLAN from a code-mode script");
+  const planDone = await settle("A:the PLAN run finished", () => frames.slice(planFrom).some((f) => f.events.some((e) => e.type === "RUN_FINISHED")));
+  const planEvents = frames.slice(planFrom).flatMap((f) => f.events) as unknown as { type: string; toolCallId?: string; toolCallName?: string }[];
+  check("a plan a code-mode script sets reaches the wire as an update_plan call, and the script does not",
+    planDone && planEvents.some((e) => e.type === "TOOL_CALL_START" && e.toolCallName === "update_plan") && !planEvents.some((e) => e.toolCallId?.startsWith("exec_")),
+    { types: planEvents.map((e) => `${e.type}${e.toolCallName ? `(${e.toolCallName})` : ""}`), ...margin("A:the PLAN run finished") });
 
   // ---- (2) restart: the defect that killed the plane ------------------------------------------
   // `DIE now` kills the app-server mid-turn. The host's crash rail brings up a replacement, which
