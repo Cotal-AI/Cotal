@@ -477,9 +477,7 @@ export function permissionsFor(
   const chatHistD = chatHistDurable(pr.owner, pr.actor, uid), dmD = dmDurable(pr.owner, pr.actor, uid);
   const DLV = dlvStream(space), dlvD = dlvDurable(pr.owner, pr.actor, uid); // Plane-3 per-member delivery (bind-only when channel-readable)
   const roles = taskRoles(opts.role, opts.capabilities);
-  const canConfigureChannel = opts.capabilities?.includes("channel-config");
   const pubAllow = [
-    ...(canConfigureChannel ? allowPublish.map((ch) => channelConfigSubject(space, `${pr.owner}.${pr.actor}`, ch)) : []),
     // peer publish — owner+actor identity + channel scope, built from the real builders. Default-deny:
     // ONLY the declared allowPublish channels (none by default) get a chat-publish grant.
     ...allowPublish.map((ch) => chatSubject(space, pr.owner, pr.actor, ch)),
@@ -736,7 +734,6 @@ export function permissionsFor(
   // Replies to this agent's durable join/leave/list requests ride `ctl.delivery.<o>.<a>.>` (NOT the
   // per-id _INBOX), so the scoped delivery daemon can answer without broad inbox-publish.
   const deliveryReplies = `${controlServiceSubject(space, CONTROL_DELIVERY, pr.owner, pr.actor)}.>`;
-  if (canConfigureChannel) epSub.push(channelConfigReplySubject(space, `${pr.owner}.${pr.actor}`, "*"));
   // Liveness answers (#1577) ride the probe's OWN request subtree, exactly like the delivery
   // control replies above and for the same reason: the responder answers without needing broad
   // inbox-publish. One row per plane, pinned to this agent's principal, so it can hear answers to
@@ -747,7 +744,16 @@ export function permissionsFor(
   // the `ctl.<tier>.<id>.reply.>` subtrees are gone with the ctl rail.
   // A take's reply rides the take's own request subtree, like the delivery control replies.
   const takeReplies = roles.map((role) => `${takeSubject(space, role, pr.owner, pr.actor)}.>`);
-  return { pub: { allow: pubAllow, deny: pubDeny }, sub: { allow: [inbox, deliveryReplies, ...takeReplies, ...livenessReplies, ...subChat, ...payloadReads, ...epSub] } };
+  return agentPermissions(space, pr, opts, pubAllow, pubDeny, [inbox, deliveryReplies, ...takeReplies, ...livenessReplies, ...subChat, ...payloadReads, ...epSub]);
+}
+
+function agentPermissions(space: string, pr: MintPrincipal, opts: MintOpts, pubAllow: string[], pubDeny: string[], subAllow: string[]): Record<string, unknown> {
+  if (opts.capabilities?.includes("channel-config")) {
+    const principal = `${pr.owner}.${pr.actor}`;
+    pubAllow = [...(opts.allowPublish ?? []).map((channel) => channelConfigSubject(space, principal, channel)), ...pubAllow];
+    subAllow.push(channelConfigReplySubject(space, principal, "*"));
+  }
+  return { pub: { allow: pubAllow, deny: pubDeny }, sub: { allow: subAllow } };
 }
 
 export { INSTRUMENT_PROFILES };
