@@ -63,6 +63,7 @@ export function startHermesEvents(agent: MeshAgent, config: AgentConfig, journal
         mintRunId: () => randomUUID(),
         consumed: await consumedRecords(source, resume.sourceCursor),
         resumeRunId: resume.brackets?.run,
+        reasoning: config.reasoningEvents,
       });
       return AguiEmitter.start({
         endpoint: agent.ep,
