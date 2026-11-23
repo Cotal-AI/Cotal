@@ -16,6 +16,14 @@ interface Members {
   members: { id: string; name: string | null; live: boolean; durable: boolean; observedAt: number }[];
 }
 
+/** A JSON membership follow that refused before writing its snapshot. */
+export function membershipSetupFailureRecords(target: { space: string | null; channel: string | null }, failure: CommandFailure) {
+  return [
+    streamRecord("membership", "error", target, { code: failure.code, message: failure.message, ...(failure.remedy === undefined ? {} : { remedy: failure.remedy }) }),
+    streamRecord("membership", "end", target, { reason: "setup-failed", lastAsOf: null }),
+  ];
+}
+
 /** An invisible reader of the broker-derived feed, never an input to channel authorization. */
 export async function channelMembers(values: Values, channel: string, presentation: Presentation): Promise<void> {
   if (!values.follow || presentation !== "json") return readMembers(values, channel, presentation);
@@ -30,8 +38,7 @@ export async function channelMembers(values: Values, channel: string, presentati
     recordTelemetryFailure(failure.outcome, failure.code, error);
     const refusedSpace = refusal?.target?.space;
     const target = { space: state.space ?? (typeof refusedSpace === "string" ? refusedSpace : values.space ?? null), channel };
-    writeStreamRecord(streamRecord("membership", "error", target, { code: failure.code, message: failure.message, ...(failure.remedy === undefined ? {} : { remedy: failure.remedy }) }));
-    writeStreamRecord(streamRecord("membership", "end", target, { reason: "setup-failed", lastAsOf: null }));
+    for (const record of membershipSetupFailureRecords(target, failure)) writeStreamRecord(record);
     process.exitCode = exitCode(failure.outcome, failure.code);
   }
 }
