@@ -24,13 +24,14 @@
 import { createHash } from "node:crypto";
 import { AGENT_PROMPT_CONTENT_MAX_BYTES, canonicalJson, type PromptContent, type PromptInput, type PromptOption } from "@cotal-ai/core";
 import type { Delivery, HookEvent, HookHandle, MeshAgent, PromptDesk, PromptHold, PromptVerdict } from "@cotal-ai/connector-core";
+import { DISMISSED, answeredInput, questionContent, submitted } from "./question-prompt.js";
 
 /** How long a prompt is offered: a prompt left on a Friday can still be answered on Monday. */
 const OPEN_MS = 7 * 24 * 60 * 60 * 1000;
 /** How long an answered prompt waits for a batch or a turn end before it closes with nothing seen. */
 const SETTLE_MS = 15 * 60 * 1000;
-/** Dialogs the terminal keeps: a question and a plan need more than allow and deny. */
-const LEFT_TO_TERMINAL: ReadonlySet<string> = new Set(["AskUserQuestion", "ExitPlanMode"]);
+/** The dialog the terminal keeps: a plan needs more than allow and deny. */
+const LEFT_TO_TERMINAL: ReadonlySet<string> = new Set(["ExitPlanMode"]);
 /** The message of a deny with no note. Claude gives a refused call this message as its result, and the
  *  module has to know the text to tell that call from one that ran. */
 const DENIED = "Permission denied.";
@@ -103,16 +104,49 @@ function permissionContent(p: ToolPermission, input: PromptInput, options: Promp
 /** The message Claude gets for a deny, and later gives the refused call as its result. */
 const denyMessage = (verdict: PromptVerdict): string => verdict.note || DENIED;
 
-/** The hook output that hands an accepted answer to Claude. */
-function decision(verdict: PromptVerdict): Record<string, unknown> {
-  const d = verdict.option === ALLOW.id ? { behavior: "allow" } : { behavior: "deny", message: denyMessage(verdict) };
-  return { hookSpecificOutput: { hookEventName: "PermissionRequest", decision: d } };
+/** The hook output that hands a decision to Claude. */
+const hookDecision = (decision: Record<string, unknown>): Record<string, unknown> =>
+  ({ hookSpecificOutput: { hookEventName: "PermissionRequest", decision } });
+
+/** What one permission asks on the desk, and what each answer hands Claude: the hook output, and the
+ *  message of a refusal. */
+interface Ask {
+  content: PromptContent;
+  answer(verdict: PromptVerdict): { output: Record<string, unknown>; refusal?: string };
+}
+
+/** A tool permission: allow or deny, or deny alone for an input over the content limit. */
+function toolAsk(p: ToolPermission, input: string): Ask {
+  let content = permissionContent(p, { kind: "shown", value: p.input }, [ALLOW, DENY]);
+  if (Buffer.byteLength(canonicalJson(content)) > AGENT_PROMPT_CONTENT_MAX_BYTES)
+    content = permissionContent(p, { kind: "omitted", bytes: Buffer.byteLength(input) }, [DENY]);
+  return {
+    content,
+    answer: (v) => (v.option === ALLOW.id
+      ? { output: hookDecision({ behavior: "allow" }) }
+      : { output: hookDecision({ behavior: "deny", message: denyMessage(v) }), refusal: denyMessage(v) }),
+  };
+}
+
+/** An `AskUserQuestion`: its form, or why the desk cannot carry it. */
+function questionAsk(p: ToolPermission): Ask | string {
+  const content = questionContent(p.input, p.scope);
+  if (typeof content === "string") return content;
+  if (Buffer.byteLength(canonicalJson(content)) > AGENT_PROMPT_CONTENT_MAX_BYTES) return "its questions are over the content limit";
+  return {
+    content,
+    answer: (v) => {
+      if (!submitted(v)) return { output: hookDecision({ behavior: "deny", message: DISMISSED }), refusal: DISMISSED };
+      return { output: hookDecision({ behavior: "allow", updatedInput: answeredInput(p.input, v) }) };
+    },
+  };
 }
 
 /** One prompt the module holds, from `open` to the desk's `end`. */
 interface Live {
   readonly scope: Scope;
-  /** The tool name and the input digest. The scope is compared on its own. */
+  /** The tool name and the input digest. The scope is compared on its own. A batch lists an answered
+   *  question with the input Claude asked it with, not the answers it ran with. */
   readonly key: string;
   /** `deliver` ran: the prompt is `sent`, and what its connection does next shows nothing. */
   answered: boolean;
@@ -166,15 +200,18 @@ export function createClaudePrompts(opts: {
       try {
         const input = canonicalJson(permission.input);
         p = { scope: permission.scope, key: keyOf(permission.tool, sha256(input)), answered: false };
-        let content = permissionContent(permission, { kind: "shown", value: permission.input }, [ALLOW, DENY]);
-        if (Buffer.byteLength(canonicalJson(content)) > AGENT_PROMPT_CONTENT_MAX_BYTES)
-          content = permissionContent(permission, { kind: "omitted", bytes: Buffer.byteLength(input) }, [DENY]);
-        hold = desk.open({ content, openMs: OPEN_MS, settleMs: SETTLE_MS }, {
+        const ask = permission.tool === "AskUserQuestion" ? questionAsk(permission) : toolAsk(permission, input);
+        if (typeof ask === "string") {
+          opts.warn(`Claude's own dialog asks this AskUserQuestion: ${ask}`);
+          return leave();
+        }
+        hold = desk.open({ content: ask.content, openMs: OPEN_MS, settleMs: SETTLE_MS }, {
           deliver: (verdict): Promise<Delivery> => {
             if (exchange.closed.aborted) return Promise.resolve({ kind: "gone" });
             p.answered = true;
-            if (verdict.option !== ALLOW.id) refused(refusalOf(p.scope, p.key, sha256(denyMessage(verdict))));
-            return exchange.write(decision(verdict)).then(() => ({ kind: "delivered" }));
+            const answer = ask.answer(verdict);
+            if (answer.refusal !== undefined) refused(refusalOf(p.scope, p.key, sha256(answer.refusal)));
+            return exchange.write(answer.output).then(() => ({ kind: "delivered" }));
           },
           end: ({ attempted }) => {
             live.delete(p);
