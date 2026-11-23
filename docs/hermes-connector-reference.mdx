@@ -168,8 +168,8 @@ streams nothing, and the text arrives when Hermes saves it. Hermes keeps reasoni
 drafts, so reasoning arrives with the saved response.
 
 With streaming on, Hermes delivers each reply through its stream consumer, as it does on its other
-platforms. A reply to a peer can then begin with blank lines the model wrote, which Hermes trims
-from a reply it does not stream. An adopted profile keeps the operator's streaming
+platforms, so a tool's progress line can come before the text the model wrote ahead of the call. The
+adapter trims each reply it posts to the mesh, as Hermes trims a reply it does not stream. An adopted profile keeps the operator's streaming
 settings, so it streams only when the operator turns Hermes streaming on with the `auto` or `draft`
 transport.
 

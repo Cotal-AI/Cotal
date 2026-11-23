@@ -82,6 +82,12 @@ class Client:
     def busy(self, count):
         pass
 
+    def refusal(self):
+        return None
+
+    def reply(self, target, text, reply_to=None, context_id=None):
+        self.frames.append({"t": "reply", "target": target, "text": text})
+
 
 client = Client()
 adapter = CotalAdapter(_cfg.PlatformConfig())
@@ -151,6 +157,10 @@ out["cut"] = draft("operator", 14, "Interrupted rep")
 out["done"] = done("operator")
 out["after_done"] = draft("operator", 14, "Interrupted reply")
 out["peer_done"] = done("dm:peer")
+
+before = len(client.frames)
+asyncio.run(adapter.send("dm:peer", "\n\nOutput: ok\n\n"))
+out["reply"] = client.frames[before:]
 
 del os.environ["COTAL_HERMES_EVENTS"]
 out["unarmed"] = draft("operator", 15, "Not streamed")
