@@ -7642,7 +7642,7 @@
     {
       "path": "implementations/cli/src/commands/update.ts",
       "kind": "derived-output",
-      "anchor": "const installed = await rt.spawnGlobal(root, \"install\", command.file, command.args, rt.env, true, command.windowsVerbatimArguments);\n          if (installe",
+      "anchor": "rt.spawnGlobal(root, \"install\", \"npm\", [\"install\", \"-g\", ...(prefix ? [\"--prefix\", prefix] : []), `cotal-ai@${record.previous}`], rt.env, true)",
       "class": "non-render/control",
       "rationale": "Interrupted recovery starts the npm reinstall process for the recorded previous package, not peer presence."
     },
@@ -7768,7 +7768,7 @@
     {
       "path": "implementations/cli/src/commands/update.ts",
       "kind": "derived-output",
-      "anchor": "rt.spawnGlobal(\n    root,\n    \"install\",\n    npmInstall.file,\n    npmInstall.args,\n    rt.env,\n    false,\n    npmInstall.windowsVerbatimArguments,\n  )",
+      "anchor": "rt.spawnGlobal(\n    root,\n    \"install\",\n    \"npm\",\n    npmInstall,\n    rt.env,\n    false,\n  )",
       "class": "non-render/control",
       "rationale": "The legacy path starts a guarded npm installation process whose status is an exit code, not peer presence."
     },
