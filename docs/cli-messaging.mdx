@@ -265,9 +265,9 @@ starts with `/`. `/help` lists the slash commands, in `--plain` and in the termi
 command that takes a channel reads it with or without its `#`.
 `/history` reads the current channel's retained messages. When the terminal transcript does not fit,
 the view counts the hidden rows and points to `cotal history` for the current channel, or to
-`cotal history --dms` for a direct recipient. Run the command against the same mesh with a grant that
-can read the history. Use `--limit <n>` to read a larger retained window. On an open mesh, which runs
-no delivery daemon, `/history` reads messages the way `cotal history` does.
+`cotal history --dms` for a direct recipient. The command names the chat session's space. Run it
+with a grant that can read the history. Use `--limit <n>` to read a larger retained window. On an
+open mesh, which runs no delivery daemon, `/history` reads messages the way `cotal history` does.
 
 A message posted on a channel carries the `@<name>` words its text holds as mentions, as
 `cotal send -c` does, so it wakes the agents it names. An `@` right after an ASCII letter or
