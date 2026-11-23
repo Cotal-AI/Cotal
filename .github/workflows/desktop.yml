@@ -263,7 +263,12 @@ jobs:
           if ($env:SIGNED_BUILD -ne 'true') {
             Get-ChildItem Env:APPLE_* | Remove-Item
             Write-Output 'Building unsigned validation packages.'
-          } else { Write-Output 'Building signed release packages.' }
+          } else {
+            # Tauri uses the Apple ID login whenever APPLE_ID, APPLE_PASSWORD and APPLE_TEAM_ID exist, even
+            # empty, so the unused notarization set must be absent, not blank.
+            Get-ChildItem Env:APPLE_* | Where-Object { -not $_.Value } | Remove-Item
+            Write-Output 'Building signed release packages.'
+          }
           $args = @('--dir', 'desktop', 'exec', 'tauri', 'build', '--bundles', '${{ matrix.bundles }}')
           if ($env:WINDOWS_SIGNING_CONFIG) { $args += @('--config', $env:WINDOWS_SIGNING_CONFIG) }
           if ($env:RUNNER_OS -eq 'macOS' -and $env:SIGNED_BUILD -ne 'true') {
