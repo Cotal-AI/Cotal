@@ -8,7 +8,7 @@
  * truth, so the cotal_* surface can't drift across adapters.
  */
 import { z } from "zod";
-import { isConcreteChannel, isChannelFamily, assertValidChannel, MAX_CHANNEL_LENGTH, channelInAllow, patternInAllow, AmbiguousPeerError, peerLabel, sharedNameIds, assertLifecycleToken, isPermissionDenied, EpEnvelopeError, EP_UNANSWERED, REGISTRY_PAGE_LIMIT, formatAge, presenceAges, presenceText, isAnycastSeq, type AnycastStatus, type PresenceStatus } from "@cotal-ai/core";
+import { isConcreteChannel, isChannelFamily, assertValidChannel, MAX_CHANNEL_LENGTH, channelInAllow, patternInAllow, AmbiguousPeerError, PeerAddressError, peerLabel, sharedNameIds, assertLifecycleToken, isPermissionDenied, EpEnvelopeError, EP_UNANSWERED, REGISTRY_PAGE_LIMIT, formatAge, presenceAges, presenceText, isAnycastSeq, type AnycastStatus, type PresenceStatus } from "@cotal-ai/core";
 import type { MeshAgent, InboxItem } from "./agent.js";
 // The neutralization and the per-item rendering live in `framing.ts`, one convention shared with
 // the auto-injected block, and are used here rather than restated. See that file for the rule.
@@ -642,7 +642,7 @@ export function cotalToolSpecs(
       async run(agent, _config, { to, text: msg, replyTo }: { to: string; text: string; replyTo?: string }) {
         try {
           const { recipient, ack, recipientStatusAtSend } = await agent.dm(to, msg, { replyTo });
-          if (to.includes("/")) return ok(`DM stored at sequence ${ack.seq} for ${recipient.id}. Storage does not confirm a recipient or delivery.`);
+          if (recipientStatusAtSend === "unobserved") return ok(`DM stored at sequence ${ack.seq} for ${recipient.id}. Storage does not confirm a recipient or delivery.`);
           const dup = ack.duplicate ? " duplicate publication." : "";
           const who = recipient.name.trim() ? recipient.name : shownParticipant(recipient.name, recipient.id);
           const unrostered = recipientStatusAtSend === "unrostered"
@@ -655,6 +655,10 @@ export function cotalToolSpecs(
             : "";
           return ok(`Sent to ${who}.${unrostered}${offline} Other agents can't read it. If others could use it, post it on the task's channel.${dup}`);
         } catch (e) {
+          if (e instanceof PeerAddressError) {
+            const text = `Couldn't DM (${e.code}): ${e.message}`;
+            return { ...err(text), structured: { text, code: e.code, target: e.target, addresses: e.addresses } };
+          }
           if (e instanceof AmbiguousPeerError) {
             const who = e.candidates
               .map((c) => `  • ${c.name.trim() ? peerLabel(c) : c.id} (${c.status}) — id: ${c.id}`)

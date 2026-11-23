@@ -5,7 +5,9 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import {
   normalizeMentions,
   isConcreteChannel,
+  parsePeerAddress,
   parsePrincipalKey,
+  PeerAddressError,
   type AnycastStatus,
   assertValidRole,
   type Presence,
@@ -74,6 +76,7 @@ export interface AgentMessagingDeps {
   readRoster: (...args: Parameters<MeshAgent["readRoster"]>) => ReturnType<MeshAgent["readRoster"]>;
   requireConnected: (...args: Parameters<MeshAgent["requireConnected"]>) => ReturnType<MeshAgent["requireConnected"]>;
   roleHolders: (...args: Parameters<MeshAgent["roleHolders"]>) => ReturnType<MeshAgent["roleHolders"]>;
+  warn: (error: Error) => void;
   unanswered: () => MeshAgent["unanswered"];
 }
 
@@ -134,8 +137,8 @@ export class AgentMessaging {
     if (q.peerId === item.fromId) return true;
     if (!this.config.userAuth && !this.config.creds) return !!q.role && q.role === item.fromRole;
     if (!q.request || item.replyTo !== q.request.id) return false;
-    const status = await this.ep.anycastStatus(q.request.seq, q.request.id).catch(() => undefined);
-    return status?.state === "taken" && status.taker.id === item.fromId;
+    const status = await this.ep.anycastStatus(q.request.seq, q.request.id);
+    return status.state === "taken" && status.taker.id === item.fromId;
   }
 
   /** The correlation a send carries, and the question it asks (a `contextId` the caller's scope
@@ -208,6 +211,8 @@ export class AgentMessaging {
       if (this.unanswered.size > MAX_CORRELATIONS) this.unanswered.delete(this.unanswered.keys().next().value!);
       void this.answersQuestion(item).then((matches) => {
         if (matches && this.unanswered.get(key) === entry) this.unanswered.delete(key);
+      }, (error: unknown) => {
+        this.deps.warn(new Error(`Could not verify the recorded anycast taker: ${String(error)}`, { cause: error }));
       });
     }
   }
@@ -382,32 +387,29 @@ export class AgentMessaging {
     opts: { replyTo?: string } = {},
   ): Promise<{
     msg: CotalMessage;
-    /** The roster row the target resolved to; absent when it resolved to an unrostered sender. */
+    /** The roster row the target resolved to, if any. */
     peer?: Presence;
     recipient: { id: string; name: string };
     ack: { seq: number; duplicate: boolean };
-    /** `unrostered`: the recipient is a peer that messaged us and has no roster row (#384). */
-    recipientStatusAtSend: Presence["status"] | "unrostered";
+    /** `unrostered` is a known sender with no roster row. `unobserved` is a routing-only principal. */
+    recipientStatusAtSend: Presence["status"] | "unrostered" | "unobserved";
   }> {
+    const address = parsePeerAddress(target);
     await this.requireConnected();
-    // #384: a sender's exact id is as unambiguous as a roster id, so it is never read as a roster
-    // display name; a peer that took that id as its name would otherwise receive the reply.
-    // #1229: a miss is only a real "no peer" when the roster read succeeded; under a failed read the
-    // target refuses naming the read's error (never "no peer"), and the DM does not go out.
-    const { roster, failure } = await this.readRoster();
-    const known = this.heldSender(target);
-    const candidates = failure && target.includes("/") ? [] : roster;
-    const peer = known ? candidates.find((p) => p.card.id === target)
-      : await this.ep.resolvePeerAddress(target, { roster: candidates, selfId: this.id });
-    const held = peer ? undefined : known;
-    if (!peer && !held) {
-      if (!failure) throw new Error(this.noPeer(target));
-      throw this.cannotVerify(`peer "${target}"`, failure, "The DM was not sent.");
+    const { roster, failure } = address.kind === "qualified" ? { roster: [], failure: undefined } : await this.readRoster();
+    const peer = await this.ep.resolvePeerAddress(target, { roster, selfId: this.id });
+    const literal = address.kind === "principal" && address.value !== this.id ? address.value : undefined;
+    const known = !peer && literal ? this.heldSender(literal) : undefined;
+    const recipient = peer ? { id: peer.card.id, name: peer.card.name } : known ?? (literal ? { id: literal, name: literal } : undefined);
+    if (!recipient) {
+      if (address.kind === "principal") throw new PeerAddressError(target, "USAGE_INVALID", this.noPeer(address.value));
+      if (!failure) throw new PeerAddressError(target, "TARGET_NOT_FOUND", this.noPeer(target));
+      const error = this.cannotVerify(`peer "${target}"`, failure, "The DM was not sent.");
+      throw new PeerAddressError(target, "TARGET_UNAVAILABLE", error.message, [], { cause: failure });
     }
     // The only status we can truthfully attribute is the roster snapshot taken right before the
     // publish: recipient state can change the instant after, and the ack never tells us either way.
-    const recipientStatusAtSend = peer?.status ?? "unrostered";
-    const recipient = peer ? { id: peer.card.id, name: peer.card.name } : held!;
+    const recipientStatusAtSend = peer?.status ?? (known ? "unrostered" : "unobserved");
     // A DM back to a peer answers the message `replyTo` names, or the oldest one it sent us that no
     // DM has answered yet (see answering()). It counts as answered only once the DM is published,
     // so a failed send leaves it to the retry.

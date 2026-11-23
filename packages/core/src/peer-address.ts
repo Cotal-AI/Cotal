@@ -86,8 +86,6 @@ export async function resolvePeerAddress(roster: readonly Presence[], target: st
     return resolvePeer(peers, target);
   }
   if (address.kind === "qualified") return qualifiedPeer(target, address, authority, selfId);
-  const exact = peers.find((p) => p.card.id === target);
-  if (exact) return exact;
   const want = address.value;
   const own: Presence[] = [];
   const foreign: { peer: Presence; owner: string; actor: string }[] = [];

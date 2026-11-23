@@ -19,6 +19,7 @@ import { createSuite } from "@cotal-ai/smoke-kit";
 import { MeshAgent } from "../../../extensions/connector-core/src/agent.js";
 import type { AgentConfig } from "../../../extensions/connector-core/src/config.js";
 import { fmtFrom } from "../../../extensions/connector-core/src/framing.js";
+import { cotalToolSpecs } from "../../../extensions/connector-core/src/tool-specs.js";
 import { deriveOwnerForIdpSubject, grantActor, loadOwnerSecret, platformControlOwner, revokeActor, startAuthService, type AuthServiceHandle } from "../src/index.js";
 import { authorityWriterGrants, openAuthorityClient } from "../src/authority-client.js";
 import { startHostedAuthFixture, type HostedAuthAccount } from "./_hosted-auth-fixture.js";
@@ -67,6 +68,43 @@ async function awaitValue<T>(read: () => T | undefined): Promise<T | undefined> 
   } while (Date.now() < until);
 }
 
+async function checkDmResolution(left: MeshAgent, right: MeshAgent, caller: MeshAgent, username: string, otherUsername: string): Promise<void> {
+  const tool = cotalToolSpecs(caller.config).find((spec) => spec.name === "cotal_dm")!;
+  const send = (to: string, text: string) => tool.run(caller, caller.config, { to, text });
+  const exact = `${otherOwner}.unobserved_dm_target`;
+  const direct = await send(exact, "exact principal without presence");
+  suite.check("an unobserved exact principal reports storage without claiming it messaged the sender", !direct.isError &&
+    direct.text.includes(`for ${exact}`) && direct.text.includes("stored at sequence") && !direct.text.includes("messaged you"), direct);
+
+  const roster = await left.readRoster();
+  assert.ok(roster.roster.some((p) => p.card.id === right.ep.card.id) && roster.roster.some((p) => p.card.id === caller.ep.card.id));
+  const suggestionTool = cotalToolSpecs(left.config).find((spec) => spec.name === "cotal_dm")!;
+  const bare = await suggestionTool.run(left, left.config, { to: "reviewer", text: "must not cross owners" });
+  suite.check("the tool preserves a typed foreign-only name refusal and suggested address", bare.isError === true &&
+    bare.structured?.code === "TARGET_NOT_FOUND" && Array.isArray(bare.structured.addresses) && bare.structured.addresses.includes(`${otherUsername}/reviewer`), bare);
+  const label = core.peerLabel(caller.ep.card);
+  assert.equal(label, `${username} (role: reviewer)`);
+  const invalid = await cotalToolSpecs(right.config).find((spec) => spec.name === "cotal_dm")!.run(right, right.config,
+    { to: label, text: "decorated label is not an address" });
+  suite.check("the decorated name and role label does not alias the qualified target", invalid.isError === true &&
+    ![left, caller].some((agent) => agent.peekInbox().some((item) => item.text === "decorated label is not an address")), invalid);
+
+  const readRoster = caller.readRoster;
+  let reads = 0;
+  caller.readRoster = async () => { reads++; return readRoster.call(caller); };
+  try {
+    const malformed = await send(`${username}//reviewer`, "malformed address");
+    suite.check("a malformed qualified address is refused before reading presence", malformed.isError === true && malformed.structured?.code === "USAGE_INVALID" && reads === 0, { malformed, reads });
+    const first = await send(`${username}/reviewer`, "qualified first reviewer only");
+    const second = await send(`${otherUsername}/reviewer`, "qualified second reviewer only");
+    const got = (agent: MeshAgent, text: string) => agent.peekInbox().some((item) => item.text === text);
+    assert.ok(await awaitValue(() => got(left, "qualified first reviewer only") && got(right, "qualified second reviewer only") ? true : undefined));
+    suite.check("two live owners with the same agent name each receive only their qualified DM", !first.isError && !second.isError &&
+      !got(left, "qualified second reviewer only") && !got(right, "qualified first reviewer only"), { first, second });
+    suite.check("qualified connector targets do not read presence before publishing", reads === 0, reads);
+  } finally { caller.readRoster = readRoster; }
+}
+
 async function checkReaders(authService: AuthServiceHandle, username: string): Promise<void> {
   const channel = "reader_test";
   const allow = [channel];
@@ -83,10 +121,10 @@ async function checkReaders(authService: AuthServiceHandle, username: string): P
     lease = await daemon.acquireDeliveryLease(0);
     await daemon.startPlane3((id, uid) => daemon.aclForOwner(id, uid));
     lease = await daemon.markDeliveryLeaseReady(0, lease);
-    const prepare = async (subject: string, owner: string, actor: string) => {
+    const prepare = async (subject: string, owner: string, actor: string, role?: string) => {
       const lifecycleUid = mintLifecycleUid();
-      grantActor(a.stateDir, { owner, actor, lifecycleUid, scope: [], allowSubscribe: allow, allowPublish: allow });
-      await provisionAgentDurables(provisioner, { owner, actor, lifecycleUid }, { subscribe: allow, allowSubscribe: allow });
+      grantActor(a.stateDir, { owner, actor, lifecycleUid, role, scope: [], allowSubscribe: allow, allowPublish: allow });
+      await provisionAgentDurables(provisioner, { owner, actor, lifecycleUid }, { role, subscribe: allow, allowSubscribe: allow });
       const bearer = async () => {
         const result = await fetch(`${authService.url}/exchange`, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${authService.cap}` },
           body: JSON.stringify({ actor, idpToken: await idpToken(subject, { preferred_username: subject }) }) });
@@ -94,10 +132,10 @@ async function checkReaders(authService: AuthServiceHandle, username: string): P
         assert.ok(result.ok && body.token, body.error);
         return body.token;
       };
-      return { lifecycleUid, userAuth: { owner, actor, bearer, sentinelCreds: a.sentinelCreds } };
+      return { lifecycleUid, role, userAuth: { owner, actor, bearer, sentinelCreds: a.sentinelCreds } };
     };
-    const start = async (grant: Awaited<ReturnType<typeof prepare>>) => {
-      const config: AgentConfig = { ...base, ...grant, name: grant.userAuth.actor, subscribe: allow, allowSubscribe: allow, allowPublish: allow, kind: "agent", tls: false };
+    const start = async (grant: Awaited<ReturnType<typeof prepare>>, name = grant.userAuth.actor) => {
+      const config: AgentConfig = { ...base, ...grant, name, subscribe: allow, allowSubscribe: allow, allowPublish: allow, kind: "agent", tls: false };
       const agent = new MeshAgent(config, {}, { eventsArmed: false });
       agents.push(agent);
       agent.on("error", console.error);
@@ -108,6 +146,11 @@ async function checkReaders(authService: AuthServiceHandle, username: string): P
     const leftGrant = await prepare("lister-human", owner, "reviewer");
     const left = await start(leftGrant);
     const right = await start(await prepare("other-human", otherOwner, "reviewer"));
+    const caller = await start(await prepare("lister-human", owner, "dm_caller", "reviewer"), username);
+    const otherUsername = await right.ep.readUsername(otherOwner);
+    assert.ok(otherUsername);
+    daemon.serveDeliveryLiveness();
+    await checkDmResolution(left, right, caller, username, otherUsername);
     for (const agent of [left, right]) await agent.setChannelMode(channel, "quiet");
     const sender = await prepare("lister-human", owner, "sender");
     let nc: NatsConnection | undefined;

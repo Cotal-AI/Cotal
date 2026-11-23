@@ -162,6 +162,16 @@ export function startBridgeServer(agent: MeshAgent, config: AgentConfig, socketP
     }
   };
 
+  const defer = (key: string): void => {
+    deferred.add(key);
+    awaitingId = undefined;
+    setTimeout(() => {
+      deferred.delete(key);
+      pump();
+    }, DEFER_MS).unref();
+    pump();
+  };
+
   /** Push the oldest buffered message to the adapter, one at a time. Acks happen only on the
    *  adapter's `delivered` (see below), so a turn that never surfaces a message redelivers it. A
    *  deferred one waits out its delay while the messages behind it go first. A role request is
@@ -181,7 +191,13 @@ export function startBridgeServer(agent: MeshAgent, config: AgentConfig, socketP
         pump();
         return;
       }
-      const msg = await wireItem(agent, shown);
+      let msg: Record<string, unknown>;
+      try { msg = await wireItem(agent, shown); }
+      catch (error) {
+        log(`Could not verify the recorded anycast taker: ${String(error)}. The reply stays buffered for retry.`);
+        if (push === pushes && adapter === to) defer(shown.recvKey);
+        return;
+      }
       if (push === pushes && adapter === to) sendFrame(to, { t: "incoming", msg });
     });
   };
@@ -253,16 +269,7 @@ export function startBridgeServer(agent: MeshAgent, config: AgentConfig, socketP
         return;
       case "deferred":
         // The host would not run it where it belongs (see adapter.py). It stays buffered and unacked.
-        if (typeof frame.recvKey === "string" && frame.recvKey !== "" && frame.recvKey === awaitingId) {
-          const key = awaitingId;
-          deferred.add(key);
-          awaitingId = undefined;
-          setTimeout(() => {
-            deferred.delete(key);
-            pump();
-          }, DEFER_MS).unref();
-          pump();
-        }
+        if (typeof frame.recvKey === "string" && frame.recvKey !== "" && frame.recvKey === awaitingId) defer(frame.recvKey);
         return;
       case "reply":
         try {

@@ -1261,6 +1261,7 @@ export class MeshAgent extends EventEmitter {
     readRoster: (...args) => this.readRoster(...args),
     requireConnected: (...args) => this.requireConnected(...args),
     roleHolders: (...args) => this.roleHolders(...args),
+    warn: (error) => this.handleEndpointWarning(error),
     unanswered: () => this.unanswered,
   });
 
@@ -1280,15 +1281,7 @@ export class MeshAgent extends EventEmitter {
   async anycastStatus(seq: number): Promise<AnycastStatus> { return this.messaging.anycastStatus(seq); }
   async cancelAnycast(seq: number): Promise<AnycastStatus> { return this.messaging.cancelAnycast(seq); }
   resolvePeer(target: string): Promise<ResolvedPeerAddress | undefined> { return this.messaging.resolvePeer(target); }
-  async dm(target: string, text: string, opts: { replyTo?: string } = {}): Promise<{
-    msg: CotalMessage;
-    /** The roster row the target resolved to; absent when it resolved to an unrostered sender. */
-    peer?: Presence;
-    recipient: { id: string; name: string };
-    ack: { seq: number; duplicate: boolean };
-    /** `unrostered`: the recipient is a peer that messaged us and has no roster row (#384). */
-    recipientStatusAtSend: Presence["status"] | "unrostered";
-  }> { return this.messaging.dm(target, text, opts); }
+  async dm(target: string, text: string, opts: { replyTo?: string } = {}): ReturnType<AgentMessaging["dm"]> { return this.messaging.dm(target, text, opts); }
 
   /** Run turns: the native lease, the turn relay and pull, surfacing, once claims and yields. Every dependency reads through at its use. */
   private readonly turns = new AgentTurns({

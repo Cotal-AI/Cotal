@@ -8,7 +8,7 @@ import {
   epcStreamName, epeStreamName, epfStreamName, epjStreamName, eprStreamName,
   eptStreamName, eptReqStreamName, epwStreamName,
   channelBucket, presenceBucket, membershipBucket, deliveryBucket, managerBucket,
-  membersBucket, aclBucket, epAuthBucket, recordsBucket, sessionsBucket, anycastBucket, transferBucket, objectStoreStream,
+  membersBucket, aclBucket, epAuthBucket, recordsBucket, sessionsBucket, anycastBucket, transferBucket, objectStoreStream, usernameBucket,
   type Profile, type MintOpts, type MintPrincipal, type EpCapability,
 } from "@cotal-ai/core";
 import { calloutPermissions } from "../../src/permissions.js";
@@ -182,6 +182,7 @@ export function streamSubjects(space: string): Record<string, string> {
     [eptReqStreamName(space)]: `cotal.${space}.ept.>`,
     [epwStreamName(space)]: `cotal.${space}.epw.>`,
     [`KV_${channelBucket(space)}`]: kv(channelBucket(space)),
+    [`KV_${usernameBucket(space)}`]: kv(usernameBucket(space)),
     [`KV_${presenceBucket(space)}`]: kv(presenceBucket(space)),
     [`KV_${membershipBucket(space)}`]: kv(membershipBucket(space)),
     [`KV_${deliveryBucket(space)}`]: kv(deliveryBucket(space)),
