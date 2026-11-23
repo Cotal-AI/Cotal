@@ -964,7 +964,7 @@ const A = await driver(RUN_A, TK_A);
   `);
   const result = spawnSync(process.execPath, [
     "--import", import.meta.resolve("tsx"), entry,
-    "run", "start", "--local", "--server", SERVERS, "--space", S, "--creds", credsFile, "--file", programFile,
+    "run", "start", "--local", "--server", SERVERS, "--space", S, "--creds", credsFile, "--file", programFile, "--admit-read", "none", "--admit-publish", "none",
   ], { cwd: dir, env, encoding: "utf8", timeout: 30_000 });
   const output = `${result.stdout ?? ""}\n${result.stderr ?? ""}`;
   c("a single-credential local CLI attempt reaches the named refusal", result.status === 1 && output.includes("single --creds"), output.slice(-1200));
