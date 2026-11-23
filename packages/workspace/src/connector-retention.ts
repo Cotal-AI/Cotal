@@ -244,14 +244,16 @@ function retainedSelectionRoot(saved: string, versionDir: string, mismatch: stri
   const config = resolve(globalConfigDir());
   const base = recordedConfigBase(savedDir, versionDir, config);
   if (!base) throw new Error(mismatch);
+  if (basename(base) !== basename(config)) {
+    if (existsSync(base) && sameConfigBase(base, config)) return saved;
+    throw new Error(mismatch);
+  }
   const refuse = (reason: string, next: string, cause?: unknown) => connectorMoveRefusal(base, config, reason, next, preparing, cause);
   let former = base;
-  let exists: boolean;
   try {
-    exists = lstatSync(base, { throwIfNoEntry: false }) !== undefined;
-    if (exists) {
+    if (lstatSync(base, { throwIfNoEntry: false })) {
       if (sameConfigBase(base, config)) return saved;
-    } else if (basename(base) === basename(config)) {
+    } else {
       // The nearest existing parent must be protected. A dangling ancestor link is not a move.
       former = dirname(base);
       while (!lstatSync(former, { throwIfNoEntry: false })) former = dirname(former);
@@ -266,9 +268,8 @@ function retainedSelectionRoot(saved: string, versionDir: string, mismatch: stri
       : "Restore search access to the former path. If an unrelated entry you own blocks it, rename that entry to an unused name beside it";
     throw refuse(reason, next, error);
   }
-  if (exists) throw refuse("the former config folder still exists and does not resolve to the current folder",
+  throw refuse("the former config folder still exists and does not resolve to the current folder",
     "If you own the former folder and have verified it is unrelated, rename it to an unused name beside it. Do not delete it");
-  throw new Error(mismatch);
 }
 
 function previousConfig(id: { entry: string; path: string }, prepare?: (path: string) => void): string | undefined {
