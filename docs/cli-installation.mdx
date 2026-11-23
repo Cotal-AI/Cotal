@@ -489,9 +489,10 @@ keeps a single attempt. If npm reports a refused connection to the proxy set by 
 proxy settings and retry. Cotal neither prints the proxy URL nor bypasses it. An unavailable registry
 without a confirmed proxy refusal remains a no-op.
 If npm is in offline mode and the latest-version lookup misses Cotal's temporary cache,
-`cotal update --self` reports that the check was skipped and exits 0. It does not retry with
-network access, reconcile connectors or replace installed packages. Run the command with npm
-offline mode disabled to check for a newer release.
+`cotal update --self` reports that the check was skipped and exits 0. The skipped check does not
+retry with network access or start a new install. Before the lookup, the updater can still recover an
+interrupted update or finish a pending extension promotion. It reports a completed promotion
+separately. Run the command with npm offline mode disabled to check for a newer release.
 For other non-network failures in the latest-version check, `cotal update --self` reports npm's
 first diagnostic line and exits with status 1.
 

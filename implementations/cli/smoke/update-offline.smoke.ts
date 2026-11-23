@@ -1,11 +1,31 @@
 import { execFile } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import strictAssert from "node:assert/strict";
 import { countedAssert, emitSentinel } from "../../../bin/smoke/sentinel.mjs";
+
+function pendingPromotion(config: string) {
+  const root = join(config, "extensions");
+  const stage = join(config, ".extensions.stage-offline.ready");
+  const old = join(config, ".extensions.rollback-offline");
+  const journal = join(config, ".extensions-promotion.json");
+  const name = "offline-promotion-fixture";
+  const manifest = (prefix: string) => join(prefix, "node_modules", name, "package.json");
+  for (const [prefix, version] of [[root, "1.0.0"], [stage, "2.0.0"]] as const) {
+    mkdirSync(join(prefix, "node_modules", name), { recursive: true, mode: 0o700 });
+    writeFileSync(manifest(prefix), JSON.stringify({ name, version }), { mode: 0o600 });
+    writeFileSync(join(prefix, "extensions.json"), JSON.stringify({ extensions: [{ pkg: name, version, spec: name, commands: [] }] }), { mode: 0o600 });
+  }
+  const identity = (path: string) => {
+    const stat = lstatSync(path);
+    return { dev: String(stat.dev), ino: String(stat.ino), birth: stat.birthtimeMs };
+  };
+  writeFileSync(journal, JSON.stringify({ v: 1, root, stage, old, stageIdentity: identity(stage), oldIdentity: identity(root) }), { mode: 0o600 });
+  return { journal, version: () => JSON.parse(readFileSync(manifest(root), "utf8")).version as string };
+}
 
 /** Exercise the public CLI with npm's own effective config and a reachable registry. */
 async function assertOfflineSelfUpdate(assert: typeof strictAssert): Promise<void> {
@@ -43,10 +63,19 @@ async function assertOfflineSelfUpdate(assert: typeof strictAssert): Promise<voi
       if (!extra.npm_config_offline) writeFileSync(env.npm_config_userconfig!, "offline=true\n");
       const result = await run(extra);
       assert.equal(result.code, 0, result.stdout + result.stderr);
-      assert.equal(result.stdout.trim(), "npm is in offline mode. The latest-version check was skipped; no installed packages were replaced.");
+      assert.equal(result.stdout.trim(), "npm is in offline mode. The latest-version check was skipped.");
       assert.equal(result.stderr, "");
       assert.deepEqual(requests, []);
     }
+    const promotion = pendingPromotion(join(env.XDG_CONFIG_HOME!, "cotal"));
+    assert.equal(promotion.version(), "1.0.0");
+    const recovered = await run();
+    assert.equal(recovered.code, 0, recovered.stdout + recovered.stderr);
+    assert.equal(recovered.stderr, "");
+    assert.deepEqual(requests, []);
+    assert.equal(promotion.version(), "2.0.0");
+    assert.equal(existsSync(promotion.journal), false);
+    assert.equal(recovered.stdout.trim(), "Completed an interrupted extension promotion.\nnpm is in offline mode. The latest-version check was skipped.");
     const online = await run({ npm_config_offline: "false" });
     assert.equal(online.code, 1, online.stdout + online.stderr);
     assert.match(online.stderr, /cotal-ai version check failed: npm (?:error|ERR!) code E401/);

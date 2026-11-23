@@ -3,4 +3,4 @@
 "cotal-ai": patch
 ---
 
-`cotal update --self` now reports a skipped version check when npm is offline and leaves the installed release in place. It does not retry with network access after a cache miss.
+`cotal update --self` now skips the version check when npm is offline and the temporary cache has no registry metadata. It does not retry with network access and reports any extension promotion it recovered before the check.

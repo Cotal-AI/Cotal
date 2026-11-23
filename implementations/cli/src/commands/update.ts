@@ -357,7 +357,7 @@ async function updateInstallation(args: ParsedArgs, rt: UpdateRuntime): Promise<
       });
     }
     try {
-      prepareUpdateConnectorConfig(Boolean(rt.prepareExecution));
+      prepareUpdateConnectorConfig(Boolean(rt.prepareExecution), line => rt.out(line));
     } catch (error) {
       if (error instanceof UnreadableConnectorSelection) connectorSelection = error;
       else {
@@ -628,7 +628,7 @@ export async function executeUpdate(self: boolean, rt: UpdateRuntime = updateRun
       if (latest.offline) {
         if (rt.env.COTAL_AUTO_UPDATE === "1") recordUpdateDeferral(current, "waiting for npm offline mode to be disabled", true);
         rt.onOfflineVersionCheckSkipped?.();
-        rt.out(`${latest.error}. The latest-version check was skipped; no installed packages were replaced.`);
+        rt.out(`${latest.error}. The latest-version check was skipped.`);
         return 0;
       }
       if (!latest.npmResult || !(releaseReadError(latest.npmResult, "cotal-ai version check failed") instanceof RegistryUnavailable)) {

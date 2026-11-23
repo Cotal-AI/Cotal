@@ -19,11 +19,12 @@ export function assertConfigAncestorProtected(): void {
   protectedLocalDirectory(path, "the Cotal config folder");
 }
 
-export function prepareUpdateConnectorConfig(staged: boolean): void {
-  if (staged) {
-    prepareConnectorConfigForUpdate();
-    if (recoverExtensionPromotion(true)) prepareConnectorConfigForUpdate();
-  } else recoverExtensionPromotion();
+export function prepareUpdateConnectorConfig(staged: boolean, report: (line: string) => void): void {
+  if (staged) prepareConnectorConfigForUpdate();
+  if (recoverExtensionPromotion(staged)) {
+    report("Completed an interrupted extension promotion.");
+    if (staged) prepareConnectorConfigForUpdate();
+  }
 }
 
 /** Repair the selection before the updater checks installed extension dependencies. */
@@ -31,7 +32,7 @@ export function repairUpdateConnectorSelection(staged: boolean, report: (line: s
   const setAside = repairConnectorSelection();
   if (!setAside.length) return false;
   report(`Set aside unreadable connector selection: ${setAside.map(path => JSON.stringify(path)).join(", ")}`);
-  prepareUpdateConnectorConfig(staged);
+  prepareUpdateConnectorConfig(staged, report);
   return true;
 }
 
