@@ -27,8 +27,10 @@ cotal run check <runId> (<program> | --file <program>) [--local] [--endpoint <ep
 `ps` (or `list`), `journal` and `migrate` still work as compatibility aliases of bare `run`, `show`
 and `check`.
 
-Every verb also takes `--space <s>`, `--server <url>` and `--creds <path>` to pick the mesh and the
-credential. A hosted verb refuses a raw `--creds` file `UNSUPPORTED`, exit 2, because the file
+Operator run commands use `--space <s>` and `--server <url>` to pick the mesh and
+`--creds <path>` to select a credential where supported. Offline commands take no mesh or caller
+selection. The seat-only `turns` and `yield` forms do not take `--creds`.
+A hosted verb refuses a raw `--creds` file `UNSUPPORTED`, exit 2, because the file
 carries no endpoint-caller triple for the manager call and that route cannot mint one. Its next step
 is to run the verb again without `--creds`, in the mesh's project folder or with `--space`, where
 the CLI mints the one-shot caller itself.
@@ -431,8 +433,8 @@ Inside a manager-launched static or open seat, `run turns` reads that seat's ass
 `run yield <turn-id> --status <done|blocked|handoff>` reports an outcome. Handoff also requires
 `--to <agent>`; `--note <text>` carries context. If the turn ID is missing, the refusal points to
 `cotal run turns` and shows the status and handoff flags. The native launcher supplies the caller context.
-These forms verify the seat's own credential and manager, never substitute an operator caller,
-and refuse user-auth self impersonation. They skip operator catalog and installation repair.
+These forms use the launcher's seat identity and manager and reject `--creds` with `USAGE_INVALID`
+(exit 1). They refuse user-auth self impersonation and skip operator catalog and installation repair.
 Yielding one turn does not complete the entire workflow.
 
 

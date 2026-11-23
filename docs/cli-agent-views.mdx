@@ -610,7 +610,9 @@ retirement and before any card-removal intent exists. Open and user-auth mixed r
 
 ### Manifest file checks
 
-`team check <file>` resolves the native manifest and referenced personas without a broker.
+`team check <file> [--space <name>]` resolves the native manifest and referenced personas without
+contacting a broker. `--space` asserts that the name matches the manifest's `space:` field. It does
+not select a registered target. A mismatch is refused with `CONFLICT` (exit 2).
 It lists the manifest's `defaults:` and each channel's delivery class, replay and replay window.
 A field the channel leaves out shows the manifest default it inherits at boot, marked `(default)`.
 A field neither declares does not claim a live registry value; the native seed may merge over
