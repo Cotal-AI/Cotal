@@ -17,10 +17,11 @@
  * Run: pnpm smoke:space-prepared-delete
  */
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createSuite } from "@cotal-ai/smoke-kit";
+import { spaceSegment } from "@cotal-ai/workspace";
 import { ptySpawn, screen } from "./_console-pty.js";
 
 const BIN = join(import.meta.dirname, "..", "..", "..", "bin", "dist", "cotal.js");
@@ -59,8 +60,37 @@ const at80 = async (args: string[]) => {
  *  which no wrap can break. */
 const fits80 = (display: string) => display.split("\n").every((line) => [...line].length <= 80 || !/\S\s+\S/.test(line.trim()));
 
+const empty = run(["space"]);
+check("rig: no spaces are registered or prepared", empty.status === 0 && empty.stdout.includes("No spaces registered."), shown(empty));
+const seeded = mkdtempSync(join(home, "seeded-"));
+mkdirSync(join(seeded, ".cotal"), { mode: 0o700 });
+writeFileSync(join(seeded, ".cotal", "channels.json"), '{"channels":{}}\n');
+const unknownStep = 'Unknown space "b4b". Run `cotal space` to check the name. For a new local space, run `cotal space create b4b` in its project folder, then run `cotal up` there.';
+const unknownPlain = run(["doctor", "auth", "--space", "b4b", "--plain"], seeded);
+check("doctor auth --space for an unknown space gives preparation guidance instead of a root",
+  unknownPlain.status === 2 && `${unknownPlain.stdout}${unknownPlain.stderr}`.includes(`Next\n  ${unknownStep}\n`), shown(unknownPlain));
+const noScope = run(["doctor", "auth", "--plain"], seeded);
+check("bare doctor auth in a never-started project lists where to find a space root",
+  noScope.status === 4 && noScope.stderr.includes("`cotal space` lists each space's root") && !noScope.stderr.includes("server-open.conf"), shown(noScope));
+
 const created = run(["space", "create", "b4b", "--root", root]);
 check("rig: the space is prepared and not started", created.status === 0, shown(created));
+
+for (const verb of ["describe", "invoke"]) {
+  const operation = [verb, "manager", ...(verb === "invoke" ? ["status", "--args", "{}"] : []), "--space", "b4b"];
+  const plain = run(["ep", ...operation, "--plain"]);
+  const message = '"b4b" is prepared but not started';
+  const remedy = `start it with \`cotal up\` in ${realpathSync(root)}`;
+  check(`ep ${verb} in a prepared space names the project and startup step`, plain.status === 2 && plain.stdout === "" &&
+    /Code:\s+TARGET_UNAVAILABLE/.test(plain.stderr) && plain.stderr.includes(message) && plain.stderr.includes(`Next\n  ${remedy}`), shown(plain));
+  for (const prefix of [["endpoint"], []]) {
+    const json = run([...prefix, ...operation, "--json"], home);
+    const report = json.envelope;
+    check(`${[...prefix, verb].join(" ")} refuses before requesting a contract and names the prepared target`, json.status === 2 && json.stderr === "" &&
+      report?.outcome === "refused" && report.error?.code === "TARGET_UNAVAILABLE" && report.error.message === message &&
+      report.error.remedy === remedy && report.target?.space === "b4b" && report.target.root === realpathSync(root), shown(json));
+  }
+}
 
 const server = "nats://127.0.0.1:43842";
 const beforeMint = readdirSync(join(root, ".cotal")).sort();
@@ -115,6 +145,23 @@ check("running it again in the same root gives the same refusal and writes nothi
 // Without --space the report is partial rather than a refusal, and its step was the same "run it in a
 // space's root". It now names the space this root prepared; the outcome, exit and scope stay.
 const BARE_HERE = '"b4b" is prepared but not started; start it with `cotal up`, then run `cotal doctor auth` again';
+{
+  const record = join(env.COTAL_HOME, "prepared", `${spaceSegment("b4b")}.json`);
+  const saved = readFileSync(record);
+  writeFileSync(record, "{\n");
+  try {
+    const plain = run(["doctor", "auth", "--plain"]);
+    const json = run(["doctor", "auth", "--json"]);
+    const step = json.envelope?.error?.remedy ?? "";
+    check("bare doctor auth gives the damaged prepared record's recovery as its primary step in text and JSON",
+      plain.status === 4 && json.status === 4 && json.envelope?.warnings?.some(({ code }) => code === "PREPARED_RECORD_SKIPPED") === true &&
+      step.includes(record) && step.includes("`cotal space forget b4b`") && plain.stderr.includes(`-> ${step}`) &&
+      !step.includes("server-open.conf") && readFileSync(record, "utf8") === "{\n", { plain: shown(plain), json: shown(json) });
+    const named = run(["doctor", "auth", "--space", "b4b", "--json"]);
+    check("named doctor auth keeps the damaged record refusal and its recovery",
+      named.status === 1 && named.envelope?.error?.code === "SCHEMA_INVALID" && named.envelope.error.remedy === "remove it with `cotal space forget b4b`", shown(named));
+  } finally { writeFileSync(record, saved); }
+}
 const bareJson = run(["doctor", "auth", "--json"]);
 check("bare doctor auth in a prepared space's root stays partial, exit 4, with no space or credential scope established",
   bareJson.status === 4 && bareJson.envelope?.outcome === "partial" && bareJson.envelope.error?.code === "OPERATION_PARTIAL" && bareJson.envelope.target?.root === realpathSync(root)
@@ -134,6 +181,29 @@ const bareFix = run(["doctor", "auth", "--fix", "--json"]);
 check("bare doctor auth --fix there still refuses AUTH_REQUIRED, exit 2, naming no space, with the step for --fix",
   bareFix.status === 2 && bareFix.envelope?.error?.code === "AUTH_REQUIRED" && bareFix.envelope.target?.space === null
     && bareFix.envelope.error.remedy === '"b4b" is prepared but not started; start it with `cotal up`, then run `cotal doctor auth --fix` again', shown(bareFix));
+
+{
+  const seed = join(realpathSync(root), ".cotal", "channels.json");
+  writeFileSync(seed, '{"channels":\n');
+  const status = run(["status", "--space", "b4b", "--plain"]);
+  const ps = run(["ps", "--space", "b4b", "--json"]);
+  const doctor = run(["doctor", "auth", "--space", "b4b", "--json"], home);
+  const up = run(["up", "--foreground", "--space", "b4b", "--server", server]);
+  const repair = `fix or remove ${seed}`;
+  const doctorStep = doctor.envelope?.error?.remedy ?? "";
+  check("status keeps the prepared verdict and replaces bare first-start advice with channel seed repair",
+    status.status === 0 && status.stdout.includes('"b4b" is prepared but not started') && status.stdout.includes(`First start blocked: the channels file ${seed}`) && status.stdout.includes(repair) && !status.stdout.includes("start it with"), shown(status));
+  check("ps keeps TARGET_UNAVAILABLE and names the same channel seed repair",
+    ps.status === 2 && ps.envelope?.error?.code === "TARGET_UNAVAILABLE" && ps.envelope.error.message?.includes(`First start blocked: the channels file ${seed}`) === true && ps.envelope.error.remedy === repair, shown(ps));
+  check("doctor keeps AUTH_REQUIRED and puts the repair before startup at the named root",
+    doctor.status === 2 && doctor.envelope?.error?.code === "AUTH_REQUIRED" && doctorStep.includes(`First ${repair}, then start it with \`cotal up --root ${realpathSync(root)}\``), shown(doctor));
+  check("up refuses the same malformed default seed before startup",
+    up.status === 1 && up.stderr.includes(`the channels file ${seed} is not valid JSON`), shown(up));
+  rmSync(seed);
+  const repaired = run(["doctor", "auth", "--space", "b4b", "--json"]);
+  check("once the malformed seed is removed, doctor offers the regular first start",
+    repaired.status === 2 && repaired.envelope?.error?.remedy === DOCTOR_HERE, shown(repaired));
+}
 
 // From another folder the step names the prepared root with --root, quoted so a shell reads it back
 // as that folder.
@@ -171,16 +241,41 @@ const cleared = run(["use", "--clear"]);
 check("rig: the selection is cleared", cleared.status === 0, shown(cleared));
 
 const doctorUnknown = run(["doctor", "auth", "--space", "nosuch", "--json"]);
-check("control: a space nothing prepared or registered keeps the general step",
-  doctorUnknown.status === 2 && doctorUnknown.envelope?.error?.code === "AUTH_REQUIRED" && doctorUnknown.envelope.error.remedy === "run `cotal doctor auth --space nosuch` in that space's root folder; `cotal space` lists each space's root", shown(doctorUnknown));
+check("an unknown space keeps the JSON refusal code and gives preparation guidance even in another space's root",
+  doctorUnknown.status === 2 && doctorUnknown.envelope?.error?.code === "AUTH_REQUIRED" && doctorUnknown.envelope.error.remedy === unknownStep.replaceAll("b4b", "nosuch"), shown(doctorUnknown));
 
 const preview = run(["space", "delete", "b4b", "--dry-run", "--json"]);
 check("a delete preview of a prepared space refuses as unavailable, exit 2", preview.status === 2 && preview.envelope?.error?.code === "TARGET_UNAVAILABLE", shown(preview));
 check("it says the space is prepared and not running", /"b4b" is prepared and not running/.test(preview.envelope?.error?.message ?? ""), preview.envelope?.error);
 check("a space that never ran has no streams, so its remedy names only space forget", /no stack has run for it/.test(preview.envelope?.error?.remedy ?? "") && /cotal space forget b4b/.test(preview.envelope?.error?.remedy ?? "") && !/cotal up/.test(preview.envelope?.error?.remedy ?? ""), preview.envelope?.error);
 
+const damagedRoot = mkdtempSync(join(home, "damaged-"));
+const damagedCreate = run(["space", "create", "damaged", "--root", damagedRoot]);
+check("rig: create a prepared record to damage", damagedCreate.status === 0, shown(damagedCreate));
+const record = join(env.COTAL_HOME, "prepared", `space.${Buffer.from("damaged").toString("hex")}.json`);
+writeFileSync(record, "{");
+for (const flags of [["--dry-run"], []]) {
+  const deletion = run(["space", "delete", "damaged", ...flags, "--json"]);
+  const error = deletion.envelope?.error;
+  check(`delete ${flags.join(" ") || "apply"} names the damaged file and its recovery without contacting a broker`,
+    deletion.status === 1 && error?.code === "SCHEMA_INVALID" && error.message?.includes(record) === true && error.message.includes("no broker was contacted") &&
+    error.remedy?.includes("cotal space forget damaged") === true && readFileSync(record, "utf8") === "{", shown(deletion));
+}
+const forgetDamaged = run(["space", "forget", "damaged", "--json"]);
+check("the recovery command removes the damaged record", forgetDamaged.status === 0 && !existsSync(record), shown(forgetDamaged));
+
 const unknown = run(["space", "delete", "nosuch", "--dry-run", "--json"]);
 check("control: a name nothing records is still not found, exit 2", unknown.status === 2 && unknown.envelope?.error?.code === "TARGET_NOT_FOUND", shown(unknown));
+const addedOffline = run(["space", "add", "offline", "--server", server, "--root", noSpace, "--force"]);
+const offline = run(["space", "delete", "offline", "--dry-run", "--json"]);
+check("a failed deletion preview names the recorded broker and how to inspect its registration",
+  addedOffline.status === 0 && offline.status === 2 && offline.envelope?.error?.code === "TARGET_UNAVAILABLE" &&
+    offline.envelope.error.message?.includes(server) === true && offline.envelope.error.message.includes("no alternate address or identity was tried") &&
+    offline.envelope.error.remedy === "inspect the registration with `cotal space show offline`", shown(offline));
+const offlineShown = run(["space", "show", "offline", "--plain"]);
+check("the recorded registration is still visible and its broker is unreachable",
+  offlineShown.status === 0 && offlineShown.stdout.includes(server) && offlineShown.stdout.includes("unreachable"), shown(offlineShown));
+check("rig: remove the offline manual registration", run(["space", "forget", "offline"]).status === 0);
 const unknownApply = run(["space", "delete", "no-such-space", "--plain"]);
 const unknownPreview = run(["space", "delete", "no-such-space", "--dry-run", "--plain"]);
 check("noninteractive apply of a missing name gives the same refusal as dry-run without asking for confirmation",
@@ -218,6 +313,16 @@ const unchecked = run(["doctor", "auth", "--space", "workshop-a", "--json"], wor
 check("doctor keeps the local open-space no-op and warns that the mode was not checked",
   unchecked.status === 0 && unchecked.envelope?.outcome === "no-op" && unchecked.envelope.result?.credentialScope === "open-space" &&
   unchecked.envelope.result.repair?.attempted === false && unchecked.envelope.warnings?.some(w => w.code === "MODE_NOT_CHECKED") === true, shown(unchecked));
+const child = join(workshop, "subdir"), sibling = `${workshop}-other`;
+for (const dir of [child, sibling]) mkdirSync(dir, { mode: 0o700 });
+const nested = run(["doctor", "auth", "--space", "workshop-a", "--json"], child);
+check("doctor from a subfolder reports the named open registration's root and keeps the unchecked warning without creating .cotal",
+  nested.status === 0 && nested.envelope?.target?.root === realpathSync(workshop) && nested.envelope?.result?.credentialScope === "open-space" &&
+  nested.envelope.result.repair?.attempted === false && nested.envelope.warnings?.some(w => w.code === "MODE_NOT_CHECKED") === true &&
+  [workshop, child].every(dir => !existsSync(join(dir, ".cotal"))), shown(nested));
+const elsewhere = run(["doctor", "auth", "--space", "workshop-a", "--json"], sibling);
+check("doctor refuses a named open registration from a sibling with a shared path prefix",
+  elsewhere.status === 2 && elsewhere.envelope?.error?.code === "AUTH_REQUIRED", shown(elsewhere));
 for (const fix of [[], ["--fix"]]) {
   const command = ["doctor", "auth", ...fix];
   const bare = run([...command, "--plain"], workshop);
@@ -230,6 +335,23 @@ for (const fix of [[], ["--fix"]]) {
       explicit.status === 0 && explicit.stdout.includes("Credential check skipped") && explicit.stdout.replace(/\s+/g, " ").includes(`Space: ${space}`) &&
       !explicit.stdout.includes("authenticates no one") && explicit.stderr.includes(`cotal space show ${space}`), shown(explicit));
   }
+}
+
+{
+  const record = join(env.COTAL_HOME, "meshes", `${spaceSegment("workshop-a")}.json`);
+  writeFileSync(record, '{"space":\n');
+  const recovery = "restore the record from backup, or remove it with `cotal space forget workshop-a`";
+  const barePlain = run(["doctor", "auth", "--plain"], workshop);
+  const namedPlain = run(["doctor", "auth", "--plain", "--space", "workshop-a"], workshop);
+  check("doctor gives the same damaged registration refusal in plain output with and without --space",
+    barePlain.status === 1 && namedPlain.status === 1 && namedPlain.stderr === barePlain.stderr &&
+    namedPlain.stderr.includes(record) && namedPlain.stderr.includes("SCHEMA_INVALID") && namedPlain.stderr.includes(recovery), [barePlain, namedPlain].map(shown));
+  const bareJson = run(["doctor", "auth", "--json"], workshop);
+  const namedJson = run(["doctor", "auth", "--json", "--space", "workshop-a"], workshop);
+  check("doctor gives the same damaged registration refusal in JSON with and without --space",
+    bareJson.status === 1 && namedJson.status === 1 && namedJson.stdout === bareJson.stdout &&
+    namedJson.envelope?.outcome === "refused" && namedJson.envelope.error?.code === "SCHEMA_INVALID" &&
+    namedJson.envelope.error.message?.includes(record) === true && namedJson.envelope.error.remedy === recovery, [bareJson, namedJson].map(shown));
 }
 
 finish();

@@ -37,7 +37,7 @@ if (!existsSync(BIN)) {
 interface Envelope {
   outcome: string;
   completeness?: string;
-  result?: { requestedName?: string };
+  result?: { requestedName?: string; name?: string; path?: string; definition?: { name?: string }; source?: string };
   target: Record<string, unknown> | null;
   error?: { code: string; message?: string; remedy?: string };
 }
@@ -47,7 +47,7 @@ const home = mkdtempSync(join(tmpdir(), "cotal-operation-space-"));
 const root = realpathSync(mkdtempSync(join(home, "project-")));
 process.on("exit", () => rmSync(home, { recursive: true, force: true }));
 const HOST_ENV = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("COTAL_") && k !== "FORCE_COLOR" && k !== "NO_COLOR"));
-const env = { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config"), COTAL_HOME: join(home, ".cotal"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" };
+const env: NodeJS.ProcessEnv & { XDG_CONFIG_HOME: string } = { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config"), COTAL_HOME: join(home, ".cotal"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" };
 
 const outcome = (r: ReturnType<typeof spawnSync>) => {
   const stdout = String(r.stdout ?? ""), stderr = String(r.stderr ?? "");
@@ -57,7 +57,8 @@ const outcome = (r: ReturnType<typeof spawnSync>) => {
 };
 const fixture = join(import.meta.dirname, "operation-space.fixture.ts");
 const kernel = (...words: string[]) => outcome(spawnSync(process.execPath, [...process.execArgv, fixture, ...words], { cwd: root, env, encoding: "utf8", timeout: 60_000 }));
-const cotal = (...words: string[]) => outcome(spawnSync(process.execPath, [BIN, ...words], { cwd: root, env, encoding: "utf8", timeout: 120_000 }));
+const cotalAt = (cwd: string, ...words: string[]) => outcome(spawnSync(process.execPath, [BIN, ...words], { cwd, env, encoding: "utf8", timeout: 120_000 }));
+const cotal = (...words: string[]) => cotalAt(root, ...words);
 const shown = (r: ReturnType<typeof kernel>) => ({ status: r.status, stdout: r.stdout.slice(0, 600), stderr: r.stderr.slice(0, 600) });
 const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
 
@@ -111,6 +112,15 @@ for (const args of [["show", "nosuch"], ["remove", "nosuch", "--yes"]]) {
   const missing = cotal("persona", ...args, "--json");
   check(`persona ${args[0]} of a missing persona is TARGET_NOT_FOUND with a remedy`, missing.status === 2 && missing.envelope?.error?.code === "TARGET_NOT_FOUND" && missing.envelope.error.remedy === "see the personas here with `cotal persona`", shown(missing));
 }
+const alternate = mkdtempSync(join(home, "alternate-"));
+const alternatePrepared = cotalAt(alternate, "space", "create", "alternate-catalog", "--root", ".");
+check("fixture: a second catalog is prepared", alternatePrepared.status === 0, shown(alternatePrepared));
+const alternateMiss = cotal("persona", "show", "nosuch", "--space", "alternate-catalog", "--json");
+const alternateList = alternateMiss.envelope?.error?.remedy?.match(/`([^`]+)`/)?.[1];
+check("persona show in a different catalog refuses and its recovery lists that catalog",
+  alternateMiss.status === 2 && alternateMiss.envelope?.error?.code === "TARGET_NOT_FOUND"
+    && alternateMiss.envelope.target?.space === "alternate-catalog" && alternateList === "cotal persona --space alternate-catalog"
+    && cotal(...alternateList.split(" ").slice(1), "--json").envelope?.target?.space === "alternate-catalog", shown(alternateMiss));
 // A complete file that names another persona: the refusal names the file's name and the create that keeps it.
 const otherFile = join(root, "bernie.md");
 writeFileSync(otherFile, "---\nname: bernie\nrole: reviewer\nsubscribe: []\n---\n");
@@ -154,38 +164,43 @@ check("control: a valid role token is created", roleOk.status === 0 && existsSyn
 // A malformed --on names the command to rerun, with --on written once.
 for (const [argv, rerun] of [
   [["persona", "--on", "bad"], "cotal persona --on <instance>"],
-  [["persona", "create", "h1", "--prompt", "x", "--on", "bad"], "cotal persona create h1 --on <instance>"],
   // #7322: a verb that targets an agent keeps the agent, its other positionals and the space it named.
-  [["stop", "default_agent", "--on", "bad"], "cotal stop default_agent --on <instance>"],
+  [["stop", "default_agent", "--on", "bad"], "cotal stop default_agent --json --on <instance>"],
   // #7644: input gives its text again, quoted for a shell, rather than a `<text>` a shell reads as a redirection.
   [["input", "default_agent", "hello world", "--on", "bad"], "cotal input default_agent 'hello world' --on <instance>"],
   [["input", "default_agent", "hello world", "--no-enter", "--on", "bad"], "cotal input default_agent 'hello world' --no-enter --on <instance>"],
   [["status", "default_agent", "--on", "bad"], "cotal status default_agent --on <instance>"],
-  [["stop", "default_agent", "--space", "elsewhere", "--on", "bad"], "cotal stop default_agent --space elsewhere --on <instance>"],
+  [["stop", "default_agent", "--force", "--space", "elsewhere", "--on", "bad"], "cotal stop default_agent --force --json --space elsewhere --on <instance>"],
   // #7644: ps and models keep the --space and filter they were given.
   [["ps", "--space", "elsewhere", "--on", "bad"], "cotal ps --space elsewhere --on <instance>"],
   [["ps", "--slots", "--server", "nats://127.0.0.1:39200", "--on", "bogus"], "cotal ps --slots --server nats://127.0.0.1:39200 --on <instance>"],
   [["models", "--harness", "claude", "--on", "bad"], "cotal models --harness claude --on <instance>"],
-  [["spawn", "default", "-d", "--on", "bad"], "cotal spawn default -d --on <instance>"],
+  [["spawn", "default", "-d", "--on", "bad"], "cotal spawn default -d --json --on <instance>"],
 ] as const) {
   const pinned = cotal(...argv, "--json");
   const said = `${pinned.envelope?.error?.message ?? ""} ${pinned.envelope?.error?.remedy ?? ""}`;
   check(`${argv.slice(0, -2).join(" ")} --on bad names ${rerun} and never --on twice`,
     pinned.status === 1 && pinned.envelope?.error?.code === "USAGE_INVALID" && (pinned.envelope.error.remedy ?? "").endsWith(`rerun it as \`${rerun}\``) && !said.includes("--on --on"), shown(pinned));
 }
+const createPin = cotal("persona", "create", "h1", "--prompt", "keep this definition private", "--on", "bad", "--space", "opsp", "--json");
+check("persona create with a malformed pin tells JSON callers to replace only the original --on value",
+  createPin.status === 1 && createPin.envelope?.error?.code === "USAGE_INVALID" &&
+  (createPin.envelope.error.remedy ?? "").includes("replace only the --on value in the original command") &&
+  !createPin.stdout.includes("cotal persona create h1 --on") && !createPin.stdout.includes("keep this definition private"), shown(createPin));
 // #7644: a principal id, an empty value and an endpoint's malformed --on are refused while the
 // arguments are read, with the command to rerun in the message. It keeps the command's words and
 // the --space it was given; it used to keep only the verb.
 for (const [argv, rerun] of [
-  [["stop", "default_agent", "--space", "elsewhere", "--on", "local.U123"], "cotal stop default_agent --space elsewhere --on <instance>"],
+  [["stop", "default_agent", "--space", "elsewhere", "--on", "local.U123"], "cotal stop default_agent --json --space elsewhere --on <instance>"],
   [["status", "default_agent", "--on", "local.U123"], "cotal status default_agent --on <instance>"],
-  [["stop", "default_agent", "--on", ""], "cotal stop default_agent --on <instance>"],
+  [["stop", "default_agent", "--on", ""], "cotal stop default_agent --json --on <instance>"],
   [["input", "reviewer", "Review this", "--no-enter", "--on", "", "--space", "audit"], "cotal input reviewer 'Review this' --no-enter --space audit --on <instance>"],
   [["input", "reviewer", "--text=--verbose now", "--no-enter", "--on", "local.U123"], "cotal input reviewer '--text=--verbose now' --no-enter --on <instance>"],
   [["endpoint", "describe", "ai.cotal.manager", "--space", "elsewhere", "--on", "bad"], "cotal endpoint describe ai.cotal.manager --space elsewhere --on <instance>"],
   [["endpoint", "invoke", "ai.cotal.manager", "ps", "--on", "bad"], "cotal endpoint invoke ai.cotal.manager ps --on <instance>"],
+  [["spawn", "--no-input", "-d", "--on=", "--name", "explicit", "--", "-persona"], "cotal spawn --no-input -d --name explicit --json --on <instance> -- -persona"],
 ] as const) {
-  const refused = cotal(...argv, "--json");
+  const refused = cotal("--json", ...argv);
   check(`${argv.join(" ")} names ${rerun}`,
     refused.status === 1 && refused.envelope?.error?.code === "USAGE_INVALID" && (refused.envelope.error.message ?? "").includes(`\`${rerun}\``), shown(refused));
 }
@@ -265,6 +280,32 @@ check("spawn --dry-run of a missing name is TARGET_NOT_FOUND, naming the catalog
 const noFile = cotal("spawn", "--file", "missing.md", "--dry-run", "--json");
 check("spawn --dry-run of a missing --file names the file it checked",
   noFile.status === 2 && noFile.envelope?.error?.code === "TARGET_NOT_FOUND" && noFile.envelope.error.message === `no persona "missing.md": ${join(root, "missing.md")} was not found`, shown(noFile));
+if (process.platform !== "win32") {
+  const link = agentFilePath(root, "broken-probe");
+  symlinkSync("absent-probe.md", link);
+  for (const flags of [["--dry-run", "--plain"], ["--server", "nats://127.0.0.1:34300"]]) {
+    const refused = cotal("spawn", "broken-probe", ...flags);
+    check(`spawn ${flags[0]} diagnoses a dangling persona link`, refused.status === 2 &&
+      /Code:\s+TARGET_NOT_FOUND/.test(refused.stderr) && refused.stderr.includes(`${link} is a symbolic link to a missing target: absent-probe.md`) &&
+      refused.stderr.includes("restore the link's target, or move the link aside and put a regular persona file in its place"), shown(refused));
+  }
+  writeFileSync(agentFilePath(root, "absent-probe"), "---\nname: broken-probe\n---\n");
+  const restored = cotal("spawn", "broken-probe", "--dry-run", "--json");
+  check("spawn preview follows the same link when its target is restored",
+    restored.status === 0 && restored.envelope?.result?.requestedName === "broken-probe", shown(restored));
+}
+if (process.getuid && process.getuid() !== 0) {
+  const unreadable = join(root, "unreadable persona.md");
+  writeFileSync(unreadable, "---\nname: reader\n---\n", { mode: 0o000 });
+  const refused = cotal("spawn", "--file", unreadable, "--dry-run", "--json");
+  const remedy = refused.envelope?.error?.remedy;
+  check("spawn preview quotes the chmod remedy for an owned file without changing its mode",
+    refused.status === 2 && refused.envelope?.error?.code === "PERMISSION_DENIED" && refused.envelope.target?.path === unreadable &&
+    remedy === `run \`chmod u+r '${unreadable}'\`, then retry` && (statSync(unreadable).mode & 0o777) === 0, shown(refused));
+  chmodSync(unreadable, 0o400);
+  const retried = cotal("spawn", "--file", unreadable, "--dry-run", "--json");
+  check("the spawn preview succeeds once owner read permission is restored", retried.status === 0, shown(retried));
+}
 const prefix = join(env.XDG_CONFIG_HOME, "cotal", "extensions");
 mkdirSync(join(prefix, "node_modules", "@cotal-ai"), { recursive: true });
 const previewExtensions = ["connector-claude-code", "connector-opencode"].map((pkg) => {
@@ -274,21 +315,68 @@ const previewExtensions = ["connector-claude-code", "connector-opencode"].map((p
   return { pkg: `@cotal-ai/${pkg}`, version: JSON.parse(readFileSync(join(source, "package.json"), "utf8")).version, commands: [], provides: [{ kind: "connector", name }], connectors: [{ name, requires: [name], eventPlane: true, setup: null }] };
 });
 writeFileSync(join(prefix, "extensions.json"), JSON.stringify({ extensions: previewExtensions }));
+if (process.platform !== "win32") {
+  const path = agentFilePath(alternate, "edit-receipt");
+  const edited = '---\nname: "Review Bot"\nagent: claude\n---\n';
+  const editor = join(home, "rename-editor");
+  writeFileSync(path, "---\nname: edit-receipt\nagent: claude\n---\n");
+  writeFileSync(editor, `#!/bin/sh\ncat > "$1" <<'EOF'\n${edited}EOF\n`, { mode: 0o700 });
+  const saved = outcome(spawnSync(process.execPath, [BIN, "persona", "edit", "edit-receipt", "--space", "alternate-catalog", "--plain"],
+    { cwd: root, env: { ...env, VISUAL: editor }, encoding: "utf8", timeout: 120_000 }));
+  const launch = /^\s+(?:pnpm )?cotal (spawn .+?) {2,}Launch an agent from this persona\s*$/m.exec(saved.stdout)?.[1];
+  check("persona edit saves a distinct display name and prints a launch with a valid override and the same space",
+    saved.status === 0 && readFileSync(path, "utf8") === edited &&
+    launch === "spawn edit-receipt --space alternate-catalog --name edit-receipt", shown(saved));
+  const preview = launch && cotal(...launch.split(" "), "--dry-run", "--json");
+  check("the launch arguments in the edit receipt preview the saved persona in the selected space",
+    !!preview && preview.status === 0 && preview.envelope?.target?.space === "alternate-catalog" &&
+    preview.envelope.result?.requestedName === "edit-receipt", preview && shown(preview));
+}
 const noDefault = cotal("spawn", "--dry-run", "--plain");
 check("spawn --dry-run with no default persona previews the shipped default without writing it",
   noDefault.status === 0 && noDefault.stdout.includes("the launch writes the shipped default persona here; the preview wrote nothing") && !existsSync(agentFilePath(root, "default")), shown(noDefault));
 
 const dottedCatalog = join(dirname(agentFilePath(root, "default")), "review.md.md");
 const dottedFile = join(root, "review.md");
-writeFileSync(dottedCatalog, "---\nname: reviewer\n---\n");
-writeFileSync(dottedFile, "---\nname: other\n---\n");
+const dottedSource = "---\nname: reviewer\n---\nReview this change.\n";
+const projectSource = "---\nname: other\n---\n";
+writeFileSync(dottedCatalog, dottedSource);
+writeFileSync(dottedFile, projectSource);
 try {
+  const listed = cotal("persona", "--space", "opsp", "--plain");
+  check("persona lists the dotted name", listed.status === 0 && /^  review\.md\s/m.test(listed.stdout), shown(listed));
+  const show = cotal("persona", "show", "review.md", "--space", "opsp", "--json");
+  const card = show.envelope?.result;
+  check("persona show reads the listed dotted name from the catalog rather than the project file",
+    show.status === 0 && card?.name === "review.md" && card.path === dottedCatalog && card.definition?.name === "reviewer" && card.source === dottedSource, shown(show));
+  const legacyShow = cotal("personas", "show", "review.md", "--space", "opsp");
+  check("legacy personas show copies the dotted catalog source", legacyShow.status === 0 && legacyShow.stdout === dottedSource, shown(legacyShow));
+  const fileRef = cotal("persona", "show", "./review.md", "--space", "opsp", "--json");
+  check("persona show refuses a path", fileRef.status === 1 && fileRef.envelope?.error?.code === "USAGE_INVALID", shown(fileRef));
+  const create = cotal("persona", "create", "new.review", "--prompt", "Review this.", "--subscribe", "", "--space", "opsp", "--json");
+  check("persona create still refuses dotted names",
+    create.status === 1 && create.envelope?.error?.code === "USAGE_INVALID" && !existsSync(join(dirname(dottedCatalog), "new.review.md")), shown(create));
   const preview = cotal("spawn", "review.md", "--dry-run", "--plain");
   check("spawn --dry-run previews the dotted catalog name instead of the project file",
     preview.status === 0 && preview.stdout.includes(dottedCatalog) && preview.stdout.includes("reviewer"), shown(preview));
+  for (const [ref, path, name] of [["review.md", dottedCatalog, "reviewer"], ["./review.md", dottedFile, "other"]]) {
+    env.COTAL_DEFAULT_PERSONA = ref;
+    const preferred = cotal("spawn", "--dry-run", "--plain");
+    check(`spawn --dry-run with COTAL_DEFAULT_PERSONA=${ref} selects ${name}`,
+      preferred.status === 0 && preferred.stdout.includes(path) && new RegExp(`Requested name:\\s+${name}$`, "m").test(preferred.stdout), shown(preferred));
+  }
+  const remove = cotal("personas", "rm", "review.md", "--space", "opsp");
+  check("legacy personas rm asks for confirmation without changing either file",
+    remove.status === 1 && remove.stderr.includes("cotal personas rm review.md --space opsp --force") &&
+    readFileSync(dottedCatalog, "utf8") === dottedSource && readFileSync(dottedFile, "utf8") === projectSource, shown(remove));
+  const forced = cotal("personas", "rm", "review.md", "--space", "opsp", "--force");
+  check("legacy personas rm --force removes only the dotted catalog entry",
+    forced.status === 0 && !existsSync(dottedCatalog) && existsSync(dottedFile) &&
+    readFileSync(dottedFile, "utf8") === projectSource, shown(forced));
 } finally {
-  rmSync(dottedCatalog);
-  rmSync(dottedFile);
+  delete env.COTAL_DEFAULT_PERSONA;
+  rmSync(dottedCatalog, { force: true });
+  rmSync(dottedFile, { force: true });
 }
 
 // #7526: spawning or previewing an invalid native persona preserves the field/position error without
@@ -460,6 +548,15 @@ const builtInRuntime = previewRuntime("--runtime", "pty");
 check("the built-in pty is available here, with no warning",
   builtInRuntime.r.status === 0 && builtInRuntime.p?.result?.requested?.runtime === "pty" && builtInRuntime.p.result.runtimeCheck?.available === true
     && builtInRuntime.p.result.runtimeCheck.error === null && same(builtInRuntime.p.warnings, []), shown(builtInRuntime.r));
+const foregroundRuntime = cotal("spawn", "--foreground", "--runtime", "pty", "--json");
+check("foreground spawn refuses --runtime and offers compatible foreground and managed retries",
+  foregroundRuntime.status === 1 && foregroundRuntime.envelope?.error?.code === "USAGE_INVALID"
+    && foregroundRuntime.envelope.error.remedy === "omit --runtime, --json to launch in this terminal, or replace --foreground with -d (with --on <instance> to select a manager) to launch through a manager",
+  shown(foregroundRuntime));
+const combinedRuntime = cotal("spawn", "--foreground", "--runtime", "pty", "--json", "-d");
+check("foreground spawn with -d already supplied tells the operator to omit --foreground for a managed launch",
+  combinedRuntime.status === 1 && combinedRuntime.envelope?.error?.code === "USAGE_INVALID"
+    && combinedRuntime.envelope.error.remedy?.endsWith("or omit --foreground to launch through a manager") === true, shown(combinedRuntime));
 const noRuntime = previewRuntime();
 check("without --runtime the preview names none and checks none",
   noRuntime.r.status === 0 && noRuntime.p?.result?.requested?.runtime === null && noRuntime.p.result.runtimeCheck === null, shown(noRuntime.r));

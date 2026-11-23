@@ -4,6 +4,7 @@ import Headless from "@xterm/headless";
 import type { Manager } from "./manager.js";
 import { exitProof, pollProvedExit, watchProvedExit } from "./runtime/index.js";
 import type { ManagedAgent } from "./seat-types.js";
+import type { ManagerConfig } from "./manager-config.js";
 
 /** How often the readiness race asks a runtime that streams no exit whether its child has exited, and
  *  how long it waits past the window for the proof of its last read. An operator waits on this reply,
@@ -15,12 +16,14 @@ const READINESS_EXIT_POLL_MS = 1_000;
  *  exits first and is reported as failed. */
 const OPERATOR_READINESS_MS = 3_000;
 
+/** Room for a refusal paragraph that names a full filesystem path, while a runaway line stays bounded. */
+const TAIL_MAX = 4096;
+
 /** What {@link ReadinessWait} reads from the Manager. Every entry is read at use, so a field the Manager
  *  assigns after construction is always current, and a Manager method a test replaces is the one that runs. */
 export interface ReadinessWaitDeps {
   agents: () => Manager["agents"];
   ep: () => Manager["ep"];
-  shutdownReadiness: () => Manager["shutdownReadiness"];
   managedPrincipal: (...args: Parameters<Manager["managedPrincipal"]>) => ReturnType<Manager["managedPrincipal"]>;
   onAgentExit: (...args: Parameters<Manager["onAgentExit"]>) => ReturnType<Manager["onAgentExit"]>;
 }
@@ -31,7 +34,6 @@ export function readinessWaitDeps(m: Manager): ReadinessWaitDeps {
   return {
     agents: () => m["agents"],
     ep: () => m["ep"],
-    shutdownReadiness: () => m["shutdownReadiness"],
     managedPrincipal: (...args) => m["managedPrincipal"](...args),
     onAgentExit: (...args) => m["onAgentExit"](...args),
   };
@@ -39,14 +41,13 @@ export function readinessWaitDeps(m: Manager): ReadinessWaitDeps {
 
 /** The launch readiness race (join, exit or the bound), the exit watch that outlives it, and the transcript tail an exit reports. */
 export class ReadinessWait {
-  constructor(private readonly deps: ReadinessWaitDeps) {}
+  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: ReadinessWaitDeps) {}
 
   // The Manager members these bodies read, under their Manager names. Each reads through its dep at
   // use, so a field the Manager assigns later is current and a method a test replaces on the Manager
   // is the one that runs.
   private get agents() { return this.deps.agents(); }
   private get ep() { return this.deps.ep(); }
-  private get shutdownReadiness() { return this.deps.shutdownReadiness(); }
   private managedPrincipal(...args: Parameters<Manager["managedPrincipal"]>): ReturnType<Manager["managedPrincipal"]> { return this.deps.managedPrincipal(...args); }
   private onAgentExit(...args: Parameters<Manager["onAgentExit"]>): ReturnType<Manager["onAgentExit"]> { return this.deps.onAgentExit(...args); }
 
@@ -118,7 +119,7 @@ export class ReadinessWait {
         clearTimeout(operatorTimer);
         if (joinedPoll !== undefined) clearInterval(joinedPoll);
         this.ep.off("presence", onPresence);
-        this.shutdownReadiness.signal.removeEventListener("abort", onShutdown);
+        this.config.shutdownReadiness.signal.removeEventListener("abort", onShutdown);
         unsubExit();
         resolve(r);
       };
@@ -207,18 +208,19 @@ export class ReadinessWait {
       if (s) unsubExit = s.onExit(onExit);
       else pollProvedExit(a.handle, onExit, () => !done, READINESS_EXIT_POLL_MS);
       this.ep.on("presence", onPresence);
-      this.shutdownReadiness.signal.addEventListener("abort", onShutdown, { once: true });
+      this.config.shutdownReadiness.signal.addEventListener("abort", onShutdown, { once: true });
       // Subscribe-then-check (TOCTOU): a join or an exit that already landed before we subscribed.
-      if (this.shutdownReadiness.signal.aborted) onShutdown();
+      if (this.config.shutdownReadiness.signal.aborted) onShutdown();
       else if (s && a.handle.status() === "exited") onExit();
       else onPresence();
     });
   }
 
-  /** Last non-empty line of the session's rendered backlog as a single trimmed snippet (≤160 chars)
-   *  — a readable one-line cause for an early-exit diagnostic. The backlog repaints cells a TUI
-   *  skipped with cursor moves, so it is rendered and the line is read off the terminal; stripping
-   *  its escapes would glue the words those moves separate. */
+  /** Last non-empty line of the session's rendered backlog, trimmed, as the cause for an early-exit
+   *  diagnostic. A harness that refuses its launch prints the reason as one long line that names
+   *  the cause first, so the line is kept whole up to {@link TAIL_MAX} code points. The backlog
+   *  repaints cells a TUI skipped with cursor moves, so it is rendered and the line is read off the
+   *  terminal; stripping its escapes would glue the words those moves separate. */
   async tail(session: AttachSession): Promise<string> {
     const backlog = await session.backlog();
     // Sized after the snapshot: a custodial seat's snapshot carries the geometry it was taken at.
@@ -240,7 +242,7 @@ export class ReadinessWait {
     text = text.trim();
     // Cut on code points: half a surrogate pair is not I-JSON, and a launch terminal carrying it is refused.
     const chars = [...text];
-    return chars.length > 160 ? `…${chars.slice(-160).join("")}` : text;
+    return chars.length > TAIL_MAX ? `…${chars.slice(-TAIL_MAX).join("")}` : text;
   }
 
   /** Subscribe to a managed agent's process-exit so a self-driven exit frees its slot and reaps

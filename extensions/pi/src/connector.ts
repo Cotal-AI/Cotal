@@ -17,6 +17,7 @@ import {
 } from "@cotal-ai/core";
 import {
   aclEnv,
+  nameEnv,
   connectorLaunchOptions,
   controlEndpoint,
   eventChannel,
@@ -131,6 +132,7 @@ export const piConnector: Connector = {
   supportsSessionContinuation: true,
   supportsSessionReopen: true,
   supportsPrompt: true, // pi takes the prompt as its positional initial message — see buildLaunch
+  interruptKey: "\x1b", // Escape aborts the live turn ("Operation aborted")
   // The driver wakes the session for a run turn and hands a once task over at most once.
   supportsTurnRelay: true,
   listModels: listPiModels,
@@ -158,7 +160,7 @@ export const piConnector: Connector = {
       ...launchEnv({ providerKeys: PI_PROVIDER_KEYS, envAllow: opts.envAllow }),
       ...aclEnv(opts),
       COTAL_SPACE: opts.space,
-      COTAL_NAME: opts.name,
+      ...nameEnv(opts),
     };
     // Arming is separate from the broker's publish grant. The WAL needs a stable root on restart.
     if (launchArmsEvents(opts)) {

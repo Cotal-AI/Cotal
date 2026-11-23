@@ -124,7 +124,7 @@ function parseFrontmatter(src: string, path: string): Record<string, unknown> {
 }
 
 /** The frontmatter fence {@link loadAgentFile} and a frontmattered `cotal_persona` prompt share. */
-const AGENT_FILE_FENCE = /^---\n([\s\S]*?)\n---\n?([\s\S]*)$/;
+const AGENT_FILE_FENCE = /^---\n([\s\S]*?)\n---[ \t]*(?:\n|$)([\s\S]*)$/;
 
 /** Named error prefix when a persona prompt starts with `---` but is not a closed, valid agent file. */
 export const PROMPT_FRONTMATTER = "prompt-frontmatter";
@@ -173,8 +173,9 @@ export function loadAgentFile(path: string, options?: { deferRoleValidation?: bo
 export function parseAgentFileSource(src: string, path: string, options?: { deferRoleValidation?: boolean }): AgentDef {
   const encoding = utf16Problem(src);
   if (encoding) throw new Error(`agent file ${path}: ${encoding}; save it as UTF-8`);
-  const m = AGENT_FILE_FENCE.exec(src.replace(/^\uFEFF/, "").replace(/\r\n/g, "\n"));
-  if (!m) throw new Error(`agent file ${path}: missing "---" frontmatter block`);
+  const normalized = src.replace(/^\uFEFF/, "").replace(/\r\n/g, "\n");
+  const m = AGENT_FILE_FENCE.exec(normalized);
+  if (!m) throw new Error(`agent file ${path}: ${normalized.startsWith("---\n") ? 'missing closing "---" frontmatter fence on its own line' : 'missing "---" frontmatter block'}`);
   const fm = parseFrontmatter(m[1], path);
   const persona = m[2].trim();
 
@@ -198,6 +199,7 @@ export function parseAgentFileSource(src: string, path: string, options?: { defe
   const name = str("name");
   if (!name) throw new Error(`agent file ${path}: "name" is required`);
   assertValidName(name);
+  const agent = str("agent");
   const model = str("model");
   const variant = str("variant");
   assertLaunchSelectors({ model, variant }, `agent file ${path}`);
@@ -224,14 +226,16 @@ export function parseAgentFileSource(src: string, path: string, options?: { defe
   const allowPublish = list("allowPublish");
   const quiet = list("quiet");
   const muted = list("muted");
-  // Reject channel names the wire layer would silently rewrite — a policy name must equal its wire
-  // token, or the ACL aliases (see assertValidChannel). Covers all three scope fields.
-  for (const ch of [...(subscribe ?? []), ...(allowSubscribe ?? []), ...(allowPublish ?? [])])
+  // A policy channel must match its wire token so the ACL cannot grant access to a different channel.
+  const checkChannel = (field: string, ch: string): void => {
     try {
       assertValidChannel(ch);
     } catch (e) {
-      throw new Error(`agent file ${path}: ${(e as Error).message}`);
+      throw new Error(`agent file ${path}: "${field}": ${(e as Error).message}`);
     }
+  };
+  for (const [field, chans] of [["subscribe", subscribe], ["allowSubscribe", allowSubscribe], ["allowPublish", allowPublish]] as const)
+    for (const ch of chans ?? []) checkChannel(field, ch);
   // Invariant (fail-loud at load): the active read set must be within the read ACL. Defaults:
   // subscribe ⇒ NOTHING; allowSubscribe ⇒ subscribe (read exactly what you subscribe to).
   // An omitted or empty read set means NO channels, not `general`: a file that names no channel
@@ -253,11 +257,7 @@ export function parseAgentFileSource(src: string, path: string, options?: { defe
     throw new Error(`agent file ${path}: channel(s) [${both.join(", ")}] are in both quiet and muted - pick one`);
   for (const [field, chans] of [["quiet", quiet], ["muted", muted]] as const)
     for (const ch of chans ?? []) {
-      try {
-        assertValidChannel(ch);
-      } catch (e) {
-        throw new Error(`agent file ${path}: ${(e as Error).message}`);
-      }
+      checkChannel(field, ch);
       if (!isConcreteChannel(ch))
         throw new Error(`agent file ${path}: ${field} channel "${ch}" must be a concrete channel (no wildcard)`);
       if (!channelInAllow(effAllow, ch))
@@ -280,6 +280,8 @@ export function parseAgentFileSource(src: string, path: string, options?: { defe
     try { assertValidRole(role); }
     catch { throw new Error(`agent file ${path}: "role" must be a single token using letters, digits, underscores or hyphens`); }
   }
+  if (fm.endpoints === null)
+    throw new Error(`agent file ${path}: "endpoints" must be a list, not null. Remove the key or supply a list such as endpoints: []`);
 
   // Sweep every scalar frontmatter key we don't model into meta, verbatim — connector launcher
   // hints ride here so core stays ignorant of surface-specific keys.
@@ -292,7 +294,7 @@ export function parseAgentFileSource(src: string, path: string, options?: { defe
     kind,
     description: str("description"),
     tags: list("tags"),
-    agent: str("agent"),
+    agent: agent?.trim() ? agent : undefined,
     subscribe,
     allowSubscribe,
     allowPublish,
@@ -522,12 +524,12 @@ export function agentFilePath(root: string, nameOrPath: string): string {
 
 /** One local persona catalog entry. A malformed file is an error row, not a throw. */
 export interface PersonaCatalogEntry {
-  /** The filename stem (`.cotal/agents/<name>.md`), which is also the spawn name. */
+  /** The catalog selector, taken from the filename stem in `.cotal/agents/<name>.md`. */
   name: string;
   path: string;
   /** Parsed definition, or undefined when the file failed to parse (see `error`). */
   def?: AgentDef;
-  /** Parse error message, if the file is malformed — surfaced rather than crashing the list. */
+  /** Why the selector or file cannot be used. */
   error?: string;
   /** The encoding problem when the file is not valid UTF-8. */
   encoding?: string;
@@ -570,12 +572,16 @@ export function readPersonaCatalog(root: string): PersonaCatalogEntry[] {
     files = readdirSync(dir).filter((f) => f.endsWith(".md"));
     accessSync(dir, constants.X_OK);
   } catch (e) {
-    if ((e as NodeJS.ErrnoException).code === "ENOENT") return [];
+    if ((e as NodeJS.ErrnoException).code === "ENOENT" && !lstatSync(dir, { throwIfNoEntry: false })) return [];
     throw e;
   }
   return files.sort().map((f) => {
     const name = f.slice(0, -3);
     const path = join(dir, f);
+    if (!name.trim()) return {
+      name, path,
+      error: `persona filename has a blank stem: ${path}. Rename the file or launch it with \`cotal spawn --file <persona.md>\`.`,
+    };
     const link = personaLinkTarget(path);
     try {
       // A FIFO or a device would block the read, so only a regular file is opened. A link is

@@ -14,6 +14,7 @@
  */
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, extname, join, relative, resolve } from "node:path";
+import { createSuite } from "@cotal-ai/smoke-kit";
 
 const REPO = join(import.meta.dirname, "..", "..");
 const PKG_DIR = join(REPO, "implementations", "manager");
@@ -21,17 +22,7 @@ const MANIFEST = join(PKG_DIR, "package.json");
 const DIST = join(PKG_DIR, "dist");
 const ENTRY = join(DIST, "index.js");
 
-let pass = 0;
-let fail = 0;
-const check = (name: string, cond: boolean, extra?: unknown) => {
-  if (cond) {
-    pass++;
-    console.log(`  ✓ ${name}`);
-  } else {
-    fail++;
-    console.log(`  ✗ FAIL: ${name}`, extra ?? "");
-  }
-};
+const { check, finish, passed, failed } = createSuite();
 
 type Manifest = {
   dependencies?: Record<string, string>;
@@ -106,5 +97,6 @@ check(
   [...external].sort().join(", "),
 );
 
-console.log(`SUITE COMPLETE: ${pass} passed, ${fail} failed`);
-process.exit(fail === 0 ? 0 : 1);
+console.log(`SUITE COMPLETE: ${passed()} passed, ${failed()} failed`);
+finish();
+process.exit(failed() === 0 ? 0 : 1);

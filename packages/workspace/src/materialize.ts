@@ -1,4 +1,5 @@
-import { existsSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
+import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { registry, type Extension, type ExtensionRef } from "@cotal-ai/core";
@@ -6,6 +7,7 @@ import {
   bindExtensionPeers,
   extensionPackageDir,
   extensionProvides,
+  extensionReinstallAdvice,
   hostPackageDir,
   installedExtensionPackage,
   loadExtensionsManifest,
@@ -98,6 +100,22 @@ export function extensionEntry(meta: InstalledExtensionPackage): string {
 }
 
 /**
+ * A package entry may name a directory, which Node resolves through that directory's own
+ * package.json main and then its index file. ESM `import()` refuses a directory path outright,
+ * so resolve it the way `require.resolve` does before importing. When nothing resolves, the
+ * directory path itself is imported so Node reports the failure as it did before.
+ */
+function resolveEntryFile(dir: string, entry: string): string {
+  const path = join(dir, entry);
+  if (!statSync(path, { throwIfNoEntry: false })?.isDirectory()) return path;
+  try {
+    return createRequire(join(dir, "package.json")).resolve(path);
+  } catch {
+    return path;
+  }
+}
+
+/**
  * Import an installed package's declared entry so it self-registers. `cotal ext add` and every later
  * load import through here, so a missing peer export is reported as a ranked skew on both paths.
  * `remedy` closes a failure the extension's own build must fix: an installed extension is reinstalled,
@@ -110,7 +128,7 @@ export async function importExtensionEntry(pkg: string, version: string, remedy:
   if (!meta) throw new Error(`extension ${pkg} is not installed at ${dir} - ${remedy}`);
   try {
     const entry = extensionEntry(meta);
-    await import(pathToFileURL(join(dir, entry)).href);
+    await import(pathToFileURL(resolveEntryFile(dir, entry)).href);
   } catch (e) {
     throw importFailure(pkg, version, e, remedy, meta);
   }
@@ -178,7 +196,7 @@ async function loadOne(ext: InstalledExtension, advertised: ExtensionRef): Promi
   }
   if (onDisk.version !== ext.version) {
     throw new Error(
-      `extension ${pkg} is ${onDisk.version} on disk but the manifest pinned ${ext.version} (its cached command surface may be stale) - re-add it: \`cotal ext add ${ext.spec}\``,
+      `extension ${pkg} is ${onDisk.version} on disk but the manifest pinned ${ext.version} (its cached command surface may be stale). ${extensionReinstallAdvice(ext)}`,
     );
   }
   // The prefix is machine-global, but global installs, npx, and source worktrees are distinct hosts.

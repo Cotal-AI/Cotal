@@ -4,7 +4,7 @@
 import { strict as assert } from "node:assert";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createRequire } from "node:module";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -62,7 +62,7 @@ try {
   recordMesh({ space, server: broker.servers, root: project, mode: "auth", ts: new Date().toISOString() });
   const provisioner = await mintCreds(auth, newIdentity(), "provisioner");
   await setupSpaceStreams({ servers: broker.servers, space, creds: provisioner });
-  await seedChannelRegistry({ servers: broker.servers, space, creds: provisioner, file: { channels: { general: {}, "review.code": {} } } });
+  await seedChannelRegistry({ servers: broker.servers, space, creds: provisioner, file: { channels: { general: {}, "review.code": {}, "-general": {} } } });
   daemon = new CotalEndpoint({ space, servers: broker.servers, creds: await mintCreds(auth, newIdentity(), "delivery"), consume: false, registerPresence: false, card: { name: "delivery", kind: "endpoint" } });
   daemon.on("error", () => {});
   await daemon.start();
@@ -101,12 +101,36 @@ try {
   await refused("other-channel", other.file, other.uid, /does not grant read access to #general[\s\S]*--allow-subscribe general/);
 
   async function joins(name: string, file: string, uid: string, channel: string) {
-    const run = cli("join", "--space", space, "--creds", file, "--lifecycle-uid", uid, "--name", name, "--channel", channel);
+    const run = cli("join", "--space", space, "--creds", file, "--lifecycle-uid", uid, "--name", name, `--channel=${channel}`);
     await until(() => run.output().includes("holding presence") || run.proc.exitCode !== null);
     check(`${name}: matching lifecycle and read grant join successfully`, run.proc.exitCode === null && run.output().includes("holding presence"), run.output());
     await killAndAwaitExit(run.proc);
     await run.exited;
   }
+  const truncated = join(dir, "truncated.creds");
+  writeFileSync(truncated, readFileSync(other.file, "utf8").split("\n").slice(0, 2).join("\n") + "\n", { mode: 0o600 });
+  const absent = join(dir, "absent.creds");
+  for (const [kind, file, exitCode, code, diagnosis, firstStep, channel, subscribe] of [
+    ["truncated", truncated, 1, "SCHEMA_INVALID", "no complete NATS user JWT block", "pass the complete credential file", "review.code", "--allow-subscribe review.code"],
+    ["absent", absent, 2, "TARGET_NOT_FOUND", `creds file not found: ${absent}`, "check the path", "review.code", "--allow-subscribe review.code"],
+    ["dash_channel", absent, 2, "TARGET_NOT_FOUND", `creds file not found: ${absent}`, "check the path", "-general", "--allow-subscribe=-general"],
+  ] as const) {
+    const attempt = cli("join", "--space", space, "--creds", file, "--lifecycle-uid", other.uid, `--channel=${channel}`);
+    const status = await attempt.exited;
+    const output = attempt.output();
+    check(`${kind} file: join diagnoses the file and explains how to pair the replacement`, status === exitCode &&
+      new RegExp(`Code: +${code}`).test(output) && output.includes(diagnosis) && output.includes(firstStep) &&
+      output.includes("--lifecycle-uid set to the new UID that mint reports"), output);
+    const advice = /`cotal auth mint (<name> [^`]+)`/.exec(output)?.[1];
+    assert.ok(advice && advice.includes(`--provision ${subscribe} --space ${space} --no-persona --out <file>`), output);
+    const repaired = join(dir, `${kind}-repair.creds`);
+    const mint = cli("auth", "mint", ...advice.split(" ").map((arg) => arg === "<name>" ? `${kind}_repair` : arg === "<file>" ? repaired : arg));
+    check(`${kind} file: the suggested command mints a replacement`, await mint.exited === 0, mint.output());
+    const replacementUid = /^\s*Lifecycle:\s+(\S+)/m.exec(mint.output())?.[1];
+    assert.ok(replacementUid && replacementUid !== other.uid, mint.output());
+    await joins(`${kind}-repair`, repaired, replacementUid, channel);
+  }
+
   const foreign = join(dir, "foreign.creds"), foreignUid = mintLifecycleUid();
   const foreignAuth = await createSpaceAuth("elsewhere");
   writeFileSync(foreign, await mintCreds(foreignAuth, newIdentity(), "agent", {

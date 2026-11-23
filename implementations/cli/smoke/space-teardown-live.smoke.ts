@@ -77,7 +77,7 @@
  */
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { connect } from "@nats-io/transport-node";
@@ -97,7 +97,7 @@ for (const key of Object.keys(process.env)) if (key.startsWith("COTAL_")) delete
 // Set before the stores are imported; they read COTAL_HOME on each call.
 process.env.COTAL_HOME = home;
 const env = { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: configDir, COTAL_SKIP_CONNECTOR_SEED: "1" };
-const { findMesh, findPreparedSpace, getSpaceAuth, recordMesh, removeMesh, workspaceSecretStore } = await import("@cotal-ai/workspace");
+const { deliveryCredsKey, findMesh, findPreparedSpace, getSpaceAuth, recordMesh, removeMesh, workspaceSecretStore } = await import("@cotal-ai/workspace");
 const { observeServiceProcess, serviceInstances, serviceInstanceStore } = await import("../src/lib/service-instances.js");
 const { shellWord } = await import("../src/lib/endpoint-errors.js");
 
@@ -123,6 +123,26 @@ const cli = (cwd: string, ...args: string[]): Run => {
   return { status: run.status, stdout: run.stdout, stderr: run.stderr, env: parsed };
 };
 const shown = (run: Run) => ({ status: run.status, error: run.env?.error, out: run.stdout.slice(-1000), err: run.stderr.slice(-1500) });
+
+function checkStoppedDeliveryLog(root: string, space: string, instanceId: string | null | undefined): void {
+  const credential = join(root, ".cotal", deliveryCredsKey(space, { injected: false, root }));
+  check("the stop removed the delivery launch credential", !existsSync(credential), credential);
+  const args = ["service", "logs", "stack-delivery", "--space", space, "--tail", "30", "--json"];
+  const logs = cli(root, ...args);
+  const result = logs.env?.result as { instance?: { instanceId?: string; observedProcess?: string; recordedState?: string }; lines?: string[]; path?: string } | undefined;
+  check("the stopped delivery instance's captured log is readable without its launch credential",
+    logs.status === 0 && typeof instanceId === "string" && result?.instance?.instanceId === instanceId && result.instance.observedProcess === "gone"
+    && result.instance.recordedState === "stopped" && (result.lines?.length ?? 0) > 0, shown(logs));
+  if (!result?.path) return;
+  const path = result.path, moved = `${path}.moved`;
+  renameSync(path, moved);
+  try {
+    const missing = cli(root, ...args);
+    check("the missing captured file is refused by its log path, not by a launch input",
+      missing.status === 2 && missing.env?.error?.code === "TARGET_NOT_FOUND" && missing.env.error.message.includes(path), shown(missing));
+  } finally { renameSync(moved, path); }
+}
+
 const journalOf = (root: string) => join(root, ".cotal", "stack-controller.json");
 const accountDigest = (root: string) => {
   const dir = join(root, ".cotal", "auth");
@@ -195,11 +215,12 @@ try {
     check("its remedy names cotal down and cotal reset store", Boolean(deleted.env?.error?.remedy?.includes("cotal down")) && Boolean(deleted.env?.error?.remedy?.includes(`cotal reset store ${space}`)), deleted.env?.error);
 
     // 3. Reset previews and refusals carry a verdict, one reason and a Next (B4-04).
+    const stopReview = `from ${root}, review the stop with \`cotal down --dry-run\`, confirm it with \`cotal down --yes\``;
     const storeLive = cli(root, "reset", "store", space, "--dry-run", "--json");
     check("reset store --dry-run on a live stack exits 0 with a refused verdict", storeLive.status === 0 && storeLive.env?.result?.applyVerdict?.offered === false && storeLive.env.result.applyVerdict.code === "LIFECYCLE_BLOCKED", shown(storeLive));
-    check("that verdict's remedy names cotal down and the review, each in backticks", Boolean(storeLive.env?.result?.applyVerdict?.remedy?.startsWith("stop it with `cotal down` from ")) && Boolean(storeLive.env?.result?.applyVerdict?.remedy?.endsWith(`, then run \`cotal reset store ${space} --dry-run\``)), storeLive.env?.result?.applyVerdict);
+    check("that verdict names how to review and confirm the stop, then retry the store preview", storeLive.env?.result?.applyVerdict?.remedy === `${stopReview}, then run \`cotal reset store ${space} --dry-run\``, storeLive.env?.result?.applyVerdict);
     const spaceLive = cli(root, "reset", "space", space, "--dry-run", "--json");
-    check("reset space --dry-run on a live stack refuses with a remedy naming cotal down and the review, each in backticks", spaceLive.status === 2 && spaceLive.env?.error?.code === "LIFECYCLE_BLOCKED" && Boolean(spaceLive.env.error.remedy?.startsWith("stop it with `cotal down` from ")) && Boolean(spaceLive.env.error.remedy?.endsWith(`, then run \`cotal reset space ${space} --dry-run\``)), shown(spaceLive));
+    check("reset space --dry-run refuses and names how to review and confirm the stop, then retry the space preview", spaceLive.status === 2 && spaceLive.env?.error?.code === "LIFECYCLE_BLOCKED" && spaceLive.env.error.remedy === `${stopReview}, then run \`cotal reset space ${space} --dry-run\``, shown(spaceLive));
     // The delivery daemon's own pidfile names the process its stack member runs, so it is listed once.
     const processes = spaceLive.env?.target?.processes ?? [];
     const pids = processes.flatMap((row) => /\bpid (\d+)/.exec(row)?.[1] ?? []);
@@ -207,6 +228,8 @@ try {
       processes.length === 2 && !processes.some((row) => row.startsWith("delivery daemon")) && /^stack-delivery, pid \d+, instance [0-9a-f-]+$/.test(processes.find((row) => row.startsWith("stack-delivery")) ?? "")
         && processes.some((row) => /^stack-broker, instance [0-9a-f-]+$/.test(row)) && new Set(pids).size === pids.length && spaceLive.env?.error?.message.split("delivery").length === 2, processes);
 
+    const stopPreview = cli(root, "down", "--dry-run", "--json");
+    check("down --dry-run reviews the stop and leaves the stack running", stopPreview.status === 0 && findMesh(space) !== undefined, shown(stopPreview));
     const stopped = cli(root, "down", "--yes", "--json");
     check("the refused delete left a stack that down --yes stops", stopped.status === 0, shown(stopped));
     check("down removed the registration and kept the prepared record", findMesh(space) === undefined && findPreparedSpace(space) !== undefined);
@@ -214,6 +237,10 @@ try {
     const deleteStopped = cli(home, "space", "delete", space, "--yes", "--json");
     check("space delete after down refuses TARGET_UNAVAILABLE and names cotal reset store, not cotal up",
       deleteStopped.status === 2 && deleteStopped.env?.error?.code === "TARGET_UNAVAILABLE" && Boolean(deleteStopped.env.error.remedy?.includes(`cotal reset store ${space} --yes`)) && !deleteStopped.env.error.remedy?.includes("cotal up"), shown(deleteStopped));
+    const deletePreview = cli(home, "space", "delete", space, "--dry-run", "--json");
+    check("the stopped stack's deletion preview names reset impact and says a stream inventory needs a running broker",
+      deletePreview.status === 2 && deletePreview.env?.error?.code === "TARGET_UNAVAILABLE" &&
+        deletePreview.env.error.remedy === `preview the impact of resetting its store with \`cotal reset store ${space} --dry-run\`. A stream inventory requires a running broker.`, shown(deletePreview));
 
     // 4. Reset after a normal down (B4-02).
     const storeStopped = cli(root, "reset", "store", space, "--dry-run", "--json");
@@ -246,6 +273,10 @@ try {
     const stoppedAgain = cli(root, "down", "--yes", "--json");
     check("down --yes stops it again", stoppedAgain.status === 0, shown(stoppedAgain));
 
+    const spaceConfirmation = cli(root, "reset", "space", space, "--json");
+    check("reset space confirmation keeps JSON in both the preview and apply commands",
+      spaceConfirmation.status === 1 && spaceConfirmation.env?.error?.code === "USAGE_INVALID"
+        && spaceConfirmation.env.error.remedy === `review \`cotal reset space ${space} --dry-run --json\` first, then run \`cotal reset space ${space} --yes --json\``, shown(spaceConfirmation));
     const spacePreview = cli(root, "reset", "space", space, "--dry-run", "--json");
     check("reset space --dry-run after down offers the apply", spacePreview.status === 0 && spacePreview.env?.result?.applyVerdict?.offered === true, shown(spacePreview));
     // The store goes with the identity, so the preview names what it holds, as reset store's does.
@@ -323,6 +354,10 @@ try {
       await new Promise((settle) => setTimeout(settle, 250));
     }
     check("the finished run is counted and only the waiting run is listed, with its state", runs?.finished === 1 && runs.unfinished?.length === 1 && runs.unfinished[0]?.runId === runId && runs.unfinished[0].state === "running", runs);
+    const journal = cli(root, "run", "show", runId ?? "-", "--limit", "1", "--space", space);
+    check("run show --limit reads one journal row", journal.status === 0 && journal.stdout.includes("Journal · last 1 of"), shown(journal));
+    const pagedJournal = cli(root, "run", "show", runId ?? "-", "--page", "--limit", "1", "--space", space);
+    check("run show refuses inventory paging even when the journal limit is valid", pagedJournal.status === 1 && pagedJournal.stdout === "" && pagedJournal.stderr.includes("remove --page to read the journal") && pagedJournal.stderr.includes("cotal run --page --on <instance>"), shown(pagedJournal));
     for (const [definition, id] of [["stack-manager", manager], ["stack-delivery", delivery]] as const) {
       const stoppedMember = cli(root, "service", "stop", definition, "--instance", String(id), "--space", space, "--yes", "--json");
       check(`the ${definition} member stops on its own`, stoppedMember.status === 0, shown(stoppedMember));
@@ -512,6 +547,17 @@ try {
       check(`reset ${kind} ${mode} refuses CONFLICT, naming the linked store path and the directory it points to`, reset.status === 2 && reset.env?.error?.code === "CONFLICT" && Boolean(reset.env.error.message.includes(`the recorded store path ${store} is a link to ${moved}`)) && Boolean(reset.env.error.remedy?.includes(`cotal reset ${kind} ${space} --dry-run`)), shown(reset));
     }
     check("nothing is removed through the link", existsSync(join(moved, "notes.txt")) && existsSync(join(moved, "jetstream")));
+    rmSync(store);
+    const missing = `${store}-missing`;
+    symlinkSync(missing, store);
+    for (const kind of ["store", "space"]) for (const mode of ["--dry-run", "--yes"]) {
+      const reset = cli(root, "reset", kind, space, mode, "--json");
+      check(`reset ${kind} ${mode} refuses a dangling store link`, reset.status === 2 && reset.env?.error?.code === "CONFLICT"
+        && reset.env.error.message.includes(`the recorded store path ${store} is a link to ${missing}`)
+        && reset.env.error.message.includes("nothing was removed"), shown(reset));
+    }
+    check("the dangling link and parked store remain", readlinkSync(store) === missing
+      && !existsSync(missing) && existsSync(join(moved, "jetstream")));
   }
 
   // 10. A stack whose folder is deleted stops from another folder, and its name starts again.
@@ -607,11 +653,21 @@ try {
     for (const dir of ["home", "xdg", "proj"]) mkdirSync(join(elsewhere, dir), { mode: 0o700 });
     const other = (...args: string[]) => {
       const run = spawnSync(process.execPath, ["--import", TSX_IMPORT, CLI, ...args], { cwd: join(elsewhere, "proj"), env: elsewhereEnv, encoding: "utf8", timeout: 180_000 });
-      return { status: run.status, stdout: run.stdout, stderr: run.stderr } as Run;
+      let parsed: Envelope | undefined;
+      try { parsed = JSON.parse(run.stdout) as Envelope; } catch { parsed = undefined; }
+      return { status: run.status, stdout: run.stdout, stderr: run.stderr, env: parsed } satisfies Run;
     };
     const added = other("space", "add", space, "--server", server, "--root", join(elsewhere, "proj"));
-    const deleted = other("space", "delete", space, "--yes");
-    check("another Cotal home adds the open space and deletes it while the stack runs", added.status === 0 && deleted.status === 0 && /Space streams deleted/.test(deleted.stdout), { added: shown(added), deleted: shown(deleted) });
+    const confirmation = other("space", "delete", space, "--json");
+    check("space delete confirmation keeps JSON in both the preview and apply commands",
+      confirmation.status === 1 && confirmation.env?.error?.code === "USAGE_INVALID"
+        && confirmation.env.error.remedy === `inspect \`cotal space delete ${space} --dry-run --json\` first, then run \`cotal space delete ${space} --yes --json\``, shown(confirmation));
+    const preview = other("space", "delete", space, "--dry-run", "--json");
+    check("the suggested delete preview returns JSON without applying", preview.status === 0 && preview.env?.result?.kind === "live-space-delete-impact", shown(preview));
+    const deleted = other("space", "delete", space, "--yes", "--json");
+    check("another Cotal home adds the open space and deletes it with a JSON receipt while the stack runs",
+      added.status === 0 && deleted.status === 0 && deleted.env?.result?.kind === "live-space-delete",
+      { added: shown(added), deleted: shown(deleted) });
     const statusGone = cli(root, "status", "--json");
     const streamsGone = (statusGone.env?.result?.selected as { spaceStreams?: { state: string; root: string | null; stack: string | null } } | undefined)?.spaceStreams;
     check("status says the streams are not on the broker while the stack runs", statusGone.status === 0 && streamsGone?.state === "absent" && streamsGone.stack === "running" && streamsGone.root === root, shown(statusGone));
@@ -664,7 +720,7 @@ try {
       check("an open space with an overriding auth broker names both addresses and dropping --server, never up here",
         mismatch.status === 2 && mismatch.env?.error?.code === "AUTH_REQUIRED"
           && mismatch.env.error.message.includes(authServer) && mismatch.env.error.message.includes(`"${space}" is recorded as an open mesh at ${server}`)
-          && mismatch.env.error.remedy === `check that address, or drop --server to reach "${space}" at ${server}, where it is recorded`
+          && mismatch.env.error.remedy === `check that address, or drop --server and retry with \`--space ${space}\` to reach its recorded broker at ${server}`
           && !mismatch.env.error.remedy.includes("cotal up"), shown(mismatch));
     }
     const openDown = cli(root, "down", "--yes", "--json");
@@ -822,6 +878,7 @@ try {
       omitted.status === 2 && omitted.env?.error?.code === "LIFECYCLE_BLOCKED" && journalRows().find((row) => row.role === "manager")?.instanceId === manager, shown(omitted));
     const stopped = cli(root, "down", "--yes", "--json");
     check("down --yes stops every member, and no member process is left", stopped.status === 0 && JSON.stringify(ids(rows(stopped))) === JSON.stringify(ids(first)) && gone(firstPids), shown(stopped));
+    checkStoppedDeliveryLog(root, space, first.find((row) => row.role === "delivery")?.instanceId);
     const cycledUp = cli(root, "up", "--json"), cycledRows = rows(cycledUp), cycledPids = pidsOf();
     const cycledDown = cli(root, "down", "--yes", "--json");
     const spaceServiceDir = join(home, "services", Buffer.from(space, "utf8").toString("hex"));

@@ -23,7 +23,7 @@
  * Run: pnpm smoke:manager-preset:live
  */
 import { spawn as spawnProc, spawnSync, type ChildProcess } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -173,6 +173,45 @@ function cotal(args: string[], timeout = 120_000) {
   return spawnSync(process.execPath, ["--import", TSX_LOADER, BIN, ...args], options);
 }
 const out = (r: ReturnType<typeof cotal>) => `${r.stdout ?? ""}${r.stderr ?? ""}`;
+function launchPreview(space: string): void {
+  for (const args of [["manager", "start", "--help"], ["help", "manager", "start"]]) {
+    const help = cotal(args);
+    check(`${args.join(" ")} lists the foreground and dry-run switches separately`, help.status === 0
+      && /\[--foreground\]\s+\[--dry-run\]/.test(help.stdout), out(help));
+  }
+  const preview = ["manager", "start", "--space", space, "--dry-run", "--json"];
+  const badHost = cotal([...preview, "--console-host", "bad host"]);
+  check("a fresh manager preview refuses a console host containing whitespace",
+    badHost.status === 1 && JSON.parse(badHost.stdout).error?.code === "USAGE_INVALID", out(badHost));
+  const args = [...preview, "--foreground"];
+  const launch = join(root, "absent-launch.json");
+  const spec = JSON.stringify({ apiVersion: "cotal-launch/v1", space, runId: "preview", agents: [] });
+  const digest = createHash("sha256").update(spec).digest("hex");
+  for (const [supplied, required] of [[["--launch", launch], "--launch-sha256"], [["--launch-sha256", digest], "--launch"]] as const) {
+    const run = cotal([...args, ...supplied]);
+    const { error } = JSON.parse(run.stdout);
+    check(`manager preview with only ${supplied[0]} names ${required} before checking the file`,
+      run.status === 1 && error?.code === "USAGE_INVALID" && error.message.startsWith(`${supplied[0]} requires ${required} `), out(run));
+  }
+  const retryArgs = [...args, "--launch", launch, "--launch-sha256", digest];
+  const missing = cotal(retryArgs);
+  const { error } = JSON.parse(missing.stdout);
+  check("manager preview names the missing launch specification and how to correct both flags",
+    missing.status === 2 && error?.code === "TARGET_NOT_FOUND" && error.message.includes(`the --launch specification ${launch} does not exist`)
+      && error.remedy?.includes("absolute path") && error.remedy.includes("matching SHA-256 in `--launch-sha256`")
+      && error.remedy.includes("keeping all other arguments and flags unchanged"), out(missing));
+  check("refused previews neither save the manager nor allocate an instance", !serviceDefinitionStore(space).read("manager") && !serviceInstances(space, "manager").length);
+  writeFileSync(launch, spec, { mode: 0o600 });
+  const retry = cotal([...retryArgs, "--console-host", "127.0.0.1"]);
+  const { result } = JSON.parse(retry.stdout);
+  check("the corrected launch preview succeeds without saving or starting a manager",
+    retry.status === 0 && result?.dryRun === true && result.saved === false && result.allocated === false
+      && !serviceDefinitionStore(space).read("manager") && !serviceInstances(space, "manager").length, out(retry));
+  const status = cotal(["manager", "status", "--space", space, "--json"]);
+  const receipt = JSON.parse(status.stdout);
+  check("launch previews leave no manager history in the broker-only space", status.status === 2
+    && receipt.error?.code === "TARGET_NOT_FOUND" && receipt.error.message.includes("no manager has been started"), out(status));
+}
 const ptyEnv = Object.fromEntries(Object.entries(env).filter((entry): entry is [string, string] => entry[1] !== undefined));
 const started: ChildProcess[] = [];
 let stackUp = false;
@@ -186,6 +225,31 @@ try {
     const up = cotal(["up", "--detach", "--open", "--no-manager", "--space", SPACE, "--server", SERVER]);
     stackUp = up.status === 0;
     check("a broker-only open stack starts", stackUp, out(up));
+    launchPreview(SPACE);
+    const manager = ["manager", "start", "--space", SPACE, "--json"];
+    const stopManager = ["manager", "stop", "--space", SPACE, "--yes", "--with-agents"];
+    const launch = join(root, "absent-launch.json");
+    const digest = createHash("sha256").update(readFileSync(launch)).digest("hex");
+    try {
+      const initial = cotal([...manager, "--launch", launch, "--launch-sha256", digest]);
+      check("a manager starts with the correct launch digest", initial.status === 0, out(initial));
+      const stopped = cotal(stopManager);
+      check("the manager stops before the override", stopped.status === 0, out(stopped));
+      const definition = () => serviceDefinitionStore(SPACE).read("manager");
+      const instances = () => serviceInstances(SPACE, "manager");
+      const before = definition(), stoppedBefore = instances();
+      const wrong = cotal([...manager, "--launch", launch, "--launch-sha256", "0".repeat(64)]);
+      check("a mismatched digest refuses without replacing the definition or stopped instance",
+        wrong.status === 2 && JSON.parse(wrong.stdout).error?.code === "CONFLICT"
+          && before !== undefined && stoppedBefore.length === 1 && stoppedBefore[0]?.record.value.state === "stopped"
+          && JSON.stringify(definition()?.record) === JSON.stringify(before.record)
+          && JSON.stringify(instances().map((row) => row.record)) === JSON.stringify(stoppedBefore.map((row) => row.record)), out(wrong));
+      const retry = cotal(manager);
+      check("plain start still uses the saved launch digest and reaches readiness", retry.status === 0 && instances()[0]?.record.value.state === "running", out(retry));
+    } finally {
+      cotal(stopManager);
+      cotal(["service", "remove", "manager", "--space", SPACE, "--yes"]);
+    }
     const add = cotal(["service", "add", "mgr", "--preset", "manager", "--space", SPACE, "--root", root, "--runtime", "pty", "--roster", roster]);
     check("service add saves the manager preset with its roster", add.status === 0, out(add));
     const fg = spawnProc(process.execPath, ["--import", TSX_LOADER, BIN, "service", "start", "mgr", "--space", SPACE, "--foreground"], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });

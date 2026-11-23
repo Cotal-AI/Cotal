@@ -33,7 +33,7 @@
     },
     {
       "name": "status treats any default persona file as launchable even when the shipped loader rejected it",
-      "file": "implementations/cli/src/commands/status.ts",
+      "file": "implementations/cli/src/commands/status-meshes.ts",
       "find": "    default: def?.def ? \"valid\" : def?.error ? \"invalid\" : \"missing\",",
       "replace": "    default: def ? \"valid\" : \"missing\",",
       "expectRed": "invalid default: present file is NOT green when the shipped loader rejects it",

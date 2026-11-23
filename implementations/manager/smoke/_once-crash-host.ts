@@ -38,7 +38,7 @@ const manager = new Manager({ space, servers, runtime: "pty", workspaceRoot: roo
 await manager.start();
 // Armed by the suite with a marker file: the manager dies at its next checkpoint write, the deadline
 // hold a once task mints after its goal and index entry exist and before its seat launches.
-const kv = (manager as unknown as { goalWriter: { ctx: { kv: { put: (key: string, ...rest: unknown[]) => Promise<unknown> } } } }).goalWriter.ctx.kv;
+const kv = (manager as unknown as { goalWriterComponent: { goalWriter: { ctx: { kv: { put: (key: string, ...rest: unknown[]) => Promise<unknown> } } }; } }).goalWriterComponent.goalWriter.ctx.kv;
 const put = kv.put.bind(kv);
 const crashMarker = join(root, "crash-at-hold");
 kv.put = async (key, ...rest) => {

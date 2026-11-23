@@ -4,15 +4,15 @@
  * binary reads the records a real `up`, `meshes add` or catalog sync leaves. A real broker answers
  * for one space; another points at a port nothing listens on; a discovered one points at a listener
  * that counts connections, so the suite can show a read never dials it.
- * A registry record that does not parse refuses the listing and show with SCHEMA_INVALID, and so does
- * every other command that reads the registry, changing nothing.
+ * A registry record that does not parse refuses reads with SCHEMA_INVALID. Clearing the selection
+ * reports that it cannot identify the folder's space but still clears the selection.
  *
  * Needs `nats-server` on PATH.
  *
  * Run: pnpm smoke:space-reads
  */
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -32,7 +32,7 @@ const hintSandbox = recordSmokeSandbox({ root: hintProject, cotalHome, xdgConfig
 // Set before the workspace is imported: it reads COTAL_HOME on each call, so the real ~/.cotal is
 // never touched.
 process.env.COTAL_HOME = cotalHome;
-const { clearCurrent, findMesh, getCurrent, meshesDir, recordMesh, setCurrent } = await import("@cotal-ai/workspace");
+const { clearCurrent, findMesh, getCurrent, meshesDir, recordMesh, removeMesh, setCurrent } = await import("@cotal-ai/workspace");
 
 const { check, finish } = createSuite();
 const HOST_ENV = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("COTAL_") && k !== "FORCE_COLOR" && k !== "NO_COLOR"));
@@ -70,8 +70,8 @@ const run = (args: string[], extraEnv: Record<string, string> = {}, cwd = home) 
   const r = spawnSync(process.execPath, [BIN, ...args], options);
   return { status: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
 };
-const json = (args: string[]) => {
-  const r = run([...args, "--json"]);
+const json = (args: string[], cwd = home) => {
+  const r = run([...args, "--json"], {}, cwd);
   let env: Record<string, any> | undefined;
   try {
     env = JSON.parse(r.stdout);
@@ -88,6 +88,36 @@ for (let i = 0; i < 50; i++) {
   const { isReachable } = await import("@cotal-ai/core");
   if (await isReachable(LIVE)) break;
   await new Promise((r) => setTimeout(r, 100));
+}
+
+// An implicit config scope outside a project requires a running broker.
+{
+  const space = "config-probe";
+  const entry = { space, server: DEAD, root: hintProject, mode: "open", origin: "manual", ts: new Date().toISOString() } as const;
+  recordMesh(entry);
+  try {
+    const set = json(["config", "set", "harness", "codex", "--space", space]);
+    check("fixture: the offline space holds a harness override", set.status === 0, shown(set));
+    const before = registryFiles();
+    const plain = run(["config", "get", "harness", "--plain"]);
+    const implicit = json(["config", "get", "harness"]);
+    check("without a running space, plain and JSON use defaults", plain.status === 0 && /Value:\s+claude/.test(plain.stdout) && /Scope:\s+your defaults/.test(plain.stdout) &&
+      implicit.status === 0 && implicit.env?.target === null && implicit.env.result.scope.space === null && implicit.env.result.setting.value === "claude", { plain: shown(plain), json: shown(implicit) });
+    const explicit = json(["config", "get", "harness", "--space", space]);
+    check("explicit config still reads the offline space without changing the registry", explicit.status === 0 && explicit.env?.result.setting.value === "codex" &&
+      explicit.env.result.scope.from === "flag" && JSON.stringify(registryFiles()) === JSON.stringify(before), shown(explicit));
+    setCurrent(space);
+    const selected = json(["config", "get", "harness"]);
+    check("a saved selection still reads the offline space", selected.status === 0 && selected.env?.result.setting.value === "codex" && selected.env.result.scope.from === "selected", shown(selected));
+    clearCurrent();
+    recordMesh({ ...entry, server: LIVE });
+    const running = json(["config", "get", "harness"]);
+    check("the only running space supplies its override", running.status === 0 && running.env?.result.setting.value === "codex" && running.env.result.scope.from === "running", shown(running));
+  } finally {
+    clearCurrent();
+    json(["config", "unset", "harness", "--space", space]);
+    removeMesh(space);
+  }
 }
 
 // ── An empty registry ────────────────────────────────────────────────────────────────────────────────
@@ -150,7 +180,7 @@ recordMesh({ space: "gamma", server: CATALOG, root, mode: "user", origin: "catal
   check("use names the space it selected and the one it replaced", human.status === 0 && /selected beta \(was alpha\)/.test(human.stdout.replace(/\x1b\[[0-9;]*m/g, "")), shown(human));
   // --clear removes the selection; nothing else could, so a folder's space could not apply again.
   const cleared = json(["use", "--clear"]);
-  check("use --clear removes the selection and names the one it removed", cleared.status === 0 && cleared.env?.outcome === "ok" && cleared.env.result.current === null && cleared.env.result.previous === "beta" && cleared.env.target === null && getCurrent() === undefined, shown(cleared));
+  check("use --clear removes the selection and reports no folder space outside a project", cleared.status === 0 && cleared.env?.outcome === "ok" && cleared.env.result.current === null && cleared.env.result.previous === "beta" && cleared.env.result.folder === null && cleared.env.target === null && getCurrent() === undefined, shown(cleared));
   const clearedAgain = json(["use", "--clear"]);
   check("use --clear with nothing selected is a no-op", clearedAgain.status === 0 && clearedAgain.env?.outcome === "no-op" && clearedAgain.env.result.previous === null, shown(clearedAgain));
   const named = json(["use", "alpha", "--clear"]);
@@ -310,6 +340,29 @@ recordMesh({ space: "gamma", server: CATALOG, root, mode: "user", origin: "catal
   check("rig: create prepares the hint's project root", prepared.status === 0, shown(prepared));
   try {
     setCurrent("alpha");
+    const selection = json(["use"], project);
+    check("bare use reports the prepared folder without changing the selection or target", selection.status === 0 && selection.env?.target?.space === "alpha" && selection.env?.result?.current === "alpha" && selection.env?.result?.folder === "hint-live" && getCurrent() === "alpha", shown(selection));
+    const selectionPlain = run(["use", "--plain"], {}, project);
+    check("plain use names the selection and how to reach the prepared folder's space", selectionPlain.status === 0 && /^selected: alpha$/m.test(selectionPlain.stdout) && selectionPlain.stdout.includes("--space hint-live") && selectionPlain.stdout.includes("cotal use --clear"), shown(selectionPlain));
+    const cleared = json(["use", "--clear"], project);
+    const clearedAgain = json(["use", "--clear"], project);
+    check("use --clear reports the prepared folder's space with and without a selection to remove",
+      cleared.status === 0 && cleared.env?.outcome === "ok" && cleared.env.result.current === null && cleared.env.result.previous === "alpha" && cleared.env.result.folder === "hint-live"
+      && clearedAgain.status === 0 && clearedAgain.env?.outcome === "no-op" && clearedAgain.env.result.current === null && clearedAgain.env.result.previous === null && clearedAgain.env.result.folder === "hint-live"
+      && getCurrent() === undefined, { cleared: shown(cleared), clearedAgain: shown(clearedAgain) });
+    setCurrent("alpha");
+    const preparedDir = join(cotalHome, "prepared");
+    renameSync(preparedDir, `${preparedDir}.saved`);
+    try {
+      writeFileSync(preparedDir, "not a directory\n");
+      const refusedUse = run(["use", "beta", "--plain"], {}, project);
+      check("use refuses when the prepared records path is a file", refusedUse.status === 1 && refusedUse.stderr.includes("SCHEMA_INVALID") && refusedUse.stderr.includes(`${preparedDir} is a file, not a folder`), shown(refusedUse));
+      const retainedUse = json(["use"]);
+      check("a refused selection leaves the previous space selected", retainedUse.status === 0 && retainedUse.env?.result?.current === "alpha", shown(retainedUse));
+    } finally {
+      rmSync(preparedDir, { force: true });
+      renameSync(`${preparedDir}.saved`, preparedDir);
+    }
     const bare = run(["space", "show", "--plain"], {}, project);
     check("bare show prefers the prepared project space to the selection", bare.status === 0 && /^space:\s+hint-live$/m.test(bare.stdout), shown(bare));
     const named = run(["space", "show", "alpha", "--plain"], {}, project);
@@ -358,6 +411,15 @@ recordMesh({ space: "gamma", server: CATALOG, root, mode: "user", origin: "catal
     const r = json(args);
     check(`cotal ${args.join(" ")} refuses a record that does not parse with SCHEMA_INVALID, exit 1, naming the file`, r.status === 1 && r.env?.outcome === "refused" && r.env.error?.code === "SCHEMA_INVALID" && String(r.env.error.message).includes(file), shown(r));
   }
+  const cleared = json(["use", "--clear"]);
+  check("JSON clear removes the selection and reports the unreadable folder scope separately", cleared.status === 0 && cleared.env?.outcome === "ok" &&
+    cleared.env.completeness === "partial" && cleared.env.result.current === null && cleared.env.result.previous === selected && cleared.env.result.folder === null &&
+    cleared.env.warnings.some((w: { code: string; target: { file?: string } }) => w.code === "SCHEMA_INVALID" && w.target.file === file) && getCurrent() === undefined, shown(cleared));
+  if (selected !== undefined) setCurrent(selected);
+  const plain = run(["use", "--clear", "--plain"]);
+  check("plain clear also succeeds and reports the unreadable record", plain.status === 0 && plain.stdout.includes("cleared the selection") &&
+    plain.stderr.includes(file) && getCurrent() === undefined && readFileSync(file, "utf8") === '{"space":"omega"', shown(plain));
+  if (selected !== undefined) setCurrent(selected);
   rmSync(file);
   check("those refusals changed nothing: alpha is registered, the selection is kept and zeta was not prepared", findMesh("alpha") !== undefined && getCurrent() === selected && !existsSync(join(elsewhere, ".cotal")), { selected, now: getCurrent() });
 }

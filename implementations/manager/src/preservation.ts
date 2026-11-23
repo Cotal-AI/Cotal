@@ -10,20 +10,20 @@ import { parseResumeControlArgs, readReleasedSeatReference, readSeatRecord, writ
 import { requireRuntimeReap } from "./runtime/index.js";
 import type { AgentHandle } from "./runtime/index.js";
 import type { ManagedAgent } from "./seat-types.js";
+import type { ManagerConfig } from "./manager-config.js";
+import type { ManagerParts } from "./manager-parts.js";
+import type { ManagerStartState } from "./manager-start-state.js";
 
 /** What {@link Preservation} reads from the Manager. Every entry is read at use, so a field the Manager
  *  assigns after construction is always current, and a Manager method a test replaces is the one that runs. */
 export interface PreservationDeps {
   agents: () => Manager["agents"];
-  auth: () => Manager["auth"];
   credRenewTimer: () => Manager["credRenewTimer"];
   setCredRenewTimer: (value: Manager["credRenewTimer"]) => void;
   ep: () => Manager["ep"];
-  execution: () => Manager["execution"];
   lifecycleInFlight: () => Manager["lifecycleInFlight"];
   maintenanceState: () => Manager["maintenanceState"];
   setMaintenanceState: (value: Manager["maintenanceState"]) => void;
-  managerInstanceId: () => Manager["managerInstanceId"];
   meshMode: () => Manager["meshMode"];
   preservationAttemptId: () => Manager["preservationAttemptId"];
   setPreservationAttemptId: (value: Manager["preservationAttemptId"]) => void;
@@ -31,13 +31,9 @@ export interface PreservationDeps {
   setPreservationGeneration: (value: Manager["preservationGeneration"]) => void;
   preservationInventory: () => Manager["preservationInventory"];
   setPreservationInventory: (value: Manager["preservationInventory"]) => void;
-  preserveStopTimeoutMs: () => Manager["preserveStopTimeoutMs"];
   resumeCredRenewal: () => Manager["resumeCredRenewal"];
-  space: () => Manager["space"];
   unverifiedStops: () => Manager["unverifiedStops"];
   setUnverifiedStops: (value: Manager["unverifiedStops"]) => void;
-  userMode: () => Manager["userMode"];
-  workspaceRoot: () => Manager["workspaceRoot"];
   awaitLifecycleDrain: (...args: Parameters<Manager["awaitLifecycleDrain"]>) => ReturnType<Manager["awaitLifecycleDrain"]>;
   deprovision: (...args: Parameters<Manager["deprovision"]>) => ReturnType<Manager["deprovision"]>;
   dropInlineSnapshot: (...args: Parameters<Manager["dropInlineSnapshot"]>) => ReturnType<Manager["dropInlineSnapshot"]>;
@@ -52,7 +48,6 @@ export interface PreservationDeps {
   resumeEntryOf: (...args: Parameters<Manager["resumeEntryOf"]>) => ReturnType<Manager["resumeEntryOf"]>;
   runtimeFor: (...args: Parameters<Manager["runtimeFor"]>) => ReturnType<Manager["runtimeFor"]>;
   stopHandle: (...args: Parameters<Manager["stopHandle"]>) => ReturnType<Manager["stopHandle"]>;
-  teardownTarget: (...args: Parameters<Manager["teardownTarget"]>) => ReturnType<Manager["teardownTarget"]>;
   validateRetainedAuthority: (...args: Parameters<Manager["validateRetainedAuthority"]>) => ReturnType<Manager["validateRetainedAuthority"]>;
   watchExit: (...args: Parameters<Manager["watchExit"]>) => ReturnType<Manager["watchExit"]>;
   withProvisioner: <T>(fn: (prov: CotalEndpoint) => Promise<T>) => Promise<T>;
@@ -63,15 +58,12 @@ export interface PreservationDeps {
 export function preservationDeps(m: Manager): PreservationDeps {
   return {
     agents: () => m["agents"],
-    auth: () => m["auth"],
     credRenewTimer: () => m["credRenewTimer"],
     setCredRenewTimer: (value) => { m["credRenewTimer"] = value; },
     ep: () => m["ep"],
-    execution: () => m["execution"],
     lifecycleInFlight: () => m["lifecycleInFlight"],
     maintenanceState: () => m["maintenanceState"],
     setMaintenanceState: (value) => { m["maintenanceState"] = value; },
-    managerInstanceId: () => m["managerInstanceId"],
     meshMode: () => m["meshMode"],
     preservationAttemptId: () => m["preservationAttemptId"],
     setPreservationAttemptId: (value) => { m["preservationAttemptId"] = value; },
@@ -79,13 +71,9 @@ export function preservationDeps(m: Manager): PreservationDeps {
     setPreservationGeneration: (value) => { m["preservationGeneration"] = value; },
     preservationInventory: () => m["preservationInventory"],
     setPreservationInventory: (value) => { m["preservationInventory"] = value; },
-    preserveStopTimeoutMs: () => m["preserveStopTimeoutMs"],
     resumeCredRenewal: () => m["resumeCredRenewal"],
-    space: () => m["space"],
     unverifiedStops: () => m["unverifiedStops"],
     setUnverifiedStops: (value) => { m["unverifiedStops"] = value; },
-    userMode: () => m["userMode"],
-    workspaceRoot: () => m["workspaceRoot"],
     awaitLifecycleDrain: (...args) => m["awaitLifecycleDrain"](...args),
     deprovision: (...args) => m["deprovision"](...args),
     dropInlineSnapshot: (...args) => m["dropInlineSnapshot"](...args),
@@ -100,7 +88,6 @@ export function preservationDeps(m: Manager): PreservationDeps {
     resumeEntryOf: (...args) => m["resumeEntryOf"](...args),
     runtimeFor: (...args) => m["runtimeFor"](...args),
     stopHandle: (...args) => m["stopHandle"](...args),
-    teardownTarget: (...args) => m["teardownTarget"](...args),
     validateRetainedAuthority: (...args) => m["validateRetainedAuthority"](...args),
     watchExit: (...args) => m["watchExit"](...args),
     withProvisioner: (fn) => m["withProvisioner"](fn),
@@ -109,21 +96,20 @@ export function preservationDeps(m: Manager): PreservationDeps {
 
 /** Preserving the manager for a restart: prepare, commit and abort, the cut that releases or tears down each seat, and adoption of released seats at the next start. */
 export class Preservation {
-  constructor(private readonly deps: PreservationDeps) {}
+  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: PreservationDeps, private readonly state: ManagerStartState, private readonly parts: Pick<ManagerParts, "seatStop">) {}
 
   // The Manager members these bodies read, under their Manager names. Each reads through its dep at
   // use, so a field the Manager assigns later is current and a method a test replaces on the Manager
   // is the one that runs.
   private get agents() { return this.deps.agents(); }
-  private get auth() { return this.deps.auth(); }
+  private get auth() { return this.state.auth; }
   private get credRenewTimer() { return this.deps.credRenewTimer(); }
   private set credRenewTimer(value: Manager["credRenewTimer"]) { this.deps.setCredRenewTimer(value); }
   private get ep() { return this.deps.ep(); }
-  private get execution() { return this.deps.execution(); }
   private get lifecycleInFlight() { return this.deps.lifecycleInFlight(); }
   private get maintenanceState() { return this.deps.maintenanceState(); }
   private set maintenanceState(value: Manager["maintenanceState"]) { this.deps.setMaintenanceState(value); }
-  private get managerInstanceId() { return this.deps.managerInstanceId(); }
+  private get managerInstanceId() { return this.state.managerInstanceId!; }
   private get meshMode() { return this.deps.meshMode(); }
   private get preservationAttemptId() { return this.deps.preservationAttemptId(); }
   private set preservationAttemptId(value: Manager["preservationAttemptId"]) { this.deps.setPreservationAttemptId(value); }
@@ -131,13 +117,10 @@ export class Preservation {
   private set preservationGeneration(value: Manager["preservationGeneration"]) { this.deps.setPreservationGeneration(value); }
   private get preservationInventory() { return this.deps.preservationInventory(); }
   private set preservationInventory(value: Manager["preservationInventory"]) { this.deps.setPreservationInventory(value); }
-  private get preserveStopTimeoutMs() { return this.deps.preserveStopTimeoutMs(); }
   private get resumeCredRenewal() { return this.deps.resumeCredRenewal(); }
-  private get space() { return this.deps.space(); }
   private get unverifiedStops() { return this.deps.unverifiedStops(); }
   private set unverifiedStops(value: Manager["unverifiedStops"]) { this.deps.setUnverifiedStops(value); }
-  private get userMode() { return this.deps.userMode(); }
-  private get workspaceRoot() { return this.deps.workspaceRoot(); }
+  private get userMode() { return this.state.userMode; }
   private awaitLifecycleDrain(...args: Parameters<Manager["awaitLifecycleDrain"]>): ReturnType<Manager["awaitLifecycleDrain"]> { return this.deps.awaitLifecycleDrain(...args); }
   private deprovision(...args: Parameters<Manager["deprovision"]>): ReturnType<Manager["deprovision"]> { return this.deps.deprovision(...args); }
   private dropInlineSnapshot(...args: Parameters<Manager["dropInlineSnapshot"]>): ReturnType<Manager["dropInlineSnapshot"]> { return this.deps.dropInlineSnapshot(...args); }
@@ -152,7 +135,6 @@ export class Preservation {
   private resumeEntryOf(...args: Parameters<Manager["resumeEntryOf"]>): ReturnType<Manager["resumeEntryOf"]> { return this.deps.resumeEntryOf(...args); }
   private runtimeFor(...args: Parameters<Manager["runtimeFor"]>): ReturnType<Manager["runtimeFor"]> { return this.deps.runtimeFor(...args); }
   private stopHandle(...args: Parameters<Manager["stopHandle"]>): ReturnType<Manager["stopHandle"]> { return this.deps.stopHandle(...args); }
-  private teardownTarget(...args: Parameters<Manager["teardownTarget"]>): ReturnType<Manager["teardownTarget"]> { return this.deps.teardownTarget(...args); }
   private validateRetainedAuthority(...args: Parameters<Manager["validateRetainedAuthority"]>): ReturnType<Manager["validateRetainedAuthority"]> { return this.deps.validateRetainedAuthority(...args); }
   private watchExit(...args: Parameters<Manager["watchExit"]>): ReturnType<Manager["watchExit"]> { return this.deps.watchExit(...args); }
   private withProvisioner<T>(fn: (prov: CotalEndpoint) => Promise<T>): Promise<T> { return this.deps.withProvisioner(fn); }
@@ -190,7 +172,7 @@ export class Preservation {
   /** Fence and build the inventory without stopping a child. The coordinator must durably persist
    * this exact plan before calling commitPreservation with the same attempt id. */
   preparePreservation(attemptId: string): Promise<ManagerPreservationPlan> {
-    if (this.execution === "none") return Promise.reject(new EpEnvelopeError("unimplemented", this.executionRefusal()));
+    if (this.config.execution === "none") return Promise.reject(new EpEnvelopeError("unimplemented", this.executionRefusal()));
     if (!attemptId.trim()) return Promise.reject(new Error("preservation attemptId is required"));
     if (this.preservationAttemptId && this.preservationAttemptId !== attemptId)
       return Promise.reject(new Error(`manager is fenced for preservation attempt ${this.preservationAttemptId}; refusing different attempt ${attemptId}`));
@@ -234,7 +216,7 @@ export class Preservation {
     const backfillFloor = await this.chatFrontierForPreservation();
     const inventory = this.preservationInventory ?? {
       version: "cotal-manager-resume/v2",
-      space: this.space,
+      space: this.config.space,
       createdAt: new Date().toISOString(),
       agents: [...this.agents.values()].map((a) => this.resumeEntry(a, backfillFloor)),
     } satisfies ManagerResumeInventory;
@@ -290,7 +272,7 @@ export class Preservation {
   /** Stop children only after the coordinator has persisted the prepared inventory. Same-attempt
    * retries are idempotent; a different attempt is refused. */
   commitPreservation(attemptId: string): Promise<ManagerPreserveResult> {
-    if (this.execution === "none") return Promise.reject(new EpEnvelopeError("unimplemented", this.executionRefusal()));
+    if (this.config.execution === "none") return Promise.reject(new EpEnvelopeError("unimplemented", this.executionRefusal()));
     if (!this.preservationAttemptId || this.preservationAttemptId !== attemptId)
       return Promise.reject(new Error(`preservation attempt ${attemptId} was not prepared by this manager`));
     if (!this.preservationInventory)
@@ -316,7 +298,7 @@ export class Preservation {
   /** Recover an abandoned prepare before any child stop. Once commit begins, preservation is
    * irreversible and remains fenced until the coordinator records failure/recourse. */
   abortPreservation(attemptId: string): void {
-    if (this.execution === "none") throw new EpEnvelopeError("unimplemented", this.executionRefusal());
+    if (this.config.execution === "none") throw new EpEnvelopeError("unimplemented", this.executionRefusal());
     if (this.preservationAttemptId !== attemptId)
       throw new Error(`preservation attempt ${attemptId} is not the active manager attempt`);
     if (this.preparationTask || this.lifecycleInFlight > 0)
@@ -388,8 +370,8 @@ export class Preservation {
       throw new Error(`runtime "${handle.kind}" cannot prove child exit (AgentHandle.waitForExit is not implemented)`);
     await withTimeout(
       handle.waitForExit(),
-      this.preserveStopTimeoutMs,
-      `child did not exit within ${this.preserveStopTimeoutMs}ms`,
+      this.config.preserveStopTimeoutMs,
+      `child did not exit within ${this.config.preserveStopTimeoutMs}ms`,
     );
     if (handle.status() !== "exited")
       throw new Error(`runtime "${handle.kind}" reported exit completion but status is still running`);
@@ -402,10 +384,10 @@ export class Preservation {
       return `imperative launch options have no non-secret durable source (${entry.launch.unresolvedLaunchOptionKeys.join(", ")})`;
     if (!entry.dependencies.some((path) => resolve(path) === resolve(entry.launch.source.configPath)))
       return `launch config is not declared as a retained dependency: ${entry.launch.source.configPath}`;
-    if (entry.launch.source.kind === "inline" && resolve(entry.launch.source.configPath) !== resolve(inlineSnapshotPath(this.workspaceRoot, entry.identity.lifecycleUid)))
+    if (entry.launch.source.kind === "inline" && resolve(entry.launch.source.configPath) !== resolve(inlineSnapshotPath(this.config.workspaceRoot, entry.identity.lifecycleUid)))
       return `inline persona snapshot ${entry.launch.source.configPath} is not this lifecycle's snapshot path`;
     if (entry.launch.source.kind === "manifest" && entry.launch.source.runId) {
-      const specPath = join(this.workspaceRoot, ".cotal", "run", `${entry.launch.source.runId}.json`);
+      const specPath = join(this.config.workspaceRoot, ".cotal", "run", `${entry.launch.source.runId}.json`);
       if (!entry.dependencies.some((path) => resolve(path) === resolve(specPath)))
         return `manifest source is not declared as a retained dependency: ${specPath}`;
     }
@@ -441,7 +423,7 @@ export class Preservation {
            this.fileDigest(entry.identity.sentinelCredential.path) !== entry.identity.sentinelCredential.sha256))
         return `retained user identity files changed after the cut for ${entry.name}`;
       if (entry.launch.source.kind === "manifest" && entry.launch.source.runId) {
-        const specPath = join(this.workspaceRoot, ".cotal", "run", `${entry.launch.source.runId}.json`);
+        const specPath = join(this.config.workspaceRoot, ".cotal", "run", `${entry.launch.source.runId}.json`);
         if (!entry.launch.source.manifestSha256 || this.fileDigest(specPath) !== entry.launch.source.manifestSha256)
           return `manifest source changed since it became effective: ${specPath}`;
       }
@@ -505,7 +487,7 @@ export class Preservation {
       managed.filter((a) => !a.suppressCleanup).map((a) => {
         // Retired here on every mesh, the open mesh included, which runs no teardown of its own.
         const settled = a.launch.source.kind !== "inline" || this.dropInlineSnapshot(a.name, a.lifecycleUid);
-        return this.deprovision({ ...this.teardownTarget(a), ...(settled ? { snapshotSettled: true as const } : {}) }).catch((e) => console.error(`deprovision ${a.name} (${a.id}) on shutdown: ${rejectionText(e)}`));
+        return this.deprovision({ ...this.parts.seatStop.teardownTarget(a), ...(settled ? { snapshotSettled: true as const } : {}) }).catch((e) => console.error(`deprovision ${a.name} (${a.id}) on shutdown: ${rejectionText(e)}`));
       }),
     );
     if (failures.length)
@@ -548,8 +530,8 @@ export class Preservation {
           // A static manager records an adoptable seat at launch and keeps that record current. A
           // user-mode manager records nothing until here.
           if (this.userMode)
-            writeSeatRecord(this.workspaceRoot, { version: "cotal-seat-record/v1", instanceId: this.managerInstanceId, crashes: a.restart?.crashes ?? [], agent: this.resumeEntryOf(a) });
-          writeReleasedSeatReference(this.workspaceRoot, this.space, a.name, { version: "cotal-released-seat/v1", lifecycleUid: a.lifecycleUid, kind: reference.kind, id: reference.id });
+            writeSeatRecord(this.config.workspaceRoot, { version: "cotal-seat-record/v1", instanceId: this.managerInstanceId, crashes: a.restart?.crashes ?? [], agent: this.resumeEntryOf(a) });
+          writeReleasedSeatReference(this.config.workspaceRoot, this.config.space, a.name, { version: "cotal-released-seat/v1", lifecycleUid: a.lifecycleUid, kind: reference.kind, id: reference.id });
         } catch (e) {
           console.error(`! ${a.name}: the released seat could not be recorded (${rejectionText(e)}); this stop retires it instead`);
           stop.push(a);
@@ -571,7 +553,7 @@ export class Preservation {
    *  the runtime adopts is watched, and retired when that watch proves it gone. A seat the runtime
    *  has already reaped is retired now. Anything the runtime cannot prove is left recorded. */
   async adoptReleasedSeats(): Promise<void> {
-    const dir = join(this.workspaceRoot, ".cotal", "seat-records", this.space);
+    const dir = join(this.config.workspaceRoot, ".cotal", "seat-records", this.config.space);
     if (!existsSync(dir)) return;
     for (const file of readdirSync(dir)) {
       if (!file.endsWith(".runtime-ref")) continue;
@@ -585,8 +567,8 @@ export class Preservation {
   }
 
   private async adoptReleasedSeat(name: string): Promise<void> {
-    const reference = readReleasedSeatReference(this.workspaceRoot, this.space, name);
-    const record = reference ? readSeatRecord(this.workspaceRoot, this.space, name) : undefined;
+    const reference = readReleasedSeatReference(this.config.workspaceRoot, this.config.space, name);
+    const record = reference ? readSeatRecord(this.config.workspaceRoot, this.config.space, name) : undefined;
     const identity = record?.agent.identity;
     if (!reference || !record || identity?.mode !== "user" || identity.lifecycleUid !== reference.lifecycleUid) return;
     try {
@@ -625,6 +607,7 @@ export class Preservation {
     const launch = record.agent.launch;
     const agent: ManagedAgent = {
       name,
+      ...(record.agent.displayName !== undefined ? { displayName: record.agent.displayName } : {}),
       role: record.agent.role,
       agent: launch.connector,
       id: principalKey(identity.owner, identity.actor).key,

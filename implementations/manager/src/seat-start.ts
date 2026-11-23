@@ -8,6 +8,7 @@ import { CHAT_ALIAS_PREFIX } from "./chat-session.js";
 import { readContinuityAssignment, writeInlineSnapshot } from "./launch.js";
 import type { Manager } from "./manager.js";
 import type { ManagerParts } from "./manager-parts.js";
+import { withTimeout } from "./manager-timeout.js";
 import { enrolledAcl } from "./remote-authority.js";
 import { MAX_AGENTS, supervisePolicy } from "./resume.js";
 import type { TeardownTarget } from "./retirement.js";
@@ -18,8 +19,24 @@ import type { ManagedAgent, SpawnHooks, StartAgentOpts } from "./seat-types.js";
 import { activateStaticLifecycle, casStaticSlot, readStaticSlot } from "./static-lifecycle.js";
 import type { TranscriptClaim } from "./transcript-receive.js";
 import type { ProvisionedUserAgent } from "./user-provision.js";
+import type { ManagerConfig } from "./manager-config.js";
+import type { ManagerStartState } from "./manager-start-state.js";
 
 class LegacyEventCountPermissionError extends Error {}
+
+async function startupFailureDetail(a: ManagedAgent, outcome: "failed" | "exited"): Promise<string> {
+  const failure = outcome === "failed" ? "startup confirmation failed" : "the seat exited before startup confirmation completed";
+  try {
+    // The startup watch can report failure before the runtime records the diagnostic on exit.
+    if (a.handle.waitForExit)
+      await withTimeout(a.handle.waitForExit(), 10_000, "seat exit was not confirmed within 10000ms");
+    const diagnostic = a.handle.exitInfo?.()?.diagnostic?.replace(/\p{Cs}/gu, "\uFFFD");
+    if (diagnostic) return `${a.name}: ${diagnostic}`;
+  } catch (error) {
+    return `${a.name}: ${failure}; ${rejectionText(error).replace(/\p{Cs}/gu, "\uFFFD")}. See the manager log.`;
+  }
+  return `${a.name}: ${failure}. See the manager log.`;
+}
 
 /** The {@link SeatLaunch} methods {@link SeatStart.startActive} calls. Each is read at call time. */
 export interface SeatStartLaunch {
@@ -36,12 +53,12 @@ export interface SeatStartLaunch {
 
 /** The agent-start path: admission, grant, launch, readiness and the rollback of a failed start. */
 export class SeatStart {
-  constructor(private readonly deps: SeatLaunchDeps, private readonly parts: Pick<ManagerParts, "connectorInventory">, private readonly launch: SeatStartLaunch) {}
+  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: SeatLaunchDeps, private readonly parts: Pick<ManagerParts, "brokerTransport" | "connectorInventory" | "harnessResolution" | "namesCapacity" | "personaCatalog">, private readonly launch: SeatStartLaunch, private readonly state: ManagerStartState) {}
 
   // The Manager members startActive reads, under their Manager names. Each reads through its dep
   // at use, so a field the Manager assigns later is current and a method a test replaces on the
   // Manager is the one that runs.
-  private get auth() { return this.deps.auth(); }
+  private get auth() { return this.state.auth; }
   private awaitReadiness(...args: Parameters<Manager["awaitReadiness"]>): ReturnType<Manager["awaitReadiness"]> { return this.deps.awaitReadiness(...args); }
   private awaitStartupOutcome(...args: Parameters<Manager["awaitStartupOutcome"]>): ReturnType<Manager["awaitStartupOutcome"]> { return this.deps.awaitStartupOutcome(...args); }
   private capabilityRefusal(...args: Parameters<Manager["capabilityRefusal"]>): ReturnType<Manager["capabilityRefusal"]> { return this.deps.capabilityRefusal(...args); }
@@ -49,49 +66,38 @@ export class SeatStart {
   private dropInlineSnapshot(...args: Parameters<Manager["dropInlineSnapshot"]>): ReturnType<Manager["dropInlineSnapshot"]> { return this.deps.dropInlineSnapshot(...args); }
   private endOnceBeforeServe(...args: Parameters<Manager["endOnceBeforeServe"]>): ReturnType<Manager["endOnceBeforeServe"]> { return this.deps.endOnceBeforeServe(...args); }
   private get ep() { return this.deps.ep(); }
-  private get eventPayloadsWithheld() { return this.deps.eventPayloadsWithheld(); }
   private eventsRefusal(...args: Parameters<Manager["eventsRefusal"]>): ReturnType<Manager["eventsRefusal"]> { return this.deps.eventsRefusal(...args); }
-  private get eventsRequired() { return this.deps.eventsRequired(); }
   private fileDigest(...args: Parameters<Manager["fileDigest"]>): ReturnType<Manager["fileDigest"]> { return this.deps.fileDigest(...args); }
   private hostLaunchFields(...args: Parameters<Manager["hostLaunchFields"]>): ReturnType<Manager["hostLaunchFields"]> { return this.deps.hostLaunchFields(...args); }
-  private issuanceSeam(...args: Parameters<Manager["issuanceSeam"]>): ReturnType<Manager["issuanceSeam"]> { return this.deps.issuanceSeam(...args); }
-  private launchHarness(...args: Parameters<Manager["launchHarness"]>): ReturnType<Manager["launchHarness"]> { return this.deps.launchHarness(...args); }
   private launchOwner(...args: Parameters<Manager["launchOwner"]>): ReturnType<Manager["launchOwner"]> { return this.deps.launchOwner(...args); }
   private get leaseStopping() { return this.deps.leaseStopping(); }
   private loadSeatRuntime(...args: Parameters<Manager["loadSeatRuntime"]>): ReturnType<Manager["loadSeatRuntime"]> { return this.deps.loadSeatRuntime(...args); }
-  private get managerInstanceId() { return this.deps.managerInstanceId(); }
-  private get managerLifecycleUid() { return this.deps.managerLifecycleUid(); }
+  private get managerInstanceId() { return this.state.managerInstanceId!; }
   private get meshMode() { return this.deps.meshMode(); }
   private get namesCapacity() { return this.deps.namesCapacity(); }
   private openOnceDelivery(...args: Parameters<Manager["openOnceDelivery"]>): ReturnType<Manager["openOnceDelivery"]> { return this.deps.openOnceDelivery(...args); }
-  private personaOwner(...args: Parameters<Manager["personaOwner"]>): ReturnType<Manager["personaOwner"]> { return this.deps.personaOwner(...args); }
   private place(...args: Parameters<Manager["place"]>): ReturnType<Manager["place"]> { return this.deps.place(...args); }
   private provisionUserAgent(...args: Parameters<Manager["provisionUserAgent"]>): ReturnType<Manager["provisionUserAgent"]> { return this.deps.provisionUserAgent(...args); }
   private readerRemedy(...args: Parameters<Manager["readerRemedy"]>): ReturnType<Manager["readerRemedy"]> { return this.deps.readerRemedy(...args); }
-  private get readinessTimeoutMs() { return this.deps.readinessTimeoutMs(); }
-  private get remoteAuthority() { return this.deps.remoteAuthority(); }
+  private get remoteAuthority() { return this.config.remoteAuthority; }
   private resolveConnector(...args: Parameters<Manager["resolveConnector"]>): ReturnType<Manager["resolveConnector"]> { return this.deps.resolveConnector(...args); }
   private get retirement() { return this.deps.retirement(); }
   private get runHosting() { return this.deps.runHosting(); }
   private runtimeFor(...args: Parameters<Manager["runtimeFor"]>): ReturnType<Manager["runtimeFor"]> { return this.deps.runtimeFor(...args); }
-  private seatCapRefusal(...args: Parameters<Manager["seatCapRefusal"]>): ReturnType<Manager["seatCapRefusal"]> { return this.deps.seatCapRefusal(...args); }
   private get seatCustody() { return this.deps.seatCustody(); }
-  private get secrets() { return this.deps.secrets(); }
   private get sessionRecovery() { return this.deps.sessionRecovery(); }
   private shredUserSecrets(...args: Parameters<Manager["shredUserSecrets"]>): ReturnType<Manager["shredUserSecrets"]> { return this.deps.shredUserSecrets(...args); }
-  private get space() { return this.deps.space(); }
   private get staticLifecycle() { return this.deps.staticLifecycle(); }
   private stopAndTrack(...args: Parameters<Manager["stopAndTrack"]>): ReturnType<Manager["stopAndTrack"]> { return this.deps.stopAndTrack(...args); }
   private trackDeprovision(...args: Parameters<Manager["trackDeprovision"]>): ReturnType<Manager["trackDeprovision"]> { return this.deps.trackDeprovision(...args); }
   private get transcripts() { return this.deps.transcripts(); }
-  private get userMode() { return this.deps.userMode(); }
+  private get userMode() { return this.state.userMode; }
   private get userProvision() { return this.deps.userProvision(); }
   private watchExit(...args: Parameters<Manager["watchExit"]>): ReturnType<Manager["watchExit"]> { return this.deps.watchExit(...args); }
   private watchOnceExit(...args: Parameters<Manager["watchOnceExit"]>): ReturnType<Manager["watchOnceExit"]> { return this.deps.watchOnceExit(...args); }
   private withIssuer<T>(fn: (i: { store: IssuedStore; accepted: KV }) => Promise<T>): Promise<T> { return this.deps.withIssuer(fn); }
   private withLifecycleExecutor<T>(pin: { owner: string; actor: string; lifecycleUid: string; alias: string }, fn: (t: LifecycleStateTransport) => Promise<T>): Promise<T> { return this.deps.withLifecycleExecutor(pin, fn); }
   private withProvisioner<T>(fn: (prov: CotalEndpoint) => Promise<T>): Promise<T> { return this.deps.withProvisioner(fn); }
-  private get workspaceRoot() { return this.deps.workspaceRoot(); }
 
   // The SeatLaunch methods startActive calls, under their SeatLaunch names.
   private checkSpawnCwd(...args: Parameters<SeatLaunch["checkSpawnCwd"]>): ReturnType<SeatLaunch["checkSpawnCwd"]> { return this.launch.checkSpawnCwd(...args); }
@@ -160,7 +166,7 @@ export class SeatStart {
     if (run !== undefined && "refused" in run) return { ok: false, error: `spawn: ${run.refused}` };
     const bound = await this.staticSpawnBound(authenticatedCaller, run);
 
-    const readinessTimeoutMs = connector.readinessTimeoutMs ?? this.readinessTimeoutMs;
+    const readinessTimeoutMs = connector.readinessTimeoutMs ?? this.config.readinessTimeoutMs;
     if (!Number.isSafeInteger(readinessTimeoutMs) || readinessTimeoutMs <= 0)
       return { ok: false, error: `connector ${connector.name} declares invalid readinessTimeoutMs ${JSON.stringify(connector.readinessTimeoutMs)}; expected a positive safe integer` };
 
@@ -179,7 +185,7 @@ export class SeatStart {
     // Harness preflight before reserving a slot or minting — a missing `claude`/`opencode` binary
     // fails here with a clear name, not obscurely at process spawn. No fallback. All synchronous, so
     // the reserve gate stays atomic. (The connector itself was resolved up top, before the capacity gate.)
-    const harness = this.launchHarness(connector);
+    const harness = this.parts.harnessResolution.launchHarness(connector);
     if ("refusal" in harness) return { ok: false, error: this.harnessUnavailableError(harness.refusal, opts.route ?? "inst") };
     // Resume is a connector capability: reject an unsupported resume HERE, before the reserve/mint, so
     // it can never provision creds + durables and then throw at buildLaunch (mint-then-orphan). Same
@@ -222,7 +228,7 @@ export class SeatStart {
     let cotalConfig: CotalConfig;
     let hostFields: ReturnType<Manager["hostLaunchFields"]>;
     try {
-      cotalConfig = loadCotalConfig(this.workspaceRoot);
+      cotalConfig = loadCotalConfig(this.config.workspaceRoot);
       hostFields = this.hostLaunchFields(cotalConfig, agent, opts.shareTools, harness);
     } catch (e) {
       const error = rejectionText(e);
@@ -261,7 +267,7 @@ export class SeatStart {
     let resolvedCwd: string | undefined;
     if (typeof opts.cwd === "string" && opts.cwd !== "") {
       const asked = opts.cwd;
-      const target = resolve(this.workspaceRoot, asked);
+      const target = resolve(this.config.workspaceRoot, asked);
       const checked = this.checkSpawnCwd(target);
       if ("refusal" in checked)
         return { ok: false, error: `spawn: cwd does not resolve on this host (${hostname()}): ${JSON.stringify(asked)} (${checked.refusal}); the seat was not launched` };
@@ -328,7 +334,7 @@ export class SeatStart {
       const personaNamesChannels = def.subscribe !== undefined || def.allowSubscribe !== undefined || def.allowPublish !== undefined;
       const heldChannels = (field: "allowSubscribe" | "allowPublish", channels: string[]) => {
         const own = channels.filter((ch) => eventChannelPrincipal(ch) === null);
-        return bound.kind === "bounded" ? own.filter((ch) => grantOverreach(this.space, bound.caller, bound.ceiling, { [field]: [ch] }).length === 0) : own;
+        return bound.kind === "bounded" ? own.filter((ch) => grantOverreach(this.config.space, bound.caller, bound.ceiling, { [field]: [ch] }).length === 0) : own;
       };
       let scoped: { allowSubscribe: string[]; allowPublish: string[] } | undefined;
       try {
@@ -368,13 +374,13 @@ export class SeatStart {
       return { ok: false, error: opts.resolved ? `launch agent: ${rejectionText(e)}` : `persona ${where}: ${rejectionText(e)}` };
     }
     // Default events on where the connector supports them, unless the launch explicitly opts out.
-    const events = this.eventsRequired || opts.events === true || (opts.events !== false && !!connector.eventChannel);
-    if (this.eventPayloadsWithheld && opts.eventPayloads === true)
+    const events = this.config.eventsRequired || opts.events === true || (opts.events !== false && !!connector.eventChannel);
+    if (this.config.eventPayloadsWithheld && opts.eventPayloads === true)
       return { ok: false, error: "space policy withholds event payloads" };
-    const eventPayloads = !this.eventPayloadsWithheld && (opts.eventPayloads ?? def?.eventPayloads) !== false;
+    const eventPayloads = !this.config.eventPayloadsWithheld && (opts.eventPayloads ?? def?.eventPayloads) !== false;
     if (run === undefined) {
       const reads = this.managedStaticInstanceReads(capabilities);
-      if (bound.kind === "exempt" || (bound.kind === "bounded" && !grantOverreach(this.space, bound.caller, bound.ceiling, { endpoints: reads }).length))
+      if (bound.kind === "exempt" || (bound.kind === "bounded" && !grantOverreach(this.config.space, bound.caller, bound.ceiling, { endpoints: reads }).length))
         endpoints.push(...reads);
     }
     // THE DELEGATION BOUND, on the grant as it will be minted: every channel and capability the
@@ -397,7 +403,7 @@ export class SeatStart {
     const catalogCopy: AgentDef | undefined = inline?.save
       ? {
           name: ref,
-          owner: savedBy !== undefined ? this.personaOwner(principalKey(savedBy.owner, savedBy.actor).key) : spawner === undefined ? undefined : this.personaOwner(spawner),
+          owner: savedBy !== undefined ? this.parts.personaCatalog.personaOwner(principalKey(savedBy.owner, savedBy.actor).key) : spawner === undefined ? undefined : this.parts.personaCatalog.personaOwner(spawner),
           role,
           model,
           variant,
@@ -487,7 +493,7 @@ export class SeatStart {
     let reopenSession: string | undefined;
     if (exact) {
       try {
-        reopenSession = readContinuityAssignment(this.workspaceRoot, { space: this.space, name: identityName, connector: agent, cwd: resolvedCwd ?? this.workspaceRoot });
+        reopenSession = readContinuityAssignment(this.config.workspaceRoot, { space: this.config.space, name: identityName, connector: agent, cwd: resolvedCwd ?? this.config.workspaceRoot });
       } catch (e) {
         return { ok: false, error: rejectionText(e) };
       }
@@ -541,8 +547,8 @@ export class SeatStart {
       if (events && this.userMode && !runtime.spawnDelegated && eventOwner?.startsWith("u_")) {
         try {
           await checkEventStartup({
-            workspaceRoot: this.workspaceRoot,
-            space: this.space,
+            workspaceRoot: this.config.workspaceRoot,
+            space: this.config.space,
             principal: { owner: eventOwner, actor: name },
             retainedMessages: async () => {
               try {
@@ -552,7 +558,7 @@ export class SeatStart {
                 // free or renumber it: preserve the requested candidate and let the launched
                 // agent's existing startup check decide. Every other read failure stays loud.
                 if (!isPermissionDenied(e)) throw e;
-                console.error(`! event startup name check: missing $JS.API.STREAM.INFO.${chatStream(this.space)} permission; launching "${name}" unchanged so the agent checks its transcript state`);
+                console.error(`! event startup name check: missing $JS.API.STREAM.INFO.${chatStream(this.config.space)} permission; launching "${name}" unchanged so the agent checks its transcript state`);
                 throw new LegacyEventCountPermissionError();
               }
             },
@@ -585,7 +591,7 @@ export class SeatStart {
     // before any of the others reserved, and they all pass. Nothing between here and the reserve
     // awaits. It refuses BEFORE `onEffect`, so the launch states `not-executed` and leaves no
     // name, no mint and no footprint behind.
-    const overCap = this.seatCapRefusal(owner);
+    const overCap = this.parts.namesCapacity.seatCapRefusal(owner);
     if (overCap) return { ok: false, code: overCap.code, error: overCap.message, ...(overCap.details ? { details: overCap.details } : {}) };
     // Set once the agent's footprint (durables + creds, or the user-mode grant + secret files)
     // exists; cleared when a live slot takes ownership. If it survives to `finally`, the spawn threw
@@ -768,7 +774,7 @@ export class SeatStart {
         // LAST) over the key-pinned executor. The wire AUTHORITY principal is the incarnation-
         // unique nkey; the alias is protected by the name-keyed slot + freeSlot hold.
         await this.withLifecycleExecutor({ owner: DEV_OWNER, actor: identity.id, lifecycleUid, alias: name }, (t) =>
-          activateStaticLifecycle(t, { owner: DEV_OWNER, alias: name, actor: identity.id, lifecycleUid, managerInstance: this.managerLifecycleUid, ownerInstanceId: this.managerInstanceId, runtime: custody }),
+          activateStaticLifecycle(t, { owner: DEV_OWNER, alias: name, actor: identity.id, lifecycleUid, managerInstance: this.config.managerLifecycleUid, ownerInstanceId: this.managerInstanceId, runtime: custody }),
         );
         // From here the DURABLE registration exists: arm the rollback BEFORE minting, so a throw
         // between activation and provisioning still drives the exact-op static terminal (the
@@ -802,19 +808,19 @@ export class SeatStart {
               lifecycleUid,
               expiresAt: exp,
               issued,
-              issuance: this.issuanceSeam(i, "issue", issuedAgent, exp),
+              issuance: this.parts.brokerTransport.issuanceSeam(i, "issue", issuedAgent, exp),
             }),
           ),
         );
         // Store first (the source of truth), then materialize: `buildLaunch` hands the CHILD this
         // file path, so the cred must exist as a file regardless of the store behind the seam. The
         // manager's ONE store (injected for hosted, workstation FS locally).
-        const secrets = this.secrets;
+        const secrets = this.config.secrets;
         // LIFECYCLE-KEYED (SPEC 13.1 on the FS): the incarnation's cred file embeds its uid, so a
         // replayed/stale teardown can never address a same-name successor's credential.
-        credsPath = agentLifecycleSecretFilePaths(this.workspaceRoot, this.space, name, lifecycleUid).creds;
-        await secrets.put(agentSecretKeyForFile(credsPath, this.space), creds);
-        await materializeSecretToFile(secrets, agentSecretKeyForFile(credsPath, this.space), credsPath);
+        credsPath = agentLifecycleSecretFilePaths(this.config.workspaceRoot, this.config.space, name, lifecycleUid).creds;
+        await secrets.put(agentSecretKeyForFile(credsPath, this.config.space), creds);
+        await materializeSecretToFile(secrets, agentSecretKeyForFile(credsPath, this.config.space), credsPath);
         provisioned = { id: identity.id, name, lifecycleUid, secretPaths: { creds: credsPath }, ...(custody ? { runtime: custody } : {}) }; // footprint now exists — the finally rolls it back if the spawn throws
       }
       // Per-agent cwd overrides the manager's shared workspace root, so agents can be rooted at
@@ -822,20 +828,20 @@ export class SeatStart {
       // agent shares the workspace root (the prior, unchanged behavior).
       // The realpath the admission check above already resolved (#385 item 2) — never re-resolved here,
       // so the admission refusal and the launch cwd can never disagree on the same request.
-      const cwd = resolvedCwd ?? this.workspaceRoot;
+      const cwd = resolvedCwd ?? this.config.workspaceRoot;
       // An inline persona's snapshot, and its catalog copy when saved, are written here: after the
       // grant (the static issuance, the user-auth ledger, a hosted enrollment that may replace the
       // uid) and before launch, so a refused grant leaves neither file and the snapshot carries the
       // final uid. A copy that loses a create race throws, and the finally rolls the grant back.
       if (inline) {
-        configPath = writeInlineSnapshot(this.workspaceRoot, lifecycleUid, { name, role, model, variant, description: def.description, body: def.persona });
+        configPath = writeInlineSnapshot(this.config.workspaceRoot, lifecycleUid, { name, role, model, variant, description: def.description, body: def.persona });
         snapshotUid = lifecycleUid;
-        if (catalogCopy) saveAgentFile(agentFilePath(this.workspaceRoot, ref), catalogCopy, { createOnly: true });
+        if (catalogCopy) saveAgentFile(agentFilePath(this.config.workspaceRoot, ref), catalogCopy, { createOnly: true });
       }
       if (configPath === undefined) throw new Error("internal: the persona file is missing at launch");
       const configSha256 = this.fileDigest(configPath);
       const manifestPath = opts.launchRef
-        ? join(this.workspaceRoot, ".cotal", "run", `${opts.launchRef.runId}.json`)
+        ? join(this.config.workspaceRoot, ".cotal", "run", `${opts.launchRef.runId}.json`)
         : undefined;
       const manifestSha256 = manifestPath ? this.fileDigest(manifestPath) : undefined;
       const launchOpts: LaunchOpts = {
@@ -898,7 +904,7 @@ export class SeatStart {
         watchConnectorHolder(handle, holder);
       } else {
         if (carried) {
-          seatHome = join(this.workspaceRoot, ".cotal", "seat-homes", lifecycleUid);
+          seatHome = join(this.config.workspaceRoot, ".cotal", "seat-homes", lifecycleUid);
           mkdirSync(seatHome, { recursive: true, mode: 0o700 });
           launchOpts.carried = { home: seatHome, transcript: carried.path, cwd };
         }
@@ -1023,7 +1029,7 @@ export class SeatStart {
         // is refused rather than replaced by an empty one; name the record that pins it.
         const error = reopenSession === undefined ? readiness.detail
           : `${readiness.detail} (continuity: exact was reopening recorded session ${reopenSession}; if the harness no longer has it, ` +
-            `remove ${join(this.workspaceRoot, ".cotal", "continuity", `${name}.json`)} to start a new session)`;
+            `remove ${join(this.config.workspaceRoot, ".cotal", "continuity", `${name}.json`)} to start a new session)`;
         if (managed.once) managed.once.stopReason ??= "launch-failed";
         await hooks?.onOutcome?.({ kind: "failed", data: { error } });
         return { ok: false, error };
@@ -1057,12 +1063,17 @@ export class SeatStart {
           return { ok: false, error };
         }
       }
-      // A plain seat on such a connector starts whatever its startup showed. One whose watch opened the
-      // input screen without the prompt is not woken by mesh traffic, and the spawn says so instead of
-      // starting it silently without push (#5737).
+      // An input screen without the prompt allows a plain launch, but mesh traffic cannot wake it.
       if (!onceTask && connector.idleWakeNeedsConfirmed !== undefined && runtime.reportsStartupOutcome) {
         const startup = await this.awaitStartupOutcome(managed, launchedAt, readinessTimeoutMs);
         if (managed.terminalizing || this.leaseStopping) { hooks?.onTerminalDeferred?.(); return { ok: false, error: `${name} was stopped before its startup ended` }; }
+        if (startup === "failed" || startup === "exited") {
+          const error = await startupFailureDetail(managed, startup);
+          if (managed.terminalizing || this.leaseStopping) { hooks?.onTerminalDeferred?.(); return { ok: false, error }; }
+          this.watchExit(managed);
+          await hooks?.onOutcome?.({ kind: "failed", data: { error } });
+          return { ok: false, error };
+        }
         if (startup === "ready") {
           managed.startupNotice = connector.idleWakeNeedsConfirmed;
           console.error(`! ${name}: ${connector.idleWakeNeedsConfirmed}`);
@@ -1089,7 +1100,7 @@ export class SeatStart {
             if (reopenSession !== undefined && managed.launch.sessionId !== reopenSession)
               throw new Error(`continuity: exact asked for session ${reopenSession}, the connector bound ${managed.launch.sessionId}`);
             if (exact) {
-              managed.continuity = { space: this.space, name, connector: agent, cwd };
+              managed.continuity = { space: this.config.space, name, connector: agent, cwd };
               this.sessionRecovery.recordContinuity(managed, managed.launch.sessionId);
             }
           } catch (error) {

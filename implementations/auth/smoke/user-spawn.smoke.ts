@@ -182,10 +182,15 @@ const cliEnv = {
 };
 function cotal(args: string[], timeoutMs = 20_000): Promise<{ status: number | null; out: string; timedOut: boolean; launchError?: string }> {
   return new Promise((resolve) => {
-    const child = spawn(TSX, [CLI_BIN, ...args], { cwd: root, env: cliEnv, stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(TSX, [CLI_BIN, ...args], { cwd: root, env: cliEnv, stdio: ["ignore", "pipe", "pipe"], detached: true });
     let out = "";
     let timedOut = false;
-    const timer = setTimeout(() => { timedOut = true; child.kill("SIGKILL"); }, timeoutMs);
+    const timer = setTimeout(() => {
+      timedOut = true;
+      if (child.pid !== undefined) {
+        try { process.kill(-child.pid, "SIGKILL"); } catch { /* already gone */ }
+      }
+    }, timeoutMs);
     child.stdout.on("data", (data: Buffer) => { out += data.toString(); });
     child.stderr.on("data", (data: Buffer) => { out += data.toString(); });
     child.on("error", (error) => { clearTimeout(timer); resolve({ status: null, out, timedOut, launchError: error.message }); });
@@ -560,7 +565,7 @@ try {
     optedOutRequired.ok === false && (optedOutRequired.error ?? "").includes(SPACE) && /--no-events/.test(optedOutRequired.error ?? "") && !existsSync(rowFile("managed", OWNER, "beta")), optedOutRequired);
   // The remaining sections exercise explicit opt-outs and unrelated authorization paths. They predate
   // the required-policy scenario above, so return this in-process fixture to unrestricted behavior.
-  (manager as unknown as { eventsRequired: boolean }).eventsRequired = false;
+  (manager as unknown as { config: { eventsRequired: boolean } }).config.eventsRequired = false;
   const alphaToken = readFileSync(incFiles("alpha").actorToken, "utf8").trim(); // capture for D + F
   // Witness the presence join on the OPERATOR's OWN user bearer (login → exchange → connect), watching the roster.
   const opCreds = await cotalAuthProvider.userCredentials({ store, dir, space: SPACE, actor: "cli" });
@@ -979,9 +984,13 @@ try {
   // use its real channel grant, include its own send and refuse a channel outside that grant.
   grantActor(dir, { ...cliRow0, scope: [] });
   try {
-  const narrowAttach = await cliResult(["attach", "--name", "alpha", "--no-reconnect", "--space", SPACE]);
-  check("the shipped attach CLI reports permission denial after its actor loses spawn scope",
-    !narrowAttach.timedOut && narrowAttach.status !== null && narrowAttach.status !== 0 && /Code:\s+PERMISSION_DENIED/.test(narrowAttach.plain) && !/attached to alpha/.test(narrowAttach.plain), narrowAttach);
+  const attachArgs = ["attach", "--name", "alpha", "--no-reconnect", "--space", SPACE];
+  const narrowAttach = await cliResult(attachArgs, 12_000);
+  check("a person's sign-in still attaches to its own seat without spawn scope, and the smoke deadline closes the CLI's pipes",
+    narrowAttach.timedOut && /attached to alpha/.test(narrowAttach.plain), narrowAttach);
+  const deniedAttach = await cliResult([...attachArgs, "--on", mintLifecycleUid()]);
+  check("the shipped attach CLI exits with PERMISSION_DENIED when the auth service refuses its manager pin",
+    !deniedAttach.timedOut && deniedAttach.status === 2 && /Code:\s+PERMISSION_DENIED/.test(deniedAttach.plain) && !/attached to alpha/.test(deniedAttach.plain), deniedAttach);
   const nativeText = `narrow native history ${Date.now()}`;
   const postedHistory = await cliResult(["send", "-c", "general", nativeText, "--space", SPACE]);
   check("narrow user sends its own history fixture message", postedHistory.status === 0 && !postedHistory.timedOut, postedHistory);
@@ -2024,7 +2033,7 @@ try {
   check("cell 4: admin explicit plane remains served with the own-channel grant",
     adminResult.reply.ok === true && adminRow?.allowPublish?.includes(eventChannel({ owner: OWNER, actor: "adminprobe" })) === true,
     { ok: adminResult.reply.ok, error: adminResult.reply.error?.message });
-  (participant as unknown as { eventsRequired: boolean }).eventsRequired = false;
+  (participant as unknown as { config: { eventsRequired: boolean } }).config.eventsRequired = false;
   // Observe the options entering the real provisioning method, not a stubbed success reply.
   // A u_-owner foreign caller is refused later by enrollment, so its notice never reaches the wire.
   const actualStart = participant.startAgent.bind(participant);
@@ -2051,9 +2060,8 @@ try {
   // Main adds three shared-Manager status cells; the redesign adds five focused CLI cells.
   // These combined expectations still require an actual integrated run.
   // 148 -> 151: D2's spawn and admin views also read ps.
-  // One CLI attach denial after the operator loses spawn scope.
   // Eight hosted-enrollment checks include uncommitted attempts, changed authority and refused replay.
-  const EXPECTED = endpointCliFocus ? 71 : 160;
+  const EXPECTED = endpointCliFocus ? 72 : 161;
   check(`every cell ran - ${EXPECTED} expected`, cells === EXPECTED + 1, `${cells} cells reported`);
 
   console.log(`\n${endpointCliFocus ? "USER-ENDPOINT CLI SMOKE" : "USER-SPAWN SMOKE"} ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);

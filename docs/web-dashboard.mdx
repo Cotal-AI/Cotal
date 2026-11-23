@@ -83,9 +83,10 @@ Anyone holding the private browser session can exercise the configured posting a
 
 ### Open the private session
 
-For `cotal service start web --no-open` or a foreground service, read the owner-private session file named in the service log, then open its single-use link in the browser profile you intend to use.
-The dashboard creates the file for the full service instance and launch request. Read it again after a repeated loopback start to get the fresh link.
-Logs contain only its reference path.
+For a background service started with `cotal service start web --no-open`, find the owner-private session file path in the service log.
+A foreground start prints the path in its terminal. A repeat start for that loopback instance prints the path again after refreshing the link.
+Read the file and open its single-use link in the browser profile you intend to use.
+The dashboard creates the file for the full service instance and launch request. Output contains only the file path, not the link.
 
 <Callout type="warn" title="Keep the session file private">
 
@@ -256,6 +257,7 @@ Ordinary Unicode text remains readable as entered.
 Channel names accept dotted segments of letters, digits, `_`, and `-`, with `*` or `>` where a subtree is allowed.
 Invalid names are refused rather than rewritten into a different channel.
 
+Dashboard API reads and the live feed use `GET`. After authentication, a bodyless request using another method returns `405` with `Allow: GET`.
 Read routes accept no body. An announced body receives `413`, and the connection closes before reading it.
 The older embedded web handler has a separate delete route limited to 8 KiB with no wildcard targets.
 Its complete body must arrive within ten seconds. Otherwise it returns `408`, closes the connection and leaves the channel unchanged.
@@ -275,7 +277,8 @@ the agent page show. The dashboard shows only data the observer can read.
 ## Check visibility limits
 
 The service uses the space's `web.creds` or the protected credential file you supplied, and its grants.
-It does not mint a replacement admin credential. A chat-only file hides DM views.
+It does not mint a replacement admin credential. The default `web.creds` includes live channel traffic, not live direct messages or role messages.
+A chat-only file hides DM views.
 A restricted read is not an empty mesh and does not prove that a hidden DM is absent.
 
 See [Identity](identity-and-auth.mdx) for credential scopes and [MeshView](mesh-view.mdx) for the terminal observer API.

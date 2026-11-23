@@ -25,6 +25,8 @@ import { caughtEnvelope } from "./turn-relay.js";
 import { lifecycleBlocked, lifecycleBlockedFrom } from "@cotal-ai/core";
 import { REMOTE_STANDING_BUDGET_MS, remoteStandingTimeLeft } from "./credential-renewal.js";
 import { withTimeout } from "./manager-timeout.js";
+import type { ManagerConfig } from "./manager-config.js";
+import type { ManagerStartState } from "./manager-start-state.js";
 
 type ServiceServe = { handle: EpServeHandle; nc: NatsConnection; identity: Identity; grant: EpServeGrant; creds?: string };
 type SessionLedgerConnection = { nc: NatsConnection; creds?: string };
@@ -55,36 +57,11 @@ function openMeshFrozenGateRefusal(e: unknown, instanceId: string): unknown {
 
 /** Current manager authority and shared renewal state, read when an operation runs. */
 export interface ServePlaneDeps {
-  auth(): SpaceAuth | undefined;
-  remoteAuthority(): Pick<NonNullable<ManagerOptions["remoteAuthority"]>, "identities" | "goalWriterCreds" | "sessionLedgerCreds" | "serveCreds" | "serveGrant" | "mintSessionServing"> | undefined;
-  space(): string;
-  servers(): string | undefined;
-  workspaceRoot(): string;
-  managerInstanceId(): string;
   managerServeIdentity(): Identity;
   leaseStopping(): boolean;
-  remoteBundleRenewal(): Promise<void> | undefined;
-  maxSessions(): number | undefined;
-  serviceServe(): ServiceServe | undefined;
-  setServiceServe(value: ServiceServe | undefined): void;
-  sessionLedgerIdentity(): Identity | undefined;
-  setSessionLedgerIdentity(value: Identity | undefined): void;
-  sessionLedgerCreds(): string | undefined;
-  setSessionLedgerCreds(value: string | undefined): void;
-  sessionLedgerConn(): SessionLedgerConnection | undefined;
-  setSessionLedgerConn(value: SessionLedgerConnection | undefined): void;
-  sessionPlane(): ManagerSessionPlane | undefined;
-  setSessionPlane(value: ManagerSessionPlane | undefined): void;
-  sessionKeyRenewTimer(): ReturnType<typeof setInterval> | undefined;
-  setSessionKeyRenewTimer(value: ReturnType<typeof setInterval> | undefined): void;
-  userMode(): boolean;
-  setGoalWriterIdentity(value: Identity): void;
-  setGoalWriterCreds(value: string | undefined): void;
   remoteStandingBudgetMs: number;
   dial: (opts: Parameters<ReturnType<typeof dialerFor>>[0]) => Promise<NatsConnection>;
   dialRemoteStanding: (opts: Parameters<ReturnType<typeof dialerFor>>[0], deadline: number) => Promise<NatsConnection>;
-  trackTransport: (nc: NatsConnection) => void;
-  discardServeCandidate: (nc: NatsConnection, handle?: EpServeHandle) => Promise<void>;
   managerServiceDefs: () => EpCommandDef[];
   omitClassCommands: () => readonly string[] | undefined;
   resolveTarget: (target: { owner: string; actor: string }) => { lifecycleUid: string; mappingRevision: number } | undefined;
@@ -92,7 +69,6 @@ export interface ServePlaneDeps {
   withOpenServeConnection: <T>(fn: (kvs: ExecutorStores) => Promise<T>) => Promise<T>;
   boundedReconnect: (label: string, attempt: () => Promise<boolean>, expired?: boolean) => Promise<boolean>;
   renewRemoteBeforeRedial: (label: string, read: () => string | undefined) => Promise<void>;
-  scheduleServeRenewal: (creds: string) => void;
   stop: () => Promise<void>;
   healFrozenRegistrationGate: (authKv: KV, instanceId: string, auth: SpaceAuth, recordsKv: KV) => Promise<void>;
   mintAndStageGoalWriter: (authKv: KV) => Promise<string>;
@@ -107,36 +83,11 @@ export interface ServePlaneDeps {
  *  field the Manager assigns later is current and a member a test replaces on the instance is the one that runs. */
 export function servePlaneDeps(m: Manager): ServePlaneDeps {
   return {
-    auth: () => m["auth"],
-    remoteAuthority: () => m["remoteAuthority"],
-    space: () => m["space"],
-    servers: () => m["servers"],
-    workspaceRoot: () => m["workspaceRoot"],
-    managerInstanceId: () => m["managerInstanceId"],
     managerServeIdentity: () => m["managerServeIdentity"],
     leaseStopping: () => m["leaseStopping"],
-    remoteBundleRenewal: () => m["remoteBundleRenewal"],
-    maxSessions: () => m["maxSessions"],
-    serviceServe: () => m["serviceServe"],
-    setServiceServe: (value) => { m["serviceServe"] = value; },
-    sessionLedgerIdentity: () => m["sessionLedgerIdentity"],
-    setSessionLedgerIdentity: (value) => { m["sessionLedgerIdentity"] = value; },
-    sessionLedgerCreds: () => m["sessionLedgerCreds"],
-    setSessionLedgerCreds: (value) => { m["sessionLedgerCreds"] = value; },
-    sessionLedgerConn: () => m["sessionLedgerConn"],
-    setSessionLedgerConn: (value) => { m["sessionLedgerConn"] = value; },
-    sessionPlane: () => m["sessionPlane"],
-    setSessionPlane: (value) => { m["sessionPlane"] = value; },
-    sessionKeyRenewTimer: () => m["sessionKeyRenewTimer"],
-    setSessionKeyRenewTimer: (value) => { m["sessionKeyRenewTimer"] = value; },
-    userMode: () => m["userMode"],
-    setGoalWriterIdentity: (value) => { m["goalWriterIdentity"] = value; },
-    setGoalWriterCreds: (value) => { m["goalWriterCreds"] = value; },
     remoteStandingBudgetMs: REMOTE_STANDING_BUDGET_MS,
     dial: (...args) => m["dial"](...args),
     dialRemoteStanding: (...args) => m["dialRemoteStanding"](...args),
-    trackTransport: (...args) => m["trackTransport"](...args),
-    discardServeCandidate: (...args) => m["discardServeCandidate"](...args),
     managerServiceDefs: (...args) => m["managerServiceDefs"](...args),
     omitClassCommands: (...args) => m["omitClassCommands"](...args),
     resolveTarget: (target) => m["resolveServeTarget"](target),
@@ -144,7 +95,6 @@ export function servePlaneDeps(m: Manager): ServePlaneDeps {
     withOpenServeConnection: (...args) => m["withOpenServeConnection"](...args),
     boundedReconnect: (...args) => m["boundedReconnect"](...args),
     renewRemoteBeforeRedial: (...args) => m["renewRemoteBeforeRedial"](...args),
-    scheduleServeRenewal: (...args) => m["scheduleServeRenewal"](...args),
     stop: (...args) => m["stop"](...args),
     healFrozenRegistrationGate: (...args) => m["healFrozenRegistrationGate"](...args),
     mintAndStageGoalWriter: (...args) => m["mintAndStageGoalWriter"](...args),
@@ -164,35 +114,43 @@ export class ServePlane {
    *  revoke; a session that never staged drops its entry when the manager exits. */
   private readonly sessionServingKeys = new Map<string, string>();
 
-  constructor(private readonly deps: ServePlaneDeps, private readonly parts: Pick<ManagerParts, "connectorInventory">) {}
+  /** The manager's ONE §13.6 session plane — offer mint + one-use redeem + PTY-bridge
+   *  standup for `attach`. The face's establisher and the CLI attach handler both call THIS one
+   *  plane; the manager never constructs a second. Undefined until {@link startSessionPlane}. */
+  sessionPlane?: ManagerSessionPlane;
+  /** The standing session-LEDGER connection + its mutable creds holder (the authenticator
+   *  presents the refreshed cred on the next reconnect after a half-TTL renewal — the goal-writer
+   *  precedent). Auth mode only; an open mesh runs the plane over a bare connection. */
+  sessionLedgerConn?: SessionLedgerConnection;
+  /** Renews the session signing key long before its window closes. A key that expires unattended
+   *  takes the whole session plane down until the manager is restarted, which kills live sessions. */
+  sessionKeyRenewTimer?: ReturnType<typeof setInterval>;
+  /** The STABLE session-LEDGER identity (auth mode) — minted once at registration
+   *  alongside the serve + goal-writer identities; a renewal re-mints the SAME nkey with a fresh
+   *  bounded exp and re-stages its distinct credId into the §13.1 revocation family. The current
+   *  credential is minted INSIDE {@link registerManagerService}'s run block and stashed here. */
+  sessionLedgerIdentity?: Identity;
+  /** The manager's v0.4 service-endpoint serve state — the serve handle +
+   *  its dedicated connection, the STABLE serve identity (renewals re-mint the same nkey), the
+   *  branded serve grant, and the CURRENT credential (the connection's authenticator reads it on
+   *  every (re)connect, so a renewal is adopted without re-registration). Absent on open meshes,
+   *  in user mode, and before registration completes. */
+  serviceServe?: ServiceServe;
+  sessionLedgerCreds?: string;
 
-  private get auth(): SpaceAuth | undefined { return this.deps.auth(); }
-  private get remoteAuthority(): Pick<NonNullable<ManagerOptions["remoteAuthority"]>, "identities" | "goalWriterCreds" | "sessionLedgerCreds" | "serveCreds" | "serveGrant" | "mintSessionServing"> | undefined { return this.deps.remoteAuthority(); }
-  private get space(): string { return this.deps.space(); }
-  private get servers(): string | undefined { return this.deps.servers(); }
-  private get workspaceRoot(): string { return this.deps.workspaceRoot(); }
-  private get managerInstanceId(): string { return this.deps.managerInstanceId(); }
+  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: ServePlaneDeps, private readonly parts: Pick<ManagerParts, "brokerTransport" | "connectorInventory" | "credentialRenewal" | "goalWriter">, private readonly state: ManagerStartState) {}
+  private get userMode() { return this.state.userMode; }
+
+  private get auth(): SpaceAuth | undefined { return this.state.auth; }
+  private get remoteAuthority(): Pick<NonNullable<ManagerOptions["remoteAuthority"]>, "identities" | "goalWriterCreds" | "sessionLedgerCreds" | "serveCreds" | "serveGrant" | "mintSessionServing"> | undefined { return this.config.remoteAuthority; }
+  private get managerInstanceId(): string { return this.state.managerInstanceId!; }
   private get managerServeIdentity(): Identity { return this.deps.managerServeIdentity(); }
   private get leaseStopping(): boolean { return this.deps.leaseStopping(); }
-  private get remoteBundleRenewal(): Promise<void> | undefined { return this.deps.remoteBundleRenewal(); }
-  private get maxSessions(): number | undefined { return this.deps.maxSessions(); }
-  private get serviceServe(): ServiceServe | undefined { return this.deps.serviceServe(); }
-  private set serviceServe(value: ServiceServe | undefined) { this.deps.setServiceServe(value); }
-  private get sessionLedgerIdentity(): Identity | undefined { return this.deps.sessionLedgerIdentity(); }
-  private set sessionLedgerIdentity(value: Identity | undefined) { this.deps.setSessionLedgerIdentity(value); }
-  private get sessionLedgerCreds(): string | undefined { return this.deps.sessionLedgerCreds(); }
-  private set sessionLedgerCreds(value: string | undefined) { this.deps.setSessionLedgerCreds(value); }
-  private get sessionLedgerConn(): SessionLedgerConnection | undefined { return this.deps.sessionLedgerConn(); }
-  private set sessionLedgerConn(value: SessionLedgerConnection | undefined) { this.deps.setSessionLedgerConn(value); }
-  private get sessionPlane(): ManagerSessionPlane | undefined { return this.deps.sessionPlane(); }
-  private set sessionPlane(value: ManagerSessionPlane | undefined) { this.deps.setSessionPlane(value); }
-  private get sessionKeyRenewTimer(): ReturnType<typeof setInterval> | undefined { return this.deps.sessionKeyRenewTimer(); }
-  private set sessionKeyRenewTimer(value: ReturnType<typeof setInterval> | undefined) { this.deps.setSessionKeyRenewTimer(value); }
   /** The connector rows a status read serves (see {@link servedConnectorStatuses}), after retrying the unavailable ones. */
   private get connectorStatuses(): readonly ManagerConnectorStatus[] {
     const inventory = this.parts.connectorInventory;
     inventory.refreshUnavailableConnectors();
-    return servedConnectorStatuses(inventory.connectorStatuses, this.deps.userMode());
+    return servedConnectorStatuses(inventory.connectorStatuses, this.userMode);
   }
 
   /** #2073: dial the manager's ONE control-plane connection and serve its typed command surface on
@@ -213,7 +171,7 @@ export class ServePlane {
       maxReconnectAttempts: -1,
     };
     const nc = await (deadline === undefined ? this.deps.dial(opts) : this.deps.dialRemoteStanding(opts, deadline));
-    this.deps.trackTransport(nc);
+    this.parts.brokerTransport.trackTransport(nc);
     let handle: EpServeHandle | undefined;
     try {
       // The typed surface + the derived `describe`. The descriptor stays PUBLIC in static
@@ -228,7 +186,7 @@ export class ServePlane {
       else await this.deps.withTimeout(nc.flush(), this.deps.remoteStandingTimeLeft(deadline),
         "remote manager standing serve flush exceeded its 10000ms aggregate budget");
     } catch (e) {
-      await this.deps.discardServeCandidate(nc, handle);
+      await this.parts.brokerTransport.discardServeCandidate(nc, handle);
       throw e;
     }
     // Wired only once the connection serves: a candidate this method closes after a
@@ -240,7 +198,7 @@ export class ServePlane {
   }
 
   private serveOnConnection(nc: NatsConnection, grant: EpServeGrant): EpServeHandle {
-    return serveEndpoint(nc, this.space, grant, this.deps.managerServiceDefs(), { public: true }, {
+    return serveEndpoint(nc, this.config.space, grant, this.deps.managerServiceDefs(), { public: true }, {
       resolveTarget: (t) => this.deps.resolveTarget(t),
       omitClassCommands: this.deps.omitClassCommands(),
     });
@@ -266,7 +224,7 @@ export class ServePlane {
     const authRef = this.auth!;
     return this.deps.withEndpointServeExecutor(({ authKv }) =>
       mintCreds(authRef, s.identity, "endpoint-serve", {
-        serveIssuance: serveIssuanceGateKv(authKv, this.space, { endpoint: MANAGER_ENDPOINT, instanceId: this.managerInstanceId }),
+        serveIssuance: serveIssuanceGateKv(authKv, this.config.space, { endpoint: MANAGER_ENDPOINT, instanceId: this.managerInstanceId }),
         endpointServe: s.grant,
       }));
   }
@@ -291,15 +249,15 @@ export class ServePlane {
       if (!s) return false;
       const deadline = this.remoteAuthority ? performance.now() + this.deps.remoteStandingBudgetMs : undefined;
       // Let an admitted renewal finish owning its candidate before recovery opens another.
-      if (deadline === undefined) await this.remoteBundleRenewal;
-      else await this.deps.withTimeout(Promise.resolve(this.remoteBundleRenewal), this.deps.remoteStandingTimeLeft(deadline),
+      if (deadline === undefined) await this.parts.credentialRenewal.remoteBundleRenewal;
+      else await this.deps.withTimeout(Promise.resolve(this.parts.credentialRenewal.remoteBundleRenewal), this.deps.remoteStandingTimeLeft(deadline),
         "remote manager closed-serve renewal wait exceeded its 10000ms aggregate budget");
       if (this.leaseStopping || this.serviceServe !== s || s.nc !== closed) return true;
       if (deadline !== undefined) await this.deps.withTimeout(this.deps.renewRemoteBeforeRedial("serve", () => s.creds), this.deps.remoteStandingTimeLeft(deadline),
         "remote manager closed-serve renewal wait exceeded its 10000ms aggregate budget");
       else if (inspectCredHealth(s.creds ?? "").state !== "healthy" && s.creds !== undefined) {
         s.creds = await this.remintServeCreds(s);
-        this.deps.scheduleServeRenewal(s.creds);
+        this.parts.credentialRenewal.scheduleServeRenewal(s.creds);
       }
       if (this.leaseStopping || this.serviceServe !== s || s.nc !== closed) return true;
       const { nc, handle } = await this.dialServeConnection(s, undefined, deadline);
@@ -314,7 +272,7 @@ export class ServePlane {
     });
     if (this.leaseStopping || recovered) return;
     console.error(
-      `! manager service endpoint could not be restored for ${this.space}/${MANAGER_ENDPOINT}/${this.managerInstanceId}: releasing the lease and exiting`,
+      `! manager service endpoint could not be restored for ${this.config.space}/${MANAGER_ENDPOINT}/${this.managerInstanceId}: releasing the lease and exiting`,
     );
     await this.deps.stop();
     process.exit(1);
@@ -337,9 +295,9 @@ export class ServePlane {
     const auth = this.auth;
     if (this.remoteAuthority) {
       const remote = this.remoteAuthority;
-      this.deps.setGoalWriterIdentity(remote.identities.goalWriter);
+      this.parts.goalWriter.goalWriterIdentity = remote.identities.goalWriter;
       this.sessionLedgerIdentity = remote.identities.sessionLedger;
-      this.deps.setGoalWriterCreds(remote.goalWriterCreds);
+      this.parts.goalWriter.goalWriterCreds = remote.goalWriterCreds;
       this.sessionLedgerCreds = remote.sessionLedgerCreds;
       const state = {
         handle: undefined as unknown as EpServeHandle,
@@ -371,7 +329,7 @@ export class ServePlane {
         // wrote to EPF/EPE), so the manager ensures the full set here over the provisioner (whose
         // STREAM.CREATE now covers them), idempotently - createEndpointStreams is a superset of
         // ensureContractStore + ensureAuthorityStores, fail-loud on drift. Auth + open both run this.
-        await createEndpointStreams(await jetstreamManager(provNc), new Kvm(provNc), this.space);
+        await createEndpointStreams(await jetstreamManager(provNc), new Kvm(provNc), this.config.space);
       } finally {
         await drainAndClose(provNc);
       }
@@ -400,10 +358,10 @@ export class ServePlane {
     const serveIdentity = this.managerServeIdentity;
     const servePrincipal = principalKey(DEV_OWNER, serveIdentity.id).key;
     // An open mesh mints no credentials, so it has no family for a fresh pair to grow.
-    const siblings = auth ? claimManagerSiblingIdentities(this.workspaceRoot, this.space) : { goalWriter: newIdentity(), sessionLedger: newIdentity() };
+    const siblings = auth ? claimManagerSiblingIdentities(this.config.workspaceRoot, this.config.space) : { goalWriter: newIdentity(), sessionLedger: newIdentity() };
     // The STABLE goal-writer identity - a SIBLING credential in the same §13.1 family
     // (not the gate's bound serving principal), so the run block can family-stage it.
-    this.deps.setGoalWriterIdentity(siblings.goalWriter);
+    this.parts.goalWriter.goalWriterIdentity = siblings.goalWriter;
     // The STABLE session-LEDGER identity - another SIBLING in the SAME §13.1 family, so
     // the takeover barrier revokes a deposed manager's ledger cred alongside its goal-writer. The
     // per-session serving creds join the same family, each with its own fresh identity.
@@ -431,7 +389,7 @@ export class ServePlane {
       // digest (the generic-invoke read path). Create-only + content-addressed: a retry
       // or a same-artifact republish is an idempotent lost-CAS. The registration itself still
       // verifies against the in-memory copies (the manager is the author).
-      const storeCtx = await contractStoreContext(execNc, this.space);
+      const storeCtx = await contractStoreContext(execNc, this.config.space);
       for (const value of [...managerContractArtifactValues(), artifacts.document, artifacts.manifest])
         await publishContractArtifact(storeCtx, contractArtifactCanonicalBytes(value));
       // §13.1 pre-registration: the issuance gate, born open@gen0 bound to the serve
@@ -441,7 +399,7 @@ export class ServePlane {
       // registerServiceInstance below freezes + re-registers the EXISTING gate (advancing the epoch
       // after it verify-evicts the superseded family). The serve principal is the SAME persisted one,
       // so the gate's principal binding is unchanged either way.
-      if ((await serveIssuanceGateKv(authKv, this.space, { endpoint: MANAGER_ENDPOINT, instanceId: iid }).observe()) === null)
+      if ((await serveIssuanceGateKv(authKv, this.config.space, { endpoint: MANAGER_ENDPOINT, instanceId: iid }).observe()) === null)
         await provisionEndpointGateOpen(authKv, { endpoint: MANAGER_ENDPOINT, instanceId: iid, principal: servePrincipal });
     };
     const completeRegistration = async (
@@ -456,13 +414,13 @@ export class ServePlane {
       // ({@link openMeshUnverifiedEviction}). NO-ORACLE = LOUD: with no reachable delivery daemon the
       // evictor THROWS naming the cure, so PHASE 2 fails closed with the delivery-daemon fix in the
       // error text - a crash-restart never silently skips eviction (no-fallbacks).
-      const barrier = endpointRegistrationBarrier(authKv, this.space, {
+      const barrier = endpointRegistrationBarrier(authKv, this.config.space, {
         endpoint: MANAGER_ENDPOINT, instanceId: iid, opId: registrationOpId,
-        evict: auth ? makeManagerEndpointHolderEvictor({ space: this.space, servers: this.servers ?? DEFAULT_SERVER, auth, log: (line) => console.error(line), unreachableWaitMs: DELIVERY_ADMIN_BOOT_WAIT_MS }) : this.deps.openMeshUnverifiedEviction,
+        evict: auth ? makeManagerEndpointHolderEvictor({ space: this.config.space, servers: this.config.servers ?? DEFAULT_SERVER, auth, log: (line) => console.error(line), unreachableWaitMs: DELIVERY_ADMIN_BOOT_WAIT_MS }) : this.deps.openMeshUnverifiedEviction,
       });
       const spec = { endpoint: MANAGER_ENDPOINT, owner: DEV_OWNER, clusterDigests: [artifacts.closureDigest], protocol: { v: 1 as const } };
       const { grant } = await registerServingInstance(recordsKv, {
-        space: this.space, spec, instanceId: iid, registrant: { owner: DEV_OWNER }, authority, barrier, readClusterArtifact,
+        space: this.config.space, spec, instanceId: iid, registrant: { owner: DEV_OWNER }, authority, barrier, readClusterArtifact,
         // #1393: when a FOREIGN instance holds the endpoint governance slot, let core tell an
         // in-flight registration from one abandoned by a predecessor that died between its
         // slot-take and its spec publish. The read rides THIS executor's existing auth-bucket read
@@ -472,7 +430,7 @@ export class ServePlane {
           readEndpointGateGeneration(authKv, { endpoint: MANAGER_ENDPOINT, instanceId: holderInstanceId }),
         status: { connectors: [...this.connectorStatuses] },
       });
-      const fence = serveIssuanceGateKv(authKv, this.space, { endpoint: MANAGER_ENDPOINT, instanceId: iid });
+      const fence = serveIssuanceGateKv(authKv, this.config.space, { endpoint: MANAGER_ENDPOINT, instanceId: iid });
       // Open mesh: NO mint - the §13.1 fence is issuance-only and nothing is ever issued, so the
       // gate keeps an empty `epcred` family; the serve connection below stays bare.
       const creds = auth ? await mintCreds(auth, serveIdentity, "endpoint-serve", { serveIssuance: fence, endpointServe: grant }) : undefined;
@@ -511,7 +469,7 @@ export class ServePlane {
     }
     if (!registration) throw new Error("manager registration produced no serve authority");
     const { grant, creds, goalWriterCreds, sessionLedgerCreds } = registration;
-    this.deps.setGoalWriterCreds(goalWriterCreds);
+    this.parts.goalWriter.goalWriterCreds = goalWriterCreds;
     this.sessionLedgerCreds = sessionLedgerCreds;
     // The serve connection presents the CURRENT credential on every (re)connect (the state object
     // is captured by the authenticator), so a fence-traversing renewal is adopted by reconnect
@@ -526,7 +484,7 @@ export class ServePlane {
     // #2073: arm the serve credential's own renewal now, from ITS window, instead of leaving it to
     // `credRenewTimer`'s boot-phased TTL/4 tick. Open mesh mints no credential (`creds` is
     // undefined) and has nothing to schedule.
-    if (state.creds !== undefined) this.deps.scheduleServeRenewal(state.creds);
+    if (state.creds !== undefined) this.parts.credentialRenewal.scheduleServeRenewal(state.creds);
   }
 
   /** Mint the standing `session-ledger` credential and STAGE it into this instance's
@@ -547,7 +505,7 @@ export class ServePlane {
     // Registration instanceId (the persisted logical id), not the per-process lifecycleUid:
     // the barrier enumerates `epcred.<e>.<managerInstanceId>`, so the ledger cred joins that family.
     const iid = this.managerInstanceId;
-    const fence = serveIssuanceGateKv(authKv, this.space, { endpoint: MANAGER_ENDPOINT, instanceId: iid });
+    const fence = serveIssuanceGateKv(authKv, this.config.space, { endpoint: MANAGER_ENDPOINT, instanceId: iid });
     const observed = await fence.observe();
     if (observed === null)
       throw new Error(`the issuance gate for ${MANAGER_ENDPOINT}/${iid} vanished; the session-ledger cred cannot join its §13.1 revocation family`);
@@ -583,7 +541,7 @@ export class ServePlane {
       maxReconnectAttempts: -1,
     });
     nc.closed().then((err) => { void this.onSessionLedgerConnectionClosed(err ?? undefined); });
-    this.deps.trackTransport(nc);
+    this.parts.brokerTransport.trackTransport(nc);
     sw.nc = nc;
   }
 
@@ -635,7 +593,7 @@ export class ServePlane {
     const serveEpoch = this.serviceServe?.grant.epoch;
     if (serveEpoch === undefined)
       throw new Error("the manager session plane needs the serve grant epoch; registerManagerService must run first");
-    const ledgerKv = await openSessionLedgerKv(nc, sessionsBucket(this.space));
+    const ledgerKv = await openSessionLedgerKv(nc, sessionsBucket(this.config.space));
     // The session signing key ROTATES. It used to be minted once here with a flat 24h window and
     // handed back frozen forever, so a manager that stayed up past 24h lost its session plane
     // permanently: every attach failed closed with "outside its validity window", and the only
@@ -662,7 +620,7 @@ export class ServePlane {
       };
     }, Date.now());
     this.sessionPlane = new ManagerSessionPlane({
-      space: this.space,
+      space: this.config.space,
       // The session's serving identity is the persisted REGISTRATION instanceId, not the
       // per-process lifecycleUid: a restarted manager re-registers the SAME logical instanceId with
       // an ADVANCED epoch, so a client re-attaches by the same instance while the epoch fences the
@@ -678,7 +636,7 @@ export class ServePlane {
       resolveAnchor: (id) => rotating.resolve(id),
       ledgerKv, ttlMs: SESSION_GRANT_MAX_TTL_MS,
       servingCredential: this.sessionServingCredentials(),
-      ...(this.maxSessions !== undefined ? { maxSessions: this.maxSessions } : {}),
+      ...(this.config.maxSessions !== undefined ? { maxSessions: this.config.maxSessions } : {}),
     });
     this.sessionLedgerConn = sw;
     // The belt to the signing path's braces: renew on a timer as well, so a plane that sits idle
@@ -753,7 +711,7 @@ export class ServePlane {
         // ServingGatePin.gate - the stage refuses loudly if this is ever missing on an auth mesh).
         if (!this.auth && !this.remoteAuthority) return { key: epgateKey(MANAGER_ENDPOINT, instanceId), revision: 0 };
         return gate(async (authKv) => {
-          const observed = await serveIssuanceGateKv(authKv, this.space, { endpoint: MANAGER_ENDPOINT, instanceId }).observe();
+          const observed = await serveIssuanceGateKv(authKv, this.config.space, { endpoint: MANAGER_ENDPOINT, instanceId }).observe();
           if (observed === null)
             throw new Error(`the issuance gate for ${MANAGER_ENDPOINT}/${instanceId} vanished; a session credential never stages against a missing gate (SPEC 13.1)`);
           // The WHOLE observation rides the pin: the stage's fence compares every field of it, which
@@ -777,7 +735,7 @@ export class ServePlane {
         if (observed === undefined)
           throw new Error(`the redemption of session ${grant.sessionId} carries no gate observation for ${MANAGER_ENDPOINT}/${iid}; a session credential never stages unfenced (SPEC 13.1)`);
         await gate(async (authKv) => {
-          const fence = serveIssuanceGateKv(authKv, this.space, { endpoint: MANAGER_ENDPOINT, instanceId: iid });
+          const fence = serveIssuanceGateKv(authKv, this.config.space, { endpoint: MANAGER_ENDPOINT, instanceId: iid });
           await commitSiblingIssuance(fence, observed, {
             credentialId: cred.id,
             credentialKey: key,

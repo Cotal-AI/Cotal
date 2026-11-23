@@ -1,5 +1,180 @@
 # @cotal-ai/runtime
 
+## 0.176.3
+
+### Patch Changes
+
+- Updated dependencies [a38ed1d]
+  - @cotal-ai/lang@0.176.3
+  - @cotal-ai/core@0.176.3
+  - @cotal-ai/workspace@0.176.3
+
+## 0.176.2
+
+### Patch Changes
+
+- @cotal-ai/core@0.176.2
+  - @cotal-ai/lang@0.176.2
+  - @cotal-ai/workspace@0.176.2
+
+## 0.176.1
+
+### Patch Changes
+
+- Updated dependencies [fc7712c]
+  - @cotal-ai/workspace@0.176.1
+  - @cotal-ai/core@0.176.1
+  - @cotal-ai/lang@0.176.1
+
+## 0.176.0
+
+### Patch Changes
+
+- 28b97c7: Show how to look up a missing local workflow ID, label computed calls accurately in plans, and apply scripted race faults before the branches start.
+- bedf4ee: Quote workflow simulation retry paths and reject local admission lists with no patterns before contacting the broker.
+- Updated dependencies [e9bcb31]
+- Updated dependencies [56b6dc1]
+- Updated dependencies [5c49fdd]
+- Updated dependencies [089f68d]
+- Updated dependencies [7266240]
+- Updated dependencies [28b97c7]
+  - @cotal-ai/core@0.176.0
+  - @cotal-ai/workspace@0.176.0
+  - @cotal-ai/lang@0.176.0
+
+## 0.175.3
+
+### Patch Changes
+
+- 806ac82: Reject an empty `--handler` for a workflow simulation as a usage error, and say how to name the results file or leave the option out.
+- 7b16e50: Reject a local workflow start that omits an admission option as a usage error before any broker contact, naming the missing option and how to supply it.
+- a943a0e: Keep validation problems visible when JSON output cannot be written, and retain workflow warnings when the simulation results script is refused.
+- a023cff: Waiting hosted workflows check for timer fires and settlements without replaying the journal on every empty poll.
+- a70411d: Refuse a simulation results file whose clock.start is past the safe-integer range, so a one-millisecond sleep is never reported as zero elapsed time; name the supported range and how to fix it.
+- 2017841: A simulation stopped by a missing scripted result now says to save the result in a results file and rerun with `--handler`, instead of only showing the result object.
+- 56ff44a: When a hosted workflow command finds no registered Manager, its recovery names the local stack's project folder or directs the operator to its host.
+- Updated dependencies [3e4e94e]
+- Updated dependencies [03b122e]
+- Updated dependencies [35e08ac]
+- Updated dependencies [1d07abd]
+- Updated dependencies [5406c82]
+  - @cotal-ai/workspace@0.175.3
+  - @cotal-ai/core@0.175.3
+  - @cotal-ai/lang@0.175.3
+
+## 0.175.2
+
+### Patch Changes
+
+- 1afa1b1: Keep the original CLI options when correcting an attach manager ID, removing a source file from hosted resume, or adding a missing run ID to local revoke.
+- Updated dependencies [7ca1d02]
+- Updated dependencies [8cf0871]
+- Updated dependencies [138db65]
+- Updated dependencies [5bf58dd]
+- Updated dependencies [d4ecdff]
+- Updated dependencies [c940ed9]
+- Updated dependencies [a2486a2]
+- Updated dependencies [beddddf]
+  - @cotal-ai/core@0.175.2
+  - @cotal-ai/lang@0.175.2
+  - @cotal-ai/workspace@0.175.2
+
+## 0.175.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.175.1
+  - @cotal-ai/lang@0.175.1
+  - @cotal-ai/workspace@0.175.1
+
+## 0.175.0
+
+### Patch Changes
+
+- Updated dependencies [e91ed5b]
+- Updated dependencies [4907c2d]
+  - @cotal-ai/workspace@0.175.0
+  - @cotal-ai/core@0.175.0
+  - @cotal-ai/lang@0.175.0
+
+## 0.174.4
+
+### Patch Changes
+
+- fa3107a: Keep JSON refusals quiet when the reader closes the pipe, report failed JSON simulation warnings only in the receipt, and point local run failure views to the driving process instead of manager logs.
+- Updated dependencies [a2c9581]
+- Updated dependencies [8aceac1]
+- Updated dependencies [bd76aab]
+- Updated dependencies [a9413a5]
+- Updated dependencies [d4633a8]
+  - @cotal-ai/workspace@0.174.4
+  - @cotal-ai/core@0.174.4
+  - @cotal-ai/lang@0.174.4
+
+## 0.174.3
+
+### Patch Changes
+
+- affcbdd: `run show` rejects diagnostic paging flags even with a journal limit, and `watch --json` reports an invalid view with stream error and end records.
+- f85c211: Local `cotal run answer` and `cotal run amend` reject a whitespace-only `--by` before contacting the broker.
+- 23c283e: A simulation results script with a fault entry that names no step, or carries a field the reader does not know, is now refused before the simulation runs instead of simulating as if the fault were not there.
+- c42b757: A failed offline simulation keeps the warnings static validation found. They print with the failure in text mode and ride in the failure envelope in JSON mode.
+- b8c54dd: Keep the intended space in CLI retry and follow-up commands and name it in membership stream errors when local records identify it.
+- f98cece: Workflow commands offer offline simulation on open meshes, keep the selected route in checkpoint and receipt follow-ups, and ship a working simulation example.
+- Updated dependencies [ab010b5]
+- Updated dependencies [f2158ba]
+- Updated dependencies [52c5b11]
+- Updated dependencies [61b02ca]
+- Updated dependencies [43963e8]
+- Updated dependencies [8a7bd4b]
+- Updated dependencies [ff4cd00]
+- Updated dependencies [4697bab]
+- Updated dependencies [b8c54dd]
+  - @cotal-ai/workspace@0.174.3
+  - @cotal-ai/core@0.174.3
+  - @cotal-ai/lang@0.174.3
+
+## 0.174.2
+
+### Patch Changes
+
+- Updated dependencies [7b7e60c]
+- Updated dependencies [1e5fbb4]
+  - @cotal-ai/core@0.174.2
+  - @cotal-ai/workspace@0.174.2
+  - @cotal-ai/lang@0.174.2
+
+## 0.174.1
+
+### Patch Changes
+
+- d287713: The mesh handler's contract types and module-level helpers now live in their own module, with no change in behavior.
+- Updated dependencies [0d29594]
+  - @cotal-ai/workspace@0.174.1
+  - @cotal-ai/core@0.174.1
+  - @cotal-ai/lang@0.174.1
+
+## 0.174.0
+
+### Patch Changes
+
+- 1fba601: `cotal run simulate` now refuses a results script whose `clock` has a field it does not know, such as `clock.checkpoints`. The misspelled field used to be ignored, so the simulation ran with the one-minute default instead of the delay the author wrote. The refusal is `SCHEMA_INVALID`, names the field and the file, and names the singular field when the typo is its plural.
+- 8fcd1b0: When `run revoke` rejects `--json` or `--plain`, it tells you to remove that flag from the original command so the supplied actor, reason, and target stay intact.
+- Updated dependencies [5053a5e]
+- Updated dependencies [f93db6f]
+- Updated dependencies [f6760fa]
+- Updated dependencies [f1abc70]
+- Updated dependencies [9cc5f7a]
+- Updated dependencies [78d93f9]
+- Updated dependencies [96ef3da]
+- Updated dependencies [f670fe9]
+- Updated dependencies [12bd829]
+- Updated dependencies [5faf2c8]
+- Updated dependencies [f3e469a]
+  - @cotal-ai/core@0.174.0
+  - @cotal-ai/workspace@0.174.0
+  - @cotal-ai/lang@0.174.0
+
 ## 0.173.0
 
 ### Patch Changes

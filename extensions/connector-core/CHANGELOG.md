@@ -1,5 +1,81 @@
 # @cotal-ai/connector-core
 
+## 0.176.3
+
+No changes in this release.
+
+## 0.176.2
+
+### Patch Changes
+
+- 0187b5d: Document the watch credential selector, show structured formats in endpoint work help, keep the live contract shortcut on the same target, and explain why endpoint describe does not take `--live`.
+- 662b968: Fix the upgrade guide link in the workflow operations troubleshooting steps.
+
+## 0.176.1
+
+No changes in this release.
+
+## 0.176.0
+
+### Minor Changes
+
+- d4f8140: Claude Code agents on a signed-in space now list, run and interrupt their own `/` commands for their owner, as OpenCode, pi and Codex agents do.
+  
+  `@cotal-ai/connector-claude-code` ships a command mod, `hooks/commands.js`, which needs Claude Code 2.1.330 or later with mods on. The seat's MCP server, and a plain session's, serves a private command socket for its Claude Code process, and the mod's reader connects to it with its connector and Claude versions; the server refuses another connector version or an older Claude. The `agent` endpoint's `commands` lists Claude's own `/` list as `command` entries, without what Claude hides and what cannot run remotely. A command that a person, a plugin or an MCP server added runs, and of Claude's built-ins only `/context`, `/compact`, `/init`, `/security-review`, `/code-review`, `/simplify` and `/verify` do: one that opens a panel or writes settings, such as `/usage` or `/model`, ends `refused` with its reason, and a name Claude does not list, an alias such as `/cost` included, ends `not-found`. A queued command starts only while the seat runs no turn, and one Claude has not started within 30 s, such as one a panel holds, ends `unknown`. After a local Stop a command ends `refused` with "waiting for local input". `interrupt` stops the turn and every tool the stop moved to the background, and the seat then reads idle. While no mod serves the session, `commands` answers `supported: false` and `command` and `interrupt` are `unimplemented` with the cause. `serveClaudeSession` takes `claudePid` to serve one session's command socket. `@cotal-ai/connector-core` adds an optional `unsupported()` to `CommandDispatcher` for that cause, and exports the release version on the `@cotal-ai/connector-core/version` subpath.
+
+### Patch Changes
+
+- ec4ab86: An OpenCode 2.x agent that answers a direct message in chat only, with no Cotal reply, now gets one reminder to reply with a Cotal tool. The connector records a reply when `cotal_dm`, `cotal_send` or `cotal_anycast` succeeds. A turn that carried a live direct message, role request or @mention and ended cleanly without one is followed by a single short turn that leaves the choice to reply with the agent. `@cotal-ai/connector-core` exports `MESH_ACTIONS`, the intent-to-tool map the orientation card shows.
+- 769237d: Clarify that `spawn --file` reads the persona locally unless `--detach` or `--on` sends the launch to a manager.
+- a334492: Find the correct Codex model ID format, the roster command for a missing pending recipient, and the alternate directory option for an existing endpoint scaffold.
+
+## 0.175.3
+
+### Patch Changes
+
+- 450ccb6: Explain when retrying `cotal_spawn` would start a duplicate helper and point callers to `cotal_invoke` to inspect a helper whose model pin could not be audited.
+
+## 0.175.2
+
+No changes in this release.
+
+## 0.175.1
+
+No changes in this release.
+
+## 0.175.0
+
+No changes in this release.
+
+## 0.174.4
+
+### Patch Changes
+
+- 4e25638: Correct the `whoami` broker URL requirements, document the paired `manager start` launch flags, and list `mcp` in the CLI command reference.
+- c618c33: The service reference example now saves the definition in the newly prepared space even when another space is selected.
+- 0b55375: The agent briefing now offers a single-task helper with `once: true` without listing which harnesses support it.
+  The manager already refuses a connector that cannot take a once task, so the sentence matches the `cotal_spawn` description, which dropped the same list.
+
+## 0.174.3
+
+No changes in this release.
+
+## 0.174.2
+
+No changes in this release.
+
+## 0.174.1
+
+### Patch Changes
+
+- 8ec8bc4: The mesh agent's option types, connection constants and module-level helpers now live in their own connector-core module, with no change in behavior.
+
+## 0.174.0
+
+### Minor Changes
+
+- 5053a5e: An agent's owner can now rename the agent, and every client in the space sees the new name while the agent keeps its identity. The `agent` endpoint advances to revision 4 with `set-name` `{ name }`, which only the owner's interactive session may call. The agent checks the name with the shared name rule, refuses the name of another live agent compared lowercased, changes its card's display name and republishes presence at once; refusals are typed with the `ai.cotal.agent.name-refused` detail (`name-invalid` or `name-taken`), and the current name again changes nothing. Messages sent afterwards carry the new `from.name`, and stored history keeps the old one. `CotalEndpoint.setCardName` makes the change, and an endpoint that watches presence reports a changed display name as a `presence` update and a `roster` event. A manager keeps a seat's last shown name apart from its alias and passes it as `COTAL_DISPLAY_NAME` (`LaunchOpts.displayName`) when it starts the seat again after a crash or a preserved resume, so the seat comes back under the same alias and actor with its last name. `ps`, resume commit and name allocation find a renamed seat by its principal, and in user mode a new spawn does not take a renamed agent's actor.
+
 ## 0.173.0
 
 ### Minor Changes

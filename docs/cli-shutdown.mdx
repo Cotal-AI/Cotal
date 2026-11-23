@@ -200,8 +200,10 @@ folder is not replaced: `down` refuses `CONFLICT` and names `cotal space forget 
 which `down` stops the stack through its journal. While another registered space names this
 stack's exact broker address, bare `down` refuses `LIFECYCLE_BLOCKED`, exit 2, and stops nothing,
 because one listener answers for both registrations. It names each of those spaces with the
-`cotal space show <space>` that reads one, the `cotal space forget <space>` that takes it off this
-address once its own stack is stopped, and the `cotal down` to run again after that. A user-auth stack's registration is not rebuilt,
+`cotal space show <space>` that reads one, the `cotal space forget <space> --plain` that takes it off
+this address once its own stack is stopped, and the `cotal down` to run again after that. For a
+retained name that starts with `-`, use `cotal space show -- -old` and
+`cotal space forget --plain -- -old`, replacing `-old` with that name. A user-auth stack's registration is not rebuilt,
 so it refuses `UNSUPPORTED`. A stop that refuses or is cancelled before any member stops puts the
 registration back as it was.
 
@@ -214,6 +216,9 @@ another space refuses with `CONFLICT`, exit 2, and names this folder's stack. Ea
 the space and, when this machine started it elsewhere, its root, and its next step runs the same
 `down` from that root. `--json` and `--plain` carry that refusal as structured output, because the
 folder has no stack for a bare stop to print its own lines about.
+
+A manual or catalog connection records the folder that uses it. If a named stop or preview finds
+only that connection in another folder, run the stop or preview in the project that started the stack.
 
 When the folder of a running controller stack is deleted, its stack journal and broker
 configuration go with it, so no member's own stop can run. A running broker writes `.cotal/nats`
@@ -292,10 +297,13 @@ reached the project journal. Missing launch evidence does not mean that nothing 
 A bare `down` in a folder whose stack is already stopped stops nothing. It reports that the stack
 in that folder is not running, with outcome `no-op` and exit 0, and writes nothing, so it needs no
 `--yes`. `--dry-run`, `--json` and `--plain` also report the no-op. The text receipt and preview
-name `cotal up --no-manager` for a stopped broker-only controller stack and `cotal up` otherwise.
+name `cotal up --no-manager` for a stopped broker-only controller stack. For a stopped legacy
+user-auth stack they show a foreground restart without a manager, with `--user-auth` and the
+recorded space and broker address. Other stacks show `cotal up`.
 Before the first `up`,
 `down --space <name>` gives the same no-op when the name matches the space prepared in this folder.
-A different name is refused. A controller stack
+A different name is refused. For a stop with `--json` or `--plain`, the refusal names the mismatch
+and directs you to the requested space's project root. A controller stack
 counts as stopped when its last whole-stack operation was a completed `down` and no member and no
 other service instance of its space runs. That check reads no process record under the root; those
 are read only as described below. A stack that stopped any other way takes the full stop, which
@@ -342,6 +350,7 @@ accept the new named-service JSON/plain apply receipt flags, except that `--json
 `down --preserve-state` refuses `--json` and `--plain` before stopping anything and names the same
 preserve command without the output flag. A retained bare stop shows its
 recorded components and asks for confirmation on an interactive terminal, defaulting to No.
+If `cotal down --yes --json` refuses the output format, it stops nothing and names `cotal down --yes` as the retry.
 Without an interactive terminal, or when prompts are disabled, it requires `--yes`, exit 1,
 before any stop or cleanup. This applies to a folder started with plain `cotal up` too.
 `--dry-run` stays read-only and needs no confirmation. This acknowledgement does not establish
@@ -385,12 +394,19 @@ instead of reporting a stopped stack. Press Ctrl-C in the first terminal, or wai
 retry `cotal down --yes`. Once the broker is registered, `down` waits up to 20 seconds for startup
 to finish before stopping the stack. If it cannot finish waiting, it gives the same next step and
 stops nothing. A refused manager stop leaves delivery and the broker running.
+Once the mesh is registered, `down --preserve-state` refuses with `LIFECYCLE_BLOCKED`, exit 2,
+if startup or another maintenance operation still holds the lock. Nothing was stopped. After the
+other operation finishes, repeat the preserve command from the same folder with the same options.
+When a legacy open broker stops cleanly and its saved payload limit is below the manager's
+minimum, the receipt shows `cotal up --no-manager`. That starts the broker at the same limit.
 The machine home is not an isolated project root, so bare `down` refuses the home stack. Stop it
 with `cotal down --preserve-state`, which keeps its state for the next `cotal up`. The refusal names
 that command. `--preserve-state` takes its agent inventory from the manager that serves the space.
 When no manager holds the space's lease, as on a stack started with `--no-manager`, it refuses
 `TARGET_UNAVAILABLE`, exit 2, before it stops anything or writes a maintenance record. Start the
 manager with `cotal up`, then run `cotal down --preserve-state` again.
+After a preserved stop, `cotal up --no-manager` refuses with `LIFECYCLE_BLOCKED`, exit 2, and
+leaves the preserved inventory in place. Run `cotal up` in the project folder to resume it.
 The cut stops the delivery daemon before it takes the manager's inventory, so no durable join or
 leave can race it. A refusal after that point (the manager refuses to prepare, an endpoint the
 manager does not manage is live, or a seat cannot be checkpointed) starts the daemon again and
@@ -440,7 +456,7 @@ cotal down -f <cotal.yaml> | --run <id> [--dry-run]
 | `--abandon-stop <request-id>` | none | Controller stack, with `--yes`: abandon a member's stop that no receipt settles, then stop the stack. See the settlement rules under [up](cli-startup.mdx#up) |
 | `--abandon-launch <instance-id>` | none | Controller stack, with `--yes`: record failed a member launch whose record names no process, then stop the stack. See the settlement rules under [up](cli-startup.mdx#up) |
 | `--preserve-state` | off | Bare whole stack only: fence the manager, retain principals and durable state, stop and prove the stack down, then publish `ready` |
-| `--store-dir <dir>` | the recorded store, else `.cotal/nats` | With `--preserve-state`: the store to cut. The mesh record names the store the broker runs on, such as a `backup restore --store-dir` target, and a different path refuses `CONFLICT` before anything stops |
+| `--store-dir <dir>` | the recorded store, else `.cotal/nats` | With `--preserve-state`: the store to cut. A different path refuses `CONFLICT` before anything stops. Omit the flag or use the suggested shell-quoted option to name the recorded store |
 | `--session-store <dir>` | none | With `--preserve-state`: a harness transcript store directory to capture with every continuation-capable retained seat. Repeatable. No default and never inferred from a connector name; a path that does not exist or is not a directory is refused before anything stops |
 
 A legacy ledger preview selects the saved ledger by the manifest's source hash. It does not
@@ -732,6 +748,16 @@ It takes one target and no extra positional arguments. A channel name after `his
 value in its printed force command so it stays one shell argument. A run without `--force` refuses
 `USAGE_INVALID` (exit 1) and prints the command to run, keeping `--store-dir` for `store` and `all`
 and `--space`, `--server`, `--creds` and `--dms` for `history`, so that command acts on the same target.
+When the store path begins with `-`, the printed command uses `--store-dir=<dir>` so the path is not
+read as another option.
+`clean history` refuses `--store-dir` with `USAGE_INVALID` (exit 1) and purges nothing, even with `--force`.
+Use `--store-dir` with `clean store` or `clean all` to name a stopped store.
+`clean history` also refuses `--attempt` with `USAGE_INVALID` (exit 1) and purges nothing, even with `--force`.
+`clean store` and `clean all` refuse `--attempt` with `USAGE_INVALID` (exit 1) and remove nothing,
+in both `--dry-run` and `--force` modes. `--attempt` selects a restore only for `clean restore-attempt`
+or `clean restore-fallback`.
+`clean restore-attempt` and `clean restore-fallback` also refuse `--store-dir` with `USAGE_INVALID`
+(exit 1) and change nothing. Remove the option and its value only to act on the restore named by `--attempt`.
 Only `history` takes `--space` (or `-s`), `--server` or `--creds`. Local cleanup uses the project found
 from the working directory. When local cleanup refuses these flags, it reports `USAGE_INVALID`
 (exit 1) and names the flags to remove. If you ran the command from the project you intend to clean,
@@ -750,7 +776,14 @@ retry from the same working directory and remove only the named flags and their 
   removes nothing; move them out and run it again. Cleanup and reset check that the store root and
   each directory inside it are readable, writable and searchable before moving or removing the store.
   A permission failure refuses `PERMISSION_DENIED` (exit 2), keeps the store in place and names
-  `chmod -R u+rwX` on its root. A stopped named open space is identified by its retained broker
+  `chmod -R u+rwX` on its root. Cleanup and reset also check for write and search access to the store's
+  parent, where they move the store aside. If that check fails, they name the parent and
+  `chmod u+w` on it instead. If `clean` cannot search the path to the store, it refuses
+  `PERMISSION_DENIED` and names the blocking directory when it can identify it. Restore search
+  access there. If the directory is yours and lacks owner search permission, use `chmod u+x` on it.
+  If the store path is an unresolved link, `clean` refuses `CONFLICT` and names the recorded link
+  target. Put the real store directory back at that path or pass its real location with `--store-dir`.
+  A stopped named open space is identified by its retained broker
   configuration, so its own streams do not count as another space's data.
 - `all` is `store` plus the space identity (`.cotal/auth`), the local creds and markers tied to
   it, any crash residue a normal `down` would have swept (stale pidfiles, `run/`), and the mesh's
@@ -865,7 +898,8 @@ no store to reset, so both refuse `TARGET_NOT_FOUND` and name `cotal up`. So doe
 no stack has run for, which also names `cotal space forget`. A stack whose last
 operation is not a completed `down` refuses `LIFECYCLE_BLOCKED` and names `cotal down --yes`. Each
 refusal names one reason and the command that clears it. A space that may still run names
-`cotal down` from its root, and lists each process that may run once. A stack member whose
+`cotal down --dry-run` to review the stop and `cotal down --yes` to confirm it, both from its root,
+and lists each process that may run once. A stack member whose
 process also holds its component's record, such as the manager's pidfile, is listed as that member
 with the record's pid. A member that exited without a recorded stop, as after a crash, is
 settled by `cotal down --yes`: it finds the member gone and records it as already stopped, and the
@@ -877,6 +911,10 @@ from that root after `cotal down` to preview what would be removed. A reset prev
 the space refuses `TARGET_NOT_FOUND`, names `cotal space`, and suggests the matching cleanup preview.
 An apply that refuses there names `cotal clean store --force` or `cotal clean all --force` instead.
 Add `--store-dir <dir>` when the stack used a custom store.
+
+Both resets leave a ready preserved legacy store in place. From its project root, run `cotal up`
+to resume it, then `cotal down --yes` to stop it without preserving again. Preview cleanup there
+with `cotal clean store --dry-run` or `cotal clean all --dry-run`.
 
 Removing the store removes what the broker kept in it: workflow runs and their journals, channel
 history, stored messages and every other record. A run still waiting for an answer goes with it and
@@ -914,9 +952,9 @@ recorded broker address. A match blocks store apply, while no match does not
 exclude aliases, remote tenants or live attachments. A negative credless probe
 cannot prove absence for TLS-first listeners. A custom store path must be
 absolute and one real directory. A recorded store path that is a link refuses `CONFLICT` in the
-preview and the apply of both resets, naming the path and the directory it points to, and nothing
-is removed. Replace the link with that directory to reset it. A selected root whose `.cotal` is a
-link refuses both resets and their previews `CONFLICT`, exit 2, before anything reads through it,
+preview and the apply of both resets, even if its target is missing. The refusal names the link and
+its target. Nothing is removed. Replace the link with the store directory to reset it. A selected
+root whose `.cotal` is a link refuses both resets and their previews `CONFLICT`, exit 2, before anything reads through it,
 naming the link, and nothing is removed; when the records were moved away and linked back, the Next
 names moving them back. A store in the project folder itself
 refuses both resets `CONFLICT` as it refuses `clean store`, naming the store's own entries to remove
@@ -927,9 +965,10 @@ custody or a complete identity deletion set.
 ### Store reset
 
 Bare `reset store <space>` checks those conditions, displays a scoped terminal
-confirmation or requires `--yes` in a script, and acquires the maintenance lock. While another
-command holds it, such as an `up` started at the same time, `reset store` and `reset space` refuse
-`LIFECYCLE_BLOCKED`, exit 2, name that command's pid and remove nothing.
+confirmation or requires `--yes` in a script, and acquires the maintenance lock. A refusal for
+missing `--yes` keeps `--json` in both the suggested preview and the confirmation when requested.
+While another command holds the lock, such as an `up` started at the same time, `reset store` and
+`reset space` refuse `LIFECYCLE_BLOCKED`, exit 2, name that command's pid and remove nothing.
 Under the lock it rechecks the exact registration or stopped-stack records, one-tenant root, absent
 maintenance journal, legacy process records, service instances, supervisor
 receipts and retained native attempts for that space, additive ledgers and
@@ -985,7 +1024,8 @@ the same section. A preview that passes every check opens with a verdict, as the
 does: the apply is offered, with `cotal reset space <space> --yes` as Next.
 
 Apply shows the path inventory and defaults to cancellation, or requires
-`--yes` in a script. Under the maintenance lock it repeats the eligibility
+`--yes` in a script. The confirmation refusal keeps `--json` or `--plain` in both suggested commands
+if given. Under the maintenance lock it repeats the eligibility
 checks and compares the reviewed file identities. Native secret deletion is
 restricted to the planned keys; each filesystem removal checks the remaining
 reviewed tree. Added paths and changed files do not enlarge the confirmed scope.

@@ -52,7 +52,7 @@
  * Run: pnpm smoke:usage-format
  */
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir, userInfo } from "node:os";
 import { delimiter, join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -85,11 +85,27 @@ const run = (args: string[], extra: Record<string, string> = {}, cwd = neutral) 
 const runShell = (args: string, extra: Record<string, string> = {}, cwd = neutral) =>
   spawnSync("sh", ["-c", `exec "$0" "$1" ${args}`, process.execPath, BIN], { cwd, env: { ...env, ...extra }, encoding: "utf8", timeout: 120_000 });
 const shown = (r: ReturnType<typeof run>) => ({ status: r.status, stdout: r.stdout.slice(0, 600), stderr: r.stderr.slice(0, 900) });
+const parsed = (r: ReturnType<typeof run>) => { try { return JSON.parse(r.stdout) as { target?: unknown; error?: { code?: string; message?: string; remedy?: string } }; } catch { return undefined; } };
 const usageShape = (r: ReturnType<typeof run>, message: RegExp) =>
   r.status === 1 && r.stdout === "" && /^✗ /m.test(r.stderr) && message.test(r.stderr) && /Usage/.test(r.stderr) && !/Request refused|Code:/.test(r.stderr);
 
 const parser = run(["status", "--bogus"]);
 check("control: a parser usage error has the documented shape", usageShape(parser, /Unknown option '--bogus'/), shown(parser));
+const dottedOperand = run(["version", "release.3"]);
+check("an unexpected positional keeps the full value in its refusal",
+  usageShape(dottedOperand, /^✗ Unexpected argument 'release\.3'\n/m) && dottedOperand.stderr.includes("\ncotal version\n"), shown(dottedOperand));
+
+for (const verb of ["start", "stop", "restart", "status", "logs", "install", "uninstall"]) {
+  const extra = run(["manager", verb, "extra", "--json"]);
+  const error = parsed(extra)?.error;
+  check(`manager ${verb} names the extra operand and its own selectors`, extra.status === 1 && error?.code === "USAGE_INVALID" &&
+    error.message === `unexpected argument "extra" for \`cotal manager ${verb}\`` &&
+    error.remedy?.includes("remove the extra argument") === true && error.remedy.includes("--space <space> or --instance <full-id>"), shown(extra));
+}
+const managerExtra = run(["manager", "status", "extra", "--plain"]);
+check("a plain manager operand refusal keeps the manager status help", managerExtra.status === 1 &&
+  managerExtra.stderr.includes('unexpected argument "extra" for `cotal manager status`') &&
+  managerExtra.stderr.includes("Usage\n  cotal manager status") && !managerExtra.stderr.includes("use service"), shown(managerExtra));
 
 // The linear extension declares one usage form per line.
 const LINEAR = join(import.meta.dirname, "..", "..", "linear", "dist", "index.js");
@@ -110,7 +126,7 @@ check("linear serve --json is refused naming the flag, that serve has no --json 
 // after a space, and an option typed with a typographic dash is named with hyphens.
 const dashWord = run(["send", "-c", "general", "-n is a flag here"]);
 check("an unknown option names -- for a word that starts with -", usageShape(dashWord, /Unknown option '-n'/) && /put -- before it/.test(dashWord.stderr), shown(dashWord));
-const spaceTypo = run(["space", "--json", "--jso"]);
+const spaceTypo = run(["space", "--json", "--unlisted-option"]);
 check("an unknown option cannot become the space subcommand", spaceTypo.status === 1 && spaceTypo.stderr === ""
   && JSON.parse(spaceTypo.stdout).error.remedy === "run `cotal help space`", shown(spaceTypo));
 const dashValue = run(["history", "--from", "-bob"]);
@@ -129,12 +145,103 @@ const noValue = run(["history", "--limit"]);
 check("an option given last with no value is refused naming it and its placeholder", usageShape(noValue, /--limit needs a value/) && /write --limit <n>/.test(noValue.stderr) && !/argument missing/.test(noValue.stderr), shown(noValue));
 const flagValue = run(["history", "--limit", "--from", "bob"]);
 check("an option followed by another of the command's options is refused as missing its value", usageShape(flagValue, /--limit needs a value/) && /write --limit <n>/.test(flagValue.stderr), shown(flagValue));
+const separateJson = run(["config", "get", "harness", "--json", "-Z"]);
+const groupedJson = run(["config", "get", "harness", "-jZ"]);
+check("an unknown short option after grouped -j gives the same JSON refusal as separate options",
+  groupedJson.status === 1 && groupedJson.stderr === "" && groupedJson.stdout === separateJson.stdout
+  && JSON.parse(groupedJson.stdout).error.code === "USAGE_INVALID"
+  && JSON.parse(groupedJson.stdout).error.message === "Unknown option '-Z'", shown(groupedJson));
+const unknownBeforeJson = run(["config", "get", "harness", "-Zj"]);
+check("an unknown short option before j does not select JSON", usageShape(unknownBeforeJson, /Unknown option '-Z'/), shown(unknownBeforeJson));
+const missingLimit = run(["history", "--json", "--limit", "--from", "abc"]);
+for (const [global, operand] of [["--no-input", "abc"], ["--no-color", "1"]] as const) {
+  const result = run(["history", "--json", "--limit", global, operand]);
+  check(`a ${global} flag cannot move an operand into a missing option value`,
+    result.status === 1 && result.stderr === "" && result.stdout === missingLimit.stdout
+    && JSON.parse(result.stdout).error.code === "USAGE_INVALID"
+    && JSON.parse(result.stdout).error.message === "--limit needs a value"
+    && JSON.parse(result.stdout).error.remedy === "write --limit <n>", shown(result));
+}
+const followGlobal = run(["history", "--json", "--follow", "--limit", "--no-input", "abc"]);
+const followRecords = followGlobal.stdout.trim().split("\n").filter(Boolean).map((line) => JSON.parse(line));
+check("a global flag after a missing history follow value preserves the stream refusal and channel",
+  followGlobal.status === 1 && followGlobal.stderr === ""
+  && followRecords.map((record) => record.type).join() === "error,end"
+  && followRecords.every((record) => record.stream === "history" && record.target?.channel === "abc")
+  && followRecords[0]?.data?.code === "USAGE_INVALID" && followRecords[0]?.data?.message === "--limit needs a value"
+  && followRecords[0]?.data?.remedy === "write --limit <n>" && followRecords[1]?.data?.reason === "setup-failed", shown(followGlobal));
+const groupedSpace = run(["config", "get", "harness", "-js", "--no-input", "abc"]);
+for (const [args, space] of [[[], null], [["--space", "watch-test"], "watch-test"]] as const) {
+  const result = run(["watch", ...args, "--view", "--json"]);
+  const records = result.stdout.trim().split("\n").map((line) => JSON.parse(line));
+  check("a missing watch view emits a stream refusal and end record",
+    result.status === 1 && result.stderr === "" && records.map((record) => record.type).join() === "error,end"
+    && records.every((record) => record.stream === "watch" && record.target?.requestedSpace === space)
+    && records[0]?.data?.code === "USAGE_INVALID" && records[0]?.data?.message === "--view needs a value"
+    && records[0]?.data?.remedy === "write --view <view>" && records[1]?.data?.reason === "setup-failed", shown(result));
+}
+check("a global flag cannot hide a missing value at the end of a short option group",
+  groupedSpace.status === 1 && groupedSpace.stderr === "" && JSON.parse(groupedSpace.stdout).error.message === "--space needs a value", shown(groupedSpace));
+for (const global of ["--no-input", "--no-color"]) {
+  const args = [global, "config", "get", "harness", "--space", global];
+  const text = run(args);
+  const json = run([...args, "--json"]);
+  const complete = run([global, "config", "get", "harness", "--space", "demo", global, "--json"]);
+  check(`a repeated ${global} in the value slot reports the missing value in text and JSON`,
+    usageShape(text, /--space needs a value/) && text.stderr.includes("write --space <name>")
+    && json.status === 1 && json.stderr === "" && JSON.parse(json.stdout).error.code === "USAGE_INVALID"
+    && JSON.parse(json.stdout).error.message === "--space needs a value" && JSON.parse(json.stdout).error.remedy === "write --space <name>",
+    { text: shown(text), json: shown(json) });
+  check(`a repeated ${global} with the value supplied still refuses the duplicate`, complete.status === 1 && complete.stderr === ""
+    && JSON.parse(complete.stdout).error.message === `Option '${global}' cannot be repeated`, shown(complete));
+}
+const completeValue = run(["docs", "--json", "--search", "usage", "--no-input"]);
+check("a global flag after a supplied value is accepted", completeValue.status === 0 && completeValue.stderr === ""
+  && JSON.parse(completeValue.stdout).result.query === "usage", shown(completeValue));
+const groupedServer = run(["status", "--server", "-jv"]);
+const separateServer = run(["status", "--server", "-j", "-v"]);
+const groupedError = JSON.parse(groupedServer.stdout).error;
+check("a short option group after --server gets the same missing-value refusal as separate options",
+  groupedServer.status === 1 && separateServer.status === 1 && groupedServer.stderr === "" && separateServer.stderr === ""
+  && groupedServer.stdout === separateServer.stdout && groupedError.code === "USAGE_INVALID"
+  && groupedError.message === "--server needs a value" && groupedError.remedy === "write --server <url>", shown(groupedServer));
+const separatorValue = run(["history", "--json", "--limit", "--", "general"]);
+const separatorError = JSON.parse(separatorValue.stdout).error;
+check("an option followed by the separator asks for its value before the separator", separatorValue.status === 1 && separatorValue.stderr === ""
+  && separatorError.code === "USAGE_INVALID" && separatorError.message === "--limit needs a value"
+  && separatorError.remedy === "write --limit <n> before --", shown(separatorValue));
+for (const args of [["--search", "-1"], ["--search=-1"], ["--search", "first"]]) {
+  const repeated = run(["docs", "--json", ...args, "--search", "--"]);
+  const error = JSON.parse(repeated.stdout).error;
+  check(`a second --search with no value after ${args.join(" ")} asks to use --search once`, repeated.status === 1 && repeated.stderr === ""
+    && error.code === "USAGE_INVALID" && error.message === "--search cannot be repeated" && error.remedy === "use --search once", shown(repeated));
+}
+const numericQuery = run(["docs", "--json", "--search", "-1"]);
+check("one search accepts a dash and digit without an equals sign", numericQuery.status === 0 && numericQuery.stderr === ""
+  && JSON.parse(numericQuery.stdout).result.query === "-1", shown(numericQuery));
+const noHitQuery = "zzq-cotal-help-probe-nohit";
+const searchTypo = run(["docs", "--json", "--serch", noHitQuery]);
+const searchError = JSON.parse(searchTypo.stdout).error;
+const searchCorrection = /^use (--[\w-]+)$/.exec(searchError.remedy)?.[1];
+const searchRetry = searchCorrection && run(["docs", "--json", searchCorrection, noHitQuery]);
+check("a typo in --search names a replacement option that searches for the same query",
+  searchTypo.status === 1 && searchTypo.stderr === "" && searchError.code === "USAGE_INVALID"
+  && searchError.message === "Unknown option '--serch' - did you mean --search?" && searchCorrection === "--search"
+  && !!searchRetry && searchRetry.status === 0 && searchRetry.stderr === ""
+  && JSON.parse(searchRetry.stdout).result.kind === "docs-search" && JSON.parse(searchRetry.stdout).result.query === noHitQuery,
+  { refused: shown(searchTypo), retry: searchRetry && shown(searchRetry) });
 const shortEquals = run(["send", "-c=general", "hello"]);
 check("-c=value is refused naming the value it would give", usageShape(shortEquals, /-c=general gives -c the value "=general"/) && /write -c general or --channel=general/.test(shortEquals.stderr), shown(shortEquals));
 for (const typed of ["\u2014json", "\u2212\u2212json", "\u2013json"]) {
   const r = run(["status", typed]);
   check(`${typed} is refused as a typographic dash, naming --json`, usageShape(r, /starts with a typographic dash/) && /type the option with hyphens: --json/.test(r.stderr), shown(r));
 }
+const shortHelp = run(["send", "-c", "general", "\u2013h"]);
+check("a typographic short help flag is refused with -h", usageShape(shortHelp, /starts with a typographic dash/)
+  && shortHelp.stderr.includes("type the option with hyphens: -h"), shown(shortHelp));
+const helpValue = run(["docs", "--search", "\u2014help", "--json"]);
+check("typographic help used as an option value stays literal", helpValue.status === 0 && helpValue.stderr === ""
+  && JSON.parse(helpValue.stdout).result.query === "\u2014help", shown(helpValue));
 const historyTypo = run(["history", "\u2013\u2013limit=10", "--json"]);
 check("the typographic history option correction retains the attached limit", historyTypo.status === 1 && historyTypo.stderr === ""
   && JSON.parse(historyTypo.stdout).error.remedy === "type the option with hyphens: --limit=10", shown(historyTypo));
@@ -155,6 +262,9 @@ for (const [args, flag] of [
   [["\u2013\u2013plain", "status"], "--plain"],
   [["\u2013no-input", "status"], "--no-input"],
   [["\u2014json", "status"], "--json"],
+  [["\u2013j", "version"], "-j"],
+  [["\u2013h"], "-h"],
+  [["\u2013V"], "-V"],
 ] as const) {
   const r = run([...args]);
   check(`${args.join(" ")} is refused as a typographic dash before the command word, naming ${flag}`, r.status === 1 && r.stdout === ""
@@ -171,14 +281,53 @@ if (process.platform !== "win32") {
   const cwd = realpathSync(neutral);
   const parent = "reviewer's $draft/nested";
   const dir = `${parent}/reviews`;
-  const scaffold = run(["endpoint", "init", "com.example.reviews", "--dir", dir, "--plain"], {}, cwd);
-  const next = /^Next\n  (.+)$/m.exec(scaffold.stderr)?.[1];
-  const unchanged = !existsSync(join(neutral, "reviewer's $draft"));
-  const retry = next && spawnSync("sh", ["-c", `node=$1\nbin=$2\ncotal() { "$node" "$bin" "$@"; }\n${next}`, "endpoint-init", process.execPath, BIN], { cwd: neutral, env, encoding: "utf8", timeout: 120_000 });
-  check("endpoint init names its missing parent without creating it, and its Next creates the scaffold",
-    scaffold.status === 2 && scaffold.stdout === "" && scaffold.stderr.split("\nNext")[0]!.includes("reviewer'\\''s $draft/nested") && unchanged
-    && !!retry && retry.status === 0 && existsSync(join(neutral, dir, "contract.json")) && existsSync(join(neutral, dir, "handler.mjs")),
-    { scaffold: shown(scaffold), retry });
+  const scaffold = run(["endpoint", "init", "com.example.reviews", "--dir", dir, "--json"], {}, cwd);
+  const receipt = JSON.parse(scaffold.stdout);
+  const directories = ["reviewer's $draft", parent, dir].map((path) => join(cwd, path));
+  const files = ["contract.json", "handler.mjs"].map((name) => join(cwd, dir, name));
+  const expected = [...directories.map((path) => ({ path, kind: "directory", complete: true })), ...files.map((path) => ({ path, kind: "file", complete: true }))];
+  check("endpoint init creates and reports all missing directories privately in one invocation",
+    scaffold.status === 0 && scaffold.stderr === "" && JSON.stringify(receipt.result?.changed) === JSON.stringify(expected)
+    && directories.every((path) => (statSync(path).mode & 0o777) === 0o700)
+    && files.every((path, index) => (statSync(path).mode & 0o777) === (index === 0 ? 0o600 : 0o700)), shown(scaffold));
+
+  const original = files.map((path) => readFileSync(path));
+  const conflictArgs = ["endpoint", "init", "different", "--dir", dir];
+  const conflict = run([...conflictArgs, "--json"], {}, cwd);
+  const plainConflict = run([...conflictArgs, "--plain"], {}, cwd);
+  const rejected = JSON.parse(conflict.stdout);
+  const copyDir = `${parent}/reviews-copy`;
+  const copy = run(["endpoint", "init", "different", "--dir", copyDir, "--json"], {}, cwd);
+  const checked = run(["endpoint", "check", join(copyDir, "contract.json"), "--plain"], {}, cwd);
+  check("endpoint init preserves scaffold files and names the alternate destination remedy in JSON and plain output",
+    conflict.status === 2 && rejected.error?.code === "CONFLICT" && rejected.target?.path === files[0]
+    && rejected.error?.remedy?.includes("cotal endpoint init different --dir <new-directory>")
+    && plainConflict.status === 2 && plainConflict.stderr.includes(rejected.error.remedy)
+    && files.every((path, index) => readFileSync(path).equals(original[index]!))
+    && copy.status === 0 && JSON.parse(copy.stdout).result?.endpoint === "com.example.different" && checked.status === 0,
+    [conflict, plainConflict, copy, checked].map(shown));
+
+  symlinkSync(directories[0]!, join(cwd, dir, "linked-parent"), "dir");
+  for (const blocked of [`${dir}/linked-parent`, `${dir}/contract.json`]) {
+    const args = ["endpoint", "init", "scratch", "--dir", `${blocked}/missing/scratch`];
+    const rejected = run([...args, "--json"], {}, cwd);
+    const plain = run([...args, "--plain"], {}, cwd);
+    const { target, error } = JSON.parse(rejected.stdout);
+    check("endpoint init names a blocked parent and advises using a real directory",
+      rejected.status === 2 && rejected.stderr === "" && error?.code === "PERMISSION_DENIED" && target?.path === join(cwd, blocked)
+      && /real directory path/.test(error.remedy) && plain.status === 2 && plain.stdout === ""
+      && plain.stderr.includes(join(cwd, blocked).replace(/'/g, `'\\''`)) && plain.stderr.includes("Next") && plain.stderr.includes(error.remedy)
+      && !existsSync(join(directories[0]!, "missing")), { json: shown(rejected), plain: shown(plain) });
+  }
+  const physical = run(["endpoint", "init", "scratch", "--dir", join(directories[0]!, "missing/scratch"), "--json"], {}, cwd);
+  check("endpoint init succeeds with a real directory instead of the symlink", physical.status === 0
+    && existsSync(join(directories[0]!, "missing/scratch/contract.json")), shown(physical));
+
+  const partial = run(["endpoint", "init", "scratch", "--dir", `partial-parent/${"x".repeat(256)}/scratch`, "--json"], {}, cwd);
+  const partialReceipt = JSON.parse(partial.stdout);
+  check("endpoint init reports directories created before a component exceeds the filename limit", partial.status === 4
+    && partialReceipt.error?.code === "OPERATION_PARTIAL" && JSON.stringify(partialReceipt.changed) === JSON.stringify([{ path: join(cwd, "partial-parent"), kind: "directory", complete: true }])
+    && (statSync(join(cwd, "partial-parent")).mode & 0o777) === 0o700, shown(partial));
 
   const authoring = run(["endpoint", "init", "reviews"], {}, cwd);
   const wrong = "reviews/wrong.json";
@@ -193,6 +342,24 @@ if (process.platform !== "win32") {
     && text.every((r) => r.status === 2 && r.stdout === "" && r.stderr.includes(path) && r.stderr.includes(envelope.error.remedy))
     && corrected.status === 0 && JSON.parse(corrected.stdout).outcome === "ok", { text: text.map(shown), json: shown(json), corrected: shown(corrected) });
 }
+
+const referenceProject = join(home, "endpoint-reference");
+mkdirSync(referenceProject);
+const addReference = (path: string) => run(["endpoint", "add", "example", "--file", path, "--space", "usage-examples", "--json"], {}, referenceProject);
+const beforePreparation = addReference("");
+const prepared = run(["space", "create", "usage-examples", "--root", referenceProject, "--json"], {}, referenceProject);
+const afterPreparation = addReference("");
+for (const r of [beforePreparation, afterPreparation]) {
+  const envelope = JSON.parse(r.stdout);
+  check("endpoint add rejects empty --file before resolving the space or path", r.status === 1 && r.stderr === ""
+    && envelope.target === null && envelope.error?.code === "USAGE_INVALID" && envelope.error.message === "--file is empty"
+    && /reference JSON file/.test(envelope.error.remedy), shown(r));
+}
+const reference = { schemaVersion: 1, space: "usage-examples", endpoint: "com.example.reviews" };
+writeFileSync(join(referenceProject, "reference.json"), JSON.stringify(reference), { mode: 0o600 });
+const added = addReference("reference.json");
+check("endpoint add saves the reference after retrying with a file path", prepared.status === 0 && added.status === 0
+  && JSON.parse(added.stdout).result?.reference?.endpoint === reference.endpoint, { prepared: shown(prepared), added: shown(added) });
 
 const conflict = run(["up", "--foreground", "--detach"]);
 check("two conflicting flags have the same shape", usageShape(conflict, /--foreground or --detach/), shown(conflict));
@@ -237,18 +404,33 @@ const misspelledStatus = run(["help", "service", "sttaus", "manager"]);
 check("explicit help still refuses a misspelled service subcommand before its operand",
   usageShape(misspelledStatus, /cotal service has no subcommand "sttaus" - did you mean status\?/), shown(misspelledStatus));
 
+for (const [command, word, title] of [
+  ["docs", "cli", "cotal docs"],
+  ["history", "general", "cotal history"],
+  ["h", "general", "cotal history"],
+  ["history", "clear", "cotal history clear"],
+  ["history", "limit", "cotal history limit"],
+] as const) {
+  const explicit = run(["help", command, word]);
+  const flag = run([command, word, "--help"]);
+  check(`both help forms for ${command} ${word} show ${title}`,
+    explicit.status === 0 && flag.status === 0 && explicit.stderr === "" && flag.stderr === ""
+    && explicit.stdout === flag.stdout && explicit.stdout.startsWith(`${title}\n`),
+    { explicit: shown(explicit), flag: shown(flag) });
+}
+
 const subcommand = run(["service", "frob"]);
 check("control: the parser's unknown subcommand has the same words", usageShape(subcommand, /cotal service has no subcommand "frob"/), shown(subcommand));
 
 // --help after a word that names no subcommand refuses as `cotal help` does, with the nearest one.
-// After a real subcommand, history's channel word or a leaf's argument it still prints the help.
+// After a real subcommand or a leaf's argument it prints the help.
 for (const args of [["space", "nosuch", "--help"], ["persona", "nosuch", "--help"], ["config", "nosuch", "--help"], ["channel", "nosuch", "--help"], ["team", "nosuch", "-h"]] as const) {
   const r = run([...args]);
   check(`${args.join(" ")} refuses the unknown subcommand`, usageShape(r, new RegExp(`cotal ${args[0]} has no subcommand "nosuch"`)), shown(r));
 }
 const nearHelp = run(["space", "creat", "--help"]);
 check("space creat --help names the nearest subcommand", usageShape(nearHelp, /cotal space has no subcommand "creat" - did you mean create\?/), shown(nearHelp));
-for (const args of [["space", "create", "--help"], ["history", "general", "--help"], ["team", "show", "anything", "--help"]] as const) {
+for (const args of [["space", "create", "--help"], ["team", "show", "anything", "--help"]] as const) {
   const r = run([...args]);
   check(`control: ${args.join(" ")} prints its help`, r.status === 0 && /Usage/.test(r.stdout), shown(r));
 }
@@ -263,6 +445,15 @@ check("models help explains the registration requirement without offering --cred
   && modelsHelpText.includes("Raw credential files are not accepted.")
   && /--space <s>/.test(modelsHelp.stdout) && /--server <url>/.test(modelsHelp.stdout)
   && !/--creds/.test(modelsHelp.stdout), shown(modelsHelp));
+
+const psHelp = run(["ps", "--help"]);
+check("ps help shows the supported target selectors without offering --creds",
+  psHelp.status === 0 && /--space <s>/.test(psHelp.stdout) && /--server <url>/.test(psHelp.stdout)
+  && !/--creds/.test(psHelp.stdout), shown(psHelp));
+const psCreds = run(["ps", "--plain", "--server", "nats://127.0.0.1:37943", "--creds", join(neutral, "not-created")]);
+check("ps refuses a raw credential file and points to the project folder or registered space",
+  psCreds.status === 2 && /Code:\s+UNSUPPORTED/.test(psCreds.stderr)
+  && psCreds.stderr.includes("run the command again without --creds: in the mesh's project folder, or with --space naming its registry entry"), shown(psCreds));
 
 // A subcommand's help gives its whole usage, name argument included, and only its own options.
 for (const [args, usage, foreign] of [
@@ -304,9 +495,10 @@ for (const [args, usage, foreign] of [
   for (const flags of [[], ["--plain"]]) {
     const refused = await at80(["service", "add", "myep", "--preset", "exec-endpoint", "--space", "widenext", ...flags]);
     const short = await at80(["service", "add", "b", "--preset", "broker", "--space", "w", ...flags]);
-    check(`the service add refusal on 80 columns${flags.length ? " under --plain" : ""} keeps its remedy command on one line`,
-      refused.some((line) => line.trim() === listedCommand.replace("<name>", "myep")) && registered.status === 0
-      && short.some((line) => line.trim() === shortCommand && displayWidth(line) <= 80),
+    check(`the service add refusal on 80 columns${flags.length ? " under --plain" : ""} keeps the remedy's flags together`,
+      registered.status === 0 && (flags.length
+        ? refused.some((line) => line.includes("`--contract <file> --handler <file>`")) && short.some((line) => line.includes("`--config <file> --binary <file>`"))
+        : refused.some((line) => line.trim() === listedCommand.replace("<name>", "myep")) && short.some((line) => line.trim() === shortCommand && displayWidth(line) <= 80)),
       { refused: refused.slice(0, 16), registered: shown(registered), short: short.slice(0, 16) });
   }
   // A logged-in user with a private runtime directory and no session bus reaches no user manager, so
@@ -369,8 +561,8 @@ for (const [args, usage, foreign] of [
     paths.push([cmd.name, ...path]);
     const examples = node.examples ?? [];
     const problems: string[] = [];
-    // Endpoint work and Manager unit installation are listed but have no runnable examples.
-    const unavailable = (cmd.name === "endpoint" && path[0] === "work") || (cmd.name === "manager" && path[0] === "install");
+    // Gated endpoint modes and Manager unit installation are listed but have no runnable examples.
+    const unavailable = (cmd.name === "endpoint" && ["watch", "session", "work"].some((mode) => mode === path[0])) || (cmd.name === "manager" && path[0] === "install");
     if (unavailable ? examples.length !== 0 : examples.length < 1 || examples.length > 3) problems.push(`declares ${examples.length} examples`);
     const lines: string[] = [];
     printHelpPath(cmd, path, (line) => lines.push(...line.replace(/\x1b\[[0-9;]*m/g, "").split("\n")), 80);
@@ -451,7 +643,7 @@ for (const [args, usage, foreign] of [
       ["implementations/cli/src/lib/setup-log.ts", /^\n=== cotal setup - /], // the setup log's header
       ["implementations/cli/src/seed/paths.ts", /can take an installed cotal down\.|cannot determine the (?:loaded )?cotal version: /], // cotal, the program
       ["implementations/cli/src/seed/reconcile.ts", /and this cotal \$\{\} does not move it back/],
-      ["implementations/cli/src/commands/status.ts", /^cotal \$\{\} {2}· {2}Node \$\{\}/], // cotal, the program, and its version
+      ["implementations/cli/src/commands/status-render.ts", /^cotal \$\{\} {2}· {2}Node \$\{\}/], // cotal, the program, and its version
       ["implementations/cli/src/lib/nearest-word.ts", /^cotal \$\{\} has no subcommand /], // a refusal that starts with its command
       ["implementations/cli/src/commands/service-registry.ts", /^cotal up or cotal supervise$/], // startedBy, a data value
       ["packages/core/src/connector-config.ts", /^modelPolicy\.\$\{\} in the cotal config$/], // the config file
@@ -530,11 +722,30 @@ for (const [args, usage, foreign] of [
     rejectedNoOpen.status === 1 && /--no-open belongs to service start web/.test(rejectedNoOpen.stderr) && !/^  --no-open\b/m.test(rejectedNoOpen.stderr) &&
     webStart.status === 0 && /^  --no-open\b/m.test(webStart.stdout),
     { manager: shown(managerStart), refused: shown(rejectedNoOpen), web: shown(webStart) });
+  const brokerStart = run(["service", "start", "broker", "--help"]);
+  const brokerHelp = run(["help", "service", "start", "broker"]);
+  const brokerRefusal = run(["service", "start", "broker", "--no-open", "--dry-run"]);
+  check("broker start help shows broker options and omits the web-only --no-open option, including on refusal",
+    brokerStart.status === 0 && brokerHelp.status === 0 && brokerStart.stdout === brokerHelp.stdout &&
+    /^  --config <file>/m.test(brokerStart.stdout) && /^  --binary <file>/m.test(brokerStart.stdout) && !/^  --no-open\b/m.test(brokerStart.stdout) &&
+    brokerRefusal.status === 1 && /--no-open belongs to service start web/.test(brokerRefusal.stderr) &&
+    /^  --config <file>/m.test(brokerRefusal.stderr) && !/^  --no-open\b/m.test(brokerRefusal.stderr),
+    { start: shown(brokerStart), help: shown(brokerHelp), refused: shown(brokerRefusal) });
 
-  for (const path of [["endpoint", "work"], ["endpoint", "work", "lease"], ["endpoint", "work", "commit"]]) {
+  for (const path of [["endpoint", "watch"], ["endpoint", "session"], ["endpoint", "work"], ["endpoint", "work", "lease"], ["endpoint", "work", "commit"]]) {
     const help = run([...path, "--help"]);
     check(`cotal ${path.join(" ")} help states the limit without offering working examples`,
-      help.status === 0 && /unavailable in this CLI/.test(help.stdout) && /^Usage$/m.test(help.stdout) && !/^Examples$/m.test(help.stdout), shown(help));
+      help.status === 0 && /unavailable in this CLI/.test(help.stdout) && /^Usage$/m.test(help.stdout) && !/^Examples$/m.test(help.stdout) &&
+      help.stdout.trimEnd().endsWith("Structured output: json, plain"), shown(help));
+  }
+
+  for (const operation of ["lease", "commit"]) {
+    const extra = operation === "commit" ? ["--lease", "missing.creds", "--result", "{}"] : [];
+    const refused = run(["endpoint", "work", operation, "ep:example", "review", ...extra, "--json"]);
+    const receipt = JSON.parse(refused.stdout);
+    check(`endpoint work ${operation} still returns the finite unsupported refusal`,
+      refused.status === 2 && receipt.schemaVersion === 1 && receipt.command === "endpoint" && receipt.outcome === "refused" &&
+      receipt.target?.capability === "work" && receipt.target.operation === operation && receipt.error?.code === "UNSUPPORTED", shown(refused));
   }
 
   // The persona create example, its placeholders filled in, run as written against a fresh Cotal home
@@ -568,6 +779,11 @@ for (const [args, usage, foreign] of [
 // No mark at all: the report names the outcome in words, and `!` stays the warning mark.
 const reportShape = (r: ReturnType<typeof run>, message: RegExp) =>
   r.status === 1 && r.stdout === "" && /^Request refused$/m.test(r.stderr) && /Code: +USAGE_INVALID/.test(r.stderr) && message.test(r.stderr) && /Usage/.test(r.stderr) && !/[✗↳]|^! /m.test(r.stderr);
+const describeLive = run(["endpoint", "describe", "manager", "--live", "--plain"]);
+check("endpoint describe explains the --live refusal and both available reads",
+  reportShape(describeLive, /endpoint describe already reads the contract live and does not take --live/) &&
+  describeLive.stderr.includes("remove --live") && describeLive.stderr.includes("cotal endpoint list --live") &&
+  !describeLive.stderr.includes("--file and --yes"), shown(describeLive));
 const ascii = { LANG: "C" };
 const plainOwn = run(["config", "get", "bogus", "--plain"]);
 check("under --plain a command's own usage refusal is the plain report with its Next, then the help", reportShape(plainOwn, /unknown preference "bogus"/) && /^Next$/m.test(plainOwn.stderr), shown(plainOwn));
@@ -583,6 +799,11 @@ check("under a locale without UTF-8 an unknown command is the report, with no wa
 // --yes are the whole fix, so the command's help is left out, as `down` already did.
 const project = join(home, "proj");
 mkdirSync(project, { mode: 0o700 });
+const backupDestination = join(home, "unused");
+const backupCreate = run(["backup", "create", "../unused", "--yes", "--plain"], {}, project);
+check("backup create names the unsupported option and refuses before writing",
+  reportShape(backupCreate, /backup create does not accept --yes/) && backupCreate.stderr.includes("remove --yes to create the backup")
+  && !existsSync(backupDestination), shown(backupCreate));
 const confirmationSpace = run(["space", "create", "confirmation", "--root", project]);
 check("confirmation refusals use a prepared local space", confirmationSpace.status === 0, shown(confirmationSpace));
 const deleteTarget = run(["space", "add", "delete-target", "--root", project, "--mode", "open", "--server", "nats://127.0.0.1:43028", "--force", "--yes"]);
@@ -622,14 +843,51 @@ for (const [args, message] of [
   const r = run([...args]);
   check(`${args.join(" ")} names the nearest word`, r.status === 1 && message.test(r.stderr), shown(r));
 }
+for (const words of [["--json", "--jsn"], ["--jsn", "-j"]]) {
+  const r = run(["version", ...words]);
+  const error = parsed(r)?.error;
+  check(`version ${words.join(" ")} keeps the JSON switch already supplied`, r.status === 1 && error?.message === "Unknown option '--jsn'" && error.remedy === "drop the unknown option; --json is already set", shown(r));
+}
+const afterEnd = run(["version", "--jsn", "--", "--json"]);
+check("an operand after -- is not a switch already set", afterEnd.status === 1 && afterEnd.stderr.includes("did you mean --json?"), shown(afterEnd));
 const configTypo = run(["config", "get", "harness", "--verbsoe", "--json"]);
 check("config get does not suggest a flag only bare config takes",
   configTypo.status === 1 && configTypo.stderr === "" && JSON.parse(configTypo.stdout).error.message === "Unknown option '--verbsoe'", shown(configTypo));
+const configGet = ["config", "get", "harness", "--user", "--json"];
+const configUnknown = run([...configGet, "--mystery-flag"]);
+const { error: configError } = JSON.parse(configUnknown.stdout);
+const configRetry = run(configGet);
+check("config get with its key filled says to drop the unknown option, and dropping it returns the setting",
+  configUnknown.status === 1 && configUnknown.stderr === "" && configError?.code === "USAGE_INVALID"
+  && configError.message === "Unknown option '--mystery-flag'" && configError.remedy === "drop the unknown option"
+  && configRetry.status === 0 && JSON.parse(configRetry.stdout).result?.setting?.key === "harness",
+  { refusal: shown(configUnknown), retry: shown(configRetry) });
 const clearTypo = run(["history", "clear", "--folow"]);
 check("history clear does not suggest a flag only history reads take",
   usageShape(clearTypo, /Unknown option '--folow'/) && !/did you mean/.test(clearTypo.stderr), shown(clearTypo));
 const far = run(["frobnicate"]);
 check("control: a word near nothing gets no suggestion", far.status === 1 && /unknown command: frobnicate - run `cotal help` to list commands/.test(far.stderr) && !/did you mean/.test(far.stderr), shown(far));
+
+for (const [args, suggestion] of [
+  [["auth", "handle", "inspec"], "inspect"],
+  [["endpoint", "work", "commti"], "commit"],
+] as const) {
+  const [command, parent, typo] = args;
+  const message = `cotal ${command} ${parent} has no subcommand "${typo}" - did you mean ${suggestion}? Or run \`cotal help ${command} ${parent}\``;
+  const text = run([...args]);
+  const help = run([...args, "--help"]);
+  const json = run([...args, "--json"]);
+  check(`${args.join(" ")} refuses with the same text and parent help as --help`,
+    text.status === 1 && help.status === 1 && text.stdout === "" && help.stdout === ""
+    && text.stderr.startsWith(`✗ ${message}\n`) && text.stderr === help.stderr, { text: shown(text), help: shown(help) });
+  check(`${args.join(" ")} --json reports the nested typo as USAGE_INVALID`,
+    json.status === 1 && json.stderr === "" && parsed(json)?.error?.code === "USAGE_INVALID"
+    && parsed(json)?.error?.message === message, shown(json));
+}
+const missingHandleFile = run(["auth", "handle", "inspect", "--json"]);
+check("auth handle inspect without a file still reports the missing operand",
+  missingHandleFile.status === 1 && missingHandleFile.stderr === "" && parsed(missingHandleFile)?.error?.code === "USAGE_INVALID"
+  && parsed(missingHandleFile)?.error?.message === "use auth handle inspect <private-file>", shown(missingHandleFile));
 
 // A word that is no subcommand is refused naming the subcommands the command takes, as telemetry
 // names its levels, and a hidden subcommand is not offered.
@@ -652,7 +910,6 @@ check("an over-long unknown command is repeated as its first 128 characters and 
 const longSub = run(["telemetry", long]);
 check("an over-long unknown subcommand is repeated the same way", usageShape(longSub, /cotal telemetry has no subcommand "x{128}… \(100000 characters\)"; it takes off, minimal or regular/) && longest(longSub.stderr) < 400, shown(longSub));
 const longSubJson = run(["telemetry", long, "--json"]);
-const parsed = (r: ReturnType<typeof run>) => { try { return JSON.parse(r.stdout) as { target?: unknown; error?: { code?: string; message?: string } }; } catch { return undefined; } };
 check("its --json message is repeated the same way", longSubJson.status === 1 && parsed(longSubJson)?.error?.code === "USAGE_INVALID" && parsed(longSubJson)?.error?.message?.startsWith(`cotal telemetry has no subcommand "${"x".repeat(128)}… (100000 characters)"`) === true && longSubJson.stdout.length < 1_000, shown(longSubJson));
 check("its --json target is what a short word's refusal carries", JSON.stringify(parsed(longSubJson)?.target) === JSON.stringify(parsed(levelJson)?.target), { long: parsed(longSubJson)?.target, short: parsed(levelJson)?.target });
 const longRun = run(["run", "show", `run-${long}`]);
@@ -744,6 +1001,23 @@ if (process.platform !== "win32") {
   const json = at(["status", "--json"]);
   const envelope = json.stdout.startsWith("{") ? JSON.parse(json.stdout) : undefined;
   check("with --json it is one CONFLICT refusal", json.status === 2 && envelope?.outcome === "refused" && envelope.error?.code === "CONFLICT", shown(json));
+  for (const [stream, args, target] of [
+    ["history", ["history", "review", "--follow"], { space: null, channel: "review", dms: false }],
+    ["membership", ["channel", "members", "review", "--follow"], { space: null, channel: "review" }],
+    ["watch", ["watch"], { requestedSpace: null }],
+  ] as const) {
+    const r = at([...args, "--json"]);
+    const records = r.stdout.trimEnd().split("\n").map((line) => JSON.parse(line || "{}"));
+    check(`${stream} reports the project conflict as a setup failure without a snapshot`, r.status === 2 && r.stderr === ""
+      && records.length === 2 && records.every((record) => record.schemaVersion === 1 && record.stream === stream && Object.entries(target).every(([key, value]) => record.target?.[key] === value))
+      && records[0]?.type === "error" && records[0].data?.code === "CONFLICT" && records[0].data?.message?.includes(join(notes, ".cotal"))
+      && records[0].data?.remedy === "rename or move that file, then run the command again"
+      && records[1]?.type === "end" && records[1].data?.reason === "setup-failed" && (stream !== "membership" || records[1].data.lastAsOf === null), shown(r));
+  }
+  const history = at(["history", "review", "--json"]);
+  const receipt = JSON.parse(history.stdout || "{}");
+  check("finite history still reports one CONFLICT receipt", history.status === 2 && history.stderr === ""
+    && receipt.command === "history" && receipt.outcome === "refused" && receipt.error?.code === "CONFLICT", shown(history));
   const rooted = at(["space", "create", "notes", "--root", notes], neutral);
   check("--root naming that folder refuses the same way", named(rooted), shown(rooted));
   for (const args of [["--version"], ["version"]]) {
@@ -838,10 +1112,30 @@ if (process.platform !== "win32") {
   const helpSvcStartMgr = run(["help", "service", "start", "manager"]);
   const svcStartMgrHelp = run(["service", "start", "manager", "--help"]);
   check("help service start manager prints the same preset-augmented help as service start manager --help", helpSvcStartMgr.status === 0 && helpSvcStartMgr.stdout === svcStartMgrHelp.stdout && /--runtime/.test(helpSvcStartMgr.stdout), shown(helpSvcStartMgr));
+  check("manager preset start help keeps --instance and omits --new-instance in Usage and Options",
+    svcStartMgrHelp.status === 0 && /\[--instance <id>\]/.test(svcStartMgrHelp.stdout) && !svcStartMgrHelp.stdout.includes("--new-instance"), shown(svcStartMgrHelp));
+  const genericStartHelp = run(["service", "start", "--help"]);
+  check("generic service start help still lists --new-instance in Usage and Options",
+    genericStartHelp.status === 0 && /\[--instance <id>\|--new-instance\]/.test(genericStartHelp.stdout) && /^  --new-instance\s/m.test(genericStartHelp.stdout), shown(genericStartHelp));
+  const multiManager = run(["service", "start", "manager", "--new-instance", "--dry-run", "--json", "--space", "presetspace"], {}, presetSpace);
+  const multiRefusal = parsed(multiManager) as { outcome?: string; error?: { code?: string } } | undefined;
+  check("manager preset still refuses --new-instance in a preview", multiManager.status === 2 && multiRefusal?.outcome === "refused" && multiRefusal.error?.code === "UNSUPPORTED", shown(multiManager));
+  const serviceList = run(["service", "list", "--space", "presetspace", "--json"], {}, presetSpace);
+  const helpService = run(["service", "--help"]);
+  const helpServiceList = run(["help", "service", "list"]);
+  const serviceListHelp = run(["service", "list", "--help"]);
+  check("both help forms for the hidden service list mode print parent help without listing the mode",
+    serviceList.status === 0 && JSON.parse(serviceList.stdout).result.kind === "service-inventory"
+    && [helpService, helpServiceList, serviceListHelp].every((r) => r.status === 0 && r.stderr === "" && r.stdout === helpService.stdout)
+    && /^Commands\n/m.test(helpService.stdout) && !/^  list\s/m.test(helpService.stdout), shown(helpServiceList));
   const svcAddPresetMissingHelp = run(["service", "add", "--preset", "--help"]);
   const svcAddPresetBogusHelp = run(["service", "add", "x", "--preset", "bogus", "--help"]);
   const svcAddHelp = run(["service", "add", "--help"]);
   check("service add --help wins over missing or unknown --preset", svcAddPresetMissingHelp.status === 0 && svcAddPresetMissingHelp.stdout === svcAddHelp.stdout && svcAddPresetBogusHelp.status === 0 && svcAddPresetBogusHelp.stdout === svcAddHelp.stdout, { missing: shown(svcAddPresetMissingHelp), bogus: shown(svcAddPresetBogusHelp) });
+  const svcAddPresetMissing = run(["service", "add", "widget", "--preset"]);
+  check("service add with no preset value refuses with the scoped help and preset option",
+    svcAddPresetMissing.status === 1 && svcAddPresetMissing.stdout === "" && svcAddHelp.stdout.includes("--preset <name>")
+    && svcAddPresetMissing.stderr === `✗ --preset needs one declared preset name\n${svcAddHelp.stdout}`, shown(svcAddPresetMissing));
 
   for (const args of [
     ...["start", "show", "stop", "status", "logs", "remove"].map((mode) => ["service", mode, "myweb", "--preset", "web"]),

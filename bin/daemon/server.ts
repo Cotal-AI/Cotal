@@ -17,10 +17,10 @@
  */
 import { chmodSync, closeSync, linkSync, unlinkSync, lstatSync } from "node:fs";
 import { randomBytes } from "node:crypto";
-import { join } from "node:path";
+import { basename, dirname, isAbsolute, join } from "node:path";
 import { createServer, type Server, type Socket } from "node:net";
 import { localPeerCredentials, listenPipe, windowsUserSid, type PipeListener, type PipePeer, type PipeRefused } from "@cotal-ai/seat";
-import { DAEMON_PROTOCOL_VERSION, MAX_LINE_BYTES, EndpointRefusal, adoptPipe, assertSocketPathFits, assertSupportedPlatform, checkSocket, defaultPeerUid, ensureDir, ensureStateDir, type DaemonPaths, type PeerUid } from "./endpoint.js";
+import { DAEMON_PROTOCOL_VERSION, MAX_LINE_BYTES, EndpointRefusal, adoptPipe, assertSocketPathFits, assertSupportedPlatform, checkDir, checkSocket, defaultPeerUid, ensureDir, ensureStateDir, type DaemonPaths, type PeerUid } from "./endpoint.js";
 import { claimSocketPath, generationOf, holdLifetime, processBirth, type HeldLifetime } from "./lifetime.js";
 import { encode, parseRequest, type ConnectCheckResult, type DaemonResponse, type DaemonStatus, type HostedManager, type LogoutChange, type RegisterResult, type ServiceConnectionResult } from "./protocol.js";
 import { createLoginCoordinator, type LoginCoordinator } from "./login.js";
@@ -419,14 +419,15 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
         return;
       }
       if (req.op === "service-connect" || req.op === "service-disconnect" || req.op === "service-status") {
+        const notRegistered = {
+          space: req.space, state: "not-registered" as const, message: `Space ${req.space} is not registered on this machine.`,
+          remedy: "Check the space name or run `cotal space` to list registered spaces.",
+        };
         const run = req.op === "service-status" ? Promise.resolve(services.status(req.space))
           : (async () => {
             if (req.op === "service-connect") {
               const entry = findMesh(req.space);
-              if (!entry) return {
-                space: req.space, state: "not-registered" as const, message: `Space ${req.space} is not registered on this machine.`,
-                remedy: "Check the space name or run `cotal space` to list registered spaces.",
-              };
+              if (!entry) return notRegistered;
               if (entry.mode !== "user") return {
                 space: req.space, state: "unsupported" as const, message: NON_USER_AUTH_MESSAGE, remedy: NON_USER_AUTH_REMEDY,
               };
@@ -461,9 +462,14 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
               const { entries, unusable } = readMeshRegistry();
               // Keep pre-hex registrations visible without mistaking a damaged canonical record for a legacy one.
               damaged = unusable.some(error => error.file === meshFile(req.space));
-              if (!damaged && entries.some(entry => entry.space === req.space && entry.mode !== "user")) {
-                if (req.op === "service-status") return { space: req.space, state: "unsupported", message: NON_USER_AUTH_MESSAGE, remedy: NON_USER_AUTH_REMEDY };
-                return { ...result, manager: { ...manager, next: NON_USER_AUTH_REMEDY } };
+              if (!damaged) {
+                const entry = entries.find(entry => entry.space === req.space);
+                if (req.op === "service-status" && result.state === "not-requested" && !entry) return notRegistered;
+                if (entry && entry.mode !== "user") {
+                  if (req.op === "service-status") return { space: req.space, state: "unsupported", message: NON_USER_AUTH_MESSAGE, remedy: NON_USER_AUTH_REMEDY };
+                  return { ...result, message: result.removedRecords?.length === 0 ? "This space does not use the machine service. There was nothing to disconnect." : result.message,
+                    manager: { ...manager, next: NON_USER_AUTH_REMEDY } };
+                }
               }
             } catch (error) {
               if (!isMeshRegistryError(error)) throw error;
@@ -666,6 +672,28 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
     async prepareGenerationRestart() { await resumed; await managers.prepareGenerationRestart(daemonRestartOwner); notifyStatusWatchers(); }, abortGenerationRestart: () => managers.abortGenerationRestart(daemonRestartOwner).finally(() => notifyStatusWatchers()) };
 }
 
+/** Recover a predecessor's socket before a different Linux runtime replaces its record. */
+async function recoverPreviousRuntime(paths: DaemonPaths, uid: number, previous: HeldLifetime["previous"]): Promise<void> {
+  const socket = previous?.socket;
+  if (process.platform !== "linux" || !socket || socket.path === paths.socket || !isAbsolute(socket.path)) return;
+  const dir = dirname(socket.path);
+  const parent = dirname(dir);
+  if (basename(socket.path) !== basename(paths.socket) || basename(dir) !== basename(paths.dir!)
+    || (paths.parent !== undefined && basename(parent) !== basename(paths.parent))) return;
+  try {
+    const runtime = lstatSync(paths.parent === undefined ? parent : dirname(parent));
+    if (!runtime.isDirectory() || runtime.uid !== uid || (runtime.mode & 0o022) !== 0) return;
+    if (paths.parent !== undefined) checkDir(parent, uid);
+    checkDir(dir, uid);
+    checkSocket(socket.path, uid);
+    if (await claimSocketPath(socket.path, socket) !== "recover") return;
+    const current = lstatSync(socket.path);
+    if (current.isSocket() && current.uid === uid && current.dev === socket.dev && current.ino === socket.ino) unlinkSync(socket.path);
+  } catch {
+    // The old runtime may be gone or inaccessible. It cannot block serving in the selected runtime.
+  }
+}
+
 /** Linux and macOS: publish the unix socket, and on close remove it only if it is still ours. */
 async function publishSocket(paths: DaemonPaths, uid: number, lock: HeldLifetime, counters: ServerCounters, log: (line: string) => void, accept: (sock: Socket) => void): Promise<Endpoint> {
   const server = createServer({ allowHalfOpen: false, pauseOnConnect: true }, accept);
@@ -679,6 +707,7 @@ async function publishSocket(paths: DaemonPaths, uid: number, lock: HeldLifetime
     throw error;
   }
   if (claim === "recover") unlinkSync(paths.socket);
+  await recoverPreviousRuntime(paths, uid, lock.previous);
   lock.discardPrevious();
   if (claim === "recover") {
     counters.socketsRecovered++;
@@ -690,7 +719,8 @@ async function publishSocket(paths: DaemonPaths, uid: number, lock: HeldLifetime
   // whatever sits at the path it bound (measured on Node 24), so binding the private name means
   // close() can only ever remove that name, never a socket another process later put at the
   // public path. The private name is removed as soon as the link exists.
-  const bindPath = join(paths.dir!, `.bind-${process.pid}-${randomBytes(6).toString("hex")}`);
+  // The temporary basename is 11 ASCII bytes, the same length as daemon.sock.
+  const bindPath = join(paths.dir!, `.${randomBytes(7).toString("base64url")}`);
   assertSocketPathFits(bindPath);
   // umask is process-wide; it is narrowed only around listen() and restored in `finally`. The
   // directory is already verified 0700 and the bound socket is chmod-ed and re-checked below, so

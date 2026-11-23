@@ -14,6 +14,8 @@ import type { ManagerParts } from "./manager-parts.js";
 import { foreignEventChannels } from "./seat-launch.js";
 import type { ManagedAgent } from "./seat-types.js";
 import { ownedBySibling } from "./static-lifecycle.js";
+import type { ManagerConfig } from "./manager-config.js";
+import type { ManagerStartState } from "./manager-start-state.js";
 
 /** How often a resumed seat whose readiness was uncertain is checked for a join its predecessor's
  *  presence row hides (see {@link Manager.watchResumeAdoption}). The wait has no end of its own, so
@@ -56,47 +58,32 @@ interface PreparedResume {
  *  assigns after construction is always current, and a Manager method a test replaces is the one that runs. */
 export interface PreservedResumeDeps {
   agents: () => Manager["agents"];
-  auth: () => Manager["auth"];
   ep: () => Manager["ep"];
-  eventPayloadsWithheld: () => Manager["eventPayloadsWithheld"];
-  execution: () => Manager["execution"];
-  managerInstanceId: () => Manager["managerInstanceId"];
   namesCapacity: () => Manager["namesCapacity"];
-  readinessTimeoutMs: () => Manager["readinessTimeoutMs"];
-  remoteAuthority: () => Manager["remoteAuthority"];
-  resumeAttemptId: () => Manager["resumeAttemptId"];
   resumeDurableCommitToken: () => Manager["resumeDurableCommitToken"];
   setResumeDurableCommitToken: (value: Manager["resumeDurableCommitToken"]) => void;
   resumeRequired: () => Manager["resumeRequired"];
   setResumeRequired: (value: Manager["resumeRequired"]) => void;
   retirement: () => Manager["retirement"];
-  secrets: () => Manager["secrets"];
-  space: () => Manager["space"];
-  userMode: () => Manager["userMode"];
-  workspaceRoot: () => Manager["workspaceRoot"];
   abortPreservation: (...args: Parameters<Manager["abortPreservation"]>) => ReturnType<Manager["abortPreservation"]>;
   armSessionRecovery: (...args: Parameters<Manager["armSessionRecovery"]>) => ReturnType<Manager["armSessionRecovery"]>;
   awaitHandleExit: (...args: Parameters<Manager["awaitHandleExit"]>) => ReturnType<Manager["awaitHandleExit"]>;
   awaitReadiness: (...args: Parameters<Manager["awaitReadiness"]>) => ReturnType<Manager["awaitReadiness"]>;
   beginLifecycle: (...args: Parameters<Manager["beginLifecycle"]>) => ReturnType<Manager["beginLifecycle"]>;
   capabilityRefusal: (...args: Parameters<Manager["capabilityRefusal"]>) => ReturnType<Manager["capabilityRefusal"]>;
-  capacityRefusal: (...args: Parameters<Manager["capacityRefusal"]>) => ReturnType<Manager["capacityRefusal"]>;
   commitPreservation: (...args: Parameters<Manager["commitPreservation"]>) => ReturnType<Manager["commitPreservation"]>;
   deprovision: (...args: Parameters<Manager["deprovision"]>) => ReturnType<Manager["deprovision"]>;
   eventsRefusal: (...args: Parameters<Manager["eventsRefusal"]>) => ReturnType<Manager["eventsRefusal"]>;
   executionRefusal: (...args: Parameters<Manager["executionRefusal"]>) => ReturnType<Manager["executionRefusal"]>;
-  fileDigestOrEmpty: (...args: Parameters<Manager["fileDigestOrEmpty"]>) => ReturnType<Manager["fileDigestOrEmpty"]>;
   forkProvenance: (...args: Parameters<Manager["forkProvenance"]>) => ReturnType<Manager["forkProvenance"]>;
   freeSlot: (...args: Parameters<Manager["freeSlot"]>) => ReturnType<Manager["freeSlot"]>;
   hostLaunchFields: (...args: Parameters<Manager["hostLaunchFields"]>) => ReturnType<Manager["hostLaunchFields"]>;
   inventoryReferenceError: (...args: Parameters<Manager["inventoryReferenceError"]>) => ReturnType<Manager["inventoryReferenceError"]>;
-  launchHarness: (...args: Parameters<Manager["launchHarness"]>) => ReturnType<Manager["launchHarness"]>;
   loadSeatRuntime: (...args: Parameters<Manager["loadSeatRuntime"]>) => ReturnType<Manager["loadSeatRuntime"]>;
   maintenanceError: (...args: Parameters<Manager["maintenanceError"]>) => ReturnType<Manager["maintenanceError"]>;
   managedPrincipal: (...args: Parameters<Manager["managedPrincipal"]>) => ReturnType<Manager["managedPrincipal"]>;
   nameError: (...args: Parameters<Manager["nameError"]>) => ReturnType<Manager["nameError"]>;
   occupancy: (...args: Parameters<Manager["occupancy"]>) => ReturnType<Manager["occupancy"]>;
-  occupancyText: (...args: Parameters<Manager["occupancyText"]>) => ReturnType<Manager["occupancyText"]>;
   preparePreservation: (...args: Parameters<Manager["preparePreservation"]>) => ReturnType<Manager["preparePreservation"]>;
   probeStaticCredential: (...args: Parameters<Manager["probeStaticCredential"]>) => ReturnType<Manager["probeStaticCredential"]>;
   readManagedSession: (...args: Parameters<Manager["readManagedSession"]>) => ReturnType<Manager["readManagedSession"]>;
@@ -122,47 +109,32 @@ export interface PreservedResumeDeps {
 export function preservedResumeDeps(m: Manager): PreservedResumeDeps {
   return {
     agents: () => m["agents"],
-    auth: () => m["auth"],
     ep: () => m["ep"],
-    eventPayloadsWithheld: () => m["eventPayloadsWithheld"],
-    execution: () => m["execution"],
-    managerInstanceId: () => m["managerInstanceId"],
     namesCapacity: () => m["namesCapacity"],
-    readinessTimeoutMs: () => m["readinessTimeoutMs"],
-    remoteAuthority: () => m["remoteAuthority"],
-    resumeAttemptId: () => m["resumeAttemptId"],
     resumeDurableCommitToken: () => m["resumeDurableCommitToken"],
     setResumeDurableCommitToken: (value) => { m["resumeDurableCommitToken"] = value; },
     resumeRequired: () => m["resumeRequired"],
     setResumeRequired: (value) => { m["resumeRequired"] = value; },
     retirement: () => m["retirement"],
-    secrets: () => m["secrets"],
-    space: () => m["space"],
-    userMode: () => m["userMode"],
-    workspaceRoot: () => m["workspaceRoot"],
     abortPreservation: (...args) => m["abortPreservation"](...args),
     armSessionRecovery: (...args) => m["armSessionRecovery"](...args),
     awaitHandleExit: (...args) => m["awaitHandleExit"](...args),
     awaitReadiness: (...args) => m["awaitReadiness"](...args),
     beginLifecycle: (...args) => m["beginLifecycle"](...args),
     capabilityRefusal: (...args) => m["capabilityRefusal"](...args),
-    capacityRefusal: (...args) => m["capacityRefusal"](...args),
     commitPreservation: (...args) => m["commitPreservation"](...args),
     deprovision: (...args) => m["deprovision"](...args),
     eventsRefusal: (...args) => m["eventsRefusal"](...args),
     executionRefusal: (...args) => m["executionRefusal"](...args),
-    fileDigestOrEmpty: (...args) => m["fileDigestOrEmpty"](...args),
     forkProvenance: (...args) => m["forkProvenance"](...args),
     freeSlot: (...args) => m["freeSlot"](...args),
     hostLaunchFields: (...args) => m["hostLaunchFields"](...args),
     inventoryReferenceError: (...args) => m["inventoryReferenceError"](...args),
-    launchHarness: (...args) => m["launchHarness"](...args),
     loadSeatRuntime: (...args) => m["loadSeatRuntime"](...args),
     maintenanceError: (...args) => m["maintenanceError"](...args),
     managedPrincipal: (...args) => m["managedPrincipal"](...args),
     nameError: (...args) => m["nameError"](...args),
     occupancy: (...args) => m["occupancy"](...args),
-    occupancyText: (...args) => m["occupancyText"](...args),
     preparePreservation: (...args) => m["preparePreservation"](...args),
     probeStaticCredential: (...args) => m["probeStaticCredential"](...args),
     readManagedSession: (...args) => m["readManagedSession"](...args),
@@ -186,53 +158,42 @@ export function preservedResumeDeps(m: Manager): PreservedResumeDeps {
 
 /** Resuming a preserved manager: the bound inventory, validating each retained seat's authority, relaunching or adopting it, and the commit and finalize doors. */
 export class PreservedResume {
-  constructor(private readonly deps: PreservedResumeDeps, private readonly parts: Pick<ManagerParts, "connectorInventory">) {}
+  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: PreservedResumeDeps, private readonly parts: Pick<ManagerParts, "connectorInventory" | "harnessResolution" | "namesCapacity" | "preservation">, private readonly state: ManagerStartState) {}
 
   // The Manager members these bodies read, under their Manager names. Each reads through its dep at
   // use, so a field the Manager assigns later is current and a method a test replaces on the Manager
   // is the one that runs.
   private get agents() { return this.deps.agents(); }
-  private get auth() { return this.deps.auth(); }
+  private get auth() { return this.state.auth; }
   private get ep() { return this.deps.ep(); }
-  private get eventPayloadsWithheld() { return this.deps.eventPayloadsWithheld(); }
-  private get execution() { return this.deps.execution(); }
-  private get managerInstanceId() { return this.deps.managerInstanceId(); }
+  private get managerInstanceId() { return this.state.managerInstanceId!; }
   private get namesCapacity() { return this.deps.namesCapacity(); }
-  private get readinessTimeoutMs() { return this.deps.readinessTimeoutMs(); }
-  private get remoteAuthority() { return this.deps.remoteAuthority(); }
-  private get resumeAttemptId() { return this.deps.resumeAttemptId(); }
+  private get remoteAuthority() { return this.config.remoteAuthority; }
   private get resumeDurableCommitToken() { return this.deps.resumeDurableCommitToken(); }
   private set resumeDurableCommitToken(value: Manager["resumeDurableCommitToken"]) { this.deps.setResumeDurableCommitToken(value); }
   private get resumeRequired() { return this.deps.resumeRequired(); }
   private set resumeRequired(value: Manager["resumeRequired"]) { this.deps.setResumeRequired(value); }
   private get retirement() { return this.deps.retirement(); }
-  private get secrets() { return this.deps.secrets(); }
-  private get space() { return this.deps.space(); }
-  private get userMode() { return this.deps.userMode(); }
-  private get workspaceRoot() { return this.deps.workspaceRoot(); }
+  private get userMode() { return this.state.userMode; }
   private abortPreservation(...args: Parameters<Manager["abortPreservation"]>): ReturnType<Manager["abortPreservation"]> { return this.deps.abortPreservation(...args); }
   private armSessionRecovery(...args: Parameters<Manager["armSessionRecovery"]>): ReturnType<Manager["armSessionRecovery"]> { return this.deps.armSessionRecovery(...args); }
   private awaitHandleExit(...args: Parameters<Manager["awaitHandleExit"]>): ReturnType<Manager["awaitHandleExit"]> { return this.deps.awaitHandleExit(...args); }
   private awaitReadiness(...args: Parameters<Manager["awaitReadiness"]>): ReturnType<Manager["awaitReadiness"]> { return this.deps.awaitReadiness(...args); }
   private beginLifecycle(...args: Parameters<Manager["beginLifecycle"]>): ReturnType<Manager["beginLifecycle"]> { return this.deps.beginLifecycle(...args); }
   private capabilityRefusal(...args: Parameters<Manager["capabilityRefusal"]>): ReturnType<Manager["capabilityRefusal"]> { return this.deps.capabilityRefusal(...args); }
-  private capacityRefusal(...args: Parameters<Manager["capacityRefusal"]>): ReturnType<Manager["capacityRefusal"]> { return this.deps.capacityRefusal(...args); }
   private commitPreservation(...args: Parameters<Manager["commitPreservation"]>): ReturnType<Manager["commitPreservation"]> { return this.deps.commitPreservation(...args); }
   private deprovision(...args: Parameters<Manager["deprovision"]>): ReturnType<Manager["deprovision"]> { return this.deps.deprovision(...args); }
   private eventsRefusal(...args: Parameters<Manager["eventsRefusal"]>): ReturnType<Manager["eventsRefusal"]> { return this.deps.eventsRefusal(...args); }
   private executionRefusal(...args: Parameters<Manager["executionRefusal"]>): ReturnType<Manager["executionRefusal"]> { return this.deps.executionRefusal(...args); }
-  private fileDigestOrEmpty(...args: Parameters<Manager["fileDigestOrEmpty"]>): ReturnType<Manager["fileDigestOrEmpty"]> { return this.deps.fileDigestOrEmpty(...args); }
   private forkProvenance(...args: Parameters<Manager["forkProvenance"]>): ReturnType<Manager["forkProvenance"]> { return this.deps.forkProvenance(...args); }
   private freeSlot(...args: Parameters<Manager["freeSlot"]>): ReturnType<Manager["freeSlot"]> { return this.deps.freeSlot(...args); }
   private hostLaunchFields(...args: Parameters<Manager["hostLaunchFields"]>): ReturnType<Manager["hostLaunchFields"]> { return this.deps.hostLaunchFields(...args); }
   private inventoryReferenceError(...args: Parameters<Manager["inventoryReferenceError"]>): ReturnType<Manager["inventoryReferenceError"]> { return this.deps.inventoryReferenceError(...args); }
-  private launchHarness(...args: Parameters<Manager["launchHarness"]>): ReturnType<Manager["launchHarness"]> { return this.deps.launchHarness(...args); }
   private loadSeatRuntime(...args: Parameters<Manager["loadSeatRuntime"]>): ReturnType<Manager["loadSeatRuntime"]> { return this.deps.loadSeatRuntime(...args); }
   private maintenanceError(...args: Parameters<Manager["maintenanceError"]>): ReturnType<Manager["maintenanceError"]> { return this.deps.maintenanceError(...args); }
   private managedPrincipal(...args: Parameters<Manager["managedPrincipal"]>): ReturnType<Manager["managedPrincipal"]> { return this.deps.managedPrincipal(...args); }
   private nameError(...args: Parameters<Manager["nameError"]>): ReturnType<Manager["nameError"]> { return this.deps.nameError(...args); }
   private occupancy(...args: Parameters<Manager["occupancy"]>): ReturnType<Manager["occupancy"]> { return this.deps.occupancy(...args); }
-  private occupancyText(...args: Parameters<Manager["occupancyText"]>): ReturnType<Manager["occupancyText"]> { return this.deps.occupancyText(...args); }
   private preparePreservation(...args: Parameters<Manager["preparePreservation"]>): ReturnType<Manager["preparePreservation"]> { return this.deps.preparePreservation(...args); }
   private probeStaticCredential(...args: Parameters<Manager["probeStaticCredential"]>): ReturnType<Manager["probeStaticCredential"]> { return this.deps.probeStaticCredential(...args); }
   private readManagedSession(...args: Parameters<Manager["readManagedSession"]>): ReturnType<Manager["readManagedSession"]> { return this.deps.readManagedSession(...args); }
@@ -289,8 +250,8 @@ export class PreservedResume {
             owner: principal.owner,
             actor: principal.actor,
             lifecycleUid: a.lifecycleUid,
-            actorToken: { kind: "file" as const, path: files.actorToken, sha256: this.fileDigestOrEmpty(files.actorToken) },
-            sentinelCredential: { kind: "file" as const, path: files.sentinelCreds, sha256: this.fileDigestOrEmpty(files.sentinelCreds) },
+            actorToken: { kind: "file" as const, path: files.actorToken, sha256: this.parts.preservation.fileDigestOrEmpty(files.actorToken) },
+            sentinelCredential: { kind: "file" as const, path: files.sentinelCreds, sha256: this.parts.preservation.fileDigestOrEmpty(files.sentinelCreds) },
             health: { kind: "file" as const, path: files.health },
           };
         })()
@@ -298,15 +259,16 @@ export class PreservedResume {
         ? (() => {
             if (!files?.creds)
               throw new Error(`managed agent ${a.name} is static-auth but its credential path was not recorded`);
-            return { mode: "static" as const, id: principal.actor, lifecycleUid: a.lifecycleUid, credential: { kind: "file" as const, path: files.creds, sha256: this.fileDigestOrEmpty(files.creds) }, ...(a.issued ? { issued: a.issued } : {}) };
+            return { mode: "static" as const, id: principal.actor, lifecycleUid: a.lifecycleUid, credential: { kind: "file" as const, path: files.creds, sha256: this.parts.preservation.fileDigestOrEmpty(files.creds) }, ...(a.issued ? { issued: a.issued } : {}) };
           })()
         : { mode: "open", id: principal.actor, lifecycleUid: a.lifecycleUid };
     const dependencies = [a.launch.source.configPath];
     if (a.launch.source.kind === "manifest" && a.launch.source.runId)
-      dependencies.unshift(join(this.workspaceRoot, ".cotal", "run", `${a.launch.source.runId}.json`));
+      dependencies.unshift(join(this.config.workspaceRoot, ".cotal", "run", `${a.launch.source.runId}.json`));
     return structuredClone({
-      space: this.space,
+      space: this.config.space,
       name: a.name,
+      ...(a.displayName !== undefined ? { displayName: a.displayName } : {}),
       role: a.role,
       identity,
       launch: {
@@ -342,7 +304,7 @@ export class PreservedResume {
   }
 
   async opFinalizeResume(rawArgs: unknown): Promise<ControlReply> {
-    if (this.execution === "none") throw new EpEnvelopeError("unimplemented", this.executionRefusal());
+    if (this.config.execution === "none") throw new EpEnvelopeError("unimplemented", this.executionRefusal());
     {
       let args: { attemptId: string; durableCommitToken: string };
       try {
@@ -350,8 +312,8 @@ export class PreservedResume {
       } catch (e) {
         return { ok: false, error: rejectionText(e) };
       }
-      if (!this.resumeAttemptId || this.resumeAttemptId !== args.attemptId)
-        return { ok: false, error: `manager expects resume attempt ${this.resumeAttemptId ?? "<none>"}, not ${args.attemptId}` };
+      if (!this.config.resumeAttemptId || this.config.resumeAttemptId !== args.attemptId)
+        return { ok: false, error: `manager expects resume attempt ${this.config.resumeAttemptId ?? "<none>"}, not ${args.attemptId}` };
       if (!this.resumeCommitted || !this.resumeDurableCommitToken)
         return { ok: false, error: `resume attempt ${args.attemptId} has no successful commit to finalize` };
       if (this.resumeDurableCommitToken !== args.durableCommitToken)
@@ -390,7 +352,7 @@ export class PreservedResume {
   }
 
   async opCommitResume(rawArgs: unknown): Promise<ControlReply> {
-    if (this.execution === "none") throw new EpEnvelopeError("unimplemented", this.executionRefusal());
+    if (this.config.execution === "none") throw new EpEnvelopeError("unimplemented", this.executionRefusal());
     {
       let attemptId: string;
       try {
@@ -398,8 +360,8 @@ export class PreservedResume {
       } catch (e) {
         return { ok: false, error: rejectionText(e) };
       }
-      if (!this.resumeAttemptId || this.resumeAttemptId !== attemptId)
-        return { ok: false, error: `manager expects resume attempt ${this.resumeAttemptId ?? "<none>"}, not ${attemptId}` };
+      if (!this.config.resumeAttemptId || this.config.resumeAttemptId !== attemptId)
+        return { ok: false, error: `manager expects resume attempt ${this.config.resumeAttemptId ?? "<none>"}, not ${attemptId}` };
       if (this.resumeCommitted)
         return {
           ok: true,
@@ -421,15 +383,15 @@ export class PreservedResume {
   }
 
   async opResumePreserved(rawArgs: unknown): Promise<ControlReply> {
-    if (this.execution === "none") throw new EpEnvelopeError("unimplemented", this.executionRefusal());
+    if (this.config.execution === "none") throw new EpEnvelopeError("unimplemented", this.executionRefusal());
     {
       try {
         const args = parseResumeControlArgs(rawArgs);
         const inventoryDigest = createHash("sha256").update(JSON.stringify(args.inventory)).digest("hex");
-        if (!this.resumeAttemptId)
+        if (!this.config.resumeAttemptId)
           return { ok: false, error: "resumePreserved requires a manager started with --resume-attempt" };
-        if (this.resumeAttemptId !== args.attemptId)
-          return { ok: false, error: `manager expects resume attempt ${this.resumeAttemptId}, not ${args.attemptId}` };
+        if (this.config.resumeAttemptId !== args.attemptId)
+          return { ok: false, error: `manager expects resume attempt ${this.config.resumeAttemptId}, not ${args.attemptId}` };
         if (this.resumeInventoryDigest && this.resumeInventoryDigest !== inventoryDigest)
           return { ok: false, error: `resume attempt ${args.attemptId} is already bound to a different inventory` };
         if (!this.resumeInventoryDigest) {
@@ -456,7 +418,7 @@ export class PreservedResume {
   }
 
   async opPreservationCtl(op: string, rawArgs: unknown): Promise<ControlReply> {
-    if (this.execution === "none") throw new EpEnvelopeError("unimplemented", this.executionRefusal());
+    if (this.config.execution === "none") throw new EpEnvelopeError("unimplemented", this.executionRefusal());
     if (this.resumeRequired) return { ok: false, error: this.maintenanceError() };
     const attemptId = String((rawArgs as Record<string, unknown> | undefined)?.attemptId ?? "").trim();
     if (!attemptId) return { ok: false, error: `${op} requires attemptId` };
@@ -555,8 +517,10 @@ export class PreservedResume {
         inactive.push(`${entry.name} runtime status failed: ${rejectionText(e)}`);
         continue;
       }
+      // The principal and lifecycle name the incarnation. `card.name` is display data that `set-name`
+      // changes, so it proves nothing here.
       if (!roster.some((presence) =>
-        presence.card.id === expectedPrincipal && presence.card.name === entry.name && presence.status !== "offline" &&
+        presence.card.id === expectedPrincipal && presence.status !== "offline" &&
         presence.lifecycleUid === entry.identity.lifecycleUid))
         inactive.push(`${entry.name} incarnation ${entry.identity.lifecycleUid} (principal ${expectedPrincipal}) is not exactly present`);
     }
@@ -569,7 +533,7 @@ export class PreservedResume {
   async resumePreserved(
     inventory: ManagerResumeInventory,
   ): Promise<ManagerResumeResult> {
-    if (this.execution === "none")
+    if (this.config.execution === "none")
       return { ok: false, agents: [], error: this.executionRefusal() };
     const release = this.beginLifecycle(true);
     if (!release) return { ok: false, agents: [], error: this.maintenanceError() };
@@ -578,8 +542,8 @@ export class PreservedResume {
     try {
       if (inventory.version !== "cotal-manager-resume/v2")
         return { ok: false, agents: [], error: `unsupported manager resume inventory version ${String(inventory.version)}` };
-      if (inventory.space !== this.space)
-        return { ok: false, agents: [], error: `resume inventory belongs to space "${inventory.space}", not "${this.space}"` };
+      if (inventory.space !== this.config.space)
+        return { ok: false, agents: [], error: `resume inventory belongs to space "${inventory.space}", not "${this.config.space}"` };
       // The caller keeps its inventory, so it is copied before the first await: a later write to it
       // cannot change what a resumed seat launches with or what the next preservation retains.
       const entries = structuredClone(inventory.agents);
@@ -590,7 +554,7 @@ export class PreservedResume {
       const liveRoster = this.ep.getRoster().filter((presence) => presence.status !== "offline");
       const occupancy = this.occupancy();
       if (occupancy.used + entries.length > MAX_AGENTS)
-        return { ok: false, agents: [], error: `resume inventory of ${entries.length} would exceed manager capacity (${this.occupancyText(occupancy)})` };
+        return { ok: false, agents: [], error: `resume inventory of ${entries.length} would exceed manager capacity (${this.parts.namesCapacity.occupancyText(occupancy)})` };
       for (const entry of entries) {
         if (seen.has(entry.name))
           return { ok: false, agents: [], error: `resume inventory contains duplicate agent name "${entry.name}"` };
@@ -626,7 +590,6 @@ export class PreservedResume {
           return confirmedPredecessor === undefined ||
             confirmedPredecessor.principal !== principal ||
             confirmedPredecessor.lifecycleUid !== presence.lifecycleUid ||
-            presence.card.name !== entry.name ||
             entry.identity.lifecycleUid === confirmedPredecessor.lifecycleUid;
         });
         if (principalIsLive) {
@@ -671,7 +634,7 @@ export class PreservedResume {
           return { ok: false, agents, error: reply.error };
         }
       }
-      if (this.resumeAttemptId) this.resumeAwaitingCommit = true;
+      if (this.config.resumeAttemptId) this.resumeAwaitingCommit = true;
       return { ok: true, agents };
     } finally {
       for (const name of batchReservations) {
@@ -748,8 +711,8 @@ export class PreservedResume {
       // layout) or the name-keyed one (a pre-split inventory being carried across the upgrade).
       // Anything else is a foreign path and refused exactly as before.
       const candidates = [
-        resolve(agentLifecycleSecretFilePaths(this.workspaceRoot, this.space, entry.name, entry.identity.lifecycleUid).creds),
-        resolve(agentSecretFilePaths(this.workspaceRoot, this.space, entry.name).creds),
+        resolve(agentLifecycleSecretFilePaths(this.config.workspaceRoot, this.config.space, entry.name, entry.identity.lifecycleUid).creds),
+        resolve(agentSecretFilePaths(this.config.workspaceRoot, this.config.space, entry.name).creds),
       ];
       const expected = resolve(entry.identity.credential.path);
       if (!candidates.includes(expected))
@@ -761,7 +724,7 @@ export class PreservedResume {
         // composition resolves the key to this same path).
         const st = lstatSync(expected);
         if (!st.isFile() || st.isSymbolicLink()) throw new Error("not a regular non-symlink file");
-        const stored = await this.secrets.get(agentSecretKeyForFile(expected, this.space));
+        const stored = await this.config.secrets.get(agentSecretKeyForFile(expected, this.config.space));
         if (stored === undefined) throw new Error("the credential is not in the secret store");
         credentialText = stored;
         const actual = idFromCreds(credentialText);
@@ -789,20 +752,20 @@ export class PreservedResume {
       // so a transiently-absent health file still validates), and the store reads below key off the
       // RECORDED path, so a foreign path can neither pass the pin nor address a different row.
       // Both triples are derived under THIS manager's space, and the key builder is given
-      // `this.space` rather than reading the segment out of the recorded path: an inventory row is
+      // `this.config.space` rather than reading the segment out of the recorded path: an inventory row is
       // caller data, and a recorded path may not choose which tenant's material is addressed.
-      const lifecycleFiles = agentLifecycleSecretFilePaths(this.workspaceRoot, this.space, entry.name, entry.identity.lifecycleUid);
-      const legacyFiles = agentSecretFilePaths(this.workspaceRoot, this.space, entry.name);
+      const lifecycleFiles = agentLifecycleSecretFilePaths(this.config.workspaceRoot, this.config.space, entry.name, entry.identity.lifecycleUid);
+      const legacyFiles = agentSecretFilePaths(this.config.workspaceRoot, this.config.space, entry.name);
       const recordedToken = resolve(entry.identity.actorToken.path);
       const recordedSentinel = resolve(entry.identity.sentinelCredential.path);
       const recordedHealth = resolve(entry.identity.health.path);
       const matchesFamily = (f: { actorToken: string; sentinelCreds: string; health: string }): boolean =>
         recordedToken === resolve(f.actorToken) && recordedSentinel === resolve(f.sentinelCreds) && recordedHealth === resolve(f.health);
       if (!matchesFamily(lifecycleFiles) && !matchesFamily(legacyFiles))
-        throw new Error(`retained identity references for ${entry.name} are not one manager-owned secret family: all of actor-token, sentinel, and health must be the lifecycle-<uid> triple or the legacy name-keyed triple under ${agentCredsDir(this.workspaceRoot, this.space)} (no mixed families, no foreign health path)`);
-      const secrets = this.secrets;
-      const actorToken = await secrets.get(agentSecretKeyForFile(recordedToken, this.space));
-      const sentinelCreds = await secrets.get(agentSecretKeyForFile(recordedSentinel, this.space));
+        throw new Error(`retained identity references for ${entry.name} are not one manager-owned secret family: all of actor-token, sentinel, and health must be the lifecycle-<uid> triple or the legacy name-keyed triple under ${agentCredsDir(this.config.workspaceRoot, this.config.space)} (no mixed families, no foreign health path)`);
+      const secrets = this.config.secrets;
+      const actorToken = await secrets.get(agentSecretKeyForFile(recordedToken, this.config.space));
+      const sentinelCreds = await secrets.get(agentSecretKeyForFile(recordedSentinel, this.config.space));
       if (actorToken === undefined || sentinelCreds === undefined)
         throw new Error("the retained actor token / sentinel credential is not in the secret store");
       const adopted = this.remoteAuthority
@@ -815,8 +778,8 @@ export class PreservedResume {
           })
         : await provider.validateRetainedAgent({
             store: secrets,
-            dir: userAuthStateDir(this.workspaceRoot, this.space),
-            space: this.space,
+            dir: userAuthStateDir(this.config.workspaceRoot, this.config.space),
+            space: this.config.space,
             owner: entry.identity.owner,
             actor: entry.identity.actor,
             actorToken,
@@ -844,8 +807,8 @@ export class PreservedResume {
             provider.agentBearerCommand,
             ...(this.remoteAuthority
               ? ["--exchange-url", this.remoteAuthority.agentBearerExchangeUrl]
-              : ["--dir", userAuthStateDir(this.workspaceRoot, this.space)]),
-            "--space", this.space,
+              : ["--dir", userAuthStateDir(this.config.workspaceRoot, this.config.space)]),
+            "--space", this.config.space,
             "--owner", entry.identity.owner,
             "--actor", entry.identity.actor,
             "--token-file", entry.identity.actorToken.path,
@@ -905,12 +868,12 @@ export class PreservedResume {
     prepared?: Map<string, PreparedResume>,
     supervised?: SupervisedRestart,
   ): Promise<ControlReply> {
-    if (this.execution === "none") return { ok: false, error: this.executionRefusal() };
+    if (this.config.execution === "none") return { ok: false, error: this.executionRefusal() };
     const release = this.beginLifecycle(batchReserved);
     if (!release) return { ok: false, error: this.maintenanceError() };
     try {
-      if (entry.space !== this.space)
-        return { ok: false, error: `retained agent ${entry.name} belongs to space "${entry.space}", not "${this.space}"` };
+      if (entry.space !== this.config.space)
+        return { ok: false, error: `retained agent ${entry.name} belongs to space "${entry.space}", not "${this.config.space}"` };
       try {
         await this.loadSeatRuntime(entry.launch.runtime);
       } catch (e) {
@@ -924,7 +887,7 @@ export class PreservedResume {
         return { ok: false, error: `retained agent "${entry.name}" is already managed or reserved; same-principal resume never auto-numbers` };
       const occupancy = batchReserved ? undefined : this.occupancy();
       if (occupancy && occupancy.used >= MAX_AGENTS)
-        return { ok: false, error: `${this.capacityRefusal(occupancy)}; same-principal resume refused` };
+        return { ok: false, error: `${this.parts.namesCapacity.capacityRefusal(occupancy)}; same-principal resume refused` };
       const cached = prepared?.get(entry.name);
       if (!preflightOnly && cached) {
         try {
@@ -957,7 +920,7 @@ export class PreservedResume {
         return { ok: false, error: rejectionText(e) };
       }
       await this.parts.connectorInventory.refreshUnavailableConnectors(connector.name, true);
-      const harness = this.launchHarness(connector);
+      const harness = this.parts.harnessResolution.launchHarness(connector);
       if ("refusal" in harness) return { ok: false, error: harness.refusal };
       let retainedSession: string | undefined;
       try {
@@ -978,9 +941,9 @@ export class PreservedResume {
           return { ok: false, error: `retained manifest launch for ${entry.name} has no runId; refusing to guess a .cotal/run source` };
         let spec: MeshLaunchAgent | undefined;
         try {
-          const source = launchSpecForRun(this.workspaceRoot, launchSource.runId);
-          if (source.space !== this.space)
-            return { ok: false, error: `retained launch spec space "${source.space}" does not match manager space "${this.space}"` };
+          const source = launchSpecForRun(this.config.workspaceRoot, launchSource.runId);
+          if (source.space !== this.config.space)
+            return { ok: false, error: `retained launch spec space "${source.space}" does not match manager space "${this.config.space}"` };
           spec = source.agents.find((a) => a.name === launchSource.requested);
         } catch (e) {
           return { ok: false, error: rejectionText(e) };
@@ -1012,8 +975,9 @@ export class PreservedResume {
 
       try {
         const launchOpts: LaunchOpts = {
-          ...this.hostLaunchFields(loadCotalConfig(this.workspaceRoot), entry.launch.connector, entry.launch.shareTools, harness),
+          ...this.hostLaunchFields(loadCotalConfig(this.config.workspaceRoot), entry.launch.connector, entry.launch.shareTools, harness),
           name: entry.name,
+          displayName: entry.displayName,
           role: entry.role,
           id: authority.id,
           creds: authority.creds,
@@ -1039,7 +1003,7 @@ export class PreservedResume {
           capabilities: entry.launch.capabilities,
           endpoints: copyPersonaEndpoints(entry.launch.endpoints) ?? [],
           events: entry.launch.events,
-          eventPayloads: this.eventPayloadsWithheld ? false : entry.launch.eventPayloads,
+          eventPayloads: this.config.eventPayloadsWithheld ? false : entry.launch.eventPayloads,
           cwd: entry.launch.cwd,
         };
         const spec = connector.buildLaunch(launchOpts);
@@ -1069,7 +1033,7 @@ export class PreservedResume {
       // preserve/resume — without it the adopted cred would die loud at its TTL with no remint.
       let adoptedSeed: string | undefined;
       if (entry.identity.mode === "static") {
-        const stored = await this.secrets.get(agentSecretKeyForFile(resolve(entry.identity.credential.path), this.space));
+        const stored = await this.config.secrets.get(agentSecretKeyForFile(resolve(entry.identity.credential.path), this.config.space));
         // The core parser, which reads the creds format's six-dash END marker. A local pattern that
         // expected five matched no real file, so every resumed seat lost its renewal.
         try {
@@ -1081,7 +1045,7 @@ export class PreservedResume {
           console.error(`! resume ${entry.name}: the adopted credential carries no readable nkey seed - the manager cannot renew it (it dies loud at its exp)`);
       }
       const connector = await this.resolveConnector(entry.launch.connector);
-      const readinessTimeoutMs = connector.readinessTimeoutMs ?? this.readinessTimeoutMs;
+      const readinessTimeoutMs = connector.readinessTimeoutMs ?? this.config.readinessTimeoutMs;
       if (!Number.isSafeInteger(readinessTimeoutMs) || readinessTimeoutMs <= 0)
         return { ok: false, error: `connector ${connector.name} declares invalid readinessTimeoutMs ${JSON.stringify(connector.readinessTimeoutMs)}; expected a positive safe integer` };
       const resumeId = entry.identity.mode === "user" ? principalKey(entry.identity.owner, entry.identity.actor).key : entry.identity.id;
@@ -1092,6 +1056,7 @@ export class PreservedResume {
       const handle = await this.spawnCustodied(runtime, entry.name, prepared.spec, entry.launch.cwd, custody);
       const managed: ManagedAgent = {
         name: entry.name,
+        ...(entry.displayName !== undefined ? { displayName: entry.displayName } : {}),
         role: entry.role,
         agent: entry.launch.connector,
         id: resumeId,
@@ -1125,7 +1090,7 @@ export class PreservedResume {
           capabilities: entry.launch.capabilities,
           ...(entry.launch.endpoints?.length ? { endpoints: copyPersonaEndpoints(entry.launch.endpoints) } : {}),
           events: entry.launch.events,
-          eventPayloads: this.eventPayloadsWithheld ? false : entry.launch.eventPayloads,
+          eventPayloads: this.config.eventPayloadsWithheld ? false : entry.launch.eventPayloads,
           shareTools: entry.launch.shareTools,
           forkSource: entry.launch.forkSource,
           ...(entry.launch.resumed ? { resumed: entry.launch.resumed } : {}),
@@ -1141,7 +1106,7 @@ export class PreservedResume {
       };
       this.agents.set(entry.name, managed);
       this.namesCapacity.placed(entry.name);
-      if (this.resumeAttemptId) this.resumedAgentNames.add(entry.name);
+      if (this.config.resumeAttemptId) this.resumedAgentNames.add(entry.name);
       try {
         await this.recordSlotRuntime(managed);
       } catch (error) {
@@ -1159,7 +1124,7 @@ export class PreservedResume {
       }
       const unbound = await this.armResumedSeat(managed, connector, prepared, supervised);
       if (unbound !== undefined) return await this.stopFailedResume(managed, "resume-session-rebind-failed", unbound);
-      if (!this.resumeAttemptId) managed.suppressCleanup = false;
+      if (!this.config.resumeAttemptId) managed.suppressCleanup = false;
       if (supervised) this.refreshSeatRecord(managed);
       this.watchExit(managed);
       if (this.agents.get(managed.name) !== managed)
@@ -1198,7 +1163,7 @@ export class PreservedResume {
       if (asked !== undefined && managed.launch.sessionId !== asked)
         throw new Error(`continuity: exact asked for session ${asked}, the connector bound ${managed.launch.sessionId}`);
       if (prepared.exact) {
-        managed.continuity = { space: this.space, name: managed.name, connector: managed.agent, cwd: managed.launch.cwd };
+        managed.continuity = { space: this.config.space, name: managed.name, connector: managed.agent, cwd: managed.launch.cwd };
         this.recordContinuity(managed, managed.launch.sessionId);
       }
       return undefined;

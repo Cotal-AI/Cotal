@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync, type ChildProcess, type SpawnSyncReturns } from "node:child_process";
 import { createHash } from "node:crypto";
-import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { hostname } from "node:os";
@@ -456,6 +456,16 @@ async function scenario(mode: "open" | "auth"): Promise<void> {
       // The previous store holds the only copy of what the restore left out, so the preview warns and
       // both cleanup commands refuse to delete it without --discard-history.
       const previous = active.restore.previousSource!.identity.path;
+      const journalPath = join(root, ".cotal", "maintenance", "v1", "journal.json");
+      const journalBefore = readFileSync(journalPath, "utf8");
+      const otherStore = join(root, ".cotal", "not-the-fallback");
+      mkdirSync(otherStore, { mode: 0o700 });
+      writeFileSync(join(otherStore, "marker"), "kept");
+      const wrongStore = run("clean", "restore-fallback", "--attempt", active.restore.attemptId, "--force", "--discard-history", "--store-dir", "./.cotal/not-the-fallback");
+      assert.ok(wrongStore.status === 1 && wrongStore.stderr.includes("does not take --store-dir") && wrongStore.stderr.includes("Remove --store-dir and its value"), `${mode} cleanup refuses the store path\n${wrongStore.stdout}${wrongStore.stderr}`);
+      assert.ok(lstatSync(join(previous, "jetstream")).isDirectory());
+      assert.equal(readFileSync(journalPath, "utf8"), journalBefore);
+      assert.equal(readFileSync(join(otherStore, "marker"), "utf8"), "kept");
       const { run: runElsewhere } = sandboxRun(join(home, "other-project"), home);
       const wrongFolder = runElsewhere("clean", "restore-fallback", "--attempt", active.restore.attemptId, "--force");
       assert.equal(wrongFolder.status, 2, `${mode} cleanup from another project refuses\n${wrongFolder.stderr}`);
@@ -969,7 +979,8 @@ async function restoredStoreRestartScenario(): Promise<void> {
   const twoStores = realpathSync.native(mkdtempSync(join(tmpdir(), "cotal-two-stores-root-")));
   const twoHome = realpathSync.native(mkdtempSync(join(tmpdir(), "cotal-two-stores-home-")));
   const artifact = join(root, "registry-backup");
-  const store = join(root, "registry-target");
+  const parent = join(root, "store parent");
+  const store = join(parent, "registry-target");
   const server = `nats://127.0.0.1:${await freePort()}`;
   const space = "backup_restored_store_restart";
   const { run } = sandboxRun(root, home);
@@ -982,6 +993,25 @@ async function restoredStoreRestartScenario(): Promise<void> {
     must("seed registry", run("channel", "set", "preserved", "--desc", "survives", "--space", space));
     must("down --preserve-state", run("down", "--preserve-state"));
     must("registry backup", run("backup", "create", artifact, "--only", "registry"));
+    mkdirSync(parent);
+    if (process.platform !== "win32" && process.getuid?.() !== 0) {
+      const journal = join(root, ".cotal", "maintenance", "v1", "journal.json");
+      const ready = readFileSync(journal, "utf8");
+      chmodSync(parent, 0o500);
+      try {
+        for (const args of [["backup", "restore", artifact, "--plain"], ["up", "--restore", artifact, "--detach", "--space", space]]) {
+          const refused = run(...args, "--store-dir", store);
+          assert.equal(refused.status, 2, refused.stderr);
+          assert.match(refused.stderr, /PERMISSION_DENIED/);
+          const report = refused.stderr.replace(/\s+/g, " ");
+          assert.ok(report.includes(`this account cannot write ${parent}`), refused.stderr);
+          assert.match(report, /make the parent directory writable by this account or choose a path under a writable parent/);
+          assert.match(report, /Leave the store directory absent/);
+          assert.equal(existsSync(store), false);
+          assert.equal(readFileSync(journal, "utf8"), ready);
+        }
+      } finally { chmodSync(parent, 0o700); }
+    }
     const restored = run("backup", "restore", artifact, "--only", "registry", "--store-dir", store, "--json");
     must("registry restore into another store", restored);
     const { attemptId, store: restoredStore } = (JSON.parse(restored.stdout) as { result: { attemptId: string; store: string } }).result;
@@ -1153,6 +1183,9 @@ async function restoreClaimRaceScenario(): Promise<void> {
       },
     });
     releaseMaintenanceLock(lock);
+    const wrongStore = run("clean", "restore-attempt", "--attempt", "race-stale", "--force", "--store-dir", "./other-store");
+    assert.ok(wrongStore.status === 1 && wrongStore.stderr.includes("does not take --store-dir"), `rollback refuses the store path\n${wrongStore.stdout}${wrongStore.stderr}`);
+    assert.equal(readMaintenanceJournal(root)?.state, "restore-ready");
     const recovered = run("clean", "restore-attempt", "--attempt", "race-stale", "--force");
     assert.equal(recovered.status, 0, `stale attempt recovery\nstdout:\n${recovered.stdout}\nstderr:\n${recovered.stderr}`);
     assert.match(recovered.stdout, /retry with `cotal up --restore <dir>` \(replace <dir> with the backup directory/, "rollback names the required backup directory for a retry");

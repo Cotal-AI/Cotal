@@ -18,7 +18,7 @@ import { ManifestError, type ManifestIssue } from "./errors.js";
 
 /** Parse + validate a manifest source into the resolved model. `sourcePath` anchors relative
  *  persona refs and locates errors. */
-export function resolveManifest(src: string, sourcePath: string): ResolvedManifest {
+export function resolveManifest(src: string, sourcePath: string, logFileOverride?: string): ResolvedManifest {
   // Parsed as UTF-8, a UTF-16 file would be one string the schema calls the wrong shape.
   const encoding = utf16Problem(src);
   if (encoding) throw new ManifestError(sourcePath, [{ message: `${encoding}; save it as UTF-8` }]);
@@ -84,7 +84,7 @@ export function resolveManifest(src: string, sourcePath: string): ResolvedManife
       add((e as Error).message, ["agents", name]);
     }
 
-  if (raw.broker) validateBroker(raw.broker, add);
+  if (raw.broker) validateBroker(raw.broker, add, logFileOverride);
   const channels = normalizeChannels(raw, agentNames, add);
   const agents = resolveAgents(raw, channels, sourcePath, add);
 
@@ -291,12 +291,12 @@ function invertPolicy(name: string, channels: ResolvedChannel[]): AgentPolicy {
  *  auth creds/profile path, not embedded secrets (critic, round-6); `host` is a bind address, not
  *  a URL. Each server entry and `idp` must parse as a URL (no silent fallback). A message never
  *  repeats a value. */
-function validateBroker(broker: NonNullable<RawManifest["broker"]>, add: (m: string, p?: (string | number)[]) => void): void {
+function validateBroker(broker: NonNullable<RawManifest["broker"]>, add: (m: string, p?: (string | number)[]) => void, logFileOverride?: string): void {
   if (broker.host?.includes("://"))
     add(`broker.host is a bind address (e.g. 127.0.0.1), not a URL - drop the scheme`, ["broker", "host"]);
   if (broker.logFile !== undefined && (!broker.logFile.trim() || /[\u0000-\u001f\u007f]/u.test(broker.logFile)))
     add("broker.logFile must be a non-empty file path without control characters", ["broker", "logFile"]);
-  if (broker.logFile === undefined && (broker.logfileSizeLimit !== undefined || broker.logfileMaxNum !== undefined))
+  if (broker.logFile === undefined && logFileOverride === undefined && (broker.logfileSizeLimit !== undefined || broker.logfileMaxNum !== undefined))
     add("broker.logfileSizeLimit and broker.logfileMaxNum require broker.logFile", ["broker"]);
   if (broker.servers) for (const problem of serverUrlProblems(broker.servers, "broker.servers")) add(problem, ["broker", "servers"]);
   // `idp` pairs with user auth ONLY — on any other mode it would be silently ignored, and a

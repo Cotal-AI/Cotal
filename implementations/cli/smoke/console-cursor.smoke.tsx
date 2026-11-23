@@ -136,7 +136,7 @@ const snapshot = (rows: Presence[]) => ({ agents: rows, endpoints: [], channels:
 const palette = (rows: Presence[], query = "dm ") => <CommandPalette active query={query}
   snapshot={snapshot(rows)} canWrite canControl width={120} onChange={(query) => { changed = query; }}
   onRun={(line) => runs.push(line)} onCancel={() => {}} onNewAgent={() => {}}
-  readManaged={async () => ({ ok: true, rows: [], silent: [], failed: [], answered: [] })} />;
+  readManaged={async () => ({ ok: true, rows: [], silent: [], gone: [], failed: [], answered: [] })} />;
 {
   const term = await terminal(palette([]));
   try {

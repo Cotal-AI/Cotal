@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { buffer } from "node:stream/consumers";
 import * as prompts from "../lib/prompts.js";
-import { assertValidChannel, assertValidRole, oneLine, personaDir, resolveReadAcl, type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
+import { assertValidChannel, assertValidRole, oneLine, personaDir, resolveReadAcl, spawnNameError, type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
 import {
   ConfirmationRequired,
   codeSpan, parseCommaList, CommandFailure, jsonFlag, plainFlag, presentationOf, spaceFlag, serverFlag,
@@ -11,9 +11,9 @@ import {
   personaDefinitionProblem, recordOperationSpace,
 } from "@cotal-ai/workspace";
 import { completedFlagValue, completingFlagValue, positionalsForCompletion } from "../lib/completion.js";
-import { catalogFolderProblem, catalogReadRefusal, listPersonaNames, readPersonas } from "../lib/personas.js";
+import { catalogReadRefusal, hasBlankPersonaSelector, listPersonaNames, readPersonas } from "../lib/personas.js";
 import {
-  assertLabels, commitPersona, editPersona, personaCatalog, personaNameProblem, personaPath, readPersonaSource,
+  assertLabels, commitPersona, editPersona, personaCatalog, personaCatalogContext, personaNameProblem, personaNameWords, personaPath, readPersonaSource,
   requirePersonaSource, reservedPersonaName, serializePersona, validatePersona, type PersonaCatalog, type PersonaEdit,
 } from "../lib/persona-files.js";
 import { remotePersona, validateRemotePersonaArguments } from "./persona-remote.js";
@@ -60,31 +60,37 @@ export async function persona(args: ParsedArgs): Promise<void> {
   const [sub, name, ...extra] = args.positionals;
   if (values.on !== undefined) { validateRemotePersonaArguments(args); return remotePersona(args); }
   if (values.announce !== undefined) throw usage("--announce belongs to persona create --on <full-manager-instance>; a local file was not changed");
-  if (extra.length || (sub === undefined ? name !== undefined : !name)) throw usage("usage: cotal persona [show|create|edit|remove <name>]");
+  if (extra.length || (sub === undefined ? name !== undefined : sub === "show" ? name === undefined : !name)) throw usage("usage: cotal persona [show|create|edit|remove <name>]");
   if (sub !== "create" && createOnly.some(flag => values[flag] !== undefined)) throw usage("file and definition flags are only accepted by persona create");
   if (sub !== "remove" && values.yes !== undefined) throw usage("--yes is only accepted by persona remove");
   if (sub === "create" && values.harness !== undefined) checkHarness(values.harness);
-  const catalog = personaCatalog(values);
+  const target = targetWords(values);
+  const { catalog, userMode } = personaCatalogContext(values);
   recordOperationSpace(catalog.space);
   if (sub === undefined) return list(catalog, presentation);
-  const path = personaPath(catalog.root, name!);
+  const path = personaPath(catalog.root, name!, sub === "show" ? "show" : "write");
   if (sub === "show") {
-    const source = requirePersonaSource(path);
+    const source = requirePersonaSource(path, target);
     const definition = validatePersona(source.bytes, path);
-    writeResult(presentation, { command: "persona", target: catalog, result: { kind: "persona", name, path, definition, source: source.bytes.toString("utf8") } }, result => ({ sections: [
+    const word = personaNameWords(name!, target);
+    const jsonWords = personaNameWords(name!, `${target} --json`);
+    const nameProblem = spawnNameError(definition.name, { userMode });
+    const spawnWords = personaSpawnWords(name!, target, userMode, !!nameProblem);
+    const warnings = nameProblem ? [{ code: "USAGE_INVALID", target: { name, path }, message: `the frontmatter name cannot be used to launch this persona: ${nameProblem}. Set a valid name in the file or use --name.` }] : [];
+    writeResult(presentation, { command: "persona", target: catalog, result: { kind: "persona", name, path, definition, source: source.bytes.toString("utf8") }, warnings }, result => ({ sections: [
       { title: `Persona · ${result.name}`, blocks: [{ kind: "fields", rows: [
         ["Role", result.definition.role ?? "not set"],
         ["Application", result.definition.agent ? `${result.definition.agent} · pinned` : "user default"],
         ["Model", result.definition.model ?? "application default"],
-        ["Read", (result.definition.allowSubscribe ?? result.definition.subscribe ?? []).join(", ") || "no channels"],
+        ["Read", resolveReadAcl(result.definition.subscribe ?? [], result.definition.allowSubscribe).join(", ") || "no channels"],
         ["Post", (result.definition.allowPublish ?? []).join(", ") || "no channels"],
         ["File", result.path],
       ] }] },
       { title: "Instructions", blocks: [{ kind: "lines", lines: result.definition.persona?.trim() ? result.definition.persona.split(/\r?\n/) : [{ text: "No instructions in this definition.", tone: "hint" }] }] },
       { title: "Next", blocks: [{ kind: "commands", items: [
-        { command: `cotal p edit ${result.name}`, description: "Edit this local definition" },
-        { command: `cotal spawn ${result.name}`, description: "Launch an agent from it" },
-        { command: `cotal p show ${result.name} --json`, description: "Read all fields and the complete source" },
+        ...(personaNameProblem(result.name!) ? [] : [{ command: `cotal p edit${word}`, description: "Edit this local definition" }]),
+        { command: `cotal spawn${spawnWords}`, description: nameProblem ? "Launch with a valid agent name" : "Launch an agent from it" },
+        { command: `cotal p show${jsonWords}`, description: "Read all fields and the complete source" },
       ] }] },
     ] }));
     return;
@@ -94,16 +100,19 @@ export async function persona(args: ParsedArgs): Promise<void> {
     if (reserved) throw new CommandFailure("refused", "USAGE_INVALID", reserved, { remedy: "choose another name" });
     const expected = readPersonaSource(path);
     if (expected !== undefined) {
-      const target = targetWords(values);
-      throw new CommandFailure("refused", "CONFLICT", `persona '${name}' already exists`, { remedy: `change it with \`cotal persona edit ${name}${target}\`, or remove it with \`cotal persona remove ${name}${target}\` first` });
+      const word = personaNameWords(name!, target);
+      throw new CommandFailure("refused", "CONFLICT", `persona '${name}' already exists`, { remedy: `change it with \`cotal persona edit${word}\`, or remove it with \`cotal persona remove${word}\` first` });
     }
     const bytes = await createSource(name!, path, values);
-    commitPersona(path, expected, bytes);
-    return receipt(presentation, catalog, name!, path, "created");
+    commitPersona(path, expected, bytes, target);
+    return receipt(presentation, catalog, name!, path, "created", target);
   }
   if (sub === "edit") {
-    const edit = await editPersona(path, name!, catalog, presentation === "json");
-    if (edit.action === "saved") return receipt(presentation, catalog, name!, path, "saved");
+    const edit = await editPersona(path, name!, catalog, target, presentation === "json");
+    if (edit.action === "saved") {
+      const spawnWords = personaSpawnWords(name!, target, userMode, !!spawnNameError(edit.displayName, { userMode }));
+      return receipt(presentation, catalog, name!, path, "saved", target, false, spawnWords);
+    }
     return editNotSaved(presentation, catalog, name!, path, edit);
   }
   if (sub === "remove") {
@@ -112,7 +121,7 @@ export async function persona(args: ParsedArgs): Promise<void> {
     const seeded = name === "default";
     const question = seeded ? `Remove the seeded default persona '${name}' at ${path}? A bare \`cotal spawn\` launches it.` : `Remove '${name}' at ${path}?`;
     if (!values.yes) {
-      if (presentation === "json" || !canPrompt()) throw new ConfirmationRequired(yesRequired(`removing '${name}' at ${path}`, presentation === "json"), { remedy: `confirm with \`cotal persona remove ${name}${targetWords(values)} --yes\`` });
+      if (presentation === "json" || !canPrompt()) throw new ConfirmationRequired(yesRequired(`removing '${name}' at ${path}`, presentation === "json"), { remedy: `confirm with \`cotal persona remove${personaNameWords(name!, `${target} --yes${presentation === "json" ? " --json" : ""}`)}\`` });
       let confirmed = false;
       if (presentation === "plain") {
         confirmed = (await prompts.askLine(`${question}\n1) Cancel\n2) Remove\nChoice [1]: `))?.trim() === "2";
@@ -126,31 +135,41 @@ export async function persona(args: ParsedArgs): Promise<void> {
       }
     }
     commitPersona(path, expected, undefined);
-    return receipt(presentation, catalog, name!, path, "removed", seeded);
+    return receipt(presentation, catalog, name!, path, "removed", target, seeded);
   }
   throw usage(`unknown persona action '${sub}'`);
 }
 
-async function readInput(path: string): Promise<Buffer> {
+async function readInput(path: string, flag: "file" | "from"): Promise<Buffer> {
   try { return path === "-" ? await buffer(process.stdin) : readFileSync(path); }
-  catch { throw new CommandFailure("refused", "PERMISSION_DENIED", `cannot read persona input: ${path}`); }
+  catch (error) {
+    if (path !== "-" && (error as NodeJS.ErrnoException).code === "ENOENT") {
+      throw new CommandFailure("refused", "TARGET_NOT_FOUND", `no persona input file at ${path}`, {
+        remedy: `check the path or pipe the original input into the same command with --${flag} -`,
+      });
+    }
+    throw new CommandFailure("refused", "PERMISSION_DENIED", `cannot read persona input: ${path}`);
+  }
 }
 
 async function createSource(name: string, path: string, values: Values): Promise<Buffer> {
   const sources = [values.file, values.prompt, values.from].filter(value => value !== undefined);
   if (sources.length !== 1) throw usage("provide one of --file, --prompt or --from");
+  const problem = spawnNameError(name, { userMode: false });
+  if (problem) throw new CommandFailure("refused", "USAGE_INVALID", problem, {
+    remedy: `choose a catalog name that starts with a letter, digit or _, such as reviewer${values.file === undefined ? "" : ", and use the same name in the file's frontmatter"}`,
+  });
   if (values.file !== undefined) {
     if ([values.role, values.model, values.subscribe, values.harness, values["allow-subscribe"], values["allow-publish"]].some(value => value !== undefined)) throw usage("--file cannot be combined with definition flags");
-    const bytes = await readInput(values.file);
+    const bytes = await readInput(values.file, "file");
     const source = values.file === "-" ? "standard input" : values.file;
     const def = validatePersona(bytes, source);
     if (def.name !== name) {
       const file = `--file${values.file !== "-" && values.file.startsWith("-") ? "=" : " "}${shellWord(values.file)}`;
-      const ownName = shellWord(def.name);
-      const retry = def.name.startsWith("-") ? `cotal persona create ${file}${targetWords(values)} -- ${ownName}`
-        : `cotal persona create ${ownName} ${file}${targetWords(values)}`;
+      const retry = `cotal persona create${personaNameWords(def.name, ` ${file}${targetWords(values)}`)}`;
       const rename = `set its name to '${name}'`;
-      const remedy = personaNameProblem(def.name) || reservedPersonaName(def.name) ? rename
+      const remedy = spawnNameError(def.name, { userMode: false }) || reservedPersonaName(def.name) ? rename
+        : values.file === "-" ? `pipe the original definition into ${codeSpan(retry)} again, or ${rename} and pipe the corrected definition into the original command`
         : `create it under its own name with ${codeSpan(retry)}, or ${rename}`;
       throw new CommandFailure("refused", "SCHEMA_INVALID", `persona name must match the catalog name '${name}'; ${source} names '${def.name}'`, { remedy });
     }
@@ -169,7 +188,7 @@ async function createSource(name: string, path: string, values: Values): Promise
   let body = values.prompt;
   if (body === undefined) {
     const from = values.from!;
-    const bytes = await readInput(from);
+    const bytes = await readInput(from, "from");
     if (!isUtf8(bytes)) {
       const source = from === "-" ? "standard input" : oneLine(from);
       throw new CommandFailure("refused", "SCHEMA_INVALID", `invalid persona body: ${source} is not valid UTF-8`, { remedy: "convert the input to UTF-8 and retry" });
@@ -194,27 +213,32 @@ async function createSource(name: string, path: string, values: Values): Promise
 function list(catalog: PersonaCatalog, presentation: Presentation): void {
   let entries: ReturnType<typeof readPersonas>;
   try { entries = readPersonas(catalog.root); }
-  catch (error) { throw catalogFolderProblem(personaDir(catalog.root)) ?? catalogReadRefusal(personaDir(catalog.root), error); }
+  catch (error) { throw catalogReadRefusal(personaDir(catalog.root), error); }
   const items = entries.map(entry => ({ name: entry.name, path: entry.path, role: entry.def?.role ?? null, model: entry.def?.model ?? null, description: entry.def?.description ?? null, harness: entry.def?.agent ?? null, valid: !entry.error }));
-  const malformed = entries.filter(entry => entry.error);
+  const invalid = entries.filter(entry => entry.error);
   // A linked persona still lists and launches, but show, edit and remove refuse it.
   const linked = entries.filter(entry => entry.link !== undefined);
   writeResult(presentation, {
-    command: "persona", target: catalog, result: { kind: "personas", items }, completeness: malformed.length ? "partial" : "complete",
+    command: "persona", target: catalog, result: { kind: "personas", items }, completeness: invalid.length ? "partial" : "complete",
     warnings: [
-      ...malformed.map(entry => entry.notRegular
-        ? { code: "PERMISSION_DENIED", target: { name: entry.name, path: entry.path }, message: `${entry.error}; it was not read` }
-        : { code: "SCHEMA_INVALID", target: { name: entry.name, path: entry.path }, message: `cannot parse persona '${entry.name}' at ${entry.path}: ${personaDefinitionProblem(entry.error, entry.path)}` }),
+      ...invalid.map(entry => hasBlankPersonaSelector(entry)
+        ? { code: "USAGE_INVALID", target: { name: entry.name, path: entry.path }, message: entry.error! }
+        : entry.notRegular
+          ? { code: "PERMISSION_DENIED", target: { name: entry.name, path: entry.path }, message: `${entry.error}; it was not read` }
+          : { code: "SCHEMA_INVALID", target: { name: entry.name, path: entry.path }, message: `cannot parse persona '${entry.name}' at ${entry.path}: ${personaDefinitionProblem(entry.error, entry.path)}` }),
       ...linked.map(entry => ({ code: "PERMISSION_DENIED", target: { name: entry.name, path: entry.path, link: entry.link }, message: `persona '${entry.name}' at ${entry.path} is a link to ${entry.link}; persona show, edit and remove refuse a link` })),
     ],
-    ...(malformed.length ? { partial: { message: "some persona definitions could not be read" } } : {}),
+    ...(invalid.length ? { partial: { message: invalid.some(hasBlankPersonaSelector) ? "some persona catalog entries could not be used" : "some persona definitions could not be read" } } : {}),
   }, result => ({ sections: [
     { title: "Personas", blocks: [
       { kind: "lines", lines: [{ text: `${catalog.space} · local persona files`, tone: "hint" }] },
       ...(result.items.length ? [{
         kind: "table" as const,
-        columns: [{ key: "name", label: "Persona" }, { key: "role", label: "Role" }, { key: "harness", label: "Application" }, ...(result.items.some(item => item.model) ? [{ key: "model", label: "Model pin" }] : []), ...(malformed.length ? [{ key: "state", label: "Definition" }] : [])],
-        rows: result.items.map(item => ({ name: item.name, role: item.role ?? "not set", harness: item.harness ?? "user default", model: item.model ?? "application default", state: item.valid ? "readable" : { text: "unreadable", tone: "failed" as const } })),
+        columns: [{ key: "name", label: "Persona" }, { key: "role", label: "Role" }, { key: "harness", label: "Application" }, ...(result.items.some(item => item.model) ? [{ key: "model", label: "Model pin" }] : []), ...(invalid.length ? [{ key: "state", label: "Definition" }] : [])],
+        rows: result.items.map(item => {
+          const blankSelector = hasBlankPersonaSelector(item);
+          return { name: blankSelector ? JSON.stringify(item.name) : item.name, role: item.role ?? "not set", harness: item.harness ?? "user default", model: item.model ?? "application default", state: item.valid ? "readable" : { text: blankSelector ? "invalid selector" : "unreadable", tone: "failed" as const } };
+        }),
       }] : [{ kind: "lines" as const, lines: ["No personas in this catalog."] }]),
       { kind: "lines", lines: [{ text: "Definitions, not running agents. Editing a persona does not change a live session.", tone: "hint" }] },
     ] },
@@ -238,7 +262,14 @@ function editNotSaved(presentation: Presentation, catalog: PersonaCatalog, name:
     : [`${name} is unchanged, so nothing was saved.`] }] }] }));
 }
 
-function receipt(presentation: Presentation, catalog: PersonaCatalog, name: string, path: string, action: string, seededDefault = false): void {
+function personaSpawnWords(name: string, target: string, userMode: boolean, needsOverride: boolean): string {
+  if (!needsOverride) return personaNameWords(name, target);
+  const launchName = spawnNameError(name, { userMode }) ? "persona_agent" : name;
+  return personaNameWords(name, `${target} --name ${launchName}`);
+}
+
+function receipt(presentation: Presentation, catalog: PersonaCatalog, name: string, path: string, action: string, target: string, seededDefault = false, spawnWords = personaNameWords(name, target)): void {
+  const word = personaNameWords(name, target);
   writeResult(presentation, { command: "persona", target: catalog, result: { kind: "persona-written", action, name, path, ...(seededDefault ? { seededDefault } : {}) } }, result => ({ sections: [
     { title: result.action === "removed" ? "Persona removed" : result.action === "created" ? "Persona created" : "Persona saved", blocks: [
       { kind: "lines", lines: [{ text: result.name, tone: "ok", mark: "✓" }] },
@@ -248,8 +279,8 @@ function receipt(presentation: Presentation, catalog: PersonaCatalog, name: stri
     { title: "Next", blocks: [{ kind: "commands", items: result.action === "removed" ? [
       { command: "cotal p", description: "Browse the local catalog" },
     ] : [
-      { command: `cotal spawn ${result.name}`, description: "Launch an agent from this persona" },
-      { command: `cotal p show ${result.name}`, description: "Read the saved definition" },
+      { command: `cotal spawn${spawnWords}`, description: "Launch an agent from this persona" },
+      { command: `cotal p show${word}`, description: "Read the saved definition" },
     ] }] },
   ] } satisfies Report));
 }

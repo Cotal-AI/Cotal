@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer, connect, type Socket } from "node:net";
 import { assertSmokeSandboxDown, createSuite, freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
-import { clean, COTAL, cotalPty, wait, type Pty } from "./_console-pty.js";
+import { clean, COTAL, cotalPty, screen, wait, type Pty } from "./_console-pty.js";
 
 const home = mkdtempSync(join(tmpdir(), "cotal-chat-recipient-home-"));
 const root = mkdtempSync(join(tmpdir(), "cotal-chat-recipient-root-"));
@@ -33,8 +33,10 @@ async function until(done: () => boolean, ms = 30_000): Promise<boolean> {
   return done();
 }
 const sessions: { name: string; pty: Pty; raw: string; exit: number | undefined }[] = [];
-function open(name: string, server?: string) {
-  const pty = cotalPty(["chat", "general", "--name", name, ...(server ? ["--server", server] : [])], { cwd: root, env, cols: 120, rows: 40 });
+function open(name: string, server?: string, channel = "general", cols = 120, rows = 40) {
+  const pty = cotalPty(["chat", channel, "--name", name, ...(server ? ["--server", server] : [])], {
+    cwd: root, env: { ...env, CI: "false", CONTINUOUS_INTEGRATION: "false" }, cols, rows,
+  });
   const session = { name, pty, raw: "", exit: undefined as number | undefined };
   pty.onData((data) => { session.raw += data; });
   pty.onExit(({ exitCode }) => { session.exit = exitCode; });
@@ -62,6 +64,37 @@ function history(label: string, ...args: string[]): string {
   writeFileSync(join(evidence, `${label}.txt`), `status=${result.status}\n${result.stdout}\n${result.stderr}`);
   check(`${label} history read succeeds`, result.status === 0, result.stderr);
   return clean(result.stdout);
+}
+
+async function historyViewport(): Promise<void> {
+  const channel = "viewport";
+  const setup = cli("channel", "set", channel, "--no-replay");
+  if (setup.status !== 0) throw new Error(setup.stderr);
+  const writer = spawnSync(process.execPath, ["--import", import.meta.resolve("tsx"), COTAL, "chat", channel, "--stdio", "--name", "writer"], {
+    cwd: root, env, encoding: "utf8", timeout: 30_000,
+    input: Array.from({ length: 25 }, (_, i) => JSON.stringify({
+      schemaVersion: 1, type: "send", id: `m${i}`, channel, text: `viewport-marker-${String(i + 1).padStart(2, "0")}`,
+    })).join("\n") + "\n",
+  });
+  if (writer.status !== 0 || (writer.stdout.match(/"outcome":"stored"/g) ?? []).length !== 25) throw new Error(writer.stdout + writer.stderr);
+  const reader = open("reader", undefined, channel, 80, 24);
+  if (!await until(() => clean(reader.raw).includes("Enter send"))) throw new Error("history reader did not open the terminal composer");
+  const initial = await screen(reader.raw, 80, 24);
+  check("the terminal shows no overflow notice when the transcript fits", !/earlier rows? hidden/.test(initial), initial);
+  await line(reader, "/history 25");
+  await until(() => reader.raw.includes("viewport-marker-25"));
+  const latest = await screen(reader.raw, 80, 24);
+  const visible = latest.match(/viewport-marker-\d\d/g) ?? [];
+  check("overflowing history counts the hidden rows and names the channel history command",
+    visible.length === 16 && visible[0] === "viewport-marker-10" && visible.at(-1) === "viewport-marker-25"
+    && latest.includes("10 earlier rows hidden. See `cotal history '#viewport'`"), latest);
+  const retained = history("viewport-retained", `#${channel}`);
+  check("the suggested command reads all 25 retained messages", (retained.match(/viewport-marker-\d\d/g) ?? []).length === 25, retained);
+  reader.pty.write("\t");
+  if (!await until(() => reader.raw.includes("Enter choose"))) throw new Error("history reader did not open the recipient picker");
+  await line(reader, "@ana");
+  const directed = await screen(reader.raw, 80, 24);
+  check("the overflowing transcript names DM history when the recipient is a DM", directed.includes("See `cotal history --dms`"), directed);
 }
 
 try {
@@ -181,6 +214,7 @@ try {
   if (!await until(() => clean(ana.raw).includes("private during command"))) throw new Error("command completion lost the held draft");
   const slashDm = history("delayed-slash-dms", "--dms");
   check("a delayed command preserves the held draft for explicit DM choice", /DM[^\n]*private during command/.test(slashDm), slashDm);
+  await historyViewport();
 } finally {
   release();
   for (const session of sessions) {

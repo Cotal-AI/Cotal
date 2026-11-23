@@ -1,4 +1,4 @@
-import { inputDisabledByFlag } from "@cotal-ai/workspace";
+import { codeSpan, ConfirmationRequired, inputDisabledByFlag, presentationOf } from "@cotal-ai/workspace";
 import { shellWord } from "./endpoint-errors.js";
 
 /** The refusal sentence for a missing `--yes` when a command cannot ask, naming what kept it from
@@ -14,13 +14,26 @@ export function yesRequired(action: string, json: boolean): string {
 /** The command that confirms a refused service action. It names the space and keeps the instance and
  *  `--with-agents` as given, so it acts on the target the refused command picked, not on the
  *  selected space's service of that name. */
-export function serviceConfirmCommand(verb: string, name: string, space: string, values: { instance?: unknown; "with-agents"?: unknown }): string {
+export function serviceConfirmCommand(verb: string, name: string, space: string, values: { instance?: unknown; "with-agents"?: unknown }, json = false): string {
   const instance = values.instance === undefined ? "" : ` --instance ${shellWord(String(values.instance))}`;
-  return `cotal svc ${verb} ${shellWord(name)} --space ${shellWord(space)}${instance}${values["with-agents"] === true ? " --with-agents" : ""} --yes`;
+  return `cotal svc ${verb} ${shellWord(name)} --space ${shellWord(space)}${instance}${values["with-agents"] === true ? " --with-agents" : ""} --yes${json ? " --json" : ""}`;
+}
+
+export function teamRemovalConfirmation(message: string, target: { root: string; space: string; deploymentId: string }, values: Parameters<typeof presentationOf>[0]): ConfirmationRequired {
+  const output = presentationOf(values);
+  const command = `cotal team remove ${target.deploymentId}${targetWords({ space: target.space })}${output === "rich" ? "" : ` --${output}`}`;
+  return new ConfirmationRequired(message, {
+    target, remedy: `review it with ${codeSpan(`${command} --dry-run`)}, then run ${codeSpan(`${command} --yes`)}`,
+  });
 }
 
 /** The `--space`, `--server` and `--creds` a refused command was given, for the confirming command
  *  it prints: without them that command acts on the selected space instead (#7564). */
 export function targetWords(values: { space?: unknown; server?: unknown; creds?: unknown }): string {
-  return (["space", "server", "creds"] as const).map((name) => values[name] === undefined ? "" : ` --${name} ${shellWord(String(values[name]))}`).join("");
+  return (["space", "server", "creds"] as const).map((name) => {
+    const raw = values[name];
+    if (raw === undefined) return "";
+    const value = String(raw);
+    return ` --${name}${value.startsWith("-") ? "=" : " "}${shellWord(value)}`;
+  }).join("");
 }

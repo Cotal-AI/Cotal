@@ -258,6 +258,21 @@ try {
       census?.result?.managers.every((m) => m.reportedHost === hostname()) === true,
     { host: hostname(), out: unpinnedOut.slice(-400), managers: census?.result?.managers });
 
+  const directStatus = await cotal(["endpoint", "invoke", "manager", "status", "--space", space, "--json"], root1);
+  const deniedScatter = await cotal(["endpoint", "invoke", "ep:manager", "status", "--all", "--space", space, "--json"], root1);
+  const allowedScatter = await cotal(["endpoint", "invoke", "manager", "ps", "--all", "--space", space, "--json"], root1);
+  const direct = JSON.parse(directStatus.stdout);
+  const denied = JSON.parse(deniedScatter.stdout);
+  const allowed = JSON.parse(allowedScatter.stdout);
+  check("a direct status answers but a status scatter without its grant is refused before sending",
+    directStatus.status === 0 && [IID1, IID2].includes(direct.result?.responder?.instanceId) &&
+    deniedScatter.status === 2 && denied.outcome === "refused" && denied.error?.code === "PERMISSION_DENIED" &&
+    denied.error.message.includes("no class scatter grant for manager status") && denied.result === null,
+    { direct: directStatus.status, denied });
+  check("a granted class scatter still returns both attributed replies",
+    allowedScatter.status === 0 && allowed.result?.coverageComplete === true &&
+    JSON.stringify(allowed.result.replies.map((row: { instanceId: string }) => row.instanceId).sort()) === JSON.stringify([IID1, IID2].sort()), allowed);
+
   // An unpinned `models` goes to the one manager the class queue picks. It names the other as not
   // asked, and an empty catalog list says the answering manager has no application installed.
   check("rig: no connector is registered yet, so each manager lists no catalog", registry.all<Connector>("connector").length === 0, registry.all<Connector>("connector").map((c) => c.name));
@@ -316,7 +331,7 @@ try {
     const out = strip(r.out);
     check(site.what,
       r.status !== 0
-        && /--on wants the manager INSTANCE id as `cotal ps` prints it/.test(out)
+        && out.includes(`--on wants the manager INSTANCE id as \`cotal ps${site.argv[0] === "ps" ? ` --space ${space}` : ""}\` prints it`)
         && /not the roster's principal id/.test(out)
         && /is a principal id/.test(out)
         && !/no describe reply|did not answer/i.test(out),
@@ -479,6 +494,11 @@ try {
       { status: r.status, tail: out.slice(-400) });
     check(`...and ${site.what}'s headline names the instance, not an unreachable mesh`,
       !/no manager reachable/i.test(out), out.slice(-300));
+    if (site.what === "describe") {
+      check("a pinned describe names the unanswered instance and recommends the live inventory",
+        r.status === 2 && out.includes(`pinned instance ${absent} of manager did not answer its contract read`) &&
+        out.includes(`cotal endpoint list --live --space ${space}`) && !out.includes("start the service"), out);
+    }
     // The launch and attach blocks name the space as a field; only the refusal's heading names the mesh.
     if (site.what === "spawn --detach" || site.what === "attach")
       check(`...and ${site.what} names the mesh once, in the refusal's heading`,
@@ -608,6 +628,7 @@ try {
   const mixedManager = new VariantManager({ space, servers: SERVERS, runtime: "pty", workspaceRoot: root3 });
   m2 = mixedManager;
   await mixedManager.start();
+  const mixedManagerId = (mixedManager as unknown as MgrPriv).managerInstanceId;
   const seatA = await m1.startAgent({ name: "census-a", agent: "ps-census-stub", cwd: repoRoot, events: false });
   const seatB = await mixedManager.startAgent({ name: "census-b", agent: "ps-census-stub", cwd: repoRoot, events: false });
   check("both real managers started a seat", seatA.ok === true && seatB.ok === true, { seatA, seatB });
@@ -685,8 +706,18 @@ try {
       rowOf("models-unlisted")?.supported === false &&
       every.env.warnings.filter((w) => w.code === "MODEL_CATALOG_UNREADABLE").map((w) => w.target.agent).join() === "models-broken",
     { status: every.run.status, stdout: every.run.stdout.slice(-900) });
-  const unlistedHuman = await cotal(["models", "--harness", "models-unlisted", "--space", space], root1);
+  const unlistedHuman = await cotal(["models", "--harness", "models-unlisted", "--refresh", "--space", space, "--server", SERVERS], root1);
   mustHaveRun(unlistedHuman, "`models --harness models-unlisted`");
+  const otherManager = /Not asked: +(\S+)/.exec(strip(unlistedHuman.out))?.[1];
+  check("the other-manager command keeps the selected catalog, refresh request and broker",
+    otherManager !== undefined && strip(unlistedHuman.out).includes(`cotal models --space ${space} --harness models-unlisted --refresh --server ${SERVERS} --on ${otherManager}`),
+    { status: unlistedHuman.status, out: strip(unlistedHuman.out) });
+  const answeringManager = /Answering manager: +(\S+)/.exec(strip(unlistedHuman.out))?.[1];
+  check("refresh on the answering manager keeps the application and explicit broker",
+    (answeringManager === IID1 || answeringManager === mixedManagerId) && strip(unlistedHuman.out).includes(`cotal models --space ${space} --harness models-unlisted --refresh --server ${SERVERS} --on ${answeringManager}`),
+    { status: unlistedHuman.status, liveManagerIds: [IID1, mixedManagerId], out: strip(unlistedHuman.out) });
+  check("a read of all catalogs leaves the application as a placeholder for the refresh",
+    modelsOut.includes(`cotal models --space ${space} -H <application> --refresh --on ${asked}`), modelsOut.slice(-900));
   check("the report gives the reason the install lists no catalog and no failure",
     unlistedHuman.status === 0 && strip(unlistedHuman.out).includes("this fixture install lists no catalog; pass --model") && !/could not be read/.test(strip(unlistedHuman.out)),
     { status: unlistedHuman.status, out: strip(unlistedHuman.out).slice(-400) });
@@ -958,7 +989,7 @@ try {
   m3 = new Manager({ space, servers: `nats://127.0.0.1:${relayPort}`, runtime: "pty", workspaceRoot: root7 });
   await m3.start();
   const IID7 = (m3 as unknown as MgrPriv).managerInstanceId;
-  const epoch7 = () => (m3 as unknown as { serviceServe?: { grant: { epoch: number } } }).serviceServe?.grant.epoch;
+  const epoch7 = () => (m3 as unknown as { servePlane: { serviceServe?: { grant: { epoch: number } }; } }).servePlane.serviceServe?.grant.epoch;
   const epochBefore = epoch7();
   relayArmed = true;
   const gap = await cotal(["spawn", "gap", "--detach", "--on", IID7, "--harness", "ps-census-stub", "--no-events", "--space", space, "--json"], root1);

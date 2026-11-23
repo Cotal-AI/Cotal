@@ -53,7 +53,7 @@ const { Manager } = await import("../../manager/src/manager.js");
 const { managerRailGone, pinnedLivenessProbe, scatterResolveCommands } = await import("../../../packages/workspace/dist/control/index.js");
 const { pickFreePort } = await import("../../../packages/core/smoke/_free-port.js");
 
-const EXPECTED_CELLS = 32; // Includes three stopped-broker deregistration checks.
+const EXPECTED_CELLS = 33; // Includes three stopped-broker deregistration checks.
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 let pass = 0, fail = 0;
@@ -75,7 +75,7 @@ const mkRoot = (tag: string): string => {
 };
 writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: join(dir, "js") }));
 
-type MgrPriv = { managerInstanceId: string; serviceServe?: { nc: NatsConnection }; leaseStopping: boolean };
+type MgrPriv = { managerInstanceId: string; leaseStopping: boolean; servePlane: { serviceServe?: { nc: NatsConnection }; } };
 const kids: ReturnType<typeof spawn>[] = [];
 const conns: NatsConnection[] = [];
 let releaseBroker: (() => void) | undefined;
@@ -103,7 +103,7 @@ try {
   // re-dials it (#2073), which would bring this corpse back to answer. Set the stop fence first,
   // as a host that dies mid-teardown does, so the close stays a close and nothing deregisters.
   (corpse as unknown as MgrPriv).leaseStopping = true;
-  await ((corpse as unknown as MgrPriv).serviceServe as { nc: NatsConnection }).nc.close();
+  await ((corpse as unknown as MgrPriv).servePlane.serviceServe as { nc: NatsConnection }).nc.close();
   await wait(500);
 
   /** One connection under a `control-caller-privileged` instrument pinned to exactly `pins` — the
@@ -290,6 +290,10 @@ try {
   const ps = await cli(["ps", "--space", SPACE]);
   check("ps lists the corpse as stale and names endpoint deregister from this space's own root",
     ps.status === 4 && ps.stdout.includes(`remove the record from this space's own root: \`cotal endpoint deregister manager ${IID_CORPSE} --yes\``), { status: ps.status, out: ps.stdout.slice(-700) });
+  const slotRead = await cli(["ps", "--slots", "--space", SPACE, "--server", SERVERS, "--json"]);
+  const slotReport = JSON.parse(slotRead.stdout);
+  check("a partial slot read keeps the slot view and both target flags in its one-manager retry",
+    slotRead.status === 4 && slotReport.error?.remedy?.includes(`\`cotal ps --on <instance> --slots --space ${SPACE} --server ${SERVERS}\``), slotReport.error);
   const legacy = await cli(["deregister-instance", "--instance", IID_CORPSE]);
   check("deregister-instance refuses naming endpoint deregister and the static authority it needs, and prints no usage after it",
     legacy.status === 1 && legacy.stderr.includes("the legacy deregistration spelling no longer executes") && legacy.stderr.includes("cotal endpoint deregister <class> <full-instance-id>") &&
@@ -298,7 +302,7 @@ try {
   console.log("9. with every registered manager gone, an unpinned launch's describe draws no answer and nothing is sent");
   // The live manager now crashes the same way, so the registry lists two managers and neither answers.
   (live as unknown as MgrPriv).leaseStopping = true;
-  await ((live as unknown as MgrPriv).serviceServe as { nc: NatsConnection }).nc.close();
+  await ((live as unknown as MgrPriv).servePlane.serviceServe as { nc: NatsConnection }).nc.close();
   await wait(500);
   const unanswered = await cli(["spawn", "nobody", "-d", "--json", "--space", SPACE]);
   let silent: { target?: { requestId?: string }; error?: { code?: string; message?: string } } | undefined;

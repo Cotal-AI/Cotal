@@ -2,11 +2,11 @@
 import nodeAssert from "node:assert/strict";
 import { countedAssert, emitSentinel } from "@cotal-ai/smoke-kit";
 import { execFileSync } from "node:child_process";
-import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { hostname, tmpdir } from "node:os";
 import { createServer, type AddressInfo } from "node:net";
 import { join } from "node:path";
-import { ArtifactFileFault, artifactStreams, BACKUP_MANIFEST_FORMAT, BACKUP_MANIFEST_FORMAT_V1, BACKUP_MANIFEST_FORMAT_V2, createArtifactWriter, inspectBackupArtifact, stageArtifact } from "../src/lib/backup-artifact.js";
+import { ArtifactFileFault, artifactStreams, BACKUP_MANIFEST_FORMAT, BACKUP_MANIFEST_FORMAT_V1, BACKUP_MANIFEST_FORMAT_V2, createArtifactWriter, stageArtifact } from "../src/lib/backup-artifact.js";
 import { backupRead } from "../src/commands/backup-read.js";
 import { down } from "../src/commands/down.js";
 import { clean } from "../src/commands/clean.js";
@@ -17,11 +17,58 @@ import { isManagerCommitResult, isManagerFinalizeResult, movedFolderRefusal, pre
 import { authorityFingerprint } from "../src/lib/maintenance-files.js";
 import { assertEndpointUnreachable } from "../src/lib/endpoint-cut.js";
 import { consumerConfigFromCheckpoint, createSpaceAuth, dmStream, eventPayloadStream, rotateSystemAccount, spaceBackupInventory, taskStream } from "@cotal-ai/core";
-import { acquireMaintenanceLock, authDir, beginMaintenanceCut, completeMaintenanceCut, ensureStoreIdentity, isCommandFailure, readMaintenanceJournal, recordPreservationManagerCommit, releaseMaintenanceLock, saveSpaceAuth, writeMaintenanceResumeDocument } from "@cotal-ai/workspace";
+import { acquireMaintenanceLock, authDir, beginMaintenanceCut, claimMaintenanceReady, completeMaintenanceCut, ensureStoreIdentity, isCommandFailure, readMaintenanceJournal, recordMaintenanceClaimResources, recordPreservationManagerCommit, releaseMaintenanceLock, saveSpaceAuth, writeMaintenanceResumeDocument } from "@cotal-ai/workspace";
 import { DeliverPolicy, type ConsumerInfo } from "@nats-io/jetstream";
 const counted = countedAssert(nodeAssert);
 const assert: typeof nodeAssert = counted.assert;
 const cells = counted.cells;
+
+function checkLinkedInterruptedBackup(root: string): void {
+  const parent = join(root, "backups"), alias = join(root, "backup-link");
+  mkdirSync(parent);
+  symlinkSync(realpathSync.native(parent), alias, "junction");
+  const named = join(alias, "interrupted");
+  const attemptId = "backup-00000000-0000-4000-8000-000000000000";
+  const now = new Date().toISOString();
+  const lock = acquireMaintenanceLock(root);
+  const real = join(realpathSync.native(parent), "interrupted");
+  const destination = { label: "destination" as const, path: named };
+  const check = (mode: "verify" | "inspect", path: string, recover: boolean) => {
+    assert.throws(() => backupRead({ positionals: [mode, path], values: {}, raw: [] }), (error: unknown) => {
+      if (!isCommandFailure(error)) return false;
+      const target = error.target as { directory?: unknown; fault?: unknown } | null;
+      return error.code === "SCHEMA_INVALID" && target?.directory === real && target.fault === "manifest-missing"
+        && error.remedy === (recover ? `run \`cotal backup recover ${attemptId} --yes\` from the original project once the attempt has stopped, then create a new backup`
+          : "verify another intact copy, or create a new backup from a stopped preserved cut");
+    }, `${mode} diagnoses ${path} with ${recover ? "claim recovery" : "the ordinary remedy"}`);
+  };
+  try {
+    claimMaintenanceReady(lock, { attemptId, deadline: now, coordinator: { pid: process.pid, host: hostname(), startedAt: now, id: attemptId }, owners: [], ownedPaths: [destination] });
+    const { dev, ino } = createArtifactWriter(named).identity;
+    check("verify", named, false);
+    recordMaintenanceClaimResources(lock, { ownedPaths: [{ ...destination, dev: dev.toString(), ino: ino.toString() }] });
+  } finally { releaseMaintenanceLock(lock); }
+  check("verify", named, true);
+  check("inspect", real, true);
+  writeFileSync(join(real, "checkpoints.json"), "[]\n");
+  check("verify", named, true);
+  check("inspect", real, true);
+
+  // Keep the old directory allocated so the replacement cannot reuse its inode.
+  const moved = join(parent, "moved");
+  renameSync(real, moved);
+  mkdirSync(real);
+  assert.throws(() => backupRead({ positionals: ["verify", named], values: {}, raw: [] }), (error: unknown) =>
+    isCommandFailure(error) && error.code === "TARGET_NOT_FOUND", "an empty replacement directory is not the interrupted artifact");
+  writeFileSync(join(real, "checkpoints.json"), "[]\n");
+  check("verify", named, false);
+
+  renameSync(real, join(parent, "replacement"));
+  symlinkSync(moved, real, "junction");
+  assert.throws(() => backupRead({ positionals: ["verify", named], values: {}, raw: [] }), (error: unknown) =>
+    isCommandFailure(error) && error.code === "SCHEMA_INVALID" && !(error.remedy ?? "").includes("backup recover"),
+  "recovery will not remove a symlink occupying the recorded destination");
+}
 
 for (const mode of ["open", "auth", "user"] as const) {
   const inventory = spaceBackupInventory("versioned");
@@ -93,11 +140,15 @@ try {
   writeFileSync(join(destination, "stream-a.snap"), "changed");
   assert.throws(() => stageArtifact(destination, stagingParent), (error: unknown) => error instanceof ArtifactFileFault && error.file === "stream-a.snap" && error.fault === "mismatch");
   // `backup verify` names the failing file and its fault, so an operator knows which copy is damaged.
+  const artifactLink = join(root, "artifact-link");
+  const realArtifact = realpathSync.native(destination);
+  symlinkSync(realArtifact, artifactLink, "junction");
   const verifyFault = (file: string | null, fault: string, text: RegExp) => (error: unknown) => {
-    const target = isCommandFailure(error) ? error.target as { file?: unknown; fault?: unknown } : undefined;
-    return isCommandFailure(error) && error.code === "SCHEMA_INVALID" && text.test(error.message) && target?.file === file && target.fault === fault;
+    if (!isCommandFailure(error)) return false;
+    const target = error.target as { directory?: unknown; file?: unknown; fault?: unknown } | null;
+    return error.code === "SCHEMA_INVALID" && text.test(error.message) && target?.directory === realArtifact && target.file === file && target.fault === fault;
   };
-  assert.throws(() => backupRead({ positionals: ["verify", realpathSync(destination)], values: {}, raw: [] }),
+  assert.throws(() => backupRead({ positionals: ["verify", artifactLink], values: {}, raw: [] }),
     verifyFault("stream-a.snap", "mismatch", /^backup artifact file stream-a\.snap does not match its declared size and SHA-256/));
   writeFileSync(join(destination, "stream-a.snap"), Buffer.from([1, 9, 3]));
   assert.throws(() => backupRead({ positionals: ["verify", realpathSync(destination)], values: {}, raw: [] }),
@@ -105,13 +156,21 @@ try {
   rmSync(join(destination, "stream-a.snap"));
   assert.throws(() => backupRead({ positionals: ["verify", realpathSync(destination)], values: {}, raw: [] }),
     verifyFault("stream-a.snap", "missing", /^backup artifact is missing its declared file stream-a\.snap/));
-  // An interrupted create leaves snapshots with no manifest: verify names it an incomplete artifact.
+  // Snapshots with no manifest identify an incomplete artifact, not an attempt to recover.
   const partial = join(root, "partial-artifact");
   mkdirSync(partial);
   writeFileSync(join(partial, "stream-0123456789abcdef01234567.snap"), Buffer.from([1, 2, 3]));
-  assert.throws(() => backupRead({ positionals: ["verify", realpathSync(partial)], values: {}, raw: [] }), (error: unknown) =>
-    isCommandFailure(error) && error.code === "SCHEMA_INVALID" && error.message === `${realpathSync(partial)} has no manifest.json, so it is an incomplete artifact, as an interrupted backup create leaves one; nothing in it was checked`
-      && (error.target as { fault?: unknown }).fault === "manifest-missing" && (error.remedy ?? "").includes("cotal backup recover <attempt> --yes"));
+  const linkedPartial = join(root, "partial-link");
+  const realPartial = realpathSync.native(partial);
+  symlinkSync(realPartial, linkedPartial, "junction");
+  for (const [mode, path] of [["verify", realPartial], ["verify", linkedPartial], ["inspect", linkedPartial]] as const)
+    assert.throws(() => backupRead({ positionals: [mode, path], values: {}, raw: [] }), (error: unknown) => {
+      if (!isCommandFailure(error)) return false;
+      const target = error.target as { directory?: unknown; fault?: unknown } | null;
+      return error.code === "SCHEMA_INVALID" && error.message === `${realPartial} has no manifest.json, so it is an incomplete artifact; nothing in it was checked`
+        && target?.directory === realPartial && target.fault === "manifest-missing"
+        && error.remedy === "verify another intact copy, or create a new backup from a stopped preserved cut";
+    }, `${mode} names the real incomplete artifact for ${path}`);
   // A folder that holds nothing a create writes, or a file, is not an artifact, not an interrupted one,
   // and the refusal says which it is.
   const plain = join(root, "not-a-backup");
@@ -132,12 +191,20 @@ try {
   // A path through a linked folder names the artifact create published there, and verify reads it at
   // its real path, as restore stages it.
   const linkParent = mkdtempSync(join(tmpdir(), "cotal-backup-cli-link-"));
+  const write = process.stdout.write;
+  let output = "";
   try {
-    symlinkSync(realpathSync(root), join(linkParent, "via"));
-    const throughLink = inspectBackupArtifact(join(linkParent, "via", "artifact"), true);
-    assert.equal(throughLink.directory, realpathSync(destination), "verify through a linked folder reads the artifact at its real path");
-    assert.equal(throughLink.integrity, "matched-declared-sizes-and-sha256", "and its files match");
-  } finally { rmSync(linkParent, { recursive: true, force: true }); }
+    const via = join(linkParent, "via");
+    symlinkSync(realpathSync.native(root), via, "junction");
+    process.stdout.write = ((chunk: string) => (output += chunk, true)) as typeof write;
+    backupRead({ positionals: ["verify", join(via, "artifact")], values: { json: true }, raw: [] });
+  } finally {
+    process.stdout.write = write;
+    rmSync(linkParent, { recursive: true, force: true });
+  }
+  const throughLink = JSON.parse(output);
+  assert.equal(throughLink.result.directory, realArtifact, "verify through a linked folder reads the artifact at its real path");
+  assert.equal(throughLink.result.integrity, "matched-declared-sizes-and-sha256", "and its files match");
   const traversing = JSON.parse(originalManifest) as { checkpoints: string };
   traversing.checkpoints = "../checkpoints.json";
   writeFileSync(join(destination, "manifest.json"), `${JSON.stringify(traversing)}\n`);
@@ -489,6 +556,7 @@ try {
             && / or resume with bare .*up`; once the root holds no maintenance state and its mesh is stopped, run .*clean (store|all) --force` again$/.test(error.remedy ?? ""),
         `clean ${target} on a preserved cut names the step status shows for it`);
       assert.ok(existsSync(cleanStore) && readMaintenanceJournal(cleanRoot)?.state === "ready", "the refused clean removed nothing and kept the cut");
+      checkLinkedInterruptedBackup(cleanRoot);
     } finally { process.chdir(previousCwd); }
   }
 

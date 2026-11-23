@@ -14,7 +14,7 @@ import {
 import { presenceSeat, type ManagerPin } from "@cotal-ai/workspace/control";
 import { followEndpointAction, type AcceptedEndpointGoal } from "../lib/endpoint-goal.js";
 import { endpointResolution, resolveEndpointSelection, validateEndpointSelector } from "../lib/endpoint-selection.js";
-import { endpointFailure, NativeReplyError, shellWord, withPairedCallerRemedy } from "../lib/endpoint-errors.js";
+import { endpointFailure, NativeReplyError, shellWord, verifyPinnedEndpoint, withPairedCallerRemedy } from "../lib/endpoint-errors.js";
 import { refuseUnmappedHandle } from "../lib/endpoint-capability-gates.js";
 import { invokeEndpointScatter, writeEndpointScatter } from "../lib/endpoint-scatter.js";
 import { onInstanceId, onFlag, onRerun } from "../lib/control.js";
@@ -86,7 +86,13 @@ export async function describeCmd(args: ParsedArgs, commandName = "describe"): P
     const { nc, space, auth, callerCredential } = connection;
     if (on !== undefined && auth.managerInstanceId !== undefined && on !== auth.managerInstanceId) throw new CommandFailure("refused", "CONFLICT", "the explicit pin differs from this credential's instance authority", { target });
     const instanceId = on ?? auth.managerInstanceId;
-    const service = await resolveService(nc, space, endpoint, auth.epCaller!, { deadlineMs: 10_000, ...(instanceId === undefined ? {} : { instanceId }) });
+    const service = await resolveService(nc, space, endpoint, auth.epCaller!, { deadlineMs: 10_000, ...(instanceId === undefined ? {} : { instanceId }) }).catch((error: unknown) => {
+      if (instanceId === undefined || !unansweredRequest(error) || !(error instanceof EpEnvelopeError)) throw error;
+      throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `pinned instance ${instanceId} of ${endpoint} did not answer its contract read`, {
+        native: { code: error.code, outcome: error.outcome }, cause: error,
+        remedy: verifyPinnedEndpoint(space, typeof args.values.server === "string" ? args.values.server : undefined),
+      });
+    });
     result = { kind: "endpoint-contract", contractSource: "fresh-native-resolution", endpoint: service.endpoint, owner: service.owner, responder: service.responder,
       resolution: endpointResolution(selection, service.responder),
       ...(callerCredential ? { callerCredential: callerCredential } : {}),
@@ -169,6 +175,12 @@ export async function invokeCmd(args: ParsedArgs, commandName = "invoke"): Promi
     const service = await resolveService(nc, space, endpoint, auth.epCaller!, { deadlineMs: budgetMs, commands, ...(instanceId === undefined ? {} : { instanceId }) }).catch((error: unknown) => {
       if (selectedSeat && unansweredRequest(error))
         throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `manager instance ${on} did not answer the named seat's contract read`, { target, cause: error });
+      if (instanceId !== undefined && unansweredRequest(error) && error instanceof EpEnvelopeError) {
+        throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `pinned instance ${instanceId} of ${endpoint} did not answer its contract read within the ${budgetMs}ms ${values.timeout === undefined ? "deadline" : "--timeout"}; no invocation was sent`, {
+          native: { code: error.code, outcome: error.outcome }, cause: error,
+          remedy: `${verifyPinnedEndpoint(space, values.server)}, or ${longerTimeout} if you expect that instance to answer`,
+        });
+      }
       if (!(error instanceof EpEnvelopeError) || error.code !== "deadline-exceeded" || unansweredRequest(error) && values.timeout === undefined) throw error;
       if (unansweredRequest(error)) throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `no instance of ${endpoint} answered its contract read within the ${budgetMs}ms --timeout, so nothing is serving it, none could be reached, or the deadline was too short`, {
         native: { code: error.code, outcome: error.outcome }, cause: error,
@@ -212,7 +224,7 @@ export async function invokeCmd(args: ParsedArgs, commandName = "invoke"): Promi
     if (values.all) {
       if (declaration.class !== "ephemeral") throw new CommandFailure("refused", "UNSUPPORTED", "the installed native scatter helper supports ephemeral commands only; no journaled command was published", { target });
       beforeSubmit();
-      result = await invokeEndpointScatter(nc, space, service, command, input, requestId, deadlineMs);
+      result = await invokeEndpointScatter(nc, space, service, command, input, requestId, deadlineMs, auth.creds);
     } else if (values.cast) {
       beforeSubmit();
       try {

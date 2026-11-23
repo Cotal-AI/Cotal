@@ -1,6 +1,6 @@
-import { MANAGED_HANDOFF_FILE_ENV, type FlagSpec } from "@cotal-ai/core";
-import { jsonFlag, plainFlag, credsFlag, launchFlags, serverFlag, spaceFlag } from "@cotal-ai/workspace";
-import { onRerun } from "../lib/control.js";
+import { MANAGED_HANDOFF_FILE_ENV, oneLine, type FlagSpec, type FlagValues } from "@cotal-ai/core";
+import { explicitNoInputFlag, jsonFlag, plainFlag, credsFlag, launchFlags, serverFlag, spaceFlag } from "@cotal-ai/workspace";
+import { shellWord } from "../lib/endpoint-errors.js";
 
 /** `cotal spawn`'s grammar: the application in this terminal by default, a manager's launch only
  *  with `--detach` or `--on`, and one positional persona or explicit persona file. Declared `as const` so the values cast
@@ -30,7 +30,33 @@ export const spawnFlags = [
   { name: "expect-lifecycle-uid", type: "string", value: "<uid>", description: `with ${MANAGED_HANDOFF_FILE_ENV}: the lifecycle UID the managed handoff must carry` },
 ] as const satisfies readonly FlagSpec[];
 
-/** The spawn an `--on` refusal tells the caller to rerun: the persona and `-d` as given, with the
- *  `--space` or `--server` given (#7644). */
-export const spawnRerun = (values: { detach?: unknown; space?: unknown; server?: unknown }, positionals: readonly string[]): string =>
-  onRerun("cotal spawn", values, [...positionals, ...(values.detach === true ? ["-d"] : [])]);
+/** Keep shell words on one line even when a kickoff prompt contains terminal control characters. */
+export function retryWord(value: string): string {
+  if (oneLine(value) === value) return shellWord(value);
+  return `$'${[...value].map((ch) => oneLine(ch) !== ch ? `\\U${ch.codePointAt(0)!.toString(16).padStart(8, "0")}` : ch.replace(/[\\']/g, "\\$&")).join("")}'`;
+}
+
+/** Keep the selected persona and every explicit option except the manager pin being replaced. */
+export function spawnRerun(values: FlagValues<typeof spawnFlags>, positionals: readonly string[]): { command: string } {
+  const words = ["cotal spawn"];
+  if (explicitNoInputFlag()) words.push("--no-input");
+  const dashOperand = positionals.some((word) => word.startsWith("-"));
+  if (!dashOperand) words.push(...positionals.map(retryWord));
+  if (values.detach) words.push("-d");
+  for (const flag of spawnFlags) {
+    const name = flag.name;
+    if (name === "on" || name === "detach") continue;
+    // Managed launch normalizes the public flags to internal names as well.
+    if ((name === "config" && values.file !== undefined) || (name === "agent" && values.harness !== undefined)) continue;
+    const value = values[name];
+    if (value === true) words.push(`--${name}`);
+    for (const entry of typeof value === "string" ? [value] : Array.isArray(value) ? value : []) {
+      const word = retryWord(entry);
+      if (entry.startsWith("-")) words.push(`--${name}=${word}`);
+      else words.push(`--${name}`, word);
+    }
+  }
+  words.push("--on <instance>");
+  if (dashOperand) words.push("--", ...positionals.map(retryWord));
+  return { command: words.join(" ") };
+}

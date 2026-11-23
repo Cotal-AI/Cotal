@@ -83,8 +83,9 @@ check("an anycast rest is the ROUTE, not a channel", svc?.rest === "someroute", 
 // a stale or wrong build would make all of it a statement about code nobody is editing, and the
 // gate's `smoke:dist-freshness` guard checks ORDERING only — a newer-but-wrong dist passes it.
 //
-// `subjects.ts` imports nothing first-party (only `node:crypto`, verified before relying on it), so
-// it loads standalone and the two can be driven side by side on the same vectors. If the artifact
+// `subjects.ts` imports only `@nats-io/nkeys`, a type-only `./types.js` and its own import-free
+// `subject-grammar.ts` (verified before relying on it), so it loads standalone and the two can be
+// driven side by side on the same vectors. If the artifact
 // and the source disagree, that reddens HERE instead of silently grading the wrong one.
 //
 // EVERY PLANE IS COVERED, not just chat. The kind-gate's whole job is what happens on `inst` and

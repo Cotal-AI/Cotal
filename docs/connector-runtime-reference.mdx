@@ -265,10 +265,11 @@ A connector hands `MeshAgent` a dispatcher as the `commands` option:
 - `list()` returns every command and skill the harness runs now as `{ name, target, description?, inputHint? }`, each named as `dispatch` names it. A rejection reaches the caller as `unavailable`, never as an empty list.
 - `dispatch({ target, name, args })` starts one and resolves once the harness accepted it. A command that runs the model runs as a turn of its own, and some, such as OpenCode's `goal clear`, run no turn. It throws `CommandRefused` with `not-found` or `failed-precondition` when the harness refused it and nothing started. Any other throw leaves the outcome unknown.
 - `interrupt()`, optional, stops the turn the harness is running and resolves `interrupted`, or `idle` when none ran. The connector then ends that turn as one its user stopped, so the next queued command starts. Without it, `interrupt` is `unimplemented`. A throw reaches the caller as `internal` with the outcome unknown.
+- `unsupported()`, optional, names why the harness runs no commands now, or returns undefined while it does. While it names a cause, `commands` answers `{ supported: false }`, and `command` and `interrupt` are `unimplemented` with that cause. Claude Code uses it while no command mod serves the session.
 
 The runtime sends only those four fields of an entry. It leaves out a name `command` cannot carry and shortens a longer description or hint.
 Without a dispatcher, `commands` answers `{ supported: false }` and `command` is `unimplemented`.
-In this release OpenCode 2.x and [pi](pi-connector-reference.mdx#agent-commands) 0.84.2 or later have one, and [Codex](codex-connector-reference.mdx#agent-commands) has one that runs skills.
+In this release OpenCode 2.x, [pi](pi-connector-reference.mdx#agent-commands) 0.84.2 or later and [Claude Code](claude-connector-reference.mdx#agent-commands) 2.1.330 or later with mods on have one, and [Codex](codex-connector-reference.mdx#agent-commands) has one that runs skills.
 
 `command` answers the command's `id` at once, and the command waits in a queue for the connector's next idle turn.
 `MeshAgent` emits `command`, and the connector calls `dispatchNextCommand()` while no turn runs. It answers `dispatched`, `failed`, or `empty`.
@@ -277,6 +278,22 @@ At most 8 commands are queued. A queued command has no time bound: it waits unti
 Stopping the agent moves every queued command to `refused` with `unavailable`. A command the harness is still being asked to start stays `taken`, and its outcome leaves with the process.
 The agent remembers the last 32 commands to end, and an older id is `not-found`.
 The states, codes and outcomes are in [SPEC §13.22](../SPEC.md#1322-the-agent-endpoint).
+
+## Agent name [#agent-name]
+
+The agent owner's interactive session renames an agent with `set-name` `{ name }` on the agent's endpoint, and gets `{ name }` back.
+No one else can call it: the broker refuses a sibling agent of the same owner, any other owner, and every grant.
+`MeshAgent` serves it with no connector code. It changes the card's display name and republishes presence at once, and every client in the space sees the new name.
+The principal does not change, so the agent's subjects, durables and grants stay as they are, and an `@mention` of the new name reaches it.
+
+The agent refuses a name the shared name rule refuses as `bad-request`, and the name of another live agent, compared lowercased, as `already-exists`.
+Each refusal is `not-executed` and carries the `ai.cotal.agent.name-refused` detail with the reason `name-invalid` or `name-taken`.
+The current name again is `ok` and changes nothing.
+Two agents renamed at the same moment can still end up with one name, because the check reads presence.
+
+Messages the agent sends afterwards carry the new `from.name`, and stored history keeps the name each message was sent under.
+`agent.displayName` reads the current name, and `config.name` stays the launch name.
+A manager keeps the last name a seat showed with the seat, apart from its alias. When it starts the seat again, after a crash or a preserved resume, it passes the name as `COTAL_DISPLAY_NAME`, so the seat comes back under the same alias and actor and shows its last name.
 
 ## Prompt desk [#prompt-desk]
 

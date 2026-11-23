@@ -42,7 +42,7 @@ export const MESH_FIRST_STEER =
   "otherwise cotal_dm or cotal_anycast to reach one) so the work stays visible to the user and " +
   "addressable by peers rather than hidden inside a private subagent. Use a harness subagent only for " +
   "a self-contained job nobody else needs to follow. For a single task, cotal_spawn with once: true " +
-  "starts a Claude Code, jcode, OpenCode or pi helper that is stopped when the task ends.";
+  "starts a helper that is stopped when the task ends.";
 
 /** Workflow-run steer, folded in beside {@link MESH_FIRST_STEER} for every connector. Points agents
  *  at durable cotal-lang runs for coordination that must outlive their own session, so the reflex is
@@ -147,6 +147,15 @@ export interface Orientation {
   actions: { read: string; replyChannel: string; replyPrivate: string; askRole: string };
 }
 
+/** The tool for each intent, as the card shows it. The three that are not `read` are the ways a
+ *  reply reaches a peer. */
+export const MESH_ACTIONS = {
+  read: "cotal_inbox",
+  replyChannel: "cotal_send",
+  replyPrivate: "cotal_dm",
+  askRole: "cotal_anycast",
+} as const;
+
 /** The everyday loop (the `core` group); every other tool falls into `more`. Keep in sync with the
  *  reply/loop tools an agent reaches for each turn. An unknown/new tool defaults to `more`. */
 const CORE_TOOLS = new Set([
@@ -213,14 +222,14 @@ export function buildOrientation(
     generatedAt,
     identity: {
       state: agent.connected ? "bound" : "unbound",
-      display: { name: config.name, role: config.role ?? "unknown" },
+      display: { name: agent.displayName, role: config.role ?? "unknown" },
       principal: principal ?? { owner: "unknown", actor: "unknown" },
       lifecycleUid: config.lifecycleUid ?? "unknown",
       replacement: {
         state: "unknown",
         predecessorLifecycleUid: "unknown",
       },
-      name: config.name,
+      name: agent.displayName,
       role: config.role,
       space: config.space,
       id: agent.id,
@@ -251,12 +260,7 @@ export function buildOrientation(
     status: agent.status,
     attention: agent.attention,
     unread: { total: agent.inboxCount() },
-    actions: {
-      read: "cotal_inbox",
-      replyChannel: "cotal_send",
-      replyPrivate: "cotal_dm",
-      askRole: "cotal_anycast",
-    },
+    actions: { ...MESH_ACTIONS },
   };
 }
 

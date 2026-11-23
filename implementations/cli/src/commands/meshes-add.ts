@@ -353,7 +353,8 @@ export function verifyFailureMessage(kind: PreflightFailure, space: string, serv
     case "jetstream-unsupported":
       return `✗ the NATS server at ${server} does not have JetStream enabled - enable JetStream or check the broker address`;
     case "non-nats-listener":
-      return `✗ a non-NATS listener holds ${server} - stop it or choose another broker address`;
+      return pid === undefined ? `✗ a non-NATS listener holds ${server} - stop it or choose another broker address`
+        : `✗ the broker address ${server} is held by stopped process ${pid}, which is not a NATS server. Free that address or choose another broker address.`;
     case "unreachable":
       return `✗ no broker answered at ${server} - check the address and that the mesh is up on that machine`;
     case "creds-rejected":
@@ -382,7 +383,7 @@ export function verifyFailureMessage(kind: PreflightFailure, space: string, serv
 export async function verifyTarget(target: MeshTarget): Promise<Check<void>> {
   const r = await preflightTarget(target);
   if (r.ok) return good(undefined);
-  return (r.kind === "unreachable" && (await unreachableAt(target.server))) || bad(verifyFailureMessage(r.kind, target.space, target.server, target.root), preflightCode(r.kind));
+  return (r.kind === "unreachable" && (await unreachableAt(target.server))) || bad(verifyFailureMessage(r.kind, target.space, target.server, target.root, r.pid), preflightCode(r.kind));
 }
 
 export { openSpaceNames };

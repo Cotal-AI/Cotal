@@ -430,7 +430,14 @@ function recordedUnit(paths: Pick<DaemonPaths, "state">, daemonHome: string | un
     return { receipt, plan: { mechanism, unit: receipt.unit, unitPath: receipt.unitPath, installedAt: receipt.installedAt }, service };
   }
   try { lstatSync(receipt.unitPath); }
-  catch { throw new CommandFailure("refused", "TARGET_NOT_FOUND", `the recorded unit file ${receipt.unitPath} is gone; nothing was removed. Delete ${unitReceiptFile(paths)} by hand to forget it`); }
+  catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT") throw new CommandFailure("refused", "TARGET_NOT_FOUND", `the recorded unit file ${receipt.unitPath} is gone; nothing was removed. Delete ${unitReceiptFile(paths)} by hand to forget it`);
+    const denied = code === "EACCES" || code === "EPERM";
+    throw new CommandFailure("refused", denied ? "PERMISSION_DENIED" : "TARGET_UNAVAILABLE", "the recorded unit file could not be inspected; nothing was changed", {
+      remedy: denied ? "keep the install receipt, restore access to the unit file's directory and retry" : "keep the install receipt, check the unit file's path and retry",
+    });
+  }
   if (service) service.check(receipt);
   else assertLinuxRecordedUnit(paths, daemonHome, receipt);
   return { receipt, plan: { mechanism, unit: receipt.unit, unitPath: receipt.unitPath, installedAt: receipt.installedAt }, service, recovered: saved === undefined };

@@ -118,7 +118,7 @@ mkdirSync(join(openRoot, ".cotal"), { recursive: true });
 const shell = join(home, "shell");
 mkdirSync(join(shell, ".cotal"), { recursive: true });
 
-const cleanEnv: NodeJS.ProcessEnv = { ...process.env };
+const cleanEnv: NodeJS.ProcessEnv = { ...process.env, DO_NOT_TRACK: "1" };
 for (const key of Object.keys(cleanEnv)) if (key.startsWith("COTAL_") || key === "FORCE_COLOR" || key === "NO_COLOR") delete cleanEnv[key];
 const isolatedEnv: NodeJS.ProcessEnv = { ...cleanEnv, HOME: home, USERPROFILE: home, TMPDIR: home, COTAL_HOME: join(home, ".cotal"), XDG_CONFIG_HOME: xdg, COTAL_SKIP_CONNECTOR_SEED: "1" };
 
@@ -197,6 +197,14 @@ try {
   const bob = await join_("bob", { role: "reviewer", kind: "agent", meta: { connector: "jcode", model: "glm-test", host: "box-b" } });
   const carol = await join_("carol", { kind: "agent" });
   await join_("logger", { role: "logger", kind: "endpoint" });
+  const idle = await run(["who", "--all", "--json"]);
+  check("the unfiltered roster lists the idle agent", idle.status === 0 && rowsOf(idle).alice?.status === "idle", shown(idle));
+  for (const [flags, label] of [[[], "agents"], [["--all"], "participants"]] as const) {
+    const empty = await run(["who", ...flags, "--waiting", "--plain"]);
+    check(`--waiting reports no matching ${label} when everyone is idle`,
+      empty.status === 0 && empty.stderr === "" && empty.stdout.includes(`no ${label} match --waiting in ${space}`) &&
+      !empty.stdout.includes(`no ${label} present`) && !empty.stdout.includes("alice/builder"), shown(empty));
+  }
   await alice.setStatus("working");
   await bob.setStatus("waiting");
   await bob.setActivity("reviewing the change");
@@ -261,11 +269,20 @@ try {
   const livePlain = await run(["endpoints", "--plain"]);
   check("the endpoints report words the condition and the ages from those values",
     livePlain.status === 0 && /carol\s.*idle \(auth for \d+s\) - unchanged for \d+s/.test(livePlain.stdout) && /reviewing the change \(set \d+s ago\)/.test(livePlain.stdout), shown(livePlain));
+  const targetedPresence = await run(["endpoints", "--space", space, "--server", servers, "--plain"]);
+  const rosterCommand = /^  (cotal who[^\r\n]*?)(?: {2,}Read the agent roster|$)/m.exec(targetedPresence.stdout)?.[1];
+  const rosterRetry = rosterCommand && await run(rosterCommand.split(" ").slice(1));
+  check("the live endpoint roster shortcut preserves the space and broker and reads that roster",
+    targetedPresence.status === 0 && rosterCommand === `cotal who --plain --space ${space} --server ${servers}` &&
+    !!rosterRetry && rosterRetry.status === 0 && rosterRetry.stdout.startsWith(`Mesh: ${space}\n`) && rosterRetry.stdout.includes("bob/reviewer"),
+    { presence: shown(targetedPresence), rosterCommand, rosterRetry: rosterRetry && shown(rosterRetry) });
 
   const plain = await run(["who", "--plain"], { FORCE_COLOR: "1" });
   const rich = await run(["who"], { FORCE_COLOR: "1" });
   check("the plain report is a table with every state word and no ANSI", plain.status === 0 && !/\x1b\[/.test(plain.stdout) && new RegExp(`^Who's here - ${space}\\n {2}Agent\\s+State\\s+Attention`, "m").test(plain.stdout) && /bob\/reviewer\s+waiting/.test(plain.stdout) && /idle \(auth for/.test(plain.stdout), shown(plain));
-  check("the plain report says the hidden endpoint is listed by --all", /1 infrastructure endpoint is not listed; `cotal who --all` lists them/.test(plain.stdout), plain.stdout);
+  check("the plain report adds --all to the same read", plain.stdout.includes("1 infrastructure endpoint is not listed; repeat this command with `--all` to list them"), plain.stdout);
+  const waitingPlain = await run(["who", "--space", space, "--server", servers, "--waiting", "--plain"]);
+  check("the targeted waiting report replaces the filter without dropping the target", waitingPlain.status === 0 && waitingPlain.stdout.includes("repeat this command with `--all` instead of `--waiting` to list them"), shown(waitingPlain));
   const richText = rich.stdout.replace(/\x1b\[[0-9;]*m/g, "");
   check(
     "the rich report is colored, marks each state and keeps every state word",
@@ -310,6 +327,10 @@ try {
     credsRead.status === 0 && credsRead.envelope?.outcome === "ok" && credsRead.envelope.completeness === "complete" && credsRead.envelope.result?.managers === "denied" &&
     credsRead.envelope.warnings.some((w) => w.code === "MANAGERS_DENIED") && !credsRead.envelope.warnings.some((w) => w.code === "MANAGERS_UNREAD") &&
     rowsOf(credsRead).alice?.managed === null, shown(credsRead));
+  const credentialPresence = await run(["endpoints", "--plain", "--creds", reader, "--space", space, "--server", servers]);
+  check("live endpoint presence with a raw caller names the selectors for describe instead of printing a contract shortcut",
+    credentialPresence.status === 0 && credentialPresence.stdout.includes("with the same `--space` and `--server`") &&
+    credentialPresence.stdout.includes("use a paired native caller file") && !/^  cotal endpoint describe /m.test(credentialPresence.stdout), shown(credentialPresence));
 
   // ── whoami ──────────────────────────────────────────────────────────────────────────────────────
   const me = await run(["whoami", "--json"]);
@@ -459,7 +480,7 @@ try {
   check("whoami on a prepared space whose folder holds its signer reports the signer", signed.status === 0 && signed.envelope?.result?.identity?.kind === "space-signer" && signed.envelope.result.read === "all" && signed.envelope.result.server === null, shown(signed));
   const freshPlain = await run(["whoami", "--space", "prep-fresh", "--plain"]);
   check("its report says the space is not started and where to start it",
-    freshPlain.status === 0 && /server:\s+not started/.test(freshPlain.stdout) && freshPlain.stdout.includes(`start it with \`cotal up\` in ${prepFresh}`) && !freshPlain.stdout.includes("--creds"), shown(freshPlain));
+    freshPlain.status === 0 && /server:\s+not started/.test(freshPlain.stdout) && ["cotal", "pnpm cotal"].some((cli) => freshPlain.stdout.includes(`start it with \`${cli} up\` in ${prepFresh}`)) && !freshPlain.stdout.includes("--creds"), shown(freshPlain));
   const preparedServer = await run(["whoami", "--space", "prep-fresh", "--server", "nats://127.0.0.1:3", "--json"]);
   check("control: a prepared space with --server is still refused", preparedServer.status === 2 && preparedServer.envelope?.error?.code === "TARGET_UNAVAILABLE", shown(preparedServer));
   const both = await run(["who", "--json", "--plain"]);

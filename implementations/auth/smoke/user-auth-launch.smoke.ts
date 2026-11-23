@@ -56,7 +56,7 @@ import { execFileSync, spawn } from "node:child_process";
 import { createServer, request as httpRequest } from "node:http";
 import { createServer as createHttpsServer, type Server as HttpsServer } from "node:https";
 import type { AddressInfo } from "node:net";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { assertSmokeSandboxDown, recordSmokeSandbox, type SmokeSandboxAnchor } from "@cotal-ai/smoke-kit";
@@ -142,9 +142,12 @@ function cotal(args: string[], opts: { cwd?: string; timeoutMs?: number; env?: R
 let handler: ReturnType<typeof toNodeHandler> | undefined;
 // While set, the token route answers 503, as an IdP that is down does (E4).
 let idpTokenUnavailable = false;
-const idpSrv = createServer((req, res) => idpTokenUnavailable && req.method === "GET" && req.url?.split("?")[0] === "/api/auth/token"
-  ? void res.writeHead(503, { "content-type": "application/json" }).end('{"error":"unavailable"}')
-  : handler!(req, res));
+const idpSrv = createServer((req, res) => {
+  if (req.url === "/bad-key/jwks") return void res.writeHead(200, { "content-type": "application/json" }).end('{"keys":[null]}');
+  if (idpTokenUnavailable && req.method === "GET" && req.url?.split("?")[0] === "/api/auth/token")
+    return void res.writeHead(503, { "content-type": "application/json" }).end('{"error":"unavailable"}');
+  handler!(req, res);
+});
 await new Promise<void>((r) => idpSrv.listen(0, "127.0.0.1", r));
 const origin = `http://127.0.0.1:${(idpSrv.address() as AddressInfo).port}`;
 const base = `${origin}/api/auth`;
@@ -187,8 +190,12 @@ let caRig: { hostRoot: string; hostHome: string; hostEnv: Record<string, string>
 try {
   // ---------- A. up --user-auth ----------
   console.log("A) cotal up --user-auth --idp <real IdP> --auth-timeout 3 --detach");
+  const malformed = await cotal(["up", "--user-auth", "--idp", `${origin}/bad-key`, "--detach", "--no-manager", "--space", SPACE, "--server", SERVER]);
+  check("first enable with malformed JWKS starts no broker and leaves no IdP pin or project state", malformed.status === 2
+    && field(malformed.out, "Code", "DEPENDENCY_UNAVAILABLE") && malformed.out.includes("did not serve usable JWKS")
+    && !malformed.out.includes("Starting nats-server") && readdirSync(join(root, ".cotal")).length === 0, malformed.out);
   const up = await cotal(["up", "--user-auth", "--idp", base, "--auth-timeout", "3", "--detach", "--server", SERVER, "--space", SPACE]);
-  check("up exits 0", up.status === 0, up.out);
+  check("up exits 0 on the same project with the corrected IdP", up.status === 0, up.out);
   check("up announces the user-auth service + login line", up.out.includes("user-auth service up") && up.out.includes(`cotal login --idp ${base}`), up.out);
   check(
     "up summary reports the complete user-auth component set",
@@ -887,7 +894,7 @@ try {
     check("supervise from that stopped root is refused as stopped, not as stale state to remove",
       stoppedHere.status === 2 && plain(stoppedHere.out).includes(`Mesh: ${SPACE}\n`) && preConnect(stoppedHere.out, "TARGET_UNAVAILABLE") &&
         plain(stoppedHere.out).includes(`"${SPACE}" is stopped; its last operation, \`cotal down\`, completed, so no manager started`) &&
-        plain(stoppedHere.out).includes(`start it again with \`cotal up\` in ${root2}, or start the manager from the folder whose \`cotal up\` started the broker at ${SERVER}`), stoppedHere.out);
+        plain(stoppedHere.out).includes(`start it again with \`cotal up --no-manager\` in ${root2}, or start the manager from the folder whose \`cotal up\` started the broker at ${SERVER}`), stoppedHere.out);
     second.bare = mkdtempSync(join(tmpdir(), "cotal-ua-no-records-"));
     const elsewhere = await cotal(["supervise", "--space", SPACE, "--server", SERVER], { cwd: second.bare });
     check("supervise from a folder with no records names the folder that hosts the space, and writes nothing there",
@@ -902,7 +909,7 @@ try {
     const staticStopped = await cotal(["supervise", "--space", RT, "--server", SERVER], { cwd: root3, env });
     check("supervise from the stopped static root is refused as stopped, naming its own up and the broker's folder",
       staticStopped.status === 2 && plain(staticStopped.out).includes(`Mesh: ${RT}\n`) && preConnect(staticStopped.out, "TARGET_UNAVAILABLE") &&
-        plain(staticStopped.out).includes(`start it again with \`cotal up\` in ${root3}, or start the manager from the folder whose \`cotal up\` started the broker at ${SERVER}`), staticStopped.out);
+        plain(staticStopped.out).includes(`start it again with \`cotal up --no-manager\` in ${root3}, or start the manager from the folder whose \`cotal up\` started the broker at ${SERVER}`), staticStopped.out);
     // A first user-auth team, prepared as the boot's own refusal says. With the IdP's token route
     // answering 503, the boot then ends with its outcome unconfirmed, and the next down says so.
     const TB = `${SPACE}-tb`;

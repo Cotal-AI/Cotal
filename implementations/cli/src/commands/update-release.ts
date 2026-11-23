@@ -58,7 +58,7 @@ export async function npmProxyRefused(result: CommandResult, env: NodeJS.Process
 }
 
 /** Resolve installed first-party surfaces in a disposable prefix, including their npm dependencies. */
-export function checkInstalledClosure(version: string, releasePackages: ReadonlySet<string>, rt: UpdateRuntime): void {
+function checkInstalledClosure(version: string, releasePackages: ReadonlySet<string>, rt: UpdateRuntime): void {
   const names = [...new Set(rt.extensions().filter(entry => entry.pkg.startsWith("@cotal-ai/")).map(entry => entry.pkg))];
   if (!names.length) return;
   const staging = mkdtempSync(join(tmpdir(), "cotal-closure-check-"));
@@ -68,12 +68,13 @@ export function checkInstalledClosure(version: string, releasePackages: Readonly
     writeFileSync(join(staging, "package.json"), JSON.stringify({
       overrides: Object.fromEntries([...releasePackages, ...names].map(name => [name, version])),
     }));
-    const result = rt.npm(["install", "--prefix", staging, "--cache", join(staging, ".npm-cache"), "--logs-max=0", "--update-notifier=false", "--ignore-scripts", "--package-lock=false", "--no-audit", "--no-fund", "--fetch-retries=2", "--fetch-retry-mintimeout=1000", "--fetch-retry-maxtimeout=2000", "--fetch-timeout=15000", "--prefer-online", ...names.map(name => `${name}@${version}`)]);
+    const specs = names.map(name => `${name}@${version}`);
+    const result = rt.npm(["install", "--prefix", staging, "--cache", join(staging, ".npm-cache"), "--json", "--logs-max=0", "--update-notifier=false", "--ignore-scripts", "--package-lock=false", "--no-audit", "--no-fund", "--fetch-retries=2", "--fetch-retry-mintimeout=1000", "--fetch-retry-maxtimeout=2000", "--fetch-timeout=15000", "--prefer-online", ...specs]);
     if (result.signal) throw new DependencyCheckInterrupted(`npm dependency check was terminated by ${result.signal}`);
     if (result.status !== 0) {
-      const detail = `installed extension dependency closure is unavailable: ${failure(result)}`;
+      const detail = `installed extension dependency closure is unavailable: ${failure(result.stderr.trim() ? { ...result, stdout: "" } : result)}`;
       if (/^npm (?:error|ERR!) code ENOSPC\s*$/m.test(result.stderr)) throw new DependencyCheckNoSpace(detail);
-      throw releaseReadError(result, detail);
+      throw releaseReadError(result, detail, { installedSpecs: specs });
     }
   } finally {
     rmSync(staging, { recursive: true, force: true, maxRetries: 3 });
@@ -104,7 +105,7 @@ export async function checkReleaseArchives(version: string, rt: UpdateRuntime): 
         const result = manifests[index]!;
         if (result.status === "rejected") throw new Error(`metadata for ${spec} is unavailable`);
         const manifest = result.value;
-        if (manifest.status !== 0) throw releaseReadError(manifest, `metadata for ${spec} is unavailable`);
+        if (manifest.status !== 0) throw releaseReadError(manifest, `metadata for ${spec} is unavailable`, { metadataSpec: spec });
         let meta: Record<string, unknown>;
         try {
           const payload: unknown = JSON.parse(manifest.stdout);
@@ -143,7 +144,9 @@ export async function checkReleaseArchives(version: string, rt: UpdateRuntime): 
   }
 }
 
-export class ReleaseNotAvailable extends Error {}
+export class ReleaseNotAvailable extends Error {
+  constructor(message: string, readonly scopedMetadataMissing = false) { super(message); }
+}
 export class ReleaseDateExcluded extends Error {}
 export class DependencyCheckInterrupted extends Error {}
 export class DependencyCheckNoSpace extends Error {}
@@ -156,7 +159,7 @@ export function registryNetworkFailure(error: unknown): boolean {
   return code !== undefined && NETWORK_ERROR_CODE.test(code);
 }
 
-export function releaseReadError(result: CommandResult, detail: string): Error {
+export function releaseReadError(result: CommandResult, detail: string, { installedSpecs, metadataSpec }: { installedSpecs?: readonly string[]; metadataSpec?: string } = {}): Error {
   if (result.status !== null && !result.error) {
     try {
       const error = (JSON.parse(result.stdout) as { error?: { code?: unknown; summary?: unknown; detail?: unknown } }).error;
@@ -164,8 +167,20 @@ export function releaseReadError(result: CommandResult, detail: string): Error {
         return new ReleaseDateExcluded(`${detail}: npm's min-release-age or before setting excludes this release. Adjust that date filter and run \`cotal update --self\` again`);
       // A first-party scoped read can fail while the public registry still answers.
       if (!detail.includes("@cotal-ai/") && typeof error?.code === "string" && NETWORK_ERROR_CODE.test(error.code)) return new RegistryUnavailable(detail);
-      if (error?.code === "E404" || error?.code === "ETARGET") return new ReleaseNotAvailable(detail);
-      if (typeof error?.code === "string" && /^[A-Z][A-Z0-9_]{0,39}$/.test(error.code)) {
+      if (error?.code === "E404" || error?.code === "ETARGET") {
+        if (error.code === "E404" && metadataSpec?.startsWith("@cotal-ai/")) {
+          const request = typeof error.summary === "string" ? /\bGET (https?:\/\/\S+) - /.exec(error.summary)?.[1] : undefined;
+          // Use only the origin so npm diagnostics cannot expose credentials or URL tokens.
+          const origin = request ? URL.parse(request)?.origin : undefined;
+          const registryDetail = `${metadataSpec} was not found (npm E404${origin ? ` from ${origin}` : ""}). Check @cotal-ai:registry in .npmrc`;
+          return new ReleaseNotAvailable(registryDetail, true);
+        }
+        if (!installedSpecs) return new ReleaseNotAvailable(detail);
+        // A scoped registry 404 or a missing third-party dependency does not prove release lag.
+        const missing = error.code === "ETARGET" && installedSpecs.find(spec => error.summary === `No matching version found for ${spec}.`);
+        return missing ? new ReleaseNotAvailable(`${missing} is not yet available in the registry`) : new Error(detail);
+      }
+      if (!installedSpecs && typeof error?.code === "string" && /^[A-Z][A-Z0-9_]{0,39}$/.test(error.code)) {
         const registry = detail.includes("@cotal-ai/") ? "the @cotal-ai:registry setting in .npmrc" : "your npm registry settings";
         return new Error(`${detail} (npm ${error.code}${error.code === "ECONNREFUSED" ? ": registry connection refused" : ""}); check ${registry}, authentication, proxy and TLS configuration`);
       }
@@ -174,20 +189,33 @@ export function releaseReadError(result: CommandResult, detail: string): Error {
   return registryNetworkFailure(new Error(failure(result))) ? new RegistryUnavailable(detail) : new Error(detail);
 }
 
-export async function waitForReleaseArchives(version: string, current: string, rt: UpdateRuntime): Promise<ReadonlySet<string> | undefined> {
+export async function waitForReleasePreflight(version: string, current: string, rt: UpdateRuntime, prepareExtensions: () => boolean): Promise<"ready" | "deferred" | "refused"> {
   const now = rt.now ?? Date.now;
   const deadline = now() + 10 * 60_000;
+  rt.out(`Checking cotal-ai@${version} release archives`);
+  let releasePackages: ReadonlySet<string> | undefined;
   for (;;) {
-    try { return await checkReleaseArchives(version, rt); }
-    catch (error) {
+    try {
+      if (!releasePackages) {
+        releasePackages = await checkReleaseArchives(version, rt);
+        if (!prepareExtensions()) return "refused";
+        rt.out(`Checking installed extension dependencies for ${version}`);
+      }
+      checkInstalledClosure(version, releasePackages, rt);
+      return "ready";
+    } catch (error) {
       if (!(error instanceof ReleaseNotAvailable)) throw error;
       const remaining = deadline - now();
       if (remaining <= 0) {
+        if (releasePackages) throw error;
         recordUpdateDeferral(version, "waiting for registry or extension closure availability", true);
-        rt.out(`cotal-ai@${version} is still reaching the registry. Keeping cotal-ai@${current}; no global install was attempted. A later update check will try again.`);
-        return undefined;
+        const reason = error.scopedMetadataMissing ? `cotal-ai@${version} release archives are still unavailable. ${error.message}.` : `cotal-ai@${version} is still reaching the registry.`;
+        rt.out(`${reason} Keeping cotal-ai@${current}; no global install was attempted. A later update check will try again.`);
+        return "deferred";
       }
-      rt.out(`Waiting for cotal-ai@${version} release archives to reach the registry (${Math.ceil(remaining / 1000)} s remaining); cotal-ai@${current} stays installed.`);
+      const pending = releasePackages ? `an installed extension: ${error.message}`
+        : `cotal-ai@${version} release archives${error.scopedMetadataMissing ? `: ${error.message}` : " to reach the registry"}`;
+      rt.out(`Waiting for ${pending} (${Math.ceil(remaining / 1000)} s remaining); cotal-ai@${current} stays installed.`);
       await (rt.sleep ?? (milliseconds => new Promise(resolveSleep => setTimeout(resolveSleep, milliseconds))))(Math.min(15_000, remaining));
     }
   }

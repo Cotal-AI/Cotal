@@ -319,9 +319,9 @@ try {
       turnRelay: {
         pendingTurns: Map<string, Record<string, unknown>>;
       };
-      goalReconcileDone: boolean;
+      goalWriterComponent: { goalReconcileDone: boolean; };
     };
-    seeded.goalReconcileDone = true;
+    seeded.goalWriterComponent.goalReconcileDone = true;
     const turnRow = (goalId: string, acceptedAt: number, deadlineAt: number) => ({
       ref: { endpoint: "m", caller: { owner: seat.owner, actor: seat.actor, uid: seat.uid }, goalId },
       goalId, seat: { name: "s", ...seat }, payload: goalId, acceptedAt, deadlineAt,
@@ -342,9 +342,9 @@ try {
         turnAcceptances: Map<string, { acceptance: Record<string, unknown>; leftoverSince?: number; settled?: { state: string; at: number } }>;
         sweepTurnDeadlines: () => Promise<void>;
       };
-      goalWriter?: unknown;
+      goalWriterComponent: { goalWriter?: unknown; };
     };
-    retryDoors.goalWriter = { ctx: {} };
+    retryDoors.goalWriterComponent.goalWriter = { ctx: {} };
     turnRelayOf(seeded).pendingTurns.delete("stale");
     turnRelayOf(seeded).pendingTurns.delete("live");
     turnRelayOf(retryDoors).turnAcceptances.set("done-already", {
@@ -430,16 +430,16 @@ try {
         pendingTurns: Map<string, { acceptedAt: number; seatDiedAt?: number; seat: { name: string } }>;
       };
       managerInstanceId: string;
-      goalWriter?: unknown;
       adoptTurnGoal: (e: { ref: GoalRef; iid: string; allocated?: { name: string; owner?: string; actor: string; uid: string }; note?: string }) => Promise<void>;
+      goalWriterComponent: { goalWriter?: unknown; };
     };
     // The fixture writes through the LIVE manager's own goal-writer connection: these records are
     // the ones a manager writes, and no other credential in this suite may write them.
-    const live = manager as unknown as { goalWriter?: { nc: unknown; ctx: Parameters<typeof bindGoal>[0]; identity: unknown } };
-    const gw = live.goalWriter;
+    const live = manager as unknown as { goalWriterComponent: { goalWriter?: { nc: unknown; ctx: Parameters<typeof bindGoal>[0]; identity: unknown }; } };
+    const gw = live.goalWriterComponent.goalWriter;
     if (gw === undefined) throw new Error("the live manager has no goal-writer connection; the adoption fixture cannot write its goal");
     const actx = gw.ctx;
-    doors.goalWriter = gw;
+    doors.goalWriterComponent.goalWriter = gw;
     // An unstarted Manager has no instance id yet (start() mints or restores one). The hold below
     // is minted under an instance id, and the goal-writer cred may schedule only under the LIVE
     // manager's, so the adopting incarnation presents as that instance: the shape a restart has,
@@ -448,7 +448,7 @@ try {
     // The schedule publish is pinned to the serving instance's EPOCH as well as its id (the
     // goal-writer's egress rows), so the hold is minted under the live manager's serve epoch,
     // exactly what the accept path stamps as `holdEpoch`.
-    const serveEpoch = (manager as unknown as { serviceServe?: { grant: { epoch: number } } }).serviceServe?.grant.epoch ?? 0;
+    const serveEpoch = (manager as unknown as { servePlane: { serviceServe?: { grant: { epoch: number } }; } }).servePlane.serviceServe?.grant.epoch ?? 0;
     const seatUid = mintLifecycleUid();
     const runner: EpCaller = { owner: "local", actor: "runner", uid: mintLifecycleUid() };
     // The manager keys a relay, and derives its hold, by the caller triple plus the goal id.
@@ -478,7 +478,7 @@ try {
     // KV, the `.schedule` request over the SERVE connection (the timer row is the serving instance's
     // own, SPEC 13.9; the goal-writer holds none, and minting over it is broker-denied). The yield
     // claims the hold, so a fixture without it is a turn no seat could ever yield.
-    const serveJs = jetstream((manager as unknown as { serviceServe: { nc: Parameters<typeof jetstream>[0] } }).serviceServe.nc);
+    const serveJs = jetstream((manager as unknown as { servePlane: { serviceServe: { nc: Parameters<typeof jetstream>[0] }; } }).servePlane.serviceServe.nc);
     await mintCheckpoint(actx.kv, serveJs, space, {
       ref: { endpoint: MANAGER_ENDPOINT, token: holdTokenOf(goalId) },
       instanceId: doors.managerInstanceId, epoch: serveEpoch,
@@ -501,9 +501,9 @@ try {
     // reply is "lost"), then retries the same goal and must hear the answer it earned.
     const adoptDoors = adopting as unknown as {
       serveTurnYield: (c: { owner: string; actor: string; uid: string }, raw: Record<string, unknown>) => Promise<{ goalId: string; state: string }>;
-      goalReconcileDone: boolean;
+      goalWriterComponent: { goalReconcileDone: boolean; };
     };
-    adoptDoors.goalReconcileDone = true;
+    adoptDoors.goalWriterComponent.goalReconcileDone = true;
     // The yield's commit proves the executor's LIVE currency against the agents map (a seat that
     // died between its yield and the commit refuses `expired`); the adopting manager here never
     // started, so its map is empty and the fixture registers the seat the way a resume would.
@@ -800,8 +800,8 @@ try {
     const sr1 = new Manager({ space, servers: broker.servers, runtime: "pty", workspaceRoot });
     await sr1.start();
     const doors = sr1 as unknown as {
-      daemonRenewalOwner: boolean;
       renewDaemonCreds: () => Promise<void>;
+      credentialRenewal: { daemonRenewalOwner: boolean; };
     };
 
     // THE NON-HOLDER: same rail, no lease, names the MANAGER'S OWN store — the answer a bare
@@ -837,8 +837,8 @@ try {
       await until(async () => { await doors.renewDaemonCreds(); return nonHolderAnswers > 0; }, 30_000),
       { nonHolderAnswers, holderAnswers });
     check("a NON-HOLDER answer with the manager's own store is REFUSED: the manager does not take the renewal lease (#1694)",
-      doors.daemonRenewalOwner === false,
-      { daemonRenewalOwner: doors.daemonRenewalOwner, nonHolderAnswers, holderAnswers });
+      doors.credentialRenewal.daemonRenewalOwner === false,
+      { daemonRenewalOwner: doors.credentialRenewal.daemonRenewalOwner, nonHolderAnswers, holderAnswers });
 
     // ROUND 2, blocker 2 REPRODUCTION SHAPE: a manager that already HELD the renewal lease must
     // LOSE it when a later pass refuses. This manager started while the holder answered with a
@@ -857,9 +857,9 @@ try {
     // manager's root and drives a pass while the holder still answers, so the pass reads "shared"
     // and takes the lease; THEN the responders come off the rail for the refusal.
     holderStore = "manager-own";
-    const tookLease = await until(async () => { await doors.renewDaemonCreds(); return doors.daemonRenewalOwner === true; }, 30_000);
+    const tookLease = await until(async () => { await doors.renewDaemonCreds(); return doors.credentialRenewal.daemonRenewalOwner === true; }, 30_000);
     check("the manager held the renewal lease before the refusal (started shared, then the responder answered its store)",
-      tookLease && doors.daemonRenewalOwner === true, { daemonRenewalOwner: doors.daemonRenewalOwner });
+      tookLease && doors.credentialRenewal.daemonRenewalOwner === true, { daemonRenewalOwner: doors.credentialRenewal.daemonRenewalOwner });
 
     await nonHolder.stop().catch(() => {});
     try { holderSub.unsubscribe(); } catch { /* already closed */ }
@@ -880,8 +880,8 @@ try {
     finally { console.error = origSay; }
     const passLog = said.join("\n");
     check("a no-responder rail while the row names a holder REFUSES (undetermined, never absent) and the manager holds no renewal lease",
-      (refusal.includes("names a holder") || passLog.includes("names a holder")) && doors.daemonRenewalOwner === false,
-      { refusal, passLog, daemonRenewalOwner: doors.daemonRenewalOwner });
+      (refusal.includes("names a holder") || passLog.includes("names a holder")) && doors.credentialRenewal.daemonRenewalOwner === false,
+      { refusal, passLog, daemonRenewalOwner: doors.credentialRenewal.daemonRenewalOwner });
 
     // ROUND 2, blocker 1: the row EXISTS (a live PUT) but its bytes do not parse. The core reader
     // swallows the parse failure into `undefined`, so this reads as no-row → "absent" → the manager
@@ -903,8 +903,8 @@ try {
     catch (e) { unreadableRefusal = (e as Error).message; }
     finally { console.error = origSay2; }
     check("a lease row that EXISTS but does not parse is UNREADABLE, not absent: the pass refuses and the manager holds no renewal lease",
-      (unreadableRefusal.includes("could not read") || said2.join("\n").includes("could not read")) && doors.daemonRenewalOwner === false,
-      { unreadableRefusal, passLog: said2.join("\n"), daemonRenewalOwner: doors.daemonRenewalOwner });
+      (unreadableRefusal.includes("could not read") || said2.join("\n").includes("could not read")) && doors.credentialRenewal.daemonRenewalOwner === false,
+      { unreadableRefusal, passLog: said2.join("\n"), daemonRenewalOwner: doors.credentialRenewal.daemonRenewalOwner });
 
     // Case 3: the corrupt row is REPLACED with a holderless one (a row that names no holder —
     // `bucket.update` under the holder's own cred, the one lease-key writer) and the rail still
@@ -923,8 +923,8 @@ try {
     try { await doors.renewDaemonCreds(); }
     catch (e) { absentRefusal = (e as Error).message; }
     check("a holderless or absent lease row with no responder reads ABSENT: the manager may take the renewal lease (the daemon is not bound yet)",
-      absentRefusal === "" && doors.daemonRenewalOwner === true,
-      { absentRefusal, daemonRenewalOwner: doors.daemonRenewalOwner });
+      absentRefusal === "" && doors.credentialRenewal.daemonRenewalOwner === true,
+      { absentRefusal, daemonRenewalOwner: doors.credentialRenewal.daemonRenewalOwner });
 
     await sr1.stop({ withAgents: true }).catch(() => {});
   }

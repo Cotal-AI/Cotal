@@ -29,7 +29,7 @@ import {
   type CompletionResult,
   type ParsedArgs,
 } from "@cotal-ai/core";
-import { CLI_USER_ACTOR, CommandFailure, agentGrants, checkServer, codeSpan, connectOrThrow, connectSpace, endpointAuth, recordOperationSpace, jsonFlag, plainFlag, presentationOf, writeResult, targetFlags, userAuthStateDir, workspaceSecretStore, type Connection, type ConnectFlags, type OutputWarning, concreteChannelProblem, offlineRecipientNotice, spaceStreamsExpected } from "@cotal-ai/workspace";
+import { CLI_USER_ACTOR, CommandFailure, agentGrants, checkServer, codeSpan, connectOrThrow, connectSpace, endpointAuth, recordOperationSpace, jsonFlag, plainFlag, presentationOf, writeResult, targetFlags, userAuthStateDir, workspaceSecretStore, type Connection, type ConnectFlags, type OutputWarning, concreteChannelProblem, offlineRecipientNotice, payloadRefused, spaceStreamsExpected } from "@cotal-ai/workspace";
 import { completedFlagValue, completingFlagValue } from "../lib/completion.js";
 import { batchedRead, openTransient, streamGoneAt } from "../lib/transient.js";
 import { streamsAbsent } from "../lib/space-streams.js";
@@ -98,7 +98,7 @@ export function sendArguments(args: ParsedArgs): SendInput {
   }
   const again = (body: string) => sendAgain(destination, values, body);
   if (args.positionals.length > 1 || bodies !== 1 || values.file === "")
-    throw new CommandFailure("refused", "USAGE_INVALID", "choose exactly one body: a quoted message, --file/-f <path>, or --stdin", { remedy: again('"<message>"') });
+    throw new CommandFailure("refused", "USAGE_INVALID", "choose exactly one body: a quoted message, --file/-f <path>, or --stdin", { remedy: again(values.json ? '--json "<message>"' : '"<message>"') });
   // Stdin is read only when asked for, so a lone `-` is refused rather than published.
   if (args.positionals[0] === "-")
     throw new CommandFailure("refused", "USAGE_INVALID", 'a lone "-" is not read as stdin; send stdin with --stdin or --file -', { remedy: again("--stdin") });
@@ -154,9 +154,10 @@ function sendAgain(destination: Pick<SendInput, "mode" | "target">, values: Valu
 interface FileRefusal { target(file: string): { space?: string; file: string }; instead: string }
 
 function fileRefusal(input: SendInput, values: Values): FileRefusal {
+  const output = values.json ? "--json " : values.plain ? "--plain " : "";
   return {
     target: (file) => { const space = connectSpace(values); return { ...(space === undefined ? {} : { space }), file }; },
-    instead: `or ${sendAgain(input, values, '"<message>"')}`,
+    instead: `or ${sendAgain(input, values, `${output}"<message>"`)}`,
   };
 }
 
@@ -251,7 +252,10 @@ function decoded(bytes: Buffer, file: string | undefined, { target, instead }: F
     if (file !== undefined) throw new UnusableFile(`the message file ${JSON.stringify(file)} is not valid UTF-8`, target(file), `save it as UTF-8 text, ${instead}`);
     throw new CommandFailure("refused", "USAGE_INVALID", "the message input is not valid UTF-8");
   }
-  if (!text.trim()) throw new CommandFailure("refused", "USAGE_INVALID", "the explicit message input is empty");
+  if (!text.trim()) {
+    if (file !== undefined) throw new UnusableFile(`the message file ${JSON.stringify(file)} is empty or contains only whitespace`, target(file), `write a nonempty message in the file, ${instead}`);
+    throw new CommandFailure("refused", "USAGE_INVALID", "the explicit message input is empty");
+  }
   return text;
 }
 
@@ -325,12 +329,6 @@ function editDistance(a: string, b: string): number {
     row = next;
   }
   return row[b.length]!;
-}
-
-/** nats.js refuses a frame over the broker's `max_payload` before writing any of it. */
-function payloadRefused(error: unknown): boolean {
-  for (let e: unknown = error; e instanceof Error; e = e.cause) if (e.name === "InvalidArgumentError" && e.message.includes("max_payload")) return true;
-  return false;
 }
 
 /** JetStream answers 10023, insufficient resources, to a write while its file store holds more than

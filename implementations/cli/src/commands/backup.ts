@@ -2,7 +2,7 @@ import { hostname } from "node:os";
 import { drainAndClose } from "@cotal-ai/core";
 import { randomUUID } from "node:crypto";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
-import { accessSync, constants, lstatSync, realpathSync } from "node:fs";
+import { accessSync, constants, existsSync, lstatSync, realpathSync } from "node:fs";
 import type { ConsumerInfo } from "@nats-io/jetstream";
 import type { NatsConnection } from "@nats-io/transport-node";
 import {
@@ -70,7 +70,7 @@ export const backupFlags: FlagSpec[] = [jsonFlag, plainFlag,
   { name: "yes", short: "y", type: "boolean", description: "recover/cleanup-fallback: confirm only the exact reviewed restore attempt" },
   { name: "dry-run", type: "boolean", description: "recover/cleanup-fallback: read the original journal and paths without a lock or write" },
   { name: "discard-history", type: "boolean", description: "cleanup-fallback: also delete a previous store that holds the only copy of the history or workflow runs the restore left out" },
-  { name: "only", type: "string", value: "<full|registry>", description: "create: artifact selection (default full; registry is the only partial); restore: only registry, to restore just the registry (default follows the artifact)" },
+  { name: "only", type: "string", value: "<selection>", description: "create takes full (default) or registry. Restore takes only registry and follows the artifact's selection if omitted" },
   { name: "store-dir", type: "string", value: "<dir>", description: "create: preserved source store; restore: restore target (default .cotal/nats)" },
   { name: "accept-missing-source", type: "boolean", description: "restore: explicit disaster consent when the inode-bound preserved source is absent" },
 ];
@@ -488,7 +488,18 @@ export function validateBackupArguments(args: ParsedArgs): void {
   const attempt = new RegExp(`^(${mode === "recover" ? "restore|backup" : "restore"})-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`, "i");
   if (maintenance && !attempt.test(directory)) throw new CommandFailure("refused", "USAGE_INVALID", mode === "recover" ? "name the full attempt id, restore-<uuid> or backup-<uuid>; a prefix, path or backup directory is refused" : "name the full restore attempt id, restore-<uuid>; a prefix, path or backup directory is refused", { remedy: "cotal status shows the attempt this root holds, under Maintenance" });
   const allowed = new Set(["json", "plain", ...(mode === "create" ? ["only", "store-dir"] : mode === "restore" ? ["only", "store-dir", "accept-missing-source"] : maintenance ? ["yes", "dry-run", ...(mode === "cleanup-fallback" ? ["discard-history"] : [])] : [])]);
-  if (Object.keys(args.values).some((flag) => !allowed.has(flag))) throw new CommandFailure("refused", "USAGE_INVALID", mode === "restore" ? "backup restore accepts only --only, --store-dir and --accept-missing-source; the space, broker and runtime come from the preserved cut" : "backup inspection and verification accept no creation, target or restore inputs");
+  const unsupported = Object.keys(args.values).filter((flag) => !allowed.has(flag));
+  if (unsupported.length) {
+    const flags = unsupported.map((flag) => `--${flag}`).join(", ");
+    if (mode === "create") {
+      throw new CommandFailure("refused", "USAGE_INVALID", `backup create does not accept ${flags}`, { remedy: `remove ${flags} to create the backup` });
+    }
+    if (maintenance) {
+      const selection = mode === "cleanup-fallback" && unsupported.includes("store-dir") ? ". The full attempt ID alone selects its recorded fallback" : "";
+      throw new CommandFailure("refused", "USAGE_INVALID", `backup ${mode} does not accept ${flags}${selection}`);
+    }
+    throw new CommandFailure("refused", "USAGE_INVALID", mode === "restore" ? "backup restore accepts only --only, --store-dir and --accept-missing-source; the space, broker and runtime come from the preserved cut" : "backup inspection and verification accept no creation, target or restore inputs");
+  }
   if (mode === "create") selection(args.values.only as string | undefined);
   // The native restore accepts only a registry narrowing and otherwise follows the artifact's own
   // selection, so an explicit `full` could not be honored over a registry-only artifact. Refused here,
@@ -555,13 +566,22 @@ async function createBackup(args: ParsedArgs, observed: BackupObservation): Prom
   const journal = readMaintenanceJournal(root);
   if (!journal) throw notReady(root, undefined);
   const destinationPath = resolve(destination);
+  const folder = dirname(destinationPath);
   let destinationExists: boolean;
   try { destinationExists = lstatSync(destinationPath, { throwIfNoEntry: false }) !== undefined; }
   catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
+    if (code === "EACCES") {
+      const withChmod = oneLine(folder) === folder && existsSync(folder)
+        ? ` with ${codeSpan(`chmod u+x ${shellWord(folder)}`)}` : "";
+      throw new CommandFailure("refused", "PERMISSION_DENIED", `this account cannot search ${folder}, so the backup cannot be created in it; nothing was written`, {
+        target: { directory: destinationPath, folder },
+        remedy: `make the path to that folder searchable${withChmod}, or name a destination in a folder this account can write and search`,
+      });
+    }
     if (code !== "ENOTDIR" && code !== "ELOOP") throw error;
     const problem = code === "ENOTDIR" ? "contains a parent that is not a directory" : "contains a symbolic-link loop";
-    throw new CommandFailure("refused", "USAGE_INVALID", `the backup destination ${destinationPath} ${problem} (${code}); nothing was written`, { target: { directory: destinationPath, folder: dirname(destinationPath) }, native: { code }, remedy: "name a destination with an existing directory as its parent", selfContained: true });
+    throw new CommandFailure("refused", "USAGE_INVALID", `the backup destination ${destinationPath} ${problem} (${code}); nothing was written`, { target: { directory: destinationPath, folder }, native: { code }, remedy: "name a destination with an existing directory as its parent", selfContained: true });
   }
   if (destinationExists) {
     // The partial artifact of an interrupted create is named with the command that removes it.
@@ -581,7 +601,6 @@ async function createBackup(args: ParsedArgs, observed: BackupObservation): Prom
     .find((path) => overlaps(canonicalFuturePath(destinationPath), path));
   if (cleaned)
     throw new CommandFailure("refused", "USAGE_INVALID", `the backup destination ${destinationPath} is inside ${cleaned}, which \`cotal clean all\` removes; nothing was written`, { target: { directory: destinationPath, removedBy: cleaned }, remedy: `name a destination outside ${cleaned}`, selfContained: true });
-  const folder = dirname(destinationPath);
   try { accessSync(folder, constants.W_OK | constants.X_OK); }
   catch {
     // Do not offer a command whose operand the terminal would change by escaping invisibles.

@@ -50,6 +50,8 @@ export interface UpdateRecovery {
   /** Admission from the verified staged target, consumed only under the live parent capability. */
   readonly admission?: UpdateAdmission;
   readonly snapshot?: string;
+  /** The verified published target is reconciling without using its foreign rollback snapshot. */
+  readonly reconcileWithoutSnapshot?: boolean;
   /** Protected execution journal for staged publication. Absent on published in-place records. */
   readonly execution?: string;
   readonly renames?: readonly { readonly from: string; readonly to: string; readonly done: boolean }[];
@@ -110,6 +112,7 @@ export function readUpdateRecovery(): UpdateRecovery | undefined {
   if (record.preparedRestart !== undefined && typeof record.preparedRestart !== "boolean") throw new Error("invalid prepared restart evidence");
   if (record.admission !== undefined && !validUpdateAdmission(record.admission)) throw new Error("invalid target update admission");
   if (record.snapshot !== undefined && typeof record.snapshot !== "string") throw new Error("invalid update snapshot path");
+  if (record.reconcileWithoutSnapshot !== undefined && typeof record.reconcileWithoutSnapshot !== "boolean") throw new Error("invalid update snapshot reconciliation mode");
   if (record.execution !== undefined && typeof record.execution !== "string") throw new Error("invalid update execution journal path");
   if (record.renames !== undefined && (!Array.isArray(record.renames) || record.renames.some(entry => !entry || typeof entry.from !== "string" || typeof entry.to !== "string" || typeof entry.done !== "boolean"))) throw new Error("invalid update rename journal");
   if (record.owner && !recoveryOwner(record) && !recoverySnapshotProblem(record)) throw new Error("invalid update transaction owner");

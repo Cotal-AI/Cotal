@@ -35,7 +35,7 @@ const {
   mintGeneration, mintAcceptedToken, withIssuerSession, readRunAdmission, EP_UNBOUND_CALLER_AUTHORITY,
   issuedPermitsSubject, issuedPermitsPattern, chatSubject, registry, eventChannel, LEASE_TTL_MS,
   instanceOnlyManagerCapabilities, runCallerCapabilities, createRunAdmission, admissionBucket,
-  activateRun, createRunSpec, recordRunProgram, readRunRecord, startTimerWriter,
+  activateRun, createRunSpec, recordRunProgram, readRunRecord, startTimerWriter, writeRunStatus,
 } = await import("../../packages/core/dist/index.js");
 const { jetstream, jetstreamManager } = await import("@nats-io/jetstream");
 type EpCallerT = import("@cotal-ai/core").EpCaller;
@@ -100,6 +100,23 @@ const ownedSeats: OwnedSeatT[] = [];
 const spaceA = `runhost-${Math.random().toString(36).slice(2, 8)}`;
 const auth = await createSpaceAuth(spaceA);
 const brokerA = await bootBroker(auth);
+async function seedCompletedHistory(): Promise<void> {
+  const instanceId = mintLifecycleUid();
+  const now = Date.now();
+  const pins = { seed: "history", startedAt: now, yieldEvery: 1, stepBudget: 1, effectCeiling: 1, languageVersion: "1" };
+  // Two keys per run put the inherited checkpoint records on a later batch page.
+  for (let i = 0; i < 520; i++) {
+    const runId = `run-history-${i}`;
+    const takeoverId = newTakeoverId();
+    const creds = await mintCreds(auth, newIdentity(), "run-driver", { runDriver: { endpoint: "manager", runId, takeoverId, instanceId, epoch: 1 } });
+    const writer = await connect({ servers: brokerA.servers, ...standaloneConnectOpts({ creds, tls: false }), maxReconnectAttempts: 0 });
+    try {
+      const kv = await openRecordsBucket(writer, spaceA);
+      const observedSpecRevision = await createRunSpec(kv, "manager", runId, { pins, createdAt: now });
+      await writeRunStatus(kv, "manager", runId, { observedSpecRevision, state: "completed", holder: `fixture.${takeoverId}`, epoch: 1, fencingToken: 1, journalHigh: 1, at: now });
+    } finally { await writer.close(); }
+  }
+}
 const wsA = mkdtempSync(join(tmpdir(), "cotal-runhost-wsA-"));
 scratch.push(wsA);
 mkdirSync(join(wsA, ".cotal", "agents"), { recursive: true });
@@ -706,8 +723,9 @@ try {
     c("run-ps on the successor shows all three runs completed",
       ps.ok === true && [pureId, cpId, runId].every((x) => (ps.data as RunListRowT[]).find((row) => row.runId === x)?.state === "completed"), ps.data);
   }
-  console.log("A5a. a dropped inventory connection does not strand inherited runs");
+  console.log("A5a. a fresh batched scan takes back inherited runs after a dropped connection");
   {
+    await seedCompletedHistory();
     const startPaused = async (file: string) => {
       const r = await callB("run-start", { source: CHECKPOINT, file });
       const runId = (r.data as { runId?: string } | undefined)?.runId ?? "";
@@ -722,7 +740,10 @@ try {
     const logs: string[] = [];
     const sockets = new Set<Socket>();
     let droppedJwt: string | undefined;
+    let retryJwt: string | undefined;
     let heldScan: (() => void) | undefined;
+    let batches = 0;
+    let pointReads = 0;
     const port = Number(new URL(brokerA.servers).port);
     const relay = createServer((client) => {
       const upstream = connectSocket(port, "127.0.0.1");
@@ -745,16 +766,23 @@ try {
           client.end("-ERR 'Authorization Violation'\r\n");
           return;
         }
-        if (heldScan === undefined && jwt !== undefined && /(?:H?PUB) \$JS\.API\.STREAM\.MSG\.GET\.[^\r\n]+\r\n[^\r\n]*"next_by_subj":"[^"]*\.run\.manager\.\*\.spec"/.test(data)) {
+        if (heldScan === undefined && jwt !== undefined && /(?:H?PUB) \$JS\.API\.DIRECT\.GET\.KV_cotal_records_/.test(data)) {
           if (droppedJwt === undefined) {
             droppedJwt = jwt;
             client.resetAndDestroy();
             return;
           }
           // Hold the retry's first inventory read until the gate and unchanged run are observed.
+          retryJwt = jwt;
+          batches++;
           client.pause();
           heldScan = () => { upstream.write(bytes); client.resume(); };
           return;
+        }
+        if (retryJwt !== undefined && jwt === retryJwt) {
+          const chunk = bytes.toString("latin1");
+          batches += (chunk.match(/(?:H?PUB) \$JS\.API\.DIRECT\.GET\.KV_cotal_records_/g) ?? []).length;
+          pointReads += (chunk.match(/(?:H?PUB) \$JS\.API\.STREAM\.MSG\.GET\./g) ?? []).length;
         }
         upstream.write(bytes);
       });
@@ -779,6 +807,7 @@ try {
       const recovered = releaseScan && await until(async () => { const v = await successor.status({ runId }); return v.status?.epoch === 2 ? v : undefined; }, 10_000);
       c("a fresh scan takes back the admitted run once without another reconcile call",
         recovered?.status?.epoch === 2 && pending(recovered, "Ship it?") !== undefined && recovered.journal.filter((r) => r.kind === "activation").length === 2, { status: recovered?.status, logs });
+      c("the retry reads multiple batches without point reads for completed runs", batches > 1 && pointReads < 20, { batches, pointReads });
       const revoked = await successor.status({ runId: revokedId });
       c("the retry still leaves the revoked run parked", revoked.status?.epoch === 1 && revoked.revoked?.by === "operator"
         && revoked.journal.filter((r) => r.kind === "activation").length === 1, { status: revoked.status, logs });
@@ -1154,7 +1183,7 @@ try {
   const realError = console.error, realExit = process.exit;
   console.error = (...a: unknown[]) => { LOGS.push(a.map(String).join(" ")); };
   process.exit = ((code?: number) => { throw new Error(`exit ${code}: ${LOGS.join("\n")}`); }) as never;
-  let hostedOut = "", localOut = "", ps = "";
+  let hostedOut = "", localOut = "", ps = "", plainPs = "";
   let hostedRefusal: { outcome?: unknown; code?: unknown } | undefined, unknownRun: { outcome?: unknown; code?: unknown; message?: unknown } | undefined;
   let unknownPin: { outcome?: unknown; code?: unknown; message?: unknown; remedy?: unknown } | undefined, pinMs = -1, pinnedPs = "";
   const madeUp = mintLifecycleUid();
@@ -1165,6 +1194,7 @@ try {
     const realWrite = process.stdout.write;
     process.stdout.write = ((chunk: string | Uint8Array) => { LOGS.push(typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk)); return true; }) as typeof process.stdout.write;
     try { ps = await cli(["ps"], { json: true }); } finally { process.stdout.write = realWrite; }
+    plainPs = await cli(["ps"], { plain: true });
     await cli(["show", "run-00000000000000000000000000000000"], { json: true }).catch((e: unknown) => { unknownRun = e as typeof unknownRun; });
     // A pin that names no running manager is refused before any describe, so it does not wait out
     // the describe's deadline, and it names the manager that does run.
@@ -1184,6 +1214,8 @@ try {
   const listed = (() => { try { return JSON.parse(ps) as { command?: unknown; outcome?: unknown; target?: { space?: unknown }; result?: { kind?: unknown; items?: unknown } }; } catch { return undefined; } })();
   c("B3. `cotal run ps` still reads there, and lists nothing", listed?.command === "run" && listed.outcome === "ok" && listed.target?.space === spaceB
     && listed.result?.kind === "runs" && Array.isArray(listed.result.items) && listed.result.items.length === 0, ps);
+  c("B3a. The open mesh list explains that it cannot host runs and offers offline simulation instead of start",
+    plainPs.includes("Open meshes cannot host workflow runs.") && plainPs.includes("cotal r simulate <file>") && !plainPs.includes("cotal r start"), plainPs);
   c("B4. `cotal run show` of a run the manager holds no record of is refused TARGET_NOT_FOUND for the command kernel", unknownRun?.outcome === "refused" && unknownRun.code === "TARGET_NOT_FOUND" && String(unknownRun.message).includes("no record"), unknownRun);
   c("B5. `cotal run ps --on <id>` naming no running manager is refused TARGET_NOT_FOUND at once, naming the pin and the manager that runs",
     unknownPin?.outcome === "refused" && unknownPin.code === "TARGET_NOT_FOUND" && pinMs < 5_000
@@ -1217,7 +1249,7 @@ try { await delivery?.stop(); } catch { /* teardown */ }
   if (stillUp.running.length) console.log(`  ! seat processes still running after SIGKILL: ${stillUp.running.join(", ")}`);
 }
 
-const EXPECTED_CELLS = 108;
+const EXPECTED_CELLS = 110;
 if (pass + fail !== EXPECTED_CELLS) {
   console.log(`SUITE INCOMPLETE — ran ${pass + fail} of ${EXPECTED_CELLS} cells; a partial run is not a pass`);
   fail += 1;

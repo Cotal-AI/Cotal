@@ -39,21 +39,12 @@
 import { readFileSync, readdirSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { createSuite } from "@cotal-ai/smoke-kit";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const DIR = join(ROOT, ".github", "workflows");
 
-let pass = 0;
-let fail = 0;
-function check(name: string, cond: boolean, extra?: unknown): void {
-  if (cond) {
-    pass++;
-    console.log(`  ✓ ${name}`);
-  } else {
-    fail++;
-    console.log(`  ✗ FAIL: ${name}`, extra ?? "");
-  }
-}
+const { check, finish, passed, failed } = createSuite();
 
 /** The population this file is asserting over. A count that drifts is a workflow added or removed,
  *  and either deserves a human deciding whether it needs the queue rule, so the numbers are exact
@@ -271,11 +262,12 @@ for (const g of all.flatMap((w) => w.groups)) {
   }
 }
 
-console.log(`\n${fail === 0 ? "WORKFLOW CONCURRENCY SMOKE OK ✅" : "WORKFLOW CONCURRENCY SMOKE FAILED ❌"}  (${pass} passed, ${fail} failed)`);
+console.log(`\n${failed() === 0 ? "WORKFLOW CONCURRENCY SMOKE OK ✅" : "WORKFLOW CONCURRENCY SMOKE FAILED ❌"}  (${passed()} passed, ${failed()} failed)`);
 // Printed on BOTH outcomes, deliberately, and this is not cosmetic. The marker means the suite
 // REACHED ITS END, not that it passed, which is what lets mutation-proof tell a real named red from
 // a run that died in the middle and reddened for an unrelated reason. Gating it on success graded
 // all three mutations INCONCLUSIVE: each was red and correctly named, and each was refused for
 // having stopped early, because the only evidence it had not was the line this print withheld.
-console.log(`SUITE COMPLETE: ${pass} passed, ${fail} failed`);
-process.exit(fail === 0 ? 0 : 1);
+console.log(`SUITE COMPLETE: ${passed()} passed, ${failed()} failed`);
+finish();
+process.exit(failed() === 0 ? 0 : 1);

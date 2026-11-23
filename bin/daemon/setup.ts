@@ -14,6 +14,7 @@ import { ensureHostedManager, hostingPrerequisite } from "./hosting.js";
  * It composes the existing commands and adds no new authority. Pausing, renaming and disconnecting
  * stay separate commands; this one does not absorb them.
  */
+import { lstatSync } from "node:fs";
 import { claimUpdateClosureAccess, codeSpan, CommandFailure, findMesh, findPreparedSpace, hasUserAuthState, keptCatalogCredentials, resolveOnPath } from "@cotal-ai/workspace";
 import { normalizeIdpUrl } from "@cotal-ai/auth";
 import type { DaemonPaths } from "./endpoint.js";
@@ -23,7 +24,7 @@ import { connectCheckViaDaemon, managerViaDaemon, queryDaemon, registerViaDaemon
 import { exchangeDesktopRequest } from "./desktop.js";
 import type { PeerPid, PeerUid } from "./endpoint.js";
 import type { HostedManager, LoginPrompt, LoginResult, RegisterResult, ServiceConnectionState } from "./protocol.js";
-import { applyInstall, installedDaemonIdentity, planUninstall, planInstalledPathRefresh, startInstalled, restartInstalled } from "./install.js";
+import { applyInstall, installedDaemonIdentity, planUninstall, planInstalledPathRefresh, startInstalled, restartInstalled, unitReceiptFile } from "./install.js";
 import { fromRegister } from "./service.js";
 import { DAEMON_PROTOCOL_VERSION } from "./endpoint.js";
 import { daemonCommandCopy, NON_USER_AUTH_MESSAGE, NON_USER_AUTH_REMEDY } from "./guidance.js";
@@ -117,17 +118,22 @@ async function ensureInstalled(opts: InstallOptions, steps: SetupStep[]): Promis
   finally { release(); }
 }
 
+/** A verified unit, including a recovered one. A failed inspection of a recorded unit still refuses setup. */
+export function installedUnitForSetup(paths: DaemonPaths, home?: string): string | undefined {
+  try { return planUninstall(paths, home).unit; }
+  catch (error) {
+    if (lstatSync(unitReceiptFile(paths), { throwIfNoEntry: false })) throw error;
+    return undefined;
+  }
+}
+
 async function ensureInstalledUnderClosure(opts: InstallOptions, steps: SetupStep[]): Promise<string | undefined> {
-  let unit: string | undefined;
+  let unit = installedUnitForSetup(opts.paths, opts.daemonHome);
   let outcome: string, detail: string;
-  try {
-    // A recorded, unchanged unit means this is already installed; `planUninstall` is the exact
-    // same check `uninstall` makes, so the two can never disagree about what is installed.
-    const existing = planUninstall(opts.paths, opts.daemonHome);
-    unit = existing.unit;
+  if (unit !== undefined) {
     outcome = "already-installed";
-    detail = `${existing.unit} is already installed; it was left as it is`;
-  } catch {
+    detail = `${unit} is already installed; it was left as it is`;
+  } else {
     // Nothing is recorded, so this would install. A daemon that is already answering was started
     // some other way, by hand or by a container entrypoint, and installing now would start a
     // second one that the lifetime lock refuses. Say so instead of leaving a unit that cannot run,

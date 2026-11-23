@@ -12,6 +12,17 @@ readers treat as unconfigured. Upgrade readers together so older clients do not 
 as empty configured channels. Agent writes use `cotal_channel_info` with `set` or `remove` and the
 revision from a prior read. Space defaults and history purge remain operator actions.
 
+## A person's control of their own agents
+
+On a space where people sign in, a person can now stop, attach to, type into and interrupt every
+agent under their own owner, whatever their scope, and read those agents' event channels. The auth
+callout issues these permissions. Update and restart every member of the callout queue, the full auth
+service and each `--callout-only` replica, then reconnect each person's clients. A connect that an
+old member answers still gets the old permissions.
+
+The Manager cluster advances to revision 53 with the targeted `interrupt` command. An older Manager
+does not serve it, so update Managers before a client interrupts a turn through them.
+
 ## Tool permissions on the agent endpoint
 
 A Claude Code seat that Cotal launches on a signed-in space now serves its tool permissions on its
@@ -1111,7 +1122,7 @@ nothing on a running mesh changes.
 
 - If a script read the refusal from stderr, change it to read `error.message` and `error.remedy` from
   the envelope.
-- When the envelope cannot be written to stdout, the text report still goes to stderr.
+- When the envelope cannot be written to stdout, the text report goes to stderr unless the reader closed the pipe early.
 
 ## Endpoint caller files after 0.99.0
 
@@ -2050,10 +2061,10 @@ path. A separate broker or manager can stay running.
 
 ### What stops working
 
-- Replace a script's `cotal history --force` with `cotal history clear --yes`. `--force` is refused
-  on every `history` form, `history clear` included, and clears nothing. Add `--dms` to the
-  explicit clear command only when the purge should include direct messages and the identity holds
-  that authority.
+- `--force` is refused on every `history` form and clears nothing. For a history read or preview,
+  remove `--force` and keep the other arguments. For a script that intentionally purges history,
+  use `cotal history clear --yes` and keep the target options. Include `--dms` only when the purge
+  should include direct messages and the identity holds that authority.
 - `history clear` accepts no channel argument, read filters, or `--follow`. It purges every channel
   in the selected space. These inputs are refused. They are not treated as a selective purge.
 - Bare `history` reads channels within the caller's read grant. It never clears stored messages.
@@ -2063,10 +2074,10 @@ path. A separate broker or manager can stay running.
 
 ### Before the upgrade
 
-Find scripts that pass `--force` to `history` and change their explicit purge invocation. No stored
-state or credential backup is needed for this CLI-only transition. Before an intentional history
-purge, follow the deployment's usual backup procedure. Reads do not make a backup, and they do not
-restore data that retention has already removed.
+Find scripts that pass `--force` to `history` and update them according to the operation they
+intend. No stored state or credential backup is needed for this CLI-only transition. Before an
+intentional history purge, follow the deployment's usual backup procedure. Reads do not make a
+backup, and they do not restore data that retention has already removed.
 
 ## Status output in 0.91.0
 

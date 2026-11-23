@@ -1,5 +1,5 @@
 import { type CompletionResult, type ConnectorModelCatalog, type FlagSpec, type FlagValues, type ModelInfo, type ParsedArgs } from "@cotal-ai/core";
-import { CommandFailure, jsonFlag, plainFlag, presentationOf, targetFlags, writeResult, type Block, type Report, type Section, resolveControlTarget } from "@cotal-ai/workspace";
+import { brokerAddressForDisplay, CommandFailure, jsonFlag, plainFlag, presentationOf, targetFlags, writeResult, type Block, type Report, type Section, resolveControlTarget } from "@cotal-ai/workspace";
 import { extensionNames } from "../ext-loader.js";
 import { cliControl, onFlag, onRerun, refuseControlCreds } from "../lib/control.js";
 import { managerPin } from "../lib/manager-choice.js";
@@ -72,16 +72,21 @@ export async function models(args: ParsedArgs): Promise<void> {
         ? { partial: { message: `${failed.length} of ${items.length} model catalogs could not be read`, remedy: "inspect the named application's warning and correct its stated cause before retrying" } }
         : {}),
     },
-    modelsView,
+    (result) => {
+      const option = (flag: string, value: string) => value.startsWith("-") ? [`${flag}=${value}`] : [flag, value];
+      const base = onRerun("cotal models", {}, [...option("--space", result.space), ...(v.harness === undefined ? [] : option("--harness", v.harness))]);
+      const server = v.server === undefined ? undefined : t.server;
+      const atBroker = (command: string) => server !== undefined && brokerAddressForDisplay(server) !== server
+        ? `${command} --server <url>` : onRerun(command, { server });
+      return modelsView(result, atBroker(v.refresh ? `${base} --refresh` : base), atBroker(`${base}${v.harness === undefined ? " -H <application>" : ""} --refresh`));
+    },
   );
 }
 
-function modelsView(result: ModelsResult): Report {
+function modelsView(result: ModelsResult, read: string, refresh: string): Report {
   const instance = result.requestedManagerInstanceId ?? result.answeringManagerInstanceId;
   const token = (value: string) => /^[A-Za-z0-9_-]+$/.test(value);
-  const selected = result.space && instance && [result.space, instance].every(token)
-    ? ` --space ${result.space} --on ${instance}`
-    : " --space <space> --on <manager-instance>";
+  const selected = instance && token(instance) ? instance : "<manager-instance>";
   const notAsked = result.notAskedManagerInstanceIds ?? [];
   return { sections: [
     { title: "Model catalogs", blocks: [{ kind: "fields", rows: [["Space", result.space], ["Requested manager", result.requestedManagerInstanceId ?? "selected by native authority"], ["Answering manager", result.answeringManagerInstanceId ?? "not reported"], ["Manager epoch", result.answeringManagerEpoch === null ? "not reported" : String(result.answeringManagerEpoch)], ...(notAsked.length ? [["Not asked", notAsked.join(", ")] as [string, string]] : [])] }, { kind: "lines", lines: [
@@ -91,8 +96,8 @@ function modelsView(result: ModelsResult): Report {
     // A manager lists a row for every application its install names, so an empty list means it has none.
     ...(result.items.length ? result.items.map(catalogSection) : [{ title: "Models", blocks: [{ kind: "lines" as const, lines: ["No model catalogs were returned: the answering manager has no agent application installed."] }] }]),
     { title: "Next", blocks: [{ kind: "commands", items: [
-      ...(result.space && token(result.space) ? notAsked.filter(token).map((id) => ({ command: `cotal models --space ${result.space} --on ${id}`, description: "Ask a manager this read did not ask" })) : []),
-      { command: `cotal models -H <application> --refresh${selected}`, description: "Refresh one application's catalog on the selected manager" },
+      ...(result.space && token(result.space) ? notAsked.filter(token).map((id) => ({ command: `${read} --on ${id}`, description: "Ask a manager this read did not ask" })) : []),
+      { command: `${refresh} --on ${selected}`, description: "Refresh one application's catalog on the selected manager" },
       { command: "cotal cfg", description: "See your launch defaults" },
     ] }] },
   ] };

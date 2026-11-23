@@ -1,7 +1,6 @@
 import { spawn } from "node:child_process";
-import { closeSync, copyFileSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, renameSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { dirname, isAbsolute, join, parse, resolve, relative, sep } from "node:path";
+import { closeSync, copyFileSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { dirname, isAbsolute, join, resolve, relative, sep } from "node:path";
 import { registry, type Command, type Connector, type FlagSpec, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
 import { CommandFailure, RESERVED_CONNECTOR_NAMES, beginExtensionNpmMutation, bindExtensionPeers, cacheExtensionServiceMetadata, cacheServicePreset, cacheCommand, cacheConnector, cacheExtension, cacheLocalProcess, cmdSpawnSpec, extensionLocalProcesses, extensionPackageDir, extensionProvides, extensionsDir, extensionsManifestPath, importExtensionEntry, installedExtensionPackage, loadExtensionsManifest, loadMeshes, localProcessPath, parsePid, probeLiveness, providedWords, jsonFlag, plainFlag, presentationOf, provenance, saveExtensionsManifest, seededCommandsMismatch, writeResult, type InstalledExtension, type InstalledExtensionPackage, type LocalProcess, type LocalProcessContext, type Presentation, type Report, type ServicePreset } from "@cotal-ai/workspace";
 import { c } from "../ui.js";
@@ -11,10 +10,11 @@ import { cotalRoot } from "../lib/paths.js";
 import { resolveSpace } from "../lib/status.js";
 import { claimExtensionMutation, extensionUpdatePassOwnedBy } from "../lib/ext-mutation.js";
 import { withInstallUmask } from "../lib/install-umask.js";
+import { npmInvocation } from "../lib/npm-invocation.js";
 import { runSeed } from "../seed/reconcile.js";
 import { assertStageVerifier, stageExtensions } from "../lib/extension-stage.js";
-import { connectorConfigDir, extensionEntry } from "@cotal-ai/workspace";
-import { codeSpan, CorruptExtensionPackageError, inspectLock, extensionNpmMutationPath, oneLine, type OutputWarning } from "@cotal-ai/workspace";
+import { connectorConfigDir, extensionEntry, extensionReinstallAdvice, isExtensionPathSpec as isPathSpec } from "@cotal-ai/workspace";
+import { CorruptExtensionPackageError, inspectLock, extensionNpmMutationPath, oneLine, type OutputWarning } from "@cotal-ai/workspace";
 import { selfArgv } from "../lib/self-exec.js";
 import { spawnSync } from "node:child_process";
 import { isAuthenticSeedChild, markSeedChildLive, clearChildMarker } from "../seed/lock.js";
@@ -34,14 +34,7 @@ const EXT_USAGE = "usage: cotal ext [list] [--json|--plain] | ext add <npm-packa
 /** Parent binding for update's internal isolated re-add. Ordinary `ext add` never reads it. */
 export const EXT_UPDATE_PARENT_ENV = "COTAL_EXT_UPDATE_PARENT";
 
-/** Classify a `cotal ext add` spec as a local path (vs a registry name). A path is a relative `.`/`./`/
- *  `.\` spec or an absolute one on the NATIVE platform — POSIX `/…`, Windows drive `C:\…` / `C:/…`, or
- *  UNC `\\…`. A POSIX-only test misclassified a Windows absolute path (it starts with a drive letter,
- *  not `/`) as a registry name, which broke first-run seeding on Windows (the seed-store spec is always
- *  absolute). `absolute` is injectable so the classification is unit-testable for both platforms. */
-export function isPathSpec(spec: string, absolute: (p: string) => boolean = isAbsolute): boolean {
-  return spec.startsWith(".") || absolute(spec);
-}
+export { isPathSpec };
 
 /** A first-party package named without a version installs this cotal's own version, as setup and
  *  `update` install it: the official packages release in lockstep with the core they link to, so the
@@ -66,7 +59,8 @@ export function validateExtArguments(args: ParsedArgs): void {
     throw usage(sub === "root" ? "ext root prints its path raw and has no --json or --plain" : `ext ${sub}: --json and --plain are taken by the listing only`);
   }
   if ((sub === "add" || sub === "remove") && (args.positionals.length !== 2 || !operand)) throw usage(EXT_USAGE);
-  if (sub === "remove" && operand && !/^(?:@[a-z0-9-][a-z0-9._~-]*\/)?[a-z0-9-][a-z0-9._~-]*$/i.test(operand)) {
+  // npm accepts an initial underscore in either part of a scoped name.
+  if (sub === "remove" && operand && !/^(?:[a-z0-9-]|@[a-z0-9_-][a-z0-9._~-]*\/[a-z0-9_-])[a-z0-9._~-]*$/i.test(operand)) {
     throw usage(`invalid extension package name "${oneLine(operand)}". Give the package name as shown by \`cotal ext list\``);
   }
   if (sub === "seed" && args.positionals.length !== 1) throw usage("cotal ext seed takes no operands");
@@ -134,16 +128,17 @@ async function npm(args: string[], prefix: string, seeding = false): Promise<{ s
   // The prefix verifier requires every host-compatible dependency, including native optional
   // packages. CLI inclusion wins over an ambient omit=optional, also when npm removes a sibling.
   // Select the extension prefix explicitly so Corepack never treats its ancestors as a project.
-  const { file, args: spawnArgs, windowsVerbatimArguments } = cmdSpawnSpec("npm", [...args, "--prefix", prefix, "--include=optional", "--legacy-peer-deps"]);
   const env = { ...process.env };
   delete env[EXT_UPDATE_PARENT_ENV];
+  const npm = npmInvocation(env, [...args, "--prefix", prefix, "--include=optional", "--legacy-peer-deps"]);
+  const { file, args: spawnArgs, windowsVerbatimArguments } = cmdSpawnSpec(npm.file, npm.args, npm.env);
   const seedGroup = seeding && process.platform === "linux";
   const mutation = beginExtensionNpmMutation(undefined, seedGroup);
   let published = false;
   let preservePending = false;
   let stopForwarding = () => {};
   try {
-    const child = withInstallUmask(() => spawn(file, spawnArgs, { cwd: parse(homedir()).root, env, windowsVerbatimArguments, detached: seedGroup }));
+    const child = withInstallUmask(() => spawn(file, spawnArgs, { cwd: npm.cwd, env: npm.env, windowsVerbatimArguments, detached: seedGroup }));
     if (seedGroup && child.pid !== undefined) {
       const pid = child.pid;
       const forward = (signal: NodeJS.Signals) => {
@@ -263,6 +258,13 @@ export interface ExtensionInstallRequest {
   readonly source?: "seeded";
 }
 
+// Out-of-prefix extraneous entries describe another tree, not dependencies of this prefix.
+function dropForeignLockEntries(lock: { packages?: Record<string, { extraneous?: boolean }> }): void {
+  for (const [key, entry] of Object.entries(lock.packages ?? {})) {
+    if (entry.extraneous === true && (key.startsWith("../") || isAbsolute(key))) delete lock.packages![key];
+  }
+}
+
 /** Install a verified set off-line from readers, then promote its complete prefix once. Caller owns writer. */
 export async function installExtensionSet(
   requests: readonly ExtensionInstallRequest[],
@@ -281,6 +283,11 @@ export async function installExtensionSet(
   const interrupt = (): void => { interrupted = true; };
   process.on("SIGINT", interrupt); process.on("SIGTERM", interrupt);
   try {
+    // npm reads installed package paths physically. Use that spelling for its prefix and local file specs.
+    const npmPrefix = realpathSync(stage.prefix);
+    const livePrefix = join(realpathSync(ownerConfig), "extensions");
+    // npm's hidden lock describes the copied node_modules at its original path.
+    rmSync(join(npmPrefix, "node_modules", ".package-lock.json"), { force: true });
     // Keep missing local extensions in the inventory for explicit repair/removal, but do not ask npm
     // to reinstall them while reconciling other packages. Their original download directory may be gone.
     const absent = manifestBefore.extensions.filter(entry =>
@@ -291,10 +298,11 @@ export async function installExtensionSet(
       const path = join(stage.prefix, name);
       if (!existsSync(path)) continue;
       const value = JSON.parse(readFileSync(path, "utf8"), (_key, item: unknown) =>
-        typeof item === "string" && item.startsWith("file:") ? `file:${resolve(extensionsDir(), item.slice(5))}` : item) as {
+        typeof item === "string" && item.startsWith("file:") ? `file:${resolve(livePrefix, item.slice(5))}` : item) as {
           dependencies?: Record<string, string>;
-          packages?: Record<string, { dependencies?: Record<string, string> }>;
+          packages?: Record<string, { dependencies?: Record<string, string>; extraneous?: boolean }>;
         };
+      if (name === "package-lock.json") dropForeignLockEntries(value);
       const dependencies = name === "package.json" ? value.dependencies : value.packages?.[""]?.dependencies;
       for (const entry of absent) {
         if (!dependencies?.[entry.pkg]?.startsWith("file:")) continue;
@@ -310,7 +318,8 @@ export async function installExtensionSet(
       rmSync(join(stage.prefix, "node_modules", request.pkg), { recursive: true, force: true });
     }
     const mutationPath = extensionNpmMutationPath();
-    const result = await npm(["install", "--save", "--no-audit", "--no-fund", "--install-links", ...requests.map(request => request.spec)], stage.prefix);
+    const specs = requests.map(({ spec }) => isPathSpec(spec) ? realpathSync(spec) : spec);
+    const result = await npm(["install", "--save", "--no-audit", "--no-fund", "--install-links", ...specs], npmPrefix);
     if (existsSync(mutationPath)) stage.retain();
     if (interrupted) throw new ExtensionAddInterrupted(requests[0]!.pkg);
     if (result.status !== 0) throw new Error(`extension set npm install failed: ${npmInstallFailure(result.output)}`);
@@ -343,9 +352,10 @@ export async function installExtensionSet(
       if (!existsSync(path)) continue;
       const value = JSON.parse(readFileSync(path, "utf8"), (_key, item: unknown) => {
         if (typeof item !== "string" || !item.startsWith("file:")) return item;
-        const destination = resolve(stage.prefix, item.slice(5));
-        return `file:${relative(join(ownerConfig, "extensions"), destination).split(sep).join("/")}`;
+        const destination = resolve(npmPrefix, item.slice(5));
+        return `file:${relative(livePrefix, destination).split(sep).join("/")}`;
       });
+      if (name === "package-lock.json") dropForeignLockEntries(value);
       writeFileSync(path, JSON.stringify(value, null, 2) + "\n");
     }
     const verified = loadExtensionsManifest();
@@ -779,8 +789,10 @@ function list(presentation: Presentation): void {
     const path = join(dir, "package.json");
     let problem: string;
     try {
-      if (installedExtensionPackage(entry.pkg)) return [];
-      problem = lstatSync(dir, { throwIfNoEntry: false })
+      const installed = installedExtensionPackage(entry.pkg);
+      if (installed && installed.version === entry.version) return [];
+      if (installed) problem = `is ${oneLine(installed.version)} on disk at ${dir}, but the manifest pins ${oneLine(entry.version)}`;
+      else problem = lstatSync(dir, { throwIfNoEntry: false })
         ? `has a corrupt package at ${dir}: ${path} is missing`
         : `is not installed at ${dir}`;
     } catch (error) {
@@ -788,12 +800,7 @@ function list(presentation: Presentation): void {
         ? `has a corrupt package.json at ${path}`
         : `could not be checked: ${path} is unreadable`;
     }
-    // Do not echo a registry spec containing a URL or opaque selector in a text warning.
-    const recovery = entry.source === "seeded" ? "Run `cotal ext seed --repair` to reinstall it."
-      : isPathSpec(entry.spec) || /^(?:@[a-z0-9._~-]+\/)?[a-z0-9._~-]+(?:@[a-z0-9._~^*<>=|+ -]+)?$/i.test(entry.spec)
-        ? `Run ${codeSpan(`cotal ext add ${shellWord(entry.spec)}`)} to reinstall it.`
-        : `Run ${codeSpan(`cotal ext remove ${shellWord(entry.pkg)}`)} to drop the record, or reinstall with the original spec.`;
-    return [{ code: "DEPENDENCY_UNAVAILABLE", target: { pkg: entry.pkg }, message: `Extension ${entry.pkg} ${problem}. ${recovery}` }];
+    return [{ code: "DEPENDENCY_UNAVAILABLE", target: { pkg: entry.pkg }, message: `Extension ${entry.pkg} ${problem}. ${extensionReinstallAdvice(entry)}` }];
   });
   writeResult(presentation, {
     command: "ext", target: null, result: { kind: "extensions", root: extensionsDir(), items: entries.map(extensionRow) },

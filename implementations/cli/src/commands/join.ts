@@ -2,6 +2,7 @@ import { userInfo } from "node:os";
 import * as readline from "node:readline";
 import {
   CotalEndpoint,
+  assertValidChannel,
   parseJoinLink,
   resolvePeer,
   AmbiguousPeerError,
@@ -44,6 +45,7 @@ import { CommandFailure, activateTerminalSeat, issueTerminalSeat, retireTerminal
 import { withControlConnection } from "@cotal-ai/workspace/control";
 import { credentialEnded } from "../lib/connect.js";
 import { shellWord } from "../lib/endpoint-errors.js";
+import { FlagValueRefusal } from "../lib/flag-value-refusal.js";
 import { withProvisioner } from "../lib/provisioner.js";
 import { resolveSpace } from "../lib/status.js";
 import { activityDetail, c, presenceDetail, statusBadge, stderrLine } from "../ui.js";
@@ -134,10 +136,44 @@ export async function join(args: ParsedArgs): Promise<void> {
   }
 }
 
+function resolveJoinChannel(flag: string | undefined, linked: string | undefined): string {
+  const input = flag ?? linked ?? "general";
+  const displayed = input.startsWith("#");
+  const channel = displayed ? input.slice(1) : input;
+  try {
+    assertValidChannel(channel);
+  } catch (e) {
+    throw new CommandFailure("refused", "USAGE_INVALID", (e as Error).message, {
+      remedy: displayed ? "pass a valid channel, for example `--channel team.chat`" : undefined,
+      cause: e,
+      selfContained: true,
+    });
+  }
+  if (displayed && flag === undefined) {
+    throw new CommandFailure("refused", "USAGE_INVALID", "the join link channel cannot start with #", {
+      remedy: `override the link channel with \`--channel=${shellWord(channel)}\``,
+      selfContained: true,
+    });
+  }
+  return channel;
+}
+
+function readJoinCreds(path: string, channel: string, space: string | undefined): string {
+  const read = `--allow-subscribe${channel.startsWith("-") ? "=" : " "}${shellWord(channel)}`;
+  const replacement = "If you need a replacement, ask the space's owner to mint it with " +
+    `\`cotal auth mint <name> --provision ${read}${space === undefined ? "" : ` --space ${shellWord(space)}`} --no-persona --out <file>\`, then join with --lifecycle-uid set to the new UID that mint reports`;
+  try {
+    return readCredsFile(path, { malformedRemedy: `pass the complete credential file as it was issued. ${replacement}` });
+  } catch (e) {
+    if (isConnectRefusal(e) && e.code === "TARGET_NOT_FOUND") throw e.failure(() => `check the path. ${replacement}`);
+    throw e;
+  }
+}
+
 async function joinSpace(args: ParsedArgs): Promise<void> {
   const values = args.values as { space?: string; name?: string; role?: string; channel?: string; server?: string; kind?: string; link?: string; token?: string; creds?: string; "lifecycle-uid"?: string; tls?: boolean; "expires-in"?: string; "expires-at"?: string };
   const expiresAt = seatExpiryAt(values);
-  const expiryRefusal = (why: string) => new CommandFailure("refused", "USAGE_INVALID", `--expires-in and --expires-at set the expiry of the credential a bare join mints on a static mesh; ${why}`, { remedy: "drop the flag", selfContained: true });
+  const expiryRefusal = (why: string) => new FlagValueRefusal(`--expires-in and --expires-at set the expiry of the credential a bare join mints on a static mesh; ${why}`, "drop the flag");
 
   // A join link carries server + auth + space; explicit flags still override it.
   let link: ReturnType<typeof parseJoinLink> | undefined;
@@ -150,12 +186,12 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
   // A HUMAN joining from a terminal, not a persona-driven agent: they typed `cotal join` to land
   // somewhere and talk, so a landing channel is the point of the command. `general` stays the
   // default HERE only - an agent's read set comes from its persona and defaults to no channel.
-  const channel = values.channel ?? link?.channels?.[0] ?? "general";
+  const channel = resolveJoinChannel(values.channel, link?.channels?.[0]);
   const auth = {
     token: values.token ?? link?.token,
     user: link?.user,
     pass: link?.pass,
-    creds: values.creds ? readCredsFile(values.creds) : undefined,
+    creds: values.creds ? readJoinCreds(values.creds, channel, values.space ?? link?.space) : undefined,
     tls: values.tls ?? link?.tls ?? false,
   };
   // The join session's lifecycle UID (SPEC 13.1). The pairing input (--lifecycle-uid /
@@ -259,6 +295,8 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
     // ConsumerNotFound (a self-minted console had no manager to pre-create its dm_<id> durable) AND drops
     // the last broad `manager` mint off the console. Open mode (no auth) is unchanged — connect bare.
     const target = await resolveTargetOrThrow({ server: values.server, space: values.space });
+    if (expiresAt !== undefined && target.mode === "user")
+      throw expiryRefusal(`mesh "${target.space}" is a user-auth mesh, where the session's bearer comes from your login`);
     await registrationPolicy(target);
     space = target.space;
     server = target.server;
@@ -272,8 +310,8 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
     } else {
       await preflightOrThrow(target); // one refusal if the mesh is down / won't auth, + stale-prune
     }
-    if (expiresAt !== undefined && (target.mode === "user" || !target.auth))
-      throw expiryRefusal(`mesh "${space}" ${target.mode === "user" ? "is a user-auth mesh, where the session's bearer comes from your login" : "is open and mints no credential"}`);
+    if (expiresAt !== undefined && !target.auth)
+      throw expiryRefusal(`mesh "${space}" is open and mints no credential`);
     if (target.mode !== "user" && target.auth) {
       const spaceAuth = target.auth;
       const identity = newIdentity();
@@ -387,25 +425,24 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
       : `ask the space's owner to mint a credential with \`cotal auth mint <name> --provision --allow-subscribe ${channel} --allow-publish ${channel} --out <file>\`, then join with the lifecycle UID that mint reports`);
 
   // A headless join holds presence and logs mesh events without reading stdin.
-  const interactive = process.stdin.isTTY === true && !inputDisabledByFlag();
+  const terminal = process.stdout.isTTY ? process.stdout : process.stderr.isTTY ? process.stderr : undefined;
   let rlClosed = false;
-  const rl = interactive
+  let promptReady = false;
+  const rl = terminal && process.stdin.isTTY && !inputDisabledByFlag()
     ? readline.createInterface({
         input: process.stdin,
-        output: process.stdout,
+        output: terminal,
         prompt: c.dim(`${name}> `),
       })
     : undefined;
 
   const print = (line: string) => {
-    if (rl && !rlClosed) {
-      readline.cursorTo(process.stdout, 0);
-      readline.clearLine(process.stdout, 0);
-      console.log(line);
-      rl.prompt(true);
-    } else {
-      console.log(line);
+    if (terminal && rl && promptReady && !rlClosed) {
+      readline.cursorTo(terminal, 0);
+      readline.clearLine(terminal, 0);
     }
+    console.log(line);
+    if (rl && promptReady && !rlClosed) rl.prompt(true);
   };
 
   const who = (card: { name: string; id?: string; role?: string }) => c.bold(joinPeerLabel(card));
@@ -560,19 +597,19 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
   process.on("SIGINT", () => void shutdown(130));
   process.on("SIGTERM", () => void shutdown(143));
 
-  if (!interactive || !rl) {
+  if (!terminal || !rl) {
     console.log(
-      c.dim(`${peerLabel({ name, role: values.role })} holding presence in ${space} - headless`),
+      c.dim(`${peerLabel({ name, role: values.role })} holding presence in ${space} - headless, stdin is not read`),
     );
     return Promise.race([whenLost(), sessionFinished]); // park; event handlers do the work
   }
 
-  console.log(
-    c.dim(`Joined ${c.bold(space)} as ${who({ name, role: values.role })} on #${channel}.`),
+  terminal.write(
+    `${c.dim(`Joined ${c.bold(space)} as ${who({ name, role: values.role })} on #${channel}.`)}\n`,
   );
-  console.log(
+  terminal.write(
     c.dim(
-      `${!concreteChannel ? patternBroadcastNotice : canBroadcast ? "Type to broadcast." : `Read-only on #${channel}; this credential has no publish permission.`} Commands: /who  /dm <name> <msg>  /anycast <role> <msg>  /working [x]  /waiting [x]  /idle  /me <activity>  /quit\n`,
+      `${!concreteChannel ? patternBroadcastNotice : canBroadcast ? "Type to broadcast." : `Read-only on #${channel}; this credential has no publish permission.`} Commands: /who  /dm <name> <msg>  /anycast <role> <msg>  /working [x]  /waiting [x]  /idle  /me <activity>  /quit\n\n`,
     ),
   );
   setTimeout(() => {
@@ -583,8 +620,6 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
           others.map((p) => who(p.card) + " " + statusBadge(p.status) + presenceDetail(p)).join(c.dim(", ")),
       );
   }, 400);
-  if (!leaving && !rlClosed) rl.prompt();
-
   const setStatus = async (status: PresenceStatus, activity?: string) => {
     if (activity) await ep.setActivity(activity);
     await ep.setStatus(status);
@@ -672,5 +707,7 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
     }
     if (!leaving && !rlClosed) rl.prompt();
   });
+  promptReady = true;
+  if (!leaving && !rlClosed) rl.prompt();
   await Promise.race([whenLost(), sessionFinished]);
 }

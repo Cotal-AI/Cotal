@@ -29,7 +29,7 @@ const PACKAGE_ROOT = fileURLToPath(new URL("..", import.meta.url));
 type PluginEntry = Record<string, unknown>;
 
 /** What the `cotal` plugin carries from this package. */
-const COTAL_ASSETS = [".claude-plugin", ".mcp.json", "hooks", "monitors", "dist/seat.cjs", "dist/mcp.cjs", "dist/docs-bundle.bin", "dist/docs-index.bin", "dist/hook.cjs", "dist/monitor.cjs"] as const;
+const COTAL_ASSETS = [".claude-plugin", ".mcp.json", "hooks", "monitors", "dist/seat.cjs", "dist/mcp.cjs", "dist/docs-bundle.bin", "dist/docs-index.bin", "dist/hook.cjs", "dist/monitor.cjs", "dist/command-reader.cjs"] as const;
 
 /** The version the materialized `cotal` plugin carries: this release, then a digest of every file it
  *  holds, so `cotal status` can tell a copy an earlier release wrote. */
@@ -765,8 +765,15 @@ export const claudeSetupProvider: ConnectorSetupProvider = {
     explain: "Rewrites the copy of the Cotal plugin that Claude Code sessions load, and Cotal's entry in Claude Desktop, for this release.",
     context: [DOCS_URL],
     run({ cotal, skills }) {
+      const installed = installedPluginForRefresh();
       const path = desktopConfigPath();
-      if (!installedPluginForRefresh() && (path === undefined || readDesktopEntry(path) === undefined)) return "not installed";
+      if (!installed && (path === undefined || readDesktopEntry(path) === undefined)) return "not installed";
+      const protectedDir = [dirname(claudeUserMcpPath()), pluginCacheDir()]
+        .find((dir) => isConfigProtected(join(dir, ".cotal-setup.lock")));
+      if (protectedDir) {
+        const integration = installed === "cotal-skills" ? "Claude skills refresh" : "Claude integration refresh";
+        return `${integration} deferred because ${protectedDir} is read-only. Make that directory writable, then run \`cotal update\`.`;
+      }
       // Re-read installed state under the mutation locks before changing any integration.
       return withPluginLock(() => {
         const entries = installedForRefresh();

@@ -511,7 +511,7 @@ try {
     const q = await manager.startAgent({ name: QUIET, agent: "rc-seat-quiet", cwd: repoRoot, events: false });
     if (!q.ok) throw new Error(`quiet seat did not start: ${JSON.stringify(q)}`);
     // The manager's own accounting, read off the plane the ceiling is enforced against.
-    const live = (): number => (manager as unknown as { sessionPlane?: { liveSessions: number } }).sessionPlane?.liveSessions ?? -1;
+    const live = (): number => (manager as unknown as { servePlane: { sessionPlane?: { liveSessions: number } } }).servePlane.sessionPlane?.liveSessions ?? -1;
     const settle = async (want: number, ms: number): Promise<number> => {
       const deadline = Date.now() + ms;
       while (Date.now() < deadline && live() !== want) await wait(200);
@@ -649,13 +649,13 @@ try {
     const gate = manager as unknown as {
       authorizeNamed: (...args: unknown[]) => Promise<string | undefined>;
       attachAuthorized: (...args: unknown[]) => Promise<unknown>;
-      sessionPlane?: { liveSessions: number };
+      servePlane: { sessionPlane?: { liveSessions: number }; };
     };
     const authorize = gate.authorizeNamed;
     const establish = gate.attachAuthorized;
     const message = "scope revoked during reconnect backoff";
     let revoked = false, denials = 0, establishments = 0;
-    const live = () => gate.sessionPlane?.liveSessions ?? -1;
+    const live = () => gate.servePlane.sessionPlane?.liveSessions ?? -1;
     const baseline = live();
     gate.authorizeNamed = async function (...args) {
       if (revoked) { denials++; return message; }

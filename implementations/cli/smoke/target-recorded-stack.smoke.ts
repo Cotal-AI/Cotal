@@ -66,7 +66,7 @@ if (!existsSync(BIN)) {
 interface Envelope {
   outcome: string;
   target: { space?: string | null } | null;
-  result: { selected?: { resolved: boolean; code?: string; message?: string; space?: string; recordedRoot?: string }; hints?: string[] } | null;
+  result: { kind?: string; selected?: { resolved: boolean; code?: string; message?: string; space?: string; recordedRoot?: string }; hints?: string[] } | null;
   error?: { code: string; message: string; remedy?: string };
   warnings?: { code: string; message: string }[];
 }
@@ -127,6 +127,31 @@ for (const mode of ["--json", "--plain"]) {
   check(`down ${mode} keeps the missing-stack diagnosis and next step`, missing.status === 2 && (mode === "--json"
     ? missing.envelope?.error?.code === "TARGET_NOT_FOUND" && JSON.stringify(missing.envelope.target) === JSON.stringify({ root }) && missingText.stderr.includes(missing.envelope.error.message) && missingText.stderr.includes(missing.envelope.error.remedy ?? "missing remedy")
     : missing.stderr === missingText.stderr), shown(missing));
+}
+
+const prepared = realpathSync(mkdtempSync(join(home, "prepared-")));
+const other = realpathSync(mkdtempSync(join(home, "other-")));
+check("space create prepares the first project", run(["space", "create", "example", "--root", "."], prepared).status === 0);
+sandbox(prepared);
+const mismatch = '--space "other" does not match the space "example" prepared in this folder; nothing was stopped';
+for (const mode of ["--json", "--plain"]) {
+  const wrong = runDown(["down", "--space", "other", mode], prepared);
+  check(`down ${mode} names the mismatched space and does not suggest stopping this project`,
+    refusedWith(wrong, "UNSUPPORTED", mismatch, 'locate the project root for space "other" before retrying') &&
+      (mode !== "--json" || wrong.envelope?.target === null), shown(wrong));
+  const match = runDown(["down", "--space", "example", mode], prepared);
+  check(`down ${mode} still treats the matching prepared space as stopped`, match.status === 0 && (mode === "--json"
+    ? match.envelope?.outcome === "no-op" && match.envelope.target?.space === "example" && match.envelope.result?.kind === "stack-not-running"
+    : match.stdout.includes("is not running")), shown(match));
+}
+check("space create prepares the other project", run(["space", "create", "other", "--root", "."], other).status === 0);
+for (const mode of ["--json", "--plain"]) {
+  const known = runDown(["down", "--space", "other", mode], prepared);
+  check(`down ${mode} names the other space's recorded project root`,
+    refusedWith(known, "UNSUPPORTED", mismatch, `retry from the project root for space "other" at ${other}`), shown(known));
+}
+for (const space of ["example", "other"]) {
+  check(`remove the ${space} fixture registration`, run(["space", "forget", space], root).status === 0);
 }
 
 const now = new Date().toISOString();
@@ -289,7 +314,7 @@ const recreatedUp = run(["up", "--json"], moved);
 rmSync(root, { recursive: true });
 renameSync(moved, root);
 check("up in a moved folder whose space this machine does not record refuses CONFLICT and names only --adopt",
-  movedUp.status === 2 && movedUp.envelope?.error?.code === "CONFLICT" && (movedUp.envelope.error.message ?? "").includes(`recorded at ${root}, so this folder was moved from there`) && movedUp.envelope.error.remedy === adoptOnly, shown(movedUp));
+  movedUp.status === 2 && movedUp.envelope?.error?.code === "CONFLICT" && (movedUp.envelope.error.message ?? "").includes(`recorded at ${root}, so this folder was moved from there`) && movedUp.envelope.error.remedy === readRemedy(adoptOnly), shown(movedUp));
 check("status and whoami there name the same next step",
   (movedStatus.envelope?.result?.hints ?? []).includes(readRemedy(adoptOnly)) && movedWho.status === 2 && movedWho.envelope?.error?.remedy === readRemedy(adoptOnly), { status: shown(movedStatus), whoami: shown(movedWho) });
 check("ps in a moved folder targets the explicit selection",
@@ -297,14 +322,14 @@ check("ps in a moved folder targets the explicit selection",
 {
   const holds = `this folder holds the records of "la07" and was moved from ${root}`;
   check("bare cotal there says the folder was moved from the recorded folder, with the same step",
-    movedEntry.status === 0 && /^sel07 · /m.test(movedEntry.stdout) && movedEntry.stdout.includes(`\n${holds}; ${adoptOnly}\n`), shown(movedEntry));
+    movedEntry.status === 0 && /^sel07 · /m.test(movedEntry.stdout) && movedEntry.stdout.includes(`\n${holds}; ${readRemedy(adoptOnly)}\n`), shown(movedEntry));
   check("status in a moved folder reports the explicit selection",
     statusOnSelection(movedStatusText, movedStatusSelected), { text: movedStatusText.stdout.slice(0, 1400), json: movedStatusSelected.envelope?.result?.selected });
 }
 check("clean store in that moved folder refuses TARGET_UNAVAILABLE with the same step, and the store stays",
-  refusedWith(movedClean, "TARGET_UNAVAILABLE", `the stack journal in ${moved} was recorded at ${root}, so this folder is a copy or was moved from there; nothing was removed`, adoptOnly) && movedStore, shown(movedClean));
+  refusedWith(movedClean, "TARGET_UNAVAILABLE", `the stack journal in ${moved} was recorded at ${root}, so this folder is a copy or was moved from there; nothing was removed`, readRemedy(adoptOnly)) && movedStore, shown(movedClean));
 check("with empty folders at the old path it is still moved, and names the same step",
-  recreatedUp.status === 2 && (recreatedUp.envelope?.error?.message ?? "").includes(`recorded at ${root}, so this folder was moved from there`) && recreatedUp.envelope?.error?.remedy === adoptOnly, shown(recreatedUp));
+  recreatedUp.status === 2 && (recreatedUp.envelope?.error?.message ?? "").includes(`recorded at ${root}, so this folder was moved from there`) && recreatedUp.envelope?.error?.remedy === readRemedy(adoptOnly), shown(recreatedUp));
 // With la07 prepared at the old path, moving back starts it again; adopting it here needs a forget first.
 {
   check("rig: prepare la07 at its root again", run(["space", "create", "la07", "--json"]).status === 0);
@@ -319,11 +344,11 @@ check("with empty folders at the old path it is still moved, and names the same 
   rmSync(root, { recursive: true });
   renameSync(moved, root);
   check("up, down, whoami and whoami --space there all name moving back, or forgetting and adopting",
-    routes.every((r, i) => r.status === 2 && r.envelope?.error?.remedy === (i < 2 ? back : readRemedy(back))), routes.map(shown));
+    routes.every((r) => r.status === 2 && r.envelope?.error?.remedy === readRemedy(back)), routes.map(shown));
   check("status --space there says the folder was moved and names the same step",
     (status.envelope?.result?.selected?.message ?? "") === `"la07" is prepared in ${root}, which no longer exists, and this folder's stack journal was recorded there, so this folder was moved from there` && (status.envelope?.result?.hints ?? []).includes(readRemedy(back)), shown(status));
   check("with empty folders at the old path, up says to move them aside first",
-    recreated.status === 2 && recreated.envelope?.error?.remedy === `move what is now at ${root} aside, such as empty folders a running broker created there, then move this folder back to ${root} and run the command again there; ${adopt}`, shown(recreated));
+    recreated.status === 2 && recreated.envelope?.error?.remedy === readRemedy(`move what is now at ${root} aside, such as empty folders a running broker created there, then move this folder back to ${root} and run the command again there; ${adopt}`), shown(recreated));
   check("rig: forget la07", run(["space", "forget", "la07", "--json"]).status === 0);
 }
 // A folder whose .cotal links to this project's is refused by up and down before anything reads through
@@ -445,13 +470,13 @@ rmSync(linked, { recursive: true, force: true });
   const path = join(brought, ".cotal", "stack-controller.json");
   writeFileSync(path, JSON.stringify({ ...JSON.parse(readFileSync(path, "utf8")), broker: { storeDir: join(root, ".cotal", "nats") } }, null, 2) + "\n", { mode: 0o600 });
   renameSync(root, away);
-  const command = `cotal space create la07 --adopt --root ${brought}`;
+  const command = `${launcher} space create la07 --adopt --root ${brought}`;
   const plain = run(["space", "create", "la07", "--json"], brought);
   check("space create there without --adopt refuses CONFLICT, exit 2, naming the --adopt command",
-    plain.status === 2 && plain.envelope?.error?.code === "CONFLICT" && plain.envelope.error.remedy === `${launcher} space create la07 --adopt --root ${brought}`, shown(plain));
+    plain.status === 2 && plain.envelope?.error?.code === "CONFLICT" && plain.envelope.error.remedy === command, shown(plain));
   const status = run(["status", "--json"], brought), up = run(["up", "--json"], brought);
   check("status there names the same step as up, which adopts it",
-    up.status === 2 && (up.envelope?.error?.remedy ?? "").startsWith(`adopt it with \`${command}\`;`) && (status.envelope?.result?.hints ?? []).includes(readRemedy(up.envelope?.error?.remedy ?? "-")), { status: shown(status), up: shown(up) });
+    up.status === 2 && (up.envelope?.error?.remedy ?? "").startsWith(`adopt it with \`${command}\`;`) && (status.envelope?.result?.hints ?? []).includes(up.envelope?.error?.remedy ?? "-"), { status: shown(status), up: shown(up) });
   const adopted = run(["space", "create", "la07", "--adopt", "--json"], brought);
   const journal = JSON.parse(readFileSync(path, "utf8")) as { root: string; space: string; server: string; broker?: { storeDir: string }; members: { instanceId: string | null; state: string }[] };
   renameSync(away, root);
@@ -469,7 +494,7 @@ rmSync(linked, { recursive: true, force: true });
   writeFileSync(path, JSON.stringify({ ...JSON.parse(readFileSync(path, "utf8")), root: `${root}\tx` }, null, 2) + "\n", { mode: 0o600 });
   const up = run(["up", "--json"], renamed);
   check("up there refuses CONFLICT and names only the adopt command, since up refuses the recorded path",
-    up.status === 2 && up.envelope?.error?.code === "CONFLICT" && (up.envelope.error.message ?? "").includes("so this folder was moved from there") && up.envelope.error.remedy === `to run it from this folder, adopt it with \`cotal space create la07 --adopt --root ${renamed}\`; \`cotal up\` refuses the recorded folder, whose path holds a control character or a bidirectional formatting mark`, shown(up));
+    up.status === 2 && up.envelope?.error?.code === "CONFLICT" && (up.envelope.error.message ?? "").includes("so this folder was moved from there") && up.envelope.error.remedy === readRemedy(`to run it from this folder, adopt it with \`cotal space create la07 --adopt --root ${renamed}\`; \`cotal up\` refuses the recorded folder, whose path holds a control character or a bidirectional formatting mark`), shown(up));
   const adopted = run(["space", "create", "la07", "--adopt", "--json"], renamed);
   check("--adopt there rewrites the journal to name this folder", adopted.status === 0 && (JSON.parse(readFileSync(path, "utf8")) as { root: string }).root === renamed, shown(adopted));
   check("rig: forget the adopted space", run(["space", "forget", "la07", "--json"], renamed).status === 0);

@@ -87,7 +87,7 @@
     {
       "name": "static retirement leaves the hosted secret-store credential key intact",
       "file": "implementations/manager/src/managed-static-lifecycle.ts",
-      "find": "        await attemptCleanup(failed, `secret ${creds}`, () => secrets.delete(agentSecretKeyForFile(creds, this.deps.space())));\n",
+      "find": "        await attemptCleanup(failed, `secret ${creds}`, () => secrets.delete(agentSecretKeyForFile(creds, this.config.space)));\n",
       "replace": "",
       "expectRed": "the secret-store credential key is deleted",
       "cell": "the secret-store credential key is deleted"

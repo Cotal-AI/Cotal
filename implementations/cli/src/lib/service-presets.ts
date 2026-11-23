@@ -1,18 +1,20 @@
 import { brokerUrlHasUserinfo, registry, type Command, type FlagSpec, type ParsedArgs } from "@cotal-ai/core";
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { brokerUrlCredentialRefusal, cacheServicePreset, CommandFailure, extensionProvides, findMesh, hasUserAuthState, installedExtensionPackage, isCommandFailure, loadExtensionsManifest, oneLine, resolveNativeServiceTarget, runtimeInstallHint, segmentedKey, serviceMetadataDigest, spaceMaterialKey, validateServiceAdapterOptions, validateServiceAdapterPaths, verifiedExtensionServicePresets, WEB_SERVICE_ADAPTER, type ServiceDefinitionInput, type ServicePreset, type ServicePresetDefault } from "@cotal-ai/workspace";
+import { assertManagerName, brokerUrlCredentialRefusal, cacheServicePreset, codeSpan, CommandFailure, extensionProvides, findMesh, hasUserAuthState, installedExtensionPackage, isCommandFailure, loadExtensionsManifest, oneLine, resolveNativeServiceTarget, runtimeInstallHint, segmentedKey, serviceMetadataDigest, spaceMaterialKey, validateServiceAdapterOptions, validateServiceAdapterPaths, verifiedExtensionServicePresets, WEB_SERVICE_ADAPTER, type ServiceDefinitionInput, type ServicePreset, type ServicePresetDefault } from "@cotal-ai/workspace";
 import { installedExtensionsEnabled } from "../ext-loader.js";
 import { metadataPositionals } from "./command-path.js";
 import { shellWord } from "./endpoint-errors.js";
 import { resolveServiceAdapter } from "./service-adapters.js";
+import { STACK_ADAPTER } from "./stack-journal.js";
 import { cliVersion } from "./version.js";
 
-/** Check the manager's local launch coordinates and runtime metadata without importing a provider. */
+/** Check the manager's launch coordinates, name and runtime metadata without importing a provider. */
 export function assertManagerStartOptions(space: string, options: Record<string, unknown>): void {
   const server = options.server as string | undefined;
   if (server !== undefined && brokerUrlHasUserinfo(server)) throw brokerUrlCredentialRefusal("--server");
   if (server !== undefined || findMesh(space)) resolveNativeServiceTarget(String(options.root), space, server);
+  if (options.name !== undefined) assertManagerName(String(options.name));
 
   const runtime = String(options.runtime);
   if (runtime === "pty" || registry.has("runtime", runtime)) return;
@@ -224,18 +226,37 @@ export function servicePresetDefinition(preset: ServicePreset, space: string, gi
   const flags = servicePresetFlags(preset);
   const missing = presetMissingOptions(preset, given);
   const line = verb === "start" ? `cotal service start ${preset.name}` : `cotal service ${verb} --preset ${preset.name}`;
-  // The line also names each default this space cannot fill, so it works the first time it is run.
+  // Keep the caller's flags (including preview and output mode) without echoing option values.
+  const fromCommand = verb === "start" || given.preset !== undefined;
+  const retryWith = (additions: string) => `rerun the original command with ${codeSpan(additions)}, keeping all other arguments and flags unchanged`;
   if (missing.length) {
     const unfilled = presetUnfilledDefaults(preset, space, root, given);
+    const additions = [...missing.map((name) => `--${name} ${flags.find((flag) => flag.name === name)?.value ?? ""}`.trimEnd()), ...unfilled.map((row) => `--${row.name} ${row.value}`)].join(" ");
     const onSpace = given.space === undefined ? "" : ` --space ${shellWord(space)}`;
-    throw new CommandFailure("refused", "USAGE_INVALID", `the ${preset.name} preset needs ${missing.map((name) => `--${name}`).join(", ")}, which ${missing.length === 1 ? "has" : "have"} no default${unfilled.map((row) => `, and --${row.name}, since ${row.reason}`).join("")}; nothing was saved or started`, { remedy: `${line} ${[...missing.map((name) => `--${name} ${flags.find((flag) => flag.name === name)?.value ?? ""}`.trimEnd()), ...unfilled.map((row) => `--${row.name} ${row.value}`)].join(" ")}${onSpace}`, selfContained: true, remedyIsCommand: true });
+    const showCommand = !fromCommand || Object.keys(given).every((name) => name === "space" || name === "preset");
+    throw new CommandFailure("refused", "USAGE_INVALID", `the ${preset.name} preset needs ${missing.map((name) => `--${name}`).join(", ")}, which ${missing.length === 1 ? "has" : "have"} no default${unfilled.map((row) => `, and --${row.name}, since ${row.reason}`).join("")}; nothing was saved or started`, { remedy: showCommand ? `${line} ${additions}${onSpace}` : retryWith(additions), selfContained: true, ...(showCommand ? { remedyIsCommand: true } : {}) });
   }
   const values: ParsedArgs["values"] = { ...presetDefaultOptions(preset, space, root, given, migrate), ...given };
   const options = parsedPresetOptions(preset, values);
+  // Check the manager launch flag pair before checking whether its file exists.
+  if (preset.adapter === STACK_ADAPTER.manager && (options.launch === undefined) !== (options["launch-sha256"] === undefined)) {
+    const supplied = options.launch === undefined ? "--launch-sha256" : "--launch";
+    const needed = options.launch === undefined ? "--launch <file>" : "--launch-sha256 <digest>";
+    throw new CommandFailure("refused", "USAGE_INVALID", `${supplied} requires ${needed}: a manager launch needs both its private native spec and its full SHA-256; nothing was saved or started`, { remedy: fromCommand ? retryWith(needed) : `${line} --launch <file> --launch-sha256 <digest>`, selfContained: true, ...(fromCommand ? {} : { remedyIsCommand: true }) });
+  }
   // A refused option value is named by the flag the person typed, and the preset's help says what each takes.
   try { resolveServiceAdapter(preset.adapter, options, true, (option) => `--${presetFlagName(option)}`); }
   catch (error) {
-    if (!isCommandFailure(error) || error.code !== "SCHEMA_INVALID" || error.remedy !== undefined) throw error;
+    if (!isCommandFailure(error)) throw error;
+    const launch = options.launch;
+    if (preset.adapter === STACK_ADAPTER.manager && typeof launch === "string" && error.code === "TARGET_NOT_FOUND" && (error.target as { path?: string } | null)?.path === launch) {
+      throw new CommandFailure(error.outcome, error.code, `the --launch specification ${launch} does not exist; nothing was saved or started`, {
+        target: error.target,
+        remedy: `rerun the original command with the absolute path to an existing resolved manager launch specification in ${codeSpan("--launch")} and its matching SHA-256 in ${codeSpan("--launch-sha256")}, keeping all other arguments and flags unchanged`,
+        selfContained: true,
+      });
+    }
+    if (error.code !== "SCHEMA_INVALID" || error.remedy !== undefined) throw error;
     throw new CommandFailure(error.outcome, error.code, error.message, { target: error.target, remedy: `see what each option takes with \`${line} --help\`` });
   }
   // The dashboard posts only with a separate posting credential, so each posting flag needs the other.

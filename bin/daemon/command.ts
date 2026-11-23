@@ -35,7 +35,7 @@ import { loginFromCli } from "./cli-login.js";
 import { connectCheckViaDaemon, managerViaDaemon, queryDaemon, registerViaDaemon, serviceViaDaemon } from "./client.js";
 import { admitWindowsNativeDaemon, applyInstall, applyUninstall, observeDaemonOwnedService, type DaemonOwnershipObservation, planInstall, planUninstall, repairMissingInstalledProgram, startInstalled } from "./install.js";
 import { exchangeDesktopRequest, runDesktopBridge } from "./desktop.js";
-import { runAccountSetup, runSetup } from "./setup.js";
+import { installedUnitForSetup, runAccountSetup, runSetup } from "./setup.js";
 import { daemonCommandCopy, daemonServiceRequirement } from "./guidance.js";
 import { forgetHostedManagerIntents } from "./manager.js";
 import { automaticUpdates } from "./auto-update.js";
@@ -43,6 +43,7 @@ import { watchDaemonGeneration } from "./generation.js";
 import { isDaemonSpaceName, SPACE_PATTERN } from "./protocol.js";
 import { nativeDaemonLog } from "./native-log.js";
 import { readReceipt } from "./install-receipt.js";
+import { processBirth, readLifetimeRecord } from "./lifetime.js";
 import { liveUpdateClosureOwner, readUpdateRecovery } from "@cotal-ai/workspace";
 import type { ConnectCheckResult, DaemonStatus, RegisterResult, ServiceConnectionResult } from "./protocol.js";
 
@@ -140,6 +141,14 @@ function asFailure(e: unknown, home?: string): unknown {
   return new CommandFailure("refused", r.code, e.message, { ...(remedy ? { remedy } : {}), native: { code: e.code } });
 }
 
+function otherRuntimeRefusal(error: unknown, paths: DaemonPaths, home?: string): unknown {
+  if (process.platform !== "linux" || !(error instanceof EndpointRefusal) || (error.code !== "NOT_RUNNING" && error.code !== "LOCK_HELD")) return error;
+  const holder = readLifetimeRecord(paths.lock);
+  if (!holder?.socket || holder.socket.path === paths.socket || !holder.start || processBirth(holder.pid) !== holder.start) return error;
+  return new EndpointRefusal(error.code, `${error.message}. The live daemon recorded a socket in a different runtime directory.`,
+    `use the same XDG_RUNTIME_DIR as the running daemon, then run ${codeSpan(daemonCommandCopy("status", home))}`);
+}
+
 function capacityText(total: number, free: number): string {
   const gib = (value: number) => (value / 1024 ** 3).toFixed(1);
   const used = total === 0 ? 0 : 100 * (total - free) / total;
@@ -172,6 +181,8 @@ async function status(args: ParsedArgs): Promise<void> {
     await repairMissingInstalledProgram(paths, home);
     reply = await queryDaemon({ paths, peerUid, peerPid });
   } catch (e) {
+    const refusal = otherRuntimeRefusal(e, paths, home);
+    if (refusal !== e) throw asFailure(refusal, home);
     const installed = process.platform === "linux" && e instanceof EndpointRefusal && e.code === "NOT_RUNNING" ? readReceipt(paths) : undefined;
     if (e instanceof EndpointRefusal && installed && /^cotal-daemon(?:-[a-f0-9]{16})?\.service$/.test(installed.unit)) {
       throw new CommandFailure("refused", "TARGET_UNAVAILABLE", e.message, {
@@ -427,23 +438,17 @@ async function setupCommand(args: ParsedArgs): Promise<void> {
   let idp = choice?.url;
   const { paths, home } = resolveTarget(args);
   let newSignIn = values.idp !== undefined || args.values.cloud === true;
-  if (!space && !idp) {
-    let installed = true;
-    try { planUninstall(paths, home); } catch { installed = false; }
-    if (!installed) {
-      choice = await daemonAccountChoice(args);
-      idp = choice?.url;
-      if (idp === undefined) return;
-      newSignIn = true;
-    }
+  if (!space && !idp && installedUnitForSetup(paths, home) === undefined) {
+    choice = await daemonAccountChoice(args);
+    idp = choice?.url;
+    if (idp === undefined) return;
+    newSignIn = true;
   }
   const plain = presentation === "plain";
   // Progress goes to stderr so a --json caller still reads one document on stdout.
   const report = (line: string) => { process.stderr.write(`${line}\n`); };
   if (!space) {
     if (!idp) {
-      try { planUninstall(paths, home); }
-      catch { throw new CommandFailure("refused", "USAGE_INVALID", "No daemon is installed; pass --idp <url> to connect an account"); }
       let discovery;
       try { discovery = await exchangeDesktopRequest({ paths, peerUid, peerPid }, { op: "spaces", refresh: true }); }
       catch { throw new CommandFailure("refused", "AUTH_REQUIRED", "The daemon cannot report its sign-in; pass --idp <url> to connect an account"); }
@@ -553,7 +558,7 @@ async function serve(args: ParsedArgs): Promise<void> {
       log: (l) => process.stderr.write(`${l}\n`), ...(home !== undefined ? { sessionDir: home } : {}) });
   } catch (e) {
     if (process.env.COTAL_DAEMON_NATIVE_SERVICE === "1") process.stderr.write(`daemon startup refused: ${e instanceof Error ? e.message : String(e)}\n`);
-    throw asFailure(e);
+    throw asFailure(otherRuntimeRefusal(e, paths, home));
   }
   updates = automaticUpdates({ version: binVersion(), eligible: () => home === undefined && (owned || (ownershipPending ? "pending" : false)), prepare: async () => { const seats = await running.generationSeats(); if (seats.some(row => row.seats > 0)) throw new Error("running agents remain"); }, abort: async () => {}, report: line => process.stderr.write(`${line}\n`) });
   if (process.platform === "linux" && process.env.COTAL_DAEMON_NATIVE_SERVICE === "1" && process.env.NOTIFY_SOCKET) {
@@ -644,10 +649,10 @@ async function run(args: ParsedArgs): Promise<void> {
     return runDesktopBridge({ resolveTarget: () => target(args), version: binVersion(), peerUid, peerPid });
   }
   if (mode === "name") {
-    const { paths } = resolveTarget(args);
+    const { paths, home } = resolveTarget(args);
     let reply;
     try { reply = await exchangeDesktopRequest({ paths, peerUid, peerPid }, { op: "name", ...(rest[0] !== undefined ? { name: rest[0] } : {}) }); }
-    catch (error) { throw asFailure(error); }
+    catch (error) { throw asFailure(error, home); }
     if (!reply.ok) throw new CommandFailure("refused", "USAGE_INVALID", reply.error.message);
     if ("event" in reply || !("computer" in reply.result) || typeof reply.result.computer !== "string") throw new CommandFailure("failed", "OPERATION_FAILED", "the daemon returned no computer name");
     const result = { computer: reply.result.computer };
@@ -655,10 +660,10 @@ async function run(args: ParsedArgs): Promise<void> {
     return;
   }
   if (mode === "spaces") {
-    const { paths } = resolveTarget(args);
+    const { paths, home } = resolveTarget(args);
     let reply;
     try { reply = await exchangeDesktopRequest({ paths, peerUid, peerPid }, { op: "spaces", refresh: args.values.refresh === true }); }
-    catch (error) { throw asFailure(error); }
+    catch (error) { throw asFailure(error, home); }
     if (!reply.ok) {
       if (reply.error.code === "DEPENDENCY_UNAVAILABLE") throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", reply.error.message, { remedy: reply.error.remedy, native: { code: reply.error.code } });
       throw new CommandFailure("failed", "OPERATION_FAILED", "the daemon could not read its spaces", { native: { code: reply.error.code } });

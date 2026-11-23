@@ -18,7 +18,7 @@ cotal service show <name>
 cotal service add <name> --exec "<command>" [--cwd <dir>]
 cotal service add <name> --preset <preset> <preset-options>
 cotal service add <name> --file <definition.json>
-cotal service start <name> [<preset-options>] [--instance <id>|--new-instance] [--foreground|--dry-run]
+cotal service start <name> [<preset-options>] [--instance <id>|--new-instance] [--foreground] [--dry-run]
 cotal service stop <name> [--instance <id>] [--with-agents] [--yes|--dry-run]
 cotal service restart <name> [--instance <id>] [--with-agents] [--yes|--dry-run]
 cotal service status <name> [--instance <id>]
@@ -28,7 +28,8 @@ cotal service uninstall <name> [--instance <id>] [--yes|--dry-run]
 cotal service remove <name> [--instance <id>] [--yes]
 ```
 
-`svc` and `services` are aliases. Every form takes `--space`, `--json` and `--plain`.
+`svc` and `services` are aliases. Every form takes `--space` and `--plain`.
+Every form takes `--json` except `start --foreground` without `--dry-run`.
 
 | Flag | Meaning |
 |---|---|
@@ -70,15 +71,19 @@ another space.
 A built-in service needs no `add`. `cotal service start <preset>` saves a definition of that name
 from the preset's defaults and starts it; stderr says what it saved. A start preview checks the
 adapter's foreground and multi-instance capabilities even before the definition is saved.
+The manager preset does not support `--new-instance`, so `cotal service start manager --help`
+omits it. Generic `cotal service start --help` lists it for services that support it.
 A preset that needs something only you can give, such as the intake's keys, refuses with those flags
 named, and takes them on the start line. A default the space cannot fill yet, such as the `web`
 dashboard's `web.creds` on a space
 `cotal up` has not run on since it was added, refuses the same way: `cotal service start web --creds <file>`
 replaces it. A start refused before anything launched forgets the definition it saved. A preset name acts on the
 space's one service built on that preset, so after `cotal up` the name `delivery` reaches
-`stack-delivery`. The manager has its own [`manager`](cli-maintenance.mdx#manager) commands. `--json` writes one envelope for every form,
-and `logs --follow --json` writes one record per line once it selects an instance. Without `--json`,
-a follow's last line says why it ended. If a saved service has no recorded instance, `logs` refuses
+`stack-delivery`. The manager has its own [`manager`](cli-maintenance.mdx#manager) commands.
+A foreground start with `--dry-run --json` writes one preview envelope without launching a process.
+Other commands that take `--json` write one envelope, except `logs --follow --json`, which writes
+one record per line once it selects an instance. Without `--json`, a follow's last line says why
+it ended. If a saved service has no recorded instance, `logs` refuses
 with `TARGET_NOT_FOUND` (exit 2). An instance must run before it can produce a log. The refusal
 gives a `service status` command for the same service and space, which starts nothing.
 `logs` refuses a log file this account
@@ -89,12 +94,17 @@ the refusal is the stream's `error` record, which carries that step as `remedy`,
 
 ## Adding a service [#adding-a-service]
 
-Run `service add` from a prepared or registered space's project folder, or pass `--space <name>`.
-In a new project, prepare the space first. Neither command starts a broker or the service.
+In a script, `service add` needs a definition name with each source: `--exec`, `--preset` or `--file`.
+If you supplied a source but no name, insert the name after `add` in your original command.
+Keep the source and its options, including any `--space`, `--json` or `--plain` flags.
+
+In a new project, prepare the space first, then pass `--space` to save the definition there. A
+prepared project folder does not override the current space selection. Neither command starts a
+broker or the service.
 
 ```bash
 cotal space create reviews-dev --root .
-cotal service add reviews --exec "node /srv/reviews/server.mjs --port 8080"
+cotal service add reviews --space reviews-dev --exec "node /srv/reviews/server.mjs --port 8080"
 ```
 
 `--exec` splits its text into the program and its arguments as a shell quotes words, but runs no
@@ -104,7 +114,8 @@ would not mean here what it means in a terminal; for those, run a shell yourself
 `--exec "sh -c '<command line>'"`. A bare program name is looked up on `PATH` as `add` saves it, and
 a relative path is saved as the absolute path it names in `--cwd`, which defaults to the folder you
 run `add` in. An explicit empty or whitespace-only `--cwd` refuses `USAGE_INVALID` (exit 1)
-before a definition is saved. The service is ready once its process runs. `--file` keeps the full definition shape
+before a definition is saved. Omit `--cwd` to use the directory you run `add` in, or pass
+`--cwd <dir>` to use another directory. The service is ready once its process runs. `--file` keeps the full definition shape
 below, for readiness over HTTP, environment references or a credential file.
 
 The presets built into the CLI are `auth-service`, `broker`, `delivery`, `exec-endpoint`,
@@ -119,13 +130,16 @@ takes a path shows `<dir>`, `<file>` or `<path>`, and the broker's `--server` sh
 of one that exists, and a relative one is refused. An option the service names in camelCase takes a
 dashed flag, so the broker's `logFile` is `--log-file <path>`, as `cotal up` spells it, and `add`
 takes it as `cotal up --log-file` does: a relative path is made absolute against the folder `add`
-runs in, and the file need not exist yet. A missing required option is refused with each one named,
-and the refusal prints the command line with them. That line also names each option whose default
-the space cannot fill yet, such as the broker's `--server <url>` in a space with no registered
-broker, and keeps an explicit `--space` so the retry saves in the same space.
+runs in, and the file need not exist yet. When a preset refuses because required options are missing,
+it names them and any defaults the space cannot fill, such as the broker's `--server <url>` in a
+space with no registered broker. If you supplied other options, add just the missing flags to your
+original command. Keep your supplied values, the selected `--space`, and flags such as `--json` or
+`--dry-run`. The refusal does not repeat the option values you entered.
 
 A preset's options describe the service and never choose its space. `add` saves into the space
 `--space` names, or else the selected space or the folder's, as other commands resolve it.
+In a script, `add` without a launch source refuses with `USAGE_INVALID` (exit 1). Its suggested
+`--exec` command keeps any explicit `--space`, `--json` or `--plain`.
 
 `add` checks the options against the preset's schema, and checks that each declared path exists
 with its required protection. The `auth-service` preset also requires a user-auth registration and
@@ -137,8 +151,9 @@ value the preset's schema refuses gives the preset's help as its Next:
 `broker` preset's `server`: `add` checks it against the address rules a start applies, and its
 refusal quotes the address unless it holds an `@`, which may be a credential.
 
-`--file` imports a version-1 definition. This one runs a program and treats it as ready once its
-loopback health URL answers 200:
+`--file` imports a version-1 definition. An empty or whitespace-only value refuses `USAGE_INVALID`
+(exit 1) before selecting a space and asks for `--file <definition.json>`.
+This definition runs a program and treats it as ready once its loopback health URL answers 200:
 
 ```json
 {
@@ -224,9 +239,18 @@ to correct.
 Ctrl-D or closed input at that question leaves the service unchanged and exits 0. When `stop`,
 `restart`, `remove` or `uninstall` cannot ask, it refuses and prints the command that confirms it,
 with `--space` and the `--instance` and `--with-agents` you gave, so that command acts on the same
-service. Without an
+service. The `remove` confirmation and the `stop` and `restart` confirmations for a service without
+an installed unit also keep `--json` when requested. Without an
 installed unit, a `restart` whose process is already gone stops nothing, so it does not ask. A
-start or stop that finds nothing to do says so and reports `no-op`.
+start or stop that finds nothing to do says so and reports `no-op`. For a saved definition with no
+recorded instances, `stop` and `stop --dry-run` report `no-op` without asking for confirmation or
+allocating an instance. An explicit `--instance` that does not belong to the service still refuses
+with `TARGET_NOT_FOUND` (exit 2).
+With no recorded instance, `restart` without `--instance` also refuses with `TARGET_NOT_FOUND`.
+Its Next names `cotal service start <name> --space <space>` to create the first instance.
+
+If a custom service name has no saved definition in the requested space, `service logs` and
+`service status` exit 2 and show how to list the saved definitions in that space.
 
 `service status <name>` reports `not started` and exits 0 for a saved definition with no recorded
 instances. It does not allocate an instance or start a process. With `--json`, the result has
@@ -282,7 +306,7 @@ a submitted or unknown step may have changed the original unit even if its insta
 is absent. A legacy PID record is not adopted into the new instance controller. Unreadable
 component records make the inventory partial. Reads do not start, repair or install a service.
 
-`service add [name] --file <definition.json>` imports the version-1 service object described under
+`service add <name> --file <definition.json>` imports the version-1 service object described under
 [Adding a service](#adding-a-service). A declared preset uses
 `service add <name> --preset <preset> <declared-options>`. Guided input offers installed presets
 and file import. Defaulted options show the same default description as their flag help. Enter
@@ -303,6 +327,8 @@ are not publisher signatures or a proof of every executable file. No remote sche
 `service show <name>` reads declared policy, not live state. Public reports omit argument bodies,
 adapter option values and credential contents. Missing launch paths do not prevent reading the
 saved declaration. Records live under the workstation store's case-safe per-space service path.
+If no definition has that name, `show` refuses with `TARGET_NOT_FOUND` (exit 2) and suggests
+`cotal service --space <space>` for the space it checked.
 
 `service remove <name> --yes` removes the unchanged definition and its stopped instances' records
 and sidecar receipts, and deletes each removed instance's log file and rotated `<log>.1` file.
@@ -326,6 +352,8 @@ Use `service add <name> --preset <preset> --help` for that preset's option flags
 help and completion derive those flags from the adapter's closed schema. Boolean options have
 positive and negative forms; a pair refuses. A boolean whose schema admits only true, such as an
 explicit intent, has only the positive form. Numeric and complex options use JSON syntax.
+Use `cotal service start <preset> --help` for start options. The `--no-open` flag is available only
+with `cotal service start web`.
 A preset no registered or installed provider declares refuses by name; for `web` the refusal
 names `cotal ext add @cotal-ai/web`.
 Options that collide with service/global flags require the file form. No preset is installed or
@@ -368,6 +396,9 @@ match the declared IP, port and transport. `add` refuses a `server` that is not 
 definition saved before that check refuses on start, before launch, naming its `server` option and
 how to add it again. This reports the child's client listener, not JetStream readiness, endpoint serving
 or a fresh trust check.
+
+A saved broker does not support `--foreground`. If a preview refuses it, remove `--foreground`
+and keep `--dry-run` and the rest of the command unchanged. The retry does not start the broker.
 
 Broker stop has a separate kernel-exit policy, with no invented endpoint principal or epoch.
 Known live or unresolved dependants refuse. After confirmation the controller rechecks the scope

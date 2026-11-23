@@ -39,7 +39,7 @@
  */
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -54,13 +54,11 @@ import { renderScheduledTask, scheduledTaskName, scheduledTaskService, windowsAr
 
 import { recoverPausedTask } from "../daemon/restart-recovery.js";
 import { daemonCommandCopy } from "../daemon/guidance.js";
+import { createSuite } from "@cotal-ai/smoke-kit";
 
 for (const key of Object.keys(process.env)) if (key.startsWith("COTAL_")) delete process.env[key];
 
-let pass = 0, fail = 0;
-const check = (name: string, cond: boolean, extra?: unknown) => {
-  if (cond) { pass++; console.log(`  ✓ ${name}`); } else { fail++; console.log(`  ✗ FAIL: ${name}`, extra ?? ""); }
-};
+const { check, finish, passed, failed } = createSuite();
 for (const scenario of ["old", "absent", "ambiguous", "changed", "pending"] as const) {
   let enables = 0;
   let absent = 0;
@@ -372,7 +370,7 @@ try {
     check("built task entry passes preflight", code(() => assertScheduledEntry(nativeEntry)) === "none");
     const refused = spawnSync(process.execPath, [nativeEntry, "daemon", "serve", "--daemon-home", nativeHome, "--json"], {
       cwd: root, encoding: "utf8", timeout: 20_000,
-      env: { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))), XDG_RUNTIME_DIR: root, COTAL_HOME: join(root, "cotal-home"), COTAL_IDP_TIMEOUT_MS: "0", COTAL_SKIP_CONNECTOR_SEED: "1" },
+      env: { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))), XDG_RUNTIME_DIR: root, COTAL_HOME: join(root, "cotal-home"), COTAL_IDP_TIMEOUT_MS: "0", COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1" },
     });
     const log = join(nativeHome, "daemon.log");
     const refusalLog = existsSync(log) ? readFileSync(log, "utf8") : "";
@@ -811,6 +809,22 @@ try {
       if (kind === "default" || kind === "managed") {
         const before = effects();
         const receiptBefore = readFileSync(receiptFile, "utf8"), sourceBefore = readFileSync(receipt.unitPath, "utf8");
+        if (kind === "default") {
+          const unitDir = dirname(receipt.unitPath), saved = join(dir, "saved-unit-directory");
+          const inspect = (code: string) => ["install", "uninstall"].every((verb) => {
+            const r = call(verb, home, ["--dry-run"]);
+            return r.status === 2 && r.doc.error?.code === code && r.out.includes("keep the install receipt") && !r.out.includes("is gone");
+          });
+          if (uid !== 0) {
+            chmodSync(unitDir, 0);
+            try { check("a directory the daemon cannot enter does not make its unit absent", inspect("PERMISSION_DENIED")); }
+            finally { chmodSync(unitDir, 0o700); }
+          }
+          renameSync(unitDir, saved);
+          writeFileSync(unitDir, "fixture", { flag: "wx", mode: 0o600 });
+          try { check("a non-directory in the recorded unit path does not prove absence", inspect("TARGET_UNAVAILABLE")); }
+          finally { rmSync(unitDir); renameSync(saved, unitDir); }
+        }
         const repeats = [call("install", home, ["--dry-run"]), call("install", home)];
         check(`N7 recorded ${kind} install succeeds without native effects or rewrites`, repeats.every((r) => r.status === 0 && r.doc.result?.alreadyInstalled === true) && effects() === before && readFileSync(receiptFile, "utf8") === receiptBefore && readFileSync(receipt.unitPath, "utf8") === sourceBefore, repeats);
         const again = call("install", home);
@@ -1008,5 +1022,6 @@ function splitWindows(line: string): string[] {
   return out;
 }
 
-console.log(`\ndaemon-install-native smoke: ${pass} passed, ${fail} failed`);
-process.exit(fail ? 1 : 0);
+console.log(`\ndaemon-install-native smoke: ${passed()} passed, ${failed()} failed`);
+finish();
+process.exit(failed() ? 1 : 0);

@@ -136,7 +136,7 @@ If you move the Cotal home, move its `codex-plugin` directory with it. When the 
 If Cotal needs to move the marketplace registration and `config.toml` is read-only, the update leaves the file and its permissions unchanged. It names the registration it could not change and refreshes the cache only if Codex can still list the installed plugin. Make the file writable and run `cotal update` to finish. A computer without the plugin needs no Codex executable.
 If Codex has been uninstalled, upgrades leave its cached plugin unchanged and report that Codex is not installed.
 The retained cache is not verified as current. Reinstall Codex and run `cotal update` to refresh it.
-An unreadable or unwritable Cotal plugin cache still prevents an upgrade that needs to replace it.
+If the Cotal plugin cache is read-only, the CLI update finishes and reports the plugin version it left installed. Make the named cache directory writable and run `cotal update` to refresh the plugin. An unreadable cache still prevents Cotal from verifying the integration.
 Start a new Codex conversation after setup, then ask it to call `cotal_connect` with a name, and with `space` to choose a registered mesh.
 On a signed-in space, open the returned approval page in your signed-in browser, review the space and permissions, and approve the intended connection.
 Nothing joins a signed-in space before you approve.

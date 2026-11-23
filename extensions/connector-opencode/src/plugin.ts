@@ -54,7 +54,6 @@ import {
   EventWal,
   FileSubjectFrontier,
   ensureEventWalDir,
-  eventWalLocation,
   resolveEventsStateRoot,
   controlFromEnv,
   scrubLaunchMaterial,
@@ -64,7 +63,6 @@ import {
 } from "@cotal-ai/connector-core";
 import { principalKey } from "@cotal-ai/core";
 import { randomUUID } from "node:crypto";
-import { rm, rmdir } from "node:fs/promises";
 import { OpenCodeSessionSource, type OpenCodeMessageWithParts, type OpenCodeRecord } from "./agui-source.js";
 import { createOpenCodeMapper, type OpenCodeMapper } from "./agui-map.js";
 import type { Plugin, Hooks, ToolDefinition } from "@opencode-ai/plugin";
@@ -75,12 +73,11 @@ import {
   SWAP_SETTLE_MS,
   INTAKE_SETTLE_MS,
   SESSION_RETIRED,
-  WAL_REAPED,
-  WAL_KEPT,
   verifyServerModel,
   settleWithin,
   SurfacedBatch,
 } from "./plugin-seams.js";
+import { pluginIo } from "./plugin-io.js";
 export {
   SESSION_RETIRED,
   SETTLE_ABANDONED,
@@ -129,6 +126,7 @@ export const cotal: Plugin = async () => {
   })();
 
   const agent = new MeshAgent(config);
+  const { reapRetiredWal, opencodeApi, isMessageAbortedError, runErrorOf } = pluginIo({ agent, config, serverUrl, serverAuth });
   // OpenCode lazily loads plugins while answering /provider. Awaiting that request in this
   // plugin's initializer would deadlock the server. Return hooks first, but do not join or
   // create a session until the server has answered. This is a managed serve process: on a
@@ -311,91 +309,6 @@ export const cotal: Plugin = async () => {
       log(`event WAL lock release failed: ${(e as Error).message}`);
     }
   };
-
-  /**
-   * REAP A RETIRED SESSION'S WRITE-AHEAD LOG, AND THE LIFETIME IS THE DECISION HERE, not the two
-   * unlinks that carry it out.
-   *
-   * A log exists so a later start can recover what its thread had NOT yet published: the one frame
-   * it froze before publishing, and the position it had reached. Removing it while either still
-   * matters destroys exactly what it is for, which is why the rule is a property of the log rather
-   * than a step in the swap:
-   *
-   *   a thread's log may be removed once (a) this connector has closed that thread's run on the wire
-   *   and the drain that did it SETTLED rather than spending its bound, and (b) the log on disk holds
-   *   no pending frame.
-   *
-   * (a) is the connector's half. An abandoned drain is uncancelled work that may still write here,
-   * and a directory removed out from under it turns a bounded delay into a lost frame. (b) is the
-   * log's own half and is the half that is actually about recovery: a pending frame is one whose
-   * fate the broker never confirmed, and only a start that reads this file can settle it.
-   *
-   * WHAT IS DELIBERATELY NOT REAPED, so the claim is not read wider than it is. The LIVE thread's
-   * directory survives teardown: a process leaves exactly ONE behind rather than one per `/new`,
-   * which is the accumulation #599 names, and that one is kept because a teardown is not a
-   * retirement, since no observer has been told the thread ended, and a start that adopts it again is
-   * precisely the case the log is for. The principal's own `subject.json` and `.lock` sit one level
-   * up, are shared by every thread, and are not this directory's to remove.
-   *
-   * The log is read back FROM DISK rather than from the retired emitter's object, because the
-   * emitter has been released by this point and the file is the only authority on what it left. A
-   * log that cannot be read is KEPT: this is a cleanup and never a repair.
-   */
-  async function reapRetiredWal(threadId: string, drained: boolean): Promise<void> {
-    // (a), AND IT IS FIRST BECAUSE IT IS THE CHEAPEST WAY TO BE WRONG. An abandoned drain is
-    // uncancelled work that may still write into this directory, so removing it turns a bounded
-    // delay into a lost frame. The decision lives here, next to the lifetime it belongs to, rather
-    // than at the call site: a caller holding half the rule is how the easy half gets shipped alone.
-    if (!drained) {
-      log(`${WAL_KEPT} ${threadId}: its drain spent the bound, so it may still be writing`);
-      return;
-    }
-    const principal = principalKey(agent.ep.principal.owner, agent.ep.principal.actor).key;
-    const { threadDir, walPath } = eventWalLocation({
-      workspaceRoot: resolveEventsStateRoot(process.env),
-      space: config.space,
-      principal,
-      threadId,
-    });
-    try {
-      const wal = await EventWal.open(walPath, { space: config.space, threadId, principal, subjectMayExist: false });
-      // (b), AND THIS IS THE HALF THAT IS ACTUALLY ABOUT RECOVERY. A pending frame is one whose fate
-      // the broker never confirmed, and only a start that reads this file can settle it.
-      if (wal.pending !== null) {
-        log(`${WAL_KEPT} ${threadId}: a frame is still pending, which is the one thing a later start recovers`);
-        return;
-      }
-    } catch (e) {
-      log(`${WAL_KEPT} ${threadId}: its log could not be read (${(e as Error).message})`);
-      return;
-    }
-    // NEVER A RECURSIVE REMOVE. `rm` here is `force` but NOT `recursive`, so it can only ever unlink
-    // the one file this layout puts in the directory, and `rmdir` then refuses outright if anything
-    // else is in there. A computed path plus a recursive delete is one wrong component away from
-    // taking a tree with it, and the components here are hashes of values from outside this process.
-    try {
-      await rm(walPath, { force: true });
-      await rmdir(threadDir);
-      log(`${WAL_REAPED} ${threadId}`);
-    } catch (e) {
-      log(`${WAL_KEPT} ${threadId}: ${(e as Error).message}`);
-    }
-  }
-
-  async function opencodeApi<T>(path: string, init?: RequestInit, timeoutMs = 10_000): Promise<T> {
-    const res = await fetch(`${serverUrl}${path}`, {
-      ...init,
-      signal: init?.signal ?? AbortSignal.timeout(timeoutMs),
-      headers: {
-        authorization: serverAuth,
-        "content-type": "application/json",
-        ...(init?.headers ?? {}),
-      },
-    });
-    if (!res.ok) throw new Error(`OpenCode HTTP ${res.status} ${res.statusText} for ${path}`);
-    if (res.status === 204) return undefined as T;
-    return (await res.json()) as T;
-  }
 
   const def = process.env.COTAL_AGENT_FILE?.trim() ? loadAgentFile(process.env.COTAL_AGENT_FILE.trim()) : undefined;
   const persona = def?.persona || undefined;
@@ -695,35 +608,6 @@ export const cotal: Plugin = async () => {
     interruptIntent = undefined;
     if (!intent || Date.now() > intent.expires) return false;
     return !intent.sessionID || !sessionID || intent.sessionID === sessionID;
-  }
-
-  function isMessageAbortedError(error: unknown): boolean {
-    return typeof error === "object" && error !== null && (error as { name?: unknown }).name === "MessageAbortedError";
-  }
-
-  /**
-   * The failure a `session.error` reports, in the shape `RUN_ERROR` takes.
-   *
-   * OpenCode's error is a TAGGED UNION — `ProviderAuthError`, `APIError`, `MessageOutputLengthError`,
-   * `UnknownError`, `MessageAbortedError` — with the tag on `name` and the human-readable reason on
-   * `data.message`. The tag is published as the code and the reason as the message, both verbatim:
-   * this connector does not rank one failure kind above another, it names the one OpenCode named.
-   *
-   * `error` is OPTIONAL on the bus event, and an error-less `session.error` is still a failed turn —
-   * it just cannot say which kind, so it gets a message and no code rather than being demoted to a
-   * finish. `MessageOutputLengthError` carries no `message` either and lands on the same fallback.
-   */
-  function runErrorOf(error: unknown): { message: string; code?: string } {
-    const e = (typeof error === "object" && error !== null ? error : {}) as {
-      name?: unknown;
-      data?: { message?: unknown };
-    };
-    const code = typeof e.name === "string" && e.name ? e.name : undefined;
-    const message = typeof e.data?.message === "string" && e.data.message ? e.data.message : undefined;
-    return {
-      message: message ?? `opencode turn failed${code ? `: ${code}` : ""}`,
-      ...(code ? { code } : {}),
-    };
   }
 
   function scheduleErrorRetry(): void {

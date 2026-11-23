@@ -157,25 +157,34 @@ export function unsavedServiceStep(name: string, mode: string): string {
   return name === "web" ? "the web dashboard is an extension: add it with `cotal ext add @cotal-ai/web`, then start it with `cotal service start web`" : mode === "stop" ? "list this space's saved definitions with `cotal service`" : "add a supported service definition explicitly before starting it";
 }
 
+function missingServiceDefinition(space: string, name: string, mode: string, commandName: string): CommandFailure {
+  const stackName = stackMemberFor(space, name);
+  const reading = mode === "logs" || mode === "status";
+  const effect = reading ? "nothing was read" : `no process or extension was ${mode === "stop" ? "stopped" : "started"}`;
+  const remedy = stackName
+    ? `this space's controller stack names it ${stackName}: use \`cotal ${commandName === "down" ? "down" : `${commandName} ${mode}`} ${stackName} --space ${space}\`${mode === "stop" ? ", or bare `cotal down` to stop the whole stack" : ""}`
+    : reading ? `list this space's saved definitions with \`cotal service --space ${shellWord(space)}\`` : unsavedServiceStep(name, mode);
+  return new CommandFailure("refused", "TARGET_NOT_FOUND", `no saved service definition resolves this name in the selected space; ${effect}`, { target: { space, name }, remedy });
+}
+
 /** `root` is the selected space's root, where a definition must have been added to launch. */
 export async function serviceAction(args: ParsedArgs, space: string, root: string, commandName = "service", resolved?: PresetServiceTarget): Promise<void> {
   const [mode, name] = args.positionals as [string, string];
   const values = args.values as { instance?: string; "new-instance"?: boolean; foreground?: boolean; "with-agents"?: boolean; "dry-run"?: boolean; yes?: boolean; tail?: string; follow?: boolean; json?: boolean };
   const presentation = presentationOf(args.values);
   const store = serviceDefinitionStore(space, addedDefinitionStep), definition = store.read(name);
-  if (!definition) {
-    const stackName = stackMemberFor(space, name);
-    throw new CommandFailure("refused", "TARGET_NOT_FOUND", `no saved service definition resolves this name in the selected space; no process or extension was ${mode === "stop" ? "stopped" : "started"}`, { target: { space, name }, remedy: stackName ? `this space's controller stack names it ${stackName}: use \`cotal ${commandName === "down" ? "down" : `${commandName} ${mode}`} ${stackName} --space ${space}\`${mode === "stop" ? ", or bare `cotal down` to stop the whole stack" : ""}` : unsavedServiceStep(name, mode) });
-  }
+  if (!definition) throw missingServiceDefinition(space, name, mode, commandName);
   if (mode === "start" || mode === "restart" || mode === "install") assertDefinitionRoot(definition, space, root, mode);
   const rows = serviceInstances(space, name);
   let id = values.instance;
+  if (mode === "restart" && id === undefined && rows.length === 0)
+    throw new CommandFailure("refused", "TARGET_NOT_FOUND", "no instance is recorded for this service definition", { target: { space, name }, remedy: `cotal service start ${shellWord(name)} --space ${shellWord(space)}`, remedyIsCommand: true });
   if (!id && rows.length > 1 && !values["new-instance"] && canPrompt() && presentation !== "json") {
     const selected = await prompts.select({ message: `Choose the full owned instance of ${oneLine(name)}`, options: rows.map((row) => ({ value: row.name, label: row.name, hint: `${row.record.value.host.name} · ${observeServiceProcess(row.record.value)}` })) });
     if (prompts.isCancel(selected)) return cancelled();
     id = selected;
   }
-  const selected = values["new-instance"] ? undefined : selectServiceInstance(rows, id, mode === "start" || mode === "install" || mode === "status" || mode === "logs");
+  const selected = values["new-instance"] ? undefined : selectServiceInstance(rows, id, mode === "start" || mode === "stop" || mode === "install" || mode === "status" || mode === "logs");
   // A preset name resolved to another saved name keeps the name the person typed beside it.
   const target = { space, name, instanceId: selected?.name ?? null, ...(resolved && resolved.requested !== name ? { requested: resolved.requested } : {}) };
   if (["start", "stop", "restart"].includes(mode)) assertNoServiceUnitAttempts(space, name);
@@ -281,13 +290,13 @@ export async function serviceAction(args: ParsedArgs, space: string, root: strin
       return;
     }
     if (definition.record.value.launch.type === "adapter") {
-      const launch = definition.record.value.launch, adapter = resolveServiceAdapter(launch.adapter, launch.options);
+      const launch = definition.record.value.launch, adapter = resolveServiceAdapter(launch.adapter, launch.options, false);
       if (!controlsRecordedAdapter(selected!.record.value, adapter) || !adapter.declaration.capabilities.logs) throw new CommandFailure("refused", "UNSUPPORTED", "the pinned adapter does not declare log access through this controller, or its declaration changed; no different provider was loaded", { target });
     }
     const tail = values.tail === undefined ? 100 : Number(values.tail);
     if (values.follow) return followServiceLog(selected!, presentation, tail);
     // A tail that returned every line asked for is complete, even when earlier bytes were not read.
-    const row = instanceProjection(selected!), log = readServiceLog(space, selected!.name, tail);
+    const row = instanceProjection(selected!), log = readServiceLog(space, selected!.name, tail, !row.foreground);
     writeResult(presentation, { command: commandName, target, result: { kind: "service-logs", instance: row, ...log, encoding: "utf8-with-replacement", collection: row.foreground ? "foreground output is not captured in this log" : "owned background stdout/stderr" }, ...(log.omittedBytes && log.lines.length < tail ? { completeness: "partial", partial: { message: "The 16 MiB bounded read holds fewer lines than the requested tail; earlier bytes were omitted." } } : {}) }, (result): Report => ({ sections: [{ title: "Service log tail", blocks: [{ kind: "fields", rows: [["Definition", name], ["Instance", row.instanceId], ["Host", row.executionHost], ["Collection", result.collection], ["Encoding", result.encoding]] }, { kind: "lines", lines: result.lines.length ? result.lines : ["No captured log lines in this bounded read."] }, { kind: "lines", lines: [{ text: "Service-produced output may contain secrets. This is a local authorized read, not a secret-redacted log or an upload.", tone: "hint" }] }] }] }));
     return;
   }
@@ -326,11 +335,17 @@ export async function serviceAction(args: ParsedArgs, space: string, root: strin
   const prepared = mode === "start" || mode === "restart" ? prepareProcessService(definition) : undefined;
   if (prepared?.adapter) {
     const adapter = prepared.adapter;
-    if (values["new-instance"] && !adapter.declaration.capabilities.multiInstance || values.foreground && !adapter.declaration.capabilities.foreground) throw new CommandFailure("refused", "UNSUPPORTED", "the adapter does not declare the requested multi-instance or foreground capability; no provider code was loaded", { target });
+    const unsupported = [values["new-instance"] && !adapter.declaration.capabilities.multiInstance ? "--new-instance" : null, values.foreground && !adapter.declaration.capabilities.foreground ? "--foreground" : null].filter(Boolean).join(" and ");
+    if (unsupported) throw new CommandFailure("refused", "UNSUPPORTED", `The adapter does not support ${unsupported}. No provider code was loaded.${values["dry-run"] ? ` Retry without ${unsupported}, keeping --dry-run and the rest of the command unchanged.` : ""}`, { target });
     if (selected && !controlsRecordedAdapter(selected.record.value, adapter)) throw new CommandFailure("refused", "CONFLICT", "the selected instance pins a different adapter declaration or package version; it was not stopped or adopted", { target });
   }
   const declaredStop = prepared?.adapter ?? (definition.record.value.launch.type === "adapter" ? resolveServiceAdapter(definition.record.value.launch.adapter, definition.record.value.launch.options, false) : undefined);
   if (values["with-agents"] && declaredStop?.declaration.stop !== "native") throw new CommandFailure("refused", "UNSUPPORTED", "--with-agents requires this selected adapter's native stop policy; generic descendant signals are not supported", { target });
+  if (mode === "stop" && !selected) {
+    const result = { kind: "service-stop", space, definition: name, instanceId: null, dryRun: values["dry-run"] === true };
+    writeResult(presentation, { command: commandName, target, result, noOp: true }, (): Report => ({ sections: [{ title: "Service was not running; nothing was stopped", blocks: [{ kind: "fields", rows: [["Definition", name], ["Instance", "not recorded"]] }] }] }));
+    return;
+  }
   const launch = definition.record.value.launch;
   if (launch.type === "adapter" && launch.adapter === STACK_ADAPTER.manager && (mode === "restart" || mode === "start" && (!selected || observeServiceProcess(selected.record.value) !== "running")))
     assertManagerStartOptions(space, launch.options);
@@ -353,7 +368,7 @@ export async function serviceAction(args: ParsedArgs, space: string, root: strin
   }
   // A restart whose original process is already gone stops nothing, so it asks for nothing.
   const confirmStop = mode === "stop" || mode === "restart" && !["gone", "previous-boot", "foreign-pid"].includes(observeServiceProcess(selected!.record.value));
-  if (confirmStop && !values.yes && (!canPrompt() || presentation === "json")) throw new ConfirmationRequired(yesRequired(mode, presentation === "json"), { target, remedy: `confirm with \`${serviceConfirmCommand(mode, name, space, values)}\`, or preview it with --dry-run` });
+  if (confirmStop && !values.yes && (!canPrompt() || presentation === "json")) throw new ConfirmationRequired(yesRequired(mode, presentation === "json"), { target, remedy: `confirm with \`${serviceConfirmCommand(mode, name, space, values, presentation === "json")}\`, or preview it with --dry-run` });
   if (mode === "restart") assertRestartAdmitted(definition);
   let nativePlan: Awaited<ReturnType<typeof prepareNativeServiceStop>> | undefined;
   try { nativePlan = mode === "stop" || mode === "restart" ? await prepareNativeServiceStop(definition, selected!, values["with-agents"] === true) : undefined; }
@@ -411,9 +426,10 @@ export async function serviceAction(args: ParsedArgs, space: string, root: strin
   }
   const result = instanceProjection(started.instance);
   const browserWarnings: { code: string; message: string; target: { space: string; name: string } }[] = [];
-  const noBrowser = () => browserWarnings.push({ code: "BROWSER_NOT_OPENED", target: { space, name }, message: `No browser was opened; use \`cotal service logs web --space ${space}\` for the private session record and open its single-use launchUrl locally.` });
+  const sessionSource = result.foreground ? "the original foreground terminal" : `\`cotal service logs web --space ${space}\``;
+  const noBrowser = () => browserWarnings.push({ code: "BROWSER_NOT_OPENED", target: { space, name }, message: `No browser was opened; find the private session record in ${sessionSource} and open its single-use launchUrl locally.` });
   const noOpen = args.values["no-open"] === true;
-  let refreshedBrowserLink = false;
+  let refreshedSessionPath: string | undefined;
   if (mode === "start" && name === "web" && prepared?.adapter?.pin.name === "web-service" && !values.foreground && (!noOpen || started.noOp)) {
     try {
       const value = started.instance.record.value;
@@ -428,7 +444,7 @@ export async function serviceAction(args: ParsedArgs, space: string, root: strin
         const { launchUrl } = await response.json() as { launchUrl: string };
         const url = new URL(launchUrl);
         if (url.origin !== new URL(session.launchUrl).origin || url.protocol !== "http:" || url.username || url.password || url.pathname !== "/" || !url.searchParams.get("k")) throw new Error("invalid launch URL");
-        refreshedBrowserLink = true;
+        refreshedSessionPath = path;
         if (!noOpen) {
           if (process.platform === "linux" && !process.env.DISPLAY && !process.env.WAYLAND_DISPLAY) noBrowser();
           else {
@@ -443,10 +459,10 @@ export async function serviceAction(args: ParsedArgs, space: string, root: strin
       }
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT" && (error as NodeJS.ErrnoException).syscall?.startsWith("spawn ")) noBrowser();
-      else throw new CommandFailure("partial", "OPERATION_PARTIAL", refreshedBrowserLink ? "the dashboard is running, but its browser session could not be opened" : "the dashboard is running, but a fresh browser link was not confirmed", { target: { space, name, instanceId: result.instanceId }, remedy: refreshedBrowserLink ? `use \`cotal service logs web --space ${space}\` for the private session record, or retry \`cotal service start web\`` : `inspect \`cotal service logs web --space ${space}\` before retrying \`cotal service start web\`` });
+      else throw new CommandFailure("partial", "OPERATION_PARTIAL", refreshedSessionPath ? "the dashboard is running, but its browser session could not be opened" : "the dashboard is running, but a fresh browser link was not confirmed", { target: { space, name, instanceId: result.instanceId }, remedy: refreshedSessionPath ? `find the private session record in ${sessionSource}, or retry \`cotal service start web\`` : `inspect ${sessionSource} before retrying \`cotal service start web\`` });
     }
   }
-  writeResult(presentation, { command: commandName, target: { ...target, instanceId: result.instanceId }, result: { kind: mode === "restart" ? "service-restart" : "service-start", ...result, ...(mode === "restart" ? { originalStopImpact: nativePlan ?? kernelPlan ?? null } : {}), ...(resolved ? { presetDefinition: resolved.saved } : {}) }, noOp: started.noOp && !refreshedBrowserLink, warnings: browserWarnings }, (row) => {
+  writeResult(presentation, { command: commandName, target: { ...target, instanceId: result.instanceId }, result: { kind: mode === "restart" ? "service-restart" : "service-start", ...result, ...(mode === "restart" ? { originalStopImpact: nativePlan ?? kernelPlan ?? null } : {}), ...(resolved ? { presetDefinition: resolved.saved } : {}) }, noOp: started.noOp && !refreshedSessionPath, warnings: browserWarnings }, (row) => {
     const view = instanceView(row, started.noOp ? "Already running; nothing was started" : row.nativeEndpoint ? "Owned process running; native adapter readiness recorded" : row.reportedListener ? "Owned broker process reported its listener" : row.readinessObservation === "http-reachable" ? "Owned process running; HTTP reachable" : "Owned service process running");
     // A background child reports how to reach it, such as the dashboard's bootstrap file, in its own log.
     if (values.foreground) return view;
@@ -457,6 +473,7 @@ export async function serviceAction(args: ParsedArgs, space: string, root: strin
     const named = args.values.space ? ` --space ${oneLine(row.space)}` : "";
     const logs = commandName === "manager" ? `cotal manager logs${named}` : only && !args.values.space ? `cotal service logs ${row.definition}` : `cotal service logs ${row.definition} --space ${oneLine(row.space)} --instance ${row.instanceId}`;
     const stop = commandName === "manager" ? `cotal manager stop${named}` : `cotal service stop ${row.definition}${named}`;
+    if (row.foreground) return { sections: [...view.sections, { title: "Next", blocks: [{ kind: "lines", lines: [refreshedSessionPath ? `Private browser bootstrap file: ${oneLine(refreshedSessionPath)}` : "Read the service's startup output in the original foreground terminal."] }, { kind: "commands", items: [{ command: stop, description: "Stop it" }] }] }] };
     return { sections: [...view.sections, { title: "Next", blocks: [{ kind: "commands", items: [{ command: logs, description: "Read the service's own startup output, including how to reach it when it reports that" }, { command: stop, description: "Stop it" }] }] }] };
   });
   if (values.foreground && started.child && started.exit) {

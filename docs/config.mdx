@@ -180,8 +180,10 @@ and before the product default.
 variables override a saved value. `cotal config` shows the winning value and the values it overrides.
 
 `harness` is checked against the official connectors and the ones installed extensions provide.
-`persona` must be a persona name, made of letters, digits, `_` and `-`, or a path to a persona file
-with no control characters. When the catalog of the space a command here uses (`--space`, else the
+`persona` accepts a catalog name or a path to a persona file with no control characters. A direct
+launch or preview checks the catalog first for a bare name ending in `.md`, such as `review.md`.
+Use a path such as `./review.md` to select a file relative to the mesh root. When the catalog of
+the space a command here uses (`--space`, else the
 space `spawn` resolves from this folder, which is a running space registered here even when another
 space is selected) does not hold it, the value is still saved, since the file may be created later,
 with a `PERSONA_NOT_FOUND` warning naming that catalog; a launch checks it again when it uses it. A
@@ -229,6 +231,7 @@ other non-empty value when it starts, naming the variable. A blank value uses th
 |---|---|---|---|
 | `COTAL_SPACE` | connector session | Space to join | `demo` (or the join link's) |
 | `COTAL_NAME` | connector session | Presence name / identity | required (or via `COTAL_AGENT_FILE` / `COTAL_LINK`) |
+| `COTAL_DISPLAY_NAME` | connector session | The display name the card starts with when it differs from `COTAL_NAME`. A manager sets it when it relaunches a seat that `set-name` renamed; `COTAL_NAME`, and in user mode the actor, stay the launch name. An invalid name is refused when the session starts | `COTAL_NAME` |
 | `COTAL_ROLE` | connector session | Role | agent file's `role:`, else none |
 | `COTAL_SERVERS` | connector session | Broker URL(s). Hand-driven sessions only: a launcher-spawned seat gets this in its launch material instead (see below). A URL with a user name or password is refused when the session starts; pass the credential in `COTAL_CREDS`, `COTAL_TOKEN` or `COTAL_LINK` | the default local broker (or the link's) |
 | `COTAL_CREDS` | connector session | Path to a NATS creds file (auth mode). Hand-driven sessions only, same as above | none (open mode) |

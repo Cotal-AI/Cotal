@@ -24,7 +24,7 @@ if (["agent-bearer", "auth-service", "app-identity"].includes(process.argv[2] ??
   await serveFixtureGateway({ cli: [process.execPath, ...process.execArgv, import.meta.filename], cwd: process.cwd(), sessions: JSON.parse(process.argv[3]!) });
 } else {
   const { spawn } = await import("node:child_process");
-  const { createHash } = await import("node:crypto");
+  const { createHash, generateKeyPairSync } = await import("node:crypto");
   const { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } = await import("node:fs");
   const { createServer } = await import("node:http");
   const { tmpdir } = await import("node:os");
@@ -62,7 +62,8 @@ if (["agent-bearer", "auth-service", "app-identity"].includes(process.argv[2] ??
   authority.retirement.driverRan = false;
   const { counts, retirement } = authority;
   const childEnv = { ...process.env, COTAL_HOME: home, NODE_EXTRA_CA_CERTS: authority.caFile };
-  const idp = createServer((_req, res) => { res.writeHead(200, { "content-type": "application/json" }); res.end('{"keys":[]}'); });
+  const jwks = JSON.stringify({ keys: [generateKeyPairSync("ed25519").publicKey.export({ format: "jwk" })] });
+  const idp = createServer((_req, res) => { res.writeHead(200, { "content-type": "application/json" }); res.end(jwks); });
   await new Promise<void>((resolve) => idp.listen(0, "127.0.0.1", resolve));
   const idpUrl = `http://127.0.0.1:${(idp.address() as import("node:net").AddressInfo).port}/auth`;
   let broker: Child | undefined;

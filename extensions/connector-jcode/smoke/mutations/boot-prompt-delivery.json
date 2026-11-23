@@ -45,7 +45,7 @@
     },
     {
       "name": "bridge recovery ignores the owned startup kickoff when no inbox wake exists",
-      "file": "extensions/connector-jcode/src/host-turns.ts",
+      "file": "extensions/connector-jcode/src/host-recovery.ts",
       "find": "      if (!hostState.stopping && hasDriveWork()) void drive();",
       "replace": "      if (!hostState.stopping && (agent.pendingWake() > 0 || hostState.wakeQueued)) void drive();",
       "expectRed": "a startup kickoff still pending before send is delivered once after recovery without an inbox wake",

@@ -67,7 +67,7 @@ const sandboxEnv = (() => {
 })();
 
 const kids: ChildProcess[] = [];
-async function run(args: string[]): Promise<{ status: number | null; out: string }> {
+async function run(args: string[], timeoutMs?: number): Promise<{ status: number | null; out: string }> {
   const options = { cwd: root, env: sandboxEnv, stdio: ["ignore", "pipe", "pipe"] as ["ignore", "pipe", "pipe"] };
   assertSmokeSandboxDown(sandbox, args, options);
   const cp = spawn(process.execPath, ["--import", TSX_IMPORT, CLI, ...args], options);
@@ -75,7 +75,8 @@ async function run(args: string[]): Promise<{ status: number | null; out: string
   let out = "";
   cp.stdout?.on("data", (b: Buffer) => { out += b.toString(); });
   cp.stderr?.on("data", (b: Buffer) => { out += b.toString(); });
-  await once(cp, "exit");
+  const timeout = timeoutMs === undefined ? undefined : setTimeout(() => cp.kill("SIGTERM"), timeoutMs);
+  try { await once(cp, "close"); } finally { clearTimeout(timeout); }
   return { status: cp.exitCode, out };
 }
 
@@ -168,6 +169,10 @@ async function checkMode(mode: "auth" | "open-legacy" | "open-controller"): Prom
   console.log("\n3) down, then a PLAIN up renders the recorded limit again");
   const down = await run(["down", "--yes"]);
   ok("down exits 0", down.status === 0, down.out.slice(-1500));
+  if (mode === "open-controller") {
+    const watch = await run(["watch", "--space", space, "--plain"]);
+    ok("watch still recommends bare up for a stopped manager-backed stack", watch.status === 2 && watch.out.includes(`start it again with \`cotal up\` in ${root}`), watch.out);
+  }
   const again = await run(["up", "--detach", ...flags, "--space", space, "--server", server]);
   ok("a plain up with no flag exits 0", again.status === 0, again.out.slice(-1500));
   ok("…and renders the recorded max_payload again", confText().includes(`\nmax_payload: ${asked}\n`), confText().split("\n").filter((l) => l.startsWith("max_payload")));
@@ -232,6 +237,8 @@ async function checkMode(mode: "auth" | "open-legacy" | "open-controller"): Prom
       const clean = await run(["down", "--yes"]);
       ok("the low-payload broker stops", clean.status === 0, clean.out);
     }
+    if (mode === "open-controller") await checkStoppedBrokerOnly(space, port);
+    else await checkStoppedOpenForeground(server, port);
     const wide = await run(["up", "--open", "--no-manager", "--space", space, "--server", server, "--max-payload", "1048576"]);
     try {
       ok("a broker-only start accepts and serves 1048576 bytes", wide.status === 0 && await servedMaxPayload(port) === 1048576, wide.out);
@@ -244,6 +251,47 @@ async function checkMode(mode: "auth" | "open-legacy" | "open-controller"): Prom
       const clean = await run(["down", "--yes"]);
       ok("the sufficient-payload broker stops", clean.status === 0, clean.out);
     }
+  }
+}
+
+async function checkStoppedOpenForeground(server: string, port: number): Promise<void> {
+  const before = confText();
+  const restart = await run(["up", "--foreground", "--server", server], 15_000);
+  try {
+    ok("a cold legacy open foreground start with the recorded low limit refuses before launch",
+      restart.status === 1 && restart.out.includes("--max-payload 8192 is below 263168 bytes") &&
+      restart.out.includes("pass --no-manager") && !restart.out.includes("Starting nats-server"), restart.out);
+    ok("the refused start leaves the open config and policy unchanged and no listener", confText() === before &&
+      recordedPayload() === 8192 && await servedMaxPayload(port) === undefined, restart.out);
+  } finally {
+    if (await servedMaxPayload(port) !== undefined) await run(["down", "--yes"]);
+  }
+}
+
+async function checkStoppedBrokerOnly(space: string, port: number): Promise<void> {
+  const next = `start it again with \`cotal up --no-manager\` in ${root}`;
+  const plain = await run(["watch", "--space", space, "--plain"]);
+  ok("watch refuses a stopped broker-only space and names the broker-only restart", plain.status === 2 && plain.out.includes("TARGET_UNAVAILABLE") && plain.out.includes(next), plain.out);
+  const json = await run(["watch", "--space", space, "--json"]);
+  const [error, end] = json.out.trim().split("\n").map((line) => JSON.parse(line));
+  ok("watch JSON reports the same refusal and restart remedy", json.status === 2 && error?.type === "error" && error.data.code === "TARGET_UNAVAILABLE" && error.data.remedy === next && end?.type === "end", json.out);
+  const status = await run(["status", "--components", "--space", space]);
+  const health = status.out.split("Component Health")[1] ?? "";
+  ok("component health keeps the broker-only restart advice", status.status === 1 && /start it again with `(?:pnpm )?cotal up --no-manager` in /.test(health), status.out);
+  for (const args of [["space", "show", space], ["use", space]]) {
+    const result = await run(args);
+    const advice = result.out.replace("`pnpm cotal up", "`cotal up");
+    ok(`${args.join(" ")} names the broker-only restart in the saved project`, result.status === 0 && advice.includes(next), result.out);
+  }
+
+  const restart = await run(["up", "--no-manager"]);
+  try {
+    ok("the advised command starts the stopped broker on its recorded low limit", restart.status === 0 && await servedMaxPayload(port) === 8192, restart.out);
+    const who = await run(["who", "--json"]);
+    ok("who connects to the restarted broker with no manager", who.status === 0 && who.out.includes('"managers":"none-present"'), who.out);
+  } finally {
+    const clean = await run(["down", "--yes"]);
+    ok("the restarted broker stops", clean.status === 0, clean.out);
   }
 }
 

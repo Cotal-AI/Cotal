@@ -136,6 +136,11 @@ export function describeStatusError(err: Error): Error {
   return err;
 }
 
+/** Keep expected broker expiry observable without requiring an error listener. */
+export function expiryAwareErrorEvent(err: unknown, hasErrorListener: boolean): "error" | "warning" {
+  return !hasErrorListener && err instanceof UserAuthenticationExpiredError ? "warning" : "error";
+}
+
 /** The ordered consumer behind a KV watch, which nats.js keeps on the iterator and the KV types hide. */
 export function kvWatchConsumer(iter: Awaited<ReturnType<KV["watch"]>>): PushConsumer {
   const consumer = (iter as { _data?: PushConsumer })._data;

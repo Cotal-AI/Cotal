@@ -4,6 +4,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, parse, relative, resolve, sep } from "node:path";
 import { cmdSpawnSpec, beginGlobalUpdateChild, processGroupMembers, processStartToken } from "@cotal-ai/workspace";
 import { withInstallUmask } from "../lib/install-umask.js";
+import { npmInvocation } from "../lib/npm-invocation.js";
 import { compareSemver } from "../seed/reconcile.js";
 
 export interface CommandResult {
@@ -75,11 +76,12 @@ export function verifyGlobalEntry(root: string, expectedVersion: string): string
 
 export async function runNpmAsync(args: string[], archiveCache?: string): Promise<CommandResult> {
   try {
-    const { file, args: spawnArgs, windowsVerbatimArguments } = cmdSpawnSpec("npm", args);
+    const npm = npmInvocation(process.env, args);
+    const { file, args: spawnArgs, windowsVerbatimArguments } = cmdSpawnSpec(npm.file, npm.args, npm.env);
     const gated = archiveCache !== undefined && (process.platform === "linux" || process.platform === "darwin");
     const gate = 'IFS= read -r permit <&3 && [ "$permit" = run ] || exit 1; exec 3<&-; exec "$@"';
     const child = spawn(gated ? "/bin/sh" : file, gated ? ["-c", gate, "cotal-release-check", file, ...spawnArgs] : spawnArgs, {
-      cwd: parse(homedir()).root, windowsVerbatimArguments, windowsHide: true,
+      cwd: npm.cwd, env: npm.env, windowsVerbatimArguments, windowsHide: true,
       ...(gated ? { detached: true, stdio: ["ignore", "pipe", "pipe", "pipe"] } : {}),
     });
     let stdout = "", stderr = "", error: string | undefined;
@@ -106,9 +108,10 @@ export async function runNpmAsync(args: string[], archiveCache?: string): Promis
 
 export function runNpm(args: string[], inherit = false): CommandResult {
   try {
-    const { file, args: spawnArgs, windowsVerbatimArguments } = cmdSpawnSpec("npm", args);
+    const npm = npmInvocation(process.env, args);
+    const { file, args: spawnArgs, windowsVerbatimArguments } = cmdSpawnSpec(npm.file, npm.args, npm.env);
     const result = spawnSync(file, spawnArgs, {
-      cwd: parse(homedir()).root, windowsVerbatimArguments,
+      cwd: npm.cwd, env: npm.env, windowsVerbatimArguments,
       ...(inherit ? { stdio: "inherit" as const } : { encoding: "utf8" as const }),
     });
     return {
@@ -154,6 +157,8 @@ export async function runGlobalProcess(
   let idle: ReturnType<typeof setTimeout> | undefined;
   let stopping: Promise<void> | undefined;
   try {
+    const npm = operation === "install" && file === "npm" ? npmInvocation(env, args) : undefined;
+    if (npm) ({ file, args, windowsVerbatimArguments } = cmdSpawnSpec(npm.file, npm.args, npm.env));
     cache = mkdtempSync(join(tmpdir(), "cotal-update-npm-"));
     const recordCache = gated && staging !== undefined;
     if (recordCache) {
@@ -176,7 +181,7 @@ export async function runGlobalProcess(
     const child = withInstallUmask(() => spawn(gated ? "/bin/sh" : file, gated ? ["-c", gate, "cotal-update", file, ...args] : args, {
       // Corepack searches ancestors for a package manager. Keep only npm at the filesystem root.
       ...(operation === "install" ? { cwd: parse(homedir()).root } : {}),
-      env: { ...env, npm_config_cache: cache, npm_config_logs_max: "0", npm_config_update_notifier: "false" },
+      env: { ...(npm?.env ?? env), npm_config_cache: cache, npm_config_logs_max: "0", npm_config_update_notifier: "false" },
       // A separate process group keeps terminal interrupts out of npm's live replacement.
       // Keep the ChildProcess referenced and await close; this is not a background update.
       detached: true,

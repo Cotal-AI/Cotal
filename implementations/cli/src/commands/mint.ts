@@ -7,7 +7,7 @@ import {
   type FlagValues, type Identity, type ParsedArgs, type Profile, type SpaceAuth,
 } from "@cotal-ai/core";
 import {
-  parseCommaList, CommandFailure, assertExternalCredentialExport, agentCredsKey, agentSecretFilePaths, credentialMintFlags,
+  parseCommaList, CommandFailure, assertExternalCredentialExport, agentCredsKey, agentSecretFilePaths, authDir, credentialMintFlags,
   isCommandFailure, preflightTarget, presentationOf,
   protectedCredentialReference, protectedLocalDirectory, readLocalRecordSource,
   validateCredentialMintArguments, workspaceErrorParts,
@@ -19,6 +19,7 @@ import { staticMintAuthority } from "../lib/credential-authority.js";
 import { recordCredentialExport } from "../lib/credential-exports.js";
 import { shellWord } from "../lib/endpoint-errors.js";
 import { withProvisioner } from "../lib/provisioner.js";
+import { retireMintReadAcl } from "../lib/mint-renewal.js";
 import { noExpiryRecordPath, noExpiryRecordText } from "../lib/no-expiry-record.js";
 import { mintEndpointCaller } from "./mint-endpoint-caller.js";
 export { resolveMintTarget } from "../lib/credential-authority.js";
@@ -118,6 +119,10 @@ function outFolderRefusal(target: object, out: string, error: unknown): CommandF
   return new CommandFailure("refused", "PERMISSION_DENIED", `the --out folder ${parent} could not be reached or made by this account (${code}); no credential was written`, { target: { ...target, folder: parent }, remedy: "name an --out file in a folder you own, or make that folder first" });
 }
 
+function personaCommand(verb: "show" | "edit", name: string, space: string): string {
+  return `cotal persona ${verb} ${shellWord(name)} --space${space.startsWith("-") ? "=" : " "}${shellWord(space)}`;
+}
+
 /** Native static profiles only. Labels, files and broker provisioning share one resolved authority. */
 export async function mint(args: ParsedArgs): Promise<void> {
   validateCredentialMintArguments(args);
@@ -132,7 +137,7 @@ export async function mint(args: ParsedArgs): Promise<void> {
   const changed: Record<string, unknown>[] = [];
   let mayHaveProvisioned = false, publicationStarted = false;
   let identity: Identity | undefined, lifecycleUid: string | undefined, carried: AgentGrants | undefined;
-  let held: ReturnType<typeof acquireLock> | undefined;
+  let held: ReturnType<typeof acquireLock> | undefined, renewLock: typeof held, identitySource: string | undefined;
   let target: { space?: string; name: string; profile: string; path?: string; identity?: string; lifecycleUid?: string } = { name, profile };
   try {
     const { target: resolvedTarget, currentRoot, store, auth } = await staticMintAuthority(values, target, !values.provision, values.provision ? OFFLINE_MINT : undefined);
@@ -145,7 +150,7 @@ export async function mint(args: ParsedArgs): Promise<void> {
       const bytes = readLocalRecordSource(path, 1024 * 1024, true);
       if (!bytes) throw new CommandFailure("refused", "TARGET_NOT_FOUND", "the protected identity source disappeared");
       let text: string;
-      try { text = new TextDecoder("utf-8", { fatal: true }).decode(bytes); identity = identityFromCreds(text); }
+      try { text = new TextDecoder("utf-8", { fatal: true }).decode(bytes); identity = identityFromCreds(text); identitySource = text; }
       catch { throw new CommandFailure("refused", "SCHEMA_INVALID", "the identity source has no matching native JWT subject and user nkey seed; contents were not printed"); }
       // An agent credential this space issued keeps its grants when it is minted again.
       const claims = credsClaims(text);
@@ -195,7 +200,7 @@ export async function mint(args: ParsedArgs): Promise<void> {
       const unusable = (problem: string, remedy: string) => new CommandFailure("refused", "SCHEMA_INVALID", `the persona file ${path} for this label ${problem}, so no credential was minted; file values and secret material were not printed`, { target: { ...target, persona: path }, remedy });
       let definition;
       try { definition = !values["no-persona"] && existsSync(path) ? loadAgentFile(path, { deferRoleValidation: true }) : undefined; }
-      catch { throw unusable("could not be read as a persona", `see what is wrong with it with \`cotal persona show ${name}\`, then fix it and mint again`); }
+      catch { throw unusable("could not be read as a persona", `see what is wrong with it with \`${personaCommand("show", name, space)}\`, then fix it and mint again`); }
       // A flag wins, then the grants of the --identity credential, then the persona.
       const readFlag = parseCommaList(values["allow-subscribe"]);
       allowSubscribe = readFlag === undefined && carried ? carried.read : resolveReadAcl(definition?.subscribe ?? [], readFlag ?? definition?.allowSubscribe);
@@ -204,7 +209,7 @@ export async function mint(args: ParsedArgs): Promise<void> {
       if (!carried && definition?.capabilities?.includes("channel-config")) capabilities = ["channel-config"];
       if (values.role === undefined && !carried && role !== undefined) {
         try { assertValidRole(role); }
-        catch { throw unusable("sets a role that is not one word of letters, digits, _ or -", `give it such a role with \`cotal persona edit ${name}\`, then mint again`); }
+        catch { throw unusable("sets a role that is not one word of letters, digits, _ or -", `give it such a role with \`${personaCommand("edit", name, space)}\`, then mint again`); }
       }
       lifecycleUid = mintLifecycleUid();
     }
@@ -230,6 +235,11 @@ export async function mint(args: ParsedArgs): Promise<void> {
         throw new CommandFailure("refused", preflight.kind.includes("creds") || preflight.kind === "stale-auth" ? "AUTH_REQUIRED" : "TARGET_UNAVAILABLE", `${message}; no stale registration was pruned`, { target, ...(next === undefined ? {} : { remedy: next }) });
       }
       checkProvisionedExpiry();
+      if (identitySource !== undefined) {
+        renewLock = acquireLock(join(authDir(root), `${identity.id}.mint.lock`), { label: "credential identity", waitMs: 0, onTimeout: () => new CommandFailure("refused", "CONFLICT", "another mint holds this credential identity", { remedy: "wait for that mint to finish, then inspect its result before retrying" }) });
+        await retireMintReadAcl(resolvedTarget, auth, identity.id, identitySource, name, { read: allowSubscribe ?? [], post: allowPublish ?? [], role: role ?? null }, () => { mayHaveProvisioned = true; });
+        checkProvisionedExpiry();
+      }
       mayHaveProvisioned = true;
       const provisionedIdentity = identity;
       await provisionForMint(auth, identity, { ...options, lifecycleUid: lifecycleUid! }, resolvedTarget, () => {
@@ -308,7 +318,7 @@ export async function mint(args: ParsedArgs): Promise<void> {
     }
     if (mayHaveProvisioned || publicationStarted) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "provisioning or private publication started, but the final credential outcome is unconfirmed; no mint was retried", { target, changed, remedy: "inspect the original identity/lifecycle and output; do not allocate another identity blindly" });
     throw new CommandFailure("refused", "SCHEMA_INVALID", "native credential preparation failed before provisioning or private publication; file values and secret material were not printed", { target });
-  } finally { held?.release(); }
+  } finally { renewLock?.release(); held?.release(); }
 }
 
 const channelList = (channels: readonly string[]) => channels.length ? channels.join(", ") : "no channel";

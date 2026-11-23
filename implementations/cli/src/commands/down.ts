@@ -37,6 +37,7 @@ import {
   type Report,
   readMaintenanceJournal,
   readMaintenanceLockHolder,
+  readBrokerPolicy,
   readContainedRecord,
   keepsRegistration,
   recordMesh,
@@ -52,6 +53,7 @@ import {
 } from "@cotal-ai/workspace";
 import {
   isReachable,
+  MANAGER_START_PAYLOAD_FLOOR,
   realDirNoSymlink,
 } from "@cotal-ai/core";
 import { localProcessSurface } from "../ext-loader.js";
@@ -161,7 +163,21 @@ export function validateDownArguments(args: ParsedArgs): void {
         remedy: `run ${codeSpan(retry)} from this root`,
       });
     }
-    throw new CommandFailure("refused", "UNSUPPORTED", "--json and --plain apply only to a controller stack, a --dry-run preview, a stack that is already stopped or a folder whose records name another folder's space; a bare stop here prints its own lines, and nothing was stopped", { remedy: `run \`${displayCmd()} down\` from this root without --json or --plain; \`${displayCmd()} down --dry-run --json\` reads this root's stack` });
+    const { space, ...flags } = args.values;
+    if (typeof space === "string" && bareStop(flags) && flags["with-agents"] === undefined) {
+      let prepared: string | undefined, project: string | undefined;
+      try {
+        prepared = preparedSpaceAt(canonicalRoot(cotalRoot()))?.space;
+        if (prepared !== undefined && prepared !== space) project = findPreparedSpace(space)?.root;
+      } catch { /* A project lookup is only for the diagnostic. */ }
+      if (prepared !== undefined && prepared !== space) {
+        throw new CommandFailure("refused", "UNSUPPORTED", `--space ${JSON.stringify(space)} does not match the space ${JSON.stringify(prepared)} prepared in this folder; nothing was stopped`, {
+          remedy: project === undefined ? `locate the project root for space ${JSON.stringify(space)} before retrying` : `retry from the project root for space ${JSON.stringify(space)} at ${oneLine(project)}`,
+        });
+      }
+    }
+    const retry = bareStop(args.values) ? sameDown(args.values) : `${displayCmd()} down`;
+    throw new CommandFailure("refused", "UNSUPPORTED", "--json and --plain apply only to a controller stack, a --dry-run preview, a stack that is already stopped or a folder whose records name another folder's space; a bare stop here prints its own lines, and nothing was stopped", { remedy: `run ${codeSpan(retry)} from this root without --json or --plain; \`${displayCmd()} down --dry-run --json\` reads this root's stack` });
   }
 }
 
@@ -330,7 +346,7 @@ function stoppedLegacyStack(values: ParsedArgs["values"]): { root: string; space
   // An explicit name only qualifies a never-started prepared root; it cannot select a legacy stop.
   if (requested !== undefined) {
     if (typeof requested !== "string" || started || kept || prepared?.space !== requested || space !== requested) return undefined;
-    refuseSpaceElsewhere(root, requested, values["dry-run"] === true);
+    refuseSpaceElsewhere(root, requested, values);
   }
   if (space !== undefined && planBareDownServices(space).some((row) => row.action !== "already-stopped")) return undefined;
   const retired = kept?.space === space && kept?.stoppedByDown === true && kept.stoppedWithAgents === true;
@@ -461,7 +477,10 @@ function guardLegacyBareDown(): { space: string; server: string; mode?: string }
   // is named with its own `space forget`, which `cotal space show` reads first and which refuses
   // while that space runs, and the stop to run again once the address is this stack's alone.
   if (other.length) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "another registered space names this exact broker address; bare down did not stop its shared listener", { target: { ...scoped, otherSpaces: other.map((row) => row.space) }, remedy: [
-    ...other.map((row) => `read "${row.space}" with \`cotal space show ${row.space}\`, stop it in its own folder, then take it off this address with \`cotal space forget ${row.space}\``),
+    ...other.map(({ space }) => {
+      const name = `${space.startsWith("-") ? "-- " : ""}${shellWord(space)}`;
+      return `read ${JSON.stringify(space)} with ${codeSpan(`cotal space show ${name}`)}, stop it in its own folder, then take it off this address with ${codeSpan(`cotal space forget ${name}`)}`;
+    }),
     "then run `cotal down` again",
   ].join("; ") });
   assertNoLiveServices(mesh.space, "down");
@@ -507,15 +526,23 @@ function refuseUncontainedRecords(components: readonly LocalProcess[], context: 
   });
 }
 
-/** Bare down stops only the stack recorded at this folder's root. A `--space` whose stack is
- *  recorded in another folder gets one refusal from the preview and the stop, naming that folder. */
-function refuseSpaceElsewhere(root: string, space: string, dryRun: boolean): void {
-  let at: string | undefined;
-  try { at = findMesh(space)?.root ?? findPreparedSpace(space)?.root; } catch { return; }
+/** A stop or preview from another folder names the stack's root only for a local registration.
+ *  A manual or catalog entry records where the connection is used, not where the stack runs. */
+function refuseSpaceElsewhere(root: string, space: string, values: ParsedArgs["values"]): void {
+  let at: string | undefined, connection: boolean;
+  try {
+    const mesh = findMesh(space);
+    at = mesh?.root ?? findPreparedSpace(space)?.root;
+    connection = mesh?.origin === "manual" || mesh?.origin === "catalog";
+  } catch { return; }
   if (at === undefined || at === root || existsSync(at) && canonicalRoot(at) === canonicalRoot(root)) return;
+  if (connection) throw new CommandFailure("refused", "TARGET_NOT_FOUND", `the connection to space "${space}" is registered at ${at}; its registration does not identify the folder that started the stack`, {
+    target: { root, space, registeredRoot: at },
+    remedy: `run ${codeSpan(sameDown(values))} in the project that started the stack`,
+  });
   let controller = false;
   try { controller = readStackJournal(at)?.journal.space === space; } catch { /* named with the legacy stop */ }
-  const stop = dryRun ? "cotal down --dry-run" : controller ? "cotal down --yes" : "cotal down";
+  const stop = values["dry-run"] ? "cotal down --dry-run" : controller ? "cotal down --yes" : "cotal down";
   throw new CommandFailure("refused", "TARGET_NOT_FOUND", `the stack of space "${space}" is recorded at ${at}, not at this folder's root, and \`cotal down\` stops only the stack recorded where it runs`, {
     target: { root, space, spaceRoot: at },
     remedy: `run \`${stop}\` in ${at}; to stop one saved service, run \`cotal service stop <service-name> --space ${space}\``,
@@ -585,7 +612,7 @@ async function downCommand(args: ParsedArgs): Promise<void> {
     }
   }
   if (values["dry-run"] && !values.file && !values.run && !values["preserve-state"] && !values["store-dir"] && !values["session-store"]?.length) {
-    if (values.space) refuseSpaceElsewhere(cotalRoot(), values.space, true);
+    if (values.space) refuseSpaceElsewhere(cotalRoot(), values.space, args.values);
     return previewWholeStack(args);
   }
   if (values["with-agents"] && (values.file || values.run || values.space))
@@ -609,7 +636,7 @@ async function downCommand(args: ParsedArgs): Promise<void> {
     await downManifest(values.file ?? "<run>", { run: values.run, dryRun: Boolean(values["dry-run"]) });
     return;
   }
-  if (values.space) refuseSpaceElsewhere(cotalRoot(), values.space, false);
+  if (values.space) refuseSpaceElsewhere(cotalRoot(), values.space, args.values);
   if (values.space)
     throw new CommandFailure("refused", "USAGE_INVALID", "a bare stop takes no --space: `cotal down` stops the stack recorded at this folder's root", {
       target: { root: cotalRoot(), space: values.space },
@@ -773,7 +800,12 @@ async function downCommand(args: ParsedArgs): Promise<void> {
     console.error(c.red("Nothing running for the local stack (no recorded pidfiles)."));
     process.exit(1);
   }
-  console.log(`\n${renderReport({ sections: [{ title: "Next", blocks: [{ kind: "commands", items: [{ command: `${displayCmd()} up`, description: "Start it again" }] }] }] }, "rich", process.stdout)}`);
+  let payload: number | undefined;
+  // The retained policy determines the restart, not whether the stop succeeded.
+  try { if (guarded.mode === "open") payload = readBrokerPolicy(folderCtx().root)?.maxPayload; }
+  catch { return; }
+  const restart = payload !== undefined && payload < MANAGER_START_PAYLOAD_FLOOR ? "up --no-manager" : "up";
+  console.log(`\n${renderReport({ sections: [{ title: "Next", blocks: [{ kind: "commands", items: [{ command: `${displayCmd()} ${restart}`, description: "Start it again" }] }] }] }, "rich", process.stdout)}`);
 }
 
 /** What an interrupted bare down of a legacy stack left: the members it stopped, the ones still

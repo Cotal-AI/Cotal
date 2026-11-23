@@ -83,7 +83,7 @@ export function chatAdmission(mode: MeshTarget["mode"], label: string, channel: 
  *  `--stdio` and `--space`, so a refusal that names it keeps the session's front end and mesh. */
 export function reopenCommand(args: Pick<ParsedArgs, "raw" | "positionalIndices">): (channel: string) => string {
   const flags = args.raw.filter((_, index) => !args.positionalIndices?.includes(index));
-  return (channel) => ["cotal", "chat", channel, ...flags].map(shellWord).join(" ");
+  return (channel) => ["cotal", "chat", channel.startsWith("-") ? `#${channel}` : channel, ...flags].map(shellWord).join(" ");
 }
 
 /** How `cotal chat`'s session refusals end: the command that reopens on a channel with this

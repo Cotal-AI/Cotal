@@ -75,8 +75,13 @@ export function buildCotalTools(agent: MeshAgent, config: AgentConfig): Record<s
  *  schema goes across unmodified; there is no 1.x-style raw-shape flattening needed here. The
  *  closed-object refusal at dispatch is the same guard as {@link buildCotalTools} keeps: this host
  *  also hands `execute` the caller's object UNVALIDATED, so a stray `owner`/`actor` is refused by
- *  name here too, never silently reaching `run`. */
-export function buildCotalTools2(agent: MeshAgent, config: AgentConfig): Parameters<OpenCode2ToolEditor["add"]>[0][] {
+ *  name here too, never silently reaching `run`. `succeeded` hears each tool that returns without
+ *  an error. */
+export function buildCotalTools2(
+  agent: MeshAgent,
+  config: AgentConfig,
+  succeeded: (tool: string) => void,
+): Parameters<OpenCode2ToolEditor["add"]>[0][] {
   const defs: Parameters<OpenCode2ToolEditor["add"]>[0][] = [];
   for (const spec of cotalToolSpecs(config, "opencode")) {
     if (spec.name === "cotal_inbox") {
@@ -109,6 +114,7 @@ export function buildCotalTools2(agent: MeshAgent, config: AgentConfig): Paramet
           return { content: `⚠ ${(e as Error).message}` };
         }
         const r = await spec.run(agent, config, parsed);
+        if (!r.isError) succeeded(spec.name);
         return { content: r.isError ? `⚠ ${r.text}` : r.text };
       },
     });

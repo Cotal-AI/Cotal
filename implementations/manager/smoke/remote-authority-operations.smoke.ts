@@ -37,12 +37,12 @@ const manager = new Manager({
   },
 }) as unknown as {
   managerInstanceId: string;
-  goalWriter: unknown;
   dial(opts: unknown): Promise<never>;
   withEndpointServeExecutor<T>(fn: unknown): Promise<T>;
   withOpenServeConnection<T>(fn: unknown): Promise<T>;
   deregisterServiceOnStop(): Promise<void>;
   reconcileGoalIndex(): Promise<void>;
+  goalWriterComponent: { goalWriter: unknown; };
 };
 manager.managerInstanceId = instanceId;
 
@@ -59,7 +59,7 @@ manager.withOpenServeConnection = async () => {
 await manager.deregisterServiceOnStop();
 assert.deepEqual({ scoped, bare, hostScans }, { scoped: 1, bare: 0, hostScans: 0 });
 
-manager.goalWriter = {};
+manager.goalWriterComponent.goalWriter = {};
 manager.dial = async () => {
   bare++;
   throw new Error("remote authority must not dial anonymously for the goal-index sweep");
@@ -164,6 +164,7 @@ const remoteOnly = new Manager({
   despawnAuthorized(): { ok: true; data: unknown };
   attachAuthorized(): Promise<{ ok: true; data: unknown }>;
   inputAuthorized(): unknown;
+  terminalInputComponent: { interruptAuthorized(): unknown };
   serveTurnGoal(): unknown;
 };
 remoteOnly.userMode = true;
@@ -185,24 +186,25 @@ remoteOnly.findManagedByTarget = () => foreignTarget;
 remoteOnly.despawnAuthorized = () => { effects.push("despawn"); return { ok: true, data: {} }; };
 remoteOnly.attachAuthorized = async () => { effects.push("attach"); return { ok: true, data: {} }; };
 remoteOnly.inputAuthorized = () => { effects.push("input"); return {}; };
+remoteOnly.terminalInputComponent.interruptAuthorized = () => { effects.push("interrupt"); return {}; };
 remoteOnly.serveTurnGoal = () => { effects.push("turn"); return {}; };
 const handlers = new Map(remoteOnly.managerServiceDefs().map((def) => [def.command, def.handler]));
 const handlerContext = {
   subject: { caller: epCaller, target: { mode: "owner" } },
   request: { args: {}, target: { owner: foreignTarget.userOwner, actor: "worker", lifecycleUid: mintLifecycleUid() } },
 };
-for (const command of ["despawn", "attach", "input", "turn"]) {
+for (const command of ["despawn", "attach", "input", "interrupt", "turn"]) {
   await handlers.get(command)!(handlerContext);
 }
-assert.deepEqual(effects, ["despawn", "attach", "input", "turn"]);
-assert.equal(remoteChecks, 6);
+assert.deepEqual(effects, ["despawn", "attach", "input", "interrupt", "turn"]);
+assert.equal(remoteChecks, 7);
 adminDecision = new Error("host authority unavailable");
 effects.length = 0;
-for (const command of ["despawn", "attach", "input", "turn"]) {
+for (const command of ["despawn", "attach", "input", "interrupt", "turn"]) {
   await assert.rejects(Promise.resolve(handlers.get(command)!(handlerContext)), /host authority unavailable/);
 }
 assert.deepEqual(effects, []);
-assert.equal(remoteChecks, 10);
+assert.equal(remoteChecks, 12);
 
 // #373: cross-owner arming still needs admin BEFORE
 // startAgent (which mints credentials — "no credential minted" is asserted as "startAgent was
@@ -250,7 +252,7 @@ reply = await spawn(false) as { ok: boolean };
 assert.equal(reply.ok, true);
 assert.deepEqual((startOpts[2] as { events?: boolean }).events, false);
 assert.equal((startOpts[2] as { eventsNotice?: string }).eventsNotice, undefined);
-assert.equal(remoteChecks, 14);
+assert.equal(remoteChecks, 16);
 spawnCaller = epCaller;
 adminCaller = caller;
 reply = await spawn(true) as { ok: boolean };
@@ -260,17 +262,17 @@ reply = await spawn() as { ok: boolean };
 assert.equal(reply.ok, true, "an owner's omitted event flag stays armed by default");
 assert.equal((startOpts[4] as { events?: boolean }).events, undefined);
 assert.equal((startOpts[4] as { eventsNotice?: string }).eventsNotice, undefined);
-assert.equal(remoteChecks, 16);
+assert.equal(remoteChecks, 18);
 
 // The broker transport's own dials go through Manager.dial, so a test that replaces it (as the
 // goal-index sweep above does) intercepts the standing dial and the one-shot connections too.
 const dialSeam = new Manager({ space: "demo", runtime: "pty" }) as unknown as {
-  servers: string;
+  config: { servers: string };
   dial(opts: unknown): Promise<never>;
   dialRemoteStanding(opts: unknown, deadline: number): Promise<unknown>;
   withOpenServeConnection<T>(fn: unknown): Promise<T>;
 };
-dialSeam.servers = "nats://127.0.0.1:1";
+dialSeam.config.servers = "nats://127.0.0.1:1";
 let seamDials = 0;
 dialSeam.dial = async () => { seamDials++; throw new Error("dial seam stub"); };
 await assert.rejects(dialSeam.dialRemoteStanding({ maxReconnectAttempts: 0 }, performance.now() + 3000), /dial seam stub/, "a replaced Manager.dial intercepts the remote standing dial");

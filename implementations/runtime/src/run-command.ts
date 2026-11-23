@@ -103,6 +103,7 @@ import {
   SHOWN_VALUE_MAX,
   shellPath,
 } from "@cotal-ai/workspace";
+import { startStackManagerRemedy } from "@cotal-ai/workspace/control";
 import { offlineWorkflow, sourceOf } from "./offline-command.js";
 import { seatTurnCommand } from "./seat-turn-command.js";
 import { openRequestKeys, printRunDetail, printRunList, runReceipt } from "./workflow-views.js";
@@ -508,7 +509,16 @@ async function journal(values: RunValues, planes: Planes, endpoint: string, runI
   }
   // The replay durable is named by the takeover id this call's credential was minted for.
   const view = await runHost.status(planes, { endpoint, runId, takeoverId });
-  if (!view) throw new CommandFailure("refused", "TARGET_NOT_FOUND", "no workflow record was returned for this run", { target: { space: planes.space, endpoint, run: runId } });
+  if (!view) {
+    const selectors = retryFlag("space", planes.space) + (["server", "creds", "endpoint"] as const).map((flag) => retryFlag(flag, values[flag])).join("");
+    const output = values.json ? " --json" : values.plain ? " --plain" : "";
+    const privateServer = values.server !== undefined && brokerAddressForDisplay(values.server) !== oneLine(values.server);
+    throw new CommandFailure("refused", "TARGET_NOT_FOUND", "no workflow record was returned for this run", {
+      target: { space: planes.space, endpoint, run: runId },
+      remedy: privateServer ? "replace the subcommand and run ID with `list` in the original command, and omit `--limit` if given"
+        : `list the recorded runs with ${codeSpan(`cotal run list --local${selectors}${output}`)}`,
+    });
+  }
   printRunDetail(planes.space, view, values);
 }
 
@@ -790,9 +800,9 @@ function reportInterruptedStart(values: RunValues, space: string): () => void {
  *  fetch, digest-verified recompile), then the invoke, re-issued after a bind split
  *  ({@link invokeRepairingSplit}). The reply's data on success; a refusal throws as
  *  {@link managerRefusal} classifies it. */
-async function askHost(values: RunValues, command: string, args: Record<string, unknown> | undefined, resolved?: (space: string) => void): Promise<unknown> {
+async function askHost(values: RunValues, command: string, args: Record<string, unknown> | undefined, resolved: (target: ControlTarget) => void): Promise<unknown> {
   const { target: t, seat } = await resolveRunControlTarget(values);
-  resolved?.(t.space);
+  resolved(t);
   const who = controlCaller(t.auth);
   // A raw --creds file carries no endpoint-caller triple, and this route cannot mint one. Without
   // --creds the CLI mints the one-shot caller from the space's trust or the signed-in login.
@@ -807,7 +817,7 @@ async function askHost(values: RunValues, command: string, args: Record<string, 
   try {
     // Only the operator's own unpinned instrument holds the registry rows `ps` scatters on; a seat's
     // credential and a user's manager view hold none.
-    if (!seat && auth.bearer === undefined && (auth.managerInstanceId === undefined || values.on !== undefined)) await refuseWithoutLiveManager(nc, t.space, values.on);
+    if (!seat && auth.bearer === undefined && (auth.managerInstanceId === undefined || values.on !== undefined)) await refuseWithoutLiveManager(nc, t, values.on);
     // A logged-in user's manager view is issued at the callout (SPEC 13.15): its generation is read
     // back from this connection's accepted row, and every request rides `ep.v1` under it.
     const caller = auth.bearer !== undefined && auth.managerInstanceId !== undefined
@@ -883,7 +893,7 @@ async function chatStreamGone(nc: NatsConnection, space: string): Promise<boolea
  *  it, rather than after the describe has waited out its whole deadline for an answer no manager
  *  can send. So is an `on` pin that names none of the live managers, with the ones that run. Any
  *  other registry outcome, an unreadable registry included, leaves the describe to decide. */
-async function refuseWithoutLiveManager(nc: NatsConnection, space: string, on?: string): Promise<void> {
+async function refuseWithoutLiveManager(nc: NatsConnection, { space, server }: ControlTarget, on?: string): Promise<void> {
   let live: Awaited<ReturnType<typeof freezeExpectedSet>>;
   try {
     live = await freezeExpectedSet(await jetstreamManager(nc, { checkAPI: false }), space, BASELINE_LIFECYCLE_ENDPOINT);
@@ -892,7 +902,7 @@ async function refuseWithoutLiveManager(nc: NatsConnection, space: string, on?: 
     throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "no manager is running for this space to host or read its workflow runs", {
       target: { space },
       native: { code: e.code, detail: `${e.code}: ${e.message}` },
-      remedy: "start the stack's manager with bare `cotal up`; a stack started with --no-manager has none",
+      remedy: startStackManagerRemedy(space, server),
     });
   }
   // A pin that names none of the running managers can only wait out its describe, so it is refused
@@ -936,7 +946,8 @@ export function renderLangProblem(d: EpErrorDetail): string {
 
 async function hosted(values: RunValues, verb: string, a: string | undefined, b: string | undefined): Promise<void> {
   let space: string | undefined;
-  const ask = (command: string, args: Record<string, unknown> | undefined) => askHost(values, command, args, (resolved) => { space = resolved; });
+  let open = false;
+  const ask = (command: string, args: Record<string, unknown> | undefined) => askHost(values, command, args, (target) => { space = target.space; open = target.mode === "open"; });
   const endpoint = values.endpoint !== undefined ? { endpoint: values.endpoint } : {};
   // A hosted drive is recorded under the manager's own endpoint; a caller cannot choose another,
   // so an `--endpoint` here is refused rather than dropped.
@@ -987,7 +998,7 @@ async function hosted(values: RunValues, verb: string, a: string | undefined, b:
     }
     const rows = await ask("run-ps", Object.keys(endpoint).length ? endpoint : undefined) as RunListRow[];
     const unmatched = values.endpoint !== undefined && !rows.length ? { endpoint: values.endpoint, recordedUnder: recordedUnder(await ask("run-ps", undefined) as RunListRow[]) } : undefined;
-    printRunList(space, rows, values, unmatched);
+    printRunList(space, rows, values, unmatched, open);
     return;
   }
   if (verb === "journal") {
@@ -1137,6 +1148,14 @@ function checkAnswerValue(text: string, usage: (message: string) => never): void
   }
 }
 
+function journalIdRemedy(verb: string, values: RunValues): string {
+  if (values.server !== undefined && brokerAddressForDisplay(values.server) !== values.server)
+    return "list the runs with the same broker and target options, then give the original command one ID from that list";
+  const target = (values.local ? " --local" : "") + (["space", "server", "creds", "endpoint", "on"] as const).map((flag) => retryFlag(flag, values[flag])).join("");
+  const output = values.json ? " --json" : values.plain ? " --plain" : "";
+  return `${codeSpan(`cotal run${target}${output}`)} lists the runs; run ${codeSpan(`cotal run ${verb} <run-id>${target}${retryFlag("limit", values.limit)}${output}`)}`;
+}
+
 /** Public workflow grammar, before catalog preparation or native requests. */
 export function workflowArguments(args: ParsedArgs): { values: RunValues; verb: string; a?: string; b?: string } {
   const values = { ...args.values } as RunValues;
@@ -1145,11 +1164,16 @@ export function workflowArguments(args: ParsedArgs): { values: RunValues; verb: 
   const verb = ({ list: "ps", show: "journal", check: "migrate" } as Record<string, string>)[raw] ?? raw;
   // A refusal that names its own fix prints that fix and no help; any other prints the help.
   const usage = (message: string, remedy?: string): never => { throw new CommandFailure("refused", "USAGE_INVALID", message, remedy === undefined ? {} : { remedy, selfContained: true }); };
+  if (verb === "journal" && (first === undefined || second !== undefined)) usage(`run ${raw} takes one identifier`, journalIdRemedy(raw, values));
   if (extra.length || !["start", "resume", "ps", "journal", "answer", "amend", "revoke", "migrate", "validate", "plan", "simulate", "turns", "yield"].includes(verb)) usage("choose a declared run command; run it bare to list workflows");
   // A run id is an id token, so a malformed one is refused here, before any contact, rather than
   // by whichever plane reads it first.
   if (["journal", "resume", "revoke", "answer", "amend", "migrate"].includes(verb) && first !== undefined) {
-    try { assertIdToken(first, "run id"); } catch { usage(`run ${raw}: ${JSON.stringify(boundedValue(first, SHOWN_VALUE_MAX))} is not a run id, which is 1 to 64 letters, digits, "_" or "-"; \`cotal run\` lists them`); }
+    try { assertIdToken(first, "run id"); } catch {
+      const message = `run ${raw}: ${JSON.stringify(boundedValue(first, SHOWN_VALUE_MAX))} is not a run id, which is 1 to 64 letters, digits, "_" or "-"`;
+      if (verb === "journal") usage(message, journalIdRemedy(raw, values));
+      usage(`${message}; \`cotal run\` lists them`);
+    }
   }
   let a: string | undefined = first;
   let b: string | undefined = second;
@@ -1171,6 +1195,8 @@ export function workflowArguments(args: ParsedArgs): { values: RunValues; verb: 
     if (first !== undefined) usage(`run ${raw} takes no positional argument`);
   } else if (verb === "answer" || verb === "amend") {
     if (!first || !second) usage(`run ${verb} requires a run id and step key`);
+  } else if (verb === "revoke" && first === undefined) {
+    usage("run revoke takes one identifier", "add a run ID after `run revoke` in the original command. A revoke requires `--local --by <actor> --reason <text>`");
   } else if (!first || second !== undefined) usage(`run ${raw} takes one identifier`, verb === "yield" ? "`cotal run turns` lists your turns. Run `cotal run yield <turn-id> --status <done|blocked|handoff>`. For a handoff, add `--to <agent>`." : `\`cotal run\` lists the runs; run \`cotal run ${raw} <run-id>\``);
   const scopes: Record<string, readonly string[]> = {
     timeout: ["start", "resume"], by: ["answer", "amend", "revoke"], reason: ["revoke"], value: ["answer", "amend"], artifact: ["answer", "amend"],
@@ -1194,9 +1220,13 @@ export function workflowArguments(args: ParsedArgs): { values: RunValues; verb: 
     if (!Number.isSafeInteger(ms)) outOfRange();
     if (ms === 0) usage("--timeout must be longer than zero, or every checkpoint, ask and turn that sets no limit of its own expires at once");
   }
-  if (verb === "journal" && values.limit !== undefined) {
-    if (!/^[1-9][0-9]*$/.test(values.limit) || Number(values.limit) > 1000) usage(`run ${raw}: --limit must be between 1 and 1000`);
-    if (values.json) usage(`run ${raw}: --limit bounds the text view, and --json returns the whole journal`);
+  if (verb === "journal") {
+    const paging = [values.page !== undefined ? "--page" : undefined, values.cursor !== undefined ? "--cursor" : undefined].filter(Boolean).join(" and ");
+    if (paging) usage(`run ${raw}: diagnostic inventory options are not available here`, `remove ${paging} to read the journal, or use \`cotal run --page --on <instance>\` for diagnostic inventory`);
+    if (values.limit !== undefined) {
+      if (!/^[1-9][0-9]*$/.test(values.limit) || Number(values.limit) > 1000) usage(`run ${raw}: --limit must be between 1 and 1000`);
+      if (values.json) usage(`run ${raw}: --limit bounds the text view, and --json returns the whole journal`);
+    }
   } else if (values.page !== undefined || values.limit !== undefined || values.cursor !== undefined) {
     if (verb !== "ps" || values.local === true || values.page !== true || values.on === undefined)
       usage("diagnostic paging requires run --page --on <instance> without --local");
@@ -1211,6 +1241,8 @@ export function workflowArguments(args: ParsedArgs): { values: RunValues; verb: 
   // `a b`, would admit a channel nobody named.
   for (const flag of ["admit-read", "admit-publish"] as const) {
     const entries = (values[flag] ?? "").split(",").map((s) => s.trim()).filter((s) => s.length > 0);
+    if (verb === "start" && values.local === true && entries.length === 0)
+      usage(`run start --local requires --${flag} <channels>; a local run is admitted under the ceiling you name`, `pass --${flag} <channels> (comma-separated channel patterns, or \`none\`)`);
     if (entries.length === 1 && entries[0] === "none") continue;
     for (const entry of entries) {
       try { assertValidChannel(entry); } catch (error) { usage(`--${flag}: ${oneLine((error as Error).message)}`); }
@@ -1225,15 +1257,17 @@ export function workflowArguments(args: ParsedArgs): { values: RunValues; verb: 
     }
   }
   if (verb === "revoke" && (values.local !== true || !values.by?.trim() || !values.reason?.trim())) usage("run revoke requires --local --by <actor> --reason <text> under the existing trust checks");
-  if ((verb === "answer" || verb === "amend") && values.local === true && !values.by)
+  if ((verb === "answer" || verb === "amend") && values.local === true && !values.by?.trim())
     usage(`run ${verb} --local requires --by <who>; nothing was written`, "add --by <who> to name the local answerer");
   if (values.by !== undefined && values.local !== true) usage("the hosted manager records the authenticated caller; --by is only for the local path");
   if ((verb === "start" || verb === "resume") && values.endpoint !== undefined && values.local !== true) usage("a hosted run uses the manager's endpoint; --endpoint is only for the local path");
   if (verb === "resume" && values.file !== undefined && values.local !== true)
-    usage("run resume: the manager resumes a run from its recorded program, so --file is not taken", `omit --file to resume the recorded program with \`cotal run resume ${a}${values.space ? ` --space ${values.space}` : ""}${values.on ? ` --on ${values.on}` : ""}\`; a run with no recorded program uses \`cotal run resume ${a} --local --file <program>\``);
+    usage("run resume: the manager resumes a run from its recorded program, so --file is not taken", `remove only --file and its value from the original command, then rerun it to resume the recorded program. A run with no recorded program uses \`cotal run resume ${a} --local --file <program>\``);
   if (values.value !== undefined) checkAnswerValue(values.value, usage);
   if (values.artifact !== undefined && !values.artifact.trim()) usage("--artifact names the artifact the answer cites, so it cannot be empty");
   if (values.handler !== undefined && verb !== "simulate") usage("--handler belongs to run simulate");
+  if (verb === "simulate" && values.handler !== undefined && !values.handler.trim())
+    usage("--handler names the simulation results file, so it cannot be empty", "pass `--handler <results.json>` to name the results file, or omit `--handler` when no results file is needed");
   if ((values.status !== undefined || values.to !== undefined || values.note !== undefined) && verb !== "yield") usage("--status, --to and --note belong to run yield");
   if (verb === "yield") {
     if (!["done", "blocked", "handoff"].includes(values.status ?? "")) usage("run yield requires --status done, blocked or handoff");
@@ -1252,12 +1286,16 @@ export function workflowArguments(args: ParsedArgs): { values: RunValues; verb: 
   // flag, and the same command without it where none does.
   if ((values.json || values.plain) && values.local && !["ps", "journal", "answer", "amend"].includes(verb)) {
     const flag = values.json ? "--json" : "--plain";
-    if (verb === "start" || verb === "resume")
-      usage(`run ${raw} --local prints no ${flag} output`, `drop --local to ${raw} it on the manager, which takes ${flag}: \`cotal run ${verb === "start" ? "start <file>" : `resume ${a}`} ${flag}\``);
-    if (verb === "migrate" && values.server !== undefined && brokerAddressForDisplay(values.server) !== oneLine(values.server))
+    if (verb === "start" || verb === "resume") {
+      const localRetry = `remove ${flag} from the original command to keep driving it locally`;
+      const pins = (["space", "server", "creds", "timeout"] as const).map((key) => retryFlag(key, values[key])).join("");
+      const hosted = `cotal run ${verb === "start" ? `start${retryFlag("file", values.file)}` : `resume ${a}`} ${flag}${pins}`;
+      usage(`run ${raw} --local prints no ${flag} output`, values.server !== undefined && brokerAddressForDisplay(values.server) !== values.server
+        ? localRetry : `${localRetry}, or ${raw} it on the manager with ${codeSpan(hosted)}`);
+    }
+    if (verb === "revoke" || (verb === "migrate" && values.server !== undefined && brokerAddressForDisplay(values.server) !== oneLine(values.server)))
       usage(`run ${raw} prints no ${flag} output`, `remove ${flag} from the original command and rerun it`);
-    const retry = verb === "revoke" ? `cotal run revoke ${a} --local --by <who> --reason <text>`
-      : codeSpan(`cotal run check ${a}${(["file", "space", "server", "creds", "endpoint"] as const).map((key) => retryFlag(key, values[key])).join("")}${args.values.local === true ? " --local" : ""}`);
+    const retry = codeSpan(`cotal run check ${a}${(["file", "space", "server", "creds", "endpoint"] as const).map((key) => retryFlag(key, values[key])).join("")}${args.values.local === true ? " --local" : ""}`);
     usage(`run ${raw} prints no ${flag} output`, `run it without ${flag}: ${retry}`);
   }
   return { values, verb, ...(a === undefined ? {} : { a }), ...(b === undefined ? {} : { b }) };

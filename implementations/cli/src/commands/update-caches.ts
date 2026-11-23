@@ -2,13 +2,23 @@ import { lstatSync, readdirSync, readFileSync, realpathSync, rmSync } from "node
 import { join } from "node:path";
 import { processGroupMembers, protectedLocalDirectory, recoveryProcessStartToken } from "@cotal-ai/workspace";
 
-/** Only caches with recorded custody can be reclaimed. A worker cannot open its cache before its
- * process group is recorded, and the owner cannot start new workers after it exits. */
+function expiredCompileScratch(scratch: string, mtimeMs: number): boolean {
+  const cutoff = Date.now() - 60 * 60_000;
+  if (mtimeMs >= cutoff) return false;
+  const entries = readdirSync(scratch);
+  if (entries.length !== 1 || entries[0] !== "node-compile-cache") return false;
+  const cache = join(scratch, entries[0]);
+  const info = lstatSync(cache);
+  return info.isDirectory() && info.mtimeMs < cutoff &&
+    readdirSync(cache).every(name => lstatSync(join(cache, name)).mtimeMs < cutoff);
+}
+
+/** Reclaim caches whose recorded workers have exited, and idle legacy compile-only scratch. */
 export function collectUpdateCaches(parent: string): void {
-  if (process.platform !== "linux" && process.platform !== "darwin") return;
+  const recorded = process.platform === "linux" || process.platform === "darwin";
   try { parent = realpathSync(parent); }
   catch { return; }
-  const uid = process.getuid!();
+  const uid = process.getuid?.();
   const privateDirectory = (path: string) => {
     const info = lstatSync(path);
     return info.isDirectory() && info.uid === uid && (info.mode & 0o077) === 0;
@@ -31,7 +41,8 @@ export function collectUpdateCaches(parent: string): void {
     }
     catch (error) { return (error as NodeJS.ErrnoException).code === "ESRCH"; }
   };
-  function sweep(directory: string): void {
+  function sweep(directory: string): boolean {
+    let collected = false;
     for (const name of readdirSync(directory)) {
       const staged = process.platform === "linux" && /^cotal-update-npm-[a-zA-Z0-9]{6}$/.test(name);
       if (!staged && !/^cotal-release-check-[a-zA-Z0-9]{6}$/.test(name)) continue;
@@ -45,16 +56,27 @@ export function collectUpdateCaches(parent: string): void {
         if (workers.every(worker => {
           const match = /^\.worker-([1-9]\d*)$/.exec(worker);
           return !!match && absentGroup(Number(match[1]));
-        })) rmSync(cache, { recursive: true, force: true, maxRetries: 3 });
+        })) {
+          rmSync(cache, { recursive: true, force: true, maxRetries: 3 });
+          collected ||= workers.length > 0;
+        }
       } catch { /* Unprovable or already collected scratch is left alone. */ }
     }
+    return collected;
   }
   try {
-    sweep(parent);
+    if (recorded) sweep(parent);
     for (const name of readdirSync(parent)) {
       if (!/^cotal-update-[a-zA-Z0-9]{6}$/.test(name)) continue;
       const scratch = join(parent, name);
-      try { if (privateDirectory(scratch)) sweep(scratch); }
+      try {
+        const info = lstatSync(scratch);
+        if (!info.isDirectory() || (uid !== undefined && (info.uid !== uid || (info.mode & 0o077) !== 0))) continue;
+        protectedLocalDirectory(scratch, "the update cache");
+        if (expiredCompileScratch(scratch, info.mtimeMs) ||
+            (recorded && sweep(scratch) && readdirSync(scratch).every(name => name === "node-compile-cache")))
+          rmSync(scratch, { recursive: true, force: true, maxRetries: 3 });
+      }
       catch { /* Another command can retire its scratch during the scan. */ }
     }
   } catch { /* Temporary storage cleanup is best effort. */ }

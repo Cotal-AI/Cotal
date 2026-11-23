@@ -1027,7 +1027,7 @@ try {
   // ── desks 4 to 6: a pending receipt meets expiry, a disconnect and close() ──
   console.log("\ndesks 4 to 6: a pending receipt meets expiry, a disconnect and close()");
   const reconnectCoder = async () => {
-    await (coderEp as unknown as { nc: NatsConnection }).nc.reconnect();
+    await (coderEp as unknown as { conn: { nc: NatsConnection } }).conn.nc.reconnect();
     return until(async () => (await settled(call(webEp, "prompts", {}, { deadlineMs: 1500 }))).ok, 15_000);
   };
   for (const order of ["expiry, then a disconnect", "a disconnect, then expiry"] as const) {
@@ -1089,7 +1089,7 @@ try {
     await until(() => sent.verdicts.length === 1);
     await until(() => roster(W.coder2)?.prompts !== undefined, 8000);
     stripped.add(W.coder2.uid);
-    await (coder2Ep as unknown as { nc: NatsConnection }).nc.reconnect();
+    await (coder2Ep as unknown as { conn: { nc: NatsConnection } }).conn.nc.reconnect();
     const closedOnIt = await until(() => open.ends.length === 1 && sent.ends.length === 1, 10_000);
     check("the next credential lacks the rows: the serve fails, the desk closes, the open prompt is released and the sent one ends attempted",
       closedOnIt && same(open.ends, [false]) && same(sent.ends, [true]) && warns.slice(before).some((w) => w.startsWith("coder2: the agent endpoint closed")), warns.slice(before));
