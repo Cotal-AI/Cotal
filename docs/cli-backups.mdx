@@ -246,8 +246,9 @@ creates its store at `.cotal/nats`, also when the cut's store is elsewhere, as a
 `up --store-dir`; only a controller root restores into its recorded store. The preserved store stays
 where it is until `backup cleanup-fallback` deletes it, so to keep the space on another disk, name a
 new store there with `--store-dir`. `--store-dir` names a store the restore creates, so a path that
-already exists, whose parent directory does not exist, or that contains a symbolic-link loop or
-exceeds filesystem path limits refuses `USAGE_INVALID` (exit 1) before anything is staged. If access
+already exists, whose parent does not resolve to an existing directory, or that contains a
+symbolic-link loop or exceeds filesystem path limits refuses `USAGE_INVALID` (exit 1) before
+anything is staged. If access
 is denied while checking `--store-dir`, both restore forms refuse `PERMISSION_DENIED` (exit 2), name
 the blocking directory when it can be identified and leave the preserved cut unchanged. Restore
 search access there or choose a new store path under a parent this account can search and write.

@@ -195,7 +195,7 @@ function storePathRefusal(path: string, code: string, outcome: string): CommandF
 function blockedStoreAncestor(path: string): { path: string; chmod?: string } | undefined {
   const uid = process.getuid?.();
   if (uid === undefined) return undefined;
-  const pending = dirname(path).split(sep).filter(Boolean).reverse();
+  const pending = path.split(sep).filter(Boolean).reverse();
   let folder: string = sep;
   let links = 0;
   try {
@@ -209,7 +209,8 @@ function blockedStoreAncestor(path: string): { path: string; chmod?: string } | 
         folder = isAbsolute(link) ? sep : dirname(folder);
         continue;
       }
-      if (!stat.isDirectory()) return undefined;
+      const part = pending.pop();
+      if (part === undefined || !stat.isDirectory()) return undefined;
       try { accessSync(folder, constants.X_OK); }
       catch (error) {
         const code = (error as NodeJS.ErrnoException).code;
@@ -218,8 +219,6 @@ function blockedStoreAncestor(path: string): { path: string; chmod?: string } | 
           ? codeSpan(`chmod u+x ${shellPath(folder)}`) : undefined;
         return { path: folder, chmod };
       }
-      const part = pending.pop();
-      if (part === undefined) return undefined;
       folder = join(folder, part);
     }
   } catch { return undefined; }

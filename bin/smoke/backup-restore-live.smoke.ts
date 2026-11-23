@@ -1061,14 +1061,18 @@ async function assertRestoreStorePreflight(run: ReturnType<typeof sandboxRun>["r
   const attempts = join(maintenance, "attempts");
   const snapshot = () => [readFileSync(journal), readFileSync(resume), existsSync(attempts) ? readdirSync(attempts).sort() : null];
   const before = snapshot();
-  const loop = join(root, "loop");
+  const loop = join(root, "loop"), finalLink = join(root, "final-link"), dangling = join(root, "dangling");
   symlinkSync("loop", loop);
+  symlinkSync(dirname(store), finalLink);
+  symlinkSync("missing-parent", dangling);
   const cases = [
     { destination: store, code: "PERMISSION_DENIED", status: 2, native: "EACCES" },
     { destination: aliasedStore, code: "PERMISSION_DENIED", status: 2, native: "EACCES" },
+    { destination: finalLink, code: "PERMISSION_DENIED", status: 2, native: "EACCES" },
     { destination: join(loop, "registry-target"), code: "USAGE_INVALID", status: 1, native: "ELOOP" },
     { destination: loop, code: "USAGE_INVALID", status: 1, native: "ELOOP" },
     { destination: join(root, "x".repeat(1024)), code: "USAGE_INVALID", status: 1, native: "ENAMETOOLONG" },
+    { destination: join(dangling, basename(store)), code: "USAGE_INVALID", status: 1, native: undefined },
   ];
   chmodSync(blocked, 0o600);
   try {
@@ -1087,12 +1091,16 @@ async function assertRestoreStorePreflight(run: ReturnType<typeof sandboxRun>["r
           assert.ok(error.message.includes(`cannot search ${blocked}`), error.message);
           assert.ok(error.remedy.includes(`chmod u+x ${shellPath(blocked)}`), error.remedy);
           assert.match(error.remedy, /choose a new store path/);
-        }
+        } else if (native === undefined) assert.equal(target.path, dangling);
         assert.deepEqual(snapshot(), before, "preflight refusal leaves the preserved cut untouched");
         assert.equal((await probeConnect(server, { timeoutMs: 500 })).ok, false);
       }
     }
   } finally { chmodSync(blocked, 0o700); }
+  const accessibleLink = run("backup", "restore", artifact, "--store-dir", finalLink, "--json");
+  assert.equal(accessibleLink.status, 1, accessibleLink.stdout);
+  assert.equal(JSON.parse(accessibleLink.stdout).target.linkTarget, dirname(store));
+  assert.deepEqual(snapshot(), before);
   assert.equal(existsSync(store), false, "the blocked restore did not create a store");
 }
 

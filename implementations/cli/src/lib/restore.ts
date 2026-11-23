@@ -4,6 +4,7 @@ import {
   mkdirSync,
   realpathSync,
   rmSync,
+  statSync,
 } from "node:fs";
 import { hostname } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
@@ -349,18 +350,14 @@ function artifactOverlapRefusal(root: string, artifact: string, store: string): 
   return undefined;
 }
 
-/** An explicit `--store-dir` names the directory a restore creates and owns for its rollback, so it
- *  must not exist yet and its parent must. Either mistake is a usage refusal before anything is
- *  staged. The preserved source itself is the same-path restore. */
+/** An explicit `--store-dir` names the directory a restore creates and owns for its rollback.
+ *  Its parent must resolve to a directory, and the target must be absent unless it is the preserved store. */
 function assertNewStorePath(target: string, source: string): void {
-  const present = (path: string) => {
-    try { lstatSync(path); return true; }
-    catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return false; throw error; }
-  };
+  const parent = dirname(target);
   const remedy = "name a --store-dir path that does not exist yet, inside an existing directory; the restore creates it";
-  if (!present(dirname(target)))
-    throw new CommandFailure("refused", "USAGE_INVALID", `the --store-dir parent ${dirname(target)} does not exist; nothing was restored`, { target: { storeDir: target }, remedy });
-  if (target !== source && present(target))
+  if (!statSync(parent, { throwIfNoEntry: false })?.isDirectory())
+    throw new CommandFailure("refused", "USAGE_INVALID", `the --store-dir parent ${parent} does not resolve to an existing directory; no restore was started`, { target: { storeDir: target, path: parent }, remedy });
+  if (target !== source && lstatSync(target, { throwIfNoEntry: false }))
     throw new CommandFailure("refused", "USAGE_INVALID", `the --store-dir path ${target} already exists, and a restore creates its store directory itself; nothing was restored`, { target: { storeDir: target }, remedy });
 }
 
