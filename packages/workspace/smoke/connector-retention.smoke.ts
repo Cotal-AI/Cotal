@@ -165,12 +165,13 @@ try {
   assert.equal(JSON.parse(readFileSync(lineage,'utf8')).root,selected);
   writeFileSync(metadata,meta);
 
-  function moveRefusal(action) {
+  function moveRefusal(reason,action) {
     for(const check of [connectorConfigDir,prepareConnectorConfigForUpdate]) {
       assert.throws(check,error=>{
         assert.equal(error.code,'PERMISSION_DENIED');
         assert.ok(error.message.includes(JSON.stringify(join(from,'cotal'))));
         assert.ok(error.message.includes(JSON.stringify(join(to,'cotal'))));
+        assert.match(error.message,reason);
         const guidance=check===connectorConfigDir?error.message:error.remedy;
         assert.match(guidance,action);
         assert.match(guidance,/without editing the selection records/);
@@ -183,16 +184,16 @@ try {
     }
   }
   mkdirSync(join(from,'cotal'),{recursive:true,mode:0o700});
-  try { moveRefusal(/verified it is unrelated, rename it to an unused name/); }
+  try { moveRefusal(/still exists and does not resolve/,/verified it is unrelated, rename it to an unused name/); }
   finally { renameSync(from,from+'.unrelated'); }
   assert.equal(connectorConfigDir(),moved);
   symlinkSync(from+'.missing',from);
-  try { moveRefusal(/rename only the link to an unused name/); }
+  try { moveRefusal(/former path could not be resolved/,/rename only the link to an unused name/); }
   finally { renameSync(from,from+'.old-link'); }
   assert.equal(connectorConfigDir(),moved);
   mkdirSync(from,{mode:0o777});
   fs.chmodSync(from,0o777);
-  try { moveRefusal(/writable by every local account.*Restore protected access/); }
+  try { moveRefusal(/writable by every local account/,/Restore protected access: chmod go-w/); }
   finally { fs.chmodSync(from,0o700); fs.rmdirSync(from); }
 
   const extensions=join(moved,'extensions');
