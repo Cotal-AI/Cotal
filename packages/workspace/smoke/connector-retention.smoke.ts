@@ -103,6 +103,14 @@ import {join,dirname} from 'node:path';
 ${scenario === "checkout" ? `const checkout=${JSON.stringify(join(config, "checkout"))};mkdirSync(join(checkout,'bin/dist'),{recursive:true,mode:0o700});mkdirSync(join(checkout,'implementations'),{mode:0o700});writeFileSync(join(checkout,'bin/package.json'),JSON.stringify({name:'cotal-ai',version:'0.166.0',bin:{cotal:'./dist/cotal.js'}}));writeFileSync(join(checkout,'bin/dist/cotal.js'),'');Object.defineProperty(globalThis,Symbol.for('cotal.execution.identity'),{value:Object.freeze({logicalEntry:join(checkout,'bin/dist/cotal.js'),loadedEntry:join(checkout,'bin/dist/cotal.js')})});` : scenario === "pnpm-dlx-refresh" ? `const dlxA=${JSON.stringify(join(config, "cache/pnpm/dlx/f366da99/mwm2iwjx-ygzp/node_modules/.pnpm/cotal-ai@0.165.4/node_modules/cotal-ai"))},dlxB=${JSON.stringify(join(config, "cache/pnpm/dlx/f366da99/mwm2kdsm-z19x/node_modules/.pnpm/cotal-ai@0.165.4/node_modules/cotal-ai"))};for(const dir of [dlxA,dlxB]){mkdirSync(join(dir,'dist'),{recursive:true,mode:0o700});writeFileSync(join(dir,'package.json'),JSON.stringify({name:'cotal-ai',version:'0.165.4',bin:{cotal:'./dist/cotal.js'}}));writeFileSync(join(dir,'dist/cotal.js'),'// dlx fixture\\n');}let currentDlx=join(dlxA,'dist/cotal.js');Object.defineProperty(globalThis,Symbol.for('cotal.execution.identity'),{get(){return Object.freeze({logicalEntry:currentDlx,loadedEntry:currentDlx});}});` : scenario === "no-identity" ? "" : `Object.defineProperty(globalThis,Symbol.for('cotal.execution.identity'),{value:Object.freeze({logicalEntry:${JSON.stringify(entry)},loadedEntry:${JSON.stringify(entry)}})});`}
 ${scenario === "desktop" ? `writeFileSync(${JSON.stringify(join(installed, "desktop-runtime.json"))},'{}');` : scenario === "windows" ? `Object.defineProperty(process,'platform',{value:'win32'});` : ""}
 const {connectorConfigDir,retainConnectorConfig,inheritConnectorConfig,canRecoverConnectorConfig,prepareConnectorConfigForUpdate}=await import(${JSON.stringify(module)});
+function assertRootPermissionRefusal(path) {
+  if (process.getuid?.()===0) return;
+  fs.chmodSync(path,0o200);
+  try {
+    assert.throws(()=>connectorConfigDir(),error=>error.code==='EACCES' && !error.message.includes('restore it there from a backup'));
+    assert.throws(()=>prepareConnectorConfigForUpdate(),error=>error.code==='PERMISSION_DENIED' && error.remedy.includes('owned and writable'));
+  } finally { fs.chmodSync(path,0o700); }
+}
 const original=${JSON.stringify(join(config, "cotal"))};
 const metadata=${JSON.stringify(join(installed, "package.json"))};
 writeFileSync(metadata,JSON.stringify({name:'cotal-ai',version:'0.165.4',bin:{cotal:'./dist/cotal.js'}}));
@@ -130,11 +138,7 @@ fs.chmodSync(selected,0o500);
 prepareConnectorConfigForUpdate();
 assert.equal(fs.statSync(selected).mode&0o777,0o700);
 assert.equal(readFileSync(selectionFile,'utf8'),selection,'alias use does not republish the record');
-fs.chmodSync(selected,0o200);
-try {
-  assert.throws(()=>connectorConfigDir(),error=>error.code==='EACCES' && !error.message.includes('restore it there from a backup'));
-  assert.throws(()=>prepareConnectorConfigForUpdate(),error=>error.code==='PERMISSION_DENIED' && error.remedy.includes('owned and writable'));
-} finally { fs.chmodSync(selected,0o700); }
+assertRootPermissionRefusal(selected);
 const record=JSON.parse(selection), foreign=mkdtempSync(join(physical,'foreign-'));
 writeFileSync(selectionFile,JSON.stringify({...record,root:join(foreign,selected.slice(join(safe,'cotal').length))}));
 assert.throws(()=>connectorConfigDir(),/differs/,'the same retained suffix under a different config is refused');
@@ -150,7 +154,7 @@ const selectedAt=path=>to+path.slice(from.length);
 const selection=selectedAt(join(dirname(selected),'selection.json'));
 const lineage=join(dirname(dirname(selection)),'current.json');
 const moved=selectedAt(selected);
-writeFileSync(join(selected,'extensions','extensions.json'),' {"extensions":[]}');
+writeFileSync(join(selected,'extensions','extensions.json'),'{"extensions":[]}');
 renameSync(from,to);
 process.env.XDG_CONFIG_HOME=to;
 const before=snapshot(to);
@@ -180,11 +184,7 @@ renameSync(extensions+'.saved',extensions);
 renameSync(manifest,manifest+'.saved');
 assert.throws(()=>connectorConfigDir(),explainsMove('extensions manifest is missing'));
 renameSync(manifest+'.saved',manifest);
-fs.chmodSync(moved,0o200);
-try {
-  assert.throws(()=>connectorConfigDir(),error=>error.code==='EACCES' && !error.message.includes('restore it there from a backup'));
-  assert.throws(()=>prepareConnectorConfigForUpdate(),error=>error.code==='PERMISSION_DENIED' && error.remedy.includes('owned and writable'));
-} finally { fs.chmodSync(moved,0o700); }
+assertRootPermissionRefusal(moved);
 const versionDir=dirname(moved);
 renameSync(versionDir,versionDir+'.saved');
 symlinkSync(versionDir+'.saved',versionDir);
