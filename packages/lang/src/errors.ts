@@ -227,6 +227,7 @@ export const CATALOG = Object.freeze({
   // ---- L6xxx: simulation -------------------------------------------------------------------------
   L6001: "Unscripted effect in simulation",
   L6002: "Simulation script entry unused",
+  L6003: "Simulation clock lost precision",
 } as const);
 
 export type LangErrorCode = keyof typeof CATALOG;

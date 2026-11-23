@@ -232,8 +232,7 @@ function faultParts(error: unknown): { title: string; cause?: string; fix?: stri
   return { title, ...(cause !== undefined ? { cause } : {}), ...(fix !== undefined ? { fix } : {}) };
 }
 
-/** Why a simulation did not complete. An L6xxx code is the simulator's: the script does not cover
- *  the program, and `target.step` names the step it stopped at. */
+/** Why a simulation did not complete. `target.step` names the journalled step it stopped at. */
 function simulationFailure(error: unknown, file: string, journal: Journal, handler?: string): CommandFailure {
   const code = (error as { code?: unknown }).code;
   const native = typeof code === "string" && /^L[0-9]+$/.test(code) ? code : undefined;
@@ -247,7 +246,7 @@ function simulationFailure(error: unknown, file: string, journal: Journal, handl
   const rerun = handler !== undefined
     ? `add it to ${handler} and rerun with \`cotal run simulate ${file} --handler ${handler}\``
     : `save it in a results file, for example results.json, and rerun with \`cotal run simulate ${file} --handler results.json\``;
-  const remedy = native?.startsWith("L6")
+  const remedy = native === "L6001"
     ? `${fix ?? "script a result for that step; unscripted effects are not invented"}; ${rerun}`
     : fix;
   return new CommandFailure("failed", "OPERATION_FAILED", `the offline simulation did not complete: ${why.charAt(0).toLowerCase()}${why.slice(1)}`, {
