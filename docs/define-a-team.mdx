@@ -108,7 +108,7 @@ Use the command that matches the target's state:
 | Boot a prepared local root | `cotal team boot <file>` |
 | Preview deployment against a running mesh | `cotal team deploy <file> --dry-run` |
 | Add a supported team to that mesh | `cotal team deploy <file>` |
-| Inspect a returned deployment or retained attempt | `cotal team show <id>` |
+| Inspect a returned deployment or retained attempt | `cotal team show <id> --space <space>` |
 | Preview removal of a recorded deployment | `cotal team remove <id> --dry-run` |
 | Confirm a supported removal | `cotal team remove <id> --yes` |
 
@@ -168,7 +168,7 @@ The requested runtime must match the selected manager.
 
 Completed effects remain if a later step fails.
 Unknown effects are not replayed, and an unfinished intent is not permission to retry it.
-Inspect the returned deployment ID with `cotal team show <id>`.
+Inspect the deployment before retrying.
 `team remove <id>` removes resources the attempt journal records it created; a failed partial deploy names that command as its next action.
 
 </Callout>
@@ -179,6 +179,14 @@ Preview the manifest, inspect the result, then apply it:
 cotal team deploy cotal.yaml --dry-run
 cotal team deploy cotal.yaml
 ```
+
+Inspect the result using the deployment ID and space from the receipt:
+
+```bash
+cotal team show <id> --space <space>
+```
+
+`team deploy` takes its space from the manifest. Without `--space`, `team show` follows `cotal use` even in the deploying project.
 
 `spawn --file` now means a persona file on the execution host. It does not deploy a Mesh manifest.
 Use `team deploy` for the manifest, including when the selected manager runs on another machine.
