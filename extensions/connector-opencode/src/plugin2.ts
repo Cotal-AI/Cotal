@@ -40,7 +40,7 @@ import {
 import { modelRefusalSentence, SurfacedBatch, settleWithin } from "./plugin.js";
 import type { OpenCode2Context, OpenCode2Event } from "./opencode2-types.js";
 import { OpenCode2SessionSource, type OpenCode2MessagePage, type OpenCode2Record } from "./agui-source2.js";
-import { createOpenCode2Mapper } from "./agui-map2.js";
+import { createOpenCode2Mapper, type OpenCode2Mapper } from "./agui-map2.js";
 import { buildCotalTools2 } from "./tools.js";
 import { ReplyCheck } from "./reply-check.js";
 import { RECONNECT_COMMAND } from "./reconnect-command.js";
@@ -197,6 +197,16 @@ function askSender(opencodeApi: OpenCodeApi): Send {
   });
 }
 
+/** Close the open run at a turn end the session's list does not record. The flush goes first, so the
+ *  turn's last records land in the run before it closes. The promise resolves once the source
+ *  position the terminal is placed at has been read; a next turn admitted before that would take
+ *  the terminal (see `turnEnded` in plugin.ts). */
+function closeRunOutOfBand(events: AguiEmitterHolder<OpenCode2Record> | undefined): Promise<void> | undefined {
+  if (events?.path === undefined) return undefined;
+  events.flush(events.path);
+  return events.closeRun(Date.now());
+}
+
 /** Validate and register one session before queuing its agent start. */
 async function setupSession(ctx: OpenCode2Context): Promise<() => Promise<void>> {
   const config = configFromEnv();
@@ -306,12 +316,13 @@ async function setupSession(ctx: OpenCode2Context): Promise<() => Promise<void>>
   /**
    * Publishes the session's activity as AG-UI events on `events.<owner>.<actor>`. It is bound to the
    * one session this adapter creates, and reads that session from its first record: the session is
-   * new, so everything in it is this seat's to publish. Turn ends are records in the list, so no run
-   * is closed out of band and `sourceEnd` is never asked. The emitter starts on the first adopt and
-   * the holder starts it again after a failure, from the same source.
+   * new, so everything in it is this seat's to publish. Turn ends are records in the list, except
+   * an interrupted execution's, which {@link completeTurn} closes out of band. The emitter starts on
+   * the first adopt and the holder starts it again after a failure, from the same source.
    */
   function eventHolder(): AguiEmitterHolder<OpenCode2Record> {
     let bound: BoundStartSource<OpenCode2Record> | undefined;
+    let mapper: OpenCode2Mapper | undefined;
     return new AguiEmitterHolder<OpenCode2Record>(
       async (id: string) => {
         bound ??= new BoundStartSource(sessionSource(id), "");
@@ -328,16 +339,17 @@ async function setupSession(ctx: OpenCode2Context): Promise<() => Promise<void>>
         const wal = await EventWal.open(walPath, { space: config.space, threadId: id, principal, subjectMayExist: false });
         // A re-established plane starts with the log's run open, so the mapper continues it.
         const resumeRunId = wal.pending === null ? wal.brackets?.run : wal.pending.brackets.run;
+        mapper = createOpenCode2Mapper({ threadId: id, mintRunId: () => randomUUID(), resumeRunId });
         return AguiEmitter.start<OpenCode2Record>({
           endpoint: agent.ep,
           withholdPayloads: config.eventPayloadsWithheld,
           wal,
           subjectFrontier,
           source: bound,
-          map: createOpenCode2Mapper({ threadId: id, mintRunId: () => randomUUID(), resumeRunId }),
+          map: mapper.map,
         });
       },
-      { onError: eventPlaneStopped({ log }), sourceEnd: (id) => sessionSource(id).end() },
+      { onError: eventPlaneStopped({ log }), sourceEnd: (id) => sessionSource(id).end(), onRunClosed: (runId) => mapper?.forgetOpenRun(runId) },
     );
   }
   const events = eventsArmed ? eventHolder() : undefined;
@@ -374,6 +386,7 @@ async function setupSession(ctx: OpenCode2Context): Promise<() => Promise<void>>
   let submitting: Promise<void> | undefined; // the prompt POST in flight; what it carries settles when it answers
   let lastTurnWasCommand = false;
   const replyCheck = new ReplyCheck();
+  let turnEnd: Promise<void> | undefined; // the last out-of-band close, whose position read must answer before a next turn
 
   async function ensureSession(): Promise<string | undefined> {
     return sessionID ?? (await sessionReady);
@@ -403,6 +416,7 @@ async function setupSession(ctx: OpenCode2Context): Promise<() => Promise<void>>
     if (execution || submitting || controller.signal.aborted) return;
     const id = await ensureSession();
     if (!id) return; // no visible session yet — the boot task above retries via sessionReady
+    await turnEnd;
     if (execution || submitting || controller.signal.aborted) return; // rechecked after the await, same reason as plugin.ts's `drive`
     // The floor: while boot text exists and its gate is closed, nothing else goes out (the 1.x
     // boot floor in `drive` without the `pendingWake` slot, which 2.x does not have).
@@ -571,6 +585,9 @@ async function setupSession(ctx: OpenCode2Context): Promise<() => Promise<void>>
     if (execution !== "running") return;
     execution = undefined;
     asks.turnEnded();
+    // OpenCode records no `idle` for an execution a rejected permission or a dismissed question
+    // interrupted (measured on 2.0.24), so its run closes here, after a flush maps its last records.
+    if (ev.type === "session.execution.interrupted") turnEnd = closeRunOutOfBand(events);
     const carried = new Set(batch.keys);
     settle();
     replyCheck.ended(succeeded);
@@ -613,6 +630,7 @@ async function setupSession(ctx: OpenCode2Context): Promise<() => Promise<void>>
   // requests it will carry first; OpenCode 2.x awaits this hook before it stores the prompt (measured).
   await ctx.session.hook("prompt", async (e) => {
     if (sessionID && e.sessionID !== sessionID) return;
+    await turnEnd;
     if (!batch.open) await agent.takeChosen("automatic", (preview) => preview);
     const prefix = batch.inject();
     if (prefix !== undefined) e.prompt.text = `${prefix}\n\n${e.prompt.text}`;
