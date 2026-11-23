@@ -419,6 +419,13 @@ const VERBS = ["start", "resume", "ps", "journal", "answer", "amend", "revoke", 
     try { atMaxEnvelope = JSON.parse(shown.join("")); } catch { atMaxEnvelope = undefined; }
     c("the largest safe-integer clock start still measures a one-millisecond sleep",
       atMax === undefined && atMaxEnvelope?.result?.elapsedMs === 1, { atMax, atMaxEnvelope });
+    writeFileSync(program, 'await sleep("1ms");\nawait sleep("1ms");\n');
+    const overflow = await simulate({ clock: { start: Number.MAX_SAFE_INTEGER } });
+    c("a second sleep at the clock boundary fails instead of reporting success without advancing time",
+      isCommandFailure(overflow) && overflow.code === "OPERATION_FAILED" && overflow.native?.code === "L6003"
+      && exitCode(overflow.outcome, overflow.code) === 5 && overflow.message.includes("without losing millisecond precision")
+      && (overflow.target as { step?: string })?.step === "/sleep#1"
+      && overflow.remedy?.includes("set clock.start closer to zero") === true, overflow);
     writeFileSync(program, 'await checkpoint("go", "Proceed?", { timeout: "4s", onExpiry: "proceed" });\n');
   }
   // The reported typo: `clock.checkpoints` silently fell back to the 60s default, so the
