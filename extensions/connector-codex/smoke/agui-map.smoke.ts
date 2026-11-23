@@ -434,6 +434,45 @@ const kinds = (evts: AguiEvent[]): Record<string, number> => {
   c("gap:and the run still opens and closes exactly once around it", k.RUN_STARTED === 1 && k.RUN_FINISHED === 1 && R?.bracketError === null, { thrown, k });
 }
 
+// ------------------------------------------------------- code mode, in codex 0.162's rollout shapes
+// With code mode, every tool call runs inside one `exec` script. app-server reports no item for the
+// script, only for the calls it makes, and the rollout records each of those as an `item_completed`
+// once it ends. A direct call writes the same record after its own call record.
+{
+  const ts = "2026-11-23T18:49:24.000Z";
+  const item = (i: Record<string, unknown>) => ({ timestamp: ts, type: "event_msg", payload: { type: "item_completed", thread_id: "th", turn_id: "t1", item: i } });
+  const R = replay([
+    { timestamp: ts, type: "event_msg", payload: { type: "task_started", turn_id: "t1" } },
+    { timestamp: ts, type: "response_item", payload: { type: "custom_tool_call", status: "completed", call_id: "call_wrap", name: "exec", input: "const r = await tools.exec_command({cmd: \"cat notes.txt\"});\ntext(r.output);" } },
+    item({ type: "CommandExecution", id: "exec-cmd", command: ["/usr/bin/zsh", "-lc", "cat notes.txt"], cwd: "file:///w/work", status: "completed", aggregated_output: "alpha\nbeta\n", exit_code: 0 }),
+    item({ type: "CommandExecution", id: "exec-bad", command: ["/usr/bin/zsh", "-lc", "false"], cwd: "file:///w/work", status: "failed", aggregated_output: "", exit_code: 1 }),
+    item({ type: "FileChange", id: "exec-patch", changes: { "/w/work/notes.txt": { type: "update", unified_diff: "@@ -1,2 +1,2 @@\n alpha\n-beta\n+gamma\n", move_path: null } }, status: "completed", stdout: "Success.", stderr: "" }),
+    item({ type: "McpToolCall", id: "exec-mcp", server: "cotal", tool: "cotal_status", arguments: { state: "working" }, status: "completed", result: { content: [{ type: "text", text: "status set" }] } }),
+    { timestamp: ts, type: "response_item", payload: { type: "custom_tool_call_output", call_id: "call_wrap", output: [{ type: "input_text", text: "Script completed" }] } },
+    { timestamp: ts, type: "response_item", payload: { type: "function_call", name: "hello", namespace: "mcp__elicit", call_id: "toolu_1", arguments: "{}" } },
+    item({ type: "McpToolCall", id: "toolu_1", server: "elicit", tool: "hello", arguments: {}, status: "completed", result: { content: [{ type: "text", text: "hello" }] } }),
+    { timestamp: ts, type: "response_item", payload: { type: "function_call_output", call_id: "toolu_1", output: "hello" } },
+    { timestamp: ts, type: "event_msg", payload: { type: "task_complete", turn_id: "t1", error: null } },
+  ]);
+  type Ev = { type: string; toolCallId?: string; toolCallName?: string; delta?: string; content?: string; cotal?: { isError?: boolean } };
+  const evs = R.events as unknown as Ev[];
+  const started = evs.filter((e) => e.type === "TOOL_CALL_START");
+  const argsOf = (id: string) => JSON.parse(evs.find((e) => e.type === "TOOL_CALL_ARGS" && e.toolCallId === id)?.delta ?? "null") as unknown;
+  const resultOf = (id: string) => evs.find((e) => e.type === "TOOL_CALL_RESULT" && e.toolCallId === id);
+  c("code-mode:the exec script and its output publish nothing", !evs.some((e) => e.toolCallId === "call_wrap"), started);
+  c("code-mode:a command the script ran is an exec_command call with its script and folder",
+    started.some((e) => e.toolCallId === "exec-cmd" && e.toolCallName === "exec_command") && JSON.stringify(argsOf("exec-cmd")) === JSON.stringify({ cmd: "cat notes.txt", workdir: "/w/work" }), argsOf("exec-cmd"));
+  c("code-mode:its output is the call's result", resultOf("exec-cmd")?.content === "alpha\nbeta\n" && resultOf("exec-cmd")?.cotal?.isError === false, resultOf("exec-cmd"));
+  c("code-mode:a command that exits nonzero is a failed result", resultOf("exec-bad")?.cotal?.isError === true, resultOf("exec-bad"));
+  c("code-mode:a file change is an apply_patch call with Codex's change list",
+    started.some((e) => e.toolCallId === "exec-patch" && e.toolCallName === "apply_patch") &&
+      JSON.stringify(argsOf("exec-patch")) === JSON.stringify({ changes: [{ path: "/w/work/notes.txt", kind: { type: "update" }, diff: "@@ -1,2 +1,2 @@\n alpha\n-beta\n+gamma\n" }] }), argsOf("exec-patch"));
+  c("code-mode:an MCP call is a call to its tool with its arguments and result",
+    started.some((e) => e.toolCallId === "exec-mcp" && e.toolCallName === "cotal_status") && JSON.stringify(argsOf("exec-mcp")) === JSON.stringify({ state: "working" }) && resultOf("exec-mcp")?.content === "status set", { args: argsOf("exec-mcp"), result: resultOf("exec-mcp") });
+  c("code-mode:a direct call's item adds no second call", started.filter((e) => e.toolCallId === "toolu_1").length === 1, started);
+  c("code-mode:brackets legal", R.bracketError === null, R.bracketError);
+}
+
 // The census is printed, not just asserted: a reader who sees "28 passed" learns nothing about
 // whether the fixture had anything in it, and a cell count is not a coverage claim.
 {
