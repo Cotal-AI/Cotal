@@ -110,8 +110,10 @@ export class CodexEventBinding {
     });
   }
 
-  /** Journal a piece of the agent message or reasoning summary `itemId` that Codex is streaming. */
+  /** Journal a piece of the agent message or reasoning summary `itemId` that Codex is streaming. A
+   *  launch without reasoningEvents journals no reasoning, since the plane publishes none. */
   delta(itemId: string, text: string, kind: "text" | "reasoning"): void {
+    if (kind === "reasoning" && !this.o.config.reasoningEvents) return;
     if (this.journal === undefined) this.unjournaled.add(itemId);
     if (this.journal === undefined || this.unjournaled.has(itemId)) return;
     this.streaming.add(itemId);
@@ -178,7 +180,7 @@ export class CodexEventBinding {
     const brackets = wal.pending === null ? wal.brackets : wal.pending.brackets;
     const at = wal.pending === null ? wal.frontier.sourceCursor : wal.pending.sourceCursor;
     const seed = await streamSeed(deltaJournalPath, at, brackets);
-    const mapper = createCodexMapper({ threadId, mintRunId: () => randomUUID(), resumeRunId: brackets?.run, seed });
+    const mapper = createCodexMapper({ threadId, mintRunId: () => randomUUID(), resumeRunId: brackets?.run, seed, reasoning: config.reasoningEvents });
     this.mapper = mapper;
     // `startCursor` is the boundary this bind captured before it announced itself. Nothing
     // above writes it into the log: see `BoundStartSource` for what that buys and what it

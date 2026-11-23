@@ -148,6 +148,8 @@ export const codexConnector: Connector = {
   prompts: true,
   // askPermissions starts the thread in T3 Code's approval-required mode (codex-config.ts).
   supportsAskPermissions: true,
+  // reasoningEvents asks Codex for reasoning summaries on every turn (codex-config.ts).
+  supportsReasoningEvents: true,
 
   supportsLaunchValidation: true,
   buildLaunch(opts: LaunchOpts): LaunchSpec {
@@ -288,7 +290,7 @@ export const codexConnector: Connector = {
     // host drops even that once it has read it, so a shell this seat runs inherits neither. Written
     // after every refusal above, and its directory is a launch artifact the launcher removes once the
     // child has exited (core launch-artifacts).
-    Object.assign(env, materialEnv({ creds: opts.creds, servers: opts.servers, control, eventsRequired: opts.eventsRequired, eventPayloads: opts.eventPayloads, askPermissions: opts.askPermissions, userAuth: opts.userAuth }, artifacts));
+    Object.assign(env, materialEnv({ creds: opts.creds, servers: opts.servers, control, eventsRequired: opts.eventsRequired, eventPayloads: opts.eventPayloads, askPermissions: opts.askPermissions, reasoningEvents: opts.reasoningEvents, userAuth: opts.userAuth }, artifacts));
 
     return { command: HOST_COMMAND, args: [HOST_ENTRY], env, control, ...(artifacts.length > 0 ? { artifacts } : {}) };
   },

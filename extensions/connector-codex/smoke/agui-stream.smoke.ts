@@ -43,7 +43,8 @@ const aborted = (turn: string): CodexRecord => ({ timestamp: at(900), type: "eve
  *  its own. */
 type Step = { record: CodexRecord } | { deltas: [string, string][] } | { thinking: [string, string][] } | { ends: string[] } | "restart" | "closeRun";
 
-async function publish(script: Step[]) {
+/** `reasoning` is the launch's `reasoningEvents`. */
+async function publish(script: Step[], reasoning = true) {
   const root = mkdtempSync(join(tmpdir(), "cotal-codex-stream-"));
   const published: AguiEvent[] = [];
   const events = (parts: Part[]) => parts.flatMap((p) => ((p as unknown as { events?: AguiEvent[] }).events ?? []));
@@ -73,7 +74,7 @@ async function publish(script: Step[]) {
       if (wal.frontier.sourceCursor === undefined) await wal.advanceCursorOnly(source.start(harness.endSync()));
       const brackets = wal.pending === null ? wal.brackets : wal.pending.brackets;
       const cursor = wal.pending === null ? wal.frontier.sourceCursor : wal.pending.sourceCursor;
-      const mapper = createCodexMapper({ threadId: "thread", mintRunId: () => `run-${++run}`, resumeRunId: brackets?.run, seed: await streamSeed(journal, cursor, brackets) });
+      const mapper = createCodexMapper({ threadId: "thread", mintRunId: () => `run-${++run}`, resumeRunId: brackets?.run, seed: await streamSeed(journal, cursor, brackets), reasoning });
       return AguiEmitter.start<Merged<CodexRecord>>({ endpoint: ep, wal, subjectFrontier: frontier, source, map: mapper.mapMerged });
     };
     let emitter = await start();
@@ -159,6 +160,14 @@ check("the reply then streams as text, and neither part is published again under
 const halfThought = summary(await publish([{ record: started("t1") }, { thinking: [["rs1", "Weigh"]] }, { record: aborted("t1") }]));
 check("a turn interrupted while its summary streams ends the summary before the run's terminal",
   JSON.stringify(halfThought.types.slice(-2)) === JSON.stringify(["REASONING_MESSAGE_END(stream:rs1)", "RUN_FINISHED"]) && halfThought.errors.length === 0, halfThought);
+
+console.log("A seat launched without reasoningEvents, whose binding journals no reasoning");
+const unasked = summary(await publish([
+  { record: started("t1") }, { record: reasoning("rs1", "Weigh the rivers.") },
+  { deltas: [["m1", "The Nile"]] }, { record: saved("m1", "The Nile is longer.") }, { record: complete("t1") },
+], false));
+check("publishes the reply and none of the saved summary",
+  !unasked.types.some((t) => t.startsWith("REASONING")) && unasked.text["stream:m1"] === "The Nile is longer." && unasked.types.at(-1) === "RUN_FINISHED" && unasked.errors.length === 0, unasked);
 
 console.log("An emitter restarted mid-reply");
 const restarted = summary(await publish([

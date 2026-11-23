@@ -57,14 +57,15 @@ const THREAD = "01a01586-5f04-7c53-a91b-78386b50a901";
 
 /** Replay every record through a fresh mapper, feeding every event to the bracket machine so a
  *  vocabulary violation fails here rather than at the broker. */
-function replay(recs: CodexRecord[]): {
+/** `reasoning` is the launch's `reasoningEvents`. */
+function replay(recs: CodexRecord[], reasoning = true): {
   events: AguiEvent[];
   perRecord: ({ runId: string; events: AguiEvent[] } | null)[];
   bracketError: string | null;
   runs: string[];
 } {
   let n = 0;
-  const mapper = createCodexMapper({ threadId: THREAD, mintRunId: () => `run-${++n}` });
+  const mapper = createCodexMapper({ threadId: THREAD, mintRunId: () => `run-${++n}`, reasoning });
   const brackets = new AguiBrackets();
   const events: AguiEvent[] = [];
   const perRecord: ({ runId: string; events: AguiEvent[] } | null)[] = [];
@@ -250,17 +251,16 @@ const kinds = (evts: AguiEvent[]): Record<string, number> => {
     kinds: kinds(replay([start, done]).events),
   });
 
-  const withReasoning = replay([
-    start,
-    { timestamp: ts, type: "response_item", payload: { type: "reasoning", id: "r1", encrypted_content: "OPAQUE", summary: [{ type: "summary_text", text: "thinking" }] } },
-    done,
-  ]);
+  const thinking: CodexRecord = { timestamp: ts, type: "response_item", payload: { type: "reasoning", id: "r1", encrypted_content: "OPAQUE", summary: [{ type: "summary_text", text: "thinking" }] } };
+  const withReasoning = replay([start, thinking, done]);
   const kr = kinds(withReasoning.events);
   c("shape:a reasoning record becomes REASONING START/CONTENT/END", kr.REASONING_MESSAGE_START === 1 && kr.REASONING_MESSAGE_CONTENT === 1 && kr.REASONING_MESSAGE_END === 1, kr);
   const deltas = withReasoning.events
     .filter((e) => (e as { type: string }).type === "REASONING_MESSAGE_CONTENT")
     .map((e) => (e as { delta: string }).delta);
   c("shape:encrypted_content is NEVER published", deltas.every((d) => !d.includes("OPAQUE")), { deltas: deltas.length });
+  const unasked = kinds(replay([start, thinking, done], false).events);
+  c("shape:without reasoningEvents a reasoning record publishes nothing", unasked.REASONING_MESSAGE_START === undefined && unasked.REASONING_MESSAGE_CONTENT === undefined && unasked.RUN_FINISHED === 1, unasked);
 
   const withTool = replay([
     start,
