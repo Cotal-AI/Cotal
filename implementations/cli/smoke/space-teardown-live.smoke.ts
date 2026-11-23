@@ -270,6 +270,10 @@ try {
     const stoppedAgain = cli(root, "down", "--yes", "--json");
     check("down --yes stops it again", stoppedAgain.status === 0, shown(stoppedAgain));
 
+    const spaceConfirmation = cli(root, "reset", "space", space, "--json");
+    check("reset space confirmation keeps JSON in both the preview and apply commands",
+      spaceConfirmation.status === 1 && spaceConfirmation.env?.error?.code === "USAGE_INVALID"
+        && spaceConfirmation.env.error.remedy === `review \`cotal reset space ${space} --dry-run --json\` first, then run \`cotal reset space ${space} --yes --json\``, shown(spaceConfirmation));
     const spacePreview = cli(root, "reset", "space", space, "--dry-run", "--json");
     check("reset space --dry-run after down offers the apply", spacePreview.status === 0 && spacePreview.env?.result?.applyVerdict?.offered === true, shown(spacePreview));
     // The store goes with the identity, so the preview names what it holds, as reset store's does.
@@ -646,11 +650,21 @@ try {
     for (const dir of ["home", "xdg", "proj"]) mkdirSync(join(elsewhere, dir), { mode: 0o700 });
     const other = (...args: string[]) => {
       const run = spawnSync(process.execPath, ["--import", TSX_IMPORT, CLI, ...args], { cwd: join(elsewhere, "proj"), env: elsewhereEnv, encoding: "utf8", timeout: 180_000 });
-      return { status: run.status, stdout: run.stdout, stderr: run.stderr } as Run;
+      let parsed: Envelope | undefined;
+      try { parsed = JSON.parse(run.stdout) as Envelope; } catch { parsed = undefined; }
+      return { status: run.status, stdout: run.stdout, stderr: run.stderr, env: parsed } satisfies Run;
     };
     const added = other("space", "add", space, "--server", server, "--root", join(elsewhere, "proj"));
-    const deleted = other("space", "delete", space, "--yes");
-    check("another Cotal home adds the open space and deletes it while the stack runs", added.status === 0 && deleted.status === 0 && /Space streams deleted/.test(deleted.stdout), { added: shown(added), deleted: shown(deleted) });
+    const confirmation = other("space", "delete", space, "--json");
+    check("space delete confirmation keeps JSON in both the preview and apply commands",
+      confirmation.status === 1 && confirmation.env?.error?.code === "USAGE_INVALID"
+        && confirmation.env.error.remedy === `inspect \`cotal space delete ${space} --dry-run --json\` first, then run \`cotal space delete ${space} --yes --json\``, shown(confirmation));
+    const preview = other("space", "delete", space, "--dry-run", "--json");
+    check("the suggested delete preview returns JSON without applying", preview.status === 0 && preview.env?.result?.kind === "live-space-delete-impact", shown(preview));
+    const deleted = other("space", "delete", space, "--yes", "--json");
+    check("another Cotal home adds the open space and deletes it with a JSON receipt while the stack runs",
+      added.status === 0 && deleted.status === 0 && deleted.env?.result?.kind === "live-space-delete",
+      { added: shown(added), deleted: shown(deleted) });
     const statusGone = cli(root, "status", "--json");
     const streamsGone = (statusGone.env?.result?.selected as { spaceStreams?: { state: string; root: string | null; stack: string | null } } | undefined)?.spaceStreams;
     check("status says the streams are not on the broker while the stack runs", statusGone.status === 0 && streamsGone?.state === "absent" && streamsGone.stack === "running" && streamsGone.root === root, shown(statusGone));
