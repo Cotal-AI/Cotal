@@ -175,7 +175,7 @@ The shared connector checks DM targets and mentioned names against a fresh prese
 An unknown bare target after a failed read refuses the DM, naming the read failure rather than calling the peer absent.
 A bare target already known from a successful presence read remains usable under the same owner rule.
 An exact known principal still works. In a signed-in space, `user/agent` can also resolve from the
-username and lifecycle records without a roster row. Only the username folds case.
+username and lifecycle records without a roster row. The username is case-insensitive. The launch name is case-sensitive.
 Reply to an authenticated sender by its exact principal, not its remembered display name.
 An unknown name after a successful read receives the ordinary unknown-peer refusal.
 
