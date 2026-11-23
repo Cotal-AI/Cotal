@@ -42,7 +42,11 @@
  *    answer goes back with that digest; a prompt whose read fails once is logged, read again and
  *    asked once; a prompt opened while the thread runs no turn is asked on its next prompt, whose
  *    turn stays open until the client answers; the seat's commands and skills are offered and run through
- *    `command`, and a refused one is said in the thread. Where they do not, nothing calls it.
+ *    `command`, and a refused one is said in the thread. Where they do not, nothing calls it;
+ *  - a prompt or seat command the seat queues behind work the thread did not start answers once its
+ *    own run ends, however long it waited. Cancelled while still queued, it leaves the queue through
+ *    `command-cancel` and the other work is not interrupted; cancelled once taken, its run is; its
+ *    seat leaving fails it with that reason.
  *
  * Run: pnpm --filter @cotal-ai/acp test
  */
@@ -1127,6 +1131,109 @@ for (const others of [["m2"], ["m2", "m3"]]) {
   small.conn.close();
   c.conn.close();
 }
+
+// A prompt the seat queues behind work the thread did not start (SPEC 13.22: a queued one waits for
+// no fixed time). Each case runs on its own space, all at once.
+async function queuedSeat(): Promise<{ space: FakeMesh; c: ReturnType<typeof connect>; s: { sessionId: string }; seat: SeatRef; state: { now: unknown; gone?: boolean }; cancels: string[] }> {
+  const space = new FakeMesh();
+  space.agentEndpoints = true;
+  space.serving = { interrupt: true, turn: true, images: true, usage: false };
+  const c = connect(async () => space);
+  await c.init;
+  const state: { now: unknown; gone?: boolean } = { now: { kind: "started" } };
+  const cancels: string[] = [];
+  space.onAgentCall = (x, command, args) => {
+    // As the space answers for a seat no longer on the roster.
+    if (state.gone) throw new AgentCallFailed(`${x.name} is not on the roster with its runtime`, "unavailable");
+    switch (command) {
+      case "prompts": return { runtime: { id: "rt", startedAt: 1 }, seq: 0, open: [], closed: [] };
+      case "commands": return { supported: true, commands: [{ name: "review", target: "command" }] };
+      case "command": return { id: "queuedcmd" };
+      case "turn": return { id: "queuedturn" };
+      case "command-state": return { state: state.now };
+      case "command-cancel":
+        cancels.push(args.id as string);
+        if ((state.now as { kind: string }).kind !== "queued") throw new AgentCallFailed("no longer queued", "conflict");
+        state.now = { kind: "cancelled" };
+        return { state: state.now };
+      case "interrupt": return { state: "interrupted" };
+    }
+    throw new AgentCallFailed(`unexpected ${command}`, "unimplemented");
+  };
+  const s = await c.agent.request(methods.agent.session.new, { cwd: dir, mcpServers: [] });
+  space.script = { before: [[{ type: "RUN_STARTED", runId: "r1" }]], after: [[{ type: "RUN_FINISHED", runId: "r1" }]] };
+  await within(c.agent.request(methods.agent.session.prompt, { sessionId: s.sessionId, prompt: [{ type: "text", text: "go" }] }));
+  const seat: SeatRef = { name: "acp-s1", owner: "local", actor: "actor-acp-s1", lifecycleUid: "life-acp-s1" };
+  space.counters.set(seat.actor, { runtime: "rt", open: 0, seq: 0 });
+  space.present.set(seat.actor, "idle");
+  await tick(300);
+  // The seat runs mesh work the thread did not start, so what the thread sends next is queued.
+  space.present.set(seat.actor, "working");
+  state.now = { kind: "queued" };
+  return { space, c, s, seat, state, cancels };
+}
+const said = (c: ReturnType<typeof connect>, sessionId: string, from = 0) =>
+  c.updates.slice(from).filter((u) => u.sessionId === sessionId && u.update.sessionUpdate === "agent_message_chunk").map((u) => (u.update as { content: { text: string } }).content.text);
+await Promise.all([
+  ...(["the prompt", "/review"] as const).map(async (text) => {
+    const { space, c, s, seat, state } = await queuedSeat();
+    let atAnswer = 0;
+    const answer = within(c.agent.request(methods.agent.session.prompt, { sessionId: s.sessionId, prompt: [{ type: "text", text }] }), 30_000).then((r) => { atAnswer = c.updates.length; return r; });
+    // The mesh work ends after 12 s, longer than any fixed wait, and the seat takes the queued one half a second later.
+    await tick(12_000);
+    space.present.set(seat.actor, "idle");
+    await tick(500);
+    state.now = { kind: "started" };
+    space.present.set(seat.actor, "working");
+    space.emit(seat, [{ type: "RUN_STARTED", runId: "q" }, { type: "TEXT_MESSAGE_START", messageId: "mq", role: "assistant" }, { type: "TEXT_MESSAGE_CONTENT", messageId: "mq", delta: `ran ${text}` }, { type: "TEXT_MESSAGE_END", messageId: "mq" }], "q");
+    await tick(300);
+    space.emit(seat, [{ type: "RUN_FINISHED", runId: "q" }], "q");
+    space.present.set(seat.actor, "idle");
+    const reply = await answer;
+    const before = said(c, s.sessionId).slice(0, said(c, s.sessionId).length - said(c, s.sessionId, atAnswer).length);
+    check(`${text} queued behind other work answers only once its own run reached the thread`, reply?.stopReason === "end_turn" && before.includes(`ran ${text}`), { reply, before, after: said(c, s.sessionId, atAnswer) });
+    check(`${text} queued behind other work is not reported as not run`, !said(c, s.sessionId).some((x) => /did not run|not started|failed/.test(x)), said(c, s.sessionId));
+    c.conn.close();
+  }),
+  (async () => {
+    const { space, c, s, seat, state, cancels } = await queuedSeat();
+    const reply = within(c.agent.request(methods.agent.session.prompt, { sessionId: s.sessionId, prompt: [{ type: "text", text: "never mind" }] }), 30_000);
+    await tick(2000);
+    await c.agent.notify(methods.agent.session.cancel, { sessionId: s.sessionId });
+    const answer = await reply;
+    const interrupts = space.agentCalls.filter((x) => x.command === "interrupt").length;
+    check("a prompt cancelled while queued answers cancelled", answer?.stopReason === "cancelled", answer);
+    check("...and leaves the queue through command-cancel, so it never runs", JSON.stringify(cancels) === '["queuedturn"]' && JSON.stringify(state.now) === '{"kind":"cancelled"}', { cancels, state: state.now });
+    check("...and does not interrupt the work the thread did not start", interrupts === 0, interrupts);
+    space.present.set(seat.actor, "idle");
+    c.conn.close();
+  })(),
+  (async () => {
+    const { space, c, s, seat, state, cancels } = await queuedSeat();
+    const reply = within(c.agent.request(methods.agent.session.prompt, { sessionId: s.sessionId, prompt: [{ type: "text", text: "too late" }] }), 30_000);
+    await tick(1000);
+    state.now = { kind: "taken" };
+    await c.agent.notify(methods.agent.session.cancel, { sessionId: s.sessionId });
+    await tick(500);
+    state.now = { kind: "started" };
+    await tick(1000);
+    space.present.set(seat.actor, "idle");
+    const answer = await reply;
+    const interrupts = space.agentCalls.filter((x) => x.command === "interrupt").length;
+    check("a prompt cancelled once the seat took it answers cancelled and interrupts its run", answer?.stopReason === "cancelled" && interrupts === 1 && JSON.stringify(state.now) === '{"kind":"started"}', { answer, interrupts, cancels, state: state.now });
+    c.conn.close();
+  })(),
+  (async () => {
+    const { space, c, s, seat, state } = await queuedSeat();
+    const failed = errorOf(c.agent.request(methods.agent.session.prompt, { sessionId: s.sessionId, prompt: [{ type: "text", text: "lost" }] }));
+    await tick(1000);
+    space.present.delete(seat.actor);
+    state.gone = true;
+    const e = await within(failed, 10_000);
+    check("a prompt whose seat leaves while it is queued fails, saying the seat left before it took it", e?.message?.includes("acp-s1 left before it took the prompt") === true, e);
+    c.conn.close();
+  })(),
+]);
 
 rmSync(dir, { recursive: true, force: true });
 console.log(`\n${pass} passed, ${fail} failed`);
