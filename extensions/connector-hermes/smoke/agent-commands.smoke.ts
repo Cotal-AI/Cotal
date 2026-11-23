@@ -2,8 +2,9 @@
  * The Hermes seat's agent endpoint over the bridge (src/commands.ts, src/bridge.ts): the owner's
  * turns with their images, the gateway's commands and skills, interrupt and usage, each answered by
  * the adapter, and the busy gate that starts a queued turn only while the gateway has no Cotal
- * message or turn in progress. The adapter here is a socket speaking the bridge frames; the
- * dispatcher, the bridge and the drain are the shipped ones.
+ * message or turn in progress, and the end of a turn the gateway gave up on once it is idle. The
+ * adapter here is a socket speaking the bridge frames; the dispatcher, the bridge, the drain and the
+ * presence end are the shipped ones.
  */
 import { EventEmitter, once } from "node:events";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -14,6 +15,7 @@ import { CommandRefused, type AgentConfig, type AgentTurn, type MeshAgent } from
 import { skipSuite } from "@cotal-ai/smoke-kit";
 import { startBridgeServer, type BridgeServer } from "../src/bridge.js";
 import { drainWhileIdle, hermesCommands } from "../src/commands.js";
+import { gatewayIdle } from "../src/hermes-hooks.js";
 import { bridgeKey, openBridge } from "./bridge-open.js";
 
 if (process.platform === "win32") skipSuite("the Hermes connector is Unix-only");
@@ -34,6 +36,21 @@ class QueueAgent extends EventEmitter {
   readonly queue: AgentTurn[] = [];
   readonly started: string[] = [];
   turn?: (t: AgentTurn) => Promise<void>;
+  /** Presence as the hooks write it: each status written, and the held-message wakes asked for. */
+  status = "idle";
+  readonly statuses: string[] = [];
+  held = 0;
+  wakes = 0;
+  async setStatus(status: string): Promise<void> {
+    this.statuses.push(status);
+    this.status = status;
+  }
+  pendingWake(): number {
+    return this.held;
+  }
+  requestWake(): void {
+    this.wakes += 1;
+  }
   inboxPreview() {
     return [];
   }
@@ -71,8 +88,10 @@ let subscribed = 0;
 let idled = 0;
 bridge = startBridgeServer(agent as unknown as MeshAgent, config as AgentConfig, socketPath, bridgeKey(socketPath, key), {
   onSubscribe: () => (subscribed += 1),
+  // As the sidecar wires it.
   onIdle: () => {
     idled += 1;
+    void gatewayIdle(agent as unknown as MeshAgent, bridge);
     drain();
   },
 });
@@ -257,6 +276,37 @@ async function busyGate(a: Adapter): Promise<void> {
   await tick();
 }
 
+/** A turn still working once the gateway has nothing in progress has ended: a run Hermes gave up on
+ *  fires neither post_llm_call nor on_session_end. */
+async function gaveUp(a: Adapter): Promise<void> {
+  agent.status = "working";
+  agent.held = 1;
+  send(a.sock, { t: "busy", count: 1 });
+  await tick();
+  check("a turn stays working while the gateway has a message in progress", agent.statuses.length === 0, agent.statuses);
+  send(a.sock, { t: "busy", count: 0 });
+  await tick();
+  check("the gateway going idle ends a turn still working", agent.statuses.join() === "idle", agent.statuses);
+  check("and asks for the messages held while it worked", agent.wakes === 1, agent.wakes);
+  send(a.sock, { t: "busy", count: 1 });
+  send(a.sock, { t: "busy", count: 0 });
+  await tick();
+  check("a turn that already ended is not ended again", agent.statuses.join() === "idle", agent.statuses);
+  agent.status = "working";
+  const turn = settled(commands.turn!({ text: "handed over", images: [] }));
+  const frame = await a.next();
+  send(a.sock, { t: "busy", count: 0 });
+  await tick();
+  check("a turn handed to the gateway and not yet taken is not ended", agent.statuses.join() === "idle", agent.statuses);
+  send(a.sock, { t: "busy", count: 1 });
+  send(a.sock, { t: "turn_taken", id: frame.id });
+  await turn;
+  send(a.sock, { t: "busy", count: 0 });
+  await tick();
+  check("it ends once the gateway is done with it", agent.statuses.join() === "idle,idle", agent.statuses);
+  agent.held = 0;
+}
+
 async function disconnect(a: Adapter): Promise<void> {
   const turn = settled(commands.turn!({ text: "unanswered", images: [] }));
   await a.next();
@@ -292,6 +342,7 @@ try {
   await section("the command list", () => commandList(a));
   await section("command dispatch", () => commandDispatch(a));
   await section("the busy gate", () => busyGate(a));
+  await section("a turn the gateway gave up on", () => gaveUp(a));
   await section("disconnect", () => disconnect(a));
 } finally {
   await bridge.close();

@@ -106,7 +106,7 @@ def on_session_start(*args: Any, **kwargs: Any) -> None:
 
 
 def pre_llm_call(*args: Any, **kwargs: Any) -> None:
-    journal.model_called(str(kwargs.get("platform") or ""), str(kwargs.get("sender_id") or ""))
+    journal.model_called(str(kwargs.get("platform") or ""), str(kwargs.get("sender_id") or ""), str(kwargs.get("session_id") or ""))
     relay("pre_llm_call")
 
 
@@ -116,6 +116,7 @@ def pre_tool_call(*args: Any, **kwargs: Any) -> None:
 
 
 def post_llm_call(*args: Any, **kwargs: Any) -> None:
+    journal.model_answered(str(kwargs.get("platform") or ""), str(kwargs.get("session_id") or ""), kwargs.get("assistant_response"))
     relay("post_llm_call")
 
 

@@ -125,19 +125,46 @@ def records():
         return [json.loads(line) for line in f if line.strip()]
 
 
-async def turn(source, steps, message_id=None):
+async def turn(source, steps, message_id=None, outcome="success"):
     """One message processed as the gateway does: start, the steps in order, done."""
     event = MessageEvent(text="", source=source, message_id=message_id)
     await adapter.on_processing_start(event)
     for step in steps:
         await step()
-    await adapter.on_processing_complete(event, "success")
+    await adapter.on_processing_complete(event, outcome)
+
+
+def session_of(sender):
+    return "s-op" if sender == "operator" else f"s-{sender}"
 
 
 def model_call(platform, sender, content):
+    """An agent run the model answered: one response, then ``post_llm_call`` with it."""
     async def step():
-        hooks.pre_llm_call(platform=platform, sender_id=sender, session_id="s1")
-        hooks.post_api_request(platform=platform, assistant_message={"content": content, "tool_calls": []})
+        session = session_of(sender)
+        hooks.pre_llm_call(platform=platform, sender_id=sender, session_id=session)
+        hooks.post_api_request(platform=platform, session_id=session, assistant_message={"content": content, "tool_calls": []})
+        hooks.post_llm_call(platform=platform, session_id=session, assistant_response=content)
+    return step
+
+
+def model_started(sender, content=None):
+    """The model was called and, when ``content`` is given, answered with text and a tool call."""
+    async def step():
+        session = session_of(sender)
+        hooks.pre_llm_call(platform="cotal", sender_id=sender, session_id=session)
+        if content is not None:
+            call = {"id": "call-1", "function": {"name": "terminal", "arguments": "{}"}}
+            hooks.post_api_request(platform="cotal", session_id=session, assistant_message={"content": content, "tool_calls": [call]})
+    return step
+
+
+def model_finished(sender, content):
+    """The rest of a run ``model_started`` began: its last response, then ``post_llm_call``."""
+    async def step():
+        session = session_of(sender)
+        hooks.post_api_request(platform="cotal", session_id=session, assistant_message={"content": content, "tool_calls": []})
+        hooks.post_llm_call(platform="cotal", session_id=session, assistant_response=content)
     return step
 
 
@@ -157,6 +184,19 @@ SCENARIOS = {
     "peer_chat": lambda: turn(PEER, [reply("dm:u_peer.ada", "hello ada")]),
     "stop_reply": lambda: turn(OPERATOR, [reply("operator", "Stopped.", reply_to=f"{STOP_ID_PREFIX}x")]),
     "blank": lambda: turn(OPERATOR, [reply("operator", "  \n")]),
+    # The provider kept failing, so Hermes gave up before any response and sent its own error.
+    "gave_up": lambda: turn(OPERATOR, [model_started("operator"), reply("operator", "API call failed after 3 retries")]),
+    "progress_answered": lambda: turn(OPERATOR, [
+        model_started("operator", "checking"), reply("operator", "terminal: ls"), reply("operator", "checking"),
+        model_finished("operator", "all done"), reply("operator", "all done"),
+    ]),
+    "progress_gave_up": lambda: turn(OPERATOR, [
+        model_started("operator", "checking"), reply("operator", "terminal: ls"), reply("operator", "API call failed"),
+    ]),
+    "cancelled": lambda: turn(OPERATOR, [model_started("operator", "checking"), reply("operator", "terminal: ls")], outcome="cancelled"),
+    "peer_answered": lambda: turn(OPERATOR, [
+        model_started("operator"), model_call("cotal", "u_peer.ada", "peer work"), reply("operator", "API call failed"),
+    ]),
 }
 
 out = {}

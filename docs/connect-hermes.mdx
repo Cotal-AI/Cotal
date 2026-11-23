@@ -180,7 +180,8 @@ See [Session forks](hermes-connector-reference.mdx#session-forks) for per-chat b
 
 ## Presence [#how-presence-follows-the-turn]
 
-Hermes reports `working` for model and tool calls, `waiting` for approvals, and `idle` at turn completion.
+Hermes reports `working` for model and tool calls, `waiting` for approvals, and `idle` at turn completion,
+including a turn that ends because the provider failed.
 Gateway reconnects and session starts do not finish a run turn.
 See the [presence mapping](hermes-connector-reference.mdx#presence-mapping) for hook details.
 
