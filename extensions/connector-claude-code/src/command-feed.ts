@@ -19,7 +19,7 @@ const FLOOR_TEXT = CLAUDE_FLOOR.join(".");
 
 const NO_READER =
   `the command mod is not running in this Claude Code session; it needs Claude Code ${FLOOR_TEXT} or later with mods on ` +
-  "(--bare, --safe-mode, disableAllHooks and an organization's allowManagedModsOnly turn mods off)";
+  "(--bare, --safe-mode, disableAllHooks, and an organization's allowManagedHooksOnly or allowManagedModsOnly turn mods off)";
 
 const WIN_PIPES = "\\\\.\\pipe\\";
 const WIN_PREFIX = "cotal-claude-cmd-";
