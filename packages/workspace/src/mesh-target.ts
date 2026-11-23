@@ -1,4 +1,4 @@
-import { accessSync, closeSync, constants, existsSync, lstatSync, openSync, readFileSync, readdirSync, readSync, realpathSync, type Stats } from "node:fs";
+import { accessSync, closeSync, constants, existsSync, lstatSync, openSync, readFileSync, readdirSync, readSync, realpathSync, statSync, type Stats } from "node:fs";
 import { join } from "node:path";
 import { boundedValue, DEFAULT_SERVER, DEFAULT_SPACE, MANAGER_START_PAYLOAD_FLOOR, personaDir, type SpaceAuth } from "@cotal-ai/core";
 import { isLoopbackLiteral } from "@cotal-ai/core/loopback";
@@ -177,6 +177,8 @@ export interface MeshTargetErrorDetails {
   stackRemedy?: string;
   /** For `not-started` on a prepared space: its root no longer exists, so `up` cannot start it there. */
   rootMissing?: boolean;
+  /** For `not-started` on a prepared space: its root exists but is a file, not a project folder, so `up` cannot start it there. */
+  rootIsFile?: boolean;
   /** For `not-started` on a root with no registration: `server` is the broker its last start
    *  configured, which a bare `cotal up` there starts again. */
   lastRun?: boolean;
@@ -447,6 +449,11 @@ function notStarted(space: string, cwd?: string): void {
     const moved = stack?.stackSpace === space && stack.recordedRoot === prepared.root ? stack.stackRemedy : undefined;
     throw new MeshTargetError("not-started", `"${space}" is prepared in ${prepared.root}, which no longer exists${moved ? ", and this folder's stack journal was recorded there, so this folder was moved from there" : ""}`, { space, root: prepared.root, rootMissing: true, ...(moved ? { stackRemedy: moved } : {}) });
   }
+  // A regular file at the recorded root is not a project folder: `up` cannot start there, and the
+  // report must say so instead of naming `up`.
+  const rootStat = statSync(prepared.root, { throwIfNoEntry: false });
+  if (rootStat !== undefined && !rootStat.isDirectory())
+    throw new MeshTargetError("not-started", `"${space}" is prepared in ${prepared.root}, which is a file, not a project folder`, { space, root: prepared.root, rootIsFile: true });
   const lifecycle = preparedLifecycle(prepared.root, space);
   if (lifecycle.state === "unsettled") throw new MeshTargetError("not-started", `"${space}" is prepared, and the last ${lifecycle.unsettled} of its stack in ${prepared.root} has no recorded outcome`, { space, root: prepared.root, unsettled: lifecycle.unsettled, ...(lifecycle.stopped ? { stopped: lifecycle.stopped } : {}) });
   if (lifecycle.state === "stopped") throw new MeshTargetError("not-started", `"${space}" is stopped; its last operation, ${lifecycle.lastOperation}`, { space, root: prepared.root, stopped: lifecycle.stopped });
