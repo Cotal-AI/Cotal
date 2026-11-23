@@ -1,6 +1,6 @@
 import { Bucket, KvWatchInclude } from "@nats-io/kv/internal";
 import type { KV, KvEntry, KvWatchEntry } from "@nats-io/kv";
-import { JetStreamApiError, type ConsumerAPI, type ConsumerInfo, type MsgRequest, type NextMsgRequest } from "@nats-io/jetstream";
+import { DeliverPolicy, JetStreamApiError, type ConsumerAPI, type ConsumerInfo, type MsgRequest, type NextMsgRequest } from "@nats-io/jetstream";
 import type { NatsConnection } from "@nats-io/nats-core";
 import { isPublishPermissionDenied } from "./endpoint.js";
 import { openPublishDenialWatch } from "./endpoint-publish-denial.js";
@@ -152,7 +152,11 @@ export async function liveKvEntries(
   } else {
     opts = options;
   }
+  return (await scanKvEntries(kv, filter, opts)).filter((e) => e.operation !== "DEL" && e.operation !== "PURGE");
+}
 
+/** Complete ordered KV pass including deletion markers, optionally starting at a stream revision. */
+export async function scanKvEntries(kv: KV, filter?: string | string[], opts?: LiveKvEntriesOptions, from?: number): Promise<KvEntry[]> {
   if (opts?.signal?.aborted) {
     throw opts.signal.reason ?? new Error("scan aborted");
   }
@@ -175,6 +179,7 @@ export async function liveKvEntries(
     );
   const bucket: Bucket = kv;
   const cc = bucket._buildCC(filter ?? ">", KvWatchInclude.AllHistory, { headers_only: false });
+  if (from !== undefined) { cc.deliver_policy = DeliverPolicy.StartSequence; cc.opt_start_seq = from; }
   // Only this temporary scan's cursor is volatile. The backing KV records keep their storage;
   // an interrupted pass still has to prove completeness or throw before returning any result.
   cc.mem_storage = true;
@@ -291,9 +296,7 @@ export async function liveKvEntries(
   // the whole point. Filtered and unfiltered obey the same rule, including zero-received.
   if (!sawTerminal) throw new IncompleteKvScan(bucketName, received, expected);
 
-  const out: KvEntry[] = [];
-  for (const e of latest.values()) if (e.operation !== "DEL" && e.operation !== "PURGE") out.push(e);
-  return out;
+  return [...latest.values()];
 }
 
 /**
