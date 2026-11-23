@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { accessSync, constants, existsSync, lstatSync, readdirSync, realpathSync, renameSync, rmdirSync, rmSync } from "node:fs";
+import { accessSync, constants, existsSync, lstatSync, readdirSync, realpathSync, renameSync, rmdirSync, rmSync, statSync } from "node:fs";
 import { dirname, isAbsolute, join, parse, relative, resolve } from "node:path";
 import { clearSpaceHistory, isReachable, registry, resolveAuthProvider, type AuthProvider, type CompletionResult, type ParsedArgs, type SecretStore } from "@cotal-ai/core";
 import {
@@ -361,6 +361,9 @@ export function liveMeshProcess(root: string, space?: string, settledByDown = fa
  * gone without its stop receipt does not, and {@link unsettledStackMembers} names it.
  */
 export function liveMeshOwner(root: string, space?: string): string | undefined {
+  // A regular file at the recorded root holds no broker and no stack: there is no pidfile to read
+  // under it, so the liveness question is answered, not asked.
+  if (statSync(root, { throwIfNoEntry: false })?.isDirectory() === false) return undefined;
   const context: LocalProcessContext = { root, space: space ?? resolveRuntimeSpace(root) };
   for (const component of localProcessSurface()) {
     if (!component.clearsMesh) continue;
