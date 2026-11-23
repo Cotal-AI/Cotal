@@ -59,6 +59,11 @@ def _path() -> Optional[str]:
     return os.environ.get("COTAL_HERMES_EVENTS") or None
 
 
+def armed() -> bool:
+    """Whether the seat's event plane is armed, so its records are written."""
+    return _path() is not None
+
+
 def _append(kind: str, **fields: Any) -> bool:
     path = _path()
     if not path:
@@ -81,8 +86,9 @@ def processing_done(key: str, outcome: str) -> bool:
     return _append("done", key=key, outcome=outcome)
 
 
-def model_response(platform: str, message: Any) -> bool:
-    """One model response of a Cotal-platform turn (``post_api_request``'s ``assistant_message``)."""
+def model_response(platform: str, message: Any, stream: Optional[str] = None) -> bool:
+    """One model response of a Cotal-platform turn (``post_api_request``'s ``assistant_message``),
+    naming the ``stream`` its text streamed under (streams.py)."""
     if not _path() or platform != "cotal" or message is None:
         return False
     calls = []
@@ -105,6 +111,7 @@ def model_response(platform: str, message: Any) -> bool:
         content=_text(_field(message, "content")),
         reasoning=reasoning if isinstance(reasoning, str) else "",
         calls=calls,
+        **({"stream": stream} if stream else {}),
     )
 
 

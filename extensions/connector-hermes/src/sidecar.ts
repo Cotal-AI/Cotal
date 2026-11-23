@@ -98,7 +98,8 @@ export function startSidecar(): Sidecar {
     if (frame.t === "approval") approvals?.request(frame);
     else approvals?.ended(frame);
   };
-  bridge = startBridgeServer(agent, config, bridgeSock, control, { onSubscribe: startAgent, onIdle, onApproval });
+  const onDelta = (key: string, text?: string): void => events?.delta(key, text);
+  bridge = startBridgeServer(agent, config, bridgeSock, control, { onSubscribe: startAgent, onIdle, onApproval, onDelta });
   // The launch's initial prompt is the gateway's first turn, in the user's own words. Read once and
   // dropped from the environment the gateway inherits.
   const prompt = process.env.COTAL_HERMES_PROMPT;

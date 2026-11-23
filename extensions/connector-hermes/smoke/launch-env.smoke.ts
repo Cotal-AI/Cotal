@@ -51,7 +51,7 @@ const assert: typeof nodeAssert = new Proxy(nodeAssert, {
  * guarantee is the false-green shape this package keeps being bitten by. Pinning the floor turns a
  * smaller green into a red. Raise it deliberately when you add a cell; a drop means one vanished.
  */
-const EXPECTED_CELLS = 188;
+const EXPECTED_CELLS = 190;
 
 if (process.platform === "win32") skipSuite("the Hermes connector is Unix-only; buildLaunch throws");
 
@@ -372,9 +372,21 @@ rmSync(mgdFresh, { recursive: true, force: true });
 assert.throws(() => setupProfile(mgdFresh, { model: undefined, config: mgdConfig }), LaunchRefused, "the refusal is the connector's own class, so the launcher prints it as a diagnosis rather than a stack");
 assert.equal(existsSync(mgdFresh), false, "a profile directory that did not exist before the refusal does not exist after it");
 
+// The launcher's own COTAL_EVENTS, which the connector sets only for an armed plane, decides
+// whether a profile streams; the leak cells above left a stand-in value there.
+delete process.env.COTAL_EVENTS;
 const mgdSet = mkdtempSync(join(tmpdir(), "cotal-hermes-managed-set-"));
 setupProfile(mgdSet, { model: "vendor/some-model", config: mgdConfig });
 assert.match(readFileSync(join(mgdSet, "config.yaml"), "utf8"), /^model: "vendor\/some-model"$/m, "a resolved model is written as a quoted scalar");
+assert.doesNotMatch(readFileSync(join(mgdSet, "config.yaml"), "utf8"), /^streaming:/m, "with no event plane to stream to, the profile leaves Hermes's streaming off");
+const mgdStream = mkdtempSync(join(tmpdir(), "cotal-hermes-managed-stream-"));
+setupProfile(mgdStream, { model: "vendor/some-model", config: { ...mgdConfig, eventsRequired: true } });
+assert.match(
+  readFileSync(join(mgdStream, "config.yaml"), "utf8"),
+  /^streaming:\n  enabled: true\n  transport: draft\n  cursor: ""\n  edit_interval: 0\.25$/m,
+  "an armed event plane turns on Hermes's draft streaming, which hands the adapter a reply as the model writes it",
+);
+rmSync(mgdStream, { recursive: true, force: true });
 const mgdPersona = mkdtempSync(join(tmpdir(), "cotal-hermes-managed-persona-"));
 setupProfile(mgdPersona, { model: "vendor/some-model", persona: "I review changes.", config: mgdConfig });
 const soul = readFileSync(join(mgdPersona, "SOUL.md"), "utf8");
