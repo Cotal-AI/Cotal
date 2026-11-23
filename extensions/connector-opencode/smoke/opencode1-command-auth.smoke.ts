@@ -14,8 +14,8 @@
  *
  * Covered: presence says the agent serves interrupt, turns with images and usage. The owner's session lists the commands, the MCP
  * prompt as a command and the skills, with nothing else from OpenCode's entries, leaving out the
- * `/reconnect` the launch injects. A listed command runs under its name, and reads started once the
- * hook ran, with OpenCode's answer still owed. Commands sent while that turn runs are queued and one is
+ * `/reconnect` the launch injects. A listed command runs under its name, and reads started once its
+ * turn started after the hook, with OpenCode's answer still owed. Commands sent while that turn runs are queued and one is
  * cancelled. After the command turn the waiting message goes first, carrying the persona, which the
  * command route cannot carry. Then the queued skill runs through the same route. `/reconnect`, an unknown command and an
  * unknown skill end refused and never reach OpenCode. A command OpenCode refuses before its prompt
@@ -27,8 +27,10 @@
  * 4xx answer ends it refused, failed-precondition. `usage` then reports the last step's input, cache
  * and output tokens of the model's input limit, and the sum of the assistant messages' cost, reading
  * the provider list once; a model the list has no window for leaves the context out. Listed newest
- * first, the step usage reports is still the newest message's. The broker refuses a sibling agent of
- * the same owner.
+ * first, the step usage reports is still the newest message's. A command OpenCode fails after its
+ * hook ends refused, failed-precondition, and leaves the session free. One whose turn never starts
+ * reads taken, ends unknown after 5 s, and leaves the session free, so interrupt then answers idle.
+ * The broker refuses a sibling agent of the same owner.
  *
  * Run: pnpm smoke:opencode1-command:auth   (needs `nats-server` on PATH; local-only)
  */
@@ -117,6 +119,10 @@ const PERSONA = "You are Cody, a careful reviewer who explains every finding.";
 let hooks: Awaited<ReturnType<typeof bootPlugin>> | undefined;
 const fire = (type: string, properties: Record<string, unknown> = {}) => hooks!.event!({ event: { type, properties: { sessionID: SID, ...properties } } } as never);
 let snippetsMs = 0;
+// What OpenCode does once a command's hook ran. Measured on 1.19.6: a plugin whose `chat.message`
+// throws makes it answer this 500 with no event and nothing stored.
+let afterHook: "turn" | "fail" | "stall" = "turn";
+const SERVER_ERROR = { name: "UnknownError", data: { message: "Unexpected server error. Check server logs for details.", ref: "err_aeb81fe6" } };
 let refuseTurn = false;
 let messages: unknown[] = [];
 const providers = { all: [{ id: "opencode", models: { "m1": { id: "m1", limit: { context: 200000, input: 160000, output: 32000 } }, "m2": { id: "m2" }, "m3": { id: "m3", limit: { context: 262144, output: 65536 } } } }], default: {}, connected: ["opencode"] };
@@ -146,8 +152,10 @@ async function runCommand(res: ServerResponse, body: { command?: string; argumen
   }
   if (snippetsMs) await sleep(snippetsMs);
   await hooks!["command.execute.before"]!({ command: entry.name, sessionID: SID, arguments: body.arguments ?? "" }, { parts: [] });
-  await fire("session.status", { status: { type: "busy" } });
+  if (afterHook === "fail") return json(res, 500, SERVER_ERROR);
+  if (afterHook === "stall") return;
   held = () => json(res, 200, { info: { id: `msg_${calls.length}`, role: "assistant", sessionID: SID }, parts: [] });
+  await fire("session.status", { status: { type: "busy" } });
 }
 const oc = createServer((req, res) => {
   if (req.headers.authorization !== basic) return void res.writeHead(401).end();
@@ -287,7 +295,7 @@ try {
 
   const review = await queue({ target: "command", name: "review", args: "src/" });
   const reviewState = await settle(review.id);
-  check("a listed command runs under its name and reads started once OpenCode's hook ran, with OpenCode's answer still owed",
+  check("a listed command runs under its name and reads started once its turn started after OpenCode's hook, with OpenCode's answer still owed",
     review.verdict === "ok" && reviewState.label === "started" && same(calls, ["command review"]) && same(bodies[0], { command: "review", arguments: "src/" }) && held !== undefined,
     [review.verdict, reviewState.label, calls, bodies[0]]);
   await webEp.unicast(`${A}.cody`, "hello from the inbox");
@@ -401,6 +409,38 @@ try {
   const newestFirst = await usageOf();
   check("usage takes the step of the newest message by id when OpenCode lists the messages newest first",
     same(newestFirst, { supported: true, context: { used: 520, size: 160000 }, cost: { amount: 0.75, currency: "USD" } }), newestFirst);
+
+  // On unchanged code each cell below leaves the seat wedged, and the idle that ends a cell frees it
+  // for the next one.
+  const promptsBefore = () => calls.filter((c) => c === "prompt").length;
+  afterHook = "fail";
+  const failed = await run({ target: "command", name: "init" });
+  afterHook = "turn";
+  check("a command OpenCode fails after its hook, before its turn starts, ends refused, failed-precondition, with OpenCode's answer",
+    failed.label === "refused/failed-precondition" && message(failed.state).includes("500"), [failed.label, message(failed.state)]);
+  const promptsAtFail = promptsBefore();
+  await webEp.unicast(`${A}.cody`, "after the failed command");
+  check("...and the session is free: a DM then reaches prompt_async", await until(() => promptsBefore() > promptsAtFail, 7000), calls.slice(-3));
+  await endTurn();
+  await runAndEndTurn();
+
+  afterHook = "stall";
+  const stalled = await queue({ target: "command", name: "init" });
+  await sleep(1000);
+  const waitingTurn = (await readState(stalled.id)).label;
+  const stalledEnd = await settle(stalled.id, 8000);
+  afterHook = "turn";
+  check("a command whose hook ran reads taken until its turn starts, and one whose turn never starts ends unknown after 5 s",
+    waitingTurn === "taken" && stalledEnd.label === "unknown/internal" && message(stalledEnd.state).includes("no turn"), [waitingTurn, stalledEnd.label, message(stalledEnd.state)]);
+  const beforeIdle = calls.length;
+  const idleAfter = await call(webEp, "interrupt");
+  check("...after which interrupt answers idle and asks OpenCode nothing",
+    idleAfter.ok && idleAfter.value.ok && same(idleAfter.value.data, { state: "idle" }) && calls.length === beforeIdle, [verdict(idleAfter), calls.slice(beforeIdle)]);
+  const promptsAtStall = promptsBefore();
+  await webEp.unicast(`${A}.cody`, "after the stalled command");
+  check("...and a DM then reaches prompt_async", await until(() => promptsBefore() > promptsAtStall, 7000), calls.slice(-3));
+  await endTurn();
+  await runAndEndTurn();
 
   const sibling = await call(siblingEp, "command", { target: "command", name: "review" });
   check("a sibling agent of the same owner: permission-denied, not-executed", verdict(sibling) === "permission-denied/not-executed", verdict(sibling));
