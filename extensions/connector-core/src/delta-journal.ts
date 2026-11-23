@@ -32,6 +32,8 @@ export interface DeltaRecord {
   /** Milliseconds since the epoch, when the line was written. */
   ts: number;
   deltas: StreamDelta[];
+  /** Keys whose streams the harness abandoned: no saved record will close them. */
+  ends?: string[];
 }
 
 /** The least time between two lines of one journal. */
@@ -50,8 +52,9 @@ export interface DeltaJournalOptions {
 /** Throws unless `value` is a {@link DeltaRecord}; `where` names it in the error. */
 export function assertDeltaRecord(value: unknown, where: string): asserts value is DeltaRecord {
   const r = value as Partial<DeltaRecord> | null;
+  const ends = r?.ends === undefined || (Array.isArray(r.ends) && r.ends.length > 0 && r.ends.every((k) => typeof k === "string" && k.length > 0));
   const ok = typeof r === "object" && r !== null && typeof r.anchor === "string" && Number.isSafeInteger(r.ts) &&
-    Array.isArray(r.deltas) && r.deltas.length > 0 &&
+    Array.isArray(r.deltas) && r.deltas.length + (r.ends?.length ?? 0) > 0 && ends &&
     r.deltas.every((d) => typeof d?.key === "string" && d.key.length > 0 && (d.kind === "text" || d.kind === "reasoning") &&
       typeof d.text === "string" && d.text.length > 0);
   if (!ok) throw new Error(`delta journal: ${where} is not a delta record`);
@@ -110,6 +113,21 @@ export class DeltaJournal {
     this.pending = [];
   }
 
+  /**
+   * End the streams under `keys` that no saved record will close, as a reply the harness failed to
+   * save leaves. The line is written at once, with the deltas still pending, so a run the caller
+   * closes next finds it in the journal. A reader ignores a key a saved record already closed.
+   */
+  abandon(keys: readonly string[]): void {
+    if (this.fd === undefined) throw new Error(`delta journal: ${this.opts.path} is closed`);
+    if (keys.length === 0) return;
+    clearTimeout(this.timer);
+    this.timer = undefined;
+    const deltas = this.pending;
+    this.pending = [];
+    this.writeLine(deltas, [...keys]);
+  }
+
   /** Drop what is pending and release the file. */
   close(): void {
     this.settle();
@@ -127,10 +145,15 @@ export class DeltaJournal {
     this.timer = undefined;
     const deltas = this.pending;
     this.pending = [];
-    if (deltas.length === 0 || this.fd === undefined) return;
+    if (deltas.length > 0) this.writeLine(deltas);
+  }
+
+  private writeLine(deltas: StreamDelta[], ends?: string[]): void {
+    if (this.fd === undefined) return;
     try {
       this.lastWrite = performance.now();
-      const line = Buffer.from(`${JSON.stringify({ anchor: this.opts.anchor(), ts: Date.now(), deltas })}\n`);
+      const record: Omit<DeltaRecord, "anchor" | "ts"> = { deltas, ...(ends ? { ends } : {}) };
+      const line = Buffer.from(`${JSON.stringify({ anchor: this.opts.anchor(), ts: Date.now(), ...record })}\n`);
       for (let at = 0; at < line.length; ) at += writeSync(this.fd, line, at);
     } catch (e) {
       this.opts.onError(e as Error);
