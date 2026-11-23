@@ -121,8 +121,9 @@ onboarding:
 ## Presence mapping
 
 The hooks map Hermes's lifecycle onto presence: `pre_llm_call` and `pre_tool_call` write `working`,
-`approval_wait` writes `waiting`, `post_llm_call` and `on_session_end` write `idle`. That last
-working-to-idle transition is the turn boundary the run relay reads (a surfaced run turn yields
+`approval_wait` writes `waiting`, `post_llm_call` and `on_session_end` write `idle`. A run Hermes
+gives up on, as when the provider refuses the request, fires neither, so a seat still `working` when
+the gateway has no Cotal message in progress also writes `idle`. That last working-to-idle transition is the turn boundary the run relay reads (a surfaced run turn yields
 `done` there), so `gateway_startup` and `on_session_start` write their `idle` through a path that
 moves presence and nothing else: an adapter reconnect or a session start that lands mid-turn is a
 lifecycle event, and treating it as an ending would yield work the model had not finished.
@@ -140,8 +141,10 @@ The plugin appends one record when the gateway starts or finishes processing a C
 (the adapter's `on_processing_start` and `on_processing_complete`), one per model response
 (`post_api_request`) and one per tool result (`post_tool_call`). It also records the gateway's
 reply in the operator chat when the model was not called for that message, as for a slash
-command's output or an error the gateway wrote itself. A reply the model wrote is recorded once, as
-its responses. It records only Cotal-platform work, so an adopted profile's other platforms stay
+command's output or an error the gateway wrote itself. When the model was called and did not answer,
+because Hermes gave up on the provider, it records the gateway's last reply, its error, as the
+message finishes. A reply the model wrote is recorded once, as its responses, and the tool progress
+the gateway sends during the run is not recorded. It records only Cotal-platform work, so an adopted profile's other platforms stay
 off the mesh. Each record also wakes the sidecar's reader over the control socket.
 
 A run opens at the first model response or operator reply while a message is in progress, and

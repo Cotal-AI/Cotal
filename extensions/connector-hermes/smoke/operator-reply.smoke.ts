@@ -44,6 +44,11 @@ check("a reply in a peer's chat is not journaled", kinds("peer_chat") === "start
 check("a reply in a peer's chat still goes to that peer", JSON.stringify(out.peer_chat!.mesh) === JSON.stringify([{ target: { peerId: "u_peer.ada" }, text: "hello ada" }]), out.peer_chat!.mesh);
 check("the reply to a stop is neither journaled nor sent", kinds("stop_reply") === "start | done" && out.stop_reply!.mesh.length === 0, out.stop_reply);
 check("a blank reply is not journaled", kinds("blank") === "start | done", kinds("blank"));
+check("the error the gateway sends when the model never answered is journaled", kinds("gave_up") === "start | reply:API call failed after 3 retries | done", kinds("gave_up"));
+check("progress and interim text before the model's answer are not journaled", kinds("progress_answered") === "start | assistant:checking | assistant:all done | done", kinds("progress_answered"));
+check("a run that gives up after a tool step journals only the gateway's last reply", kinds("progress_gave_up") === "start | assistant:checking | reply:API call failed | done", kinds("progress_gave_up"));
+check("a cancelled turn journals no progress line", kinds("cancelled") === "start | assistant:checking | done", kinds("cancelled"));
+check("a peer's answered run does not count as the operator's answer", kinds("peer_answered") === "start | assistant:peer work | reply:API call failed | done", kinds("peer_answered"));
 check("no operator reply reaches the mesh with a target", Object.values(out).every((s) => s.mesh.every((m) => m.target.peerId === "u_peer.ada" || Object.keys(m.target).length === 0)));
 
 console.log(`hermes operator reply: ${pass} passed, ${fail} failed`);
