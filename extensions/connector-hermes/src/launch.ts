@@ -105,7 +105,9 @@ const yamlStr = (s: string): string => `"${s.replace(/\\/g, "\\\\").replace(/"/g
  * Drops the cotal plugin into the profile's plugins dir, enables it + the cotal platform, and
  * turns approvals off (an autonomous spawned gateway has no human at the TUI to approve commands).
  * A launch with `askPermissions` keeps them manual instead, and the plugin puts each one behind
- * the agent's prompt desk (plugin/cotal/approvals.py).
+ * the agent's prompt desk (plugin/cotal/approvals.py). With the event plane armed it turns on
+ * Hermes's streaming, which is how Hermes hands the adapter a reply while the model writes it
+ * (plugin/cotal/streams.py).
  */
 export function setupProfile(
   home: string,
@@ -140,6 +142,8 @@ export function setupProfile(
     "approvals:",
     `  mode: ${opts.config.askPermissions ? "manual" : "off"}`,
   ];
+  if (eventPlaneArmed(opts.config))
+    lines.push("streaming:", "  enabled: true", "  transport: draft", '  cursor: ""', "  edit_interval: 0.25");
   lines.push(`model: ${yamlStr(opts.model)}`);
   writeFileSync(join(home, "config.yaml"), lines.join("\n") + "\n");
 

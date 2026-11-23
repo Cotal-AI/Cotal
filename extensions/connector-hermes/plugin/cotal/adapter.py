@@ -15,6 +15,7 @@ import asyncio
 import base64
 import logging
 import os
+import sys
 import uuid
 from typing import Any, Optional
 
@@ -28,7 +29,7 @@ from gateway.platforms.base import (
 from gateway.config import Platform, PlatformConfig
 from gateway.session import build_session_key
 
-from . import approvals, hooks, journal, replies
+from . import approvals, hooks, journal, replies, streams
 from .bridge_client import get_client
 from .commands import operator_commands
 from .resume import seed_chat
@@ -205,6 +206,23 @@ class CotalAdapter(BasePlatformAdapter):
         )
         return SendResult(success=True, message_id=uuid.uuid4().hex)
 
+    def supports_draft_streaming(self, chat_type: Any = None, metadata: Any = None, **_: Any) -> bool:
+        """Hermes streams a reply here as drafts when its streaming is on (streams.py). Hermes 0.21
+        also passes the chat id."""
+        return True
+
+    def streaming_overflow_limit(self) -> Optional[int]:
+        """No limit: a streamed reply is sent whole, as an unstreamed one is, never split into
+        several messages."""
+        return sys.maxsize
+
+    async def send_draft(self, chat_id: str, draft_id: int, content: str, metadata: Any = None) -> SendResult:
+        """The reply so far: the event plane streams the text it adds. Nothing goes to the mesh, which
+        gets the reply when the gateway sends it."""
+        if journal.armed():
+            streams.draft(self._client, chat_id, draft_id, content)
+        return SendResult(success=True)
+
     @classmethod
     def supports_exec_approval_buttons(cls) -> bool:
         """Hermes 0.21 calls ``send_exec_approval`` only for an adapter that says it renders approvals;
@@ -237,6 +255,7 @@ class CotalAdapter(BasePlatformAdapter):
         entry = self._busy.pop(id(event), None)
         key = entry[1] if entry else None
         ended = str(getattr(outcome, "value", outcome))
+        streams.turn_done(self._client, str(getattr(event.source, "chat_id", "")))
         wake = getattr(event.source, "chat_id", None) == OPERATOR_CHAT and journal.operator_done(ended)
         if key and journal.processing_done(key, ended):
             wake = True
