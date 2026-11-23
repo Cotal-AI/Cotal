@@ -199,15 +199,15 @@ console.log("2. a long identity keeps its name, activity and ages at every cappe
   // Status first, then name: long1, bob123, eve456, long2.
   const roster = [seat(long1, "reviewing-the-diff12"), seat("bob123", "testing-it"), seat("eve456", "testing-it"), seat(long2, "reviewing-the-diff34")];
   const long = (name: string, act: string): Record<number, string[]> => ({
-    120: ["● " + name, "  /probe cc", "  " + act, "  (set 5m ago)  progress unknown", "  working · unchanged for 3m"],
-    80: ["● " + name.slice(0, 18), "  " + name.slice(18) + "/probe", "  cc", "  " + act.slice(0, 18), "  " + act.slice(18) + " (set 5m ago)",
+    120: ["● " + name, "  (role: probe) cc", "  " + act, "  (set 5m ago)  progress unknown", "  working · unchanged for 3m"],
+    80: ["● " + name.slice(0, 18), "  " + name.slice(18), "  (role: probe) cc", "  " + act.slice(0, 18), "  " + act.slice(18) + " (set 5m ago)",
       "  progress unknown", "  working", "  unchanged for 3m"],
-    79: ["● " + name + "/probe cc  " + act, "  (set 5m ago)  progress unknown", "  working · unchanged for 3m"],
+    79: ["● " + name + " (role: probe) cc  " + act, "  (set 5m ago)  progress unknown", "  working · unchanged for 3m"],
   });
   const short = (name: string): Record<number, string[]> => ({
-    120: ["● " + name + "/probe cc  testing-it", "  (set 5m ago)  progress unknown", "  working · unchanged for 3m"],
-    80: ["● " + name + "/probe cc", "  testing-it", "  (set 5m ago)", "  progress unknown", "  working", "  unchanged for 3m"],
-    79: ["● " + name + "/probe cc  testing-it (set 5m ago)  progress unknown", "  working · unchanged for 3m"],
+    120: ["● " + name + " (role: probe) cc", "  testing-it (set 5m ago)", "  progress unknown", "  working · unchanged for 3m"],
+    80: ["● " + name + " (role:", "  probe) cc", "  testing-it", "  (set 5m ago)", "  progress unknown", "  working", "  unchanged for 3m"],
+    79: ["● " + name + " (role: probe) cc  testing-it (set 5m ago)  progress unknown", "  working · unchanged for 3m"],
   });
   // 120 and 80 columns cap the roster at 36 and 24 cells beside the feed; 79 gives it the whole width.
   for (const [cols, box] of [[120, 36], [80, 24], [79, 79]] as const) {

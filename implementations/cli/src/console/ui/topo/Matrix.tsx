@@ -1,13 +1,18 @@
 import { useState } from "react";
 import { Box, Text, useInput } from "ink";
+import { displayWidth } from "@cotal-ai/workspace";
 import type { FeedEntry } from "../../mesh.js";
-import { agentColor, ago, fmtTime, STATUS } from "../theme.js";
+import { agentColor, ago, clipText, fmtTime, STATUS } from "../theme.js";
 import { HEAT, heatLevel, edgeEntries, nodeLabel, type TopoEdge, type TopoGraph, type TopoNode } from "./model.js";
 
 const CELL_W = 7;
 const FOOTER_H = 3; // separator/summary + 2 recent messages
 
-const trunc = (s: string, n: number) => (s.length > n ? s.slice(0, Math.max(1, n - 1)) + "…" : s);
+function fitLabel(label: string, width: number, gap = 0): string {
+  const room = Math.max(0, width - gap);
+  const text = room === 0 ? "" : displayWidth(label) > room ? clipText(label, room - 1) + "…" : label;
+  return text + " ".repeat(width - displayWidth(text));
+}
 
 function hubColor(n: TopoNode): string | undefined {
   return n.kind === "channel" ? "cyan" : n.kind === "service" ? "magenta" : agentColor(n.name);
@@ -62,12 +67,13 @@ export function Matrix({
     },
     { isActive: active },
   );
-
   if (!rows.length || !cols.length)
     return <Text dimColor>(no traffic in the window - waiting for peer messages)</Text>;
-
+  if (width < CELL_W + 2) return null;
   // Viewports: rows under header + footer; columns follow the cursor.
-  const labelW = Math.min(Math.max(18, Math.min(32, Math.floor(width / 3))), Math.max(10, ...rows.map((n) => nodeLabel(n).length + 2)) + 1);
+  const labelLimit = Math.max(18, Math.min(32, Math.floor(width / 3)));
+  const labelNeed = Math.max(11, ...rows.map((n) => displayWidth(nodeLabel(n)) + 3));
+  const labelW = Math.max(2, Math.min(width - CELL_W, labelLimit, labelNeed));
   const visCols = Math.max(1, Math.floor((width - labelW) / CELL_W));
   const colTop = Math.max(0, Math.min(c - visCols + 1, cols.length - visCols));
   const visRows = Math.max(1, height - 1 - FOOTER_H);
@@ -111,10 +117,10 @@ export function Matrix({
   return (
     <Box flexDirection="column">
       <Text wrap="truncate-end">
-        <Text dimColor>{"from \\ to".padEnd(labelW)}</Text>
+        <Text dimColor>{fitLabel("from \\ to", labelW)}</Text>
         {shownCols.map((n) => (
           <Text key={n.key} color={hubColor(n)}>
-            {trunc(nodeLabel(n), CELL_W - 1).padEnd(CELL_W)}
+            {fitLabel(nodeLabel(n), CELL_W, 1)}
           </Text>
         ))}
         {moreCols > 0 ? <Text dimColor>{"→+" + moreCols}</Text> : null}
@@ -124,7 +130,7 @@ export function Matrix({
         return (
           <Text key={row.key} wrap="truncate-end">
             <Text color={glyph.color}>{glyph.dot + " "}</Text>
-            <Text color={agentColor(row.name)}>{trunc(nodeLabel(row), labelW - 3).padEnd(labelW - 2)}</Text>
+            <Text color={agentColor(row.name)}>{fitLabel(nodeLabel(row), labelW - 2, 1)}</Text>
             {shownCols.map((col, ci) => {
               const selected = active && rowTop + ri === r && colTop + ci === c;
               if (row.key === col.key)

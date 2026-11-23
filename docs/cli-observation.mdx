@@ -21,8 +21,9 @@ cotal console [--plain] [--space <s>]
 | `--space <s>` / `--server <url>` / `--creds <path>` | resolved mesh | Space to watch |
 | `--plain` | off | Line stream instead of the TUI |
 
-A live protocol view for a space: a lazygit-style TUI, or a plain line stream on `--plain`. The
-line stream is also what a pipe gets. On `--plain`, and under a locale that is not UTF-8, it writes
+A live protocol view for a space. The TUI requires both stdin and stdout to be terminals.
+The line stream runs when either stream is not a terminal or when you pass `--plain` or `--no-input`.
+On `--plain`, and under a locale that is not UTF-8, it writes
 no status marks and its punctuation in ASCII. The line stream reports a lost connection in one line
 while it re-establishes it. A credential that can no longer connect ends it with the refusal a
 one-shot command with that credential gets, as [`history --follow`](cli-messaging.mdx#history) does. Ctrl-C or
@@ -124,6 +125,12 @@ dashboard, starting a second process or silently reinstalling it.
 It uses the existing observer view authority; a user-auth space requires the corresponding
 admin view grant. It does not register a participant, bind an inbox or expose local process
 controls. Leaving with `q`, Esc or Ctrl-C stops only this observer.
+
+| Flag | What it selects |
+|---|---|
+| `--space <s>` | The target space. Defaults to the resolved mesh. |
+| `--server <url>` | The broker URL. Overrides the address in the space registry. |
+| `--creds <path>` | The observer credential file for an off-registry broker. See the [observer credential restrictions](watch-a-mesh.mdx#what-each-surface-can-see). |
 
 Use `--view events` or `--view messages` to select a feed, or press `f` to change it in the
 terminal. Arrow keys scroll; `g` returns to the latest observations. The feed retains at most

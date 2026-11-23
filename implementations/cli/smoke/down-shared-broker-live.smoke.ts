@@ -3,11 +3,8 @@
  * refuses with LIFECYCLE_BLOCKED, exit 2, and the human refusal NAMES the blocking registration
  * with a usable next step.
  *
- * Before the fix the refusal said only "another registration names this stack's exact broker
- * address; a shared broker is not stopped in this cut" with no name and no Next block, while
- * `down --yes --json` already recorded the name in `target.spaces`. The guard stays: the broker
- * is not stopped under the other registration, nothing is forgotten automatically, and an active
- * shared space is never implied safe to stop. The remedy names each blocking registration with
+ * The broker is not stopped under the other registration, nothing is forgotten automatically, and
+ * an active shared space is never implied safe to stop. The remedy names each registration with
  * its `space show` to read it, its `space forget --plain` to take it off the address once its own
  * stack is stopped, and the down to run again.
  *
@@ -27,12 +24,15 @@ import net from "node:net";
 import { join, resolve as resolvePath } from "node:path";
 import { makeScratch, assertScratchHeld } from "../../../bin/smoke/_scratch.js";
 import { assertSmokeSandboxDown, freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
+import { recordMesh } from "@cotal-ai/workspace";
 
 const scratch = makeScratch("cotal-down-shared-broker-");
 const home = mkdtempSync(join(scratch, "home-"));
 const root = mkdtempSync(join(scratch, "root-"));
 const neighbor = join(root, "neighbor");
+const oldNeighbor = join(root, "old-neighbor");
 mkdirSync(neighbor, { recursive: true });
+mkdirSync(oldNeighbor, { recursive: true });
 const configDir = join(home, "xdg");
 const sandbox = recordSmokeSandbox({ root, cotalHome: home, xdgConfigHome: configDir });
 process.env.COTAL_HOME = home;
@@ -105,6 +105,13 @@ const envelope = (out: string): DownEnvelope | undefined => {
   try { return JSON.parse(line) as DownEnvelope; } catch { return undefined; }
 };
 
+/** Read one simple command displayed in Next, without assuming which launcher is on PATH. */
+const nextCommand = (out: string, expected: string): string[] => {
+  const printed = [...out.matchAll(/`(?:pnpm )?cotal ([^`]+)`/g)].map((m) => m[1]).find((cmd) => cmd === expected);
+  if (!printed) throw new Error(`missing Next command ${expected}: ${out}`);
+  return printed.split(" ");
+};
+
 try {
   assertScratchHeld(root, "down shared-broker fixture");
   const port = await freePort();
@@ -118,16 +125,14 @@ try {
 
   const added = await run(["space", "add", "shared-neighbor", "--mode", "open", "--server", server, "--root", neighbor, "--force", "--yes"]);
   ok("second name registers at the same broker address", added.status === 0, added.out.slice(-500));
+  recordMesh({ space: "-old", root: oldNeighbor, server, mode: "open", origin: "manual", ts: new Date().toISOString() });
 
   const down = await run(["down", "--yes"]);
   ok("down refuses LIFECYCLE_BLOCKED, exit 2, and keeps the guard's message",
     down.status === 2 && down.out.includes("LIFECYCLE_BLOCKED") && down.out.includes("a shared broker is not stopped in this cut"), down.out.slice(-1200));
   ok("the human refusal names the blocking registration",
     down.out.includes("shared-neighbor"), down.out.slice(-1200));
-  ok("the Next step names space show, space forget --plain and the down to run again",
-    down.out.includes("Next") && down.out.includes("`cotal space show shared-neighbor`") &&
-      down.out.includes("`cotal space forget shared-neighbor --plain`") && down.out.includes("then run bare `cotal down`"),
-    down.out.slice(-1200));
+  ok("the Next step names the down to run again", down.out.includes("Next") && /then run bare `(?:pnpm )?cotal down`/.test(down.out), down.out.slice(-1200));
   ok("the refusal does not forget anything and never implies the shared space is safe to stop",
     !/forgot shared-neighbor/.test(down.out) && !/safe to stop/.test(down.out), down.out.slice(-1200));
   ok("the broker listener is still serving after the refusal", await serving(port));
@@ -135,17 +140,23 @@ try {
   const downJson = await run(["down", "--yes", "--json"]);
   const env = envelope(downJson.out);
   ok("down --json exits 2 and records the blocking registration in target.spaces",
-    downJson.status === 2 && env?.error?.code === "LIFECYCLE_BLOCKED" && env?.target?.spaces?.includes("shared-neighbor") === true,
+    downJson.status === 2 && env?.error?.code === "LIFECYCLE_BLOCKED" && ["shared-neighbor", "-old"].every((name) => env.target?.spaces?.includes(name)),
     downJson.out.slice(-800));
   ok("the structured remedy names the same show and forget steps",
     (env?.error?.remedy ?? "").includes("`cotal space show shared-neighbor`") &&
-      (env?.error?.remedy ?? "").includes("`cotal space forget shared-neighbor --plain`"),
+      (env?.error?.remedy ?? "").includes("`cotal space forget shared-neighbor --plain`") &&
+      (env?.error?.remedy ?? "").includes("`cotal space show -- -old`") &&
+      (env?.error?.remedy ?? "").includes("`cotal space forget --plain -- -old`"),
     env?.error?.remedy);
 
-  const shown = await run(["space", "show", "shared-neighbor"]);
+  const shown = await run(nextCommand(down.out, "space show shared-neighbor"));
   ok("the named registration reads back as a manual registration", shown.status === 0, shown.out.slice(-500));
-  const forgotten = await run(["space", "forget", "shared-neighbor", "--plain"]);
+  const forgotten = await run(nextCommand(down.out, "space forget shared-neighbor --plain"));
   ok("forgetting it explicitly exits 0", forgotten.status === 0, forgotten.out.slice(-500));
+  const shownOld = await run(nextCommand(down.out, "space show -- -old"));
+  ok("the printed show reads the retained -old registration and reports it reachable", shownOld.status === 0 && shownOld.out.includes("-old") && shownOld.out.includes("reachable"), shownOld.out);
+  const forgottenOld = await run(nextCommand(down.out, "space forget --plain -- -old"));
+  ok("the printed forget removes only the retained registration", forgottenOld.status === 0 && forgottenOld.out.includes("forgot -old"), forgottenOld.out);
   ok("the broker listener is still serving after the explicit forget", await serving(port));
 
   const retry = await run(["down", "--yes"]);

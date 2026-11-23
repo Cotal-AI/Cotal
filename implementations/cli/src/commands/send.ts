@@ -100,7 +100,7 @@ export function sendArguments(args: ParsedArgs): SendInput {
   }
   const again = (body: string) => sendAgain(destination, values, body);
   if (args.positionals.length > 1 || bodies !== 1 || values.file === "")
-    throw new CommandFailure("refused", "USAGE_INVALID", "choose exactly one body: a quoted message, --file/-f <path>, or --stdin", { remedy: again('"<message>"') });
+    throw new CommandFailure("refused", "USAGE_INVALID", "choose exactly one body: a quoted message, --file/-f <path>, or --stdin", { remedy: again(values.json ? '--json "<message>"' : '"<message>"') });
   // Stdin is read only when asked for, so a lone `-` is refused rather than published.
   if (args.positionals[0] === "-")
     throw new CommandFailure("refused", "USAGE_INVALID", 'a lone "-" is not read as stdin; send stdin with --stdin or --file -', { remedy: again("--stdin") });

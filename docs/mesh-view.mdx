@@ -62,6 +62,8 @@ Its resolution does not mean that those reads have completed.
 A 75 ms timer emits `change` when the model is dirty. A one-second heartbeat marks the model dirty to refresh ages and rates.
 Channels refresh every two seconds. Membership watch notifications debounce for 150 ms before a new read.
 `stop()` clears timers, discards pending unicast bursts, stops the membership watch, and stops the endpoint.
+If `stop()` runs while the endpoint is starting, the view does not open its tap or start timers.
+To observe again after stopping, create a new view with a new endpoint.
 
 | Option | Type | Default | Meaning |
 |---|---|---|---|

@@ -22,6 +22,9 @@ it is not limited to child processes owned by the manager. The Participant colum
 that `endpoint describe` takes, and the role has its own column. A name that is only whitespace is
 shown as the id, and a role or activity that is only whitespace is shown as none or not reported.
 `result.items` keeps the name, role, and activity from the presence record.
+The plain and terminal reports keep the same space and broker in the `endpoint describe` shortcut.
+If the target or caller cannot be carried over, the report names the selectors to supply. A raw
+presence credential is not a paired native caller file.
 The `who` command in Next keeps the explicit target flags from this read.
 
 
@@ -253,8 +256,9 @@ cotal endpoint check <contract-file> [--json|--plain]
 `init` creates `contract.json` and an executable `handler.mjs` template. The default directory is
 the supplied name. Use `--dir` to choose another one. `init` creates missing directories with
 mode `0700`. If the path crosses a symlink or a non-directory, `init` names the blocked component.
-Retry with `--dir` set to a real directory path. `init` never replaces an existing file. The receipt
-lists the paths created. A partial write leaves those paths in place for review.
+Retry with `--dir` set to a real directory path. If a scaffold file already exists, `init` leaves it
+unchanged and suggests `--dir <new-directory>` with the same endpoint name. The receipt lists the
+paths created. A partial write leaves those paths in place for review.
 
 A simple scaffold name such as `reviews` declares `com.example.reviews`. A full reverse-DNS name
 is kept. Choose a namespace you control before requesting serving authority. Scaffolding creates
@@ -589,6 +593,8 @@ and is not a substitute for that gate.
 
 `endpoint describe --refresh` performs the same fresh native resolution and contract fetch as bare
 `endpoint describe`, because this CLI keeps no resolved contract cache between calls.
+Use `endpoint describe` without `--live` to read a contract, or use `cotal endpoint list --live`
+to list registrations.
 
 A saved-reference or paired-file invocation uses the described instance and epoch without bind-repair
 to a different handle. A pre-effect bind refusal remains a refusal, not permission to choose another

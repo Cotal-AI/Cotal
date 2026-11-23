@@ -7,8 +7,8 @@ import {
   chatStream, dmStream, dlvStream, inboxStream, taskStream,
   epcStreamName, epeStreamName, epfStreamName, epjStreamName, eprStreamName,
   eptStreamName, eptReqStreamName, epwStreamName,
-  channelBucket, presenceBucket, membershipBucket, deliveryBucket, managerBucket,
-  membersBucket, aclBucket, epAuthBucket, recordsBucket, sessionsBucket, anycastBucket, transferBucket, objectStoreStream, usernameBucket,
+  channelBucket, usernameBucket, presenceBucket, membershipBucket, deliveryBucket, managerBucket,
+  membersBucket, aclBucket, epAuthBucket, recordsBucket, sessionsBucket, anycastBucket, transferBucket, objectStoreStream,
   type Profile, type MintOpts, type MintPrincipal, type EpCapability,
 } from "@cotal-ai/core";
 import { calloutPermissions } from "../../src/permissions.js";

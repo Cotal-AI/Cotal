@@ -7,6 +7,8 @@ import type { RetirementHold, TeardownTarget } from "./retirement.js";
 import type { AttachEndReason } from "./session/index.js";
 import type { Manager } from "./manager.js";
 import type { ManagerConfig } from "./manager-config.js";
+import type { ManagerParts } from "./manager-parts.js";
+import type { ManagerStartState } from "./manager-start-state.js";
 
 type FreeSlotStopCause = Extract<FreeSlotCause, { kind: string }>;
 /** Minimum slot lifetime for rate-flooring (P4c). A slot freed (by despawn OR natural exit/reap)
@@ -37,8 +39,6 @@ const FREE_SLOT_ATTACH_END: Record<Exclude<FreeSlotCause, FreeSlotStopCause>, At
 
 /** Current manager-owned lifecycle operations used while allocating and releasing names. */
 export interface NamesCapacityDeps {
-  userMode(): boolean;
-  managerInstanceId(): string;
   agents(): Iterable<ManagedAgent>;
   authEnabled(): boolean;
   maintenanceActive(): boolean;
@@ -56,7 +56,6 @@ export interface NamesCapacityDeps {
   releasedSeatPending: (agent: ManagedAgent) => boolean;
   dropSeatRecord: (agent: ManagedAgent) => void;
   failSeatTurns: (name: string, lifecycleUid: string) => void;
-  teardownTarget: (agent: ManagedAgent) => TeardownTarget;
   dropInlineSnapshot: (name: string, lifecycleUid: string) => boolean;
   trackDeprovision: (target: TeardownTarget) => void;
 }
@@ -65,8 +64,6 @@ export interface NamesCapacityDeps {
  *  field the Manager assigns later is current and a member a test replaces on the instance is the one that runs. */
 export function namesCapacityDeps(m: Manager): NamesCapacityDeps {
   return {
-    userMode: () => m["userMode"],
-    managerInstanceId: () => m["managerInstanceId"],
     agents: () => m["agents"].values(),
     authEnabled: () => m["auth"] !== undefined,
     maintenanceActive: () => m["maintenanceState"] === "active",
@@ -84,7 +81,6 @@ export function namesCapacityDeps(m: Manager): NamesCapacityDeps {
     releasedSeatPending: (...args) => m["releasedSeatPending"](...args),
     dropSeatRecord: (...args) => m["dropSeatRecord"](...args),
     failSeatTurns: (...args) => m["failSeatTurns"](...args),
-    teardownTarget: (...args) => m["teardownTarget"](...args),
     dropInlineSnapshot: (...args) => m["dropInlineSnapshot"](...args),
     trackDeprovision: (...args) => m["trackDeprovision"](...args),
   };
@@ -112,7 +108,9 @@ export class NamesCapacity {
    *  count-only, lazily-pruned recycle floor (P4c). Pruned + summed into the ceiling gate. */
   private cooling: number[] = [];
 
-  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: NamesCapacityDeps) {}
+  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: NamesCapacityDeps, private readonly state: ManagerStartState, private readonly parts: Pick<ManagerParts, "seatStop">) {}
+  private get managerInstanceId(): string { return this.state.managerInstanceId!; }
+  private get userMode() { return this.state.userMode; }
 
   reserve(name: string, owner: string): void { this.reserved.set(name, owner); }
   placed(name: string): void { this.reservedLive.add(name); }
@@ -133,7 +131,7 @@ export class NamesCapacity {
    *  mode the name is ALSO the actor, which is a narrower alphabet still; {@link spawnNameError}
    *  holds both halves so this door and the auto-numbering that feeds it cannot disagree. */
   nameError(name: string): string | undefined {
-    return spawnNameError(name, { userMode: this.deps.userMode() });
+    return spawnNameError(name, { userMode: this.userMode });
   }
 
   /** The roster's LIVE occupant names (status !== offline) - occupants this manager may NOT manage
@@ -146,7 +144,7 @@ export class NamesCapacity {
       if (p.status === "offline") continue;
       // In user mode the alias is the actor. `set-name` changes only `card.name`, so a renamed agent
       // still holds its actor, and a spawn under that alias would collide with its principal.
-      const actor = this.deps.userMode() ? parsePrincipalKey(p.card.id)?.actor : undefined;
+      const actor = this.userMode ? parsePrincipalKey(p.card.id)?.actor : undefined;
       const predecessor = this.deps.predecessor(actor ?? p.card.name);
       if (predecessor !== undefined && predecessor.principal === p.card.id && predecessor.lifecycleUid === p.lifecycleUid) continue;
       live.add(p.card.name);
@@ -183,7 +181,7 @@ export class NamesCapacity {
     // The cap belongs to user mode alone: only there is the numbered name the actor. Static and open
     // mode key the actor on the minted nkey, so a numbered name there has no length to fit.
     const name = firstFreeName(base, (n) => unavailable.has(n) || this.nameInUse(n, live) || (n !== base && this.issuedNumberedNames.has(n)),
-      this.deps.userMode() ? { actorBound: true } : undefined);
+      this.userMode ? { actorBound: true } : undefined);
     return name;
   }
 
@@ -217,7 +215,7 @@ export class NamesCapacity {
     // The departed agent's own custody reference rides the teardown: the exit that freed this slot
     // is usually the seat ending, but a stop that could not prove the process gone leaves one the
     // terminal must still address before it frees the alias.
-    const target = this.deps.teardownTarget(a);
+    const target = this.parts.seatStop.teardownTarget(a);
     // On a USER mesh the name is RESERVED PENDING RETIREMENT - despawn started this
     // lifecycle's FULL teardown (footprint + standing-authority revoke + the auth-side retirement),
     // and the alias frees only when all of it completes (not the retirement alone). The detached
@@ -226,7 +224,7 @@ export class NamesCapacity {
     // CONSTRUCTION (NEW-1): a static-auth mint has no user-mode lifecycle head to retire, so the
     // reservation + rail request simply don't apply there (the incidental nkey-parse used to mask
     // this, but the intent is "user mode only", not "any principal-shaped id").
-    if (this.deps.userMode()) {
+    if (this.userMode) {
       const p = parsePrincipalKey(a.id);
       if (p) this.deps.holdRetirement(a.name, { opId: managedRetirementOpId(a.lifecycleUid), owner: p.owner, actor: p.actor, target, startedAt: Date.now() });
     } else if (this.deps.authEnabled()) {
@@ -310,7 +308,7 @@ export class NamesCapacity {
    * on an admitted launch).
    */
   launchOwner(opts: Pick<StartAgentOpts, "owner">, spawner?: string): string {
-    if (!this.deps.userMode()) return DEV_OWNER;
+    if (!this.userMode) return DEV_OWNER;
     const asked = spawner === undefined ? undefined : parsePrincipalKey(spawner)?.owner;
     return opts.owner ?? (asked?.startsWith("u_") ? asked : DEV_OWNER);
   }
@@ -348,7 +346,7 @@ export class NamesCapacity {
     const seats = this.ownerSeats(owner);
     if (seats < cap) return undefined;
     return seatCapRefused(
-      `owner ${owner} holds ${seats} of the ${cap} seat${cap === 1 ? "" : "s"} manager ${this.deps.managerInstanceId()} admits per owner; ` +
+      `owner ${owner} holds ${seats} of the ${cap} seat${cap === 1 ? "" : "s"} manager ${this.managerInstanceId} admits per owner; ` +
         `stop one of that owner's seats, or ask the operator who runs this manager for a higher seat cap`,
       { owner, seats, cap },
     );

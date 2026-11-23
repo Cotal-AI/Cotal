@@ -20,7 +20,7 @@ const deliveryCommands: Command[] = [
   {
     kind: "command", name: "pending", group: "Messaging",
     summary: "read one exact DM durable's native counts and bounded candidate IDs without acknowledging messages",
-    positionals: "<agent>", usage: "cotal pending <agent> [--durable <exact-dm-durable>] [--limit <1..100>] [--space <s>] [--json|--plain]",
+    positionals: "<agent>", usage: "cotal pending <agent> [--durable <exact-dm-durable>] [--limit <1..100>] [--space <s>] [--server <url>] [--creds <private-file>] [--json|--plain]",
     flags: pendingFlags, outputs: ["json", "plain"], reads: true, prepareMeshTarget: false,
     validate: validatePendingArguments, run: pendingView,
     examples: [{ command: "cotal pending <agent>", note: "count the DMs waiting for an agent, unread" }, { command: "cotal pending <agent> --json", note: "the same as one JSON document" }],

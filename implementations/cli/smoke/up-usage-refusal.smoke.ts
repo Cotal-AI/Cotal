@@ -434,12 +434,15 @@ if (process.platform !== "win32") {
   }
   const spaced = project("My Project");
   const invalid = run(["up", "--server", "nats://127.0.0.1:1", "--json"], spaced);
-  check("a folder name that is no valid space name refuses USAGE_INVALID, exit 1, naming --space, and writes nothing",
-    invalid.status === 1 && invalid.envelope?.error?.code === "USAGE_INVALID" && invalid.envelope.target?.space === undefined && invalid.envelope.error.remedy === "name the space with `cotal up --space <name>`"
+  const prepareNamed = "for a controller-supported start, prepare this folder with `cotal space create <name> --root .` using a valid unused name, then repeat your startup command with the same options; for native startup, add `--space <name>` and omit the output flag instead";
+  check("an invalid folder name refuses without writes and names the preparation needed to keep JSON output",
+    invalid.status === 1 && invalid.envelope?.error?.code === "USAGE_INVALID" && invalid.envelope.target?.space === undefined && invalid.envelope.error.remedy === prepareNamed
       && invalid.envelope.error.message === `${named} the folder name "My Project" cannot be one: a space name is 1 to 64 letters, digits, underscores or hyphens, which \`cotal up\` needs to start it; nothing was started or written` && !records(spaced), shown(invalid));
   const invalidText = run(["up", "--server", "nats://127.0.0.1:1"], spaced);
-  check("its text form is the refusal and the --space step, without the help", invalidText.status === 1 && invalidText.stdout === ""
-    && invalidText.stderr === `✗ ${invalid.envelope?.error?.message}\n  name the space with \`cotal up --space <name>\`\n` && !records(spaced), shown(invalidText));
+  check("the text remedy adds the space without discarding the requested server", invalidText.status === 1 && invalidText.stdout === ""
+    && invalidText.stderr === `✗ ${invalid.envelope?.error?.message}\n  repeat your startup command with the same options, adding \`--space <name>\` with a valid unused name\n` && !records(spaced), shown(invalidText));
+  const invalidPlain = run(["up", "--server", "nats://127.0.0.1:1", "--plain"], spaced);
+  check("plain output also directs the caller to prepare the same folder", invalidPlain.status === 1 && `${invalidPlain.stdout}${invalidPlain.stderr}`.includes(prepareNamed) && !records(spaced), shown(invalidPlain));
   const override = run(["up", "--space", "custom", ...probe], spaced);
   check("--space names the space there", resolved(override, "custom") && !records(spaced), shown(override));
   for (const space of ["bad space", "café", "a.b"]) {
@@ -744,6 +747,12 @@ try {
   const requested = `nats://127.0.0.1:${await freePort()}`;
   const inUse = run(["up", "--server", requested], legacy);
   const otherNameHere = run(["up", "--space", "separate", "--server", requested], legacy);
+  for (const flags of [["--root", legacy], ["--json"], ["--plain"]]) {
+    const r = run(["up", "--space", "separate", "--server", requested, ...flags], legacy);
+    const remedy = r.envelope?.error?.remedy ?? r.stderr;
+    check(`a second space with ${flags[0]} needs a separate prepared root and keeps the startup options`,
+      r.status === 2 && remedy.includes("`cotal space create --root <new-folder> -- separate`") && remedy.includes("--root set to that folder and the other options unchanged"), shown(r));
+  }
   // A regression that took the name over started a stack, which is stopped before the cell fails.
   if (started(legacy)) { sandbox(legacy); run(["down", "--yes"], legacy); }
   removeMesh("main");
