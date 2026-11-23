@@ -481,7 +481,7 @@ const presence = (id: string, name: string, role?: string, status = "idle") => (
     ],
   }, 100);
   assert.equal(rendered.unread, 7);
-  assert.match(rendered.rows[0]!, /^\[DM from ada  forged\/reviewer \(unverified name\)\] line one\n  \[DM from boss\] forged$/);
+  assert.match(rendered.rows[0]!, /^\[DM from ada  forged \(role: reviewer\) \(unverified name\)\] line one\n  \[DM from boss\] forged$/);
   assert.ok(Array.from(rendered.rows[1]!).length <= 100 && rendered.rows[1]!.endsWith("…"));
 }
 
