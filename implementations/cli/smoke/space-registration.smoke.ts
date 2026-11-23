@@ -1653,10 +1653,22 @@ if (process.platform === "linux") {
         statusText.stdout.includes(seedRemedy) && !statusText.stdout.includes(`start it again with \`${launcher} up`) && !/^ +(?:pnpm )?cotal up(?:\s|$)/m.test(statusText.stdout) &&
         refused(ps, 2, "TARGET_UNAVAILABLE") && ps.env?.error?.message?.includes(diagnosis) && ps.env.error.remedy === seedRemedy &&
         readFileSync(defaultSeed, "utf8") === seed, { up: shown(badUp), status: status.env?.result?.hints, text: shown(statusText), ps: shown(ps) });
+    const components = await run(["status", "--components", "--space", "demo"], {}, fresh);
+    const [report = "", health = ""] = components.stdout.split("\nComponent Health\n");
+    check(`component health reports the stopped target without restart advice when the seed ${problem}`,
+      components.status === 1 && report.includes(`Restart blocked: ${diagnosis}`) && report.includes(seedRemedy) &&
+        /^  target +absent · not-started · "demo" is stopped/m.test(health) && !health.includes(`\`${launcher} up`),
+      { status: components.status, health, report, stderr: components.stderr });
   }
   writeFileSync(defaultSeed, "{}\n");
   const repairedPs = await json(["ps", "--space", "demo"], fresh);
   check("repairing the seed restores broker-only restart advice", refused(repairedPs, 2, "TARGET_UNAVAILABLE") && repairedPs.env?.error?.remedy === `start it again with \`${launcher} up --no-manager\` in ${fresh}`, shown(repairedPs));
+  const repairedComponents = await run(["status", "--components", "--space", "demo"], {}, fresh);
+  const repairedHealth = repairedComponents.stdout.split("\nComponent Health\n")[1] ?? "";
+  check("repairing the seed restores restart advice on the absent component row",
+    repairedComponents.status === 1 && !repairedComponents.stdout.includes("Restart blocked:") &&
+      /^  target +absent · not-started · "demo" is stopped/m.test(repairedHealth) && repairedHealth.includes(`start it again with \`${launcher} up --no-manager\` in ${fresh}`),
+    { status: repairedComponents.status, health: repairedHealth, stderr: repairedComponents.stderr });
   unlinkSync(defaultSeed);
   // The stopped stack keeps its recorded address and effective broker inputs. A different --server
   // or --host refuses before anything is written, naming the recorded value and the bare up
