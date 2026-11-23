@@ -370,6 +370,29 @@ const VERBS = ["start", "resume", "ps", "journal", "answer", "amend", "revoke", 
     const invalid = await simulateText(text);
     c(`an invalid clock start is refused (${text})`, scriptRefusal(invalid, "clock.start must be a finite number in milliseconds"), invalid);
   }
+  // A start past the safe-integer range cannot step by whole milliseconds: 9007199254740992
+  // plus a 1ms sleep rounds back to the start, so the simulation would report elapsedMs 0.
+  // It is refused before simulation, naming the supported range, while the largest safe
+  // integer still measures the sleep.
+  {
+    const tooLarge = await simulateText('{"clock":{"start":9007199254740992}}');
+    c("a clock start past the safe-integer range is refused naming clock.start and the supported range",
+      scriptRefusal(tooLarge, "clock.start must be a safe integer in milliseconds")
+      && isCommandFailure(tooLarge) && (tooLarge.remedy ?? "").includes("9007199254740991"), tooLarge);
+    const shown: string[] = [];
+    const write = process.stdout.write;
+    process.stdout.write = ((chunk: string | Uint8Array) => { shown.push(String(chunk)); return true; }) as typeof process.stdout.write;
+    let atMax: unknown;
+    try {
+      writeFileSync(program, 'await sleep("1ms");\nlog("done");\n');
+      atMax = await simulate({ clock: { start: 9007199254740991 } }, { json: true });
+    } finally { process.stdout.write = write; }
+    let atMaxEnvelope: { result?: { elapsedMs?: number } } | undefined;
+    try { atMaxEnvelope = JSON.parse(shown.join("")); } catch { atMaxEnvelope = undefined; }
+    c("the largest safe-integer clock start still measures a one-millisecond sleep",
+      atMax === undefined && atMaxEnvelope?.result?.elapsedMs === 1, { atMax, atMaxEnvelope });
+    writeFileSync(program, 'await checkpoint("go", "Proceed?", { timeout: "4s", onExpiry: "proceed" });\n');
+  }
   // The reported typo: `clock.checkpoints` silently fell back to the 60s default, so the
   // simulation measured 60000ms instead of the 3000ms the author asked for. An unknown clock
   // key is refused naming the field, the results file, and the key to use instead, and the
