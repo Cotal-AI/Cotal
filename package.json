@@ -667,6 +667,7 @@
     "smoke:hook-relay-hold": "tsx extensions/connector-core/smoke/hook-relay-hold.smoke.ts",
     "smoke:claude-permission-prompts": "tsx extensions/connector-claude-code/smoke/permission-prompts.smoke.ts",
     "smoke:agent-commands:auth": "tsx extensions/connector-core/smoke/agent-commands-auth.smoke.ts",
+    "smoke:agent-endpoint-served": "tsx extensions/connector-core/smoke/agent-endpoint-served.smoke.ts",
     "smoke:agent-set-name:auth": "tsx extensions/connector-core/smoke/agent-set-name-auth.smoke.ts",
     "smoke:native-service-gate": "tsx implementations/auth/smoke/native-service-gate.smoke.ts",
     "smoke:service-access-callout:auth": "tsx implementations/auth/smoke/service-access-callout.smoke.ts",

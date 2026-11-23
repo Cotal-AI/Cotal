@@ -1,7 +1,8 @@
 /**
  * An agent's own harness commands and skills on its `agent` endpoint (SPEC 13.22): the `commands`,
- * `command`, `command-cancel`, `command-state`, `turn`, `interrupt` and `usage` handlers, and the
- * queue between a `command` or `turn` request and the connector's next idle turn.
+ * `command`, `command-cancel`, `command-state`, `turn`, `interrupt` and `usage` handlers, the queue
+ * between a `command` or `turn` request and the connector's next idle turn, and which of them the
+ * agent's presence says it serves.
  *
  * A command or turn starts only while no turn runs, which only the connector can see, so the
  * connector takes each queued one with {@link CommandQueue.dispatchNext}.
@@ -12,7 +13,7 @@ import {
   AGENT_CONTRACTS, EpEnvelopeError, isAgentCommandName,
   type CommandEntry, type CommandIdInput, type CommandInput, type CommandOutput, type CommandState, type CommandStateOutput, type CommandTarget,
   type CommandsOutput, type EpErrorCode, type EpPrincipalCommandDef, type EpPrincipalServeContext, type InterruptOutput,
-  type TurnImage, type TurnInput, type UsageOutput,
+  type PresenceAgentEndpoint, type TurnImage, type TurnInput, type UsageOutput,
 } from "@cotal-ai/core";
 
 /** A `commands` or `usage` reply waits at most this long for the harness. */
@@ -44,9 +45,13 @@ export interface CommandDispatcher {
    *  `supported: false`. */
   readonly targets: ReadonlySet<CommandTarget>;
   /** Why the harness runs no commands now, or undefined while it does. While it names a cause,
-   *  `commands` answers `supported: false`, and `command` and `interrupt` are `unimplemented` with
-   *  that cause. Without it, the harness always runs them. */
+   *  `commands` answers `supported: false`, and `command`, `turn` and `interrupt` are `unimplemented`
+   *  with that cause. Without it, the harness always runs them. */
   unsupported?(): string | undefined;
+  /** Called once when the endpoint opens. The dispatcher calls `changed` each time what
+   *  {@link unsupported} answers may have changed, and the agent then republishes the commands its
+   *  presence says it serves. */
+  watch?(changed: () => void): void;
   /** Every command and skill the harness runs now, each named as {@link dispatch} names it. A
    *  rejection is the caller's error reply. */
   list(): Promise<CommandEntry[]>;
@@ -124,6 +129,20 @@ function within<T>(work: () => Promise<T>, ms: number): Promise<T> {
   return Promise.race([Promise.resolve().then(work), late]).finally(() => clearTimeout(timer));
 }
 
+/** The `agent` endpoint commands a dispatcher serves now, as presence shows them (SPEC §6). It never
+ *  claims more than the handlers serve: `interrupt` and `turn` only while {@link
+ *  CommandDispatcher.unsupported} names no cause, and `images` only with `turn`. */
+export function servedCommands(dispatcher: CommandDispatcher | undefined): PresenceAgentEndpoint {
+  const now = dispatcher !== undefined && dispatcher.unsupported?.() === undefined;
+  const turn = now && typeof dispatcher.turn === "function";
+  return {
+    interrupt: now && typeof dispatcher.interrupt === "function",
+    turn,
+    images: turn && dispatcher.images === true,
+    usage: typeof dispatcher?.usage === "function",
+  };
+}
+
 export function createCommandLane(dispatcher: CommandDispatcher | undefined, onQueued: () => void): CommandLane {
   // Every command not yet forgotten, in the order it was queued, so the first queued entry is the oldest.
   const entries = new Map<string, Entry>();
@@ -194,6 +213,8 @@ export function createCommandLane(dispatcher: CommandDispatcher | undefined, onQ
     notSelf(ctx, "gives itself a turn");
     const input = ctx.request.args as unknown as TurnInput;
     if (!dispatcher?.turn) throw refused("unimplemented", "this agent's connector takes no turn from its owner");
+    const cause = dispatcher.unsupported?.();
+    if (cause !== undefined) throw refused("unimplemented", `this agent's connector takes no turn now: ${cause}`);
     const images = input.images ?? [];
     if (images.length && !dispatcher.images) throw refused("unimplemented", "this agent's harness takes no images");
     if (input.text === "" && !images.length) throw refused("bad-request", "a turn needs text or an image");
