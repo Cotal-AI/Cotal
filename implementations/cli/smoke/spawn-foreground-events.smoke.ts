@@ -36,10 +36,11 @@
  *
  * Run: pnpm smoke:spawn-foreground-events
  */
-import { spawn as spawnProcess } from "node:child_process";
+import { spawn as spawnProcess, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { pickFreePort } from "../../manager/smoke/_free-port.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
@@ -233,6 +234,21 @@ try {
       const bad = await run(["spawn", "--foreground", "--file", malformed, "--space", "fgevents", "-H", "fg-probe-live"]);
       check("foreground spawn refuses invalid UTF-8 before building a launch", bad.opts === undefined && bad.exited === 1, bad);
       rmSync(malformed);
+      if (process.platform !== "win32") {
+        const loop = join(root, ".cotal", "agents", "loop.md");
+        const binary = fileURLToPath(new URL("../../../bin/dist/cotal.js", import.meta.url));
+        symlinkSync("loop.md", loop);
+        for (const source of [["--", "loop"], ["--file", loop]]) {
+          const refused = spawnSync(process.execPath, [binary, "spawn", "--foreground", "--server", server, "--space", "fgevents", ...source], {
+            cwd: caller, env: { ...process.env, COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" }, encoding: "utf8", timeout: 30_000,
+          });
+          check(`foreground spawn ${source[0]} names the looping persona and how to fix it`,
+            refused.status === 1 && refused.stderr.includes(`the persona path contains a symbolic-link loop: ${loop}`) &&
+            refused.stderr.includes("correct the link's target") && refused.stderr.includes("put a regular persona file in its place") &&
+            !refused.stderr.includes("spawning loop"), refused.stderr || refused.error);
+        }
+        rmSync(loop);
+      }
     } finally {
       if (previousDefault === undefined) delete process.env.COTAL_DEFAULT_PERSONA; else process.env.COTAL_DEFAULT_PERSONA = previousDefault;
       process.chdir(previous);
@@ -442,7 +458,7 @@ try {
   rmSync(store, { recursive: true, force: true });
 }
 
-const EXPECTED = 36;
+const EXPECTED = process.platform === "win32" ? 36 : 38;
 check(`every cell ran - ${EXPECTED} expected`, pass + fail === EXPECTED, `${pass + fail} cells reported`);
 console.log(`SUITE COMPLETE: ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);
