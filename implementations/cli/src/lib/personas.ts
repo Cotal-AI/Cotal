@@ -92,7 +92,7 @@ export function readPersonas(root: string): PersonaEntry[] {
  *  show/rm`. Only an absent folder is an empty catalog. One that cannot be read throws an error that
  *  names it, so the completion offers nothing and COTAL_COMPLETE_DEBUG says why. */
 export function listPersonaNames(root: string): string[] {
-  return completionPersonas(root).map((p) => p.name);
+  return completionPersonas(root).filter((p) => !p.invalidSelector).map((p) => p.name);
 }
 
 /** {@link readPersonas} for a completion: a catalog folder that cannot be read throws an error that

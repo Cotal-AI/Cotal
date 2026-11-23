@@ -163,7 +163,7 @@ async function list(verbose: boolean, running: boolean, values: ConnectValues): 
     if (e.error) {
       const prefix = `agent file ${e.path}: `;
       const reason = e.error.startsWith(prefix) ? `${prefix}${personaDefinitionProblem(e.error, e.path)}` : e.error;
-      console.log(`${c.red(name)}  ${c.red("⨯ unparseable")} ${c.dim(oneLine(reason))}`);
+      console.log(`${c.red(e.invalidSelector ? JSON.stringify(e.name) : name)}  ${c.red(e.invalidSelector ? "⨯ invalid selector" : "⨯ unparseable")} ${c.dim(oneLine(reason))}`);
       continue;
     }
     const d = e.def!;

@@ -15,7 +15,7 @@ normative wire contract, and [docs/](../../docs/) for the protocol.
 
 `readPersonaCatalog(root)` is the filesystem reader shared by core and the CLI. It returns an
 empty catalog only for an absent directory; unreadable or unsearchable directories throw. Entries
-retain parse errors, UTF-16 diagnostics, non-regular-file markers and symbolic-link targets.
+retain parse errors, invalid catalog selectors, UTF-16 diagnostics, non-regular-file markers and symbolic-link targets.
 `listPersonaCatalog(root)` keeps its existing empty-list policy for unreadable catalogs and uses
 the same reader. The manager still filters ownership and omits local file details from peer replies.
 
