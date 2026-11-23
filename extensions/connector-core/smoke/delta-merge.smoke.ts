@@ -392,6 +392,25 @@ try {
     journal.close();
   }
 
+  console.log("a key abandoned before it streamed, after a restart");
+  {
+    const f = fixture();
+    const c0 = f.merged.start(f.harness.endSync());
+    const journal = DeltaJournal.open({ path: f.jPath, anchor: () => f.harness.endSync(), onWrite: () => {}, onError: () => {} });
+    const { published, boot } = rig(f, c0);
+    f.record("R1");
+    journal.abandon(["never"]);
+    const first = await boot();
+    await first.pump();
+    const second = await boot(); // a restart past the abandon line
+    journal.append({ key: "never", kind: "text", text: "late" });
+    await sleep(DELTA_JOURNAL_INTERVAL_MS + 50);
+    await second.pump();
+    check("a later delta under it publishes nothing, as it would have without the restart",
+      !published.some((e) => (e as { messageId?: string }).messageId === "never"), published.map((e) => e.type));
+    journal.close();
+  }
+
   console.log("a late abandon line from another process");
   {
     const f = fixture();

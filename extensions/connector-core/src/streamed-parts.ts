@@ -60,7 +60,8 @@ export class StreamedParts {
   }
 
   /** END for each of `keys` still open: the harness abandoned those streams, and no saved record will
-   *  close them. A key already closed, or one that never streamed, sends nothing and stays closed. */
+   *  close them. A key already closed, or one that never streamed, sends nothing and stays closed,
+   *  across a restart too: {@link streamSeed} closes every key a line ends. */
   end(keys: readonly string[], timestamp: number): AguiEvent[] {
     const events: AguiEvent[] = [];
     for (const key of keys) {

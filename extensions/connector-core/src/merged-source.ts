@@ -106,7 +106,8 @@ export class DeltaMergedSource<T> implements DurableSource<Merged<T>> {
 /**
  * The stream state a restarted mapper resumes with: the journal is read up to the cursor's journal
  * half, a key the WAL's brackets hold open resumes with the text it streamed, and every other key
- * seen there is closed. A cursor with no journal half streamed nothing.
+ * seen there is closed, a key a line ended before it streamed included. A cursor with no journal
+ * half streamed nothing.
  */
 export async function streamSeed(journalPath: string, cursor: string | undefined, brackets: BracketState | null): Promise<StreamSeed> {
   const upTo = cursor === undefined ? undefined : unpack(cursor).journal;
@@ -114,6 +115,7 @@ export async function streamSeed(journalPath: string, cursor: string | undefined
   const journal = new JsonlFileSource<DeltaRecord>(journalPath);
   const read = await journal.read(await journal.cursorAtBeginning());
   const streamed = new Map<string, { kind: StreamDelta["kind"]; text: string }>();
+  const ended = new Set<string>();
   for (const r of read.records) {
     if (journal.compare(r.cursor, upTo) > 0) break;
     assertDeltaRecord(r.value, `the line before ${journalPath} cursor ${r.cursor}`);
@@ -122,6 +124,7 @@ export async function streamSeed(journalPath: string, cursor: string | undefined
       if (s) s.text += d.text;
       else streamed.set(d.key, { kind: d.kind, text: d.text });
     }
+    for (const key of r.value.ends ?? []) ended.add(key);
   }
   const open = new Set([...(brackets?.text ?? []), ...(brackets?.reasoning ?? [])]);
   const seed: StreamSeed = { open: [], closed: [] };
@@ -129,5 +132,6 @@ export async function streamSeed(journalPath: string, cursor: string | undefined
     if (open.has(key)) seed.open.push({ key, ...s });
     else seed.closed.push(key);
   }
+  for (const key of ended) if (!streamed.has(key)) seed.closed.push(key);
   return seed;
 }
