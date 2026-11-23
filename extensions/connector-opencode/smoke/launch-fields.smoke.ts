@@ -7,8 +7,12 @@
  * every tool asks, except the ones T3 always allows and the agent's own `cotal_*` tools, and reading
  * an `.env` file asks. OpenCode applies the last rule that matches, so the catch-all must come first.
  *
+ * `reasoningEvents` rides to the seat in its launch material, where the plugin reads it and turns on
+ * the mapper's reasoning arm (`smoke:opencode-reasoning-events` grades that half).
+ *
  * Run: pnpm smoke:opencode-launch-fields
  */
+import { LAUNCH_MATERIAL_ENV, discardLaunchMaterial, readLaunchMaterial } from "@cotal-ai/core";
 import { opencodeConnector } from "../src/extension.js";
 
 let pass = 0;
@@ -69,7 +73,20 @@ check("supports:the connector declares askPermissions, so the Manager passes it 
     refusalFor({ launchOptions: { permission: "allow" } }) === null);
 }
 
-const EXPECTED = 12;
+{
+  const material = (extra: Record<string, unknown>) => {
+    const env = opencodeConnector.buildLaunch({ space: "s", name: "seat", workspaceRoot: WS, creds: "creds", ...extra } as never).env as Record<string, string>;
+    const read = readLaunchMaterial(env[LAUNCH_MATERIAL_ENV]!);
+    discardLaunchMaterial(env[LAUNCH_MATERIAL_ENV]!);
+    return read;
+  };
+  check("supports:the connector declares reasoningEvents, so the Manager passes it on",
+    opencodeConnector.supportsReasoningEvents === true, opencodeConnector.supportsReasoningEvents);
+  check("reasoning:a launch with reasoningEvents carries it to the seat", material({ reasoningEvents: true }).reasoningEvents === true);
+  check("control:a launch without it carries nothing", material({}).reasoningEvents === undefined);
+}
+
+const EXPECTED = 15;
 check(`meta:every cell ran - ${EXPECTED} expected`, pass + fail === EXPECTED, `${pass + fail} cells reported`);
 console.log(`opencode-launch-fields smoke: ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

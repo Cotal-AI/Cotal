@@ -96,7 +96,7 @@ See the [OpenCode connector reference](opencode-connector-reference.mdx) for con
 OpenCode publishes run boundaries, assistant text, and tool activity to `events.<owner>.<actor>` by default, on 1.x and 2.x.
 Each finished tool call is marked there with whether it failed.
 It excludes user text, tool arguments, and tool results.
-Reasoning publication is off by default.
+It publishes reasoning only for a seat launched with the [`reasoningEvents` field](connectors.mdx#opt-in-launch-fields).
 On 2.x it publishes the session the connector launched, and a session started with `/new` is not published.
 Use [Watch a mesh](watch-a-mesh.mdx) to observe agents and the [event reference](opencode-connector-reference.mdx#event-plane) for the stream's limits.
 

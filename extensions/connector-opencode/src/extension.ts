@@ -245,6 +245,8 @@ export const opencodeConnector: Connector = {
   // A session serves OpenCode's permission asks and questions on the agent endpoint (prompts.ts).
   prompts: true,
   supportsAskPermissions: true,
+  // The mappers publish reasoning as REASONING_* when the launch material asks (agui-map.ts, agui-map2.ts).
+  supportsReasoningEvents: true,
   supportsLaunchValidation: true,
   buildLaunch(opts: LaunchOpts): LaunchSpec {
     if (opts.continueSession) throw new Error("opencode connector does not support exact-session continuation");
@@ -395,7 +397,7 @@ export const opencodeConnector: Connector = {
     // executes the session's tool calls, so a shell this seat runs inherits neither the material
     // nor a reference to it. The shim itself keeps the reference, because the server it starts is
     // the reader; it runs no tools of its own.
-    Object.assign(env, materialEnv({ creds: opts.creds, servers: opts.servers, control, eventsRequired: opts.eventsRequired, eventPayloads: opts.eventPayloads, userAuth: opts.userAuth }, artifacts));
+    Object.assign(env, materialEnv({ creds: opts.creds, servers: opts.servers, control, eventsRequired: opts.eventsRequired, eventPayloads: opts.eventPayloads, reasoningEvents: opts.reasoningEvents, userAuth: opts.userAuth }, artifacts));
 
     // Run the shim (node dist/serve.js): `opencode serve` + an attached foreground TUI.
     return {
