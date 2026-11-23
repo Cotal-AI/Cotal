@@ -303,6 +303,14 @@ session's activity on the event stream is what prompts each read. Each finished 
 by a `cotal.toolResult` marker, which carries the call id and whether OpenCode recorded the call as
 failed, and nothing the tool read or returned.
 
+On 1.x a reply also streams. OpenCode creates a text or reasoning part empty, sends its text as
+`message.part.delta` events and then saves the part whole. The connector journals that text as it
+arrives ([streamed text](connector-runtime-reference.mdx#streamed-text)), so the part publishes as
+one message under its own stream id while OpenCode writes it, and its saved record ends that
+message. Reasoning streams only for a seat launched with `reasoningEvents`. A stream the turn left
+without a saved part ends at the turn's end, before the run closes. A part OpenCode had begun before
+the event plane started publishes whole when it is saved.
+
 Four things are specific to OpenCode and worth knowing before you read a stream:
 
 - **No user-authored text is published, ever.** When a peer message is injected into a native
