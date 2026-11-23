@@ -43,7 +43,7 @@
  * Needs `nats-server` on PATH. Run: pnpm smoke:team-views:live
  */
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { assertSmokeSandboxDown, createSuite, freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
@@ -535,6 +535,16 @@ try {
       replay.status === 0 && /^\s+Deployment:\s+([0-9a-f]{16})$/m.exec(replay.stdout)?.[1] === bootId &&
       envelope(cotal(b, "use", "--json").stdout)?.result?.current === SPACE, { command: bootCommand, replay: replay.out });
   } finally { cotal(b, "use", SPACE_B); }
+
+  const summaries = join(c, ".cotal", "team-summaries");
+  mkdirSync(summaries, { recursive: true, mode: 0o700 });
+  copyFileSync(join(b, ".cotal", "team-summaries", `${bootId}.json`), join(summaries, `${bootId}.json`));
+  for (const args of [["show", bootId], ["remove", bootId, "--dry-run"]]) {
+    const copied = cotal(b, "team", ...args, "--space", OTHER, "--json");
+    const error = envelope(copied.stdout)?.error;
+    check(`team ${args[0]} of a copied summary points status at the folder and space holding the copy`,
+      copied.status === 2 && error?.code === "CONFLICT" && error.remedy?.includes(`\`cd '${realpathSync(c)}' && cotal status --space=${OTHER}\``) === true, copied.out);
+  }
 } finally {
   if (openUp) {
     const down = cotal(c, "down", "--yes");

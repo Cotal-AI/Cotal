@@ -221,7 +221,7 @@ summary and retains the complete list in JSON; none are claimed to have joined. 
 or refused summary after boot is not a reason to boot again. A summary records the absolute folder
 `up -f` ran in. After that folder is moved or copied, the summary still reads but names the old
 path. It settles nothing in the new folder and blocks no `up` or `down` there, and `team show <id>`
-refuses it with CONFLICT, naming the folder it was recorded at.
+refuses it with CONFLICT, naming the folder it was recorded at. To inspect the project that holds the copy, the refusal gives a status command that changes to its folder and names its space.
 The inventory's `completeness` stays `partial` because older fresh boots may have no summary.
 That historical caveat does not change the exit status. If a local deployment record cannot be
 read or validated, `team` keeps the readable records, warns, and exits 4. Its JSON reports
