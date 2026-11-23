@@ -28,7 +28,7 @@
     "extensions/connector-core/src/tool-specs-inbox.ts": [206, 191],
     "extensions/connector-core/src/tool-specs-manager.ts": [540],
     "extensions/connector-core/src/tool-specs.ts": [726],
-    "extensions/connector-hermes/src/bridge.ts": [253],
+    "extensions/connector-hermes/src/bridge.ts": [226],
     "extensions/connector-hermes/src/launch.ts": [172],
     "extensions/connector-jcode/src/host-turns.ts": [908, 257, 241],
     "extensions/connector-jcode/src/host.ts": [1142],
