@@ -152,7 +152,7 @@ running static-auth project, the refusal tells you to move the project back befo
 `cotal down --yes` there. A bare `up` whose folder names a space that
 runs from another folder refuses `CONFLICT` as well. To start a separate space, run
 `cotal up --space <name>` in a new project folder outside the current one. Use an unused name and
-keep `--server` if you specified a free address. To stop the running space instead, use `cotal down` in its own folder. A background boot also brings up the control plane (delivery daemon in auth
+keep `--server` if you specified a free address. If the current folder already hosts another space and your startup uses `--root`, `--json` or `--plain`, prepare the new folder with `cotal space create --root <new-folder> -- <name>`. Repeat the startup from the original working directory with `--root` set to the new folder and keep the other options. To stop the running space instead, use `cotal down` in its own folder. A background boot also brings up the control plane (delivery daemon in auth
 mode, then the manager). An open mesh runs no delivery daemon, also in a root that still holds a
 static stack's accounts, and its manager mints no credentials from those accounts, so static and
 open boots can alternate in one folder. Their store then holds both accounts, and a backup holds
