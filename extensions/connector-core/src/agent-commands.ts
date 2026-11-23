@@ -1,10 +1,10 @@
 /**
  * An agent's own harness commands and skills on its `agent` endpoint (SPEC 13.22): the `commands`,
- * `command`, `command-cancel`, `command-state` and `interrupt` handlers, and the queue between a
- * `command` request and the connector's next idle turn.
+ * `command`, `command-cancel`, `command-state`, `turn`, `interrupt` and `usage` handlers, and the
+ * queue between a `command` or `turn` request and the connector's next idle turn.
  *
- * A command starts only while no turn runs, which only the connector can see, so the connector takes
- * each queued command with {@link CommandQueue.dispatchNext}.
+ * A command or turn starts only while no turn runs, which only the connector can see, so the
+ * connector takes each queued one with {@link CommandQueue.dispatchNext}.
  */
 import { randomBytes } from "node:crypto";
 import {
@@ -12,11 +12,12 @@ import {
   AGENT_CONTRACTS, EpEnvelopeError, isAgentCommandName,
   type CommandEntry, type CommandIdInput, type CommandInput, type CommandOutput, type CommandState, type CommandStateOutput, type CommandTarget,
   type CommandsOutput, type EpErrorCode, type EpPrincipalCommandDef, type EpPrincipalServeContext, type InterruptOutput,
+  type TurnImage, type TurnInput, type UsageOutput,
 } from "@cotal-ai/core";
 
-/** A `commands` reply waits at most this long for the harness's list. */
+/** A `commands` or `usage` reply waits at most this long for the harness. */
 export const COMMAND_LIST_MS = 10_000;
-/** How many commands may be queued at once. */
+/** How many commands and turns may be queued at once. */
 export const MAX_QUEUED_COMMANDS = 8;
 /** How many ended commands the agent remembers. An older id is `not-found`. */
 export const ENDED_COMMANDS_KEPT = 32;
@@ -28,8 +29,19 @@ export interface AgentCommand {
   readonly args: string;
 }
 
+/** A turn the agent's owner asked for: their own words and the images they attached. */
+export interface AgentTurn {
+  readonly text: string;
+  readonly images: readonly TurnImage[];
+}
+
+/** What a harness reports about its context window and cost. */
+export type AgentUsage = Omit<Extract<UsageOutput, { supported: true }>, "supported">;
+
 /** Lists and starts commands on a connector's harness. */
 export interface CommandDispatcher {
+  /** The kinds of command the harness runs. Empty: it runs none, and `commands` answers
+   *  `supported: false`. */
   readonly targets: ReadonlySet<CommandTarget>;
   /** Why the harness runs no commands now, or undefined while it does. While it names a cause,
    *  `commands` answers `supported: false`, and `command` and `interrupt` are `unimplemented` with
@@ -48,6 +60,15 @@ export interface CommandDispatcher {
    *  stopped, so the next queued command can start. Without it, `interrupt` is `unimplemented`. A
    *  throw leaves the outcome unknown. */
   interrupt?(): Promise<InterruptOutput["state"]>;
+  /** Start a turn on the owner's words, which the harness takes as its user's own message, resolving
+   *  once the harness accepted it. Throw {@link CommandRefused} when the harness refused it and
+   *  nothing started. Without it, `turn` is `unimplemented`. */
+  turn?(turn: AgentTurn): Promise<void>;
+  /** The harness takes images with a turn. Without it, a `turn` with images is `unimplemented`. */
+  readonly images?: boolean;
+  /** What the harness reports now. A field it has not reported yet is absent. Without it, `usage`
+   *  answers `supported: false`. */
+  usage?(): Promise<AgentUsage>;
 }
 
 /** The harness refused a command, and nothing started. */
@@ -80,13 +101,13 @@ export interface CommandLane extends CommandQueue {
 
 interface Entry {
   readonly id: string;
-  readonly command: AgentCommand;
+  readonly job: { readonly command: AgentCommand } | { readonly turn: AgentTurn };
   state: CommandState;
 }
 
 const B32 = "abcdefghijklmnopqrstuvwxyz234567";
 const refused = (code: EpErrorCode, message: string) => new EpEnvelopeError(code, message, undefined, "not-executed");
-const what = (c: AgentCommand) => `the ${c.target} "${c.name}"`;
+const what = (e: Entry) => ("turn" in e.job ? "the turn" : `the ${e.job.command.target} "${e.job.command.name}"`);
 
 function cut(text: string, max: number): string {
   const chars = [...text];
@@ -122,7 +143,7 @@ export function createCommandLane(dispatcher: CommandDispatcher | undefined, onQ
   }
 
   async function list(): Promise<CommandsOutput> {
-    if (!dispatcher || dispatcher.unsupported?.() !== undefined) return { supported: false };
+    if (!dispatcher || dispatcher.targets.size === 0 || dispatcher.unsupported?.() !== undefined) return { supported: false };
     let listed: unknown;
     try {
       listed = await within(() => dispatcher.list(), COMMAND_LIST_MS);
@@ -149,20 +170,45 @@ export function createCommandLane(dispatcher: CommandDispatcher | undefined, onQ
       throw refused("permission-denied", `an agent never ${what}`);
   }
 
+  function enqueue(job: Entry["job"]): CommandOutput {
+    if (closed) throw refused("unavailable", "this agent is stopping");
+    if (queued().length >= MAX_QUEUED_COMMANDS) throw refused("resource-exhausted", `${MAX_QUEUED_COMMANDS} commands and turns are already queued`);
+    let id: string;
+    do id = Array.from(randomBytes(26), (b) => B32[b & 31]).join(""); while (entries.has(id));
+    entries.set(id, { id, job, state: { kind: "queued" } });
+    onQueued();
+    return { id };
+  }
+
   function run(ctx: EpPrincipalServeContext): CommandOutput {
     notSelf(ctx, "runs a command on itself");
     const input = ctx.request.args as unknown as CommandInput;
-    if (!dispatcher) throw refused("unimplemented", "this agent's connector runs no commands or skills");
+    if (!dispatcher || dispatcher.targets.size === 0) throw refused("unimplemented", "this agent's connector runs no commands or skills");
     const cause = dispatcher.unsupported?.();
     if (cause !== undefined) throw refused("unimplemented", `this agent's connector runs no commands now: ${cause}`);
     if (!dispatcher.targets.has(input.target)) throw refused("unimplemented", `this agent's connector runs no ${input.target}s`);
-    if (closed) throw refused("unavailable", "this agent is stopping");
-    if (queued().length >= MAX_QUEUED_COMMANDS) throw refused("resource-exhausted", `${MAX_QUEUED_COMMANDS} commands are already queued`);
-    let id: string;
-    do id = Array.from(randomBytes(26), (b) => B32[b & 31]).join(""); while (entries.has(id));
-    entries.set(id, { id, command: { target: input.target, name: input.name, args: input.args ?? "" }, state: { kind: "queued" } });
-    onQueued();
-    return { id };
+    return enqueue({ command: { target: input.target, name: input.name, args: input.args ?? "" } });
+  }
+
+  function turn(ctx: EpPrincipalServeContext): CommandOutput {
+    notSelf(ctx, "gives itself a turn");
+    const input = ctx.request.args as unknown as TurnInput;
+    if (!dispatcher?.turn) throw refused("unimplemented", "this agent's connector takes no turn from its owner");
+    const images = input.images ?? [];
+    if (images.length && !dispatcher.images) throw refused("unimplemented", "this agent's harness takes no images");
+    if (input.text === "" && !images.length) throw refused("bad-request", "a turn needs text or an image");
+    return enqueue({ turn: { text: input.text, images } });
+  }
+
+  async function usage(): Promise<UsageOutput> {
+    if (!dispatcher?.usage) return { supported: false };
+    let got: AgentUsage;
+    try {
+      got = await within(() => dispatcher.usage!(), COMMAND_LIST_MS);
+    } catch (e) {
+      throw refused("unavailable", `the harness did not report its usage: ${(e as Error).message}`);
+    }
+    return { supported: true, ...(got?.context ? { context: got.context } : {}), ...(got?.cost ? { cost: got.cost } : {}) };
   }
 
   async function interrupt(ctx: EpPrincipalServeContext): Promise<InterruptOutput> {
@@ -193,7 +239,9 @@ export function createCommandLane(dispatcher: CommandDispatcher | undefined, onQ
       { command: "command", contract: AGENT_CONTRACTS.command, handler: (ctx) => run(ctx) },
       { command: "command-cancel", contract: AGENT_CONTRACTS["command-cancel"], handler: (ctx) => cancel(ctx.request.args as unknown as CommandIdInput) },
       { command: "command-state", contract: AGENT_CONTRACTS["command-state"], handler: (ctx) => ({ state: known((ctx.request.args as unknown as CommandIdInput).id).state }) },
+      { command: "turn", contract: AGENT_CONTRACTS.turn, handler: (ctx) => turn(ctx) },
       { command: "interrupt", contract: AGENT_CONTRACTS.interrupt, handler: (ctx) => interrupt(ctx) },
+      { command: "usage", contract: AGENT_CONTRACTS.usage, handler: () => usage() },
     ],
     get queued() {
       return queued().length;
@@ -203,20 +251,21 @@ export function createCommandLane(dispatcher: CommandDispatcher | undefined, onQ
       if (!e) return "empty";
       e.state = { kind: "taken" };
       try {
-        await dispatcher!.dispatch(e.command);
+        if ("turn" in e.job) await dispatcher!.turn!(e.job.turn);
+        else await dispatcher!.dispatch(e.job.command);
         end(e, { kind: "started" });
         return "dispatched";
       } catch (err) {
         const message = String((err as Error)?.message ?? err);
         end(e, err instanceof CommandRefused
           ? { kind: "refused", code: err.code, message: cut(message, AGENT_COMMAND_MESSAGE_MAX) }
-          : { kind: "unknown", code: "internal", message: cut(`the harness failed, so ${what(e.command)} may have started: ${message}`, AGENT_COMMAND_MESSAGE_MAX) });
+          : { kind: "unknown", code: "internal", message: cut(`the harness failed, so ${what(e)} may have started: ${message}`, AGENT_COMMAND_MESSAGE_MAX) });
         return "failed";
       }
     },
     close() {
       closed = true;
-      for (const e of queued()) end(e, { kind: "refused", code: "unavailable", message: `the agent stopped before ${what(e.command)} started` });
+      for (const e of queued()) end(e, { kind: "refused", code: "unavailable", message: `the agent stopped before ${what(e)} started` });
     },
   };
 }
