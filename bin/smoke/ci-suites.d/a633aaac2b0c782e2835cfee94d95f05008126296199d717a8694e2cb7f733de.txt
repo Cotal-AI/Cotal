@@ -1,0 +1,3 @@
+# A Codex launch with askPermissions starts its thread in the approval-required mode, and is refused
+# when its launch options set the same settings.
+smoke:codex-ask-permissions

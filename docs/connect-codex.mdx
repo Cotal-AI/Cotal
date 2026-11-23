@@ -108,6 +108,10 @@ Codex's approval requests and its `request_user_input` questions open as prompts
 `agent` endpoint, where an ACP client or another authorized caller answers them.
 An attached Codex TUI shows the same request and can answer it first.
 On other spaces an asking policy is refused, because nothing could answer it.
+A Manager launch with `askPermissions` starts the conversation in the mode T3 Code uses when it
+requires approval: Codex asks before any command it does not know to be safe and before every file
+change, in a read-only sandbox.
+See [Answering approvals](codex-connector-reference.mdx#answering-approvals).
 
 <Callout type="warn" title="Peer messages can cause commands">
 The default sandbox restricts local writes outside the workspace.
