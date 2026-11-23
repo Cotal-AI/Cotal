@@ -34,7 +34,8 @@
  *    through its link;
  *  - where seats serve their `agent` endpoint, a prompt the harness opens is asked once as a
  *    permission request, without options ACP cannot answer and only when its digest matches, and the
- *    answer goes back with that digest; the seat's commands and skills are offered and run through
+ *    answer goes back with that digest; a prompt whose read fails once is logged, read again and
+ *    asked once; the seat's commands and skills are offered and run through
  *    `command`, and a refused one is said in the thread. Where they do not, nothing calls it.
  *
  * Run: pnpm --filter @cotal-ai/acp test
@@ -202,14 +203,15 @@ function connect(open: () => Promise<Mesh>, terminal = true, canSignIn = async (
   const answers: { pick: (r: RequestPermissionRequest) => RequestPermissionResponse } = { pick: () => ({ outcome: { outcome: "cancelled" } }) };
   const hidden = new MemoryHidden();
   const links = new MemoryLinks();
+  const logs: string[] = [];
   let n = 0;
-  const app = cotalAgent({ mesh: open, hidden, links, log: () => {}, version: "0.0.0-smoke", newName: () => `acp-s${++n}`, waits: { startMs: 300, settleMs: 100 }, canSignIn });
+  const app = cotalAgent({ mesh: open, hidden, links, log: (line) => void logs.push(line), version: "0.0.0-smoke", newName: () => `acp-s${++n}`, waits: { startMs: 300, settleMs: 100 }, canSignIn });
   const conn = client({ name: "smoke" })
     .onNotification(methods.client.session.update, ({ params }) => void updates.push(params))
     .onRequest(methods.client.session.requestPermission, async ({ params }) => { asked.push(params); return answers.pick(params); })
     .connect(app);
   const init = conn.agent.request(methods.agent.initialize, { protocolVersion: PROTOCOL_VERSION, clientCapabilities: terminal ? { auth: { terminal: true } } : {} });
-  return { agent: conn.agent, conn, updates, hidden, links, init, asked, answers };
+  return { agent: conn.agent, conn, updates, hidden, links, init, asked, answers, logs };
 }
 const errorOf = async (p: Promise<unknown>): Promise<{ code?: number; message?: string } | undefined> => {
   try { await p; return undefined; } catch (e) { return e as { code?: number; message?: string }; }
@@ -881,6 +883,44 @@ check("a thread's agent name is a valid user-mode actor token", (() => { try { r
   setTimeout(() => space.present.set(pictureSeat.actor, "idle"), 600);
   await firstPicture;
   check("then gives it the prompt as a turn with the images", callsOf("turn").length === turnsBefore + 1 && callsOf("turn").at(-1)?.args.text === "what is this" && callsOf("turn").at(-1)?.seat === "acp-s2", callsOf("turn").slice(turnsBefore));
+  c.conn.close();
+}
+// A prompt whose read fails once, as when the transport drops, is read again and asked once.
+{
+  const space = new FakeMesh();
+  space.agentEndpoints = true;
+  const c = connect(async () => space);
+  await c.init;
+  const at = new Date().toISOString();
+  const content: PromptContent = { kind: "permission", title: "Run ls?", options: [{ id: "yes", label: "Yes", effect: "proceed" }, { id: "no", label: "No", effect: "refuse" }] };
+  const p1: AgentPrompt = { id: "p1", digest: agentPromptDigest(content), openedAt: at, expiresAt: at, state: { kind: "open" }, content };
+  const summary: PromptSummary = { id: "p1", digest: p1.digest, openedAt: at, expiresAt: at, state: p1.state, kind: "permission", title: content.title, contentBytes: 1 };
+  let seq = 1;
+  let down = true;
+  space.onAgentCall = (_seat, command) => {
+    if (command === "prompts") return { runtime: { id: "rt", startedAt: 1 }, seq, open: [summary], closed: [] };
+    if (command !== "prompt") throw new AgentCallFailed(`unexpected ${command}`, "unimplemented");
+    if (!down) return { prompt: p1 };
+    down = false;
+    throw new AgentCallFailed("the seat did not answer", "unavailable");
+  };
+  const fetches = () => space.agentCalls.filter((x) => x.command === "prompt").length;
+  const s = await c.agent.request(methods.agent.session.new, { cwd: dir, mcpServers: [] });
+  space.script = { before: [[{ type: "RUN_STARTED", runId: "r1" }]], after: [] };
+  const turn = within(c.agent.request(methods.agent.session.prompt, { sessionId: s.sessionId, prompt: [{ type: "text", text: "go" }] }));
+  await tick(50);
+  const seat: SeatRef = { name: "acp-s1", owner: "local", actor: "actor-acp-s1", lifecycleUid: "life-acp-s1" };
+  space.counters.set(seat.actor, { runtime: "rt", open: 1, seq });
+  await tick(1000);
+  check("a failed prompt read is logged", c.logs.some((l) => l.includes("prompt p1 not read: the seat did not answer")), c.logs);
+  check("a prompt whose first read failed is read again on the same counter and asked", c.asked.length === 1 && fetches() === 2, { asks: c.asked.length, fetches: fetches() });
+  seq = 2;
+  space.counters.set(seat.actor, { runtime: "rt", open: 1, seq });
+  await tick(600);
+  check("once asked, it is not asked again when the counter moves", c.asked.length === 1 && fetches() === 2, { asks: c.asked.length, fetches: fetches() });
+  space.present.set(seat.actor, "idle");
+  space.emit(seat, [{ type: "RUN_FINISHED", runId: "r1" }]);
+  check("the turn ends on its run", (await turn)?.stopReason === "end_turn");
   c.conn.close();
 }
 // /name, /open and the thread links.
