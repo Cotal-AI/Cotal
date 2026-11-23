@@ -200,6 +200,9 @@ interface DriverOpts {
   developerInstructions?: string;
   /** Settings `thread/start` applies to the thread, such as an asking launch's approval policy. */
   threadSettings?: Readonly<Record<string, unknown>>;
+  /** Settings every `turn/start` carries, such as the reasoning summary a reasoningEvents launch
+   *  asks for. */
+  turnSettings?: Readonly<Record<string, unknown>>;
   /** Extra env for the child, applied AFTER the COTAL_* scrub. The MCP bearer token rides here:
    *  the child genuinely needs that one capability, while everything else COTAL_* stays hidden.
    *  (That token is host-lifetime — the endpoint outlives app-server restarts — unlike the
@@ -551,6 +554,7 @@ export class AppServerDriver extends EventEmitter {
   async startTurn(text: string, images: readonly TurnImage[] = []): Promise<void> {
     if (!this.threadId) throw new Error("thread not started");
     await this.request("turn/start", {
+      ...this.opts.turnSettings,
       threadId: this.threadId,
       input: [
         ...(text || images.length === 0 ? [{ type: "text", text, text_elements: [] }] : []),
@@ -579,6 +583,7 @@ export class AppServerDriver extends EventEmitter {
   async startSkillTurn(name: string, path: string, args: string): Promise<void> {
     if (!this.threadId) throw new Error("thread not started");
     await this.request("turn/start", {
+      ...this.opts.turnSettings,
       threadId: this.threadId,
       input: [{ type: "skill", name, path }, ...(args ? [{ type: "text", text: args, text_elements: [] }] : [])],
     });

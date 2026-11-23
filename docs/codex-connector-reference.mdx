@@ -268,7 +268,7 @@ qualify Codex payload mapping or native payload acceptance. See the
 [payload rules](claude-connector-reference.mdx#event-plane) for the separate rail and current scope.
 
 A spawned seat publishes a structured account of what it did: run
-boundaries per turn, assistant text, reasoning, and the tool calls the model makes through Codex's
+boundaries per turn, assistant text, reasoning when the launch asks for it, and the tool calls the model makes through Codex's
 function-call and custom-tool interfaces, each with its start and its end. Tool arguments and
 tool results are not republished onto this channel. That covers the tools you watch a seat use,
 `shell` and `apply_patch` among them. The channel is
@@ -353,7 +353,12 @@ Ten things are specific to Codex and worth knowing before you read a stream:
   reply of a seat still connecting to the mesh can, is published whole when Codex saves it. A turn
   that ends, or a seat that stops, while a message streams ends that message before the run. A
   reasoning summary streams only when the model provider sends one.
-- **Reasoning is published as its summary only.** Codex also stores an encrypted reasoning blob on
+- **Reasoning is off by default, and published as its summary only.** A seat launched with the
+  [`reasoningEvents` field](connectors.mdx#opt-in-launch-fields) publishes it, and sends a reasoning
+  summary setting on every `turn/start`: the `model_reasoning_summary` set with `--opt`, else
+  `auto`. Codex's model catalog can default the summary to none, and T3 Code's own Codex provider
+  sends the same setting on each turn. A seat without the field publishes no reasoning, journals
+  none, and leaves Codex's own default in place. Codex also stores an encrypted reasoning blob on
   every reasoning record; it is opaque, no reader can display it, and it is never put on the wire.
 - **Each tool result carries the `cotal.toolResult` marker.** A Codex tool output has no error flag,
   so `isError` comes from the call's end record: a command's exit code, whether a patch applied, or
