@@ -9,7 +9,7 @@ import { shellWord } from "../lib/endpoint-errors.js";
 import { forgetRefusedPresetService, presetDefinition, presetDefinitions, recordedPresetProcess, resolvePresetService, type PresetServiceTarget } from "../lib/service-preset-target.js";
 import { execWords } from "../lib/exec-words.js";
 import { resolveServiceAdapter } from "../lib/service-adapters.js";
-import { personaCatalog } from "../lib/persona-files.js";
+import { personaCatalog, personaCatalogContext } from "../lib/persona-files.js";
 import { definitionRootMatch, execServiceDefinition, importServiceDefinition, serviceDefinitionProjection, serviceDefinitionStore, validateServiceDefinition, type ServiceDefinitionSnapshot } from "../lib/service-definitions.js";
 import { serviceAction } from "./service-actions.js";
 import { followRecordedLog } from "./service-log-follow.js";
@@ -109,7 +109,7 @@ export async function service(args: ParsedArgs, commandName = "service"): Promis
   const presentation = presentationOf(args.values);
   // Only --space selects the space: a preset's own options, such as the broker's --server and --root,
   // describe the service and never the target.
-  const catalog = personaCatalog({ space: args.values.space as string | undefined });
+  const { catalog, prepared } = personaCatalogContext({ space: args.values.space as string | undefined });
   const { space, root } = catalog;
   recordOperationSpace(space);
   const store = serviceDefinitionStore(space, addedDefinitionStep);
@@ -124,7 +124,7 @@ export async function service(args: ParsedArgs, commandName = "service"): Promis
       const running = mode === "restart" && manager !== undefined && recordedPresetProcess(space, root, manager) !== undefined;
       await assertManagerLogin(root, space, commandName === "manager" ? `\`cotal manager ${mode}\`` : `\`cotal service ${mode} ${suppliedName}\``, running ? "the running manager was left running" : undefined);
     }
-    const resolved = resolvePresetService(space, root, suppliedName!, mode, args.values);
+    const resolved = resolvePresetService(space, root, suppliedName!, mode, args.values, prepared);
     if (resolved?.recorded) return mode === "logs" && resolved.preset === "manager" ? recordedManagerLogs(resolved.requested, { ...resolved.recorded, state: "running" }, space, root, args.values, presentation, commandName) : recordedPresetProcessReport(resolved, resolved.recorded, space, mode, presentation, commandName);
     if (resolved?.stopped) return mode === "status"
       ? stoppedManagerStatus(resolved, resolved.stopped, space, root, presentation, commandName)
