@@ -129,15 +129,17 @@ function resolveSpaceDeletionEntry(name: string, dryRun = false): MeshEntry {
       const preview = `preview the impact of resetting its store with ${reset}. A stream inventory requires a running broker.`;
       const forget = codeSpan(spaceForgetCommand(name));
       const problem = projectRootProblem(prepared.root);
-      if (problem === "not-directory") {
+      if (problem === "not-directory" || problem === "inaccessible") {
+        const restore = problem === "inaccessible" ? `restore access to the project folder at ${oneLine(prepared.root)}` : `restore the original project folder to ${oneLine(prepared.root)}`;
+        const localOnly = problem === "not-directory" ? `. To remove only the local preparation, run ${forget}` : "";
         throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `the recorded project path for "${oneLine(name)}" at ${oneLine(prepared.root)} ${projectRootProblemText(problem)}, so its stored streams could not be checked; no broker was contacted`, {
-          target, remedy: `restore the original project folder to ${oneLine(prepared.root)}, then run ${codeSpan(spaceDeleteCommand(name, " --dry-run"))} again. To remove only the local preparation, run ${forget}`,
+          target, remedy: `${restore}, then run ${codeSpan(spaceDeleteCommand(name, " --dry-run"))} again${localOnly}`,
         });
       }
-      if (problem !== undefined) {
+      if (problem === "missing") {
         const project = canonicalRoot(findCotalRoot());
         let moved: ReturnType<typeof journalRecordedElsewhere>;
-        if (problem === "missing" && cotalDirLink(project) === undefined) {
+        if (cotalDirLink(project) === undefined) {
           try { moved = journalRecordedElsewhere(project); } catch { /* An unusable journal does not locate the store. */ }
         }
         if (moved?.recordedRoot === prepared.root && moved.journal.space === name) {

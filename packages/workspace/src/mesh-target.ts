@@ -617,7 +617,10 @@ function recordedProcessGone(pin: unknown): boolean {
  *  unresolved replacement. The hint requires the matching terminal records and no live pins. */
 function knownStackStopped(space: string, recordedRoot: string, members: unknown, operation: unknown): boolean {
   const down = operation as { kind?: unknown; phase?: unknown } | null | undefined;
-  if (down?.kind !== "down" || down.phase !== "completed" || !Array.isArray(members) || lstatSync(recordedRoot, { throwIfNoEntry: false }) !== undefined) return false;
+  if (down?.kind !== "down" || down.phase !== "completed" || !Array.isArray(members)) return false;
+  const problem = projectRootProblem(recordedRoot);
+  // ENOENT from stat can be a dangling link to the original project rather than a missing entry.
+  if (problem !== "not-directory" && (problem !== "missing" || lstatSync(recordedRoot, { throwIfNoEntry: false }) !== undefined)) return false;
   if (findMesh(space) !== undefined || findPreparedSpace(space)?.root !== recordedRoot) return false;
   const definitions = new Map<string, string | null>();
   const remaining = new Set<string>();
@@ -668,7 +671,7 @@ export function stackAdoptionBlock(root: string, recordedRoot: string, space: st
 /** The next step in `root`, whose stack journal `recordedRoot` recorded for `space`, which every
  *  command run there names. A linked `.cotal`, and a copy whose recorded folder still holds the
  *  journal, use the stack from there. A moved folder moves back when this machine records its stack
- *  or its space. A confirmed stopped stack at a missing path can also be forgotten and adopted.
+ *  or its space. A confirmed stopped stack at a missing or obstructed path can be forgotten and adopted.
  *  When the machine records neither, moving it back would not start it. */
 export function stackElsewhereRemedy(root: string, recordedRoot: string, space: string, members: unknown, operation?: unknown): string {
   if (cotalDirLink(root) !== undefined) return `use the stack from ${recordedRoot}, which holds it; this folder only links to its records`;

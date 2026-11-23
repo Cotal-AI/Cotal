@@ -37,6 +37,7 @@ const hintSandbox = recordSmokeSandbox({ root: hintProject, cotalHome, xdgConfig
 // never touched.
 process.env.COTAL_HOME = cotalHome;
 const { clearCurrent, findMesh, getCurrent, meshesDir, preparedSpacesDir, recordMesh, setCurrent, spaceSegment } = await import("@cotal-ai/workspace");
+const { processServiceHost, requireProcessIdentity, serviceInstanceStore } = await import("../src/lib/service-instances.js");
 
 const { check, finish } = createSuite();
 const HOST_ENV = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("COTAL_") && k !== "FORCE_COLOR" && k !== "NO_COLOR"));
@@ -68,6 +69,19 @@ const json = (args: string[], cwd = home) => {
 const shown = (r: { status: number | null; stdout: string; stderr: string }) => ({ status: r.status, stdout: r.stdout.slice(0, 600), stderr: r.stderr.slice(0, 400) });
 const itemOf = (env: Record<string, any> | undefined, name: string) => (env?.result?.items as { space: string }[] | undefined)?.find((s) => s.space === name) as Record<string, unknown> | undefined;
 const registryFiles = () => readdirSync(meshesDir()).sort().map((f) => `${f}:${readFileSync(join(meshesDir(), f), "utf8")}`);
+
+function saveDormantBroker(space: string, project: string): string {
+  const declaration = join(home, `${space}-broker.json`), config = join(project, ".cotal", "server.conf");
+  writeFileSync(config, "", { mode: 0o600 });
+  writeFileSync(declaration, JSON.stringify({ schemaVersion: 1, space,
+    launch: { type: "adapter", adapter: "nats-broker", options: { root: project, config, binary: process.execPath, server: DEAD } },
+    readiness: { type: "adapter", timeoutMs: 30_000 },
+  }), { mode: 0o600 });
+  const added = json(["service", "add", "stack-broker", "--space", space, "--file", declaration], project);
+  const revision: unknown = added.env?.result?.revision;
+  if (added.status !== 0 || typeof revision !== "string") throw new Error(`could not save the dormant broker fixture: ${JSON.stringify(shown(added))}`);
+  return revision;
+}
 
 // ── An empty registry ────────────────────────────────────────────────────────────────────────────────
 {
@@ -108,19 +122,18 @@ const registryFiles = () => readdirSync(meshesDir()).sort().map((f) => `${f}:${r
           denied.status === 0 && denied.env?.result?.rootMissing === true && denied.env.result.rootProblem === "inaccessible" &&
             deniedTarget.status === 2 && deniedTarget.env?.error?.code === "TARGET_UNAVAILABLE" &&
             deniedTarget.env.error.remedy.includes("restore access") && !deniedTarget.env.error.remedy.includes("cotal up"), [denied, deniedTarget].map(shown));
+        const deniedCreate = json(["space", "create", space, "--root", project]);
+        const deniedDelete = json(["space", "delete", space, "--dry-run"]);
+        const asksForAccess = (r: ReturnType<typeof json>, code: string) => r.status === 2 && r.env?.error?.code === code &&
+          r.env.error.message.includes(`${project} could not be accessed`) && r.env.error.remedy.includes("restore access") &&
+          !r.env.error.remedy.includes("cotal reset store");
+        check("create asks for access to the existing directory", asksForAccess(deniedCreate, "PERMISSION_DENIED") && readFileSync(record).equals(preparedBefore), shown(deniedCreate));
+        check("delete preview asks for access instead of looking for the existing directory", asksForAccess(deniedDelete, "TARGET_UNAVAILABLE"), shown(deniedDelete));
       }
     } finally { chmodSync(project, 0o700); }
   }
 
-  const brokerDefinition = join(home, "dormant-broker.json");
-  const config = join(project, ".cotal", "server-open.conf");
-  writeFileSync(config, "", { mode: 0o600 });
-  writeFileSync(brokerDefinition, JSON.stringify({ schemaVersion: 1, space,
-    launch: { type: "adapter", adapter: "nats-broker", options: { root: project, config, binary: process.execPath, server: DEAD } },
-    readiness: { type: "adapter", timeoutMs: 30_000 },
-  }), { mode: 0o600 });
-  const added = json(["service", "add", "stack-broker", "--space", space, "--file", brokerDefinition], project);
-  if (added.status !== 0) throw new Error(`could not save the dormant broker fixture: ${JSON.stringify(shown(added))}`);
+  saveDormantBroker(space, project);
 
   renameSync(project, `${project}.saved`);
   const missing = show(), missingTarget = who();
@@ -129,9 +142,23 @@ const registryFiles = () => readdirSync(meshesDir()).sort().map((f) => `${f}:${r
       missingTarget.status === 2 && missingTarget.env?.error?.code === "TARGET_UNAVAILABLE" &&
       missingTarget.env.error.message.includes(`${project}, which no longer exists`) && recovery(missingTarget.env.error.remedy),
     [missing, missingTarget].map(shown));
+  const bareProject = mkdtempSync(join(home, "bare-up-"));
+  mkdirSync(join(bareProject, ".cotal"), { mode: 0o700 });
+  // If target resolution admits startup, runtime preflight still prevents a launch.
+  const bareUp = () => json(["up", "--open", "--runtime", "smoke-missing-runtime", "--server", DEAD], bareProject);
+  setCurrent(space);
+  const missingUp = bareUp();
+  check("bare up refuses to start another space when the selected root is missing",
+    missingUp.status === 2 && missingUp.env?.error?.code === "TARGET_UNAVAILABLE" && missingUp.env.error.message.includes(`${project}, which no longer exists`), shown(missingUp));
 
   const replacement = "replacement file\n";
   writeFileSync(project, replacement);
+  const fileUp = bareUp();
+  check("bare up refuses to start another space when a file occupies the selected root",
+    fileUp.status === 2 && fileUp.env?.error?.code === "TARGET_UNAVAILABLE" && fileUp.env.error.message.includes(`${project}, which is not a directory`) &&
+      fileUp.env.error.remedy.includes(`cotal space forget ${space}`) &&
+      readdirSync(join(bareProject, ".cotal")).length === 0, shown(fileUp));
+  clearCurrent();
   const plain = show(), detail = json(["space", "show", space]), target = who();
   const list = run(["space", "--plain"]), listed = json(["space"]);
   const fileMessage = `${project}, which is not a directory`;
@@ -197,8 +224,17 @@ const registryFiles = () => readdirSync(meshesDir()).sort().map((f) => `${f}:${r
   if (created.status !== 0) throw new Error(`could not prepare the moved fixture: ${JSON.stringify(shown(created))}`);
   const now = new Date().toISOString();
   const journal = ".cotal/stack-controller.json";
+  const definitionRevision = saveDormantBroker(space, project);
+  const instanceId = randomUUID(), requestId = randomUUID(), instances = serviceInstanceStore(space);
+  const instance = {
+    schemaVersion: 1 as const, instanceId, definition: "stack-broker", definitionRevision,
+    space, host: processServiceHost(), requestId, launchRequestId: requestId, state: "stopped" as const,
+    launcher: requireProcessIdentity(process.pid), readiness: "not-checked" as const, supervisor: "none" as const,
+    foreground: false, createdAt: now, updatedAt: now,
+  };
+  instances.commit(instanceId, undefined, instance);
   const bytes = JSON.stringify({ schemaVersion: 1, kind: "cotal-stack-controller", root: project, space, mode: "open", server: DEAD,
-    members: ["broker", "auth", "delivery", "manager"].map((role) => ({ role, definition: `stack-${role}`, instanceId: null, state: role === "broker" ? "stopped" : "not-attempted" })),
+    members: ["broker", "auth", "delivery", "manager"].map((role) => ({ role, definition: `stack-${role}`, instanceId: role === "broker" ? instanceId : null, state: role === "broker" ? "stopped" : "not-attempted" })),
     operation: { id: randomUUID(), kind: "down", phase: "completed", recordedAt: now, withAgents: false }, updatedAt: now,
   });
   writeFileSync(join(project, journal), bytes, { mode: 0o600 });
@@ -215,10 +251,17 @@ const registryFiles = () => readdirSync(meshesDir()).sort().map((f) => `${f}:${r
     [list, show, use].every((r) => r.status === 0 && movedRecovery(r.stdout)) &&
       who.status === 2 && who.env?.error?.code === "TARGET_UNAVAILABLE" && who.env.error.message.includes("is not a directory") &&
       movedRecovery(who.env.error.remedy) && readFileSync(join(moved, journal), "utf8") === bytes, [list, show, use, who].map(shown));
+  instances.commit(instanceId, instances.read(instanceId), { ...instance, state: "starting" });
+  const unresolved = json(["who", "--space", space], moved);
+  check("a retained nonterminal instance is not offered adoption at an obstructed old path",
+    unresolved.status === 2 && unresolved.env?.error?.code === "TARGET_UNAVAILABLE" &&
+      unresolved.env.error.remedy.includes("move this folder back") && !unresolved.env.error.remedy.includes("--adopt"), shown(unresolved));
+  instances.commit(instanceId, instances.read(instanceId), instance);
   const forgot = json(["space", "forget", space]);
   const adopted = json(["space", "create", space, "--adopt", "--root", moved], moved);
   check("the advertised adoption succeeds without modifying the file at the old path",
-    forgot.status === 0 && adopted.status === 0 && adopted.env?.result?.root === moved &&
+    forgot.status === 0 && forgot.env?.result?.releasedDefinitions?.join() === "stack-broker" && instances.read(instanceId) === undefined &&
+      adopted.status === 0 && adopted.env?.result?.root === moved &&
       JSON.parse(readFileSync(join(moved, journal), "utf8")).root === moved && readFileSync(project, "utf8") === "replacement\n", [forgot, adopted].map(shown));
   const cleanup = json(["space", "forget", space]);
   check("the moved fixture leaves no preparation", cleanup.status === 0, shown(cleanup));

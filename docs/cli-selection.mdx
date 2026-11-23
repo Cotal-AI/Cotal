@@ -89,7 +89,8 @@ matching journal in the current folder, restore the original project folder, or 
 forget <name>` and prepare it again at the new path with `cotal space create <name> --root <dir>`.
 Inspection leaves both the file and preparation untouched. `cotal space delete <name> --dry-run`
 cannot inspect the store at a file and asks you to restore the project folder first. If Cotal
-cannot enter the recorded folder, restore access before trying to start or inspect its stack.
+cannot enter the recorded folder, `space create` and `space delete --dry-run` ask you to restore
+access rather than replace the folder.
 
 `space add` registers a space that runs elsewhere, so `--space` and `use` can reach it. A name
 `space create` refuses, such as one that starts with `-` or holds a `*`, given or named by a bundle,
@@ -243,11 +244,12 @@ finishes or settles it. `cotal up --space <name>` in a folder
 that is already another local space's root refuses with `CONFLICT`, exit 2. `space add` refuses a
 prepared name. A registration for another broker in the same folder does not prevent a prepared
 local space from starting there. A prepared space records its folder by path, and moving the folder
-leaves nothing in it that names the space. A bare `cotal up` in a folder that names no space, while the selected space is
-prepared in a folder that no longer exists, refuses `TARGET_UNAVAILABLE`, exit 2, rather than start a
-space named after the folder there. Forget the space with `cotal space forget <name>`, prepare it again in its new
-folder with `cotal space create <name>`, then run `cotal up`. Until then, `space create` of that name
-says its recorded folder no longer exists.
+leaves nothing in it that names the space. If the selected preparation's folder is missing,
+occupied by a file, or inaccessible, bare `cotal up` from a folder that names no space refuses
+`TARGET_UNAVAILABLE`, exit 2. It does not start a new space named after the current folder.
+If you moved a project that has no stack journal, forget the space with `cotal space forget <name>`,
+prepare it again in its new folder with `cotal space create <name>`, then run `cotal up`.
+If the folder is still there but cannot be entered, restore access first.
 
 
 An explicit empty or whitespace-only `--root` on `space create` or `space add` refuses

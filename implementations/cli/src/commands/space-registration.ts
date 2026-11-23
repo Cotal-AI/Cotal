@@ -424,6 +424,8 @@ function addedView(r: SpaceAdded | AddCancelled): Report {
 export async function spaceCreate(name: string, rootFlag: string | undefined, adopt: boolean, presentation: Presentation): Promise<void> {
   const root = resolve(rootFlag ?? process.cwd());
   const problem = projectRootProblem(root);
+  if (problem === "inaccessible")
+    throw refuse("PERMISSION_DENIED", `the project directory ${root} ${projectRootProblemText(problem)}; nothing was written`, { space: name, root }, "restore access to the project directory, then run this create again");
   if (problem !== undefined && (problem !== "missing" || rootFlag === undefined || adopt))
     throw usage(`--root ${root} is not a directory`, "pass an existing directory");
   if (adopt) {
