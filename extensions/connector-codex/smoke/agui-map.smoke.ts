@@ -25,7 +25,7 @@
  */
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { AguiBrackets, type AguiEvent } from "@cotal-ai/connector-core";
+import { AguiBrackets, type AguiEvent, type Merged } from "@cotal-ai/connector-core";
 import { createCodexMapper, type CodexRecord } from "../src/agui-map.js";
 
 /** The unit a record mapped to, or `null`: a turn the mapper opens no run for maps to none. */
@@ -471,6 +471,45 @@ const kinds = (evts: AguiEvent[]): Record<string, number> => {
     started.some((e) => e.toolCallId === "exec-mcp" && e.toolCallName === "cotal_status") && JSON.stringify(argsOf("exec-mcp")) === JSON.stringify({ state: "working" }) && resultOf("exec-mcp")?.content === "status set", { args: argsOf("exec-mcp"), result: resultOf("exec-mcp") });
   c("code-mode:a direct call's item adds no second call", started.filter((e) => e.toolCallId === "toolu_1").length === 1, started);
   c("code-mode:brackets legal", R.bracketError === null, R.bracketError);
+}
+
+// ------------------------------------------------------- a plan, from the thread's delta journal
+// A plan a code-mode script sets reaches app-server clients only as `turn/plan/updated`, which the
+// seat journals as a plan record. A direct update_plan call already carries its plan in the rollout.
+{
+  const ts = "2026-11-23T19:45:10.000Z";
+  const at = (r: CodexRecord): Merged<CodexRecord> => ({ harness: r });
+  const planLine = (id: string, explanation: string | null): Merged<CodexRecord> => ({ deltas: [], timestamp: 5, records: [{ type: "plan", id, explanation,
+    plan: [{ step: "read", status: "completed" }, { step: "fix", status: "inProgress" }] }] } as Merged<CodexRecord>);
+  const start = at({ timestamp: ts, type: "event_msg", payload: { type: "task_started", turn_id: "t1" } });
+  const done = at({ timestamp: ts, type: "event_msg", payload: { type: "task_complete", turn_id: "t1", error: null } });
+  type Ev = { type: string; toolCallId?: string; toolCallName?: string; delta?: string; content?: string; cotal?: { isError?: boolean } };
+  const merged = (values: Merged<CodexRecord>[]): Ev[] => {
+    const mapper = createCodexMapper({ threadId: THREAD, mintRunId: () => "run-plan" });
+    return values.flatMap((v) => unitOf(mapper.mapMerged(v))?.events ?? []) as unknown as Ev[];
+  };
+  const scripted = merged([start,
+    at({ timestamp: ts, type: "response_item", payload: { type: "custom_tool_call", status: "completed", call_id: "call_wrap", name: "exec", input: "await tools.update_plan({...});" } }),
+    planLine("plan_1", "read first"),
+    at({ timestamp: ts, type: "response_item", payload: { type: "custom_tool_call_output", call_id: "call_wrap", output: [{ type: "input_text", text: "Script completed" }] } }),
+    done]);
+  const args = scripted.find((e) => e.type === "TOOL_CALL_ARGS" && e.toolCallId === "plan_1")?.delta;
+  c("plan:a plan the script sets is an update_plan call", scripted.some((e) => e.type === "TOOL_CALL_START" && e.toolCallId === "plan_1" && e.toolCallName === "update_plan"),
+    scripted.map((e) => e.type));
+  c("plan:in update_plan's own arguments", args === JSON.stringify({ explanation: "read first", plan: [{ step: "read", status: "completed" }, { step: "fix", status: "in_progress" }] }), args);
+  c("plan:and it ends with the result update_plan returns",
+    scripted.some((e) => e.type === "TOOL_CALL_END" && e.toolCallId === "plan_1") && scripted.find((e) => e.type === "TOOL_CALL_RESULT" && e.toolCallId === "plan_1")?.content === "Plan updated",
+    scripted.filter((e) => e.toolCallId === "plan_1"));
+  const bare = merged([start, planLine("plan_4", null), done]).find((e) => e.type === "TOOL_CALL_ARGS")?.delta;
+  c("plan:a plan with no explanation leaves it out", bare !== undefined && !("explanation" in (JSON.parse(bare) as object)), bare);
+  const direct = merged([start,
+    at({ timestamp: ts, type: "response_item", payload: { type: "function_call", name: "update_plan", call_id: "call_plan", arguments: '{"plan":[{"step":"read","status":"completed"}]}' } }),
+    planLine("plan_2", null),
+    at({ timestamp: ts, type: "response_item", payload: { type: "function_call_output", call_id: "call_plan", output: "Plan updated" } }),
+    done]);
+  const starts = direct.filter((e) => e.type === "TOOL_CALL_START").map((e) => e.toolCallId);
+  c("plan:a direct update_plan call publishes its plan once, as itself", JSON.stringify(starts) === '["call_plan"]', starts);
+  c("plan:a plan line read with no run open publishes nothing", merged([planLine("plan_3", null)]).length === 0);
 }
 
 // The census is printed, not just asserted: a reader who sees "28 passed" learns nothing about

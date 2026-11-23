@@ -235,6 +235,18 @@ function lineEvents(streams: StreamedParts, runId: string | null, line: Extract<
   return events.length > 0 ? { runId, events } : null;
 }
 
+/** A journal line read inside a run: its streamed parts, then the update_plan call each plan record
+ *  of the line stands for. */
+function mergedLine(streams: StreamedParts, codeMode: ReturnType<typeof createCodeMode>, runId: string | null, line: Extract<Merged<CodexRecord>, { deltas: unknown }>): Mapped {
+  const streamed = lineEvents(streams, runId, line);
+  if (runId === null) return streamed;
+  const plans = (line.records ?? []).flatMap((r) => {
+    const call = codeMode.plan(r);
+    return call === undefined ? [] : nestedEvents(call, line.timestamp);
+  });
+  return plans.length === 0 ? streamed : { runId, events: [...(streamed?.events ?? []), ...plans] };
+}
+
 /**
  * @param threadId The native thread id, which is `session_meta.payload.id` and the rollout
  *  filename key. Passed in rather than read from the file: the caller resolved the path FROM this
@@ -423,7 +435,7 @@ export function createCodexMapper(opts: { threadId: string; mintRunId: () => str
 
   return {
     map,
-    mapMerged: (record) => ("deltas" in record ? lineEvents(streams, open, record) : map(record.harness)),
+    mapMerged: (record) => ("deltas" in record ? mergedLine(streams, codeMode, open, record) : map(record.harness)),
     forgetOpenRun: (runId: string): void => {
       if (open === runId) {
         open = null;

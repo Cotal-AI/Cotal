@@ -94,6 +94,7 @@ See the [Codex connector reference](codex-connector-reference.mdx) for message d
 
 Codex publishes run boundaries, assistant text as Codex streams it, and supported tool activity to `events.<owner>.<actor>` by default.
 It publishes reasoning summaries only for a seat launched with the [`reasoningEvents` field](connectors.mdx#opt-in-launch-fields), and such a seat asks Codex for a summary on every turn.
+Codex's plan tool is off by default. Turn it on for a seat with `--opt 'tools={update_plan={enabled=true}}'`, and its plan is published as `update_plan` calls.
 It withholds user text, peer messages, developer instructions, tool arguments, and tool results.
 Use [Watch a mesh](watch-a-mesh.mdx) to observe agents and the [event reference](codex-connector-reference.mdx#event-plane) to understand stream gaps and recovery.
 
