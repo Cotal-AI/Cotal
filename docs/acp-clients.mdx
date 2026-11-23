@@ -98,7 +98,8 @@ The agent still has the prompt, and answers it when it gets to it.
 A turn shows the agent's messages, its reasoning when the application publishes it, and its tool calls.
 A tool call shows its arguments and its result, and a file edit shows as a diff.
 They come from the agent's payload rail ([SPEC 13.19](../SPEC.md#1319-private-tool-results)), so a call shows by name and status until its payload arrives, and a result over the rail's size limit is replaced by a note.
-A to-do list the agent keeps, such as Claude Code's tasks, Codex's plan or OpenCode's and Pi's to-dos, shows as the thread's plan.
+A to-do list the agent keeps, such as Claude Code's tasks, Codex's plan, or the to-do lists of OpenCode, Jcode and Hermes, shows as the thread's plan.
+The thread knows the file and shell tools of Claude Code, Pi, Codex, OpenCode, Jcode and Hermes. Any other tool shows by name, with its arguments and result as the agent sent them.
 
 On a space where people sign in, the thread also uses the agent's `agent` endpoint ([SPEC 13.22](../SPEC.md#1322-the-agent-endpoint)):
 

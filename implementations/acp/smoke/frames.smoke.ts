@@ -7,7 +7,10 @@
  *  - a call's arguments and result from the payload rail show on it, whichever plane arrives first:
  *    its kind, title, locations, edits as diffs (a relative path in the seat's folder) and output;
  *    a connector without the marker ends a call with its result; a cut payload says so;
- *  - each harness's todo tools show as the session's plan, Claude's task tools one task at a time;
+ *  - each harness's todo tools show as the session's plan, Claude's task tools one task at a time and
+ *    Hermes's todo merging by id when asked;
+ *  - Jcode's and Hermes's tools read by kind, with their edits as diffs;
+ *  - a Codex file change approval's change list reads as diffs;
  *  - a `*** Begin Patch` envelope reads as one diff per file;
  *  - a frame mapped once maps to nothing the second time, so a history read and a live tap overlap;
  *  - RUN_ERROR ends the frame's run with the seat's message; an interrupt outcome is told apart;
@@ -156,6 +159,40 @@ check("frameOf ignores a frame that another sender put on an agent's event chann
   ocp.map(frame([{ type: "TOOL_CALL_START", toolCallId: "q1", toolCallName: "todowrite" }]));
   const ocSteps = plans(ocp, [{ type: "TOOL_CALL_ARGS", toolCallId: "q1", delta: JSON.stringify({ todos: [{ content: "a", status: "pending", priority: "high" }, { content: "b", status: "cancelled", priority: "low" }] }) }], "payloads");
   check("OpenCode's todowrite shows as the plan, without cancelled entries", JSON.stringify(ocSteps.at(-1)) === JSON.stringify([{ content: "a", status: "pending", priority: "high" }]), ocSteps);
+  const jc = new FrameMapper("jcode");
+  jc.map(frame([{ type: "TOOL_CALL_START", toolCallId: "j1", toolCallName: "todo" }]));
+  const jcSteps = plans(jc, [{ type: "TOOL_CALL_ARGS", toolCallId: "j1", delta: JSON.stringify({ intent: "plan", todos: [{ id: "1", content: "a", status: "in_progress", priority: "high", confidence: 0.9 }, { id: "2", content: "b", status: "cancelled" }] }) }], "payloads");
+  check("Jcode's todo shows as the plan, without cancelled entries", JSON.stringify(jcSteps.at(-1)) === JSON.stringify([{ content: "a", status: "in_progress", priority: "high" }]), jcSteps);
+  const hm = new FrameMapper("hermes");
+  hm.map(frame([{ type: "TOOL_CALL_START", toolCallId: "h1", toolCallName: "todo" }]));
+  plans(hm, [{ type: "TOOL_CALL_ARGS", toolCallId: "h1", delta: JSON.stringify({ todos: [{ id: "a", content: "read", status: "pending" }, { id: "b", content: "fix", status: "pending" }] }) }], "payloads");
+  hm.map(frame([{ type: "TOOL_CALL_START", toolCallId: "h2", toolCallName: "todo" }]));
+  const merged = plans(hm, [{ type: "TOOL_CALL_ARGS", toolCallId: "h2", delta: JSON.stringify({ merge: true, todos: [{ id: "a", status: "completed" }, { id: "b", status: "cancelled" }, { id: "c", content: "ship", status: "in_progress" }] }) }], "payloads");
+  check("Hermes's todo with merge changes the items it names and adds new ones", JSON.stringify(merged.at(-1)) === JSON.stringify([{ content: "read", status: "completed", priority: "medium" }, { content: "ship", status: "in_progress", priority: "medium" }]), merged);
+  hm.map(frame([{ type: "TOOL_CALL_START", toolCallId: "h3", toolCallName: "todo" }]));
+  const replaced = plans(hm, [{ type: "TOOL_CALL_ARGS", toolCallId: "h3", delta: JSON.stringify({ todos: [{ id: "z", content: "again", status: "pending" }] }) }], "payloads");
+  check("and without merge replaces the list", JSON.stringify(replaced.at(-1)) === JSON.stringify([{ content: "again", status: "pending", priority: "medium" }]), replaced);
+}
+
+// Jcode's and Hermes's tools read by kind, with their edits as diffs.
+{
+  const view = (harness: string, id: string, name: string, args: unknown, at: number) => {
+    const fm = new FrameMapper(harness, "/w");
+    fm.map(frame([{ type: "TOOL_CALL_ARGS", toolCallId: id, delta: JSON.stringify(args) }], { plane: "payloads", seq: at }));
+    return fm.map(frame([{ type: "TOOL_CALL_START", toolCallId: id, toolCallName: name }], { seq: at })).updates[0] as unknown as Record<string, unknown>;
+  };
+  const jEdit = view("jcode", "je", "edit", { intent: "fix", file_path: "a.ts", edits: [{ old_string: "x", new_string: "y" }] }, 1001);
+  check("Jcode 1.x's edit list shows as diffs", jEdit.kind === "edit" && JSON.stringify(jEdit.content) === JSON.stringify([{ type: "diff", path: "/w/a.ts", oldText: "x", newText: "y" }]), jEdit);
+  const jRead = view("jcode", "jr", "read", { file_path: "/w/b.ts" }, 1002);
+  const jBash = view("jcode", "jb", "bash", { command: "ls" }, 1003);
+  check("Jcode's read and bash read by kind", jRead.kind === "read" && jRead.title === "Read /w/b.ts" && jBash.kind === "execute" && jBash.title === "ls", [jRead, jBash]);
+  const hPatch = view("hermes", "hp", "patch", { path: "c.ts", old_string: "p", new_string: "q" }, 1004);
+  check("Hermes's patch replaces a span by default", hPatch.kind === "edit" && JSON.stringify(hPatch.content) === JSON.stringify([{ type: "diff", path: "/w/c.ts", oldText: "p", newText: "q" }]), hPatch);
+  const hEnvelope = view("hermes", "he", "patch", { mode: "patch", patch: "*** Begin Patch\n*** Add File: d.ts\n+new\n*** End Patch" }, 1005);
+  check("and with mode patch reads its envelope", JSON.stringify(hEnvelope.content) === JSON.stringify([{ type: "diff", path: "/w/d.ts", oldText: null, newText: "new" }]), hEnvelope);
+  const hTerm = view("hermes", "ht", "terminal", { command: "echo ok" }, 1006);
+  const hSearch = view("hermes", "hs", "search_files", { pattern: "TODO", path: "src" }, 1007);
+  check("Hermes's terminal and search_files read by kind", hTerm.kind === "execute" && hTerm.title === "echo ok" && hSearch.kind === "search", [hTerm, hSearch]);
 }
 
 // A patch envelope as diffs.
@@ -170,6 +207,18 @@ check("frameOf ignores a frame that another sender put on an agent's event chann
   cx.map(frame([{ type: "TOOL_CALL_ARGS", toolCallId: "ap", delta: "*** Begin Patch\n*** Update File: src/x.ts\n-a\n+b\n*** End Patch" }], { plane: "payloads", seq: 990 }));
   const patched = cx.map(frame([{ type: "TOOL_CALL_START", toolCallId: "ap", toolCallName: "apply_patch" }], { seq: 990 })).updates[0] as unknown as Record<string, unknown>;
   check("Codex's apply_patch, whose input is not JSON, shows its files as diffs", patched.kind === "edit" && patched.title === "Edit /repo/src/x.ts" && JSON.stringify(patched.content) === JSON.stringify([{ type: "diff", path: "/repo/src/x.ts", oldText: "a", newText: "b" }]), patched);
+  const changes = [
+    { path: "src/u.ts", kind: { type: "update", move_path: null }, diff: "--- a/src/u.ts\n+++ b/src/u.ts\n@@ -1,2 +1,2 @@\n keep\n-old\n+new" },
+    { path: "src/n.ts", kind: { type: "add" }, diff: "fresh" },
+    { path: "src/g.ts", kind: { type: "delete" }, diff: "gone" },
+  ];
+  cx.map(frame([{ type: "TOOL_CALL_ARGS", toolCallId: "ch", delta: JSON.stringify({ changes }) }], { plane: "payloads", seq: 991 }));
+  const asked = cx.map(frame([{ type: "TOOL_CALL_START", toolCallId: "ch", toolCallName: "apply_patch" }], { seq: 991 })).updates[0] as unknown as Record<string, unknown>;
+  check("a Codex file change approval's change list shows as diffs: an update's hunks, an added or deleted file's contents", asked.title === "Edit 3 files" && JSON.stringify(asked.content) === JSON.stringify([
+    { type: "diff", path: "/repo/src/u.ts", oldText: "keep\nold", newText: "keep\nnew" },
+    { type: "diff", path: "/repo/src/n.ts", oldText: null, newText: "fresh" },
+    { type: "diff", path: "/repo/src/g.ts", oldText: "gone", newText: "" },
+  ]), asked);
 }
 
 // A manager that does not list its agents hides only its own.

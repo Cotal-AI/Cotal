@@ -78,8 +78,43 @@ export function patchDiffs(patch: string): { path: string; content: ToolCallCont
   return out.map((f) => ({ path: f.path, content: diff(f.path, f.added ? null : f.oldLines.join("\n"), f.deleted ? "" : f.newLines.join("\n")) }));
 }
 
+/** One file's unified diff (`--- a/x`, `+++ b/x`, then `@@` hunks) as one diff. Lines before the first
+ *  hunk are headers. */
+function unifiedDiff(path: string, text: string): ToolCallContent {
+  const oldLines: string[] = [];
+  const newLines: string[] = [];
+  let inHunk = false;
+  for (const line of text.split("\n")) {
+    if (line.startsWith("@@")) inHunk = true;
+    else if (!inHunk) continue;
+    else if (line.startsWith("+")) newLines.push(line.slice(1));
+    else if (line.startsWith("-")) oldLines.push(line.slice(1));
+    else if (line.startsWith(" ")) {
+      oldLines.push(line.slice(1));
+      newLines.push(line.slice(1));
+    }
+  }
+  return diff(path, oldLines.join("\n"), newLines.join("\n"));
+}
+
+/** Codex's own list of the changes a file change approval asks for: an added or deleted file is its
+ *  raw contents, an update a unified diff. */
+function changeDiffs(changes: unknown): { path: string; content: ToolCallContent }[] {
+  const list = Array.isArray(changes) ? (changes as Args[]) : [];
+  return list.flatMap((c) => {
+    const path = str(c.path);
+    const kind = (c.kind as Args | undefined)?.type;
+    if (!path || typeof c.diff !== "string") return [];
+    const content = kind === "add" ? diff(path, null, c.diff) : kind === "delete" ? diff(path, c.diff, "") : unifiedDiff(path, c.diff);
+    return [{ path, content }];
+  });
+}
+
 function patch(text: unknown, name: string): ToolView {
-  const files = typeof text === "string" ? patchDiffs(text) : [];
+  return edits(typeof text === "string" ? patchDiffs(text) : [], name);
+}
+
+function edits(files: { path: string; content: ToolCallContent }[], name: string): ToolView {
   const paths = [...new Set(files.map((f) => f.path))];
   return {
     kind: "edit",
@@ -129,7 +164,8 @@ const CODEX: Record<string, Describe> = {
   shell_command: (a) => execute(a.command, "shell_command"),
   shell: (a) => execute(Array.isArray(a.command) && a.command[0] === "bash" && a.command[1] === "-lc" ? a.command[2] : a.command, "shell"),
   write_stdin: () => ({ kind: "execute", title: "Write to the running command" }),
-  apply_patch: (a) => patch(a.input, "apply_patch"),
+  // A call carries the patch text; the file change approval it asks for carries Codex's change list.
+  apply_patch: (a) => (Array.isArray(a.changes) ? edits(changeDiffs(a.changes), "apply_patch") : patch(a.input, "apply_patch")),
   view_image: (a) => read(str(a.path), "view_image"),
 };
 
@@ -155,7 +191,39 @@ const OPENCODE: Record<string, Describe> = {
   websearch: (a) => ({ kind: "fetch", title: str(a.query) ? `websearch ${oneLine(str(a.query)!, 80)}` : "websearch" }),
 };
 
-const TABLES: Record<string, Record<string, Describe>> = { claude: CLAUDE, pi: PI, codex: CODEX, opencode: OPENCODE };
+/** Jcode 0.99.0 edits one span; 1.x takes a list of them. */
+const JCODE: Record<string, Describe> = {
+  bash: (a) => execute(a.command, "bash"),
+  read: (a) => read(str(a.file_path), "read", a.offset),
+  ls: (a) => search(str(a.path), "ls", str(a.path)),
+  agentgrep: (a) => search(str(a.query), "agentgrep"),
+  write: (a) => write(str(a.file_path), "write", a.content),
+  edit: (a) => {
+    const path = str(a.file_path);
+    const spans = Array.isArray(a.edits) ? (a.edits as Args[]) : [a];
+    return edit(path, "edit", path ? spans.filter((e) => typeof e.old_string === "string" && typeof e.new_string === "string").map((e) => diff(path, e.old_string as string, e.new_string as string)) : []);
+  },
+  apply_patch: (a) => patch(a.patch_text, "apply_patch"),
+  webfetch: (a) => fetchTool(a.url, "webfetch"),
+  websearch: (a) => ({ kind: "fetch", title: str(a.query) ? `websearch ${oneLine(str(a.query)!, 80)}` : "websearch" }),
+};
+
+/** Hermes's `patch` replaces a span unless `mode` is `patch`, which takes a patch envelope. */
+const HERMES: Record<string, Describe> = {
+  terminal: (a) => execute(a.command, "terminal"),
+  read_file: (a) => read(str(a.path), "read_file", a.offset),
+  write_file: (a) => write(str(a.path), "write_file", a.content),
+  patch: (a) => {
+    if (a.mode === "patch") return patch(a.patch, "patch");
+    const path = str(a.path);
+    return edit(path, "patch", path && typeof a.old_string === "string" && typeof a.new_string === "string" ? [diff(path, a.old_string, a.new_string)] : []);
+  },
+  search_files: (a) => search(str(a.pattern), "search_files", str(a.path)),
+  web_search: (a) => ({ kind: "fetch", title: str(a.query) ? `web_search ${oneLine(str(a.query)!, 80)}` : "web_search" }),
+  web_extract: (a) => fetchTool(Array.isArray(a.urls) && a.urls.length === 1 ? a.urls[0] : undefined, "web_extract"),
+};
+
+const TABLES: Record<string, Record<string, Describe>> = { claude: CLAUDE, pi: PI, codex: CODEX, opencode: OPENCODE, jcode: JCODE, hermes: HERMES };
 
 /** A Codex custom tool carries its input as a bare string, which the tables read as `input`. */
 function argsOf(raw: unknown): Args {
@@ -189,6 +257,8 @@ const PLAN_TOOLS: Record<string, readonly string[]> = {
   claude: ["TodoWrite", "TaskCreate", "TaskUpdate"],
   opencode: ["todowrite"],
   codex: ["update_plan"],
+  jcode: ["todo"],
+  hermes: ["todo"],
 };
 
 /** Whether `name` is one of that harness's todo tools, whose calls show as the session's plan. */
@@ -208,10 +278,12 @@ export class Plan {
    *  task Claude creates is known by the call until its result names the task's number. */
   apply(harness: string, name: string, callId: string, input: unknown, result?: string): PlanEntry[] | undefined {
     const a = argsOf(input);
-    if ((harness === "claude" && name === "TodoWrite") || (harness === "opencode" && name === "todowrite")) {
+    if ((harness === "claude" && name === "TodoWrite") || (harness === "opencode" && name === "todowrite") || (harness === "jcode" && name === "todo")) {
       const todos = Array.isArray(a.todos) ? (a.todos as Args[]) : [];
       this.entries = new Map(todos.filter((t) => typeof t.content === "string" && t.status !== "cancelled")
         .map((t, i) => [String(i), { content: t.content as string, status: status(t.status), priority: priority(t.priority) }]));
+    } else if (harness === "hermes" && name === "todo") {
+      this.hermesTodo(a);
     } else if (harness === "codex" && name === "update_plan") {
       const steps = Array.isArray(a.plan) ? (a.plan as Args[]) : [];
       this.entries = new Map(steps.filter((t) => typeof t.step === "string").map((t, i) => [String(i), { content: t.step as string, status: status(t.status), priority: "medium" }]));
@@ -228,5 +300,19 @@ export class Plan {
       else this.entries.set(id, { ...entry, ...(typeof a.subject === "string" ? { content: a.subject } : {}), ...(a.status !== undefined ? { status: status(a.status) } : {}) });
     } else return undefined;
     return [...this.entries.values()];
+  }
+
+  /** Hermes's `todo` replaces the list, or with `merge` changes the items it names by id and adds new
+   *  ones. A cancelled item leaves the plan. */
+  private hermesTodo(a: Args): void {
+    const todos = (Array.isArray(a.todos) ? (a.todos as Args[]) : []).filter((t) => typeof t.id === "string" || typeof t.id === "number");
+    if (a.merge !== true) this.entries = new Map();
+    for (const t of todos) {
+      const id = String(t.id);
+      const entry = this.entries.get(id);
+      if (t.status === "cancelled") this.entries.delete(id);
+      else if (entry) this.entries.set(id, { ...entry, ...(typeof t.content === "string" && t.content ? { content: t.content } : {}), ...(t.status ? { status: status(t.status) } : {}) });
+      else if (typeof t.content === "string") this.entries.set(id, { content: t.content, status: status(t.status), priority: "medium" });
+    }
   }
 }
