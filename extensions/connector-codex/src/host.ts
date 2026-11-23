@@ -81,6 +81,7 @@ import { randomUUID } from "node:crypto";
 import type { PresenceCondition } from "@cotal-ai/core";
 import { AppServerDriver, type ThreadItem } from "./app-server.js";
 import { codexCommands } from "./commands.js";
+import { createCodexPrompts } from "./prompts.js";
 import { createCodexMapper, type CodexMapper, type CodexRecord } from "./agui-map.js";
 import { waitForRollout } from "./agui-rollout.js";
 import { startCotalMcp, MCP_SERVER_NAME, MCP_TOKEN_ENV, type CotalMcpEndpoint } from "./mcp.js";
@@ -200,8 +201,9 @@ function prepareCodexHome(space: string, name: string): string {
 
 /** The `-c key=value` override list for the codex child: the operator's launch options first
  *  (verbatim), then the selectors and autonomy defaults ONLY where the operator didn't set that
- *  key — one rail, so an explicit `--opt approval_policy=…` naturally wins. */
-function configOverrides(model: string | undefined, variant: string | undefined): [string, string][] {
+ *  key — one rail, so an explicit `--opt approval_policy=…` naturally wins. `asks` says Codex's
+ *  approval requests can be answered: only a user-auth mesh serves the agent's prompt desk. */
+function configOverrides(model: string | undefined, variant: string | undefined, asks: boolean): [string, string][] {
   const overrides: [string, string][] = [];
   const raw = process.env.COTAL_CODEX_CONFIG?.trim();
   if (raw) {
@@ -218,15 +220,16 @@ function configOverrides(model: string | undefined, variant: string | undefined)
   const has = (key: string): boolean => overrides.some(([k]) => k === key);
   if (model && !has("model")) overrides.push(["model", `"${model}"`]);
   if (variant && !has("model_reasoning_effort")) overrides.push(["model_reasoning_effort", `"${variant}"`]);
-  // Autonomy: a headless host has no one to answer an approval prompt, so an interactive
+  // Autonomy: without the prompt desk nobody can answer an approval request, so an interactive
   // approval_policy cannot be HONORED — the driver would have to auto-answer, silently
-  // nullifying the operator's stated policy. Refuse anything but `never` rather than pretend.
+  // nullifying the operator's stated policy. Refuse anything but `never` there rather than pretend.
   const approval = overrides.find(([k]) => k === "approval_policy");
-  if (approval && approval[1].replace(/"/g, "") !== "never")
+  if (approval && approval[1].replace(/"/g, "") !== "never" && !asks)
     throw new Error(
-      `codex connector: approval_policy=${approval[1]} is not supported — the headless host cannot ` +
-        `answer interactive approvals; only "never" (the default) is honest here. Tighten the sandbox ` +
-        `(sandbox_mode) instead to restrict what the agent may do.`,
+      `codex connector: approval_policy=${approval[1]} needs a space where people sign in — this host ` +
+        `answers Codex's approval requests through the agent endpoint, which only such a space serves; ` +
+        `only "never" (the default) is honest here. Tighten the sandbox (sandbox_mode) instead to ` +
+        `restrict what the agent may do.`,
     );
   if (!approval) overrides.push(["approval_policy", '"never"']);
   // `never` means never ASK, not never allow: the agent runs its commands, and what bounds it is
@@ -392,11 +395,13 @@ export async function runCodexHost(): Promise<void> {
   const codexBin = process.env.COTAL_CODEX_BIN?.trim() || process.env.COTAL_CODEX_RESOLVED_BIN?.trim() || undefined;
   // Validate the operator's launch config BEFORE anything is listening, so a bad launch throws
   // with nothing left behind to reap.
-  const baseOverrides = configOverrides(model, variant);
+  const baseOverrides = configOverrides(model, variant, config.userAuth !== undefined);
   // The cotal_* tools must be LISTENING before the child spawns: the child's config names this
   // URL and codex dials it while starting the thread.
   const mcp = await startCotalMcp(agent, config, log, () => ready && !driver.stopped ? driver.thread : undefined);
+  const prompts = createCodexPrompts({ desk: () => agent.prompts, respond: (request, result) => driver.respond(request, result), warn: log });
   const driver = new AppServerDriver({
+    hold: (request) => prompts.hold(request),
     cwd: process.cwd(),
     codexHome,
     configOverrides: [...baseOverrides, ...mcpOverrides(mcp)],
@@ -984,6 +989,9 @@ export async function runCodexHost(): Promise<void> {
   });
   // The request was declined in the same call; resume `working`, which also clears its condition.
   driver.on("answered", () => void safeStatus("working"));
+  driver.on("resolved", (id: number | string) => {
+    if (prompts.resolved(id)) void safeStatus("working");
+  });
   driver.on("turnCompleted", ({ status, condition, owned }: { status: string; condition?: PresenceCondition; owned: boolean }) => {
     flushEvents();
     feed(`— turn ${status}`);
@@ -992,6 +1000,7 @@ export async function runCodexHost(): Promise<void> {
   });
   driver.on("itemStarted", (item: ThreadItem) => {
     agent.noteActivity();
+    prompts.itemStarted(item);
     if (item.type === "commandExecution" && typeof item.command === "string") {
       feed(`$ ${item.command}`);
       void safeStatus("working", item.command.slice(0, 120));
@@ -1002,6 +1011,7 @@ export async function runCodexHost(): Promise<void> {
   });
   driver.on("itemCompleted", (item: ThreadItem) => {
     agent.noteActivity();
+    prompts.itemCompleted(item);
     flushEvents();
     if (item.type === "agentMessage" && item.text?.trim()) feed(`● ${item.text.trim()}`);
   });
@@ -1089,6 +1099,7 @@ export async function runCodexHost(): Promise<void> {
   // new thread. Bounded — a crash LOOP is fatal, never an endless silent respawn.
   let restartAt: number[] = [];
   driver.on("closed", (code: number) => {
+    prompts.closed();
     // During a cooperative shutdown the child's death is EXPECTED — `shutdown()` killed it — and
     // that single promise owns the rest: offline presence, the clean mesh leave, then exit.
     // Exiting here instead would win the race against its own `driver.stop()` and terminate
