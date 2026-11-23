@@ -1,5 +1,18 @@
 # @cotal-ai/cli
 
+## 0.176.2
+
+### Patch Changes
+
+- 303aba0: Keep the inspected space and any explicit broker and credential options in the channel inventory's suggested commands.
+- 0187b5d: Document the watch credential selector, show structured formats in endpoint work help, keep the live contract shortcut on the same target, and explain why endpoint describe does not take `--live`.
+- c687d10: Name the mismatched space in structured shutdown refusals and print usable shared-broker recovery commands for retained space names that start with a dash.
+- dcccbd9: Foreground spawn previews name unavailable working directories and explain how to retry, prepared persona catalogs work offline with a planned broker address, and manager start help explains when to select by name or by instance ID.
+- b32129d: When a project already hosts another space, explain how to prepare a separate folder and keep the requested startup options if the caller selected a root or requested JSON or plain output.
+- 9dcb30d: Accept empty defaults in channel-only team deployments and show which project root to use when deploying from another checkout.
+- @cotal-ai/core@0.176.2
+  - @cotal-ai/workspace@0.176.2
+
 ## 0.176.1
 
 ### Patch Changes

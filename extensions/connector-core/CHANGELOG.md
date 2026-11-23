@@ -1,5 +1,12 @@
 # @cotal-ai/connector-core
 
+## 0.176.2
+
+### Patch Changes
+
+- 0187b5d: Document the watch credential selector, show structured formats in endpoint work help, keep the live contract shortcut on the same target, and explain why endpoint describe does not take `--live`.
+- 662b968: Fix the upgrade guide link in the workflow operations troubleshooting steps.
+
 ## 0.176.1
 
 No changes in this release.
