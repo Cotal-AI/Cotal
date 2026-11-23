@@ -14,7 +14,7 @@ export interface UsernameClaims {
 }
 
 export type UsernameChoice = { username: string } | { suggestion: string };
-export type AssignUsername = (owner: string, claims: UsernameClaims, supplied?: string) => Promise<UsernameChoice | undefined>;
+export type AssignUsername = (owner: string, claims: UsernameClaims, supplied?: string) => Promise<void>;
 export interface UsernameAssignment {
   exchange: AssignUsername;
   choose(owner: string, claims: UsernameClaims, username?: string): Promise<UsernameChoice | undefined>;
@@ -174,14 +174,13 @@ export async function openUsernameAssignment(nc: NatsConnection, space: string, 
   });
   return {
     choose,
-    exchange: async (owner, claims, supplied) => {
+    exchange: async (owner, _claims, supplied) => {
       if (owner === DEV_OWNER || owner.startsWith(PLATFORM_OWNER_PREFIX)) return undefined;
       if (policy.source === "claims") {
         if (supplied !== undefined) throw new Error('a supplied username requires the space username source "directory"');
-        return choose(owner, claims);
+        return;
       }
-      if (supplied !== undefined) return forOwner(owner, () => reserve(owner, supplied));
-      return undefined;
+      if (supplied !== undefined) await forOwner(owner, () => reserve(owner, supplied));
     },
     reserveDirectory: (owner, username) => forOwner(owner, () => { requireSource("directory"); return reserve(owner, username); }),
     backfill: (owner) => forOwner(owner, async () => {

@@ -25,13 +25,17 @@ async function usernameRequest(base: string, path: string, body: object, cap?: s
 }
 
 /** Nonterminal logins leave the registry untouched, including the suggestion lookup. */
-export async function pickUsername(interactive: boolean, request: Request, ask: (suggestion: string, refusal?: string) => Promise<string | undefined>): Promise<string | undefined> {
+export async function pickUsername(interactive: boolean, request: Request, ask: (suggestion: string, refusal?: string) => Promise<string | undefined>, warn = console.error): Promise<string | undefined> {
   if (!interactive) return undefined;
   const initial = await request();
-  if (initial.status === 403 || initial.status === 404) return undefined;
+  if (initial.status === 403) {
+    warn(`Username selection skipped: ${oneLine(initial.body.error ?? "this account does not have an interactive grant")}`);
+    return undefined;
+  }
+  if (initial.status === 404) return undefined;
   if (initial.status !== 200) throw new Error(initial.body.error ?? "the username service did not return a suggestion");
-  const suggestion = initial.body.suggestion;
-  if (typeof suggestion !== "string") return initial.body.username;
+  if (typeof initial.body.suggestion !== "string") return initial.body.username;
+  let suggestion = initial.body.suggestion;
   let refusal: string | undefined;
   for (;;) {
     const username = await ask(suggestion, refusal);
@@ -43,6 +47,7 @@ export async function pickUsername(interactive: boolean, request: Request, ask: 
       const current = await request();
       if (current.status === 200 && typeof current.body.username === "string") return current.body.username;
       if (current.status !== 200) throw new Error(current.body.error ?? "the username service could not confirm the account state");
+      if (typeof current.body.suggestion === "string") suggestion = current.body.suggestion;
     }
     refusal = answer.body.error ?? "the username was refused";
   }

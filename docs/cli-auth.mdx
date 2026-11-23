@@ -343,9 +343,8 @@ file that cannot be deleted is named, and the login exits 4 (`OPERATION_PARTIAL`
 In a claims-source user-auth space, interactive login offers a permanent username if you have
 an interactive grant and no existing username. Use `--space <space>` to choose the space for
 this step, or use the selected space. Accept the suggestion or enter another name. The auth
-service refuses taken and reserved names and the prompt asks again. A piped login or login with
-`--no-browser` caches the session without reserving a name. The username and the chat name are
-separate.
+service refuses taken and reserved names and the prompt asks again. A piped login caches the
+session without reserving a name. The username and the chat name are separate.
 
 After a login, every command on that mesh works under your identity: each connect takes a fresh IdP
 proof, exchanges it locally for a short-lived bearer, and is authorized against the actor

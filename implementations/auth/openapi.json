@@ -908,8 +908,7 @@
           },
           "grant": {
             "$ref": "#/components/schemas/UserAuthGrant"
-          },
-          "username": { "$ref": "#/components/schemas/UsernameChoice" }
+          }
         },
         "required": [
           "token",

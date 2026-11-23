@@ -98,7 +98,7 @@ const must = async (label: string, args: string[], timeoutMs?: number) => {
 
 async function terminalLogin(expectPrompt: boolean): Promise<{ status: number | null; out: string; prompted: boolean }> {
   const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
-  const command = [TSX, BIN, "login", "--idp", base, "--space", SPACE, "--plain"].map(quote).join(" ");
+  const command = [TSX, BIN, "login", "--idp", base, "--space", SPACE, "--plain", "--no-browser"].map(quote).join(" ");
   const child = spawn("script", ["-qec", `stty cols 120 rows 40; exec ${command}`, "/dev/null"], {
     cwd: root, env: { ...childEnv, DISPLAY: "", WAYLAND_DISPLAY: "", TERM: "xterm" }, stdio: ["pipe", "pipe", "pipe"],
   });

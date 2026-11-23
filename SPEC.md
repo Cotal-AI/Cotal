@@ -540,6 +540,8 @@ It completes a reservation only for the owner named by that key and only while t
 binding. Further reservations for that owner stay reserved and unused. Grant revocation and
 owner deletion MUST leave both keys in place. The service MUST NOT rewrite a binding, delete a
 reservation, or reassign a reserved username to a different owner.
+The stream MUST deny message deletion, purge, and rollup. Deleting the space destroys its
+entire registry, including all reservations.
 
 A space selects exactly one username source. The default suggests a name from verified
 `preferred_username`, then verified `name`, then a generated `user_<short>` name. Email addresses

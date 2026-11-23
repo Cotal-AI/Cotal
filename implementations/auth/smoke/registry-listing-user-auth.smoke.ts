@@ -80,6 +80,8 @@ async function setup(account: HostedAuthAccount) {
   try {
     const info = await (await jetstreamManager(connection)).streams.info(`KV_${usernameBucket(account.space)}`);
     suite.check("user-auth space setup creates an empty username bucket before auth starts", info.state.messages === 0);
+    suite.check("the broker reports deletion, purge and rollup disabled in the username stream",
+      info.config.deny_delete === true && info.config.deny_purge === true && info.config.allow_rollup_hdrs === false, info.config);
   } finally { await connection.close(); }
 }
 
@@ -88,7 +90,7 @@ async function exchange(handle: AuthServiceHandle, subject: string, claims: Reco
     method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${handle.cap}` },
     body: JSON.stringify({ idpToken: await idpToken(subject, claims), actor: "lister", username }),
   });
-  return { res, body: await res.json() as { token?: string; error?: string; username?: { suggestion?: string; username?: string } } };
+  return { res, body: await res.json() as { token?: string; error?: string } };
 }
 
 async function usernamePost(handle: AuthServiceHandle, path: string, body: object, publicFace = false) {
@@ -107,7 +109,8 @@ async function claimsCases(handle: AuthServiceHandle, nc: NatsConnection, otherN
   const preferred = { preferred_username: `7-${"N".repeat(41)}`, name: "Ignored Preferred" };
   const display = { email: "ignored@example.test", name: `7-${"n".repeat(38)}` };
   const requests = [picker(handle, "lister-human", preferred), picker(handle, "other-human", display)] as const;
-  suite.check("claims exchange returns a suggestion but does not reserve it", (await exchange(handle, "lister-human", preferred)).body.username?.suggestion === base &&
+  const ordinary = await exchange(handle, "lister-human", preferred);
+  suite.check("claims exchange returns a bearer without username state or reservation", ordinary.res.ok && !Object.hasOwn(ordinary.body, "username") &&
     await readUsername(nc, a.space, owner) === undefined && await readUsernameOwner(nc, a.space, base) === undefined);
   let requestsWithoutTty = 0;
   await pickUsername(false, async () => { requestsWithoutTty++; return requests[0](); }, async () => { throw new Error("unexpected prompt"); });
@@ -118,11 +121,12 @@ async function claimsCases(handle: AuthServiceHandle, nc: NatsConnection, otherN
   }
   const suggestions: string[] = [];
   const errors: string[] = [];
+  const refreshed: string[] = [];
   let started = 0;
   let release!: () => void;
   const both = new Promise<void>((resolve) => { release = resolve; });
   const chosen = await Promise.all(requests.map((request, index) => pickUsername(true, request, async (suggestion, refusal) => {
-    if (refusal) { errors.push(refusal); return `second_choice_${index}`; }
+    if (refusal) { errors.push(refusal); refreshed.push(suggestion); return `second_choice_${index}`; }
     suggestions.push(suggestion);
     if (++started === 2) release();
     await both;
@@ -130,7 +134,7 @@ async function claimsCases(handle: AuthServiceHandle, nc: NatsConnection, otherN
   })));
   suite.check("two clients see the suggestion; one confirms it and the other retries with a changed name",
     suggestions.length === 2 && suggestions.every((name) => name === base) && errors.length === 1 && /already reserved/.test(errors[0]!) &&
-    chosen.includes(base) && chosen.some((name) => name?.startsWith("second_choice_")), { chosen, suggestions, errors });
+    refreshed.length === 1 && refreshed[0] !== base && chosen.includes(base) && chosen.some((name) => name?.startsWith("second_choice_")), { chosen, suggestions, errors, refreshed });
   for (const [i, expectedOwner] of [owner, otherOwner].entries()) {
     const name = chosen[i]!;
     suite.check("both members read the same reciprocal confirmed binding", await readUsername(nc, a.space, expectedOwner) === name &&
@@ -141,6 +145,9 @@ async function claimsCases(handle: AuthServiceHandle, nc: NatsConnection, otherN
     suite.check("a later confirmation cannot rebind the owner", (await requests[i]!("changed_name")).status === 409);
   }
   const noClaims = { preferred_username: "first_private@example.test", name: "second_private@example.test", email: "private_local@example.test" };
+  const warnings: string[] = [];
+  const skipped = await pickUsername(true, picker(handle, "ungranted-human", {}), async () => { throw new Error("unexpected prompt for ungranted owner"); }, (line) => warnings.push(line));
+  suite.check("interactive signup skips once and explains a missing grant", skipped === undefined && warnings.length === 1 && /interactive grant/.test(warnings[0]!));
   const generated = await picker(handle, "unnamed-human", noClaims)();
   suite.check("email-like claims are skipped and no name binds without confirmation",
     /^user_[0-9a-f]{10}$/.test(generated.body.suggestion ?? "") && await readUsername(nc, a.space, unnamedOwner) === undefined);
@@ -224,7 +231,10 @@ async function directoryCases(): Promise<void> {
     handle = await bootWithDiagnostics(directory, restartLog);
     suite.check("service restart completes both directions without a sign-in for the affected owner",
       await readUsername(nc, directory.space, pending) === "interrupted" && await readUsernameOwner(nc, directory.space, "interrupted") === pending);
-    suite.check("startup leaves a second reservation unused for an owner already bound", await readUsernameOwner(nc, directory.space, "unused_alias") === undefined && await readUsername(nc, directory.space, owner) === supplied);
+    await assert.rejects(() => readUsernameOwner(nc, directory.space, "unused_alias"),
+      (error: unknown) => error instanceof UsernameRegistryReadError && error.code === "unavailable");
+    suite.check("startup leaves a second reservation unused and lookup distinguishes it from a missing key",
+      await readUsernameOwner(nc, directory.space, "missing_alias") === undefined && await readUsername(nc, directory.space, owner) === supplied);
     suite.check("startup reports both repaired and unused orphan keys with their named owners",
       [["interrupted", pending], ["unused_alias", owner]].every(([name, reservedFor]) =>
         restartLog.some((line) => line.includes(`orphan key username.${name}: owner.${reservedFor}`))), restartLog);
@@ -246,7 +256,8 @@ async function emailCase(): Promise<void> {
   assert.ok(issued.res.ok && issued.body.token, issued.body.error);
   const { nc } = await member(email, grant, issued.body.token);
   suite.check("the opt-in email local part is suggested but not bound without confirmation",
-    issued.body.username?.suggestion === "opt_in" && await readUsername(nc, email.space, owner) === undefined);
+    !Object.hasOwn(issued.body, "username") && (await picker(handle, "email-human", { email: "Opt-In@example.test" })()).body.suggestion === "opt_in" &&
+    await readUsername(nc, email.space, owner) === undefined);
 }
 
 try {

@@ -294,7 +294,7 @@ async function runLogin(args: ParsedArgs): Promise<void> {
       if (choice && !readCurrent()) { setAdoptedCurrent(choice); selected = choice; }
     }
     const saved = resolvePreference("name").value;
-    const username = await pickLoginUsername(idp, session, canChooseAccount() && args.values["no-browser"] !== true, args.values.space as string | undefined);
+    const username = await pickLoginUsername(idp, session, canChooseAccount(), args.values.space as string | undefined);
     // WHO signed in must be human-readable (per-user auth exists for operator-visible identity):
     // prefer the IdP's email/name claim; the raw `sub` stays as the stable id (dim when secondary).
     console.log(renderReport({ sections: [

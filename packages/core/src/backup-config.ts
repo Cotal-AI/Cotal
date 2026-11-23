@@ -366,7 +366,10 @@ export function canonicalBackupStreamConfig(
     return { ...kvStoreConfig(stream, recordsBucket(space)), allow_direct: true, ...endpointAuthorityStoreDefinitions(space).records.hardenAfterCreate };
   if (stream === `KV_${admissionBucket(space)}`)
     return { ...kvStoreConfig(stream, admissionBucket(space)), ...admissionStoreDefinition(space).hardenAfterCreate };
-  for (const bucket of [channelBucket(space), aclBucket(space), membersBucket(space), usernameBucket(space)]) {
+  const usernames = usernameBucket(space);
+  if (stream === `KV_${usernames}`)
+    return { ...kvStoreConfig(stream, usernames), allow_direct: true, allow_rollup_hdrs: false, deny_delete: true, deny_purge: true };
+  for (const bucket of [channelBucket(space), aclBucket(space), membersBucket(space)]) {
     if (stream === `KV_${bucket}`) {
       return {
         ...baseConfig(stream, [`$KV.${bucket}.>`]),
