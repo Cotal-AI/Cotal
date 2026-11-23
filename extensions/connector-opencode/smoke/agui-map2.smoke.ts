@@ -57,7 +57,7 @@ const expected: Record<string, string[]> = {
   "reasoning, text and a slow shell, then a long step": [T.RUN_STARTED, ...TEXT, ...TOOL, ...TEXT, T.RUN_FINISHED],
   "interrupted while streaming": [T.RUN_STARTED, ...TEXT, T.RUN_FINISHED],
   "tool error": [T.RUN_STARTED, ...TOOL, ...TEXT, T.RUN_FINISHED],
-  "failed before any step": [],
+  "failed before any step": [T.RUN_STARTED, T.RUN_ERROR],
   "prompt steered into a running turn": [T.RUN_STARTED, ...TEXT, T.RUN_FINISHED, T.RUN_STARTED, ...TEXT, T.RUN_FINISHED],
 };
 
@@ -162,6 +162,19 @@ for (const s of all) {
 }
 
 {
+  const { map } = createOpenCode2Mapper({ threadId: THREAD, mintRunId: () => "run-empty" });
+  const prompt = { id: "msg_1", type: "user", time: { created: 31 }, text: "[user 1]" } as OpenCode2Message;
+  const refused: OpenCode2Message = { id: "msg_2", type: "assistant", time: { created: 32, completed: 33 }, content: [] };
+  const idle: OpenCode2Message = { id: "msg_3", type: "idle", time: { created: 34 }, outcome: "succeeded" };
+  const none = [map({ message: prompt, index: -1 }), map({ message: refused, index: -1 })];
+  const closed = map({ message: idle, index: -1 });
+  const again = map({ message: { ...idle, id: "msg_4", time: { created: 35 } }, index: -1 });
+  const types = closed && "events" in closed ? closed.events.map((e) => [e.type, (e as { timestamp?: number }).timestamp]) : [];
+  check("empty-turn:a turn with no element publishes a run at its idle, started at its prompt, and a second idle closes nothing",
+    none.every((u) => u === null) && JSON.stringify(types) === JSON.stringify([[T.RUN_STARTED, 31], [T.RUN_FINISHED, 34]]) && again === null, { none, closed, again });
+}
+
+{
   const messages = [...finished("shell then text, two turns")].sort((a, b) => (a.id < b.id ? -1 : 1));
   const out = await publish(messages);
   const stamp = (type: string) => (out.published.find((e) => e.type === type) as { timestamp: number }).timestamp;
@@ -174,6 +187,6 @@ for (const s of all) {
     { tool: stamp(T.TOOL_CALL_START), text: stamp(T.TEXT_MESSAGE_START), end: stamp(T.RUN_FINISHED) });
 }
 
-const EXPECTED = 22;
+const EXPECTED = 23;
 check(`meta:every cell ran - ${EXPECTED} expected`, passed() + failed() === EXPECTED, `${passed() + failed()} cells reported`);
 finish();

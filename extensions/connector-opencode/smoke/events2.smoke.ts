@@ -232,6 +232,15 @@ try {
     { id: "msg_12", type: "idle", time: { created: 1794314140040 }, outcome: "succeeded" },
   ];
   await grow(second, SESSIONS[1]!, [nextTurn], "session.execution.succeeded");
+  // A turn the provider refused before any output, as OpenCode 2.0.24 recorded one live: an
+  // assistant record with no content, then the failed idle.
+  const refusedTurn: OpenCode2Message[] = [
+    ...nextTurn,
+    userRecord("msg_13", 1794314150000, "[user 5]"),
+    { id: "msg_14", type: "assistant", time: { created: 1794314150010, completed: 1794314150020 }, error: { type: "provider.invalid-request", message: "[error 2]" }, content: [] },
+    { id: "msg_15", type: "idle", time: { created: 1794314150030 }, outcome: "failed" },
+  ];
+  await grow(second, SESSIONS[1]!, [refusedTurn], "session.execution.failed", { error: { type: "provider.invalid-request", message: "Model is unavailable." } });
 
   await sleep(3_000);
   await reader.stop().catch(() => {});
@@ -246,6 +255,7 @@ try {
     "RUN_STARTED", "TOOL_CALL_START", "TOOL_CALL_END", "CUSTOM", "RUN_FINISHED",
     "RUN_STARTED", ...TEXT, "RUN_FINISHED",
     "RUN_STARTED", ...TEXT, "RUN_FINISHED",
+    "RUN_STARTED", "RUN_ERROR",
   ];
   check("control:the stream reads back from the subject, so the cells below grade something", seen.length > 0, { frames: seen.length });
   check("order:each turn's run, its tool call's start, end and result marker, its text, and its close, in order and once each",
@@ -257,15 +267,17 @@ try {
   const wire = JSON.stringify(seen);
   check("withheld:no prompt, tool input, tool result, reasoning or upstream error text reaches the subject",
     !["[user", "[input", "[result", "[reasoning", "secret-detail", "provider.auth"].some((p) => wire.includes(p)));
-  const restarted = seen.filter((e) => e.threadId === SESSIONS[1] && e.type === "RUN_STARTED").map((e) => e.runId);
+  const restarted = seen.filter((e) => e.threadId === SESSIONS[1] && e.type === "RUN_STARTED").map((e) => e.runId).slice(0, 4);
   const closes = seen.filter((e) => e.type === "RUN_FINISHED" && restarted.includes(e.runId)).map((e) => e.runId);
   check("late-idle:an idle recorded after an out-of-band close closes nothing, and each run of the restarted session closes once",
     restarted.length === 4 && new Set(restarted).size === 4 && JSON.stringify(closes) === JSON.stringify(restarted), { restarted, closes });
+  check("refused:a turn the provider refused before any output publishes a run of its own that ends with RUN_ERROR",
+    JSON.stringify(seen.slice(-2).map((e) => [e.type, e.type === "RUN_STARTED" ? e.threadId : undefined])) === JSON.stringify([["RUN_STARTED", SESSIONS[1]], ["RUN_ERROR", undefined]]), seen.slice(-2));
   const error = seen.find((e) => e.type === "RUN_ERROR");
   check("fail:the failed turn ends its run with RUN_ERROR carrying only the fixed message", error?.message === "run failed" && error.code === undefined, error);
   const starts = seen.filter((e) => e.type === "RUN_STARTED").map((e) => e.threadId);
   check("restart:the same principal started again publishes its new session after the first, on its channel",
-    JSON.stringify(starts) === JSON.stringify([sid, sid, sid, SESSIONS[1], SESSIONS[1], SESSIONS[1], SESSIONS[1]]), starts);
+    JSON.stringify(starts) === JSON.stringify([sid, sid, sid, SESSIONS[1], SESSIONS[1], SESSIONS[1], SESSIONS[1], SESSIONS[1]]), starts);
   check("deltas:each assistant text is published whole",
     JSON.stringify(seen.filter((e) => e.type === "TEXT_MESSAGE_CONTENT").map((e) => e.delta)) === JSON.stringify(["[text 1]", "[text 2]", "[text 3]", "[text 1]", "[text 2]", "[text 3]"]));
   check("arm:no seat exited at any point", exits.length === 0, { exits });
@@ -280,7 +292,7 @@ try {
   process.exit = exit;
 }
 
-const EXPECTED = 18;
+const EXPECTED = 19;
 check(`meta:every cell ran - ${EXPECTED} expected`, passed() + failed() === EXPECTED, `${passed() + failed()} cells reported`);
 finish();
 process.exit();
