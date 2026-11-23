@@ -21,6 +21,7 @@ import { PiDriver, type CotalBatchDetails, type PiContextLike } from "./driver.j
 import { registerCotalTools } from "./tools.js";
 import { wrapped } from "./wrap.js";
 import { PiEvents } from "./events.js";
+import { askBeforeTools } from "./approvals.js";
 import { piCommandDispatcher, piRunsCommands, type PiCommandHost, type PiSessionView } from "./commands.js";
 
 const CUSTOM_TYPE = "cotal-inbox";
@@ -239,6 +240,7 @@ export default async function cotalMesh(pi: ExtensionAPI): Promise<void> {
   // The pinned Pi types predate sendUserMessage's expandPromptTemplates; piRunsCommands gates its use.
   runtime.commandHost = pi as unknown as PiCommandHost;
   registerCotalTools(pi, runtime.mesh, runtime.config);
+  if (runtime.config.askPermissions) askBeforeTools(pi, () => runtime.mesh.prompts);
   pi.registerMessageRenderer<CotalBatchDetails>(CUSTOM_TYPE, (message) => wrapped(messageText(message.content)));
 
   if (supervisedCwd) {
