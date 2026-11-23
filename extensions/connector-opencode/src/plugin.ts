@@ -272,7 +272,7 @@ export const cotal: Plugin = async () => {
         // re-established plane starts with the log's run open, and a mapper that opened with none
         // would drop every record until the next prompt, whose `RUN_STARTED` the brackets refuse.
         const resumeRunId = wal.pending === null ? wal.brackets?.run : wal.pending.brackets.run;
-        mapper = createOpenCodeMapper({ threadId, mintRunId: () => randomUUID(), resumeRunId });
+        mapper = createOpenCodeMapper({ threadId, mintRunId: () => randomUUID(), resumeRunId, reasoning: config.reasoningEvents });
         return AguiEmitter.start<OpenCodeRecord>({
           endpoint: agent.ep,
           withholdPayloads: config.eventPayloadsWithheld,

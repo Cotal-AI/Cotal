@@ -352,7 +352,9 @@ Four things are specific to OpenCode and worth knowing before you read a stream:
   error and no parts. That message opens the turn's run, so its `session.error` still closes it with
   `RUN_ERROR`.
 
-Reasoning is off by default.
+Reasoning is off by default. A seat launched with the
+[`reasoningEvents` field](connectors.mdx#opt-in-launch-fields) publishes each saved reasoning part,
+on 1.x and 2.x, as one `REASONING_*` message with its text, ahead of the text that follows it.
 
 ## Session lifecycle
 
