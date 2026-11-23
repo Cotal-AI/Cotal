@@ -68,6 +68,11 @@ class PlatformConfig:
 
 _cfg.Platform = Platform
 _cfg.PlatformConfig = PlatformConfig
+# Read for each saved response with text (streams.response_saved). No turn here streams.
+_context = types.ModuleType("gateway.session_context")
+_context.get_session_env = lambda name, default="": default
+_consumer = types.ModuleType("gateway.stream_consumer")
+_consumer.GatewayStreamConsumer = type("GatewayStreamConsumer", (), {"_draft_id_counter": 0})
 
 sys.modules.update(
     {
@@ -76,6 +81,8 @@ sys.modules.update(
         "gateway.platforms.base": _base,
         "gateway.config": _cfg,
         "gateway.session": _session,
+        "gateway.session_context": _context,
+        "gateway.stream_consumer": _consumer,
     }
 )
 
