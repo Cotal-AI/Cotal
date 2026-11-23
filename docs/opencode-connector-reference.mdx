@@ -67,8 +67,9 @@ is the first one the plugin submits, it carries the persona in the `system` fiel
 ends it `refused` with `failed-precondition`. OpenCode takes an image whatever the model. A model
 without image input reads an error note in its place and tells the user it cannot see the image.
 `usage` reports what T3 Code's OpenCode provider shows. `context.used` is the input, cache read,
-cache write and output tokens of the session's last model step: the last `step-finish` part on 1.x,
-the newest assistant record on 2.x. `context.size` is that model's `limit.input`, or its
+cache write and output tokens of the session's last model step: on 1.x the last `step-finish` part
+of the newest message by id, whatever order OpenCode lists the messages in, and on 2.x the newest
+assistant record. `context.size` is that model's `limit.input`, or its
 `limit.context` when it has no input limit, from `GET /provider` on 1.x and `GET /api/model` on
 2.x. A model with neither leaves `context` out. `cost` is the session's cost in USD once it is
 above zero: the sum of the assistant messages' `cost` on 1.x, and the session's `cost` on 2.x.

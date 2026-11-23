@@ -26,8 +26,9 @@
  * text and then each image as a file part with a data URL, and an image-only turn has no text part. A
  * 4xx answer ends it refused, failed-precondition. `usage` then reports the last step's input, cache
  * and output tokens of the model's input limit, and the sum of the assistant messages' cost, reading
- * the provider list once; a model the list has no window for leaves the context out. The broker
- * refuses a sibling agent of the same owner.
+ * the provider list once; a model the list has no window for leaves the context out. Listed newest
+ * first, the step usage reports is still the newest message's. The broker refuses a sibling agent of
+ * the same owner.
  *
  * Run: pnpm smoke:opencode1-command:auth   (needs `nats-server` on PATH; local-only)
  */
@@ -392,6 +393,14 @@ try {
   check("a model the provider list gives no window leaves the context out", same(await usageOf(), { supported: true, cost: { amount: 0.75, currency: "USD" } }), await usageOf());
   (messages[2] as { info: { modelID: string } }).info.modelID = "m3";
   check("a model with no input limit is measured against its context limit", same(await usageOf(), { supported: true, context: { used: 4250, size: 262144 }, cost: { amount: 0.75, currency: "USD" } }), await usageOf());
+  messages = [
+    { info: { role: "assistant", id: "msg_3", providerID: "opencode", modelID: "m1", cost: 0.5 }, parts: [{ type: "step-start" }, step(500, 20, 0, 0)] },
+    { info: { role: "assistant", id: "msg_2", providerID: "opencode", modelID: "m1", cost: 0.25 }, parts: [{ type: "step-start" }, step(900, 40, 0, 0)] },
+    { info: { role: "user", id: "msg_1" }, parts: [{ type: "text", text: "hi" }] },
+  ];
+  const newestFirst = await usageOf();
+  check("usage takes the step of the newest message by id when OpenCode lists the messages newest first",
+    same(newestFirst, { supported: true, context: { used: 520, size: 160000 }, cost: { amount: 0.75, currency: "USD" } }), newestFirst);
 
   const sibling = await call(siblingEp, "command", { target: "command", name: "review" });
   check("a sibling agent of the same owner: permission-denied, not-executed", verdict(sibling) === "permission-denied/not-executed", verdict(sibling));
