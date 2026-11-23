@@ -414,7 +414,7 @@ function createAgentFileWithSource(path: string, text: string): string | undefin
     try {
       const current = agentFileDirectory(parent);
       if (current.real === dir.real && current.pin === dir.pin) source = createdAgentFileSource(path, dir, fd);
-    } catch { /* Attribution is optional when the created entry can no longer be observed. */ }
+    } catch { /* If the entry disappears or changes, the launch has no source to report. */ }
   });
   return source;
 }
