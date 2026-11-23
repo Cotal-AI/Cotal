@@ -16,6 +16,7 @@ const { startHostedAuthFixture } = await import("../../auth/smoke/_hosted-auth-f
 const { bootDeliveryDaemon } = await import("./_boot-delivery.js");
 const { nativeRemoteManager } = await import("./_native-remote-manager.js");
 const { remoteManagerClient } = await import("../dist/index.js");
+const { recordMesh, removeMesh } = await import("@cotal-ai/workspace");
 const { emitSentinel } = await import("@cotal-ai/smoke-kit");
 
 let passed = 0, failed = 0;
@@ -53,8 +54,15 @@ registry.register({ kind: "connector", name: "launch-probe", requires: ["node"],
   buildLaunch: () => { throw new Error("launch-reads: nothing is launched"); } } as import("@cotal-ai/core").Connector);
 let runtimeSpawnCalls = 0;
 const neverSpawn = (): never => { runtimeSpawnCalls++; throw new Error("launch-reads: nothing is launched"); };
+let delegatedSource: string | undefined;
+let receivedPersona = false;
 const delegatedRuntime: import("@cotal-ai/core").RuntimeProvider = { kind: "runtime", name: "launch-delegated", available: () => true,
-  create: () => ({ kind: "launch-delegated", streamsTerminal: false, spawn: neverSpawn, spawnDelegated: neverSpawn }) };
+  create: () => ({ kind: "launch-delegated", streamsTerminal: false, spawn: neverSpawn, spawnDelegated(launch, handoff) {
+    const command = core.delegatedSeatCommand(launch, handoff, { handoff: "/child/handoff.json", persona: "/child/probe.md" });
+    delegatedSource = command.env[core.AGENT_FILE_SOURCE_ENV];
+    receivedPersona = core.parseAgentFileSource(launch.persona, "delegated fixture").persona === "Named catalog probe.";
+    return neverSpawn();
+  } }) };
 registry.register(delegatedRuntime);
 let service: Awaited<ReturnType<typeof startAuthService>> | undefined;
 let delivery: Awaited<ReturnType<typeof bootDeliveryDaemon>> | undefined;
@@ -91,7 +99,7 @@ try {
   type Outcome = { kind: "answered"; data: any } | { kind: "manager-refused"; code: string; error: unknown } | { kind: "broker-refused" } | { kind: "error"; message: string };
   const call = async (c: Awaited<ReturnType<typeof open>>, command: string, args?: Record<string, unknown>): Promise<Outcome> => {
     try {
-      const r = await invokeCommand(c.nc, a.space, c.service, command, args, { deadlineMs: 15000 });
+      const r = await invokeCommand(c.nc, a.space, c.service, command, args, { deadlineMs: 30000 });
       assert.equal(r.responder.instanceId, c.instanceId);
       return r.reply.ok ? { kind: "answered", data: r.reply.data } : { kind: "manager-refused", code: String(r.reply.error?.code), error: r.reply.error };
     } catch (error) {
@@ -109,8 +117,9 @@ try {
   const personaText = "---\nname: probe\nagent: launch-probe\nsubscribe: []\nallowSubscribe: []\nallowPublish: []\ncapabilities: []\n---\n";
   writeFileSync(file, personaText); symlinkSync(file, fileAlias);
   mkdirSync(join(delegatedRoot, ".cotal", "agents"), { recursive: true });
-  writeFileSync(join(delegatedRoot, ".cotal", "agents", "probe.md"), personaText);
-  const watched = [outside, alias, missing, file, fileAlias, join(delegatedRoot, ".cotal", "agents", "probe.md")];
+  const delegatedPath = join(delegatedRoot, ".cotal", "agents", "probe.md");
+  writeFileSync(delegatedPath, `${personaText}\nNamed catalog probe.\n`);
+  const watched = [outside, alias, missing, file, fileAlias, delegatedPath];
   const fsOperations: string[] = [];
   let observing = false;
   const restorers: Array<() => void> = [];
@@ -200,6 +209,17 @@ try {
       cell(`${command}: closed input has no config path door`, result.kind === "error" && reads === 0, result.kind);
     }
     cell("neither runtime launch entry was called", runtimeSpawnCalls === 0, runtimeSpawnCalls);
+    recordMesh({ space: a.space, server: fx.servers, root: delegatedRoot, mode: "user", ts: new Date().toISOString(),
+      userAuth: { provider: "cotal", idp: { url: origin, issuer: origin, audience: origin }, endpoints: { url: service.publicUrl! } } });
+    // The manager re-execs its argv entry to check the enrolled actor's bearer before launching.
+    const entry = process.argv[1]!;
+    process.argv[1] = fileURLToPath(new URL("../../../bin/dist/cotal.js", import.meta.url));
+    try {
+      const result = await call(delegatedCaller, "spawn", { name: "probe", events: false });
+      cell("named spawn reaches the delegated runtime with the manager catalog prompt", runtimeSpawnCalls === 1 && receivedPersona, result);
+      const expectedSource = core.agentFileSourceId(delegatedPath);
+      cell("delegated launch command carries the manager catalog source", expectedSource !== undefined && delegatedSource === expectedSource, delegatedSource);
+    } finally { process.argv[1] = entry; removeMesh(a.space); }
   } finally {
     for (const restore of restorers.reverse()) restore();
     syncBuiltinESMExports();

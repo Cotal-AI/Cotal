@@ -3,7 +3,7 @@ import type { LaunchSpec } from "./connector.js";
 import type { StartupOutcome } from "./startup-confirm.js";
 import { MANAGED_HANDOFF_FILE_ENV, type ManagedLifecycleHandoff, type ManagedLifecycleTarget } from "./managed-handoff.js";
 import { assertLifecycleToken } from "./subjects.js";
-import { AGENT_FILE_SOURCE_ENV } from "./agent-file.js";
+import { AGENT_FILE_SOURCE_ENV } from "./agent-file-source.js";
 
 /** Which backend a manager spawns through. Open-ended: `pty` ships with the manager; every other
  *  name is contributed by a {@link RuntimeProvider}. */

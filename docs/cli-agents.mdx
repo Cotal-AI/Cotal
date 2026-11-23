@@ -666,9 +666,11 @@ name no persona can have with the codes `persona show` uses. Only its explicit `
 connects to the mesh.
 That overlay checks the mesh even if the local catalog is empty and refuses if the mesh cannot be reached.
 It heads the list with the mesh it read and marks a persona `running` when a live session reports
-using that catalog entry on this host, even if its display name differs. This includes a session
-that saved its inline persona to the catalog. If there is no match and a live participant of the
-same kind lacks source information, the overlay says `running status unknown`.
+using that catalog entry on this host, even if its display name differs. This includes manifest
+and delegated launches that read the entry, and inline launches that save it. An in-place edit
+or an edit through Cotal keeps the association. Removing and recreating the file does not.
+An external editor that saves by replacing the file starts a new entry. If there is no match and
+a live participant of the same kind lacks source information, the overlay says `running status unknown`.
 Otherwise it says `not running`. Display names do not establish which file a session used.
 
 

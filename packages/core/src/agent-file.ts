@@ -26,10 +26,9 @@
  * half, alongside the join link.
  */
 import { accessSync, constants, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, statSync } from "node:fs";
-import { hostname } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
-import { contractDigest } from "./canonical.js";
+import { AgentFileCatalogChanged, AgentFileNotRegular, agentFileDirectory, assertAgentFileDirectory, createdAgentFileSource, readAgentFileBytes, readAgentFileSnapshot } from "./agent-file-source.js";
 import type { EndpointKind } from "./types.js";
 import { assertValidName } from "./resolve.js";
 import { createPrivateRecord, writePrivateRecord } from "./secret-fs.js";
@@ -37,6 +36,8 @@ import { utf16Problem, utf8Problem } from "./text-encoding.js";
 import { assertValidChannel, assertValidRole, channelInAllow, isConcreteChannel, resolveReadAcl } from "./subjects.js";
 import { assertBoundedOwner } from "./endpoint-subjects.js";
 import { parsePersonaEndpoints, type PersonaEndpoint } from "./persona-endpoints.js";
+
+export { AGENT_FILE_SOURCE_ENV, AGENT_FILE_SOURCE_META_KEY, AgentFileCatalogChanged, AgentFileNotRegular, readAgentFileBytes, readAgentFileSnapshot, replaceAgentFile, UNKNOWN_AGENT_FILE_SOURCE } from "./agent-file-source.js";
 
 export interface AgentDef {
   name: string;
@@ -172,20 +173,14 @@ function parseAgentFileBytes(bytes: Buffer, path: string, options?: { deferRoleV
   return parseAgentFileSource(source, path, options);
 }
 
-export const AGENT_FILE_SOURCE_META_KEY = "ai.cotal.agent-file.source";
-export const AGENT_FILE_SOURCE_ENV = "COTAL_AGENT_FILE_SOURCE";
-
-/** An advisory source ID that does not publish the local path. Identify the named entry in its
- *  physical directory, so edits keep the association and two links to one file remain distinct. */
-export function agentFileSourceId(path: string): string {
-  return agentFileDirectory(dirname(path)).sourceId(basename(path));
+/** An advisory fingerprint of the selected entry, if its lifetime can be established. */
+export function agentFileSourceId(path: string): string | undefined {
+  return readAgentFileSnapshot(path).sourceId;
 }
 
-function agentFileDirectory(path: string) {
-  const real = realpathSync.native(path);
-  const { dev, ino, ctimeNs } = statSync(real, { bigint: true });
-  const identity = [hostname(), real, String(dev), String(ino)];
-  return { real, stamp: JSON.stringify([...identity, String(ctimeNs)]), sourceId: (file: string) => contractDigest([...identity, file]) };
+export function loadAgentFileSnapshot(path: string): { def: AgentDef; sourceId?: string } {
+  const { bytes, sourceId } = readAgentFileSnapshot(path);
+  return { def: parseAgentFileBytes(bytes, path), sourceId };
 }
 
 /** Parse an agent-file document already in memory. `path` is only for error text. A leading UTF-8
@@ -339,7 +334,7 @@ export function parseAgentFileSource(src: string, path: string, options?: { defe
  *  persist a peer-defined agent as config. The file is written 0o600 and never through a
  *  symlink ({@link writePrivateRecord}). `createOnly` refuses a name that already exists, a symlink
  *  included, and leaves it as it was ({@link createPrivateRecord}). */
-export function saveAgentFile(path: string, def: AgentDef, opts: { createOnly?: boolean } = {}): void {
+export function saveAgentFile(path: string, def: AgentDef, opts: { createOnly?: boolean; captureSource?: boolean } = {}): string | undefined {
   if (!def.name) throw new Error('saveAgentFile: "name" is required');
   assertValidName(def.name);
   if (def.kind !== undefined) assertValidKind(def.kind, "saveAgentFile");
@@ -406,8 +401,22 @@ export function saveAgentFile(path: string, def: AgentDef, opts: { createOnly?: 
     throw new Error(`it would not load: ${reason.startsWith(prefix) ? reason.slice(prefix.length) : reason}`);
   }
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  if (opts.createOnly) createPrivateRecord(path, text);
-  else writePrivateRecord(path, text);
+  if (!opts.createOnly) writePrivateRecord(path, text);
+  else if (!opts.captureSource) createPrivateRecord(path, text);
+  else return createAgentFileWithSource(path, text);
+}
+
+function createAgentFileWithSource(path: string, text: string): string | undefined {
+  const parent = dirname(path);
+  const dir = agentFileDirectory(parent);
+  let source: string | undefined;
+  createPrivateRecord(join(dir.real, basename(path)), text, fd => {
+    try {
+      const current = agentFileDirectory(parent);
+      if (current.real === dir.real && current.pin === dir.pin) source = createdAgentFileSource(path, dir, fd);
+    } catch { /* Attribution is optional when the created entry can no longer be observed. */ }
+  });
+  return source;
 }
 
 /** An inline persona (SPEC 13.7): the helper's definition, carried on the spawn instead of read
@@ -605,40 +614,27 @@ export function readPersonaCatalog(root: string, options?: { includeSource?: boo
     }
     throw e;
   }
-  const entries = files.sort().map((f) => {
-    const name = f.slice(0, -3);
-    const path = join(dir, f);
-    const readPath = directory ? join(directory.real, f) : path;
-    const link = personaLinkTarget(readPath);
-    try {
-      // A FIFO or a device would block the read, so only a regular file is opened. A link is
-      // followed, as the read follows it.
-      if (!statSync(readPath).isFile()) return { name, path, error: `persona is not a regular file: ${path}`, notRegular: true as const, ...(link !== undefined ? { link } : {}) };
-      return { name, path, def: parseAgentFileBytes(readFileSync(readPath), path), ...(directory ? { sourceId: directory.sourceId(f) } : {}), ...(link !== undefined ? { link } : {}) };
-    } catch (e) {
-      let encoding: string | undefined;
-      try {
-        const bytes = readFileSync(readPath);
-        encoding = utf8Problem(bytes, bytes.toString("utf8"));
-      } catch { /* unreadable: `error` says so */ }
-      return { name, path, error: (e as Error).message, ...(encoding ? { encoding } : {}), ...(link !== undefined ? { link } : {}) };
-    }
-  });
-  if (directory) assertCatalogDirectory(dir, directory.stamp);
+  const entries = files.sort().map(f => readCatalogEntry(dir, f, directory));
+  if (directory) assertAgentFileDirectory(dir, directory.stamp);
   return entries;
 }
 
-function assertCatalogDirectory(dir: string, stamp: string): void {
+function readCatalogEntry(dir: string, file: string, directory: ReturnType<typeof agentFileDirectory> | undefined): PersonaCatalogEntry {
+  const name = file.slice(0, -3);
+  const path = join(dir, file);
+  const readPath = directory ? join(directory.real, file) : path;
+  const link = personaLinkTarget(readPath);
+  let bytes: Buffer | undefined;
   try {
-    if (agentFileDirectory(dir).stamp === stamp) return;
+    const snapshot = directory ? readAgentFileSnapshot(path, directory) : { bytes: readAgentFileBytes(path), sourceId: undefined };
+    bytes = snapshot.bytes;
+    return { name, path, link, def: parseAgentFileBytes(bytes, path), ...(directory && { sourceId: snapshot.sourceId }) };
   } catch (e) {
-    if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+    if (e instanceof AgentFileCatalogChanged && directory) throw e;
+    if (e instanceof AgentFileNotRegular) return { name, path, link, error: e.message, notRegular: true };
+    const encoding = bytes && utf8Problem(bytes, bytes.toString("utf8"));
+    return { name, path, link, error: (e as Error).message, ...(encoding ? { encoding } : {}) };
   }
-  throw new AgentFileCatalogChanged(dir);
-}
-
-export class AgentFileCatalogChanged extends Error {
-  constructor(path: string) { super(`persona catalog changed while reading: ${path}`); }
 }
 
 /** The one-line description `cotal personas list` prints: `description:` if set, else the

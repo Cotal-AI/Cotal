@@ -19,6 +19,7 @@
  */
 import {
   AGENT_FILE_SOURCE_ENV,
+  UNKNOWN_AGENT_FILE_SOURCE,
   eventChannel,
   type PersonaEndpoint,
   LAUNCH_MATERIAL_ENV,
@@ -192,7 +193,7 @@ export function nameEnv(opts: { name: string; displayName?: string; agentFileSou
   env.COTAL_NAME = opts.name;
   if (opts.displayName !== undefined) env.COTAL_DISPLAY_NAME = opts.displayName;
   if (opts.agentFileSource !== undefined) {
-    if (!isContractDigest(opts.agentFileSource)) throw new Error(`${AGENT_FILE_SOURCE_ENV} must be a SHA-256 digest`);
+    if (opts.agentFileSource !== UNKNOWN_AGENT_FILE_SOURCE && !isContractDigest(opts.agentFileSource)) throw new Error(`${AGENT_FILE_SOURCE_ENV} must be a SHA-256 digest or unknown`);
     env[AGENT_FILE_SOURCE_ENV] = opts.agentFileSource;
   }
   return env;

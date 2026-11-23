@@ -2,7 +2,7 @@ import { accessSync, constants, existsSync, lstatSync, realpathSync, statSync } 
 import { homedir, hostname } from "node:os";
 import { isAbsolute, join, sep } from "node:path";
 import { agentFilePath, assertLifecycleToken, assertValidChannel, DEFAULT_SERVER, digestIdToken, EpEnvelopeError, eventChannel, eventChannelPrincipal, grantOverreach, grantParts, isIssuedCaller, issuedSpawnerStanding, MAX_SCHEDULE_MS, parsePersonaEndpoints, personaDir, principalKey, registry, rejectionText, renderOnceTask, resolveReadAcl, runDriverCaller, shownSpawner, withIssuerSession, type AgentDef, type Connector, type ControlReply, type CotalEndpoint, type DelegatedGrant, type EpCaller, type EpCapability, type EpServeGrant, type GrantOverreach, type InlinePersona, type IssuedStore, type IssuedSubjectPermissions, type LifecycleStateTransport, type RunAdmission, type RunRevocation, type SpaceAuth } from "@cotal-ai/core";
-import { loadLaunchPersonaFile, manifestExtensionNames, PersonaSourceError, resolveAgentType } from "@cotal-ai/workspace";
+import { loadLaunchPersonaSnapshot, manifestExtensionNames, PersonaSourceError, resolveAgentType } from "@cotal-ai/workspace";
 import type { KV } from "@nats-io/kv";
 import { inlinePersonaDir } from "./launch.js";
 import { listDirectory } from "./list-dir.js";
@@ -416,8 +416,8 @@ export class SeatLaunch {
     spawner: string | undefined,
     authenticatedCaller: EpCaller | undefined,
   ): Promise<
-    | { ref: string; configPath: string; def: AgentDef | undefined; agent: string; inline?: undefined }
-    | { ref: string; configPath?: undefined; def: AgentDef; agent: string; inline: { save: boolean } }
+    | { ref: string; configPath: string; def: AgentDef | undefined; agent: string; inline?: undefined; source?: { bytes: Buffer; sourceId?: string } }
+    | { ref: string; configPath?: undefined; def: AgentDef; agent: string; inline: { save: boolean }; source?: undefined }
     | { error: string; code?: "bad-request" }
   > {
     // Both config-taking wire commands and direct/roster starts enter here before interpreting
@@ -495,26 +495,27 @@ export class SeatLaunch {
     // second load). A manifest launch (`resolved`) materializes its own transient persona and the
     // file is NOT its authority, so its def (and its agent pin) is deliberately not consulted here —
     // the manifest's own `agent:` field drove the launch object already.
-    let def: AgentDef | undefined;
+    let source: ReturnType<typeof loadLaunchPersonaSnapshot> | undefined;
     if (!opts.resolved) {
       try {
-        def = loadLaunchPersonaFile(configPath);
+        source = loadLaunchPersonaSnapshot(configPath);
       } catch (e) {
         return { error: rejectionText(e), ...(e instanceof PersonaSourceError ? { code: "bad-request" as const } : {}) };
       }
       // Shared operator files remain launchable. Owned content follows the catalog's visibility
       // decision before connector loading or any allocation. A hosted run acts for its admission;
       // only a complete authenticated caller can request the current ledger's admin decision.
-      if (this.deps.userMode() && def.owner !== undefined) {
+      if (this.deps.userMode() && source.def.owner !== undefined) {
         const acting = authenticatedCaller === undefined ? undefined
           : this.deps.runHosting()?.admittedCaller(authenticatedCaller) ?? authenticatedCaller;
         const personaCaller = acting === undefined ? spawner ?? "" : principalKey(acting.owner, acting.actor).key;
         const admin = authenticatedCaller !== undefined && await this.deps.epAdminReach(authenticatedCaller);
-        if (!this.deps.canReadPersona(def.owner, personaCaller, admin))
+        if (!this.deps.canReadPersona(source.def.owner, personaCaller, admin))
           return { error: `no persona "${ref}"` };
       }
     }
-    return { ref, configPath, def, agent: resolveAgentType({ flag: opts.agent, pin: def?.agent, callerDefault: opts.defaultAgent }) };
+    const def = source?.def;
+    return { ref, configPath, def, source, agent: resolveAgentType({ flag: opts.agent, pin: def?.agent, callerDefault: opts.defaultAgent }) };
   }
 
   /** Whether a persona path resolves into the inline snapshot directory, the directory itself

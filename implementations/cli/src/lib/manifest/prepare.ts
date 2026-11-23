@@ -40,6 +40,7 @@ export interface PreparedAgent {
   continuity?: "none" | "exact";
   /** Persona file path (or undefined for an inline agent). */
   persona?: string;
+  agentFileSource?: string;
   /** Effective values (manifest override ?? persona default). */
   model?: string;
   variant?: string;

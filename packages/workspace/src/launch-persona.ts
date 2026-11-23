@@ -1,6 +1,5 @@
-import { closeSync, constants, fstatSync, openSync, readFileSync, statSync } from "node:fs";
 import { parseDocument } from "yaml";
-import { parseAgentFileSource, utf8Problem, type AgentDef } from "@cotal-ai/core";
+import { AgentFileNotRegular, parseAgentFileSource, readAgentFileBytes, readAgentFileSnapshot, utf8Problem, type AgentDef } from "@cotal-ai/core";
 import { MeshManifestSchema } from "./mesh-manifest-schema.js";
 
 /** A workstation-file refusal, mapped onto existing native bad-request/CLI schema-invalid codes. */
@@ -36,18 +35,24 @@ export function personaFileReference(value: string): string {
 
 /** Read a regular persona file on the execution host; never deploy a manifest from this door. */
 export function loadLaunchPersonaFile(path: string): AgentDef {
-  const notRegular = () => new PersonaSourceError(`persona is not a regular file: ${path}`, { remedy: "pass a regular persona file" });
-  if (!statSync(path).isFile()) throw notRegular();
-  // Follow persona links as before. NONBLOCK keeps a replacement FIFO from hanging the open;
-  // validate and read the same descriptor so a path replacement cannot bypass the type check.
-  const fd = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK);
-  let bytes: Buffer;
-  try {
-    if (!fstatSync(fd).isFile()) throw notRegular();
-    bytes = readFileSync(fd);
-  } finally {
-    closeSync(fd);
+  return parseLaunchPersonaFile(readLaunchPersona(path, readAgentFileBytes), path);
+}
+
+/** Keep the definition, payload and advisory source together when handing a persona to a launcher. */
+export function loadLaunchPersonaSnapshot(path: string): { def: AgentDef; bytes: Buffer; sourceId?: string } {
+  const snapshot = readLaunchPersona(path, readAgentFileSnapshot);
+  return { ...snapshot, def: parseLaunchPersonaFile(snapshot.bytes, path) };
+}
+
+function readLaunchPersona<T>(path: string, read: (path: string) => T): T {
+  try { return read(path); }
+  catch (error) {
+    if (error instanceof AgentFileNotRegular) throw new PersonaSourceError(error.message, { remedy: "pass a regular persona file" });
+    throw error;
   }
+}
+
+function parseLaunchPersonaFile(bytes: Buffer, path: string): AgentDef {
   const source = bytes.toString("utf8");
   const encoding = utf8Problem(bytes, source);
   if (encoding) throw new PersonaSourceError(`invalid persona definition: ${path}: ${encoding}`, { remedy: `save ${path} as UTF-8` });

@@ -94,8 +94,9 @@ A managed spawn reads the selected manager's catalog on its execution host.
 The file path is a local convention; NATS presence provides mesh discovery, and the file's card supplies the presence record.
 
 The launcher sets `COTAL_AGENT_FILE=<abs path>` for the joined session to read its card.
-The reference connectors report a fingerprint of the file's named entry for the live persona
-listing. This hint carries neither the path nor the persona text and grants no authority.
+The reference connectors report a fingerprint of the persona entry selected for the live listing.
+Manifest and delegated launches carry it from the original file rather than the launch copy.
+This hint carries neither the path nor the persona text and grants no authority.
 `COTAL_LINK` supplies the mesh connection.
 Individual `COTAL_*` variables can override file values as described in [Configuration](config.mdx).
 

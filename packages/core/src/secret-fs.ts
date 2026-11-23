@@ -182,18 +182,19 @@ export function writePrivateRecord(path: string, data: string | Buffer): void {
  * existing name, a symlink included, fails with `EEXIST` and is left as it was. If writing fails
  * after creation, the new file is best-effort removed before the original error propagates.
  */
-export function createPrivateRecord(path: string, data: string | Buffer): void {
-  writeBytes(path, data, true);
+export function createPrivateRecord(path: string, data: string | Buffer, onCreated?: (fd: number) => void): void {
+  writeBytes(path, data, true, onCreated);
 }
 
 /** {@link openPrivate}, then truncate and write the bytes; the descriptor is closed on every path. */
-function writeBytes(path: string, data: string | Buffer, exclusive: boolean): void {
+function writeBytes(path: string, data: string | Buffer, exclusive: boolean, onCreated?: (fd: number) => void): void {
   // No O_TRUNC: a name openPrivate refuses keeps its bytes, so truncation waits until it passed.
   const fd = openPrivate(path, constants.O_WRONLY | constants.O_CREAT | (exclusive ? constants.O_EXCL : 0));
   try {
     try {
       ftruncateSync(fd);
       writeFileSync(fd, data);
+      onCreated?.(fd);
     } finally {
       closeSync(fd);
     }
@@ -232,10 +233,11 @@ function writePrivate(path: string, data: string | Buffer, exclusive: boolean): 
  * file (e.g. the IdP session cache). NB: this closes torn-file/partial-write hazards; a lost update
  * under two truly-concurrent writers to the same file is a rarer residual that would need file locking.
  */
-export function writeSecretFileAtomic(path: string, data: string | Buffer): void {
+export function writeSecretFileAtomic(path: string, data: string | Buffer, beforePublish?: (staged: string) => void): void {
   const tmp = `${path}.${process.pid}.${Date.now()}.tmp`;
   try {
     writeSecretFile(tmp, data); // 0o600 at create + win32 ACL harden on the TEMP; the ACL rides the rename
+    beforePublish?.(tmp);
     renameSync(tmp, path);
   } catch (e) {
     try {

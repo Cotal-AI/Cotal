@@ -8,7 +8,7 @@
  */
 import { existsSync } from "node:fs";
 import { basename, dirname, extname, join, relative } from "node:path";
-import { loadAgentFile, type AgentDef } from "@cotal-ai/core";
+import { loadAgentFileSnapshot } from "@cotal-ai/core";
 import { findCotalRoot } from "@cotal-ai/workspace";
 import type { ResolvedManifest } from "./model.js";
 import { prepareAgent, type AgentWarning, type PreparedAgent } from "./prepare.js";
@@ -43,10 +43,10 @@ export function preparePersonas(manifest: ResolvedManifest): PreparedManifest {
   const agents: PreparedAgent[] = [];
 
   for (const a of manifest.agents) {
-    let persona: AgentDef | undefined;
+    let persona: ReturnType<typeof loadAgentFileSnapshot> | undefined;
     if (a.persona) {
       try {
-        persona = loadAgentFile(a.persona);
+        persona = loadAgentFileSnapshot(a.persona);
       } catch (e) {
         const code = (e as NodeJS.ErrnoException).code;
         issues.push({
@@ -56,10 +56,10 @@ export function preparePersonas(manifest: ResolvedManifest): PreparedManifest {
         continue;
       }
     }
-    const r = prepareAgent(a, persona, declared);
+    const r = prepareAgent(a, persona?.def, declared);
     issues.push(...r.issues);
     warnings.push(...r.warnings);
-    agents.push(r.prepared);
+    agents.push({ ...r.prepared, ...(persona?.sourceId && { agentFileSource: persona.sourceId }) });
   }
 
   if (issues.length) throw new ManifestError(manifest.sourcePath, issues);

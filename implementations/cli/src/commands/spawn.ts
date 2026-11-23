@@ -4,6 +4,7 @@ import { constants as osConstants } from "node:os";
 import { resolve as resolvePath } from "node:path";
 import {
   AGENT_FILE_SOURCE_ENV,
+  UNKNOWN_AGENT_FILE_SOURCE,
   assertValidChannel,
   assertValidRole,
   connectorServers,
@@ -743,7 +744,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   }
   const launchOpts: LaunchOpts = {
     space, name, role, servers: server, configPath: path,
-    agentFileSource: handoffManagerInstanceId === undefined ? undefined : process.env[AGENT_FILE_SOURCE_ENV],
+    agentFileSource: handoffManagerInstanceId === undefined ? undefined : process.env[AGENT_FILE_SOURCE_ENV] ?? UNKNOWN_AGENT_FILE_SOURCE,
     model, variant, launchOptions, subscribe, allowSubscribe, allowPublish,
     endpoints: copyPersonaEndpoints(def.endpoints) ?? [], prompt: values.prompt,
     resume: values.resume, events: launchEvents, eventPayloads, eventsRequired,

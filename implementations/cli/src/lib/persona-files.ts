@@ -3,8 +3,8 @@ import { accessSync, constants, existsSync, lstatSync, mkdtempSync, readdirSync,
 import { tmpdir } from "node:os";
 import { basename, dirname, join, sep } from "node:path";
 import {
-  acquireLock, assertValidName, hardenPrivate, MAX_NAME_LENGTH, mkSecretDir,
-  parseAgentFileSource, personaDir, saveAgentFile, utf8Problem, writeSecretFile, writeSecretFileAtomic,
+  acquireLock, AgentFileCatalogChanged, assertValidName, hardenPrivate, MAX_NAME_LENGTH, mkSecretDir,
+  parseAgentFileSource, personaDir, replaceAgentFile, saveAgentFile, utf8Problem, writeSecretFile, writeSecretFileAtomic,
   type AgentDef,
 } from "@cotal-ai/core";
 import {
@@ -17,7 +17,7 @@ import { exitInterrupted, INTERRUPT_SIGNALS, type InterruptSignal } from "./inte
 import { catalogFolderProblem, linkTarget } from "./personas.js";
 
 export interface PersonaCatalog { root: string; space: string }
-export interface PersonaSource { bytes: Buffer; ino: number; dev: number; mtimeMs: number }
+export interface PersonaSource { bytes: Buffer; ino: bigint; dev: bigint; ctimeNs: bigint; birthtimeNs: bigint }
 
 /** Resolve the catalog without requiring a running broker or guessing which space owns the cwd. */
 export function personaCatalog(values: { space?: string; server?: string }): PersonaCatalog {
@@ -109,12 +109,12 @@ function personaLinkRemedy(path: string): string | undefined {
 /** Only absence is absent. Unreadable and non-regular sources refuse rather than becoming empty. */
 export function readPersonaSource(path: string): PersonaSource | undefined {
   try {
-    const stat = lstatSync(path);
+    const stat = lstatSync(path, { bigint: true });
     if (!stat.isFile()) {
       const remedy = stat.isSymbolicLink() ? personaLinkRemedy(path) : undefined;
       throw new CommandFailure("refused", "PERMISSION_DENIED", `persona is not a regular file: ${path}`, remedy === undefined ? {} : { remedy });
     }
-    return { bytes: readFileSync(path), ino: stat.ino, dev: stat.dev, mtimeMs: stat.mtimeMs };
+    return { bytes: readFileSync(path), ino: stat.ino, dev: stat.dev, ctimeNs: stat.ctimeNs, birthtimeNs: stat.birthtimeNs };
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
     if (code === "ENOENT") return undefined;
@@ -146,7 +146,7 @@ export function validatePersona(bytes: Buffer, path: string, name?: string): Age
 }
 
 function sameSource(a: PersonaSource | undefined, b: PersonaSource | undefined): boolean {
-  return a === undefined ? b === undefined : b !== undefined && a.ino === b.ino && a.dev === b.dev && a.mtimeMs === b.mtimeMs && a.bytes.equals(b.bytes);
+  return a === undefined ? b === undefined : b !== undefined && a.ino === b.ino && a.dev === b.dev && a.ctimeNs === b.ctimeNs && a.birthtimeNs === b.birthtimeNs && a.bytes.equals(b.bytes);
 }
 
 /** A catalog folder its owner made read-only is refused as it is: hardening it would undo the lock. */
@@ -196,8 +196,14 @@ export function commitPersona(path: string, expected: PersonaSource | undefined,
     }
     if (bytes === undefined) unlinkSync(path);
     else {
-      try { writeSecretFileAtomic(path, bytes); }
-      catch (error) { throw localWriteFailure(error, path); }
+      try {
+        if (current === undefined) writeSecretFileAtomic(path, bytes);
+        else replaceAgentFile(path, bytes, current);
+      }
+      catch (error) {
+        if (error instanceof AgentFileCatalogChanged) throw new CommandFailure("refused", "CONFLICT", error.message, { remedy: "read the current definition and retry" });
+        throw localWriteFailure(error, path);
+      }
     }
   } finally { lock.release(); }
 }

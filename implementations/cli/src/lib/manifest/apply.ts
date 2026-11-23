@@ -67,6 +67,7 @@ function toLaunchAgent(a: PreparedAgent): MeshLaunchAgent {
     allowSubscribe: a.policy.allowSubscribe,
     allowPublish: a.policy.allowPublish,
     personaPath: a.persona,
+    agentFileSource: a.agentFileSource,
     hash: hashAgent(a),
   };
 }

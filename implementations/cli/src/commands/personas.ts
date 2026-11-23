@@ -187,13 +187,13 @@ async function list(verbose: boolean, running: boolean, values: ConnectValues): 
 interface RunningOverlay {
   space: string;
   sources: Set<string>;
+  liveKinds: Set<EndpointKind>;
   unattributed: Set<EndpointKind>;
 }
 
 function runningMark(overlay: RunningOverlay, sourceId: string | undefined, kind: EndpointKind): string {
-  if (sourceId === undefined) throw new Error("persona catalog snapshot has no source ID");
-  if (overlay.sources.has(sourceId)) return c.green("● running");
-  if (overlay.unattributed.has(kind)) return c.yellow("? running status unknown");
+  if (sourceId !== undefined && overlay.sources.has(sourceId)) return c.green("● running");
+  if ((sourceId === undefined ? overlay.liveKinds : overlay.unattributed).has(kind)) return c.yellow("? running status unknown");
   return c.dim("○ not running");
 }
 
@@ -203,17 +203,20 @@ async function presentSources(values: ConnectValues): Promise<RunningOverlay> {
     if (!ep.presenceView().fresh)
       throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `could not read a current roster for ${oneLine(space)}`, { target: { space } });
     const sources = new Set<string>();
+    const liveKinds = new Set<EndpointKind>();
     const unattributed = new Set<EndpointKind>();
     for (const { status, card } of ep.getRoster()) {
       if (status === "offline") continue;
       const source = card.meta?.[AGENT_FILE_SOURCE_META_KEY];
-      if (isContractDigest(source)) sources.add(source);
-      else {
-        if (card.kind !== "endpoint") unattributed.add("agent");
-        if (card.kind !== "agent") unattributed.add("endpoint");
+      const attributed = isContractDigest(source);
+      if (attributed) sources.add(source);
+      for (const kind of ["agent", "endpoint"] as const) {
+        if (card.kind !== undefined && card.kind !== kind) continue;
+        liveKinds.add(kind);
+        if (!attributed) unattributed.add(kind);
       }
     }
-    return { space, sources, unattributed };
+    return { space, sources, liveKinds, unattributed };
   } finally {
     await ep.stop();
   }

@@ -2,9 +2,11 @@ import { mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { connect, createServer, type Socket } from "node:net";
 import { once } from "node:events";
 import { join } from "node:path";
-import { CotalEndpoint, registry, type Connector } from "@cotal-ai/core";
+import { agentFileSourceId, CotalEndpoint, registry, type Connector, type MeshLaunchAgent } from "@cotal-ai/core";
 import { configFromEnv, MeshAgent, nameEnv } from "@cotal-ai/connector-core";
 import { recordMesh, removeMesh } from "@cotal-ai/workspace";
+import { askManager } from "@cotal-ai/workspace/control";
+import { cliControl } from "../../implementations/cli/src/lib/control.js";
 import { Manager } from "@cotal-ai/manager";
 
 type RunCli = (args: string[]) => Promise<{ code: number | null; out: string }>;
@@ -46,7 +48,9 @@ export async function checkPersonaRunning(
       unattributed.code === 0 && /^sibling\s+\? running status unknown$/m.test(unattributed.out), unattributed);
     check("an edited catalog entry stays running when its source still matches",
       unattributed.code === 0 && /^mismatch\s+● running$/m.test(unattributed.out), unattributed);
-    await Promise.all([legacy.stop(), agent.stop()]);
+    await legacy.stop();
+    await checkRecreatedPersona(space, run, list, check);
+    await agent.stop();
     const stopped = await list();
     check("offline presence does not count as running or unattributed",
       stopped.code === 0 && /^mismatch\s+○ not running$/m.test(stopped.out) && /^sibling\s+○ not running$/m.test(stopped.out), stopped);
@@ -54,6 +58,22 @@ export async function checkPersonaRunning(
     await Promise.all([legacy.stop(), agent.stop()]);
     removeMesh(space);
   }
+}
+
+async function checkRecreatedPersona(space: string, run: RunCli, list: () => ReturnType<RunCli>, check: Check): Promise<void> {
+  const words = ["personas", "new", "mismatch", "--space", space, "--subscribe", ""];
+  const edit = await run([...words, "--force", "--prompt", "Updated persona body."]);
+  const edited = await list();
+  check("an atomic CLI edit keeps the launched entry running",
+    edit.code === 0 && edited.code === 0 && /^mismatch\s+● running$/m.test(edited.out) && edited.out.includes("Updated persona body."), { edit, edited });
+  const removed = await run(["personas", "rm", "mismatch", "--force", "--space", space]);
+  const absent = await list();
+  check("a removed persona has no row while its original seat stays live",
+    removed.code === 0 && absent.code === 0 && !/^mismatch\s/m.test(absent.out), { removed, absent });
+  const created = await run([...words, "--prompt", "Unlaunched replacement."]);
+  const replacement = await list();
+  check("a same-name replacement does not inherit the running seat",
+    created.code === 0 && replacement.code === 0 && /^mismatch\s+○ not running$/m.test(replacement.out) && replacement.out.includes("Unlaunched replacement."), { created, replacement });
 }
 
 export async function checkPersonaCatalogSwap(root: string, servers: string, run: RunCli, check: Check): Promise<void> {
@@ -140,8 +160,28 @@ export async function checkSavedInlineRunning(root: string, servers: string, run
     const listed = await run(["personas", "list", "--running", "--space", space]);
     check("a saved inline seat is running under its catalog entry",
       listed.code === 0 && /^saved\s+(?:owner=\S+\s+)?● running$/m.test(listed.out), listed);
+    await checkManifestSources(root, space, servers, connector.name, run, check);
   } finally {
     try { await caller.stop(); await manager.stop({ withAgents: true }); }
     finally { registry.unregister("connector", connector.name); removeMesh(space); }
   }
+}
+
+async function checkManifestSources(root: string, space: string, servers: string, agent: string, run: RunCli, check: Check): Promise<void> {
+  const dir = join(root, ".cotal", "agents");
+  const path = join(dir, "from-manifest.md");
+  for (const name of ["from-manifest", "never-launched"])
+    writeFileSync(join(dir, `${name}.md`), `---\nname: ${name}\n---\n`);
+  const source = agentFileSourceId(path);
+  const resolved: MeshLaunchAgent = { name: "manifest-seat", agent, personaPath: path, agentFileSource: source,
+    body: "Manifest instructions.", subscribe: [], allowSubscribe: [], allowPublish: [], hash: "manifest123", events: false };
+  const unknown: MeshLaunchAgent = { ...resolved, name: "manifest-inline", personaPath: undefined, agentFileSource: undefined };
+  const spec = { apiVersion: "cotal-launch/v1", space, runId: "persona-manifest", agents: [resolved, unknown] };
+  for (const { name } of spec.agents) {
+    const reply = await askManager(cliControl, space, servers, "launch", { runId: spec.runId, name, spec }, {}, "any");
+    check(`served manager launched ${name}`, reply.ok, reply);
+  }
+  const listed = await run(["personas", "list", "--running", "--space", space]);
+  check("the manifest snapshot uses its captured catalog source and an unbound snapshot leaves other entries unknown",
+    source !== undefined && listed.code === 0 && /^from-manifest\s+● running$/m.test(listed.out) && /^never-launched\s+\? running status unknown$/m.test(listed.out), listed);
 }

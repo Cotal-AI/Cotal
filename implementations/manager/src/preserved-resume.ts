@@ -1,4 +1,4 @@
-import { copyPersonaEndpoints, DEV_OWNER, discardLaunchArtifacts, EpEnvelopeError, identityFromCreds, idFromCreds, loadAgentFile, loadCotalConfig, parsePrincipalKey, principalKey, rejectionText, resolveAuthProvider } from "@cotal-ai/core";
+import { copyPersonaEndpoints, DEV_OWNER, discardLaunchArtifacts, EpEnvelopeError, identityFromCreds, idFromCreds, loadAgentFile, loadCotalConfig, parsePrincipalKey, principalKey, rejectionText, resolveAuthProvider, UNKNOWN_AGENT_FILE_SOURCE } from "@cotal-ai/core";
 import type { Connector, ControlReply, LaunchOpts, LaunchSpec, MeshLaunchAgent, Presence, RuntimeReference, UserAuthLaunch } from "@cotal-ai/core";
 import { agentCredsDir, agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, userAuthStateDir } from "@cotal-ai/workspace";
 import { createHash, randomBytes } from "node:crypto";
@@ -953,6 +953,7 @@ export class PreservedResume {
         return { ok: false, error: `${connector.name} connector does not support exact-session continuation` };
 
       let launchOptions: Record<string, unknown> | undefined;
+      let agentFileSource = entry.launch.source.kind === "inline" ? entry.launch.source.agentFileSource ?? UNKNOWN_AGENT_FILE_SOURCE : undefined;
       let exact = false;
       if (entry.launch.source.kind === "manifest") {
         const launchSource = entry.launch.source;
@@ -970,6 +971,7 @@ export class PreservedResume {
         if (!spec || spec.hash !== launchSource.hash)
           return { ok: false, error: `retained manifest agent ${launchSource.requested} is missing or its hash changed; refusing same-principal resume` };
         launchOptions = spec.launchOptions;
+        agentFileSource = spec.agentFileSource ?? UNKNOWN_AGENT_FILE_SOURCE;
         exact = spec.continuity === "exact";
       } else {
         try {
@@ -1010,7 +1012,7 @@ export class PreservedResume {
           backfillFloor: entry.backfillFloor,
           acceptedToken: entry.identity.mode === "static" ? entry.identity.issued?.acceptedToken : undefined,
           configPath: entry.launch.source.configPath,
-          agentFileSource: entry.launch.source.kind === "inline" ? entry.launch.source.agentFileSource : undefined,
+          agentFileSource,
           model: entry.launch.model,
           variant: entry.launch.variant,
           launchOptions,
