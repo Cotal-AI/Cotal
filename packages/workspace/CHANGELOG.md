@@ -1,5 +1,15 @@
 # @cotal-ai/workspace
 
+## 0.176.0
+
+### Patch Changes
+
+- 56b6dc1: Overlapping CLI commands now report an installation at most once per UTC day. Each command still reports its own outcome.
+- 5c49fdd: Keep space registrations that cannot be read, show the correct broker-only restart command, and omit the unsupported `--new-instance` flag from manager preset start help.
+- Updated dependencies [e9bcb31]
+- Updated dependencies [089f68d]
+  - @cotal-ai/core@0.176.0
+
 ## 0.175.3
 
 ### Patch Changes
