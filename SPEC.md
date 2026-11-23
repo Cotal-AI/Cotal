@@ -382,6 +382,7 @@ Presence is a per-space directory keyed by instance id. NATS binding: JetStream 
 | `runtime` | `PresenceRuntime` | MAY | the OS process holding this record's mesh connection, as that process observed itself: `{ id, startedAt, source }`. `id` is an opaque CSPRNG token minted once per (OS process, `lifecycleUid`) scope and MUST NOT be reused or span two lifecycle UIDs. A new process or lifecycle scope MUST get a new id. `startedAt` is the epoch ms that OS process started, read in-process (`performance.timeOrigin`), shared by all endpoints in the process. A lifecycle registered later carries the process's age, not its lifecycle age. It MUST NOT date a launch request, registration, heartbeat, activity, separate parent or model harness process. `source` is the closed set `endpoint-process`; an observer treats any other value as unsupported. Status, activity, heartbeats and in-process reconnects within the scope leave it unchanged. An offline record keeps it, so `now - startedAt` dates a running process only while the record is live. It carries no pid, host, path, command line or environment. Missing means not reported, never zero |
 | `channelModes` | `Record<string, ChannelMode>` | MAY | per-channel attention overrides (`ChannelMode` = `quiet` \| `muted`), keyed by concrete channel name. Advisory, **not** access control (the broker still authorises and delivers); a receive-side preference, reset on restart |
 | `prompts` | `PresencePrompts` | MAY | `{ open, seq }`, the prompts this process serves on its `agent` endpoint (§13.22). `open` counts the prompts that are `open` or `sent`. `seq` is an integer that goes up by one each time a prompt opens or changes state; it restarts with the process, so it means something only together with `runtime.id`, and under one `runtime.id` it never goes back, also when the process stops serving the endpoint and serves it again. Present exactly while the process serves that endpoint and the broker accepted its subscription on the current connection (§13.21). Each serve takes a fresh `seq` when it starts, one above every `seq` the process used under its `runtime.id`, and shows `open` 0 with it until the server sets the field, so one `(runtime.id, seq)` never names two states. It carries no prompt content and no authority. An offline record omits it. A reader learns from it that it should read the prompts (§13.22, reader rules) |
+| `agentEndpoint` | `PresenceAgentEndpoint` | MAY | `{ interrupt, turn, images, usage }`, four booleans: which `agent` endpoint commands this process serves now (§13.22). `interrupt` and `turn` are true only while the connector would accept that call, `images` only with `turn` and when the harness takes images, and `usage` when the connector reports the harness's usage. A false flag means that call answers `unimplemented`, or `{ supported: false }` for `usage`. It follows what the connector runs at the moment, so it can change within a lifecycle, and the process writes presence when it does. Present under the same gate as `prompts`, with all four flags false when the process serves the endpoint and runs none of them. An offline record omits it. Absent means the process serves none of them. It carries no authority: a caller still gets the endpoint's own answer |
 | `ts` | number | MUST | epoch ms of last heartbeat |
 
 `AgentCard`:
@@ -410,9 +411,10 @@ Readers MUST drop a record whose `card.id` differs from its KV key, whose `card.
 blank or does not have the type given above, whose `status` does not have the type given
 above, whose `ts` is not a finite number, whose
 `card.role`, `activity` or `attention` is present and not a string, whose `condition` is present
-and is not an object with a string `code`, or whose `prompts` is present and is not an object with
-non-negative integer `open` and `seq`, and SHOULD report the rejection on their recoverable
-diagnostic path. A `condition` of `null`, a bare string or an object with no `code` is dropped.
+and is not an object with a string `code`, whose `prompts` is present and is not an object with
+non-negative integer `open` and `seq`, or whose `agentEndpoint` is present and is not an object with
+boolean `interrupt`, `turn`, `images` and `usage`, and SHOULD report the rejection on their
+recoverable diagnostic path. A `condition` of `null`, a bare string or an object with no `code` is dropped.
 A reader that kept a record whose `ts` is missing or text such as `"nope"` could not age it past the liveness window, so it would
 show its peer live after the key expired. Readers print the string fields as text, and an object
 such as `{"toString":null,"valueOf":null}` throws when converted, so one kept row would fail every
@@ -6914,7 +6916,8 @@ interface CommandEntry {
 
 `{ supported: false }` means the agent's connector runs no commands now. It can change within a
 lifecycle, such as when the harness extension that runs them starts or stops, so a reader asks again
-later. Meanwhile `command` and `interrupt` name the cause in their `unimplemented` message.
+later. Meanwhile `command`, `turn` and `interrupt` name the cause in their `unimplemented` message,
+and the presence `agentEndpoint` field (§6) shows `interrupt`, `turn` and `images` as false.
 `{ supported: true }` with an empty list means it runs commands and has none. A list carries at most 512 entries and nothing else
 the harness keeps about a command, such as a file path or a skill's body. The agent leaves out a
 command whose name `command` cannot carry and shortens a longer text, marking the cut. A failed or
@@ -6980,7 +6983,7 @@ stops, and its outcome leaves with the process.
 | `command-state` | `id` is not known to the agent, or forgotten | `not-found`, `not-executed` |
 | `command-state` | Otherwise | `ok`, with `{ state }` |
 | `interrupt` | The caller principal is the agent itself | `permission-denied`, `not-executed`, whatever its row |
-| `interrupt` | The agent's connector cannot interrupt a turn | `unimplemented`, `not-executed` |
+| `interrupt` | The agent's connector cannot interrupt a turn, or cannot now | `unimplemented`, `not-executed` |
 | `interrupt` | The agent is stopping | `unavailable`, `not-executed` |
 | `interrupt` | The harness failed | `internal`, `unknown`: the turn may have stopped |
 | `interrupt` | No turn was running | `ok`, with `{ state: "idle" }`. Nothing changes. |
@@ -6992,7 +6995,7 @@ stops, and its outcome leaves with the process.
 | `set-name` | Another live instance has the name, compared lowercased | `already-exists`, `not-executed`, with `name-refused` `{ reason: "name-taken" }` |
 | `set-name` | Otherwise | `ok`, with `{ name }`: the card carries the name |
 | `turn` | The caller principal is the agent itself | `permission-denied`, `not-executed`, whatever its row |
-| `turn` | The agent's connector takes no turn from its owner | `unimplemented`, `not-executed` |
+| `turn` | The agent's connector takes no turn from its owner, or none now | `unimplemented`, `not-executed` |
 | `turn` | `images` is present and the agent's harness takes no images | `unimplemented`, `not-executed` |
 | `turn` | `text` is empty and `images` is absent | `bad-request`, `not-executed` |
 | `turn` | The agent is stopping | `unavailable`, `not-executed` |
@@ -7038,6 +7041,11 @@ connector then ends that turn as it ends one its user stopped, and the agent tak
 command. `interrupt` never moves a command's state:
 a `taken` or `started` command whose turn it stops keeps its state, and a `queued` command stays
 queued. A command queued behind a turn that never ends waits until the owner interrupts that turn.
+
+**What the agent serves now.** The agent's presence `agentEndpoint` field (§6) says which of
+`interrupt`, `turn`, images with a turn, and `usage` it serves at the moment. A caller that has
+another way to reach the agent, such as a launcher's own interrupt, picks one path from that field
+before it sends anything, and reports that path's failure as it is.
 
 The bounds:
 
@@ -8149,6 +8157,7 @@ Normative revisions of this document, newest first. Dated snapshots per §11; th
 
 | Date | Revision |
 | --- | --- |
+| 2026-11-23 | **Presence says which `agent` endpoint commands a process serves now (§6, §13.22), additive.** Presence gains `agentEndpoint: { interrupt, turn, images, usage }`, four required booleans, under the same gate as `prompts`. The process derives it from what its connector runs at the moment and writes presence when it changes, so a caller can pick the endpoint or another path before it sends anything. A reader drops a record whose `agentEndpoint` is not that shape. While `commands` answers `{ supported: false }`, `turn` now answers `unimplemented` with the cause, as `command` and `interrupt` do. `spec/cotal.schema.json` gains `PresenceAgentEndpoint`. No subject, cluster or digest changes. |
 | 2026-11-23 | **Opt-in launch fields for permission prompts and reasoning (§9, §13.7), additive.** The Manager cluster advances to revision 54. Its `spawn` input takes the optional booleans `askPermissions`, which launches the harness asking before it uses a tool so its prompts reach the `agent` endpoint, and `reasoningEvents`, which publishes the model's reasoning on the event plane. Both default off. The manager refuses a field the connector does not declare before any provisioning, refuses `reasoningEvents` without the event plane, and keeps an accepted field with the seat across restarts. Every `status.connectors` row requires both as the connector's declarations, read as false when an installed extension's cache lacks them. No subject changes. |
 | 2026-11-23 | **The owner gives an agent a turn and reads its usage (§13.21, §13.22, Appendix B), additive.** The `agent` cluster advances to revision 5 with `turn`, capability `agent.turn.start`, input `{ text, images? }` and output `{ id }`, and `usage`, capability `agent.usage.read`, input `{}` and output `{ supported: false }` or `{ supported: true, context?: { used, size }, cost?: { amount, currency } }`, both `authorities: ["owner"]`. `turn` queues the owner's own words, with up to 16 images, on the queue `command` uses, so `command-state` and `command-cancel` take its id and the bound of 8 counts both. It refuses the agent itself as `permission-denied`, a connector that takes no turn, or images where the harness takes none, as `unimplemented`, and a turn with no text and no image as `bad-request`. `usage` answers what the harness reported, waiting at most 10 s, and `unavailable` when it did not. An `interactive` ledger row gains the `owner` rows for both; no `grant` row admits them. Earlier commands and their digests are unchanged. |
 | 2026-11-23 | **`commands` can answer `supported: false` for a while (§13.22), clarification.** `{ supported: false }` means the connector runs no commands now. It can change within a lifecycle, as for a Claude Code seat whose command mod is not running, so a reader asks again later. `command` and `interrupt` then answer `unimplemented`, `not-executed`, with the cause in the message. No subject, schema or digest changes. |

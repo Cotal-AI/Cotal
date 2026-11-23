@@ -71,6 +71,8 @@ Declare only the features your connector implements:
   The session reads `config.reasoningEvents` and publishes reasoning only when it is true.
 - Set `interruptKey` to the bytes of the key that stops the application's live turn, such as `"\x1b"` for Escape.
   The manager's `interrupt` command writes it into the seat's terminal. Declare it only after a live check shows the key ending a turn.
+- Declare nothing for the agent endpoint's `interrupt`, `turn`, images and `usage`.
+  Each seat's presence says which of them it serves now, derived from the dispatcher its session hands `MeshAgent` ([agent commands](connector-runtime-reference.mdx#agent-commands)).
 - Use `supportsSessionContinuation` for recovery of the same meshed session after a process restart.
   Use `supportsSessionReopen` only when an existing named session can be reopened without creating a replacement.
   Set `supportsFreshStart` when a launch without a session handle creates a new session.

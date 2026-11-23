@@ -4,7 +4,7 @@ import type { EndpointIdentity } from "./endpoint-identity.js";
 import type { ConsumerInfo } from "@nats-io/jetstream";
 import type { KV, KvEntry } from "@nats-io/kv";
 import { TimeoutError } from "@nats-io/transport-node";
-import type { Presence, PresenceStatus, PresenceCondition, PresencePrompts, AttentionMode, ChannelMode } from "./types.js";
+import type { Presence, PresenceAgentEndpoint, PresenceStatus, PresenceCondition, PresencePrompts, AttentionMode, ChannelMode } from "./types.js";
 import { processRuntime } from "./process-runtime.js";
 import { lastKvEntries } from "./kv-scan.js";
 import { TTL_RECONCILE_CANARY_KEY } from "./streams.js";
@@ -18,6 +18,8 @@ type PresenceWatch = Awaited<ReturnType<KV["watch"]>>;
 export interface EndpointPresenceDeps {
   /** The `prompts` field this process's presence carries now, or none (SPEC §6). */
   prompts: () => PresencePrompts | undefined;
+  /** The `agentEndpoint` field this process's presence carries now, or none (SPEC §6). */
+  agentEndpoint: () => PresenceAgentEndpoint | undefined;
   notLiveMsg: () => string;
   bindWatch: (kv: KV) => Promise<{ iter: PresenceWatch; info: ConsumerInfo } | undefined>;
   retireWatch: (iter: PresenceWatch) => void;
@@ -399,6 +401,7 @@ export class EndpointPresence {
       attention: this.attentionMode,
       channelModes: this.channelModes,
       prompts: this.deps.prompts(),
+      agentEndpoint: this.deps.agentEndpoint(),
       ts: Date.now(),
     };
     // Wire contract (SPEC §6): an OFFLINE record must not carry the advisory attention fields or
@@ -780,7 +783,8 @@ export class EndpointPresence {
       prev.attention === p.attention &&
       sameChannelModes(prev.channelModes, p.channelModes) &&
       prev.prompts?.open === p.prompts?.open &&
-      prev.prompts?.seq === p.prompts?.seq
+      prev.prompts?.seq === p.prompts?.seq &&
+      sameAgentEndpoint(prev.agentEndpoint, p.agentEndpoint)
     ) {
       this.roster.set(id, p);
       return;
@@ -801,9 +805,9 @@ export class EndpointPresence {
    *  not show a stale `[focus]` or "locally muted #x" hint - SPEC: attention removed on offline sweep,
    *  channel modes reset on restart. `statusSince` goes too: it dated the live status, and an observer
    *  that derives offline from a stale heartbeat does not know when the peer left. `prompts` goes as
-   *  well: an offline process serves nothing. card/activity/ts are kept. */
+   *  well, with `agentEndpoint`: an offline process serves nothing. card/activity/ts are kept. */
   private toOffline(p: Presence): Presence {
-    return { ...p, status: "offline", statusSince: undefined, attention: undefined, channelModes: undefined, prompts: undefined };
+    return { ...p, status: "offline", statusSince: undefined, attention: undefined, channelModes: undefined, prompts: undefined, agentEndpoint: undefined };
   }
 
   /** Mark a known peer offline (on KV delete/purge), keeping it in the roster. */
@@ -885,4 +889,8 @@ function sameCondition(a: PresenceCondition | undefined, b: PresenceCondition | 
     && a?.source === b?.source
     && a?.message === b?.message
     && a?.since === b?.since;
+}
+
+function sameAgentEndpoint(a: PresenceAgentEndpoint | undefined, b: PresenceAgentEndpoint | undefined): boolean {
+  return a?.interrupt === b?.interrupt && a?.turn === b?.turn && a?.images === b?.images && a?.usage === b?.usage;
 }
