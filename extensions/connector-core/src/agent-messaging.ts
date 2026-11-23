@@ -400,10 +400,9 @@ export class AgentMessaging {
     // target refuses naming the read's error (never "no peer"), and the DM does not go out.
     const { roster, failure } = await this.readRoster();
     const address = target;
-    const owner = this.ep.principal.owner;
     const peer = this.senders.has(address) || (this.config.userAuth && parsePrincipalKey(address))
       ? roster.find((p) => p.card.id !== this.id && p.card.id === address)
-      : this.config.userAuth ? roster.find((p) => p.card.id !== this.id && p.card.id === `${owner}.${address.trim()}`)
+      : this.config.userAuth ? roster.find((p) => p.card.id !== this.id && p.card.id === `${this.ep.principal.owner}.${address.trim()}`)
         : this.resolvePeer(address);
     // #384: a target with no roster row may still be a peer that messaged us (its id is
     // authenticated), which a one-shot `cotal send` always is. The DM goes to that identity and the
