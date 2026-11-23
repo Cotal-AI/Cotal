@@ -214,6 +214,8 @@ export const opencodeConnector: Connector = {
   // changed. It takes the PRINCIPAL: a display name is not an identity on this mesh, and a
   // name-keyed channel would fuse two principals' streams onto one subject.
   eventChannel,
+  // A session serves OpenCode's permission asks and questions on the agent endpoint (prompts.ts).
+  prompts: true,
   supportsLaunchValidation: true,
   buildLaunch(opts: LaunchOpts): LaunchSpec {
     if (opts.continueSession) throw new Error("opencode connector does not support exact-session continuation");

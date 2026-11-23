@@ -155,6 +155,26 @@ in-process plugin does everything.
 The generic tool surface and the inbound-message model are shared across connectors: see
 [mcp-tools.md](mcp-tools.mdx) and [connect-claude.md](connect-claude.mdx).
 
+## Prompts
+
+A seat launches with OpenCode's `permission` set to `allow`, so it asks nothing. A persona whose
+`launchOptions` set an asking permission, such as `{permission: {bash: ask}}`, makes OpenCode ask.
+On a signed-in space each ask then opens a prompt on the agent's `agent` endpoint, on 1.x and 2.x,
+while OpenCode's own dialog stays open. The first reply wins.
+
+- **A permission ask** offers Allow once, Allow always and Reject, and shows what the call would
+  touch. On 1.x, Allow always allows the ask's patterns for the rest of the OpenCode session. On
+  2.x it saves an allow rule for the project. A note on Reject reaches the model as OpenCode's
+  rejection message. An ask too large to show offers only Reject.
+- **A question** from OpenCode's question tool opens a form with one field per question. A
+  question's listed choices are offered as a choice, and typing an answer of your own works only
+  in OpenCode's dialog. Dismiss rejects the question. A 2.x form with a field the form profile has
+  no words for, such as an external link or a conditional field, stays with OpenCode's dialog.
+- An answer given in OpenCode's dialog closes the prompt, and the end of the turn withdraws a
+  prompt nobody answered.
+
+Asks from subagent sessions under the seat's session are served too, scoped to that session.
+
 ## Startup diagnostics
 
 The launcher waits 120 seconds for the plugin's session handshake and keeps poking the server throughout that window.
