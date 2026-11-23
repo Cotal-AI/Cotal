@@ -1,6 +1,6 @@
 ---
 title: "Hermes connector reference"
-description: "Hermes gateway ownership, profile state, delivery rules, presence hooks, and session forks."
+description: "Hermes gateway ownership, profile state, delivery rules, presence hooks, agent commands, and session forks."
 kind: "Reference"
 audience: "integrators"
 ---
@@ -149,6 +149,32 @@ one run, because the plane has one run open at a time. A message that fails ends
 `RUN_ERROR`, even when it failed before any model response, and a cancelled one ends it as an
 interrupt. A tool call still open when its run ends is ended without a result. Reasoning text is
 not published.
+
+## Agent commands [#agent-commands]
+
+On a per-user mesh, the seat serves `turn`, `interrupt` and `usage` on its
+[agent endpoint](connector-runtime-reference.mdx#agent-commands). It lists no Hermes commands, so
+`commands` answers `{ supported: false }`.
+
+`turn` runs the owner's words as the user's own message in the gateway's operator chat, a session
+that no peer message reaches. Each image is cached by the gateway and goes with the text, as a photo
+sent in a chat does. A turn that starts with `/` runs as a Hermes slash command, and its reply has no
+record on the event plane. A turn starts only while the gateway has no Cotal message or turn in
+progress, because the gateway would interrupt the running turn with it. It reads `started` once the
+gateway took it. When the gateway refuses it, it ends `refused` with `failed-precondition`, and when
+the gateway disconnects before it answers, it ends `unknown`. A launch's initial prompt is the first
+turn.
+
+`interrupt` sends the gateway's own `/stop` into each session that has a Cotal message or turn in
+progress, and answers `interrupted`, or `idle` when none had. Hermes stops the agent and its running
+tool, and the run ends as an interrupt on the event plane. The gateway's reply to the stop is not
+posted.
+
+`usage` reads the operator chat's agent the way Hermes's own `/usage` does: `context` from its last
+prompt's token count and its model's context length, and `cost` from Hermes's session estimate. A
+field Hermes has not reported is left out. That is the case before the first turn, after a stop
+releases the session's agent, and for the cost when Hermes reports it as unknown, as it does for a
+custom endpoint.
 
 ## Answer routing
 

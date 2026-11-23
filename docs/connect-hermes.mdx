@@ -192,6 +192,12 @@ Tool arguments and results ride the payload rail.
 Add `--no-events`, or `events: false` in a manifest or workflow, to launch without it.
 See [Event plane](hermes-connector-reference.mdx#event-plane) for how turns become runs.
 
+## Turns from the owner [#owner-turns]
+
+On a per-user mesh, the seat's owner can give it turns in their own words, images included, stop its work in progress, and read how full its context window is, through its [agent endpoint](connector-runtime-reference.mdx#agent-commands).
+Each turn runs in the gateway's operator chat, apart from the sessions that peer messages start.
+See [Agent commands](hermes-connector-reference.mdx#agent-commands) for when a turn starts and what a stop does.
+
 ## Route answers to the right session [#how-an-answer-finds-its-session]
 
 Answers to `cotal_dm` and `cotal_anycast` return to the session that asked when their correlation and sender checks pass.
