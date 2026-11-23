@@ -155,8 +155,8 @@ export interface UpdateRuntime {
   adoptUpdateChild?(): Promise<boolean | void>;
   /** The native updater can survive its daemon's restart and verify automatic activation. */
   automaticGenerationWait?: boolean;
-  /** Bring what connectors installed in their harnesses to this release; one line per connector. */
-  refreshConnectors(): Promise<readonly string[]>;
+  /** Bring what connectors installed in their harnesses to this release; report each completed refresh. */
+  refreshConnectors(report: (line: string) => void): Promise<void>;
   /** Bring the entries client setup wrote in ACP clients to this release, once the operator
    *  extensions that provide them are current; one line per client. */
   refreshClients(): Promise<readonly string[]>;
@@ -753,7 +753,7 @@ async function reconcileCurrent(
   try {
     rt.out("Refreshing connector integrations");
     const refreshStarted = Date.now();
-    for (const line of await rt.refreshConnectors()) rt.out(c.green(`✓ ${line}`));
+    await rt.refreshConnectors((line) => rt.out(c.green(`✓ ${line}`)));
     rt.out(`✓ connector integrations refreshed (${((Date.now() - refreshStarted) / 1000).toFixed(1)} s)`);
   } catch (e) {
     rt.err(c.red(`✗ connector installs: ${message(e)}`));

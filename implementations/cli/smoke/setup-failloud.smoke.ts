@@ -15,22 +15,34 @@
 import nodeAssert from "node:assert/strict";
 import { countedAssert, emitSentinel } from "@cotal-ai/smoke-kit";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { type Connector } from "@cotal-ai/core";
+import { registry, type Connector, type ConnectorSetupProvider } from "@cotal-ai/core";
 import { setInstalledExtensionsEnabled } from "../src/ext-loader.js";
-import { connectorSetupProvider, setupConnectorSurface } from "../src/commands/setup.js";
+import { connectorSetupProvider, refreshConnectorInstalls, setupConnectorSurface } from "../src/commands/setup.js";
 const counted = countedAssert(nodeAssert);
 const assert: typeof nodeAssert = counted.assert;
 const cells = counted.cells;
 
-const tmp = mkdtempSync(join(import.meta.dirname, ".setup-failloud-"));
+const tmp = mkdtempSync(join(tmpdir(), "cotal-setup-failloud-"));
 process.env.XDG_CONFIG_HOME = tmp;
+process.env.COTAL_HOME = join(tmp, "home");
 setInstalledExtensionsEnabled(true); // published-binary posture: an unregistered connector materializes from the manifest
 
 const manifestPath = join(tmp, "cotal", "extensions", "extensions.json");
 mkdirSync(join(tmp, "cotal", "extensions"), { recursive: true });
 const writeManifest = (extensions: unknown[]) => writeFileSync(manifestPath, JSON.stringify({ extensions }));
 const launch = () => ({ command: "true", args: [] });
+
+function registerRefresh(name: string, run: () => Promise<string> | string): void {
+  const connector: Connector = { kind: "connector", name, setup: { kind: "connector-setup", name }, buildLaunch: launch };
+  const provider: ConnectorSetupProvider = {
+    kind: "connector-setup", name,
+    available: () => false,
+    refresh: { name: "refresh", title: `Refresh ${name}`, explain: "Refresh the test integration", run },
+  };
+  registry.register(connector, provider);
+}
 
 try {
   // Removed: absent from the manifest means absent from the surface setup derives membership from.
@@ -40,9 +52,8 @@ try {
   // Broken-present: a connector this CLI has never heard of IS in the manifest but has no package on
   // disk. The same discovery boundary guided setup uses must propagate the real repair diagnostic
   // rather than dropping the connector or reporting a deliberate removal.
-  writeManifest([
-    { pkg: "@example/connector-unfamiliar", version: "9.9.9", spec: ".", provides: [{ kind: "connector", name: "unfamiliar" }], commands: [] },
-  ]);
+  const brokenConnector = { pkg: "@example/connector-unfamiliar", version: "9.9.9", spec: ".", provides: [{ kind: "connector", name: "unfamiliar" }], commands: [] };
+  writeManifest([brokenConnector]);
   await assert.rejects(setupConnectorSurface(), /is in the manifest but not installed/, "a broken-present unfamiliar connector must fail loud");
 
   // A healthy connector that declares no setup provider owns no setup: no provider, no crash.
@@ -63,6 +74,20 @@ try {
     /no installed extension provides connector-setup/,
     "a declared-but-unresolvable setup provider must fail loud",
   );
+
+  writeManifest([brokenConnector]);
+  registry.register(phantom);
+  registerRefresh("rejected-refresh", async () => { throw new Error("ownership refused\nUse the owning home."); });
+  registerRefresh("working-refresh", () => "repaired");
+  const reported: string[] = [];
+  process.argv[1] = join(import.meta.dirname, "..", "..", "..", "bin", "cotal.ts");
+  await assert.rejects(refreshConnectorInstalls((line) => reported.push(line)), (error: Error) => {
+    assert.match(error.message, /^failloud-phantom: no installed extension provides connector-setup/m);
+    assert.match(error.message, /^rejected-refresh: ownership refused\nUse the owning home\.$/m);
+    assert.match(error.message, /^unfamiliar: .* is in the manifest but not installed/m);
+    return true;
+  });
+  assert.deepEqual(reported, ["Refresh working-refresh: repaired"], "a later provider still refreshes and reports its result");
 
   console.log("setup-failloud.smoke: all assertions passed");
 } finally {

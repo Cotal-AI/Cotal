@@ -24,7 +24,7 @@ for (const [self, latest] of [[false, "0.13.2"], [true, "0.13.2"], [true, "0.13.
         return outcome === "legacy" ? "legacy" : "none";
       },
       reconcile: async () => { effects.push("reconcile"); },
-      refreshConnectors: async () => [], refreshClients: async () => [],
+      refreshConnectors: async () => {}, refreshClients: async () => [],
       extensions: () => [],
       claimUpdatePass: () => () => {},
       npm: (args) => {
@@ -65,7 +65,7 @@ for (const denied of [false, true]) {
     adoptUpdateChild: async () => { effects.push("adopt"); if (denied) throw new Error("scope denied"); },
     reconcile: async () => { effects.push("reconcile"); },
     reportRunningManager: async () => "none",
-    refreshConnectors: async () => [], refreshClients: async () => [],
+    refreshConnectors: async () => {}, refreshClients: async () => [],
     extensions: () => [],
     claimUpdatePass: () => () => {},
     waitForInstalledGeneration: async () => { effects.push("wait"); },
