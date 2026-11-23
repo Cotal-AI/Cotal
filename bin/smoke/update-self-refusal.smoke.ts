@@ -28,11 +28,13 @@ const clean = Object.fromEntries(Object.entries(process.env).filter(([key]) => !
 const env: NodeJS.ProcessEnv = { ...clean, HOME: home, XDG_CONFIG_HOME: config, XDG_RUNTIME_DIR: runtime, COTAL_HOME: cotal, COTAL_NO_UPDATE_CHECK: "1", DO_NOT_TRACK: "1", NO_COLOR: "1", npm_config_prefix: prefix };
 const run = (overrides: NodeJS.ProcessEnv = {}) => spawnSync(process.execPath, [join(installed, "dist/cotal.js"), "update", "--self"], { cwd: root, env: { ...env, ...overrides }, encoding: "utf8", timeout: 30_000 });
 const packageBefore = readFileSync(join(installed, "package.json"), "utf8");
+const connectorRoot = join(config, "cotal"), extensions = join(connectorRoot, "extensions"), seed = join(connectorRoot, "seed");
+mkdirSync(extensions, { recursive: true, mode: 0o700 });
 try {
   const directories = [installed, join(installed, "dist"), join(prefix, "lib/node_modules"), join(prefix, "lib")];
-  for (const paths of [directories, [join(prefix, "lib/node_modules")], []]) {
+  for (const paths of [directories, [join(prefix, "lib/node_modules")], [extensions], []]) {
     for (const path of paths) chmodSync(path, 0o500);
-    // Registry unavailability returns success without replacement, after real destination preflight.
+    // Registry unavailability returns success after permission preflight without replacing packages.
     const repaired = run({ npm_config_registry: "http://127.0.0.1:1", npm_config_fetch_retries: "0", npm_config_fetch_timeout: "1000" });
     check.equal(repaired.status, 0, repaired.stderr);
     check.equal(repaired.stdout.trim(), paths.length ? "The registry cannot be reached; no installed packages were replaced." : "The registry cannot be reached; nothing was changed.");
@@ -51,7 +53,6 @@ const chmod = fs.chmodSync;
 fs.chmodSync = (path, mode) => { if (path === ${JSON.stringify(installed)}) throw Object.assign(new Error('read-only filesystem'), { code: 'EROFS' }); return chmod(path, mode); };
 syncBuiltinESMExports();\n`);
   const nodeOptions = env.NODE_OPTIONS;
-  const connectorRoot = join(config, "cotal"), seed = join(connectorRoot, "seed");
   mkdirSync(seed, { recursive: true, mode: 0o700 });
   chmodSync(seed, 0o500);
   chmodSync(connectorRoot, 0o500);
