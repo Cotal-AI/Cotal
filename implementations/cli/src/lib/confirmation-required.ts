@@ -1,4 +1,4 @@
-import { inputDisabledByFlag } from "@cotal-ai/workspace";
+import { codeSpan, ConfirmationRequired, inputDisabledByFlag, presentationOf } from "@cotal-ai/workspace";
 import { shellWord } from "./endpoint-errors.js";
 
 /** The refusal sentence for a missing `--yes` when a command cannot ask, naming what kept it from
@@ -17,6 +17,14 @@ export function yesRequired(action: string, json: boolean): string {
 export function serviceConfirmCommand(verb: string, name: string, space: string, values: { instance?: unknown; "with-agents"?: unknown }): string {
   const instance = values.instance === undefined ? "" : ` --instance ${shellWord(String(values.instance))}`;
   return `cotal svc ${verb} ${shellWord(name)} --space ${shellWord(space)}${instance}${values["with-agents"] === true ? " --with-agents" : ""} --yes`;
+}
+
+export function teamRemovalConfirmation(message: string, target: { root: string; space: string; deploymentId: string }, values: Parameters<typeof presentationOf>[0]): ConfirmationRequired {
+  const output = presentationOf(values);
+  const command = `cotal team remove ${target.deploymentId}${targetWords({ space: target.space })}${output === "rich" ? "" : ` --${output}`}`;
+  return new ConfirmationRequired(message, {
+    target, remedy: `review it with ${codeSpan(`${command} --dry-run`)}, then run ${codeSpan(`${command} --yes`)}`,
+  });
 }
 
 /** The `--space`, `--server` and `--creds` a refused command was given, for the confirming command
