@@ -2,7 +2,8 @@
 // protocol to drive the host's turn loop, and journals everything it sees to
 // FAKE_CODEX_LOG (JSONL) so the smoke can assert on it. Turn behavior is scripted by
 // the injected text: TOOL:roster → call the cotal_* MCP endpoint the host is serving;
-// TOOLREC → also leave in the rollout the two records a real tool call leaves;
+// TOOLREC → also leave in the rollout the two records a real tool call leaves; PERMREQ → ask for
+// more permissions as the `request_permissions` tool does;
 // SLOW → hold the turn open ~1.2s (a steer window); HANG → hold until an interrupt
 // arrives, else self-interrupt after ~1s; FAIL → fail in the same frame the turn started in;
 // THINK → stream a reasoning summary as summary deltas before saving it;
@@ -376,6 +377,14 @@ async function runTurn(text) {
   }
   if (text.includes("APPROVAL")) {
     await serverRequest("item/commandExecution/requestApproval", { threadId: THREAD, turnId, itemId: `cmd_${turnSeq}` });
+  }
+  if (text.includes("PERMREQ")) {
+    // The request codex 0.162 sends when the model calls its `request_permissions` tool.
+    const answer = await serverRequest("item/permissions/requestApproval", {
+      threadId: THREAD, turnId, itemId: `perm_${turnSeq}`, environmentId: "local", startedAtMs: Date.now(), cwd: process.cwd(),
+      reason: "fetch a page", permissions: { network: { enabled: true }, fileSystem: null },
+    });
+    journal({ ev: "permissionsAnswer", answer });
   }
   if (text.includes("SOLOTUI") && !soloUsed) {
     // A turn the human started with NOTHING of ours open. The host must still pump its buffered
