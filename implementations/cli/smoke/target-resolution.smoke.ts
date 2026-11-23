@@ -174,6 +174,30 @@ const QUESTION = "Which one?";
           retry.status === 0 && retry.stdout?.startsWith(`Mesh: ${space}\n`) && retry.stdout.includes("Saved endpoint reference") && retry.stdout.includes(`example.${space}`) && getCurrent() === undefined, shown(retry));
       }
     }
+    for (const [verb, selector, flags, format] of [
+      ["remove", "probe", ["--plain"], "--plain"],
+      ["remove", "probe", ["-y", "-j"], "--json"],
+      ["describe", "manager", ["--plain"], "--plain"],
+      ["describe", "manager", ["--json"], "--json"],
+    ] as const) {
+      const refused = run(["endpoint", verb, selector, ...flags], root);
+      const error = envelope(refused)?.error;
+      const remedy: unknown = error?.remedy;
+      const guidance = typeof remedy === "string" ? remedy : refused.stderr.split("\nNext\n")[1] ?? "";
+      const retries = Array.from(guidance.matchAll(/`([^`]+)`/g), (match) => match[1]!);
+      check(`ambiguous endpoint ${verb} ${format} names both spaces and prints unconfirmed retries`,
+        refused.status === 2 && /TARGET_AMBIGUOUS/.test(error?.code ?? refused.stderr) && /registered spaces: beta, gamma/.test(error?.message ?? refused.stderr) &&
+        retries.length === 2 && ["beta", "gamma"].every((space, i) => retries[i]?.endsWith(` endpoint ${verb} ${selector} ${format} --space ${space}`)), shown(refused));
+      if (verb === "remove" && format === "--plain" && process.platform !== "win32") {
+        const retry = spawnSync("sh", ["-c", retries[0] ?? ""], { cwd: root, env, encoding: "utf8", timeout: 120_000 });
+        check("the printed remove retry still requires confirmation and keeps the reference",
+          retry.status === 1 && retry.stderr.includes("--yes") && run(["endpoint", "show", "probe", "--space", "beta"], root).status === 0, shown(retry));
+      }
+    }
+    const typo = run(["endpoint", "describe", "manager", "--space", "space-typo", "--json"], root);
+    const typoError = envelope(typo)?.error;
+    check("endpoint describe names an unknown explicit space and points to the space list",
+      typo.status === 2 && typoError?.code === "TARGET_NOT_FOUND" && typoError.message.includes('"space-typo"') && typoError.remedy?.includes("`cotal space`"), shown(typo));
     for (const space of ["beta", "gamma"]) {
       const picked = run(["who", "--plain", "--space", space], root);
       check(`the exact roster read for ${space} succeeds without choosing a default`, picked.status === 0 && picked.stdout.startsWith(`Mesh: ${space}\n`) && getCurrent() === undefined, shown(picked));
