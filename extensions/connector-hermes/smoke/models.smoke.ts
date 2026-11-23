@@ -16,7 +16,7 @@ import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 import { createSuite, skipSuite } from "@cotal-ai/smoke-kit";
 import { hermesConnector } from "../src/extension.js";
-import { listHermesModels } from "../src/models.js";
+import { hermesEfforts, listHermesModels } from "../src/models.js";
 
 if (process.platform === "win32") skipSuite("the Hermes connector is Unix-only");
 
@@ -34,6 +34,8 @@ const uvArgs = join(root, "uv-args");
 const pidFile = join(root, "pid");
 mkdirSync(join(root, "py", "hermes_cli"), { recursive: true });
 writeFileSync(join(root, "py", "hermes_cli", "__init__.py"), "");
+writeFileSync(join(root, "py", "hermes_constants.py"), 'VALID_REASONING_EFFORTS = ("low", "high", "max")\n');
+const EFFORTS = [{ name: "none" }, { name: "low" }, { name: "high" }, { name: "max" }];
 writeFileSync(join(root, "py", "hermes_cli", "runtime_provider.py"), `
 import json, os, sys
 
@@ -95,7 +97,9 @@ check("the read runs the catalog script under the project's Hermes through uv",
   isDeepStrictEqual(readFileSync(uvArgs, "utf8").trim().split("\n"), ["run", "--project", pkgDir, "--quiet", "python", "-P", script]));
 check("and keeps the plugin directory off sys.path", recorded().safePath === true);
 check("a custom endpoint that spawn.env names lists that endpoint's models",
-  isDeepStrictEqual(listed.models, [{ id: "local-a" }, { id: "local-b" }]) && listed.unavailable === undefined, listed);
+  isDeepStrictEqual(listed.models.map((m) => m.id), ["local-a", "local-b"]) && listed.unavailable === undefined, listed);
+check("each model offers the reasoning efforts this Hermes takes as its variants, none first",
+  listed.models.every((m) => isDeepStrictEqual(m.variants, EFFORTS)), listed.models);
 check("the catalog names the provider Hermes resolved", /\bcustom provider\b/.test(listed.source ?? ""), listed.source);
 check("Hermes reads the base URL spawn.env passes", JSON.parse(readFileSync(fetched, "utf8")).baseUrl === custom.CUSTOM_BASE_URL);
 const first = recorded();
@@ -110,12 +114,18 @@ check("without spawn.env, the launch's names do not reach the read, so Hermes re
 const keyed = await read({ OPENROUTER_API_KEY: "sk-or-test" });
 check("a provider key a launch forwards reaches the read", recorded().env.includes("OPENROUTER_API_KEY"));
 check("a named provider lists Hermes's catalog for it, without blank ids",
-  isDeepStrictEqual(keyed.models, [{ id: "openrouter/one" }, { id: "openrouter/two" }]) && /openrouter provider/.test(keyed.source ?? ""), keyed);
+  isDeepStrictEqual(keyed.models.map((m) => m.id), ["openrouter/one", "openrouter/two"]) && /openrouter provider/.test(keyed.source ?? ""), keyed);
 
 const adopted = join(root, "adopted-home");
 mkdirSync(adopted);
-await read({ COTAL_HERMES_ADOPT_HOME: adopted, HERMES_INFERENCE_PROVIDER: "openrouter" }, { envAllow: SPAWN_ENV });
+const onAdopted = await read({ COTAL_HERMES_ADOPT_HOME: adopted, HERMES_INFERENCE_PROVIDER: "openrouter" }, { envAllow: SPAWN_ENV });
 check("with COTAL_HERMES_ADOPT_HOME the read uses the operator's profile and leaves it", recorded().home === adopted && existsSync(adopted));
+check("and offers no variant, since that profile's own config.yaml sets the effort",
+  onAdopted.models.length === 2 && onAdopted.models.every((m) => m.variants === undefined), onAdopted.models);
+
+const launchRead = hermesEfforts({ env: { ...process.env, COTAL_HERMES_UV_BIN: uv } });
+check("the launcher reads the same efforts from the catalog script",
+  isDeepStrictEqual(launchRead, EFFORTS.map((e) => e.name)) && readFileSync(uvArgs, "utf8").trim().split("\n").at(-1) === "efforts", launchRead);
 
 const dead = await read({ HERMES_INFERENCE_PROVIDER: "custom", CUSTOM_BASE_URL: "http://127.0.0.1:1/dead" }, { envAllow: SPAWN_ENV });
 check("an endpoint whose model list Hermes cannot read is reported unavailable",
