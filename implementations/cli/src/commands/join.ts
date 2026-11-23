@@ -159,8 +159,11 @@ function resolveJoinChannel(flag: string | undefined, linked: string | undefined
 }
 
 function readJoinCreds(path: string, channel: string, space: string | undefined): string {
+  if (path === "")
+    throw new FlagValueRefusal("--creds requires a nonempty credential path", "supply a nonempty credential path or omit --creds to join without one");
+  const read = `--allow-subscribe${channel.startsWith("-") ? "=" : " "}${shellWord(channel)}`;
   const replacement = "If you need a replacement, ask the space's owner to mint it with " +
-    `\`cotal auth mint <name> --provision --allow-subscribe ${shellWord(channel)}${space === undefined ? "" : ` --space ${shellWord(space)}`} --no-persona --out <file>\`, then join with --lifecycle-uid set to the new UID that mint reports`;
+    `\`cotal auth mint <name> --provision ${read}${space === undefined ? "" : ` --space ${shellWord(space)}`} --no-persona --out <file>\`, then join with --lifecycle-uid set to the new UID that mint reports`;
   try {
     return readCredsFile(path, { malformedRemedy: `pass the complete credential file as it was issued. ${replacement}` });
   } catch (e) {
@@ -190,7 +193,7 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
     token: values.token ?? link?.token,
     user: link?.user,
     pass: link?.pass,
-    creds: values.creds ? readJoinCreds(values.creds, channel, values.space ?? link?.space) : undefined,
+    creds: values.creds === undefined ? undefined : readJoinCreds(values.creds, channel, values.space ?? link?.space),
     tls: values.tls ?? link?.tls ?? false,
   };
   // The join session's lifecycle UID (SPEC 13.1). The pairing input (--lifecycle-uid /
