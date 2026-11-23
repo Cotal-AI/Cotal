@@ -101,6 +101,7 @@ for (const [label, defaults] of [
 }
 
 // ---- Defaults fill only what the person did not give; a missing option is named -----------------
+const longNumericField = `limit${"x".repeat(123)}`;
 const adapter: LocalProcess = {
   kind: "local-process", name: "fixture-adapter", label: "Fixture adapter", controllerOnly: true, pidFile: "fixture.{space}.pid",
   service: {
@@ -111,6 +112,9 @@ const adapter: LocalProcess = {
       count: { type: "integer", description: "a number with a default" },
       ratio: { type: "number", exclusiveMinimum: 0, maximum: 1, description: "a bounded ratio" },
       limits: { type: "array", maxItems: 2, items: { type: "integer", exclusiveMaximum: 10 } },
+      settings: { type: "object", additionalProperties: false, properties: {
+        [longNumericField]: { type: "integer", minimum: -3, maximum: 3 },
+      } },
       server: { type: "string", description: "the broker" },
       creds: { type: "string", description: "a file the space keeps" },
       logFile: { type: "string", description: "a camelCase option, taken as --log-file" },
@@ -132,6 +136,15 @@ check("numeric preset help and guided validation preserve inclusive and exclusiv
 const nestedInvalid = presetOptionRefusal(preset, "limits", "[7,1234]");
 check("a nested numeric refusal identifies the item and its exclusive bound without printing its value",
   nestedInvalid?.includes("at --limits.1, which must be an integer less than 10") === true && !nestedInvalid.includes("1234"), nestedInvalid);
+const longFieldAnswer = (value: number) => JSON.stringify({ [longNumericField]: value });
+const longFieldRefusal = presetOptionRefusal(preset, "settings", longFieldAnswer(419));
+check("a numeric refusal names a nested field at the adapter declaration's length limit",
+  longFieldRefusal?.includes(`at --settings.${longNumericField}, which must be an integer from -3 through 3`) === true
+    && !longFieldRefusal.includes("419") && presetOptionRefusal(preset, "settings", longFieldAnswer(3)) === undefined, longFieldRefusal);
+const unknownKey = `unlisted${"y".repeat(80)}`;
+const unknownRefusal = presetOptionRefusal(preset, "settings", JSON.stringify({ [unknownKey]: 419 }));
+check("long undeclared keys and their values remain redacted",
+  unknownRefusal?.includes("closed schema") === true && !unknownRefusal.includes(unknownKey) && !unknownRefusal.includes("419"), unknownRefusal);
 
 const SPACE = "servicecommands";
 const missing = refusal(() => servicePresetDefinition(preset, SPACE, {}, root, "start"));

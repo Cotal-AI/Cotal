@@ -306,8 +306,9 @@ export function validateServiceAdapterOptions(declaration: ServiceAdapterDeclara
   try { check = new Ajv2020({ strict: true, ownProperties: true, validateFormats: false }).compile(declaration.optionsSchema); valid = check(options) === true; }
   catch { return invalid("the adapter options could not be validated against its closed declaration"); }
   if (!valid) {
-    const location = schemaErrorLocation(check.errors, name);
-    const range = location ? numericOptionError(declaration.optionsSchema, check.errors?.at(-1)) : undefined;
+    const range = numericOptionError(declaration.optionsSchema, check.errors?.at(-1));
+    // A numeric error's instance path visits only declared fields and bounded array indices.
+    const location = schemaErrorLocation(check.errors, name, range ? field : undefined);
     return invalid(`the service options do not match the installed adapter's closed schema${location}${range ? `, which must be ${range}` : ""}; option values were not printed`);
   }
 }
