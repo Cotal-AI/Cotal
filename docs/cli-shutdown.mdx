@@ -200,8 +200,10 @@ folder is not replaced: `down` refuses `CONFLICT` and names `cotal space forget 
 which `down` stops the stack through its journal. While another registered space names this
 stack's exact broker address, bare `down` refuses `LIFECYCLE_BLOCKED`, exit 2, and stops nothing,
 because one listener answers for both registrations. It names each of those spaces with the
-`cotal space show <space>` that reads one, the `cotal space forget <space>` that takes it off this
-address once its own stack is stopped, and the `cotal down` to run again after that. A user-auth stack's registration is not rebuilt,
+`cotal space show <space>` that reads one, the `cotal space forget <space> --plain` that takes it off
+this address once its own stack is stopped, and the `cotal down` to run again after that. For a
+retained name that starts with `-`, use `cotal space show -- -old` and
+`cotal space forget --plain -- -old`, replacing `-old` with that name. A user-auth stack's registration is not rebuilt,
 so it refuses `UNSUPPORTED`. A stop that refuses or is cancelled before any member stops puts the
 registration back as it was.
 
@@ -300,7 +302,8 @@ user-auth stack they show a foreground restart without a manager, with `--user-a
 recorded space and broker address. Other stacks show `cotal up`.
 Before the first `up`,
 `down --space <name>` gives the same no-op when the name matches the space prepared in this folder.
-A different name is refused. A controller stack
+A different name is refused. For a stop with `--json` or `--plain`, the refusal names the mismatch
+and directs you to the requested space's project root. A controller stack
 counts as stopped when its last whole-stack operation was a completed `down` and no member and no
 other service instance of its space runs. That check reads no process record under the root; those
 are read only as described below. A stack that stopped any other way takes the full stop, which
