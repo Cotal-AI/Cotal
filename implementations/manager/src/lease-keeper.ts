@@ -37,7 +37,7 @@ export class ManagerInstanceLeaseHeld extends Error {
 type LeaseState = "held" | "held-unrenewed" | "gone" | "unknown";
 
 /** What the lease keeper reads from its manager. Each is read when a call runs: `start()` assigns
- *  the endpoint and the instance id after construction, and `stopping` is the manager's stop fence. */
+ *  the endpoint after construction, and `stopping` is the manager's stop fence. */
 export interface LeaseKeeperDeps {
   endpoint: () => CotalEndpoint;
   stopping: () => boolean;

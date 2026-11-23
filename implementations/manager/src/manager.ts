@@ -567,12 +567,6 @@ export class Manager {
   /** Lifecycle UIDs already handed to `Runtime.spawnDelegated`: a lifecycle is handed off at most
    *  once, so a lost create acknowledgement can never become a second create. */
   protected readonly delegatedLaunched = new Set<string>();
-  /** The persisted LOGICAL instance id (SPEC 13.6 item 7): STABLE across restart, so a
-   *  restart re-registers the SAME id with an ADVANCED epoch through the §13.1 gate (the successor
-   *  fences the predecessor's epoch — the (i) fence bites on a real restart). It is the registration
-   *  instanceId, the served-status id, the goal spec's executor.instanceId, the epe route, and the
-   *  resolveExecutorEpoch key — DISTINCT from {@link ManagerConfig.managerLifecycleUid} (per-process: the presence
-   *  node uid + the managerInstance audit coordinate every static activation records). Set in start(). */
   /** The persisted serve nkey identity: reusing the SAME principal across restart keeps
    *  {@link provisionEndpointGateOpen} idempotent (no core barrier change) and gives verified
    *  eviction a stable target (the predecessor's connections under this principal). Set in start(). */
@@ -645,7 +639,12 @@ export class Manager {
   /** {@link ManagerStartState.userMode}. */
   protected get userMode(): boolean { return this.startState.userMode; }
   protected set userMode(value: boolean) { this.startState.userMode = value; }
-  /** {@link ManagerStartState.managerInstanceId}; undefined until start sets it. */
+  /** The persisted LOGICAL instance id (SPEC 13.6 item 7): STABLE across restart, so a
+   *  restart re-registers the SAME id with an ADVANCED epoch through the §13.1 gate (the successor
+   *  fences the predecessor's epoch — the (i) fence bites on a real restart). It is the registration
+   *  instanceId, the served-status id, the goal spec's executor.instanceId, the epe route, and the
+   *  resolveExecutorEpoch key — DISTINCT from {@link ManagerConfig.managerLifecycleUid} (per-process: the presence
+   *  node uid + the managerInstance audit coordinate every static activation records). Set in start(); undefined before. */
   protected get managerInstanceId(): string { return this.startState.managerInstanceId!; }
   protected set managerInstanceId(value: string) { this.startState.managerInstanceId = value; }
   protected readonly namesCapacity = new NamesCapacity(this.config, namesCapacityDeps(this), this.startState);
