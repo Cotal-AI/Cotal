@@ -7,6 +7,7 @@ import { CLAUDE_READY_TEXTS, CLAUDE_STARTUP_BLOCKERS, CLAUDE_WORKSPACE_TRUST_REP
 import { assertChannelServerDeclared, claudeUserMcpEnvKeys } from "./user-mcp.js";
 import { HOST_EXE_ENV, resolveHostExe } from "./once-exit.js";
 import { HOOK_CONTEXT_CHARS } from "./hooks.js";
+import { launchFieldArgs } from "./launch-fields.js";
 import { CLAUDE_EFFORT_LEVELS, listClaudeModels } from "./models.js";
 import { CLAUDE_PROVIDER_KEYS } from "./provider-keys.js";
 
@@ -84,7 +85,9 @@ export const claudeConnector: Connector = {
   eventChannel,
   // A launched session serves Claude's tool permissions on the agent endpoint (prompts.ts), except on
   // Windows, where the hook answers each one itself until serving there is built (hook.ts).
-  ...(process.platform === "win32" ? {} : { prompts: true as const }),
+  // askPermissions launches in the mode that asks, so it is declared only where the prompts are served.
+  ...(process.platform === "win32" ? {} : { prompts: true as const, supportsAskPermissions: true }),
+  supportsReasoningEvents: true, // thinking summaries on, and the mapper's reasoning option
   pluginRoot: PLUGIN_ROOT,
   requires: ["claude"],
   listModels: listClaudeModels,
@@ -234,6 +237,7 @@ export const claudeConnector: Connector = {
     // exists. After the first write, only writeLaunchArtifact can throw, and it removes every file
     // this launch wrote before it does.
     const passthrough = connectorLaunchOptions("claude", opts.launchOptions).map(([k, v]) => [k, String(v)] as const);
+    const fieldArgs = launchFieldArgs(opts, passthrough);
     if (opts.variant !== undefined && passthrough.some(([k]) => k === "effort"))
       throw new Error("claude connector: the variant sets --effort, and the launch options set effort too; pass one of them");
     // The private files this launch writes. The launcher that spawns the spec removes them once the
@@ -249,7 +253,7 @@ export const claudeConnector: Connector = {
     // recorded so far instead of leaving it with no owner.
     try {
       env.COTAL_CONTROL_SOCKET = control.path;
-      Object.assign(env, materialEnv({ creds: opts.creds, servers: opts.servers, control, eventsRequired: opts.eventsRequired, eventPayloads: opts.eventPayloads, userAuth: opts.userAuth }, artifacts));
+      Object.assign(env, materialEnv({ creds: opts.creds, servers: opts.servers, control, eventsRequired: opts.eventsRequired, eventPayloads: opts.eventPayloads, askPermissions: opts.askPermissions, reasoningEvents: opts.reasoningEvents, userAuth: opts.userAuth }, artifacts));
       // Default (no shared servers): pass the config inline, unchanged. With shared servers, write it
       // to a file instead and pass the path. Either way the secret stays a `${VAR}` reference (Claude
       // expands it from the child env at launch — see the mcpKeys forwarding above), never the resolved
@@ -302,14 +306,7 @@ export const claudeConnector: Connector = {
       // no deny-list — the spawn capability is the trust boundary (see connectorLaunchOptions), not the
       // flag set. An operator can already run `claude` with any flag directly, and a peer's cotal_spawn
       // is gated by the spawn capability itself; every `claude` flag is forwarded verbatim.
-      // A managed seat has no human at its terminal, so a permission prompt under the default mode
-      // is a prompt nobody answers: the seat's first mesh tool call stalled there and it looked dead
-      // to its peers. Bypass is the default for a managed seat, which the manager marks with `cwd`. A
-      // foreground launch runs in the operator's terminal and keeps Claude's own mode, so the operator
-      // answers its prompts there. An operator who wants another mode passes
-      // `--opt permission-mode=<mode>`, and either permission flag in the passthrough wins.
-      if (opts.cwd && !passthrough.some(([k]) => k === "permission-mode" || k === "dangerously-skip-permissions"))
-        args.push("--permission-mode", "bypassPermissions");
+      args.push(...fieldArgs);
       for (const [k, val] of passthrough) {
         if (val === "") args.push(`--${k}`);
         else args.push(`--${k}`, val);

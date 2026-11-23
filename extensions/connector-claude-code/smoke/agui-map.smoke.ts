@@ -531,11 +531,11 @@ const OPENERS = entries.filter(opensARun).length;
  */
 const FIRST_RUN_AT = entries.findIndex(opensARun);
 /** Blocks of one type in a slice of the session. */
-const blocksIn = (from: number, type: string): number => {
+const blocksIn = (from: number, type: string, keep: (b: { thinking?: unknown }) => boolean = () => true): number => {
   let n = 0;
   for (let i = from; i < entries.length; i += 1) {
     const content = entries[i]!.message?.content;
-    if (Array.isArray(content)) for (const b of content) if (b.type === type) n += 1;
+    if (Array.isArray(content)) for (const b of content) if (b.type === type && keep(b)) n += 1;
   }
   return n;
 };
@@ -1061,9 +1061,11 @@ c("real:reasoning-is-OFF-by-default", typesOf("REASONING_MESSAGE_START") === 0);
 c("real:reasoning-is-emitted-when-asked", (() => {
   const on = run({ reasoning: true }).flatMap((u) => u.events);
   // From the first run on, for the same reason as the tool-call cells: a pre-run head's `thinking`
-  // blocks belong to runs that ended in an earlier session and have nowhere to go.
+  // blocks belong to runs that ended in an earlier session and have nowhere to go. One message per
+  // block with text: a block whose display Claude omitted is empty and maps to nothing.
   const thinking = FIRST_RUN_AT < 0 ? 0 : blocksIn(FIRST_RUN_AT, "thinking");
-  return thinking > 0 && on.filter((e) => e.type === "REASONING_MESSAGE_START").length === thinking;
+  const shown = FIRST_RUN_AT < 0 ? 0 : blocksIn(FIRST_RUN_AT, "thinking", (b) => b.thinking !== "");
+  return thinking > 0 && on.filter((e) => e.type === "REASONING_MESSAGE_START").length === shown;
 })());
 // Asserted on the reasoning-ON stream, because OFF proves nothing about a field that only exists
 // beside the content this setting emits.
@@ -1136,6 +1138,22 @@ c("real:a-signed-thinking-block-still-EMITS-its-reasoning-minus-the-signature", 
   return ev.some((e) => e.type === "REASONING_MESSAGE_CONTENT") && signatureKeys(ev) === 0;
 })());
 
+// Claude Code records a thinking block with empty text when the API omitted its display. Reasoning on,
+// that block maps to nothing, and a block with text beside it still maps.
+c("synthetic:an-EMPTY-thinking-block-maps-to-no-reasoning-message", (() => {
+  let n = 0;
+  const m = createClaudeMapper({ threadId: THREAD, mintRunId: () => `run-${(n += 1)}`, now: () => 0, reasoning: true });
+  unitOf(m.map(OPENER));
+  const unit = unitOf(m.map({
+    type: "assistant",
+    uuid: "omitted-thinking",
+    timestamp: "2026-08-14T21:00:01.000Z",
+    message: { id: "msg-omitted", content: [{ type: "thinking", thinking: "" }, { type: "thinking", thinking: "shown" }] },
+  } as unknown as ClaudeEntry));
+  const starts = (unit?.events ?? []).filter((e) => e.type === "REASONING_MESSAGE_START");
+  return starts.length === 1 && (starts[0] as { messageId?: string }).messageId === "omitted-thinking#1";
+})());
+
 // SELECTION. The classes §3.1 drops must actually be dropped, and the count is the evidence: a
 // majority of a real session maps to nothing, which is `[P7]`'s common path rather than an edge.
 c("real:the-non-conversational-record-types-map-to-nothing", (() => {
@@ -1194,7 +1212,7 @@ c("real:the-mapper-ALONE-leaves-the-LAST-run-open-at-EOF", (() => {
 // otherwise leaves the run green with a smaller number that nobody compares. The PR body leans on
 // this total, so the suite is what holds it.
 if (SESSION.endsWith("session-shape.jsonl")) {
-  const EXPECTED = 52;
+  const EXPECTED = 53;
   c(`fixture:every cell ran - ${EXPECTED} expected`, pass + fail === EXPECTED, `${pass + fail} cells reported`);
 }
 
