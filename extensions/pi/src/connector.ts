@@ -93,8 +93,9 @@ function piCatalog(reply: PiRpcResponse): ModelCatalog {
 
 export async function listPiModels(opts: ModelCatalogOpts = {}): Promise<ModelCatalog> {
   // `--offline` skips startup network work, such as an OAuth refresh that stopping pi mid-request would lose.
+  // The spawn.env names a launch gets, such as PI_CODING_AGENT_DIR, so pi lists what a seat reaches.
   const child = spawn(opts.resolvedBinaries?.pi ?? "pi", ["--mode", "rpc", "--no-session", "--offline"], {
-    env: launchEnv({ providerKeys: PI_PROVIDER_KEYS }),
+    env: launchEnv({ providerKeys: PI_PROVIDER_KEYS, envAllow: opts.envAllow }),
     stdio: ["pipe", "pipe", "ignore"],
   });
   try {
