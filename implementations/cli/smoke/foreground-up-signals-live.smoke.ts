@@ -12,7 +12,8 @@
  * does. A third shows that a second foreground `up` refuses while one holds the stack, and that one
  * over a stack whose holder was killed says it takes the running stack over before a signal stops it.
  * A hangup cell sends SIGHUP to a ready foreground `up`: it exits 129, names `cotal down`, leaves the
- * broker running and removes its hold record, and the next `down --yes` stops the stack.
+ * broker running and removes its hold record. With the project moved, the notice gives the named
+ * stop from another folder and that stop shuts down every member.
  * A broker crash releases a controller foreground hold with a failed exit and prints a repair
  * command that keeps a broker-only stack broker-only.
  * A legacy foreground stop exits 130 on SIGINT and 143 on SIGTERM.
@@ -813,20 +814,26 @@ async function controllerHangupCell(): Promise<void> {
   }
 }
 
-/** A hangup of a ready foreground controller stack is not a stop. SIGHUP exits 129, names `cotal down`,
- *  leaves the broker running and removes the hold record. The next `down --yes` stops the stack. */
-async function controllerSighupCell(): Promise<void> {
-  const name = "controller-sighup";
+async function controllerSighupCell(renameRoot = false): Promise<void> {
+  const name = renameRoot ? "controller-sighup-moved-root" : "controller-sighup";
   const root = join(base, name), home = join(root, "home"), caller = join(root, "caller");
-  const selected = "../owner's mesh", mesh = resolve(caller, selected);
+  const selected = "../owner's mesh", mesh = resolve(caller, selected), moved = `${mesh} moved`;
   for (const p of [root, home, mesh, caller, join(home, "xdg"), join(home, "machine")]) mkdirSync(p, { recursive: true, mode: 0o700 });
-  recordSmokeSandbox({ root: mesh, cotalHome: join(home, "machine"), xdgConfigHome: join(home, "xdg") });
   const port = await freePort(); assert.notEqual(port, 4222);
   const space = `foreground-${name}`;
   const env = { ...cleanEnv, HOME: home, COTAL_HOME: join(home, "machine"), XDG_CONFIG_HOME: join(home, "xdg"), XDG_DATA_HOME: join(home, "data"), XDG_CACHE_HOME: join(home, "cache"), XDG_STATE_HOME: join(home, "state"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" };
+  const meshSandbox = recordSmokeSandbox({ root: mesh, cotalHome: env.COTAL_HOME, xdgConfigHome: env.XDG_CONFIG_HOME });
+  const callerSandbox = recordSmokeSandbox({ root: caller, cotalHome: env.COTAL_HOME, xdgConfigHome: env.XDG_CONFIG_HOME });
+  const down = (folderGone: boolean) => {
+    const args = folderGone ? ["down", "--space", space, "--yes"] : ["down", "--yes"];
+    const cwd = folderGone ? caller : mesh;
+    assertSmokeSandboxDown(folderGone ? callerSandbox : meshSandbox, args, { cwd, env });
+    return foregroundCliProbe(cliEntry, tsx, cwd, env, args, 120_000);
+  };
   const created = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["space", "create", space, "--root", mesh]);
   assert.equal(created.code, 0, `space create prepares the controller root: ${created.err}`); passed++;
-  const child: ChildProcess = spawn(process.execPath, ["--import", tsx, cliEntry, "up", "--foreground", "--open", "--no-manager", "--server", `nats://127.0.0.1:${port}`, "--root", selected, "--store-dir", "./relative-store", "--log-file", "./broker.log"], { cwd: caller, env, detached: true, stdio: ["ignore", "pipe", "pipe"] });
+  const modeArgs = renameRoot ? [] : ["--open", "--no-manager", "--store-dir", "./relative-store", "--log-file", "./broker.log"];
+  const child: ChildProcess = spawn(process.execPath, ["--import", tsx, cliEntry, "up", "--foreground", "--server", `nats://127.0.0.1:${port}`, "--root", selected, ...modeArgs], { cwd: caller, env, detached: true, stdio: ["ignore", "pipe", "pipe"] });
   let out = "", err = "";
   child.stdout?.on("data", (b: Buffer) => { out += b.toString(); });
   child.stderr?.on("data", (b: Buffer) => { err += b.toString(); });
@@ -838,30 +845,52 @@ async function controllerSighupCell(): Promise<void> {
       if (state.exited) throw new Error(`CLI exited before the stack was ready: ${err}`);
       return out.includes("Controller stack started") && existsSync(hold) && out.includes("cotal down");
     }, 120_000, () => err.slice(-3000));
-    assert.ok(existsSync(join(caller, "relative-store")) && existsSync(join(caller, "broker.log"))
-      && !existsSync(join(mesh, "relative-store")) && !existsSync(join(mesh, "broker.log")), "--root leaves both relative broker paths in the invoking folder"); passed++;
-    assert.ok(readFileSync(join(mesh, ".cotal/server-open.conf"), "utf8").includes(`log_file: ${JSON.stringify(join(realpathSync(caller), "broker.log"))}`), "the selected root's broker config names the caller's log"); passed++;
+    if (renameRoot) {
+      renameSync(mesh, moved);
+      assert.equal(existsSync(mesh), false);
+    } else {
+      assert.ok(existsSync(join(caller, "relative-store")) && existsSync(join(caller, "broker.log"))
+        && !existsSync(join(mesh, "relative-store")) && !existsSync(join(mesh, "broker.log")), "--root leaves both relative broker paths in the invoking folder"); passed++;
+      assert.ok(readFileSync(join(mesh, ".cotal/server-open.conf"), "utf8").includes(`log_file: ${JSON.stringify(join(realpathSync(caller), "broker.log"))}`), "the selected root's broker config names the caller's log"); passed++;
+    }
     assert.ok(child.pid); process.kill(child.pid, "SIGHUP");
     await until(() => { if (state.error) throw state.error; return state.exited; }, 30_000, () => err.slice(-3000));
     await waitForOwnedChild(() => state.closed, 3_000, `${root}: hangup owner streams drained`);
     assert.equal(state.code, 129, `a hangup exits 129 and leaves the stack: ${err}`); passed++;
-    // The command word depends on whether the host has a `cotal` launcher on PATH; the project selection does not.
-    const stopPrefix = `\`cd ${shellPath(realpathSync(mesh))} && `;
-    const stopAt = err.indexOf(stopPrefix);
-    assert.ok(stopAt !== -1 && /^[^`\n]+ down` stops it\./.test(err.slice(stopAt + stopPrefix.length)), `the hangup stop command selects the project from the invoking folder: ${err}`); passed++;
     assert.equal(await portOpen(port), true, "the broker keeps running after the hangup"); passed++;
-    assert.equal(existsSync(hold), false, "the hangup removes this process's hold record"); passed++;
-    const status = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["status", "--space", space, "--server", `nats://127.0.0.1:${port}`]);
-    assert.ok(status.code === 0 && /reachable/.test(status.out), `status still shows the broker reachable: ${status.out}${status.err}`); passed++;
-    const down = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["down", "--yes"], 120_000);
-    assert.equal(down.code, 0, `the next down stops the stack the hangup left: ${down.out}${down.err}`); passed++;
+    if (renameRoot) {
+      assert.ok(err.includes(` down --space ${space} --yes\` from another folder`), err); passed++;
+      assert.doesNotMatch(err, /`cd /); passed++;
+    } else {
+      // The launcher depends on PATH; the project selection does not.
+      const stopPrefix = `\`cd ${shellPath(realpathSync(mesh))} && `;
+      const stopAt = err.indexOf(stopPrefix);
+      assert.ok(stopAt !== -1 && /^[^`\n]+ down` stops it\./.test(err.slice(stopAt + stopPrefix.length)), `the hangup stop command selects the project from the invoking folder: ${err}`); passed++;
+      assert.equal(existsSync(hold), false, "the hangup removes this process's hold record"); passed++;
+      const status = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["status", "--space", space, "--server", `nats://127.0.0.1:${port}`]);
+      assert.ok(status.code === 0 && /reachable/.test(status.out), `status still shows the broker reachable: ${status.out}${status.err}`); passed++;
+    }
+    const stopped = await down(renameRoot);
+    assert.equal(stopped.code, 0, `the next down stops the stack the hangup left: ${stopped.out}${stopped.err}`); passed++;
+    if (renameRoot) {
+      assert.match(stopped.out, /Stack stopped; its folder was gone/); passed++;
+      for (const role of ["manager", "delivery", "broker"]) {
+        assert.match(stopped.out, new RegExp(`${role}.*stopped by SIGTERM`)); passed++;
+      }
+    }
     assert.equal(await portOpen(port), false, "down closed the broker the hangup left running"); passed++;
-    assert.equal(existsSync(hold), false, "the hold record stays gone after down"); passed++;
+    if (!renameRoot) {
+      assert.equal(existsSync(hold), false, "the hold record stays gone after down"); passed++;
+    }
     console.log(`PASS foreground-up-signals ${name}`);
   } finally {
     try {
       if (!state.exited && child.pid) process.kill(-child.pid, "SIGKILL");
-      if (await portOpen(port)) await foregroundCliProbe(cliEntry, tsx, mesh, env, ["down", "--yes"], 120_000);
+      if (await portOpen(port)) {
+        const cleanup = await down(existsSync(moved));
+        assert.equal(cleanup.code, 0, cleanup.out + cleanup.err);
+        assert.equal(await portOpen(port), false);
+      }
     } finally {
       writeFileSync(join(root, "stdout.log"), out, { mode: 0o600 });
       writeFileSync(join(root, "stderr.log"), err, { mode: 0o600 });
@@ -1333,6 +1362,7 @@ await controllerStartupCell("team");
 await controllerStartupCell("team-launch");
 await controllerHangupCell();
 await controllerSighupCell();
+if (process.platform === "linux") await controllerSighupCell(true);
 await controllerHoldCell();
 await controllerHoldCell("other-home");
 await controllerHoldCell("broker-crash");

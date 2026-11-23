@@ -241,9 +241,10 @@ On a controller stack, Ctrl-C or `SIGTERM` in that terminal runs the same guarde
 uses the same recorded process checks as `cotal down --space <space> --yes` from another folder.
 A signal while the stack is still starting lets the start settle, then runs that stop. When the
 start fails, the stop still runs before the start failure is printed. A hangup, such as a closed
-terminal, leaves the stack running and exits 129. The printed stop command changes to the stack's project
-folder before running `cotal down`, so it also works from another folder. A hangup while the stack is still
-starting lets the start settle, prints the same line and exits 129, and leaves what the start left.
+terminal, leaves the stack running and exits 129. If the project folder is still there, the printed
+stop command changes to that folder before running `cotal down`. If Cotal still records the stack
+but its project folder is gone, the notice gives `cotal down --space <space> --yes` to run from
+another folder. A hangup during startup lets the start settle, prints stop guidance and exits 129.
 While a foreground `up` holds the stack, it records its process in `.cotal/stack-foreground.hold`,
 and a second foreground `up` on that stack refuses `CONFLICT`, exit 2, names that process, and
 starts nothing. If the journal records a different launching `COTAL_HOME`, the suggested stop and
@@ -252,10 +253,9 @@ that record as it exits, a hangup included. A holder that was killed leaves it, 
 `cotal down` removes it once that process is gone. A
 foreground `up` on a stack that is already running without such a holder, because a background `up`
 started it or the holding terminal closed, takes over its lifetime. Before it blocks it says that
-the stack is already running and that Ctrl-C or `SIGTERM` there stops the whole stack. A closed
-terminal leaves the stack running, and the same notice names `cotal down`. A systemd unit that runs
-`up --foreground` should set `KillMode=mixed`, so the stop signal reaches only `cotal up`, which
-runs the guarded stack stop, and a `TimeoutStopSec` long enough for that stop. The default
+the stack is already running and that Ctrl-C or `SIGTERM` there stops the whole stack.
+A systemd unit that runs `up --foreground` should set `KillMode=mixed`, so the stop signal reaches
+only `cotal up`, which runs the guarded stack stop, and a `TimeoutStopSec` long enough for that stop. The default
 `control-group` mode signals every member at the same time, and a manager signalled directly stops
 on its own, without the request-bound stop's receipts.
 
