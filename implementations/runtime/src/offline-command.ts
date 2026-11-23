@@ -1,7 +1,7 @@
 import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, statSync, writeSync, type Stats } from "node:fs";
 import { hasDuplicateNames } from "@cotal-ai/core";
 import { dryRunOutcome, DurationError, Journal, journalEntryKeyString, LangErrors, parseDuration, validate, type SimScript } from "@cotal-ai/lang";
-import { CommandFailure, envelopeLine, exitCode, failureEnvelope, isCommandFailure, oneLine, presentationOf, recordOperationWarning, renderReport, writeResult, type Report } from "@cotal-ai/workspace";
+import { codeSpan, CommandFailure, envelopeLine, exitCode, failureEnvelope, isCommandFailure, oneLine, presentationOf, recordOperationWarning, renderReport, shellPath, writeResult, type Report } from "@cotal-ai/workspace";
 import { logLineText } from "./log-line.js";
 
 interface OfflineValues {
@@ -232,8 +232,7 @@ function faultParts(error: unknown): { title: string; cause?: string; fix?: stri
   return { title, ...(cause !== undefined ? { cause } : {}), ...(fix !== undefined ? { fix } : {}) };
 }
 
-/** Why a simulation did not complete. An L6xxx code is the simulator's: the script does not cover
- *  the program, and `target.step` names the step it stopped at. */
+/** Why a simulation did not complete. `target.step` names the journalled step it stopped at. */
 function simulationFailure(error: unknown, file: string, journal: Journal, handler?: string): CommandFailure {
   const code = (error as { code?: unknown }).code;
   const native = typeof code === "string" && /^L[0-9]+$/.test(code) ? code : undefined;
@@ -244,10 +243,13 @@ function simulationFailure(error: unknown, file: string, journal: Journal, handl
   // A missing scripted result has no file to edit yet when no results file was passed: the
   // remedy names the file to save and the command that passes it to the simulator, instead of
   // only showing the result object. When a results file was passed, it names that file.
+  const sourceWord = shellPath(file.startsWith("-") ? `./${file}` : file);
+  const handlerArg = `${handler?.startsWith("-") ? "=" : " "}${shellPath(handler ?? "results.json")}`;
+  const command = codeSpan(`cotal run simulate ${sourceWord} --handler${handlerArg}`);
   const rerun = handler !== undefined
-    ? `add it to ${handler} and rerun with \`cotal run simulate ${file} --handler ${handler}\``
-    : `save it in a results file, for example results.json, and rerun with \`cotal run simulate ${file} --handler results.json\``;
-  const remedy = native?.startsWith("L6")
+    ? `add it to ${oneLine(handler)} and rerun with ${command}`
+    : `save it in a results file, for example results.json, and rerun with ${command}`;
+  const remedy = native === "L6001"
     ? `${fix ?? "script a result for that step; unscripted effects are not invented"}; ${rerun}`
     : fix;
   return new CommandFailure("failed", "OPERATION_FAILED", `the offline simulation did not complete: ${why.charAt(0).toLowerCase()}${why.slice(1)}`, {

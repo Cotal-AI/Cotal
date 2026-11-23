@@ -239,11 +239,13 @@ material, and is the path on a bare broker with no manager or for a run with no 
 (`cotal run resume <runId> --local --file <program>`); `answer --local` and `amend --local` take
 `--by <who>` and print the same receipt as the hosted path, and `start --local` requires
 `--admit-read` and `--admit-publish` (comma-separated
-patterns or `none`), the run's channel ceiling. An entry that is not a channel or a pattern, such as
-`a b`, is refused `USAGE_INVALID` naming it. When the run's status records that its program failed
-under this drive, `start --local` and `resume --local` fail `OPERATION_FAILED`, exit 5, naming the
-run and its language code with that code's title. A failure whose code has no title shows the first
-line of its recorded message instead, with control characters escaped. Their Next is
+patterns or `none`), the run's channel ceiling. An omitted option or a list containing only commas
+and whitespace is refused as `USAGE_INVALID` before contacting the broker. An entry that is not a
+channel or a pattern, such as `a b`, is refused `USAGE_INVALID` naming it. When the run's status
+records that its program failed under this drive, `start --local` and `resume --local` fail
+`OPERATION_FAILED`, exit 5, naming the run and its language code with that code's title. A failure
+whose code has no title shows the first line of its recorded message instead, with control
+characters escaped. Their Next is
 `cotal run show <runId> --local`, which prints the whole message. Any other error the drive ends on
 stays `unknown`, exit 3. On a
 user-auth mesh the host's own manager refuses the family by name, and `--local` has no credential
@@ -340,12 +342,15 @@ unexpected destination. A destination refusal names the `to` field, including th
 for a list entry.
 
 A missing script entry or an exhausted list raises L6001. If it goes uncaught, the error names the
-table and step and suggests what to add. For an exhausted list it names the needed result, counted
+table and step, suggests what to add, and prints a retry command with shell-quoted paths where needed.
+For an exhausted list it names the needed result, counted
 from 1, while the step key counts occurrences from 0. JSON includes `target.step` if a failed
 journal entry matches the error code. That can be a different step from the one in the message,
 for example when parallel branches both raise L6001.
 
-If L6001 or a statement such as `throw "boom"` goes uncaught, the simulator produces no report.
+The simulator raises L6003 before a delay that cannot advance the virtual clock or be counted
+in elapsed time with millisecond precision. Start the clock closer to zero or shorten the delays.
+If L6001, L6003 or a statement such as `throw "boom"` goes uncaught, the simulator produces no report.
 The CLI exits 5 with `OPERATION_FAILED`. Its JSON envelope has `outcome: "failed"` and
 `result: null`.
 

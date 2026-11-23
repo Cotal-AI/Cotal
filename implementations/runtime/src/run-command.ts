@@ -1219,17 +1219,11 @@ export function workflowArguments(args: ParsedArgs): { values: RunValues; verb: 
   // `a b`, would admit a channel nobody named.
   for (const flag of ["admit-read", "admit-publish"] as const) {
     const entries = (values[flag] ?? "").split(",").map((s) => s.trim()).filter((s) => s.length > 0);
+    if (verb === "start" && values.local === true && entries.length === 0)
+      usage(`run start --local requires --${flag} <channels>; a local run is admitted under the ceiling you name`, `pass --${flag} <channels> (comma-separated channel patterns, or \`none\`)`);
     if (entries.length === 1 && entries[0] === "none") continue;
     for (const entry of entries) {
       try { assertValidChannel(entry); } catch (error) { usage(`--${flag}: ${oneLine((error as Error).message)}`); }
-    }
-  }
-  // A local start is admitted under the ceiling the operator names, so a missing or empty
-  // admission option is a usage error here, before any broker contact or connector setup.
-  if (verb === "start" && values.local === true) {
-    for (const flag of ["admit-read", "admit-publish"] as const) {
-      if (values[flag] === undefined || !values[flag].trim())
-        usage(`run start --local requires --${flag} <channels>; a local run is admitted under the ceiling you name`, `pass --${flag} <channels> (comma-separated channel patterns, or \`none\`)`);
     }
   }
   // Revoke is local only and needs --by, so its own requirement is named before the hosted --by refusal.

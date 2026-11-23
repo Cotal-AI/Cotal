@@ -15,7 +15,7 @@ import { chmodSync, closeSync, constants, mkdirSync, mkdtempSync, openSync, read
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { EpEnvelopeError, EP_UNANSWERED, LANG_PROBLEM_DETAIL_KIND, registry, type Command, type RunStatusView } from "@cotal-ai/core";
-import { CommandFailure, exitCode, isCommandFailure, runOperation } from "@cotal-ai/workspace";
+import { CommandFailure, exitCode, isCommandFailure, runOperation, shellPath } from "@cotal-ai/workspace";
 import { runWorkflow } from "../src/index.js";
 import { managerRefusal, renderLangProblem, unansweredHostFailure, unansweredManagerRefusal, withMatchingKeys, workflowArguments } from "../src/run-command.js";
 import { printRunDetail } from "../src/workflow-views.js";
@@ -112,9 +112,11 @@ const gate = (positionals: string[], values: Record<string, string | boolean> = 
   for (const [flag, values] of [
     ["admit-read", { "admit-read": "", "admit-publish": "none" }],
     ["admit-publish", { "admit-read": "none", "admit-publish": "   " }],
+    ["admit-read", { "admit-read": " , , ", "admit-publish": "none" }],
+    ["admit-publish", { "admit-read": "none", "admit-publish": " , , " }],
   ] as const) {
     const empty = local(values);
-    c(`start --local with empty --${flag} refuses before contact naming the flag`,
+    c(`start --local with --${flag} ${JSON.stringify(values[flag])} refuses before contact naming the flag`,
       usageRefusal(empty, `run start --local requires --${flag} <channels>`), empty);
   }
   c("start --local with both ceilings named still passes the grammar",
@@ -419,6 +421,13 @@ const VERBS = ["start", "resume", "ps", "journal", "answer", "amend", "revoke", 
     try { atMaxEnvelope = JSON.parse(shown.join("")); } catch { atMaxEnvelope = undefined; }
     c("the largest safe-integer clock start still measures a one-millisecond sleep",
       atMax === undefined && atMaxEnvelope?.result?.elapsedMs === 1, { atMax, atMaxEnvelope });
+    writeFileSync(program, 'await sleep("1ms");\nawait sleep("1ms");\n');
+    const overflow = await simulate({ clock: { start: Number.MAX_SAFE_INTEGER } });
+    c("a second sleep at the clock boundary fails instead of reporting success without advancing time",
+      isCommandFailure(overflow) && overflow.code === "OPERATION_FAILED" && overflow.native?.code === "L6003"
+      && exitCode(overflow.outcome, overflow.code) === 5 && overflow.message.includes("without losing millisecond precision")
+      && (overflow.target as { step?: string })?.step === "/sleep#1"
+      && overflow.remedy?.includes("set clock.start closer to zero") === true, overflow);
     writeFileSync(program, 'await checkpoint("go", "Proceed?", { timeout: "4s", onExpiry: "proceed" });\n');
   }
   // The reported typo: `clock.checkpoints` silently fell back to the 60s default, so the
@@ -506,14 +515,14 @@ const VERBS = ["start", "resume", "ps", "journal", "answer", "amend", "revoke", 
   c("a script with no result for an effect names the step and the entry to add",
     isCommandFailure(missing) && missing.code === "OPERATION_FAILED" && missing.message.includes('no checkpoints entry for "go" (step /checkpoint:go#0)')
       && (missing.detail().remedy ?? "").includes('{ checkpoints: { "go": <result> } }') && (missing.target as { step?: string } | undefined)?.step === "/checkpoint:go#0"
-      && (missing.detail().remedy ?? "").includes(`add it to ${join(dir, "results.json")} and rerun with \`cotal run simulate ${program} --handler ${join(dir, "results.json")}\``), missing);
+      && (missing.detail().remedy ?? "").includes(`add it to ${join(dir, "results.json")} and rerun with \`cotal run simulate ${shellPath(program)} --handler ${shellPath(handler)}\``), missing);
   // Without a results file there is nothing to edit: the remedy says to save one and pass it
   // with --handler, instead of only showing the result object.
   const noHandler = await runWorkflow({ values: {}, positionals: ["simulate", program], raw: [] }).then(() => undefined, (e: Error) => e);
   c("a simulation run without a results file is told to save one and pass it with --handler",
     isCommandFailure(noHandler) && noHandler.code === "OPERATION_FAILED"
       && (noHandler.detail().remedy ?? "").includes("save it in a results file, for example results.json")
-      && (noHandler.detail().remedy ?? "").includes(`rerun with \`cotal run simulate ${program} --handler results.json\``), noHandler);
+      && (noHandler.detail().remedy ?? "").includes(`rerun with \`cotal run simulate ${shellPath(program)} --handler results.json\``), noHandler);
   writeFileSync(program, 'await checkpoint("go", "Proceed?", { timeout: "4s" });\n');
   const out: string[] = [];
   const write = process.stdout.write;
@@ -573,6 +582,44 @@ log([].filter(() => true), [].find(() => true) === undefined, [].findLast(() => 
   c("a list one result short says the second step needs result 2",
     isCommandFailure(short) && short.code === "OPERATION_FAILED" && short.message.includes('the script gives 1 checkpoints result for "go", and step /checkpoint:go#1 needs result 2'), short);
   rmSync(dir, { recursive: true, force: true });
+}
+
+if (process.platform !== "win32") {
+  const dir = mkdtempSync(join(tmpdir(), "run-simulate-retry-"));
+  try {
+    const entry = join(dir, "run-cli.mts");
+    writeFileSync(entry, `
+      import ${JSON.stringify(new URL("../src/index.ts", import.meta.url).href)};
+      import { registry } from ${JSON.stringify(import.meta.resolve("@cotal-ai/core"))};
+      import { runCli } from ${JSON.stringify(new URL("../../cli/src/command.ts", import.meta.url).href)};
+      await runCli(registry, process.argv.slice(2));
+    `);
+    const program = "timer file.cotal.js";
+    writeFileSync(join(dir, program), 'await sleep("20s");\nawait checkpoint("expiry", "Let this expire", { timeout: "3s", onExpiry: "proceed" });\n');
+    const cli = [process.execPath, "--import", import.meta.resolve("tsx"), entry];
+    const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_")));
+    Object.assign(env, { HOME: dir, COTAL_HOME: dir, XDG_CONFIG_HOME: join(dir, "config"), COTAL_TELEMETRY: "off", NO_COLOR: "1" });
+    const options = { cwd: dir, env, encoding: "utf8", timeout: 30_000 } as const;
+    const run = (...args: string[]) => spawnSync(cli[0]!, [...cli.slice(1), "run", ...args], options);
+    for (const handler of [undefined, "timer's $results file.json"]) {
+      if (handler !== undefined) writeFileSync(join(dir, handler), "{}");
+      const missing = run("simulate", program, ...(handler === undefined ? [] : ["--handler", handler]));
+      const retry = /rerun with `([^`]+)`/.exec(missing.stderr ?? "")?.[1];
+      writeFileSync(join(dir, handler ?? "results.json"), '{"checkpoints":{"expiry":{"status":"expired"}}}');
+      const replayed = retry?.startsWith("cotal run simulate ")
+        ? spawnSync("sh", ["-c", `cotal() { ${cli.map(shellPath).join(" ")} "$@"; }\n${retry}`], options)
+        : undefined;
+      c(`the printed simulation retry runs verbatim with ${handler === undefined ? "a new handler" : "the existing handler path"}`,
+        missing.status === 5 && replayed?.status === 0 && /Program outcome:\s+completed/.test(replayed.stdout)
+        && /Virtual time:\s+23000 ms/.test(replayed.stdout), { missing, replayed });
+    }
+    for (const [empty, named] of [["--admit-read", "--admit-publish"], ["--admit-publish", "--admit-read"]]) {
+      const refused = run("start", program, "--local", "--server", "nats://127.0.0.1:1", empty!, " , , ", named!, "none");
+      c(`the CLI refuses a separator-only ${empty} as missing before contacting the broker`, refused.status === 1
+        && refused.stderr.includes(`run start --local requires ${empty} <channels>`)
+        && refused.stderr.includes(`pass ${empty} <channels> (comma-separated channel patterns, or \`none\`)`), refused);
+    }
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 }
 
 // Handler bytes must reach the simulated program unchanged, just as source bytes do. Reject
