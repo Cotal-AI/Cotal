@@ -38,7 +38,7 @@ const line = res.stdout.split("\n").find((l) => l.startsWith("RESULT "));
 if (res.status !== 0 || !line) throw new Error(`the probe did not run:\n${res.stdout}\n${res.stderr}`);
 type Frame = { t: string; key: string; text?: string };
 type Draft = { success?: boolean; frames: Frame[]; error?: string };
-const out = JSON.parse(line.slice("RESULT ".length)) as Record<string, unknown> & Record<"d1" | "d2" | "same" | "other_chat" | "late" | "n1" | "n2" | "broken1" | "broken2" | "ws1" | "ws2" | "ws3" | "cut" | "after_done" | "unarmed", Draft> & { done: Frame[]; peer_done: Frame[]; reply: Record<string, unknown>[] };
+const out = JSON.parse(line.slice("RESULT ".length)) as Record<string, unknown> & Record<"d1" | "d2" | "same" | "other_chat" | "late" | "n1" | "n2" | "broken1" | "broken2" | "ws1" | "ws2" | "ws3" | "cut" | "after_done" | "early_late" | "early_next" | "unarmed", Draft> & { done: Frame[]; peer_done: Frame[]; reply: Record<string, unknown>[] };
 const saved = readFileSync(journalPath, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l) as HermesJournalRecord);
 
 check("the adapter takes Hermes's drafts, the chat id Hermes 0.21 passes included", out.buttons === true);
@@ -50,9 +50,9 @@ check("a later draft sends only the text it adds, under the same key", isDeepStr
 check("a draft that adds nothing sends nothing", key !== undefined && out.same.error === undefined && out.same.frames.length === 0, out.same);
 check("another chat's draft streams under a key of its own", out.other_chat.frames.length === 1 && out.other_chat.frames[0]!.key !== key);
 const responses = saved.filter((r) => r.k === "assistant");
-check("a response recorded before any stream names none, and reads no session context", out.first === null && responses[0]?.content === "before any stream" && responses[0]?.stream === undefined, out.first ?? responses[0]);
+check("a response recorded before any stream names none", out.first === null && responses[0]?.content === "before any stream" && responses[0]?.stream === undefined, out.first ?? responses[0]);
 check("the saved response names the stream its text streamed under", key !== undefined && responses[1]?.content === "Hello world." && responses[1]?.stream === key, responses[1]);
-check("a response on another platform closes no stream and is not recorded", responses.length === 4 && !responses.some((r) => r.content === "Elsewhere, saved."));
+check("a response on another platform closes no stream and is not recorded", responses.length === 6 && !responses.some((r) => r.content === "Elsewhere, saved."));
 check("a draft after its response was saved is dropped", key !== undefined && out.late.error === undefined && out.late.frames.length === 0, out.late);
 const k9 = out.n1.frames[0]?.key;
 const k10 = out.n2.frames.find((f) => f.t === "delta")?.key;
@@ -67,6 +67,11 @@ check("so what streamed is the start of the saved text", wsKey !== undefined && 
 const kCut = out.cut.frames[0]?.key;
 check("a message that ends with its stream open ends the stream", kCut !== undefined && isDeepStrictEqual(out.done, [{ t: "delta_end", key: kCut }]), out.done);
 check("and a draft of it after that is dropped", kCut !== undefined && out.after_done.error === undefined && out.after_done.frames.length === 0, out.after_done);
+check("a short reply saved before its first draft keeps its text in the record, and that draft arriving late is dropped",
+  responses[4]?.content === "Quick reply." && responses[4]?.stream === undefined && out.early_late?.error === undefined && out.early_late?.frames.length === 0, [responses[4], out.early_late]);
+const kNext = out.early_next?.frames.find((f) => f.t === "delta")?.key;
+check("and the next stretch, under a later draft id, streams and is closed by its record",
+  isDeepStrictEqual(out.early_next?.frames, [{ t: "delta", key: kNext, text: "Next stretch" }]) && kNext !== undefined && responses[5]?.stream === kNext, [out.early_next, responses[5]]);
 check("a peer chat's stream no response closed ends when its message does", out.other_chat.frames.length === 1 && isDeepStrictEqual(out.peer_done, [{ t: "delta_end", key: out.other_chat.frames[0]!.key }]), out.peer_done);
 check("a reply a peer gets is trimmed, as Hermes trims a reply it does not stream",
   isDeepStrictEqual(out.reply, [{ t: "reply", target: { peerId: "peer" }, text: "Output: ok" }]), out.reply);
