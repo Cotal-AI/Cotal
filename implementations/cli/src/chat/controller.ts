@@ -76,7 +76,7 @@ async function runSlashUnguarded(session: AdmittedChatSession, state: () => Chat
     case "channel-mode":
       return fold(await session.setChannelMode(command.channel, command.mode), none);
     case "join":
-      return fold(await session.join(command.channel), (v) => [v.joined ? `joined #${oneLine(command.channel)}${v.backfilled ? ` (${v.backfilled} earlier messages)` : ""}${v.durable ? "" : " (live only)"}` : `not joined: ${oneLine(v.reason ?? "no reason given")}`]);
+      return fold(await session.join(command.channel), (v) => [v.joined ? `joined #${oneLine(command.channel)}${v.backfilled ? ` (${v.backfilled} earlier messages)` : ""}${v.durable ? "" : " (live only)"}` : v.reason === undefined ? `already on #${oneLine(command.channel)}` : `not joined: ${oneLine(v.reason)}`]);
     case "leave":
       // `left: false` means the session had not joined the channel.
       return fold(await session.leave(command.channel), (v) => [v.left ? `left #${oneLine(command.channel)}` : `not on #${oneLine(command.channel)}, so there is nothing to leave`]);
