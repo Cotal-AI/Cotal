@@ -381,7 +381,7 @@ function launchCalls(c: Connected, p: Controls, defaultPersona: string | null | 
 
     async spawn(req: SpawnRequest) {
       const reply = await requestManagedLaunch(
-        { persona: req.persona ?? defaultPersona ?? "default", identity: req.name, agent: req.agent, model: req.model, variant: req.variant, cwd: req.cwd, prompt: req.prompt, ...(req.subscribe ? { subscribe: [...req.subscribe] } : {}), events: true },
+        { persona: req.persona ?? defaultPersona ?? "default", identity: req.name, agent: req.agent, model: req.model, variant: req.variant, cwd: req.cwd, ...(req.prompt ? { prompt: req.prompt } : {}), ...(req.subscribe ? { subscribe: [...req.subscribe] } : {}), events: true },
         (args) => ask("start", args, req.managerInstanceId, START_TIMEOUT_MS),
       );
       if (!reply.ok) throw failure(reply, `${req.name} did not start`);

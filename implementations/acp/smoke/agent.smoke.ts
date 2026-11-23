@@ -41,7 +41,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { client, methods, PROTOCOL_VERSION, type RequestPermissionRequest, type RequestPermissionResponse, type SessionNotification } from "@agentclientprotocol/sdk";
 import { agentPromptDigest, assertValidOwnerToken, type AgentPrompt, type PromptContent, type PromptSummary } from "@cotal-ai/core";
-import { cotalAgent, defaultName, promptText, type HiddenSessions, type ThreadLink, type ThreadLinks } from "../src/agent.js";
+import { cotalAgent, defaultName, type HiddenSessions, type ThreadLink, type ThreadLinks } from "../src/agent.js";
+import { promptParts } from "../src/turns.js";
 import { AgentCallFailed, LaunchListsRefused, NoLaunchManager, SignInRequired, type AgentCatalog, type AguiEventLike, type ManagerChoice, type Mesh, type PromptCounter, type SeatFrame, type SeatRef, type SeatRow, type SpawnRequest } from "../src/mesh.js";
 
 let pass = 0, fail = 0;
@@ -590,9 +591,13 @@ await tick();
 check("a delete during the first spawn answers once its seat is hidden, and sends that seat nowhere", r6?.stopReason === "cancelled" && hiddenAtDelete && !updates.some((u) => u.sessionId === c6.sessionId), { r6, hiddenAtDelete, updates });
 mesh.spawnDelay = 0;
 
-let threw = false;
-try { promptText([{ type: "image", data: "", mimeType: "image/png" }]); } catch { threw = true; }
-check("image content is refused", threw);
+const parts = promptParts([{ type: "text", text: "look" }, { type: "image", data: "iVBORw0KGgo=", mimeType: "image/png" }]);
+check("an image becomes one of the prompt's images", parts.text === "look" && JSON.stringify(parts.images) === JSON.stringify([{ mimeType: "image/png", data: "iVBORw0KGgo=" }]), parts);
+const refusedKind = (blocks: Parameters<typeof promptParts>[0]) => { try { promptParts(blocks); return false; } catch { return true; } };
+check("an image of another type, an image without data, and audio are refused",
+  refusedKind([{ type: "image", data: "PHN2Zz4=", mimeType: "image/svg+xml" }]) && refusedKind([{ type: "image", data: "", mimeType: "image/png" }]) && refusedKind([{ type: "audio", data: "AAAA", mimeType: "audio/wav" }]));
+const imaged = await errorOf(agent.request(methods.agent.session.prompt, { sessionId: (await agent.request(methods.agent.session.new, { cwd: dir, mcpServers: [] })).sessionId, prompt: [{ type: "image", data: "iVBORw0KGgo=", mimeType: "image/png" }] }));
+check("a first prompt with images on a space without the agent endpoint is refused, naming why", imaged?.code === -32602 && imaged.message?.includes("agent endpoint") === true, imaged);
 
 
 check("a space without the agent endpoint never calls it", mesh.agentCalls.length === 0, mesh.agentCalls);
@@ -642,6 +647,8 @@ check("a thread's agent name is a valid user-mode actor token", (() => { try { r
   const prompts = new Map<string, AgentPrompt>([["p1", promptOf("p1")]]);
   let seq = 1;
   let commandState: unknown = { kind: "started" };
+  let turnRefusal: AgentCallFailed | undefined;
+  let usage: unknown = { supported: true, context: { used: 5000, size: 200000 }, cost: { amount: 0.25, currency: "USD" } };
   space.onAgentCall = (_seat, command, args) => {
     switch (command) {
       case "prompts": return { runtime: { id: "rt", startedAt: 1 }, seq, open: [...prompts.values()].map(summaryOf), closed: [] };
@@ -650,6 +657,10 @@ check("a thread's agent name is a valid user-mode actor token", (() => { try { r
       case "commands": return { supported: true, commands: [{ name: "review", target: "command", description: "Review the diff", inputHint: "what to review" }, { name: "humanizer", target: "skill" }, { name: "name", target: "command" }] };
       case "command": return { id: "cmd1" };
       case "command-state": return { state: commandState };
+      case "turn":
+        if (turnRefusal) throw turnRefusal;
+        return { id: "turn1" };
+      case "usage": return usage;
     }
     throw new AgentCallFailed(`unexpected ${command}`, "unimplemented");
   };
@@ -693,12 +704,43 @@ check("a thread's agent name is a valid user-mode actor token", (() => { try { r
   check("a seat command runs through command with its target, name and args", ran?.stopReason === "end_turn" && JSON.stringify(callsOf("command").at(-1)?.args) === JSON.stringify({ target: "command", name: "review", args: "the last commit" }), callsOf("command"));
   check("and waits until the seat took it", callsOf("command-state").length >= 1);
   await run("$humanizer");
+  await tick(50);
+  const usageSent = c.updates.filter((u) => u.sessionId === s.sessionId && u.update.sessionUpdate === "usage_update").map((u) => u.update as unknown as { used: number; size: number; cost?: { amount: number } });
+  check("after a turn the seat's context usage reaches the client", usageSent.some((u) => u.used === 5000 && u.size === 200000 && u.cost?.amount === 0.25), usageSent);
   check("a skill runs through command as a skill, with no args", JSON.stringify(callsOf("command").at(-1)?.args) === JSON.stringify({ target: "skill", name: "humanizer" }), callsOf("command"));
   commandState = { kind: "refused", code: "failed-precondition", message: "a turn is running" };
   c.updates.length = 0;
   const refused = await run("/review");
   const said = c.updates.filter((u) => u.sessionId === s.sessionId && u.update.sessionUpdate === "agent_message_chunk").map((u) => JSON.stringify(u.update)).join("");
   check("a refused seat command is said in the thread and ends the prompt", refused?.stopReason === "end_turn" && said.includes("did not run /review: a turn is running"), said);
+
+  commandState = { kind: "started" };
+  space.onInput = (x) => { space.present.set(x.actor, "working"); setTimeout(() => space.present.set(x.actor, "idle"), 20); };
+  const typedBefore = space.typed.length;
+  const later = await within(c.agent.request(methods.agent.session.prompt, { sessionId: s.sessionId, prompt: [{ type: "text", text: "and now this" }, { type: "image", data: "iVBORw0KGgo=", mimeType: "image/png" }] }));
+  const turned = callsOf("turn").at(-1);
+  check("a later prompt is a turn with the owner's words and images, and nothing is typed", later !== undefined && turned?.args.text === "and now this" && JSON.stringify(turned.args.images) === JSON.stringify([{ mimeType: "image/png", data: "iVBORw0KGgo=" }]) && space.typed.length === typedBefore, { later, turned, typed: space.typed.slice(typedBefore) });
+  turnRefusal = new AgentCallFailed("this agent's connector takes no turn from its owner", "unimplemented");
+  await within(c.agent.request(methods.agent.session.prompt, { sessionId: s.sessionId, prompt: [{ type: "text", text: "typed instead" }] }));
+  check("a seat whose connector takes no turn is typed into through its manager", space.typed.at(-1)?.text === "typed instead", space.typed.slice(typedBefore));
+  c.updates.length = 0;
+  const noImages = await errorOf(c.agent.request(methods.agent.session.prompt, { sessionId: s.sessionId, prompt: [{ type: "text", text: "see" }, { type: "image", data: "iVBORw0KGgo=", mimeType: "image/png" }] }));
+  check("images to such a seat fail the prompt with its reason, and nothing is typed", noImages?.message?.includes("takes no turn") === true && space.typed.at(-1)?.text === "typed instead", noImages);
+  turnRefusal = undefined;
+  space.onInput = () => {};
+
+  usage = { supported: false };
+  const pictured = await c.agent.request(methods.agent.session.new, { cwd: dir, mcpServers: [] });
+  space.script = { before: [], after: [] };
+  const turnsBefore = callsOf("turn").length;
+  const pictureSeat: SeatRef = { name: "acp-s2", owner: "local", actor: "actor-acp-s2", lifecycleUid: "life-acp-s2" };
+  const firstPicture = within(c.agent.request(methods.agent.session.prompt, { sessionId: pictured.sessionId, prompt: [{ type: "text", text: "what is this" }, { type: "image", data: "iVBORw0KGgo=", mimeType: "image/png" }] }));
+  await tick(400);
+  check("a first prompt with images spawns the seat with no first turn, and waits until it serves its endpoint", space.spawned.at(-1)?.prompt === undefined && callsOf("turn").length === turnsBefore, { spawned: space.spawned.at(-1), turns: callsOf("turn").length - turnsBefore });
+  space.counters.set(pictureSeat.actor, { runtime: "rt3", open: 0, seq: 0 });
+  setTimeout(() => space.present.set(pictureSeat.actor, "idle"), 600);
+  await firstPicture;
+  check("then gives it the prompt as a turn with the images", callsOf("turn").length === turnsBefore + 1 && callsOf("turn").at(-1)?.args.text === "what is this" && callsOf("turn").at(-1)?.seat === "acp-s2", callsOf("turn").slice(turnsBefore));
   c.conn.close();
 }
 // /name, /open and the thread links.
