@@ -616,6 +616,29 @@ log([].filter(() => true), [].find(() => true) === undefined, [].findLast(() => 
   }
 }
 
+// An in-process caller can capture an invalid workflow's complete JSON refusal through stdout.write.
+{
+  const dir = mkdtempSync(join(tmpdir(), "run-invalid-workflow-"));
+  const program = join(dir, "invalid.cotal.js");
+  writeFileSync(program, "const = ;\n");
+  const chunks: string[] = [];
+  const write = process.stdout.write, previousExit = process.exitCode;
+  process.stdout.write = ((chunk: string) => { chunks.push(chunk); return true; }) as typeof process.stdout.write;
+  let status: typeof process.exitCode;
+  try {
+    await runWorkflow({ values: { json: true }, positionals: ["validate", program], raw: [] });
+    status = process.exitCode;
+  } finally {
+    process.stdout.write = write;
+    process.exitCode = previousExit;
+    rmSync(dir, { recursive: true, force: true });
+  }
+  const receipt = JSON.parse(chunks.join("") || "null");
+  c("a validation refusal reaches an in-process stdout.write capture with its findings and exit 1",
+    status === 1 && receipt?.outcome === "refused" && receipt.error.code === "SCHEMA_INVALID"
+    && receipt.result.problems[0].code === "L1008" && receipt.result.problems[0].span.column === 7, receipt);
+}
+
 // A validator warning names its code, position, cause and fix, as a problem does. L3021 on a literal
 // list is a fan-out the run refuses, and the warning used to say only that something was found.
 {
