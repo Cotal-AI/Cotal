@@ -62,7 +62,8 @@ export interface SpawnRequest {
   /** Channels the seat subscribes to at launch. */
   readonly subscribe?: readonly string[];
   readonly cwd: string;
-  readonly prompt: string;
+  /** The seat's first turn. Absent: the seat starts with none. */
+  readonly prompt?: string;
   readonly managerInstanceId?: string;
 }
 
