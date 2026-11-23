@@ -75,7 +75,6 @@ export interface CredentialRenewalDeps {
   ep: () => Manager["ep"];
   leaseStopping: () => Manager["leaseStopping"];
   managerInstanceId: () => Manager["managerInstanceId"];
-  remoteAuthority: () => Manager["remoteAuthority"];
   runHosting: () => Manager["runHosting"];
   userMode: () => Manager["userMode"];
   deliveryShard: () => (typeof Manager)["DELIVERY_SHARD"];
@@ -100,7 +99,6 @@ export function credentialRenewalDeps(m: Manager): CredentialRenewalDeps {
     ep: () => m["ep"],
     leaseStopping: () => m["leaseStopping"],
     managerInstanceId: () => m["managerInstanceId"],
-    remoteAuthority: () => m["remoteAuthority"],
     runHosting: () => m["runHosting"],
     userMode: () => m["userMode"],
     deliveryShard: () => (m.constructor as typeof Manager).DELIVERY_SHARD,
@@ -160,7 +158,7 @@ export class CredentialRenewal {
   private get ep() { return this.deps.ep(); }
   private get leaseStopping() { return this.deps.leaseStopping(); }
   private get managerInstanceId() { return this.deps.managerInstanceId(); }
-  private get remoteAuthority() { return this.deps.remoteAuthority(); }
+  private get remoteAuthority() { return this.config.remoteAuthority; }
   private get runHosting() { return this.deps.runHosting(); }
   private get userMode() { return this.deps.userMode(); }
   private beginLifecycle(...args: Parameters<Manager["beginLifecycle"]>): ReturnType<Manager["beginLifecycle"]> { return this.deps.beginLifecycle(...args); }

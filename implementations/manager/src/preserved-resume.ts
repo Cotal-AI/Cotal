@@ -61,7 +61,6 @@ export interface PreservedResumeDeps {
   ep: () => Manager["ep"];
   managerInstanceId: () => Manager["managerInstanceId"];
   namesCapacity: () => Manager["namesCapacity"];
-  remoteAuthority: () => Manager["remoteAuthority"];
   resumeDurableCommitToken: () => Manager["resumeDurableCommitToken"];
   setResumeDurableCommitToken: (value: Manager["resumeDurableCommitToken"]) => void;
   resumeRequired: () => Manager["resumeRequired"];
@@ -120,7 +119,6 @@ export function preservedResumeDeps(m: Manager): PreservedResumeDeps {
     ep: () => m["ep"],
     managerInstanceId: () => m["managerInstanceId"],
     namesCapacity: () => m["namesCapacity"],
-    remoteAuthority: () => m["remoteAuthority"],
     resumeDurableCommitToken: () => m["resumeDurableCommitToken"],
     setResumeDurableCommitToken: (value) => { m["resumeDurableCommitToken"] = value; },
     resumeRequired: () => m["resumeRequired"],
@@ -183,7 +181,7 @@ export class PreservedResume {
   private get ep() { return this.deps.ep(); }
   private get managerInstanceId() { return this.deps.managerInstanceId(); }
   private get namesCapacity() { return this.deps.namesCapacity(); }
-  private get remoteAuthority() { return this.deps.remoteAuthority(); }
+  private get remoteAuthority() { return this.config.remoteAuthority; }
   private get resumeDurableCommitToken() { return this.deps.resumeDurableCommitToken(); }
   private set resumeDurableCommitToken(value: Manager["resumeDurableCommitToken"]) { this.deps.setResumeDurableCommitToken(value); }
   private get resumeRequired() { return this.deps.resumeRequired(); }

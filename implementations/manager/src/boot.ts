@@ -43,7 +43,6 @@ export interface ManagerBootDeps {
   setManagerInstanceId: (value: Manager["managerInstanceId"]) => void;
   managerServeIdentity: () => Manager["managerServeIdentity"];
   setManagerServeIdentity: (value: Manager["managerServeIdentity"]) => void;
-  remoteAuthority: () => Manager["remoteAuthority"];
   resumeCredRenewal: () => Manager["resumeCredRenewal"];
   setResumeCredRenewal: (value: Manager["resumeCredRenewal"]) => void;
   runHosting: () => Manager["runHosting"];
@@ -94,7 +93,6 @@ export function bootDeps(m: Manager): ManagerBootDeps {
     setManagerInstanceId: (value) => { m["managerInstanceId"] = value; },
     managerServeIdentity: () => m["managerServeIdentity"],
     setManagerServeIdentity: (value) => { m["managerServeIdentity"] = value; },
-    remoteAuthority: () => m["remoteAuthority"],
     resumeCredRenewal: () => m["resumeCredRenewal"],
     setResumeCredRenewal: (value) => { m["resumeCredRenewal"] = value; },
     runHosting: () => m["runHosting"],
@@ -149,7 +147,7 @@ export class ManagerBoot {
   private set managerInstanceId(value: Manager["managerInstanceId"]) { this.deps.setManagerInstanceId(value); }
   private get managerServeIdentity() { return this.deps.managerServeIdentity(); }
   private set managerServeIdentity(value: Manager["managerServeIdentity"]) { this.deps.setManagerServeIdentity(value); }
-  private get remoteAuthority() { return this.deps.remoteAuthority(); }
+  private get remoteAuthority() { return this.config.remoteAuthority; }
   private get resumeCredRenewal() { return this.deps.resumeCredRenewal(); }
   private set resumeCredRenewal(value: Manager["resumeCredRenewal"]) { this.deps.setResumeCredRenewal(value); }
   private get runHosting() { return this.deps.runHosting(); }
