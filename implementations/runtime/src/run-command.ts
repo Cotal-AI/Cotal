@@ -626,8 +626,15 @@ async function migrate(values: RunValues, planes: Planes, runId: string | undefi
   const endpoint = values.endpoint ?? "manager";
   const record = await readRunRecord(planes.kv, endpoint, runId);
   // A run ID nothing records is refused as `run show` refuses it; the check writes nothing either way.
-  if (record === undefined)
-    throw new CommandFailure("refused", "TARGET_NOT_FOUND", `run ${runId}: no record on endpoint ${endpoint}; a run that was never started cannot be checked`, { target: { space: planes.space, endpoint, run: runId }, remedy: "list the recorded runs with `cotal run`" });
+  if (record === undefined) {
+    const selectors = retryFlag("space", planes.space) + (["server", "creds", "endpoint"] as const).map((flag) => retryFlag(flag, values[flag])).join("");
+    const privateServer = values.server !== undefined && brokerAddressForDisplay(values.server) !== oneLine(values.server);
+    throw new CommandFailure("refused", "TARGET_NOT_FOUND", `run ${runId}: no record on endpoint ${endpoint}; a run that was never started cannot be checked`, {
+      target: { space: planes.space, endpoint, run: runId },
+      remedy: privateServer ? "change the original subcommand to `list`, remove the run ID and program file (including `--file` if used), and add `--local` if missing"
+        : `list the recorded runs with ${codeSpan(`cotal run list --local${selectors}`)}`,
+    });
+  }
   const recorded = await readRunProgram(planes.kv, endpoint, runId);
   const replay = await replayRunJournal(planes.js, planes.jsm, planes.space, runId, takeoverId);
   const source = sourceOf(values.file);
