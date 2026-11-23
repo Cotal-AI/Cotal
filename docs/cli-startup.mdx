@@ -111,8 +111,8 @@ with no `.cotal` above it, and a run refused before it writes there removes that
 When the home holds a stack an earlier release started there, the folder starts its own stack beside
 it. The home's stack keeps running and keeps its records, and commands in the folder reach the
 folder's own stack from then on. In such a folder,
-`up -f` and `up --restore` refuse `CONFLICT` before anything is written: prepare the folder with
-`space create <space> --root .`, then run `up` again from it. In the home folder
+`up -f` and `up --restore` refuse `CONFLICT` before anything is written. For a manifest, prepare the folder with
+`space create <space> --root .`, then repeat the manifest command there. Keep its file and launch options, but omit `--json` or `--plain` if you passed it. In the home folder
 itself, whose `.cotal` holds this machine's own records, `up` refuses `CONFLICT` and names a project
 folder, as `space create` does there. In a folder that is, or is in, a control directory, `up`
 refuses `CONFLICT` before anything is started or written and names the project folder to run it from. A home that already holds a stack an earlier release started
@@ -145,9 +145,9 @@ leaves the other space's `down` and its reads reaching this one. When the named 
 `--plain`, and writes nothing in the folder it ran from. If you run it from the renamed folder of a
 running static-auth project, the refusal tells you to move the project back before running
 `cotal down --yes` there. A bare `up` whose folder names a space that
-runs from another folder refuses `CONFLICT` as well. Its Next names
-`cotal up --space <name>` to start a separate space in this folder, and the `cotal down` that stops
-the other one in its own folder. A background boot also brings up the control plane (delivery daemon in auth
+runs from another folder refuses `CONFLICT` as well. To start a separate space, run
+`cotal up --space <name>` in a new project folder outside the current one. Use an unused name and
+keep `--server` if you specified a free address. To stop the running space instead, use `cotal down` in its own folder. A background boot also brings up the control plane (delivery daemon in auth
 mode, then the manager). An open mesh runs no delivery daemon, also in a root that still holds a
 static stack's accounts, and its manager mints no credentials from those accounts, so static and
 open boots can alternate in one folder. Their store then holds both accounts, and a backup holds
@@ -268,9 +268,10 @@ its stop impact. It does not replace native stop authority with a process signal
 was not registered yet, it names that broker's pid, `cotal down --yes` and then `cotal up`. A start
 killed before it could say so leaves the same broker. The next `up` then refuses `CONFLICT`, exit 2,
 with or without `--server`, and names that broker's pid and `cotal down`, because the broker holds
-this root's store and no second one starts beside it. `cotal down` stops it. An
-interrupted `up --no-manager` names `cotal up --no-manager` in each of these, because bare `up` adds
-the manager, and the `cotal down --yes` that settles such an `up` names it as its Next. An `up`
+this root's store and no second one starts beside it. After `cotal down` stops it, repeat the startup
+command that refused, including its options. A bare `cotal up` can reuse the old address or start a
+manager you did not request. An interrupted controller `up --no-manager` names `cotal up --no-manager`
+in its signal notice and after the `cotal down --yes` that settles it. An `up`
 interrupted while it writes a new space's trust material leaves the space new, so the next `up`
 writes all of it again. A bare `down` interrupted the same way exits with the same codes and names
 the members still running; `cotal down --yes` finishes the stop. When it had signalled a member that

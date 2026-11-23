@@ -70,7 +70,6 @@ const family = async (ttl: number) =>
 type Internals = {
   dial(opts: object): Promise<NatsConnection>;
   dialServeConnection(state: unknown, readCreds: () => string): Promise<{ nc: NatsConnection; handle: { stop(): Promise<void> } }>;
-  serviceServe?: { nc: NatsConnection; identity: Identity; grant: { epoch: number }; creds?: string };
   ep: { reconnect(): Promise<void> };
   leaseStopping: boolean;
   renewRemoteBeforeRedial(label: string, read: () => string | undefined): Promise<void>;
@@ -79,6 +78,7 @@ type Internals = {
     sessionLedgerIdentity?: Identity;
     sessionLedgerConn?: { nc: NatsConnection; creds?: string };
     sessionLedgerCreds?: string;
+    serviceServe?: { nc: NatsConnection; identity: Identity; grant: { epoch: number }; creds?: string };
   };
   credentialRenewal: { remoteSupervisorCreds?: string; remoteExecutorCreds?: string; remoteRenewalDebt?: { processEpoch: number; reason: string; unadoptedSubjects: string[] }; };
   goalWriterComponent: { goalWriterCreds?: string; };
@@ -132,8 +132,8 @@ try {
   m.ep = { reconnect: async () => {} };
   // Only session-ledger recovery is native here. Serve replacement is a transport seam,
   // not an authorization or dispatch test. Native serve continuity has its own live suite.
-  m.serviceServe = { nc: { flush: async () => {}, close: async () => {} } as never, identity: held.serve, grant: { epoch: 7 }, creds: initial.serve };
-  Object.assign(m.serviceServe, { handle: { stop: async () => {} } });
+  m.servePlane.serviceServe = { nc: { flush: async () => {}, close: async () => {} } as never, identity: held.serve, grant: { epoch: 7 }, creds: initial.serve };
+  Object.assign(m.servePlane.serviceServe, { handle: { stop: async () => {} } });
   m.dialServeConnection = async (_state, readCreds) => {
     const nc = await m.dial({ authenticator: (nonce?: string) => credsAuthenticator(new TextEncoder().encode(readCreds()))(nonce), maxReconnectAttempts: -1 });
     await nc.flush();
@@ -169,7 +169,7 @@ try {
     assert.equal(m.credentialRenewal.remoteRenewalDebt, undefined);
     assert.equal(sw.creds, renewed.value!.sessionLedger);
     assert.equal(m.servePlane.sessionLedgerCreds, renewed.value!.sessionLedger);
-    assert.equal(m.serviceServe!.creds, renewed.value!.serve);
+    assert.equal(m.servePlane.serviceServe!.creds, renewed.value!.serve);
     assert.equal(m.goalWriterComponent.goalWriterCreds, renewed.value!.goalWriter);
   });
   await cell("every duty keeps its held nkey, and no per-duty or local path ran", async () => {
@@ -189,7 +189,7 @@ try {
   console.error = origError;
   if (m) m.leaseStopping = true;
   await m?.servePlane.sessionLedgerConn?.nc?.close().catch(() => {});
-  await m?.serviceServe?.nc?.close().catch(() => {});
+  await m?.servePlane.serviceServe?.nc?.close().catch(() => {});
   releaseBroker();
   await killAndAwaitExit(srv);
 }

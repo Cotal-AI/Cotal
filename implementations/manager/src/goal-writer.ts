@@ -9,6 +9,7 @@ import { Kvm } from "@nats-io/kv";
 import type { KV } from "@nats-io/kv";
 import type { NatsConnection } from "@nats-io/transport-node";
 import type { ManagerConfig } from "./manager-config.js";
+import type { ManagerParts } from "./manager-parts.js";
 import type { SpawnAcceptance } from "./seat-types.js";
 
 /** What {@link GoalWriter} reads from the Manager. Every entry is read at use, so a field the Manager
@@ -18,7 +19,6 @@ export interface GoalWriterDeps {
   leaseStopping: () => Manager["leaseStopping"];
   managerInstanceId: () => Manager["managerInstanceId"];
   remoteAuthority: () => Manager["remoteAuthority"];
-  serviceServe: () => Manager["serviceServe"];
   turnRelay: () => Manager["turnRelay"];
   adoptTurnGoal: (...args: Parameters<Manager["adoptTurnGoal"]>) => ReturnType<Manager["adoptTurnGoal"]>;
   boundedReconnect: (...args: Parameters<Manager["boundedReconnect"]>) => ReturnType<Manager["boundedReconnect"]>;
@@ -38,7 +38,6 @@ export function goalWriterDeps(m: Manager): GoalWriterDeps {
     leaseStopping: () => m["leaseStopping"],
     managerInstanceId: () => m["managerInstanceId"],
     remoteAuthority: () => m["remoteAuthority"],
-    serviceServe: () => m["serviceServe"],
     turnRelay: () => m["turnRelay"],
     adoptTurnGoal: (...args) => m["adoptTurnGoal"](...args),
     boundedReconnect: (...args) => m["boundedReconnect"](...args),
@@ -53,7 +52,7 @@ export function goalWriterDeps(m: Manager): GoalWriterDeps {
 
 /** The goal-writer's standing connection, its credential, and the goal index it reconciles at boot. */
 export class GoalWriter {
-  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: GoalWriterDeps) {}
+  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: GoalWriterDeps, private readonly parts: Pick<ManagerParts, "servePlane">) {}
 
   /** The spawn-as-action SELF-MEDIATED goal-writer connection + ActionContext — a
    *  standing connection DISJOINT from the serve credential, scoped to exactly this endpoint's
@@ -90,7 +89,6 @@ export class GoalWriter {
   private get leaseStopping() { return this.deps.leaseStopping(); }
   private get managerInstanceId() { return this.deps.managerInstanceId(); }
   private get remoteAuthority() { return this.deps.remoteAuthority(); }
-  private get serviceServe() { return this.deps.serviceServe(); }
   private get turnRelay() { return this.deps.turnRelay(); }
   private adoptTurnGoal(...args: Parameters<Manager["adoptTurnGoal"]>): ReturnType<Manager["adoptTurnGoal"]> { return this.deps.adoptTurnGoal(...args); }
   private boundedReconnect(...args: Parameters<Manager["boundedReconnect"]>): ReturnType<Manager["boundedReconnect"]> { return this.deps.boundedReconnect(...args); }
@@ -319,7 +317,7 @@ export class GoalWriter {
       // A SUCCESSOR settling work it inherited: the committer is THIS incarnation at its CURRENT
       // serve epoch, which is strictly greater than the goal's acceptedEpoch — the `committed >
       // accepted` arm of the attribution rule, and the reason that arm has to exist.
-      await settleGoalUncertain(gw.ctx, { ref, now: Date.now(), committer: { instanceId: this.managerInstanceId, epoch: this.serviceServe?.grant.epoch ?? 0 } }); // first-terminal-wins: a racing terminal returns the winner, no throw
+      await settleGoalUncertain(gw.ctx, { ref, now: Date.now(), committer: { instanceId: this.managerInstanceId, epoch: this.parts.servePlane.serviceServe?.grant.epoch ?? 0 } }); // first-terminal-wins: a racing terminal returns the winner, no throw
       await clearGoalIndex(gw.ctx, ref);
     };
     const remaining = spec.value.acceptedAt + (spec.value.readinessDeadlineMs ?? this.config.readinessTimeoutMs) - Date.now();
@@ -334,7 +332,7 @@ export class GoalWriter {
    *  the terminal; the durable result fact + inspect/ps are the reconcile authority). A dropped event
    *  is non-fatal (the terminal is authoritative in the journal). */
   emitGoalProgress(ref: GoalRef, epoch: number, event: Record<string, unknown>): void {
-    const nc = this.serviceServe?.nc;
+    const nc = this.parts.servePlane.serviceServe?.nc;
     if (!nc) return;
     try {
       nc.publish(

@@ -152,6 +152,12 @@ written. Setup never removes a runtime you leave out; `cotal ext remove` does. `
 lists each one with its package, its host tool and whether setup found it set up, added it or left it
 out.
 
+When T3 Code or Zed is on this computer, setup installs `@cotal-ai/acp` as `cotal ext add` does, at
+this cotal's version, and adds the space to each client it finds (see
+[Use an ACP client](acp-clients.mdx#add-to-a-client)). A client settings file setup cannot change
+leaves the rest saved and the result `partial`. `cotal update` points those entries at the Cotal it
+installed, and `cotal status` shows one whose command is gone.
+
 A rerun with the same answers changes nothing and is a `no-op`; a space already prepared, started or
 registered at that root is reported, not refused. A space name or root another space holds is
 `CONFLICT`. If the local space is already prepared in an existing folder, rerun setup with that
@@ -691,6 +697,8 @@ reading; `--allow-publish` is optional when the session will not post. A credent
 permission joins read-only, and the prompt says so instead of inviting broadcasts. Attempting to
 post confirms that nothing was sent and names the mint with `--allow-publish` for that channel.
 Reading, roster commands and DMs remain available. Use the intended channel in both commands.
+For a channel that starts with `-`, attach the values with `=`, as in `--allow-subscribe=-general`
+when minting and `--channel=-general` when joining.
 A subscription pattern such as `team.>` can be the landing channel when the read grant covers it.
 The session can follow the pattern, but broadcasts from the join prompt require a concrete landing channel.
 If the file is missing or incomplete, `join` refuses it before connecting. Check the path for a

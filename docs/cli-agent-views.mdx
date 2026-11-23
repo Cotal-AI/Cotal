@@ -125,15 +125,18 @@ An unpinned launch that no manager received has no such line, because no manager
 
 `--harness/-H`, `--model/-m`, `--name/-n`, `--prompt/-p` and `--cwd/-C` retain their declared
 meanings. The legacy `--agent` spelling remains accepted; using both harness spellings refuses.
-A `--file <persona-file>` launch uses this route too unless `--foreground` is given. A manifest is
-deployed with `cotal team deploy <file>`, not `spawn`.
+`--file <persona-file>` selects the persona, not the launch route. Without `--detach` or `--on`,
+the application runs in this terminal and relative file paths resolve from the invoking folder.
+With `--detach` or `--on`, the manager reads the file on its own host and resolves relative paths
+from its workspace. Use `cotal team deploy <file>` for a manifest, not `spawn`.
 
-`--foreground` runs the native application directly. It does not support a structured receipt,
-manager pin or manager control credential. Native exit or terminal loss may end that process;
-no detachable-view or reboot-survival claim applies. The command exits with the application's
-exit code. When a signal ends the application, it exits with 128 plus the signal number, as a
-shell does, so SIGTERM gives 143 and SIGKILL gives 137. Protected internal handoff/enrollment
-children keep their existing direct execution and native authorization checks.
+`--foreground` explicitly selects direct execution. It cannot be combined with `--detach` or
+`--on`. Direct execution does not support a structured receipt or manager control credential.
+Native exit or terminal loss may end the process. This route offers no detachable view or
+reboot-survival guarantee. The command exits with the application's exit code. When a signal ends
+the application, it exits with 128 plus the signal number, as a shell does, so SIGTERM gives 143
+and SIGKILL gives 137. Protected internal handoff/enrollment children keep their existing direct
+execution and native authorization checks.
 
 If the agent joins but attachment fails, the result is partial with its original identity and
 manager. No second launch occurs. A view exit sends no stop request. This route does not offer
