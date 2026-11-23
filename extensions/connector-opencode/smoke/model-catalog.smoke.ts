@@ -1,6 +1,7 @@
 import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 import type { ModelCatalog, ModelCatalogOpts } from "@cotal-ai/core";
 import { createSuite, skipSuite } from "@cotal-ai/smoke-kit";
@@ -44,6 +45,41 @@ async function list(bin: string, opts: ModelCatalogOpts = {}) {
 const unavailableOnly = (r: Awaited<ReturnType<typeof list>>, reason: RegExp) =>
   r.error === "" && r.catalog?.models.length === 0 && reason.test(r.catalog.unavailable ?? "");
 
+const SOURCE2 = "opencode serve --stdio: GET /api/model";
+const FAKE_SERVE = fileURLToPath(new URL("./fixtures/fake-opencode2-serve.mjs", import.meta.url));
+
+/** A fake 2.x binary whose servers settle `settleMs` after their first request (never when null). */
+function fakeServer(name: string, config: { settleMs: number | null; modelBody: string; modelStatus?: number }) {
+  const pidFile = join(dir, `${name}.pids`);
+  const configFile = join(dir, `${name}.json`);
+  writeFileSync(configFile, JSON.stringify({ ...config, pidFile }));
+  return { bin: fakeOpenCode(name, "opencode v2.4.1", `exec '${process.execPath}' '${FAKE_SERVE}' '${configFile}' "$@"`), pidFile };
+}
+
+/** Whether every pid written to `pidFile` is gone within 2 s. A read settles without waiting for
+ *  the exit, so the kill gets time to be reaped. A missing file means no server ran. */
+async function gone(pidFile: string): Promise<boolean> {
+  let pids: number[];
+  try {
+    pids = readFileSync(pidFile, "utf8").trim().split(/\s+/).map(Number);
+  } catch {
+    return false;
+  }
+  const alive = (pid: number) => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  for (let waited = 0; waited < 2_000; waited += 50) {
+    if (pids.every((pid) => Number.isInteger(pid) && !alive(pid))) return true;
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  return false;
+}
+
 try {
   const SECRET = "sk-fixture-secret-must-not-surface";
   const recorded = JSON.parse(readFileSync(new URL("./fixtures/opencode2-model-list.json", import.meta.url), "utf8"));
@@ -53,20 +89,19 @@ try {
   const replyFile = join(dir, "reply.json");
   writeFileSync(replyFile, JSON.stringify(recorded, null, 2));
 
-  const v2 = fakeOpenCode("oc2", "opencode v2.2.5", `cat '${replyFile}'`);
-  const listed = await list(v2);
+  const late = fakeServer("oc2", { settleMs: 300, modelBody: JSON.stringify(recorded) });
+  const listed = await list(late.bin);
   const reference = readFileSync(new URL("../../../docs/opencode-connector-reference.mdx", import.meta.url), "utf8");
   check(
     "the reference describes the available 2.x catalog without an obsolete limitation",
-    listed.catalog?.source === "opencode api --standalone GET /api/model" &&
-      reference.includes(`\`${listed.catalog.source}\``) && !reference.includes("lists no OpenCode catalog"),
+    listed.catalog?.source === SOURCE2 && reference.includes(`\`${listed.catalog.source}\``) && !reference.includes("lists no OpenCode catalog"),
   );
   const effort = (...names: string[]) => names.map((name) => ({ name }));
   check(
-    "on 2.x the catalog lists the server's models as provider/model ids with their variants",
+    "on 2.x the catalog waits for OpenCode's plugins to settle, then lists the server's models as provider/model ids with their variants",
     listed.error === "" &&
       isDeepStrictEqual(listed.catalog, {
-        source: "opencode api --standalone GET /api/model",
+        source: SOURCE2,
         models: [
           { id: "opencode/big-pickle", provider: "opencode", name: "Big Pickle" },
           { id: "opencode/deepseek-v4.1-flash-free", provider: "opencode", name: "DeepSeek V4.1 Flash Free", variants: effort("low", "high", "max") },
@@ -81,50 +116,52 @@ try {
     listed,
   );
   check(
-    "on 2.x the catalog read asks a private standalone server, never the background service",
-    argv(v2) === "api --standalone GET /api/model",
-    argv(v2),
+    "on 2.x the catalog read starts a private stdio server on loopback with no password on its command line, never the background service",
+    argv(late.bin) === "serve --stdio --hostname 127.0.0.1 --port 0",
+    argv(late.bin),
   );
+  check("on 2.x a read leaves no server process or child behind", await gone(late.pidFile));
   check(
     "on 2.x the catalog carries no provider key, header or settings from the reply",
     (listed.catalog?.models.length ?? 0) > 0 && !JSON.stringify(listed.catalog).includes(SECRET),
     listed.catalog,
   );
 
-  const refused = await list(fakeOpenCode("oc2-refused", "opencode v2.2.5", `echo '{"_tag":"ServiceUnavailableError"}'\necho 'HTTP 503 Service Unavailable' >&2\nexit 1`));
-  check("on 2.x a refused read is reported unavailable with OpenCode's reason, not thrown", unavailableOnly(refused, /HTTP 503 Service Unavailable/), refused);
+  const none = await list(fakeServer("oc2-none", { settleMs: 0, modelBody: JSON.stringify({ location: { directory: "/work" }, data: [] }) }).bin);
+  check("on 2.x a list still empty once the plugins settled is reported unavailable, not listed empty", unavailableOnly(none, /no models/), none);
 
-  const notJson = await list(fakeOpenCode("oc2-text", "opencode v2.2.5", `echo 'opencode v2.2.5'`));
+  const refused = await list(fakeOpenCode("oc2-refused", "opencode v2.2.5", `echo 'Error: Missing server password' >&2\nexit 1`));
+  check("on 2.x a server that fails to start is reported unavailable with OpenCode's reason, not thrown", unavailableOnly(refused, /Missing server password/), refused);
+
+  const status = await list(fakeServer("oc2-status", { settleMs: 0, modelStatus: 503, modelBody: '{"_tag":"ServiceUnavailableError"}' }).bin);
+  check("on 2.x a refused model read is reported unavailable with its HTTP status, not thrown", unavailableOnly(status, /HTTP 503/), status);
+
+  const notJson = await list(fakeServer("oc2-text", { settleMs: 0, modelBody: "opencode v2.2.5" }).bin);
   check("on 2.x a reply that is not JSON is reported unavailable, not thrown", unavailableOnly(notJson, /not JSON/), notJson);
 
-  const noProvider = await list(fakeOpenCode("oc2-shape", "opencode v2.2.5", `echo '{"location":{"directory":"/work"},"data":[{"id":"big-pickle","name":"Big Pickle","variants":[]}]}'`));
+  const noProvider = await list(fakeServer("oc2-shape", { settleMs: 0, modelBody: '{"location":{"directory":"/work"},"data":[{"id":"big-pickle","name":"Big Pickle","variants":[]}]}' }).bin);
   check("on 2.x a model without a providerID is reported unavailable, not thrown", unavailableOnly(noProvider, /providerID/), noProvider);
 
-  const noData = await list(fakeOpenCode("oc2-nodata", "opencode v2.2.5", `echo '{"location":{"directory":"/work"}}'`));
+  const noData = await list(fakeServer("oc2-nodata", { settleMs: 0, modelBody: '{"location":{"directory":"/work"}}' }).bin);
   check("on 2.x a reply without a model list is reported unavailable, not thrown", unavailableOnly(noData, /model list/), noData);
+
+  const unsettled = fakeServer("oc2-unsettled", { settleMs: null, modelBody: JSON.stringify(recorded) });
+  const stuck = await list(unsettled.bin);
+  check(
+    "on 2.x plugins that never settle are reported unavailable within the read's 10 seconds, not listed empty",
+    unavailableOnly(stuck, /10 seconds/) && stuck.ms >= 9_500 && stuck.ms < 15_000,
+    { ...stuck, returned: undefined },
+  );
+  check("on 2.x a read that timed out leaves no server process or child behind", await gone(unsettled.pidFile));
 
   const pidFile = join(dir, "slow.pid");
   const slow = await list(fakeOpenCode("oc2-slow", "opencode v2.2.5", `echo $$ > '${pidFile}'\nexec sleep 60`));
   check(
-    "on 2.x a read that does not answer within 6 seconds is reported unavailable, not hung",
-    unavailableOnly(slow, /6 seconds/) && slow.ms >= 5_500 && slow.ms < 11_000,
+    "on 2.x a server that does not start within 10 seconds is reported unavailable, not hung",
+    unavailableOnly(slow, /10 seconds/) && slow.ms >= 9_500 && slow.ms < 15_000,
     { ...slow, returned: undefined },
   );
-  let slowKilled = false;
-  let pid = NaN;
-  try {
-    pid = Number(readFileSync(pidFile, "utf8"));
-  } catch {}
-  // The catalog settles at the deadline without waiting for the exit, so give the kill time to be reaped.
-  for (let waited = 0; Number.isInteger(pid) && !slowKilled && waited < 2_000; waited += 50) {
-    try {
-      process.kill(pid, 0);
-      await new Promise((r) => setTimeout(r, 50));
-    } catch {
-      slowKilled = true;
-    }
-  }
-  check("on 2.x the timed-out read's process is killed", slowKilled);
+  check("on 2.x the timed-out read's process is killed", await gone(pidFile));
 
   const v1Out = [
     "opencode/big-pickle",
