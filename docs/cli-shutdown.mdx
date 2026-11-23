@@ -391,6 +391,9 @@ instead of reporting a stopped stack. Press Ctrl-C in the first terminal, or wai
 retry `cotal down --yes`. Once the broker is registered, `down` waits up to 20 seconds for startup
 to finish before stopping the stack. If it cannot finish waiting, it gives the same next step and
 stops nothing. A refused manager stop leaves delivery and the broker running.
+Once the mesh is registered, `down --preserve-state` refuses with `LIFECYCLE_BLOCKED`, exit 2,
+if startup or another maintenance operation still holds the lock. Nothing was stopped. After the
+other operation finishes, repeat the preserve command from the same folder with the same options.
 When a legacy open broker stops cleanly and its saved payload limit is below the manager's
 minimum, the receipt shows `cotal up --no-manager`. That starts the broker at the same limit.
 The machine home is not an isolated project root, so bare `down` refuses the home stack. Stop it

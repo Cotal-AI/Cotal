@@ -22,6 +22,7 @@ import { join, resolve as resolvePath } from "node:path";
 import {
   CommandFailure,
   isCommandFailure,
+  isMaintenanceError,
   abortMaintenanceCut,
   acquireMaintenanceLock,
   beginMaintenanceCut,
@@ -166,6 +167,16 @@ async function restartFencedDelivery(space: string, server: string, tls: boolean
   }
 }
 
+function acquirePreserveLock(root: string, space: string) {
+  try { return acquireMaintenanceLock(root); }
+  catch (error) {
+    if (!isMaintenanceError(error) || error.code !== "lock-held") throw error;
+    throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `${error.message}; nothing was stopped`, {
+      target: { root, space }, remedy: "after the other operation finishes, repeat `cotal down --preserve-state` from this folder with the same options",
+    });
+  }
+}
+
 export async function preserveStateDown(storeOverride?: string, sessionStores: readonly string[] = []): Promise<void> {
   const root = cotalRoot();
   const matching = loadMeshes().filter((mesh) => mesh.root === root);
@@ -179,7 +190,7 @@ export async function preserveStateDown(storeOverride?: string, sessionStores: r
   const storeDir = storeOverride ? resolveStore(storeOverride) : mesh.storeDir ?? join(root, ".cotal", "nats");
   // The store cap the broker was started with travels with the store, so the resume re-renders it.
   const cap: { maxFileStore?: number } = mesh.maxFileStore !== undefined ? { maxFileStore: mesh.maxFileStore } : {};
-  const lock = acquireMaintenanceLock(root);
+  const lock = acquirePreserveLock(root, mesh.space);
   try {
     const additiveAttempts = listAdditiveTeamAttempts(root);
     if (retainedAdditiveTeamAttempts(additiveAttempts).length || additiveAttempts.refused.length) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "an additive attempt or returned additive deployment remains; preserve-state down did not fold its resources into the retained stack", { target: { root, space: mesh.space, deploymentIds: retainedAdditiveTeamAttempts(additiveAttempts).map((attempt) => attempt.deploymentId), unreadable: additiveAttempts.refused.map(({ path }) => path) } });
