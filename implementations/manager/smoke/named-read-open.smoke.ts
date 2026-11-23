@@ -74,6 +74,13 @@ try {
     const status = await cli(["status", "raw-seat", ...pin]);
     check(`raw-open named status ${pin.length ? "with" : "without"} explicit owner`, status.code === 0 && status.out.includes("raw-seat") && status.out.includes("raw-pin") && status.out.includes(iid), status);
   }
+  const absentPin = `${iid.slice(0, -1)}${iid.endsWith("7") ? "6" : "7"}`;
+  const wrongPin = await cli(["status", "raw-seat", "--on", absentPin]);
+  const wrongPinError = JSON.parse(wrongPin.out).error;
+  check("a named read refuses an absent pin without a describe deadline or rerouting to the seat's owner",
+    wrongPin.code === 2 && wrongPinError?.code === "TARGET_NOT_FOUND"
+      && wrongPinError.message.includes(`--on ${absentPin} names no manager running`)
+      && wrongPinError.remedy === `run it again with --on ${iid}, or without --on`, wrongPin);
   // The text Next names the agent it found, with the --space and --server it was read with; it
   // printed a literal <agent>, which a shell reads as a redirection (#7640).
   const text = await cli(["status", "raw-seat"], "--plain");

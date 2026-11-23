@@ -26,6 +26,8 @@ signs in to the broker, redeems enrollment, provisions or allocates an agent. A 
 launch arguments if the installed connector supports validation without creating launch files. Where the launch reads
 whether the recorded brokers answer to choose its space, as in a folder whose registered space may
 be stopped, the preview reads the same without signing in, so it names the space the launch uses.
+In the project of a stopped open stack, `spawn --detach --dry-run` can use the name saved by the
+last start without restarting the stack.
 A managed preview checks an explicit `--name` with the launch's local name rule, including the
 actor-token rule for a selected user-auth space. An invalid name is refused with `USAGE_INVALID`
 (exit 1). A successful managed preview reports `completeness` as `not-checked`. The manager
@@ -96,7 +98,8 @@ whose provider, registered or installed with this CLI, declares no terminal. Any
 attach is partial, exit 4, with the manager's reason as `Native detail` and a Next that gives
 `cotal ps` and `cotal attach` with the space and manager instance. Without usable input/output terminals, an attaching
 `--on` launch refuses before allocation and names `-d` or a spawn in this terminal. A shell tool's
-inherited parent PTY is not enough.
+inherited parent PTY is not enough. With `--json` or `--plain`, add `-d` to keep the manager pin
+and receive a receipt without attaching.
 
 A launch whose agent application waits for you before it joins is ready once its process runs.
 Claude with `--opt resume=` and no session id opens its session picker, so the CLI says the agent
@@ -149,6 +152,8 @@ unregistered `--space` retain the raw open-broker connection, with or without `-
 JSON has `identity`, `execution`, `mesh` and `activity` fields; missing optional observations
 are null with source annotations. The Identity Agent field shows the id when the name is missing or only whitespace. JSON `identity.name` stays the name the manager returned.
 `--on <manager-instance>` restricts the read and never redirects to a different owner.
+On a static or open space, if the manager registry shows that the pin is absent, the refusal
+names the registered managers without waiting for a reply from the missing instance.
 Its Next names the agent it read, with the `--space` and `--server` you gave and the manager's
 `--on`, so the `attach` and `stop` it suggests run as printed.
 It takes no `--all`, `--components`, `--wide` or `--verbose`.

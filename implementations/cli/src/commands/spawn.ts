@@ -233,7 +233,7 @@ export function validateSpawnArguments(args: ParsedArgs) {
   if (values["live-only"] && !direct) throw new CommandFailure("refused", "USAGE_INVALID", "--live-only belongs to direct foreground execution");
   seatExpiry(values, direct);
   if (!values["dry-run"] && !direct && !values.detach && (values.json || values.plain || inputDisabledByFlag() || !process.stdin.isTTY || !process.stdout.isTTY))
-    throw new CommandFailure("refused", "USAGE_INVALID", "attaching to a manager's launch needs usable input and output terminals before an identity is allocated", { remedy: "add -d to wait for readiness without attaching, or drop --on to run it in this terminal", selfContained: true });
+    throw new CommandFailure("refused", "USAGE_INVALID", "attaching to a manager's launch needs usable input and output terminals before an identity is allocated", { remedy: values.json || values.plain ? "add -d to wait for readiness without attaching" : "add -d to wait for readiness without attaching, or drop --on to run it in this terminal", selfContained: true });
   for (const field of ["harness", "agent", "model", "variant", "name", "cwd"] as const) if (values[field] !== undefined && !values[field]!.trim())
     throw new CommandFailure("refused", "USAGE_INVALID", `--${field} cannot be empty`);
   if (values.events && values["no-events"]) throw new CommandFailure("refused", "USAGE_INVALID", "choose --events or --no-events, not both");
