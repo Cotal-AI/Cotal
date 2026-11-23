@@ -279,10 +279,21 @@ if (process.platform !== "win32") {
     && directories.every((path) => (statSync(path).mode & 0o777) === 0o700)
     && files.every((path, index) => (statSync(path).mode & 0o777) === (index === 0 ? 0o600 : 0o700)), shown(scaffold));
 
-  const original = readFileSync(files[0]!, "utf8");
-  const conflict = run(["endpoint", "init", "different", "--dir", dir, "--json"], {}, cwd);
-  check("endpoint init does not replace scaffold files", conflict.status === 2 && JSON.parse(conflict.stdout).error?.code === "CONFLICT"
-    && readFileSync(files[0]!, "utf8") === original, shown(conflict));
+  const original = files.map((path) => readFileSync(path));
+  const conflictArgs = ["endpoint", "init", "different", "--dir", dir];
+  const conflict = run([...conflictArgs, "--json"], {}, cwd);
+  const plainConflict = run([...conflictArgs, "--plain"], {}, cwd);
+  const rejected = JSON.parse(conflict.stdout);
+  const copyDir = `${parent}/reviews-copy`;
+  const copy = run(["endpoint", "init", "different", "--dir", copyDir, "--json"], {}, cwd);
+  const checked = run(["endpoint", "check", join(copyDir, "contract.json"), "--plain"], {}, cwd);
+  check("endpoint init preserves scaffold files and names the alternate destination remedy in JSON and plain output",
+    conflict.status === 2 && rejected.error?.code === "CONFLICT" && rejected.target?.path === files[0]
+    && rejected.error?.remedy?.includes("cotal endpoint init different --dir <new-directory>")
+    && plainConflict.status === 2 && plainConflict.stderr.includes(rejected.error.remedy)
+    && files.every((path, index) => readFileSync(path).equals(original[index]!))
+    && copy.status === 0 && JSON.parse(copy.stdout).result?.endpoint === "com.example.different" && checked.status === 0,
+    [conflict, plainConflict, copy, checked].map(shown));
 
   symlinkSync(directories[0]!, join(cwd, dir, "linked-parent"), "dir");
   for (const blocked of [`${dir}/linked-parent`, `${dir}/contract.json`]) {
