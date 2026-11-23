@@ -11,12 +11,12 @@ import { requireRuntimeReap } from "./runtime/index.js";
 import type { AgentHandle } from "./runtime/index.js";
 import type { ManagedAgent } from "./seat-types.js";
 import type { ManagerConfig } from "./manager-config.js";
+import type { ManagerAuthState } from "./manager-auth-state.js";
 
 /** What {@link Preservation} reads from the Manager. Every entry is read at use, so a field the Manager
  *  assigns after construction is always current, and a Manager method a test replaces is the one that runs. */
 export interface PreservationDeps {
   agents: () => Manager["agents"];
-  auth: () => Manager["auth"];
   credRenewTimer: () => Manager["credRenewTimer"];
   setCredRenewTimer: (value: Manager["credRenewTimer"]) => void;
   ep: () => Manager["ep"];
@@ -34,7 +34,6 @@ export interface PreservationDeps {
   resumeCredRenewal: () => Manager["resumeCredRenewal"];
   unverifiedStops: () => Manager["unverifiedStops"];
   setUnverifiedStops: (value: Manager["unverifiedStops"]) => void;
-  userMode: () => Manager["userMode"];
   awaitLifecycleDrain: (...args: Parameters<Manager["awaitLifecycleDrain"]>) => ReturnType<Manager["awaitLifecycleDrain"]>;
   deprovision: (...args: Parameters<Manager["deprovision"]>) => ReturnType<Manager["deprovision"]>;
   dropInlineSnapshot: (...args: Parameters<Manager["dropInlineSnapshot"]>) => ReturnType<Manager["dropInlineSnapshot"]>;
@@ -60,7 +59,6 @@ export interface PreservationDeps {
 export function preservationDeps(m: Manager): PreservationDeps {
   return {
     agents: () => m["agents"],
-    auth: () => m["auth"],
     credRenewTimer: () => m["credRenewTimer"],
     setCredRenewTimer: (value) => { m["credRenewTimer"] = value; },
     ep: () => m["ep"],
@@ -78,7 +76,6 @@ export function preservationDeps(m: Manager): PreservationDeps {
     resumeCredRenewal: () => m["resumeCredRenewal"],
     unverifiedStops: () => m["unverifiedStops"],
     setUnverifiedStops: (value) => { m["unverifiedStops"] = value; },
-    userMode: () => m["userMode"],
     awaitLifecycleDrain: (...args) => m["awaitLifecycleDrain"](...args),
     deprovision: (...args) => m["deprovision"](...args),
     dropInlineSnapshot: (...args) => m["dropInlineSnapshot"](...args),
@@ -102,13 +99,13 @@ export function preservationDeps(m: Manager): PreservationDeps {
 
 /** Preserving the manager for a restart: prepare, commit and abort, the cut that releases or tears down each seat, and adoption of released seats at the next start. */
 export class Preservation {
-  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: PreservationDeps) {}
+  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: PreservationDeps, private readonly state: ManagerAuthState) {}
 
   // The Manager members these bodies read, under their Manager names. Each reads through its dep at
   // use, so a field the Manager assigns later is current and a method a test replaces on the Manager
   // is the one that runs.
   private get agents() { return this.deps.agents(); }
-  private get auth() { return this.deps.auth(); }
+  private get auth() { return this.state.auth; }
   private get credRenewTimer() { return this.deps.credRenewTimer(); }
   private set credRenewTimer(value: Manager["credRenewTimer"]) { this.deps.setCredRenewTimer(value); }
   private get ep() { return this.deps.ep(); }
@@ -126,7 +123,7 @@ export class Preservation {
   private get resumeCredRenewal() { return this.deps.resumeCredRenewal(); }
   private get unverifiedStops() { return this.deps.unverifiedStops(); }
   private set unverifiedStops(value: Manager["unverifiedStops"]) { this.deps.setUnverifiedStops(value); }
-  private get userMode() { return this.deps.userMode(); }
+  private get userMode() { return this.state.userMode; }
   private awaitLifecycleDrain(...args: Parameters<Manager["awaitLifecycleDrain"]>): ReturnType<Manager["awaitLifecycleDrain"]> { return this.deps.awaitLifecycleDrain(...args); }
   private deprovision(...args: Parameters<Manager["deprovision"]>): ReturnType<Manager["deprovision"]> { return this.deps.deprovision(...args); }
   private dropInlineSnapshot(...args: Parameters<Manager["dropInlineSnapshot"]>): ReturnType<Manager["dropInlineSnapshot"]> { return this.deps.dropInlineSnapshot(...args); }

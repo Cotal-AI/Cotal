@@ -6,6 +6,7 @@ import { MANAGER_ENDPOINT } from "./manager-service-contract.js";
 import type { Manager } from "./manager.js";
 import type { ManagedAgent } from "./seat-types.js";
 import type { ManagerConfig } from "./manager-config.js";
+import type { ManagerAuthState } from "./manager-auth-state.js";
 import type { ManagerParts } from "./manager-parts.js";
 
 /** How much of an `input` text is written to a seat's pty at a time. Comfortably under the 4096-byte
@@ -33,7 +34,6 @@ export const RUNTIME_NO_TERMINAL_DETAIL = "ai.cotal.manager.runtime-no-terminal"
  *  assigns after construction is always current, and a Manager method a test replaces is the one that runs. */
 export interface TerminalInputDeps {
   agents: () => Manager["agents"];
-  auth: () => Manager["auth"];
   runtimeFor: (...args: Parameters<Manager["runtimeFor"]>) => ReturnType<Manager["runtimeFor"]>;
   resolveConnector: (...args: Parameters<Manager["resolveConnector"]>) => ReturnType<Manager["resolveConnector"]>;
 }
@@ -43,7 +43,6 @@ export interface TerminalInputDeps {
 export function terminalInputDeps(m: Manager): TerminalInputDeps {
   return {
     agents: () => m["agents"],
-    auth: () => m["auth"],
     runtimeFor: (...args) => m["runtimeFor"](...args),
     resolveConnector: (...args) => m["resolveConnector"](...args),
   };
@@ -51,13 +50,13 @@ export function terminalInputDeps(m: Manager): TerminalInputDeps {
 
 /** Typing into a seat's terminal and opening an attach or console session on it, after authorization. */
 export class TerminalInput {
-  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: TerminalInputDeps, private readonly parts: Pick<ManagerParts, "servePlane">) {}
+  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: TerminalInputDeps, private readonly parts: Pick<ManagerParts, "servePlane">, private readonly state: ManagerAuthState) {}
 
   // The Manager members these bodies read, under their Manager names. Each reads through its dep at
   // use, so a field the Manager assigns later is current and a method a test replaces on the Manager
   // is the one that runs.
   private get agents() { return this.deps.agents(); }
-  private get auth() { return this.deps.auth(); }
+  private get auth() { return this.state.auth; }
   private runtimeFor(...args: Parameters<Manager["runtimeFor"]>): ReturnType<Manager["runtimeFor"]> { return this.deps.runtimeFor(...args); }
   private resolveConnector(...args: Parameters<Manager["resolveConnector"]>): ReturnType<Manager["resolveConnector"]> { return this.deps.resolveConnector(...args); }
 

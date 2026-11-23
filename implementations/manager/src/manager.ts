@@ -41,6 +41,7 @@ import { StartDoors, startDoorsDeps } from "./start-doors.js";
 import { HarnessResolution, harnessResolutionDeps } from "./harness-resolution.js";
 import { ConnectorInventory } from "./connector-inventory.js";
 import type { ManagerParts } from "./manager-parts.js";
+import type { ManagerAuthState } from "./manager-auth-state.js";
 import { Preservation, preservationDeps } from "./preservation.js";
 import { PreservedResume, preservedResumeDeps } from "./preserved-resume.js";
 export { PASTE_END, PASTE_START, RUNTIME_NO_TERMINAL_DETAIL } from "./terminal-input.js";
@@ -637,14 +638,16 @@ export class Manager {
   private readonly retirementQueue: Array<() => void> = [];
   protected readonly attach: AttachEndpoint;
   protected ep!: CotalEndpoint;
-  /** Space trust material when the mesh runs in auth mode (`.cotal/auth` present);
-   *  the manager mints per-agent creds from it at spawn. Undefined when the mesh is open. */
-  protected auth?: SpaceAuth;
-  /** True on a USER-AUTH space (the on-disk marker; cross-checked against the registry at start).
-   *  Gates the whole spawn path: user mode grants ledger actors + bearer plumbing, never static mints. */
-  protected userMode = false;
-  protected readonly namesCapacity = new NamesCapacity(this.config, namesCapacityDeps(this));
-  private readonly servePlane = new ServePlane(this.config, servePlaneDeps(this), this.parts);
+  /** Written by ManagerBoot.start; declared ahead of the parts so each one built below receives it. */
+  private readonly authState: ManagerAuthState = { userMode: false };
+  /** {@link ManagerAuthState.auth}. */
+  protected get auth(): SpaceAuth | undefined { return this.authState.auth; }
+  protected set auth(value: SpaceAuth | undefined) { this.authState.auth = value; }
+  /** {@link ManagerAuthState.userMode}. */
+  protected get userMode(): boolean { return this.authState.userMode; }
+  protected set userMode(value: boolean) { this.authState.userMode = value; }
+  protected readonly namesCapacity = new NamesCapacity(this.config, namesCapacityDeps(this), this.authState);
+  private readonly servePlane = new ServePlane(this.config, servePlaneDeps(this), this.parts, this.authState);
 
   protected resolveServeTarget(t: { owner: string; actor: string }): { lifecycleUid: string; mappingRevision: number } | undefined {
           if (this.config.remoteAuthority) {
@@ -663,7 +666,7 @@ export class Manager {
           return undefined;
 
   }
-  protected readonly retirement = new Retirement(this.config, retirementDeps(this));
+  protected readonly retirement = new Retirement(this.config, retirementDeps(this), this.authState);
   private readonly lease = new LeaseKeeper(this.config, leaseKeeperDeps(this));
   /** Set at the top of `stop()`. `renewLease` returns at once once this is set, and its `gone` arm
    *  does not re-acquire: a manager that is stopping never puts its own key back. It also closes the
@@ -718,37 +721,37 @@ export class Manager {
     deprovision?: DeprovisionResourceAccounting;
   } | undefined) { this.staticLifecycle.setResources(value); }
 
-  protected readonly staticLifecycle = new ManagedStaticLifecycle(this.config, managedStaticLifecycleDeps(this));
+  protected readonly staticLifecycle = new ManagedStaticLifecycle(this.config, managedStaticLifecycleDeps(this), this.authState);
 
   /** User-mode provisioning owns no manager state: each dependency reads through at its use. */
   protected readonly userProvision = new UserProvision(this.config, userProvisionDeps(this));
 
   /** Seat stop, exit, recursive reap and named despawn. Every dependency reads through at its use. */
-  private readonly seatStopComponent = new SeatStop(this.config, seatStopDeps(this), this.parts);
+  private readonly seatStopComponent = new SeatStop(this.config, seatStopDeps(this), this.parts, this.authState);
 
   /** The typed command table and its admission. Every dependency reads through at its use. */
-  private readonly commandDispatch = new CommandDispatch(this.config, commandDispatchDeps(this), this.parts);
+  private readonly commandDispatch = new CommandDispatch(this.config, commandDispatchDeps(this), this.parts, this.authState);
 
   /** The spawn and launch goal path. Every dependency reads through at its use. */
-  private readonly spawnGoalComponent = new SpawnGoal(this.config, spawnGoalDeps(this), this.parts);
+  private readonly spawnGoalComponent = new SpawnGoal(this.config, spawnGoalDeps(this), this.parts, this.authState);
 
   /** The persona catalog doors. Every dependency reads through at its use. */
-  private readonly personaCatalogComponent = new PersonaCatalog(this.config, personaCatalogDeps(this));
+  private readonly personaCatalogComponent = new PersonaCatalog(this.config, personaCatalogDeps(this), this.authState);
 
   /** Seat terminal input and attach sessions. Every dependency reads through at its use. */
-  private readonly terminalInputComponent = new TerminalInput(this.config, terminalInputDeps(this), this.parts);
+  private readonly terminalInputComponent = new TerminalInput(this.config, terminalInputDeps(this), this.parts, this.authState);
 
   /** Status, seat list and model catalog reads. Every dependency reads through at its use. */
-  private readonly statusAndModelsComponent = new StatusAndModels(this.config, statusAndModelsDeps(this), this.parts);
+  private readonly statusAndModelsComponent = new StatusAndModels(this.config, statusAndModelsDeps(this), this.parts, this.authState);
 
   /** The launch readiness race and exit watch. Every dependency reads through at its use. */
   private readonly readinessWaitComponent = new ReadinessWait(this.config, readinessWaitDeps(this));
 
   /** Broker dials and scoped executor connections. Every dependency reads through at its use. */
-  private readonly brokerTransportComponent = new BrokerTransport(this.config, brokerTransportDeps(this), this.parts);
+  private readonly brokerTransportComponent = new BrokerTransport(this.config, brokerTransportDeps(this), this.parts, this.authState);
 
   /** The start and launch control doors. Every dependency reads through at its use. */
-  private readonly startDoorsComponent = new StartDoors(this.config, startDoorsDeps(this));
+  private readonly startDoorsComponent = new StartDoors(this.config, startDoorsDeps(this), this.authState);
 
   /** Connector and harness resolution for a launch. Every dependency reads through at its use. */
   private readonly harnessResolutionComponent = new HarnessResolution(this.config, harnessResolutionDeps(this), this.parts);
@@ -758,22 +761,22 @@ export class Manager {
 
 
   /** Manager preservation and released-seat adoption. Every dependency reads through at its use. */
-  private readonly preservationComponent = new Preservation(this.config, preservationDeps(this));
+  private readonly preservationComponent = new Preservation(this.config, preservationDeps(this), this.authState);
 
   /** Preserved-manager resume and its control doors. Every dependency reads through at its use. */
-  private readonly preservedResumeComponent = new PreservedResume(this.config, preservedResumeDeps(this), this.parts);
+  private readonly preservedResumeComponent = new PreservedResume(this.config, preservedResumeDeps(this), this.parts, this.authState);
 
   /** The goal-writer connection and the goal index it reconciles. Every dependency reads through at its use. */
-  private readonly goalWriterComponent = new GoalWriter(this.config, goalWriterDeps(this), this.parts);
+  private readonly goalWriterComponent = new GoalWriter(this.config, goalWriterDeps(this), this.parts, this.authState);
 
   /** Renewal of the manager's standing credentials. Every dependency reads through at its use. */
-  private readonly credentialRenewal = new CredentialRenewal(this.config, credentialRenewalDeps(this), this.parts);
+  private readonly credentialRenewal = new CredentialRenewal(this.config, credentialRenewalDeps(this), this.parts, this.authState);
 
   /** The launch pipeline's leaf steps. Every dependency reads through at its use. */
-  private readonly seatLaunch = new SeatLaunch(this.config, seatLaunchDeps(this), this.parts);
+  private readonly seatLaunch = new SeatLaunch(this.config, seatLaunchDeps(this), this.parts, this.authState);
 
   /** Manager boot: execution admission, connect, registration and lease. Every dependency reads through at its use. */
-  private readonly bootComponent = new ManagerBoot(this.config, bootDeps(this), this.parts);
+  private readonly bootComponent = new ManagerBoot(this.config, bootDeps(this), this.parts, this.authState);
 
   constructor(opts: ManagerOptions) {
     const config: Mutable<ManagerConfig> = this.config;

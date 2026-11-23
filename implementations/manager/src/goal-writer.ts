@@ -9,13 +9,13 @@ import { Kvm } from "@nats-io/kv";
 import type { KV } from "@nats-io/kv";
 import type { NatsConnection } from "@nats-io/transport-node";
 import type { ManagerConfig } from "./manager-config.js";
+import type { ManagerAuthState } from "./manager-auth-state.js";
 import type { ManagerParts } from "./manager-parts.js";
 import type { SpawnAcceptance } from "./seat-types.js";
 
 /** What {@link GoalWriter} reads from the Manager. Every entry is read at use, so a field the Manager
  *  assigns after construction is always current, and a Manager method a test replaces is the one that runs. */
 export interface GoalWriterDeps {
-  auth: () => Manager["auth"];
   leaseStopping: () => Manager["leaseStopping"];
   managerInstanceId: () => Manager["managerInstanceId"];
   turnRelay: () => Manager["turnRelay"];
@@ -33,7 +33,6 @@ export interface GoalWriterDeps {
  *  field the Manager assigns later is current and a member a test replaces on the instance is the one that runs. */
 export function goalWriterDeps(m: Manager): GoalWriterDeps {
   return {
-    auth: () => m["auth"],
     leaseStopping: () => m["leaseStopping"],
     managerInstanceId: () => m["managerInstanceId"],
     turnRelay: () => m["turnRelay"],
@@ -50,7 +49,7 @@ export function goalWriterDeps(m: Manager): GoalWriterDeps {
 
 /** The goal-writer's standing connection, its credential, and the goal index it reconciles at boot. */
 export class GoalWriter {
-  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: GoalWriterDeps, private readonly parts: Pick<ManagerParts, "servePlane">) {}
+  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: GoalWriterDeps, private readonly parts: Pick<ManagerParts, "servePlane">, private readonly state: ManagerAuthState) {}
 
   /** The spawn-as-action SELF-MEDIATED goal-writer connection + ActionContext — a
    *  standing connection DISJOINT from the serve credential, scoped to exactly this endpoint's
@@ -83,7 +82,7 @@ export class GoalWriter {
   // The Manager members these bodies read, under their Manager names. Each reads through its dep at
   // use, so a field the Manager assigns later is current and a method a test replaces on the Manager
   // is the one that runs.
-  private get auth() { return this.deps.auth(); }
+  private get auth() { return this.state.auth; }
   private get leaseStopping() { return this.deps.leaseStopping(); }
   private get managerInstanceId() { return this.deps.managerInstanceId(); }
   private get remoteAuthority() { return this.config.remoteAuthority; }

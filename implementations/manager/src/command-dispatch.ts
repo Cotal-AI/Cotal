@@ -10,6 +10,7 @@ import { listStaticSlotObservations, observeStaticSlot, renderStaticSlotObservat
 import type { TranscriptReceiveInput } from "./transcript-receive.js";
 import { measureManagerVitals } from "./vitals.js";
 import type { ManagerConfig } from "./manager-config.js";
+import type { ManagerAuthState } from "./manager-auth-state.js";
 import type { ManagerParts } from "./manager-parts.js";
 
 export function participantKey(owner: string, actor: string, uid: string): string {
@@ -20,13 +21,11 @@ export function participantKey(owner: string, actor: string, uid: string): strin
  *  assigns after construction is always current, and a Manager method a test replaces is the one that runs. */
 export interface CommandDispatchDeps {
   agents: () => Manager["agents"];
-  auth: () => Manager["auth"];
   managerInstanceId: () => Manager["managerInstanceId"];
   participants: () => Manager["participants"];
   resumeRequired: () => Manager["resumeRequired"];
   runHosting: () => Manager["runHosting"];
   transcripts: () => Manager["transcripts"];
-  userMode: () => Manager["userMode"];
   attachAuthorized: (...args: Parameters<Manager["attachAuthorized"]>) => ReturnType<Manager["attachAuthorized"]>;
   authorizeNamed: (...args: Parameters<Manager["authorizeNamed"]>) => ReturnType<Manager["authorizeNamed"]>;
   authorizeRunAmend: (...args: Parameters<Manager["authorizeRunAmend"]>) => ReturnType<Manager["authorizeRunAmend"]>;
@@ -83,13 +82,11 @@ export interface CommandDispatchDeps {
 export function commandDispatchDeps(m: Manager): CommandDispatchDeps {
   return {
     agents: () => m["agents"],
-    auth: () => m["auth"],
     managerInstanceId: () => m["managerInstanceId"],
     participants: () => m["participants"],
     resumeRequired: () => m["resumeRequired"],
     runHosting: () => m["runHosting"],
     transcripts: () => m["transcripts"],
-    userMode: () => m["userMode"],
     attachAuthorized: (...args) => m["attachAuthorized"](...args),
     authorizeNamed: (...args) => m["authorizeNamed"](...args),
     authorizeRunAmend: (...args) => m["authorizeRunAmend"](...args),
@@ -144,20 +141,20 @@ export function commandDispatchDeps(m: Manager): CommandDispatchDeps {
 
 /** The typed manager command table, the control admission both doors share, and the admin reach it reads. */
 export class CommandDispatch {
-  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: CommandDispatchDeps, private readonly parts: Pick<ManagerParts, "goalWriter">) {}
+  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: CommandDispatchDeps, private readonly parts: Pick<ManagerParts, "goalWriter">, private readonly state: ManagerAuthState) {}
 
   // The Manager members these bodies read, under their Manager names. Each reads through its dep at
   // use, so a field the Manager assigns later is current and a method a test replaces on the Manager
   // is the one that runs.
   private get agents() { return this.deps.agents(); }
-  private get auth() { return this.deps.auth(); }
+  private get auth() { return this.state.auth; }
   private get managerInstanceId() { return this.deps.managerInstanceId(); }
   private get participants() { return this.deps.participants(); }
   private get remoteAuthority() { return this.config.remoteAuthority; }
   private get resumeRequired() { return this.deps.resumeRequired(); }
   private get runHosting() { return this.deps.runHosting(); }
   private get transcripts() { return this.deps.transcripts(); }
-  private get userMode() { return this.deps.userMode(); }
+  private get userMode() { return this.state.userMode; }
   private attachAuthorized(...args: Parameters<Manager["attachAuthorized"]>): ReturnType<Manager["attachAuthorized"]> { return this.deps.attachAuthorized(...args); }
   private authorizeNamed(...args: Parameters<Manager["authorizeNamed"]>): ReturnType<Manager["authorizeNamed"]> { return this.deps.authorizeNamed(...args); }
   private authorizeRunAmend(...args: Parameters<Manager["authorizeRunAmend"]>): ReturnType<Manager["authorizeRunAmend"]> { return this.deps.authorizeRunAmend(...args); }
