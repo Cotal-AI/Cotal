@@ -206,7 +206,7 @@ const WT = resolve(import.meta.dirname, "..", "..", "..");
 const CLI = join(WT, "bin", "cotal.ts");
 // One process per command, so a SIGKILL reaches the CLI itself and not a wrapper.
 const TSX_IMPORT = import.meta.resolve("tsx");
-const home = mkdtempSync(join(tmpdir(), "cotal-stack-settle-"));
+const home = mkdtempSync(join(tmpdir(), "cotal-stack-settle-home with spaces-"));
 // A --store-dir outside the Cotal home, which is a control directory.
 const storeDirs = mkdtempSync(join(tmpdir(), "cotal-stack-settle-stores-"));
 // Project folders outside it too: a project folder may not be in a control directory.
@@ -439,9 +439,13 @@ try {
         const stop = cli(root, "down", "--yes", "--json");
         const running = ["stack-broker", "stack-delivery", "stack-manager"].every((definition) => { const pid = pidOf(space, definition); return pid !== null && alive(pid); });
         check("down --yes with an unwritable instances folder refuses PERMISSION_DENIED, exit 2, naming it and chmod, and stops nothing",
-          stop.status === 2 && stop.env?.error?.code === "PERMISSION_DENIED" && stop.env.error.message.includes(instancesDir) && Boolean(stop.env.error.remedy?.includes(`chmod u+w ${instancesDir}`)) && running, shown(stop));
+          stop.status === 2 && stop.env?.error?.code === "PERMISSION_DENIED" && stop.env.error.message.includes(instancesDir) && Boolean(stop.env.error.remedy?.includes(`chmod u+w ${shellPath(instancesDir)}`)) && running, shown(stop));
+        chmodSync(instancesDir, 0o400);
         const start = cli(root, "up", "--json");
-        check("up with it refuses the same way", start.status === 2 && start.env?.error?.code === "PERMISSION_DENIED" && Boolean(start.env.error.remedy?.includes(`chmod u+w ${instancesDir}`)), shown(start));
+        const repair = start.env?.error?.remedy?.match(/^make it writable with (.+), then run /)?.[1];
+        const words = repair ? execWords(repair) : [];
+        const repaired = words.length === 3 && words[0] === "chmod" && words[1] === "u+wx" && words[2] === instancesDir && spawnSync("chmod", words.slice(1)).status === 0;
+        check("up refuses until the printed repair restores write and search access", start.status === 2 && start.env?.error?.code === "PERMISSION_DENIED" && repaired && cli(root, "up", "--json").status === 0, shown(start));
       } finally { chmodSync(instancesDir, 0o700); }
     }
     // The receipt and service status name every listener the stack opened: the broker's client and

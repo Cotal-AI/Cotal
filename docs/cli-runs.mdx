@@ -266,6 +266,8 @@ whose pause was cancelled after accepting it, is listed as `not acted on`. Its J
 the full returned status and journal. The JSON and answer commands under `Next` keep `--local` and
 any explicit target selectors. The JSON command omits `--limit`, and a local answer requires
 `--by <who>`. Answer and amendment receipts keep the same route in their `show` command.
+If `run show --local` finds no record for the ID, it points to `cotal run list --local` on the same
+target. The local list does not need a manager.
 Revoked admission and unreadable revocation markers remain distinct from the record's state.
 Neither a record nor a receipt is a live agent-progress report.
 
@@ -325,8 +327,9 @@ L3021, a `fanOut` over a list written in the call whose items carry no
 `id` and that passes no `key`, which the run refuses when it reaches it. A list held in a variable
 gets no warning, because it can change before the call; the run refuses it the same way.
 Plan lists validated static call sites in source order with their one-based line numbers. It counts
-JavaScript line breaks, including bare CR, the same way validation does. It does not evaluate
-branches, loop counts or an execution schedule. Simulation uses the native simulator with a JSON
+JavaScript line breaks, including bare CR, the same way validation does. It labels calls through
+computed properties `derived call` without evaluating the property. It does not evaluate branches,
+loop counts or an execution schedule. Simulation uses the native simulator with a JSON
 results script. It executes no JavaScript handler and invents no unscripted outcome. A scripted
 checkpoint result needs a `status` of `resolved` or `expired` and may carry `value`, `by` and
 `artifact`. An invalid checkpoint result is refused with `SCHEMA_INVALID`. The refusal names the
@@ -388,6 +391,9 @@ prompts an `unblock` turn, and the unnamed wait reads the `wait` entry.
 | `events` | `wait` results. `null` is a timeout |
 | `clock` | `{start, turn, ask, checkpoint, wait}`: `start` is a safe integer in milliseconds, between -9007199254740991 and 9007199254740991, so the virtual clock can advance by whole milliseconds. Effect durations take values such as `"5m"`. A turn takes 5 minutes and the others 1 minute unless set |
 | `faults` | `[{at, kind, code, message}]`: the step at `at`, a step key such as `turn:build#1`, fails with that error |
+
+To fail a race before any branch runs in `run simulate`, target the race's own step key, such as
+`/race:first#0`. To fail an effect inside the race, use that effect's step key instead.
 
 An invalid clock duration is refused before simulation with `SCHEMA_INVALID`, exit 1, even if the
 program does not reach that effect. The refusal names the results file and the field to correct.
