@@ -1,4 +1,4 @@
-import { remoteManagerActors, type Presence } from "@cotal-ai/core";
+import { DEV_OWNER, remoteManagerActors, resolvePeer, type Presence } from "@cotal-ai/core";
 import { brokerAddressForDisplay } from "../broker-display.js";
 import { isConnectRefusal, type ConnectFlags } from "../connect.js";
 import { resolveControlTarget } from "../control-target.js";
@@ -151,25 +151,29 @@ export async function locateSeat(
   if (probe.auth.managerInstanceId !== undefined) return { kind: "pin", instanceId: probe.auth.managerInstanceId };
   if (probe.auth.bearer) return { kind: "unpinned" };
   const roster = await client.roster({ space: probe.space, server: probe.server });
-  let unhinted: Presence | undefined;
-  try { return { kind: "pin", ...presenceSeat(roster, name, (peer) => { unhinted = peer; }) }; }
+  try { return { kind: "pin", ...presenceSeat(roster, name) }; }
   catch (error) {
-    if (unhinted && isCommandFailure(error)) {
-      const census = await scatterManager(client, probe.space, probe.server, "ps", probe.auth, probe.spaceAuth).catch(() => undefined);
-      if (census && hasNoSeatOwner(census, roster, unhinted)) {
-        const space = v.space === undefined ? "" : ` --space${v.space.startsWith("-") ? "=" : " "}${shellPath(v.space)}`;
-        const server = v.server === undefined ? "" : ` --server${v.server.startsWith("-") ? "=" : " "}${/^[A-Za-z0-9_./:+-]+$/.test(v.server) ? v.server : shellPath(v.server)}`;
-        const who = v.server !== undefined && brokerAddressForDisplay(v.server) !== v.server
-          ? `${codeSpan(`cotal who${space} --all`)} with your original --server option`
-          : codeSpan(`cotal who${space}${server} --all`);
-        throw new CommandFailure(error.outcome, error.code, error.message, {
-          target: error.target,
-          remedy: `Use the agent's original terminal to type or quit. To see its mesh status, run ${who}.`,
-        });
+    if (!isCommandFailure(error)) throw error;
+    if (error.code === "TARGET_UNAVAILABLE") {
+      const live = roster.filter((peer) => peer.status !== "offline");
+      const address = live.some((peer) => peer.card.id === `${DEV_OWNER}.${name}`) ? `${DEV_OWNER}.${name}` : name;
+      const peer = resolvePeer(live, address);
+      if (peer?.card.kind === "agent" && peer.lifecycleUid && peer.card.meta?.["ai.cotal.manager.instance"] === undefined) {
+        const census = await scatterManager(client, probe.space, probe.server, "ps", probe.auth, probe.spaceAuth).catch(() => undefined);
+        if (census && hasNoSeatOwner(census, roster, peer)) {
+          const space = v.space === undefined ? "" : ` --space${v.space.startsWith("-") ? "=" : " "}${shellPath(v.space)}`;
+          const server = v.server === undefined ? "" : ` --server${v.server.startsWith("-") ? "=" : " "}${/^[A-Za-z0-9_./:+-]+$/.test(v.server) ? v.server : shellPath(v.server)}`;
+          const who = v.server !== undefined && brokerAddressForDisplay(v.server) !== v.server
+            ? `${codeSpan(`cotal who${space} --all`)} with your original --server option`
+            : codeSpan(`cotal who${space}${server} --all`);
+          throw new CommandFailure(error.outcome, error.code, error.message, {
+            target: error.target,
+            remedy: `Use the agent's original terminal to type or quit. To see its mesh status, run ${who}.`,
+          });
+        }
       }
-      throw error;
     }
-    if (!isCommandFailure(error) || error.code !== "TARGET_NOT_FOUND") throw error;
+    if (error.code !== "TARGET_NOT_FOUND") throw error;
   }
   const census = await scatterManager(client, probe.space, probe.server, "ps", probe.auth, probe.spaceAuth);
   if (!census.ok && census.noLiveManager) return { kind: "no-manager", space: probe.space, server: probe.server, native: { code: census.code, detail: census.error } };
