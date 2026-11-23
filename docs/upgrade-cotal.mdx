@@ -295,6 +295,9 @@ On Linux and macOS, if you stop Cotal and move your home or configuration direct
 the CLI installed at the same path, Cotal can use the same retained connector set at its new
 location. The former configuration folder must be absent or resolve to the same protected folder.
 Cotal checks the retained paths at the new location without rewriting the selection records.
+If Cotal cannot verify the former path, it names both locations. Keep the moved configuration
+selected. If you own an unrelated folder or stale symbolic link blocking the former path, rename
+that entry to a spare name beside it and retry. Do not delete it or edit the selection records.
 An unreadable connector selection does not prevent `cotal --version`, `cotal status` or a bare
 `cotal down`. `cotal status` reports the connector inventory as unreadable.
 Run `cotal ext seed --repair` to repair an unreadable selection. It keeps the unreadable record

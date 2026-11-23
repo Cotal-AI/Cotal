@@ -165,12 +165,35 @@ try {
   assert.equal(JSON.parse(readFileSync(lineage,'utf8')).root,selected);
   writeFileSync(metadata,meta);
 
+  function moveRefusal(action) {
+    for(const check of [connectorConfigDir,prepareConnectorConfigForUpdate]) {
+      assert.throws(check,error=>{
+        assert.equal(error.code,'PERMISSION_DENIED');
+        assert.ok(error.message.includes(JSON.stringify(join(from,'cotal'))));
+        assert.ok(error.message.includes(JSON.stringify(join(to,'cotal'))));
+        const guidance=check===connectorConfigDir?error.message:error.remedy;
+        assert.match(guidance,action);
+        assert.match(guidance,/without editing the selection records/);
+        if(check===prepareConnectorConfigForUpdate) {
+          assert.match(error.message,/\. No CLI update was staged\.$/);
+          assert.equal(error.native.outcome,'not-executed');
+        }
+        return true;
+      });
+    }
+  }
   mkdirSync(join(from,'cotal'),{recursive:true,mode:0o700});
-  try { assert.throws(()=>connectorConfigDir(),/still exists and does not resolve/); }
-  finally { fs.rmdirSync(join(from,'cotal')); fs.rmdirSync(from); }
+  try { moveRefusal(/verified it is unrelated, rename it to an unused name/); }
+  finally { renameSync(from,from+'.unrelated'); }
+  assert.equal(connectorConfigDir(),moved);
   symlinkSync(from+'.missing',from);
-  try { assert.throws(()=>connectorConfigDir(),/ENOENT/,'a dangling link above the old config is not a move'); }
-  finally { fs.unlinkSync(from); }
+  try { moveRefusal(/rename only the link to an unused name/); }
+  finally { renameSync(from,from+'.old-link'); }
+  assert.equal(connectorConfigDir(),moved);
+  mkdirSync(from,{mode:0o777});
+  fs.chmodSync(from,0o777);
+  try { moveRefusal(/writable by every local account.*Restore protected access/); }
+  finally { fs.chmodSync(from,0o700); fs.rmdirSync(from); }
 
   const extensions=join(moved,'extensions');
   renameSync(extensions,extensions+'.held');

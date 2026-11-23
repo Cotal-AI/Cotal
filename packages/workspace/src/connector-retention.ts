@@ -14,7 +14,7 @@ import { MANAGER_PIDFILE, localProcessPathCandidates, recordedLocalProcessPaths 
 import { commandIsCotalSupervisor, readProcessRecord } from "./pid.js";
 import { probeLiveness } from "./liveness.js";
 import { protectedResolvedDirectory } from "./protected-records.js";
-import { CommandFailure } from "./output.js";
+import { CommandFailure, isCommandFailure } from "./output.js";
 
 interface ConnectorHolder {
   v: 1;
@@ -215,31 +215,60 @@ function recordedConfigBase(saved: string, expected: string, config: string): st
   if (base && resolve(base) === base) return base;
 }
 
+function sameConfigBase(saved: string, config: string): boolean {
+  return protectedResolvedDirectory(saved, "the connector config folder") === protectedResolvedDirectory(config, "the connector config folder");
+}
+
 // Only the config base may be an alias. Update snapshots require the original location or an alias.
 function sameConfigPath(saved: string, expected: string): boolean {
   if (saved === expected) return true;
   const config = resolve(globalConfigDir());
   const base = recordedConfigBase(saved, expected, config);
-  if (!base || !existsSync(base) || !existsSync(config)) return false;
-  return protectedResolvedDirectory(base, "the connector config folder") === protectedResolvedDirectory(config, "the connector config folder");
+  return !!base && existsSync(base) && existsSync(config) && sameConfigBase(base, config);
 }
 
-function retainedSelectionRoot(saved: string, versionDir: string, mismatch: string): string {
+function connectorMoveRefusal(former: string, current: string, reason: string, next: string, preparing: boolean, cause?: unknown): CommandFailure {
+  const problem = `Cannot verify the connector configuration move from ${JSON.stringify(former)} to ${JSON.stringify(current)}: ${reason}.`;
+  const remedy = `${next}. Keep the current config folder selected and retry without editing the selection records.`;
+  return new CommandFailure("refused", "PERMISSION_DENIED", preparing ? `${problem} No CLI update was staged.` : `${problem} ${remedy}`, {
+    target: { formerConfig: former, currentConfig: current }, native: { outcome: "not-executed" },
+    ...(preparing ? { remedy } : {}), cause,
+  });
+}
+
+function retainedSelectionRoot(saved: string, versionDir: string, mismatch: string, preparing: boolean): string {
   const name = basename(saved);
   if (!/^cotal(?:-[a-f0-9]{16})?$/.test(name) || resolve(saved) !== saved) throw new Error(mismatch);
   const savedDir = dirname(saved);
-  if (sameConfigPath(savedDir, versionDir)) return saved;
+  if (savedDir === versionDir) return saved;
   const config = resolve(globalConfigDir());
   const base = recordedConfigBase(savedDir, versionDir, config);
-  if (!base || basename(base) !== basename(config)) throw new Error(mismatch);
-  if (lstatSync(base, { throwIfNoEntry: false })) {
-    throw new Error(`${mismatch}: the saved config folder ${base} still exists and does not resolve to ${config}. Use the original protected configuration before retrying.`);
+  if (!base) throw new Error(mismatch);
+  const refuse = (reason: string, next: string, cause?: unknown) => connectorMoveRefusal(base, config, reason, next, preparing, cause);
+  let former = base;
+  let exists: boolean;
+  try {
+    exists = lstatSync(base, { throwIfNoEntry: false }) !== undefined;
+    if (exists) {
+      if (sameConfigBase(base, config)) return saved;
+    } else if (basename(base) === basename(config)) {
+      // The nearest existing parent must be protected. A dangling ancestor link is not a move.
+      former = dirname(base);
+      while (!lstatSync(former, { throwIfNoEntry: false })) former = dirname(former);
+      protectedResolvedDirectory(former, "the former connector config parent");
+      return join(versionDir, name);
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") throw refuse(`the former path could not be resolved below ${JSON.stringify(former)}`,
+      "If a stale symbolic link you own blocks the former path, rename only the link to an unused name beside it", error);
+    const reason = error instanceof Error ? error.message : String(error);
+    const next = isCommandFailure(error) && error.remedy ? `Restore protected access: ${error.remedy}`
+      : "Restore search access to the former path. If an unrelated entry you own blocks it, rename that entry to an unused name beside it";
+    throw refuse(reason, next, error);
   }
-  // Prove absence under a protected parent. A dangling ancestor link is not a move.
-  let parent = dirname(base);
-  while (!lstatSync(parent, { throwIfNoEntry: false })) parent = dirname(parent);
-  protectedResolvedDirectory(parent, "the former connector config parent");
-  return join(versionDir, name);
+  if (exists) throw refuse("the former config folder still exists and does not resolve to the current folder",
+    "If you own the former folder and have verified it is unrelated, rename it to an unused name beside it. Do not delete it");
+  throw new Error(mismatch);
 }
 
 function previousConfig(id: { entry: string; path: string }, prepare?: (path: string) => void): string | undefined {
@@ -252,7 +281,7 @@ function previousConfig(id: { entry: string; path: string }, prepare?: (path: st
   const mismatch = "invalid previous connector retention selection";
   if (record.entry !== id.entry || !/^\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?$/.test(record.version)) throw new Error(mismatch);
   const versionDir = join(sets, record.version);
-  const root = retainedSelectionRoot(record.root, versionDir, mismatch);
+  const root = retainedSelectionRoot(record.root, versionDir, mismatch, prepare !== undefined);
   const expected = join(versionDir, basename(root));
   prepare?.(expected);
   ownedAncestors(expected);
@@ -318,7 +347,7 @@ function currentConfig(id: { entry: string; version: string; path: string }, pre
   const record = parseSelection(bytes, path);
   const mismatch = "connector retention selection differs from this installation";
   if (record.entry !== id.entry || record.version !== id.version) throw new Error(mismatch);
-  const root = retainedSelectionRoot(record.root, id.path, mismatch);
+  const root = retainedSelectionRoot(record.root, id.path, mismatch, prepare !== undefined);
   const snapshot = updateSnapshot(id);
   if (!snapshot || record.snapshot === snapshot) prepare?.(join(id.path, basename(root)));
   ownedDirectory(root);
