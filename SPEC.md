@@ -230,7 +230,8 @@ In `user/agent`, `user` is a username from §6, with ASCII uppercase letters fol
 `agent` is the exact case-sensitive principal actor, not a display name. Launches enforce the
 launch-name grammar at admission. For bare names, an exact own actor wins over a case-insensitive
 launch-name match. A unique own launch-name match can resolve without exact case. Two such matches
-are ambiguous. Non-launch actors match only exact bytes.
+are ambiguous. Non-launch actors match only exact bytes. A retained offline row remains a candidate
+within the sender's owner, regardless of whether another owner's agent is online.
 Open and no-login spaces resolve bare names as display names and do not accept `user/agent`.
 Reply shortcuts address the authenticated sender principal, not a remembered display name.
 

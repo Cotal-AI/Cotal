@@ -84,15 +84,13 @@ export async function prepareChannelMentions(text: string, options: ChannelPostO
     });
     return { mentions: normalizeMentions(legacy, true) };
   }
-  const own = roster.filter((peer) => parsePrincipalKey(peer.card.id)?.owner === authority.owner);
   const mentionIds: string[] = [];
   for (const name of mentions) {
-    const parsed = parsePeerAddress(name);
-    const peer = await resolvePeerAddress(parsed.kind === "qualified" ? [] : own, name, { authority, selfId });
-    if (!peer) {
-      if (failure === undefined) await resolvePeerAddress(roster, name, { authority, selfId });
-      return missing(name);
-    }
+    const peer = await resolvePeerAddress(roster, name, { authority, selfId }).catch((error: unknown) => {
+      if (failure !== undefined && !name.includes("/") && error instanceof PeerAddressError) return missing(name);
+      throw error;
+    });
+    if (!peer) return missing(name);
     mentionIds.push(peer.card.id);
   }
   if (new Set(mentionIds).size !== mentionIds.length) return invalid("", "Duplicate mention targets are not allowed.");

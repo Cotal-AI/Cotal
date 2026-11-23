@@ -91,6 +91,9 @@ async function checkMentionWriters(
   const wakesFor = (agent: MeshAgent, text: string) => agent.inboxWake((item) => item.text !== text);
   const missing = await send("reviewer", "no own live", live);
   suite.check("writer: foreign-only bare live mention is refused", refused(missing.result, /own|could not resolve/i), missing.result);
+  suite.check("writer: a bare mention with no own roster row names the other owner's qualified address",
+    missing.result instanceof core.PeerAddressError && missing.result.code === "TARGET_NOT_FOUND" &&
+    missing.result.addresses.includes(foreign) && missing.result.message.includes(foreign), missing.result);
   if (!(missing.result instanceof Error)) await saw(right, missing.text);
   const direct = await send(foreign, "qualified live", live);
   const directSeen = !(direct.result instanceof Error) && (await saw(right, direct.text))?.mentionsMe === true;
@@ -127,14 +130,24 @@ async function checkMentionWriters(
   suite.check("writer: an old post without mentionIds still gets a name-based mention copy", (await saw(resumed, legacy))?.mentionsMe === true);
   suite.check("writer: the foreign-only bare post leaves no offline mention copy", !received(resumed, missingOffline.text));
   const left = await openLeft();
+  await resumed.setChannelMode(live, "quiet");
   const own = await send("reviewer", "own live", live);
   const ownSeen = !(own.result instanceof Error) && (await saw(left, own.text))?.mentionsMe === true;
   suite.check("writer: a bare mention selects the sender's own seat among two live namesakes", addressed(own.result, left.id) && ownSeen && !received(resumed, own.text), own.result);
   await left.stop();
-  const ownOffline = await send("reviewer", "own durable", durable);
+  const roster = await sender.ep.readPresence();
+  assert.ok(roster.some((p) => p.card.id === left.id && p.status === "offline"), "own reviewer has a retained offline row");
+  assert.ok(roster.some((p) => p.card.id === resumed.id && p.status !== "offline"), "foreign namesake is live");
+  const ownOffline = await send("reviewer", "own backstop while foreign namesake is live", live);
+  const ownDurable = await send("reviewer", "own durable", durable);
+  if (!(ownOffline.result instanceof Error)) assert.ok(await saw(resumed, ownOffline.text), "the live namesake still receives ordinary channel traffic");
   const resumedLeft = await openLeft();
   const ownOfflineSeen = !(ownOffline.result instanceof Error) && (await saw(resumedLeft, ownOffline.text))?.mentionsMe === true;
-  suite.check("writer: a bare mention retains its own target through the durable backstop", addressed(ownOffline.result, resumedLeft.id) && ownOfflineSeen && !received(resumed, ownOffline.text), ownOffline.result);
+  suite.check("writer: the replay-off live post backs up only the own offline namesake as a mention",
+    addressed(ownOffline.result, resumedLeft.id) && ownOfflineSeen && wakesFor(resumedLeft, ownOffline.text) === 1 &&
+    wakesFor(resumed, ownOffline.text) === 0 && !received(resumed, ownOffline.text), ownOffline.result);
+  const ownDurableSeen = !(ownDurable.result instanceof Error) && (await saw(resumedLeft, ownDurable.text))?.mentionsMe === true;
+  suite.check("writer: a bare mention retains its own target on a durable channel", addressed(ownDurable.result, resumedLeft.id) && ownDurableSeen && !received(resumed, ownDurable.text), ownDurable.result);
   await checkSharedWriter(sender, resumed, resumedLeft, username, live);
 }
 
@@ -324,19 +337,21 @@ async function checkAddresses(sender: CotalEndpoint, nc: NatsConnection, own: Co
     if (!roster.some((p) => p.card.id === own.card.id && p.status !== "offline")) break;
     await delay(100);
   }
-  assert(!roster.some((p) => p.card.id === own.card.id && p.status !== "offline"), "own peer is offline");
+  assert(roster.some((p) => p.card.id === own.card.id && p.status === "offline"), "own peer has a retained offline row");
   const send = async (address: string, text: string) => {
     const selected = await target(roster, address);
     if (!selected) throw new Error(`no matching participant for ${address}`);
     await sender.unicast(selected.card.id, text);
     return selected.card.id;
   };
-  const refused = await send("lister", "bare-must-not-cross-owners").catch((error: Error) => error.message);
   const qualified = `${foreignName}/lister`;
-  suite.check("with the own agent offline a bare send refuses and names the other owner's qualified address", refused.includes(qualified), refused);
+  const ownOffline = await send("lister", "bare-must-not-cross-owners").catch((error: Error) => error.message);
+  suite.check("the shared resolver keeps the offline own DM target despite the live foreign namesake", ownOffline === own.card.id, ownOffline);
+  const noOwn = await select(roster.filter((p) => p.card.id !== own.card.id), "lister");
+  suite.check("with no own roster row the shared resolver refuses and names the foreign qualified address", noOwn.includes(qualified), noOwn);
   const delivered = await send(qualified, "qualified-recipient").catch((error: Error) => error.message);
   for (let i = 0; i < 30 && !received.includes("qualified-recipient") && !received.includes("bare-must-not-cross-owners"); i++) await delay(100);
-  suite.check("the other owner never receives the refused bare DM", !received.includes("bare-must-not-cross-owners"), received);
+  suite.check("the other owner never receives the own bare DM", !received.includes("bare-must-not-cross-owners"), received);
   suite.check("the other owner receives the explicitly qualified DM", delivered === foreign.card.id && received.includes("qualified-recipient"), { delivered, received });
   const missing = await select(roster, `${foreignName}/absent`);
   suite.check("a known username resolves an unobserved actor without inferring existence", missing === `${foreign.principal.owner}.absent`, missing);
@@ -355,7 +370,7 @@ async function checkAddresses(sender: CotalEndpoint, nc: NatsConnection, own: Co
   suite.check("a bare name absent from all owners still returns no match", await select(roster, "missing_actor") === "no match");
 }
 
-async function checkChat(sender: CotalEndpoint, foreign: CotalEndpoint, foreignName: string, received: string[], daemon: CotalEndpoint, reopen: () => Promise<CotalEndpoint>): Promise<void> {
+async function checkChat(sender: CotalEndpoint, own: CotalEndpoint, foreign: CotalEndpoint, foreignName: string, received: string[], daemon: CotalEndpoint, reopen: () => Promise<CotalEndpoint>): Promise<void> {
   const session = new NativeChatSession({ endpoint: sender,
     identity: { mode: "user", space: sender.space, principal: sender.card.id, lifecycleUid: senderRow.lifecycleUid!, label: "sender", allowSubscribe: [], allowPublish: [] },
     retire: async () => { await sender.stop(); return { retirement: "not-applicable", connectionClosed: "confirmed", message: "stopped" }; },
@@ -364,7 +379,8 @@ async function checkChat(sender: CotalEndpoint, foreign: CotalEndpoint, foreignN
   try {
     await sender.waitForPresenceSnapshot();
     const bare = await session.dm("lister", "chat-bare-must-not-cross");
-    suite.check("native chat refuses a foreign bare target without sending", bare.outcome === "refused" && bare.message.includes(`${foreignName}/lister`), bare);
+    suite.check("native chat stores a bare DM for the offline own agent instead of a live foreign namesake",
+      bare.outcome === "stored" && bare.recipient?.id === own.card.id && bare.recipientStatusAtSend === "offline", bare);
     daemon.serveLiveness("delivery", () => "bound");
     const old = await session.dm(`${foreignName}/lister`, "old-delivery-must-not-store");
     daemon.serveDeliveryLiveness();
@@ -380,7 +396,7 @@ async function checkChat(sender: CotalEndpoint, foreign: CotalEndpoint, foreignN
     suite.check("native chat stores a qualified DM without claiming the target exists", offline.outcome === "stored" && offline.seq !== undefined && offline.recipientStatusAtSend === undefined, offline);
     await reopen();
     for (let i = 0; i < 30 && !received.includes("chat-qualified-offline"); i++) await delay(100);
-    suite.check("the same lifecycle gets both qualified DMs and neither refused DM", received.includes("chat-qualified") && received.includes("chat-qualified-offline") && !received.includes("chat-bare-must-not-cross") && !received.includes("old-delivery-must-not-store"), received);
+    suite.check("the foreign lifecycle gets both qualified DMs but no own bare DM or refused qualified DM", received.includes("chat-qualified") && received.includes("chat-qualified-offline") && !received.includes("chat-bare-must-not-cross") && !received.includes("old-delivery-must-not-store"), received);
   } finally { await session.close(); }
 }
 
@@ -628,7 +644,11 @@ try {
   const lease = await daemon.acquireDeliveryLease(0);
   await daemon.startPlane3((id, uid) => daemon.aclForOwner(id, uid));
   await daemon.markDeliveryLeaseReady(0, lease);
-  await checkChat(sender, foreign, names[1]!, received, daemon, async () => (await connect(otherToken, otherRow, true, received)).ep);
+  await checkChat(sender, first, foreign, names[1]!, received, daemon, async () => (await connect(otherToken, otherRow, true, received)).ep);
+  const ownReceived: string[] = [];
+  await connect(firstToken, row, true, ownReceived);
+  suite.check("the original own lifecycle receives both bare DMs on reconnect", !!await awaitValue(() =>
+    ownReceived.includes("bare-must-not-cross-owners") && ownReceived.includes("chat-bare-must-not-cross") ? true : undefined), ownReceived);
   for (const lookup of [() => readUsername(readerNc!, a.space, owner), () => readUsernameOwner(readerNc!, a.space, base)])
     await assert.rejects(lookup, (error: unknown) => error instanceof core.UsernameRegistryReadError && error.code === "denied");
   suite.check("both lookups distinguish a denied key read from absence", true);

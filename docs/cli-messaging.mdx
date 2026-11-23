@@ -52,6 +52,8 @@ selects an agent for you.
 
 In a signed-in space, `--to reviewer` names your own agent. Use `--to user/reviewer` to name
 another owner's agent. The username is case-insensitive and the launch name is case-sensitive.
+For direct sends and mentions, an offline agent still matches a bare name while its roster row
+is present. A live agent of another owner cannot replace that match.
 An exact instance ID still works. A qualified send reports storage, not whether the recipient exists or read it.
 Qualified input requires an upgraded delivery responder. If its version cannot be verified, nothing is sent.
 Open and no-login spaces accept bare display names and exact IDs, but not `user/agent`.
