@@ -3,7 +3,7 @@ import { accountRevocations, credsClaims, isReachable, isUserNkey, revokeAccount
 import {
   boundedValue, codeSpan, CommandFailure, ConfirmationRequired, folderSpaceHeld, getCurrent, getSpaceAuth, hasUserAuthState, isCommandFailure, isWorkspaceTargetError, oneLine,
   presentationOf, protectedCredentialReference, putSpaceAuth, readLocalRecordSource, readMaintenanceJournal, releaseMaintenanceLock,
-  resolveMeshTarget, shellPath, SHOWN_VALUE_MAX, targetErrorCode, workspaceErrorParts, workspaceSecretStore, writeResult, type Report,
+  resolveMeshTarget, retainedLegacyBroker, shellPath, SHOWN_VALUE_MAX, targetErrorCode, workspaceSecretStore, writeResult, type Report,
 } from "@cotal-ai/workspace";
 import * as prompts from "../lib/prompts.js";
 import { acquireStackOperationLock, readStackJournal } from "../lib/stack-journal.js";
@@ -22,9 +22,12 @@ function revokeTarget(values: { space?: string }): RevokeTarget {
   try { const target = resolveMeshTarget(process.cwd(), { ...values, readOnly: true }); return { root: target.root, space: target.space, registered: true }; }
   catch (error) {
     if (!isWorkspaceTargetError(error)) throw error;
-    if (error.code === "not-started" && error.details.root && error.details.space) return { root: error.details.root, space: error.details.space, registered: false };
-    const remedy = error.code === "no-meshes" ? "run it in the space's project folder, or name the space with --space" : workspaceErrorParts({ kind: "target", error }).remedy;
-    throw new CommandFailure("refused", targetErrorCode(error.code), "the selected space's local authority root could not be resolved; nothing was revoked", remedy === undefined ? {} : { remedy });
+    if (error.code === "not-started") {
+      const { root, space, lastRun, stackSpace } = error.details;
+      const name = space ?? (lastRun && stackSpace === values.space ? stackSpace : undefined);
+      if (root && name) return { root, space: name, registered: false };
+    }
+    throw new CommandFailure("refused", targetErrorCode(error.code), "the selected space's local authority root could not be resolved; nothing was revoked", { remedy: "run it in the issuing space's project folder with the broker stopped, or check the name with `cotal space`" });
   }
 }
 
@@ -36,7 +39,7 @@ async function assertStopped(target: RevokeTarget, subject: string): Promise<voi
   if (maintenance)
     throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `this root retains a maintenance attempt in state ${maintenance.state}; nothing was revoked`, { target: where, remedy: "finish it, or recover it with its recorded restore recovery or fallback cleanup, first" });
   const running = liveMeshProcesses(root, space, true);
-  const server = readStackJournal(root)?.journal.server;
+  const server = readStackJournal(root)?.journal.server ?? retainedLegacyBroker(root)?.server;
   if (target.registered || running.length || (server !== undefined && await isReachable(server)))
     throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "the space is running, and its broker loads a revocation only when it starts; nothing was revoked", { target: { ...where, ...(running.length ? { processes: running } : {}) }, remedy: route });
 }

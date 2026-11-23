@@ -4,10 +4,10 @@
 import { readFileSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { writeSecretFileAtomic } from "@cotal-ai/core";
-import { assertRecordIdentity, exitCode, formatRecord, identityRecord, parseRecord, renderReport, shellPath } from "@cotal-ai/workspace";
+import { assertRecordIdentity, exitCode, findMesh, formatRecord, identityRecord, parseRecord, renderReport, shellPath } from "@cotal-ai/workspace";
 import { displayCmd } from "./self-exec.js";
 import { observeServiceProcess, serviceInstanceStore } from "./service-instances.js";
-import { readStackJournal } from "./stack-journal.js";
+import { readStackJournal, stackDefinitionsAt, type StackJournal } from "./stack-journal.js";
 
 /** Where a foreground `up` records the process that holds its stack's lifetime. */
 const foregroundHoldPath = (root: string): string => join(root, ".cotal", "stack-foreground.hold");
@@ -49,16 +49,33 @@ export function releaseDeadForegroundHold(root: string): boolean {
   return true;
 }
 
+function foregroundReleased(message: string): 0 {
+  process.stderr.write(`${renderReport({ sections: [{ title: "Foreground stack released", blocks: [{ kind: "lines", lines: [message] }] }] }, "rich", process.stderr)}\n`);
+  return 0;
+}
+
+/** The missing-folder stop observes the pinned exits, then removes definitions and registration. */
+function goneRootStackStopped(held: StackJournal): boolean {
+  const members = held.members.filter((member) => member.instanceId !== null);
+  return members.length > 0 && members.every((member) => {
+    const state = member.process && assertRecordIdentity(member.process).kind;
+    return state === "gone" || state === "mismatch";
+  }) && stackDefinitionsAt(held.space, held.root).length === 0 && findMesh(held.space)?.root !== held.root;
+}
+
 /** Read-only lifetime check. An unreadable record is not proof that its process exited. */
-export function foregroundStackEnd(root: string, held: string | undefined): number | undefined {
+export function foregroundStackEnd(root: string, held: StackJournal | undefined): number | undefined {
   const journal = () => { try { return readStackJournal(root)?.journal; } catch { return undefined; } };
-  const current = journal();
-  if (!current) return;
+  let current: StackJournal | undefined;
+  try {
+    current = readStackJournal(root)?.journal;
+    if (!current) return held && goneRootStackStopped(held)
+      ? foregroundReleased("Another command stopped this stack and removed its saved records after its folder went missing. This terminal no longer holds it.") : undefined;
+  } catch { return; }
   const { operation, space } = current;
-  if (operation.id !== held && (operation.kind === "down" || operation.kind === "preserve")) {
+  if (operation.id !== held?.operation.id && (operation.kind === "down" || operation.kind === "preserve")) {
     if (operation.phase === "completed") {
-      process.stderr.write(`${renderReport({ sections: [{ title: "Foreground stack released", blocks: [{ kind: "lines", lines: [`Another command completed a ${operation.kind === "down" ? "stop" : "preserve"} of this stack (operation ${operation.id}). This terminal no longer holds it.`] }] }] }, "rich", process.stderr)}\n`);
-      return 0;
+      return foregroundReleased(`Another command completed a ${operation.kind === "down" ? "stop" : "preserve"} of this stack (operation ${operation.id}). This terminal no longer holds it.`);
     }
     if (operation.phase === "planned" || operation.phase === "applying") return;
   }
