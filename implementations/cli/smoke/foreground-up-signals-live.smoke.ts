@@ -32,6 +32,7 @@ import { recordsBucket } from "@cotal-ai/core";
 import { canonicalLocalProcessPath, DELIVERY_PIDFILE, isCommandFailure, MANAGER_PIDFILE, MANAGER_SPARE_CAPABILITY, readManagerName, shellPath, spaceKey, verifyIdentityPin, type ProcessIdentityRecord } from "@cotal-ai/workspace";
 import { finishOwnedChild, observeOwnedChild, ownedBirthLive as live, waitForOwnedChild } from "./_foreground-owned-child.js";
 import { foregroundCliProbe } from "./_foreground-cli-probe.js";
+import { shellWord } from "../src/lib/endpoint-errors.js";
 import { observeServiceProcess, serviceInstances } from "../src/lib/service-instances.js";
 import { readStackJournal } from "../src/lib/stack-journal.js";
 import { checkInheritedPipeCleanup } from "./_foreground-pipe-fixture.js";
@@ -933,7 +934,7 @@ async function movedRootSignalCell(signal: "SIGTERM" | "SIGHUP"): Promise<void> 
   const name = `controller-moved-root-${signal.toLowerCase()}`;
   const root = join(base, name), mesh = join(root, "project"), moved = `${mesh} moved`, outside = join(root, "outside");
   const home = join(root, "home"), space = "foreground-moved-root-signal", port = await freePort();
-  const env = { ...cleanEnv, HOME: home, COTAL_HOME: join(home, "machine"), XDG_CONFIG_HOME: join(home, "xdg"), XDG_RUNTIME_DIR: join(home, "runtime"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" };
+  const env = { ...cleanEnv, PATH: process.env.PATH, HOME: home, COTAL_HOME: join(home, "machine"), XDG_CONFIG_HOME: join(home, "xdg"), XDG_RUNTIME_DIR: join(home, "runtime"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" };
   mkdirSync(env.XDG_RUNTIME_DIR, { recursive: true, mode: 0o700 });
   const sandbox = recordSmokeSandbox({ root: mesh, cotalHome: env.COTAL_HOME, xdgConfigHome: env.XDG_CONFIG_HOME });
   const created = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["space", "create", space, "--root", "."]);
@@ -944,8 +945,9 @@ async function movedRootSignalCell(signal: "SIGTERM" | "SIGHUP"): Promise<void> 
     return foregroundCliProbe(cliEntry, tsx, mesh, env, args, 120_000);
   };
   const children: { child: ChildProcess; state: ReturnType<typeof observeOwnedChild> }[] = [];
-  const start = async (...args: string[]) => {
-    const child = spawn(process.execPath, ["--import", tsx, cliEntry, "up", "--foreground", ...args], { cwd: mesh, env, detached: true, stdio: ["ignore", "pipe", "pipe"] });
+  const cli = [process.execPath, "--import", tsx, cliEntry] as const;
+  const start = async ([program, ...prefix]: readonly [string, ...string[]], ...args: string[]) => {
+    const child = spawn(program, [...prefix, "up", "--foreground", ...args], { cwd: mesh, env, detached: true, stdio: ["ignore", "pipe", "pipe"] });
     const state = observeOwnedChild(child);
     children.push({ child, state });
     let out = "", err = "";
@@ -961,12 +963,13 @@ async function movedRootSignalCell(signal: "SIGTERM" | "SIGHUP"): Promise<void> 
   };
   let confirmed = false;
   try {
-    const initial = await start("--server", `nats://127.0.0.1:${port}`);
+    const initial = await start(cli, "--server", `nats://127.0.0.1:${port}`);
     const stopped = await down();
     assert.equal(stopped.code, 0, stopped.out + stopped.err);
     await until(() => initial.state.closed, 10_000, initial.log);
     assert.equal(initial.state.code, 0, initial.log());
-    const holder = await start("--root", mesh);
+    if (signal === "SIGHUP") env.PATH = relativeHangupPath(mesh, root, cli, env.PATH);
+    const holder = await start(signal === "SIGHUP" ? ["cotal"] : cli, "--root", mesh);
     const pins = readStackJournal(mesh)?.journal.members.flatMap(({ process }) => process ? [process] : []);
     assert.ok(pins?.length === 3 && pins.every(live), holder.log());
     assert.equal(await portOpen(port), true, holder.log());
@@ -977,14 +980,15 @@ async function movedRootSignalCell(signal: "SIGTERM" | "SIGHUP"): Promise<void> 
     let stopOutput = holder.log();
     if (signal === "SIGHUP") {
       const command = /The terminal closed\. This stack is still running; run `([^`\n]+)` from another folder to stop it\./.exec(stopOutput)?.[1];
-      assert.ok(command?.endsWith(` down --space ${space} --yes`) && !command.startsWith("cd "), stopOutput); passed++;
       assert.ok(pins.every(live) && await portOpen(port), "the hangup left every stack member running"); passed++;
       const args = ["down", "--space", space, "--yes"];
+      assert.ok(command, stopOutput);
+      assert.equal(command, [...cli, ...args].map(shellWord).join(" "), stopOutput); passed++;
       const outsideSandbox = recordSmokeSandbox({ root: outside, cotalHome: env.COTAL_HOME, xdgConfigHome: env.XDG_CONFIG_HOME });
       assertSmokeSandboxDown(outsideSandbox, args, { cwd: outside, env });
-      const stopped = await foregroundCliProbe(cliEntry, tsx, outside, env, args, 120_000);
-      assert.equal(stopped.code, 0, stopped.out + stopped.err); passed++;
-      stopOutput = stopped.out;
+      const stopped = spawnSync("/bin/sh", ["-c", command], { cwd: outside, env, encoding: "utf8", timeout: 120_000 });
+      assert.equal(stopped.status, 0, stopped.error?.message ?? stopped.stdout + stopped.stderr); passed++;
+      stopOutput = stopped.stdout;
     }
     assert.match(stopOutput, /Stack stopped; its folder was gone/); passed++;
     assert.ok(pins.every((pin) => !live(pin)), holder.log()); passed++;
@@ -1001,6 +1005,14 @@ async function movedRootSignalCell(signal: "SIGTERM" | "SIGHUP"): Promise<void> 
       await down();
     }
   }
+}
+
+function relativeHangupPath(mesh: string, root: string, cli: readonly string[], path: string | undefined): string {
+  const tools = join(mesh, "tools"), other = join(root, "other-bin");
+  for (const dir of [tools, other]) mkdirSync(dir, { mode: 0o700 });
+  writeFileSync(join(tools, "cotal"), `#!/bin/sh\nexec ${cli.map(shellWord).join(" ")} "$@"\n`, { mode: 0o700 });
+  writeFileSync(join(other, "cotal"), "#!/bin/sh\necho 'wrong cotal' >&2\nexit 99\n", { mode: 0o700 });
+  return ["tools", other, ...(path ? [path] : [])].join(":");
 }
 
 async function controllerHoldCell(kind: "takeover" | "other-home" | "broker-crash" | "broker-only-crash" | "time-wait" | "moved-root" = "takeover"): Promise<void> {

@@ -200,7 +200,8 @@ function durableCotalsOnPath(env: NodeJS.ProcessEnv): string[] {
  *  installed entry under this Node runtime. A dev clone uses pnpm unless the command must run
  *  from another folder. Re-execs use {@link selfArgv}. */
 export function displayCmd({ fromAnyFolder = false } = {}): string {
-  if (cotalOnPath()) return "cotal";
+  // A relative or empty PATH entry can select a different executable in the destination folder.
+  if ((!fromAnyFolder || (process.env.PATH ?? "").split(delimiter).every(isAbsolute)) && cotalOnPath()) return "cotal";
   if (isNpx()) return "npx cotal-ai";
   if (isPnpmDlx()) return "pnpm dlx cotal-ai";
   if (runsCliEntry() && (fromAnyFolder || seedWriterKind() === "released")) {
