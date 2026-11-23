@@ -34,7 +34,7 @@ import { connectTargetOrThrow, isConnectRefusal, ownManagerInstances, resolveCon
 import { askManager, controlPs, liveManagerIds, managerCandidate, managerRailGone, reportedManagerHost, startStackManagerRemedy, START_TIMEOUT_MS, type ControlClient, type ControlCtx, type ManagerReply } from "@cotal-ai/workspace/control";
 import { readManagedLaunch, requestManagedLaunch } from "@cotal-ai/workspace/launch";
 import { openObserver } from "@cotal-ai/workspace/view";
-import { AgentCallFailed, deregisterRemedy, LaunchListsRefused, NoLaunchManager, SignInRequired, type AgentCatalog, type AguiEventLike, type ManagerChoice, type Mesh, type RosterEntry, type SeatFrame, type SeatRef, type SeatRow, type SpawnRequest } from "./mesh.js";
+import { AgentCallFailed, deregisterRemedy, LaunchListsRefused, NoLaunchManager, SignInRequired, type AgentCatalog, type AguiEventLike, type ChannelRow, type ManagerChoice, type Mesh, type PersonaRow, type RosterEntry, type SeatFrame, type SeatRef, type SeatRow, type SpawnRequest } from "./mesh.js";
 
 const OBSERVER_NAME = "acp";
 /** A seat's retained event history is read up to this many frames. */
@@ -106,6 +106,9 @@ export function managerPlan(listed: readonly ManagerInstanceListing[]): { launch
     : "the space lists no live manager for you";
   return { launch, read: [...remote, ...local], own: registered.map((m) => m.instanceId), ...(why ? { why } : {}) };
 }
+
+/** The order a plain `sort()` gives strings. */
+const byCodeUnits = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
 
 /** A seat id as a manager reports it: the principal in user mode, a bare actor otherwise. */
 function principalOf(id: string): { owner: string; actor: string } {
@@ -377,8 +380,9 @@ function launchCalls(c: Connected, p: Controls, defaultPersona: string | null | 
     async personas(instanceId) {
       const reply = await ask("listPersonas", undefined, instanceId);
       if (!reply.ok) throw listFailure(reply, "the manager did not list its personas");
-      const rows = (reply.data as { personas?: { name: string }[] } | undefined)?.personas ?? [];
-      return rows.map((p) => p.name).sort();
+      const rows = (reply.data as { personas?: { name: string; owner?: string }[] } | undefined)?.personas ?? [];
+      // The list names a persona's owner only to the caller who owns it (`list-personas`).
+      return rows.map((p): PersonaRow => ({ name: p.name, ...(p.owner ? { own: true } : {}) })).sort((a, b) => byCodeUnits(a.name, b.name));
     },
 
     async spawn(req: SpawnRequest) {
@@ -575,7 +579,10 @@ function spaceReads(c: Connected): Pick<Mesh, "followFrames" | "frameHistory" | 
     },
 
     async channels() {
-      return (await observer.listChannels()).map((c) => c.channel).filter((c) => !isEventChannel(c)).sort();
+      return (await observer.listChannels())
+        .filter((c) => !isEventChannel(c.channel))
+        .map((c): ChannelRow => ({ channel: c.channel, messages: c.messages, ...(c.config?.description ? { description: c.config.description } : {}) }))
+        .sort((a, b) => byCodeUnits(a.channel, b.channel));
     },
 
     async close() {

@@ -118,12 +118,12 @@ A new thread offers these options next to the model list. They apply when the fi
 | --- | --- |
 | Model | The application and model, as `<application>/<model>`. Each name starts with its application, so the list picks the application in clients that do not show groups, such as T3 Code. `<application>/default` leaves the model to the application. A model id the list does not show is passed to the manager as given. |
 | Reasoning | The model's variant. Offered while any listed model has variants; for a model without them it holds only the model default. |
-| Persona | A persona from the manager's catalog. |
-| Channel | One channel the new agent joins. |
+| Persona | A persona from the manager's catalog. A catalog of 64 or more personas offers a short list: the default, the current choice, and up to 16 personas you own. `/persona` picks any other. |
+| Channel | One channel the new agent joins. A space with 64 or more channels offers a short list: no channel, the current choice, and up to 16 channels, those the space describes first, each group with the most retained messages first. `/join` picks any other. |
 | Machine | Which manager spawns the agent. The default is your live manager on this machine. Another computer's manager is never the default, because it cannot use this machine's folder. With none of yours live on this machine, a new thread has no machine: this list offers the other computers, also when there is only one, and a prompt fails until you start this machine's manager with `cotal manager start` or choose a computer here. The list is offered when there is more than one manager, or when none of them runs on this machine. On a space where people sign in, the list comes from the space's auth service: the space's own manager while you have registered none, and each of your registered managers it lists as a candidate once you have. A candidate can be one whose computer is gone. With none of yours live, a new thread is refused until you start one with `cotal manager start`. Every call a thread makes names its manager, so a space host that sends unnamed calls to its own manager (`local-primary`, see [Embedding a manager](embedding-manager.mdx)) does not change the list. A thread keeps the manager it started on. When a thread you load offers this list, its agent's manager is in it and is the current choice, so a new agent the thread starts after `/despawn` starts there unless you choose another. |
 
 Only applications that publish an event plane are offered, because the thread is built from it (see [Connectors](connectors.mdx)).
-A select that would hold 64 or more choices is not offered.
+Any other select that would hold 64 or more choices is not offered.
 The session's model list also gives each model its reasoning choices, so a client that reads them, such as T3 Code, shows a model's reasoning choices before any thread has run it.
 
 ## Slash commands [#slash-commands]
@@ -135,6 +135,10 @@ The session's model list also gives each model its reasoning choices, so a clien
 | `/despawn` | Send it by itself to stop the thread's agent. The thread stays, and its next prompt spawns a new agent when your grant may spawn agents (see [Sign in](#sign-in)). |
 | `/roster` | Lists who is on the mesh and what each is doing. |
 | `/channels` | Lists the space's channels. |
+| `/persona <name>` | Sets the Persona option to any persona in the manager's catalog, by its exact name. Offered when the Persona option shows a short list. |
+| `/join <channel>` | Sets the Channel option to any channel of the space, by its exact name. Offered when the Channel option shows a short list. |
+
+`/persona` and `/join` are offered only while the thread has no agent, because the choices apply when the agent starts. While an agent runs, the thread does not take them, so the agent's own command of that name reaches it. A name the list does not hold fails with one line, and the choice stays.
 
 ## Sign in [#sign-in]
 

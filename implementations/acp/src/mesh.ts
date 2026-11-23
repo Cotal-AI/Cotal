@@ -37,6 +37,21 @@ export interface CatalogModel {
   readonly variants: readonly string[];
 }
 
+/** One persona in a manager's catalog. */
+export interface PersonaRow {
+  readonly name: string;
+  /** The caller owns the persona's file. */
+  readonly own?: true;
+}
+
+/** One channel of the space: how many messages the space retains on it, and the purpose its registry
+ *  entry states. */
+export interface ChannelRow {
+  readonly channel: string;
+  readonly messages: number;
+  readonly description?: string;
+}
+
 /** A manager the bridge can spawn through. */
 export interface ManagerChoice {
   readonly instanceId: string;
@@ -179,9 +194,9 @@ export interface Mesh {
   /** One manager as a choice, described from its presence, or from its own answer when its presence
    *  row is not found. */
   manager(instanceId: string): Promise<ManagerChoice>;
-  /** Persona names in a manager's catalog. Each manager holds its own. Rejects with
+  /** The personas in a manager's catalog, by name. Each manager holds its own. Rejects with
    *  {@link LaunchListsRefused} when the caller may not read them. */
-  personas(managerInstanceId?: string): Promise<string[]>;
+  personas(managerInstanceId?: string): Promise<PersonaRow[]>;
   /** Launch a seat and wait until the manager confirms it joined. */
   spawn(request: SpawnRequest): Promise<SeatRef>;
   /** Every managed seat the caller can see. */
@@ -220,6 +235,7 @@ export interface Mesh {
    *  roster. */
   presence(seat: SeatRef): string | undefined;
   roster(): Promise<RosterEntry[]>;
-  channels(): Promise<string[]>;
+  /** The space's channels, by name, without the agents' event channels. */
+  channels(): Promise<ChannelRow[]>;
   close(): Promise<void>;
 }
