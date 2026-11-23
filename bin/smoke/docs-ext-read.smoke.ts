@@ -96,6 +96,21 @@ let specBody = "";
 }
 
 {
+  const docs = run(["docs", "cli-messaging", "--json"]);
+  const body = docs.envelope?.result?.body;
+  const pending = typeof body === "string" ? body.split(/^## pending(?: \[#pending\])?$/m)[1]?.split(/^## /m)[0] ?? "" : "";
+  const synopsis = /^cotal pending .*$/m.exec(pending)?.[0] ?? "";
+  const help = run(["pending", "--help"]);
+  const usage = help.stdout.split(/^Usage$/m)[1]?.split(/\n\s*\n/)[0] ?? "";
+  const selectors = ["[--server <url>]", "[--creds <private-file>]"];
+  check("pending names both selectors in the bundled reference and help Usage",
+    docs.status === 0 && help.status === 0 && selectors.every((flag) => synopsis.includes(flag) && usage.includes(flag)),
+    { synopsis, usage, stderr: help.stderr });
+  check("the pending reference explains which credential to pair with an unregistered broker",
+    pending.includes("pass its URL with `--server <url>` and a static admin credential with `--creds <private-file>`"), pending);
+}
+
+{
   const installation = run(["docs", "installation", "--plain"]);
   const removal = installation.stdout.split("\n## Remove Cotal\n")[1]?.split("\n## ")[0] ?? "";
   const status = removal.indexOf("`cotal daemon status`");

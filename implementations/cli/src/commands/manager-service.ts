@@ -1,5 +1,5 @@
 import { findSubcommand, registry, type Command, type FlagSpec, type ParsedArgs } from "@cotal-ai/core";
-import type { ServicePreset } from "@cotal-ai/workspace";
+import { CommandFailure, type ServicePreset } from "@cotal-ai/workspace";
 import { metadataPositionals } from "../lib/command-path.js";
 import { findServicePreset, servicePresetCommand, servicePresetFlags } from "../lib/service-presets.js";
 import { service } from "./service-registry.js";
@@ -44,7 +44,13 @@ export function managerServiceCommand(manager: Command, argv: readonly string[],
       flagNames: sub.flagNames?.filter((flag) => flag !== "file" && flag !== "preset" && flag !== "new-instance" && flag !== "no-open"
         && !(verb === "install" && flag === "dry-run")),
     })),
-    validate: (args) => augmented.validate?.(withName(args)),
+    validate: (args) => {
+      const extra = args.positionals[1];
+      if (extra !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", `unexpected argument ${JSON.stringify(extra)} for \`cotal manager ${verb}\``, {
+        remedy: "remove the extra argument, or select the manager with --space <space> or --instance <full-id>",
+      });
+      augmented.validate?.(withName(args));
+    },
     run: (args) => augmented.run(withName(args)),
   };
   return { cmd, argv: [verb, ...rest] };

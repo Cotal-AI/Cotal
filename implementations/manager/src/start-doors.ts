@@ -12,7 +12,6 @@ const ONCE_DEFAULT_DEADLINE_MS = 60 * 60_000;
 /** What {@link StartDoors} reads from the Manager. Every entry is read at use, so a field the Manager
  *  assigns after construction is always current, and a Manager method a test replaces is the one that runs. */
 export interface StartDoorsDeps {
-  remoteAuthority: () => Manager["remoteAuthority"];
   userMode: () => Manager["userMode"];
   executionRefusal: (...args: Parameters<Manager["executionRefusal"]>) => ReturnType<Manager["executionRefusal"]>;
   startAgent: (...args: Parameters<Manager["startAgent"]>) => ReturnType<Manager["startAgent"]>;
@@ -22,7 +21,6 @@ export interface StartDoorsDeps {
  *  field the Manager assigns later is current and a member a test replaces on the instance is the one that runs. */
 export function startDoorsDeps(m: Manager): StartDoorsDeps {
   return {
-    remoteAuthority: () => m["remoteAuthority"],
     userMode: () => m["userMode"],
     executionRefusal: (...args) => m["executionRefusal"](...args),
     startAgent: (...args) => m["startAgent"](...args),
@@ -36,7 +34,7 @@ export class StartDoors {
   // The Manager members these bodies read, under their Manager names. Each reads through its dep at
   // use, so a field the Manager assigns later is current and a method a test replaces on the Manager
   // is the one that runs.
-  private get remoteAuthority() { return this.deps.remoteAuthority(); }
+  private get remoteAuthority() { return this.config.remoteAuthority; }
   private get userMode() { return this.deps.userMode(); }
   private executionRefusal(...args: Parameters<Manager["executionRefusal"]>): ReturnType<Manager["executionRefusal"]> { return this.deps.executionRefusal(...args); }
   private startAgent(...args: Parameters<Manager["startAgent"]>): ReturnType<Manager["startAgent"]> { return this.deps.startAgent(...args); }

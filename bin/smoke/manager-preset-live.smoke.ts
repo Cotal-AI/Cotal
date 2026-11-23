@@ -174,10 +174,16 @@ function cotal(args: string[], timeout = 120_000) {
 }
 const out = (r: ReturnType<typeof cotal>) => `${r.stdout ?? ""}${r.stderr ?? ""}`;
 function launchPreview(space: string): void {
-  const args = ["manager", "start", "--space", space, "--dry-run", "--json"];
-  const badHost = cotal([...args, "--console-host", "bad host"]);
+  for (const args of [["manager", "start", "--help"], ["help", "manager", "start"]]) {
+    const help = cotal(args);
+    check(`${args.join(" ")} lists the foreground and dry-run switches separately`, help.status === 0
+      && /\[--foreground\]\s+\[--dry-run\]/.test(help.stdout), out(help));
+  }
+  const preview = ["manager", "start", "--space", space, "--dry-run", "--json"];
+  const badHost = cotal([...preview, "--console-host", "bad host"]);
   check("a fresh manager preview refuses a console host containing whitespace",
     badHost.status === 1 && JSON.parse(badHost.stdout).error?.code === "USAGE_INVALID", out(badHost));
+  const args = [...preview, "--foreground"];
   const launch = join(root, "absent-launch.json");
   const spec = JSON.stringify({ apiVersion: "cotal-launch/v1", space, runId: "preview", agents: [] });
   const digest = createHash("sha256").update(spec).digest("hex");
