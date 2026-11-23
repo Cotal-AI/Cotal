@@ -829,7 +829,8 @@ export class AppServerDriver extends EventEmitter {
       || method === "applyPatchApproval"
       || method === "item/commandExecution/requestApproval"
       || method === "item/fileChange/requestApproval"
-      || method === "item/permissions/requestApproval";
+      || method === "item/permissions/requestApproval"
+      || (method === "mcpServer/elicitation/request" && (params._meta as { codex_approval_kind?: unknown } | null | undefined)?.codex_approval_kind === "mcp_tool_call");
     this.emit("waiting", method, approval ? ({ code: "approval", source: method, since: Date.now() } satisfies PresenceCondition) : undefined);
     // A held request is answered later; its `serverRequest/resolved` ends the wait.
     if (this.opts.hold?.({ id, method, params, gen: this.generation })) return;
@@ -842,7 +843,10 @@ export class AppServerDriver extends EventEmitter {
       this.writeLine({ jsonrpc: "2.0", id, result: { decision: "decline" } }); // v2 decision enums
     else if (method === "item/permissions/requestApproval")
       this.writeLine({ jsonrpc: "2.0", id, result: { permissions: {}, scope: "turn" } }); // grants nothing
-    // Anything else (elicitations, attestation, user-input): decline cleanly.
+    // A cancel leaves Codex no saved decision, where a decline is the person's refusal.
+    else if (method === "mcpServer/elicitation/request")
+      this.writeLine({ jsonrpc: "2.0", id, result: { action: "cancel", content: null, _meta: null } });
+    // Anything else (attestation, user-input): decline cleanly.
     else this.writeLine({ jsonrpc: "2.0", id, error: { code: -32601, message: "unsupported by the cotal host" } });
     // The wait ended with the reply. Without this the turn could end waiting→idle, which is not the
     // working→idle turn boundary, and the condition would outlive the turn (#3840).

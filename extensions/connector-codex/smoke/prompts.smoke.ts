@@ -5,7 +5,8 @@
  * the shipped prompt desk. An answer is a `prompt-answer` call on the desk's own handler, and what the
  * module writes back is what the driver would send as the request's JSON-RPC result. Covered: the
  * command, stdin and file change approvals, a file change too large to show, a permissions request,
- * the decisions a server lists, questions as a form, a secret question, a request nobody resolves until the desk closes, a
+ * the decisions a server lists, questions as a form, a secret question, an MCP tool-call approval,
+ * an MCP server's form, a request nobody resolves until the desk closes, a
  * request the app-server resolves first, an answer after the app-server is gone, no desk, and the
  * Connector's declaration.
  *
@@ -15,7 +16,7 @@ import { isDeepStrictEqual } from "node:util";
 import type { AgentPrompt, CotalEndpoint, EpPrincipalServeContext, PromptState, PromptsOutput } from "@cotal-ai/core";
 import { createSuite } from "@cotal-ai/smoke-kit";
 import { createPromptDesk, type ServedPromptDesk } from "../../connector-core/src/prompt-desk.js";
-import type { ServerRequest } from "../src/app-server.js";
+import type { ServerRequest, ThreadItem } from "../src/app-server.js";
 import { codexConnector } from "../src/extension.js";
 import { createCodexPrompts, type CodexPrompts } from "../src/prompts.js";
 
@@ -215,6 +216,94 @@ function hold(w: World, req: ServerRequest): string | undefined {
 
   const secret = request("item/tool/requestUserInput", { itemId: "call_6", questions: [{ id: "pw", header: "Password", question: "?", isOther: true, isSecret: true, options: null }] });
   check("a secret question is not put on the desk", w.prompts.hold(secret) === false);
+}
+
+// ---- MCP elicitations --------------------------------------------------------------------------
+const ELICIT = "mcpServer/elicitation/request";
+const NOTHING = { content: null, _meta: null };
+const mcpCall = (id: string, tool = "hello"): ThreadItem => ({ type: "mcpToolCall", id, server: "elicit", tool, status: "inProgress", arguments: { who: "Ada" } });
+// The tool-call approval codex 0.162 sends for an MCP server's tool: an empty form, its kind in `_meta`.
+const approveCall = (persist?: unknown) => request(ELICIT, {
+  serverName: "elicit", mode: "form", message: 'Allow the elicit MCP server to run tool "hello"?', requestedSchema: { type: "object", properties: {} },
+  _meta: { codex_approval_kind: "mcp_tool_call", ...(persist !== undefined ? { persist } : {}), tool_description: "Say hello.", tool_params: { who: "Ada" }, tool_params_display: [] },
+});
+const optionsOf = (w: World, id: string | undefined) => (id ? read(w, id).content.options.map((o) => o.id) : undefined);
+{
+  const w = world();
+  w.prompts.itemStarted(mcpCall("toolu_m1"));
+  const req = approveCall(["session", "always"]);
+  const id = hold(w, req);
+  const c = id ? read(w, id).content : undefined;
+  check("an MCP tool-call approval opens a permission prompt for the running call",
+    c?.kind === "permission" && c.title === 'Allow the elicit MCP server to run tool "hello"?' && c.source?.toolCallId === "toolu_m1" && c.body?.text === "Say hello." &&
+      isDeepStrictEqual(c.subject, { type: "tool", name: "hello", input: { kind: "shown", value: { who: "Ada" } }, server: "elicit" }), c);
+  check("it offers allow, the persistence Codex lists, deny and cancel",
+    isDeepStrictEqual(c?.options.map((o) => [o.id, o.effect, o.persists !== undefined]),
+      [["accept", "proceed", false], ["accept-for-session", "proceed", true], ["accept-always", "proceed", true], ["decline", "refuse", false], ["cancel", "cancel", false]]), c?.options);
+  if (id) await answer(w, id, "accept");
+  check("allowing accepts the call once", isDeepStrictEqual(w.written.at(-1), { id: req.id, result: { action: "accept", content: {}, _meta: null } }), w.written.at(-1));
+  for (const [option, persist] of [["accept-for-session", "session"], ["accept-always", "always"]] as const) {
+    const r = approveCall(["session", "always"]);
+    const rid = hold(w, r);
+    if (rid) await answer(w, rid, option);
+    check(`${option} asks Codex to keep the approval for ${persist}`, isDeepStrictEqual(w.written.at(-1), { id: r.id, result: { action: "accept", content: {}, _meta: { persist } } }), w.written.at(-1));
+  }
+  for (const action of ["decline", "cancel"]) {
+    const r = approveCall(["session", "always"]);
+    const rid = hold(w, r);
+    if (rid) await answer(w, rid, action);
+    check(`${action} is written as Codex's ${action}`, isDeepStrictEqual(w.written.at(-1), { id: r.id, result: { action, ...NOTHING } }), w.written.at(-1));
+  }
+  check("only the persistence Codex lists is offered", isDeepStrictEqual(optionsOf(w, hold(w, approveCall("session"))), ["accept", "accept-for-session", "decline", "cancel"]));
+  check("with none listed, nothing persists", isDeepStrictEqual(optionsOf(w, hold(w, approveCall())), ["accept", "decline", "cancel"]));
+  w.prompts.itemStarted(mcpCall("toolu_m2"));
+  const twoId = hold(w, approveCall());
+  const two = twoId ? read(w, twoId).content : undefined;
+  check("with two calls running on the server, the prompt names neither and keeps Codex's question",
+    two !== undefined && two.subject === undefined && two.source?.toolCallId === undefined && two.title === 'Allow the elicit MCP server to run tool "hello"?', two);
+}
+{
+  const w = world();
+  w.prompts.itemStarted(mcpCall("toolu_f1", "pick_color"));
+  const requestedSchema = {
+    $schema: "https://json-schema.org/draft/2020-12/schema", type: "object", required: ["color"],
+    properties: {
+      color: { type: "string", title: "Color", enum: ["red", "green"], enumNames: ["Red", "Green"] },
+      shade: { type: "integer", title: "Shade", minimum: 1, maximum: 9, default: 5 },
+      bold: { type: "boolean", title: "Bold", default: false },
+    },
+  };
+  const form = (message = "Which color should the banner be?") => request(ELICIT, { serverName: "elicit", mode: "form", _meta: null, message, requestedSchema });
+  const req = form();
+  const id = hold(w, req);
+  const c = id ? read(w, id).content : undefined;
+  check("an MCP server's form opens a form prompt with its fields, for the running call, naming the server",
+    c?.kind === "form" && c.title === "Which color should the banner be?" && c.source?.toolCallId === "toolu_f1" && c.body?.text === "Asked by the elicit MCP server." &&
+      isDeepStrictEqual(c.form?.schema, {
+        type: "object", required: ["color"],
+        properties: {
+          color: { type: "string", title: "Color", oneOf: [{ const: "red", title: "Red" }, { const: "green", title: "Green" }] },
+          shade: { type: "integer", title: "Shade", minimum: 1, maximum: 9, default: 5 },
+          bold: { type: "boolean", title: "Bold", default: false },
+        },
+      }), c);
+  check("it offers submit, decline and cancel", isDeepStrictEqual(c?.options.map((o) => [o.id, o.effect, o.form]), [["submit", "proceed", "required"], ["decline", "refuse", undefined], ["cancel", "cancel", undefined]]), c?.options);
+  if (id) await answer(w, id, "submit", { color: "green", shade: 7, bold: true });
+  check("submitted values are written as the elicitation's content",
+    isDeepStrictEqual(w.written.at(-1), { id: req.id, result: { action: "accept", content: { color: "green", shade: 7, bold: true }, _meta: null } }), w.written.at(-1));
+  const message = `First line\n${"x".repeat(300)}`;
+  const longId = hold(w, form(message));
+  const long = longId ? read(w, longId).content : undefined;
+  check("a message longer than a title keeps its full text in the body",
+    long !== undefined && !long.title.includes("\n") && long.title.length <= 200 && long.body?.text === `${message}\n\nAsked by the elicit MCP server.`, long);
+  const nested = request(ELICIT, { serverName: "elicit", mode: "form", _meta: null, message: "?", requestedSchema: { type: "object", properties: { a: { type: "object", properties: {} } } } });
+  check("a form outside the desk's form profile is not held, and the host says so", w.prompts.hold(nested) === false && w.warnings.some((m) => m.includes(ELICIT)), w.warnings);
+  check("a url elicitation is not held", w.prompts.hold(request(ELICIT, { serverName: "elicit", mode: "url", _meta: null, message: "Sign in", url: "https://example.com", elicitationId: "e1" })) === false);
+  check("an OpenAI form is not held", w.prompts.hold(request(ELICIT, { serverName: "elicit", mode: "openai/form", _meta: null, message: "?", requestedSchema: {} })) === false);
+  const left = form();
+  hold(w, left);
+  w.desk.close();
+  check("one still waiting when the desk closes is cancelled", isDeepStrictEqual(w.written.at(-1), { id: left.id, result: { action: "cancel", ...NOTHING } }), w.written.at(-1));
 }
 
 // ---- requests the module leaves to the driver --------------------------------------------------

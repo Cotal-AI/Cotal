@@ -5,7 +5,7 @@
  * asking launch starts its thread in T3 Code's approval-required mode and leaves out the autonomy
  * defaults. It is refused when a launch option sets what it sets. A launch without it keeps the
  * defaults and starts its thread as before. A permissions request no prompt desk holds grants
- * nothing.
+ * nothing, and an MCP elicitation no prompt desk holds is cancelled.
  *
  * Run: pnpm smoke:codex-ask-permissions
  */
@@ -13,6 +13,7 @@ import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { isDeepStrictEqual } from "node:util";
 import { LAUNCH_MATERIAL_ENV, readLaunchMaterial, type LaunchOpts } from "@cotal-ai/core";
 import { createSuite, skipSuite } from "@cotal-ai/smoke-kit";
 import { AppServerDriver } from "../src/app-server.js";
@@ -99,19 +100,26 @@ try {
   const waits: { detail: string; code?: string }[] = [];
   driver.on("waiting", (detail: string, condition?: { code: string }) => waits.push({ detail, code: condition?.code }));
   let answer: unknown;
+  let elicited: { kind?: string; answer?: unknown }[] = [];
   try {
     await driver.start();
-    await driver.startTurn("PERMREQ probe");
-    for (let i = 0; i < 100 && answer === undefined; i++) {
+    await driver.startTurn("PERMREQ ELICIT probe");
+    for (let i = 0; i < 100 && (answer === undefined || elicited.length < 2); i++) {
       await new Promise((r) => setTimeout(r, 50));
-      const entries = readFileSync(LOG, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l) as { ev: string; answer?: unknown });
+      const entries = readFileSync(LOG, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l) as { ev: string; kind?: string; answer?: unknown });
       answer = entries.find((e) => e.ev === "permissionsAnswer")?.answer;
+      elicited = entries.filter((e) => e.ev === "elicitationAnswer");
     }
   } finally {
     await driver.stop();
   }
   check("a permissions request no prompt desk holds grants nothing", JSON.stringify(answer) === JSON.stringify({ permissions: {}, scope: "turn" }), answer);
   check("and it relays the approval condition while it waits", waits.some((w) => w.detail === "item/permissions/requestApproval" && w.code === "approval"), waits);
+  const cancelled = { action: "cancel", content: null, _meta: null };
+  check("an MCP tool-call approval and an MCP form no prompt desk holds are both cancelled",
+    elicited.length === 2 && elicited.every((e) => JSON.stringify(e.answer) === JSON.stringify(cancelled)), elicited);
+  check("the tool-call approval relays the approval condition while it waits, and the form does not",
+    isDeepStrictEqual(waits.filter((w) => w.detail === "mcpServer/elicitation/request").map((w) => w.code), ["approval", undefined]), waits);
 } finally {
   rmSync(dir, { recursive: true, force: true });
 }
