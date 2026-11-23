@@ -24,7 +24,7 @@ import {
 } from "@cotal-ai/connector-core";
 import { hermesHookHandle } from "./hermes-hooks.js";
 import { startBridgeServer, type BridgeServer } from "./bridge.js";
-import { hermesCommands } from "./commands.js";
+import { drainWhileIdle, hermesCommands } from "./commands.js";
 import { startHermesEvents, type HermesEvents } from "./events.js";
 import { hermesToolDescriptors } from "./tool-schema.js";
 
@@ -80,21 +80,7 @@ export function startSidecar(): Sidecar {
     if (journal) events?.holder.flush(journal);
     return hermesHookHandle(a, ev);
   }, { fatalBind: true });
-  // The owner's queued turns start one at a time, each only once the gateway has no Cotal message
-  // or turn in progress: the gateway's own busy handling would interrupt a turn in progress.
-  let draining = false;
-  const drain = (): void => {
-    const b = bridge;
-    if (draining || !b?.idle()) return;
-    draining = true;
-    void (async () => {
-      try {
-        while (b.idle() && (await agent.dispatchNextCommand()) !== "empty");
-      } finally {
-        draining = false;
-      }
-    })();
-  };
+  const drain = drainWhileIdle(agent, () => bridge);
   agent.on("command", drain);
   bridge = startBridgeServer(agent, config, bridgeSock, control, { onSubscribe: startAgent, onIdle: drain });
   // The launch's initial prompt is the gateway's first turn, in the user's own words. Read once and
