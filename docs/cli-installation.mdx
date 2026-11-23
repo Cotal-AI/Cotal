@@ -502,7 +502,8 @@ first diagnostic line and exits with status 1.
 Missing release archives or target version metadata share a ten-minute wait with missing target
 versions of installed first-party extensions. If CLI release archives or target version metadata are
 still missing, Cotal keeps the installed version and exits successfully. If the registry returns
-HTTP 404 for a scoped first-party package's metadata, Cotal exits with status 1 without waiting.
+HTTP 404 for a scoped first-party package's metadata, Cotal exits with status 1 without waiting,
+even if another package checked at the same time does not yet list its target version.
 The diagnostic names the package, npm error code and registry origin when npm reports it.
 Check `@cotal-ai:registry` in `.npmrc`. Cotal leaves that setting and the installed version unchanged.
 If an installed extension's target version is still missing, Cotal names it,

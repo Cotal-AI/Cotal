@@ -96,16 +96,22 @@ export async function checkReleaseArchives(version: string, rt: UpdateRuntime): 
     }
     for (let offset = 0; offset < names.length;) {
       const batch = names.slice(offset, offset + 3);
-      // Settle every read before validating or removing its shared private cache. Validation below
-      // stays in discovery order, including when independent registry requests finish out of order.
+      // Settle every read before validating or removing its shared private cache. A definitive
+      // failure takes precedence over publication lag, with discovery order within each kind.
       const manifests = await Promise.allSettled(batch.map(name => rt.npmAsync(["view", `${name}@${version}`, "--json", ...options], cache)));
       offset += batch.length;
+      let lag: ReleaseNotAvailable | undefined;
       for (const [index, name] of batch.entries()) {
         const spec = `${name}@${version}`;
         const result = manifests[index]!;
         if (result.status === "rejected") throw new Error(`metadata for ${spec} is unavailable`);
         const manifest = result.value;
-        if (manifest.status !== 0) throw releaseReadError(manifest, `metadata for ${spec} is unavailable`, { metadataSpec: spec });
+        if (manifest.status !== 0) {
+          const error = releaseReadError(manifest, `metadata for ${spec} is unavailable`, { metadataSpec: spec });
+          if (!(error instanceof ReleaseNotAvailable)) throw error;
+          lag ??= error;
+          continue;
+        }
         let meta: Record<string, unknown>;
         try {
           const payload: unknown = JSON.parse(manifest.stdout);
@@ -130,6 +136,7 @@ export async function checkReleaseArchives(version: string, rt: UpdateRuntime): 
           }
         }
       }
+      if (lag) throw lag;
     }
     // npm verifies each archive's integrity and applies registry, scoped auth and proxy/TLS policy.
     // Its cache add accepts multiple specs. Bound each group rather than starting npm per archive.

@@ -1655,18 +1655,19 @@ async function completionOut(positionals: string[]): Promise<string> {
   assert.equal(result.status, 0, result.stdout + result.stderr);
 }
 
-// A reachable scoped mirror can serve one first-party package and return HTTP 404 for another.
+// A package-level 404 must refuse even when an earlier sibling's version has not arrived.
 {
   const root = mkdtempSync(join(tmpdir(), "cotal-scoped-404-"));
   const version = "0.13.2", npmrc = join(root, "mirror.npmrc");
   const requests: string[] = [];
+  let publishedVersion = version;
   const mirror = createServer((request, response) => {
     const path = decodeURIComponent(request.url ?? "");
     requests.push(path);
     response.setHeader("content-type", "application/json");
     if (path !== "/@cotal-ai/cli") return response.writeHead(404).end('{"error":"Not found"}');
-    response.end(JSON.stringify({ name: "@cotal-ai/cli", "dist-tags": { latest: version }, versions: {
-      [version]: { name: "@cotal-ai/cli", version, dist: { tarball: "https://registry.invalid/cli.tgz", integrity: "sha512-fixture" } },
+    response.end(JSON.stringify({ name: "@cotal-ai/cli", "dist-tags": { latest: publishedVersion }, versions: {
+      [publishedVersion]: { name: "@cotal-ai/cli", version: publishedVersion, dist: { tarball: "https://registry.invalid/cli.tgz", integrity: "sha512-fixture" } },
     } }));
   });
   try {
@@ -1676,21 +1677,24 @@ async function completionOut(positionals: string[]): Promise<string> {
     const origin = `http://127.0.0.1:${address.port}`;
     const config = `@cotal-ai:registry=${origin}/\n`;
     writeFileSync(npmrc, config);
-    const fixture = updateRuntime({
-      npm: args => ({ status: 0, stdout: args[0] === "view" ? JSON.stringify(version) : "/global/node_modules" }),
-      releaseNpm: () => ({ status: 0, stdout: JSON.stringify({ name: "cotal-ai", version, dependencies: { "@cotal-ai/cli": version, "@cotal-ai/core": version }, dist: { tarball: "https://registry.invalid/root.tgz", integrity: "sha512-fixture" } }) }),
-    });
-    fixture.rt.npmAsync = (args, cache) => args[1].startsWith("@cotal-ai/")
-      ? runNpmAsync([...args, "--userconfig", npmrc], cache) : Promise.resolve(fixture.rt.npm(args));
-    fixture.rt.sleep = async () => assert.fail("a package-level 404 must not wait for publication");
-    assert.equal(await executeUpdate(true, fixture.rt), 1);
-    assert.deepEqual(requests.sort(), ["/@cotal-ai/cli", "/@cotal-ai/core"]);
-    const diagnostic = `@cotal-ai/core@${version} was not found (npm E404 from ${origin}). Check @cotal-ai:registry in .npmrc`;
-    const errors = fixture.events.filter(event => event.startsWith("err:")).join("\n");
-    assert.ok(errors.includes(`update preflight failed: ${diagnostic}. No global install was attempted.`), errors);
-    assert.doesNotMatch(fixture.events.join("\n"), /Waiting for .*release archives|A later update check/);
-    assert.ok(!fixture.events.some(event => /^(global:|claim-global:|reconcile|refresh-connectors)/.test(event)));
-    assert.equal(readFileSync(npmrc, "utf8"), config);
+    for (publishedVersion of [version, "0.13.1"]) {
+      requests.length = 0;
+      const fixture = updateRuntime({
+        npm: args => ({ status: 0, stdout: args[0] === "view" ? JSON.stringify(version) : "/global/node_modules" }),
+        releaseNpm: () => ({ status: 0, stdout: JSON.stringify({ name: "cotal-ai", version, dependencies: { "@cotal-ai/cli": version, "@cotal-ai/core": version }, dist: { tarball: "https://registry.invalid/root.tgz", integrity: "sha512-fixture" } }) }),
+      });
+      fixture.rt.npmAsync = (args, cache) => args[1].startsWith("@cotal-ai/")
+        ? runNpmAsync([...args, "--userconfig", npmrc], cache) : Promise.resolve(fixture.rt.npm(args));
+      fixture.rt.sleep = async () => assert.fail("a package-level 404 must not wait for publication");
+      assert.equal(await executeUpdate(true, fixture.rt), 1);
+      assert.deepEqual(requests.sort(), ["/@cotal-ai/cli", "/@cotal-ai/core"]);
+      const diagnostic = `@cotal-ai/core@${version} was not found (npm E404 from ${origin}). Check @cotal-ai:registry in .npmrc`;
+      const errors = fixture.events.filter(event => event.startsWith("err:")).join("\n");
+      assert.ok(errors.includes(`update preflight failed: ${diagnostic}. No global install was attempted.`), errors);
+      assert.doesNotMatch(fixture.events.join("\n"), /Waiting for .*release archives|A later update check/);
+      assert.ok(!fixture.events.some(event => /^(global:|claim-global:|reconcile|refresh-connectors)/.test(event)));
+      assert.equal(readFileSync(npmrc, "utf8"), config);
+    }
   } finally {
     await new Promise<void>(done => mirror.close(() => done()));
     rmSync(root, { recursive: true, force: true });
