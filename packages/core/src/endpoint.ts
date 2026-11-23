@@ -41,7 +41,7 @@ import type { EpVerbTarget, EpAttributedReply } from "./endpoint-verbs.js";
 import { isJetStreamMissing } from "./jetstream-missing.js";
 import { assertValidKind } from "./agent-file.js";
 import { assertValidName } from "./resolve.js";
-import { PeerAddressError, resolvePeerAddress, type ResolvedPeerAddress } from "./peer-address.js";
+import { PeerAddressError, requireQualifiedDmVersion, resolvePeerAddress, type ResolvedPeerAddress } from "./peer-address.js";
 import { readUsername } from "./username-registry.js";
 import {
   JetStreamApiCodes,
@@ -1193,7 +1193,8 @@ export class CotalEndpoint extends EventEmitter {
     if (!this.identity.userMode) return resolvePeerAddress(roster, target, { authority: { mode: this.authed ? "static" : "open" }, selfId });
     const nc = this.conn.nc;
     if (!nc || !this.conn.nativeBound) throw new PeerAddressError(target, "TARGET_UNAVAILABLE", this.notLiveMsg());
-    return resolvePeerAddress(roster, target, { authority: { mode: "user", ...this.principal, space: this.space, nc }, selfId });
+    const peer = await resolvePeerAddress(roster, target, { authority: { mode: "user", ...this.principal, space: this.space, nc }, selfId });
+    return requireQualifiedDmVersion(target, peer, () => this.liveness.probeLiveness("delivery"));
   }
 
   /**
@@ -2424,8 +2425,8 @@ export class CotalEndpoint extends EventEmitter {
    *  and stood down — a responder that reports its intent instead of its state, which is the whole
    *  family of bug this issue is about. */
   serveDeliveryLiveness(shardIndex = 0): void {
-    this.serveLiveness("delivery", async () =>
-      responderFromLease(await this.readDeliveryLease(shardIndex), this.card.id));
+    this.liveness.serveLiveness("delivery", async () =>
+      responderFromLease(await this.readDeliveryLease(shardIndex), this.card.id), 1);
   }
 
   /** Ask whether a responder is bound for `plane`, as a credentialed peer that need not own it.

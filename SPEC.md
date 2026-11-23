@@ -238,8 +238,10 @@ The sender reads the username binding and builds `owner.actor` without testing r
 An absent username is a refusal. A failed registry read is unavailable and nothing is published.
 A broker acknowledgement reports storage at a sequence. It says nothing about whether the actor
 exists or read the message. A publish timeout leaves the outcome unknown, and the sender does not
-retry automatically. Only upgraded senders interpret `user/agent`. The string never goes on the
-wire: both old and new delivery components receive the existing principal address.
+retry automatically. Only upgraded senders interpret `user/agent`. Before publishing a qualified
+send, the client MUST observe a bound delivery responder advertising `qualifiedDmVersion: 1`
+(§6.1). If the version is missing or cannot be verified, nothing is published. The DM uses the
+existing principal address on the wire.
 
 **Delivery guarantee: `live` and `durable` classes.** Channel delivery has two classes, fixed
 per channel and wire-observable (§7); the guarantee is defined here, its NATS realization is the
@@ -499,6 +501,7 @@ channel that can end the process, and it keeps serving.
 | `plane` | `manager` \| `delivery` | MUST | the plane asked about; a caller MUST reject a reply whose `plane` differs from the plane it asked |
 | `responder` | `ResponderState` | MUST | `bound` \| `unbound` \| `stale` \| `unknown` |
 | `instance` | string | MAY | an opaque token naming the responder that answered. Non-empty when present |
+| `qualifiedDmVersion` | integer `1` | MAY | A bound delivery responder advertises support for qualified DM clients. |
 
 A responder MUST put nothing else in the reply. In particular it carries no lease holder, pid,
 workspace path, instance id, runtime or roster.

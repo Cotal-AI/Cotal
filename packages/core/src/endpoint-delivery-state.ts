@@ -21,7 +21,7 @@ export interface DeliveryState {
    *  by {@link EndpointLiveness.bindLiveness} on every (re)connect: a rebuild closes the old connection and every
    *  subscription on it, so a responder bound once would leave its plane to the broker's
    *  no-responders answer, which a peer grades `unbound`, while this endpoint is connected and serving. */
-  readonly livenessResponders: Map<LivenessPlane, { readState: () => Promise<ResponderState> | ResponderState; sub?: Subscription }>;
+  readonly livenessResponders: Map<LivenessPlane, { readState: () => Promise<ResponderState> | ResponderState; sub?: Subscription; qualifiedDmVersion?: 1 }>;
   /** The principal endpoints {@link servePrincipal} serves, by endpoint name: INTENT, re-bound on
    *  every replaced connection. */
   readonly principalServes: Map<string, PrincipalServeIntent>;
@@ -50,7 +50,7 @@ export interface DeliveryState {
 export function newDeliveryState(): DeliveryState {
   return {
     subs: [],
-    livenessResponders: new Map<LivenessPlane, { readState: () => Promise<ResponderState> | ResponderState; sub?: Subscription }>(),
+    livenessResponders: new Map(),
     principalServes: new Map<string, PrincipalServeIntent>(),
     streamMsgs: [],
     chatSubs: new Map<string, Subscription>(),

@@ -81,11 +81,11 @@ export class EndpointLiveness {
    *  THE BINDING IS KEPT AS INTENT and re-bound on every (re)connect, so a reconnect does not leave
    *  the plane answered by the broker's no-responders status while this endpoint is serving. A second
    *  call for the same plane replaces the first. */
-  serveLiveness(plane: LivenessPlane, readState: () => Promise<ResponderState> | ResponderState): void {
+  serveLiveness(plane: LivenessPlane, readState: () => Promise<ResponderState> | ResponderState, qualifiedDmVersion?: 1): void {
     if (!this.conn.nc) throw new Error(this.notLiveMsg());
     const held = this.delivery.livenessResponders.get(plane);
-    if (held) held.readState = readState;
-    else this.delivery.livenessResponders.set(plane, { readState });
+    if (held) Object.assign(held, { readState, qualifiedDmVersion });
+    else this.delivery.livenessResponders.set(plane, { readState, qualifiedDmVersion });
     this.bindLiveness(plane);
   }
 
@@ -99,7 +99,7 @@ export class EndpointLiveness {
       const i = this.delivery.subs.indexOf(held.sub);
       if (i >= 0) this.delivery.subs.splice(i, 1);
     }
-    const { readState } = held;
+    const { readState, qualifiedDmVersion } = held;
     const sub = this.conn.nc.subscribe(livenessServeFilter(this.identity.space, plane), { queue: `live.${plane}` });
     held.sub = sub;
     this.delivery.subs.push(sub);
@@ -147,7 +147,7 @@ export class EndpointLiveness {
         } catch {
           responder = "unknown";
         }
-        const answer: LivenessAnswer = { plane, responder, instance };
+        const answer: LivenessAnswer = { plane, responder, instance, ...(responder === "bound" && qualifiedDmVersion ? { qualifiedDmVersion } : {}) };
         try { m.respond(JSON.stringify(answer)); } catch { /* the requester is gone */ }
       }
       // The loop itself ends only on a SUBSCRIPTION-level fault (the connection went away), which
@@ -185,6 +185,7 @@ export class EndpointLiveness {
     let outcome: ProbeOutcome;
     let answered: ResponderState | undefined;
     let instance: string | undefined;
+    let qualifiedDmVersion: 1 | undefined;
     try {
       const m = await this.requestBoundReply(this.conn.nc, reqSubject, "", reply, timeoutMs);
       let body: unknown;
@@ -196,6 +197,7 @@ export class EndpointLiveness {
       outcome = parsed ? "replied" : "malformed";
       answered = parsed?.responder;
       instance = parsed?.instance;
+      qualifiedDmVersion = parsed?.qualifiedDmVersion;
     } catch (e) {
       outcome = this.isNoResponders(e) ? "noResponders" : this.probeFailureOutcome(e);
     }
@@ -203,7 +205,7 @@ export class EndpointLiveness {
     // so there is no responder to name, and a token attached to an `unbound` or an `unknown` would
     // claim one had. It stays absent on those arms by construction: nothing assigns it.
     const verdict: LivenessAnswer = { plane, responder: responderFromProbe(outcome, answered) };
-    return instance === undefined ? verdict : { ...verdict, instance };
+    return { ...verdict, ...(instance === undefined ? {} : { instance }), ...(qualifiedDmVersion === undefined ? {} : { qualifiedDmVersion }) };
   }
 
   /** Grade a failed probe that was NOT a no-responders answer. Both arms return an outcome that

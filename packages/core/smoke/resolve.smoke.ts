@@ -7,7 +7,6 @@ import { resolvePeer, sharedNameIds, AmbiguousPeerError, assertValidName } from 
 import { resolvePeerAddress, PeerAddressError } from "../src/peer-address.js";
 import { peerLabel } from "../src/peer-label.js";
 import type { Presence, PresenceStatus } from "../src/types.js";
-import { peerLabel } from "../src/peer-label.js";
 
 let seq = 0;
 function p(name: string, status: PresenceStatus = "idle", id = `id-${++seq}`): Presence {

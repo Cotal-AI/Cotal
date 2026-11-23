@@ -53,6 +53,7 @@ selects an agent for you.
 In a signed-in space, `--to reviewer` names your own agent. Use `--to user/reviewer` to name
 another owner's agent. The username is case-insensitive and the launch name is case-sensitive.
 An exact instance ID still works. A qualified send reports storage, not whether the recipient exists or read it.
+Qualified input requires an upgraded delivery responder. If its version cannot be verified, nothing is sent.
 Open and no-login spaces accept bare display names and exact IDs, but not `user/agent`.
 
 For a channel post, repeat `--mention <agent>` to add explicit wake hints without changing the

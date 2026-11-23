@@ -44,6 +44,7 @@ const row = grantActor(a.stateDir, { owner, actor: "lister", scope: [], allowSub
 const narrow = { actor: "lister", scope: [], allowSubscribe: [], allowPublish: [] };
 const otherRow = grantActor(a.stateDir, { owner: otherOwner, ...narrow });
 const senderRow = grantActor(a.stateDir, { owner, ...narrow, actor: "address_sender" });
+const caseRows = ["Build", "build"].map((actor) => grantActor(a.stateDir, { owner, ...narrow, actor }));
 grantActor(a.stateDir, { owner: directoryOwner, ...narrow, username: supplied });
 grantActor(a.stateDir, { owner: unnamedOwner, ...narrow });
 const idpToken = (subject: string, claims: Record<string, unknown>) => {
@@ -71,11 +72,12 @@ async function checkReaders(authService: AuthServiceHandle, username: string): P
   const daemon = new CotalEndpoint({ ...base, creds: await mintCreds(a.auth, newIdentity(), "delivery"), channels: [], consume: false, registerPresence: false, watchPresence: true, card: { kind: "endpoint", name: "delivery" } });
   const agents: MeshAgent[] = [];
   let peer: CotalEndpoint | undefined;
+  let lease: number | undefined;
   try {
     for (const ep of [provisioner, daemon]) { ep.on("error", console.error); await ep.start(); }
-    const lease = await daemon.acquireDeliveryLease(0);
+    lease = await daemon.acquireDeliveryLease(0);
     await daemon.startPlane3((id, uid) => daemon.aclForOwner(id, uid));
-    await daemon.markDeliveryLeaseReady(0, lease);
+    lease = await daemon.markDeliveryLeaseReady(0, lease);
     const prepare = async (subject: string, owner: string, actor: string) => {
       const lifecycleUid = mintLifecycleUid();
       grantActor(a.stateDir, { owner, actor, lifecycleUid, scope: [], allowSubscribe: allow, allowPublish: allow });
@@ -163,6 +165,7 @@ async function checkReaders(authService: AuthServiceHandle, username: string): P
   } finally {
     await peer?.stop().catch(() => {});
     for (const agent of agents.reverse()) await agent.stop().catch(() => {});
+    if (lease !== undefined) await daemon.releaseDeliveryLease(0, lease);
     await daemon.stop().catch(() => {});
     await provisioner.stop().catch(() => {});
   }
@@ -190,7 +193,8 @@ async function checkAddresses(sender: CotalEndpoint, nc: NatsConnection, own: Co
   const ownMatch = await select(roster, "lister");
   suite.check("a bare name selects the sender's own live agent among two signed-in owners", ownMatch === own.card.id, ownMatch);
   suite.check("a unique own launch name permits a case-insensitive match", await select(roster, "LISTER") === own.card.id);
-  const namesakes = ["Build", "build"].map((actor): core.Presence => ({ ...roster.find((p) => p.card.id === own.card.id)!, card: { id: `${own.principal.owner}.${actor}`, kind: "agent", name: "display" } }));
+  const namesakes = caseRows.map((row) => roster.find((p) => p.card.id === `${row.owner}.${row.actor}`)!);
+  assert(namesakes.every(Boolean), "both case variants published authenticated presence");
   suite.check("exact actor spelling wins over a case-insensitive collision", await select(namesakes, "Build") === namesakes[0]!.card.id && await select(namesakes, "build") === namesakes[1]!.card.id);
   const ambiguous = await select(namesakes, "BUILD");
   suite.check("a mixed-case name listing two own actors is ambiguous", ambiguous.includes("ambiguous") && namesakes.every((p) => ambiguous.includes(p.card.id)), ambiguous);
@@ -232,7 +236,7 @@ async function checkAddresses(sender: CotalEndpoint, nc: NatsConnection, own: Co
   suite.check("a bare name absent from all owners still returns no match", await select(roster, "missing_actor") === "no match");
 }
 
-async function checkChat(sender: CotalEndpoint, foreign: CotalEndpoint, foreignName: string, received: string[], reopen: () => Promise<CotalEndpoint>): Promise<void> {
+async function checkChat(sender: CotalEndpoint, foreign: CotalEndpoint, foreignName: string, received: string[], daemon: CotalEndpoint, reopen: () => Promise<CotalEndpoint>): Promise<void> {
   const session = new NativeChatSession({ endpoint: sender,
     identity: { mode: "user", space: sender.space, principal: sender.card.id, lifecycleUid: senderRow.lifecycleUid!, label: "sender", allowSubscribe: [], allowPublish: [] },
     retire: async () => { await sender.stop(); return { retirement: "not-applicable", connectionClosed: "confirmed", message: "stopped" }; },
@@ -242,6 +246,10 @@ async function checkChat(sender: CotalEndpoint, foreign: CotalEndpoint, foreignN
     await sender.waitForPresenceSnapshot();
     const bare = await session.dm("lister", "chat-bare-must-not-cross");
     suite.check("native chat refuses a foreign bare target without sending", bare.outcome === "refused" && bare.message.includes(`${foreignName}/lister`), bare);
+    daemon.serveLiveness("delivery", () => "bound");
+    const old = await session.dm(`${foreignName}/lister`, "old-delivery-must-not-store");
+    daemon.serveDeliveryLiveness();
+    suite.check("qualified sends refuse a bound delivery responder without the version field", old.outcome === "refused" && old.code === "TARGET_UNAVAILABLE" && old.message.includes("Nothing was sent"), old);
     const qualified = await session.dm(`${foreignName}/lister`, "chat-qualified");
     for (let i = 0; i < 30 && !received.includes("chat-qualified") && !received.includes("chat-bare-must-not-cross"); i++) await delay(100);
     suite.check("native chat stores the qualified target at the foreign principal", qualified.outcome === "stored" && qualified.recipient?.id === foreign.card.id && received.includes("chat-qualified"), { qualified, received });
@@ -253,7 +261,7 @@ async function checkChat(sender: CotalEndpoint, foreign: CotalEndpoint, foreignN
     suite.check("native chat stores a qualified DM without claiming the target exists", offline.outcome === "stored" && offline.seq !== undefined && offline.recipientStatusAtSend === undefined, offline);
     await reopen();
     for (let i = 0; i < 30 && !received.includes("chat-qualified-offline"); i++) await delay(100);
-    suite.check("the same lifecycle gets both qualified DMs and no foreign bare DM", received.includes("chat-qualified") && received.includes("chat-qualified-offline") && !received.includes("chat-bare-must-not-cross"), received);
+    suite.check("the same lifecycle gets both qualified DMs and neither refused DM", received.includes("chat-qualified") && received.includes("chat-qualified-offline") && !received.includes("chat-bare-must-not-cross") && !received.includes("old-delivery-must-not-store"), received);
   } finally { await session.close(); }
 }
 
@@ -264,7 +272,7 @@ try {
     watchPresence: false, registerPresence: false, watchChannels: false, card: { name: "provisioner", kind: "endpoint" } });
   endpoints.push(provisioner);
   await provisioner.start();
-  for (const grant of [row, otherRow, senderRow]) {
+  for (const grant of [row, otherRow, senderRow, ...caseRows]) {
     await provisioner.provisionDmInbox(grant.owner, grant.actor, grant.lifecycleUid!);
     await provisioner.provisionDlvInbox(grant.owner, grant.actor, grant.lifecycleUid!);
   }
@@ -368,12 +376,21 @@ try {
     generationOf(other) !== undefined && generationOf(caller) !== undefined && generationOf(other) !== generationOf(caller), [generationOf(caller), generationOf(other)]);
 
   await checkReaders(service, names[0]!);
+  for (const grant of caseRows) await connect(await bearer("lister-human", {}, undefined, grant.actor), grant, true);
   const received: string[] = [];
   const { ep: foreign } = await connect(otherToken, otherRow, true, received);
   const { ep: sender, nc: senderNc } = await connect(await bearer("lister-human", {}, undefined, senderRow.actor), senderRow);
   await second.stop();
   await checkAddresses(sender, senderNc, first, foreign, names[1]!, received, ncOfSecond);
-  await checkChat(sender, foreign, names[1]!, received, async () => (await connect(otherToken, otherRow, true, received)).ep);
+  const daemon = new CotalEndpoint({ space: a.space, servers: fx.servers, creds: await mintCreds(a.auth, newIdentity(), "delivery"),
+    channels: [], consume: false, registerPresence: false, watchPresence: false, card: { name: "delivery_addresses", kind: "endpoint" } });
+  endpoints.push(daemon);
+  daemon.on("error", console.error);
+  await daemon.start();
+  const lease = await daemon.acquireDeliveryLease(0);
+  await daemon.startPlane3((id, uid) => daemon.aclForOwner(id, uid));
+  await daemon.markDeliveryLeaseReady(0, lease);
+  await checkChat(sender, foreign, names[1]!, received, daemon, async () => (await connect(otherToken, otherRow, true, received)).ep);
 } finally {
   for (const ep of endpoints) await ep.stop().catch(() => {});
   await registry?.stop().catch(() => {});

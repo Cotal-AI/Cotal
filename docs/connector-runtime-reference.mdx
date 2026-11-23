@@ -177,6 +177,7 @@ A bare target already known from a successful presence read remains usable under
 An exact known principal still works. In a signed-in space, `user/agent` resolves from the
 username registry without a roster row. The username is case-insensitive and the actor is case-sensitive.
 A qualified send returns the stored sequence without claiming that a recipient exists or read the message.
+The connector refuses qualified input before publishing if the delivery responder does not advertise support.
 Reply to an authenticated sender by its exact principal, not its remembered display name.
 An unknown name after a successful read receives the ordinary unknown-peer refusal.
 

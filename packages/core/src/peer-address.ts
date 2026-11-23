@@ -2,6 +2,7 @@ import type { NatsConnection } from "@nats-io/transport-node";
 import { AmbiguousPeerError, resolvePeer } from "./resolve.js";
 import { DEV_OWNER, parsePrincipalKey, principalKey } from "./subjects.js";
 import type { Presence } from "./types.js";
+import type { LivenessAnswer } from "./liveness.js";
 import { assertValidUsername, readUsername, readUsernameOwner } from "./username-registry.js";
 
 export type PeerAddressAuthority =
@@ -53,6 +54,15 @@ export interface PrincipalAddress {
 }
 
 export type ResolvedPeerAddress = Presence | PrincipalAddress;
+
+/** A qualified write must see an upgraded delivery reader; an old reply is not a version claim. */
+export async function requireQualifiedDmVersion(target: string, peer: ResolvedPeerAddress | undefined, probe: () => Promise<LivenessAnswer>): Promise<ResolvedPeerAddress | undefined> {
+  if (!peer || !("routingOnly" in peer)) return peer;
+  const delivery = await probe().catch(() => undefined);
+  if (delivery?.responder !== "bound" || delivery.qualifiedDmVersion !== 1)
+    throw new PeerAddressError(target, "TARGET_UNAVAILABLE", "Qualified direct messages require an upgraded delivery responder. Nothing was sent.");
+  return peer;
+}
 
 async function qualifiedPeer(target: string, address: Extract<PeerAddress, { kind: "qualified" }>, authority: UserAuthority, selfId: string | undefined): Promise<PrincipalAddress> {
   const { username, actor } = address;
