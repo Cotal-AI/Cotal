@@ -20,7 +20,11 @@
  * once it joined a per-user mesh, with or without a dispatcher, runs a command that arrived before
  * the broker confirmed its serve, never runs a command still queued when it stops, stops within 4 s
  * while its harness is being asked to start a command, and on an open mesh starts as before and
- * serves nothing.
+ * serves nothing. `turn` queues the owner's words and images on the same queue and the harness gets them
+ * once taken; a turn with nothing in it is bad-request, a turn to a connector that takes none, or with
+ * images to one that takes no images, is unimplemented, and an agent never gives itself a turn.
+ * `usage` answers the harness's numbers, `supported: false` without a hook, and unavailable when the
+ * harness fails; the broker refuses both to everyone but the owner's sessions.
  *
  * Run: pnpm smoke:agent-commands:auth   (needs nats-server on PATH; operator-mode callout, local-only)
  */
@@ -40,7 +44,7 @@ import {
 import { createCalloutAuth, calloutPermissions, deriveOwnerToken, startAuthCallout, USER_TOKEN_VER, type AclResolver, type ValidatedUserToken } from "@cotal-ai/auth";
 import { SMOKE_BROKER_TOKEN, createSuite, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { openAgentEndpoint, type AgentEndpoint } from "../src/agent-endpoint.js";
-import { CommandRefused, createCommandLane, type AgentCommand, type CommandDispatcher } from "../src/agent-commands.js";
+import { CommandRefused, createCommandLane, type AgentCommand, type AgentTurn, type AgentUsage, type CommandDispatcher } from "../src/agent-commands.js";
 import { MeshAgent } from "../src/agent.js";
 import type { AgentConfig } from "../src/config.js";
 import { pickFreePort } from "./_free-port.js";
@@ -109,7 +113,7 @@ const resolveAcl: AclResolver = (t) => {
   return { allowSubscribe: [], allowPublish: [], lifecycleUid: w.uid, scope: [], kind: w.kind };
 };
 // The shipped mint, plus one test-only edit: `builder` holds every grant row the shipped builder
-// makes for alice.coder out of prompts, the four command commands and interrupt. It refuses the last five.
+// makes for alice.coder out of prompts, the four command commands, interrupt, turn and usage. It refuses all but prompts.
 type Perm = { pub?: { allow?: string[] }; sub?: { allow?: string[] }; [k: string]: unknown };
 const shipped = calloutPermissions(resolveAcl, async () => {});
 const builderGrants: string[] = [];
@@ -118,7 +122,7 @@ const mintFor = async (t: ValidatedUserToken, connId: string, readerId: string):
   const uid = t.act.lifecycleUid!;
   if (uid === W.foreignGrantee.uid) {
     const pub: string[] = [], sub: string[] = [];
-    for (const command of ["prompts", "commands", "command", "command-cancel", "command-state", "interrupt"]) {
+    for (const command of ["prompts", "commands", "command", "command-cancel", "command-state", "interrupt", "turn", "usage"]) {
       try {
         const r = epPrincipalGrantRows(space, { owner: B, actor: "builder", uid }, { owner: A, actor: "coder", uid: W.withDispatcher.uid }, [command]);
         pub.push(...r.pub);
@@ -212,13 +216,19 @@ const EXPECTED: CommandEntry[] = [
   { name: "init", target: "command" },
   { name: "browser", target: "skill", description: `${"d".repeat(1023)}…` },
 ];
-interface Fake extends CommandDispatcher { ran: AgentCommand[]; lists: number; interrupts: number }
-function fake(o: { targets?: CommandTarget[]; list?: () => Promise<unknown[]>; dispatch?: (c: AgentCommand) => Promise<void>; interrupt?: () => Promise<"interrupted" | "idle"> } = {}): Fake {
+interface Fake extends CommandDispatcher { ran: AgentCommand[]; turns: AgentTurn[]; lists: number; interrupts: number; usages: number }
+function fake(o: {
+  targets?: CommandTarget[]; list?: () => Promise<unknown[]>; dispatch?: (c: AgentCommand) => Promise<void>; interrupt?: () => Promise<"interrupted" | "idle">;
+  turn?: (t: AgentTurn) => Promise<void>; images?: boolean; usage?: () => Promise<AgentUsage>;
+} = {}): Fake {
   const f: Fake = {
-    ran: [], lists: 0, interrupts: 0, targets: new Set(o.targets ?? ["command", "skill"]),
+    ran: [], turns: [], lists: 0, interrupts: 0, usages: 0, targets: new Set(o.targets ?? ["command", "skill"]),
     async list() { f.lists++; return (await (o.list ? o.list() : Promise.resolve(structuredClone(LISTED)))) as CommandEntry[]; },
     async dispatch(c) { f.ran.push(c); await o.dispatch?.(c); },
     ...(o.interrupt ? { async interrupt() { f.interrupts++; return o.interrupt!(); } } : {}),
+    ...(o.turn ? { async turn(t: AgentTurn) { f.turns.push(t); await o.turn!(t); } } : {}),
+    ...(o.images ? { images: true } : {}),
+    ...(o.usage ? { async usage() { f.usages++; return o.usage!(); } } : {}),
   };
   return f;
 }
@@ -308,25 +318,26 @@ try {
 
   console.log("\nwho else may call");
   {
-    const before = coderHarness.ran.length + coderHarness.lists + coderHarness.interrupts;
-    const FIVE = ["commands", "command", "command-cancel", "command-state", "interrupt"] as const;
-    const argsFor = (cmd: string): Record<string, unknown> => (cmd === "commands" || cmd === "interrupt" ? {} : cmd === "command" ? { target: "command", name: "review" } : { id: ranCommand.id });
+    const heard = () => coderHarness.ran.length + coderHarness.lists + coderHarness.interrupts + coderHarness.turns.length + coderHarness.usages;
+    const before = heard();
+    const FIVE = ["commands", "command", "command-cancel", "command-state", "interrupt", "turn", "usage"] as const;
+    const argsFor = (cmd: string): Record<string, unknown> => (cmd === "commands" || cmd === "interrupt" || cmd === "usage" ? {} : cmd === "command" ? { target: "command", name: "review" } : cmd === "turn" ? { text: "hello" } : { id: ranCommand.id });
     const sibling = await Promise.all(FIVE.map((cmd) => settled(call(coder2Ep, W.withDispatcher, cmd, argsFor(cmd)))));
-    check("a sibling agent of the same owner: commands, command, command-cancel, command-state and interrupt are each permission-denied, not-executed",
+    check("a sibling agent of the same owner: commands, command, command-cancel, command-state, interrupt, turn and usage are each permission-denied, not-executed",
       sibling.every((r) => verdict(r) === "permission-denied/not-executed"), sibling.map(verdict));
     const coder2Raw = await seat(W.sibling);
     const siblingRaw = await Promise.all(FIVE.flatMap((cmd) => (["owner", "grant"] as const).map((word) => publishRefused(coder2Raw, W.withDispatcher, cmd, word))));
     check(`...and the broker refuses ${siblingRaw.filter(Boolean).length}/${FIVE.length * 2} of its raw publishes, under owner and grant`, siblingRaw.every(Boolean));
     const foreign = await Promise.all(FIVE.map((cmd) => settled(call(bobWebEp, W.withDispatcher, cmd, argsFor(cmd)))));
-    check("another owner's interactive session: permission-denied, not-executed, on all five", foreign.every((r) => verdict(r) === "permission-denied/not-executed"), foreign.map(verdict));
-    check("the shipped grant builder makes rows for prompts and refuses the four command commands and interrupt", same(builderGrants, ["prompts"]), builderGrants);
+    check("another owner's interactive session: permission-denied, not-executed, on all seven", foreign.every((r) => verdict(r) === "permission-denied/not-executed"), foreign.map(verdict));
+    check("the shipped grant builder makes rows for prompts and refuses the four command commands, interrupt, turn and usage", same(builderGrants, ["prompts"]), builderGrants);
     const granted = await settled(call(builderEp, W.withDispatcher, "prompts", {}, "grant"));
     const viaGrant = await Promise.all(FIVE.map((cmd) => settled(call(builderEp, W.withDispatcher, cmd, argsFor(cmd), "grant"))));
-    check("another owner's agent with a prompts grant reads prompts, and lists, runs, cancels and reads no command and interrupts nothing: permission-denied, not-executed",
+    check("another owner's agent with a prompts grant reads prompts, and lists, runs, cancels and reads no command, interrupts nothing, gives no turn and reads no usage: permission-denied, not-executed",
       verdict(granted) === "ok" && viaGrant.every((r) => verdict(r) === "permission-denied/not-executed"), [verdict(granted), ...viaGrant.map(verdict)]);
     const still = await stateOf(W.withDispatcher, ranCommand.id);
     check("the harness heard nothing from any of them, and the command they named still reads started",
-      coderHarness.ran.length + coderHarness.lists + coderHarness.interrupts === before && still === "started", { ran: coderHarness.ran, interrupts: coderHarness.interrupts, still });
+      heard() === before && still === "started", { ran: coderHarness.ran, interrupts: coderHarness.interrupts, turns: coderHarness.turns, still });
   }
 
   console.log("\nan agent endpoint with no dispatcher");
@@ -358,6 +369,9 @@ try {
     const selfStop = await settled(call(termEp, W.self, "interrupt"));
     check("an agent interrupting its own turn is permission-denied, not-executed, and the harness was not asked",
       verdict(selfStop) === "permission-denied/not-executed" && harness.interrupts === 0, { verdict: verdict(selfStop), interrupts: harness.interrupts });
+    const selfTurn = await settled(call(termEp, W.self, "turn", { text: "do it yourself" }));
+    check("an agent giving itself a turn is permission-denied, not-executed, and nothing is queued",
+      verdict(selfTurn) === "permission-denied/not-executed" && toldSelf === 0 && term.commands.queued === 0, { verdict: verdict(selfTurn), toldSelf });
     const fromOwner = await queue(W.self, { target: "command", name: "review" });
     check("the same command from the owner's other session is accepted and queued once",
       fromOwner.verdict === "ok" && ID.test(fromOwner.id ?? "") && toldSelf === 1 && term.commands.queued === 1, { fromOwner, toldSelf, queued: term.commands.queued });
@@ -375,7 +389,13 @@ try {
   let held = Promise.resolve();
   let laneList: () => Promise<unknown[]> = async () => structuredClone(LISTED);
   let stopAnswer: "interrupted" | "idle" | "throw" = "interrupted";
+  let usageAnswer: () => Promise<AgentUsage> = async () => ({ context: { used: 1200, size: 200000 }, cost: { amount: 0.42, currency: "USD" } });
   const laneHarness = fake({
+    turn: async (t) => {
+      if (t.text === "refuse me") throw new CommandRefused("failed-precondition", "the harness is waiting for its user");
+    },
+    images: true,
+    usage: () => usageAnswer(),
     interrupt: async () => {
       if (stopAnswer === "throw") throw new Error("socket hang up");
       return stopAnswer;
@@ -515,6 +535,36 @@ try {
       { asked: laneHarness.interrupts - asked, queued: lane.commands.queued, queuedBefore });
   }
 
+  console.log("\nturns and usage");
+  {
+    while (lane.commands.queued > 0) await lane.commands.dispatchNext();
+    const image = { mimeType: "image/png", data: "iVBORw0KGgo=" };
+    const q = await settled(call(webEp, W.byHand, "turn", { text: "look at this", images: [image] }));
+    const id = q.ok && q.value.ok ? (q.value.data as { id?: string }).id : undefined;
+    const waiting = await stateOf(W.byHand, id);
+    check("the owner's turn is accepted at once with an id of the grammar, and reads queued", ID.test(id ?? "") && waiting === "queued", { verdict: verdict(q), waiting });
+    const took = await lane.commands.dispatchNext();
+    const done = await stateOf(W.byHand, id);
+    check("once taken, the harness got the owner's text and images, and the turn reads started",
+      took === "dispatched" && done === "started" && same(laneHarness.turns.at(-1), { text: "look at this", images: [image] }), { took, done, turn: laneHarness.turns.at(-1) });
+    const r = await settled(call(webEp, W.byHand, "turn", { text: "refuse me" }));
+    const rid = r.ok && r.value.ok ? (r.value.data as { id?: string }).id : undefined;
+    await lane.commands.dispatchNext();
+    check("a turn the harness refuses reads refused, failed-precondition, with the harness's message",
+      (await stateOf(W.byHand, rid)) === "refused/failed-precondition", await stateOf(W.byHand, rid));
+    const empty = await settled(call(webEp, W.byHand, "turn", { text: "" }));
+    check("a turn with neither text nor an image is bad-request, not-executed, and nothing is queued", verdict(empty) === "bad-request/not-executed" && lane.commands.queued === 0, verdict(empty));
+    const got = await settled(call(webEp, W.byHand, "usage"));
+    check("usage answers the harness's context and cost", got.ok && got.value.ok && same(got.value.data, { supported: true, context: { used: 1200, size: 200000 }, cost: { amount: 0.42, currency: "USD" } }), got.ok ? got.value : verdict(got));
+    usageAnswer = async () => ({});
+    const none = await settled(call(webEp, W.byHand, "usage"));
+    check("a harness that has reported nothing yet: { supported: true } alone", none.ok && none.value.ok && same(none.value.data, { supported: true }), none.ok ? none.value : verdict(none));
+    usageAnswer = async () => { throw new Error("no session yet"); };
+    const failed = await settled(call(webEp, W.byHand, "usage"));
+    check("a harness that fails to report is unavailable, not-executed, with its reason",
+      verdict(failed) === "unavailable/not-executed" && failed.ok && !failed.value.ok && failed.value.error.message.includes("no session yet"), failed.ok ? failed.value : verdict(failed));
+  }
+
   console.log("\nforgetting");
   {
     const endOne = async (name: string): Promise<string | undefined> => {
@@ -558,6 +608,22 @@ try {
     check("closing the lane leaves the taken command taken and moves both queued ones to refused, unavailable, which command-state then reads",
       stateAt(0)?.kind === "taken" && [1, 2].every((i) => { const s = stateAt(i); return s?.kind === "refused" && s.code === "unavailable" && s.message !== ""; })
       && direct.queued === 0 && toldDirect === 3, { ids, states: [0, 1, 2].map(stateAt), queued: direct.queued });
+    const noTurn = await handle("turn", { text: "hi" });
+    const noUsage = await handle("usage", {});
+    check("a dispatcher with no turn hook: turn is unimplemented, not-executed; with no usage hook, usage answers { supported: false }",
+      !noTurn.ok && noTurn.error instanceof EpEnvelopeError && noTurn.error.code === "unimplemented" && noUsage.ok && same(noUsage.value, { supported: false }),
+      [noTurn.ok ? noTurn.value : (noTurn.error as Error).message, noUsage.ok ? noUsage.value : (noUsage.error as Error).message]);
+    const textOnly = createCommandLane(fake({ targets: [], turn: async () => {} }), () => {});
+    const byText = (command: string, args: Record<string, unknown>) => settled(Promise.resolve().then(() => textOnly.handlers.find((h) => h.command === command)!.handler(
+      { request: { args }, principal: addressOf(W.byHand), caller: { owner: A, actor: "web", uid: W.ownerSession.uid } } as never)));
+    const withImage = await byText("turn", { text: "see", images: [{ mimeType: "image/png", data: "iVBORw0KGgo=" }] });
+    const plainList = await byText("commands", {});
+    const plainRun = await byText("command", { target: "command", name: "review" });
+    check("a connector that takes turns but no images refuses a turn with one as unimplemented, not-executed",
+      !withImage.ok && withImage.error instanceof EpEnvelopeError && withImage.error.code === "unimplemented" && textOnly.queued === 0, withImage.ok ? withImage.value : (withImage.error as Error).message);
+    check("a dispatcher that runs no kind of command answers { supported: false } and refuses command as unimplemented",
+      plainList.ok && same(plainList.value, { supported: false }) && !plainRun.ok && plainRun.error instanceof EpEnvelopeError && plainRun.error.code === "unimplemented",
+      [plainList.ok ? plainList.value : (plainList.error as Error).message, plainRun.ok ? plainRun.value : (plainRun.error as Error).message]);
     const noHook = await handle("interrupt", {});
     check("a dispatcher with no interrupt hook: interrupt is unimplemented, not-executed",
       !noHook.ok && noHook.error instanceof EpEnvelopeError && noHook.error.code === "unimplemented" && noHook.error.outcome === "not-executed", noHook.ok ? noHook.value : (noHook.error as Error).message);
