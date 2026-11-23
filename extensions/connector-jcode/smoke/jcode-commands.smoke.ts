@@ -33,7 +33,7 @@ const session = {
   renameSession: async (...a: [string, string?]) => { calls.push(["renameSession", ...a]); },
 };
 const host = { client: session, sessionId: "session_1", turnActive: false } as unknown as Pick<HostTurnState, "client" | "sessionId" | "turnActive">;
-const commands = jcodeCommands(host);
+const commands = jcodeCommands(host, async () => { throw new Error("no turn in this smoke"); });
 const run = (name: string, args = "") => commands.dispatch({ target: "command", name, args } satisfies AgentCommand);
 async function outcome(work: Promise<unknown>): Promise<string> {
   try {
