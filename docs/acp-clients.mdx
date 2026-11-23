@@ -95,8 +95,15 @@ That sign-in runs in a terminal. It installs Cotal with `curl -fsSL https://get.
 If the agent does not start working on a later prompt within 30 seconds, the turn ends with a note saying so.
 The agent still has the prompt, and answers it when it gets to it.
 
-A turn shows the agent's messages, its reasoning when the application publishes it, and its tool calls by name and status.
-Tool arguments and results stay off the ordinary event channel, so the client does not show them.
+A turn shows the agent's messages, its reasoning when the application publishes it, and its tool calls.
+A tool call shows its arguments and its result, and a file edit shows as a diff.
+They come from the agent's payload rail ([SPEC 13.19](../SPEC.md#1319-private-tool-results)), so a call shows by name and status until its payload arrives, and a result over the rail's size limit is replaced by a note.
+A to-do list the agent keeps, such as Claude Code's tasks, Codex's plan or OpenCode's and Pi's to-dos, shows as the thread's plan.
+
+On a space where people sign in, the thread also uses the agent's `agent` endpoint ([SPEC 13.22](../SPEC.md#1322-the-agent-endpoint)):
+
+- A question the agent stops to ask, such as a tool permission, shows as a permission request in the client, which may answer it from the thread's mode. A question with a form is shown as a form when the client takes forms. The answer goes back to the agent. An option that needs a written note is not offered; answer it at the agent's terminal.
+- The agent's own commands and skills join the command list. A skill is listed with a leading `$`. Sending one runs it through the agent's `command`.
 
 ## Choose the agent [#options]
 
@@ -139,7 +146,7 @@ person controls every agent under their own owner (see
 
 ## Limits [#limits]
 
-- Stopping a turn sends the agent's interrupt key through its manager. Claude Code and Pi agents support it. For any other application, the thread says the agent could not be stopped, the turn ends as cancelled, and the agent keeps working on the mesh.
+- Stopping a turn uses the agent's `interrupt` on a space where people sign in. Codex, OpenCode 2, Pi and Jcode agents stop that way. A Claude Code agent, and every agent on a space where people do not sign in, is sent its interrupt key through its manager instead, which Claude Code and Pi agents support. When neither works, the thread says the agent could not be stopped, the turn ends as cancelled, and the agent keeps working on the mesh.
 - When you stop a Claude Code turn before the agent answered, Claude puts that prompt back in its input box. Your next prompt is typed after it, so the agent gets both.
 - A later prompt is typed as if you typed it into the application, so the application's input shortcuts apply. In Claude Code, a prompt that starts with `!` runs as a shell command and its turn does not show in the thread.
 - A later prompt ends when the agent stops working. When the agent was already busy as the prompt arrived, the turn can end when that earlier work does.
@@ -155,7 +162,7 @@ person controls every agent under their own owner (see
 - `/open` finds the agents the thread list would show. If another thread in the same client drives that agent, the agent moves to the new thread.
 - A rollback in T3 Code starts a fresh session, which spawns a new agent.
 - Pi agents publish text as completed messages, so their replies arrive whole.
-- Questions an agent stops to ask, such as tool permissions, are not forwarded to the client yet.
+- Questions an agent stops to ask, and the agent's own commands, reach the client only on a space where people sign in.
 - The client's own MCP servers are not passed to the agent.
 
 ## cotal acp [#acp]

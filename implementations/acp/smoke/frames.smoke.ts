@@ -4,6 +4,11 @@
  *
  *  - text keeps its role and message id; reasoning maps to thought chunks;
  *  - a tool call shows its name and ends on the `cotal.toolResult` marker, failed when it says so;
+ *  - a call's arguments and result from the payload rail show on it, whichever plane arrives first:
+ *    its kind, title, locations, edits as diffs (a relative path in the seat's folder) and output;
+ *    a connector without the marker ends a call with its result; a cut payload says so;
+ *  - each harness's todo tools show as the session's plan, Claude's task tools one task at a time;
+ *  - a `*** Begin Patch` envelope reads as one diff per file;
  *  - a frame mapped once maps to nothing the second time, so a history read and a live tap overlap;
  *  - RUN_ERROR ends the frame's run with the seat's message; an interrupt outcome is told apart;
  *  - `closeOpen` closes every tool call still open, once;
@@ -14,7 +19,9 @@
  * Run: pnpm --filter @cotal-ai/acp test   (needs `pnpm build` of core and workspace first)
  */
 import type { CotalMessage, Presence } from "@cotal-ai/core";
+import type { SessionUpdate } from "@agentclientprotocol/sdk";
 import { FrameMapper } from "../src/frames.js";
+import { patchDiffs } from "../src/tools.js";
 import { answeredReads, frameOf, managerChoice, managerPlan, namesDeregister } from "../src/live-mesh.js";
 import type { AguiEventLike, SeatFrame } from "../src/mesh.js";
 
@@ -23,7 +30,7 @@ const check = (n: string, c: boolean, x?: unknown): void => { if (c) { pass++; c
 
 let seq = 0;
 const frame = (events: AguiEventLike[], over: Partial<SeatFrame> = {}): SeatFrame =>
-  ({ owner: "local", actor: "a1", threadId: "t1", runId: "r1", epoch: "e1", seq: ++seq, events, ts: 1000 + seq, ...over });
+  ({ plane: "events", owner: "local", actor: "a1", threadId: "t1", runId: "r1", epoch: "e1", seq: ++seq, events, ts: 1000 + seq, ...over });
 
 const m = new FrameMapper();
 const first = m.map(frame([
@@ -64,11 +71,106 @@ check("an interrupt outcome is told apart from a finish", interrupted.runs[0]?.k
 
 const message = (channel: string, parts: unknown[]): CotalMessage => ({ id: "x", ts: 5, channel, parts, from: { id: "local.a1", name: "a1" } }) as unknown as CotalMessage;
 const read = frameOf(message("events.local.a1", [{ kind: "text", text: "x" }, { kind: "ag-ui.frame", protocol: "ag-ui", threadId: "t", runId: "r", epoch: "e", seq: 3, events: [{ type: "RUN_STARTED" }, { nope: 1 }] }]));
-check("frameOf reads the frame part and the channel's principal", read?.owner === "local" && read.actor === "a1" && read.seq === 3 && read.events.length === 1 && read.ts === 5, read);
+check("frameOf reads the frame part and the channel's principal", read?.owner === "local" && read.actor === "a1" && read.seq === 3 && read.events.length === 1 && read.ts === 5 && read.plane === "events", read);
+const payloadRead = frameOf(message("events.local.a1", [{ kind: "ag-ui.frame", protocol: "ag-ui", threadId: "t", runId: "r", epoch: "e", seq: 3, events: [{ type: "TOOL_CALL_ARGS", toolCallId: "c", delta: "{}" }] }]), "payloads");
+check("frameOf reads a payload frame, whose envelope names the event channel, as one", payloadRead?.plane === "payloads" && payloadRead.actor === "a1", payloadRead);
 check("frameOf ignores a message off an event channel", frameOf(message("general", [{ kind: "ag-ui.frame", threadId: "t", runId: "r", seq: 1, events: [] }])) === undefined);
 check("frameOf ignores a message with no frame part", frameOf(message("events.local.a1", [{ kind: "text", text: "x" }])) === undefined);
 const forged = { ...message("events.local.a1", [{ kind: "ag-ui.frame", threadId: "t", runId: "r", seq: 1, events: [] }]), from: { id: "local.a2", name: "a2" } } as unknown as CotalMessage;
 check("frameOf ignores a frame that another sender put on an agent's event channel", frameOf(forged) === undefined);
+
+// The payload rail: arguments and results on the calls they belong to.
+{
+  type Any = Record<string, unknown>;
+  const as = (u: SessionUpdate | undefined) => u as unknown as Any;
+  const pm = new FrameMapper("claude", "/work");
+  // The payload frame is published first, so its arguments can beat the call's start.
+  const early = pm.map(frame([{ type: "TOOL_CALL_ARGS", toolCallId: "e1", delta: JSON.stringify({ file_path: "notes.txt", old_string: "a", new_string: "b" }) }], { plane: "payloads", seq: 500 }));
+  check("arguments that beat the call show nothing yet", early.updates.length === 0, early.updates);
+  const started = pm.map(frame([{ type: "TOOL_CALL_START", toolCallId: "e1", toolCallName: "Edit" }], { seq: 500 }));
+  const edit = as(started.updates[0]);
+  check("the call then starts with its kind, title and arguments", edit.sessionUpdate === "tool_call" && edit.kind === "edit" && edit.title === "Edit /work/notes.txt" && (edit.rawInput as Any).old_string === "a", edit);
+  check("an edit shows as a diff, its relative path in the seat's folder", JSON.stringify(edit.content) === JSON.stringify([{ type: "diff", path: "/work/notes.txt", oldText: "a", newText: "b" }]) && JSON.stringify(edit.locations) === JSON.stringify([{ path: "/work/notes.txt" }]), edit);
+  check("a payload frame and an event frame with one seq are both mapped", started.updates.length === 1);
+  const result = pm.map(frame([{ type: "TOOL_CALL_RESULT", toolCallId: "e1", content: "updated" }], { plane: "payloads" }));
+  const out = as(result.updates[0]);
+  check("its result shows as output on the call and ends it", out.sessionUpdate === "tool_call_update" && out.rawOutput === "updated" && JSON.stringify(out.content).includes("updated") && out.status === "completed", out);
+  const marked = pm.map(frame([{ type: "CUSTOM", name: "cotal.toolResult", value: { toolCallId: "e1", isError: false } }]));
+  check("the marker after the result adds nothing", marked.updates.length === 0, marked.updates);
+
+  const late = pm.map(frame([{ type: "TOOL_CALL_START", toolCallId: "l1", toolCallName: "Bash" }, { type: "CUSTOM", name: "cotal.toolResult", value: { toolCallId: "l1", isError: true } }]));
+  check("a call whose payload has not arrived shows by name and ends on the marker", as(late.updates[0]).title === "Bash" && as(late.updates[0]).kind === "execute" && as(late.updates[1]).status === "failed", late.updates);
+  const lateArgs = pm.map(frame([{ type: "TOOL_CALL_ARGS", toolCallId: "l1", delta: JSON.stringify({ command: "ls -la" }) }, { type: "TOOL_CALL_RESULT", toolCallId: "l1", content: "denied", cotal: { isError: true } }], { plane: "payloads" }));
+  const lateUpdate = as(lateArgs.updates.at(-1));
+  check("a payload that arrives after the call ended still shows on it", lateUpdate.title === "ls -la" && lateUpdate.rawOutput === "denied" && (lateUpdate.rawInput as Any).command === "ls -la", lateArgs.updates);
+  check("closeOpen leaves calls that ended alone", pm.closeOpen("completed").length === 0);
+
+  const cut = pm.map(frame([{ type: "TOOL_CALL_START", toolCallId: "k1", toolCallName: "Read" }]));
+  pm.map(frame([{ type: "TOOL_CALL_RESULT", toolCallId: "k1", content: JSON.stringify({ cotalPayloadCut: true, originalBytes: 900000, sha256: "ab" }) }], { plane: "payloads" }));
+  check("a read shows by kind before its arguments arrive", as(cut.updates[0]).kind === "read", cut.updates);
+  const cutOut = pm.map(frame([{ type: "TOOL_CALL_RESULT", toolCallId: "k1", content: JSON.stringify({ cotalPayloadCut: true, originalBytes: 900000, sha256: "ab" }) }], { plane: "payloads", seq: 900 }));
+  check("a payload the rail cut says so instead of showing the marker", String(as(cutOut.updates[0]).rawOutput).includes("900000 bytes"), cutOut.updates);
+
+  const oc = new FrameMapper("opencode");
+  oc.map(frame([{ type: "TOOL_CALL_START", toolCallId: "o1", toolCallName: "shell" }]));
+  const ocEnd = oc.map(frame([{ type: "TOOL_CALL_ARGS", toolCallId: "o1", delta: JSON.stringify({ command: "sleep 1" }) }, { type: "TOOL_CALL_RESULT", toolCallId: "o1", content: "" }], { plane: "payloads" }));
+  check("a connector without the marker ends a call with its result", as(ocEnd.updates.at(-1)).status === "completed", ocEnd.updates);
+  const ocWrite = oc.map(frame([{ type: "TOOL_CALL_ARGS", toolCallId: "o2", delta: JSON.stringify({ path: "/w/x.txt", content: "alpha" }) }], { plane: "payloads", seq: 950 }));
+  const ocStart = as(oc.map(frame([{ type: "TOOL_CALL_START", toolCallId: "o2", toolCallName: "write" }], { seq: 950 })).updates[0]);
+  check("OpenCode 2.x's write shows as a diff from nothing", ocWrite.updates.length === 0 && ocStart.title === "Write /w/x.txt" && JSON.stringify(ocStart.content) === JSON.stringify([{ type: "diff", path: "/w/x.txt", oldText: null, newText: "alpha" }]), ocStart);
+
+  const unknown = new FrameMapper("claude");
+  unknown.map(frame([{ type: "TOOL_CALL_ARGS", toolCallId: "u1", delta: JSON.stringify({ q: 1 }) }], { plane: "payloads", seq: 960 }));
+  const mcp = as(unknown.map(frame([{ type: "TOOL_CALL_START", toolCallId: "u1", toolCallName: "mcp__x__y" }], { seq: 960 })).updates[0]);
+  check("a tool no table names reads as other with its arguments as given", mcp.kind === "other" && mcp.title === "mcp__x__y" && (mcp.rawInput as Any).q === 1, mcp);
+}
+
+// Todo tools show as the session's plan.
+{
+  const plans = (m: FrameMapper, events: AguiEventLike[], plane: SeatFrame["plane"] = "events", at?: number) =>
+    m.map(frame(events, { plane, ...(at ? { seq: at } : {}) })).updates.filter((u) => u.sessionUpdate === "plan").map((u) => (u as unknown as { entries: { content: string; status: string }[] }).entries);
+  const cc = new FrameMapper("claude");
+  const todo = JSON.stringify({ todos: [{ content: "write", status: "completed", activeForm: "w" }, { content: "test", status: "in_progress", activeForm: "t" }] });
+  plans(cc, [{ type: "TOOL_CALL_ARGS", toolCallId: "t1", delta: todo }], "payloads", 970);
+  const written = cc.map(frame([{ type: "TOOL_CALL_START", toolCallId: "t1", toolCallName: "TodoWrite" }, { type: "CUSTOM", name: "cotal.toolResult", value: { toolCallId: "t1" } }], { seq: 970 }));
+  check("TodoWrite shows as the plan and not as a call", written.updates.length === 1 && written.updates[0]!.sessionUpdate === "plan" && JSON.stringify((written.updates[0] as unknown as { entries: unknown }).entries) === JSON.stringify([{ content: "write", status: "completed", priority: "medium" }, { content: "test", status: "in_progress", priority: "medium" }]), written.updates);
+  check("a plan call is never closed as a call", cc.closeOpen("completed").length === 0);
+
+  const tasks = new FrameMapper("claude");
+  tasks.map(frame([{ type: "TOOL_CALL_START", toolCallId: "k1", toolCallName: "TaskCreate" }]));
+  plans(tasks, [{ type: "TOOL_CALL_ARGS", toolCallId: "k1", delta: JSON.stringify({ subject: "ship", description: "d" }) }, { type: "TOOL_CALL_RESULT", toolCallId: "k1", content: "Task #4 created successfully: ship" }], "payloads");
+  tasks.map(frame([{ type: "TOOL_CALL_START", toolCallId: "k2", toolCallName: "TaskCreate" }]));
+  plans(tasks, [{ type: "TOOL_CALL_ARGS", toolCallId: "k2", delta: JSON.stringify({ subject: "review", description: "d" }) }, { type: "TOOL_CALL_RESULT", toolCallId: "k2", content: "Task #5 created successfully: review" }], "payloads");
+  tasks.map(frame([{ type: "TOOL_CALL_START", toolCallId: "k3", toolCallName: "TaskUpdate" }]));
+  const updated = plans(tasks, [{ type: "TOOL_CALL_ARGS", toolCallId: "k3", delta: JSON.stringify({ taskId: "4", status: "completed" }) }], "payloads");
+  check("Claude's task tools build the plan one task at a time", JSON.stringify(updated.at(-1)) === JSON.stringify([{ content: "ship", status: "completed", priority: "medium" }, { content: "review", status: "pending", priority: "medium" }]), updated);
+  tasks.map(frame([{ type: "TOOL_CALL_START", toolCallId: "k4", toolCallName: "TaskUpdate" }]));
+  const deleted = plans(tasks, [{ type: "TOOL_CALL_ARGS", toolCallId: "k4", delta: JSON.stringify({ taskId: "5", status: "deleted" }) }], "payloads");
+  check("a deleted task leaves the plan", JSON.stringify(deleted.at(-1)) === JSON.stringify([{ content: "ship", status: "completed", priority: "medium" }]), deleted);
+
+  const cx = new FrameMapper("codex");
+  cx.map(frame([{ type: "TOOL_CALL_START", toolCallId: "p1", toolCallName: "update_plan" }]));
+  const steps = plans(cx, [{ type: "TOOL_CALL_ARGS", toolCallId: "p1", delta: JSON.stringify({ plan: [{ step: "read", status: "completed" }, { step: "fix", status: "in_progress" }] }) }], "payloads");
+  check("Codex's update_plan shows as the plan", JSON.stringify(steps.at(-1)) === JSON.stringify([{ content: "read", status: "completed", priority: "medium" }, { content: "fix", status: "in_progress", priority: "medium" }]), steps);
+  const ocp = new FrameMapper("opencode");
+  ocp.map(frame([{ type: "TOOL_CALL_START", toolCallId: "q1", toolCallName: "todowrite" }]));
+  const ocSteps = plans(ocp, [{ type: "TOOL_CALL_ARGS", toolCallId: "q1", delta: JSON.stringify({ todos: [{ content: "a", status: "pending", priority: "high" }, { content: "b", status: "cancelled", priority: "low" }] }) }], "payloads");
+  check("OpenCode's todowrite shows as the plan, without cancelled entries", JSON.stringify(ocSteps.at(-1)) === JSON.stringify([{ content: "a", status: "pending", priority: "high" }]), ocSteps);
+}
+
+// A patch envelope as diffs.
+{
+  const diffs = patchDiffs(["*** Begin Patch", "*** Update File: a.ts", "@@", " keep", "-old", "+new", "*** Add File: b.ts", "+fresh", "*** Delete File: c.ts", "*** End Patch"].join("\n"));
+  check("a patch reads as one diff per file", JSON.stringify(diffs.map((d) => d.content)) === JSON.stringify([
+    { type: "diff", path: "a.ts", oldText: "keep\nold", newText: "keep\nnew" },
+    { type: "diff", path: "b.ts", oldText: null, newText: "fresh" },
+    { type: "diff", path: "c.ts", oldText: "", newText: "" },
+  ]), diffs);
+  const cx = new FrameMapper("codex", "/repo");
+  cx.map(frame([{ type: "TOOL_CALL_ARGS", toolCallId: "ap", delta: "*** Begin Patch\n*** Update File: src/x.ts\n-a\n+b\n*** End Patch" }], { plane: "payloads", seq: 990 }));
+  const patched = cx.map(frame([{ type: "TOOL_CALL_START", toolCallId: "ap", toolCallName: "apply_patch" }], { seq: 990 })).updates[0] as unknown as Record<string, unknown>;
+  check("Codex's apply_patch, whose input is not JSON, shows its files as diffs", patched.kind === "edit" && patched.title === "Edit /repo/src/x.ts" && JSON.stringify(patched.content) === JSON.stringify([{ type: "diff", path: "/repo/src/x.ts", oldText: "a", newText: "b" }]), patched);
+}
 
 // A manager that does not list its agents hides only its own.
 {
