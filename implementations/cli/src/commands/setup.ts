@@ -1237,7 +1237,7 @@ async function reconcileOtherConnectorSkills(
 }
 
 /** Report each successful refresh and fail reconciliation after trying every connector. */
-export async function refreshConnectorInstalls(report: (line: string) => void): Promise<void> {
+export async function refreshConnectorInstalls(report: (line: string) => void, invocation: () => readonly string[]): Promise<void> {
   const failures: Error[] = [];
   for (const connector of await setupConnectorSurface()) {
     let label = connector.name;
@@ -1249,7 +1249,7 @@ export async function refreshConnectorInstalls(report: (line: string) => void): 
       label = refresh.title;
       const started = Date.now();
       console.error(`Refreshing ${refresh.title}`);
-      line = `${refresh.title}: ${await refresh.run({ cotal: selfArgv(), skills: connectorSkillsInput() })}`;
+      line = `${refresh.title}: ${await refresh.run({ cotal: invocation(), skills: connectorSkillsInput() })}`;
       console.error(`✓ integration ${connector.name} refreshed (${((Date.now() - started) / 1000).toFixed(1)} s)`);
     } catch (error) {
       failures.push(new Error(`${label}: ${error instanceof Error ? error.message : String(error)}`, { cause: error }));

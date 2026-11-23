@@ -1151,7 +1151,8 @@ async function completionOut(positionals: string[]): Promise<string> {
       kind: "connector-setup", name,
       refresh: {
         name: "refresh", title: `Refresh ${name}`, explain: "Reconcile the installed integration.",
-        async run() {
+        async run({ cotal }) {
+          assert.deepEqual(cotal, failing.rt.selfArgv());
           attempts.push(name);
           if (name !== "fixture-c") throw new Error(`${name} refused its refresh`);
           return "repaired";

@@ -156,7 +156,7 @@ export interface UpdateRuntime {
   /** The native updater can survive its daemon's restart and verify automatic activation. */
   automaticGenerationWait?: boolean;
   /** Report each completed connector refresh, then reject if any failed. */
-  refreshConnectors(report: (line: string) => void): Promise<void>;
+  refreshConnectors(report: (line: string) => void, invocation: () => readonly string[]): Promise<void>;
   reportRunningManager(target: Record<string, unknown>): Promise<"none" | "legacy">;
   /** Authenticate and retain an installed same-version repair before its connector writes. */
   prepareReconciliation?(target: Record<string, unknown>): Promise<void>;
@@ -749,7 +749,7 @@ async function reconcileCurrent(
   try {
     rt.out("Refreshing connector integrations");
     const refreshStarted = Date.now();
-    await rt.refreshConnectors((line) => rt.out(c.green(`✓ ${line}`)));
+    await rt.refreshConnectors((line) => rt.out(c.green(`✓ ${line}`)), () => rt.selfArgv());
     rt.out(`✓ connector integrations refreshed (${((Date.now() - refreshStarted) / 1000).toFixed(1)} s)`);
   } catch (e) {
     rt.err(c.red(`✗ connector installs: ${message(e)}`));

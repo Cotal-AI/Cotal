@@ -292,7 +292,7 @@ async function reconcileUnderClosure(mode: Mode, automatic: boolean, resumeFirst
         releaseMutation();
         releaseMutation = () => {};
         const { refreshConnectorInstalls } = await import("../commands/setup.js");
-        await refreshConnectorInstalls((line) => console.error(c.dim(`→ ${line}`)));
+        await refreshConnectorInstalls((line) => console.error(c.dim(`→ ${line}`)), selfArgv);
         releaseMutation = claimExtensionMutation({ waitMs: 30000 });
         if (JSON.stringify(loadExtensionsManifest()) !== before)
           throw new Error("installed extensions changed during connector refresh; retry the upgrade before committing its generation");
