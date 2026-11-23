@@ -287,6 +287,36 @@ function follow(args: string[]) {
   return { child, lines, exited, until, stderr: () => stderr };
 }
 
+async function checkWatchHistoryHint(watchedSpace: string): Promise<void> {
+  const channel = "general";
+  const scope = ["--space", watchedSpace];
+  const text = "x".repeat(16_384) + "END OF LONG POST";
+  const file = join(shell, "long.txt");
+  writeFileSync(file, text);
+  const set = await run(["channel", "set", channel, "--replay", "--delivery", "live", ...scope]);
+  const sent = await run(["send", "-c", channel, "--file", file, ...scope]);
+  check("watch history fixture stores a long post in the observed space", set.status === 0 && sent.status === 0, { set: shown(set), sent: shown(sent) });
+
+  const observer = follow(["watch", "--plain", ...scope]);
+  const marker = /\[16 text code units not shown; `((?:pnpm )?cotal history [^`]+)` carries the whole text\]$/;
+  let hint: string | undefined;
+  try {
+    const isHint = (line: string) => line.startsWith(`[${watchedSpace}]`) && marker.test(line);
+    await observer.until(isHint);
+    hint = observer.lines.find(isHint)?.match(marker)?.[1];
+    check("the truncated watch line prints a history command", hint !== undefined, observer.stderr());
+  } finally {
+    await killAndAwaitExit(observer.child, "SIGINT");
+  }
+  const unscoped = await run(["history", `#${channel}`, "--json"]);
+  const targetSpace = (r: typeof unscoped) => (r.envelope?.target as { space?: string } | null)?.space;
+  check("positive control: unscoped history targets the saved selection", targetSpace(unscoped) === space, shown(unscoped));
+  if (!hint) return;
+  const history = await run(execWords(hint.replace(/^(?:pnpm )?cotal /, "")));
+  check("the printed history command returns the full post from the watched space",
+    history.status === 0 && targetSpace(history) === watchedSpace && texts(history).includes(text), shown(history));
+}
+
 async function checkFollowResume(alice: CotalEndpoint, bob: CotalEndpoint, timestamp: string) {
   const args = ["history", "general", "--follow", "--json", "--grep", "resume boundary"];
   const parse = (line: string) => JSON.parse(line) as { type: string; data: Item & { items?: Item[] } };
@@ -354,6 +384,8 @@ try {
   await setupSpaceStreams({ servers, space, creds: provisionerCreds });
   await seedChannelRegistry({ servers, space, creds: provisionerCreds, file: { channels: { general: { replay: true, replayWindow: "24h" }, ops: { replay: false } } } });
   await setupSpaceStreams({ servers: openServers, space: openSpace });
+  const watchedSpace = `histwatch-${randomUUID().slice(0, 8)}`;
+  await setupSpaceStreams({ servers: openServers, space: watchedSpace });
   saveSpaceAuth(authDir(meshRoot), auth);
   const priorHome = process.env.COTAL_HOME;
   process.env.COTAL_HOME = isolatedEnv.COTAL_HOME;
@@ -361,10 +393,20 @@ try {
     recordMesh({ space, server: servers, root: meshRoot, mode: "auth", origin: "manual", ts: new Date().toISOString() });
     recordMesh({ space: openSpace, server: openServers, root: openRoot, mode: "open", origin: "manual", ts: new Date().toISOString() });
     recordMesh({ space: bareSpace, server: openServers, root: openRoot, mode: "open", origin: "manual", ts: new Date().toISOString() });
+    recordMesh({ space: watchedSpace, server: openServers, root: openRoot, mode: "open", origin: "manual", ts: new Date().toISOString() });
     setCurrent(space);
   } finally {
     if (priorHome === undefined) delete process.env.COTAL_HOME;
     else process.env.COTAL_HOME = priorHome;
+  }
+  try { await checkWatchHistoryHint(watchedSpace); }
+  finally {
+    process.env.COTAL_HOME = isolatedEnv.COTAL_HOME;
+    try { removeMesh(watchedSpace); }
+    finally {
+      if (priorHome === undefined) delete process.env.COTAL_HOME;
+      else process.env.COTAL_HOME = priorHome;
+    }
   }
   provisioner = new CotalEndpoint({ space, servers, creds: provisionerCreds, card: { name: "history-provisioner", kind: "endpoint" }, consume: false, watchPresence: false, registerPresence: false });
   await provisioner.start();
