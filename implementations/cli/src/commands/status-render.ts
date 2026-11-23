@@ -606,7 +606,7 @@ function nextActions(r: StatusResult, seedFailed: boolean, interactive: boolean,
     items.unshift(...held.map((row) => ({ command: `${cmd} svc stop ${row.definition} --instance ${row.instanceId} --space ${shellWord(space)} --yes`, description: `Stop the ${row.definition} service, which runs this root's ${row.record} (pid ${row.pid}) outside the stack` })),
       { command: `${cmd} up --root ${shellWord(r.selected.root)}${r.folder.noManager ? " --no-manager" : ""}`, description: held.length ? "Then restart this stack's stopped members from its recorded inputs" : "Restart this stack's stopped members from its recorded inputs" });
   } else if (!elsewhere && legacy && dialed.mode === "open" && dialed.connection === "ok" && origin === "up" && exited.includes("manager") && r.folder.processes?.some((row) => row.name === "nats" && row.state === "running")) {
-    restartBlock = channelSeedRestartBlock(dialed.root);
+    restartBlock = channelSeedRestartBlock(dialed.root, { seedsChannels: false });
     if (!restartBlock) items.unshift({ command: `${cmd} up`, description: "Restart this folder's manager without stopping the broker" });
   } else if (!storeBlocked && !seedBlocksRestart && local && exited.length) {
     const broker = exited.includes("nats"), manager = exited.includes("manager");

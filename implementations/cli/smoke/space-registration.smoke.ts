@@ -67,6 +67,7 @@ if (!existsSync(BIN)) {
 const home = mkdtempSync(join(tmpdir(), "cotal-space-registration-"));
 // Set before the workspace is imported: it reads COTAL_HOME on each call.
 process.env.COTAL_HOME = join(home, ".cotal");
+mkdirSync(process.env.COTAL_HOME, { mode: 0o700 });
 const { MANAGER_PIDFILE, cacheLocalProcess, canonicalLocalProcessPath, clearCurrent, extensionsManifestPath, findMesh, findPreparedSpace, getCurrent, meshesDir, preparedSpacesDir, recordMesh, recordPreparedSpace, removeMesh, removePreparedSpace, resolveOnPath, saveExtensionsManifest, setCurrent, setAdoptedCurrent, readCurrentSelection, shellPath, spaceSegment } = await import("@cotal-ai/workspace");
 const { userExchangeIssuer } = await import("../src/commands/meshes-add.js");
 const { processServiceHost, requireProcessIdentity, serviceInstanceStore } = await import("../src/lib/service-instances.js");
@@ -1663,8 +1664,12 @@ if (process.platform === "linux") {
   check("history at a different address still refers to that address, not the stopped stack",
     refused(stoppedHistoryOverride, 2, "TARGET_UNAVAILABLE") && stoppedHistoryOverride.env?.error.message === `can't reach a broker at ${DEAD}` &&
     stoppedHistoryOverride.env.error.remedy === "check that address and that a broker runs there", shown(stoppedHistoryOverride));
-  const seedRemedy = `fix or remove ${defaultSeed}`;
-  for (const [seed, problem] of [["{\n", "is not valid JSON"], ['{"defaults":{"replay":"yes"}}', 'is invalid: "defaults" replay']] as const) {
+  const fixSeed = `fix or remove ${defaultSeed}`;
+  for (const [seed, problem, exit, code, seedRemedy] of [
+    ["{\n", "is not valid JSON", 1, "USAGE_INVALID", fixSeed],
+    ['{"defaults":{"replay":"yes"}}', 'is invalid: "defaults" replay', 1, "SCHEMA_INVALID", fixSeed],
+    ['{"channels":{"wire.seeded":{"deliveryClass":"durable"}}}', 'requests durable delivery for channel "wire.seeded"', 2, "UNSUPPORTED", 'set deliveryClass to "live" in those entries, or start an authenticated space for durable delivery'],
+  ] as const) {
     writeFileSync(defaultSeed, seed);
     const badUp = await json(["up", "--no-manager"], fresh);
     const status = await json(["status", "--space", "demo"], fresh);
@@ -1672,7 +1677,7 @@ if (process.platform === "linux") {
     const ps = await json(["ps", "--space", "demo"], elsewhere);
     const diagnosis = `the channels file ${defaultSeed} ${problem}`;
     check(`up, status and ps agree on the stopped stack's seed ${problem}`,
-      badUp.status === 1 && badUp.env?.error?.message?.includes(diagnosis) && badUp.env.error.remedy === seedRemedy &&
+      refused(badUp, exit, code) && badUp.env?.error?.message?.includes(diagnosis) && badUp.env.error.remedy === seedRemedy &&
         status.status === 0 && status.env?.result?.selected?.code === "not-started" && status.env.result.selected.message.includes("is stopped") && status.env.result.selected.channelSeedBlocksRestart === true &&
         status.env.result.hints.some((hint: string) => hint.includes(diagnosis) && hint.includes(seedRemedy)) &&
         statusText.stdout.includes(seedRemedy) && !statusText.stdout.includes(`start it again with \`${launcher} up`) && !/^ +(?:pnpm )?cotal up(?:\s|$)/m.test(statusText.stdout) &&
@@ -2188,6 +2193,40 @@ if (process.platform !== "win32") {
     inventory.stderr.includes(`${file} is a file, not a folder`) && !!pasted && pasted.status === 0 && !existsSync(file) &&
     existsSync(`${file}.old`) && readFileSync(`${file}.old`, "utf8") === "not a folder" && recovered.status === 0,
     { inventory: shown(inventory), move: pasted ? shown(pasted) : move, recovered: shown(recovered) });
+}
+
+// A refused port change must keep the stopped, folder-named registration.
+{
+  const space = "retained-open-seed";
+  const project = projectRoot(space);
+  const server = `nats://127.0.0.1:${await freePort()}`;
+  const nextServer = `nats://127.0.0.1:${await freePort()}`;
+  const sandbox = recordSmokeSandbox({ root: project, cotalHome: runEnv.COTAL_HOME, xdgConfigHome: runEnv.XDG_CONFIG_HOME });
+  async function stop() {
+    assertSmokeSandboxDown(sandbox, ["down", "--yes"], { cwd: project, env: runEnv });
+    return run(["down", "--yes"], {}, project);
+  }
+  try {
+    const started = await run(["up", "--open", "--detach", "--no-manager", "--server", server], {}, project);
+    const stopped = await stop();
+    const before = registryFiles();
+    const seed = join(project, "channels.json");
+    writeFileSync(seed, '{"channels":{"wire.seeded":{"deliveryClass":"durable"}}}');
+    const rejected = await run(["up", "--detach", "--no-manager", "--server", nextServer, "--channels", "channels.json"], {}, project);
+    check("detached up inherits open mode and refuses a durable seed without replacing the stopped registration",
+      started.status === 0 && stopped.status === 0 && rejected.status === 2 && rejected.stdout === "" &&
+      rejected.stderr.includes(seed) && /Code:\s+UNSUPPORTED/.test(rejected.stderr) && findMesh(space)?.server === server &&
+      JSON.stringify(registryFiles()) === JSON.stringify(before), { started: shown(started), stopped: shown(stopped), rejected: shown(rejected) });
+    writeFileSync(seed, '{"channels":{"wire.seeded":{"deliveryClass":"live"}}}');
+    const restarted = await run(["up", "--detach", "--no-manager", "--server", nextServer, "--channels", "channels.json"], {}, project);
+    const channel = await json(["channel", "show", "wire.seeded", "--space", space], project);
+    check("the live seed permits the same detached port change and keeps the space open",
+      restarted.status === 0 && findMesh(space)?.server === nextServer && findMesh(space)?.mode === "open" &&
+      channel.status === 0 && channel.env?.result?.registry?.channels?.["wire.seeded"]?.deliveryClass === "live", { restarted: shown(restarted), channel: shown(channel) });
+  } finally {
+    const down = await stop();
+    check("cleanup stops any retained-open fixture listener", down.status === 0, shown(down));
+  }
 }
 
 // An open space registered by an earlier release must still start under its exact old name.

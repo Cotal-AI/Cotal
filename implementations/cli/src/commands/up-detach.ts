@@ -477,9 +477,8 @@ export interface DetachOpts {
   recreateMembershipStore?: boolean;
   channels?: string;
   host?: string;
-  /** Channel-registry seed in memory (the `cotal up -f` manifest path), used instead of reading a
-   *  `--channels` file. Takes precedence over {@link channels}. */
-  seed?: ChannelRegistryFile;
+  /** Resolved channel seed, or null if the caller found no file. Omit to load {@link channels}. */
+  seed?: ChannelRegistryFile | null;
   /** PUBLIC-exchange daemon argv (`--exchange-public-port` et al), threaded verbatim to the
    *  auth-service daemon when THIS boot starts it. */
   publicExchange?: string[];
@@ -525,7 +524,7 @@ export async function prepareBrokerStart(opts: DetachOpts) {
   ensureRootForSpace(space); // may pin the cwd as this space's root — before any cotalPath use
   refuseStartOverUserState(Boolean(opts.open), opts.userAuth !== undefined, space);
   const root = cotalRoot();
-  const seedFile = opts.seed ?? loadChannelsFile(root, opts.channels, !useAuth && !opts.resumeAttempt);
+  const seedFile = opts.seed === undefined ? loadChannelsFile(root, opts.channels, !useAuth && !opts.resumeAttempt) : opts.seed ?? undefined;
   const storeDir = opts.storeDir ? resolve(opts.storeDir) : cotalPath("nats");
   if (opts.storeDir) warnForeignStoreEntries(storeDir);
   if (opts.existingStore) {

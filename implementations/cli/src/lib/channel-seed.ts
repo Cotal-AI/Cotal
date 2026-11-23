@@ -2,7 +2,8 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { readFileSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { assertValidChannel, isConcreteChannel, utf16Problem, validateChannelConfig, validateChannelDefaults, type ChannelConfig, type ChannelDefaults, type ChannelRegistryFile } from "@cotal-ai/core";
-import { CommandFailure, isCommandFailure } from "@cotal-ai/workspace";
+import { CommandFailure, isCommandFailure, retainedLegacyBroker } from "@cotal-ai/workspace";
+import { readStackJournal } from "./stack-journal.js";
 
 /** The channels files one `up` has read, by path. Flag checking, startup preflight and broker
  *  preparation share the parsed seed. `--channels` may name a pipe or a FIFO,
@@ -36,9 +37,13 @@ export function readDefaultChannelsFile(root: string): ChannelRegistryFile | und
   return readChannelsFile(path, false);
 }
 
-/** The failure that prevents a bare `up` from using this root's default channel seed. */
-export function channelSeedRestartBlock(root: string): CommandFailure | undefined {
-  try { readDefaultChannelsFile(root); }
+/** The seed refusal for a bare `up`. Repairing only a legacy manager parses but never applies it. */
+export function channelSeedRestartBlock(root: string, { seedsChannels = true } = {}): CommandFailure | undefined {
+  try {
+    const mode = seedsChannels ? readStackJournal(root)?.journal.mode : undefined;
+    const open = seedsChannels && (mode === undefined ? retainedLegacyBroker(root)?.open === true : mode === "open");
+    loadChannelsFile(root, undefined, open);
+  }
   catch (error) {
     if (isCommandFailure(error)) return error;
     throw error;

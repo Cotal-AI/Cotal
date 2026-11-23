@@ -1830,7 +1830,6 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
   }
   const openMaxPayload = values.open ? maxPayload ?? readBrokerPolicy(cotalRoot())?.maxPayload : undefined;
   if (!noManager) assertManagerPayload(openMaxPayload);
-  if (stoppedStart) console.log(c.dim(stoppedStart));
 
   if (!resumeAttempt) {
     const space = values.space ?? folderSpace();
@@ -1862,16 +1861,15 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
     onSpawn: (pid: number, startedAt: string) => bindSpawnedOrdinaryResumeListener(ordinaryAttempt, pid, startedAt, startupLock),
     verify: async () => { await verifySpawnedOrdinaryListener(ordinaryAttempt); },
   } : undefined;
+  const useAuth = !values.open, space = values.space ?? folderSpace();
+  refuseStartOverUserState(!useAuth, wantUser, space);
+  const seedFile = loadChannelsFile(cotalRoot(), values.channels, !useAuth && !resumeAttempt);
+  if (stoppedStart) console.log(c.dim(stoppedStart));
   if (values.detach) {
-    // A `backup restore` owns its own receipt: the native launcher's progress lines stay off stdout.
-    // The receipt names its space before the launch prints anything, as every report does. A start that
-    // refuses the space reports that on stderr under its own `Mesh:` heading, so those checks run
-    // first; the launch below repeats them and finds them settled.
-    const receiptSpace = values.space ?? folderSpace();
-    const unnamed = values.space === undefined && unnamedDefault(cotalRoot(), receiptSpace);
-    refuseStartOverUserState(Boolean(values.open), wantUser, receiptSpace);
-    await claimSpace(receiptSpace, server, cotalRoot());
-    if (!quietRestore) console.log(`${renderReport({ space: receiptSpace, sections: [] }, "rich", process.stdout)}\n`);
+    // The claim can remove a stopped registration and must follow seed validation.
+    const unnamed = values.space === undefined && unnamedDefault(cotalRoot(), space);
+    await claimSpace(space, server, cotalRoot());
+    if (!quietRestore) console.log(`${renderReport({ space, sections: [] }, "rich", process.stdout)}\n`);
     const { pid, executable, authService, controlPlane: planeReturned, delivery, deliveryLost, manager } = await startMeshDetached({
       transport,
       server,
@@ -1883,14 +1881,14 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
       authTimeout,
       maxPayload: openMaxPayload ?? maxPayload,
       accountResolver,
-      space: values.space,
+      space,
       open: values.open,
       userAuth: wantUser ? { idpUrl: values.idp } : undefined,
       rotateSys: values["rotate-sys"],
       ...(values["recreate-issued-stores"] !== undefined ? { recreateIssuedStores: resolve(values["recreate-issued-stores"]) } : {}),
       ...(values["recreate-membership-store"] ? { recreateMembershipStore: true } : {}),
       publicExchange,
-      channels: values.channels,
+      seed: seedFile ?? null,
       // The RAW flag, not the loopback-defaulted `host` above: `startMeshDetached` applies the same
       // default itself, and what it records must distinguish "the operator asked for this address"
       // from "nobody asked", or every mesh would persist an exposure decision it never made.
@@ -1915,8 +1913,8 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
       // The summary's continuation lines start under its text, past the `✓`.
       const [mark, ...summary] = renderDetachedSummary(detached).split(" ");
       for (const line of hang(`${mark} `, summary.join(" "), terminalWidth(process.stdout))) console.log(c.green(line));
-      if (unnamed) console.log(c.dim(`  This folder names no space, so up started the default space "${receiptSpace}"; pass --space <name> to start another`));
-      if (values.__folderNamed) for (const line of hang("  ", `This new project's space is named after its folder, "${receiptSpace}"; pass --space <name> to start another`, terminalWidth(process.stdout))) console.log(c.dim(line));
+      if (unnamed) console.log(c.dim(`  This folder names no space, so up started the default space "${space}"; pass --space <name> to start another`));
+      if (values.__folderNamed) for (const line of hang("  ", `This new project's space is named after its folder, "${space}"; pass --space <name> to start another`, terminalWidth(process.stdout))) console.log(c.dim(line));
     }
     if (restored && process.env.COTAL_SMOKE_FAIL_AFTER_RESTORE_LISTENER_READY === "1")
       throw new Error("smoke-injected failure after restore listener readiness");
@@ -1933,8 +1931,8 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
     );
     if (restored && !quietRestore) printRestoreReceipt(restored, values.__invokedRoot);
     if (!quietRestore) {
-      const managerRecord = managerRecordState(receiptSpace);
-      console.log(`\n${renderReport({ sections: [{ title: "Next", blocks: detachedNext({ ...detached, controlPlane, ...(managerRecord.state === "unattributable" ? { unattributableManager: managerRecord.path, noManager } : {}) }, receiptSpace) }] }, "rich", process.stdout)}`);
+      const managerRecord = managerRecordState(space);
+      console.log(`\n${renderReport({ sections: [{ title: "Next", blocks: detachedNext({ ...detached, controlPlane, ...(managerRecord.state === "unattributable" ? { unattributableManager: managerRecord.path, noManager } : {}) }, space) }] }, "rich", process.stdout)}`);
     }
     if (restored) restoreSinks.get(restored.attemptId)?.({
       attemptId: restored.attemptId, space: restored.space, root: restored.root, server: restored.server, mode: restored.mode,
@@ -1944,11 +1942,6 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
     return;
   }
 
-  const useAuth = !values.open;
-  const space = values.space ?? folderSpace();
-  ensureRootForSpace(space); // may pin the cwd as this space's root — before any cotalPath use
-  refuseStartOverUserState(Boolean(values.open), wantUser, space);
-  const seedFile = loadChannelsFile(cotalRoot(), values.channels, !useAuth && !resumeAttempt);
   const storeDir = values["store-dir"] ? resolve(values["store-dir"]) : cotalPath("nats");
   if (values.__ordinaryResumeAttempt) {
     // Final identity re-assertion immediately before JetStream opens: the journaled canonical path
