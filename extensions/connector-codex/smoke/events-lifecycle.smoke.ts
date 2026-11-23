@@ -412,6 +412,7 @@ try {
       "a streamed reasoning summary reaches the wire before Codex saves it",
       "and the wire carries the saved summary once, before the reply",
       "a plan a code-mode script sets reaches the wire as an update_plan call, and the script does not",
+      "a command a code-mode script runs reaches the wire while it runs, and only once",
       "the restarted app-server really is a NEW thread",
       "the plane KEEPS PUBLISHING after the restart",
       "and no run the dead thread opened was left open",
@@ -461,6 +462,21 @@ try {
   check("a plan a code-mode script sets reaches the wire as an update_plan call, and the script does not",
     planDone && planEvents.some((e) => e.type === "TOOL_CALL_START" && e.toolCallName === "update_plan") && !planEvents.some((e) => e.toolCallId?.startsWith("exec_")),
     { types: planEvents.map((e) => `${e.type}${e.toolCallName ? `(${e.toolCallName})` : ""}`), ...margin("A:the PLAN run finished") });
+
+  // ---- (1d) a command a code-mode script runs ------------------------------------------------
+  // Codex records it in the rollout only once it ends. The seat journals its item/started, so the
+  // call is on the wire while it runs. Its arguments and result go to the payload plane.
+  const nestedFrom = frames.length;
+  await dm(A, "NESTED command from a code-mode script");
+  const nestedDone = await settle("A:the NESTED run finished", () => frames.slice(nestedFrom).some((f) => f.events.some((e) => e.type === "RUN_FINISHED")));
+  const nestedEvents = frames.slice(nestedFrom).flatMap((f, i) => f.events.map((e) => ({ ...(e as unknown as { type: string; toolCallId?: string }), at: frameAt[nestedFrom + i]! })));
+  const nestedEndedAt = fakeLog(join(dir, "a.log.jsonl")).find((r) => r.ev === "nestedEnded")?.at;
+  const ofNested = nestedEvents.filter((e) => e.toolCallId?.startsWith("exec-nested-"));
+  const nestedStart = ofNested.find((e) => e.type === "TOOL_CALL_START");
+  check("a command a code-mode script runs reaches the wire while it runs, and only once",
+    nestedDone && nestedEndedAt !== undefined && nestedStart !== undefined && nestedStart.at < nestedEndedAt &&
+      JSON.stringify(ofNested.map((e) => e.type)) === JSON.stringify(["TOOL_CALL_START", "TOOL_CALL_END"]),
+    { types: ofNested.map((e) => e.type), startAt: nestedStart?.at, nestedEndedAt, ...margin("A:the NESTED run finished") });
 
   // ---- (2) restart: the defect that killed the plane ------------------------------------------
   // `DIE now` kills the app-server mid-turn. The host's crash rail brings up a replacement, which

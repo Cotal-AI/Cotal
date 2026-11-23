@@ -37,7 +37,7 @@ import {
   type StreamSeed,
 } from "@cotal-ai/connector-core";
 import type { PresenceCondition, PresenceConditionCode } from "@cotal-ai/core";
-import { createCodeMode, type NestedCall } from "./agui-nested.js";
+import { createCodeMode, type NestedCall, type StartedCall } from "./agui-nested.js";
 
 /** One rollout line. `payload` is `unknown` on purpose: it crosses in from a file this process did
  *  not write, so every field is checked at the point it is read rather than trusted by its type. */
@@ -191,14 +191,19 @@ function resultEvents(toolCallId: string, payload: Record<string, unknown>, isEr
   ];
 }
 
-/** A call code mode's script made, published whole: Codex records it once it has ended. */
-function nestedEvents(call: NestedCall, ts: number): AguiEvent[] {
+/** A call code mode's script made, as its start: its name and its arguments, whole. */
+function startEvents(call: StartedCall, ts: number): AguiEvent[] {
   return [
     toolCallStart({ toolCallId: call.id, toolCallName: call.name, timestamp: ts }),
     toolCallArgs({ toolCallId: call.id, delta: JSON.stringify(call.args), timestamp: ts }),
     toolCallEnd({ toolCallId: call.id, timestamp: ts }),
-    ...resultEvents(call.id, { output: call.output }, call.isError, ts),
   ];
+}
+
+/** A call code mode's script made that has ended: its start unless that was published, then its
+ *  result. */
+function nestedEvents(call: NestedCall, opened: boolean, ts: number): AguiEvent[] {
+  return [...(opened ? [] : startEvents(call, ts)), ...resultEvents(call.id, { output: call.output }, call.isError, ts)];
 }
 
 /** The delta journal's key for the agent message or reasoning summary Codex streams as item `itemId`.
@@ -235,16 +240,17 @@ function lineEvents(streams: StreamedParts, runId: string | null, line: Extract<
   return events.length > 0 ? { runId, events } : null;
 }
 
-/** A journal line read inside a run: its streamed parts, then the update_plan call each plan record
- *  of the line stands for. */
+/** A journal line read inside a run: its streamed parts, then the calls its records stand for, a
+ *  plan as the whole update_plan call and a started call as its start. */
 function mergedLine(streams: StreamedParts, codeMode: ReturnType<typeof createCodeMode>, runId: string | null, line: Extract<Merged<CodexRecord>, { deltas: unknown }>): Mapped {
   const streamed = lineEvents(streams, runId, line);
   if (runId === null) return streamed;
-  const plans = (line.records ?? []).flatMap((r) => {
-    const call = codeMode.plan(r);
-    return call === undefined ? [] : nestedEvents(call, line.timestamp);
+  const calls = (line.records ?? []).flatMap((r) => {
+    const j = codeMode.journaled(r);
+    if (j === undefined) return [];
+    return j.ended ? nestedEvents(j.call, false, line.timestamp) : startEvents(j.call, line.timestamp);
   });
-  return plans.length === 0 ? streamed : { runId, events: [...(streamed?.events ?? []), ...plans] };
+  return calls.length === 0 ? streamed : { runId, events: [...(streamed?.events ?? []), ...calls] };
 }
 
 /**
@@ -360,8 +366,8 @@ export function createCodexMapper(opts: { threadId: string; mintRunId: () => str
     // ---- code mode (agui-nested.ts) -------------------------------------------------------
     if (envelope === "response_item" && codeMode.hides(inner, payload)) return null;
     if (envelope === "event_msg" && inner === "item_completed") {
-      const call = codeMode.nested(payload);
-      return call === undefined ? null : { runId, events: nestedEvents(call, ts) };
+      const n = codeMode.nested(payload);
+      return n === undefined ? null : { runId, events: nestedEvents(n.call, n.opened, ts) };
     }
 
     // ---- assistant text -----------------------------------------------------------------
