@@ -78,7 +78,7 @@ export class AgentChannels {
 
   configureChannel(channel: string, change: ChannelChange) {
     if (isAuthed(this.config) && (!this.config.capabilities?.includes("channel-config") || !channelInAllow(this.config.allowPublish, channel)))
-      throw new Error("You need channel-config and a publish grant for this channel.");
+      throw new Error("You need channel-config and a publish grant for this channel. Tell the user if it needs changing.");
     return this.ep.configureChannel(channel, change);
   }
 

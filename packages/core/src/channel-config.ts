@@ -73,7 +73,7 @@ export async function changeChannelConfig(kv: KV, channel: string, change: Chann
   const config: ChannelConfig = change.remove
     ? { removed: true, writer }
     : { ...current.config, ...change.patch, writer };
-  if (!mayAct()) throw new Error("The delivery host stopped serving before the channel write.");
+  if (!mayAct()) throw new Error("The service that saves channel settings isn't running. Tell the user.");
   let revision: number;
   try { revision = await kv.put(channel, JSON.stringify(config), { previousSeq: change.expectedRevision }); }
   catch (e) {
@@ -95,7 +95,7 @@ export function serveChannelConfig(nc: NatsConnection, space: string, kv: KV, ma
       if (!msg.reply?.startsWith(replyPrefix) || !/^[a-f0-9-]{36}$/.test(msg.reply.slice(replyPrefix.length))) continue;
       let body: object;
       try {
-        if (!mayAct()) throw new Error("The delivery host is not serving this channel write.");
+        if (!mayAct()) throw new Error("The service that saves channel settings isn't running. Tell the user.");
         const change = msg.json<ChannelChange>();
         const state = await changeChannelConfig(kv, tail.join("."), change, principalKey(owner, actor).key, mayAct);
         body = { ok: true, data: state };

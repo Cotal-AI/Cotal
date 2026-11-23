@@ -100,7 +100,7 @@ export class EndpointChannelDiscovery {
 
   async channelState(channel: string): Promise<ChannelState> {
     assertValidChannel(channel);
-    if (!isConcreteChannel(channel)) throw new Error("Channel configuration needs one concrete channel.");
+    if (!isConcreteChannel(channel)) throw new Error("Settings apply to one channel by its full name, not to a family.");
     if (!this.conn.nc) throw new Error(this.notLiveMsg());
     const jsm = await jetstreamManager(this.conn.nc, { checkAPI: false });
     try { return await readChannelStateLeader(jsm, this.identity.space, channel); }
@@ -112,7 +112,7 @@ export class EndpointChannelDiscovery {
 
   async configureChannel(channel: string, change: ChannelChange): Promise<ChannelState> {
     assertValidChannel(channel);
-    if (!isConcreteChannel(channel)) throw new Error("Channel configuration needs one concrete channel.");
+    if (!isConcreteChannel(channel)) throw new Error("Settings apply to one channel by its full name, not to a family.");
     validateChannelChange(change);
     const nc = this.conn.nc;
     if (!nc) throw new Error(this.notLiveMsg());
