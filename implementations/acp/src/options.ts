@@ -9,6 +9,12 @@
  * plane are not offered: the bridge reads a seat's turns from that plane and has nothing to show
  * without it. A model the catalog does not list is accepted as a custom id, as a client's own model
  * field sends it, and the manager validates it at launch.
+ *
+ * Each model's reasoning variants also ride the session's model state, as per-model `_meta` in the
+ * shape T3 Code reads (Grok's): a client can then show a model's effort choices before any session
+ * selected that model. The reasoning select is offered whenever some model has variants, so such a
+ * client has the option those choices belong to. A client that ignores `_meta` sees the same select,
+ * holding the selected model's variants.
  */
 import type { SessionConfigOption } from "@agentclientprotocol/sdk";
 import type { AgentCatalog, ManagerChoice } from "./mesh.js";
@@ -90,11 +96,19 @@ export function initialSelection(offer: Offer): Selection {
   return { model: `${agent.agent}/${DEFAULT_MODEL}`, variant: DEFAULT_VARIANT, persona: DEFAULT_PERSONA, channel: NO_CHANNEL, ...(machine ? { machine: machine.instanceId } : {}) };
 }
 
-function variantsOf(offer: Offer, selection: Selection): readonly string[] {
-  const { agent, model } = parseModel(selection.model);
+/** The variants of one `<agent>/<model>` choice: none for an application's default or a custom id. */
+function variantsOfModel(offer: Offer, value: string): readonly string[] {
+  const { agent, model } = parseModel(value);
   if (model === undefined) return [];
   return offer.catalogs.find((c) => c.agent === agent)?.models.find((m) => m.id === model)?.variants ?? [];
 }
+
+function variantsOf(offer: Offer, selection: Selection): readonly string[] {
+  return variantsOfModel(offer, selection.model);
+}
+
+/** A variant list a select can hold. */
+const offerable = (variants: readonly string[]): boolean => variants.length > 0 && variants.length < MAX_CHOICES;
 
 /** A selection made against one manager, carried to another manager's offer. A choice the new
  *  manager does not offer returns to its default. Throws when the new manager offers no application. */
@@ -137,6 +151,50 @@ export function applyOption(offer: Offer, selection: Selection, configId: string
   }
 }
 
+/** The model select's choices, grouped by application. */
+function modelGroups(offer: Offer, selection: Selection): { group: string; name: string; options: { value: string; name: string }[] }[] {
+  return usable(offer.catalogs).map((c) => {
+    // A seat-only thread offers the model its agent runs, and the default only when it names none.
+    const choices = [
+      ...(offer.seatOnly && c.models.length > 0 ? [] : [{ value: `${c.agent}/${DEFAULT_MODEL}`, name: `${c.agent}: default` }]),
+      ...c.models.map((m) => ({ value: `${c.agent}/${m.id}`, name: `${c.agent}: ${m.name ?? m.id}` })),
+    ];
+    // The current value is always a choice, a custom id included.
+    if (parseModel(selection.model).agent === c.agent && !choices.some((o) => o.value === selection.model))
+      choices.push({ value: selection.model, name: `${c.agent}: ${selection.model.slice(c.agent.length + 1)}` });
+    return { group: c.agent, name: c.agent, options: choices };
+  });
+}
+
+/** One model of the session's model state. */
+export interface ModelInfo {
+  modelId: string;
+  name: string;
+  _meta: Record<string, unknown>;
+}
+
+/** The session's model state: every model the select offers, each with its reasoning variants. */
+export interface ModelState {
+  currentModelId: string;
+  availableModels: ModelInfo[];
+}
+
+/** The model state for a selection: the select's choices, each with the effort choices the reasoning
+ *  select would hold for it as `_meta.reasoningEfforts`, or `supportsReasoningEffort: false`. */
+export function modelState(offer: Offer, selection: Selection): ModelState {
+  const availableModels = modelGroups(offer, selection).flatMap((g) => g.options).map(({ value, name }) => {
+    const variants = variantsOfModel(offer, value);
+    const _meta = offerable(variants)
+      ? {
+        reasoningEfforts: [{ value: DEFAULT_VARIANT, label: "Model default" }, ...variants.map((v) => ({ value: v, label: v }))],
+        reasoningEffort: value === selection.model ? selection.variant : DEFAULT_VARIANT,
+      }
+      : { supportsReasoningEffort: false };
+    return { modelId: value, name, _meta };
+  });
+  return { currentModelId: selection.model, availableModels };
+}
+
 /** The full option set for a selection. Every reply that changes an option carries all of them. */
 export function configOptions(offer: Offer, selection: Selection): SessionConfigOption[] {
   const options: SessionConfigOption[] = [{
@@ -145,20 +203,12 @@ export function configOptions(offer: Offer, selection: Selection): SessionConfig
     category: "model",
     type: "select",
     currentValue: selection.model,
-    options: usable(offer.catalogs).map((c) => {
-      // A seat-only thread offers the model its agent runs, and the default only when it names none.
-      const choices = [
-        ...(offer.seatOnly && c.models.length > 0 ? [] : [{ value: `${c.agent}/${DEFAULT_MODEL}`, name: `${c.agent}: default` }]),
-        ...c.models.map((m) => ({ value: `${c.agent}/${m.id}`, name: `${c.agent}: ${m.name ?? m.id}` })),
-      ];
-      // The current value is always a choice, a custom id included.
-      if (parseModel(selection.model).agent === c.agent && !choices.some((o) => o.value === selection.model))
-        choices.push({ value: selection.model, name: `${c.agent}: ${selection.model.slice(c.agent.length + 1)}` });
-      return { group: c.agent, name: c.agent, options: choices };
-    }),
+    options: modelGroups(offer, selection),
   }];
   const variants = variantsOf(offer, selection);
-  if (variants.length && variants.length < MAX_CHOICES)
+  // Offered while any model has variants, so a model without them shows only the model default.
+  const someVariants = usable(offer.catalogs).some((c) => c.models.some((m) => offerable(m.variants)));
+  if (someVariants && variants.length < MAX_CHOICES)
     options.push({
       id: "variant",
       name: "Reasoning",

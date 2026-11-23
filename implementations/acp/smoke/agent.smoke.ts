@@ -7,6 +7,9 @@
  *  - opening the space fails as -32000 when signing in fixes it, and as an internal error otherwise;
  *  - `session/new` launches nothing and offers `<agent>/default` first, without applications that
  *    publish no event plane; deleting it hides nothing;
+ *  - on the wire, `session/new` carries the model state: every model of the select, each with its
+ *    reasoning choices as `_meta.reasoningEfforts` or `supportsReasoningEffort: false`, and the
+ *    reasoning select is offered on a fresh session at an application's default;
  *  - the first prompt spawns the seat in the session's folder with that prompt, every update of the
  *    turn reaches the client before the prompt answers, frames that beat the spawn reply are kept,
  *    and a tool call left open is closed;
@@ -39,7 +42,7 @@
 import { mkdtempSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { client, methods, PROTOCOL_VERSION, type RequestPermissionRequest, type RequestPermissionResponse, type SessionNotification } from "@agentclientprotocol/sdk";
+import { client, methods, ndJsonStream, PROTOCOL_VERSION, type RequestPermissionRequest, type RequestPermissionResponse, type SessionNotification } from "@agentclientprotocol/sdk";
 import { agentPromptDigest, assertValidOwnerToken, type AgentPrompt, type PromptContent, type PromptSummary } from "@cotal-ai/core";
 import { cotalAgent, defaultName, type HiddenSessions, type ThreadLink, type ThreadLinks } from "../src/agent.js";
 import { promptParts } from "../src/turns.js";
@@ -257,6 +260,55 @@ const probe = await agent.request(methods.agent.session.new, { cwd: dir, mcpServ
 await agent.request(methods.agent.session.delete, { sessionId: probe.sessionId });
 check("deleting a session that never spawned hides nothing", hidden.ids.size === 0, [...hidden.ids]);
 
+// The session's model state as it goes on the wire. The SDK's client drops a response field its
+// schema lacks, so these cells read the bridge's own JSON-RPC lines.
+{
+  const toAgent = new TransformStream<Uint8Array, Uint8Array>();
+  const toClient = new TransformStream<Uint8Array, Uint8Array>();
+  cotalAgent({ mesh: async () => new FakeMesh(), hidden: new MemoryHidden(), links: new MemoryLinks(), log: () => {}, version: "0.0.0-smoke", newName: () => "acp-raw", waits: { startMs: 300, settleMs: 100 } })
+    .connect(ndJsonStream(toClient.writable, toAgent.readable));
+  const writer = toAgent.writable.getWriter();
+  const reader = toClient.readable.pipeThrough(new TextDecoderStream()).getReader();
+  let buffered = "";
+  const raw = async (id: number, method: string, params: unknown): Promise<{ result?: Record<string, unknown> }> => {
+    await writer.write(new TextEncoder().encode(`${JSON.stringify({ jsonrpc: "2.0", id, method, params })}\n`));
+    for (;;) {
+      const nl = buffered.indexOf("\n");
+      if (nl >= 0) {
+        const line = JSON.parse(buffered.slice(0, nl)) as { id?: number; result?: Record<string, unknown> };
+        buffered = buffered.slice(nl + 1);
+        if (line.id === id) return line;
+        continue;
+      }
+      const { value, done } = await reader.read();
+      if (done) throw new Error("the bridge closed the connection");
+      buffered += value;
+    }
+  };
+  await raw(1, "initialize", { protocolVersion: PROTOCOL_VERSION, clientCapabilities: {} });
+  const fresh = (await raw(2, "session/new", { cwd: dir, mcpServers: [] })).result ?? {};
+  type Wire = { models?: { currentModelId?: string; availableModels?: { modelId: string; _meta?: { reasoningEfforts?: { value: string; label: string }[]; reasoningEffort?: string; supportsReasoningEffort?: boolean } }[] };
+    configOptions?: { id: string; category?: string; currentValue?: string; options: ({ value: string } | { options: { value: string }[] })[] }[] };
+  const wire = fresh as Wire;
+  const listed = wire.models?.availableModels ?? [];
+  const select = wire.configOptions?.find((o) => o.id === "model");
+  const choices = (select?.options ?? []).flatMap((g) => ("options" in g ? g.options : [g])).map((c) => c.value);
+  check("session/new carries the model state, listing every model of the model select",
+    wire.models?.currentModelId === select?.currentValue && JSON.stringify(listed.map((m) => m.modelId)) === JSON.stringify(choices), { models: wire.models, choices });
+  const meta = (id: string) => listed.find((m) => m.modelId === id)?._meta;
+  check("a model with variants lists the reasoning select's choices for it, starting at the model default",
+    JSON.stringify(meta("claude/opus")?.reasoningEfforts?.map((e) => e.value)) === '["default","high","low"]' &&
+    meta("claude/opus")?.reasoningEffort === "default" && JSON.stringify(meta("claude/sonnet")?.reasoningEfforts?.map((e) => e.value)) === '["default","low"]',
+    { opus: meta("claude/opus"), sonnet: meta("claude/sonnet") });
+  check("a model without variants, an application's default included, says it takes no reasoning effort",
+    ["claude/haiku", "claude/default", "pi/default"].every((id) => meta(id)?.supportsReasoningEffort === false && meta(id)?.reasoningEfforts === undefined),
+    ["claude/haiku", "claude/default", "pi/default"].map((id) => meta(id)));
+  const reasoning = wire.configOptions?.find((o) => o.id === "variant");
+  check("a fresh session at an application's default offers the reasoning select, holding the model default",
+    reasoning?.category === "thought_level" && reasoning.currentValue === "default" && JSON.stringify(reasoning.options.map((c) => ("value" in c ? c.value : ""))) === '["default"]', reasoning);
+  await writer.close();
+}
+
 // options
 const sid = created.sessionId;
 const set = (configId: string, value: string) => agent.request(methods.agent.session.setConfigOption, { sessionId: sid, configId, value });
@@ -267,7 +319,9 @@ opts = (await set("model", "claude/sonnet")).configOptions;
 const variant = opts.find((o) => o.id === "variant") as { currentValue?: string } | undefined;
 check("a variant does not carry to a model that lacks it", variant?.currentValue === "default", variant);
 opts = (await set("model", "claude/haiku")).configOptions;
-check("a model without variants offers no variant option", !opts.some((o) => o.id === "variant"), opts);
+const onlyDefault = opts.find((o) => o.id === "variant") as { options?: { value: string }[] } | undefined;
+check("a model without variants offers the reasoning select with only the model default",
+  JSON.stringify(onlyDefault?.options?.map((c) => c.value)) === '["default"]', onlyDefault);
 const bad = await errorOf(set("model", "hermes/default"));
 check("an application without an event plane is refused as invalid params", bad?.code === -32602 && bad.message?.includes("event plane") === true, bad);
 opts = (await set("model", "claude/my-custom")).configOptions;
@@ -284,6 +338,7 @@ check("a persona the chosen machine lacks returns to the default", carried?.curr
 await set("machine", "m1");
 await set("model", "claude/opus");
 await set("persona", "reviewer");
+await set("variant", "high");
 const noChannel = await errorOf(set("channel", "nowhere"));
 check("a channel the space does not hold is refused", noChannel?.code === -32602, noChannel);
 await set("channel", "ops");
@@ -301,7 +356,7 @@ const answer = await within(agent.request(methods.agent.session.prompt, { sessio
 const seen = updates.filter((u) => u.sessionId === sid).map((u) => u.update);
 const req = mesh.spawned[0];
 check("the first prompt spawns one seat named after the session", mesh.spawned.length === 1 && req?.name === sid, mesh.spawned);
-check("it spawns in the session's folder with the prompt and the chosen options", req?.cwd === link && req.prompt === "do it\n\n[spec](file:///spec.md)" && req.agent === "claude" && req.model === "opus" && req.persona === "reviewer" && req.managerInstanceId === "m1" && JSON.stringify(req.subscribe) === '["ops"]', req);
+check("it spawns in the session's folder with the prompt and the chosen options", req?.cwd === link && req.prompt === "do it\n\n[spec](file:///spec.md)" && req.agent === "claude" && req.model === "opus" && req.variant === "high" && req.persona === "reviewer" && req.managerInstanceId === "m1" && JSON.stringify(req.subscribe) === '["ops"]', req);
 check("the prompt answers end_turn", answer?.stopReason === "end_turn", answer);
 check("frames published before the spawn reply still reach the client", seen.some((u) => u.sessionUpdate === "user_message_chunk"), seen.map((u) => u.sessionUpdate));
 check("the reply reaches the client before the prompt answers", seen.some((u) => u.sessionUpdate === "agent_message_chunk" && (u as { content: { text: string } }).content.text === "done"));

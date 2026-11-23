@@ -34,7 +34,7 @@ import { FrameMapper, type RunSignal } from "./frames.js";
 import { answer, permissionRequest, plainOptions, PromptFollower } from "./prompts.js";
 import { deregisterRemedy, LaunchListsRefused, NoLaunchManager, SignInRequired, type ManagerChoice, type Mesh, type SeatFrame, type SeatList, type SeatRef, type SeatRow } from "./mesh.js";
 import { awaitTaken, promptParts, spaceImageRefusal, takeTurn, usageUpdate } from "./turns.js";
-import { applyOption, configOptions, DEFAULT_PERSONA, DEFAULT_VARIANT, defaultManager, initialSelection, MAX_CHOICES, NO_CHANNEL, parseModel, reconcile, refusal, type Offer, type Selection } from "./options.js";
+import { applyOption, configOptions, modelState, DEFAULT_PERSONA, DEFAULT_VARIANT, defaultManager, initialSelection, MAX_CHOICES, NO_CHANNEL, parseModel, reconcile, refusal, type Offer, type Selection } from "./options.js";
 
 /** The slash commands every session offers. */
 export const COMMANDS = [
@@ -689,7 +689,7 @@ function threadHandlers(b: Bridge, offers: Offers, runTurn: ReturnType<typeof tu
       const session: Session = { id, cwd: params.cwd, offer, selection: initialSelection(offer), mapper: new FrameMapper(), open: new Map(), client };
       sessions.set(id, session);
       setImmediate(() => void announce(session).catch(() => {}));
-      return { sessionId: id, configOptions: configOptions(offer, session.selection) };
+      return { sessionId: id, configOptions: configOptions(offer, session.selection), models: modelState(offer, session.selection) };
     },
     setConfigOption: async (params: SetSessionConfigOptionRequest) => {
       const session = sessionOf(params.sessionId);
@@ -818,7 +818,7 @@ function historyHandlers(b: Bridge, offers: Offers) {
         void announce(session).catch(() => {});
         void reportUsage(session, m);
       });
-      return { configOptions: configOptions(session.offer, session.selection) };
+      return { configOptions: configOptions(session.offer, session.selection), models: modelState(session.offer, session.selection) };
     },
     delete: async (params: DeleteSessionRequest) => {
       const session = sessions.get(params.sessionId);
