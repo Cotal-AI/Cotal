@@ -85,7 +85,7 @@ const run = (args: string[], extra: Record<string, string> = {}, cwd = neutral) 
 const runShell = (args: string, extra: Record<string, string> = {}, cwd = neutral) =>
   spawnSync("sh", ["-c", `exec "$0" "$1" ${args}`, process.execPath, BIN], { cwd, env: { ...env, ...extra }, encoding: "utf8", timeout: 120_000 });
 const shown = (r: ReturnType<typeof run>) => ({ status: r.status, stdout: r.stdout.slice(0, 600), stderr: r.stderr.slice(0, 900) });
-const parsed = (r: ReturnType<typeof run>) => { try { return JSON.parse(r.stdout) as { target?: unknown; error?: { code?: string; message?: string } }; } catch { return undefined; } };
+const parsed = (r: ReturnType<typeof run>) => { try { return JSON.parse(r.stdout) as { target?: unknown; error?: { code?: string; message?: string; remedy?: string } }; } catch { return undefined; } };
 const usageShape = (r: ReturnType<typeof run>, message: RegExp) =>
   r.status === 1 && r.stdout === "" && /^✗ /m.test(r.stderr) && message.test(r.stderr) && /Usage/.test(r.stderr) && !/Request refused|Code:/.test(r.stderr);
 
@@ -775,6 +775,13 @@ for (const [args, message] of [
   const r = run([...args]);
   check(`${args.join(" ")} names the nearest word`, r.status === 1 && message.test(r.stderr), shown(r));
 }
+for (const words of [["--json", "--jsn"], ["--jsn", "-j"]]) {
+  const r = run(["version", ...words]);
+  const error = parsed(r)?.error;
+  check(`version ${words.join(" ")} keeps the JSON switch already supplied`, r.status === 1 && error?.message === "Unknown option '--jsn'" && error.remedy === "drop the unknown option; --json is already set", shown(r));
+}
+const afterEnd = run(["version", "--jsn", "--", "--json"]);
+check("an operand after -- is not a switch already set", afterEnd.status === 1 && afterEnd.stderr.includes("did you mean --json?"), shown(afterEnd));
 const configTypo = run(["config", "get", "harness", "--verbsoe", "--json"]);
 check("config get does not suggest a flag only bare config takes",
   configTypo.status === 1 && configTypo.stderr === "" && JSON.parse(configTypo.stdout).error.message === "Unknown option '--verbsoe'", shown(configTypo));
