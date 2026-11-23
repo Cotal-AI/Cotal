@@ -327,7 +327,7 @@ export async function status(args: ParsedArgs): Promise<void> {
       recovery, stoppedForeignListener,
     }),
   );
-  if (values.components) await printComponentHealth(selected, store, target.resolved && target.connection === "unreachable", target.channelSeedBlocksRestart);
+  if (values.components) await printComponentHealth(selected, store, target, meshes);
 }
 
 /** Why this account cannot list or search `root`, or undefined when it can. */

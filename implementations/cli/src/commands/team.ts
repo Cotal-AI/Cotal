@@ -9,7 +9,7 @@ import { findLedgerByRun, listLedgerFiles, type MeshLedger } from "../lib/manife
 import { findFreshTeamAttempt, findFreshTeamSummary, freshTeamAttemptSettled, freshTeamSummaryRecordedElsewhere, listFreshTeamAttempts, listFreshTeamSummaries, type FreshTeamSummary } from "../lib/team-fresh.js";
 import { additiveTeamRecordedState, findAdditiveTeamAttempt, listAdditiveTeamAttempts, removedAdditiveDeploymentIds, stoppedAttemptEffects, type AdditiveTeamAttempt } from "../lib/team-additive-attempt.js";
 import { completedFlagValue, positionalsForCompletion } from "../lib/completion.js";
-import { cardsWithoutLiveDelivery, inspectTeamDeployment, liveDeliveryRemedy, readOwnedChannelRevisions } from "../lib/team-deploy-inspection.js";
+import { cardsWithoutLiveDelivery, inspectTeamDeployment, liveDeliveryRemedy, readOwnedChannelRevisions, stoppedTeamDeploy } from "../lib/team-deploy-inspection.js";
 import { managerRecordState } from "../lib/manager-proc.js";
 import { authModeText, teamText } from "../lib/team-text.js";
 import { readLocalServiceCensus } from "../lib/service-census.js";
@@ -325,7 +325,7 @@ async function previewDeploy(file: string, values: TeamValues): Promise<void> {
   let local: ReturnType<typeof findMesh>, waiting: ReturnType<typeof findPreparedSpace>;
   try { local = findMesh(space); waiting = findPreparedSpace(space); }
   catch { throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the local registry or prepared-space records could not be read; no additive target was inferred", { target: { space } }); }
-  if (!local) throw new CommandFailure("refused", "TARGET_UNAVAILABLE", waiting ? "the selected space is only prepared; additive deploy requires an existing registered mesh" : "the selected space has no local registration; no broker or authorization target was inferred", { target: { space }, remedy: "register an existing authorized mesh before reviewing an additive deployment" });
+  if (!local) throw stoppedTeamDeploy(waiting) ?? new CommandFailure("refused", "TARGET_UNAVAILABLE", waiting ? "the selected space is only prepared; additive deploy requires an existing registered mesh" : "the selected space has no local registration; no broker or authorization target was inferred", { target: { space }, remedy: "register an existing authorized mesh before reviewing an additive deployment" });
   if (waiting && canonicalRoot(waiting.root) !== canonicalRoot(local.root)) throw new CommandFailure("refused", "CONFLICT", "prepared and registered records disagree on this space's root; no additive target was chosen", { target: { space } });
   const runtimeRequest = values.runtime ?? prepared.manifest.runtime ?? "pty";
   const openDurable = local.mode === "open" && prepared.manifest.channels.some((channel) => channel.deliveryClass === "durable");
