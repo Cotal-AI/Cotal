@@ -288,8 +288,9 @@ console.log("6. every topology lens labels a peer as the roster does");
         variant={variant as TopoVariant} width={200} height={20} blocked={false}
         onFocus={() => {}} onOpenAgent={() => {}} onOpenMessage={() => {}} />,
     );
-    check(`the ${lens} prints each peer's shared label after its status dot`,
-      labels.every((l) => out.includes("○ " + l)), out.slice(0, 800));
+    const shown = lens === "matrix" ? labels.map((l) => l.length > 15 ? `${l.slice(0, 14)}…` : l) : labels;
+    check(`the ${lens} prints each peer's shared label within its column budget`,
+      shown.every((l) => out.includes("○ " + l)), out.slice(0, 800));
     check(`...and never the bracketed role`, !out.includes("ops]x[y"), out.slice(0, 800));
   }
   check("a topology node uses the id when the agent name is blank",

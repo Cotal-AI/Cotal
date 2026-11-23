@@ -309,12 +309,12 @@ async function streamLines(plain: boolean, locale: string): Promise<string[]> {
 for (const [what, plain, locale] of [["--plain under a UTF-8 locale", true, "C.UTF-8"], ["a pipe under LC_ALL=C", false, "C"]] as const) {
   const text = (await streamLines(plain, locale)).join("\n");
   check(`line stream on ${what} is ASCII: no status marks, -> for the arrow, x for a count`,
-    !/[^\x00-\x7F]/.test(text) && /alice\/alice working - progress unknown/.test(text) && /alice\/alice -> #general: a -> b/.test(text) && /\(3x\)/.test(text));
+    !/[^\x00-\x7F]/.test(text) && /alice \(role: alice\) working - progress unknown/.test(text) && /alice \(role: alice\) -> #general: a -> b/.test(text) && /\(3x\)/.test(text));
 }
 {
   const text = (await streamLines(false, "C.UTF-8")).join("\n");
   check("control: a pipe under a UTF-8 locale draws the status mark, the arrow and the count sign",
-    /● working · progress unknown/.test(text) && /alice\/alice → #general: a → b/.test(text) && /\(3×\)/.test(text));
+    /● working · progress unknown/.test(text) && /alice \(role: alice\) → #general: a → b/.test(text) && /\(3×\)/.test(text));
 }
 
 {
