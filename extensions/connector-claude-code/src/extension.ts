@@ -1,106 +1,20 @@
-import { spawn, type ChildProcess } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { discardLaunchArtifacts, loadAgentFile, registry, writeLaunchArtifact, type Connector, type LaunchOpts, type LaunchSpec, type ModelCatalog, type ModelCatalogOpts } from "@cotal-ai/core";
+import { discardLaunchArtifacts, loadAgentFile, registry, writeLaunchArtifact, type Connector, type LaunchOpts, type LaunchSpec } from "@cotal-ai/core";
 import { aclEnv, nameEnv, connectorLaunchOptions, controlEndpoint, eventChannel, launchArmsEvents, launchEnv, materialEnv, mcpServerEnvKeys } from "@cotal-ai/connector-core";
 import { carriedForkRecord, claudeResumeTranscript, placeCarried, refuseCarriedLaunch } from "./carried.js";
 import { CLAUDE_READY_TEXTS, CLAUDE_STARTUP_BLOCKERS, CLAUDE_WORKSPACE_TRUST_REPLIES } from "./trust.js";
 import { assertChannelServerDeclared, claudeUserMcpEnvKeys } from "./user-mcp.js";
 import { HOST_EXE_ENV, resolveHostExe } from "./once-exit.js";
 import { HOOK_CONTEXT_CHARS } from "./hooks.js";
+import { listClaudeModels } from "./models.js";
+import { CLAUDE_PROVIDER_KEYS } from "./provider-keys.js";
+
+export { CLAUDE_PROVIDER_KEYS };
 
 /** Name the cotal MCP server is registered under via --mcp-config (see buildLaunch). */
 const MCP_SERVER_NAME = "cotal";
 
-/** Auth and provider-routing env `claude` actually reads for a headless or container seat.
- *  Drawn from Anthropic's authentication precedence
- *  (https://docs.anthropic.com/en/docs/claude-code/iam) and the env-vars page, not from a
- *  prefix guess. `CLAUDE_CODE_OAUTH_TOKEN` is the load-bearing name: `docs/deploy.mdx` and
- *  `deploy/` tell operators a container Claude authenticates with it, and a container has no
- *  Keychain. Host-session markers (`CLAUDE_CODE_CHILD_SESSION`, `CLAUDECODE`,
- *  `CLAUDE_CODE_ENTRYPOINT`) are deliberately absent — those are how a nested `claude` decides
- *  it must not save a transcript. Files under the default `~/.claude` and `~/.aws` locations
- *  remain reachable through HOME. A credential file at a non-default path is reachable only when
- *  its path variable, such as `GOOGLE_APPLICATION_CREDENTIALS`, is forwarded explicitly. */
-export const CLAUDE_PROVIDER_KEYS = [
-  // First-party / subscription (setup-token, Console key, gateway bearer).
-  "CLAUDE_CODE_OAUTH_TOKEN",
-  "CLAUDE_CODE_OAUTH_REFRESH_TOKEN",
-  "CLAUDE_CODE_OAUTH_SCOPES",
-  "ANTHROPIC_API_KEY",
-  "ANTHROPIC_AUTH_TOKEN",
-  "ANTHROPIC_BASE_URL",
-  "CLAUDE_CONFIG_DIR",
-  // Cloud provider selection. Without the matching flag, the credential vars below are inert.
-  "CLAUDE_CODE_USE_BEDROCK",
-  "CLAUDE_CODE_USE_VERTEX",
-  "CLAUDE_CODE_USE_FOUNDRY",
-  "CLAUDE_CODE_USE_ANTHROPIC_AWS",
-  "CLAUDE_CODE_USE_MANTLE",
-  "CLAUDE_CODE_SKIP_BEDROCK_AUTH",
-  "CLAUDE_CODE_SKIP_VERTEX_AUTH",
-  "CLAUDE_CODE_SKIP_FOUNDRY_AUTH",
-  "CLAUDE_CODE_SKIP_ANTHROPIC_AWS_AUTH",
-  "CLAUDE_CODE_SKIP_MANTLE_AUTH",
-  "CLAUDE_CODE_SKIP_AWS_CRED_CACHE",
-  "CLAUDE_CODE_AWS_CHAIN_RESOLVE_TIMEOUT_MS",
-  // Amazon Bedrock / Claude Platform on AWS.
-  "ANTHROPIC_AWS_API_KEY",
-  "ANTHROPIC_AWS_BASE_URL",
-  "ANTHROPIC_AWS_WORKSPACE_ID",
-  "AWS_ACCESS_KEY_ID",
-  "AWS_SECRET_ACCESS_KEY",
-  "AWS_SESSION_TOKEN",
-  "AWS_PROFILE",
-  "AWS_REGION",
-  "AWS_DEFAULT_REGION",
-  "AWS_SHARED_CREDENTIALS_FILE",
-  "AWS_CONFIG_FILE",
-  "AWS_BEARER_TOKEN_BEDROCK",
-  "ANTHROPIC_BEDROCK_BASE_URL",
-  "ANTHROPIC_BEDROCK_MANTLE_BASE_URL",
-  "ANTHROPIC_BEDROCK_REGION_PREFIX",
-  "ANTHROPIC_BEDROCK_SERVICE_TIER",
-  "ANTHROPIC_SMALL_FAST_MODEL_AWS_REGION",
-  // Google Cloud's Agent Platform.
-  "ANTHROPIC_VERTEX_BASE_URL",
-  "ANTHROPIC_VERTEX_PROJECT_ID",
-  "GOOGLE_APPLICATION_CREDENTIALS",
-  "CLOUD_ML_REGION",
-  "GCLOUD_PROJECT",
-  "GOOGLE_CLOUD_PROJECT",
-  "VERTEX_REGION_CLAUDE_3_5_HAIKU",
-  "VERTEX_REGION_CLAUDE_3_5_SONNET",
-  "VERTEX_REGION_CLAUDE_3_7_SONNET",
-  "VERTEX_REGION_CLAUDE_4_0_OPUS",
-  "VERTEX_REGION_CLAUDE_4_0_SONNET",
-  "VERTEX_REGION_CLAUDE_4_1_OPUS",
-  "VERTEX_REGION_CLAUDE_4_5_OPUS",
-  "VERTEX_REGION_CLAUDE_4_5_SONNET",
-  "VERTEX_REGION_CLAUDE_4_6_OPUS",
-  "VERTEX_REGION_CLAUDE_4_6_SONNET",
-  "VERTEX_REGION_CLAUDE_4_7_OPUS",
-  "VERTEX_REGION_CLAUDE_4_8_OPUS",
-  "VERTEX_REGION_CLAUDE_5_OPUS",
-  "VERTEX_REGION_CLAUDE_5_SONNET",
-  "VERTEX_REGION_CLAUDE_FABLE_5",
-  "VERTEX_REGION_CLAUDE_FABLE_5_1",
-  "VERTEX_REGION_CLAUDE_HAIKU_4_5",
-  // Microsoft Foundry.
-  "ANTHROPIC_FOUNDRY_API_KEY",
-  "ANTHROPIC_FOUNDRY_AUTH_TOKEN",
-  "ANTHROPIC_FOUNDRY_BASE_URL",
-  "ANTHROPIC_FOUNDRY_RESOURCE",
-  // Workload Identity Federation / named Anthropic profiles.
-  "ANTHROPIC_PROFILE",
-  "ANTHROPIC_FEDERATION_RULE_ID",
-  "ANTHROPIC_ORGANIZATION_ID",
-  "ANTHROPIC_WORKSPACE_ID",
-  "ANTHROPIC_IDENTITY_TOKEN",
-  "ANTHROPIC_IDENTITY_TOKEN_FILE",
-] as const;
 /** Channel ref for `--dangerously-load-development-channels`, which turns on the cotal MCP server's
  *  `claude/channel` capability so an idle session wakes the instant a peer message arrives. The ref
  *  is the server tagged `server:<name>` (the CLI rejects a plugin ref or a bare name here), and
@@ -151,99 +65,6 @@ function assertServableModel(model: string): void {
       `it through starts a session on a DIFFERENT model than the one named, and everything that ` +
       `session produces would carry the wrong attribution.`,
   );
-}
-
-/** Flags for asking `claude` which models its login can use. With them `claude` reads one `initialize`
- *  control request over stream-json and answers before any user message exists, so asking starts no
- *  turn and spends no tokens. The rest keep the question from starting anything the operator
- *  configured: no MCP server (their own `cotal` server included), no hook and no saved session. */
-const MODELS_ARGS = ["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--strict-mcp-config", "--settings", '{"disableAllHooks":true}', "--no-session-persistence"];
-const MODELS_REQUEST_ID = "cotal-models";
-
-interface ControlLine {
-  type?: unknown;
-  response?: {
-    request_id?: unknown;
-    subtype?: unknown;
-    error?: unknown;
-    response?: { models?: unknown; account?: { tokenSource?: unknown; apiKeySource?: unknown } };
-  };
-}
-
-const unavailable = (why: string): ModelCatalog => ({ models: [], unavailable: why });
-
-function isModelRow(row: unknown): row is { value: string; displayName: string } {
-  const { value, displayName } = (row ?? {}) as { value?: unknown; displayName?: unknown };
-  return typeof value === "string" && typeof displayName === "string";
-}
-
-function initializeAnswer(text: string): ModelCatalog | undefined {
-  let line: ControlLine | null;
-  try {
-    line = JSON.parse(text);
-  } catch {
-    return undefined;
-  }
-  const answer = line?.response;
-  if (line?.type !== "control_response" || answer?.request_id !== MODELS_REQUEST_ID) return undefined;
-  if (answer.subtype === "error") return unavailable(`claude refused to list its models: ${String(answer.error)}`);
-  const result = answer.subtype === "success" ? answer.response : undefined;
-  // Logged out, claude still answers, with its built-in aliases, and no seat of this install can run one.
-  if (result?.account?.tokenSource === "none" && !result.account.apiKeySource) return unavailable("claude is not logged in; run claude to log in");
-  const rows = result?.models;
-  if (!Array.isArray(rows) || !rows.every(isModelRow)) return unavailable("claude answered without a model list");
-  // `default` points at claude's own default model, which a launch that names no model gets anyway.
-  return { source: "claude stream-json initialize", models: rows.filter((m) => m.value !== "default").map((m) => ({ id: m.value, name: m.displayName })) };
-}
-
-async function listClaudeModels(opts: ModelCatalogOpts = {}): Promise<ModelCatalog> {
-  // claude applies the settings of the project it runs in, so it runs in an empty private directory.
-  const cwd = mkdtempSync(join(tmpdir(), "cotal-claude-models-"));
-  const env = launchEnv({ providerKeys: CLAUDE_PROVIDER_KEYS });
-  let child: ChildProcess | undefined;
-  let timer: NodeJS.Timeout | undefined;
-  try {
-    return await new Promise<ModelCatalog>((settle) => {
-      const claude = (child = spawn(opts.resolvedBinaries?.claude ?? "claude", MODELS_ARGS, { cwd, env, stdio: ["pipe", "pipe", "ignore"] }));
-      // The bound also cuts short stopClaude's grace, so the whole read ends within 6s.
-      timer = setTimeout(() => {
-        settle(unavailable("claude did not list its models within 6s"));
-        claude.kill("SIGKILL");
-      }, 6_000);
-      claude.on("error", (e) => settle(unavailable(`claude could not start: ${e.message}`)));
-      // `close` follows the last `data` event, so an answer written just before exit is read first.
-      claude.on("close", (code, signal) => settle(unavailable(`claude exited (${code ?? signal}) before it listed its models`)));
-      // Without this listener, writing to a child that already closed its input is an unhandled error that stops the manager.
-      claude.stdin.on("error", (e) => settle(unavailable(`claude stopped reading before it listed its models: ${e.message}`)));
-      let buf = "";
-      claude.stdout.setEncoding("utf8");
-      claude.stdout.on("data", (chunk: string) => {
-        buf += chunk;
-        for (let nl = buf.indexOf("\n"); nl >= 0; nl = buf.indexOf("\n")) {
-          const answer = initializeAnswer(buf.slice(0, nl));
-          buf = buf.slice(nl + 1);
-          if (answer) settle(answer);
-        }
-      });
-      claude.stdin.write(JSON.stringify({ type: "control_request", request_id: MODELS_REQUEST_ID, request: { subtype: "initialize" } }) + "\n");
-    });
-  } finally {
-    if (child) await stopClaude(child);
-    clearTimeout(timer);
-    rmSync(cwd, { recursive: true, force: true });
-  }
-}
-
-/** After it answers, claude still rewrites its config in the user's home, and it removes the session it
- *  registered there only as it exits. A kill skips both. Closing its input makes claude exit on its own,
- *  so it is killed only if it is still running a second later. */
-async function stopClaude(claude: ChildProcess): Promise<void> {
-  if (claude.exitCode !== null || claude.signalCode !== null) return;
-  const exited = new Promise((done) => claude.once("exit", done));
-  claude.stdin!.end();
-  const force = setTimeout(() => claude.kill("SIGKILL"), 1_000);
-  await exited;
-  clearTimeout(force);
 }
 
 /**
