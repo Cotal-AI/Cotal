@@ -317,7 +317,7 @@ are not cleared. Machine daemons connected with their own service proof keep the
 disconnect behavior described below.
 
 ```bash
-cotal login [--cloud | --idp <auth base URL>] [--client-id <id>] [--no-browser] [--plain]
+cotal login [--cloud | --idp <auth base URL>] [--space <space>] [--client-id <id>] [--no-browser] [--plain]
 cotal logout --idp <auth base URL> [--local]
 ```
 
@@ -339,6 +339,14 @@ space's grant ledger, the refusal names the operator's `cotal actor grant` comma
 Signing in as a different account at the same provider removes the previous account's discovered
 spaces and deletes their sentinel credential files; manual registrations and their files stay. A
 file that cannot be deleted is named, and the login exits 4 (`OPERATION_PARTIAL`) after signing in.
+
+In a claims-source user-auth space, interactive login offers a permanent username if you have
+an interactive grant and no existing username. Use `--space <space>` to choose the space for
+this step, or use the selected space. Accept the suggestion or enter another name. The auth
+service refuses taken and reserved names and the prompt asks again. A piped login or login with
+`--no-browser` caches the session without reserving a name. The username and the chat name are
+separate.
+
 After a login, every command on that mesh works under your identity: each connect takes a fresh IdP
 proof, exchanges it locally for a short-lived bearer, and is authorized against the actor
 ledger at connect time. A rate-limited `/token` read retries once when the IdP supplies a valid

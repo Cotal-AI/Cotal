@@ -6,4 +6,4 @@
 "@cotal-ai/manager": minor
 ---
 
-Per-user-auth spaces let members look up permanent usernames assigned from verified sign-in claims or supplied by a trusted directory.
+Per-user-auth spaces let people confirm a permanent username at sign-in or use one supplied by a trusted directory.

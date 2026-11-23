@@ -32,7 +32,7 @@ import type { UserTokenIssuer } from "./issuer.js";
 import { CLOCK_TOLERANCE_SEC, USER_TOKEN_VIEWS, VIEW_REQUIRED_SCOPE, viewTtlCapSec, type UserTokenSession, type UserTokenTransferWriter, type UserTokenView } from "./token.js";
 import { grantCommandLine } from "./grant-command.js";
 import type { ConnectLimiter } from "./connect-limit.js";
-import type { AssignUsername, UsernameClaims } from "./username-assignment.js";
+import type { AssignUsername, UsernameChoice, UsernameClaims } from "./username-assignment.js";
 
 /** The pinned identity of ONE external IdP. All fields are operator config — nothing in here is
  *  ever read from a presented token. */
@@ -94,7 +94,7 @@ export interface CreateIdpBridgeOpts {
    *  emits a conformant credential id. (`validateUserToken` stays tolerant of an absent claim so
    *  the CONNECT boundary owns the signed deny-new denial for pre-cut/forged tokens.) */
   mintConnectCredential: (args: { owner: string; actor: string; lifecycleUid: string }) => Promise<string>;
-  /** A hosted space assigns usernames before issuing a human bearer. */
+  /** A hosted space can return username state when it issues a human bearer. */
   assignUsername?: AssignUsername;
   /** The dedicated `aud` of `dm-reader` proofs (#4189), from the same pinned IdP issuer and keys.
    *  Explicit operator config: it is never derived from, or defaulted to, `idp.audience`, and
@@ -108,6 +108,7 @@ export interface CreateIdpBridgeOpts {
 
 /** A successful exchange: the minted bearer plus what a caller needs to cache/refresh it. */
 export interface ExchangeResult {
+  username?: UsernameChoice;
   /** The Cotal user bearer (compact JWS) the agent presents in `auth_token`. */
   token: string;
   /** The derived opaque owner the bearer is bound to. */
@@ -378,7 +379,7 @@ export function createIdpBridge(opts: CreateIdpBridgeOpts): IdpBridge {
         ttlSec = Math.min(ttlSec, Math.max(1, session.exp - Math.floor(Date.now() / 1000)));
         notAfter = Math.min(notAfter, session.exp);
       }
-      await opts.assignUsername?.(owner, verified, grant.username);
+      const username = await opts.assignUsername?.(owner, verified, grant.username);
       // Credential-BIND the bearer (SPEC 13.1, R1): the incarnation's live root credential id
       // rides act.credentialId — ensured (minted release-last on first exchange) BEFORE the
       // bearer bytes are signed, so the row the connect arm requires is durable before any
@@ -403,6 +404,7 @@ export function createIdpBridge(opts: CreateIdpBridgeOpts): IdpBridge {
       const { exp } = decodeJwt(token);
       if (typeof exp !== "number") throw new Error("idp bridge: minted bearer is missing exp - issuer contract violated");
       return {
+        ...(username === undefined ? {} : { username }),
         token,
         owner,
         exp,

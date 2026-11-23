@@ -96,6 +96,42 @@ const must = async (label: string, args: string[], timeoutMs?: number) => {
   return result;
 };
 
+async function terminalLogin(expectPrompt: boolean): Promise<{ status: number | null; out: string; prompted: boolean }> {
+  const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
+  const command = [TSX, BIN, "login", "--idp", base, "--space", SPACE, "--plain"].map(quote).join(" ");
+  const child = spawn("script", ["-qec", `stty cols 120 rows 40; exec ${command}`, "/dev/null"], {
+    cwd: root, env: { ...childEnv, DISPLAY: "", WAYLAND_DISPLAY: "", TERM: "xterm" }, stdio: ["pipe", "pipe", "pipe"],
+  });
+  let output = "", approved = false, prompted = false;
+  let approval: Promise<unknown> | undefined;
+  child.stdin.on("error", () => {});
+  const receive = (chunk: Buffer) => {
+    output += chunk.toString();
+    const plain = output.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "");
+    const code = /Approval code:\s*([A-Z0-9-]+)/.exec(plain)?.[1];
+    if (code && !approved) {
+      approved = true;
+      approval = approve(code).catch((error) => { output += String(error); child.kill("SIGTERM"); });
+    }
+    if (!prompted && plain.includes("Choose your permanent username") && plain.includes("human_42")) {
+      prompted = true;
+      if (expectPrompt) child.stdin.write("\r");
+      else child.kill("SIGTERM");
+    }
+  };
+  child.stdout.on("data", receive);
+  child.stderr.on("data", receive);
+  const timer = setTimeout(() => child.kill("SIGTERM"), 25_000);
+  try {
+    const status = await new Promise<number | null>((resolve, reject) => {
+      child.once("error", reject);
+      child.once("close", resolve);
+    });
+    await approval;
+    return { status, out: output.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, ""), prompted };
+  } finally { clearTimeout(timer); }
+}
+
 // ---------- the dev IdP (the bootstrap the user-mode live smokes use) ----------
 let handler: ReturnType<typeof toNodeHandler> | undefined;
 const idpSrv = createServer((req, res) => handler!(req, res));
@@ -199,6 +235,10 @@ try {
   await must("actor grant cli (scope incl. admin)",
     ["actor", "grant", "cli", "--sub", sub, "--full", "--scope", "spawn,role:default,admin", "--label", "smoke human"]);
   const OWNER = await cotalAuthProvider.ownerForLogin({ store: workspaceSecretStore(root), dir: stateDir, space: SPACE });
+  const picked = await terminalLogin(true);
+  check("terminal login displays and confirms the suggested username", picked.status === 0 && picked.prompted && /Username:\s*human_42/.test(picked.out), picked.out);
+  const repeated = await terminalLogin(false);
+  check("the next terminal login reports the permanent name without asking again", repeated.status === 0 && !repeated.prompted && /Username:\s*human_42/.test(repeated.out), repeated.out);
   // A retained MANAGED agent principal: real user-mode agent authority (ledger row + sentinel +
   // actor token), the material a same-principal resume must reuse rather than replace.
   // The uid is minted into a NAMED value rather than inline, because the assertion below compares

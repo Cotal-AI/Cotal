@@ -62,6 +62,7 @@ import type { ActorGrant } from "./idp.js";
 import type { ValidatedUserToken } from "./token.js";
 import type { AclResolver } from "./permissions.js";
 import { loadPinnedIdp } from "./store.js";
+import { validateUsernameChoice } from "./username-assignment.js";
 
 const ACTORS_DIR = "actors";
 const MANAGED_DIR = "managed-actors";
@@ -241,6 +242,18 @@ export function findInteractiveActor(dir: string, owner: string, actor: string):
   return findIn(dir, "interactive", owner, actor);
 }
 
+export function hasInteractiveOwnerGrant(dir: string, owner: string): boolean {
+  const prefix = `${assertDerivedOwnerToken(owner)}.`;
+  const directory = assertRowSpaceDirectory(dir, "interactive");
+  if (!directory) return false;
+  return readdirSync(directory).some((file) => {
+    if (!file.startsWith(prefix) || !file.endsWith(".json")) return false;
+    const actor = file.slice(prefix.length, -5);
+    if (!/^[A-Za-z0-9_]+$/.test(actor) || chatSessionAliasPresent(dir, owner, actor)) return false;
+    return findInteractiveActor(dir, owner, actor)?.lifecycleUid !== undefined && !findManagedActor(dir, owner, actor);
+  });
+}
+
 export function findManagedActor(dir: string, owner: string, actor: string): ActorRow | undefined {
   return findIn(dir, "managed-agent", owner, actor);
 }
@@ -331,7 +344,7 @@ function rawGrantInteractive(dir: string, row: Omit<ActorRow, "grantedAt">): Act
   if (row.username !== undefined) {
     if (loadPinnedIdp(dir)?.username?.source !== "directory")
       throw new Error('grantActor: a supplied username requires the space username source "directory"');
-    assertValidUsername(row.username);
+    validateUsernameChoice(row.username);
   }
   assertNotChatAlias(dir, row.owner, row.actor, "grantActor");
   if (row.tokenHash !== undefined)

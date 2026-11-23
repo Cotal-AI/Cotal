@@ -313,6 +313,22 @@ request has no username input.
 At startup the auth service reports orphan registry keys. It completes reservations only for
 their recorded owners when those owners have no binding. It does not delete orphan keys.
 
+`POST /username/pick` accepts `{ idpToken }` and returns `{ suggestion }` for an unbound claims
+owner or `{ username }` for an existing binding. Include `username` to confirm a choice. The
+service verifies the proof and the owner's interactive grant, and derives the owner itself.
+Directory spaces return an empty object when asked for a suggestion. The public listener accepts
+the verified proof. The loopback listener also requires the local auth-service capability.
+
+The trusted directory can call loopback-only `POST /username/reserve` with `{ owner, username }`
+before writing its grant. It needs the local auth-service capability. The same pair can be
+retried. An invalid, reserved, or different value is refused. A conflicting reservation returns
+409. A directory grant can still bind the supplied value during exchange.
+
+For an inactive owner, `cotal auth backfill-username <owner> --space <space>` reserves a generated
+suggestion in a claims-source space. It requires the owner to have an interactive grant and keeps
+any existing binding. It calls loopback-only `POST /username/backfill` with `{ owner }` and the
+auth-service capability. It does not read an inactive owner's IdP profile.
+
 Clients can use `readUsername` or `readUsernameOwner` from `@cotal-ai/core`. A missing binding
 returns `undefined`. A failed broker read throws `UsernameRegistryReadError` with code `denied`
 or `unavailable`, so clients do not infer that a name is absent from a failed lookup.

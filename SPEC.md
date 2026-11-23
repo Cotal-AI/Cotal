@@ -541,15 +541,21 @@ binding. Further reservations for that owner stay reserved and unused. Grant rev
 owner deletion MUST leave both keys in place. The service MUST NOT rewrite a binding, delete a
 reservation, or reassign a reserved username to a different owner.
 
-A space selects exactly one username source. The default uses verified `preferred_username`,
-then a verified `name`, then a generated `user_<short>` name. Email addresses in name claims are
-not username candidates. The operator MAY opt in to using the email local part before the
-generated name. The derived name may gain a suffix on collision.
+A space selects exactly one username source. The default suggests a name from verified
+`preferred_username`, then verified `name`, then a generated `user_<short>` name. Email addresses
+in name claims are not candidates. The operator MAY opt in to using the email local part before
+the generated name. A suggestion MAY gain a suffix if taken. Suggesting a name MUST NOT reserve
+it. The owner confirms a choice once at interactive sign-in. The auth service MUST refuse a
+confirmed choice already reserved by another owner or equal to `admin`, `cotal`, `support`,
+`root`, or `system`. It MUST NOT rewrite a confirmed choice or replace a confirmed binding.
+An exchange without confirmation can succeed without binding a name. An operator MAY backfill
+one already granted, unbound owner with a generated suggestion.
 A claims-source grant MUST refuse a supplied username. A directory-source grant can carry a
 trusted username. At the next exchange the service validates and binds that exact value or
 refuses an invalid, conflicting, or different binding. A directory row without a supplied value
 can exchange without creating a binding. Replacing an existing grant with a row that omits the
-username MUST leave any existing binding intact. Participants cannot set or rename a username.
+username MUST leave any existing binding intact. The directory MAY reserve its exact name
+through the trusted auth host before writing the grant. Participants cannot rename a username.
 
 Space membership is the visibility boundary for username reads. Any member may read both
 directions in its space. Credentials outside the space cannot read either direction. The broker

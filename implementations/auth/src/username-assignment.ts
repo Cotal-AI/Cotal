@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { Kvm } from "@nats-io/kv";
 import { jetstreamManager, JetStreamApiCodes, type JetStreamClient, type JetStreamManager } from "@nats-io/jetstream";
 import type { NatsConnection } from "@nats-io/transport-node";
-import { assertDerivedOwnerToken, assertValidUsername, canonicalBackupStreamConfig, DEV_OWNER, isCasLoss, isJetStreamMissing, PLATFORM_OWNER_PREFIX, usernameBucket, USERNAME_MAX_LENGTH, validateCanonicalBackupStreamConfig, walkKvLatest } from "@cotal-ai/core";
+import { assertDerivedOwnerToken, assertValidUsername, canonicalBackupStreamConfig, DEV_OWNER, EpEnvelopeError, isCasLoss, isJetStreamMissing, PLATFORM_OWNER_PREFIX, usernameBucket, USERNAME_MAX_LENGTH, validateCanonicalBackupStreamConfig, walkKvLatest } from "@cotal-ai/core";
 import { serializedFor } from "./serialized.js";
 import type { ScanGuard } from "./plane-claim.js";
 import { parseUsernamePolicy, type UsernamePolicy } from "./username-policy.js";
@@ -13,7 +13,33 @@ export interface UsernameClaims {
   name?: string;
 }
 
-export type AssignUsername = (owner: string, claims: UsernameClaims, supplied?: string) => Promise<string | undefined>;
+export type UsernameChoice = { username: string } | { suggestion: string };
+export type AssignUsername = (owner: string, claims: UsernameClaims, supplied?: string) => Promise<UsernameChoice | undefined>;
+export interface UsernameAssignment {
+  exchange: AssignUsername;
+  choose(owner: string, claims: UsernameClaims, username?: string): Promise<UsernameChoice | undefined>;
+  reserveDirectory(owner: string, username: string): Promise<{ username: string }>;
+  backfill(owner: string): Promise<{ username: string }>;
+}
+
+export function fenceUsernameAssignment(assignment: UsernameAssignment, assertOpen: () => void): UsernameAssignment {
+  return {
+    exchange: (...args) => { assertOpen(); return assignment.exchange(...args); },
+    choose: (...args) => { assertOpen(); return assignment.choose(...args); },
+    reserveDirectory: (...args) => { assertOpen(); return assignment.reserveDirectory(...args); },
+    backfill: (...args) => { assertOpen(); return assignment.backfill(...args); },
+  };
+}
+
+const RESERVED_USERNAMES: ReadonlySet<string> = new Set(["admin", "cotal", "support", "root", "system"]);
+
+export function validateUsernameChoice(value: unknown): string {
+  let username: string;
+  try { username = assertValidUsername(value); }
+  catch (error) { throw new EpEnvelopeError("bad-request", (error as Error).message); }
+  if (RESERVED_USERNAMES.has(username)) throw new EpEnvelopeError("bad-request", `username ${username} is reserved`);
+  return username;
+}
 
 export function usernameWriterGrants(space: string): string[] {
   const bucket = usernameBucket(space);
@@ -97,7 +123,7 @@ async function reconcileReservations(kv: Awaited<ReturnType<typeof openRegistry>
 }
 
 /** Both writes are create-only. A reader accepts only the reciprocal pair elected by the forward key. */
-export async function openUsernameAssignment(nc: NatsConnection, space: string, guard: ScanGuard, log: (line: string) => void, config?: UsernamePolicy): Promise<AssignUsername> {
+export async function openUsernameAssignment(nc: NatsConnection, space: string, guard: ScanGuard, log: (line: string) => void, config?: UsernamePolicy): Promise<UsernameAssignment> {
   const policy = parseUsernamePolicy(config);
   const bucket = usernameBucket(space);
   const jsm = await jetstreamManager(nc);
@@ -106,38 +132,62 @@ export async function openUsernameAssignment(nc: NatsConnection, space: string, 
   const create = (key: string, value: string) => createKey(jsm.jetstream(), `$KV.${bucket}.${key}`, value);
   await reconcileReservations(kv, create, guard, (line) => log(`username registry ${bucket}: ${line}`));
   const owners = new Map<string, Promise<unknown>>();
-  const assigned = async (owner: string, supplied?: string) => {
+  const assigned = async (owner: string) => {
     const value = await read(`owner.${owner}`);
     if (value === undefined) return undefined;
     const username = assertValidUsername(value);
     if (await read(`username.${username}`) !== owner) throw new Error("the username registry contains an inconsistent owner binding");
-    if (supplied !== undefined && username !== supplied) throw new Error("the owner already has a different username");
     return username;
   };
-  const assign: AssignUsername = async (owner, claims, supplied) => {
-    try {
-      if (owner === DEV_OWNER || owner.startsWith(PLATFORM_OWNER_PREFIX)) return undefined;
-      assertDerivedOwnerToken(owner);
-      if (policy.source === "directory" && supplied === undefined) return undefined;
-      if (policy.source === "claims" && supplied !== undefined) throw new Error('a supplied username requires the space username source "directory"');
-      if (supplied !== undefined) assertValidUsername(supplied);
-      const current = await assigned(owner, supplied);
-      if (current !== undefined) return current;
-      const base = supplied ?? derivedUsername(owner, claims, policy.source === "claims" && policy.emailLocalPart === true);
-      for (let attempt = 0; attempt < (supplied === undefined ? 16 : 1); attempt++) {
-        const suffix = `_${createHash("sha256").update(`${owner}:${attempt}`).digest("hex").slice(0, 6)}`;
-        const username = attempt === 0 ? base : base.slice(0, USERNAME_MAX_LENGTH - suffix.length) + suffix;
-        const key = `username.${username}`;
-        if (!await create(key, owner) && await read(key) !== owner) continue;
-        if (await create(`owner.${owner}`, username)) return username;
-        const winner = await assigned(owner, supplied);
-        if (winner !== undefined) return winner;
-        throw new Error("the elected owner binding could not be read");
-      }
-      throw new Error(supplied === undefined ? "no username candidate could be reserved" : "the directory username is already reserved for another owner");
-    } catch (error) {
-      throw new Error(`username assignment failed: ${error instanceof Error ? error.message : String(error)}`, { cause: error });
+  const suggest = async (owner: string, claims: UsernameClaims) => {
+    const base = derivedUsername(owner, claims, policy.source === "claims" && policy.emailLocalPart === true);
+    for (let attempt = 0; attempt < 16; attempt++) {
+      const suffix = `_${createHash("sha256").update(`${owner}:${attempt}`).digest("hex").slice(0, 6)}`;
+      const username = attempt === 0 ? base : base.slice(0, USERNAME_MAX_LENGTH - suffix.length) + suffix;
+      if (RESERVED_USERNAMES.has(username)) continue;
+      const reservedFor = await read(`username.${username}`);
+      if (reservedFor === undefined || reservedFor === owner) return username;
     }
+    throw new Error("no available username suggestion");
   };
-  return (owner, claims, supplied) => serializedFor(owners, owner, () => assign(owner, claims, supplied));
+  const reserve = async (owner: string, value: string) => {
+    const username = validateUsernameChoice(value);
+    const current = await assigned(owner);
+    if (current === username) return { username };
+    if (current !== undefined) throw new EpEnvelopeError("conflict", "the owner already has a different username");
+    const key = `username.${username}`;
+    if (!await create(key, owner) && await read(key) !== owner)
+      throw new EpEnvelopeError("conflict", "the username is already reserved for another owner");
+    if (await create(`owner.${owner}`, username) || await assigned(owner) === username) return { username };
+    throw new EpEnvelopeError("conflict", "the owner already has a different username");
+  };
+  const forOwner = <T>(owner: string, fn: () => Promise<T>) => serializedFor(owners, assertDerivedOwnerToken(owner), fn);
+  const requireSource = (source: UsernamePolicy["source"]) => {
+    if (policy.source !== source) throw new EpEnvelopeError("failed-precondition", `this space does not use the ${source} username source`);
+  };
+  const choose = (owner: string, claims: UsernameClaims, username?: string) => forOwner(owner, async () => {
+    if (policy.source !== "claims" && username === undefined) return undefined;
+    requireSource("claims");
+    if (username !== undefined) return reserve(owner, username);
+    const current = await assigned(owner);
+    return current === undefined ? { suggestion: await suggest(owner, claims) } : { username: current };
+  });
+  return {
+    choose,
+    exchange: async (owner, claims, supplied) => {
+      if (owner === DEV_OWNER || owner.startsWith(PLATFORM_OWNER_PREFIX)) return undefined;
+      if (policy.source === "claims") {
+        if (supplied !== undefined) throw new Error('a supplied username requires the space username source "directory"');
+        return choose(owner, claims);
+      }
+      if (supplied !== undefined) return forOwner(owner, () => reserve(owner, supplied));
+      return undefined;
+    },
+    reserveDirectory: (owner, username) => forOwner(owner, () => { requireSource("directory"); return reserve(owner, username); }),
+    backfill: (owner) => forOwner(owner, async () => {
+      requireSource("claims");
+      const current = await assigned(owner);
+      return current === undefined ? reserve(owner, await suggest(owner, {})) : { username: current };
+    }),
+  };
 }

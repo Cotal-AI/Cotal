@@ -30,10 +30,10 @@ const spec = JSON.parse(readFileSync(new URL('../openapi.json', import.meta.url)
   components: { schemas: Record<string, Schema>; responses: Record<string, ResponseEntry> };
 };
 assert.equal(spec.openapi, '3.1.0');
-assert.equal(Object.keys(spec.paths).length, 12);
+assert.equal(Object.keys(spec.paths).length, 13);
 const operations = Object.values(spec.paths).flatMap(Object.values);
-assert.equal(operations.length, 13);
-assert.equal(new Set(operations.map(op => op.operationId)).size, 13);
+assert.equal(operations.length, 14);
+assert.equal(new Set(operations.map(op => op.operationId)).size, 14);
 for (const op of operations) assert.match(op.operationId, /^[a-z][a-z0-9-]*$/);
 // @exodus/schemasafe uses draft-07; this contract uses its shared JSON Schema
 // subset. No OpenAPI-specific nullable keyword or remote schema loading is used.
@@ -174,6 +174,11 @@ try {
   const minted = await request(base, '/exchange', 'POST', 200, { idpToken, actor: 'cli' });
   const claims = await jwtVerify(minted.token as string, createLocalJWKSet(keys as unknown as JSONWebKeySet));
   assert.equal(claims.payload.sub, owner);
+  const choice = await request(base, '/username/pick', 'POST', 200, { idpToken });
+  assert.equal(typeof choice.suggestion, 'string');
+  await request(base, '/username/pick', 'POST', 400, { idpToken, username: 'admin' });
+  const picked = await request(base, '/username/pick', 'POST', 200, { idpToken, username: choice.suggestion });
+  assert.equal(picked.username, choice.suggestion);
   const { token: _token, ...missingToken } = minted;
   rejects(spec.components.schemas.Bearer, missingToken);
   rejects(spec.components.schemas.Bearer, { ...minted, exp: 'later' });
@@ -288,9 +293,9 @@ try {
   }
   assert(nativeThrottles > 0, 'Native dispatch failures after a valid proof must consume the public refusal budget');
   await request(base, '/exchange', 'POST', 200, { idpToken, actor: 'cli' });
-  assert.equal(coverage.size, 13, 'Every documented operation must receive an actual HTTP request');
-  assert.equal(success.size, 13, 'Every documented operation must produce a schema-valid HTTP 200 response');
-  console.log(`auth openapi smoke: ${checks} schema checks; ${coverage.size}/13 operations exercised; ${success.size}/13 success shapes exercised`);
+  assert.equal(coverage.size, 14, 'Every documented operation must receive an actual HTTP request');
+  assert.equal(success.size, 14, 'Every documented operation must produce a schema-valid HTTP 200 response');
+  console.log(`auth openapi smoke: ${checks} schema checks; ${coverage.size}/14 operations exercised; ${success.size}/14 success shapes exercised`);
   console.log('Not exercised: complete chat retirement; service authority approved registration/activation/renewal/ready and their native effect states; manager phases after prepare; admission saturation; deadline cutoff. Dedicated native suites own those paths.');
 } finally {
   if (daemon) await killAndAwaitExit(daemon, 'SIGTERM');
