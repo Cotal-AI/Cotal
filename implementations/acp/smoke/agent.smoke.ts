@@ -37,7 +37,8 @@
  *  - where seats serve their `agent` endpoint, a prompt the harness opens is asked once as a
  *    permission request, without options ACP cannot answer and only when its digest matches, and the
  *    answer goes back with that digest; a prompt whose read fails once is logged, read again and
- *    asked once; the seat's commands and skills are offered and run through
+ *    asked once; a prompt opened while the thread runs no turn is asked on its next prompt, whose
+ *    turn stays open until the client answers; the seat's commands and skills are offered and run through
  *    `command`, and a refused one is said in the thread. Where they do not, nothing calls it.
  *
  * Run: pnpm --filter @cotal-ai/acp test
@@ -202,7 +203,7 @@ class MemoryHidden implements HiddenSessions {
 function connect(open: () => Promise<Mesh>, terminal = true, canSignIn = async () => true) {
   const updates: SessionNotification[] = [];
   const asked: RequestPermissionRequest[] = [];
-  const answers: { pick: (r: RequestPermissionRequest) => RequestPermissionResponse } = { pick: () => ({ outcome: { outcome: "cancelled" } }) };
+  const answers: { pick: (r: RequestPermissionRequest) => RequestPermissionResponse | Promise<RequestPermissionResponse> } = { pick: () => ({ outcome: { outcome: "cancelled" } }) };
   const hidden = new MemoryHidden();
   const links = new MemoryLinks();
   const logs: string[] = [];
@@ -936,6 +937,55 @@ for (const others of [["m2"], ["m2", "m3"]]) {
   space.present.set(seat.actor, "idle");
   space.emit(seat, [{ type: "RUN_FINISHED", runId: "r1" }]);
   check("the turn ends on its run", (await turn)?.stopReason === "end_turn");
+  c.conn.close();
+}
+// A prompt the seat opens while the thread runs no turn, as when it works on mesh traffic between
+// the thread's turns. A client takes a permission request only within a turn, so the thread's next
+// prompt asks it, and that turn stays open until the client answers.
+{
+  const space = new FakeMesh();
+  space.agentEndpoints = true;
+  const c = connect(async () => space);
+  await c.init;
+  const at = new Date().toISOString();
+  const content: PromptContent = { kind: "permission", title: "Run ls?", options: [{ id: "yes", label: "Yes", effect: "proceed" }, { id: "no", label: "No", effect: "refuse" }] };
+  const p1: AgentPrompt = { id: "p1", digest: agentPromptDigest(content), openedAt: at, expiresAt: at, state: { kind: "open" }, content };
+  const summary: PromptSummary = { id: "p1", digest: p1.digest, openedAt: at, expiresAt: at, state: p1.state, kind: "permission", title: content.title, contentBytes: 1 };
+  let open: PromptSummary[] = [];
+  let seq = 0;
+  space.onAgentCall = (_seat, command) => {
+    if (command === "prompts") return { runtime: { id: "rt", startedAt: 1 }, seq, open, closed: [] };
+    if (command === "prompt") return { prompt: p1 };
+    if (command === "prompt-answer") return { state: { kind: "sent" } };
+    throw new AgentCallFailed(`unexpected ${command}`, "unimplemented");
+  };
+  const callsOf = (command: string) => space.agentCalls.filter((x) => x.command === command);
+  const s = await c.agent.request(methods.agent.session.new, { cwd: dir, mcpServers: [] });
+  const seat: SeatRef = { name: "acp-s1", owner: "local", actor: "actor-acp-s1", lifecycleUid: "life-acp-s1" };
+  space.script = { before: [[{ type: "RUN_STARTED", runId: "r1" }]], after: [[{ type: "RUN_FINISHED", runId: "r1" }]] };
+  space.counters.set(seat.actor, { runtime: "rt", open: 0, seq });
+  const first = await within(c.agent.request(methods.agent.session.prompt, { sessionId: s.sessionId, prompt: [{ type: "text", text: "go" }] }));
+  space.present.set(seat.actor, "idle");
+  await tick(300);
+  open = [summary];
+  seq = 1;
+  space.counters.set(seat.actor, { runtime: "rt", open: 1, seq });
+  space.present.set(seat.actor, "waiting");
+  await tick(1000);
+  check("a prompt the seat opens between the thread's turns is read but not asked outside a turn", first?.stopReason === "end_turn" && callsOf("prompt").length === 1 && c.asked.length === 0, { first, fetches: callsOf("prompt").length, asks: c.asked.length });
+  check("the bridge logs that it waits for the thread's next turn", c.logs.some((l) => l.includes("prompt p1 waits for the thread's next turn")), c.logs);
+  let reply!: (r: RequestPermissionResponse) => void;
+  c.answers.pick = () => new Promise((r) => { reply = r; });
+  let answered = false;
+  const next = within(c.agent.request(methods.agent.session.prompt, { sessionId: s.sessionId, prompt: [{ type: "text", text: "next" }] })).then((r) => { answered = true; return r; });
+  await tick(1200);
+  check("the thread's next prompt asks it", c.asked.length === 1 && c.asked[0]?.toolCall.title === "acp-s1 asks: Run ls?", c.asked);
+  check("and its turn stays open while the client has not answered", !answered, { answered });
+  reply({ outcome: { outcome: "selected", optionId: "yes" } });
+  space.present.set(seat.actor, "working");
+  await tick(300);
+  space.present.set(seat.actor, "idle");
+  check("once answered, the answer goes back and the turn ends", (await next)?.stopReason === "end_turn" && callsOf("prompt-answer").length === 1 && callsOf("prompt-answer")[0]!.args.option === "yes", { next: await next, answers: callsOf("prompt-answer") });
   c.conn.close();
 }
 // /name, /open and the thread links.

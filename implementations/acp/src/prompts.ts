@@ -61,27 +61,45 @@ export function permissionRequest(sessionId: string, seatName: string, harness: 
   };
 }
 
-/** One seat's prompts as the bridge follows them: the counter it last read in full, and the prompts
- *  already read, so each is asked once. */
+/** One seat's prompts, followed while the thread drives the seat: the counter last read in full, the
+ *  prompts already asked, and the prompts read while no turn runs. A client takes a permission request
+ *  only within a prompt turn, and T3 Code refuses one outside it, so those wait for the next turn. */
 export class PromptFollower {
   private read?: { runtime: string; seq: number };
   private readonly asked = new Set<string>();
+  private readonly held = new Map<string, AgentPrompt>();
   private reading = false;
+  private asking = 0;
+  private readonly timer: NodeJS.Timeout;
 
   constructor(
     private readonly m: Mesh,
     private readonly seat: SeatRef,
     private readonly ask: (prompt: AgentPrompt) => Promise<void>,
     private readonly log: (line: string) => void,
-  ) {}
+    private readonly inTurn: () => boolean,
+    everyMs: number,
+  ) {
+    this.timer = setInterval(() => this.check(), everyMs);
+  }
+
+  /** Stop following, when the thread lets go of the seat. */
+  stop(): void {
+    clearInterval(this.timer);
+  }
+
+  /** An ask the client has not answered yet. A turn does not end while one is open. */
+  get pending(): boolean {
+    return this.asking > 0;
+  }
 
   /** Read the seat's open prompts when its presence counter moved past the last list read in full,
-   *  and ask each new one. A failed read of the list or of a prompt is logged and leaves the list
-   *  unread, so the next check reads it again. */
-  check(): void {
+   *  and ask each new one while a turn runs. A failed read of the list or of a prompt is logged and
+   *  leaves the list unread, so the next check reads it again. */
+  private check(): void {
     const now = this.m.promptCounter(this.seat);
     if (!now || this.reading) return;
-    if (this.read && this.read.runtime === now.runtime && this.read.seq >= now.seq) return;
+    if (this.read && this.read.runtime === now.runtime && this.read.seq >= now.seq) return this.release();
     this.reading = true;
     void this.list().finally(() => (this.reading = false));
   }
@@ -96,12 +114,16 @@ export class PromptFollower {
     }
     // A list older than one already taken for this runtime is stale.
     if (this.read && this.read.runtime === out.runtime.id && out.seq < this.read.seq) return;
-    const fresh = out.open.filter((summary) => summary.state.kind === "open" && !this.asked.has(summary.id));
+    const open = out.open.filter((summary) => summary.state.kind === "open");
+    // A held prompt that closed, as one answered at the seat's terminal, is not asked.
+    for (const id of this.held.keys()) if (!open.some((summary) => summary.id === id)) this.held.delete(id);
+    const fresh = open.filter((summary) => !this.asked.has(summary.id) && !this.held.has(summary.id));
     const read = await Promise.all(fresh.map((summary) => this.fetch(summary.id)));
     if (read.every(Boolean)) this.read = { runtime: out.runtime.id, seq: out.seq };
+    this.release();
   }
 
-  /** Read one prompt and ask it without waiting for the answer. False when the read failed. */
+  /** Read one prompt and hold it to ask. False when the read failed. */
   private async fetch(id: string): Promise<boolean> {
     let prompt: AgentPrompt;
     try {
@@ -110,14 +132,28 @@ export class PromptFollower {
       this.log(`${this.seat.name}: prompt ${id} not read: ${(e as Error).message}`);
       return false;
     }
-    this.asked.add(id);
     // SPEC 13.22: never render or answer content whose digest does not match.
     if (agentPromptDigest(prompt.content) !== prompt.digest) {
+      this.asked.add(id);
       this.log(`${this.seat.name}: prompt ${id} dropped: its content does not match its digest`);
       return true;
     }
-    void this.ask(prompt).catch((e: Error) => this.log(`${this.seat.name}: prompt ${id}: ${e.message}`));
+    this.held.set(id, prompt);
+    if (!this.inTurn()) this.log(`${this.seat.name}: prompt ${id} waits for the thread's next turn, since a client takes a permission request only within one`);
     return true;
+  }
+
+  /** Ask each held prompt while a turn runs, without waiting for the answers. */
+  private release(): void {
+    if (!this.inTurn()) return;
+    for (const [id, prompt] of this.held) {
+      this.held.delete(id);
+      this.asked.add(id);
+      this.asking++;
+      void this.ask(prompt)
+        .catch((e: Error) => this.log(`${this.seat.name}: prompt ${id}: ${e.message}`))
+        .finally(() => this.asking--);
+    }
   }
 }
 
