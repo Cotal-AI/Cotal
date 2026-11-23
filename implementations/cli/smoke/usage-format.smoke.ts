@@ -985,6 +985,27 @@ if (process.platform !== "win32") {
   check("telemetry runs from a removed folder", telemetry.status === 0 && telemetry.stdout.includes('"outcome":"ok"'), shown(telemetry));
 }
 
+{
+  const relativeHome = { COTAL_HOME: "relative" };
+  for (const [stream, args, target] of [
+    ["watch", ["watch"], { requestedSpace: null }],
+    ["history", ["history", "review", "--follow"], { space: null, channel: "review", dms: false }],
+    ["membership", ["channel", "members", "review", "--follow"], { space: null, channel: "review" }],
+  ] as const) {
+    const r = run([...args, "--json"], relativeHome);
+    const records = r.stdout.trimEnd().split("\n").map((line) => JSON.parse(line || "{}"));
+    check(`${stream} frames a relative COTAL_HOME refusal without a snapshot`, r.status === 1 && r.stderr === ""
+      && records.length === 2 && records.every((record) => record.schemaVersion === 1 && record.stream === stream && Object.entries(target).every(([key, value]) => record.target?.[key] === value))
+      && records[0]?.type === "error" && records[0].data?.code === "USAGE_INVALID"
+      && records[0].data?.message?.startsWith('COTAL_HOME "relative" is a relative path')
+      && records[0].data?.remedy?.startsWith("set COTAL_HOME to an absolute path, or unset it to use ")
+      && records[1]?.type === "end" && records[1].data?.reason === "setup-failed", shown(r));
+  }
+  const finite = run(["history", "review", "--json"], relativeHome);
+  check("finite history with a relative COTAL_HOME still emits one usage refusal", finite.status === 1 && finite.stderr === ""
+    && parsed(finite)?.error?.code === "USAGE_INVALID", shown(finite));
+}
+
 // A folder whose `.cotal` is a file, such as a notes file: every command names it and runs nothing.
 {
   const notes = mkdtempSync(join(home, "notes-"));
