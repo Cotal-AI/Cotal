@@ -747,6 +747,12 @@ try {
   const requested = `nats://127.0.0.1:${await freePort()}`;
   const inUse = run(["up", "--server", requested], legacy);
   const otherNameHere = run(["up", "--space", "separate", "--server", requested], legacy);
+  for (const flags of [["--root", legacy], ["--json"], ["--plain"]]) {
+    const r = run(["up", "--space", "separate", "--server", requested, ...flags], legacy);
+    const remedy = r.envelope?.error?.remedy ?? r.stderr;
+    check(`a second space with ${flags[0]} needs a separate prepared root and keeps the startup options`,
+      r.status === 2 && remedy.includes("`cotal space create --root <new-folder> -- separate`") && remedy.includes("--root set to that folder and the other options unchanged"), shown(r));
+  }
   // A regression that took the name over started a stack, which is stopped before the cell fails.
   if (started(legacy)) { sandbox(legacy); run(["down", "--yes"], legacy); }
   removeMesh("main");
