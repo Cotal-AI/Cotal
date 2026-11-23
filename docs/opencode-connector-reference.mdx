@@ -243,7 +243,9 @@ through OpenCode's message list, `GET /api/session/:id/message`, from its first 
 each item once it is final. Text and reasoning are final when their model step has finished
 streaming, and a tool call when it has completed or failed. OpenCode 2.x keeps a streaming text empty
 in that list until the text ends, so assistant text arrives whole at the end of each step. A 2.x
-session's activity on the event stream is what prompts each read.
+session's activity on the event stream is what prompts each read. Each finished tool call is followed
+by a `cotal.toolResult` marker, which carries the call id and whether OpenCode recorded the call as
+failed, and nothing the tool read or returned.
 
 Four things are specific to OpenCode and worth knowing before you read a stream:
 

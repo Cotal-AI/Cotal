@@ -5,7 +5,8 @@
  *
  * - `text`      -> `TEXT_MESSAGE_*`, assistant only
  * - `reasoning` -> `REASONING_*`, off by default
- * - `tool`      -> `TOOL_CALL_START` / `ARGS` / `END` / `RESULT`, `toolCallId` is the native call id
+ * - `tool`      -> `TOOL_CALL_START` / `ARGS` / `END` / `RESULT`, `toolCallId` is the native call id,
+ *   then the `cotal.toolResult` marker with the element's own error status
  * - `user`      -> nothing of its own: it closes the open run, because a new turn began. Its text is
  *   never published, for the 1.x reason: a peer batch is prepended into the person's own prompt, so
  *   the record has no boundary between the two authors to filter on.
@@ -31,6 +32,7 @@ import {
   toolCallArgs,
   toolCallEnd,
   toolCallResult,
+  toolResultMarker,
   reasoningMessageStart,
   reasoningMessageContent,
   reasoningMessageEnd,
@@ -116,6 +118,7 @@ export function createOpenCode2Mapper(opts: OpenCode2MapperOptions): RecordMappe
           timestamp: ts,
           ...(isError ? { cotal: { isError: true } } : {}),
         }),
+        toolResultMarker({ toolCallId: element.id, isError, timestamp: ts }),
       );
     }
 
