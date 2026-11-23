@@ -80,6 +80,8 @@ export interface OpenCodeMapper {
  *   usage to `cotal.usage` on `RUN_FINISHED`. `CotalMeta.usage` is that carrier, and filling it is
  *   a change of its own, so v1 still drops the numbers.
  * - `file`, `patch`, `snapshot`, `subtask`, `agent`, `retry`, `compaction` -> nothing in v1 (§3.4).
+ * - `error`, the source's stand-in for an assistant message that failed before any part -> nothing
+ *   of its own. Like every assistant record it opens the run, which the `session.error` closes.
  *
  * **THERE IS NO `RUN_ERROR` ARM HERE, AND THAT IS A STATEMENT ABOUT WHERE IT LIVES.**
  * §3.2 maps `session.error` to `RUN_ERROR`, and a failed turn IS published as one — but not from
