@@ -56,6 +56,7 @@ To list the models your pi can run, use `cotal models --harness pi`.
 It lists each model as `provider/id` for the providers pi holds credentials for.
 With no credentials, it reports `pi lists no models because it holds no provider credentials; sign in with /login in pi or set a provider API key`.
 Provider keys come from the connector's declared list and the names explicitly allowed in `spawn.env`.
+The list is read with the environment a seat gets, so a `PI_CODING_AGENT_DIR` named in `spawn.env` selects its models too.
 See [Launcher variables](config.mdx#launcher-variables) when a provider needs another variable.
 
 To give pi an initial task, add `--prompt`:
