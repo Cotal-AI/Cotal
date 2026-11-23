@@ -401,6 +401,11 @@ program does not reach that effect. The refusal names the results file and the f
 If the `clock.wait` delay is longer than the step's `timeout`, the simulated wait returns `null`
 and advances virtual time only to that timeout.
 
+A simulated `turn` or `ask` rejects a reply that arrives at or after the step's `deadline`.
+All `ask` attempts share one deadline, and `clock.ask` is the delay for each attempt. When the
+deadline expires, virtual time advances only to that deadline. The step fails with `L4003` for
+`turn` or `L4006` for `ask`.
+
 A checkpoint scripted as `expired` expires at the step's `timeout`, as a live deadline does. A
 resolved checkpoint, or an expired one without a `timeout`, takes the `clock.checkpoint` delay.
 
