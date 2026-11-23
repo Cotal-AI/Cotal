@@ -253,8 +253,9 @@ async function createOmittedInfrastructure(
   broker: IsolatedBroker,
   space: string,
   restored: readonly string[],
+  userAuth: boolean,
 ): Promise<void> {
-  const inventory = spaceBackupInventory(space);
+  const inventory = spaceBackupInventory(space, { usernames: userAuth });
   // The workflow stores are endpoint stores: createEndpointStreams below creates the ones the
   // artifact did not hold and verifies the restored ones.
   const workflow = inventory.backedUp.filter((entry) => entry.class === "workflow").map((entry) => entry.name);
@@ -329,7 +330,7 @@ export async function restoreAndValidate(
   for (const name of wanted) await restoreStream(broker, space, snapshotDir, pass, staged.manifest.streams.find((entry) => entry.stream === name)!);
   for (const name of wanted)
     await validateRestoredStream(broker, space, staged.manifest.streams.find((entry) => entry.stream === name)!, 0);
-  if (completeInfrastructure) await createOmittedInfrastructure(broker, space, wanted);
+  if (completeInfrastructure) await createOmittedInfrastructure(broker, space, wanted, staged.manifest.mode === "user");
   if (!onlyRegistry) for (const checkpoint of checkpoints) await recreateCheckpoint(broker, space, checkpoint);
   if (!onlyRegistry) for (const name of wanted) {
     const count = checkpoints.filter((checkpoint) => checkpoint.stream === name).length;

@@ -529,14 +529,24 @@ A per-user-auth space records immutable owner usernames in the JetStream KV buck
 has no expiry. The value of `owner.<owner>` is the UTF-8 username. The value of
 `username.<username>` is the UTF-8 owner token. A username has 1 to 40 characters drawn from
 `[a-z0-9_]`, may start with a digit, and is unique in the space. Open and no-login spaces have no
-bindings. The reserved owner `local` never has a binding.
+bindings. The reserved owner `local` and platform owners (`p_`) never have bindings. Per-user-auth
+space setup creates the bucket before members connect.
 
 Only the auth service writes these keys during ordinary operation. It uses create-only revision
 checks to reserve the username key before writing the owner key. A reader MUST observe both keys
-agreeing before it reports an assignment. A failed read does not prove absence. The service
-assigns a username on first use of an authorized human grant, using the verified identity or a
-name supplied by the trusted grant authority. The service MUST validate a supplied name without
-rewriting or suffixing it. Participants cannot set or rename a username.
+agreeing before it reports an assignment. Not found, permission denied, and unavailable are
+distinct results. At startup the auth service completes an existing reservation for an owner with
+no binding. Further reservations for that owner stay reserved and unused. Grant revocation and
+owner deletion MUST leave both keys in place. The service MUST NOT rewrite a binding, delete a
+reservation, or reassign a reserved username to a different owner.
+
+A space selects exactly one username source. The default uses verified `preferred_username`,
+then a verified `name`, then a generated `user_<short>` name. The operator MAY opt in to using
+the email local part before the generated name. The derived name may gain a suffix on collision.
+A claims-source grant MUST refuse a supplied username. A directory-source grant can carry a
+trusted username. At the next exchange the service validates and binds that exact value or
+refuses an invalid, conflicting, or different binding. A directory row without a supplied value
+can exchange without creating a binding. Participants cannot set or rename a username.
 
 The broker grants each member credential in a per-user-auth space publish access to the two
 Direct Get request subjects below, with responses on its existing connection inbox:
@@ -545,6 +555,8 @@ Direct Get request subjects below, with responses on its existing connection inb
 - `$JS.API.DIRECT.GET.KV_cotal_usernames_<space>.$KV.cotal_usernames_<space>.username.*`
 
 Member credentials MUST NOT hold registry KV publish, stream administration or consumer grants.
+Credentials minted before the registry grant was available get it at their next credential
+refresh. Reconnecting with the same credential does not add a grant.
 Direct Get may carry an explicit reply subject. Returned data is broker-marked and consists of
 the registry's fixed token values. It is not an application message or proof of sender identity.
 The registry does not participate in addressing, mentions or presence display.

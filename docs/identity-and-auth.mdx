@@ -68,9 +68,10 @@ With `cotal up --user-auth --idp <auth base URL>`, people sign in through an ext
 
 The first enable pins the IdP. Later enables cannot replace it with a different IdP. A missing grant denies access. User-auth commands refuse missing login or unavailable auth service rather than trying static credentials.
 
-On the first use of an authorized human grant, the auth service assigns the owner a permanent
-username unique in the space. Members can look up the binding in either direction. The username
-does not change how peers are addressed or displayed. Open and no-login spaces have no bindings.
+By default the auth service assigns a permanent username on the first authorized exchange. A
+space can instead use usernames supplied by its owner directory. Members can look up a binding
+in either direction. This does not change peer addresses or display names. Platform owners, open
+spaces, and no-login spaces have no bindings.
 
 Ordinary delegated agents stay inside their owner's channel and capability envelope. Checks follow the delegation chain to an authority root at grant time and at bearer exchange. Revocation reaches descendants in that chain. An admin-scoped ancestor is a separate authority root and ends containment checks. [User-auth lifecycle](identity-user-auth.mdx#delegation) covers this boundary and the ledger, catalogs, chat sessions, views, retirement, and recovery.
 
