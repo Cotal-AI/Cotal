@@ -43,8 +43,9 @@ export function unsearchableFolder(path: string): string | undefined {
 export const shellPath = (path: string) => /^[A-Za-z0-9_./+-]+$/.test(path) ? path : `'${path.replace(/'/g, `'\\''`)}'`;
 
 /** Establish a regular descriptor, then read only bounded bytes. POSIX opens nonblocking and
- *  without following a link, and checks a private file's owner and mode; Windows does neither. */
-export function readLocalRecordSource(path: string, limit = LOCAL_INPUT_LIMIT, privateFile = false): Buffer | undefined {
+ *  without following a link, and checks a private file's owner and mode; Windows does neither.
+ *  A caller can customize the refusal for a directory without bypassing the protected open. */
+export function readLocalRecordSource(path: string, limit = LOCAL_INPUT_LIMIT, privateFile = false, directoryFailure?: () => CommandFailure): Buffer | undefined {
   const access = requireLocalRecordAccess();
   const posix = access === "posix";
   let fd: number;
@@ -60,6 +61,7 @@ export function readLocalRecordSource(path: string, limit = LOCAL_INPUT_LIMIT, p
   }
   try {
     const before = fstatSync(fd);
+    if (directoryFailure && before.isDirectory()) throw directoryFailure();
     if (!before.isFile()) throw new CommandFailure("refused", "SCHEMA_INVALID", "local record input must be a regular file", { target: { path } });
     if (privateFile && posix && (before.uid !== process.getuid!() || (before.mode & 0o077) !== 0)) throw new CommandFailure("refused", "PERMISSION_DENIED", `the saved local record ${path} is not owned and private`, { target: { path } });
     if (before.size > limit) throw new CommandFailure("refused", "SCHEMA_INVALID", "local record input exceeds its byte limit", { target: { path } });

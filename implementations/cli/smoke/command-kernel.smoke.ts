@@ -6,7 +6,7 @@
 import "./update-isolation.js";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { commandUsage, findCommand, parseCommandArgs, registry, type Command } from "@cotal-ai/core";
@@ -819,13 +819,13 @@ async function completionOut(positionals: string[]): Promise<string> {
     }
     assert.ok(out.includes(scaffoldCheckCommand(dir)), "endpoint init's Next is the check command for the contract it created");
 
-    const runCheck = (path: string, ...flags: string[]) => spawnSync(process.execPath,
-      [join(import.meta.dirname, "../../../bin/dist/cotal.js"), "endpoint", "check", path, ...flags], {
-        cwd: scaffold, env: { ...process.env, COTAL_SKIP_CONNECTOR_SEED: "1" }, encoding: "utf8", timeout: 30_000,
+    const runCheck = (words: string[], cwd = scaffold) => spawnSync(process.execPath,
+      [join(import.meta.dirname, "../../../bin/dist/cotal.js"), "endpoint", "check", ...words], {
+        cwd, env: { ...process.env, COTAL_SKIP_CONNECTOR_SEED: "1" }, encoding: "utf8", timeout: 30_000,
       });
     const contractPath = join(dir, "contract.json");
     const original = readFileSync(contractPath, "utf8");
-    const directory = runCheck("it's here", "--json");
+    const directory = runCheck(["it's here", "--json"]);
     assert.equal(directory.status, 1, directory.stdout + directory.stderr);
     assert.equal(directory.stderr, "");
     const { target, error } = JSON.parse(directory.stdout);
@@ -834,24 +834,50 @@ async function completionOut(positionals: string[]): Promise<string> {
     assert.match(error.message, /is a directory; endpoint check requires a contract file/u);
     assert.equal(error.remedy, scaffoldCheckCommand(dir));
     for (const flags of [[], ["--plain"]]) {
-      const text = runCheck("it's here", ...flags);
+      const text = runCheck(["it's here", ...flags]);
       assert.equal(text.status, 1, text.stdout + text.stderr);
       assert.equal(text.stdout, "");
       assert.ok(text.stderr.includes(error.message));
       assert.ok(text.stderr.includes(`\nNext\n  ${error.remedy}\n`));
     }
-    const checked = runCheck(contractPath, "--json");
+    const checked = runCheck([contractPath, "--json"]);
     assert.equal(checked.status, 0, checked.stdout + checked.stderr);
     assert.equal(JSON.parse(checked.stdout).result.handlerExecuted, false);
     assert.equal(readFileSync(contractPath, "utf8"), original);
 
     mkdirSync(join(scaffold, "unrelated"));
     writeFileSync(join(scaffold, "unrelated", "contract.json"), original);
-    const unrelated = runCheck("unrelated", "--json");
+    const unrelated = runCheck(["unrelated", "--json"]);
     assert.equal(unrelated.status, 1, unrelated.stdout + unrelated.stderr);
     const refusal = JSON.parse(unrelated.stdout);
     assert.equal(refusal.target.path, join(scaffold, "unrelated"));
     assert.equal(refusal.error.remedy, "retry with the path to an existing endpoint contract file");
+
+    if (process.platform !== "win32") {
+      const cwd = join(scaffold, "line\nbreak");
+      mkdirSync(join(cwd, "-reviews"), { recursive: true });
+      writeFileSync(join(cwd, "-reviews", "contract.json"), original);
+      writeFileSync(join(cwd, "-reviews", "handler.mjs"), "throw new Error('handler must not run');\n");
+      const relative = runCheck(["--json", "--", "-reviews"], cwd);
+      assert.equal(relative.status, 1, relative.stdout + relative.stderr);
+      assert.equal(JSON.parse(relative.stdout).error.remedy, "cotal ep check ./-reviews/contract.json");
+      const retry = runCheck(["./-reviews/contract.json", "--json"], cwd);
+      assert.equal(retry.status, 0, retry.stdout + retry.stderr);
+      assert.equal(JSON.parse(retry.stdout).result.handlerExecuted, false);
+    }
+
+    if (process.platform !== "win32" && process.getuid?.() !== 0) {
+      try {
+        for (const mode of [0o000, 0o400]) {
+          chmodSync(dir, mode);
+          const denied = runCheck([dir, "--json"]);
+          assert.equal(denied.status, 2, denied.stdout + denied.stderr);
+          const { target, error } = JSON.parse(denied.stdout);
+          assert.equal(target.path, dir);
+          assert.equal(error.code, "PERMISSION_DENIED");
+        }
+      } finally { chmodSync(dir, 0o700); }
+    }
   } finally {
     if (priorXdg === undefined) delete process.env.XDG_CONFIG_HOME;
     else process.env.XDG_CONFIG_HOME = priorXdg;

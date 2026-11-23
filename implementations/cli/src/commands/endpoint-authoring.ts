@@ -1,7 +1,7 @@
 import { closeSync, constants, fsyncSync, lstatSync, mkdirSync, openSync, writeFileSync } from "node:fs";
 import { basename, join, parse, resolve, sep } from "node:path";
 import { realDirNoSymlink, type ParsedArgs } from "@cotal-ai/core";
-import { codeSpan, CommandFailure, endpointContractTemplate, MAX_ENDPOINT_CONTRACT_BYTES, parseEndpointContract, presentationOf, writeResult, type Report } from "@cotal-ai/workspace";
+import { codeSpan, CommandFailure, endpointContractTemplate, MAX_ENDPOINT_CONTRACT_BYTES, oneLine, parseEndpointContract, presentationOf, writeResult, type Report } from "@cotal-ai/workspace";
 import { shellWord } from "../lib/endpoint-errors.js";
 import { readLocalRecordSource } from "../lib/protected-records.js";
 
@@ -67,21 +67,26 @@ function createDirectories(destination: string, changed: ScaffoldChange[]): void
 }
 /** The check command for a created scaffold's contract, quoted for a POSIX shell when the path needs it. */
 export function scaffoldCheckCommand(directory: string): string {
-  return `cotal ep check ${shellWord(join(directory, CONTRACT_FILE))}`;
+  const file = join(directory, CONTRACT_FILE);
+  return `cotal ep check ${shellWord(file.startsWith("-") ? `.${sep}${file}` : file)}`;
 }
 
-function inspectEntry(path: string) {
-  try { return lstatSync(path); }
-  catch { return undefined; } // The protected reader owns lookup and permission failures.
-}
-
-function refuseContractDirectory(path: string): void {
-  if (!inspectEntry(path)?.isDirectory()) return;
-  const scaffold = inspectEntry(join(path, CONTRACT_FILE))?.isFile() && inspectEntry(join(path, HANDLER_FILE))?.isFile();
-  throw new CommandFailure("refused", "SCHEMA_INVALID", `${codeSpan(shellWord(path))} is a directory; endpoint check requires a contract file`, {
+function contractDirectoryFailure(path: string, given: string): CommandFailure {
+  const shown = codeSpan(shellWord(path));
+  let scaffold: boolean;
+  try {
+    scaffold = [CONTRACT_FILE, HANDLER_FILE].map((name) => lstatSync(join(path, name), { throwIfNoEntry: false })).every((entry) => entry?.isFile());
+  } catch (cause) {
+    const code = (cause as NodeJS.ErrnoException).code;
+    if (code === "EACCES" || code === "EPERM") return new CommandFailure("refused", "PERMISSION_DENIED", `the directory ${shown} cannot be inspected by this account (${code})`, { target: { path }, cause });
+    return new CommandFailure("refused", "TARGET_UNAVAILABLE", `the directory ${shown} could not be inspected`, { target: { path }, cause });
+  }
+  const operand = oneLine(path) === path ? path : given;
+  const command = scaffold && oneLine(operand) === operand ? scaffoldCheckCommand(operand) : undefined;
+  return new CommandFailure("refused", "SCHEMA_INVALID", `${shown} is a directory; endpoint check requires a contract file`, {
     target: { path },
-    remedy: scaffold ? scaffoldCheckCommand(path) : CONTRACT_FILE_REMEDY,
-    ...(scaffold ? { remedyIsCommand: true } : {}),
+    remedy: command ?? CONTRACT_FILE_REMEDY,
+    ...(command ? { remedyIsCommand: true } : {}),
   });
 }
 function missing(path: string): void {
@@ -96,8 +101,7 @@ export async function endpointAuthoring(args: ParsedArgs): Promise<void> {
   const presentation = presentationOf(args.values);
   if (mode === "check") {
     const file = resolve(name);
-    refuseContractDirectory(file);
-    const bytes = readLocalRecordSource(file, MAX_ENDPOINT_CONTRACT_BYTES);
+    const bytes = readLocalRecordSource(file, MAX_ENDPOINT_CONTRACT_BYTES, false, () => contractDirectoryFailure(file, name));
     if (!bytes) throw new CommandFailure("refused", "TARGET_NOT_FOUND", `the endpoint contract file was not found at ${codeSpan(shellWord(file))}`, {
       target: { path: file },
       remedy: CONTRACT_FILE_REMEDY,
