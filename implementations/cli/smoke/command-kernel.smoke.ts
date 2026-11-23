@@ -15,6 +15,7 @@ import { commandUsage, findCommand, parseCommandArgs, registry, type Command } f
 import type { InstalledExtension } from "@cotal-ai/workspace";
 import "../src/index.js"; // self-register the CLI commands (for the completion check)
 import { complete } from "../src/commands/completion.js";
+import { scaffoldCheckCommand } from "../src/commands/endpoint-authoring.js";
 import { EXT_UPDATE_PARENT_ENV, ext } from "../src/commands/ext.js";
 import { hostPackageDir, isCommandFailure, MeshTargetError, seededCommandsMismatch, telemetrySettingsPath, writeUpdateRecovery, readUpdateRecovery, clearUpdateRecovery } from "@cotal-ai/workspace";
 import { executeUpdate, installedUpdatePrefix, parseNpmVersion, printLegacyReport, reportRunningManagers, update, validateUpdateArguments, verifyCurrentExtension, verifyGlobalEntry, type UpdateRuntime } from "../src/commands/update.js";
@@ -834,8 +835,7 @@ async function completionOut(positionals: string[]): Promise<string> {
 }
 
 // --- endpoint init's Next is the check command for the contract it created ------------------------
-{
-  const { scaffoldCheckCommand } = await import("../src/commands/endpoint-authoring.js");
+if (process.platform !== "win32") {
   assert.equal(scaffoldCheckCommand("/run/ep/reviews"), "cotal endpoint check /run/ep/reviews/contract.json", "the scaffold's Next names its own contract, not a placeholder");
   assert.equal(scaffoldCheckCommand("/run/it's here"), "cotal endpoint check '/run/it'\\''s here/contract.json'", "a scaffold path a shell would split is quoted");
   const { runCli } = await import("../src/command.js");
@@ -859,6 +859,8 @@ async function completionOut(positionals: string[]): Promise<string> {
     else process.env.XDG_CONFIG_HOME = priorXdg;
     rmSync(scaffold, { recursive: true, force: true });
   }
+} else {
+  assert.equal(scaffoldCheckCommand("C:\\work\\reviewer's copy"), undefined, "Windows does not get a POSIX-quoted scaffold command");
 }
 
 // --- up rejects pure flag conflicts before even checking a supplied project root ----------------

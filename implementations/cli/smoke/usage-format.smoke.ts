@@ -58,7 +58,7 @@ import { delimiter, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { findCommand, findSubcommand, parseCommandArgs, registry, type Command, type ParsedArgs, type Subcommand } from "@cotal-ai/core";
 import { assertSmokeSandboxDown, createSuite, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
-import { displayWidth } from "@cotal-ai/workspace";
+import { displayWidth, endpointContractTemplate } from "@cotal-ai/workspace";
 import ts from "typescript";
 import { clean, nodePty } from "./_console-pty.js";
 
@@ -393,6 +393,22 @@ if (process.platform !== "win32") {
     && envelope.error.code === "TARGET_NOT_FOUND" && /existing endpoint contract file/.test(envelope.error.remedy)
     && text.every((r) => r.status === 2 && r.stdout === "" && r.stderr.includes(path) && r.stderr.includes(envelope.error.remedy))
     && corrected.status === 0 && JSON.parse(corrected.stdout).outcome === "ok", { text: text.map(shown), json: shown(json), corrected: shown(corrected) });
+} else {
+  const dir = join(realpathSync(neutral), "reviewer's copy");
+  mkdirSync(dir);
+  writeFileSync(join(dir, "contract.json"), JSON.stringify(endpointContractTemplate("reviews")));
+  const args = ["endpoint", "check", dir];
+  const text = [run(args), run([...args, "--plain"])];
+  const json = run([...args, "--json"]);
+  const refusal = parsed(json);
+  const remedy = "Use shell completion to enter the scaffold directory, then run `cotal endpoint check contract.json`.";
+  const retry = run(["endpoint", "check", "contract.json", "--json"], {}, dir);
+  check("Windows endpoint check suggests the same relative recovery in every format",
+    json.status === 1 && json.stderr === "" && refusal?.error?.code === "SCHEMA_INVALID" && refusal.error.remedy === remedy
+    && (refusal.target as { path?: string } | undefined)?.path === dir
+    && text.every((r) => r.status === 1 && r.stdout === "" && r.stderr.includes(`Next\n  ${remedy}\n`))
+    && retry.status === 0 && retry.stderr === "" && JSON.parse(retry.stdout).result?.file === join(dir, "contract.json"),
+    { text: text.map(shown), json: shown(json), retry: shown(retry) });
 }
 
 const referenceProject = join(home, "endpoint-reference");
