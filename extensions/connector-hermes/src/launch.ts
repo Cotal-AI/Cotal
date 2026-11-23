@@ -107,7 +107,8 @@ const yamlStr = (s: string): string => `"${s.replace(/\\/g, "\\\\").replace(/"/g
  * A launch with `askPermissions` keeps them manual instead, and the plugin puts each one behind
  * the agent's prompt desk (plugin/cotal/approvals.py). With the event plane armed it turns on
  * Hermes's streaming, which is how Hermes hands the adapter a reply while the model writes it
- * (plugin/cotal/streams.py).
+ * (plugin/cotal/streams.py). It sets `terminal.cwd` to the launcher's folder, which the gateway
+ * inherits: Hermes runs its terminal and file tools there, and in the home folder without it.
  */
 export function setupProfile(
   home: string,
@@ -141,6 +142,8 @@ export function setupProfile(
     "      enabled: true",
     "approvals:",
     `  mode: ${opts.config.askPermissions ? "manual" : "off"}`,
+    "terminal:",
+    `  cwd: ${yamlStr(process.cwd())}`,
   ];
   if (eventPlaneArmed(opts.config))
     lines.push("streaming:", "  enabled: true", "  transport: draft", '  cursor: ""', "  edit_interval: 0.25");

@@ -32,6 +32,9 @@ owns the mesh endpoint for the gateway's whole life and runs `hermes gateway run
   is never touched, with approvals off (a supervised agent has no human at the TUI to approve)
   unless the launch sets `askPermissions` (see [Command approvals](#command-approvals)).
   With the event plane armed it turns Hermes's streaming on (see [Event plane](#event-plane)).
+  It sets Hermes's `terminal.cwd` to the folder the seat runs in, so Hermes's terminal and file
+  tools work there. Without it, a Hermes gateway runs them in your home folder. An adopted profile
+  keeps its own `terminal.cwd`.
   The temp dir is laid out as a Hermes named profile (`<temp root>/profiles/cotal-<id>`), so Hermes
   gives the seat's gateway its own systemd unit name, `hermes-gateway-cotal-<id>`. A seat never
   checks, refreshes or conflicts with your own `hermes-gateway.service`.
