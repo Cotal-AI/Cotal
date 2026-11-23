@@ -333,7 +333,8 @@ relevant retained additive IDs and unreadable paths. The legacy bare `down`,
 intents and unremoved agent/channel receipts before effects. Bare `down` and a later
 `team deploy` name `cotal team remove <id> --dry-run`, then `--yes`, for each deployment that
 blocks them. A complete matched
-static agent-retirement receipt releases only its original deployment's blocker.
+removal receipt releases only its original deployment's blocker. The boot preview
+lists that deployment as history without warning that it blocks boot.
 A bare `up` of a stopped controller stack starts it again over a returned channel-only deployment
 made on that stack, and keeps the deployment's records and cards as they are. Any other retained
 deployment, such as an unsettled attempt or an agent deployment, still refuses the start with
@@ -441,7 +442,10 @@ registration for the declared space in this root. It shows the declared
 channel delivery/replay/window values separately from its non-atomic live
 registry classification. If the selected running mesh is open, an explicit
 durable channel declaration is warned as unsupported by its missing delivery
-daemon; the read-only preview remains available. Additive deploy does not
+daemon; the read-only preview remains available. The preview warns about invalid
+channel card fields, such as an invalid replay window, and does not list those cards
+as creation candidates. Apply reports the invalid field before writing any cards.
+Additive deploy does not
 seed manifest-wide defaults. For an existing
 unmanaged card, it names only explicitly declared fields that differ from the live value, never the live
 instructions or description body. No declaration authorizes overwriting a
@@ -449,8 +453,11 @@ saved card.
 It makes scoped, TLS-bound
 native reads of the presence and channel-registry buckets. A complete presence
 scan can prove an empty roster; a failed or malformed scan refuses rather than
-classifying absence. It classifies channel cards against the registry and agents
-against a unique prior ledger for the same manifest content. The derived membership
+classifying absence. The preview uses the registry and a unique prior ledger for
+the same manifest content. It also checks an identical retained deployment's card
+receipt against the live create revisions and card content. If it cannot verify a
+card claimed by a retained attempt, it does not classify that card as owned or unmanaged.
+The derived membership
 feed, when readable, shows a lower bound of other readers, not authorization.
 These observations are non-atomic and do not reserve names or prove that a manager,
 runtime, connector, channel writer or launch grant will be ready. An unregistered or

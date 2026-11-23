@@ -117,6 +117,7 @@ const manifest = (name: string, space: string, channels: Record<string, string>,
   writeFileSync(join(dir, name), `apiVersion: cotal/v1\nkind: Mesh\nspace: ${space}\nbroker:\n  servers: ${server}\n${open ? "  auth: false\n" : ""}${head}channels:\n${Object.entries(channels).map(([channel, extra]) => `  ${channel}:\n    description: The ${channel} channel.\n${extra}`).join("")}`);
 };
 manifest("live.yaml", SPACE, { live1: "    deliveryClass: live\n", live2: "    deliveryClass: live\n" });
+manifest("invalid-window.yaml", SPACE, { notes: "    deliveryClass: live\n    replayWindow: forever\n" });
 writeFileSync(join(s, "extra.yaml"), `apiVersion: cotal/v1\nkind: Mesh\nspace: ${SPACE}\nchannels:\n  extra: {deliveryClass: live}\n`);
 manifest("order.yaml", SPACE, Object.fromEntries(Array.from({ length: 11 }, (_, n) => [`order${n}`, "    deliveryClass: live\n"])));
 manifest("inherit.yaml", SPACE, { design: "", ops: "    replay: true\n", fine: "    deliveryClass: live\n" });
@@ -209,6 +210,13 @@ try {
       refused.error.remedy === "set `deliveryClass: live` on each card, or create a durable channel with `cotal channel set <name> --delivery durable`", notLive.out.slice(-800));
   const liveCheck = cotal(s, "team", "deploy", "live.yaml", "--dry-run", "--json");
   check("a manifest whose cards all set deliveryClass: live has no such warning", !envelope(liveCheck.stdout)?.warnings?.some((w) => w.code === "LIVE_DELIVERY_REQUIRED"));
+  const invalidPreview = cotal(s, "team", "deploy", "invalid-window.yaml", "--dry-run", "--plain");
+  const invalidApply = cotal(s, "team", "deploy", "invalid-window.yaml", "--plain");
+  const invalidWindow = 'channels.notes.replayWindow: invalid duration "forever"';
+  check("deploy preview reports the invalid window and excludes its card from creation candidates",
+    invalidPreview.status === 0 && invalidPreview.stderr.includes(invalidWindow) && /New channel candidates:\s+0/.test(invalidPreview.stdout), invalidPreview.out);
+  check("deploy apply refuses the same window with its field and native duration diagnostic",
+    invalidApply.status === 1 && invalidApply.stderr.includes("SCHEMA_INVALID") && invalidApply.stderr.includes(invalidWindow), invalidApply.out);
 
   console.log("\nC. a reapply of an identical settled deployment");
   const reapplied = cotal(s, "team", "deploy", "live.yaml", "--json");
@@ -216,6 +224,13 @@ try {
   const reapplyPreview = cotal(s, "team", "deploy", "live.yaml", "--dry-run");
   check("its preview says a reapply of an identical settled deployment changes nothing, not that it refuses",
     reapplyPreview.stdout.includes("Reapplying an identical settled deployment changes nothing") && !reapplyPreview.stdout.includes("reapply refuse"), reapplyPreview.stdout.slice(-900));
+  check("the preview classifies unchanged cards as owned by the returned deployment",
+    reapplyPreview.status === 0 && new RegExp(`Prior additive run:\\s+${deployment}`).test(reapplyPreview.stdout) &&
+      /Prior-owned channel records:\s+2/.test(reapplyPreview.stdout) && /Unmanaged existing channels:\s+0/.test(reapplyPreview.stdout), reapplyPreview.out);
+  manifest("foreign.yaml", SPACE, { live1: "    deliveryClass: live\n    replay: true\n" });
+  const foreignPreview = cotal(s, "team", "deploy", "foreign.yaml", "--dry-run", "--plain");
+  check("an existing card without a receipt for this declaration is unmanaged",
+    foreignPreview.status === 0 && /Prior-owned channel records:\s+0/.test(foreignPreview.stdout) && /Unmanaged existing channels:\s+1/.test(foreignPreview.stdout), foreignPreview.out);
 
   console.log("\nD. a manifest defaults block");
   const checked = cotal(s, "team", "check", "defaults.yaml");
@@ -376,6 +391,12 @@ try {
   const removeEdited = envelope(cotal(s, "team", "remove", deployment, "--dry-run", "--json").stdout)?.error;
   check("team remove after a card was edited refuses CONFLICT naming that card",
     edited.status === 0 && removeEdited?.code === "CONFLICT" && removeEdited.message === "the card #live1 changed after this deployment created it; changed metadata is not owned and no card was deleted", { edited: edited.out.slice(-400), removeEdited });
+  const editedPreview = cotal(s, "team", "deploy", "live.yaml", "--dry-run", "--json");
+  const editedResult = envelope(editedPreview.stdout);
+  const editedChannels = (editedResult?.result?.native as { channels?: unknown } | undefined)?.channels;
+  check("preview verifies the unchanged card but does not claim the edited card",
+    answered(editedPreview) && JSON.stringify(editedChannels) === JSON.stringify({ create: [], owned: ["live2"], existsUnmanaged: [], existsUnmanagedPolicy: [] }) &&
+      editedResult?.warnings?.some((warning) => warning.code === "CURRENT_CHANNEL_STATE_UNCHECKED" && JSON.stringify(warning.target.cards) === '["live1"]') === true, editedPreview.out);
 
   console.log("\nK. a card removal's steps in the order they were written");
   const ordered = envelope(cotal(s, "team", "deploy", "order.yaml", "--json").stdout)?.result?.deploymentId;
@@ -443,11 +464,34 @@ try {
   check("team deploy accepts an equivalent broker URL and creates the live card on the open mesh",
     openApplied.status === 0 && openResult?.outcome === "ok" && Array.isArray(openResult.result?.createdChannels) &&
       openResult.result.createdChannels.some((card) => card.name === "audit-team"), openApplied.out);
-
-  console.log("\nM. confirmation commands retain the target space and output mode");
   const openId = openResult?.result?.deploymentId;
   if (typeof openId !== "string" || !/^[a-f0-9]{16}$/.test(openId)) throw new Error("the open deployment did not return a full ID");
+  manifest("audit.yaml", OTHER, { "audit-team": "    deliveryClass: live\n" }, { ...openOptions, open: true });
+  const bootWhileRetained = cotal(c, "team", "boot", "audit.yaml", "--dry-run", "--json");
+  check("fresh boot preview warns about the unremoved deployment",
+    answered(bootWhileRetained) && envelope(bootWhileRetained.stdout)?.warnings?.some((warning) =>
+      warning.code === "ADDITIVE_ATTEMPT_REMAINS" && JSON.stringify(warning.target.deploymentIds) === JSON.stringify([openId])) === true, bootWhileRetained.out);
+
+  console.log("\nM. confirmation commands retain the target space and output mode");
   checkRemovalConfirmation(openId);
+
+  const openDown = cotal(c, "down", "--yes");
+  if (openDown.status === 0) openUp = false;
+  const bootAfterRemoval = cotal(c, "team", "boot", "audit.yaml", "--foreground", "--dry-run", "--json");
+  const bootResult = envelope(bootAfterRemoval.stdout);
+  const history = bootResult?.result?.additiveAttempts;
+  check("fresh boot preview keeps the removed deployment as history without a blocker warning",
+    openDown.status === 0 && answered(bootAfterRemoval) &&
+      Array.isArray(history) && history.some((row) => row.deploymentId === openId && row.recordedState === "removal-returned") &&
+      !bootResult?.warnings?.some((warning) => warning.code === "ADDITIVE_ATTEMPT_REMAINS"), { down: openDown.out, preview: bootAfterRemoval.out });
+  const unreadable = join(realpathSync(c), ".cotal", "team-deploy-attempt-abcdef0123456789.json");
+  writeFileSync(unreadable, "{\n", { mode: 0o600 });
+  try {
+    const bootUnreadable = cotal(c, "team", "boot", "audit.yaml", "--dry-run", "--json");
+    check("an unreadable attempt still warns after a different deployment was removed",
+      answered(bootUnreadable) && envelope(bootUnreadable.stdout)?.warnings?.some((warning) => warning.code === "ADDITIVE_ATTEMPT_REMAINS" &&
+        JSON.stringify(warning.target.deploymentIds) === "[]" && JSON.stringify(warning.target.unreadable) === JSON.stringify([unreadable])) === true, bootUnreadable.out);
+  } finally { rmSync(unreadable); }
 } finally {
   if (openUp) {
     const down = cotal(c, "down", "--yes");
