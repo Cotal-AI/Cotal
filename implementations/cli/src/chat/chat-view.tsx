@@ -29,7 +29,6 @@ import {
 } from "./view.js";
 import { closeSession, runPublish, runSlash } from "./controller.js";
 import { listChoices, refusedDm, type Choice } from "./picker.js";
-import { channelHistoryCommand } from "../lib/history-command.js";
 
 const TONE_COLOR: Record<Tone, string | undefined> = {
   ok: "green",
@@ -83,6 +82,7 @@ export function ChatView({ session, initialRecipient, notice, words, shiftEnterD
     return notice ? addNotice(first, "waiting", notice) : first;
   });
   const [picker, setPicker] = useState<Picker | undefined>(undefined);
+  const [rowsBack, setRowsBack] = useState(0);
   // The latest state for async continuations; React state is the render copy.
   const latest = useRef(state);
   latest.current = state;
@@ -176,12 +176,15 @@ export function ChatView({ session, initialRecipient, notice, words, shiftEnterD
       if (inkKey.ctrl || inkKey.meta || !input) return;
       return setPicker({ ...picker, typed: (picker.typed + input).slice(0, 600) });
     }
+    if (inkKey.pageUp) return setRowsBack((back) => Math.min(maxRowsBack, back + bodyHeight));
+    if (inkKey.pageDown) return setRowsBack((back) => Math.max(0, Math.min(back, maxRowsBack) - bodyHeight));
     if (!key) return;
     const { state: next, intent } = applyKey(latest.current, key, shiftEnterDistinct);
     update(next);
     if (!intent) return;
     if (intent.kind === "leave") return void leave();
     if (intent.kind === "pick-recipient") return void openPicker();
+    setRowsBack(0);
     queue.current = queue.current.then(async () => {
       if (closing.current) return;
       const { state: s, ack } = intent.kind === "publish"
@@ -202,15 +205,14 @@ export function ChatView({ session, initialRecipient, notice, words, shiftEnterD
     : composerRows(state, size.width, shiftEnterDistinct);
   const bodyHeight = Math.max(1, size.height - header.length - composer.length - 2);
   const transcript = transcriptRows(state, size.width);
-  const body = transcript.slice(-bodyHeight);
-  const hidden = transcript.length - body.length;
-  const recipient = state.recipient;
-  const history = recipient?.kind === "channel" ? channelHistoryCommand(recipient.channel)
-    : recipient?.kind === "role" ? undefined : "cotal history --dms";
+  const maxRowsBack = Math.max(0, transcript.length - bodyHeight);
+  const offset = Math.min(rowsBack, maxRowsBack);
+  const end = transcript.length - offset;
+  const body = transcript.slice(Math.max(0, end - bodyHeight), end);
 
   return <Box flexDirection="column" width={size.width} height={size.height}>
     <RowsView rows={header} keyPrefix="h" />
-    <Text dimColor wrap="truncate-end">{hidden ? `${hidden} earlier ${hidden === 1 ? "row" : "rows"} hidden${history ? `. See \`${history}\`` : ""}` : "─".repeat(size.width)}</Text>
+    <Text dimColor wrap="truncate-end">{maxRowsBack ? "Page Up/Down: scroll" : "─".repeat(size.width)}</Text>
     <Box flexDirection="column" height={bodyHeight}>
       {body.length ? <RowsView rows={body} keyPrefix="t" /> : <Text dimColor>No messages yet in this session.</Text>}
     </Box>
