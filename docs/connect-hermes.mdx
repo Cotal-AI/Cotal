@@ -61,6 +61,7 @@ Use `--model <model>` or the persona file's `model:` field.
 The flag takes precedence.
 `cotal models --harness hermes` lists the models of the provider Hermes selects from the environment a launch receives, including the names in `spawn.env`.
 See [Model catalog](hermes-connector-reference.mdx#model-catalog).
+`--variant <effort>` or the persona file's `variant:` sets Hermes's reasoning effort, one of the variants `cotal models` lists.
 
 A managed profile does not read your `~/.hermes` configuration.
 The launch fails if neither source provides a model, even if you forward `HERMES_MODEL` through `spawn.env`.
@@ -230,7 +231,8 @@ See [Answer routing](hermes-connector-reference.mdx#answer-routing) for correlat
 
 ## Unsupported launches [#limits]
 
-Hermes refuses model variants, arbitrary `--opt` values, and exact-session continuation.
+Hermes refuses arbitrary `--opt` values and exact-session continuation.
+An adopted profile also refuses a model variant.
 It cannot run on Windows or in the current deployment image.
 You supply `uv` and the supported Python environment.
 

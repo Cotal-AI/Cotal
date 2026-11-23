@@ -23,6 +23,7 @@ import { fileURLToPath } from "node:url";
 import { LAUNCH_MATERIAL_ENV, discardLaunchArtifacts, discardLaunchMaterial, loadAgentFile, peerLabel, readLaunchMaterial, writeLaunchMaterial } from "@cotal-ai/core";
 import { hasIdentity, configFromEnv, controlEndpoint, controlFromEnv, eventPlaneArmed, SUN_PATH_MAX_BYTES, briefing, type AgentConfig } from "@cotal-ai/connector-core";
 import { hermesUvCommand, spawnHermesGateway } from "./binary.js";
+import { hermesEfforts } from "./models.js";
 import { startSidecar } from "./sidecar.js";
 import { HERMES_FORK_RECORD, hermesSeatHome, moveLegacyHermesFork } from "./seat-home.js";
 
@@ -109,10 +110,11 @@ const yamlStr = (s: string): string => `"${s.replace(/\\/g, "\\\\").replace(/"/g
  * Hermes's streaming, which is how Hermes hands the adapter a reply while the model writes it
  * (plugin/cotal/streams.py). It sets `terminal.cwd` to the launcher's folder, which the gateway
  * inherits: Hermes runs its terminal and file tools there, and in the home folder without it.
+ * A launch's variant is the profile's reasoning effort ({@link launchEffort}).
  */
 export function setupProfile(
   home: string,
-  opts: { model: string | undefined; persona?: string; config: AgentConfig },
+  opts: { model: string | undefined; persona?: string; config: AgentConfig; effort?: string },
 ): void {
   // A managed profile is a temporary directory and reads nothing from ~/.hermes, so the model the
   // operator configured there is not a model this gateway has. With none resolved here, hermes
@@ -145,6 +147,7 @@ export function setupProfile(
     "terminal:",
     `  cwd: ${yamlStr(process.cwd())}`,
   ];
+  if (opts.effort) lines.push("agent:", `  reasoning_effort: ${yamlStr(opts.effort)}`);
   if (eventPlaneArmed(opts.config))
     lines.push("streaming:", "  enabled: true", "  transport: draft", '  cursor: ""', "  edit_interval: 0.25");
   lines.push(`model: ${yamlStr(opts.model)}`);
@@ -154,6 +157,20 @@ export function setupProfile(
   // shared briefing after it; gated on persona so we don't clobber the default SOUL.
   if (opts.persona)
     writeFileSync(join(home, "SOUL.md"), `${opts.persona.trim()}\n\n${briefing(opts.config, "hermes")}\n`);
+}
+
+/** The launch's variant (`COTAL_VARIANT`) as the reasoning effort the managed profile sets, or
+ *  undefined for Hermes's default. Hermes ignores an effort it does not know and runs the
+ *  provider's default, so a variant this Hermes does not take is refused rather than dropped. */
+export function launchEffort(adopt: string | undefined, efforts: () => string[] = hermesEfforts): string | undefined {
+  const effort = process.env.COTAL_VARIANT?.trim();
+  if (!effort) return undefined;
+  if (adopt)
+    throw new LaunchRefused(`${ADOPT_HOME_ENV} runs your own profile, whose config.yaml sets Hermes's reasoning effort and which this mode does not edit; set agent.reasoning_effort there instead of the variant ${JSON.stringify(effort)}`);
+  const known = efforts();
+  if (!known.includes(effort))
+    throw new LaunchRefused(`the variant ${JSON.stringify(effort)} is not a reasoning effort this Hermes takes (${known.join(", ")})`);
+  return effort;
 }
 
 /** A major.minor as a sortable pair, or null when the string is not one. Compared numerically,
@@ -348,8 +365,9 @@ async function main(): Promise<void> {
     : persistent;
   const home = adopt ?? managed!.home;
   if (moved) log(`moved this seat's --resume fork from ${moved} to ${home}`);
+  const effort = launchEffort(adopt);
   if (adopt) setupAdoptedProfile(home, { persona });
-  else setupProfile(home, { model: process.env.HERMES_MODEL, persona, config });
+  else setupProfile(home, { model: process.env.HERMES_MODEL, persona, config, effort });
 
   // `cotal spawn --resume`: fork before the seat joins the mesh, so a session that cannot be read is
   // refused while nothing has joined. A relaunch reuses the fork and does not read the source again.

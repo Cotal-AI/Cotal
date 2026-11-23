@@ -54,6 +54,9 @@ export const hermesConnector: Connector = {
   prompts: true,
   // The models of the provider a launch's environment picks (src/models.ts).
   listModels: listHermesModels,
+  // variant = the reasoning effort the managed profile sets (agent.reasoning_effort). The launcher
+  // checks it against the efforts the installed Hermes takes (launchEffort in src/launch.ts).
+  supportsModelVariant: true,
   buildLaunch(opts: LaunchOpts): LaunchSpec {
     if (opts.continueSession) throw new Error("the Hermes connector does not support exact-session continuation");
     // Hermes is Unix-only: its sidecar bridge + hook relay use AF_UNIX `.sock` paths and a Python
@@ -71,7 +74,8 @@ export const hermesConnector: Connector = {
       if (process.env.COTAL_HERMES_ADOPT_HOME?.trim())
         throw new Error("the Hermes connector cannot resume into COTAL_HERMES_ADOPT_HOME: that profile already holds the session, so continue it there with Hermes' own /resume");
     }
-    if (opts.variant) throw new Error("the Hermes connector does not support model variants (variant)");
+    if (opts.variant && process.env.COTAL_HERMES_ADOPT_HOME?.trim())
+      throw new Error("the Hermes connector cannot apply a variant to COTAL_HERMES_ADOPT_HOME: that profile's own config.yaml sets the reasoning effort, and this mode does not edit it");
     // The initial prompt becomes the gateway's first turn (see submitTurn in bridge.ts). An empty one
     // would start no turn while the operator waits on it.
     const prompt = opts.prompt?.trim();
@@ -137,6 +141,8 @@ export const hermesConnector: Connector = {
       env.HERMES_MODEL = opts.model;
       env.COTAL_MODEL = opts.model;
     }
+    // The launcher writes it as the managed profile's reasoning effort.
+    if (opts.variant) env.COTAL_VARIANT = opts.variant;
     const artifacts: string[] = [];
     try {
       // The exit watcher owns the socket directory and the single carrier even on a forced stop.

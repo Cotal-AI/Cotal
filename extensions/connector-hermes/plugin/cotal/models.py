@@ -4,12 +4,22 @@ Run under the project-pinned Hermes with the environment a launch builds. It ask
 ``resolve_runtime_provider`` which provider that environment picks, as the gateway does when it
 starts an agent, then lists that provider's models: ``fetch_api_models`` for an OpenAI-compatible
 endpoint (``custom``), ``provider_model_ids`` for a named provider. Prints one JSON line,
-``{"provider", "models"}``, or ``{"unavailable"}`` with Hermes's reason. The three functions are
-Hermes's own across the supported 0.18 to 0.21 range.
+``{"provider", "models", "efforts"}``, or ``{"unavailable"}`` with Hermes's reason. The three
+functions are Hermes's own across the supported 0.18 to 0.21 range. With the argument ``efforts``
+it prints only the efforts, which the launcher checks a variant against (src/launch.ts).
 """
 from __future__ import annotations
 
 import json
+import sys
+
+
+def efforts() -> list:
+    """The reasoning efforts this Hermes takes for any model: the levels its gateway's /reasoning
+    picker offers, which differ between Hermes versions."""
+    from hermes_constants import VALID_REASONING_EFFORTS
+
+    return ["none", *VALID_REASONING_EFFORTS]
 
 
 def catalog() -> dict:
@@ -27,8 +37,8 @@ def catalog() -> dict:
             return {"unavailable": "Hermes could not read the model list of the custom endpoint the launch environment names"}
     else:
         ids = provider_model_ids(provider)
-    return {"provider": provider, "models": [str(i) for i in ids or [] if str(i)]}
+    return {"provider": provider, "models": [str(i) for i in ids or [] if str(i)], "efforts": efforts()}
 
 
 if __name__ == "__main__":
-    print(json.dumps(catalog()))
+    print(json.dumps(efforts() if sys.argv[1:] == ["efforts"] else catalog()))
