@@ -17,7 +17,7 @@ import { pendingEnrollment } from "./pending-enrollment.js";
 import type { RunHosting } from "./run-hosting.js";
 import type { TeardownTarget } from "./retirement.js";
 import type { Manager } from "./manager.js";
-import { bearerEntryArgv } from "./preserved-resume.js";
+import { bearerEntryArgv, localUserAgentScope } from "./preserved-resume.js";
 import type { ManagerConfig } from "./manager-config.js";
 
 type EnrollManagedAgent = (args: {
@@ -164,7 +164,7 @@ export class UserProvision {
     // vocabulary as static capabilities; the broker maps them to the ctl tiers. `role:<r>` tokens
     // pass through too (a persona may hold delegable roles) — the ledger's envelope walk still
     // attenuates every one of these against the spawner chain.
-    const scope = (opts.capabilities ?? []).filter((c) => c === "spawn" || c === "run" || c === "admin" || /^role:[A-Za-z0-9_-]+$/.test(c));
+    const scope = localUserAgentScope(opts.capabilities);
     // The manager's ONE store (injected for a hosted composition, workstation FS locally). A hosted
     // user-mode spawn reads the callout material from it — the same store the auth-store kinds
     // (callout/issuer/…) were migrated onto — so this is no longer a local-only path.
