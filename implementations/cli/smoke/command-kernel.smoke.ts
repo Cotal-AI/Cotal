@@ -852,7 +852,8 @@ async function completionOut(positionals: string[]): Promise<string> {
     } finally {
       process.stdout.write = real;
     }
-    assert.ok(out.includes(scaffoldCheckCommand(dir)), "endpoint init's Next is the check command for the contract it created");
+    const expected = scaffoldCheckCommand(dir);
+    assert.ok(expected && out.includes(expected), "endpoint init's Next is the check command for the contract it created");
   } finally {
     if (priorXdg === undefined) delete process.env.XDG_CONFIG_HOME;
     else process.env.XDG_CONFIG_HOME = priorXdg;

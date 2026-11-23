@@ -346,6 +346,29 @@ if (process.platform !== "win32") {
     && files.every((path, index) => readFileSync(path).equals(original[index]!)),
     { text: directoryText.map(shown), json: shown(directoryJson), retried: retried && shown(retried) });
 
+  const escaped = "notes \u2708\ufe0f";
+  const escapedPath = join(cwd, escaped);
+  const escapedInit = run(["endpoint", "init", "notes", "--dir", escaped, "--plain"], {}, cwd);
+  const escapedArgs = ["endpoint", "check", escaped];
+  const escapedText = [run(escapedArgs, {}, cwd), run([...escapedArgs, "--plain"], {}, cwd)];
+  const escapedJson = run([...escapedArgs, "--json"], {}, cwd);
+  const escapedRefusal = parsed(escapedJson);
+  const manual = "Use shell completion to enter the scaffold directory, then run `cotal endpoint check contract.json`.";
+  const exact = `cotal endpoint check '${escapedPath.replace(/'/g, `'\\''`)}/contract.json'`;
+  const exactRetry = escapedRefusal?.error?.remedy === exact ? runShell(exact.slice("cotal ".length), {}, cwd) : undefined;
+  const localRetry = run(["endpoint", "check", "contract.json"], {}, escapedPath);
+  check("endpoint authoring does not print a broken terminal command for a path that is escaped in display",
+    escapedInit.status === 0 && escapedInit.stdout.includes(`Next\n  ${manual}\n`) && !escapedInit.stdout.includes("\ufe0f")
+    && escapedText.every((r) => r.status === 1 && r.stdout === "" && r.stderr.includes("\\ufe0f") && !r.stderr.includes("\ufe0f")
+      && r.stderr.includes(`Next\n  ${manual}\n`) && !r.stderr.includes("/contract.json'"))
+    && localRetry.status === 0 && localRetry.stdout.includes("Endpoint contract valid locally"),
+    { init: shown(escapedInit), text: escapedText.map(shown), localRetry: shown(localRetry) });
+  check("endpoint check JSON retains a working command with the exact Unicode path",
+    escapedJson.status === 1 && escapedJson.stderr === "" && escapedRefusal?.error?.code === "SCHEMA_INVALID"
+    && (escapedRefusal.target as { path?: string } | undefined)?.path === escapedPath
+    && exactRetry?.status === 0 && exactRetry.stderr === "" && exactRetry.stdout.includes("Endpoint contract valid locally"),
+    { json: shown(escapedJson), exactRetry: exactRetry && shown(exactRetry) });
+
   const other = join(cwd, "other-contracts");
   mkdirSync(other);
   writeFileSync(join(other, "custom.json"), original[0]!);
