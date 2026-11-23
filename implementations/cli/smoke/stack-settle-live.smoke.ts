@@ -1040,6 +1040,7 @@ try {
     const way = `move this folder back to ${root}, then run the command again there; or, to run it from this folder, forget it with \`cotal space forget ${space}\`, then run \`cotal space create ${space} --adopt --root ${moved}\``;
     const routes = [cli(moved, "up", "--json"), cli(moved, "send", "--space", space, "-c", "general", "after the stop", "--json"), cli(moved, "history", "general", "--space", space, "--json")];
     const status = cli(moved, "status", "--space", space, "--json");
+    const launcher = launcherAt(moved);
     renameSync(moved, root);
     // A copy keeps the journal too. Clean store refuses in both, so status does not offer it there.
     const copy = `${root}-copy`;
@@ -1047,7 +1048,8 @@ try {
     const copyStatus = cli(copy, "status", "--space", space, "--json");
     rmSync(copy, { recursive: true, force: true });
     check("stopped and moved, up, send and history offer moving back or adoption", routes.every((r) => r.status === 2 && r.env?.error?.remedy === way), routes.map(shown));
-    check("status --space there names the same step", ((status.env?.result?.hints as string[] | undefined) ?? []).includes(way), shown(status));
+    const hintsAfterStop = (status.env?.result?.hints as string[] | undefined) ?? [];
+    check("status --space there names the same step", launcher !== undefined && hintsAfterStop.includes(way.replaceAll("`cotal ", `\`${launcher} `)), { launcher, hints: hintsAfterStop });
     const offersNoReset = (r: Run) => {
       const result = r.env?.result as { folder?: { storedState?: boolean }; hints?: string[] } | undefined;
       return result?.folder?.storedState === false && Array.isArray(result.hints) && !result.hints.some((hint) => hint.includes("clean store"));
