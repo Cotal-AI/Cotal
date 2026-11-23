@@ -121,6 +121,8 @@ function targetErrorParts(err: MeshTargetError): WorkspaceErrorParts {
         ? d.stackRemedy !== undefined
           ? parts(`"${d.space}" is prepared in ${d.root}, which no longer exists, and this folder's stack journal was recorded there, so this folder was moved from there`, d.stackRemedy)
           : parts(`"${d.space}" is prepared in ${d.root}, which no longer exists`, `forget it with ${codeSpan(`cotal space forget ${shellPath(d.space)}`)}, then prepare it again with ${codeSpan(`cotal space create ${shellPath(d.space)} --root <dir>`)}`)
+        : d.rootIsFile
+          ? parts(`"${d.space}" is prepared in ${d.root}, which is a file, not a project folder`, `restore the project folder at ${d.root}, or forget it with ${codeSpan(`cotal space forget ${shellPath(d.space)}`)}, then prepare it again with ${codeSpan(`cotal space create ${shellPath(d.space)} --root <dir>`)}`)
         : d.unsettled !== undefined
           ? parts(`"${d.space}" is prepared, and the last ${d.unsettled} of its stack in ${d.root} has no recorded outcome`, `run \`cotal status\` in ${d.root}, which names the step that finishes or settles it`)
           : d.stopped !== undefined
