@@ -35,7 +35,7 @@ import {
 } from "@cotal-ai/connector-core";
 import { homedir } from "node:os";
 import { dirname, parse } from "node:path";
-import { createClaudeHandle, createWakePolicy, type WakePolicy } from "./hooks.js";
+import { createClaudeHandle, createWakePolicy, type ClaudeHooks, type WakePolicy } from "./hooks.js";
 import { createClaudePrompts, launchedSessionHooks } from "./prompts.js";
 import type { ClaudeEntry } from "./agui-map.js";
 import { createClaudeEventPlane } from "./claude-events.js";
@@ -263,15 +263,8 @@ async function startSession(
   // directory comes from that session's SessionStart hook instead.
   const warn = (msg: string): void => void process.stderr.write(`[cotal-connector] ${msg}\n`);
   // The command mod's socket opens below, once the session's teardown is in place.
-  let commands: CommandFeed | undefined;
-  const agent: MeshAgent = new MeshAgent(config, env, {
-    withholdProcessCwd: true,
-    onceClaimBound: true,
-    commands: claudeCommands({
-      feed: () => commands, interrupting: () => claude.interrupting(agent), warn,
-      imageDir: env[TURN_IMAGES_ENV] || undefined, onStop: (stop) => agent.once("stopping", stop),
-    }),
-  });
+  const commands = sessionCommands(env, claude, () => agent, warn);
+  const agent: MeshAgent = new MeshAgent(config, env, { withholdProcessCwd: true, onceClaimBound: true, commands: commands.dispatcher });
   const turns = commandTurns(agent);
   const plane = eventPlaneArmed(config, env) ? createClaudeEventPlane(agent, config, env) : undefined;
   events = plane?.events;
@@ -312,7 +305,7 @@ async function startSession(
       } catch {
         /* ignore */
       }
-      commands?.close();
+      commands.close();
       wake?.stop();
       try {
         await events?.close();
@@ -333,7 +326,7 @@ async function startSession(
     );
   };
   setClose(close);
-  if (opts.claudePid !== undefined) commands = await openCommandFeed(opts.claudePid, { warn });
+  await commands.open(opts.claudePid);
   controlServer = startControlServer(
     agent,
     control,
@@ -396,6 +389,22 @@ async function startSession(
     `[cotal-connector] MCP ready (stdio) — space="${config.space}" name="${config.name}"${config.role ? ` role="${config.role}"` : ""}\n`,
   );
   return { name: config.name, close };
+}
+
+/** A session's command mod: the dispatcher its agent serves, and the mod's socket behind it, which
+ *  `open` opens for the named Claude Code process. With none named, the dispatcher refuses. */
+function sessionCommands(env: NodeJS.ProcessEnv, claude: Pick<ClaudeHooks, "interrupting">, agent: () => MeshAgent, warn: (msg: string) => void) {
+  let feed: CommandFeed | undefined;
+  return {
+    dispatcher: claudeCommands({
+      feed: () => feed, interrupting: () => claude.interrupting(agent()), warn,
+      imageDir: env[TURN_IMAGES_ENV] || undefined, onStop: (stop) => agent().once("stopping", stop),
+    }),
+    async open(claudePid: number | undefined): Promise<void> {
+      if (claudePid !== undefined) feed = await openCommandFeed(claudePid, { warn });
+    },
+    close: (): void => feed?.close(),
+  };
 }
 
 /**
