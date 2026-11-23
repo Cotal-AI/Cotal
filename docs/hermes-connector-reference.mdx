@@ -231,7 +231,9 @@ of its `VALID_REASONING_EFFORTS`, which its gateway's `/reasoning` picker offers
 They differ by version. Hermes 0.18 stops at `xhigh`, and later versions add `max` and `ultra`. A
 launch's variant becomes the managed profile's `agent.reasoning_effort`. The launcher first checks
 it against the same list and refuses one Hermes does not take, because Hermes would quietly use the
-provider's default for it. Whether an effort reaches the model depends on Hermes's provider route.
+provider's default for it. Hermes sends the effort in the form its provider takes. For an
+OpenAI-compatible endpoint (the `custom` provider) that is a top-level `reasoning_effort`, which the
+endpoint may ignore.
 An adopted profile keeps the effort its own `config.yaml` sets, so its catalog lists no variants
 and a launch on it refuses one.
 
