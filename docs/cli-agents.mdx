@@ -252,7 +252,9 @@ If the installed connector supports direct preview validation, it checks resume,
 native options without creating launch files or checking its binary or login. Otherwise the preview
 reports connector arguments as not checked.
 A managed preview warns about an unknown local harness and reports `not-checked`, since the
-selected manager checks its own connectors at launch.
+selected manager checks its own connectors at launch. On an open or static space, a managed
+preview refuses a `--on` value that cannot be a manager instance id with `USAGE_INVALID`
+(exit 1). On a user-auth space, a manager name or host stays a valid pin.
 Both launch and preview reject a blank `--resume` value with `USAGE_INVALID` (exit 1) before preparing the launch.
 
 With `-d --json`, an invalid agent name or a local resume that needs `--on` produces a

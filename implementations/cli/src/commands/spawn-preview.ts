@@ -2,10 +2,12 @@ import { realpathSync, statSync } from "node:fs";
 import { hostname } from "node:os";
 import { resolve } from "node:path";
 import { connectorServers, loadCotalConfig, parseAgentFileSource, parseShareSelection, spawnEnvAllow, spawnNameError, token, type AgentDef, type Connector, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
-import { CommandFailure, isCommandFailure, recordOperationSpace, brokerAddressForDisplay, cachedPreferences, isWorkspaceTargetError, loadLaunchPersonaFile, personaDir, PersonaSourceError, presentationOf, pruneStaleMeshes, resolveAgentType, resolveMeshTarget, resolvePreference, resolveReadsLiveness, targetErrorCode, workspaceErrorParts, writeResult, type MeshTarget, type OutputWarning, type Report } from "@cotal-ai/workspace";
+import { CommandFailure, findMesh, isCommandFailure, recordOperationSpace, brokerAddressForDisplay, cachedPreferences, isWorkspaceTargetError, loadLaunchPersonaFile, personaDir, PersonaSourceError, presentationOf, pruneStaleMeshes, resolveAgentType, resolveMeshTarget, resolvePreference, resolveReadsLiveness, targetErrorCode, workspaceErrorParts, writeResult, type MeshTarget, type OutputWarning, type Report } from "@cotal-ai/workspace";
 import { mergeLaunchOptions, parseLaunchOptions } from "@cotal-ai/workspace";
 import { extensionNames, materializeExtension, preflightRuntime } from "../ext-loader.js";
 import { callerHarness, checkSpawnExpiryTarget, directPersonaPath, missingConnector, missingPersona, spawnPersona, spawnUsesManager, type PersonaSite } from "../lib/spawn-defaults.js";
+import { managerPin } from "../lib/manager-choice.js";
+import { spawnRerun } from "./spawn-flags.js";
 import { checkHarness, invalidEnvironmentValues } from "./config.js";
 import { DEFAULT_AGENT } from "../lib/default-persona.js";
 import { refuseUnmintableName } from "./spawn-managed-launch.js";
@@ -69,6 +71,11 @@ export async function spawnLaunchPreview(args: Pick<ParsedArgs, "positionals"> &
   // A folder whose records name no space is refused above, so a preview never names an assumed space.
   const target = { space, broker, authMode: targetMode };
   if (spawnUsesManager(values)) {
+    // A `--on` value that cannot be an instance id is refused here on an open or static mesh,
+    // as the launch refuses it: the shape check needs no manager lookup. A user-auth mesh keeps
+    // names and hosts as valid pins, and resolving one reads presence, so it is left alone.
+    const mode = targetMode ?? findMesh(space)?.mode;
+    if (mode !== "user") await managerPin(values, spawnRerun(values, args.positionals));
     if (values.name !== undefined) refuseUnmintableName(values.name, targetMode === "user");
     // The manager resolves the persona, harness and working directory on its own host at launch, so
     // the preview shows the request and says what it did not read.
