@@ -66,7 +66,7 @@ if (!existsSync(BIN)) {
   process.exit(1);
 }
 
-interface Envelope { outcome?: string; target?: { root?: string; space?: string; heldBy?: string }; error?: { code?: string; message?: string; remedy?: string } }
+interface Envelope { outcome?: string; target?: { root?: string; space?: string; heldBy?: string }; error?: { code?: string; message?: string; remedy?: string }; result?: { lifetimeRequest?: string } }
 const { readStackJournal, writeStackJournal } = await import("../src/lib/stack-journal.js");
 
 const { check, finish } = createSuite();
@@ -134,6 +134,19 @@ for (const { args, message } of cases) {
     check(`missing-manifest advice with ${flags[0] ?? "default output"} leads to a read-only plan`,
       refused.status === 1 && remedy.includes("pass -f <cotal.yaml>") && (flags.length > 0 || !remedy.includes("and omit --"))
         && preview.status === 0 && preview.stdout.includes("flagauditopen") && readdirSync(folder).length === 0, shown(preview));
+
+    const foreground = run(["up", "--foreground", "--dry-run", ...flags], manifests);
+    const advice = foreground.envelope?.error?.remedy ?? foreground.stderr;
+    const command = `team boot cotal.yaml --foreground --dry-run${flags.length ? ` ${flags[0]}` : ""}`;
+    check(`foreground dry-run with ${flags[0] ?? "default output"} points directly to team boot`,
+      foreground.status === 1 && (flags[0] !== "--json" || foreground.envelope?.error?.code === "USAGE_INVALID")
+        && (flags[0] === "--json" ? ["cotal"] : ["cotal", "pnpm cotal"]).some((cli) => advice.includes(`\`${cli} ${command}\``))
+        && !advice.includes("pass -f <cotal.yaml>") && !existsSync(join(manifests, ".cotal")), shown(foreground));
+    const foregroundPreview = run(command.split(" "), manifests);
+    check(`the foreground retry with ${flags[0] ?? "default output"} previews terminal custody without writes`,
+      foregroundPreview.status === 0 && (foregroundPreview.envelope?.result?.lifetimeRequest === "terminal-bound"
+        || /Lifetime request:\s+terminal-bound/.test(foregroundPreview.stdout))
+        && !existsSync(join(manifests, ".cotal")), shown(foregroundPreview));
   }
   for (const { label, args, json, help, message, remedy } of [
     { label: "-f --dry-run --max-file-store", args: ["-f", authManifest, "--dry-run", "--max-file-store", "1073741824"], json: true, help: false,
