@@ -1871,6 +1871,10 @@ if (process.platform === "linux") {
   mkdirSync(goneRoot);
   await json(["space", "create", "gone"], goneRoot);
   rmSync(goneRoot, { recursive: true });
+  const goneAdd = await json(["space", "add", "gone", "--server", DEAD, "--root", projectRoot("remote-registration"), "--force", "--yes"]);
+  const goneRemedy = goneAdd.env?.error?.remedy ?? "";
+  check("adding a prepared name from another root names the missing project to restore or the registration to forget",
+    refused(goneAdd, 2, "CONFLICT") && goneRemedy.includes("restore its project folder first") && goneRemedy.includes(goneRoot) && goneRemedy.includes("--space gone") && goneRemedy.includes("space forget gone") && findPreparedSpace("gone")?.root === goneRoot && findMesh("gone") === undefined, shown(goneAdd));
   const goneTarget = await json(["who", "--space", "gone"]);
   check("a prepared space whose folder was deleted is TARGET_UNAVAILABLE, saying the folder is gone and naming space forget",
     refused(goneTarget, 2, "TARGET_UNAVAILABLE") && (goneTarget.env?.error?.message ?? "").includes(`${goneRoot}, which no longer exists`) && (goneTarget.env?.error?.remedy ?? "").includes("cotal space forget gone"), shown(goneTarget));
