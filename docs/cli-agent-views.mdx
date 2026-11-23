@@ -404,6 +404,8 @@ channels or agents, use `cotal team deploy <file>` with a separate manifest that
 resources.
 A recorded stack resumes only after its last whole-stack stop completed and its manager was never
 attempted. The manifest's `broker.servers`, `broker.host` and `broker.auth` must match that stack.
+For a single broker URL, the scheme's letter case and an optional trailing slash do not affect
+the match. The stack resumes at its recorded address.
 A manifest that differs refuses `CONFLICT` (exit 2) and names each setting that differs with its
 recorded and declared values. Its Next names the manifest change that matches the stack, or a new
 space in another folder prepared with `cotal space create <space>`.

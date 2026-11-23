@@ -6,6 +6,7 @@ import { SERVICE_AUTHORITY_MAX_BYTES, SERVICE_CALLER_PAYLOAD_FLOOR, type ParsedA
 import {
   parseSeatCapFlag,
   CommandFailure,
+  codeSpan,
   assertSingleSpaceBroker,
   authDir,
   soleSpaceOf,
@@ -76,7 +77,12 @@ export function validateUpArguments(args: ParsedArgs): void {
   if (args.values.open === true) {
     publicExchangeArgs(args.values, false);
     serviceEndpointsArgs(args.values, false);
-  } else if (typeof args.values["exchange-public-port"] === "string") checkPublicExchangePort(args.values["exchange-public-port"]);
+  } else {
+    if (typeof args.values["exchange-public-port"] === "string") checkPublicExchangePort(args.values["exchange-public-port"]);
+    const url = args.values["exchange-public-url"];
+    if (typeof url === "string" && !url.startsWith("https://"))
+      throw new CommandFailure("refused", "USAGE_INVALID", "--exchange-public-url must be an https:// URL (TLS terminates at the reverse proxy); nothing was started or written");
+  }
   if (args.values.idp !== undefined && args.values["user-auth"] !== true && !args.values.file)
     throw new CommandFailure("refused", "USAGE_INVALID", '--idp is for user-auth spaces; pair it with --user-auth, or set broker.auth: "user" in a manifest', { remedy: "use --user-auth --idp <auth base URL>, without --open" });
   if (args.values.restore !== undefined && args.values["no-manager"] === true)
@@ -113,7 +119,12 @@ export function validateUpArguments(args: ParsedArgs): void {
   // checks the certificate against the address it names.
   if (!args.values.file && args.values["tls-cert"] !== undefined && typeof args.values.server === "string" && /^nats:\/\//i.test(args.values.server))
     throw new CommandFailure("refused", "USAGE_INVALID", "--tls-cert serves the broker over TLS, so --server must be a tls:// address; nothing was started or written", { remedy: `pass --server ${tlsAddress(args.values.server)}`, selfContained: true });
-  if (args.values.file !== undefined && args.values.foreground === true) throw new CommandFailure("refused", "UNSUPPORTED", "manifest boot has no native foreground custody path; a detached broker was not substituted for the requested terminal-bound lifetime");
+  if (typeof args.values.file === "string" && args.values.foreground === true) {
+    const boot = `cotal team boot ${shellWord(args.values.file)} --foreground`;
+    const remedy = args.values["dry-run"] === true ? `preview with ${codeSpan(`${boot} --dry-run`)}`
+      : `prepare the project if needed with \`cotal space create <space> --root .\`, then run ${codeSpan(boot)}`;
+    throw new CommandFailure("refused", "UNSUPPORTED", "manifest boot has no native foreground custody path; a detached broker was not substituted for the requested terminal-bound lifetime", { remedy });
+  }
   if (args.values.foreground === true && (args.values.json === true || args.values.plain === true)) throw new CommandFailure("refused", "USAGE_INVALID", "foreground up keeps native terminal custody and cannot produce a finite JSON or plain receipt", { remedy: `omit ${args.values.json ? "--json" : "--plain"} to keep the stack in this terminal, or omit --foreground for a finite receipt from a controller-owned stack` });
   // Flag values and combinations are usage, so they refuse here, before any effect. The run keeps
   // its own checks for maintenance re-entries, which do not pass through this validation.
