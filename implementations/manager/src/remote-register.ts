@@ -3,6 +3,7 @@ import { Kvm } from "@nats-io/kv";
 import { UserAuthenticationExpiredError, type NatsConnection } from "@nats-io/transport-node";
 import {
   accountFromCreds,
+  authorizeServeGrant,
   credsClaims,
   contractArtifactCanonicalBytes,
   contractArtifactDigestHex,
@@ -11,18 +12,20 @@ import {
   dialerFor,
   endpointRegistrationBarrier,
   epAuthBucket,
+  EpEnvelopeError,
   fetchContractArtifact,
   foreignSlotHeldFrom,
-  GovernanceSlotCasLost,
   principalKey,
   provisionEndpointGateOpen,
   publishContractArtifact,
   readEndpointGateGeneration,
   rejectionText,
   recordsBucket,
-  registerServingInstance,
+  registerServiceInstance,
   serveIssuanceGateKv,
+  SERVICE_READY,
   standaloneConnectOpts,
+  writeServiceStatus,
   type EpServeGrant,
   type EpIssuanceBarrier,
 } from "@cotal-ai/core";
@@ -34,11 +37,29 @@ async function registerAfterContention<T>(register: () => Promise<T>): Promise<T
       return await register();
     } catch (error) {
       // A fresh attempt re-reads the governance head and validates the registration under its gate.
-      if (retries === 4 || !(error instanceof GovernanceSlotCasLost || foreignSlotHeldFrom(error)?.condition === "in-flight"))
+      if (retries === 4 || !(error instanceof EpEnvelopeError && error.code === "conflict"))
         throw error;
       await delay(100);
     }
   }
+}
+
+async function finishManagerRegistration(
+  recordsKv: Parameters<typeof registerServiceInstance>[0],
+  args: Parameters<typeof registerServiceInstance>[1],
+  { registrationRevision, processEpoch }: Awaited<ReturnType<typeof registerServiceInstance>>,
+): Promise<EpServeGrant> {
+  const { space, instanceId, spec: { endpoint }, registrant: holder, authority, readClusterArtifact, barrier } = args;
+  const readProcessEpoch = async (): Promise<number> => {
+    const gate = await barrier.observe();
+    if (gate === null)
+      throw new EpEnvelopeError("failed-precondition", `no issuance gate for "${endpoint}/${instanceId}" after its registration; a gate is never deleted (SPEC 13.12)`);
+    return gate.processEpoch;
+  };
+  const grant = await authorizeServeGrant(recordsKv, { space, endpoint, instanceId, epoch: processEpoch, holder, authority, readClusterArtifact, readProcessEpoch });
+  await writeServiceStatus(recordsKv, { endpoint, instanceId, epoch: processEpoch, readProcessEpoch,
+    status: { state: SERVICE_READY, epoch: processEpoch, observedSpecRevision: registrationRevision } });
+  return grant;
 }
 
 /**
@@ -148,7 +169,7 @@ export async function registerRemoteManagerAuthority(args: {
           }
         },
       });
-      const register = () => registerServingInstance(recordsKv, {
+      const registrationArgs = {
         space: args.space,
         spec: { endpoint: MANAGER_ENDPOINT, owner: args.owner, clusterDigests: [artifacts.closureDigest], protocol: { v: 1 } },
         instanceId: args.instanceId,
@@ -159,7 +180,8 @@ export async function registerRemoteManagerAuthority(args: {
         // A foreign slot is reclaimed only after its gate provably reopens past the slot stamp.
         observeHolderGeneration: (holderInstanceId) =>
           readEndpointGateGeneration(authKv, { endpoint: MANAGER_ENDPOINT, instanceId: holderInstanceId }),
-      });
+      } satisfies Parameters<typeof registerServiceInstance>[1];
+      const register = () => registerServiceInstance(recordsKv, registrationArgs);
       let registered: Awaited<ReturnType<typeof register>>;
       try {
         registered = await registerAfterContention(register);
@@ -175,10 +197,11 @@ export async function registerRemoteManagerAuthority(args: {
         }
         registered = await register();
       }
-      const { registrationRevision, processEpoch, grant } = registered;
-      return { registrationRevision, processEpoch, serveGrant: grant };
+      // A status CAS can lose after registration committed. Never re-register on that conflict.
+      return { ...registered, serveGrant: await finishManagerRegistration(recordsKv, registrationArgs, registered) };
     } catch (error) {
       if (maintenanceFailure) throw maintenanceFailure.error;
+      if (error instanceof EpEnvelopeError && error.code === "conflict") throw error;
       // Retry only an authentication-expiry error or an elapsed credential on a closed connection.
       // Completed row CASes and verified-holder progress belong to the same freeze.
       // Some transports close without retaining the broker's expiry error. In that case require

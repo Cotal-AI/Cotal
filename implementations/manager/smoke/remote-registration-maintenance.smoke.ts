@@ -7,9 +7,9 @@ import { join } from "node:path";
 import { connect } from "@nats-io/transport-node";
 import { Kvm } from "@nats-io/kv";
 import {
-  commitSiblingIssuance, createSpaceAuth, credentialIdOf, credsClaims, epAuthBucket,
+  commitSiblingIssuance, createSpaceAuth, credentialIdOf, credsClaims, EpEnvelopeError, epAuthBucket,
   endpointRegistrationBarrier, eprepairKey, isReachable, mintCreds, mintLifecycleUid, newIdentity, parseEndpointRepairCursor,
-  recordsBucket, remoteManagerActors, serverConfig, serveIssuanceGateKv, setupSpaceStreams, standaloneConnectOpts,
+  RECORD_KINDS, recordsBucket, recordStatusKey, remoteManagerActors, serverConfig, serveIssuanceGateKv, setupSpaceStreams, standaloneConnectOpts,
 } from "@cotal-ai/core";
 import { SMOKE_BROKER_TOKEN, awaitBrokerReady, createSuite, freePort, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { registerRemoteManagerAuthority } from "../dist/index.js";
@@ -86,6 +86,46 @@ try {
   suite.check("concurrent first registrations: the loser reopened and retried at the original epoch",
     gates.every(gate => gate?.state === "open" && gate.processEpoch === 0) &&
       gates.map(gate => gate?.generation).sort().join(",") === "1,2", gates);
+
+  const statusRaceId = mintLifecycleUid();
+  const statusRaceActors = remoteManagerActors(statusRaceId);
+  const statusRaceGate = serveIssuanceGateKv(await openAuth(statusRaceId), space, { endpoint: "manager", instanceId: statusRaceId });
+  const statusKey = recordStatusKey(RECORD_KINDS.svc, ["manager", statusRaceId]);
+  const statusRaceCreds = await mintCreds(auth, newIdentity(), "remote-manager", {
+    principal: { owner, actor: statusRaceActors.executor },
+    remoteManager: { instanceId: statusRaceId, owner, actor: statusRaceActors.executor }, expiresInSeconds: 120,
+  });
+  let stagedStatus = false;
+  Kvm.prototype.open = async function (this: Kvm, ...args: Parameters<typeof open>) {
+    const kv = await open.apply(this, args);
+    if (args[0] !== recordsBucket(space)) return kv;
+    const get = kv.get.bind(kv);
+    kv.get = async (...query) => {
+      const entry = await get(...query);
+      if (query[0] === statusKey && !stagedStatus) {
+        assert.equal(entry, null);
+        const gate = await statusRaceGate.observe();
+        assert.equal(gate?.state, "open");
+        await kv.create(statusKey, new TextEncoder().encode(JSON.stringify({
+          state: "ready", epoch: gate.processEpoch, observedSpecRevision: gate.registrationRevision,
+        })));
+        stagedStatus = true;
+      }
+      return entry;
+    };
+    return kv;
+  };
+  try {
+    await assert.rejects(registerRemoteManagerAuthority({ space, server, owner, instanceId: statusRaceId,
+      serveActor: statusRaceActors.serve, tlsRequired: false, prepareCreds: statusRaceCreds,
+      evict: async () => { throw new Error("a ready-status conflict must not restart registration"); },
+    }), error => error instanceof EpEnvelopeError && error.code === "conflict");
+  } finally {
+    Kvm.prototype.open = open;
+  }
+  const afterStatusRace = await statusRaceGate.observe();
+  suite.check("ready-status CAS conflict does not repeat the committed registration", stagedStatus &&
+    afterStatusRace?.state === "open" && afterStatusRace.generation === 1 && afterStatusRace.processEpoch === 0, afterStatusRace);
 
   for (const mode of ["throw", "mixed", "short", "mixed-live"] as const) {
     const instanceId = mintLifecycleUid();
