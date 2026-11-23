@@ -17,18 +17,18 @@ export const spawnFlags = [
   { name: "restart-window", type: "string", value: "<ms>", description: "time window for --restarts; both flags are required together" },
   jsonFlag, plainFlag,
   { name: "detach", type: "boolean", short: "d", description: "launch through a manager, await readiness and return without attaching" },
-  { name: "live-only", type: "boolean", description: "foreground only: skip the durable backstop (no read-ACL row; messages missed while disconnected are not replayed)" },
-  { name: "expires-in", type: "string", value: "<seconds>", description: "foreground only, static mesh: end this seat's credential after this many seconds; omitted, it has no expiry and ends when the seat leaves cleanly" },
-  { name: "expires-at", type: "string", value: "<unix-seconds>", description: "foreground only, static mesh: end this seat's credential at this time; never with --expires-in" },
+  { name: "live-only", type: "boolean", foregroundOnly: true, description: "foreground only: skip the durable backstop (no read-ACL row; messages missed while disconnected are not replayed)" },
+  { name: "expires-in", type: "string", foregroundOnly: true, value: "<seconds>", description: "foreground only, static mesh: end this seat's credential after this many seconds; omitted, it has no expiry and ends when the seat leaves cleanly" },
+  { name: "expires-at", type: "string", foregroundOnly: true, value: "<unix-seconds>", description: "foreground only, static mesh: end this seat's credential at this time; never with --expires-in" },
   { name: "file", type: "string", short: "f", value: "<persona-file>", description: "persona file on the execution host; never a manifest deploy or implicit upload" },
   { name: "dry-run", type: "boolean", description: "preview the launch without allocation, provisioning or starting an application" },
-  { name: "enrollment-file", type: "string", value: "<private-file>", description: "foreground only: protected file holding this one seat's enrollment URL; never print or forward it" },
+  { name: "enrollment-file", type: "string", foregroundOnly: true, value: "<private-file>", description: "foreground only: protected file holding this one seat's enrollment URL; never print or forward it" },
   { name: "allow-stale", type: "string", value: "<a,b>", description: "refused: a manifest deployment option; use `cotal team deploy <file>`" },
   { name: "runtime", type: "string", value: "<name>", description: "terminal runtime for this one managed seat; omitted, the serving manager uses its own" },
   { name: "on", type: "string", value: "<instance>", description: "launch through this manager instance, by the id `ps` prints, and attach; with --detach, return once it joins" },
   { name: "expect-owner", type: "string", value: "<u_…>", description: `with ${MANAGED_HANDOFF_FILE_ENV}: the owner the managed handoff must carry` },
   { name: "expect-lifecycle-uid", type: "string", value: "<uid>", description: `with ${MANAGED_HANDOFF_FILE_ENV}: the lifecycle UID the managed handoff must carry` },
-] as const satisfies readonly FlagSpec[];
+] as const satisfies readonly (FlagSpec & { readonly foregroundOnly?: true })[];
 
 /** Keep shell words on one line even when a kickoff prompt contains terminal control characters. */
 export function retryWord(value: string): string {

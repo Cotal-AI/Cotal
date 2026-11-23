@@ -373,7 +373,10 @@ A field you leave unset is not sent, so it never causes that refusal.
 
 `cotal start` refuses without installing connectors. To migrate `cotal start --config default --name example`,
 run `cotal spawn default --detach --name example`. For a persona file, run
-`cotal spawn --detach --file <persona-file>` and keep the other launch options.
+`cotal spawn --detach --file <persona-file>`. If the old command uses `--live-only`, `--expires-in`,
+`--expires-at`, or `--enrollment-file`, use `--foreground` instead of `--detach` to keep those
+options. They cannot be used with a manager launch. In the foreground, `--json` and `--plain`
+require `--dry-run`.
 
 
 ### Manager capacity

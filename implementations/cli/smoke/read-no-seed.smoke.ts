@@ -246,8 +246,44 @@ channels:
   check("start replaces a file config with a quoted --file and retains launch options",
     file.status === 1 && file.stdout === "" && !GATE.test(file.stderr) &&
     migratedFile?.endsWith(` spawn --detach --file ${shellWord(path)} --name example --prompt 'review the first draft'`) === true, shown(file));
+  for (const flags of [["--detach", "--dry-run"], ["--on", "manager", "--dry-run"], ["--runtime", "pty", "--dry-run"], ["--json"]]) {
+    const conflict = run(["start", "--config", "default", ...launch, "--live-only", ...flags], offline, project);
+    check(`start explains how to migrate --live-only with ${flags[0]} without printing an invalid command`,
+      conflict.status === 1 && conflict.stdout === "" && !GATE.test(conflict.stderr) &&
+      conflict.stderr.includes("--live-only belongs to direct foreground execution") &&
+      !command(conflict)?.includes(" spawn "), shown(conflict));
+  }
+  for (const flags of [["--expires-in", "60"], ["--expires-at", "4102444800"], ["--enrollment-file", "./enrollment", "--space", "migration-check"]]) {
+    const removed = run(["start", "--config", "default", ...launch, ...flags], offline, project);
+    check(`start retains foreground-only ${flags[0]} in the migrated command`,
+      removed.status === 1 && removed.stdout === "" && !GATE.test(removed.stderr) &&
+      command(removed)?.endsWith(` spawn default --foreground --name example ${flags.join(" ")}`) === true, shown(removed));
+  }
   check("refusals leave the project, seed store and extensions untouched",
     readdirSync(project).length === 0 && !existsSync(join(xdg, "cotal", "seed")) && !existsSync(join(xdg, "cotal", "extensions")));
+
+  const previewEnv = { ...offline, COTAL_SKIP_CONNECTOR_SEED: "1" };
+  const prepared = run(["space", "create", "migration-check"], previewEnv, project);
+  check("prepare a stopped space for the migration previews", prepared.status === 0, shown(prepared));
+  writeFileSync(join(project, "local.md"), "---\nname: example\nagent: claude\n---\nMigration smoke.\n");
+  for (const [config, persona] of [["default", "default --foreground"], ["./local.md", "--foreground --file ./local.md"]] as const) {
+    const flags = [...launch, "--live-only", "--dry-run", "--json"];
+    const removed = run(["start", "--config", config, ...flags], offline, project);
+    const retry = command(removed);
+    const prefix = `${displayCmd({ fromAnyFolder: true })} spawn `;
+    const expected = `${prefix}${persona} ${flags.join(" ")}`;
+    check(`start explains --live-only and preserves it in the ${config} retry`,
+      removed.status === 1 && removed.stdout === "" && !GATE.test(removed.stderr) &&
+      removed.stderr.includes("--live-only belongs to direct foreground execution") && retry === expected, shown(removed));
+    if (retry !== expected) continue;
+    const preview = run(["spawn", ...retry.slice(prefix.length).split(" ")], previewEnv, project);
+    const result = preview.stdout ? JSON.parse(preview.stdout).result : undefined;
+    check(`the printed ${config} retry previews a direct launch without allocating or launching`,
+      preview.status === 0 && result?.kind === "direct-launch-preview" && result.allocated === false &&
+      result.launched === false, shown(preview));
+  }
+  check("the migration previews wrote no seed store or extensions",
+    !existsSync(join(xdg, "cotal", "seed")) && !existsSync(join(xdg, "cotal", "extensions")));
 }
 
 // ── A command that is not a read still meets the gate ───────────────────────────────────────────────
