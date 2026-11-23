@@ -58,7 +58,11 @@ claude --mcp-config '{"mcpServers":{"cotal":{…}}}' \
   Claude also asks each user to accept the bypass mode once, in a warning only that user may answer.
   Cotal never answers it. A managed seat that stops on it fails at the startup bound, and the error
   names both ways forward: accept it yourself once with `claude --permission-mode bypassPermissions`
-  in a terminal, or launch with `--opt permission-mode=default`.
+  in a terminal, or launch with `--opt permission-mode=default`. A launch with `askPermissions`
+  ([opt-in launch fields](connectors.mdx#opt-in-launch-fields)) starts in `--permission-mode default`,
+  managed or foreground, and refuses a launch option that sets `permission-mode` or
+  `dangerously-skip-permissions` as well. Windows does not take `askPermissions`, because nothing
+  serves the prompts there.
 
 - **Model auth.** Locally, `claude` still reads macOS Keychain / `~/.claude`. In a container or
   CI there is no Keychain, so the connector forwards the documented credential set:
@@ -681,8 +685,8 @@ plugin registers, with their matchers, are listed in the
 On a signed-in space, a seat that Cotal launched serves Claude's tool permissions on its own `agent`
 endpoint ([SPEC §13.22](../SPEC.md#1322-the-agent-endpoint)). The agent's owner can read and answer
 them from another session. No Manager has to run, and nothing is stored on the broker. A managed seat
-launches with `bypassPermissions` and asks nothing, so pass `--opt permission-mode=default` or another
-mode that asks.
+launches with `bypassPermissions` and asks nothing, so launch it with `askPermissions`, or pass
+`--opt permission-mode=default` or another mode that asks.
 
 The plugin registers `PermissionRequest` with a timeout of 2147483 seconds, the longest Claude
 accepts. The hook relay keeps its 2-second deadline for the dial and the connector's proof, and then
@@ -791,7 +795,10 @@ typed, assistant replies, run boundaries, and each tool call's start and end. To
 results publish by default on a separately authorized payload rail (below). A turn a peer message
 started opens a run without republishing that message. Native wake and inline prompts attributed
 to the Cotal plugin follow the same rule, including when they arrive during an open run.
-Reasoning is off by default. Programs can read these events directly. The launcher
+Reasoning is off by default. A launch with `reasoningEvents` publishes it as `REASONING_*` events,
+and passes `--settings '{"showThinkingSummaries":true}'`: without that setting Claude records each
+thinking block with empty text, and an empty block publishes nothing. Such a launch refuses a
+`settings` launch option. Programs can read these events directly. The launcher
 sets `COTAL_EVENTS` by default; pass `--no-events` to opt out on an unrestricted
 space. A user-auth registration with `policy: { events: "required" }` carries `eventsRequired` in the
 private launch material, so the connector arms even without `COTAL_EVENTS`; `--no-events` is refused.

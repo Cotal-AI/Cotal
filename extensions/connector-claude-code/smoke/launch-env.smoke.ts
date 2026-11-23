@@ -21,6 +21,7 @@
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { discardLaunchArtifacts, LAUNCH_MATERIAL_ENV, readLaunchMaterial } from "@cotal-ai/core";
 import { claudeConnector, CLAUDE_PROVIDER_KEYS } from "../src/extension.js";
 
 let pass = 0;
@@ -232,6 +233,48 @@ check(
   permissionModes(skippedArgs).length === 0 && skippedArgs.includes("--dangerously-skip-permissions"),
   skippedArgs.filter((a) => a.includes("permission")),
 );
+
+// The opt-in launch fields. askPermissions launches in Claude's asking mode, managed or foreground, and
+// refuses an operator permission option; reasoningEvents turns on Claude's thinking summaries. Both
+// reach the launch material, and a launch without them carries neither.
+{
+  const launch = (extra: Record<string, unknown>) =>
+    claudeConnector.buildLaunch({ space: "smoke", name: "claude-8", events: false, cwd: managedCwd, ...extra } as never);
+  const refusalOf = (extra: Record<string, unknown>): string => {
+    try {
+      discardLaunchArtifacts(launch(extra).artifacts ?? []);
+      return "";
+    } catch (e) {
+      return (e as Error).message;
+    }
+  };
+  const material = (spec: { env?: Record<string, string> }) => readLaunchMaterial(spec.env![LAUNCH_MATERIAL_ENV]!);
+  const asking = launch({ askPermissions: true, reasoningEvents: true });
+  const plain = launch({});
+  const foreground = claudeConnector.buildLaunch({ space: "smoke", name: "claude-9", events: false, askPermissions: true } as never);
+  const settings = (args: string[]): string[] => args.flatMap((a, i) => (a === "--settings" ? [args[i + 1] ?? ""] : []));
+  check("askPermissions launches a managed seat in Claude's default mode, not bypass", JSON.stringify(permissionModes(asking.args)) === JSON.stringify(["default"]), permissionModes(asking.args));
+  check("askPermissions launches a foreground seat in the default mode too", JSON.stringify(permissionModes(foreground.args)) === JSON.stringify(["default"]), permissionModes(foreground.args));
+  for (const option of [{ "permission-mode": "plan" }, { "dangerously-skip-permissions": "" }]) {
+    const why = refusalOf({ askPermissions: true, launchOptions: option });
+    check(`askPermissions with the launch option ${Object.keys(option)[0]} refuses the launch`, /askPermissions/.test(why) && why.includes(Object.keys(option)[0]!), why);
+  }
+  check("reasoningEvents turns on Claude's thinking summaries", JSON.stringify(settings(asking.args)) === JSON.stringify(['{"showThinkingSummaries":true}']), settings(asking.args));
+  const why = refusalOf({ reasoningEvents: true, launchOptions: { settings: "{}" } });
+  check("reasoningEvents with a settings launch option refuses the launch", /reasoningEvents/.test(why), why);
+  check("both fields reach the launch material", material(asking).askPermissions === true && material(asking).reasoningEvents === true, material(asking));
+  check(
+    "a launch without the fields keeps bypass, passes no --settings and carries neither field",
+    JSON.stringify(permissionModes(plain.args)) === JSON.stringify(["bypassPermissions"]) && settings(plain.args).length === 0 &&
+      material(plain).askPermissions === undefined && material(plain).reasoningEvents === undefined,
+    plain.args,
+  );
+  check(
+    "the connector declares askPermissions where it serves prompts, and reasoningEvents",
+    claudeConnector.supportsAskPermissions === (process.platform !== "win32") && claudeConnector.prompts === claudeConnector.supportsAskPermissions && claudeConnector.supportsReasoningEvents === true,
+  );
+  for (const spec of [asking, plain, foreground]) discardLaunchArtifacts(spec.artifacts ?? []);
+}
 
 // A step after the mint that throws (here the carried transcript is gone when it is placed) leaves
 // none of the launch's artifacts behind: not the control socket's directory, not the launch material.
