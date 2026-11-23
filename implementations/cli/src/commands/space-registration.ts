@@ -644,9 +644,10 @@ export async function spaceForget(rest: readonly string[], presentation: Present
     try {
       p = findPreparedSpace(name);
     } catch (e) {
-      // Its own record cannot be read, so it names no root to release definitions at: remove the file.
       if (!isMeshRegistryError(e) || preparedRecordSpace(e.file) !== name) throw e;
       if (e.recordDirectory) throw refuse("SCHEMA_INVALID", `${e.summary}; nothing was forgotten`, { ...target, file: e.file }, e.remedy);
+      if (e.refusal === "PERMISSION_DENIED") throw e;
+      // A malformed record names no root to release definitions at, so remove only the record.
       removeDamaged();
       removePreparedSpace(name);
       return forgotten(presentation, { space: name, server: null, root: null, origin: "prepared", releasedDefinitions: [], keptServices: savedServicesLeft(name, undefined) }, preferencesRevision, damagedWarnings);

@@ -2101,11 +2101,16 @@ if (process.platform === "linux") {
     const own = await json(["use", "pf"], folder);
     check("use pf with its own record unreadable refuses PERMISSION_DENIED, exit 2, naming that file and the step that gives it back, not its forget",
       refused(own, 2, "PERMISSION_DENIED") && own.env?.target?.file === damaged && own.env.error?.message === `${damaged} cannot be read by this account` && own.env.error?.remedy === giveBack, shown(own));
-    check("...and the record is kept", existsSync(damaged));
+    const forget = await json(["space", "forget", "pf"], folder);
+    check("space forget gives the same permission refusal and keeps the unreadable record",
+      refused(forget, 2, "PERMISSION_DENIED") && forget.env?.target?.file === damaged &&
+      forget.env.error?.message === own.env?.error?.message && forget.env.error?.remedy === giveBack && existsSync(damaged), shown(forget));
     chmodSync(damaged, 0o600);
     const readable = await json(["space", "show", "pf"], folder);
     check("once it is readable again, space show pf reads it", readable.status === 0 && readable.env?.outcome === "ok", shown(readable));
-    removePreparedSpace("pf");
+    const retried = await json(["space", "forget", "pf"], folder);
+    check("once readable, space forget reports the prepared root and removes the record",
+      retried.status === 0 && retried.env?.result?.root === readable.env?.result?.root && !existsSync(damaged), shown(retried));
   }
   removePreparedSpace("pready");
 
