@@ -77,12 +77,18 @@ async function checkDeniedDm(caller: MeshAgent, target: string, deniedReader: Na
   const { conn } = caller.ep as unknown as { conn: { nc: NatsConnection } };
   const active = conn.nc;
   const tool = cotalToolSpecs(caller.config).find((spec) => spec.name === "cotal_dm")!;
+  const unicast = caller.ep.unicastAttributed;
+  let publishes = 0;
+  caller.ep.unicastAttributed = (...args) => { publishes++; return unicast.apply(caller.ep, args); };
   conn.nc = deniedReader;
   try {
     const result = await tool.run(caller, caller.config, { to: target, text: "denied lookup must not publish" });
     suite.check("a registry read is denied on the send path", result.isError === true &&
-      result.structured?.code === "PERMISSION_DENIED" && result.text.includes("denied"), result);
-  } finally { conn.nc = active; }
+      result.structured?.code === "PERMISSION_DENIED" && result.structured.target === target && result.text.includes("denied") && publishes === 0, { result, publishes });
+  } finally {
+    conn.nc = active;
+    caller.ep.unicastAttributed = unicast;
+  }
 }
 
 async function checkDmResolution(left: MeshAgent, right: MeshAgent, caller: MeshAgent, username: string, otherUsername: string): Promise<void> {
@@ -289,17 +295,18 @@ async function checkAddresses(sender: CotalEndpoint, nc: NatsConnection, own: Co
   suite.check("the other owner receives the explicitly qualified DM", delivered === foreign.card.id && received.includes("qualified-recipient"), { delivered, received });
   const missing = await select(roster, `${foreignName}/absent`);
   suite.check("a known username resolves an unobserved actor without inferring existence", missing === `${foreign.principal.owner}.absent`, missing);
-  const unknown = await select(roster, "unknown_address_user/lister");
-  suite.check("an unknown username fails clearly", /unknown username.*unknown_address_user/i.test(unknown), unknown);
+  const unknown = await target(roster, "unknown_address_user/lister").catch((error: unknown) => error);
+  suite.check("an unknown username fails clearly", unknown instanceof core.PeerAddressError && unknown.code === "TARGET_NOT_FOUND" &&
+    /unknown username.*unknown_address_user/i.test(unknown.message), unknown);
   const wrongCase = await select(roster, `${foreignName}/Lister`);
   suite.check("the actor half is byte-exact", wrongCase === `${foreign.principal.owner}.Lister`, wrongCase);
   const folded = await select(roster, `${foreignName.toUpperCase()}/lister`);
   suite.check("only the username half folds case", folded === foreign.card.id, folded);
   const noPresence = await select([], qualified);
   suite.check("a registered principal resolves without presence", noPresence === foreign.card.id, noPresence);
-  const unavailable = await resolve([], qualified, { authority: { ...authority, nc: failedReader } })
-    .then((peer) => peer?.card.id ?? "no match", (error: Error) => error.message);
-  suite.check("a failed registry read is visibly unavailable, not an unknown username", /cannot read.*username registry/i.test(unavailable), unavailable);
+  const unavailable = await resolve([], qualified, { authority: { ...authority, nc: failedReader } }).catch((error: unknown) => error);
+  suite.check("a failed registry read is visibly unavailable, not an unknown username", unavailable instanceof core.PeerAddressError &&
+    unavailable.code === "TARGET_UNAVAILABLE" && /cannot read.*username registry/i.test(unavailable.message), unavailable);
   suite.check("an exact ID still selects a foreign peer", await select(roster, foreign.card.id) === foreign.card.id);
   suite.check("a bare name absent from all owners still returns no match", await select(roster, "missing_actor") === "no match");
 }

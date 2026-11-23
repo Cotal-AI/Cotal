@@ -53,6 +53,8 @@ selects an agent for you.
 In a signed-in space, `--to reviewer` names your own agent. Use `--to user/reviewer` to name
 another owner's agent. The username is case-insensitive and the launch name is case-sensitive.
 An exact instance ID still works. A qualified send reports storage, not whether the recipient exists or read it.
+If the username registry denies the lookup, `send` refuses with `PERMISSION_DENIED`. An unavailable read
+returns `TARGET_UNAVAILABLE`, and an unknown username returns `TARGET_NOT_FOUND`. None publishes a DM.
 Qualified input requires an upgraded delivery responder. If its version cannot be verified, nothing is sent.
 Open and no-login spaces accept bare display names and exact IDs, but not `user/agent`.
 

@@ -3,7 +3,7 @@ import { AmbiguousPeerError, resolvePeer } from "./resolve.js";
 import { DEV_OWNER, parsePrincipalKey, principalKey } from "./subjects.js";
 import type { Presence } from "./types.js";
 import type { LivenessAnswer } from "./liveness.js";
-import { assertValidUsername, readUsername, readUsernameOwner } from "./username-registry.js";
+import { assertValidUsername, readUsername, readUsernameOwner, UsernameRegistryReadError } from "./username-registry.js";
 
 export type PeerAddressAuthority =
   | { mode: "open" | "static" }
@@ -16,7 +16,7 @@ export interface PeerAddressOptions {
 }
 
 export class PeerAddressError extends Error {
-  constructor(readonly target: string, readonly code: "USAGE_INVALID" | "TARGET_NOT_FOUND" | "TARGET_UNAVAILABLE", message: string,
+  constructor(readonly target: string, readonly code: "USAGE_INVALID" | "TARGET_NOT_FOUND" | "TARGET_UNAVAILABLE" | "PERMISSION_DENIED", message: string,
     readonly addresses: readonly string[] = [], options?: ErrorOptions) {
     super(message, options);
     this.name = "PeerAddressError";
@@ -27,7 +27,11 @@ type UserAuthority = Extract<PeerAddressAuthority, { mode: "user" }>;
 
 async function readRegistry<T>(target: string, read: () => Promise<T>): Promise<T> {
   try { return await read(); }
-  catch (cause) { throw new PeerAddressError(target, "TARGET_UNAVAILABLE", `Cannot read the username registry for ${JSON.stringify(target)}.`, [], { cause }); }
+  catch (cause) {
+    if (cause instanceof UsernameRegistryReadError && cause.code === "denied")
+      throw new PeerAddressError(target, "PERMISSION_DENIED", `The username registry denied the read for ${JSON.stringify(target)}.`, [], { cause });
+    throw new PeerAddressError(target, "TARGET_UNAVAILABLE", `Cannot read the username registry for ${JSON.stringify(target)}.`, [], { cause });
+  }
 }
 
 export type PeerAddress = { kind: "principal"; value: string } | { kind: "name"; value: string } | { kind: "qualified"; username: string; actor: string };
