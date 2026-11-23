@@ -81,7 +81,7 @@ import { onInstance } from "../lib/control.js";
 import { askSpawnPlace } from "../lib/manager-choice.js";
 import { canPrompt } from "./meshes-wizard.js";
 import { listDeclaredChannels, listDeclaredRoles, listPersonaNames } from "../lib/personas.js";
-import { personaCatalog } from "../lib/persona-files.js";
+import { personaCatalog, unreadablePersona } from "../lib/persona-files.js";
 import { brokenDefaultPersona, callerHarness, checkSpawnExpiryTarget, directPersonaPath, missingConnector, missingPersona, spawnPersona, spawnUsesManager } from "../lib/spawn-defaults.js";
 import { writeDefaultPersonaForLaunch } from "../lib/default-persona.js";
 import { spawnLaunchPreview } from "./spawn-preview.js";
@@ -555,6 +555,8 @@ export async function spawn(args: ParsedArgs): Promise<void> {
           target: { space, path }, remedy: "correct the link's target, or move the link aside and put a regular persona file in its place",
         });
       } else {
+        const unreadable = unreadablePersona(path, code, space);
+        if (unreadable) throw unreadable;
         stderrLine("✗ ", `${(e as Error).message}`, c.red);
       }
       process.exit(1);
@@ -569,9 +571,8 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     if (written !== undefined) provenance.wrote("default persona", written);
     try { def = loadLaunchPersonaFile(path); }
     catch (retryError) {
-      if (written === undefined && (retryError as NodeJS.ErrnoException).code === "ENOENT")
-        throw brokenDefaultPersona(path, { space, path }) ?? retryError;
-      throw retryError;
+      if (written !== undefined || (retryError as NodeJS.ErrnoException).code !== "ENOENT") throw retryError;
+      throw brokenDefaultPersona(path, { space, path }) ?? retryError;
     }
   }
 

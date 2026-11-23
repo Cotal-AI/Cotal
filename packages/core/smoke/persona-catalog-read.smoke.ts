@@ -64,13 +64,18 @@ saveAgentFile(join(root, ".cotal", "agents", "operator.md"), {
   persona: "Hand-written, no owner.",
 });
 writeFileSync(join(root, ".cotal", "agents", "broken.md"), "not a persona file\n");
+writeFileSync(join(root, ".cotal", "agents", "   .md"), "---\nname: sample\n---\nFixture.\n");
 
 const catalog = listPersonaCatalog(root);
 check(
-  "every parseable and unparseable .md is listed (taken-name census)",
-  catalog.map((e) => e.name).join(",") === "broken,mine,operator,theirs",
+  "every .md is listed (taken-name census)",
+  catalog.map((e) => e.name).join(",") === "   ,broken,mine,operator,theirs",
   catalog.map((e) => e.name),
 );
+const blank = catalog.find(e => e.name === "   ");
+check("a blank stem uses the existing catalog error row",
+  blank?.path === join(root, ".cotal", "agents", "   .md") && blank.error?.includes("blank stem") === true &&
+  Object.keys(blank).sort().join(",") === "error,name,path", blank);
 check("broken is an error row, not a throw", catalog.find((e) => e.name === "broken")?.error !== undefined);
 const mine = catalog.find((e) => e.name === "mine")!.def!;
 const theirs = catalog.find((e) => e.name === "theirs")!.def!;

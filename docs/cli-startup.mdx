@@ -111,8 +111,8 @@ with no `.cotal` above it, and a run refused before it writes there removes that
 When the home holds a stack an earlier release started there, the folder starts its own stack beside
 it. The home's stack keeps running and keeps its records, and commands in the folder reach the
 folder's own stack from then on. In such a folder,
-`up -f` and `up --restore` refuse `CONFLICT` before anything is written: prepare the folder with
-`space create <space> --root .`, then run `up` again from it. In the home folder
+`up -f` and `up --restore` refuse `CONFLICT` before anything is written. For a manifest, prepare the folder with
+`space create <space> --root .`, then repeat the manifest command there. Keep its file and launch options, but omit `--json` or `--plain` if you passed it. In the home folder
 itself, whose `.cotal` holds this machine's own records, `up` refuses `CONFLICT` and names a project
 folder, as `space create` does there. In a folder that is, or is in, a control directory, `up`
 refuses `CONFLICT` before anything is started or written and names the project folder to run it from. A home that already holds a stack an earlier release started

@@ -80,10 +80,9 @@ const sign = (n: Name, ttl?: number) => {
 
 type Internals = {
   ep: { conn: { nc?: NatsConnection } };
-  serviceServe?: { nc: NatsConnection; creds?: string; grant: { epoch: number } };
   managerInstanceId: string;
   credentialRenewal: { remoteSupervisorCreds?: string; remoteExecutorCreds?: string; remoteRenewalDebt?: { processEpoch: number; reason: string; unadoptedSubjects: string[] }; };
-  servePlane: { sessionLedgerConn?: { nc: NatsConnection; creds?: string }; };
+  servePlane: { sessionLedgerConn?: { nc: NatsConnection; creds?: string }; serviceServe?: { nc: NatsConnection; creds?: string; grant: { epoch: number } }; };
   goalWriterComponent: { goalWriter?: { nc: NatsConnection; creds?: string }; };
 };
 
@@ -176,8 +175,8 @@ try {
   });
   const m = manager as unknown as Internals;
   await manager.start();
-  const epoch = m.serviceServe!.grant.epoch;
-  const conns = () => [m.ep.conn.nc, m.serviceServe?.nc, m.goalWriterComponent.goalWriter?.nc, m.servePlane.sessionLedgerConn?.nc];
+  const epoch = m.servePlane.serviceServe!.grant.epoch;
+  const conns = () => [m.ep.conn.nc, m.servePlane.serviceServe?.nc, m.goalWriterComponent.goalWriter?.nc, m.servePlane.sessionLedgerConn?.nc];
   const firstConns = conns();
 
   await cell("Manager.start() brings up supervisor, serve, goal-writer and session-ledger on the initial family", async () => {
@@ -225,14 +224,14 @@ try {
     assert.equal(m.credentialRenewal.remoteRenewalDebt, undefined);
     assert.equal(m.credentialRenewal.remoteSupervisorCreds, adopted!.supervisor);
     assert.equal(m.credentialRenewal.remoteExecutorCreds, adopted!.executor);
-    assert.equal(m.serviceServe!.creds, adopted!.serve);
+    assert.equal(m.servePlane.serviceServe!.creds, adopted!.serve);
     assert.equal(m.goalWriterComponent.goalWriter!.creds, adopted!.goalWriter);
     assert.equal(m.servePlane.sessionLedgerConn!.creds, adopted!.sessionLedger);
     for (const n of names) assert.equal(credsClaims(adopted![n]).sub, held[n].id, `${n} keeps its held nkey`);
   });
   await cell("the control identity and serve epoch are unchanged after recovery", async () => {
     assert.equal(m.managerInstanceId, instanceId);
-    assert.equal(m.serviceServe!.grant.epoch, epoch);
+    assert.equal(m.servePlane.serviceServe!.grant.epoch, epoch);
     assert.equal((await observeManagerGate() as unknown as { processEpoch: number }).processEpoch, epoch);
   });
   await cell("clean stop deregisters through the adopted family, not the per-duty executor renewal", async () => {
