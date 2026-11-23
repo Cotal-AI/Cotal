@@ -1411,7 +1411,7 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
     // another one, and it is not reported as a broker started elsewhere (#7123).
     const interrupted = resumeAttempt ? undefined : interruptedStartBroker(cotalRoot());
     if (interrupted)
-      throw new CommandFailure("refused", "CONFLICT", `the broker this folder started for "${interrupted.space}" still runs at ${interrupted.server} (pid ${interrupted.pid}), and no space is registered for it because the start that launched it did not finish; nothing was started`, { target: { root: cotalRoot(), space: interrupted.space, server: interrupted.server, pid: interrupted.pid }, remedy: "stop it with `cotal down`, then run `cotal up` again" });
+      throw new CommandFailure("refused", "CONFLICT", `the broker this folder started for "${interrupted.space}" still runs at ${interrupted.server} (pid ${interrupted.pid}), and no space is registered for it because the start that launched it did not finish; nothing was started`, { target: { root: cotalRoot(), space: interrupted.space, server: interrupted.server, pid: interrupted.pid }, remedy: "stop it with `cotal down`, then repeat your startup command with the same options from this folder" });
     const restoredAttempt = resumeAttempt ? pendingRestores.get(resumeAttempt) : undefined;
     if (restoredAttempt?.reentry) {
       if (!restoredAttempt.listenerProof)
