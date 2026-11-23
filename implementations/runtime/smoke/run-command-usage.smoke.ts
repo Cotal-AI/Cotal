@@ -95,6 +95,34 @@ const gate = (positionals: string[], values: Record<string, string | boolean> = 
     c(`control: --admit-read ${JSON.stringify(read)} --admit-publish ${JSON.stringify(publish)} passes the grammar`, !(local(read, publish) instanceof Error), local(read, publish));
 }
 
+// A local start names its admission ceiling on the command line, so a missing or empty
+// option is refused by the gate, before any broker contact, and the help already calls
+// both options required.
+{
+  const local = (values: Record<string, string | boolean>) => gate(["start"], { local: true, file: "p.cotal.js", ...values });
+  for (const [flag, values] of [
+    ["admit-read", { "admit-publish": "none" }],
+    ["admit-publish", { "admit-read": "none" }],
+  ] as const) {
+    const missing = local(values);
+    c(`start --local with missing --${flag} refuses before contact naming the flag`,
+      usageRefusal(missing, `run start --local requires --${flag} <channels>`)
+      && isCommandFailure(missing) && (missing.remedy ?? "").includes(`--${flag} <channels>`) && missing.selfContained === true, missing);
+  }
+  for (const [flag, values] of [
+    ["admit-read", { "admit-read": "", "admit-publish": "none" }],
+    ["admit-publish", { "admit-read": "none", "admit-publish": "   " }],
+  ] as const) {
+    const empty = local(values);
+    c(`start --local with empty --${flag} refuses before contact naming the flag`,
+      usageRefusal(empty, `run start --local requires --${flag} <channels>`), empty);
+  }
+  c("start --local with both ceilings named still passes the grammar",
+    !(local({ "admit-read": "none", "admit-publish": "none" }) instanceof Error));
+  c("a hosted start still takes no admission ceiling",
+    !(gate(["start"], { file: "p.cotal.js" }) instanceof Error));
+}
+
 {
   reset();
   // Complete answer-shaped arguments and invalid JSON: the verb gate must answer before either the
