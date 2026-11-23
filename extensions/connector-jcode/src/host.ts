@@ -160,10 +160,11 @@ export async function runJcodeHost(): Promise<void> {
   const relayServer = await startRelay(agent, config, relay);
   writeMcpConfig(home, relay, config);
 
-  const { events, eventWaitStop, releaseEventLock } = createJcodeEventPlane({ agent, config, hostState, socketHome, eventsArmed, eventsWorkspaceRoot });
+  const { events, deltaStream, eventWaitStop, releaseEventFiles } = createJcodeEventPlane({ agent, config, hostState, socketHome, eventsArmed, eventsWorkspaceRoot });
   hostState.eventJournal = undefined;
 
   const closeEventRun = (error?: Error): void => {
+    deltaStream.turnEnded();
     if (!events?.running || !hostState.eventJournal) return;
     events.flush(hostState.eventJournal);
     events.closeRun(Date.now(), error ? { message: error.message, code: error.name } : undefined);
@@ -549,7 +550,7 @@ export async function runJcodeHost(): Promise<void> {
       writeJcodeDiagnostic(`[cotal-jcode] AG-UI shutdown failed: ${(error as Error).message}\n`);
       exit = 1;
     }
-    await releaseEventLock();
+    await releaseEventFiles();
     try {
       await stopPrivateJcode();
       removeCredentials();
@@ -666,6 +667,7 @@ export async function runJcodeHost(): Promise<void> {
   const { drive, runOwnerTurn: ownerTurn, steerPending, armQueueFallback, watchClient } = createHostTurns(hostState, {
     agent,
     events,
+    deltaStream,
     closeEventRun,
     ensureEventsBound,
     unansweredSteers,

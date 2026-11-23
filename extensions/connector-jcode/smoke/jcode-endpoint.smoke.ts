@@ -17,6 +17,7 @@ import { CommandRefused, type AgentTurn, type InboxItem, type MeshAgent } from "
 import { emitSentinel } from "@cotal-ai/smoke-kit";
 import { jcodeCommands } from "../src/commands.js";
 import { createHostTurns, type HostTurnDeps, type HostTurnState } from "../src/host-turns.js";
+import { JcodeDeltaStream } from "../src/stream-deltas.js";
 
 let passed = 0;
 let failed = 0;
@@ -101,7 +102,7 @@ function seat() {
   });
   const refuseCall = () => { throw new Error("not reached in this smoke"); };
   const deps = {
-    agent, events: undefined, closeEventRun: () => {}, ensureEventsBound: async () => {},
+    agent, events: undefined, deltaStream: new JcodeDeltaStream(), closeEventRun: () => {}, ensureEventsBound: async () => {},
     unansweredSteers: new Set(), releaseUnansweredSteers: () => {}, oweAcceptanceDebt: () => {},
     withExclusiveDispatch: (operation: () => Promise<unknown>) => operation(), onceAccepted,
     heldReservations: new Set(), releaseUnheldReservations: () => {}, promoteToSurfaced: () => {}, reserveForHandover: () => () => {},

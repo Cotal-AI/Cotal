@@ -1,17 +1,20 @@
 /**
- * The Jcode seat's event plane: the emitter holder over the seat's session journal, the lock on its
- * WAL directory, and the wait that rides out a mesh rebuild.
+ * The Jcode seat's event plane: the emitter holder over the seat's session journal merged with the
+ * deltas its replies stream, the lock on its WAL directory, and the wait that rides out a mesh rebuild.
  */
 import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import {
   AguiEmitter,
   AguiEmitterHolder,
+  DeltaMergedSource,
   eventPlaneStopped,
   EventWal,
   FileSubjectFrontier,
   ensureEventWalDir,
+  streamSeed,
   type AgentConfig,
+  type Merged,
   type MeshAgent,
   type PrincipalLock,
 } from "@cotal-ai/connector-core";
@@ -21,6 +24,7 @@ import { initializeJcodeEventBoundary, JcodeJournalSource, jcodeJournalPath, pos
 import type { HostTurnState } from "./host-turns.js";
 import type { ShortSocketHome } from "./private-state.js";
 import { writeJcodeDiagnostic } from "./startup-diagnostics.js";
+import { JcodeDeltaStream } from "./stream-deltas.js";
 
 export function createJcodeEventPlane(opts: {
   agent: MeshAgent;
@@ -33,10 +37,12 @@ export function createJcodeEventPlane(opts: {
   const { agent, config, hostState, socketHome, eventsArmed, eventsWorkspaceRoot } = opts;
   let eventLock: PrincipalLock | undefined;
   let mapper: JcodeMapper | undefined;
+  const deltaStream = new JcodeDeltaStream();
+  let merged: DeltaMergedSource<PositionedJcodeJournalRecord> | undefined;
   /** Aborted by `shutdown()`, so an event step waiting out a rebuild window cannot hold a stop. */
   const eventWaitStop = new AbortController();
   const events = eventsArmed
-    ? new AguiEmitterHolder<PositionedJcodeJournalRecord>(
+    ? new AguiEmitterHolder<Merged<PositionedJcodeJournalRecord>>(
         async (journalPath: string) => {
           const workspaceRoot = eventsWorkspaceRoot!;
           if (!hostState.sessionId) throw new Error("jcode connector: cannot start AG-UI without a Harness session id");
@@ -45,30 +51,47 @@ export function createJcodeEventPlane(opts: {
           if (resolve(journalPath) !== resolve(expectedPath))
             throw new Error(`jcode connector: event source ${journalPath} does not belong to session ${threadId}`);
           const principal = principalKey(agent.ep.principal.owner, agent.ep.principal.actor).key;
-          const { walPath, subjectPath, lock } = await ensureEventWalDir({ workspaceRoot, space: config.space, principal, threadId });
+          const { walPath, subjectPath, deltaJournalPath, lock } = await ensureEventWalDir({ workspaceRoot, space: config.space, principal, threadId });
           eventLock = lock;
+          if (!merged) {
+            const harness = new JcodeJournalSource(journalPath);
+            deltaStream.open(threadId, {
+              path: deltaJournalPath,
+              anchor: () => harness.anchor(),
+              onWrite: () => {
+                if (events?.running && hostState.eventJournal) events.flush(hostState.eventJournal);
+              },
+              onError: (error) => writeJcodeDiagnostic(`[cotal-jcode] AG-UI source: streamed text could not be journaled: ${error.message}\n`),
+            });
+            merged = new DeltaMergedSource(positionedJcodeJournalSource(harness), deltaJournalPath);
+          }
+          const source = merged;
           const subjectFrontier = await FileSubjectFrontier.open(subjectPath, { space: config.space, principal });
           const wal = await EventWal.open(walPath, { space: config.space, threadId, principal, subjectMayExist: false });
           // Persist the pre-public boundary before start returns. drive() waits for this factory, so
           // no requested turn can append past an unacknowledged boundary. On restart an existing WAL
           // wins over the current journal end and replays everything appended after that cursor.
-          await initializeJcodeEventBoundary(journalPath, wal);
+          await initializeJcodeEventBoundary(journalPath, wal, source);
           const resumeBrackets = wal.pending === null ? wal.brackets : wal.pending.brackets;
-          mapper = createJcodeMapper({ threadId, mintRunId: () => randomUUID(), resumeRunId: resumeBrackets?.run, resumeTools: resumeBrackets?.tools });
-          return AguiEmitter.start<PositionedJcodeJournalRecord>({
+          const seed = await streamSeed(deltaJournalPath, wal.pending === null ? wal.frontier.sourceCursor : wal.pending.sourceCursor, resumeBrackets);
+          mapper = createJcodeMapper({ threadId, mintRunId: () => randomUUID(), resumeRunId: resumeBrackets?.run, resumeTools: resumeBrackets?.tools, seed });
+          return AguiEmitter.start<Merged<PositionedJcodeJournalRecord>>({
             endpoint: agent.ep,
             withholdPayloads: config.eventPayloadsWithheld,
             wal,
             subjectFrontier,
-            source: positionedJcodeJournalSource(new JcodeJournalSource(journalPath)),
+            source,
             map: mapper.map,
             onUnreadable: (gap) =>
-              writeJcodeDiagnostic(`[cotal-jcode] AG-UI source: skipped an unreadable journal record at offset ${gap.offset} (${gap.bytes} bytes): ${gap.reason}\n`),
+              writeJcodeDiagnostic(`[cotal-jcode] AG-UI source: skipped an unreadable ${gap.file ? "delta journal line" : "journal record"} at offset ${gap.offset} (${gap.bytes} bytes): ${gap.reason}\n`),
           });
         },
         {
           onError: eventPlaneStopped({ log: (line) => writeJcodeDiagnostic(`[cotal-jcode] ${line}\n`) }),
-          sourceEnd: (journalPath: string) => new JcodeJournalSource(journalPath).end(),
+          sourceEnd: () => {
+            if (!merged) throw new Error("jcode connector: the event plane has not started");
+            return merged.end();
+          },
           onRunClosed: (runId: string) => mapper?.forgetOpenRun(runId),
           // A flush landing in a mesh rebuild window measured `max_payload` off a connection
           // that was not there and killed the seat. The holder now rides the window out on this
@@ -118,7 +141,9 @@ export function createJcodeEventPlane(opts: {
       )
     : undefined;
 
-  const releaseEventLock = async (): Promise<void> => {
+  /** Close the delta journal and release the WAL directory's lock. */
+  const releaseEventFiles = async (): Promise<void> => {
+    deltaStream.close();
     const lock = eventLock;
     eventLock = undefined;
     if (!lock) return;
@@ -129,5 +154,5 @@ export function createJcodeEventPlane(opts: {
     }
   };
 
-  return { events, eventWaitStop, releaseEventLock };
+  return { events, deltaStream, eventWaitStop, releaseEventFiles };
 }
