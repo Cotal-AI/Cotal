@@ -724,8 +724,8 @@ try {
         && !beside.stderr.includes("cotal team deploy") && !started(journalRoot), shown(beside));
   }
 
-  // A bare up whose folder names a space that runs from another folder names a separate space for
-  // this folder, and the stop for the other one in its own folder. The folder's account names main,
+  // A bare up whose folder names a space that runs elsewhere needs a new project folder for a
+  // separate space, or the stop for the running one in its own folder. The folder's account names main,
   // as one does after an earlier `up --space main` there. A child process that sends the broker's
   // greeting stands in for the other folder's broker, since `run` blocks this process while up probes it.
   const other = realpathSync(mkdtempSync(join(tmpdir(), "cotal-up-usage-other-")));
@@ -741,15 +741,19 @@ try {
   const { recordMesh, removeMesh } = await import("@cotal-ai/workspace");
   process.env.COTAL_HOME = join(home, ".cotal");
   recordMesh({ space: "main", server: `nats://127.0.0.1:${greeting}`, root: other, mode: "auth", origin: "up", ts: now });
-  const inUse = run(["up", "--server", `nats://127.0.0.1:${await freePort()}`], legacy);
+  const requested = `nats://127.0.0.1:${await freePort()}`;
+  const inUse = run(["up", "--server", requested], legacy);
+  const otherNameHere = run(["up", "--space", "separate", "--server", requested], legacy);
   // A regression that took the name over started a stack, which is stopped before the cell fails.
   if (started(legacy)) { sandbox(legacy); run(["down", "--yes"], legacy); }
   removeMesh("main");
   delete process.env.COTAL_HOME;
   greeter.kill();
-  check("a bare up whose folder names a space that runs from another folder refuses CONFLICT, exit 2, naming cotal up --space <name> and the down in that folder",
+  check("a bare up whose folder names a space running elsewhere offers a new project folder or the stop in the running folder",
     inUse.status === 2 && /Code:\s+CONFLICT/.test(inUse.stderr) && inUse.stderr.includes(`space "main" is already in use by a mesh at nats://127.0.0.1:${greeting} (${other})`)
-      && inUse.stderr.includes(`start a separate space in this folder with \`cotal up --space <name>\`, naming one no other folder uses, or stop "main" first with \`cotal down\` in ${other}`), shown(inUse));
+      && inUse.stderr.includes(`start a separate space in a new project folder outside this one with \`cotal up --space <name>\`, using an unused name and keeping --server if you specified a free address, or stop "main" first with \`cotal down\` in ${other}`), shown(inUse));
+  check("changing only the name in the account's folder cannot start that separate space",
+    otherNameHere.status === 2 && /Code:\s+CONFLICT/.test(otherNameHere.stderr) && otherNameHere.stderr.includes(`it can't also run "separate"`), shown(otherNameHere));
 
   // THE SAME SPACE, RUNNING FROM THIS VERY PROJECT, started again at another address. The refusal
   // above belongs to a name another folder holds; here the folder IS that space's project, so the
