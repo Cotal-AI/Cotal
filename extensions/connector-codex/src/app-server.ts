@@ -225,6 +225,7 @@ interface DriverOpts {
  *  - `"itemStarted"` / `"itemCompleted"` (item, turnId) — thread items (feed/presence)
  *  - `"textDelta"` (itemId, text, kind)                — a piece of an agent message (`text`) or of a
  *    reasoning summary (`reasoning`) as it streams
+ *  - `"planUpdated"` ({explanation, plan})             — the thread's plan changed (`turn/plan/updated`)
  *  - `"waiting"` (detail)                              — an approval was requested
  *  - `"answered"` (detail)                             — that request's reply is written (→ working)
  *  - `"resolved"` (requestId)                          — the app-server stopped waiting on a request
@@ -946,6 +947,9 @@ export class AppServerDriver extends EventEmitter {
         for (const w of [...this.mcpWaiters]) w();
         return;
       }
+      case "turn/plan/updated":
+        if (params.threadId === this.threadId) this.emit("planUpdated", { explanation: params.explanation, plan: params.plan });
+        return;
       case "turn/failed": // terminal, but turn/completed (status:"failed") follows on the same turn
         return;
       case "thread/tokenUsage/updated": {

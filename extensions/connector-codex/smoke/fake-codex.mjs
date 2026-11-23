@@ -8,6 +8,7 @@
 // SLOW → hold the turn open ~1.2s (a steer window); HANG → hold until an interrupt
 // arrives, else self-interrupt after ~1s; FAIL → fail in the same frame the turn started in;
 // THINK → stream a reasoning summary as summary deltas before saving it;
+// PLAN → set a plan from a code-mode exec script, which clients see only as turn/plan/updated;
 // STREAM → stream the reply as agent-message deltas before saving it;
 // WAITEND → hold the turn until FAKE_CODEX_END_MARK exists; default → complete.
 //
@@ -461,6 +462,14 @@ async function runTurn(text) {
     journal({ ev: "reasoningSaved", turnId, at: Date.now() });
     rolloutRecord("response_item", { type: "reasoning", id: `rs_${turnSeq}`, summary: [{ type: "summary_text", text: summary }], encrypted_content: "opaque" });
     notify("item/completed", { threadId: THREAD, turnId, item: { type: "reasoning", id: `rs_${turnSeq}`, summary: [summary], content: [] } });
+  }
+  // PLAN: the rollout records the script's call and its output, and nothing for the plan it sets.
+  if (text.includes("PLAN")) {
+    rolloutRecord("response_item", { type: "custom_tool_call", status: "completed", call_id: `exec_${turnSeq}`, name: "exec", input: "await tools.update_plan({ plan });" });
+    await new Promise((r) => setTimeout(r, 150));
+    notify("turn/plan/updated", { threadId: THREAD, turnId, explanation: null, plan: [{ step: "read", status: "completed" }, { step: `fix:${turnSeq}`, status: "inProgress" }] });
+    await new Promise((r) => setTimeout(r, 150));
+    rolloutRecord("response_item", { type: "custom_tool_call_output", call_id: `exec_${turnSeq}`, output: [{ type: "input_text", text: "Script completed" }] });
   }
   let reply = `ok:${turnSeq}`;
   if (text.includes("STREAM")) {
