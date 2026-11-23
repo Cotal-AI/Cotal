@@ -169,6 +169,34 @@ export async function setupCotal(ctx: OpenCode2Context): Promise<(() => Promise<
   }
 }
 
+/** `opencodeApi` inside {@link setupSession}: the server's authenticated HTTP API. */
+type OpenCodeApi = <T>(path: string, init?: RequestInit, timeoutMs?: number) => Promise<T>;
+
+async function readLists(opencodeApi: OpenCodeApi): Promise<CommandEntry[]> {
+  const lists = await Promise.all((Object.keys(COMMAND_ROUTES) as CommandTarget[]).map(async (target) => {
+    const { list, key } = COMMAND_ROUTES[target];
+    const data = (await opencodeApi<{ data?: unknown } | undefined>(list))?.data;
+    if (!Array.isArray(data)) throw new Error(`OpenCode answered ${list} with no data list`);
+    return data.map((e: unknown) => {
+      const entry = (typeof e === "object" && e !== null ? e : {}) as Record<string, unknown>;
+      const name = entry[key];
+      if (typeof name !== "string") throw new Error(`OpenCode listed a ${target} with no ${key} at ${list}`);
+      return { name, target, ...(typeof entry.description === "string" ? { description: entry.description } : {}) };
+    });
+  }));
+  // The launch's own `/reconnect` runs only at the agent's terminal (reconnect-command.ts).
+  return lists.flat().filter((e) => !isReconnect(e));
+}
+
+/** OpenCode answers a reply to an ask it does not hold with a 404, or for a form already
+ *  answered with `FormAlreadySettledError`. */
+function askSender(opencodeApi: OpenCodeApi): Send {
+  return (path, init) => opencodeApi(path, init).then(() => true, (e: unknown) => {
+    if (e instanceof OpenCodeHttpError && (e.status === 404 || e.tag === "FormAlreadySettledError")) return false;
+    throw e;
+  });
+}
+
 /** Validate and register one session before queuing its agent start. */
 async function setupSession(ctx: OpenCode2Context): Promise<() => Promise<void>> {
   const config = configFromEnv();
@@ -191,21 +219,6 @@ async function setupSession(ctx: OpenCode2Context): Promise<() => Promise<void>>
     await verifyServerModel2(serverUrl, serverAuth, selectedModel, settleMs);
   })();
 
-  async function readLists(): Promise<CommandEntry[]> {
-    const lists = await Promise.all((Object.keys(COMMAND_ROUTES) as CommandTarget[]).map(async (target) => {
-      const { list, key } = COMMAND_ROUTES[target];
-      const data = (await opencodeApi<{ data?: unknown } | undefined>(list))?.data;
-      if (!Array.isArray(data)) throw new Error(`OpenCode answered ${list} with no data list`);
-      return data.map((e: unknown) => {
-        const entry = (typeof e === "object" && e !== null ? e : {}) as Record<string, unknown>;
-        const name = entry[key];
-        if (typeof name !== "string") throw new Error(`OpenCode listed a ${target} with no ${key} at ${list}`);
-        return { name, target, ...(typeof entry.description === "string" ? { description: entry.description } : {}) };
-      });
-    }));
-    // The launch's own `/reconnect` runs only at the agent's terminal (reconnect-command.ts).
-    return lists.flat().filter((e) => !isReconnect(e));
-  }
   // The `loaded` events still to come, set from the event loop, and the one bounded wait for them.
   const listsLoading = new Set(Object.values(COMMAND_ROUTES).map((r) => r.loaded));
   let markListsLoaded!: () => void;
@@ -215,13 +228,13 @@ async function setupSession(ctx: OpenCode2Context): Promise<() => Promise<void>>
     targets: new Set(Object.keys(COMMAND_ROUTES) as CommandTarget[]),
     async list() {
       const loaded = listsLoading.size === 0;
-      const first = await readLists();
+      const first = await readLists(opencodeApi);
       if (loaded) return first;
       await (listsWait ??= new Promise<void>((resolve) => {
         const late = setTimeout(resolve, LISTS_LOAD_MS);
         void listsLoaded.then(() => { clearTimeout(late); resolve(); });
       }).then(() => listsLoading.clear()));
-      return readLists();
+      return readLists(opencodeApi);
     },
     async dispatch(command) {
       if (isReconnect(command))
@@ -272,13 +285,7 @@ async function setupSession(ctx: OpenCode2Context): Promise<() => Promise<void>>
     if (res.status === 204) return undefined as T;
     return (await res.json()) as T;
   }
-  /** OpenCode answers a reply to an ask it does not hold with a 404, or for a form already
-   *  answered with `FormAlreadySettledError`. */
-  const send: Send = (path, init) => opencodeApi(path, init).then(() => true, (e: unknown) => {
-    if (e instanceof OpenCodeHttpError && (e.status === 404 || e.tag === "FormAlreadySettledError")) return false;
-    throw e;
-  });
-  const asks = opencode2Asks({ desk: () => agent.prompts, warn: log, send, session: () => sessionID });
+  const asks = opencode2Asks({ desk: () => agent.prompts, warn: log, send: askSender(opencodeApi), session: () => sessionID });
 
   /** A session's message list, newest first, 200 messages a page (measured: the server refuses
    *  more). A later page is named by its cursor alone, which carries the order. */
