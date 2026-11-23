@@ -237,7 +237,7 @@ async function setupSession(ctx: OpenCode2Context): Promise<() => Promise<void>>
         const wal = await EventWal.open(walPath, { space: config.space, threadId: id, principal, subjectMayExist: false });
         // A re-established plane starts with the log's run open, so the mapper continues it.
         const resumeRunId = wal.pending === null ? wal.brackets?.run : wal.pending.brackets.run;
-        mapper = createOpenCode2Mapper({ threadId: id, mintRunId: () => randomUUID(), resumeRunId });
+        mapper = createOpenCode2Mapper({ threadId: id, mintRunId: () => randomUUID(), resumeRunId, reasoning: config.reasoningEvents });
         return AguiEmitter.start<OpenCode2Record>({
           endpoint: agent.ep,
           withholdPayloads: config.eventPayloadsWithheld,
