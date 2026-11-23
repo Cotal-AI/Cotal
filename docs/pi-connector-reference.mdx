@@ -167,32 +167,36 @@ Pi is installed beside the extension.
 
 ## Event plane
 
-A managed Pi seat publishes AG-UI runs, completed assistant text messages, and tool start/end
+A managed Pi seat publishes AG-UI runs, assistant text as Pi streams it, and tool start/end
 boundaries to `events.<owner>.<actor>`. Each tool call's arguments and its result text publish by
 default on the separate `cotal.<space>.evp.<owner>.<actor>` payload rail, and the channel carries a
 `cotal.toolResult` marker for each finished call with its error flag. A result whose content holds
 anything other than text, such as an image, publishes the whole content array as JSON. Pass
 `--no-event-payloads` to withhold payloads while keeping tool activity. See the
 [payload rules](claude-connector-reference.mdx#event-plane) for admission, cut markers and limits.
-The thread id is Pi's native session id. Pi's native session JSONL is the durable source;
-extension hooks only wake the reader after persistence.
+The thread id is Pi's native session id. Pi's native session JSONL is the durable source, read
+together with the thread's [delta journal](connector-runtime-reference.mdx#streamed-text): each text
+delta Pi reports while it writes a reply is journaled, at most one line every 250 ms, and wakes the
+reader. Other extension hooks only wake the reader after persistence.
 The event plane is enabled by default. `--no-events` opts out only on unrestricted spaces.
 A registration that requires events arms the plane independently of the environment flag, and
 the seat must hold the channel's publish grant. An event-enabled launch needs a stable
 workspace root for its write-ahead log. If the event plane stops, the seat keeps running on every
 space, and Pi's log records `AG-UI emitter stopped` with the reason and the delay before the
 extension re-establishes the plane. The re-establish is a fresh start of the same session: it
-settles any frame the outage left pending and rebuilds the mapper from the run and tool calls
-that frame opened, so a tool result written after the outage closes the call the plane came back
-with.
+settles any frame the outage left pending and rebuilds the mapper from the run, tool calls and
+streamed text that frame left open, so a tool result written after the outage closes the call the
+plane came back with, and a reply saved after it ends the message it streamed.
 
 A turn you stop, such as with Escape, ends its run with `RUN_FINISHED` whose outcome is `interrupt`.
 Pi records that stop as an abort, or, when it lands during a tool call, as an error carrying the
 abort text. Any other error ends the run with `RUN_ERROR`.
 
-Text is published at **completed-message granularity**, not as live token deltas. Pi emits
-live text updates before writing the assistant record, so those deltas cannot be recovered
-after a crash. Reasoning is off by default. Usage, branch and compaction entries are not
+Text streams: each journal line publishes as content of the reply's message, and the saved reply
+sends the rest and ends it. A reply whose saved text does not begin with what streamed, as a
+provider retry leaves, ends the streamed message and publishes the saved text as a message of its
+own. Reasoning is off by default; when it is published, thinking streams the same way. A reply
+that streamed nothing publishes from its saved record. Usage, branch and compaction entries are not
 published. User text is never published: Pi's native user record cannot separate
 peer-authored content from human-authored content. A reload keeps the same native session
 and event frontier. A new, resumed or forked session gets its own thread and log on the same

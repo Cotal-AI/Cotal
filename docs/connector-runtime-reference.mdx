@@ -349,6 +349,7 @@ A connector whose harness reports deltas while it writes a reply journals them, 
 The saved record stays the text of record: text that was never journaled reaches the plane with it.
 The journal grows with the thread's streamed text.
 A harness in another process can save a record between a line's anchor and its write, and a reader that already passed the anchor places that line where its read starts.
+Pi streams this way; see its [event plane](pi-connector-reference.mdx#event-plane).
 
 ## Connector contracts
 
