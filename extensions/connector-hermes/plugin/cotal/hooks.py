@@ -106,6 +106,7 @@ def on_session_start(*args: Any, **kwargs: Any) -> None:
 
 
 def pre_llm_call(*args: Any, **kwargs: Any) -> None:
+    journal.model_called(str(kwargs.get("platform") or ""), str(kwargs.get("sender_id") or ""))
     relay("pre_llm_call")
 
 

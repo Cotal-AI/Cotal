@@ -49,7 +49,7 @@ class InjectionRefused(Exception):
 NOTICE_KINDS = ("anycast", "mention")
 # The chat a turn in the user's own words runs in. It has no mesh target either, so its reply shows on
 # the event plane and is not sent.
-OPERATOR_CHAT = "operator"
+OPERATOR_CHAT = journal.OPERATOR
 # The message id of each ``/stop`` an interrupt sends. The gateway answers a ``/stop`` in its chat, and
 # that answer is not sent: the owner stopped the turn, not the peer the chat is with.
 STOP_ID_PREFIX = "cotal-stop:"
@@ -194,6 +194,8 @@ class CotalAdapter(BasePlatformAdapter):
             raise RuntimeError(refused)  # never report a reply delivered over a bridge that will not dial
         if reply_to is not None and str(reply_to).startswith(STOP_ID_PREFIX):
             return SendResult(success=True, message_id=uuid.uuid4().hex)
+        if chat_id == OPERATOR_CHAT and journal.operator_reply(content):
+            await asyncio.to_thread(hooks.journal_wake)
         answered = str(reply_to) if reply_to is not None else None
         if answered not in self._answering:
             answered = None
@@ -204,6 +206,8 @@ class CotalAdapter(BasePlatformAdapter):
 
     async def on_processing_start(self, event: MessageEvent) -> None:
         """The gateway began processing a message: a turn starts (journal.py)."""
+        if getattr(event.source, "chat_id", None) == OPERATOR_CHAT:
+            journal.operator_turn_started()
         key = uuid.uuid4().hex
         logged = journal.processing_started(key)
         self._set_busy(event, key if logged else None)
