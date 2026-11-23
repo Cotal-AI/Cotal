@@ -19,7 +19,7 @@
  * COTAL_HOME is sandboxed; kills ONLY the PIDs it spawns. Needs nats-server on PATH.
  * Run: pnpm smoke:spawn-detach:live   (build first — bin/cotal.ts subprocess checks run dist)
  */
-import { spawn as spawnProc, spawnSync, type ChildProcess } from "node:child_process";
+import { execFile, spawn as spawnProc, spawnSync, type ChildProcess } from "node:child_process";
 import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer, type Socket } from "node:net";
@@ -386,6 +386,33 @@ try {
   const jsonRow = psEnvelope?.result?.items?.find((row) => row.name === "bard");
   ok("ps --json is one envelope whose items carry the manager's row verbatim",
     psEnvelope?.outcome === "ok" && psJson.trim().split("\n").length === 1 && jsonRow !== undefined && jsonRow.model === "fancy" && jsonRow.variant === "high" && typeof jsonRow.pid === "number" && typeof jsonRow.lifecycleUid === "string" && typeof jsonRow.cwd === "string", psJson);
+
+  const outside = mkdtempSync(join(scratch, "unregistered-client-"));
+  const file = "./repeat.md";
+  writeFileSync(join(workspaceRoot, file), "---\nname: bard\n---\nYou write verse.\n");
+  const pin = String(jsonRow?.instanceId);
+  const portFlags = ["--space", SPACE, "--server", SERVER];
+  const fromOutside = (args: string[]) => new Promise<{ status: number | string | null; stdout: string; stderr: string }>((resolve) => execFile(process.execPath, [join(import.meta.dirname, "..", "dist", "cotal.js"), ...args], {
+    cwd: outside, env: { ...process.env, HOME: outside, COTAL_HOME: join(outside, "home"), XDG_CONFIG_HOME: join(outside, "xdg"), COTAL_SKIP_CONNECTOR_SEED: "1" }, encoding: "utf8", timeout: 60_000,
+  }, (error, stdout, stderr) => resolve({ status: error ? error.code ?? null : 0, stdout, stderr })));
+  const remotePs = async () => {
+    const row = await fromOutside(["ps", ...portFlags, "--on", pin, "--json"]);
+    if (row.status !== 0) throw new Error(row.stdout + row.stderr);
+    return (JSON.parse(row.stdout).result.items as Record<string, unknown>[]).filter((item) => item.name === "bard");
+  };
+  const beforeRepeat = await remotePs();
+  ok("ps from an unregistered home sees the exact manager and seat", beforeRepeat.length === 1 && beforeRepeat[0]?.lifecycleUid === jsonRow?.lifecycleUid, beforeRepeat);
+  const repeat = ["spawn", "--file", file, "--detach", "--no-events", "--harness", "e2e", "--name", "bard", "--cwd", ".", ...portFlags];
+  const pinned = await fromOutside([...repeat, "--on", pin, "--plain"]);
+  const attachArgs = `attach bard --space ${SPACE} --server ${SERVER} --on ${pin}`;
+  ok("pinned duplicate spawn keeps the explicit broker, space and manager in its attach command",
+    pinned.status === 0 && pinned.stdout.includes(`bard is already running on ${pin}`) && pinned.stdout.includes(attachArgs), pinned.stdout + pinned.stderr);
+  const unpinned = await fromOutside([...repeat, "--json"]);
+  const noOp = unpinned.status === 0 ? JSON.parse(unpinned.stdout) : undefined;
+  ok("unpinned duplicate spawn reports the same manager and attach command without launching another seat",
+    noOp?.outcome === "no-op" && noOp?.result?.managerInstanceId === pin && noOp?.result?.attach?.endsWith(attachArgs), unpinned.stdout + unpinned.stderr);
+  const afterRepeat = await remotePs();
+  ok("the original lifecycle and process remain after both duplicate spawns", afterRepeat.length === 1 && afterRepeat[0]?.lifecycleUid === jsonRow?.lifecycleUid && afterRepeat[0]?.pid === jsonRow?.pid, afterRepeat);
 
   // B3 (#651, #905): a variant WITHOUT a model survives in the compact identity and JSON. The wide
   // continuation must not repeat it now that provenance lives in the identity row.

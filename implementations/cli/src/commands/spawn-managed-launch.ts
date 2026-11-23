@@ -19,6 +19,7 @@ import {
 } from "@cotal-ai/core";
 import {
   parseCommaList,
+  brokerAddressForDisplay,
   CommandFailure,
   isCommandFailure,
   presentationOf,
@@ -435,9 +436,10 @@ async function reportStarting(start: { name: string; managerInstanceId: string; 
 /** The agent a spawn asked for already runs, so nothing new is launched: say where it runs, then
  *  attach to it in this terminal unless the spawn was detached or cannot attach, or print the
  *  command that does. */
-export async function reportAlreadyRunning(running: AgentAlreadyRunning, values: { detach?: boolean; creds?: string; json?: boolean; plain?: boolean }, space: string, server: string | undefined): Promise<void> {
+export async function reportAlreadyRunning(running: AgentAlreadyRunning, values: { detach?: boolean; creds?: string; json?: boolean; plain?: boolean; server?: string }, space: string, server: string | undefined): Promise<void> {
   const where = running.manager;
-  const attach = where ? `${onRerun(`${displayCmd()} attach`, { space }, [running.agent])} --on ${shellWord(where.selector)}` : null;
+  const explicitServer = values.server === undefined ? undefined : brokerAddressForDisplay(values.server);
+  const attach = where ? `${onRerun(`${displayCmd()} attach`, { space, server: explicitServer }, [running.agent])} --on ${shellWord(where.selector)}` : null;
   const presentation = presentationOf(values);
   const now = where !== null && !values.detach && presentation !== "json" && canPrompt();
   const place = where ? `on ${where.selector}${where.host && where.host !== where.selector ? ` (${where.host})` : ""}` : "on the mesh, not on a manager of yours";
