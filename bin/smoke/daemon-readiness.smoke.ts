@@ -46,7 +46,7 @@ const authority = createServer(async (req, res) => {
     if (res.destroyed) return;
     if (mode === "nonsense") { res.end(JSON.stringify({ token: "not-a-jwt" })); return; }
     const now = Math.floor(Date.now() / 1000);
-    const claims = new SignJWT({}).setProtectedHeader({ alg: "EdDSA" }).setIssuer(origin).setAudience(origin).setSubject("fixture-owner").setIssuedAt(now);
+    const claims = new SignJWT({ name: "Fixture Owner" }).setProtectedHeader({ alg: "EdDSA" }).setIssuer(origin).setAudience(origin).setSubject("fixture-owner").setIssuedAt(now);
     if (mode !== "no-expiry") claims.setExpirationTime(mode === "expired" ? now - 3600 : mode === "near-expiry" ? now + 20 : now + 120);
     if (mode === "not-yet-valid") claims.setNotBefore(now + 3600);
     let token = await claims.sign(key.privateKey);

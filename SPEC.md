@@ -522,6 +522,33 @@ in `packages/core/src/subjects.ts`; `LivenessAnswer`, `parseLivenessAnswer` and
 `responderFromProbe` in `packages/core/src/liveness.ts`; `CotalEndpoint.serveLiveness`,
 `serveDeliveryLiveness` and `probeLiveness` in `packages/core/src/endpoint.ts`.
 
+### 6.2 Username registry
+
+A per-user-auth space records immutable owner usernames in the JetStream KV bucket
+`cotal_usernames_<space>`, backed by `KV_cotal_usernames_<space>`. It keeps one value per key and
+has no expiry. The value of `owner.<owner>` is the UTF-8 username. The value of
+`username.<username>` is the UTF-8 owner token. A username has 1 to 40 characters drawn from
+`[a-z0-9_]`, may start with a digit, and is unique in the space. Open and no-login spaces have no
+bindings. The reserved owner `local` never has a binding.
+
+Only the auth service writes these keys during ordinary operation. It uses create-only revision
+checks to reserve the username key before writing the owner key. A reader MUST observe both keys
+agreeing before it reports an assignment. A failed read does not prove absence. The service
+assigns a username on first use of an authorized human grant, using the verified identity or a
+name supplied by the trusted grant authority. The service MUST validate a supplied name without
+rewriting or suffixing it. Participants cannot set or rename a username.
+
+The broker grants each member credential in a per-user-auth space publish access to the two
+Direct Get request subjects below, with responses on its existing connection inbox:
+
+- `$JS.API.DIRECT.GET.KV_cotal_usernames_<space>.$KV.cotal_usernames_<space>.owner.*`
+- `$JS.API.DIRECT.GET.KV_cotal_usernames_<space>.$KV.cotal_usernames_<space>.username.*`
+
+Member credentials MUST NOT hold registry KV publish, stream administration or consumer grants.
+Direct Get may carry an explicit reply subject. Returned data is broker-marked and consists of
+the registry's fixed token values. It is not an application message or proof of sender identity.
+The registry does not participate in addressing, mentions or presence display.
+
 ---
 
 ## 7. Channels

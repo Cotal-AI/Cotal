@@ -7,7 +7,7 @@ import { type IncomingMessage, type ServerResponse } from "node:http";
 import { VOID_SCHEMA, singleDocumentClosure, contractDigest, contractRefToHex, EpEnvelopeError, contractArtifactCanonicalBytes, publishContractArtifact, parseServiceAuthorityEnvelope, SERVICE_AUTHORITY_MAX_BYTES, parseServiceRegistrationWitness, serviceWitnessDigest, type ServiceAuthorityRequest, type ServiceRegistrationWitness } from "@cotal-ai/core";
 import { decodeJwt } from "jose";
 import { deriveOwnerForIdpSubject } from "./derive.js";
-import { verifyIdpToken, verifyToolResultHumanProof } from "./idp.js";
+import { verifyIdpToken, verifyToolResultHumanProof, type VerifiedIdpToken } from "./idp.js";
 import { validateUserToken } from "./token.js";
 import { type UserTokenIssuer } from "./issuer.js";
 import { parseRemoteEndpointDeregisterRequest } from "@cotal-ai/core";
@@ -63,22 +63,21 @@ export async function handleChatSession(req: IncomingMessage, res: ServerRespons
   const refuse = (status: number, message: string, code: string, outcome: string = "unknown") =>
     refuseExchange(res, ctx, policy, peer, peerThrottled, `refused a chat-session ${op}: ${message}`, status, { error: message, code, outcome }, { code: "resource-exhausted", outcome });
   let owner: string;
-  let idpExp: number;
+  let verified: VerifiedIdpToken;
   try {
-    const verified = await verifyIdpToken(b.idpToken, ctx.bridgeIdp);
+    verified = await verifyIdpToken(b.idpToken, ctx.bridgeIdp);
     owner = deriveOwnerForIdpSubject(ctx.ownerSecret, ctx.bridgeIdp.issuer, verified.sub);
-    idpExp = verified.exp;
   } catch (e) {
     return refuse(401, e instanceof Error ? e.message : String(e), "unauthenticated", "not-executed");
   }
   try {
     if (op === "open")
       return send(res, 200, await ctx.openChatSession({
-        owner, holderHash: b.holderHash as string, read: b.read as string[], post: b.post as string[], ttlSec: b.ttlSec as number,
+        owner, usernameClaims: verified, holderHash: b.holderHash as string, read: b.read as string[], post: b.post as string[], ttlSec: b.ttlSec as number,
         ...(typeof b.label === "string" ? { label: b.label } : {}),
       }));
     if (op === "bearer") {
-      const minted = await ctx.chatSessionBearer({ owner, actor: b.actor as string, holderProof: b.holderProof as string, idpExp, issuer: ctx.issuer });
+      const minted = await ctx.chatSessionBearer({ owner, actor: b.actor as string, holderProof: b.holderProof as string, idpExp: verified.exp, issuer: ctx.issuer });
       return send(res, 200, { token: minted.token, owner, exp: minted.exp });
     }
     return send(res, 200, await ctx.retireChatSession({ owner, actor: b.actor as string, lifecycleUid: b.lifecycleUid as string, holderProof: b.holderProof as string }));

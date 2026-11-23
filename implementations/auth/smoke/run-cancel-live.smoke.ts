@@ -116,7 +116,7 @@ ensurePinnedIdp(account.stateDir, `${origin}/api/auth`);
 const owner = deriveOwnerForIdpSubject((await loadOwnerSecret(account.store, account.space))!, origin, "cancel-human");
 const cli = grantActor(account.stateDir, { owner, actor: "cli", scope: ["admin", "spawn", "run", "supervise"], allowSubscribe: [">"], allowPublish: [">"] });
 const operator = grantActor(account.stateDir, { owner, actor: "operator", scope: ["run"], allowSubscribe: [">"], allowPublish: [">"] });
-const idpToken = await new SignJWT({}).setProtectedHeader({ alg: "EdDSA", kid: "cancel-idp" }).setSubject("cancel-human").setIssuer(origin).setAudience(origin).setIssuedAt().setExpirationTime("10m").sign(privateKey);
+const idpToken = await new SignJWT({ name: "Fixture Member" }).setProtectedHeader({ alg: "EdDSA", kid: "cancel-idp" }).setSubject("cancel-human").setIssuer(origin).setAudience(origin).setIssuedAt().setExpirationTime("10m").sign(privateKey);
 const runtime: RuntimeProvider = { kind: "runtime", name: "cancel-fixture", available: () => true, create: () => ({
   kind: "cancel-fixture", streamsTerminal: false, spawn: () => { throw new Error("this fixture starts no agent processes"); },
 }) };

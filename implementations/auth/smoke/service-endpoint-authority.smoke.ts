@@ -47,7 +47,7 @@ const sessions = new Map<string, string>();
 let origin = "";
 const mint = (sub: string, aud = origin) => {
   const now = Math.floor(Date.now() / 1000);
-  return new SignJWT({}).setProtectedHeader({ alg: "EdDSA", kid: jwk.kid }).setIssuer(origin).setAudience(aud).setSubject(sub).setIssuedAt(now).setExpirationTime(now + 120).sign(key.privateKey);
+  return new SignJWT({ name: "Fixture Member" }).setProtectedHeader({ alg: "EdDSA", kid: jwk.kid }).setIssuer(origin).setAudience(aud).setSubject(sub).setIssuedAt(now).setExpirationTime(now + 120).sign(key.privateKey);
 };
 const idp = createServer(async (req, res) => {
   res.setHeader("content-type", "application/json");

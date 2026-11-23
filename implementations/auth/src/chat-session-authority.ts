@@ -119,6 +119,7 @@ export function chatBearerWindow(nowSec: number, idpExpSec: number, expiresAtMs:
 export interface ChatAdmissionRequest {
   /** Derived from the verified IdP proof by the route, never from the request body. */
   owner: string;
+  usernameClaims?: import("./username-assignment.js").UsernameClaims;
   holderHash: string;
   label?: string;
   read: string[];
@@ -154,6 +155,7 @@ interface ChatSessionAuthorityDeps {
   registry: LifecycleRegistry;
   /** The minting authority recorded on reservations and heads. */
   managerInstance: string;
+  assignUsername?: import("./username-assignment.js").AssignUsername;
   /** Run, join or resume the terminal retirement barrier for one chat lifecycle. */
   retireLifecycle: (args: { owner: string; actor: string; lifecycleUid: string; opId: string }) => Promise<void>;
   /** a7 and part of a8: pre-create the lifecycle's own `dm_` and `dlv_` durables and its read-ACL row
@@ -282,11 +284,12 @@ export function openChatSessionAuthority(deps: ChatSessionAuthorityDeps): ChatSe
   /** Preconditions 2 to 4: the parent row, its head leader-read and ensured, the pin, containment.
    *  An absent or unstamped parent head is ensured first, so the pin is never taken over a head the
    *  human's next ordinary exchange would move. */
-  const currentParentPin = async (owner: string, lists: { read: string[]; post: string[] }): Promise<{ pin: ChatParentPin; digest: string }> => {
+  const currentParentPin = async (owner: string, lists: { read: string[]; post: string[]; usernameClaims?: ChatAdmissionRequest["usernameClaims"] }): Promise<{ pin: ChatParentPin; digest: string }> => {
     const row = readChatParentRow(dir, owner);
     if (typeof row.lifecycleUid !== "string" || row.lifecycleUid === "")
       throw new EpEnvelopeError("permission-denied", `the "${CHAT_PARENT_ACTOR}" grant for owner ${owner} carries no lifecycleUid; re-grant it before opening a chat session`);
     assertChatListsContained(row, lists);
+    if (lists.usernameClaims !== undefined) await deps.assignUsername?.(owner, lists.usernameClaims, row.username);
     let head = await parentHead(owner);
     if (head === undefined || head.mapping.currentCredentialId === undefined) {
       await ensureRootCredential(registry, { owner, actor: CHAT_PARENT_ACTOR, lifecycleUid: row.lifecycleUid, managerInstance: deps.managerInstance });
@@ -593,11 +596,11 @@ export function openChatSessionAuthority(deps: ChatSessionAuthorityDeps): ChatSe
     return { actor, lifecycleUid: uid, expiresAt };
   };
 
-  const admitOnce = async (req: { owner: string; holderHash: string; read: string[]; post: string[]; label?: string; ttlMs: number }): Promise<ChatSessionAdmitted> => {
+  const admitOnce = async (req: { owner: string; holderHash: string; read: string[]; post: string[]; label?: string; ttlMs: number; usernameClaims?: ChatAdmissionRequest["usernameClaims"] }): Promise<ChatSessionAdmitted> => {
     const { owner, holderHash, read, post } = req;
     let pin: { pin: ChatParentPin; digest: string };
     try {
-      pin = await currentParentPin(owner, { read, post });
+      pin = await currentParentPin(owner, req);
     } catch (e) {
       throw withOutcome(e, "not-executed");
     }
@@ -953,7 +956,7 @@ export function openChatSessionAuthority(deps: ChatSessionAuthorityDeps): ChatSe
       // Same-holder admissions in this process run one at a time; each re-reads the durable state.
       const r = req;
       try {
-        return await serializedFor(CHAT_HOLDER_CHAINS, holderKey(r.owner, r.holderHash), () => admitOnce(r));
+        return await serializedFor(CHAT_HOLDER_CHAINS, holderKey(r.owner, r.holderHash), () => admitOnce({ ...r, usernameClaims: raw.usernameClaims }));
       } catch (e) {
         throw withOutcome(e, "unknown");
       }

@@ -525,6 +525,11 @@ export function presenceBucket(space: string): string {
   return `cotal_presence_${token(space)}`;
 }
 
+/** Name of the per-space KV bucket holding username bindings. */
+export function usernameBucket(space: string): string {
+  return `cotal_usernames_${token(space)}`;
+}
+
 /** The publish subject of one principal's own presence key. Every agent mint carries it; an
  *  operator instrument's never does. */
 export function presenceKeySubject(space: string, owner: string, actor: string): string {

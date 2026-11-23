@@ -89,7 +89,7 @@ try {
     const info = loadAuthServiceInfo(stateDir);
     if (!info) { writeFileSync(join(dir, "startup-failure.log"), controller.output(), { mode: 0o600 }); throw new Error("native preset exited before auth readiness; private fixture log retained"); }
     suite.check("compiled builtin preset opens its actual auth child", info.pid !== controller.child.pid && controller.child.exitCode === null);
-    const token = await new SignJWT({}).setProtectedHeader({ alg: "EdDSA", kid: jwk.kid }).setSubject("fixture-human")
+    const token = await new SignJWT({ name: "Fixture Member" }).setProtectedHeader({ alg: "EdDSA", kid: jwk.kid }).setSubject("fixture-human")
       .setIssuer(origin).setAudience(origin).setIssuedAt().setExpirationTime("10m").sign(privateKey);
     const response = await fetch(`${info.url}/exchange`, { method: "POST",
       headers: { "content-type": "application/json", authorization: `Bearer ${info.cap}` }, body: JSON.stringify({ idpToken: token, actor: "lister" }) });

@@ -8,7 +8,6 @@ import type { NatsConnection } from "@nats-io/transport-node";
 import {
   downloadStreamSnapshot,
   oneLine,
-  spaceBackupInventory,
   validateCanonicalBackupStreamConfig,
   validateBackupStreamState,
   validatePersistentConsumerInventory,
@@ -184,8 +183,9 @@ async function inspectionConnection(broker: IsolatedBroker): Promise<NatsConnect
   return connectIsolatedBroker(broker, broker.initialLogin);
 }
 
-async function collectInventory(nc: NatsConnection, space: string, selected: SpaceBackupSelection, held: readonly string[]): Promise<{
+async function collectInventory(nc: NatsConnection, space: string, selected: SpaceBackupSelection, mode: MaintenanceReadyRecord["mode"]): Promise<{
   checkpoints: PersistentConsumerCheckpoint[];
+  held: readonly string[];
 }> {
   const requestPage = async <T>(subject: string, offset: number): Promise<T & { total: number; offset: number; limit: number }> => {
     const msg = await nc.request(subject, JSON.stringify({ offset }), { timeout: 10_000 });
@@ -210,8 +210,8 @@ async function collectInventory(nc: NatsConnection, space: string, selected: Spa
     offset = next;
   }
   // The clone is a stopped store on a fresh broker, so the memory-backed presence bucket is gone.
-  validateSpaceBackupInventory(space, streamNames, { atRest: true });
-  const inventory = spaceBackupInventory(space);
+  const inventory = validateSpaceBackupInventory(space, streamNames, { atRest: true });
+  const held = artifactStreams({ format: BACKUP_MANIFEST_FORMAT, space, selection: selected, mode, streams: streamNames.map((stream) => ({ stream })) });
   const expected = held;
   const consumersByStream: Record<string, ConsumerInfo[]> = {};
   const statesByStream: Record<string, BackupStreamState> = {};
@@ -244,7 +244,7 @@ async function collectInventory(nc: NatsConnection, space: string, selected: Spa
     const consumers = consumersByStream[registry] ?? [];
     if (consumers.some((consumer) => !isStoppedKvWatcher(registry, consumer)))
       throw new Error(`${registry} has an unsupported consumer`);
-    return { checkpoints: [] };
+    return { checkpoints: [], held };
   }
   const backedConsumers = Object.fromEntries(held.map((stream) => {
     const consumers = consumersByStream[stream] ?? [];
@@ -253,7 +253,7 @@ async function collectInventory(nc: NatsConnection, space: string, selected: Spa
         throw new Error(`${stream}/${consumer.name} has an unsupported stopped KV watcher config: ${JSON.stringify(consumer.config)}`);
     return [stream, consumers.filter((consumer) => !isStoppedKvWatcher(stream, consumer))];
   }));
-  return { checkpoints: validatePersistentConsumerInventory(space, backedConsumers, statesByStream, held) };
+  return { checkpoints: validatePersistentConsumerInventory(space, backedConsumers, statesByStream, held), held };
 }
 
 export function isStoppedKvWatcher(stream: string, consumer: ConsumerInfo): boolean {
@@ -713,11 +713,10 @@ async function createBackup(args: ParsedArgs, observed: BackupObservation): Prom
     releaseMaintenanceLock(lock);
     lock = undefined as never;
 
-    const held = artifactStreams({ format: BACKUP_MANIFEST_FORMAT, space: ready.space, selection: selected, mode: ready.mode });
     const inspect = await inspectionConnection(broker);
-    let checkpoints;
+    let checkpoints, held;
     try {
-      ({ checkpoints } = await collectInventory(inspect, ready.space, selected, held));
+      ({ checkpoints, held } = await collectInventory(inspect, ready.space, selected, ready.mode));
     } finally {
       await drainAndClose(inspect).catch(() => {});
     }

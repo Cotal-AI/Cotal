@@ -1,7 +1,7 @@
 import {
   aclBucket, anycastBucket, artifactBucket, channelBucket, chatStream, deliveryBucket, dlvStream, dmStream,
   inboxStream, isTransferStream, managerBucket, membershipBucket, membersBucket,
-  objectStoreStream, presenceBucket, taskStream,
+  objectStoreStream, presenceBucket, taskStream, usernameBucket,
 } from "./subjects.js";
 import { endpointPlaneStreamNames } from "./endpoint-binding.js";
 import { eventPayloadStream } from "./event-payloads.js";
@@ -11,7 +11,7 @@ import { eventPayloadStream } from "./event-payloads.js";
 export function spaceDeletionStreams(space: string, observedNames: readonly string[] = []): string[] {
   const base = [
     chatStream(space), eventPayloadStream(space), dmStream(space), taskStream(space), inboxStream(space), dlvStream(space),
-    `KV_${presenceBucket(space)}`, `KV_${channelBucket(space)}`, `KV_${membersBucket(space)}`,
+    `KV_${presenceBucket(space)}`, `KV_${channelBucket(space)}`, `KV_${membersBucket(space)}`, `KV_${usernameBucket(space)}`,
     `KV_${aclBucket(space)}`, `KV_${membershipBucket(space)}`, `KV_${anycastBucket(space)}`,
     `KV_${deliveryBucket(space)}`, `KV_${managerBucket(space)}`,
     ...endpointPlaneStreamNames(space), objectStoreStream(artifactBucket(space)),
