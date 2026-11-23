@@ -78,6 +78,13 @@ try {
     );
     const sonnet = catalog.models.find((m) => m.id === "anthropic/claude-sonnet-5-5");
     check("keeps pi's provider and display name", sonnet?.provider === "anthropic" && sonnet.name === "Claude Sonnet 5.5", sonnet);
+    const levels = (id: string): string | undefined => catalog.models.find((m) => m.id === `anthropic/${id}`)?.variants?.map((v) => v.name).join(",");
+    check("a model's variants are the thinking levels pi offers for it, leaving out the levels its map marks null",
+      levels("claude-sonnet-5-5") === "low,medium,high,xhigh,max" && levels("claude-fable-5") === "minimal,low,medium,high,xhigh,max",
+      { sonnet: levels("claude-sonnet-5-5"), fable: levels("claude-fable-5") });
+    check("xhigh and max only where the map names them",
+      levels("claude-haiku-4-5") === "off,minimal,low,medium,high" && levels("claude-opus-4-6") === "off,minimal,low,medium,high,max",
+      { haiku: levels("claude-haiku-4-5"), opus: levels("claude-opus-4-6") });
     check("a listed catalog is supported and names its source", catalog.unavailable === undefined && catalog.source === "pi --mode rpc get_available_models", catalog);
     const [start, ...rest] = pi.journal();
     const argv = start?.argv ?? [];
@@ -91,6 +98,14 @@ try {
     check("gives pi the provider keys a launch gets", start?.providerKey === true, start);
     check("gives pi no seat identity", start?.seatIdentity === false, start);
     check("stops pi once it answered", await goneWithin(pi.pid(), 3_000));
+  }
+
+  {
+    const models = [{ provider: "openai", id: "gpt-4o", reasoning: false }, { provider: "openai", id: "o9", reasoning: true }];
+    const pi = fakePi("reply", { FAKE_PI_REPLY: replyFile({ type: "response", command: "get_available_models", success: true, data: { models } }) });
+    const catalog = await listPiModels({ resolvedBinaries: { pi: pi.bin } });
+    check("a model without reasoning has no variants, and one with no map gets pi's five base levels",
+      catalog.models[0]?.variants === undefined && catalog.models[1]?.variants?.map((v) => v.name).join(",") === "off,minimal,low,medium,high", catalog.models);
   }
 
   {
