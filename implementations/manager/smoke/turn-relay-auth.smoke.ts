@@ -111,7 +111,7 @@ try {
     }, { deadlineMs: 15_000, currentEpoch: async () => 0 });
   // Terminal facts are read over the manager's own goal-writer context: the EPF read is a commit
   // principal's row, and this suite grades the relay, not the run driver's own grant profile.
-  const actx = (manager as unknown as { goalWriter: { ctx: Parameters<typeof readGoalResult>[0] } }).goalWriter.ctx;
+  const actx = (manager as unknown as { goalWriterComponent: { goalWriter: { ctx: Parameters<typeof readGoalResult>[0] }; } }).goalWriterComponent.goalWriter.ctx;
   const resultOf = async (goalId: string, ms: number): Promise<Awaited<ReturnType<typeof readGoalResult>>> => {
     const until = Date.now() + ms;
     for (;;) {

@@ -71,7 +71,7 @@
     },
     {
       "name": "F3 belowPresenceSafeBroker's patch comparison inverted, so a broker at or above the safe floor is misreported as below it",
-      "file": "implementations/cli/src/commands/up.ts",
+      "file": "implementations/cli/src/commands/up-detach.ts",
       "find": "  return p.patch < 5;\n",
       "replace": "  return p.patch >= 5;\n",
       "expectRed": "the refresh over the file-backed presence bucket printed the below-2.14.5 presence line when, and only when, the PATH broker is below 2.14.5",

@@ -238,10 +238,25 @@ export function servicePresetDefinition(preset: ServicePreset, space: string, gi
   }
   const values: ParsedArgs["values"] = { ...presetDefaultOptions(preset, space, root, given, migrate), ...given };
   const options = parsedPresetOptions(preset, values);
+  // Check the manager launch flag pair before checking whether its file exists.
+  if (preset.adapter === STACK_ADAPTER.manager && (options.launch === undefined) !== (options["launch-sha256"] === undefined)) {
+    const supplied = options.launch === undefined ? "--launch-sha256" : "--launch";
+    const needed = options.launch === undefined ? "--launch <file>" : "--launch-sha256 <digest>";
+    throw new CommandFailure("refused", "USAGE_INVALID", `${supplied} requires ${needed}: a manager launch needs both its private native spec and its full SHA-256; nothing was saved or started`, { remedy: fromCommand ? retryWith(needed) : `${line} --launch <file> --launch-sha256 <digest>`, selfContained: true, ...(fromCommand ? {} : { remedyIsCommand: true }) });
+  }
   // A refused option value is named by the flag the person typed, and the preset's help says what each takes.
   try { resolveServiceAdapter(preset.adapter, options, true, (option) => `--${presetFlagName(option)}`); }
   catch (error) {
-    if (!isCommandFailure(error) || error.code !== "SCHEMA_INVALID" || error.remedy !== undefined) throw error;
+    if (!isCommandFailure(error)) throw error;
+    const launch = options.launch;
+    if (preset.adapter === STACK_ADAPTER.manager && typeof launch === "string" && error.code === "TARGET_NOT_FOUND" && (error.target as { path?: string } | null)?.path === launch) {
+      throw new CommandFailure(error.outcome, error.code, `the --launch specification ${launch} does not exist; nothing was saved or started`, {
+        target: error.target,
+        remedy: `rerun the original command with the absolute path to an existing resolved manager launch specification in ${codeSpan("--launch")} and its matching SHA-256 in ${codeSpan("--launch-sha256")}, keeping all other arguments and flags unchanged`,
+        selfContained: true,
+      });
+    }
+    if (error.code !== "SCHEMA_INVALID" || error.remedy !== undefined) throw error;
     throw new CommandFailure(error.outcome, error.code, error.message, { target: error.target, remedy: `see what each option takes with \`${line} --help\`` });
   }
   // The dashboard posts only with a separate posting credential, so each posting flag needs the other.
@@ -249,14 +264,6 @@ export function servicePresetDefinition(preset: ServicePreset, space: string, gi
   if (preset.adapter === WEB_SERVICE_ADAPTER && (options["read-only"] === false) !== (typeof options["posting-creds"] === "string")) {
     const given = options["read-only"] === false ? "--no-read-only" : "--posting-creds";
     throw new CommandFailure("refused", "USAGE_INVALID", `${given} requires ${given === "--no-read-only" ? "--posting-creds <file>" : "--no-read-only"}: the dashboard posts only when it is not read-only, with a separate posting credential; nothing was saved or started`, { remedy: `${line} --no-read-only --posting-creds <file>`, selfContained: true, remedyIsCommand: true });
-  }
-  // A manager launch is a private native spec pinned by its full digest, so each of the two flags
-  // needs the other. Its launch refuses one without the other, and a saved definition would offer
-  // a start that cannot run.
-  if (preset.adapter === STACK_ADAPTER.manager && (options.launch === undefined) !== (options["launch-sha256"] === undefined)) {
-    const supplied = options.launch === undefined ? "--launch-sha256" : "--launch";
-    const needed = options.launch === undefined ? "--launch <file>" : "--launch-sha256 <digest>";
-    throw new CommandFailure("refused", "USAGE_INVALID", `${supplied} requires ${needed}: a manager launch needs both its private native spec and its full SHA-256; nothing was saved or started`, { remedy: fromCommand ? retryWith(needed) : `${line} --launch <file> --launch-sha256 <digest>`, selfContained: true, ...(fromCommand ? {} : { remedyIsCommand: true }) });
   }
   // Saving the native auth preset must not offer a start its hosting root cannot support.
   // Read only the existing marker, without preparing authority or importing provider code.

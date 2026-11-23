@@ -46,6 +46,7 @@ const navigation = [
         page('docs/telemetry.mdx'),
         page('docs/console.mdx'),
         page('docs/web-dashboard.mdx'),
+        page('docs/acp-clients.mdx'),
         page('docs/remote-supervision.mdx'),
         page('docs/supervise-processes.mdx'),
         page('docs/deploy.mdx'),

@@ -51,6 +51,7 @@ const deliveryGuide = await guide("delivery-service-reference");
 const pid = read("packages/workspace/src/pid.ts");
 const provision = read("packages/core/src/provision-server-config.ts");
 const up = read("implementations/cli/src/commands/up.ts");
+const upArgs = read("implementations/cli/src/commands/up-args.ts");
 const deliveryProc = read("implementations/cli/src/lib/delivery-proc.ts");
 const authPaths = read("packages/workspace/src/auth-paths.ts");
 const localProcess = read("packages/workspace/src/local-process.ts");
@@ -107,8 +108,8 @@ const brokerOnlyBranch = /^  if \(o\.noManager\) \{[\s\S]*?^  \}$/m.exec(deliver
 check(
   "claim 2: the broker-only refusal and the flag's wiring are pinned",
   /`cotal up --no-manager` will not keep or stop one/.test(up.replace(/\\`/g, "`")) &&
-    /args\.values\["no-manager"\] === true && args\.values\.runtime !== undefined\)\s*throw new CommandFailure\("refused", "USAGE_INVALID", "--no-manager cannot be combined with --runtime because no manager starts"/.test(up) &&
-    /args\.values\["no-manager"\] === true && args\.values\["max-sessions"\] !== undefined\)\s*throw new CommandFailure\("refused", "USAGE_INVALID", "--no-manager cannot be combined with --max-sessions because no manager starts"/.test(up) &&
+    /args\.values\["no-manager"\] === true && args\.values\.runtime !== undefined\)\s*throw new CommandFailure\("refused", "USAGE_INVALID", "--no-manager cannot be combined with --runtime because no manager starts"/.test(upArgs) &&
+    /args\.values\["no-manager"\] === true && args\.values\["max-sessions"\] !== undefined\)\s*throw new CommandFailure\("refused", "USAGE_INVALID", "--no-manager cannot be combined with --max-sessions because no manager starts"/.test(upArgs) &&
     up.includes("broker-only boot: start the broker and, in auth mode, the delivery daemon, and no local manager") &&
     brokerOnlyBranch !== null &&
     /^    return \{\s*running: false\b[^}]*responderBound: delivery\.responderBound[^}]*\}/m.test(brokerOnlyBranch[0]) &&

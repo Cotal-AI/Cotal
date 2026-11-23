@@ -1,0 +1,149 @@
+---
+title: "Use an ACP client"
+description: "Spawn and drive Cotal agents from T3 Code, Zed and other Agent Client Protocol clients."
+kind: Guide
+audience: "operators"
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+An [Agent Client Protocol](https://agentclientprotocol.com) (ACP) client can spawn and drive Cotal agents.
+T3 Code, Zed, JetBrains IDEs and Neovim are ACP clients.
+In the client, each thread is one Cotal agent. Its first prompt spawns the agent through your space's manager, in the thread's folder.
+The agent belongs to the manager, so it keeps running on the mesh when the client closes.
+
+## Install the extension [#install]
+
+The `cotal acp` command comes from the optional `@cotal-ai/acp` extension.
+Add it on the machine where the client runs its agents:
+
+```bash
+cotal ext add @cotal-ai/acp
+```
+
+The agent needs a [running mesh](run-a-mesh.mdx) with a manager.
+It finds the space the way other commands do, from the folder the client starts it in.
+A client may start it anywhere, so pin the space with `--space`.
+If no manager is registered, ACP tells you how to start one before opening the thread again.
+
+## Add Cotal to the client [#add-to-a-client]
+
+Register `cotal` as a local ACP agent command, with `acp --space <name>` as its arguments.
+
+In T3 Code, add a provider instance with a local ACP command.
+The provider settings page writes it to T3's `settings.json`:
+
+```json
+{
+  "providerInstances": {
+    "cotal": {
+      "driver": "acpRegistry",
+      "enabled": true,
+      "config": { "source": "local", "commandPath": "cotal", "commandArgs": ["acp", "--space", "<name>"] }
+    }
+  }
+}
+```
+
+In Zed, add it under `agent_servers` in your settings:
+
+```json
+{
+  "agent_servers": {
+    "Cotal": { "command": "cotal", "args": ["acp", "--space", "<name>"] }
+  }
+}
+```
+
+To work in two spaces, add two instances, one per space.
+
+## How threads map to agents [#threads]
+
+| In the client | On the mesh |
+| --- | --- |
+| A new thread | Nothing yet. A thread that is opened and dropped leaves no agent. |
+| The thread's first prompt | Spawns an agent in the thread's folder, with that prompt as its first task. The thread's id is the agent's name. The turn ends when that first task's run ends. |
+| A later prompt | Is typed into the agent's terminal through its manager, so it reaches the agent as your own words. The turn ends once the agent has started working and stopped again. |
+| Listing sessions | The managed agents in that folder, including ones you spawned elsewhere. |
+| Importing a session | Shows what the agent's event channel still holds, then follows it live. |
+| Deleting a session | Hides that agent run from the list. The agent keeps running. |
+
+If the agent does not start working on a later prompt within 30 seconds, the turn ends with a note saying so.
+The agent still has the prompt, and answers it when it gets to it.
+
+A turn shows the agent's messages, its reasoning when the application publishes it, and its tool calls by name and status.
+Tool arguments and results stay off the ordinary event channel, so the client does not show them.
+
+## Choose the agent [#options]
+
+A new thread offers these options next to the model list. They apply when the first prompt spawns the agent.
+
+| Option | What it sets |
+| --- | --- |
+| Model | The application and model, as `<application>/<model>`. `<application>/default` leaves the model to the application. A model id the list does not show is passed to the manager as given. |
+| Reasoning | The model's variant, when the model has more than one. |
+| Persona | A persona from the manager's catalog. |
+| Channel | One channel the new agent joins. |
+| Machine | Which manager spawns the agent, when more than one is offered. The default is the manager on this machine, else one whose presence the bridge sees as current, else the first listed. On a space where people sign in, the list comes from the space's auth service: the space's own manager while you have registered none, and each of your registered managers it lists as a candidate once you have. A candidate can be one whose computer is gone. With none of yours live, a new thread is refused until you start one with `cotal manager start`. Every call a thread makes names its manager, so a space host that sends unnamed calls to its own manager (`local-primary`, see [Embedding a manager](embedding-manager.mdx)) does not change the list. A thread keeps the manager it started on. When a thread you load offers this list, its agent's manager is in it; with one manager there is no list, and a new agent starts on that manager. |
+
+Only applications that publish an event plane are offered, because the thread is built from it.
+Hermes publishes none (see [Connectors](connectors.mdx)).
+A select that would hold 64 or more choices is not offered.
+
+## Slash commands [#slash-commands]
+
+| Command | What it does |
+| --- | --- |
+| `/despawn` | Send it by itself to stop the thread's agent. The thread stays, and its next prompt spawns a new agent when your grant may spawn agents (see [Sign in](#sign-in)). |
+| `/roster` | Lists who is on the mesh and what each is doing. |
+| `/channels` | Lists the space's channels. |
+
+## Sign in [#sign-in]
+
+For a space that authenticates users, a client that can run a terminal offers **Sign in to Cotal**. Open and static-auth spaces do not offer it.
+It runs `cotal acp --auth`, which signs in to a space that authenticates users with `cotal login`.
+When no space is recorded, the client offers the same action to run `cotal setup` instead.
+
+On a space where people sign in, your own sign-in is enough. Whatever your scope, it lists and
+loads your agents, types into them, stops their turns, reads their event channels and despawns them.
+Starting a thread also needs a grant that may spawn agents. Without one, a thread you load offers
+only the agent's own model, and once you despawn that agent the thread cannot start another. You need no `admin` scope, because a
+person controls every agent under their own owner (see
+[Delegation](identity-user-auth.mdx#delegation)).
+
+## Limits [#limits]
+
+- Stopping a turn sends the agent's interrupt key through its manager. Claude Code and Pi agents support it. For any other application, the thread says the agent could not be stopped, the turn ends as cancelled, and the agent keeps working on the mesh.
+- When you stop a Claude Code turn before the agent answered, Claude puts that prompt back in its input box. Your next prompt is typed after it, so the agent gets both.
+- A later prompt is typed as if you typed it into the application, so the application's input shortcuts apply. In Claude Code, a prompt that starts with `!` runs as a shell command and its turn does not show in the thread.
+- A later prompt ends when the agent stops working. When the agent was already busy as the prompt arrived, the turn can end when that earlier work does.
+- A later prompt needs an agent on the built-in `pty` runtime, because the manager types it into the agent's terminal. An agent on tmux, cmux, Orca or Herdr refuses it, and so does a Claude Code agent showing a selection menu. The turn then fails with the manager's reason.
+- Work an agent does between your prompts, such as answering a peer, does not show live in T3 Code.
+- An agent on another machine's manager shows its conversation and tool calls, but T3 Code shows no diffs or checkpoints for it.
+- An agent on another machine's manager starts in the thread's folder, so that folder must exist on that machine. Otherwise the spawn is refused.
+- On a space where people sign in, the thread list shows your agents on every live manager the space's auth service lists for you, the space's own included. You can load them even while none of your managers may start a new thread.
+- A manager that does not answer leaves its agents out of the list until it answers again. While it does not answer, loading or deleting any thread the list does not show fails, because its agent may run there. On a space where people do not sign in, a registered manager whose host is gone is not waited for. Where they do, it is waited for like one that does not answer, until you remove it with `cotal endpoint deregister manager <id> --space <space> --yes`, which needs the `supervise` scope. The error names that command when one of your own registrations does not answer a read. The space's own manager is not yours to remove; ask the space's operator. A new thread prefers a manager whose presence the bridge sees as current. A manager that died less than a minute ago can still look current, and then a new thread fails reading its lists before the Machine list shows. Try again once its presence lapses, or remove the registration. A sleeping laptop's manager is not gone, so it holds those loads up until the laptop wakes.
+- Every manager read and command opens its own connection. A list opens one for each manager it reads, a new or loaded thread opens about three more, and each prompt, cancel or `/despawn` opens one. A space limits how many connections one sign-in opens a minute (60 by default), and your other `cotal` commands count too. Opening many threads at once can be refused, and the refusal names the limit. The allowance refills through the minute, so a retry a few seconds later can pass.
+- When your sign-in is granted again, or this machine signs in as another account, while `cotal acp` runs, it stops and says why. It sends nothing as the new sign-in. Start the agent again in your client.
+- A rollback in T3 Code starts a fresh session, which spawns a new agent.
+- Pi agents publish text as completed messages, so their replies arrive whole.
+- Questions an agent stops to ask, such as tool permissions, are not forwarded to the client yet.
+- The client's own MCP servers are not passed to the agent.
+
+## cotal acp [#acp]
+
+```
+cotal acp [--space <name>] [--server <url>]
+cotal acp --auth [--space <name>]
+```
+
+Serves the ACP agent on standard input and output. Standard output carries the protocol only.
+Logs go to standard error.
+
+| Flag | Meaning |
+| --- | --- |
+| `--space <name>` | The space the agent works in. |
+| `--server <url>` | The broker address. An explicit address overrides the address recorded for the space. |
+| `--auth` | Sign in to the space, or set one up, then exit. |
+
+Deleted sessions are kept as agent runs in `acp/hidden-runs` under the Cotal home, one per line.

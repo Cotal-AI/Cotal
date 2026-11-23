@@ -61,6 +61,7 @@ import {
 } from "@cotal-ai/workspace";
 import { displayCmd } from "../lib/self-exec.js";
 import { shellWord } from "../lib/endpoint-errors.js";
+import { channelSeedRestartBlock } from "../lib/channel-seed.js";
 import { RESPONDER_UNBOUND_CONSEQUENCE } from "../lib/delivery-responder.js";
 import { noExpiryRecordPath, noExpiryRequestedAt } from "../lib/no-expiry-record.js";
 import { credentialExportStore } from "../lib/credential-exports.js";
@@ -183,7 +184,8 @@ function trustRootStep(root: string, space: string | undefined, fix: boolean): s
   }
   if (prepared !== undefined) {
     const here = canonicalRoot(prepared) === canonicalRoot(root);
-    return `"${named}" is prepared but not started; start it with ${codeSpan(upCommand(prepared, named!, ...(here ? [] : ["--root", shellWord(prepared)])))}, then run \`${command}\` ${here ? "again" : "in that folder"}`;
+    const block = channelSeedRestartBlock(prepared);
+    return `"${named}" is prepared but not started; ${block ? `${block.message}. First ${block.remedy}, then ` : ""}start it with ${codeSpan(upCommand(prepared, named!, ...(here ? [] : ["--root", shellWord(prepared)])))}, then run \`${command}\` ${here ? "again" : "in that folder"}`;
   }
   if (registered && !existsSync(registered)) return `the folder space ${named} is recorded at, ${registered}, no longer exists; if it was moved or renamed, move it back and run \`${command}\` there; otherwise forget the space with \`cotal space forget ${named}\``;
   return registered ? `run \`${command}\` in the folder space ${space} is registered at: ${registered}` : `run \`${command}\` in ${space === undefined ? "a" : "that"} space's root folder; \`cotal space\` lists each space's root`;

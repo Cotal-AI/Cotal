@@ -6,7 +6,7 @@ import { join, resolve } from "node:path";
 import { CotalEndpoint, accountFromCreds, DEFAULT_SERVER, DEV_OWNER, injectedSecretStoreIdentity, type DeprovisionResourceAccounting, type IssuedBinding, type IssuedStore, mintLifecycleUid, parsePrincipalKey, principalKey, probeConnect, resolveAuthProvider } from "@cotal-ai/core";
 import { retainConnectorSeat } from "@cotal-ai/workspace";
 import { agentSecretKeyForFile, DEFAULT_SEAT_CAP, findCotalRoot, loadManagerInstanceIdentity, manifestExtensionNames, materializeFromManifest, runtimeInstallHint, spaceKey, userAuthStateDir, workspaceSecretStore, type ManagerInstanceIdentity, type SeatCap } from "@cotal-ai/workspace";
-import type { ActionContext, EpCapability, PersonaEndpoint, RunAdmission, Connector, ControlReply, DelegatedGrant, EpCaller, LaunchSpec, Presence, RuntimeProvider, RuntimeReference, SecretStore, SpaceAuth, StartupOutcome } from "@cotal-ai/core";
+import type { EpCapability, PersonaEndpoint, RunAdmission, Connector, ControlReply, DelegatedGrant, EpCaller, LaunchSpec, Presence, RuntimeProvider, RuntimeReference, SecretStore, SpaceAuth, StartupOutcome } from "@cotal-ai/core";
 import {
   createRuntime,
   isCustodialRuntime,
@@ -16,7 +16,7 @@ import {
   type RuntimeMode,
 } from "./runtime/index.js";
 import { Retirement, retirementDeps, type TeardownTarget } from "./retirement.js";
-import type { ManagedAgent, SpawnAcceptance, SpawnHooks, StartAgentOpts } from "./seat-types.js";
+import type { ManagedAgent, SpawnHooks, StartAgentOpts } from "./seat-types.js";
 export type { ManagedAgent, SpawnAcceptance, SpawnHooks, StartAgentOpts } from "./seat-types.js";
 import { ServePlane, servePlaneDeps } from "./serve-plane.js";
 import { NamesCapacity, namesCapacityDeps, type Occupancy } from "./names-capacity.js";
@@ -60,11 +60,10 @@ import { type LifecycleStateTransport, type StaticManagedSlotRow } from "@cotal-
 // The manager's ONE §13.6 session plane — offer mint + one-use redeem + PTY-bridge
 // standup for `attach`, over a dedicated standing session-LEDGER connection (the byte rails ride
 // per-session credentials on their own short-lived connections).
-import { ManagerSessionPlane } from "./session/index.js";
 // The manager as an ordinary v0.4 `service` endpoint — the §13.1
 // endpoint-serve credential subsystem (gate provisioning, registration barrier, mint fence) plus
 // the register/authorize/serve seams, all driven over a scoped one-shot executor connection.
-import { readEndpointGateGeneration, deregisterServiceInstance, type ServiceDeregistration, type EpIssuanceGate, type GoalIndexEntry, turnNoticeSubject, EpEnvelopeError, type EpServeContext, type EpServeGrant, type EpServeHandle, type GoalRef, type Identity } from "@cotal-ai/core";
+import { readEndpointGateGeneration, deregisterServiceInstance, type ServiceDeregistration, type GoalIndexEntry, turnNoticeSubject, EpEnvelopeError, type EpServeContext, type EpServeGrant, type EpServeHandle, type GoalRef, type Identity } from "@cotal-ai/core";
 import { MANAGER_ENDPOINT, type ManagerStaticReconciliationStatus, type ManagerStopImpact } from "./manager-service-contract.js";
 import type { NatsConnection } from "@nats-io/transport-node";
 import type { KV } from "@nats-io/kv";
@@ -594,67 +593,23 @@ export class Manager {
    *  than drains it ({@link retireConnection}). Keyed by the connection, so a re-dial that swaps in a
    *  fresh one starts from its own state. */
   protected readonly transportDown = new WeakSet<NatsConnection>();
-  /** The spawn-as-action SELF-MEDIATED goal-writer connection + ActionContext — a
-   *  standing connection DISJOINT from the serve credential, scoped to exactly this endpoint's
-   *  goal bind/terminal facts + goal-record writes ({@link goalWriterGrants}). Auth mode mints the
-   *  `goal-writer` cred; an open mesh uses a bare connection (no credential system to mint from).
-   *  `gate` (auth mode) is the own-issuance-gate READER for the own-gate currency belt — the
-   *  manager reads its OWN `epgate.<e>.<iid>` epoch over this connection before a terminal commit
-   *  and skips a superseded commit (the fast-fail belt paired with the (b) barrier-revoke fence). */
-  protected goalWriter?: { nc: NatsConnection; ctx: ActionContext; creds?: string; identity: Identity; gate?: EpIssuanceGate };
   /** The workflow-run host (SPEC 14.3): the drives this incarnation holds, each on its own
    *  per-run credential and connection. Absent under a remote authority, which mints no driver
    *  credentials, so the `run-*` family refuses there rather than connecting on a weaker identity. */
   protected runHosting?: RunHosting;
-  /** The STABLE goal-writer identity (auth mode) — minted once at
-   *  registration alongside the serve identity; a renewal re-mints the SAME nkey with a fresh
-   *  bounded exp and re-stages its distinct credId into the §13.1 revocation family. The current
-   *  goal-writer credential is minted INSIDE {@link registerManagerService}'s run block (fence
-   *  live) and stashed here for {@link startGoalWriter} to build the standing connection from. */
-  protected goalWriterIdentity?: Identity;
-  protected goalWriterCreds?: string;
-  /** The manager's ONE §13.6 session plane — offer mint + one-use redeem + PTY-bridge
-   *  standup for `attach`. The face's establisher and the CLI attach handler both call THIS one
-   *  plane; the manager never constructs a second. Undefined until {@link startSessionPlane}. */
-  protected sessionPlane?: ManagerSessionPlane;
-  /** The standing session-LEDGER connection + its mutable creds holder (the authenticator
-   *  presents the refreshed cred on the next reconnect after a half-TTL renewal — the goal-writer
-   *  precedent). Auth mode only; an open mesh runs the plane over a bare connection. */
-  protected sessionLedgerConn?: { nc: NatsConnection; creds?: string };
-  /** Renews the session signing key long before its window closes. A key that expires unattended
-   *  takes the whole session plane down until the manager is restarted, which kills live sessions. */
-  protected sessionKeyRenewTimer?: ReturnType<typeof setInterval>;
-  /** The STABLE session-LEDGER identity (auth mode) — minted once at registration
-   *  alongside the serve + goal-writer identities; a renewal re-mints the SAME nkey with a fresh
-   *  bounded exp and re-stages its distinct credId into the §13.1 revocation family. The current
-   *  credential is minted INSIDE {@link registerManagerService}'s run block and stashed here. */
-  protected sessionLedgerIdentity?: Identity;
-  protected sessionLedgerCreds?: string;
-  /** The acceptance replied for each goal this incarnation accepted, by {@link goalKey}, so an
-   *  idempotent same-goalId retry serves the IDENTICAL acceptance (same allocated name/triple)
-   *  without a second spawn. An entry lives while its goal is in flight and for
-   *  {@link ManagerConfig.goalAcceptanceRetentionMs} after its terminal commits; a later retry, or one at another
-   *  incarnation, is answered from the goal index while the goal runs and from its committed
-   *  result fact once it has ended. */
-  protected goalAcceptances = new Map<string, SpawnAcceptance>();
-  /** The boot reconcile of the durable goal index runs ONCE at start (a
-   *  fresh incarnation inherits the endpoint's accepted-but-unterminal goals from any predecessor).
-   *  Spawn-as-action REFUSES to accept until it completes, so the sweep never races a live goal's
-   *  acceptance (settling one mid-flight would steal its real terminal). */
-  protected goalReconcileDone = false;
   /** The live spawn goal ref for each managed agent name, so a despawn MID-GOAL
    *  drives the cancel path (transition -> cancel terminal). Cleared when the goal terminalizes. */
   protected agentGoals = new Map<string, GoalRef>();
   private turnRelayInstance?: TurnRelay;
   protected get turnRelay(): TurnRelay {
     return this.turnRelayInstance ??= new TurnRelay({
-      goalWriter: () => this.goalWriter,
+      goalWriter: () => this.goalWriterComponent.goalWriter,
       serviceServe: () => this.serviceServe,
       space: this.config.space,
       managerInstanceId: () => this.managerInstanceId,
       execution: this.execution,
       executionRefusal: this.executionRefusal(),
-      goalReconcileDone: () => this.goalReconcileDone,
+      goalReconcileDone: () => this.goalWriterComponent.goalReconcileDone,
       readinessTimeoutMs: () => this.config.readinessTimeoutMs,
       adoptsSeats: () => this.auth !== undefined && !this.userMode,
       onceSeatReconciling: (uid) => this.staticLifecycle.pendingLifecycle(uid),
@@ -776,19 +731,19 @@ export class Manager {
   protected readonly userProvision = new UserProvision(this.config, userProvisionDeps(this));
 
   /** Seat stop, exit, recursive reap and named despawn. Every dependency reads through at its use. */
-  private readonly seatStopComponent = new SeatStop(this.config, seatStopDeps(this));
+  private readonly seatStopComponent = new SeatStop(this.config, seatStopDeps(this), this.parts);
 
   /** The typed command table and its admission. Every dependency reads through at its use. */
-  private readonly commandDispatch = new CommandDispatch(this.config, commandDispatchDeps(this));
+  private readonly commandDispatch = new CommandDispatch(this.config, commandDispatchDeps(this), this.parts);
 
   /** The spawn and launch goal path. Every dependency reads through at its use. */
-  private readonly spawnGoalComponent = new SpawnGoal(this.config, spawnGoalDeps(this));
+  private readonly spawnGoalComponent = new SpawnGoal(this.config, spawnGoalDeps(this), this.parts);
 
   /** The persona catalog doors. Every dependency reads through at its use. */
   private readonly personaCatalogComponent = new PersonaCatalog(this.config, personaCatalogDeps(this));
 
   /** Seat terminal input and attach sessions. Every dependency reads through at its use. */
-  private readonly terminalInputComponent = new TerminalInput(this.config, terminalInputDeps(this));
+  private readonly terminalInputComponent = new TerminalInput(this.config, terminalInputDeps(this), this.parts);
 
   /** Status, seat list and model catalog reads. Every dependency reads through at its use. */
   private readonly statusAndModelsComponent = new StatusAndModels(this.config, statusAndModelsDeps(this), this.parts);
@@ -819,7 +774,7 @@ export class Manager {
   private readonly goalWriterComponent = new GoalWriter(this.config, goalWriterDeps(this));
 
   /** Renewal of the manager's standing credentials. Every dependency reads through at its use. */
-  private readonly credentialRenewal = new CredentialRenewal(this.config, credentialRenewalDeps(this));
+  private readonly credentialRenewal = new CredentialRenewal(this.config, credentialRenewalDeps(this), this.parts);
 
   /** The launch pipeline's leaf steps. Every dependency reads through at its use. */
   private readonly seatLaunch = new SeatLaunch(this.config, seatLaunchDeps(this), this.parts);
@@ -924,6 +879,7 @@ export class Manager {
       credentialRenewal: this.credentialRenewal,
       harnessResolution: this.harnessResolutionComponent,
       lease: this.lease,
+      goalWriter: this.goalWriterComponent,
       seatLaunch: this.seatLaunch,
       servePlane: this.servePlane,
     } satisfies ManagerParts);
@@ -1274,8 +1230,7 @@ export class Manager {
   private async stopOnce(withAgents: boolean): Promise<void> {
     this.leaseStopping = true;
     this.config.shutdownReadiness.abort();
-    clearTimeout(this.credentialRenewal.credentialPushRetry);
-    this.credentialRenewal.credentialPushRetry = undefined;
+    this.credentialRenewal.stopRetries();
     this.transcripts?.stop();
     this.staticLifecycle.stop();
     const starting = this.startTask;
@@ -1285,7 +1240,7 @@ export class Manager {
     if (this.credRenewTimer) clearInterval(this.credRenewTimer);
     if (this.credentialRenewal.endpointServeRenewalTimer) clearTimeout(this.credentialRenewal.endpointServeRenewalTimer);
     if (this.daemonRenewalLeaseTimer) clearInterval(this.daemonRenewalLeaseTimer);
-    if (this.sessionKeyRenewTimer) clearInterval(this.sessionKeyRenewTimer);
+    if (this.servePlane.sessionKeyRenewTimer) clearInterval(this.servePlane.sessionKeyRenewTimer);
     // A renew already in flight when the timer was cleared above must be awaited, not raced: it can
     // still move the key's revision after we clear the timer, and releasing against a cached
     // revision it has since moved is a CAS the broker correctly refuses, silently, forever.

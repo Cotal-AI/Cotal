@@ -251,7 +251,7 @@ async function runSeats(job: SeatJob): Promise<void> {
           await ep.readPresence();
           cost.ms.push(performance.now() - t);
         }
-        const entries = await lastKvEntries((ep as unknown as { kv: Parameters<typeof lastKvEntries>[0] }).kv);
+        const entries = await lastKvEntries((ep as unknown as { conn: { kv: Parameters<typeof lastKvEntries>[0] } }).conn.kv);
         cost.msgs.push(entries.length);
         cost.bytes.push(entries.reduce((a, e) => a + e.value.length + `$KV.${e.bucket}.${e.key}`.length, 0));
       }

@@ -1172,6 +1172,8 @@ export function workflowArguments(args: ParsedArgs): { values: RunValues; verb: 
     if (first !== undefined) usage(`run ${raw} takes no positional argument`);
   } else if (verb === "answer" || verb === "amend") {
     if (!first || !second) usage(`run ${verb} requires a run id and step key`);
+  } else if (verb === "revoke" && first === undefined) {
+    usage("run revoke takes one identifier", "add a run ID after `run revoke` in the original command. A revoke requires `--local --by <actor> --reason <text>`");
   } else if (!first || second !== undefined) usage(`run ${raw} takes one identifier`, verb === "yield" ? "`cotal run turns` lists your turns. Run `cotal run yield <turn-id> --status <done|blocked|handoff>`. For a handoff, add `--to <agent>`." : `\`cotal run\` lists the runs; run \`cotal run ${raw} <run-id>\``);
   const scopes: Record<string, readonly string[]> = {
     timeout: ["start", "resume"], by: ["answer", "amend", "revoke"], reason: ["revoke"], value: ["answer", "amend"], artifact: ["answer", "amend"],
@@ -1235,7 +1237,7 @@ export function workflowArguments(args: ParsedArgs): { values: RunValues; verb: 
   if (values.by !== undefined && values.local !== true) usage("the hosted manager records the authenticated caller; --by is only for the local path");
   if ((verb === "start" || verb === "resume") && values.endpoint !== undefined && values.local !== true) usage("a hosted run uses the manager's endpoint; --endpoint is only for the local path");
   if (verb === "resume" && values.file !== undefined && values.local !== true)
-    usage("run resume: the manager resumes a run from its recorded program, so --file is not taken", `omit --file to resume the recorded program with \`cotal run resume ${a}${values.space ? ` --space ${values.space}` : ""}${values.on ? ` --on ${values.on}` : ""}\`; a run with no recorded program uses \`cotal run resume ${a} --local --file <program>\``);
+    usage("run resume: the manager resumes a run from its recorded program, so --file is not taken", `remove only --file and its value from the original command, then rerun it to resume the recorded program. A run with no recorded program uses \`cotal run resume ${a} --local --file <program>\``);
   if (values.value !== undefined) checkAnswerValue(values.value, usage);
   if (values.artifact !== undefined && !values.artifact.trim()) usage("--artifact names the artifact the answer cites, so it cannot be empty");
   if (values.handler !== undefined && verb !== "simulate") usage("--handler belongs to run simulate");

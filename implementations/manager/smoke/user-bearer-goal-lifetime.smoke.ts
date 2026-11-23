@@ -386,7 +386,7 @@ async function main() {
     check("COMPAT: native descriptor exposes spawn but no goal-result", realService.commands.has("spawn") && !realService.commands.has("goal-result"), [...realService.commands.keys()]);
 
     let mutationSubmits = 0;
-    const compatNc = (epCompat as unknown as { nc: NatsConnection }).nc;
+    const compatNc = (epCompat as unknown as { conn: { nc: NatsConnection } }).conn.nc;
     const publish = compatNc.publish.bind(compatNc);
     const compatPublish: typeof publish = (subject, data, options) => {
       const request = parseEpSubject(subject);
@@ -494,7 +494,7 @@ async function main() {
     await state.nc.flush();
     let splits = 0, retrySubmits = 0;
     epRetryCompat.on("split-recovered", () => { splits++; });
-    const retryNc = (epRetryCompat as unknown as { nc: NatsConnection }).nc;
+    const retryNc = (epRetryCompat as unknown as { conn: { nc: NatsConnection } }).conn.nc;
     const retryPublish = retryNc.publish.bind(retryNc);
     retryNc.publish = (subject, data, options) => {
       const parsed = parseEpSubject(subject);
@@ -706,7 +706,7 @@ async function main() {
     });
 
     await startEndpoint(ep2);
-    const initialNc = (ep2 as unknown as { nc: { isClosed: () => boolean } }).nc;
+    const initialNc = (ep2 as unknown as { conn: { nc: { isClosed: () => boolean } } }).conn.nc;
 
     const queryCallers: Array<{ owner: string; actor: string; uid: string }> = [];
     let queryIdentityMatches = true;
@@ -719,7 +719,7 @@ async function main() {
       15_000,
       {
         reconcile: async (goalId, attributed, context) => {
-          const nc = (ep2 as unknown as { nc: NatsConnection }).nc;
+          const nc = (ep2 as unknown as { conn: { nc: NatsConnection } }).conn.nc;
           const publish = nc.publish.bind(nc);
           nc.publish = (subject, data, options) => {
             const request = parseEpSubject(subject);
@@ -743,7 +743,7 @@ async function main() {
     await new Promise((r) => setTimeout(r, 7000));
 
     // WITNESS 1: Connection instance was replaced
-    const currentNc = (ep2 as unknown as { nc: unknown }).nc;
+    const currentNc = (ep2 as unknown as { conn: { nc: unknown } }).conn.nc;
     check("REBUILD: initial connection closed by broker wire expiry", initialNc.isClosed() === true);
     check("REBUILD: endpoint running on replaced NatsConnection instance", currentNc !== initialNc);
     check("REBUILD: self-heal rebuilds observed", rebuildsObserved >= 1, { rebuildsObserved, bearerMintCount });
@@ -788,7 +788,7 @@ async function main() {
     try {
       await startEndpoint(epNativeGap);
       await startEndpoint(epGapObserver);
-      const oldGapNc = (epNativeGap as unknown as { nc: NatsConnection }).nc;
+      const oldGapNc = (epNativeGap as unknown as { conn: { nc: NatsConnection } }).conn.nc;
       let gapGoalId: string | undefined;
       let gapSubmits = 0;
       let canonicalReadRecovered = false;
@@ -955,7 +955,7 @@ async function main() {
     const refusalAbort = new AbortController();
     let wireRefusal: EpAttributedReply | undefined;
     const refusalResult = await epAbort.followServiceGoal(BASELINE_LIFECYCLE_ENDPOINT, async (signal) => {
-      wireRefusal = await invokeCommand((epAbort as unknown as { nc: NatsConnection }).nc, SPACE,
+      wireRefusal = await invokeCommand((epAbort as unknown as { conn: { nc: NatsConnection } }).conn.nc, SPACE,
         { ...realService, responder: { ...realService.responder, epoch: 999 } },
         "spawn", { name: "refused-before-effects", agent: "delayed-join" }, { signal, deadlineMs: 2000 });
       refusalAbort.abort();

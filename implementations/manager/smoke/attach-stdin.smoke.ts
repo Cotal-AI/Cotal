@@ -532,7 +532,7 @@ try {
   const s = await manager.startAgent({ name: SEAT, agent: "stdin-seat", cwd: repoRoot, events: false });
   if (!s.ok) throw new Error(`seat did not start: ${JSON.stringify(s)}`);
   for (let i = 0; i < 60 && !seatAlive(); i++) await wait(200);
-  const live = (): number => (manager as unknown as { sessionPlane?: { liveSessions: number } }).sessionPlane?.liveSessions ?? -1;
+  const live = (): number => (manager as unknown as { servePlane: { sessionPlane?: { liveSessions: number } } }).servePlane.sessionPlane?.liveSessions ?? -1;
   const settle = async (target: number, ms: number): Promise<number> => {
     const deadline = Date.now() + ms;
     for (;;) { const n = live(); if (n === target || Date.now() > deadline) return n; await wait(200); }

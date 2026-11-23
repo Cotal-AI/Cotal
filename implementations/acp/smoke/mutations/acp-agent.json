@@ -1,0 +1,431 @@
+{
+  "suite": [
+    "implementations/acp/smoke/agent.smoke.ts",
+    "implementations/acp/smoke/frames.smoke.ts"
+  ],
+  "guard": "the ACP agent keeps each protocol promise its docs make: a probe leaves no trace, a turn's updates and closed tool calls reach the client before the prompt answers, sign-in is offered and reported only where it applies, list and load show the right runs, later prompts are typed into the seat, end when it stops working and fail with the manager's reason when it refuses them, a cancel interrupts the seat and answers cancelled, also when the interrupt is refused or the session is deleted, a new session starts on a listed manager when none is on this machine, one silent manager hides only its own agents, and the frame mapping neither repeats nor misreports a seat's events; a person without spawn loads their agent with only its own model, and a seat no manager listed while one was silent is not called missing; a thread opened without spawn offers only its agent's model and cannot start another, and new threads start and agents are read where the auth service's manager list allows; a loaded agent keeps its manager as a choice and loads while no manager may start a new one, and a seat-only thread's options do not change; a new thread prefers a manager whose presence is current, an unlisted seat names the deregister command only where people sign in, a seat-only thread never points at /despawn, and a loaded thread's manager stays a described choice after a machine change",
+  "command": "pnpm --filter @cotal-ai/acp test",
+  "proveWith": "pnpm mutation-proof --config implementations/acp/smoke/mutations/acp-agent.json",
+  "why": [
+    "Each mutation is a plausible one-line regression in the protocol layer or the frame mapping. The smokes import src directly, so no build runs between the mutation and the suite."
+  ],
+  "mutations": [
+    {
+      "name": "a probe's delete writes to the hidden store",
+      "file": "implementations/acp/src/agent.ts",
+      "find": "        if (run) options.hidden.add(run.lifecycleUid);",
+      "replace": "        options.hidden.add(run?.lifecycleUid ?? params.sessionId);",
+      "expectRed": "deleting a session that never spawned hides nothing"
+    },
+    {
+      "name": "frames that beat the spawn reply are dropped",
+      "file": "implementations/acp/src/agent.ts",
+      "find": "    for (const frame of held?.frames ?? []) deliver(session, frame);",
+      "replace": "    void held;",
+      "expectRed": "frames published before the spawn reply still reach the client"
+    },
+    {
+      "name": "a turn answers with its tool calls left open",
+      "file": "implementations/acp/src/agent.ts",
+      "find": "        const closes = session.mapper.closeOpen(close).map((u) => send(session, u));",
+      "replace": "        const closes: Promise<void>[] = [];",
+      "expectRed": "a tool call left open is closed before the prompt answers"
+    },
+    {
+      "name": "terminal sign-in offered to every client",
+      "file": "implementations/acp/src/agent.ts",
+      "find": "      authMethods: params.clientCapabilities?.auth?.terminal",
+      "replace": "      authMethods: params.clientCapabilities !== undefined",
+      "expectRed": "a client that runs no terminal is offered no sign-in"
+    },
+    {
+      "name": "a sign-in failure reported as an internal error",
+      "file": "implementations/acp/src/agent.ts",
+      "find": "      throw e instanceof SignInRequired ? RequestError.authRequired(undefined, e.message) : RequestError.internalError(undefined, e.message);",
+      "replace": "      throw RequestError.internalError(undefined, e.message);",
+      "expectRed": "a space that needs a sign-in fails session/new with -32000"
+    },
+    {
+      "name": "list compares folders without resolving symlinks",
+      "file": "implementations/acp/src/agent.ts",
+      "find": "      const want = params.cwd ? canonical(params.cwd) : undefined;",
+      "replace": "      const want = params.cwd;",
+      "expectRed": "session/list matches the folder through a symlink"
+    },
+    {
+      "name": "list ignores hidden runs",
+      "file": "implementations/acp/src/agent.ts",
+      "find": "(row) => !hidden.has(row.lifecycleUid) && (",
+      "replace": "(row) => (",
+      "expectRed": "a hidden run is not listed"
+    },
+    {
+      "name": "a replay is not marked as replay",
+      "file": "implementations/acp/src/agent.ts",
+      "find": "        for (const update of updates) await send(session, update, true);",
+      "replace": "        for (const update of updates) await send(session, update);",
+      "expectRed": "session/load replays before it answers, marked as replay"
+    },
+    {
+      "name": "the channel choice is not passed to the spawn",
+      "file": "implementations/acp/src/agent.ts",
+      "find": "          ...(session.selection.channel !== NO_CHANNEL ? { subscribe: [session.selection.channel] } : {}),",
+      "replace": "          ...(session.selection.channel === NO_CHANNEL ? { subscribe: [session.selection.channel] } : {}),",
+      "expectRed": "it spawns in the session's folder with the prompt and the chosen options"
+    },
+    {
+      "name": "a failed run answers as a finished turn",
+      "file": "implementations/acp/src/agent.ts",
+      "find": "    if (run.outcome === \"error\") turn.fail(",
+      "replace": "    if (run.outcome === \"never\") turn.fail(",
+      "expectRed": "a failed run fails the prompt with the seat's message"
+    },
+    {
+      "name": "applications without an event plane are offered",
+      "file": "implementations/acp/src/options.ts",
+      "find": "  return catalogs.filter((c) => c.available && c.eventPlane);",
+      "replace": "  return catalogs.filter((c) => c.available);",
+      "expectRed": "applications without an event plane are not offered"
+    },
+    {
+      "name": "a variant carries to a model that lacks it",
+      "file": "implementations/acp/src/options.ts",
+      "find": "      return variantsOf(offer, next).includes(selection.variant) ? next : { ...next, variant: DEFAULT_VARIANT };",
+      "replace": "      return next;",
+      "expectRed": "a variant does not carry to a model that lacks it"
+    },
+    {
+      "name": "a frame maps again when a history read and the live tap overlap",
+      "file": "implementations/acp/src/frames.ts",
+      "command": "npx tsx implementations/acp/smoke/frames.smoke.ts",
+      "find": "    if (this.seen.has(key)) return { updates: [], runs: [] };",
+      "replace": "    void key;",
+      "expectRed": "a frame already mapped maps to nothing"
+    },
+    {
+      "name": "a failed tool call shows as completed",
+      "file": "implementations/acp/src/frames.ts",
+      "command": "npx tsx implementations/acp/smoke/frames.smoke.ts",
+      "find": "status: value?.isError === true ? \"failed\" : \"completed\" });",
+      "replace": "status: \"completed\" });",
+      "expectRed": "the result marker ends the call as failed when it says so"
+    },
+    {
+      "name": "RUN_ERROR loses the seat's message",
+      "file": "implementations/acp/src/frames.ts",
+      "command": "npx tsx implementations/acp/smoke/frames.smoke.ts",
+      "find": "ts: frame.ts, ...(text(event.message) ? { message: text(event.message) } : {}) });",
+      "replace": "ts: frame.ts });",
+      "expectRed": "RUN_ERROR ends the frame's run with the seat's message"
+    },
+    {
+      "name": "a later prompt answers while its run is still open",
+      "file": "implementations/acp/src/agent.ts",
+      "find": "        if (status === \"working\" || running) turn.quietSince = undefined;",
+      "replace": "        if (status === \"working\") turn.quietSince = undefined;",
+      "expectRed": "a later prompt answers only after the runs it started ended"
+    },
+    {
+      "name": "a later prompt the seat never starts on waits forever",
+      "file": "implementations/acp/src/agent.ts",
+      "find": "          if (now - after > startMs) {",
+      "replace": "          if (false) {",
+      "expectRed": "a later prompt the seat does not start on answers, and says so"
+    },
+    {
+      "name": "a cancel is ignored",
+      "file": "implementations/acp/src/agent.ts",
+      "find": "      sessions.get(params.sessionId)?.turn?.cancel();",
+      "replace": "      void params;",
+      "expectRed": "a cancel interrupts the seat through its manager"
+    },
+    {
+      "name": "a cancelled turn whose run errors fails instead of answering cancelled",
+      "file": "implementations/acp/src/agent.ts",
+      "find": "        fail: (error) => turn.cancelled !== undefined ? finish(\"failed\", () => resolve(\"cancelled\")) : finish(\"failed\", () => reject(RequestError.internalError(undefined, error.message))),",
+      "replace": "        fail: (error) => finish(\"failed\", () => reject(RequestError.internalError(undefined, error.message))),",
+      "expectRed": "a cancelled prompt answers cancelled when the interrupted run ends as an error"
+    },
+    {
+      "name": "a cancel that beats the spawn reply is dropped",
+      "file": "implementations/acp/src/agent.ts",
+      "find": "        if (turn.cancelled === \"requested\") interrupt();",
+      "replace": "        void interrupt;",
+      "expectRed": "a cancel that beats the spawn reply interrupts once the seat exists"
+    },
+    {
+      "name": "a refused interrupt is silent",
+      "file": "implementations/acp/src/agent.ts",
+      "find": "          void send(session, { sessionUpdate: \"agent_message_chunk\", content: { type: \"text\", text: `Could not stop ${seat.name}: ${e.message}. It keeps working on the mesh.` } })\n            .catch((err: Error) => options.log(`session ${session.id}: update not sent: ${err.message}`));",
+      "replace": "          void seat;",
+      "expectRed": "a refused interrupt is said in the thread"
+    },
+    {
+      "name": "a refused prompt answers as a finished turn",
+      "file": "implementations/acp/src/agent.ts",
+      "find": "      }, (e: Error) => turn.fail(e));",
+      "replace": "      }, () => turn.stop(\"end_turn\"));",
+      "expectRed": "a prompt the manager refuses to type fails with its reason"
+    },
+    {
+      "name": "a later prompt's runs are counted from after the input reply",
+      "file": "implementations/acp/src/agent.ts",
+      "find": "      const after = until === \"run\" ? 0 : Date.now();",
+      "replace": "      const after = until === \"run\" ? 0 : Date.now() + 1_000;",
+      "expectRed": "a run that ends before the input reply still answers the later prompt"
+    },
+    {
+      "name": "a refused interrupt keeps the cancelled prompt running",
+      "file": "implementations/acp/src/agent.ts",
+      "find": "          turn.cancelled = Date.now();\n          turn.stop(\"cancelled\");",
+      "replace": "          turn.cancelled = undefined;",
+      "expectRed": "a refused interrupt still answers the prompt cancelled"
+    },
+    {
+      "name": "a deleted session leaves its prompt unanswered",
+      "file": "implementations/acp/src/agent.ts",
+      "find": "      session.turn.stop(\"cancelled\");",
+      "replace": "      void 0;",
+      "expectRed": "deleting a session answers its running prompt cancelled and leaves the seat running"
+    },
+    {
+      "name": "a machine switch keeps choices the new manager lacks",
+      "file": "implementations/acp/src/agent.ts",
+      "find": "          next = reconcile(offer, next);",
+      "replace": "          void reconcile;",
+      "expectRed": "a persona the chosen machine lacks returns to the default"
+    },
+    {
+      "name": "a spawn that returns after a delete binds the deleted session",
+      "file": "implementations/acp/src/agent.ts",
+      "find": "        if (sessions.get(session.id) !== session) return;",
+      "replace": "        void sessions;",
+      "expectRed": "a delete during the first spawn answers once its seat is hidden, and sends that seat nowhere"
+    },
+    {
+      "name": "a frame from another sender is taken as the agent's",
+      "file": "implementations/acp/src/live-mesh.ts",
+      "find": "  if (!seat || msg.from?.id !== principalKey(seat.owner, seat.actor).key) return undefined;",
+      "replace": "  if (!seat) return undefined;",
+      "expectRed": "frameOf ignores a frame that another sender put on an agent's event channel"
+    },
+    {
+      "name": "a thread's agent name is not a user-mode actor token",
+      "file": "implementations/acp/src/agent.ts",
+      "find": "  return `acp_${Array.from(randomBytes(10)",
+      "replace": "  return `acp-${Array.from(randomBytes(10)",
+      "expectRed": "a thread's agent name is a valid user-mode actor token"
+    },
+    {
+      "name": "a new session with no local manager stays unpinned",
+      "file": "implementations/acp/src/options.ts",
+      "find": "  return managers.find((m) => m.local) ?? managers.find((m) => m.live) ?? managers[0];",
+      "replace": "  return managers.find((m) => m.local);",
+      "expectRed": "a new thread starts on a manager whose presence is current before the first listed"
+    },
+    {
+      "name": "one silent manager fails the whole list",
+      "file": "implementations/acp/src/live-mesh.ts",
+      "command": "npx tsx implementations/acp/smoke/frames.smoke.ts",
+      "find": "  if (failed.length > 0 && failed.length === reads.length) throw failed[0]!.error;",
+      "replace": "  if (failed.length > 0) throw failed[0]!.error;",
+      "expectRed": "one silent manager leaves the others' agents listed"
+    },
+    {
+      "name": "a miss while a manager was silent is called missing",
+      "file": "implementations/acp/src/agent.ts",
+      "find": "  if (silent.length === 0) return RequestError.resourceNotFound(name);",
+      "replace": "  return RequestError.resourceNotFound(name);",
+      "expectRed": "loading a seat no manager listed while one did not answer names that manager, not resource-not-found"
+    },
+    {
+      "name": "a delete while a manager was silent answers as done",
+      "file": "implementations/acp/src/agent.ts",
+      "find": "      if (rows.length === 0 && listed.silent.length > 0) throw notListed(m, params.sessionId, listed);\n",
+      "replace": "",
+      "expectRed": "deleting such a seat fails the same way and hides nothing"
+    },
+    {
+      "name": "a person without spawn cannot load their agent",
+      "file": "implementations/acp/src/agent.ts",
+      "find": "        if (!(e instanceof LaunchListsRefused)) throw e;",
+      "replace": "        throw e;",
+      "expectRed": "a seat whose launch lists are refused loads with only its own model and nothing to launch with"
+    },
+    {
+      "name": "a silent manager is not named",
+      "file": "implementations/acp/src/live-mesh.ts",
+      "find": "silent: failed.map((f) => f.instanceId) };",
+      "replace": "silent: [] };",
+      "expectRed": "and is named as silent, so a miss is not taken for absence"
+    },
+    {
+      "name": "a seat-only thread offers the default model too",
+      "file": "implementations/acp/src/options.ts",
+      "find": "...(offer.seatOnly && c.models.length > 0 ? [] : [{ value: `${c.agent}/${DEFAULT_MODEL}`, name: `${c.agent} default` }]),",
+      "replace": "{ value: `${c.agent}/${DEFAULT_MODEL}`, name: `${c.agent} default` },",
+      "expectRed": "a seat whose launch lists are refused loads with only its own model and nothing to launch with"
+    },
+    {
+      "name": "a seat-only thread tries to spawn after /despawn",
+      "file": "implementations/acp/src/agent.ts",
+      "find": "      if (session.offer.seatOnly) throw RequestError.invalidParams(",
+      "replace": "      if (false) throw RequestError.invalidParams(",
+      "expectRed": "a later prompt there is refused with that reason and spawns nothing"
+    },
+    {
+      "name": "/despawn in a seat-only thread promises a new agent",
+      "file": "implementations/acp/src/agent.ts",
+      "find": "await say(session.offer.seatOnly ? ",
+      "replace": "await say(false ? ",
+      "expectRed": "and says that starting another agent there needs a grant that may spawn"
+    },
+    {
+      "name": "a typed prompt goes to the default manager, not the holding one",
+      "file": "implementations/acp/src/agent.ts",
+      "find": "      bind(session, row);",
+      "replace": "      bind(session, { ...row, managerInstanceId: defaultManager(await m.managers())?.instanceId });",
+      "expectRed": "its prompt is typed into the seat through the manager that holds it"
+    },
+    {
+      "name": "new threads may start on the space's manager beside the person's own",
+      "file": "implementations/acp/src/live-mesh.ts",
+      "find": "  const launch = registered.length > 0 ? remote : local;",
+      "replace": "  const launch = [...remote, ...local];",
+      "expectRed": "with managers of their own live, new threads start only on those, in a stable order"
+    },
+    {
+      "name": "agents on the space's manager are not read once the person has their own",
+      "file": "implementations/acp/src/live-mesh.ts",
+      "find": "return { launch, read: [...remote, ...local], own: registered.map((m) => m.instanceId), ...(why ? { why } : {}) };",
+      "replace": "return { launch, read: launch, own: registered.map((m) => m.instanceId), ...(why ? { why } : {}) };",
+      "expectRed": "and agents are read from them and from the space's manager"
+    },
+    {
+      "name": "a manager that is not a candidate is read",
+      "file": "implementations/acp/src/live-mesh.ts",
+      "find": "listed.filter((m) => m.placement === placement && m.state === \"candidate\")",
+      "replace": "listed.filter((m) => m.placement === placement)",
+      "expectRed": "a manager that is not a candidate is neither started on nor read"
+    },
+    {
+      "name": "a seat-only thread takes a changed option",
+      "file": "implementations/acp/src/agent.ts",
+      "find": "      if (session.offer.seatOnly && JSON.stringify(next) !== JSON.stringify(session.selection)) throw RequestError.invalidParams(undefined, fixed);\n",
+      "replace": "",
+      "expectRed": "choosing another model there is refused, since no agent can start with it"
+    },
+    {
+      "name": "a loaded agent's manager is not kept as a choice",
+      "file": "implementations/acp/src/agent.ts",
+      "find": "    const managers = heldId === undefined || listed.some((x) => x.instanceId === heldId) ? listed : [...listed, typeof held === \"string\" ? await m.manager(held) : held!];",
+      "replace": "    const managers = listed;",
+      "expectRed": "a loaded agent's manager stays its current Machine choice beside the launch list"
+    },
+    {
+      "name": "a load fails while no manager may start a new agent",
+      "file": "implementations/acp/src/agent.ts",
+      "find": "      if (heldId === undefined || !(e instanceof NoLaunchManager)) throw e;",
+      "replace": "      throw e;",
+      "expectRed": "it loads while no manager may start a new agent, its lists read from the manager that holds it"
+    },
+    {
+      "name": "a load does not pass the manager that holds its agent",
+      "file": "implementations/acp/src/agent.ts",
+      "find": "offerFor(m, row.managerInstanceId, row.managerInstanceId)",
+      "replace": "offerFor(m, row.managerInstanceId)",
+      "expectRed": "it loads while no manager may start a new agent, its lists read from the manager that holds it"
+    },
+    {
+      "name": "a new thread starts on the first listed manager whatever its presence",
+      "file": "implementations/acp/src/options.ts",
+      "find": "return managers.find((m) => m.local) ?? managers.find((m) => m.live) ?? managers[0];",
+      "replace": "return managers.find((m) => m.local) ?? managers[0];",
+      "expectRed": "a new thread starts on a manager whose presence is current before the first listed"
+    },
+    {
+      "name": "an unlisted seat offers to remove every silent manager",
+      "file": "implementations/acp/src/agent.ts",
+      "find": "${removable.length ? ` ${deregisterRemedy(m.space, removable)}` : \"\"}",
+      "replace": "${silent.length ? ` ${deregisterRemedy(m.space, silent)}` : \"\"}",
+      "expectRed": "for a manager that is not the person's own registration, it does not offer to remove it"
+    },
+    {
+      "name": "an unlisted seat never names the deregister command",
+      "file": "implementations/acp/src/agent.ts",
+      "find": "${removable.length ? ` ${deregisterRemedy(m.space, removable)}` : \"\"}",
+      "replace": "",
+      "expectRed": "for the person's own registration that did not answer, it names the command that removes it"
+    },
+    {
+      "name": "a running seat-only thread points at /despawn",
+      "file": "implementations/acp/src/agent.ts",
+      "find": "session.offer.seatOnly ? fixed : ",
+      "replace": "",
+      "expectRed": "choosing another model while its agent runs is refused without sending the person to /despawn"
+    },
+    {
+      "name": "a machine change drops the held manager",
+      "file": "implementations/acp/src/agent.ts",
+      "find": "offerFor(m, next.machine, session.held)",
+      "replace": "offerFor(m, next.machine)",
+      "expectRed": "after /despawn, choosing another machine keeps the held manager as a choice"
+    },
+    {
+      "name": "the held manager is listed by its bare id",
+      "file": "implementations/acp/src/agent.ts",
+      "find": "typeof held === \"string\" ? await m.manager(held) : held!]",
+      "replace": "{ instanceId: heldId, local: false }]",
+      "expectRed": "and it is described from its presence like the others"
+    },
+    {
+      "name": "personas are read from an unpinned manager",
+      "file": "implementations/acp/src/agent.ts",
+      "find": "m.personas(from)",
+      "replace": "m.personas()",
+      "expectRed": "and its personas are read from that manager too"
+    },
+    {
+      "name": "one manager is offered as a Machine list",
+      "file": "implementations/acp/src/options.ts",
+      "find": "if (offer.managers.length > 1 && offer.managers.length <= MAX_CHOICES)",
+      "replace": "if (offer.managers.length > 0 && offer.managers.length <= MAX_CHOICES)",
+      "expectRed": "with one manager a loaded thread offers no Machine list"
+    },
+    {
+      "name": "a machine change describes the held manager again",
+      "file": "implementations/acp/src/agent.ts",
+      "find": "typeof held === \"string\" ? await m.manager(held) : held!]",
+      "replace": "await m.manager(heldId)]",
+      "expectRed": "the held manager is described once, at the load, not again on a machine change"
+    },
+    {
+      "name": "an offline row still describes a manager",
+      "file": "implementations/acp/src/live-mesh.ts",
+      "find": " && p.status !== \"offline\");",
+      "replace": ");",
+      "expectRed": "an offline row makes a manager neither live nor local, and names no host"
+    },
+    {
+      "name": "an unanswered start names the deregister command",
+      "file": "implementations/acp/src/live-mesh.ts",
+      "find": "const READS = new Set([\"managerStatus\", \"models\", \"listPersonas\", \"ps\"]);",
+      "replace": "const READS = new Set([\"managerStatus\", \"models\", \"listPersonas\", \"ps\", \"start\"]);",
+      "expectRed": "an unanswered start does not, since the manager may have accepted it"
+    },
+    {
+      "name": "the space's own manager is offered for removal",
+      "file": "implementations/acp/src/live-mesh.ts",
+      "find": "return instanceId !== undefined && own.has(instanceId) && READS.has(op)",
+      "replace": "return instanceId !== undefined && READS.has(op)",
+      "expectRed": "the space's own manager does not, since it is not the person's registration"
+    },
+    {
+      "name": "another owner's row describes a person's manager",
+      "file": "implementations/acp/src/live-mesh.ts",
+      "find": "(owner === undefined ? parsePrincipalKey(p.card.id)?.actor === actor : p.card.id === `${owner}.${actor}`)",
+      "replace": "parsePrincipalKey(p.card.id)?.actor === actor",
+      "expectRed": "on a signed-in space another owner's agent named after the manager does not describe it"
+    }
+  ]
+}

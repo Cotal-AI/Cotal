@@ -1,5 +1,6 @@
 // The stream and inbox provisioning of CotalEndpoint, as an internal component. Moved verbatim from
 // endpoint.ts; the endpoint keeps the public methods and forwards to them. Not re-exported by the index.
+import type { ConnectionState } from "./endpoint-connection-state.js";
 import type { EndpointIdentity } from "./endpoint-identity.js";
 import { JetStreamApiCodes, type JetStreamManager } from "@nats-io/jetstream";
 import { isJetStreamMissing } from "./jetstream-missing.js";
@@ -10,7 +11,6 @@ import { dlvStream, dmDurable, dmStream, taskStream } from "./subjects.js";
 /** What the provisioning component reads from its endpoint. State is read when it is used, never
  *  copied, and every method is looked up on the endpoint at call time. */
 export interface EndpointProvisioningDeps {
-  jsm: () => JetStreamManager | undefined;
   authed: () => boolean;
   notLiveMsg: () => string;
   manager: () => Promise<JetStreamManager>;
@@ -20,9 +20,8 @@ export interface EndpointProvisioningDeps {
  *  streams, and the DM inbox, DELIVER and TASK durables an agent binds without creating.
  *  Internal: `CotalEndpoint` keeps the public methods and forwards to it. */
 export class EndpointProvisioning {
-  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly deps: EndpointProvisioningDeps) {}
+  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly conn: Readonly<ConnectionState>, private readonly deps: EndpointProvisioningDeps) {}
 
-  private get jsm() { return this.deps.jsm(); }
   private get authed() { return this.deps.authed(); }
   private notLiveMsg() { return this.deps.notLiveMsg(); }
   private manager() { return this.deps.manager(); }
@@ -30,8 +29,8 @@ export class EndpointProvisioning {
   /** Create the three backing streams for this space (idempotent). Open-mode lazy create;
    *  the same definitions are used by `cotal up` at privileged setup. */
   async ensureStreams(): Promise<void> {
-    if (!this.jsm) throw new Error(this.notLiveMsg());
-    await createSpaceStreams(this.jsm, this.identity.space);
+    if (!this.conn.jsm) throw new Error(this.notLiveMsg());
+    await createSpaceStreams(this.conn.jsm, this.identity.space);
   }
 
   /** Create this open space's message streams if they are not there yet, as a consuming endpoint

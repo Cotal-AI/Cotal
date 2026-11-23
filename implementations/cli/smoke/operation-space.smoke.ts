@@ -47,7 +47,7 @@ const home = mkdtempSync(join(tmpdir(), "cotal-operation-space-"));
 const root = realpathSync(mkdtempSync(join(home, "project-")));
 process.on("exit", () => rmSync(home, { recursive: true, force: true }));
 const HOST_ENV = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("COTAL_") && k !== "FORCE_COLOR" && k !== "NO_COLOR"));
-const env = { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config"), COTAL_HOME: join(home, ".cotal"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" };
+const env: NodeJS.ProcessEnv & { XDG_CONFIG_HOME: string } = { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config"), COTAL_HOME: join(home, ".cotal"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" };
 
 const outcome = (r: ReturnType<typeof spawnSync>) => {
   const stdout = String(r.stdout ?? ""), stderr = String(r.stderr ?? "");
@@ -155,12 +155,12 @@ check("control: a valid role token is created", roleOk.status === 0 && existsSyn
 for (const [argv, rerun] of [
   [["persona", "--on", "bad"], "cotal persona --on <instance>"],
   // #7322: a verb that targets an agent keeps the agent, its other positionals and the space it named.
-  [["stop", "default_agent", "--on", "bad"], "cotal stop default_agent --on <instance>"],
+  [["stop", "default_agent", "--on", "bad"], "cotal stop default_agent --json --on <instance>"],
   // #7644: input gives its text again, quoted for a shell, rather than a `<text>` a shell reads as a redirection.
   [["input", "default_agent", "hello world", "--on", "bad"], "cotal input default_agent 'hello world' --on <instance>"],
   [["input", "default_agent", "hello world", "--no-enter", "--on", "bad"], "cotal input default_agent 'hello world' --no-enter --on <instance>"],
   [["status", "default_agent", "--on", "bad"], "cotal status default_agent --on <instance>"],
-  [["stop", "default_agent", "--space", "elsewhere", "--on", "bad"], "cotal stop default_agent --space elsewhere --on <instance>"],
+  [["stop", "default_agent", "--force", "--space", "elsewhere", "--on", "bad"], "cotal stop default_agent --force --json --space elsewhere --on <instance>"],
   // #7644: ps and models keep the --space and filter they were given.
   [["ps", "--space", "elsewhere", "--on", "bad"], "cotal ps --space elsewhere --on <instance>"],
   [["ps", "--slots", "--server", "nats://127.0.0.1:39200", "--on", "bogus"], "cotal ps --slots --server nats://127.0.0.1:39200 --on <instance>"],
@@ -181,9 +181,9 @@ check("persona create with a malformed pin tells JSON callers to replace only th
 // arguments are read, with the command to rerun in the message. It keeps the command's words and
 // the --space it was given; it used to keep only the verb.
 for (const [argv, rerun] of [
-  [["stop", "default_agent", "--space", "elsewhere", "--on", "local.U123"], "cotal stop default_agent --space elsewhere --on <instance>"],
+  [["stop", "default_agent", "--space", "elsewhere", "--on", "local.U123"], "cotal stop default_agent --json --space elsewhere --on <instance>"],
   [["status", "default_agent", "--on", "local.U123"], "cotal status default_agent --on <instance>"],
-  [["stop", "default_agent", "--on", ""], "cotal stop default_agent --on <instance>"],
+  [["stop", "default_agent", "--on", ""], "cotal stop default_agent --json --on <instance>"],
   [["input", "reviewer", "Review this", "--no-enter", "--on", "", "--space", "audit"], "cotal input reviewer 'Review this' --no-enter --space audit --on <instance>"],
   [["input", "reviewer", "--text=--verbose now", "--no-enter", "--on", "local.U123"], "cotal input reviewer '--text=--verbose now' --no-enter --on <instance>"],
   [["endpoint", "describe", "ai.cotal.manager", "--space", "elsewhere", "--on", "bad"], "cotal endpoint describe ai.cotal.manager --space elsewhere --on <instance>"],
@@ -306,6 +306,12 @@ try {
   const preview = cotal("spawn", "review.md", "--dry-run", "--plain");
   check("spawn --dry-run previews the dotted catalog name instead of the project file",
     preview.status === 0 && preview.stdout.includes(dottedCatalog) && preview.stdout.includes("reviewer"), shown(preview));
+  for (const [ref, path, name] of [["review.md", dottedCatalog, "reviewer"], ["./review.md", dottedFile, "other"]]) {
+    env.COTAL_DEFAULT_PERSONA = ref;
+    const preferred = cotal("spawn", "--dry-run", "--plain");
+    check(`spawn --dry-run with COTAL_DEFAULT_PERSONA=${ref} selects ${name}`,
+      preferred.status === 0 && preferred.stdout.includes(path) && new RegExp(`Requested name:\\s+${name}$`, "m").test(preferred.stdout), shown(preferred));
+  }
   const remove = cotal("personas", "rm", "review.md", "--space", "opsp");
   check("legacy personas rm asks for confirmation without changing either file",
     remove.status === 1 && remove.stderr.includes("cotal personas rm review.md --space opsp --force") &&
@@ -315,6 +321,7 @@ try {
     forced.status === 0 && !existsSync(dottedCatalog) && existsSync(dottedFile) &&
     readFileSync(dottedFile, "utf8") === projectSource, shown(forced));
 } finally {
+  delete env.COTAL_DEFAULT_PERSONA;
   rmSync(dottedCatalog, { force: true });
   rmSync(dottedFile, { force: true });
 }

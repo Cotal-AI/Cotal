@@ -158,6 +158,29 @@ check("bare doctor auth --fix there still refuses AUTH_REQUIRED, exit 2, naming 
   bareFix.status === 2 && bareFix.envelope?.error?.code === "AUTH_REQUIRED" && bareFix.envelope.target?.space === null
     && bareFix.envelope.error.remedy === '"b4b" is prepared but not started; start it with `cotal up`, then run `cotal doctor auth --fix` again', shown(bareFix));
 
+{
+  const seed = join(realpathSync(root), ".cotal", "channels.json");
+  writeFileSync(seed, '{"channels":\n');
+  const status = run(["status", "--space", "b4b", "--plain"]);
+  const ps = run(["ps", "--space", "b4b", "--json"]);
+  const doctor = run(["doctor", "auth", "--space", "b4b", "--json"], home);
+  const up = run(["up", "--foreground", "--space", "b4b", "--server", server]);
+  const repair = `fix or remove ${seed}`;
+  const doctorStep = doctor.envelope?.error?.remedy ?? "";
+  check("status keeps the prepared verdict and replaces bare first-start advice with channel seed repair",
+    status.status === 0 && status.stdout.includes('"b4b" is prepared but not started') && status.stdout.includes(`First start blocked: the channels file ${seed}`) && status.stdout.includes(repair) && !status.stdout.includes("start it with"), shown(status));
+  check("ps keeps TARGET_UNAVAILABLE and names the same channel seed repair",
+    ps.status === 2 && ps.envelope?.error?.code === "TARGET_UNAVAILABLE" && ps.envelope.error.message?.includes(`First start blocked: the channels file ${seed}`) === true && ps.envelope.error.remedy === repair, shown(ps));
+  check("doctor keeps AUTH_REQUIRED and puts the repair before startup at the named root",
+    doctor.status === 2 && doctor.envelope?.error?.code === "AUTH_REQUIRED" && doctorStep.includes(`First ${repair}, then start it with \`cotal up --root ${realpathSync(root)}\``), shown(doctor));
+  check("up refuses the same malformed default seed before startup",
+    up.status === 1 && up.stderr.includes(`the channels file ${seed} is not valid JSON`), shown(up));
+  rmSync(seed);
+  const repaired = run(["doctor", "auth", "--space", "b4b", "--json"]);
+  check("once the malformed seed is removed, doctor offers the regular first start",
+    repaired.status === 2 && repaired.envelope?.error?.remedy === DOCTOR_HERE, shown(repaired));
+}
+
 // From another folder the step names the prepared root with --root, quoted so a shell reads it back
 // as that folder.
 const special = join(home, "it's $HOME d");

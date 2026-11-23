@@ -219,12 +219,12 @@ try {
     ep.on("warning", (error: Error) => warnings.push(error.message));
     await ep.start();
     const internal = ep as unknown as {
-      kv: unknown;
+      conn: { kv: unknown };
       publishPresence(): Promise<void>;
       presenceWriteFailure(): { consecutiveFailures: number; stuck: boolean } | undefined;
     };
-    const liveKv = internal.kv;
-    internal.kv = { put: () => Promise.reject(new Error("store refused presence write")) };
+    const liveKv = internal.conn.kv;
+    internal.conn.kv = { put: () => Promise.reject(new Error("store refused presence write")) };
     await internal.publishPresence().catch(() => {});
     await internal.publishPresence().catch(() => {});
     ok("4.4 two immediate refused writes do not escalate before one full TTL",
@@ -243,17 +243,17 @@ try {
     ok("4.6 later refused heartbeats do not flood the named stuck condition",
       warnings.filter((message) => /presence writes .* consecutive times/.test(message)).length === 1,
       warnings);
-    internal.kv = liveKv;
+    internal.conn.kv = liveKv;
     await internal.publishPresence();
     ok("4.7 the next successful presence write clears the stuck condition and resets the consecutive count",
       internal.presenceWriteFailure() === undefined, internal.presenceWriteFailure());
-    internal.kv = { put: () => Promise.reject(new Error("new refused run")) };
+    internal.conn.kv = { put: () => Promise.reject(new Error("new refused run")) };
     await internal.publishPresence().catch(() => {});
     ok("4.8 a refusal after recovery starts a fresh run at one and is not already stuck",
       internal.presenceWriteFailure()?.consecutiveFailures === 1 &&
       internal.presenceWriteFailure()?.stuck === false,
       internal.presenceWriteFailure());
-    internal.kv = liveKv;
+    internal.conn.kv = liveKv;
     await ep.stop();
   }
 
@@ -284,7 +284,7 @@ try {
     ok("4.9 a below-floor INFO is refused at bind, before any control-surface resource, with the floor sentence",
       floorRejected !== undefined && /below the required floor 2\.12/.test(floorRejected.message), floorRejected?.message);
     ok("4.10 the refused bind closed its connection (the endpoint holds no nc)",
-      (floorEp as unknown as { nc?: unknown }).nc === undefined);
+      (floorEp as unknown as { conn: { nc?: unknown } }).conn.nc === undefined);
     server.close();
   }
 
@@ -317,7 +317,7 @@ try {
   type Held = { release?: () => void; bound: number };
   const holdWatch = (ep: CotalEndpoint): Held => {
     const held: Held = { bound: 0 };
-    const kv = (ep as unknown as { kv: { watch: (...a: unknown[]) => Promise<unknown> } }).kv;
+    const kv = (ep as unknown as { conn: { kv: { watch: (...a: unknown[]) => Promise<unknown> } } }).conn.kv;
     const real = kv.watch.bind(kv);
     kv.watch = async (...a: unknown[]) => {
       const it = await real(...a);

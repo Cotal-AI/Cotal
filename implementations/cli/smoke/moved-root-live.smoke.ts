@@ -45,7 +45,8 @@ try {
   const created = cli(root, "space", "create", space, "--json");
   check("space create prepares a private project", created.status === 0);
   if (created.status !== 0) throw new Error("private project was not prepared");
-  const up = cli(root, "up", "--server", `nats://127.0.0.1:${await freePort()}`, "--json");
+  const server = `nats://127.0.0.1:${await freePort()}`;
+  const up = cli(root, "up", "--server", server, "--json");
   started = up.status === 0;
   if (!started) throw new Error("private stack did not start");
   const healthy = json(other, "status", "--space", space);
@@ -72,6 +73,14 @@ try {
     noRecord.status === 2 && noRecord.stderr.includes("TARGET_NOT_FOUND") && noRecord.stderr.includes(`"${space}"`) && noRecord.stderr.includes(root) && noRecord.stderr.includes(moved) && !noRecord.stderr.includes("no space is selected"));
   const inside = json(moved, "status", "--space", space);
   check("inside the renamed folder, the existing moved-folder diagnosis remains", inside.envelope.result?.selected?.code === "moved-folder" && inside.envelope.result.selected.message?.includes(root) === true);
+  for (const cwd of [moved, other]) {
+    const components = cli(cwd, "status", "--components", "--space", space);
+    const health = components.stdout.split("Component Health\n")[1] ?? "";
+    check("missing project evidence refuses component checks without reporting the reachable broker absent",
+      components.status === 3 && /manager\s+refused/.test(health) && /delivery\s+refused/.test(health)
+      && health.split("\n").some((line) => /broker\s+refused/.test(line) && line.includes(`registered ${server}`) && line.includes("reachable")));
+    if (cwd === moved) check("component status keeps move-back guidance", components.stdout.includes(`move this folder back to ${root}`));
+  }
   for (const recreated of [false, true]) {
     if (recreated) mkdirSync(join(root, ".cotal/nats"), { recursive: true });
     const status = json(other, "status", "--space", space);
@@ -223,9 +232,9 @@ for (const open of [false, true]) {
     const deletion = cli(subdir, "space", "delete", space, flag, "--plain");
     check(`space delete ${flag} refuses without a broker and names the moved root before reset`,
       deletion.status === 2 && deletion.stderr.includes("TARGET_UNAVAILABLE") && deletion.stderr.includes("no broker was contacted") &&
-        deletion.stderr.includes(flag === "--yes" ? remedy : `move this folder back to ${project}, then inspect its stored streams`) &&
+        deletion.stderr.includes(flag === "--yes" ? remedy : `move this folder back to ${project}, then preview the impact of resetting its store`) &&
         deletion.stderr.includes(`cotal reset store ${space} ${flag}`) && !deletion.stderr.includes("no stored streams") &&
-        (flag === "--yes" || !deletion.stderr.includes(forget) && !deletion.stderr.includes("--yes")));
+        (flag === "--yes" || deletion.stderr.includes("A stream inventory requires a running broker.") && !deletion.stderr.includes(forget) && !deletion.stderr.includes("--yes")));
   }
   const unknownStore = json(other, "space", "delete", space, "--dry-run");
   check("space delete outside the renamed project does not infer absent streams",

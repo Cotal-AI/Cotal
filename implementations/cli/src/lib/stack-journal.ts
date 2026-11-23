@@ -451,7 +451,7 @@ export function stackOperationUnsettled(journal: StackJournal): boolean {
  *  or gone with nothing of ours in flight. With `settle`, the caller holds the root's maintenance
  *  lock and a crash is recorded under the definition's writer lock. Without it nothing is written.
  *  A member that is neither refuses, naming the instance and the read that shows it. */
-function classifyStackMember(journal: StackJournal, role: StackRole, settle: boolean): StackSettlement["members"][number] | undefined {
+function classifyStackMember(journal: StackJournal, role: StackRole, settle: boolean, recoveryRoot?: string): StackSettlement["members"][number] | undefined {
   const space = journal.space, name = STACK_DEFINITION[role];
   const store = serviceDefinitionStore(space), definition = store.read(name);
   const target = { root: journal.root, space, operation: journal.operation.id, definition: name };
@@ -485,7 +485,7 @@ function classifyStackMember(journal: StackJournal, role: StackRole, settle: boo
       ? "a stack member's process is neither live nor proven gone, so the earlier whole-stack operation cannot be settled from evidence; nothing was retried"
       : retained?.publication === "unknown"
         ? "a stack member's stop request file does not read as its own, so whether a stop was published is unknown and the earlier whole-stack operation cannot be settled from evidence; nothing was retried"
-        : `a stack member retains unconfirmed stop request ${retained?.requestId ?? value.requestId}, so the earlier whole-stack operation cannot be settled from evidence; nothing was retried`, { target: { ...target, instanceId: row.name, recordedState: value.state, process: observed, ...(stopRetained ? { requestId: retained?.requestId ?? value.requestId, ...(retained ? { stopPublication: retained.publication } : {}) } : {}) }, remedy: route.kind === "abandon" ? `${inspect(row.name)}; ${abandonRemedy(route.requestId)}` : route.kind === "resume" ? `${inspect(row.name)}; ${RESUME_REMEDY}` : observed === "unresolved-launch" ? `${inspect(row.name)}; ${abandonLaunchRemedy(row.name)}` : inspect(row.name) });
+        : `a stack member retains unconfirmed stop request ${retained?.requestId ?? value.requestId}, so the earlier whole-stack operation cannot be settled from evidence; nothing was retried`, { target: { ...target, instanceId: row.name, recordedState: value.state, process: observed, ...(stopRetained ? { requestId: retained?.requestId ?? value.requestId, ...(retained ? { stopPublication: retained.publication } : {}) } : {}) }, remedy: route.kind === "abandon" ? `${inspect(row.name)}; ${abandonRemedy(route.requestId, recoveryRoot)}` : route.kind === "resume" ? `${inspect(row.name)}; ${RESUME_REMEDY}` : observed === "unresolved-launch" ? `${inspect(row.name)}; ${abandonLaunchRemedy(row.name)}` : inspect(row.name) });
   } finally { hold?.release(); }
 }
 
@@ -554,7 +554,10 @@ export async function settleRetainedStackStops(journal: StackJournal): Promise<v
 export const RESUME_REMEDY = "once the command that sent the stop has exited, `cotal down --yes` signals the process again";
 
 /** The remedy a refusal over a retained, published member stop names. */
-export const abandonRemedy = (requestId: string): string => `once its process and the down that sent the request have exited, \`cotal down --abandon-stop ${requestId} --yes\` abandons it`;
+export const abandonRemedy = (requestId: string, root?: string): string => {
+  const atRoot = root ? `cd ${shellPath(root)} && ` : "";
+  return `once its process and the down that sent the request have exited, ${codeSpan(`${atRoot}cotal down --abandon-stop ${requestId} --yes`)} abandons it`;
+};
 
 /** The remedy a refusal over a member launch whose record names no process names. */
 export const abandonLaunchRemedy = (instanceId: string): string => `once the up that launched it has exited, \`cotal down --abandon-launch ${instanceId} --yes\` records it failed; a process that launch started without recording it is not excluded`;
@@ -652,12 +655,13 @@ function stopNotRetained(journal: StackJournal, requestId: string, members: read
  *  neither live nor proven gone refuses; instances settled before that refusal stay settled, and
  *  the operation stays unsettled. A settled journal, and a preserve or resume (decided by its
  *  maintenance attempt), are returned unchanged. */
-export function settleStackOperation(lock: MaintenanceLock, snapshot: StackJournalSnapshot): { snapshot: StackJournalSnapshot; settled?: StackSettlement } {
+export function settleStackOperation(lock: MaintenanceLock, snapshot: StackJournalSnapshot, invokedRoot?: string): { snapshot: StackJournalSnapshot; settled?: StackSettlement } {
   const journal = snapshot.journal, operation = journal.operation;
   if (!stackOperationUnsettled(journal) || operation.kind !== "up" && operation.kind !== "down") return { snapshot };
   if (lock.root !== journal.root) throw new CommandFailure("refused", "CONFLICT", "the held maintenance lock belongs to another root; the earlier operation was not settled", { target: { root: journal.root } });
   const roles = STACK_ROLES.filter((role) => stackRoleApplies(journal.mode, role));
-  const members = roles.flatMap((role) => classifyStackMember(journal, role, true) ?? []);
+  const recoveryRoot = invokedRoot !== undefined && invokedRoot !== journal.root ? journal.root : undefined;
+  const members = roles.flatMap((role) => classifyStackMember(journal, role, true, recoveryRoot) ?? []);
   const settlement = { operation, members, unstarted: attemptedRoles(journal).filter((role) => !members.some((member) => member.role === role)) };
   const settled = writeStackJournal(journal.root, snapshot, { ...journal, members: withSettledMembers(journal, settlement).members.map((row) => row.state !== "planned" && row.state !== "unknown" ? row : members.some((member) => member.role === row.role) ? { ...row, state: "unknown", code: "OPERATION_UNKNOWN" } : { ...row, state: "not-attempted", code: undefined }), operation: { ...operation, phase: "failed" }, updatedAt: new Date().toISOString() });
   return { snapshot: settled, settled: settlement };

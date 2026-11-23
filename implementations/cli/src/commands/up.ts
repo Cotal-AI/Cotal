@@ -1,63 +1,39 @@
 import { noManagerCredentialWarning } from "../lib/daemon-credential-warning.js";
 import { drainAndClose } from "@cotal-ai/core";
-import { type ChildProcess } from "node:child_process";
 import { openBrokerLog, prepareForegroundBrokerLog } from "../lib/broker-log.js";
 import { spawnBroker } from "../lib/broker-spawn.js";
 import { randomUUID } from "node:crypto";
-import { createConnection, isIP } from "node:net";
+import { createConnection } from "node:net";
 import { homedir, hostname } from "node:os";
 import {
-  accessSync,
-  constants,
   mkdirSync,
   readFileSync,
   existsSync,
-  statSync,
-  closeSync,
   lstatSync,
   realpathSync,
   readdirSync,
   rmdirSync,
-  type Stats,
 } from "node:fs";
-import { basename, dirname, isAbsolute, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
 import {
   isReachable,
   dialerFor,
   DEFAULT_SERVER,
-  DEFAULT_SPACE,
-  SERVICE_AUTHORITY_MAX_BYTES,
-  SERVICE_CALLER_PAYLOAD_FLOOR,
   CONTRACT_ARTIFACT_MAX_BYTES,
   MANAGER_START_PAYLOAD_FLOOR,
-  createSpaceAuth,
-  serverConfig,
-  openServerConfig,
-  type BrokerTransport,
-  credsProblem,
   mintCreds,
   mintLifecycleUid,
   DEV_OWNER,
-  mintConnectionEvictorCreds,
-  mintMembershipObserverCreds,
   newIdentity,
   reconcileSpaceMemoryBuckets,
   standaloneConnectOpts,
-  requireBrokerFloor,
-  parseServerVersion,
-  presenceBucket,
   LEASE_TTL_MS,
-  EpEnvelopeError,
-  mkSecretDir,
-  writeSecretFile,
   type AuthPrepared,
   type SpaceAuth,
-  type ChannelRegistryFile,
   type ParsedArgs,
   type FlagSpec,
   type CompletionResult,
 } from "@cotal-ai/core";
-import { jetstreamManager, StorageType } from "@nats-io/jetstream";
 import {
   assertManagerName,
   processStopped,
@@ -66,10 +42,8 @@ import {
   recordManagerName,
   parseSeatCapFlag,
   seatCapText,
-  type SeatCap,
   CommandFailure,
   codeSpan,
-  commandFailureReport,
   failureEnvelope,
   writeEnvelope,
   isCommandFailure,
@@ -78,57 +52,27 @@ import {
   plainFlag,
   renderReport,
   assertSingleSpaceBroker,
-  assertUserAuthInfo,
   authDir,
-  brokerAddressForDisplay,
   getSoleSpaceAuth,
-  soleSpaceOf,
   getSpaceAuth,
-  hasUserAuthState,
   listSpaceAccounts,
-  preloadSpaceAccounts,
-  putSpaceAuth,
   brokerAddressKey,
   canonicalRoot,
-  rootPathProblem,
-  rootControlProblem,
   clearCurrent,
   findMesh,
-  findPreparedSpace,
-  homeCotalDir,
   legacyStackOtherHome,
   stackHomeRemedy,
   getCurrent,
   loadMeshes,
-  preparedSpaceAt,
-  removePreparedSpace,
   localMeshesForRoot,
   keepsRegistration,
-  oneLine,
   presentationOf,
   writeResult,
-  type Report,
-  connectionEvictorCredsKey,
-  membershipConfigPath,
-  membershipObserverCredsKey,
-  membershipRwCredsKey,
-  MEMBERSHIP_CONFIG_KIND,
-  MEMBERSHIP_RW_CREDS_KIND,
-  WEB_CREDS_KIND,
-  webCredsKey,
   parsePositiveIntegerFlag,
-  recordMesh,
   retainedLegacyBroker,
-  meshesForRoot,
   removeMesh,
-  rotateSystemCreds,
-  setAdoptedCurrent,
-  staleSystemCreds,
-  SYSTEM_CREDS_FILES,
   userAuthStateDir,
-  userAuthSpacesOnDisk,
   workspaceSecretStore,
-  type MeshEntry,
   type UserAuthInfo,
   acquireMaintenanceLock,
   assertStoreIdentity,
@@ -142,7 +86,6 @@ import {
   replaceDeadOrdinaryResumeListener,
   localProcessOwnerStatus,
   readMaintenanceJournal,
-  rootNamesNoSpace,
   readMaintenanceResumeDocument,
   readStoreIdentity,
   recordOrdinaryResumeManagerCommit,
@@ -166,100 +109,61 @@ import {
   type ListenerProof,
   type StoreIdentity,
   readBrokerPolicy,
-  brokerAccountResolver,
   removePidPair,
-  writePidPair,
   verifyIdentityPin,
   processesNaming,
-  isLoopbackHost,
   connectUserControlOrThrow,
   userViewAuth,
   recordOperationSpace,
   recordOperationWarning,
-  retainSystemSigningSeed,
   restoreLeftOut,
-  SPACE_NAME_MAX,
-  spaceNameTooLong,
   NATS_PIDFILE,
-  MANAGER_PIDFILE,
-  DELIVERY_PIDFILE,
-  AUTH_PIDFILE,
-  localProcessPath,
-  UNTRUSTED_CERTIFICATE,
   exitCode,
-  canonicalLocalProcessPath,
-  DELIVERY_LOGFILE,
   terminalWidth,
   type ControlAuth,
 } from "@cotal-ai/workspace";
 import { FlagValueRefusal } from "../lib/flag-value-refusal.js";
-import { ensureAuthService, resolveAuthProvider, stopAuthService } from "../lib/auth-proc.js";
-import { resolveSpace } from "../lib/status.js";
+import { resolveAuthProvider, stopAuthService } from "../lib/auth-proc.js";
 import { c, hang, stderrLine } from "../ui.js";
 import { admitAndRestoreSeatCheckpoints } from "../lib/seat-resume.js";
-import { NATS_DEFAULT_MAX_PAYLOAD, natsServerLabel, resolveNatsServer, unreadVersion, type NatsServer } from "../lib/nats-bin.js";
-import { cotalPath, cotalRoot, homeHoldsStack, linkedCotalRefusal } from "../lib/paths.js";
+import { NATS_DEFAULT_MAX_PAYLOAD, natsServerLabel, resolveNatsServer, unreadVersion } from "../lib/nats-bin.js";
+import { cotalPath, cotalRoot } from "../lib/paths.js";
 import { channelsReads, readChannelsFile } from "../lib/channel-seed.js";
 import { controllerManifestRemedy, detachedNext, renderDetachedSummary } from "../lib/up-report.js";
-import { seedDefaultPersona } from "../lib/default-persona.js";
 import { seedBeforeLaunch, seedMoveNote } from "../seed/launch.js";
 import { seedDir } from "../seed/paths.js";
 import { seedStoreMoved } from "../seed/reconcile.js";
 import { upSystemdSupervisionWarning } from "../lib/systemd-supervision.js";
-import { deliveryStoppedByDown, deliveryUp, ensureControlPlane, ensureDelivery, stopDelivery } from "../lib/delivery-proc.js";
-import { RESPONDER_UNBOUND_CONSEQUENCE } from "../lib/delivery-responder.js";
+import { deliveryStoppedByDown, deliveryUp, ensureDelivery, stopDelivery } from "../lib/delivery-proc.js";
 import { displayCmd } from "../lib/self-exec.js";
 import { shellWord } from "../lib/endpoint-errors.js";
-import { clearManagerArtifacts, liveManagerWouldApplyMaxSessions, managerHasDeliveryMarker, managerLogDisplayPath, managerRecordState, managerUp, stopManager } from "../lib/manager-proc.js";
-import { ManifestError, formatIssue, loadManifest, type PreparedManifest } from "../lib/manifest/index.js";
-import { UnusableFile } from "../lib/unusable-file.js";
-import { buildLaunchSpec, genRunId, manifestToChannels, preflightConnectors, writeLaunchSpec } from "../lib/manifest/apply.js";
-import { listLedgerFiles } from "../lib/manifest/ledger.js";
-import { freshTeamAttemptSettled, listFreshTeamAttempts, listFreshTeamSummaries, writeFreshTeamAttempt, writeFreshTeamSummary } from "../lib/team-fresh.js";
-import { listAdditiveTeamAttempts, retainedAdditiveTeamAttempts } from "../lib/team-additive-attempt.js";
-import { renderUpPlan, renderInherited, renderWarnings } from "../lib/manifest/render.js";
-import { idpUrlProblem, serverUrlProblems } from "../lib/manifest/resolve.js";
-import { failManifest, refuseManifestSpaceMismatch } from "./topology.js";
-import { liveMeshProcesses } from "./clean.js";
-import { checkSpaceFlagValue, checkSpaceName } from "./meshes-add.js";
-import { checkLocalSpace } from "./space-registration.js";
-import { checkNewUpSpace, checkPublicExchangePort, preparedUpRoot } from "./up-target.js";
-import { cleanedManifestStart, interruptedStartBroker, namedOpenConfig, retainedOpenSpace } from "../lib/legacy-start.js";
+import { clearManagerArtifacts, liveManagerWouldApplyMaxSessions, managerHasDeliveryMarker, managerRecordState, stopManager } from "../lib/manager-proc.js";
+import { loadManifest } from "../lib/manifest/index.js";
+import { checkNewUpSpace, preparedUpRoot } from "./up-target.js";
+import { cleanedManifestStart, interruptedStartBroker } from "../lib/legacy-start.js";
+import { canonicalServer } from "../lib/broker-service.js";
 import {
-  bindReaches,
-  canonicalServer,
   controllerStackApplies,
-  recheckExistingStore,
   requestedStackMode, refuseForegroundStackHolder,
-  requestsTls,
   stackUp,
   stackUpForegroundNotice,
   stackUpInterrupted,
-  keptOnUp,
-  selectedOnUp,
-  type ExistingStorePin,
-  type StackUpNative,
-  unparsableDaemonCredsNotice,
 } from "./stack-up.js";
 import { exitInterrupted, handOverStartupNotice, noticeOnInterrupt, releaseStartupNotice } from "../lib/interrupt-notice.js";
 import { claimForegroundHold, foregroundHolder, foregroundStackEnd, releaseForegroundHold } from "../lib/foreground-hold.js";
 import { settleInterruptedLaunches } from "../lib/service-process.js";
 import { assertUserStackTransport, preflightUserStack } from "./stack-user-auth.js";
-import { stackDown } from "./stack-down.js";
+import { stopForegroundStack } from "./stack-down.js";
 import {
   assertControllerCoupling, assertControllerMembersLive, assertControllerResumeEligible, beginControllerResume, bindControllerBroker, controllerAttemptBrokerInstance,
   currentControllerAttempt, managerResumeAttempt, relaunchCommittedManager, settleControllerResume, startControllerMember, startControllerMembers,
 } from "../lib/controller-resume.js";
 import { removeRetiredBrokerInstance } from "../lib/controller-restore.js";
-import { acquireStackOperationLock, knownStackRecoveryHost, admittedStackRestore, readStackJournal, refuseControllerCut, STACK_DEFINITION, STACK_ROLES } from "../lib/stack-journal.js";
+import { acquireStackOperationLock, admittedStackRestore, readStackJournal, STACK_DEFINITION, STACK_ROLES, type StackJournal } from "../lib/stack-journal.js";
 import { observeServiceProcess, serviceInstances } from "../lib/service-instances.js";
 import { serviceDefinitionStore } from "../lib/service-definitions.js";
 import { MissingFlags } from "../lib/missing-flags.js";
-import { serviceSupervisorStore } from "../lib/service-supervision.js";
-import { serviceInstallIntents } from "../lib/service-install-intent.js";
-import { serviceUninstallIntents } from "../lib/service-uninstall-intent.js";
-import { serviceUnitActionStore } from "../lib/service-unit-action.js";
-import { assertStoreDirArgument, configuredStoreDir, startupStoreProblem, warnForeignStoreEntries } from "../lib/store-dir.js";
+import { warnForeignStoreEntries } from "../lib/store-dir.js";
 import { extensionNames, preflightRuntime } from "../ext-loader.js";
 import { completingFlagValue } from "../lib/completion.js";
 import { metadataPositionals } from "../lib/command-path.js";
@@ -293,8 +197,7 @@ import {
 } from "../lib/restore.js";
 import { attemptProcessesGone } from "../lib/isolated-broker.js";
 import { assertEndpointUnreachable } from "../lib/endpoint-cut.js";
-import { brokerAddressConflict } from "../lib/broker-service.js";
-import { freePort, freshStackServer, retryStackAddress, serverWithFreePort } from "../lib/up-broker-address.js";
+import { freshStackServer, retryStackAddress, serverWithFreePort } from "../lib/up-broker-address.js";
 import { askManager } from "@cotal-ai/workspace/control";
 import { cliControl } from "../lib/control.js";
 import { pendingRestores, type PendingOrdinaryResume, pendingOrdinaryResumes } from "./up-pending.js";
@@ -311,28 +214,63 @@ import {
   resolveTransport,
   assertTlsIntentServed,
   assertTlsAddressServed,
-  commitTransportPolicy,
   tlsAddress,
-  announceTransport,
   liveListenerRequiresTls,
   assertServesDialHost,
   adoptedTlsRequired,
-  refuseUnnamedLastStore,
   reopenLastStore,
   refuseMissingNamedStore,
   checkStartStore,
 } from "./up-transport.js";
-import { WILDCARD_HOSTS, reconcileHostAndServer, assertFreshTeamBindAvailable } from "./up-host.js";
+import { reconcileHostAndServer } from "./up-host.js";
 import {
   registeredAddressHolder,
   refuseRegisteredAddress,
   membershipConversionRefusal,
   fileMembershipStore,
-  postStart,
-  recreateMemoryBuckets,
   recreateAdoptedMemoryBuckets,
-  recreateDeletedStreams,
 } from "./up-stores.js";
+import { brokerVersion, writeOpenBrokerConf, authSetup, provisionWebCreds } from "./up-broker-auth.js";
+import {
+  validateUpArguments,
+  freshFolderRoot,
+  folderNamedSpace,
+  recordsNameNoSpace,
+  inheritedMachineHomeRoot,
+  assertFreshTeamBootOwnership,
+  publicExchangeArgs,
+  serviceEndpointsArgs,
+  folderSpace,
+  assertSelectionNotMoved,
+} from "./up-args.js";
+import {
+  failedListeners,
+  startUserAuthService,
+  startDeliveryWithBroker,
+  reportDegradedControlPlane,
+  recordSpawnedListener,
+  awaitSpawnedListener,
+  listenerExitRemedy,
+  serveReadyListener,
+  type DetachOpts,
+  startMeshDetached,
+  assertBrokerAddressFree,
+  refuseStartOverUserState,
+  ensureRootForSpace,
+  unnamedDefault,
+  claimSpace,
+  attachHostFor,
+  maxSessionsFor,
+  recordOurMesh,
+  seedPersonaAfterUp,
+  belowPresenceSafeBroker,
+} from "./up-detach.js";
+import { controllerStackNative, manifestFileRefusal, upManifest } from "./up-manifest.js";
+export { type FreshTeamBootPlan, prepareFreshTeamBoot, prepareResumeTeamBoot, recordedBrokerTransport, recheckFreshTeamBoot, controllerStackNative } from "./up-manifest.js";
+
+export { type DetachOpts, prepareBrokerStart, startMeshDetached, claimSpace, attachHostFor, maxSessionsFor, recordOurMeshForTest } from "./up-detach.js";
+
+export { validateUpArguments } from "./up-args.js";
 
 /** What a guarded restore returned, for `backup restore` to report as its own receipt. `up --restore`
  *  never sets a sink and prints its own startup receipt. Delivered only after the native activation wrote
@@ -429,365 +367,14 @@ export function upComplete(argv: string[]): CompletionResult {
   return { items, directive: items.length ? "nofiles" : "default" };
 }
 
-/** `--recreate-issued-stores <backup-dir>` names a directory the step creates, so it must not exist
- *  and its parent must. Checked before anything starts; the step checks again when it creates it. */
-function assertIssuedBackupDirArgument(raw: string): void {
-  const dir = resolve(raw);
-  const problem = !raw.trim() ? "is empty" : existsSync(dir) ? `${dir} already exists` : !existsSync(dirname(dir)) ? `${dirname(dir)} does not exist` : undefined;
-  if (problem) throw new CommandFailure("refused", "USAGE_INVALID", `--recreate-issued-stores names a new backup directory, and ${problem}; nothing was started`, { target: { backupDir: dir }, remedy: "name a directory that does not exist yet, inside one that does" });
-}
-
-/** Launch intent is checked by the kernel before seed or effect preparation. A recovery
- *  re-entry supplies its recorded mode explicitly rather than inheriting the new public default. */
-export function validateUpArguments(args: ParsedArgs): void {
-  presentationOf(args.values);
-  if (typeof args.values.file === "string" && !args.values.file.trim())
-    throw new CommandFailure("refused", "USAGE_INVALID", "--file is empty, so it names no manifest; nothing was started or written", { remedy: "name a manifest with --file <cotal.yaml>, or omit --file to start the folder's stack" });
-  if (args.values.restore === "")
-    throw new CommandFailure("refused", "USAGE_INVALID", "--restore is empty, so it names no backup folder; nothing was started or written", { remedy: "pass the backup folder as --restore <dir>, or omit --restore to start without restoring", selfContained: true });
-  // A `.cotal` that is a link, or leads nowhere, is refused before anything reads through it.
-  const linked = args.values.root === undefined ? linkedCotalRefusal("up") : undefined;
-  if (linked) throw linked;
-  if (args.values["user-auth"] === true && args.values.open === true)
-    throw new CommandFailure("refused", "USAGE_INVALID", "--user-auth and --open contradict - a user-auth space cannot run unauthenticated", { remedy: "drop --open for user auth, or drop --user-auth for an open space" });
-  if (args.values.open === true) {
-    publicExchangeArgs(args.values, false);
-    serviceEndpointsArgs(args.values, false);
-  } else if (typeof args.values["exchange-public-port"] === "string") checkPublicExchangePort(args.values["exchange-public-port"]);
-  if (args.values.idp !== undefined && args.values["user-auth"] !== true && !args.values.file)
-    throw new CommandFailure("refused", "USAGE_INVALID", '--idp is for user-auth spaces; pair it with --user-auth, or set broker.auth: "user" in a manifest', { remedy: "use --user-auth --idp <auth base URL>, without --open" });
-  if (args.values.restore !== undefined && args.values["no-manager"] === true)
-    throw new CommandFailure("refused", "USAGE_INVALID", "--no-manager cannot be combined with --restore: the restore needs a manager to commit its state; nothing was restored", { remedy: "rerun the restore without --no-manager" });
-  if (args.values["no-manager"] === true && args.values.runtime !== undefined)
-    throw new CommandFailure("refused", "USAGE_INVALID", "--no-manager cannot be combined with --runtime because no manager starts", { remedy: "drop --runtime, or drop --no-manager to select a manager runtime" });
-  // Only an omitted --runtime selects the default runtime. An empty one, as an unset variable gives,
-  // is a value that names no runtime (#7114).
-  if (typeof args.values.runtime === "string" && !args.values.runtime.trim())
-    throw new CommandFailure("refused", "USAGE_INVALID", "--runtime is empty, so it names no runtime; nothing was started or written", { remedy: "name a runtime, such as `--runtime pty`, or omit --runtime to use the default" });
-  if (args.values["no-manager"] === true && args.values["max-sessions"] !== undefined)
-    throw new CommandFailure("refused", "USAGE_INVALID", "--no-manager cannot be combined with --max-sessions because no manager starts", { remedy: "drop --max-sessions, or drop --no-manager to set the manager session ceiling" });
-  if (args.values.foreground === true && args.values.detach === true) throw new CommandFailure("refused", "USAGE_INVALID", "choose --foreground or --detach, not both");
-  // Only a manifest launch has a plan to print; without -f every route would start the stack.
-  if (args.values["dry-run"] === true && !args.values.file)
-    throw new CommandFailure("refused", "USAGE_INVALID", "--dry-run previews a manifest launch and needs -f <cotal.yaml>; nothing was started or written", { remedy: "pass -f <cotal.yaml> to print that manifest's plan; `cotal status` shows what this folder records" });
-  // The stack passes its space to its own children as `--space <name>`, which a leading - breaks.
-  const named = typeof args.values.space === "string" ? checkSpaceFlagValue(args.values.space) : undefined;
-  if (named && !named.ok) throw new CommandFailure("refused", "USAGE_INVALID", `${named.message.replace(/^✗ /, "")}; nothing was started or written`, { remedy: named.remedy });
-  // A manifest boot checks its own `--server` override against `broker.servers`.
-  const serverProblem = args.values.server !== undefined && !args.values.file ? upServerProblem(String(args.values.server)) : undefined;
-  if (serverProblem) throw new FlagValueRefusal(`${serverProblem}; nothing was started or written`, `pass the IP address the local broker listens on, for example ${serverExample(String(args.values.server))}`);
-  // A --host that is no bind host, or a bind that does not serve --server's address, refuses here,
-  // before the controller stack writes its journal or trust.
-  const hostProblem = !args.values.file ? upHostProblem(args.values.host as string | undefined, args.values.server as string | undefined) : undefined;
-  if (hostProblem) throw new CommandFailure("refused", "USAGE_INVALID", `${hostProblem.problem}; nothing was started or written`, { remedy: hostProblem.remedy });
-  const spaceTooLong = typeof args.values.space === "string" ? spaceNameTooLong(args.values.space) : undefined;
-  if (spaceTooLong) throw new CommandFailure("refused", "USAGE_INVALID", `${spaceTooLong}; nothing was started or written`, { remedy: `choose a space name of at most ${SPACE_NAME_MAX} characters` });
-  // A prepared or controller-owned root has no route that serves TLS, so any TLS input refuses here,
-  // once and naming the route that does, before the checks below send it from one TLS form to another.
-  const tlsRoot = typeof args.values.root === "string" ? resolve(args.values.root) : freshFolderRoot(args.values) ?? cotalRoot();
-  if (!args.values.file && requestsTls(args.values) && !readMaintenanceJournal(tlsRoot)) controllerStackApplies(tlsRoot, (args.values.space as string | undefined) ?? folderSpace(), args.values);
-  // A --tls-cert broker serves TLS only, and its address says so, so every client dials tls:// and
-  // checks the certificate against the address it names.
-  if (!args.values.file && args.values["tls-cert"] !== undefined && typeof args.values.server === "string" && /^nats:\/\//i.test(args.values.server))
-    throw new CommandFailure("refused", "USAGE_INVALID", "--tls-cert serves the broker over TLS, so --server must be a tls:// address; nothing was started or written", { remedy: `pass --server ${tlsAddress(args.values.server)}`, selfContained: true });
-  if (args.values.file !== undefined && args.values.foreground === true) throw new CommandFailure("refused", "UNSUPPORTED", "manifest boot has no native foreground custody path; a detached broker was not substituted for the requested terminal-bound lifetime");
-  if (args.values.foreground === true && (args.values.json === true || args.values.plain === true)) throw new CommandFailure("refused", "USAGE_INVALID", "foreground up keeps native terminal custody and cannot produce a finite JSON or plain receipt", { remedy: `omit ${args.values.json ? "--json" : "--plain"} to keep the stack in this terminal, or omit --foreground for a finite receipt from a controller-owned stack` });
-  // Flag values and combinations are usage, so they refuse here, before any effect. The run keeps
-  // its own checks for maintenance re-entries, which do not pass through this validation.
-  parsePositiveIntegerFlag("--max-sessions", args.values["max-sessions"] as string | undefined);
-  parseSeatCapFlag("--seat-cap", args.values["seat-cap"] as string | undefined);
-  parseMaxFileStore(args.values["max-file-store"] as string | undefined);
-  const logFile = args.values["log-file"] as string | undefined;
-  if (logFile !== undefined && (!logFile.trim() || /[\u0000-\u001f\u007f]/u.test(logFile)))
-    throw new CommandFailure("refused", "USAGE_INVALID", "--log-file must be a non-empty file path without control characters");
-  const logfileSizeLimit = parsePositiveIntegerFlag("--logfile-size-limit", args.values["logfile-size-limit"] as string | undefined);
-  const logfileMaxNum = parsePositiveIntegerFlag("--logfile-max-num", args.values["logfile-max-num"] as string | undefined);
-  // A controller restart can use its saved path. A restore still needs an explicit path.
-  if (!args.values.file && logFile === undefined && (logfileSizeLimit !== undefined || logfileMaxNum !== undefined)
-    && (args.values.restore !== undefined || readStackJournal(tlsRoot)?.journal.broker?.logFile === undefined))
-    throw new CommandFailure("refused", "USAGE_INVALID", "--logfile-size-limit and --logfile-max-num require --log-file");
-  // The timeout belongs to the auth callout, which only a user-auth space has. A manifest or a
-  // restore starts the broker its own record describes, so neither takes it.
-  if (parseAuthTimeout(args.values["auth-timeout"] as string | undefined) !== undefined) {
-    if (args.values.open === true) throw new CommandFailure("refused", "USAGE_INVALID", "--auth-timeout sets the auth callout's timeout, and an open space has no auth callout; nothing was started", { remedy: "drop --auth-timeout, or start a user-auth space with --user-auth" });
-    if (args.values.file !== undefined || args.values.restore !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", `--auth-timeout cannot be combined with ${args.values.file !== undefined ? "--file/-f" : "--restore"}, which starts the broker its own record describes; nothing was started`, { remedy: "start it without --auth-timeout; a recorded timeout is rendered again" });
-  }
-  // Both broker modes render the payload limit. A manifest or a restore starts the broker its own
-  // record describes, so neither takes the flag.
-  const requestedPayload = parseMaxPayload(args.values["max-payload"] as string | undefined);
-  if (requestedPayload !== undefined) {
-    if (args.values.file !== undefined || args.values.restore !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", `--max-payload cannot be combined with ${args.values.file !== undefined ? "--file/-f" : "--restore"}, which starts the broker its own record describes; nothing was started`, { remedy: "start it without --max-payload; a recorded limit is rendered again" });
-    // A space that admits service endpoints is a space whose auth host asserts the caller payload
-    // precondition at startup, and that assertion REFUSES below the floor, so the auth context does
-    // not open at all. Refusing the pair here is the difference between a usage error before
-    // anything starts and a broker that comes up without its auth plane.
-    if (args.values["service-endpoints"] === true && requestedPayload < SERVICE_CALLER_PAYLOAD_FLOOR)
-      throw new CommandFailure("refused", "USAGE_INVALID", `--max-payload ${requestedPayload} is below ${SERVICE_CALLER_PAYLOAD_FLOOR} bytes, the least a space with --service-endpoints starts on: a caller policy row may grow to ${SERVICE_AUTHORITY_MAX_BYTES} bytes and its write needs ${SERVICE_CALLER_PAYLOAD_FLOOR - SERVICE_AUTHORITY_MAX_BYTES} more, so the auth host refuses to open; nothing was started`, { remedy: `pass --max-payload ${SERVICE_CALLER_PAYLOAD_FLOOR} or more, or drop --service-endpoints` });
-    if (args.values["no-manager"] !== true) assertManagerPayload(requestedPayload);
-  }
-  // The account resolver belongs to the auth-mode broker configuration as well: the open broker has
-  // no operator and so no accounts to resolve, and a manifest or a restore starts the broker its own
-  // record describes.
-  if (parseAccountResolver(args.values["account-resolver"] as string | undefined) !== undefined) {
-    if (args.values.open === true) throw new CommandFailure("refused", "USAGE_INVALID", "--account-resolver sets how the broker resolves space accounts, and the open broker configuration has none; nothing was started", { remedy: "drop --account-resolver, or start an auth space without --open" });
-    if (args.values.file !== undefined || args.values.restore !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", `--account-resolver cannot be combined with ${args.values.file !== undefined ? "--file/-f" : "--restore"}, which starts the broker its own record describes; nothing was started`, { remedy: "start it without --account-resolver; a recorded resolver is rendered again" });
-  }
-  if (typeof args.values["store-dir"] === "string") assertStoreDirArgument(args.values["store-dir"], typeof args.values.root === "string" ? resolve(args.values.root) : freshFolderRoot(args.values) ?? cotalRoot());
-  const restoreOnly = args.values["restore-only"];
-  if (restoreOnly !== undefined && restoreOnly !== "registry") throw new CommandFailure("refused", "USAGE_INVALID", `--restore-only takes registry (got ${JSON.stringify(restoreOnly)})`);
-  if (!args.values.restore && (restoreOnly !== undefined || args.values["accept-missing-source"] === true)) throw new CommandFailure("refused", "USAGE_INVALID", "--restore-only and --accept-missing-source require --restore <dir>");
-  if (args.values.file !== undefined && args.values["accept-stale-checkpoint"] === true) throw new FlagValueRefusal("--accept-stale-checkpoint cannot be combined with --file/-f: a manifest starts a fresh mesh, not a preserved stack", "drop --accept-stale-checkpoint for a fresh start, or omit --file/-f to resume a preserved stack");
-  if (args.values.restore && (args.values.file !== undefined || args.values.channels !== undefined)) throw new CommandFailure("refused", "USAGE_INVALID", "--restore cannot be combined with --file/-f or --channels");
-  if (args.values.restore && args.values["rotate-sys"] === true) throw new CommandFailure("refused", "USAGE_INVALID", "--restore cannot be combined with --rotate-sys", { remedy: "restore the space and verify it first, then rotate: `cotal down`, then `cotal up --rotate-sys`" });
-  if (args.values["recreate-issued-stores"] !== undefined) {
-    if (args.values.file !== undefined || args.values.restore !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", `--recreate-issued-stores cannot be combined with ${args.values.file !== undefined ? "--file/-f" : "--restore"}; nothing was started`, { remedy: "run `cotal up --space <space> --recreate-issued-stores <backup-dir>` on its own first" });
-    assertIssuedBackupDirArgument(String(args.values["recreate-issued-stores"]));
-  }
-  if (args.values["recreate-membership-store"] === true && (args.values.file !== undefined || args.values.restore !== undefined))
-    throw new CommandFailure("refused", "USAGE_INVALID", `--recreate-membership-store cannot be combined with ${args.values.file !== undefined ? "--file/-f" : "--restore"}; nothing was started`, { remedy: "run `cotal up --space <space> --recreate-membership-store` on its own first" });
-  if (args.values.root !== undefined) preparedUpRoot(String(args.values.root));
-  else if (!(args.values.file && args.values["dry-run"] === true)) {
-    const inheritedRoot = inheritedMachineHomeRoot();
-    if (inheritedRoot) {
-      if (!freshFolderRoot(args.values))
-        throw new CommandFailure("refused", "CONFLICT", "this folder inherits the machine's home .cotal; up did not start a stack in that home root", { target: { root: process.cwd(), inheritedRoot }, remedy: "prepare this folder with `cotal space create <space> --root .`, then run `cotal up` again from this folder" });
-    } else {
-      const home = machineHomeRoot();
-      if (home && !homeHoldsStack(home))
-        throw new CommandFailure("refused", "CONFLICT", `${home} is your home folder, whose .cotal holds this machine's own records, so up started no stack there`, { target: { root: home }, remedy: "prepare a project folder with `cotal space create <space> --root <dir>`, then run `cotal up` there, or pass --root <dir> from here" });
-    }
-  }
-  if (args.values.restore !== undefined) refuseControllerCut(args.values.root !== undefined ? preparedUpRoot(String(args.values.root)) : cotalRoot(), "up --restore");
-  if (!(args.values.file && args.values["dry-run"] === true)) {
-    const root = args.values.root !== undefined ? preparedUpRoot(String(args.values.root)) : freshFolderRoot(args.values) ?? cotalRoot();
-    // A path with a control character or a bidirectional formatting mark is refused before any write.
-    const pathProblem = rootPathProblem(root) ?? rootPathProblem(canonicalRoot(root));
-    if (pathProblem) throw new CommandFailure("refused", "USAGE_INVALID", `${pathProblem}; nothing was started or written`, { target: { root }, remedy: "rename the folder without those characters, then run `cotal up` there" });
-    const control = rootControlProblem(root);
-    if (control) throw new CommandFailure("refused", "CONFLICT", `${control.message}; nothing was started or written`, { target: { root, controlDirectory: control.controlDirectory }, remedy: control.project === undefined
-      ? "prepare a project folder with `cotal space create <space> --root <dir>`, then run `cotal up` there"
-      : `run \`cotal up\` from the project folder ${shellWord(control.project)}` });
-    assertUpRootWritable(root);
-    // A restore creates its own store. A manifest uses the explicit or default store, not a legacy one.
-    if (args.values.restore === undefined) assertUpStoreWritable(root, typeof args.values["store-dir"] === "string" ? args.values["store-dir"] : args.values.file === undefined ? undefined : join(root, ".cotal", "nats"));
-  }
-}
-
-/** Every launch route writes under the root's .cotal first, or makes it when it is missing. A folder
- *  this account cannot write is refused here, by name, instead of as the raw error of whichever
- *  write came first. */
-function assertUpRootWritable(root: string): void {
-  // A `.cotal` that is a file is refused by name before any command runs, so only a directory is tested here.
-  const path = statSync(join(root, ".cotal"), { throwIfNoEntry: false })?.isDirectory() ? join(root, ".cotal") : root;
-  try { accessSync(path, constants.W_OK | constants.X_OK); }
-  catch (error) {
-    const code = (error as NodeJS.ErrnoException).code;
-    if (code !== "EACCES" && code !== "EPERM" && code !== "EROFS") throw error;
-    throw new CommandFailure("refused", "PERMISSION_DENIED", `${path} does not grant this account both write and search access (${code}); nothing was started or written`, { target: { root, path }, remedy: `make it writable and searchable by you, for example with chmod u+wx ${shellWord(path)}` });
-  }
-}
-
-/** The broker exits when it cannot write its store, naming the cause only in its own log. The store
- *  a start here opens, as `--store-dir` names it, as the stack or legacy records name it, or `.cotal/nats`,
- *  is refused here, by name, when this account cannot write it. */
-function assertUpStoreWritable(root: string, storeDir: string | undefined): void {
-  const problem = startupStoreProblem(root, storeDir);
-  if (problem) throw new CommandFailure("refused", "PERMISSION_DENIED", `${problem.message}; nothing was started or written`, { target: { root, path: problem.path }, remedy: problem.remedy });
-}
-
-/** Why `--server` cannot be the address a local broker listens on, or undefined when it can. Both
- *  launch routes need one nats:// or tls:// URL with an IP address and a TCP port, and without this
- *  check a typo reached their first write. The message names at most the host, never the whole
- *  value, which may carry a credential. */
-function upServerProblem(server: string): string | undefined {
-  let url: URL;
-  try { url = new URL(server); } catch { return "--server is not a URL"; }
-  if (url.protocol !== "nats:" && url.protocol !== "tls:") return "--server must be a nats:// or tls:// URL";
-  if (url.username || url.password) return "--server must not embed credentials";
-  if (url.search || url.hash || (url.pathname && url.pathname !== "/") || server.includes(",")) return "--server must be one broker URL without a path, query or fragment";
-  if (!url.hostname) return "--server names no host";
-  // An explicit address is taken as given, so a missing port is never filled in with the default.
-  if (!url.port) return "--server names no port";
-  if (url.port === "0") return "--server needs a TCP port from 1 to 65535";
-  if (url.hostname.startsWith("[")) return IPV6_UNSERVED("--server");
-  // The broker reports its listener by IP address, which is how both launch routes find it ready.
-  if (!isIP(url.hostname)) return `--server names the host ${url.hostname}, and up needs the IP address the broker listens on`;
-  return undefined;
-}
-
-/** The `--server` a refusal gives as its example: 127.0.0.1 on the port the user passed, or a
- *  placeholder when the value names none. */
-function serverExample(server: string): string {
-  let port: string | undefined;
-  try { port = new URL(server).port || undefined; } catch { port = undefined; }
-  port ??= /:(\d{1,5})\/?$/.exec(server)?.[1];
-  const valid = port !== undefined && Number(port) >= 1 && Number(port) <= 65535;
-  return `--server ${/^tls:/i.test(server) ? "tls" : "nats"}://127.0.0.1:${valid ? Number(port) : "<port>"}`;
-}
-
-/** The refusal of a manifest start whose effective `--server` or `broker.servers` lists more than
- *  one URL, or undefined when it names one. The start binds one new local broker to one address, so
- *  it does not pick an entry. The manifest still validates with a list, which `topology view` shows.
- *  The message counts the entries and never repeats them, as one may carry a credential. */
-function bindListRefusal(command: string, file: string, space: string, server: string | undefined, servers: string | undefined): CommandFailure | undefined {
-  const count = (server ?? servers)?.split(",").filter((entry) => entry.trim()).length ?? 0;
-  if (count < 2) return undefined;
-  const source = server !== undefined ? "--server" : "broker.servers";
-  return new CommandFailure("refused", "USAGE_INVALID", `${source} lists ${count} broker URLs, and ${command} binds a single broker address; nothing was started or written`, {
-    target: { space, path: resolve(file), source, entries: count },
-    remedy: server !== undefined ? "pass one --server URL for the new broker to listen on" : `set broker.servers in ${file} to the one URL the new broker listens on`,
-    selfContained: true,
-  });
-}
-
-/** The local stack's own clients cannot reach a broker on an IPv6 address, so neither flag may name one. */
-const IPV6_UNSERVED = (flag: string): string => `${flag} names an IPv6 address, and the local stack's own clients cannot reach a broker there`;
-
-/** Why `--host` cannot be the local broker's bind address beside `server`, with the step that fixes
- *  it, or undefined when it can. A wildcard bind keeps a loopback URL, so it pairs with any address.
- *  With no `--host` the broker binds 127.0.0.1, so a `--server` naming another IPv4 address needs one. */
-function upHostProblem(host: string | undefined, server: string | undefined): { problem: string; remedy: string } | undefined {
-  if (host === undefined) {
-    const named = server === undefined ? undefined : new URL(server).hostname;
-    return named !== undefined && isIP(named) === 4 && named !== "127.0.0.1" && !WILDCARD_HOSTS.has(named)
-      ? { problem: `--server ${server} names ${named}, and with no --host the broker binds 127.0.0.1, so it would not listen where its clients connect`, remedy: `pass --host ${named} to bind the broker there` }
-      : undefined;
-  }
-  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(host)) return { problem: `--host ${host} looks like a URL, and it takes a bind host only (an IP or hostname, no scheme)`, remedy: "pass the broker URL with --server instead" };
-  if (WILDCARD_HOSTS.has(host)) return undefined;
-  const bare = host.startsWith("[") && host.endsWith("]") ? host.slice(1, -1) : host;
-  if (isIP(bare) === 6) return { problem: IPV6_UNSERVED("--host"), remedy: "pass an IPv4 bind address, for example --host 127.0.0.1" };
-  let url: URL | undefined;
-  try { url = new URL(`nats://${host}:1`); } catch { url = undefined; }
-  if (!url || url.port !== "1" || url.pathname || url.search || url.hash || url.username || url.password)
-    return { problem: `--host ${host} is not a valid bind host: an IP or hostname only, with no port; the port comes from --server (or its default)`, remedy: "pass the port in --server, for example --server nats://127.0.0.1:4222" };
-  if (server !== undefined && !bindReaches(host, server))
-    return { problem: `--host ${host} and --server ${server} name different addresses: the broker would bind ${host} but be probed at ${new URL(server).hostname}`, remedy: "pass one of them, or make both name the same address" };
-  return undefined;
-}
-
-/** The invoking folder, when a bare `up` makes it its own project root: the only `.cotal` above it is
- *  the machine home's. The folder has no records of its own, so `up` starts it as it starts a folder
- *  with no `.cotal` above it. A stack an earlier release started in the home is left as it is and
- *  still starts from the home. A manifest or a restore still needs a prepared folder. */
-function freshFolderRoot(values: ParsedArgs["values"]): string | undefined {
-  if (values.root !== undefined || values.file !== undefined || values.restore !== undefined) return undefined;
-  return inheritedMachineHomeRoot() !== undefined ? resolve(process.cwd()) : undefined;
-}
-
-/** The space a bare `up` starts in a new project: the name of the project folder, when no `--space`
- *  names one and the folder's records name no space. The name passes the rules `space create`
- *  applies, and a name another folder on this machine holds, running, stopped or prepared, refuses
- *  rather than being taken over. Each refusal names `--space`, before anything is written. */
-function folderNamedSpace(values: ParsedArgs["values"]): string | undefined {
-  if (values.space !== undefined || values.root !== undefined || values.file !== undefined || values.restore !== undefined) return undefined;
-  const root = freshFolderRoot(values) ?? (machineHomeRoot() ? undefined : cotalRoot());
-  if (root === undefined || !recordsNameNoSpace(root)) return undefined;
-  const space = basename(resolve(root));
-  const named = `up names a new project's space after its folder, and`;
-  const checked = checkSpaceName(space);
-  const invalid = spaceNameTooLong(space) ?? (checked.ok ? undefined : checked.message.replace(/^✗ /, ""));
-  if (invalid)
-    throw new CommandFailure("refused", "USAGE_INVALID", `${named} the folder name ${JSON.stringify(space)} cannot be one: ${invalid}; nothing was started or written`, { target: { root }, remedy: "name the space with `cotal up --space <name>`", selfContained: true });
-  assertSelectionNotMoved(root, space);
-  const held = findMesh(space) ?? findPreparedSpace(space);
-  if (held)
-    throw new CommandFailure("refused", "CONFLICT", `${named} "${space}" is already ${"server" in held ? `registered at ${held.server}` : "prepared"} for ${held.root}; nothing was started or written`, { target: { root, space, heldBy: held.root }, remedy: "name this folder's space with `cotal up --space <name>`, naming one this machine does not use; `cotal space` lists the names in use" });
-  checkLocalSpace(space, root, "--root", false);
-  return space;
-}
-
-/** Whether no record names a space for `root`: this machine prepared and registered none there, and
- *  it has no `.cotal`, an empty one, or one with no account, stack journal, runtime record, broker
- *  configuration or maintenance attempt. */
-function recordsNameNoSpace(root: string): boolean {
-  if (preparedSpaceAt(root) || meshesForRoot(root).length) return false;
-  const control = join(root, ".cotal");
-  let entries: string[];
-  try { entries = readdirSync(control); }
-  catch (error) { return (error as NodeJS.ErrnoException).code === "ENOENT"; }
-  try { if (readMaintenanceJournal(root)) return false; } catch { return false; }
-  return entries.length === 0 || rootNamesNoSpace(root);
-}
-
-function inheritedMachineHomeRoot(): string | undefined {
-  const root = machineHomeRoot();
-  return root !== undefined && canonicalRoot(process.cwd()) !== canonicalRoot(root) ? root : undefined;
-}
-
-/** The root this `up` resolves when it is the machine home, whose `.cotal` holds this machine's own records. */
-function machineHomeRoot(): string | undefined {
-  const root = cotalRoot();
-  return canonicalRoot(root) === canonicalRoot(homedir()) || canonicalRoot(join(root, ".cotal")) === canonicalRoot(homeCotalDir()) ? root : undefined;
-}
-
 export { preparedUpRoot } from "./up-target.js";
-
-/** The fresh team entry refuses retained custody before `up -f` can write a launch spec,
- *  regenerate trust or stop a leftover manager. Only a recorded local root is eligible. */
-function assertFreshTeamBootOwnership(root: string, space: string, mode?: "open" | "auth" | "user", own?: { deploymentId: string; server: string; manifestPath: string }): void {
-  const current = findMesh(space), prepared = findPreparedSpace(space);
-  if (!current && !prepared) throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "fresh team boot needs a prepared local space; no checkout or machine-home root was guessed", { target: { root, space } });
-  if (current && (current.origin !== "up" || canonicalRoot(current.root) !== canonicalRoot(root)) || prepared && canonicalRoot(prepared.root) !== canonicalRoot(root)) throw new CommandFailure("refused", "CONFLICT", "the selected space is externally registered or its prepared root moved; no fresh local boot was started", { target: { root, space } });
-  if (current && mode && current.mode !== mode) throw new CommandFailure("refused", "CONFLICT", "the requested fresh boot changes the locally recorded authentication mode; no trust was replaced", { target: { root, space, recordedMode: current.mode, requestedMode: mode } });
-  assertSingleSpaceBroker(authDir(root), "team boot");
-  const accounts = listSpaceAccounts(authDir(root));
-  if (mode === "open" && accounts.length) throw new CommandFailure("refused", "CONFLICT", "the selected root retains a broker account; an open team boot did not bypass its recorded authorization", { target: { root, space } });
-  if (accounts.some((hosted) => hosted !== space)) throw new CommandFailure("refused", "CONFLICT", "the local broker root retains another space's account; team boot did not reassign that trust", { target: { root, space } });
-  const userSpaces = userAuthSpacesOnDisk(authDir(root));
-  if (mode === "user" && (userSpaces.some((hosted) => hosted !== space) || (accounts.includes(space) && !userSpaces.includes(space))))
-    throw new CommandFailure("refused", "CONFLICT", "the selected root holds another user-auth space or static trust without matching user-auth state; team boot did not convert its identity", { target: { root, space } });
-  if (mode && mode !== "user" && userSpaces.length) throw new CommandFailure("refused", "CONFLICT", "this root retains user-auth state; a static or open team boot did not re-mode its identity", { target: { root, space } });
-  if (localMeshesForRoot(root).some((entry) => entry.space !== space)) throw new CommandFailure("refused", "CONFLICT", "another locally registered space uses this broker root; fresh team boot did not reuse or replace its stack", { target: { root, space } });
-  if (readMaintenanceJournal(root)) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "this root retains a recovery or maintenance attempt; team boot cannot substitute an ordinary startup", { target: { root, space } });
-  const manager = managerRecordState(space, root);
-  if (manager.state !== "absent") throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "a manager record remains, including when its process appears dead; team boot will not stop or overwrite it", { target: { root, space, state: manager.state, path: manager.path }, remedy: "inspect the recorded manager and reconcile its own lifecycle before a fresh team boot" });
-  const processes = liveMeshProcesses(root, space);
-  if (processes.length) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "a local component may still own this stack; team boot did not replace it", { target: { root, space, processes } });
-  const instances = serviceInstances(space), supervisors = serviceSupervisorStore(space).list();
-  if (instances.length || supervisors.length) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "service-controller instances or supervisor receipts remain for this space; their ownership was not replaced by fresh team boot", { target: { root, space, instances: instances.map((row) => row.name), supervisors: supervisors.map((row) => row.name) }, remedy: "inspect each service instance and its native supervisor before booting the whole stack" });
-  const actions = serviceUnitActionStore(space).list();
-  if (actions.some((row) => row.name !== row.record.value.instanceId))
-    throw new CommandFailure("refused", "SCHEMA_INVALID", "a retained native action filename differs from its full instance ID; no fresh boot ownership was inferred", { target: { root, space } });
-  const attempts = [
-    ...serviceInstallIntents(space).map((row) => ({ kind: "install", instanceId: row.name, attemptId: row.record.value.attemptId })),
-    ...serviceUninstallIntents(space).map((row) => ({ kind: "uninstall", instanceId: row.name, attemptId: row.record.value.attemptId })),
-    ...actions.map((row) => ({ kind: "unit-action", instanceId: row.name, attemptId: row.record.value.attemptId })),
-  ];
-  if (attempts.length) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "native service attempts remain for this space; a submitted step may have changed state, so fresh team boot did not replace their custody", { target: { root, space, attempts }, remedy: "inspect and reconcile each retained attempt on its original service instance before fresh boot" });
-  let ledgers: ReturnType<typeof listLedgerFiles>;
-  try { ledgers = listLedgerFiles(root, { requireReadable: true }); }
-  catch { throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the root's additive ledger directory could not be inspected; no absence of prior owned resources was inferred", { target: { root, space } }); }
-  if (ledgers.valid.length || ledgers.refused.length) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "additive ownership ledgers or unreadable ledger records remain under this root; fresh team boot did not adopt or erase them", { target: { root, space, deploymentIds: ledgers.valid.map(({ ledger }) => ledger.runId), unreadable: ledgers.refused.map(({ path }) => path) }, remedy: "inspect and finish each additive deployment's own lifecycle before a fresh team boot" });
-  let additiveAttempts: ReturnType<typeof listAdditiveTeamAttempts>;
-  try { additiveAttempts = listAdditiveTeamAttempts(root); }
-  catch { throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the root's additive attempt inventory could not be read; fresh boot did not assume it was empty", { target: { root, space } }); }
-  if (retainedAdditiveTeamAttempts(additiveAttempts).length || additiveAttempts.refused.length) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "an additive deployment attempt remains under this root; its native outcome was not adopted as whole-stack ownership", { target: { root, space, deploymentIds: retainedAdditiveTeamAttempts(additiveAttempts).map((attempt) => attempt.deploymentId), unreadable: additiveAttempts.refused.map(({ path }) => path) } });
-  let bootAttempts: ReturnType<typeof listFreshTeamAttempts>, summaries: ReturnType<typeof listFreshTeamSummaries>;
-  try { bootAttempts = listFreshTeamAttempts(root); summaries = listFreshTeamSummaries(root); }
-  catch { throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "fresh boot attempt or summary records could not be read; no earlier startup was assumed settled", { target: { root, space } }); }
-  const byId = new Map(summaries.valid.map((summary) => [summary.deploymentId, summary]));
-  const ownAttempt = own && bootAttempts.valid.find((attempt) => attempt.deploymentId === own.deploymentId);
-  if (own && (!ownAttempt || ownAttempt.space !== space || ownAttempt.root !== root || ownAttempt.server !== own.server || ownAttempt.manifestPath !== own.manifestPath || ownAttempt.authMode !== mode || byId.has(own.deploymentId)))
-    throw new CommandFailure("refused", "CONFLICT", "this fresh boot's own intent changed or acquired a summary during preparation; no launch spec was written", { target: { root, space, deploymentId: own.deploymentId } });
-  const unsettled = bootAttempts.valid.filter((attempt) => attempt.deploymentId !== own?.deploymentId && !freshTeamAttemptSettled(attempt, byId.get(attempt.deploymentId)));
-  if (bootAttempts.refused.length || summaries.refused.length || unsettled.length)
-    throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "a prior fresh boot attempt lacks a matching readable summary, or an attempt/summary is unreadable; its outcome was not treated as absent", { target: { root, space, unsettledIds: unsettled.map((attempt) => attempt.deploymentId), unreadable: [...bootAttempts.refused, ...summaries.refused].map(({ path }) => path) }, remedy: "inspect each full boot attempt and its original listener before another fresh start; do not retry an unknown boot" });
-}
-
-/** The guarded whole-stack stop a foreground signal runs, acknowledged by that signal's exit code. A
- *  failed or unknown stop is reported with its retained members; nothing is force-killed. */
-function stopForegroundStack(root: string, signal: "SIGINT" | "SIGTERM"): Promise<void> {
-  return stackDown(root, { yes: true }).catch((error) => {
-    process.stderr.write(`${renderReport(commandFailureReport(isCommandFailure(error) ? error : new CommandFailure("unknown", "OPERATION_UNKNOWN", "the foreground stack stop did not confirm its outcome; its members were retained")), "rich", process.stderr)}\n`);
-  }).finally(() => { process.exitCode = signal === "SIGINT" ? 130 : 143; });
-}
 
 /** A hangup, such as a closed terminal, is not a stop. The stack keeps running and the notice names
  *  the command that stops it. Release this process's hold before the immediate exit, which does not
  *  unwind the surrounding finally, so a later foreground `up` can take the running stack over. */
 function hangupForegroundStack(root: string): never {
-  process.stderr.write(`The terminal closed. This stack in ${root} is still running; \`cotal down\` stops it.\n`);
+  const stop = `${displayCmd()} down`;
+  process.stderr.write(`The terminal closed. This stack is still running; ${codeSpan(`cd ${shellWord(root)} && ${stop}`)} stops it.\n`);
   process.exitCode = 129;
   releaseForegroundHold(root);
   process.exit(129);
@@ -800,17 +387,17 @@ function hangupForegroundStack(root: string): never {
  *  the start left. A failed start still runs the stop, and its failure is thrown once the stop returns.
  *  The hold exits 0 after a completed external stop or preserve, 5 after a broker crash, 129 after
  *  a hangup, 130 or 143 after a stop signal, whatever the start receipt set. */
-export async function holdForegroundStack(root: string, start?: () => Promise<void>, releaseRestoreNotice?: () => void): Promise<void> {
+export async function holdForegroundStack(root: string, start?: () => Promise<void | StackJournal>, releaseRestoreNotice?: () => void): Promise<void> {
   claimForegroundHold(root);
   try { await holdStack(root, start, releaseRestoreNotice); }
   finally { releaseForegroundHold(root); }
 }
 
-async function holdStack(root: string, start?: () => Promise<void>, releaseRestoreNotice?: () => void): Promise<void> {
+async function holdStack(root: string, start?: () => Promise<void | StackJournal>, releaseRestoreNotice?: () => void): Promise<void> {
   // The start's listeners go only once the hold's own are installed. Node runs a listener for a
   // signal when the loop next polls, and drops the signal if its last listener was removed first,
   // so a signal that lands in the start's last synchronous step would be lost in between.
-  let releaseStart = (): void => {};
+  let held: StackJournal | void = undefined, releaseStart = (): void => {};
   if (start) {
     let requested: "SIGINT" | "SIGTERM" | "SIGHUP" | undefined;
     const request = (signal: "SIGINT" | "SIGTERM" | "SIGHUP") => {
@@ -824,28 +411,27 @@ async function holdStack(root: string, start?: () => Promise<void>, releaseResto
     process.on("SIGINT", interrupt); process.on("SIGTERM", terminate); process.on("SIGHUP", hangup);
     handOverStartupNotice();
     let failure: { error: unknown } | undefined;
-    try { await start(); } catch (error) { failure = { error }; }
+    try { held = await start(); } catch (error) { failure = { error }; }
     releaseStart = () => { process.off("SIGINT", interrupt); process.off("SIGTERM", terminate); process.off("SIGHUP", hangup); };
     if (requested || failure) releaseStart();
     if (requested === "SIGHUP") hangupForegroundStack(root);
-    if (requested) await stopForegroundStack(root, requested);
+    if (requested) await stopForegroundStack(root, requested, true);
     if (failure) throw failure.error;
     if (requested) return;
   }
   return new Promise<void>((resolveHold) => {
-    // The poll keeps Node alive and observes the recorded broker and external stack operations.
-    const held = (() => { try { return readStackJournal(root)?.journal.operation.id; } catch { return undefined; } })();
+    const observed = held ?? (() => { try { return readStackJournal(root)?.journal; } catch { return undefined; } })();
     let stopping = false;
-    const lifetime = setInterval(() => {
+    const checkLifetime = () => {
       if (stopping) return;
-      const code = foregroundStackEnd(root, held);
+      const code = foregroundStackEnd(root, observed);
       if (code === undefined) return;
       stopping = true;
       process.off("SIGINT", interrupt); process.off("SIGTERM", terminate); process.off("SIGHUP", hangup);
       clearInterval(lifetime);
       process.exitCode = code;
       resolveHold();
-    }, 1000);
+    }, lifetime = setInterval(checkLifetime, 1000);
     const stop = (signal: "SIGINT" | "SIGTERM") => {
       if (stopping) return;
       stopping = true;
@@ -855,7 +441,7 @@ async function holdStack(root: string, start?: () => Promise<void>, releaseResto
     };
     const interrupt = () => stop("SIGINT");
     const terminate = () => stop("SIGTERM");
-    const hangup = () => { if (!stopping) hangupForegroundStack(root); };
+    const hangup = () => { checkLifetime(); if (!stopping) hangupForegroundStack(root); };
     process.on("SIGINT", interrupt); process.on("SIGTERM", terminate); process.on("SIGHUP", hangup);
     releaseStart();
     handOverStartupNotice();
@@ -1585,16 +1171,16 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
     try {
       const stackLock = acquireStackOperationLock(meshRoot, values.foreground ? "foreground up" : undefined);
       const native = controllerStackNative();
-      // A foreground terminal holds the start as well, so a signal during it stops what it started.
-      const start = async () => {
+      const prepare = async () => {
         try {
           const stackServer = values.server ?? readStackJournal(meshRoot)?.journal.server ?? localMeshesForRoot(meshRoot).find((m) => m.space === stackSpace)?.server ?? await unrecordedStackServer(meshRoot, stackSpace, values.host);
           if (values.foreground && presentation !== "json") stackUpForegroundNotice(presentation, stackSpace, takeover);
-          await stackUp({ maintenanceLock: stackLock, root: meshRoot, space: stackSpace, server: stackServer, transport, runtime: values.runtime ?? "pty", noManager, managerSeatCap, ...(stackMode ? { mode: stackMode } : {}), ...(values.idp ? { idp: values.idp } : {}), ...(values.host ? { host: values.host } : {}), ...(values["store-dir"] ? { storeDir: values["store-dir"] } : {}), ...(values["rotate-sys"] ? { rotateSys: true } : {}), ...(values["recreate-membership-store"] ? { recreateMembershipStore: true } : {}), ...(values["recreate-issued-stores"] !== undefined ? { recreateIssuedStores: resolve(values["recreate-issued-stores"]) } : {}), ...(maxFileStore !== undefined ? { maxFileStore } : {}), ...(logFile !== undefined ? { logFile } : {}), ...(logfileSizeLimit !== undefined ? { logfileSizeLimit } : {}), ...(logfileMaxNum !== undefined ? { logfileMaxNum } : {}), ...(authTimeout !== undefined ? { authTimeout } : {}), ...(maxPayload !== undefined ? { maxPayload } : {}), ...(accountResolver !== undefined ? { accountResolver } : {}), ...(maxSessions !== undefined ? { maxSessions } : {}), ...(values.channels ? { channels: values.channels } : {}), ...(values.__invokedRoot ? { invokedRoot: values.__invokedRoot } : {}), foreground: values.foreground === true, presentation,
+          return await stackUp({ maintenanceLock: stackLock, root: meshRoot, space: stackSpace, server: stackServer, transport, runtime: values.runtime ?? "pty", noManager, managerSeatCap, ...(stackMode ? { mode: stackMode } : {}), ...(values.idp ? { idp: values.idp } : {}), ...(values.host ? { host: values.host } : {}), ...(values["store-dir"] ? { storeDir: values["store-dir"] } : {}), ...(values["rotate-sys"] ? { rotateSys: true } : {}), ...(values["recreate-membership-store"] ? { recreateMembershipStore: true } : {}), ...(values["recreate-issued-stores"] !== undefined ? { recreateIssuedStores: resolve(values["recreate-issued-stores"]) } : {}), ...(maxFileStore !== undefined ? { maxFileStore } : {}), ...(logFile !== undefined ? { logFile } : {}), ...(logfileSizeLimit !== undefined ? { logfileSizeLimit } : {}), ...(logfileMaxNum !== undefined ? { logfileMaxNum } : {}), ...(authTimeout !== undefined ? { authTimeout } : {}), ...(maxPayload !== undefined ? { maxPayload } : {}), ...(accountResolver !== undefined ? { accountResolver } : {}), ...(maxSessions !== undefined ? { maxSessions } : {}), ...(values.channels ? { channels: values.channels } : {}), ...(values.__invokedRoot ? { invokedRoot: values.__invokedRoot } : {}), foreground: values.foreground === true, presentation,
             retryAtAnotherAddress: (host) => retryStackAddress(args.raw, invokedFrom, stackServer, host),
           }, native);
         } finally { releaseMaintenanceLock(stackLock); }
       };
+      const start = async () => { const { journal, writeReceipt } = await prepare(); writeReceipt(); return journal; };
       if (values.foreground) await holdForegroundStack(meshRoot, start);
       else await start();
     } finally { release?.(); }
@@ -2761,41 +2347,6 @@ function restoreListenerOwner(pid: number, nonce: string, startedAt: string): Pr
   return { pid, host: hostname(), startedAt, id: `restore-listener-${nonce}` };
 }
 
-function waitForChildExit(child: ChildProcess, timeoutMs: number): Promise<boolean> {
-  if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve(true);
-  return new Promise((resolveExit) => {
-    const onExit = () => finish(true);
-    const timer = setTimeout(() => finish(false), timeoutMs);
-    const finish = (exited: boolean) => {
-      clearTimeout(timer);
-      child.off("exit", onExit);
-      resolveExit(exited);
-    };
-    child.once("exit", onExit);
-  });
-}
-
-/** Listeners {@link stopFailedListener} is stopping. Their launch reports its own error, so the
- *  foreground's broker-exit handler must not report that exit as a crash and exit first. */
-const failedListeners = new WeakSet<ChildProcess>();
-
-/**
- * Stop a listener whose launch failed before it served. A signal is not proof of exit, so SIGTERM
- * escalates to SIGKILL and `nats.pid` is removed only once the exit is observed. A listener that
- * outlives both keeps its record and fails loud with its pid. A listener whose pid publish threw
- * passes `published` false and leaves `nats.pid` as found.
- */
-async function stopFailedListener(child: ChildProcess, published = true): Promise<void> {
-  failedListeners.add(child);
-  child.kill("SIGTERM");
-  if (!await waitForChildExit(child, 5_000)) {
-    child.kill("SIGKILL");
-    if (!await waitForChildExit(child, 5_000))
-      throw new Error(`nats-server process ${child.pid ?? "unknown"} did not exit after SIGKILL`);
-  }
-  if (published) removePidPair(cotalPath(NATS_PIDFILE), String(child.pid));
-}
-
 function bindSpawnedRestoreListener(prepared: PreparedRestore, pid: number, startedAt: string, heldLock?: MaintenanceLock): void {
   bindRestoreListenerOwner(prepared, restoreListenerOwner(pid, prepared.serverNonce, startedAt), heldLock);
 }
@@ -3404,1887 +2955,4 @@ async function completeResumeActivation(
   }
 }
 
-/** Validate + assemble the auth-service daemon's public-exchange argv from `up`'s flags. The three
- *  flags travel with --user-auth (an open mesh has no exchange to publish); --exchange-public-url
- *  and --exchange-trusted-proxy modify the public listener, so they require its port. Returned as
- *  an argv ARRAY — the daemon re-exec never shell-interpolates. */
-function publicExchangeArgs(
-  v: { "exchange-public-port"?: string; "exchange-public-url"?: string; "exchange-trusted-proxy"?: boolean; "advertised-server"?: string; "agent-provisioning-url"?: string },
-  wantUser: boolean,
-): string[] {
-  const port = v["exchange-public-port"];
-  const url = v["exchange-public-url"];
-  const proxy = Boolean(v["exchange-trusted-proxy"]);
-  const advertised = v["advertised-server"];
-  const provisioning = v["agent-provisioning-url"];
-  if (port === undefined && url === undefined && !proxy && advertised === undefined && provisioning === undefined) return [];
-  const flags = [port !== undefined && "--exchange-public-port", url !== undefined && "--exchange-public-url", proxy && "--exchange-trusted-proxy", advertised !== undefined && "--advertised-server", provisioning !== undefined && "--agent-provisioning-url"].filter(Boolean);
-  if (!wantUser) throw userAuthFlagsRefusal(flags.join(", "));
-  if (port === undefined) throw new CommandFailure("refused", "USAGE_INVALID", `${flags.join(", ")} ${flags.length === 1 ? "requires" : "require"} --exchange-public-port. Nothing started.`, { remedy: "add --exchange-public-port with the public listener port, or remove the flags that need it" });
-  return [
-    "--exchange-public-port", port,
-    ...(url !== undefined ? ["--exchange-public-url", url] : []),
-    ...(proxy ? ["--exchange-trusted-proxy"] : []),
-    ...(advertised !== undefined ? ["--advertised-server", advertised] : []),
-    ...(provisioning !== undefined ? ["--agent-provisioning-url", provisioning] : []),
-  ];
-}
-
-/** The daemon argv for `--service-endpoints`: the auth service hosts the service endpoint door and
- *  host route. User-auth only; an open mesh has no owner to decide. */
-function serviceEndpointsArgs(v: { "service-endpoints"?: boolean }, wantUser: boolean): string[] {
-  if (!v["service-endpoints"]) return [];
-  if (!wantUser) throw userAuthFlagsRefusal("--service-endpoints");
-  return ["--service-endpoints"];
-}
-
-function userAuthFlagsRefusal(flags: string): CommandFailure {
-  return new CommandFailure("refused", "USAGE_INVALID", `${flags} can only be used with user auth. Nothing started.`, { remedy: "remove the incompatible flags for an open space, or use them with --user-auth instead of --open" });
-}
-
-/** Bring the space's USER-AUTH service up with the broker (user mode only — `setup.prepared` is the
- *  provider's output). Loud both ways (U5): a ready service prints the login line; a service that
- *  never became ready prints the exact consequence + recourse. Returns the registry metadata either
- *  way — the mesh IS a user-auth mesh even while its service is down (connects must say "auth
- *  service down", never fall back to static semantics) — plus `ok`, so the exiting `up` surfaces
- *  (detach / manifest / refresh-heal) turn a dead identity plane into a NON-ZERO exit: automation
- *  must not read "user mesh up" from a mesh whose every user connect will be denied. */
-async function startUserAuthService(
-  space: string,
-  server: string,
-  setup?: { prepared?: AuthPrepared; stateDir?: string },
-  publicExchange?: string[],
-  quietBoot = false,
-): Promise<{ userAuth?: UserAuthInfo; ok: boolean }> {
-  if (!setup?.prepared || !setup.stateDir) return { ok: true };
-  try {
-    const raw = await ensureAuthService({ space, server, stateDir: setup.stateDir, prepared: setup.prepared, extraArgs: publicExchange });
-    // The PUBLIC face's advertised URL (when enabled) supersedes the loopback bind in the registry's
-    // convenience endpoint — the discovery bundle is GENERATED from what the daemon actually serves,
-    // never hand-written. The provider reports it; nothing here reads provider state files.
-    const base = typeof raw.publicUrl === "string" ? raw.publicUrl : String(raw.url);
-    const endpoints = { url: base, ...(typeof raw.publicUrl === "string" ? { managerAuthorityUrl: `${base.replace(/\/$/, "")}/manager-service-authority` } : {}) };
-    const info = assertUserAuthInfo({ ...setup.prepared.publicAuth, endpoints });
-    if (!quietBoot) console.log(c.green("✓ user-auth service up") + c.dim(` - sign in with: \`cotal login --idp ${info.idp.url}\``));
-    return { userAuth: info, ok: true };
-  } catch (e) {
-    // A typed refusal leads with its code and each detail's reason, e.g. a plane claim's
-    // `unknown` liveness against its `live-peer` contention, so no caller parses the copy.
-    const typed = e instanceof EpEnvelopeError
-      ? ` [${[e.code, ...(e.details ?? []).map((d) => typeof d.reason === "string" ? `${d.kind}: ${d.reason}` : d.kind)].join("; ")}]`
-      : "";
-    stderrLine("✗ ", `user-auth service did not come up${typed} (${(e as Error).message}) - user connects to "${space}" will fail until a re-\`cotal up\` succeeds`, c.red);
-    return { userAuth: assertUserAuthInfo(setup.prepared.publicAuth), ok: false };
-  }
-}
-
-/** Every fresh-boot input a controller team boot freezes before its first effect. It holds no
- *  credential, trust material or launch spec; those are produced only after this plan exists. */
-export interface FreshTeamBootPlan {
-  root: string;
-  space: string;
-  server: string;
-  /** The declared bind host, or undefined when the manifest left it unset (loopback default). */
-  host: string | undefined;
-  mode: "open" | "auth" | "user";
-  idp: string | undefined;
-  runtime: string;
-  manifestPath: string;
-  prepared: PreparedManifest;
-  transport: BrokerTransport;
-  maxSessions: number | undefined;
-  logFile: string | undefined;
-  logfileSizeLimit: number | undefined;
-  logfileMaxNum: number | undefined;
-}
-
-/** The fresh boot's read-only preparation, shared by the controller team boot. It runs the same
- *  manifest load, override, mode agreement, ownership, bind, runtime, reachability and connector
- *  refusals as the retained `upManifest` fresh path, in the same order, and writes nothing. */
-export async function prepareFreshTeamBoot(file: string, opts: { space: string; transport: BrokerTransport; server?: string; host?: string; runtime?: string; open?: boolean; userAuth?: boolean; idp?: string; maxSessions?: number }): Promise<FreshTeamBootPlan> {
-  const flags: UpManifestFlags = { ...opts, dryRun: false, freshTeamBoot: true };
-  let prepared: PreparedManifest;
-  try { prepared = loadManifest(resolve(file)); }
-  catch { throw new CommandFailure("refused", "SCHEMA_INVALID", "the fresh boot manifest changed or could not be resolved before startup; no broker was started", { target: { path: resolve(file), space: opts.space } }); }
-  if (opts.space !== prepared.manifest.space)
-    throw new CommandFailure("refused", "CONFLICT", "the fresh boot manifest no longer names the selected space; no broker was started", { target: { selectedSpace: opts.space, declaredSpace: prepared.manifest.space } });
-  const declared = prepared.manifest.broker?.auth;
-  if (opts.open && declared === "user") throw new CommandFailure("refused", "CONFLICT", "--open contradicts this manifest's user-auth mode; no trust or broker was changed", { target: { space: opts.space } });
-  if (opts.userAuth && declared !== "user") throw new CommandFailure("refused", "CONFLICT", "--user-auth contradicts this manifest's declared auth mode; no trust or broker was changed", { target: { space: opts.space } });
-  if (opts.idp && declared !== "user") throw new CommandFailure("refused", "CONFLICT", "--idp needs this manifest's user-auth mode; no trust or broker was changed", { target: { space: opts.space } });
-  const idpProblem = opts.idp === undefined ? undefined : idpUrlProblem(opts.idp, "--idp");
-  if (idpProblem) throw new CommandFailure("refused", "SCHEMA_INVALID", idpProblem, { target: { space: opts.space } });
-  const serverProblems = opts.server === undefined ? [] : serverUrlProblems(opts.server, "--server");
-  if (serverProblems.length) throw new CommandFailure("refused", "SCHEMA_INVALID", serverProblems.join("; "), { target: { space: opts.space } });
-  const list = bindListRefusal("team boot", file, opts.space, opts.server, prepared.manifest.broker?.servers);
-  if (list) throw list;
-  const { prepared: eff, hostSource, serverSource } = applyUpOverrides(prepared, flags);
-  const m = eff.manifest;
-  const host = m.broker?.host ?? "127.0.0.1";
-  const server = m.broker?.host ? reconcileHostAndServer(m.broker.host, m.broker?.servers, hostSource, serverSource) : (m.broker?.servers ?? DEFAULT_SERVER);
-  const open = m.broker?.auth === false;
-  const mode = open ? "open" as const : m.broker?.auth === "user" ? "user" as const : "auth" as const;
-  const runtime = m.runtime ?? "pty";
-  if (open && (m.defaults?.deliveryClass === "durable" || m.channels.some((channel) => channel.deliveryClass === "durable")))
-    throw new CommandFailure("refused", "UNSUPPORTED", "this open manifest explicitly requests durable channel delivery, but the open broker has no delivery daemon; no channel metadata or broker was written", { target: { space: m.space }, remedy: "use static/user authentication for durable delivery, or declare live delivery for an open mesh" });
-  const other = loadMeshes().filter((row) => row.space !== m.space && row.server === server);
-  if (other.length) throw new CommandFailure("refused", "CONFLICT", "another local registration names this exact broker address; fresh team boot did not create a listener over its recorded target", { target: { space: m.space, server: brokerAddressForDisplay(server) ?? "not displayable", otherSpaces: other.map((row) => row.space) } });
-  assertFreshTeamBootOwnership(cotalRoot(), m.space, mode);
-  await assertFreshTeamBindAvailable(server, host, m.space);
-  try { await preflightRuntime(runtime); }
-  catch (error) { throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "the requested runtime did not pass preflight; no fresh boot intent or broker was started", { target: { space: m.space, runtime }, remedy: error instanceof Error ? error.message : "inspect the selected runtime provider" }); }
-  if (await isReachable(server)) throw new CommandFailure("refused", "CONFLICT", "the selected address already has a broker; fresh boot did not adopt it or start a competing listener", { target: { space: m.space, server: brokerAddressForDisplay(server) ?? "not displayable" } });
-  const conn = await preflightConnectors(prepared);
-  if (conn) throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "connector preflight failed before the fresh boot intent; no native effect was requested", { target: { space: m.space }, remedy: conn });
-  return { root: canonicalRoot(cotalRoot()), space: m.space, server, host: m.broker?.host, mode, idp: m.broker?.idp, runtime, manifestPath: resolve(file), prepared: eff, transport: assertServesDialHost(opts.transport, new URL(server).hostname), maxSessions: opts.maxSessions, logFile: m.broker?.logFile, logfileSizeLimit: m.broker?.logfileSizeLimit, logfileMaxNum: m.broker?.logfileMaxNum };
-}
-
-/** A stack's auth mode in words, and the manifest's `broker.auth` value that declares it. */
-const RESUME_MODE = { open: { words: "open", field: "false" }, auth: { words: "static auth", field: "static" }, user: { words: "user auth", field: "user" } } as const;
-
-/** A team boot that resumes one exact stopped controller stack whose manager was never attempted.
- *  The same manifest load, agreement, durable-on-open, runtime, reachability and connector refusals
- *  as {@link prepareFreshTeamBoot}, without the fresh zero-instance ownership gate: that gate is
- *  replaced by the stopped-stack eligibility the caller binds under its lock. The manifest may not
- *  move the recorded broker: its server must equal the recorded one, and a declared bind host must
- *  equal the recorded host. Writes nothing. */
-export async function prepareResumeTeamBoot(file: string, opts: { space: string; transport: BrokerTransport; recorded: { server: string; mode: "open" | "auth" | "user"; host?: string } }): Promise<FreshTeamBootPlan> {
-  let prepared: PreparedManifest;
-  try { prepared = loadManifest(resolve(file)); }
-  catch { throw new CommandFailure("refused", "SCHEMA_INVALID", "the team manifest changed or could not be resolved before startup; nothing was resumed", { target: { path: resolve(file), space: opts.space } }); }
-  if (opts.space !== prepared.manifest.space)
-    throw new CommandFailure("refused", "CONFLICT", "the team manifest no longer names the selected space; nothing was resumed", { target: { selectedSpace: opts.space, declaredSpace: prepared.manifest.space } });
-  const { prepared: eff, hostSource, serverSource } = applyUpOverrides(prepared, { transport: opts.transport, dryRun: false, freshTeamBoot: true });
-  const m = eff.manifest;
-  const server = m.broker?.host ? reconcileHostAndServer(m.broker.host, m.broker?.servers, hostSource, serverSource) : (m.broker?.servers ?? DEFAULT_SERVER);
-  const open = m.broker?.auth === false;
-  const mode = open ? "open" as const : m.broker?.auth === "user" ? "user" as const : "auth" as const;
-  const runtime = m.runtime ?? "pty";
-  // Each setting the manifest moves, with both values and the manifest change that keeps the recorded one.
-  const shown = (address: string) => brokerAddressForDisplay(address) ?? "not displayable";
-  const moved = [
-    ...(server !== opts.recorded.server ? [{ name: "broker address", recorded: shown(opts.recorded.server), declared: shown(server), keep: `set \`broker.servers\` to ${shown(opts.recorded.server)}` }] : []),
-    ...(m.broker?.host !== undefined && m.broker.host !== opts.recorded.host ? [{ name: "bind host", recorded: opts.recorded.host ?? "none", declared: m.broker.host, keep: opts.recorded.host ? `set \`broker.host\` to ${opts.recorded.host}` : "remove `broker.host`" }] : []),
-    ...(mode !== opts.recorded.mode ? [{ name: "auth mode", recorded: RESUME_MODE[opts.recorded.mode].words, declared: RESUME_MODE[mode].words, keep: `set \`broker.auth\` to \`${RESUME_MODE[opts.recorded.mode].field}\`` }] : []),
-  ];
-  if (moved.length) {
-    const named = moved.map((row) => `${row.name} (recorded ${row.recorded}, declared ${row.declared})`);
-    throw new CommandFailure("refused", "CONFLICT", `the manifest differs from the recorded stopped stack in its ${named.length > 1 ? `${named.slice(0, -1).join(", ")} and ${named.at(-1)}` : named[0]}; nothing was resumed`, {
-      target: { space: m.space, recorded: { ...opts.recorded, server: shown(opts.recorded.server) }, declared: { server: shown(server), host: m.broker?.host ?? null, mode } },
-      remedy: `${moved.map((row) => row.keep).join(" and ")} in the manifest to resume this stack, or boot the manifest as a new space in another folder prepared with \`cotal space create <space>\``,
-    });
-  }
-  if (open && (m.defaults?.deliveryClass === "durable" || m.channels.some((channel) => channel.deliveryClass === "durable")))
-    throw new CommandFailure("refused", "UNSUPPORTED", "this open manifest explicitly requests durable channel delivery, but the open broker has no delivery daemon; nothing was resumed", { target: { space: m.space } });
-  const other = loadMeshes().filter((row) => row.space !== m.space && row.server === server);
-  if (other.length) throw new CommandFailure("refused", "CONFLICT", "another local registration names this exact broker address; the stopped stack was not resumed over it", { target: { space: m.space, otherSpaces: other.map((row) => row.space) } });
-  try { await preflightRuntime(runtime); }
-  catch (error) { throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "the requested runtime did not pass preflight; nothing was resumed", { target: { space: m.space, runtime }, remedy: error instanceof Error ? error.message : "inspect the selected runtime provider" }); }
-  if (await isReachable(server)) throw new CommandFailure("refused", "CONFLICT", "the recorded broker address already answers; the stopped stack was not resumed over it", { target: { space: m.space, server: brokerAddressForDisplay(server) ?? "not displayable" } });
-  const conn = await preflightConnectors(prepared);
-  if (conn) throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "connector preflight failed; nothing was resumed", { target: { space: m.space }, remedy: conn });
-  return { root: canonicalRoot(cotalRoot()), space: m.space, server, host: opts.recorded.host, mode, idp: m.broker?.idp, runtime, manifestPath: resolve(file), prepared: eff, transport: assertServesDialHost(opts.transport, new URL(server).hostname), maxSessions: undefined, logFile: m.broker?.logFile, logfileSizeLimit: m.broker?.logfileSizeLimit, logfileMaxNum: m.broker?.logfileMaxNum };
-}
-
-/** The recorded broker transport of a prepared root, decided without persisting anything: a team
- *  boot names no TLS flags, so it inherits the root's recorded policy exactly as a bare `up` does. */
-export function recordedBrokerTransport(root: string): BrokerTransport {
-  return resolveTransport({}, undefined, root, { persist: false, quiet: true });
-}
-
-/** Recheck, under the fresh boot's own lock, the ownership and bind refusals that a concurrent
- *  writer could have invalidated after {@link prepareFreshTeamBoot}. */
-export async function recheckFreshTeamBoot(plan: FreshTeamBootPlan, own?: { deploymentId: string }): Promise<void> {
-  assertFreshTeamBootOwnership(plan.root, plan.space, plan.mode, own ? { deploymentId: own.deploymentId, server: plan.server, manifestPath: plan.manifestPath } : undefined);
-  await assertFreshTeamBindAvailable(plan.server, plan.host ?? "127.0.0.1", plan.space);
-}
-
-/** The native callbacks a controller stack start uses, shared by `cotal up` and a controller team
- *  boot so both prepare, seed and record through the same native path. */
-export function controllerStackNative(): StackUpNative {
-  return {
-    prepareBroker: async (opts) => {
-      const prepared = await prepareBrokerStart({ transport: opts.transport, server: opts.server, space: opts.space, ...(opts.open ? { open: true } : {}), ...(opts.userAuth ? { userAuth: opts.userAuth } : {}), ...(opts.host ? { host: opts.host } : {}), ...(opts.wsPort !== undefined ? { wsPort: opts.wsPort } : {}), ...(opts.storeDir ? { storeDir: opts.storeDir } : {}), ...(opts.existingStore ? { existingStore: opts.existingStore } : {}), ...(opts.maxFileStore !== undefined ? { maxFileStore: opts.maxFileStore } : {}), ...(opts.logFile !== undefined ? { logFile: opts.logFile } : {}), ...(opts.logfileSizeLimit !== undefined ? { logfileSizeLimit: opts.logfileSizeLimit } : {}), ...(opts.logfileMaxNum !== undefined ? { logfileMaxNum: opts.logfileMaxNum } : {}), ...(opts.authTimeout !== undefined ? { authTimeout: opts.authTimeout } : {}), ...(opts.maxPayload !== undefined ? { maxPayload: opts.maxPayload } : {}), ...(opts.accountResolver !== undefined ? { accountResolver: opts.accountResolver } : {}), ...(opts.noManager ? { noManager: true } : {}), ...(opts.seed !== undefined ? { seed: opts.seed as ChannelRegistryFile } : opts.channels ? { channels: opts.channels } : {}), quietBoot: true });
-      return { root: prepared.root, server: prepared.server, space: prepared.space, storeDir: prepared.storeDir, transport: prepared.transport, ...(prepared.setup ? { setup: { mintProvisioner: prepared.setup.mintProvisioner, wsPort: prepared.setup.wsPort, moveWebsocketPort: prepared.setup.moveWebsocketPort } } : {}), ...(prepared.setup?.prepared && prepared.setup.stateDir ? { user: { prepared: prepared.setup.prepared, stateDir: prepared.setup.stateDir } } : {}), confPath: prepared.confPath, bin: prepared.bin, source: prepared.source, version: prepared.version, seedFile: prepared.seedFile, ...(prepared.setup?.authTimeout !== undefined ? { authTimeout: prepared.setup.authTimeout } : {}), ...(prepared.maxPayload !== undefined ? { maxPayload: prepared.maxPayload } : {}), ...(prepared.setup?.accountResolver !== undefined ? { accountResolver: prepared.setup.accountResolver } : {}) };
-    },
-    initializeStreams: async (server, space, setup, seedFile, recreateIssuedStores, recreateMembershipStore) => postStart(server, space, setup && { creds: await setup.mintProvisioner() }, seedFile as ChannelRegistryFile | undefined, recreateIssuedStores, recreateMembershipStore, true),
-    recreateDeletedStreams: ({ seed, ...opts }) => recreateDeletedStreams({ ...opts, ...(seed !== undefined ? { seed: seed as ChannelRegistryFile } : {}) }),
-    recordMesh: (entry) => recordOurMesh({ ...entry, ts: new Date().toISOString() }, "started", true),
-    commitTransport: (root, chosen, limits) => commitTransportPolicy(root, chosen, true, undefined, limits),
-  };
-}
-
-/** The structured refusal for a manifest `up -f` cannot use: the located problems of one that does
- *  not validate, or the read failure of one that cannot be read. Both exit 1, as the text path does. */
-function manifestFileRefusal(e: unknown, path: string): CommandFailure {
-  if (e instanceof ManifestError) {
-    // One line per problem: a parse error's code frame stays out of the sentence.
-    const issues = e.issues.map((issue) => ({ ...issue, message: issue.message.split("\n")[0]!.replace(/(at line \d+, column \d+):$/, "$1") }));
-    return new CommandFailure("refused", "SCHEMA_INVALID", `the manifest does not validate, so nothing was started: ${issues.map((issue) => formatIssue(e.file, issue)).join("; ")}`, { target: { path, issues }, remedy: "fix each named problem and run the command again" });
-  }
-  // A refusal that already names the problem, such as a directory given as the manifest, keeps its
-  // own sentence and remedy, as the text path prints them.
-  if (e instanceof CommandFailure) return e;
-  const code = (e as NodeJS.ErrnoException)?.code;
-  return new UnusableFile(code === "ENOENT" ? `manifest file not found: ${path}` : `the manifest ${path} could not be read (${code ?? (e as Error).message})`, { file: path });
-}
-
-/** `cotal up -f cotal.yaml` — bring up a FRESH mesh from a manifest (broker + channels + booted
- *  agents). `up -f` is a broker-CREATION command: `broker.servers` is the bind address for the NEW
- *  local broker, never a connect target. A broker already reachable there (local OR remote) means
- *  fresh boot refusal; an unbindable/remote address makes the broker fail to start (no silent
- *  local fallback). It owns the whole space, so `cotal down` tears it down without an additive
- *  ownership ledger. */
-async function upManifest(file: string, opts: UpManifestFlags): Promise<void> {
-  let prepared: PreparedManifest;
-  try {
-    prepared = loadManifest(resolve(file), opts.logFile);
-  } catch (e) {
-    if (opts.freshTeamBoot) throw new CommandFailure("refused", "SCHEMA_INVALID", "the fresh boot manifest changed or could not be resolved before startup; no broker was started", { target: { path: resolve(file), space: opts.space } });
-    failManifest(e);
-  }
-  if (opts.freshTeamBoot && opts.space !== prepared.manifest.space)
-    throw new CommandFailure("refused", "CONFLICT", "the fresh boot manifest no longer names the selected space; no broker was started", { target: { selectedSpace: opts.space, declaredSpace: prepared.manifest.space } });
-  refuseManifestSpaceMismatch(prepared, opts.space);
-  // The auth-mode sources (flags vs manifest) must AGREE — any mismatch names both sources and the
-  // exact correction in one sentence (a no-fallback identity decision, never a bare enum error).
-  const declared = prepared.manifest.broker?.auth;
-  const declaredStr = declared === undefined ? '"static" (the unset default)' : JSON.stringify(declared);
-  if (opts.open && declared === "user") {
-    if (opts.freshTeamBoot) throw new CommandFailure("refused", "CONFLICT", "--open contradicts this manifest's user-auth mode; no trust or broker was changed", { target: { space: prepared.manifest.space } });
-    console.error(c.red('✗ --open contradicts this manifest\'s broker.auth: "user" - a user-auth space cannot run unauthenticated. Drop --open, or change the manifest.'));
-    process.exit(1);
-  }
-  if (opts.userAuth && declared !== "user") {
-    if (opts.freshTeamBoot) throw new CommandFailure("refused", "CONFLICT", "--user-auth contradicts this manifest's declared auth mode; no trust or broker was changed", { target: { space: prepared.manifest.space } });
-    stderrLine("✗ ", `--user-auth requires manifest broker.auth: "user" (this manifest's broker.auth is ${declaredStr}). Either set broker.auth: "user" in the manifest, or drop --user-auth.`, c.red);
-    process.exit(1);
-  }
-  if (opts.idp && declared !== "user") {
-    if (opts.freshTeamBoot) throw new CommandFailure("refused", "CONFLICT", "--idp needs this manifest's user-auth mode; no trust or broker was changed", { target: { space: prepared.manifest.space } });
-    stderrLine("✗ ", `--idp is for user-auth spaces (this manifest's broker.auth is ${declaredStr}) - set broker.auth: "user" in the manifest, or drop --idp.`, c.red);
-    process.exit(1);
-  }
-  const idpProblem = opts.idp === undefined ? undefined : idpUrlProblem(opts.idp, "--idp");
-  if (idpProblem) {
-    if (opts.freshTeamBoot) throw new CommandFailure("refused", "SCHEMA_INVALID", idpProblem, { target: { space: prepared.manifest.space } });
-    stderrLine("✗ ", `${idpProblem}`, c.red);
-    process.exit(1);
-  }
-  const serverProblems = opts.server === undefined ? [] : serverUrlProblems(opts.server, "--server");
-  if (serverProblems.length) {
-    if (opts.freshTeamBoot) throw new CommandFailure("refused", "SCHEMA_INVALID", serverProblems.join("; "), { target: { space: prepared.manifest.space } });
-    for (const problem of serverProblems) stderrLine("✗ ", `${problem}`, c.red);
-    process.exit(1);
-  }
-  // Each entry of a list is checked above; the start still needs one address, before any parse of it.
-  const list = bindListRefusal(opts.freshTeamBoot ? "team boot" : "up -f", file, prepared.manifest.space, opts.server, prepared.manifest.broker?.servers);
-  if (list) throw list;
-  // Apply CLI overrides to one effective manifest (flag > manifest > default) so render + seed +
-  // broker + launch all agree on the same values.
-  const { prepared: eff, hostSource, serverSource } = applyUpOverrides(prepared, opts);
-  const m = eff.manifest;
-  if (m.broker?.logFile === undefined && (opts.logfileSizeLimit !== undefined || opts.logfileMaxNum !== undefined))
-    throw new CommandFailure("refused", "USAGE_INVALID", "--logfile-size-limit and --logfile-max-num require --log-file or broker.logFile in the manifest", { remedy: "pass --log-file <path>, set broker.logFile in the manifest, or omit the rotation flags" });
-  const host = m.broker?.host ?? "127.0.0.1";
-  // Same bind-vs-probe reconciliation as the flag path: a manifest that sets `broker.host` without
-  // an explicit `broker.servers` would otherwise bind one address and be probed at another.
-  const server = m.broker?.host ? reconcileHostAndServer(m.broker.host, m.broker?.servers, hostSource, serverSource) : (m.broker?.servers ?? DEFAULT_SERVER);
-  assertTlsIntentServed(server, opts.transport, opts.server !== undefined ? "--server" : "the manifest's broker.servers");
-  // A --tls-cert broker serves TLS only, so its address says tls://, as a bare up requires of --server.
-  if (opts.transport.kind === "tls-required" && server.split(",").some((url) => /^nats:\/\//i.test(url.trim())))
-    throw new CommandFailure("refused", "USAGE_INVALID", `--tls-cert serves the broker over TLS, so ${opts.server !== undefined ? "--server" : "the manifest's broker.servers"} must be a tls:// address; nothing was started or written`, {
-      target: { space: m.space, server: brokerAddressForDisplay(server) ?? "not displayable" },
-      remedy: opts.server !== undefined ? `pass --server ${tlsAddress(server)}` : `set broker.servers to ${tlsAddress(server)} in ${file}`,
-    });
-  const open = m.broker?.auth === false; // default is auth
-  const userAuth = m.broker?.auth === "user" ? { idpUrl: m.broker.idp } : undefined;
-  const runtime = m.runtime ?? "pty";
-  if (open && (m.defaults?.deliveryClass === "durable" || m.channels.some((channel) => channel.deliveryClass === "durable")))
-    throw new CommandFailure("refused", "UNSUPPORTED", "this open manifest explicitly requests durable channel delivery, but the open broker has no delivery daemon; no channel metadata or broker was written", { target: { space: m.space, defaultDurable: m.defaults?.deliveryClass === "durable", channels: m.channels.filter((channel) => channel.deliveryClass === "durable").map((channel) => channel.name) }, remedy: "use static/user authentication for durable delivery, or declare live delivery for an open mesh" });
-  // The address this manifest names is held by the same rule as a `--server` on the flag path: a
-  // stopped space keeps its registered address, and a second stack started there answers for both
-  // registrations. A fresh team boot has its own refusal below, so this is the ordinary `up -f`.
-  if (!opts.freshTeamBoot)
-    refuseRegisteredAddress(server, m.space, opts.server !== undefined
-      ? `start this one at another address with \`cotal up -f ${file} --server nats://${host}:<port>\``
-      : `point broker.servers in ${file} at another address`);
-  if (opts.freshTeamBoot) {
-    const other = loadMeshes().filter((row) => row.space !== m.space && row.server === server);
-    if (other.length) throw new CommandFailure("refused", "CONFLICT", "another local registration names this exact broker address; fresh team boot did not create a listener over its recorded target", { target: { space: m.space, server: brokerAddressForDisplay(server) ?? "not displayable", otherSpaces: other.map((row) => row.space) }, remedy: "inspect both registrations and their native brokers; exact-address conflicts block creation, while no conflict does not prove exclusivity" });
-  }
-  if (opts.freshTeamBoot) {
-    assertFreshTeamBootOwnership(cotalRoot(), m.space, open ? "open" : userAuth ? "user" : "auth");
-    await assertFreshTeamBindAvailable(server, host, m.space);
-  }
-  // A manifest needs its manager to boot declared agents.
-  if (opts.noManager && eff.agents.length)
-    throw new FlagValueRefusal(`--no-manager cannot launch this manifest: it declares ${eff.agents.length} agent(s), and a manifest's agents are booted by its manager (which --no-manager omits)`, "drop --no-manager, or use a broker-only manifest with no agents");
-  const effectiveNoManager = Boolean(opts.noManager);
-  // The open-mesh refusal must be RE-STATED here, not only against the CLI `--open` flag: on this
-  // path openness comes from the MANIFEST (`broker.auth: false`), which the flag-level guard cannot
-  // see. Without it, `cotal up -f open.yaml --rotate-sys` boots an open broker, exits 0 and rotates
-  // nothing: a rotation ask answered with silent success, the exact failure class this change
-  // exists to remove. Before the dry-run print and before anything boots.
-  if (opts.rotateSys && open)
-    throw new FlagValueRefusal("--rotate-sys is for auth meshes: this manifest sets broker.auth: false (open), so there is no system account or $SYS credentials to rotate, and nothing was started", "drop --rotate-sys for this open manifest");
-  // Before the dry-run print and before connector preflight or any write, as the refusals above.
-  if (!opts.storeDir) refuseUnnamedLastStore(cotalPath("nats"));
-  else refuseMissingNamedStore(resolve(opts.storeDir));
-  if (userAuth) await preflightUserStack(cotalRoot(), m.space, userAuth.idpUrl);
-  checkStartStore(opts.storeDir, m.space);
-
-  // Preview and apply only probe a runtime when starting a manager.
-  try { if (!effectiveNoManager) await preflightRuntime(runtime); }
-  catch (error) {
-    throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `the requested runtime did not pass preflight; ${opts.freshTeamBoot ? "no fresh boot intent or broker was started" : "no broker was started"}`, { target: { space: m.space, runtime }, remedy: error instanceof Error ? error.message : "inspect the selected runtime provider" });
-  }
-
-  if (opts.dryRun) {
-    // Dial-host SAN must refuse here too (S6). The real route runs assertServesDialHost after
-    // the plan is computed; dry-run used to return before that check and green-lit a launch
-    // the applying command refuses. Validate against the effective server; still no writes.
-    // Announce only AFTER the dial-host check so a wrong-SAN dry-run does not print TLS: serving.
-    assertServesDialHost(opts.transport, new URL(server).hostname);
-    // Connector preflight on the dry-run path too (#315): the real route refuses a manifest at
-    // preflightConnectors before anything boots; a dry run that plans a launch the applying
-    // command refuses is the same green-lit-a-refusal failure class.
-    const dryConn = await preflightConnectors(prepared);
-    if (dryConn) {
-      stderrLine("✗ ", `connector preflight failed: ${dryConn}`, c.red);
-      process.exit(1);
-    }
-    if (opts.transport.kind === "tls-required") announceTransport(opts.transport);
-    console.log(renderUpPlan(eff, server));
-    // The omission is part of the plan (#1417): a dry run that lists a manager the real boot
-    // will not start is the exact "green-lit a launch the applying command refuses" failure.
-    if (effectiveNoManager)
-      console.log(c.dim("  no manager will start on this host (--no-manager): broker, channels and, in auth mode, the delivery daemon come up, and no agents launch from here"));
-    return;
-  }
-
-  // up -f never adopts a running broker. The old spawn -f route is no longer a manifest deploy.
-  if (await isReachable(server)) {
-    if (opts.freshTeamBoot) throw new CommandFailure("refused", "CONFLICT", "the selected address already has a broker; fresh boot did not adopt it or start a competing listener", { target: { space: m.space, server: brokerAddressForDisplay(server) ?? "not displayable" }, remedy: "inspect the existing broker and selected local records, or use another prepared address" });
-    // This folder's own mesh for the manifest's space is named as running, as a bare `up` names it,
-    // with the routes that change it instead of the advice for a foreign broker.
-    if (loadMeshes().some((row) => row.server === server && row.root === cotalRoot() && row.space === m.space)) {
-      stderrLine("✗ ", `mesh "${m.space}" is already running at ${brokerAddressForDisplay(server) ?? "its address"} from this folder - \`up -f\` boots a fresh mesh and does not apply a manifest to a running one; stop it with \`cotal down\`, then retry your original command`, c.red);
-      process.exit(1);
-    }
-    stderrLine("✗ ", `${brokerAddressForDisplay(server) ?? "selected address"} already has a broker - a fresh boot will not adopt it. Stop the owned stack or select another address; team deploy supports only all-new channel cards, not agent apply.`, c.red);
-    process.exit(1);
-  }
-  await assertBrokerAddressFree(server, `${displayCmd()} up -f ${shellWord(file)}`, host);
-  // Connectors + their required binaries must exist before any mutation (no fallback).
-  const conn = await preflightConnectors(prepared);
-  if (conn) {
-    if (opts.freshTeamBoot) throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "connector preflight failed before the fresh boot intent; no native effect was requested", { target: { space: m.space }, remedy: conn });
-    stderrLine("✗ ", `connector preflight failed: ${conn}`, c.red);
-    process.exit(1);
-  }
-  if (opts.freshTeamBoot) {
-    assertFreshTeamBootOwnership(cotalRoot(), m.space, open ? "open" : userAuth ? "user" : "auth");
-    await assertFreshTeamBindAvailable(server, host, m.space);
-  }
-
-  const deploymentId = genRunId();
-  if (opts.freshTeamBoot) {
-    try { writeFreshTeamAttempt(cotalRoot(), { schemaVersion: 1, kind: "fresh-team-attempt", deploymentId, space: m.space, root: cotalRoot(), server, authMode: open ? "open" : userAuth ? "user" : "auth", manifestPath: resolve(file), createdAt: new Date().toISOString() }); }
-    catch { throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "fresh boot intent creation or its durability did not confirm; no trust preparation, launch spec or listener was requested", { target: { space: m.space, deploymentId, root: cotalRoot(), intentPath: join(cotalRoot(), ".cotal", `team-boot-attempt-${deploymentId}.json`) }, remedy: "inspect the exact intent path before deciding whether any further boot can be attempted" }); }
-  }
-
-  // USER-AUTH manifest: the agents run under the LOGGED-IN operator's owner, and the launch spec
-  // (consumed by the manager at boot) must carry it — so resolve it NOW. On a fresh mesh the
-  // derivation material doesn't exist yet; ensure it just-in-time (authSetup + prepareServer are
-  // idempotent ensure-* — the same contract the refresh-heal path already rides). Not logged in /
-  // no provider = the exact recovery sentence, before anything boots.
-  let owner: string | undefined;
-  if (userAuth) {
-    try {
-      mkdirSync(cotalPath("nats"), { recursive: true, mode: 0o700 });
-      // NO `rotateSys` here on purpose: this is an owner-derivation pre-resolve that runs BEFORE the
-      // real boot, and the boot below carries the flag. Rotating in both would burn two generations
-      // per `up -f --rotate-sys` and retire the account the first pass just minted creds against.
-      const setup = await authSetup(cotalPath("nats"), server, m.space, host, userAuth, assertServesDialHost(opts.transport, new URL(server).hostname), false, undefined, opts.freshTeamBoot);
-      owner = await resolveAuthProvider().ownerForLogin({ store: workspaceSecretStore(cotalRoot()), dir: setup.stateDir!, space: m.space });
-    } catch (e) {
-      if (opts.freshTeamBoot) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the fresh user-auth owner preparation did not confirm; trust or provider state may have changed, but no launch spec or listener was requested", { target: { space: m.space, deploymentId, root: cotalRoot() }, remedy: "inspect the retained boot intent, trust state and login before deciding another action; do not repeat an uncertain preparation" });
-      stderrLine("✗ ", `${(e as Error).message}`, c.red);
-      process.exit(1);
-    }
-  }
-  // The resolved launch spec is written FIRST so the ONE control-plane manager that comes up with
-  // the broker (inside startMeshDetached) carries it. Exactly one manager serves a space (the
-  // singleton lease): a second `supervise` started here for the launch would race the plain one for
-  // the lease — the loser refuses, so either the agents never boot or the incumbent is orphaned
-  // behind an overwritten pid file. The manager materializes each transient persona and mints creds
-  // from the resolved policy — never re-reading a file for authority.
-  if (opts.freshTeamBoot) {
-    assertFreshTeamBootOwnership(cotalRoot(), m.space, open ? "open" : userAuth ? "user" : "auth", { deploymentId, server, manifestPath: resolve(file) });
-    try { await assertFreshTeamBindAvailable(server, host, m.space); }
-    catch { throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the fresh boot's bind address was not confirmed after owner preparation; no launch spec or listener was requested, but its retained intent and any prepared trust were not discarded", { target: { space: m.space, deploymentId, server: brokerAddressForDisplay(server) ?? "not displayable" }, remedy: "inspect the exact retained intent, trust state and address before deciding another boot; this bind probe does not reserve the listener" }); }
-  }
-  let specPath: string;
-  try { specPath = writeLaunchSpec(cotalRoot(), buildLaunchSpec(eff, deploymentId, owner)); }
-  catch (error) {
-    if (opts.freshTeamBoot) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the fresh boot intent was recorded, but launch-spec creation did not confirm its outcome; no broker launch was attempted and the intent remains for inspection", { target: { space: m.space, deploymentId, root: cotalRoot() }, remedy: "inspect the original intent and launch-spec path before another boot; no effect was retried" });
-    throw error;
-  }
-  // Ordinary up can reconcile a leftover manager. Fresh team boot must not signal one: its
-  // stricter prewrite gate required no manager record at all, and a later contender wins
-  // neither stop authority nor permission to replace it.
-  if (!opts.freshTeamBoot) {
-    await stopManager(m.space);
-    clearManagerArtifacts(m.space);
-  }
-  let pid: number;
-  let controlPlane = false;
-  let authService = true;
-  let deliveryResponderBound: boolean | null = null;
-  try {
-    // `m.broker?.host`, not the defaulted `host`: same reason as the flag path — only a host the
-    // manifest actually declared is an exposure decision worth persisting.
-    ({ pid, controlPlane, authService, deliveryResponderBound } = await startMeshDetached({ transport: opts.transport, server, space: m.space, open, userAuth, rotateSys: opts.rotateSys, host: m.broker?.host, logFile: m.broker?.logFile, logfileSizeLimit: m.broker?.logfileSizeLimit, logfileMaxNum: m.broker?.logfileMaxNum, seed: manifestToChannels(eff), runtime, launch: specPath, maxSessions: opts.maxSessions, noManager: effectiveNoManager, quietBoot: opts.freshTeamBoot, ...(opts.storeDir ? { storeDir: opts.storeDir } : {}) }));
-  } catch (e) {
-    if (opts.freshTeamBoot) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the fresh broker startup did not confirm completion after its launch spec was written; the listener or control plane may have changed state and the boot was not retried", { target: { space: m.space, deploymentId, launchSpec: specPath }, changed: [{ kind: "launch-spec-written", path: specPath }], remedy: "inspect this exact run and the recorded local listener, manager and auth state before another boot" });
-    // A classified failure, such as a certificate this client refuses, keeps its code and next step.
-    if (isCommandFailure(e)) throw e;
-    stderrLine("✗ ", `${(e as Error).message}`, c.red);
-    process.exit(1);
-  }
-  // Transport committed inside startMeshDetached before delivery (S5+S9).
-  let summaryRecorded = false;
-  try {
-    writeFreshTeamSummary(cotalRoot(), {
-      schemaVersion: 1, kind: "fresh-team-summary", deploymentId, space: m.space,
-      root: cotalRoot(), server, authMode: open ? "open" : userAuth ? "user" : "auth", brokerPid: pid, manifestPath: resolve(file),
-      requestedAgents: eff.agents.map((agent) => agent.name),
-      declaredChannels: m.channels.map((channel) => channel.name),
-      recordedAt: new Date().toISOString(), managerRequested: !effectiveNoManager,
-      controlPlaneReturned: controlPlane, authServiceReturned: authService, deliveryResponderBound,
-      agentReadiness: "not-checked",
-    });
-    summaryRecorded = true;
-  } catch {
-    console.error(c.yellow(`! the native fresh boot returned but its local team summary could not be recorded (run ${deploymentId}); do not repeat the boot just to recreate the summary`));
-  }
-  if (opts.freshTeamBoot) {
-    if (!authService || !controlPlane || !summaryRecorded || (!open && deliveryResponderBound !== true))
-      throw new CommandFailure("partial", "OPERATION_PARTIAL", "the fresh broker started, but its control plane, auth service, delivery responder or local deployment summary did not confirm readiness; the same boot was not retried", { target: { space: m.space, deploymentId, brokerPid: pid, launchSpec: specPath }, changed: [{ kind: "broker-started", pid, server: brokerAddressForDisplay(server) ?? "not displayable" }, { kind: "launch-spec-written", path: specPath }, ...(summaryRecorded ? [{ kind: "fresh-summary-recorded", deploymentId }] : [])], remedy: "inspect this exact run, the local broker and manager, and any retained summary before deciding another action" });
-    const inheritedAccess = eff.agents.flatMap((agent) => {
-      const access = agent.inherited;
-      return access.capabilities.length || access.subscribe.length || access.allowSubscribe.length || access.allowPublish.length
-        ? [{ agent: agent.name, persona: agent.persona ?? null, capabilities: access.capabilities, subscribe: access.subscribe, allowSubscribe: access.allowSubscribe, allowPublish: access.allowPublish }]
-        : [];
-    });
-    let currentSelection: string | null = null;
-    let selectionChecked = false;
-    try { currentSelection = getCurrent() ?? null; selectionChecked = true; }
-    catch { /* The returned broker receipt remains usable without a current-default read. */ }
-    const result = { kind: "fresh-team-boot" as const, space: m.space, root: cotalRoot(), deploymentId, server: brokerAddressForDisplay(server) ?? "not displayable", brokerPid: pid, manifestPath: resolve(file), runtime, currentSelection, selectionChecked,
-      mode: open ? "open" : userAuth ? "user-auth" : "static-auth", controlPlaneReturned: controlPlane, authServiceReturned: authService, deliveryResponderBound, summaryRecorded,
-      requestedAgents: eff.agents.map((agent) => ({ name: agent.name, application: agent.agentType, role: agent.role ?? null })),
-      declaredChannels: m.channels.map((channel) => ({ name: channel.name, deliveryClass: channel.deliveryClass ?? null, replay: channel.replay ?? null, replayWindow: channel.replayWindow ?? null })), inheritedAccess, agentReadiness: "not-checked" as const };
-    writeResult(opts.presentation ?? "rich", { command: "team boot", target: { space: m.space, root: cotalRoot(), deploymentId }, result, completeness: "partial", warnings: [...eff.warnings.map((warning) => ({ code: "MANIFEST_WARNING", target: { agent: warning.agent }, message: warning.message })), ...(!selectionChecked ? [{ code: "CURRENT_SELECTION_UNAVAILABLE", target: { space: m.space }, message: "The current default space could not be read after boot; no default was inferred." }] : [])] }, (data): Report => ({ sections: [
-      { title: "Fresh team broker returned", blocks: [{ kind: "fields", rows: [["Space", data.space], ["Deployment", data.deploymentId], ["Root", data.root], ["Broker", data.server], ["Broker PID", String(data.brokerPid)], ["Manifest", data.manifestPath], ["Auth mode", data.mode], ["Runtime request", data.runtime], ["Current default", data.selectionChecked ? data.currentSelection ?? "none selected" : "not checked"], ["Control-plane ensure", "returned"], ["Delivery responder", data.deliveryResponderBound === null ? "not required" : "bound when boot returned"], ["Membership material", "not checked by this receipt"], ["Auth service", data.mode === "user-auth" ? "returned at boot" : "not required"], ["Launch summary", "recorded"], ["Agent readiness", "not checked"]] }, { kind: "lines", lines: ["The manager was requested as part of boot; this receipt does not establish agent joins, current broker health or whole-stack stop authority."] }] },
-      { title: "Requested topology", blocks: [data.requestedAgents.length ? { kind: "table", columns: [{ key: "name", label: "Agent" }, { key: "application", label: "Application" }, { key: "role", label: "Role" }], rows: data.requestedAgents.slice(0, 100).map((agent) => ({ ...agent, role: agent.role ?? "none" })) } : { kind: "lines", lines: ["No agents requested."] }, data.declaredChannels.length ? { kind: "table", columns: [{ key: "name", label: "Channel" }, { key: "delivery", label: "Declared delivery" }, { key: "replay", label: "Declared replay" }, { key: "window", label: "Declared window" }], rows: data.declaredChannels.slice(0, 100).map((channel) => ({ name: `#${channel.name}`, delivery: channel.deliveryClass ?? "not declared", replay: channel.replay === null ? "not declared" : channel.replay ? "on" : "off", window: channel.replayWindow ?? "not declared" })) } : { kind: "lines", lines: ["No channels declared."] }, ...((data.requestedAgents.length > 100 || data.declaredChannels.length > 100) ? [{ kind: "lines" as const, lines: ["Showing at most 100 declared agents and channels; the saved summary retains all names."] }] : [])] },
-      ...(data.inheritedAccess.length ? [{ title: "Persona-inherited access", blocks: [{ kind: "table" as const, columns: [{ key: "agent", label: "Agent" }, { key: "persona", label: "Persona" }, { key: "scope", label: "Outside manifest channels" }], rows: data.inheritedAccess.slice(0, 100).map((row) => ({ agent: row.agent, persona: row.persona ?? "none", scope: [row.capabilities.length ? `capabilities ${row.capabilities.join(",")}` : "", row.subscribe.length ? `subscribe ${row.subscribe.join(",")}` : "", row.allowSubscribe.length ? `read ${row.allowSubscribe.join(",")}` : "", row.allowPublish.length ? `post ${row.allowPublish.join(",")}` : ""].filter(Boolean).join(" · ") })) }, { kind: "lines" as const, lines: [...(data.inheritedAccess.length > 100 ? ["Additional inherited scopes are not shown in this terminal view."] : []), "These scopes came from referenced personas and are not limited to channels declared by this manifest."] }] }] : []),
-      { title: "Next", blocks: [{ kind: "commands", items: [{ command: `cotal team show ${data.deploymentId}`, description: "Read this local launch summary" }, { command: `cotal watch --space ${data.space}`, description: "Observe the selected mesh" }, { command: `cotal down --space ${data.space} --dry-run`, description: "Inspect local stop records without stopping the stack" }] }] },
-    ] }));
-    return;
-  }
-  console.log(c.green(`✓ mesh "${m.space}" up at ${server}`) + c.dim(` (broker pid ${pid})`));
-  console.log(c.dim(`  seeded ${m.channels.length} channel(s): ${m.channels.map((ch) => "#" + ch.name).join(", ")}`));
-  if (summaryRecorded) console.log(c.dim(`  fresh deployment ${deploymentId} recorded; \`cotal team show ${deploymentId}\` reads its launch summary, not live ownership`));
-  // Never claim a launch the control plane can't deliver: the manager carries the launch spec, so a
-  // degraded control plane (announced above) means the agents are NOT coming up.
-  if (effectiveNoManager) {
-    // Truthful summary for the broker-only boot (#1417): nothing was omitted by accident, and the
-    // agents this manifest declares (none — a declaring manifest is refused above) launch elsewhere.
-    console.log(c.dim(`  broker-only (--no-manager): no manager started on this host - run \`cotal supervise --space ${m.space} --server ${server}\` from a manager host to manage agents`));
-  } else if (controlPlane) {
-    // U6: on a user mesh the agents run under the OPERATOR's identity — say whose they are.
-    // The manager launches them after this command returns, so nothing here knows whether one joined:
-    // no success mark, and name where the outcome shows.
-    console.log(`  launch pending: the manager (${runtime}) starts ${eff.agents.length} agent(s)${owner ? ` as you (owner ${owner})` : ""} after this returns; up -f does not wait for them to join`);
-    console.log(c.dim(`  who joined: \`cotal ps --space ${m.space}\`   ·   a failed launch and its reason: ${managerLogDisplayPath(m.space)}`));
-  } else {
-    stderrLine("✗ ", `${eff.agents.length} agent(s) NOT launched - the control plane did not come up (see above)`, c.red);
-  }
-
-  // Loud summary: any persona-inherited access an `include` manifest dragged in, plus warnings.
-  const inherited = renderInherited(eff);
-  if (inherited) console.log("\n" + inherited);
-  if (eff.warnings.length) console.log("\n" + renderWarnings(eff.warnings));
-  const downRoute = opts.root ? `from ${oneLine(cotalRoot())}, run \`cotal down\`` : "`cotal down`";
-  console.log(c.dim(`\nWatch: \`cotal watch --space ${m.space}\` (terminal)   ·   Dashboard: configure the explicit web service preset separately   ·   Tear down: ${downRoute}`));
-  // A declared-user-auth manifest whose auth service never became ready, or a degraded control
-  // plane: the mesh is up + recorded, but this launch did not deliver what it declared — exit
-  // non-zero so CI/wrappers don't read success (the consequence line printed at the failure above).
-  if (!authService || !controlPlane || !summaryRecorded) process.exitCode = 1;
-}
-
-/** CLI overrides for `up -f` — each wins over the manifest's own value (flag > manifest > default).
- *  `userAuth` is a consistency ASSERTION against the manifest, not an override, and `idp` overrides
- *  only on a user-auth manifest: the manifest declares the auth mode; a disagreeing flag is a hard
- *  error, never a silent re-mode. */
-interface UpManifestFlags {
-  root?: string;
-  freshTeamBoot?: boolean;
-  presentation?: "rich" | "json" | "plain";
-  /** The listener's transport, decided above the `--file` branch. NON-OPTIONAL: this path is one of
-   *  the three that used to drop `--tls-cert`/`--tls-key` at the call boundary and serve plaintext. */
-  transport: BrokerTransport;
-  dryRun: boolean;
-  server?: string;
-  host?: string;
-  space?: string;
-  runtime?: string;
-  open?: boolean;
-  userAuth?: boolean;
-  idp?: string;
-  /** `--rotate-sys` on the manifest path: the same class-3 renewal, carried to the ONE boot that
-   *  renders the broker config (`startMeshDetached`), never to the owner-derivation pre-resolve. */
-  rotateSys?: boolean;
-  /** Operator-set live-session ceiling, recorded and handed to the manager started with the mesh. */
-  maxSessions?: number;
-  /** #1417 broker-only boot: the broker (+ channels, + delivery daemon in auth mode) comes up and
-   *  NO manager starts on this host. The manifest's agents are booted BY its manager, so a manifest
-   *  declaring agents under `--no-manager` is a contradiction refused before anything boots. */
-  noManager?: boolean;
-  /** `--store-dir`: the JetStream store this boot opens instead of `.cotal/nats`. */
-  storeDir?: string;
-  logFile?: string;
-  logfileSizeLimit?: number;
-  logfileMaxNum?: number;
-}
-
-/** Return a copy of the prepared manifest with CLI overrides applied to broker/space/runtime, so the
- *  whole launch (render, seed, broker, manager, launch spec) runs against one effective manifest.
- *  A flag names itself. A value that came from the file keeps that file's key, and a value neither
- *  supplied is named by the flag that would supply it. */
-function applyUpOverrides(prepared: PreparedManifest, o: UpManifestFlags): { prepared: PreparedManifest; hostSource: string; serverSource: string } {
-  const m = prepared.manifest;
-  const broker = { ...m.broker };
-  if (o.server) broker.servers = o.server;
-  if (o.host) broker.host = o.host;
-  if (o.open) broker.auth = false;
-  if (o.idp) broker.idp = o.idp;
-  if (o.logFile !== undefined) broker.logFile = o.logFile;
-  if (o.logfileSizeLimit !== undefined) broker.logfileSizeLimit = o.logfileSizeLimit;
-  if (o.logfileMaxNum !== undefined) broker.logfileMaxNum = o.logfileMaxNum;
-  return {
-    prepared: {
-      ...prepared,
-      manifest: {
-        ...m,
-        broker: Object.keys(broker).length ? broker : undefined,
-        runtime: (o.runtime as typeof m.runtime) ?? m.runtime,
-      },
-    },
-    hostSource: !o.host && m.broker?.host !== undefined ? "broker.host" : "--host",
-    serverSource: !o.server && m.broker?.servers !== undefined ? "broker.servers" : "--server",
-  };
-}
-
-/** Start the CONTROL PLANE alongside the broker: old-manager preflight → delivery daemon (auth
- *  mode only) → detached manager. `up` is the launching command — since `setup` became
- *  configure-only (stage 2b), the whole local stack comes up HERE, so `spawn --detach` /
- *  cotal_spawn find a manager without any setup side effect. Coupled to the broker by the
- *  daemon's watchdog + the `up`/`down` teardown. `mgr` rides through to the manager start — the
- *  `up -f` path hands THE manager its runtime + resolved launch spec here (one manager per space,
- *  so the launch can never be a second supervise). Returns the control plane it ensured, or
- *  `undefined` when it is degraded, so a caller whose output claims a manager (the `up -f` launching
- *  line) can tell the truth. */
-async function startDeliveryWithBroker(
-  space: string,
-  server: string,
-  /**
-   * Whether this listener requires TLS, decided by the CALLER.
-   *
-   * NON-OPTIONAL, for exactly the reason {@link DetachOpts.transport} is. This used to be an
-   * optional `transport` that the callee fell back on `readBrokerPolicy(cotalRoot())` for whenever
-   * it was absent — and the refresh path (#836) never passed it. That path decides the same fact
-   * from the mesh-registry entry AND the live `INFO`, refuses on any disagreement, and then handed
-   * the decision to nobody: a root whose registry records `tlsRequired` while holding no
-   * `broker-policy.json` (registered with `cotal meshes add --tls`, or a mesh that predates the
-   * policy file) relaunched the delivery daemon FLAGLESS against a TLS broker. Nothing looked
-   * wrong, because the daemon still upgrades on the server's unauthenticated INFO — and it holds a
-   * STANDING credential and reconnects unattended, so that exposure repeats with nobody watching.
-   *
-   * A second durable record consulted in the callee is how the caller's copy went silently unused.
-   * One decision, and it arrives as an argument.
-   */
-  tlsRequired: boolean,
-  mgr?: {
-    runtime?: string;
-    launch?: string;
-    attachHost?: string;
-    resumeAttempt?: string;
-    resumeCommit?: { path: string; sha256: string };
-    /** P2 item 6: broker ws listener port for the console session client. */
-    wsPort?: number;
-    maxSessions?: number;
-    managerSeatCap?: SeatCap;
-    /** #1417 broker-only mode: ensure the delivery daemon and not the manager. */
-    noManager?: boolean;
-    /** The mesh is open, so no delivery daemon starts, whatever accounts the root holds. */
-    open?: boolean;
-    /** #2469: the foreground owner's restart hook for a daemon this launch starts. */
-    onDeliveryExit?: (code: number | null, signal: NodeJS.Signals | null) => void;
-  },
-  afterDelivery?: () => Promise<void>,
-  isStopping?: () => boolean,
-): Promise<Awaited<ReturnType<typeof ensureControlPlane>> | undefined> {
-  try {
-    const plane = await ensureControlPlane({ space, server, tls: tlsRequired, ...(mgr ?? {}) }, afterDelivery);
-    // #1576: `up` either BINDS the responder or SAYS SO HERE. The delivery daemon is a hard
-    // dependency of spawn, retirement and the durable backstop, and this function used to return `true` for a boot
-    // that started a daemon whose responder never bound — so `cotal up` printed its success banner
-    // over a control plane that could not perform any of the three. The reporter's fleet ran 22
-    // hours in that state. This is not a failure of `up` (live messaging is unaffected and the
-    // responder may still bind), so it does not throw; it states the condition and its consequence.
-    if (plane.responderBound === false)
-      console.error(
-        c.yellow(`! delivery responder did not bind before this boot finished - ${RESPONDER_UNBOUND_CONSEQUENCE}`) +
-          c.dim(`\n  The daemon process is running and the wait is open-ended; boot durable joins reconcile by themselves once it binds (agents do NOT need respawning).\n  Watch it with \`${displayCmd()} status --components\`.`),
-      );
-    return plane;
-  } catch (e) {
-    // A running mesh must report its missing control plane. A foreground stop can remove the
-    // manager while this startup observation is still pending; that is intentional teardown.
-    if (!isStopping?.()) reportDegradedControlPlane((e as Error).message);
-    return undefined;
-  }
-}
-
-/** The degraded control plane on stderr: each line of `why`, then its consequence, wrapped to the
- *  terminal as every other warning is. */
-function reportDegradedControlPlane(why: string): void {
-  const [first, ...rest] = why.split("\n");
-  stderrLine("! ", `control plane degraded: ${first}`, c.dim);
-  for (const line of [...rest, "Spawn and retirement require a functioning control plane."]) stderrLine("  ", line, c.dim);
-}
-
-/**
- * Publish a spawned listener's pid, and bind a maintenance-bound one to its attempt, before anything
- * waits on it. A launch that dies before its listener serves then leaves `nats.pid` for `cotal down`
- * and a journal naming the exact process for recovery to adopt or retire. A publish or bind that
- * throws stops the listener. Both launch modes call it right after the spawn.
- */
-async function recordSpawnedListener(child: ChildProcess, startedAt: string, bound?: DetachOpts["boundListener"]): Promise<void> {
-  if (!child.pid) throw new Error("nats-server spawned with no pid");
-  try {
-    writeSecretFile(cotalPath("stack-home.json"), JSON.stringify({ home: canonicalRoot(homeCotalDir()) }));
-    writePidPair(cotalPath(NATS_PIDFILE), child.pid); // #969/#1238: publish the pair by rename, never torn
-  } catch (error) {
-    // The entry at `nats.pid` may be the one that refused the publish (a directory there fails the
-    // rename), so it is left as found: unrecording would read it and throw over this error.
-    await stopFailedListener(child, false);
-    throw error;
-  }
-  if (!bound) return;
-  if (process.env.COTAL_SMOKE_EXIT_AFTER_RESTORE_LISTENER_SPAWN === "1") process.exit(87);
-  try {
-    bound.onSpawn(child.pid, startedAt);
-  } catch (error) {
-    await stopFailedListener(child);
-    throw error;
-  }
-}
-
-/**
- * Everything between spawning a listener and serving it: readiness, the broker version read and a
- * bound listener's identity check. Foreground `up` and {@link startMeshDetached} both call it, so a
- * guard added here reaches both launch modes (#2924).
- *
- * A listener that never answers or whose version read throws is stopped and its `nats.pid` removed
- * before `up` fails. Nothing has recorded the mesh yet, so a listener left running would hold the
- * port with no registry entry. A bound listener that fails its identity check is kept: its
- * maintenance journal is already bound to it.
- */
-async function awaitSpawnedListener(l: {
-  child: ChildProcess;
-  /** The nats-server that was spawned, named when its exit ends the wait. */
-  executable: NatsServer;
-  server: string;
-  space: string;
-  creds?: string;
-  /** The listener serves TLS, so a certificate this client refuses ends the wait. */
-  tls: boolean;
-  /** Where the listener's output goes, named when it never answers. */
-  log: string;
-  boundListener?: DetachOpts["boundListener"];
-}): Promise<void> {
-  const { child, server, space } = l;
-  let facts: BrokerFacts;
-  try {
-    if (!(await waitReady(server, l.creds, l.tls, l.log))) throw exitedBeforeReady(l) ?? new Error(`nats-server did not become reachable at ${server} - see ${l.log}`);
-    facts = await brokerVersion(server, space, l.creds);
-  } catch (e) {
-    await stopFailedListener(child);
-    throw e;
-  }
-  if (belowPresenceSafeBroker(facts.version) && facts.presenceFileBacked)
-    console.error(
-      c.yellow(
-        `! nats-server ${facts.version} is below 2.14.5 and the presence bucket of "${space}" is file-backed: it can latch after a stall and close the mesh to new joins (#1356); put a nats-server 2.14.5 or newer on PATH (it wins over the bundled one)`,
-      ),
-    );
-  if (l.boundListener) await l.boundListener.verify();
-}
-
-/** The failure of a listener that exited before it answered: the executable, the exit code or signal
- *  Node observed, and where its output went. Undefined when no exit was observed, so a listener that
- *  only stayed silent keeps an unconfirmed outcome. */
-function exitedBeforeReady(l: { child: ChildProcess; executable: NatsServer; server: string; log: string }): CommandFailure | undefined {
-  const { exitCode, signalCode } = l.child;
-  if (exitCode === null && signalCode === null) return undefined;
-  const exit = exitCode !== null ? `exited with code ${exitCode}` : `was stopped by ${signalCode}`;
-  return new CommandFailure("failed", "OPERATION_FAILED", `${natsServerLabel(l.executable)} ${exit} before it answered at ${l.server}; see ${l.log}`, {
-    target: { executable: l.executable.path, ...(exitCode !== null ? { exitCode } : { signal: signalCode }), server: l.server, log: l.log },
-    remedy: listenerExitRemedy(l.executable, l.log),
-  });
-}
-
-/** The next step for a listener that exited before it answered: read its output, then fix a
- *  nats-server found on PATH or take it off PATH, and start again. */
-function listenerExitRemedy(executable: NatsServer, log: string): string {
-  return executable.source === "path" ? `read ${log}, then fix ${executable.path} or take it off PATH so cotal uses its bundled nats-server, and run \`cotal up\` again` : `read ${log}, then run \`cotal up\` again`;
-}
-
-/**
- * Everything a launch runs once its listener answers: the space setup, the user-auth service, the
- * mesh record, the transport commit and the control plane. Foreground `up` and
- * {@link startMeshDetached} both call it, so the two launch modes cannot drift apart (#2496).
- *
- * A fresh boot whose setup throws stops the listener and removes `nats.pid` before rethrowing the
- * original error. Nothing has recorded the mesh yet, so a listener left running would hold the port
- * with no registry entry for `cotal down` to reach. A channel seed with an unparseable value fails
- * here. A resume keeps its listener: its maintenance journal is already bound to it.
- */
-async function serveReadyListener(l: {
-  child: ChildProcess;
-  server: string;
-  space: string;
-  storeDir: string;
-  setup?: Awaited<ReturnType<typeof authSetup>> & { creds: string };
-  maxPayload?: number;
-  seedFile?: ChannelRegistryFile;
-  /** `--recreate-issued-stores`: the new backup directory the fresh boot's stream setup uses. */
-  recreateIssuedStores?: string;
-  /** `--recreate-membership-store`: explicit stopped-space File to Memory conversion. */
-  recreateMembershipStore?: boolean;
-  transport: BrokerTransport;
-  /** The raw `--host` flag, so the record can tell an operator's address from the loopback default. */
-  host?: string;
-  maxSessions?: number;
-  managerSeatCap?: SeatCap;
-  maxFileStore?: number;
-  publicExchange?: string[];
-  resumeAttempt?: string;
-  resumeCommit?: { path: string; sha256: string };
-  runtime?: string;
-  launch?: string;
-  noManager?: boolean;
-  quietBoot?: boolean;
-  onDeliveryExit?: (code: number | null, signal: NodeJS.Signals | null) => void;
-  /** Suppress startup failure diagnostics while a foreground guarded stop is in progress. */
-  isStopping?: () => boolean;
-}): Promise<{ authService: boolean; controlPlane: Awaited<ReturnType<typeof ensureControlPlane>> | undefined }> {
-  const { child, server, space, setup, transport } = l;
-  try {
-    if (l.resumeAttempt) {
-      const ordinaryResume = pendingOrdinaryResumes.has(l.resumeAttempt);
-      await recreateMemoryBuckets(server, space, setup, ordinaryResume ? { convertMembership: l.recreateMembershipStore === true } : undefined);
-    } else {
-      await postStart(server, space, setup, l.seedFile, l.recreateIssuedStores, l.recreateMembershipStore, true);
-    }
-  } catch (e) {
-    await stopFailedListener(child);
-    throw e;
-  }
-  // Register the prepared trust before delivery starts. Auth follows delivery's liveness oracle,
-  // then the manager: a crashed auth claim cannot be reclaimed while that oracle is absent.
-  let svc: { ok: boolean; userAuth?: UserAuthInfo } = {
-    ok: setup?.prepared === undefined,
-    ...(setup?.prepared ? { userAuth: assertUserAuthInfo(setup.prepared.publicAuth) } : {}),
-  };
-  // Record BEFORE the control plane comes up: the manager's fail-closed mode detection requires
-  // an authoritative registry entry (marker-without-registry is a refused start, not a guess),
-  // so the record must exist by the time it boots. A manager/delivery failure after this leaves
-  // a recorded-but-degraded mesh — the documented, healable posture.
-  // Read the prior host and session limit before replacing the registry entry on resume.
-  const attachHost = attachHostFor(space, l.host);
-  const maxSessions = maxSessionsFor(space, l.maxSessions);
-  try {
-    recordOurMesh({
-      space, server, root: cotalRoot(),
-      mode: setup?.prepared ? "user" : setup ? "auth" : "open",
-      // Record the transport decision even for plaintext. Omit the host unless the operator chose one.
-      tlsRequired: transport.kind === "tls-required",
-      ...(svc.userAuth ? { userAuth: svc.userAuth } : {}),
-      ...(attachHost ? { attachHost } : {}),
-      ...(maxSessions !== undefined ? { maxSessions } : {}),
-      ...(l.maxFileStore !== undefined ? { maxFileStore: l.maxFileStore } : {}),
-      storeDir: l.storeDir,
-      ts: new Date().toISOString(),
-    }, "started", l.quietBoot);
-  } catch (e) {
-    await stopFailedListener(child);
-    throw e;
-  }
-  // Commit the policy only for a listener that is up and recorded (S5), and before the control
-  // plane (S9). startDeliveryWithBroker is HANDED the transport decision, so it does not depend on
-  // the file at all.
-  commitTransportPolicy(cotalRoot(), transport, l.quietBoot, server, { authTimeout: setup?.authTimeout, maxPayload: l.maxPayload ?? setup?.maxPayload, accountResolver: setup?.accountResolver });
-  // An open mesh has no delivery daemon. Its mode is passed down because the root can still hold a
-  // static stack's accounts. Class-2 credential renewal is NOT wired here: the MANAGER is the
-  // renewal owner (it is resident in every mesh mode, where a foreground `up` process is not).
-  const controlPlane = await startDeliveryWithBroker(space, server, transport.kind === "tls-required", {
-    open: setup === undefined,
-    onDeliveryExit: l.onDeliveryExit,
-    runtime: l.runtime,
-    launch: l.launch,
-    // The address the broker was bound to. This is what lets `cotal attach` reach this manager
-    // from another machine; without it the attach face stays loopback-only, so exposing terminals
-    // is never a side effect of anything but the operator binding the mesh somewhere reachable.
-    attachHost,
-    maxSessions,
-    managerSeatCap: l.managerSeatCap,
-    noManager: l.noManager,
-    resumeAttempt: l.resumeAttempt,
-    resumeCommit: l.resumeCommit,
-    wsPort: setup?.wsPort, // P2 item 6: the console session client's broker ws port
-  }, async () => {
-    svc = await startUserAuthService(space, server, setup, [...(l.publicExchange ?? []), ...authTimeoutArgs(setup?.authTimeout)], l.quietBoot);
-    if (svc.userAuth) recordOurMesh({ space, server, root: cotalRoot(), mode: "user", userAuth: svc.userAuth, ts: new Date().toISOString() }, "refresh", true);
-  }, l.isStopping);
-  const registered = findMesh(space);
-  if (registered) recordOurMesh(registered, "refresh", true);
-  seedPersonaAfterUp(cotalRoot(), l.quietBoot);
-  return { authService: svc.ok, controlPlane };
-}
-
-export interface DetachOpts {
-  /**
-   * The listener's transport, resolved and validated by the CALLER.
-   *
-   * NON-OPTIONAL. This function used to re-derive it here from `opts`, which never carried
-   * `--tls-cert`/`--tls-key` — so `cotal up --detach --tls-cert …` validated the pair, dropped it at
-   * this boundary, fell through to the recorded policy (absent on a first enable), and served
-   * PLAINTEXT while printing `✓ mesh up`. Re-deriving a decision in the callee is what let the
-   * caller's copy be silently unused; the fix is that there is one decision and it arrives as an
-   * argument.
-   */
-  transport: BrokerTransport;
-  server?: string;
-  storeDir?: string;
-  /** A store that must already exist with this identity. Preparation rechecks it instead of
-   *  creating the directory, and refuses a missing, replaced or relinked store. */
-  existingStore?: ExistingStorePin;
-  /** JetStream file storage cap in bytes (`--max-file-store`), rendered and recorded by this boot. */
-  maxFileStore?: number;
-  logFile?: string;
-  logfileSizeLimit?: number;
-  logfileMaxNum?: number;
-  /** WebSocket listener port required by a controller manager that stays running. */
-  wsPort?: number;
-  /** The auth callout timeout in seconds (`--auth-timeout`). Absent: the root's recorded one. */
-  authTimeout?: number;
-  /** The broker's payload limit in bytes (`--max-payload`). Absent: the root's recorded one. */
-  maxPayload?: number;
-  /** How the broker resolves space accounts (`--account-resolver`). Absent: the root's recorded one. */
-  accountResolver?: "memory" | "full";
-  space?: string;
-  open?: boolean;
-  /** USER MODE: enable per-user auth (presence = on; `idpUrl` pins the IdP on first enable). */
-  userAuth?: { idpUrl?: string };
-  /** Rotate the space's system account before rendering the broker config, re-minting the two $SYS
-   *  creds against the successor. Only this boot (and the foreground one) may set it: rotation is
-   *  complete only when the broker it starts is the one carrying the rewritten config. */
-  rotateSys?: boolean;
-  /** `--recreate-issued-stores`: back up and delete the space's pre-retention issued-authority stores
-   *  into this new directory before the fresh boot's stream setup creates them again. */
-  recreateIssuedStores?: string;
-  /** Explicitly replace the stopped space's legacy File membership feed during setup. */
-  recreateMembershipStore?: boolean;
-  channels?: string;
-  host?: string;
-  /** Channel-registry seed in memory (the `cotal up -f` manifest path), used instead of reading a
-   *  `--channels` file. Takes precedence over {@link channels}. */
-  seed?: ChannelRegistryFile;
-  /** PUBLIC-exchange daemon argv (`--exchange-public-port` et al), threaded verbatim to the
-   *  auth-service daemon when THIS boot starts it. */
-  publicExchange?: string[];
-  /** Manifest launch (`cotal up -f`): the ONE control-plane manager started alongside the broker
-   *  carries this runtime + resolved launch-spec path — never a second supervise (singleton lease). */
-  runtime?: string;
-  launch?: string;
-  resumeAttempt?: string;
-  resumeCommit?: { path: string; sha256: string };
-  maxSessions?: number;
-  managerSeatCap?: SeatCap;
-  /** #1417 broker-only boot (`--no-manager`): no manager starts with this broker. An `up -f` under
-   *  the flag boots the broker + channels and launches NO agents from this host — a manifest's
-   *  agents are booted by its manager, so a launch spec under `--no-manager` would promise a boot
-   *  nothing can deliver. Refused at the flag level; carried here so every path is explicit. */
-  noManager?: boolean;
-  /** Fresh-team human report owns stdout; omit helper progress notes, retain stderr failures. */
-  quietBoot?: boolean;
-  /** Maintenance-bound listener (restore target or ordinary-resume source): named spawn, durable
-   *  ownership bind immediately after, wire verification after readiness. */
-  boundListener?: {
-    serverName: string;
-    serverNonce: string;
-    onSpawn(pid: number, startedAt: string): void;
-    verify(): Promise<void>;
-  };
-}
-
-/** Prepare the existing broker's local trust, configuration and launch inputs without starting a
- *  listener, auth service, delivery daemon or manager. This is an explicit mutating phase, not a
- *  dry-run or service-adapter planning hook. Its returned setup includes private authority material
- *  for the coordinating caller only; it must not be logged or serialized into a public receipt. */
-export async function prepareBrokerStart(opts: DetachOpts) {
-  const server = opts.server ?? DEFAULT_SERVER;
-  const useAuth = !opts.open;
-  // Belt on the one boot that both renders the broker config and can be reached by any caller: an
-  // open boot skips `authSetup` entirely, so a `rotateSys` arriving here would be dropped in silence
-  // rather than refused. Callers guard this too; this is the seam that cannot be bypassed.
-  if (opts.rotateSys && !useAuth)
-    throw new Error("startMeshDetached: --rotate-sys is for auth meshes; an open mesh has no system account or $SYS credentials to rotate");
-  const space = opts.space ?? folderSpace();
-  ensureRootForSpace(space); // may pin the cwd as this space's root — before any cotalPath use
-  refuseStartOverUserState(Boolean(opts.open), opts.userAuth !== undefined, space);
-  const root = cotalRoot();
-  const storeDir = opts.storeDir ? resolve(opts.storeDir) : cotalPath("nats");
-  if (opts.storeDir) warnForeignStoreEntries(storeDir);
-  if (opts.existingStore) {
-    if (opts.existingStore.named !== storeDir) throw new Error("prepareBrokerStart: the pinned existing store is not the store being prepared");
-    recheckExistingStore(opts.existingStore, { space, storeDir });
-  } else mkdirSync(storeDir, { recursive: true, mode: 0o700 });
-  await claimSpace(space, server, root);
-  const seedFile = opts.seed ?? loadChannelsFile(opts.channels);
-  const host = opts.host ?? "127.0.0.1";
-  // The transport arrives decided. The dial-host SAN is re-checked here because THIS is where the
-  // effective server is finally known — a manifest may name a different host than the flags did, and
-  // a certificate that is valid for one is not thereby valid for the other.
-  const transport = assertServesDialHost(opts.transport, new URL(server).hostname);
-  if (opts.logFile === undefined && (opts.logfileSizeLimit !== undefined || opts.logfileMaxNum !== undefined))
-    throw new Error("rotation bounds require --log-file");
-  const logFile = opts.logFile === undefined ? undefined : resolve(opts.logFile);
-  if (logFile !== undefined) mkdirSync(dirname(logFile), { recursive: true, mode: 0o700 });
-  if (logFile !== undefined) {
-    let fd: number | undefined;
-    try { fd = openBrokerLog(logFile); } finally { if (fd !== undefined) closeSync(fd); }
-  }
-  const setup = useAuth ? await authSetup(storeDir, server, space, host, opts.userAuth, transport, opts.rotateSys, opts.maxFileStore, opts.quietBoot, { authTimeout: opts.authTimeout, maxPayload: opts.maxPayload, accountResolver: opts.accountResolver, manager: opts.noManager !== true, logFile, logfileSizeLimit: opts.logfileSizeLimit, logfileMaxNum: opts.logfileMaxNum, wsPort: opts.wsPort }) : undefined;
-  const maxPayload = setup?.maxPayload ?? opts.maxPayload ?? readBrokerPolicy(root)?.maxPayload;
-  const port = Number(new URL(server).port) || 4222;
-  // Same rule as the foreground path: every route to a listener names its transport (see
-  // `writeOpenBrokerConf`). Detach must not be the mode where the fence quietly does not apply.
-  const renderingBinary = setup?.brokerBinary ?? await resolveNatsServer();
-  if (!renderingBinary.version) throw unreadVersion(renderingBinary);
-  const confPath = setup ? setup.confPath : writeOpenBrokerConf(storeDir, space, { brokerVersion: renderingBinary.version, port, host, transport, maxFileStore: opts.maxFileStore, maxPayload, logFile, logfileSizeLimit: opts.logfileSizeLimit, logfileMaxNum: opts.logfileMaxNum });
-  // Trust preparation awaits; the pinned store is checked again before its config is handed back.
-  if (opts.existingStore) recheckExistingStore(opts.existingStore, { space, storeDir });
-  const args = [
-    "-c", confPath,
-    ...(opts.boundListener ? ["--name", opts.boundListener.serverName] : []),
-  ];
-  const { path: bin, source, version } = renderingBinary;
-  return { root, server, space, useAuth, storeDir, seedFile, host, transport, setup, maxPayload, confPath, args, bin, source, version };
-}
-
 export { openBrokerLog };
-
-/**
- * Start a background nats-server (JetStream), wait until it's reachable, pre-create the
- * space's streams, and leave it running detached (pid in `.cotal/nats.pid`). Used by
- * `up --detach`. The child writes to the log file, so it survives the parent exiting.
- */
-export async function startMeshDetached(
-  // The `= {}` default is gone with the optional transport: an options object that can be omitted
-  // entirely cannot carry a mandatory decision.
-  opts: DetachOpts,
-): Promise<{ server: string; pid: number; executable: string; controlPlane: boolean; authService: boolean; deliveryResponderBound: boolean | null; delivery: boolean; deliveryLost?: string; manager: boolean }> {
-  const { server, space, useAuth, storeDir, seedFile, transport, setup: brokerSetup, maxPayload, args, bin, source, version } = await prepareBrokerStart(opts);
-  await seedBeforeLaunch();
-  const setup = brokerSetup && { ...brokerSetup, creds: await brokerSetup.mintProvisioner() };
-  const logPath = cotalPath("nats.log");
-  const fd = openBrokerLog(logPath);
-  const listenerStartedAt = new Date().toISOString();
-  let child: ChildProcess;
-  try { child = spawnBroker(bin, args, { cwd: cotalRoot(), detached: true, stdio: ["ignore", fd, fd] }); }
-  finally { closeSync(fd); }
-  await recordSpawnedListener(child, listenerStartedAt, opts.boundListener);
-  child.unref();
-
-  await awaitSpawnedListener({ child, executable: { path: bin, source, version }, server, space, creds: setup?.creds, tls: transport.kind === "tls-required", log: logPath, boundListener: opts.boundListener });
-  const { authService, controlPlane } = await serveReadyListener({
-    child, server, space, storeDir, setup, seedFile, transport, maxPayload,
-    ...(opts.recreateIssuedStores !== undefined ? { recreateIssuedStores: opts.recreateIssuedStores } : {}),
-    ...(opts.recreateMembershipStore ? { recreateMembershipStore: true } : {}),
-    host: opts.host,
-    maxSessions: opts.maxSessions,
-    managerSeatCap: opts.managerSeatCap,
-    maxFileStore: opts.maxFileStore,
-    publicExchange: opts.publicExchange,
-    resumeAttempt: opts.resumeAttempt,
-    resumeCommit: opts.resumeCommit,
-    runtime: opts.runtime,
-    launch: opts.launch,
-    noManager: opts.noManager,
-    quietBoot: opts.quietBoot,
-  });
-  if (opts.noManager && useAuth && controlPlane) recordOperationWarning(await noManagerCredentialWarning(cotalRoot(), space));
-  const delivery = useAuth && deliveryUp(space);
-  // A daemon this boot started can still stop before the boot ends, such as on a SIGTERM while the
-  // manager starts, and it removes its own record as it goes.
-  const lost = controlPlane?.delivery?.started && !delivery ? controlPlane.delivery : undefined;
-  return {
-    server,
-    pid: child.pid ?? 0,
-    executable: natsServerLabel({ path: bin, source, version }),
-    controlPlane: controlPlane !== undefined,
-    authService,
-    deliveryResponderBound: useAuth ? controlPlane?.responderBound === true : null,
-    delivery,
-    ...(lost ? { deliveryLost: `the delivery daemon started for space "${space}" (pid ${lost.pid}) exited before this boot finished. It logged its reason to ${canonicalLocalProcessPath(DELIVERY_LOGFILE, { root: cotalRoot(), space })}` } : {}),
-    manager: managerUp(space),
-  };
-}
-
-/** Refuse a broker address another program holds without answering NATS, such as a web server, as
- *  the controller stack refuses it. nats-server would exit on its bind with only a log line, and the
- *  readiness probe would wait on that program instead. `command` is the start the remedy reruns. */
-async function assertBrokerAddressFree(server: string, command: string, bindHost?: string): Promise<void> {
-  const conflict = await brokerAddressConflict(server, command, bindHost);
-  if (!conflict) return;
-  throw new CommandFailure("refused", "CONFLICT", `${conflict.message} (bind failed: address already in use); no broker was launched`, {
-    target: { root: cotalRoot(), server, bindError: "EADDRINUSE" }, remedy: conflict.remedy,
-  });
-}
-
-/** THE FLIP: a start without `--user-auth` must never boot a broker over a root whose space has
- *  user-auth state on disk. `--open` would serve the space's existing JetStream store to anyone and
- *  re-record the mesh "open" over its user entry; a static start would boot without the callout that
- *  state belongs to. Refused before the store, the space claim or the trust is touched, so the
- *  refusal is a refusal and not an unconfirmed outcome. authSetup keeps the same rule for the
- *  routes that reach it without passing here. */
-function refuseStartOverUserState(open: boolean, userAuth: boolean, space: string): void {
-  if (userAuth || !hasUserAuthState(cotalRoot(), space)) return;
-  const stateDir = userAuthStateDir(cotalRoot(), space);
-  throw new CommandFailure("refused", "CONFLICT", `space "${space}" has user auth enabled (state under ${stateDir})${open ? ", and --open would serve its streams without auth" : ""}; nothing was started`, {
-    target: { root: cotalRoot(), space },
-    remedy: `${open ? "replace --open with --user-auth" : "add --user-auth"} to start it with user auth, or remove ${shellWord(stateDir)} deliberately to disable user auth (existing logins and grants die with it)`,
-  });
-}
-
-/** Pin cwd as its own mesh root when the nearest ancestor root already belongs to a DIFFERENT
- *  space — mode-independent.
- *
- *  Auth path: a root's `.cotal/auth` is space-bound, so an explicit `--space` naming another space
- *  cannot share that trust material. Open path: the same ancestor still owns policy, store, pid
- *  and MeshEntry; reusing it for a second space collides those (S4 open arm — child `--open --tls-*`
- *  wrote the parent's broker-policy and nats.pid while a second broker shared the JetStream store).
- *
- *  A mismatch only exists when the resolved space differs from what the ancestor already hosts.
- *  When the root was merely inherited (cwd has no `.cotal`), honor the new-space intent by making
- *  cwd its own root. Only a folder that itself holds the other space's material refuses.
- *  (When multi-space-per-root lands, that refusal becomes provision-the-new-space instead.)
- *
- *  The question this asks is "does this root hold the space being booted", NOT "what is THE space of
- *  this root". A root holding several tenants has no sole space, and asking for one there threw
- *  before the boot could reach the config render - so a `cotal up --space alpha` against a root that
- *  legitimately holds alpha and beta refused on ambiguity that its own `--space` had already
- *  resolved. The tenant list answers the real question without picking. */
-function ensureRootForSpace(space: string): void {
-  const root = cotalRoot();
-  const cwd = process.cwd();
-  // A prepared space starts only in the root `cotal space create` gave it. Checked before the mkdir
-  // below, so a refused start leaves nothing behind.
-  const prepared = findPreparedSpace(space);
-  if (prepared && canonicalRoot(prepared.root) !== canonicalRoot(root)) {
-    const gone = !existsSync(prepared.root);
-    throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `space "${space}" is prepared in ${prepared.root}${gone ? ", which no longer exists" : ""}`, {
-      target: { space, root: prepared.root },
-      remedy: gone ? `forget it with \`cotal space forget ${space}\`, then start it here` : `start it in its folder with \`cotal up --root ${shellWord(prepared.root)} --space ${space}\`, or \`cotal space forget ${space}\` to start it here`,
-    });
-  }
-  // Auth material, a locally started registration, or a preparation names what this root hosts.
-  // A remote registration uses the root as a connection folder, not as a stack root.
-  const hosted = listSpaceAccounts(authDir(root));
-  if (hosted.includes(space)) return;
-  const existing = hosted.length
-    ? hosted
-    : [localMeshesForRoot(root)[0]?.space ?? preparedSpaceAt(root)?.space].filter((s): s is string => !!s);
-  if (existing.length === 0 || existing.includes(space)) return;
-  const names = existing.map((s) => `"${s}"`).join(", ");
-  if (root !== cwd) {
-    mkdirSync(join(cwd, ".cotal"), { recursive: true, mode: 0o700 });
-    console.log(c.dim(`nearest mesh root ${root} hosts ${names} - making this folder its own root for "${space}"`));
-    return;
-  }
-  throw new CommandFailure("refused", "CONFLICT", `this folder is the root of ${names} (${root}/.cotal), so it can't also run "${space}"`, {
-    target: { space, root, hosted: existing },
-    remedy: `${existing.length === 1 ? `run ${names} with \`cotal up --space ${existing[0]}\`` : "run one of those with `cotal up --space <name>`"}, or start "${space}" from a different folder (it becomes that mesh's own root)`,
-  });
-}
-
-/** The space a `cotal up` that names none runs in this folder. The root's sole account names it
- *  first, as {@link resolveSpace} does. An open mesh has no account, and its first start replaces
- *  the prepared record with a registration, so the space this root's stack journal or its locally
- *  started registration names comes next. Without it a second `up` in the same folder resolved the
- *  default space and refused its own mesh. Several names there are refused, never picked. Then the
- *  space prepared here. A stopped open root with none prepared names its space in the broker
- *  configuration its last start rendered. Then the default.
- *
- *  Only `up` asks this. `resolveSpace` also decides whether identity cleanup may attribute a root to
- *  a space (`reset-space-plan.ts`) and, through `resolveRuntimeSpace`, which space a legacy `down`
- *  removes credentials for; those keep their own answer. */
-function folderSpace(): string {
-  const root = cotalRoot();
-  if (soleSpaceOf(authDir(root)) === undefined) {
-    const named = [...new Set([readStackJournal(root)?.journal.space, ...localMeshesForRoot(root).map((m) => m.space)])].filter((s): s is string => s !== undefined);
-    if (named.length > 1)
-      throw new CommandFailure("refused", "CONFLICT", `this folder's stack and registrations name ${named.length} spaces (${named.map((s) => `"${s}"`).join(", ")}), so up cannot pick one`, {
-        target: { root, spaces: named },
-        remedy: "name the space to run with `--space`",
-      });
-    if (named.length === 1) return named[0];
-    // A stopped open root holds no account, so its broker configuration names its space.
-    const deployed = preparedSpaceAt(root) ? undefined : retainedOpenSpace(root);
-    if (deployed) return deployed;
-  }
-  return resolveSpace(process.cwd());
-}
-
-/** Whether `space` is the default space a bare `up` starts because this folder names none. */
-function unnamedDefault(root: string, space: string): boolean {
-  return space === DEFAULT_SPACE && soleSpaceOf(authDir(root)) === undefined && !preparedSpaceAt(root) && !localMeshesForRoot(root).length && !readStackJournal(root);
-}
-
-/** A bare `up` in a folder that names no space starts a space it names itself. When the selected
- *  space is prepared in a folder that no longer exists, as after that folder was moved, that space is
- *  not what was meant, so `up` refuses with the step that prepares the selection here. */
-function assertSelectionNotMoved(root: string, space: string): void {
-  const current = getCurrent();
-  const prepared = current === undefined || current === space ? undefined : findPreparedSpace(current);
-  if (!prepared || existsSync(prepared.root)) return;
-  throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `the selected space "${current}" is prepared in ${prepared.root}, which no longer exists, and this folder names no space, so up did not start "${space}" here`, {
-    target: { root, space: current, preparedRoot: prepared.root },
-    remedy: `if this is that folder moved, forget it with \`cotal space forget ${current}\`, then prepare it here with \`cotal space create ${current}\` and run \`cotal up\`; to start "${space}" here, pass --space ${space}`,
-  });
-}
-
-/** The remedy for a hand-registered (`origin === "manual"`) space `claimSpace` refuses to touch.
- *  Branches on whether the REGISTERED server is loopback, the one authority for that being
- *  `isLoopbackHost` (`@cotal-ai/workspace`) — never a second opinion here.
- *
- *  Non-loopback: the mesh runs on another machine and this one does not take over its control
- *  plane by deleting the registry route (that route is what attach, spawn-from-anywhere, and
- *  every read verb hang off) or by forking the identity under a different `--space`. The actual
- *  next step is running that control plane FROM here, against the broker the record already
- *  names: `cotal supervise` (plus `cotal deliver` for the daemon). Dropping the record
- *  (`meshes rm`) is a separate decision for a genuinely stale record, out of scope here.
- *
- *  Loopback: unchanged — a loopback registration this machine cannot reach the "real" mesh behind
- *  (or is stale) keeps the original two-way remedy, byte for byte.
- *
- *  A server string `new URL` rejects is a record shape this function never validated before
- *  (nothing here parsed it), so it keeps the loopback wording rather than growing a parser. */
-function manualClaimRemedy(space: string, server: string): string {
-  let loopback = true;
-  try {
-    loopback = isLoopbackHost(new URL(server).hostname);
-  } catch {
-    loopback = true;
-  }
-  if (!loopback)
-    return `\`cotal supervise --space ${space} --server ${server}\` to run its control plane from here (and \`cotal deliver --space ${space} --server ${server}\` for the daemon)`;
-  return `\`cotal meshes rm ${space}\` to drop that record first, or start this one under a different \`--space\``;
-}
-
-/** Where a prior holder's absolute root physically resolves, or undefined when it is proven gone: it
- *  does not resolve (ENOENT, ENOTDIR) or resolves to something other than a directory. Any other
- *  failure, such as EACCES, EPERM, EIO or ELOOP, proves nothing about the root or its journal, so the
- *  name is kept and the refusal says why. No lexical spelling stands in for the physical path: under
- *  an unreadable ancestor, `<root>/link/..` resolves lexically to `<root>` while it names another. */
-function priorRootPath(space: string, root: string): string | undefined {
-  let real: string;
-  let kind: Stats;
-  try {
-    real = realpathSync.native(root);
-    kind = statSync(real);
-  } catch (e) {
-    const code = (e as NodeJS.ErrnoException).code;
-    if (code === "ENOENT" || code === "ENOTDIR") return undefined;
-    throw new CommandFailure("refused", code === "EACCES" || code === "EPERM" ? "PERMISSION_DENIED" : "TARGET_UNAVAILABLE", `space "${space}" is registered to ${root}, which could not be resolved (${code ?? String(e)}) - \`cotal up\` did not take the name`, { target: { space, root }, remedy: `restore access to ${root} and run this again, or start this stack under a different \`--space\`` });
-  }
-  return kind.isDirectory() ? real : undefined;
-}
-
-/** A space name maps to one mesh in the registry (the key `--space`/`use`/`down` act on). Before
- *  starting a broker, refuse to reuse a space already claimed by a DIFFERENT live mesh — a stale/dead
- *  holder is reclaimed, and said so when it was another root's, unless that root still holds a
- *  maintenance journal. Re-`up`ping the same mesh (same server + root) is a refresh (port-reachable
- *  path). NOTE: this is a best-effort sequential guard — two `cotal up --space X` racing from
- *  different roots within the same instant can both pass the check before either records; that
- *  concurrent case is out of scope (a single-operator CLI action), not synchronized with a lock. */
-export async function claimSpace(space: string, server: string, root: string): Promise<void> {
-  const existing = findMesh(space);
-  if (!existing) return;
-  // A relative recorded root names no directory without a guess against the cwd, so it is never
-  // taken as this root, compared with it or reclaimed. Its record stays until it is removed by hand.
-  const relative = !isAbsolute(existing.root);
-  if (!relative && existing.server === server && existing.root === root) return;
-  // Every refusal below is made before the registry changes, so it is typed as refused with its own
-  // remedy, and the controller and legacy routes both show the reason and exit 2.
-  const target = { space, root: existing.root, server: existing.server };
-  // An OPERATOR-REGISTERED holder is decided FIRST, before liveness, because liveness changes
-  // nothing about it and the two outcomes would otherwise print the wrong remedy. It is never
-  // reclaimed: unreachable is not proof the mesh is gone (the record describes a broker on another
-  // machine), the reclaim runs BEFORE this launch starts anything, and `cotal down` — what the
-  // liveness branch below would advise — cannot stop a mesh this machine does not run.
-  if (existing.origin === "manual" || existing.origin === "catalog")
-    throw new CommandFailure("refused", "CONFLICT", `space "${space}" is registered to a mesh at ${existing.server} (${existing.root}) - it is ${existing.origin === "catalog" ? "owned by a signed-in space catalog" : "registered by hand"}, so \`cotal up\` neither takes it over nor reclaims the name`, { target, remedy: existing.origin === "catalog" ? "use a different `--space`, or remove access at the IdP and run `cotal sync`" : manualClaimRemedy(space, existing.server) });
-  if (relative)
-    throw new CommandFailure("refused", "CONFLICT", `space "${space}" is registered to ${existing.root}, which is not an absolute path - \`cotal up\` did not take the name`, { target, remedy: `drop that record with \`cotal meshes rm ${space}\`, or start this stack under a different \`--space\`` });
-  if (await isReachable(existing.server)) {
-    // A space name is this machine's, so a separate space here needs a name of its own.
-    let controller = false;
-    try { controller = readStackJournal(existing.root)?.journal.space === space; } catch { /* named with the legacy stop */ }
-    // THIS project's own space, running at its own address, started again with another one. The
-    // refusal below belongs to a name another folder holds: it reads as if this folder were a
-    // stranger to the space and offers to start a separate one here, when the folder IS that
-    // space's project and a start naming no address joins the mesh already running in it. No
-    // command moves a stack that ran to another address, so say which address it runs at.
-    // The address must differ for this sentence to be true: the early return above compares roots
-    // as written while this compares them resolved, so a record naming this root by another
-    // spelling reaches here at its OWN address, and that case keeps the refusal below.
-    if (canonicalRoot(existing.root) === canonicalRoot(root) && existing.server !== server)
-      throw new CommandFailure("refused", "CONFLICT", `space "${space}" already runs from this project at ${existing.server}, and this start names ${server}; nothing was started`, {
-        target,
-        remedy: `run \`cotal up\` here with no --server or --host to reach the mesh at ${existing.server}, or stop it first with \`cotal down${controller ? " --yes" : ""}\` in ${shellWord(existing.root)}`,
-      });
-    throw new CommandFailure("refused", "CONFLICT", `space "${space}" is already in use by a mesh at ${existing.server} (${existing.root})`, { target, remedy: `start a separate space in this folder with \`cotal up --space <name>\`, naming one no other folder uses, or stop "${space}" first with \`cotal down${controller ? " --yes" : ""}\` in ${shellWord(existing.root)}` });
-  }
-  // The recorded root is this root only where it physically resolves, so it is resolved before any
-  // comparison, and one that cannot be resolved refuses. A dead holder at another root keeps its name
-  // while that root holds a preserved cut or a restore: taking it would cut that root's recovery off
-  // from its space. A journal that cannot be read keeps it too. A root proven gone or not a directory
-  // has no journal to read; a readable root without one is reclaimed.
-  const prior = priorRootPath(space, existing.root);
-  const otherRoot = prior !== canonicalRoot(root);
-  if (otherRoot && prior !== undefined) {
-    let held: string | undefined;
-    try { held = readMaintenanceJournal(existing.root)?.state; }
-    catch { held = "unreadable"; }
-    if (held)
-      throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `space "${space}" is registered to ${existing.root}, whose maintenance journal holds a preserved cut or a restore (state ${held}) - \`cotal up\` did not take the name`, { target, remedy: `finish that attempt from ${existing.root}, or start this stack under a different \`--space\`` });
-  }
-  removeMesh(space); // the prior holder's broker is gone — reclaim the name
-  if (otherRoot) console.error(`• space "${space}" was registered to ${existing.root}, whose broker at ${existing.server} is not running - this up takes the name over`);
-}
-
-/**
- * The manager attach/console BIND host for a launch into `space`.
- *
- * Exposure is an operator DECISION, made at `up --host` and recorded on the mesh entry. Every later
- * launch for the same mesh — a same-root repair, adopting a preserved or restored listener, a
- * manifest deploy — has no `--host` of its own to consult, so it reads the decision back. Without
- * this a replacement manager falls to loopback and remote `cotal attach` dies at the first repair,
- * silently: the broker and every agent stay up, only the terminal face moves.
- *
- * An explicit host on THIS invocation always wins, so an operator can widen or narrow exposure by
- * saying so. Absent both, undefined — the manager's own loopback default, unchanged.
- */
-export function attachHostFor(space: string, explicit?: string): string | undefined {
-  return explicit ?? findMesh(space)?.attachHost;
-}
-
-/**
- * The manager live-session ceiling for a launch into `space`.
- *
- * Like {@link attachHostFor}, this is an operator DECISION (`--max-sessions`), not something later
- * commands can reconstruct. Every later manager launch — same-root repair, resume, `spawn -f` —
- * has no flag of its own unless the operator typed one, so it reads the decision back. Without
- * this a replacement manager silently falls to 64 and the next console pane past that is refused.
- *
- * An explicit value on THIS invocation always wins. Absent both, undefined — the plane's own
- * default of 64, unchanged, and nothing is recorded as though chosen.
- */
-export function maxSessionsFor(space: string, explicit?: number): number | undefined {
-  return explicit ?? findMesh(space)?.maxSessions;
-}
-
-/**
- * Did THIS launch bring the broker up, or is it re-recording one that was already there?
- *
- * The distinction is provenance, and it has to come from the call site because it cannot be
- * observed here: `started` covers the paths that spawned the broker or proved a listener this
- * attempt owns, and stamps `origin: "up"` — a record this machine can always write back, so the
- * liveness sweep and `cotal down` may drop it. `refresh` is the "a broker is already on this port"
- * branch, which concludes the mesh is up from reachability alone and starts nothing; stamping `up`
- * there would silently convert a hand-registered record into one the next sweep may delete, so it
- * keeps whatever origin the record already had.
- */
-type Provenance = "started" | "refresh";
-
-/** {@link recordOurMesh} under a name that says it is a test seam: the origin rule it enforces is
- *  asserted directly by the registry smoke, since reaching each branch through a full `up` would
- *  need a live broker per case. */
-export const recordOurMeshForTest = (m: MeshEntry, provenance: Provenance): void => recordOurMesh(m, provenance);
-
-/** Record this mesh in the registry, and set it as the `current` default when there's no usable one
- *  — i.e. the first mesh, OR when `current` dangles at a space that's no longer in the registry (a
- *  ghost pointer is not a default), and say so. Never silently redirect a `current` that still resolves
- *  to a live mesh; just say another is the default and how to switch. */
-function recordOurMesh(m: MeshEntry, provenance: Provenance, quietBoot = false): void {
-  const cur = getCurrent();
-  const usableCurrent = cur && (findMesh(cur) || findPreparedSpace(cur)) ? cur : undefined; // compute before recording m
-  const prior = findMesh(m.space);
-  const origin = provenance === "refresh" && (prior?.origin === "manual" || prior?.origin === "catalog") ? prior.origin : "up";
-  // A REFRESH starts nothing: it concluded the mesh is up from reachability alone, so `m` holds only
-  // what THIS launch decided, and every other field is the record as it stands now. That covers the
-  // operator's past decisions (origin, overlay consent, TLS requirement) and anything another writer
-  // committed while the refresh ensured the control plane; rebuilding from the refresh's earlier
-  // read reverted those and still exited 0. A `started` takeover may replace the record outright
-  // (that launch really is the mesh now).
-  if (provenance === "refresh" && !prior)
-    throw new Error(`mesh "${m.space}" was removed from the registry while \`cotal up\` refreshed it - not re-recording it from an earlier read`);
-  const nativeMembers: NonNullable<MeshEntry["nativeMembers"]> = [];
-  for (const [role, template] of [["manager", MANAGER_PIDFILE], ["delivery", DELIVERY_PIDFILE], ["auth", AUTH_PIDFILE], ["broker", NATS_PIDFILE]] as const) {
-    const pin = verifyIdentityPin(role === "broker" ? join(m.root, ".cotal", template) : localProcessPath(template, { root: m.root, space: m.space }));
-    if (pin.kind === "match") nativeMembers.push({ role, process: pin.record });
-  }
-  const nativeHost = nativeMembers.length ? knownStackRecoveryHost() : undefined;
-  const recorded: MeshEntry = { ...m, origin, ...(nativeHost !== undefined ? { nativeMembers, nativeHost } : {}) };
-  recordMesh(provenance === "refresh" ? { ...prior, ...recorded, stoppedByDown: undefined, stoppedWithAgents: undefined } : recorded);
-  removePreparedSpace(m.space); // started: the registration is its record now
-  if (!usableCurrent) {
-    setAdoptedCurrent(m.space);
-    if (!quietBoot) for (const line of hang("", selectedOnUp(m.space), terminalWidth(process.stdout), c.dim)) console.log(line);
-    return;
-  }
-  if (usableCurrent !== m.space && !quietBoot)
-    for (const line of hang("", keptOnUp(m.space, usableCurrent), terminalWidth(process.stdout), c.dim)) console.log(line);
-}
-
-/** Write the default persona into the root this `up` started or refreshed when it has none, and
- *  say so. The mesh is already up, so a write that fails is reported and the start stands. */
-function seedPersonaAfterUp(root: string, quiet = false): void {
-  let written: { what: string; path: string } | undefined;
-  try {
-    written = seedDefaultPersona(root);
-  } catch (e) {
-    console.error(c.yellow(`! the default persona was not written in ${root}: ${(e as Error).message}`));
-    return;
-  }
-  if (written && !quiet) for (const line of hang("  ", `wrote ${written.what}: ${written.path}`, terminalWidth(process.stdout))) console.log(c.dim(line));
-}
-
-async function waitReady(server: string, creds?: string, tls = false, log?: string): Promise<boolean> {
-  // Fifty silent probes is the bound for a broker that is not advancing. A listener that is up, or a
-  // broker log that keeps growing or recording a JetStream restore, is evidence the process is still
-  // recovering, so the wait continues instead of stopping it at a fixed count.
-  let evidence = 0;
-  let silent = 0;
-  for (let i = 0; silent < 50; i++) {
-    const reachable = await isReachable(server, creds ? { creds } : undefined);
-    if (tls) await refuseUntrustedListener(server, creds);
-    if (reachable) return true;
-    const { evidence: next, restoring } = brokerRecoveryEvidence(log);
-    // Any restore evidence seen during the wait is progress, including evidence already present on
-    // the first probe. A restore that has started and not finished is progress on every probe, since
-    // the broker writes nothing to its log until it completes; the probe cap bounds that wait. Only a
-    // probe with no new evidence and no restore in flight counts toward the silent bound.
-    if (next > evidence || restoring) {
-      evidence = Math.max(evidence, next);
-      silent = 0;
-    } else {
-      silent++;
-    }
-    if (i >= 1_500) return false;
-    await new Promise((r) => setTimeout(r, 200));
-  }
-  return false;
-}
-
-/** Bytes plus completed-restore lines in the broker log, and whether a restore is in flight. A
- *  foreground broker logging to the terminal has no file to read, so it keeps the silent-probe bound. */
-function brokerRecoveryEvidence(log?: string): { evidence: number; restoring: boolean } {
-  const none = { evidence: 0, restoring: false };
-  if (!log || log.startsWith("the terminal")) return none;
-  let text = "";
-  let size = 0;
-  try {
-    const stat = statSync(log);
-    if (!stat.isFile()) return none;
-    size = stat.size;
-    text = readFileSync(log, "utf8");
-  } catch {
-    return none;
-  }
-  const started = text.match(/Starting restore/g)?.length ?? 0;
-  const restored = text.match(/Restored \d/g)?.length ?? 0;
-  return { evidence: size + restored, restoring: started > restored };
-}
-
-/** Throw when the TLS listener at `server` answers and this client refuses its certificate in the
- *  handshake, which waiting does not change. It dials as the setup that follows does. */
-async function refuseUntrustedListener(server: string, creds?: string): Promise<void> {
-  let code: unknown, reason = "";
-  try {
-    const nc = await dialerFor(server)({ servers: server, timeout: 1_000, reconnect: false, maxReconnectAttempts: 0, ...standaloneConnectOpts({ creds, tls: false }) });
-    await nc.close();
-    return;
-  } catch (e) {
-    code = (e as NodeJS.ErrnoException)?.code;
-    reason = e instanceof Error ? e.message.split(";")[0]! : String(e);
-  }
-  const untrusted = typeof code === "string" && UNTRUSTED_CERTIFICATE.has(code);
-  if (!untrusted && code !== "ERR_TLS_CERT_ALTNAME_INVALID") return;
-  const { hostname, port } = new URL(server);
-  throw new CommandFailure("failed", "OPERATION_FAILED", `nats-server answered at ${server}, but this client refused its TLS certificate in the handshake (${reason}); up stopped it and recorded nothing`, {
-    native: { code: String(code) },
-    remedy: untrusted
-      ? "trust the certificate's CA, or a self-signed certificate itself, by setting NODE_EXTRA_CA_CERTS to that PEM file for `cotal up` and every cotal command of this space, then run `cotal up` again"
-      : /^tls:/i.test(server) ? `serve a certificate that names ${hostname}, then run \`cotal up\` again` : `pass --server tls://${hostname}:${port}, so every dial checks the certificate against ${hostname}`,
-  });
-}
-
-// SPEC §13.12: reads the connected broker's version, and refuses loud below the 2.12 floor
-// before any provisioning touches it (the same gate `requireBrokerFloor` enforces on every other
-// control-surface connection).
-type BrokerFacts = { version: string; presenceFileBacked: boolean };
-
-/** The broker's version, and whether `space`'s presence stream exists file-backed. Cotal creates
- *  it in memory (#1356), so only a bucket an older cotal created is file-backed; an absent one
- *  will be created in memory by `setupSpaceStreams`. */
-async function brokerVersion(server: string, space: string, creds?: string): Promise<BrokerFacts> {
-  const nc = await dialerFor(server)({ servers: server, ...standaloneConnectOpts({ creds, tls: false }) });
-  try {
-    requireBrokerFloor(nc);
-    const version = nc.info?.version ?? "";
-    let presenceFileBacked = false;
-    try {
-      const info = await (await jetstreamManager(nc)).streams.info(`KV_${presenceBucket(space)}`);
-      presenceFileBacked = info.config.storage === StorageType.File;
-    } catch (e) {
-      const err = e as { message?: string; api_error?: { err_code?: number } };
-      if (err.api_error?.err_code !== 10059 && !/stream not found/i.test(err.message ?? "")) throw e;
-    }
-    return { version, presenceFileBacked };
-  } finally {
-    await drainAndClose(nc);
-  }
-}
-
-// #1356: the presence bucket's file-backed latch is fixed in nats-server 2.14.5. Below that,
-// `cotal up` warns when the space's presence bucket is file-backed (never refuses: 2.14.0 meets the
-// SPEC §13.12 floor and is the bundled broker). A memory-backed bucket has no file store to latch.
-function belowPresenceSafeBroker(version: string): boolean {
-  const p = parseServerVersion(version);
-  if (!p) return false;
-  if (p.major !== 2) return p.major < 2;
-  if (p.minor !== 14) return p.minor < 14;
-  return p.patch < 5;
-}
-
-/**
- * Render and write the config for an OPEN (no-auth) broker, returning its path. It names `space`,
- * because an open root holds no account that would ({@link namedOpenConfig}).
- *
- * The `authSetup` sibling for the no-auth mode. Open mode previously launched nats-server from
- * bare CLI flags and so never passed through any renderer — meaning the REQUIRED transport union
- * on the config renderers covered the auth path only, and a `--tls-cert`/`--tls-key` pair given to
- * an open-mode `up` would have been accepted while the broker came up in cleartext. Routing open
- * mode through a renderer is what makes the union total: there is now no route to a listener that
- * does not state its transport.
- */
-function writeOpenBrokerConf(storeDir: string, space: string, opts: { brokerVersion: string; port: number; host: string; transport: BrokerTransport; maxFileStore?: number; maxPayload?: number; logFile?: string; logfileSizeLimit?: number; logfileMaxNum?: number }): string {
-  const confPath = cotalPath("server-open.conf");
-  writeBrokerConfig(
-    confPath,
-    namedOpenConfig(openServerConfig({ brokerVersion: opts.brokerVersion, port: opts.port, host: opts.host, storeDir: configuredStoreDir(cotalRoot(), storeDir), maxFileStore: opts.maxFileStore, maxPayload: opts.maxPayload, logFile: opts.logFile, logfileSizeLimit: opts.logfileSizeLimit, logfileMaxNum: opts.logfileMaxNum, transport: opts.transport }), space),
-  );
-  return confPath;
-}
-
-/** Write a broker configuration that `up` renders again on every start. Something other than this
- *  account's own regular file at its path, such as a symlink or a folder, is refused by name and
- *  left as it is. Moving it aside loses nothing, because the next `up` writes the file again.
- *  Other write failures name the path and errno, and remain known failures before a launch. */
-function writeBrokerConfig(path: string, text: string): void {
-  try { writeSecretFile(path, text); }
-  catch (error) {
-    const code = (error as NodeJS.ErrnoException).code;
-    // A nonblocking write-only open can fail ENXIO for non-regular entries before the secure
-    // writer can inspect its descriptor. An absent or regular entry still means a write failure.
-    const entry = code === "EPERM" || code === "EISDIR" || code === "EACCES" || code === "ENXIO" ? lstatSync(path, { throwIfNoEntry: false }) : undefined;
-    if (code !== "EPERM" && code !== "EISDIR" && code !== "EACCES" && (!entry || entry.isFile()))
-      throw new CommandFailure("failed", "OPERATION_FAILED", `up could not write the broker configuration ${path}${code ? ` (${code})` : ""}; nothing was started`, {
-        target: { path }, remedy: `correct the write failure at ${path}, then run \`cotal up\` again, which writes the configuration again`,
-      });
-    const what = entry?.isSymbolicLink() ? "is a symlink" : entry?.isDirectory() ? "is a folder" : code === "EACCES" ? "cannot be written by this account" : "is not a regular file this account owns";
-    throw new CommandFailure("refused", "PERMISSION_DENIED", `the broker configuration ${path} ${what}, so up cannot write it; it was left as it is and nothing was started`, {
-      target: { path }, remedy: `move it aside, as mv ${shellWord(path)} ${shellWord(`${path}.old`)} does, then run \`cotal up\` again, which writes it from the space's trust`,
-    });
-  }
-}
-
-/** The refusal for a trust record of the space that this account cannot read. It holds the space's
- *  keys, so the step makes it readable again and never removes it. Any other error as it is. */
-function unreadableTrust(error: unknown): unknown {
-  const { code, path } = error as NodeJS.ErrnoException;
-  if (code !== "EACCES" && code !== "EPERM" || typeof path !== "string") return error;
-  return new CommandFailure("refused", "PERMISSION_DENIED", `the space's trust record ${path} cannot be read by this account (${code}); nothing was started`, {
-    target: { path }, remedy: `make it readable by you again, as chmod 600 ${shellWord(path)} does, then run \`cotal up\` again; it holds the space's keys, so keep it`,
-  });
-}
-
-/** Ensure the space's trust material exists and render a server config. The caller can mint
- *  the setup credential after connector reconciliation. The account signing key
- *  in `.cotal/auth` is what `cotal mint` and the manager later use to issue per-agent creds.
- *
- *  USER MODE (`user` set): additionally run the registered auth provider's `prepareServer` over the
- *  SPACE-SCOPED state dir (`.cotal/auth/<space>/` — the multi-space-ready layout; nothing user-auth
- *  lives flat) and preload its extra account(s) into the broker config. The inverse is fail-closed:
- *  a space whose user-auth state exists MUST keep being started with --user-auth — regenerating the
- *  config without the callout account would silently break every sentinel connect.
- *
- *  `rotateSys` (`cotal up --rotate-sys`) is the class-3 renewal for an EXISTING space: rotate the
- *  system account, re-mint `membership-observer.creds` + `connection-evictor.creds` against the
- *  successor, and render the config from the ROTATED record so the broker this `up` starts is the one
- *  that trusts them. It belongs here because this is the single site that both owns the trust record
- *  and renders `server.conf`; anywhere else would publish creds the live broker cannot honor. */
-async function authSetup(
-  storeDir: string,
-  server: string,
-  space: string,
-  host: string = "127.0.0.1",
-  user: { idpUrl?: string } | undefined,
-  // NON-OPTIONAL, and it used to default to `{ kind: "plaintext" }`. That default was the hole: the
-  // manifest path called this with five arguments and silently got a cleartext listener while the
-  // operator's `--tls-cert` sat validated and unused. A default here cannot be right, because the
-  // safe value and the common value are different values — every caller knows its transport, and
-  // the one that does not is the one that must not compile.
-  transport: BrokerTransport,
-  rotateSys = false,
-  maxFileStore?: number,
-  quietBoot = false,
-  // `--auth-timeout`, `--max-payload` and `--account-resolver`. Each absent value falls back to the one the root's broker
-  // policy records, so a bare `up` renders what an earlier `up` set. They arrive as one object
-  // rather than two trailing optional numbers: a transposed pair of those renders a wrong
-  // configuration in silence.
-  requested: { authTimeout?: number; maxPayload?: number; accountResolver?: "memory" | "full"; manager?: boolean; logFile?: string; logfileSizeLimit?: number; logfileMaxNum?: number; wsPort?: number } = {},
-): Promise<{ brokerBinary: NatsServer; confPath: string; mintProvisioner: () => Promise<string>; wsPort: number; moveWebsocketPort: () => Promise<number>; prepared?: AuthPrepared; stateDir?: string; authTimeout?: number; maxPayload?: number; accountResolver: "memory" | "full" }> {
-  const dir = authDir(cotalRoot()); // the broker config (server.conf) still lands under the FS auth dir
-  const store = workspaceSecretStore(cotalRoot());
-  let auth: SpaceAuth | undefined = await getSpaceAuth(store, space).catch((error: unknown) => { throw unreadableTrust(error); });
-  if (!auth) {
-    auth = await createSpaceAuth(space);
-    // The trust record is written last. Until it exists the next up treats the space as fresh and
-    // mints all of this again, so an up stopped partway never leaves a space without its $SYS creds.
-    await provisionMembershipCreds(auth, cotalRoot(), space); // the observer is minted while the $SYS seed is in memory (fresh-space only)
-    // Smoke only: hold a new space with part of its material written, so a signal can land there.
-    if (process.env.COTAL_SMOKE_HOLD_IN_SPACE_AUTH === "1") await new Promise((done) => setTimeout(done, 60_000));
-    await retainSystemSigningSeed(store, auth); // the host keeps the seed itself, beside the record, for own-broker caller issuance
-    await putSpaceAuth(store, auth); // strips the $SYS seed at rest
-    // A fresh space's $SYS material was just minted from the seed this branch holds in memory, so
-    // the ASK is already satisfied, so say so rather than rotating a one-second-old account, and never
-    // report a rotation that did not happen.
-    if (rotateSys) console.log(c.dim("• --rotate-sys: this space is new, so its $SYS creds were just minted - nothing to rotate"));
-  } else if (rotateSys) {
-    // Third and last of the stopped-broker checks, at the one point every rotation path converges on.
-    // The other two live in `up`'s reachable-listener branch: this root's recorded mesh at the
-    // requested address, and any UNIDENTIFIED listener there (which refuses rather than free-porting
-    // around a broker that may be serving this root's own server.conf and store). This one reads the
-    // root's ownership records for a broker at an address nobody probed. It reports what those
-    // records say, not what the process table says (see its own comment for the residual), and fails
-    // CLOSED, so an ambiguous record refuses exactly like a live one.
-    await assertRootBrokerStopped(cotalRoot());
-    // Fails loud: a caller that swallowed this would boot the broker on the RETIRED system account
-    // while `doctor auth` reported the rotation as done.
-    const rot = await rotateSystemCreds(cotalRoot(), space);
-    auth = rot.auth; // the config below MUST be rendered from the successor, never the pre-rotation copy
-    console.log(
-      c.green(`✓ rotated the system account for "${space}"`) +
-        c.dim(` (generation ${rot.gen}) - re-minted ${SYSTEM_CREDS_FILES.join(" + ")}${rot.expiresAt ? `, valid to ${new Date(rot.expiresAt * 1000).toISOString().slice(0, 10)}` : ""}`),
-    );
-    // Say exactly what is true. The retirement is CONFIG-LOAD-BOUND: an old cred dies against any
-    // broker that loads the successor config, which is every broker started from this root from here
-    // on, but a stale nats-server still holding the pre-rotation config in memory would keep
-    // honoring it, so "now dead" without that qualifier oversells the guarantee.
-    console.log(c.dim("  the data account, every agent cred and the JetStream store are untouched. The OLD $SYS creds are refused by any broker that loads this config; a stale broker still running the previous config would still honor them, so stop those first."));
-    // A full backup binds to the trust chain it was taken against: `rootChainCommitment` hashes the
-    // operator JWT and the system account, both of which just changed, so `cotal up --restore`
-    // refuses every full artifact taken before this moment. That is correct (it is a different trust
-    // root), but it is only obvious to someone who has read the fingerprint code, and rotation is
-    // now a routine 30-day act rather than a once-per-space event. Say it at the moment it becomes
-    // true, not in a doc the operator reads after the restore has already failed.
-    console.log(c.dim("  NOTE: full backups taken before this rotation can no longer be restored (they are bound to the retired trust chain) - take a fresh `cotal backup` once the mesh is up."));
-  }
-  // The DATA half of the membership bundle, on EVERY path — see healMembershipDataCreds.
-  await healMembershipDataCreds(auth, cotalRoot(), space, quietBoot);
-  await provisionWebCreds(auth, cotalRoot(), space, quietBoot);
-  // The $SYS creds must be signed by the system account THIS boot is about to put in `server.conf`.
-  // A rotation that committed the trust record and then died leaves them stale, unexpired, and
-  // broker-dead and, crash-before-either-write, stale in a way that no comparison between the two
-  // FILES can see (they agree with each other; they just disagree with the record). This is the one
-  // place holding both, on the one path that renders the config, so it is where the split is caught.
-  //
-  // REFUSE, do not warn. A warning is what the `--detach` path turns into an unread log line under a
-  // green "✓ running in the background", which is the false success this whole change exists to
-  // remove. And what stays broken is not only the display feed: live connection EVICTION rides the
-  // same pair, so booting here would silently downgrade revocation to deny-new for the life of the
-  // mesh. The repo's posture is to throw rather than degrade, and the recovery is one command that
-  // this message names.
-  const stale = staleSystemCreds(cotalRoot(), auth.sys.pub, space);
-  if (stale.length)
-    throw new Error(
-      `${stale.map((x) => `${x.file} (signed by ${x.iss ? `${x.iss.slice(0, 12)}…` : "an unreadable issuer"})`).join(", ")} ` +
-        `${stale.length === 1 ? "is" : "are"} not signed by this space's system account (${auth.sys.pub.slice(0, 12)}…) - ` +
-        "an interrupted rotation left the $SYS creds behind the trust record, so the broker would deny them and live eviction + the membership feed would stay down. " +
-        "Re-run the rotation to land a complete generation: `cotal up --rotate-sys`",
-    );
-  const stateDir = userAuthStateDir(cotalRoot(), space); // the provider's space-scoped state dir
-  if (!user && hasUserAuthState(cotalRoot(), space)) {
-    throw new Error(`space "${space}" has user auth enabled (state under ${stateDir}) - start it with \`cotal up --user-auth\`, or remove that directory deliberately to disable user auth (existing logins/grants die with it)`);
-  }
-  let prepared: AuthPrepared | undefined;
-  if (user) {
-    // Registry composition: the provider came from the composition root (bin/cotal.ts imports
-    // @cotal-ai/auth); this package never imports it. No provider ⇒ resolveAuthProvider throws the
-    // exact fix. The narrow input is a capability boundary: operator seed (signs the provider's
-    // account once) + the data account's pub/signingSeed (projected for the service's minting duty).
-    try {
-      prepared = await resolveAuthProvider().prepareServer({
-        space,
-        operatorSeed: auth.operator.seed,
-        account: { pub: auth.account.pub, signingSeed: auth.account.signingSeed },
-        store: workspaceSecretStore(cotalRoot()),
-        dir: stateDir,
-        idpUrl: user.idpUrl,
-      });
-    } catch (e) {
-      throw e instanceof Error ? e : new Error(String(e));
-    }
-  }
-  const port = Number(new URL(server).port) || 4222;
-  // A reused controller manager advertises its launch-time WebSocket port.
-  const wsPort = requested.wsPort ?? await freePort(host);
-  const confPath = resolve(dir, "server.conf");
-  // EVERY tenant of this root, not just the one being booted: `resolver_preload` is a whole-broker
-  // map, so a config rendered from one space evicts the rest silently. `auth` leads the list because
-  // this function's copy can be fresher than the disk (a space created above, or one whose trust
-  // record `--rotate-sys` just replaced). Refuses on an unreadable record rather than dropping it.
-  const spaces = preloadSpaceAccounts(dir, auth);
-  const enabled = userAuthSpacesOnDisk(dir);
-  for (const enabledSpace of enabled) {
-    if (!spaces.some((s) => s.space === enabledSpace))
-      throw new Error(`space "${enabledSpace}" has user auth enabled but no data account record - refusing to render an incomplete broker resolver`);
-  }
-  const extraAccounts: Array<{ pub: string; jwt: string }> = [];
-  for (const enabledSpace of enabled) {
-    const accounts = enabledSpace === space && prepared
-      ? prepared.extraAccounts
-      : await resolveAuthProvider().preloadAccounts({ store, space: enabledSpace });
-    extraAccounts.push(...accounts);
-  }
-  // Owner-private regardless of umask, as `writeOpenBrokerConf` writes the open configuration: the
-  // broker preset refuses a configuration that other local users can write.
-  const recorded = readBrokerPolicy(cotalRoot());
-  const authTimeout = requested.authTimeout ?? recorded?.authTimeout;
-  const maxPayload = requested.maxPayload ?? recorded?.maxPayload;
-  if (requested.manager === true) assertManagerPayload(maxPayload);
-  const resolverChoice = requested.accountResolver ?? recorded?.accountResolver ?? "memory";
-  const accountResolver = brokerAccountResolver(cotalRoot(), resolverChoice === "full" ? "full" : undefined);
-  // Owner-private like the auth dir: nats-server writes each pushed claim here.
-  if (accountResolver.kind === "full") mkSecretDir(accountResolver.directory);
-  const brokerBinary = await resolveNatsServer();
-  if (!brokerBinary.version) throw unreadVersion(brokerBinary);
-  const render = (ws: number) => writeBrokerConfig(confPath, serverConfig(auth, spaces, { brokerVersion: brokerBinary.version!, transport, port, storeDir: configuredStoreDir(cotalRoot(), storeDir), maxFileStore, authTimeout, maxPayload, accountResolver, logFile: requested.logFile, logfileSizeLimit: requested.logfileSizeLimit, logfileMaxNum: requested.logfileMaxNum, host, wsPort: ws, wsHost: host, extraAccounts }));
-  render(wsPort);
-  // The chosen port is free now, but nothing holds it until the broker binds it. When another process
-  // takes it first, the broker exits before readiness, and a controller stack start renders this
-  // configuration again on a newly chosen port.
-  const moveWebsocketPort = async () => { const moved = await freePort(host); render(moved); return moved; };
-  // Connector reconciliation can outlast the provisioner's lifetime. Mint only when boot needs it
-  // to probe the listener, create streams and buckets, or seed the channel registry.
-  const mintProvisioner = () => mintCreds(auth, newIdentity(), "provisioner");
-  return { brokerBinary, confPath, mintProvisioner, wsPort, moveWebsocketPort, ...(prepared ? { prepared, stateDir } : {}), ...(authTimeout !== undefined ? { authTimeout } : {}), ...(maxPayload !== undefined ? { maxPayload } : {}), accountResolver: resolverChoice };
-}
-
-/**
- * Refuse the rotation if this root's own bookkeeping still shows a broker running. This is a
- * BEST-EFFORT check over Cotal-managed ownership records, NOT a proof that no process is serving this
- * root, and the difference matters: a survivor keeps honoring the retired account from memory, and a
- * second broker on the successor opens that survivor's JetStream store underneath it.
- *
- * Two records, because either alone has a blind spot. The PID FILE catches a broker this root started
- * whose registry row was lost. The REGISTRY sweep catches one recorded for this root at some OTHER
- * address, which no probe of the requested URL would reach. Both fail CLOSED: an unreadable or
- * malformed pid file refuses exactly like a live one, since "cannot tell" and "still running" have
- * the same consequence.
- *
- * WHAT IT CANNOT SEE: both records are mutable, and neither is written by a broker started outside
- * `cotal up`. Delete both while the process lives, or run
- * `nats-server -c <root>/.cotal/auth/server.conf` by hand, and this returns success having probed
- * nothing. The requested address is covered separately (an unidentified listener there refuses the
- * rotation rather than moving to a free port), which leaves a hand-started broker on a DIFFERENT port
- * as the honest residual. Closing that needs something a survivor holds and cannot delete, an
- * exclusive store lock, which does not exist today; until it does, do not run `nats-server` against
- * this root's config outside `cotal up`.
- *
- * Not a general `up` guard: an ordinary boot adopting or replacing a listener is a supported flow with
- * its own claim machinery. This is specifically the precondition for retiring an authority.
- */
-async function assertRootBrokerStopped(root: string): Promise<void> {
-  const pidPath = join(root, ".cotal", NATS_PIDFILE);
-  if (existsSync(pidPath)) {
-    let raw: string;
-    try {
-      raw = readFileSync(pidPath, "utf8").trim();
-    } catch (e) {
-      throw new Error(`--rotate-sys: ${pidPath} exists but cannot be read (${(e as Error).message}) - refusing to rotate while a broker for this root may still be running; \`cotal down\` first`);
-    }
-    const pid = Number(raw);
-    if (!Number.isInteger(pid) || pid <= 0)
-      throw new Error(`--rotate-sys: ${pidPath} does not hold a pid (${JSON.stringify(raw)}) - refusing to rotate while a broker for this root may still be running; \`cotal down\` first`);
-    let live: boolean;
-    try {
-      process.kill(pid, 0); // signal 0 is a liveness probe, it signals nothing
-      live = true;
-    } catch (e) {
-      // EPERM means the process EXISTS and is not ours to signal, i.e. alive for this purpose.
-      live = (e as NodeJS.ErrnoException).code === "EPERM";
-    }
-    if (live)
-      throw new Error(`--rotate-sys: this root's broker is still running (pid ${pid}) - it would keep serving the retired system account, and a second broker would share its JetStream store. Stop it first: \`cotal down\``);
-  }
-  // A broker recorded for this root at ANY address, still answering. The rotate refusal earlier in
-  // `up` only sees the URL this invocation asked for; this sees the ones it did not.
-  for (const m of meshesForRoot(root)) {
-    if (await isReachable(m.server))
-      throw new Error(`--rotate-sys: mesh "${m.space}" for this root is still reachable at ${m.server} - stop it first (\`cotal down\`), then rotate`);
-  }
-}
-
-/** Provision the DATA-account half of the membership bundle, on EVERY `up` rather than only a fresh
- *  space. Idempotent: it writes only what is absent and is silent when both are present.
- *
- *  WHY THIS IS SEPARATE FROM {@link provisionMembershipCreds}. That function mints the whole bundle
- *  in the fresh-space branch because the `$SYS` signing seed exists only there and is never
- *  persisted — true of `membership-observer.creds` and `connection-evictor.creds`. The delivery daemon
- *  mints a missing evictor itself on a single-space root that retained its system-account signing
- *  seed, so that one no longer needs a rotation; a root without the seed still needs one. It is NOT
- *  true of the other two.
- *  `membership-rw.creds` is signed by the DATA account, whose signing seed IS persisted, and
- *  `membership.json` is just that account's public id. Neither needs the `$SYS` window, so binding
- *  them to it left every space provisioned before the feature permanently without the feed.
- *
- *  That gap was not theoretical. A space with a complete `$SYS` pair, missing only the rw cred,
- *  reported `the membership bundle is incomplete here (missing membership-rw.creds)` on every
- *  delivery-daemon start and served a traffic-only graph, and the documented remedy did not work:
- *  `--rotate-sys` re-mints the `$SYS` pair and never calls the provisioner, so it wrote neither the
- *  rw cred nor the account id. `mintMembershipObserverCreds` even names that rotation as the fix in
- *  its own error text — advice that could not succeed. Healing here fixes both spellings at once:
- *  the ordinary `up` repairs the data half with no rotation at all, and a rotation now repairs it
- *  too, because this runs after both branches converge. */
-async function healMembershipDataCreds(auth: SpaceAuth, root: string, space: string, quietBoot = false): Promise<void> {
-  try {
-    const store = workspaceSecretStore(root);
-    // THE RESOLVERS, not the bare kinds (P7 §2 rule 1). Both reads below are absent-means-MINT, which
-    // is precisely why the location must be resolved through the choke point: a canonical read on a
-    // root whose material is still flat answers "absent" and mints a SECOND live cred beside the one
-    // the running daemons hold. `up` is a workstation composition by construction, so the resolver
-    // gets the FS arm and moves the material on this first touch.
-    const composition = { injected: false as const, root };
-    const rwKey = membershipRwCredsKey(space, composition);
-    const wrote: string[] = [];
-    const rw = await store.get(rwKey);
-    if (rw === undefined) {
-      await store.put(rwKey, await mintCreds(auth, newIdentity(), "membership-rw"));
-      wrote.push(MEMBERSHIP_RW_CREDS_KIND); // the KIND is what an operator reads, never the segmented key
-    } else if (credsProblem(rw) !== undefined && !quietBoot) console.error(c.yellow(`! ${unparsableDaemonCredsNotice([MEMBERSHIP_RW_CREDS_KIND])}`));
-    const configPath = membershipConfigPath(root, space);
-    if (!existsSync(configPath)) {
-      mkSecretDir(dirname(configPath)); // harden the per-space dir before the file lands, as the fresh path does
-      writeSecretFile(configPath, JSON.stringify({ accountId: auth.account.pub }));
-      wrote.push(MEMBERSHIP_CONFIG_KIND);
-    }
-    if (wrote.length && !quietBoot)
-      console.log(c.dim(`• membership: provisioned ${wrote.join(" + ")} - the data-account half needs no system-account rotation`));
-  } catch (e) {
-    // Best-effort, exactly like the fresh-space provisioner: a failure here leaves the graph on
-    // traffic-only and leaves delivery untouched. It must never keep the mesh from starting.
-    console.error(c.dim(`• broker-sourced membership not repaired: ${(e as Error).message}`));
-  }
-}
-
-/** The web dashboard's read-only cred, on EVERY `up` of a static space: `cotal service start web`
- *  defaults its `--creds` to this file. Idempotent and absent-means-mint, through the resolver as
- *  {@link healMembershipDataCreds} is. It is the `observer` profile, minted without an expiry, as the
- *  `cotal auth mint --profile observer` recipe this replaces was: the dashboard reads the file once at
- *  start and holds its connection, and no renewal owner reloads it. Best-effort for the same reason as
- *  the membership heal: a failure here must never keep the mesh from starting. */
-async function provisionWebCreds(auth: SpaceAuth, root: string, space: string, quietBoot = false): Promise<void> {
-  try {
-    const store = workspaceSecretStore(root);
-    const key = webCredsKey(space, { injected: false, root });
-    if ((await store.get(key)) !== undefined) return;
-    await store.put(key, await mintCreds(auth, newIdentity(), "observer"));
-    if (!quietBoot) for (const line of hang("• ", `web: provisioned ${WEB_CREDS_KIND} - the dashboard's read-only credential, the \`service start web\` default`, terminalWidth(process.stdout))) console.log(c.dim(line));
-  } catch (e) {
-    console.error(c.dim(`• web dashboard credential not provisioned: ${(e as Error).message}`));
-  }
-}
-
-/** Mint the two scoped creds the delivery daemon's membership feed loads (broker-sourced graph
- *  membership), at the FRESH `cotal up` while the in-memory `$SYS` signing seed still exists:
- *   - `membership-observer.creds` — SYSTEM-account CONNZ reader (the only window it is minted here:
- *     the trust record carries no `$SYS` seed, and the retained custody record serves caller issuance only).
- *   - `membership-rw.creds` — DATA-account members-read + feed-write.
- *   - `membership.json` — the DATA account id (the CONNZ/event subjects pin it; non-secret, but kept
- *     0600 alongside the creds).
- *  All 0600. Best-effort: a failure logs and leaves the feed disabled (the graph degrades to traffic-
- *  only, delivery is untouched). Runs only on a FRESH space (the `if (!auth)` branch); a normal down/up
- *  keeps `.cotal/auth` + these creds and reuses them. A space provisioned before this feature has no
- *  in-memory `$SYS` seed, so it gains membership only when its auth is regenerated (a fresh `.cotal/auth`)
- *  — a documented migration property, not a silent no-op.
- *  Coupling: `cotal clean all` deletes this identity-derived set (removeLocalState in clean.ts) —
- *  a cred added here must be added to that removal list too. `membership-rw.creds` is a MIGRATED kind:
- *  its write/read/delete all go through the {@link SecretStore} seam (here, the feed reader, and clean),
- *  so the renewal owner can re-sign it into a hosted store. The observer / evictor / config stay on the
- *  raw FS (static $SYS creds + non-secret config, not renewable kinds). */
-async function provisionMembershipCreds(auth: SpaceAuth, root: string, space: string): Promise<void> {
-  try {
-    const observer = await mintMembershipObserverCreds(auth, newIdentity());
-    const rw = await mintCreds(auth, newIdentity(), "membership-rw");
-    // D5 slice 4: the KICK-only connection-evictor cred — same mint-only-at-fresh-`up` window as
-    // the observer ($SYS seed in memory here). The delivery daemon pairs it with the observer to
-    // close a revoked/removed principal's live connections. A space without it degrades to
-    // deny-new-only (durable reauth) — surfaced loudly by the removal path, never silent.
-    const evictor = await mintConnectionEvictorCreds(auth, newIdentity());
-    // All four land through the per-kind resolvers (P7 §2 rule 1), and all four through the store's
-    // `put`, which is the same `mkSecretDir` + atomic write the raw `writeSecretFile` did — the
-    // difference being that it hardens the PER-SPACE dir the material now lives in rather than
-    // `.cotal/` itself. This is the fresh-space branch, so nothing is there to migrate; it calls the
-    // resolvers anyway because a kind with two write paths is a kind that grows two layouts.
-    const composition = { injected: false as const, root };
-    const store = workspaceSecretStore(root);
-    await store.put(membershipObserverCredsKey(space, composition), observer);
-    await store.put(membershipRwCredsKey(space, composition), rw);
-    await store.put(connectionEvictorCredsKey(space, composition), evictor);
-    const configPath = membershipConfigPath(root, space);
-    mkSecretDir(dirname(configPath));
-    writeSecretFile(configPath, JSON.stringify({ accountId: auth.account.pub }));
-  } catch (e) {
-    console.error(c.dim(`• broker-sourced membership not provisioned: ${(e as Error).message}`));
-  }
-}

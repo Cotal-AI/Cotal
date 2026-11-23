@@ -11,7 +11,7 @@
  *  D. `COTAL_DEFAULT_PERSONA` supplies the persona for a bare `spawn --detach`.
  *  G. a persona the manager cannot find is refused (exit 2) with the manager's reason, and nothing launches.
  *  I. an agent that exits at once fails OPERATION_FAILED (exit 5) with the manager's reason.
- *  E. the `start` tombstone errors, naming `spawn --detach` (subprocess through bin/cotal.ts).
+ *  E. `start` refuses, and its catalog and file retries launch through the manager.
  *  F. `--foreground --creds` fails loud (subprocess).
  *  H. a spawn in this terminal refuses a missing persona or connector with its code and Next, before
  *     it prints that it is starting the application (subprocess).
@@ -603,13 +603,29 @@ try {
     ok("stopped the restored default seat", stopped(stoppedOut, "default"), stoppedOut);
   }
 
-  // E — the start tombstone (true subprocess through bin/cotal.ts, i.e. built dist).
-  const tomb = spawnSync(TSX, [join(import.meta.dirname, "..", "cotal.ts"), "start", "--name", "x"], {
-    encoding: "utf8",
-    env: subEnv,
-  });
-  ok("tombstone exits non-zero", tomb.status === 1, tomb.status);
-  ok("tombstone names spawn --detach", /spawn --detach/.test(tomb.stderr), tomb.stderr.slice(0, 200));
+  {
+    const file = join(workspaceRoot, "start $file's.md");
+    const cli = join(import.meta.dirname, "..", "dist", "cotal.js");
+    const prompt = "Review the first draft.";
+    writeFileSync(file, "---\nname: file-agent\nrole: writer\n---\nExplicit persona.\n");
+    for (const config of ["default", file]) {
+      const name = config === file ? "file-example" : "example";
+      const tomb = spawnSync(process.execPath, [cli, "start", "--config", config, "--name", name,
+        "--no-events", "--harness", "e2e", "--space", SPACE, "--prompt", prompt], {
+        cwd: workspaceRoot, env: subEnv, encoding: "utf8", timeout: 30_000,
+      });
+      const retry = tomb.stderr.split("\n").find(line => line.startsWith("  "))?.trim();
+      ok("start refuses and names a detached replacement", tomb.status === 1 && tomb.stdout === "" && retry?.includes("--detach") === true, tomb.stderr);
+      const shell = spawnSync("bash", ["-c", `printf '%s\\0' ${retry}`], { encoding: "utf8" });
+      const words = shell.stdout.split("\0").slice(0, -1);
+      const spawn = words.indexOf("spawn");
+      ok("the replacement is a shell command without --config", shell.status === 0 && spawn >= 1 && !words.includes("--config"), shell.stderr);
+      const launched = await capture(() => run("spawn", words.slice(spawn + 1)));
+      ok(`the ${config === file ? "file" : "catalog"} replacement launches and retains the name and prompt`,
+        joinedAs(launched, name) && lastOpts?.prompt === prompt && (config !== file || lastOpts?.role === "writer"), launched);
+      await capture(() => run("stop", [name, "--space", SPACE]));
+    }
+  }
 
   // H — a spawn in this terminal checks its persona and connector before it says it is starting the
   // application, and refuses each with the full block: code, Next and exit 2.

@@ -27,7 +27,8 @@ import {
   realDirNoSymlink,
   spaceBackupInventory,
 } from "@cotal-ai/core";
-import { CommandFailure, protectedLocalEntries, readLocalRecordSource, readMaintenanceJournal, type MaintenanceAuthMode, type StoreIdentity } from "@cotal-ai/workspace";
+import { codeSpan, CommandFailure, oneLine, protectedLocalEntries, readLocalRecordSource, readMaintenanceJournal, type MaintenanceAuthMode, type StoreIdentity } from "@cotal-ai/workspace";
+import { shellWord } from "./endpoint-errors.js";
 import type { AuthorityFingerprint } from "./maintenance-files.js";
 
 export const BACKUP_MANIFEST_FORMAT = "cotal-space-backup/v3" as const;
@@ -378,11 +379,8 @@ export function isTrustBound(selection: string, mode: string): boolean {
 /** The receipt line for a trust-bound artifact. */
 export const TRUST_BOUND_TEXT = "only a root that still holds the trust state it was taken under, not another machine or a fresh root";
 
-/** Inspect manifest bytes, or hash every named file, without staging, starting a broker or restoring. */
-export function inspectBackupArtifact(artifactPath: string, verify: boolean) {
-  // A path through a linked folder names the artifact create published and restore stages, so it is
-  // read at its real path, as restore reads it.
-  const artifact = realpathSync.native(resolve(artifactPath));
+/** Read the artifact at its canonical path without staging, starting a broker or restoring. */
+export function inspectBackupArtifact(artifact: string, verify: boolean) {
   const volume = parse(artifact).root;
   if (!realDirNoSymlink(volume, ...artifact.slice(volume.length).split(sep).filter(Boolean))) throw new Error("backup artifact is not a physical directory");
   const before = lstatSync(artifact, { bigint: true });
@@ -463,7 +461,22 @@ export function missingBackupPath(path: string): "folder" | "artifact" | undefin
     if (statSync(path, { throwIfNoEntry: false })) return undefined;
     return statSync(folder, { throwIfNoEntry: false })?.isDirectory() ? "artifact" : "folder";
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ELOOP") throw error;
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "EACCES") {
+      let withChmod = "";
+      if (process.getuid && oneLine(folder) === folder) {
+        try {
+          const parent = statSync(folder);
+          if (parent.isDirectory() && parent.uid === process.getuid() && !(parent.mode & constants.S_IXUSR))
+            withChmod = ` with ${codeSpan(`chmod u+x ${shellWord(folder)}`)}`;
+        } catch { /* The blocked folder may be farther up the path. */ }
+      }
+      throw new CommandFailure("refused", "PERMISSION_DENIED", `this account cannot search the path to ${path}`, {
+        target: { directory: path, folder }, native: { code },
+        remedy: `make the path to ${folder} searchable${withChmod}, or name an accessible copy of the backup`,
+      });
+    }
+    if (code !== "ELOOP") throw error;
     throw new CommandFailure("refused", "USAGE_INVALID", `the backup path ${path} contains a symbolic-link loop (ELOOP)`, { target: { directory: path, folder }, native: { code: "ELOOP" }, remedy: "fix the symbolic link or use a path to the backup folder that does not pass through the loop", selfContained: true });
   }
 }
@@ -505,16 +518,24 @@ function notAnArtifact(path: string): boolean {
   } catch { return false; }
 }
 
-/** Whether the claim on `root` names `path` as its backup destination. */
+/** Whether the claim on `root` names this canonical backup directory. */
 function claimedDestination(root: string, path: string): { attemptId: string; owned: boolean } | undefined {
   try {
     const journal = readMaintenanceJournal(root);
     if (journal?.state !== "claimed") return undefined;
-    const destination = journal.claim.ownedPaths?.find((entry) => entry.label === "destination" && entry.path === path);
-    if (!destination) return undefined;
-    const { dev, ino } = destination;
-    const owned = dev !== undefined && ino !== undefined && sameDirectoryIdentity(path, { dev: BigInt(dev), ino: BigInt(ino) });
-    return { attemptId: journal.claim.attemptId, owned };
+    let pending = false;
+    for (const entry of journal.claim.ownedPaths ?? []) {
+      if (entry.label !== "destination") continue;
+      // Recovery uses the recorded path without following a link in its final component.
+      try {
+        const recorded = lstatSync(entry.path, { bigint: true });
+        if (!recorded.isDirectory() || realpathSync.native(entry.path) !== path) continue;
+        if (entry.dev === undefined || entry.ino === undefined) pending = true;
+        else if (entry.dev === recorded.dev.toString() && entry.ino === recorded.ino.toString() && sameDirectoryIdentity(path, recorded))
+          return { attemptId: journal.claim.attemptId, owned: true };
+      } catch { /* An inaccessible slot cannot establish ownership. */ }
+    }
+    return pending ? { attemptId: journal.claim.attemptId, owned: false } : undefined;
   } catch { return undefined; }
 }
 

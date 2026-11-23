@@ -1,3 +1,4 @@
+import { isUtf8 } from "node:buffer";
 import { readFileSync } from "node:fs";
 import {
   agentFilePath,
@@ -247,8 +248,14 @@ async function create(name: string | undefined, v: { role?: string; model?: stri
   // Body from --prompt <text>, or --from <file|-> (- = stdin). No fallback — one must be given.
   let persona: string;
   if (v.prompt !== undefined) persona = v.prompt;
-  else if (v.from !== undefined) persona = readFileSync(v.from === "-" ? 0 : v.from, "utf8");
-  else {
+  else if (v.from !== undefined) {
+    const bytes = readFileSync(v.from === "-" ? 0 : v.from);
+    if (!isUtf8(bytes)) {
+      const source = v.from === "-" ? "standard input" : oneLine(v.from);
+      throw new CommandFailure("refused", "SCHEMA_INVALID", `invalid persona body: ${source} is not valid UTF-8`, { remedy: "convert the input to UTF-8 and retry" });
+    }
+    persona = bytes.toString("utf8");
+  } else {
     console.error(c.red('provide the persona body: --prompt "<text>"  or  --from <file|->'));
     process.exit(1);
   }
@@ -283,7 +290,7 @@ async function create(name: string | undefined, v: { role?: string; model?: stri
 
 function remove(name: string | undefined, force: boolean, values: { space?: string; server?: string }): void {
   if (!name) return usage();
-  const path = personaPath(targetRoot(values), name, "show");
+  const path = personaPath(targetRoot(values), name, "legacy-remove");
   const expected = requirePersonaSource(path);
   if (!force) {
     console.error(c.red(`refusing to delete "${name}" without --force`));

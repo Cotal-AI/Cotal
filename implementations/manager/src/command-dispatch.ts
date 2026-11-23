@@ -5,10 +5,12 @@ import { managerCommandDefs } from "./manager-service-contract.js";
 import type { Manager } from "./manager.js";
 import { servedRequestSubject } from "./run-hosting.js";
 import type { ManagedAgent, StartAgentOpts } from "./seat-types.js";
+import type { TerminalInput } from "./terminal-input.js";
 import { listStaticSlotObservations, observeStaticSlot, renderStaticSlotObservation, STATIC_SLOT_READ_FAILED_DETAIL, StaticSlotReadError } from "./static-lifecycle.js";
 import type { TranscriptReceiveInput } from "./transcript-receive.js";
 import { measureManagerVitals } from "./vitals.js";
 import type { ManagerConfig } from "./manager-config.js";
+import type { ManagerParts } from "./manager-parts.js";
 
 export function participantKey(owner: string, actor: string, uid: string): string {
   return `${owner}.${actor}.${uid}`;
@@ -19,7 +21,6 @@ export function participantKey(owner: string, actor: string, uid: string): strin
 export interface CommandDispatchDeps {
   agents: () => Manager["agents"];
   auth: () => Manager["auth"];
-  goalWriter: () => Manager["goalWriter"];
   managerInstanceId: () => Manager["managerInstanceId"];
   participants: () => Manager["participants"];
   remoteAuthority: () => Manager["remoteAuthority"];
@@ -36,6 +37,7 @@ export interface CommandDispatchDeps {
   executionRefusal: (...args: Parameters<Manager["executionRefusal"]>) => ReturnType<Manager["executionRefusal"]>;
   findManagedByTarget: (...args: Parameters<Manager["findManagedByTarget"]>) => ReturnType<Manager["findManagedByTarget"]>;
   inputAuthorized: (...args: Parameters<Manager["inputAuthorized"]>) => ReturnType<Manager["inputAuthorized"]>;
+  interruptAuthorized: (...args: Parameters<TerminalInput["interruptAuthorized"]>) => ReturnType<TerminalInput["interruptAuthorized"]>;
   lifecycleMembershipRefusal: (...args: Parameters<Manager["lifecycleMembershipRefusal"]>) => ReturnType<Manager["lifecycleMembershipRefusal"]>;
   list: (...args: Parameters<Manager["list"]>) => ReturnType<Manager["list"]>;
   listSpawnDirectory: (...args: Parameters<Manager["listSpawnDirectory"]>) => ReturnType<Manager["listSpawnDirectory"]>;
@@ -83,7 +85,6 @@ export function commandDispatchDeps(m: Manager): CommandDispatchDeps {
   return {
     agents: () => m["agents"],
     auth: () => m["auth"],
-    goalWriter: () => m["goalWriter"],
     managerInstanceId: () => m["managerInstanceId"],
     participants: () => m["participants"],
     remoteAuthority: () => m["remoteAuthority"],
@@ -100,6 +101,7 @@ export function commandDispatchDeps(m: Manager): CommandDispatchDeps {
     executionRefusal: (...args) => m["executionRefusal"](...args),
     findManagedByTarget: (...args) => m["findManagedByTarget"](...args),
     inputAuthorized: (...args) => m["inputAuthorized"](...args),
+    interruptAuthorized: (...args) => m["terminalInputComponent"].interruptAuthorized(...args),
     lifecycleMembershipRefusal: (...args) => m["lifecycleMembershipRefusal"](...args),
     list: (...args) => m["list"](...args),
     listSpawnDirectory: (...args) => m["listSpawnDirectory"](...args),
@@ -144,14 +146,13 @@ export function commandDispatchDeps(m: Manager): CommandDispatchDeps {
 
 /** The typed manager command table, the control admission both doors share, and the admin reach it reads. */
 export class CommandDispatch {
-  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: CommandDispatchDeps) {}
+  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: CommandDispatchDeps, private readonly parts: Pick<ManagerParts, "goalWriter">) {}
 
   // The Manager members these bodies read, under their Manager names. Each reads through its dep at
   // use, so a field the Manager assigns later is current and a method a test replaces on the Manager
   // is the one that runs.
   private get agents() { return this.deps.agents(); }
   private get auth() { return this.deps.auth(); }
-  private get goalWriter() { return this.deps.goalWriter(); }
   private get managerInstanceId() { return this.deps.managerInstanceId(); }
   private get participants() { return this.deps.participants(); }
   private get remoteAuthority() { return this.deps.remoteAuthority(); }
@@ -168,6 +169,7 @@ export class CommandDispatch {
   private executionRefusal(...args: Parameters<Manager["executionRefusal"]>): ReturnType<Manager["executionRefusal"]> { return this.deps.executionRefusal(...args); }
   private findManagedByTarget(...args: Parameters<Manager["findManagedByTarget"]>): ReturnType<Manager["findManagedByTarget"]> { return this.deps.findManagedByTarget(...args); }
   private inputAuthorized(...args: Parameters<Manager["inputAuthorized"]>): ReturnType<Manager["inputAuthorized"]> { return this.deps.inputAuthorized(...args); }
+  private interruptAuthorized(...args: Parameters<TerminalInput["interruptAuthorized"]>): ReturnType<TerminalInput["interruptAuthorized"]> { return this.deps.interruptAuthorized(...args); }
   private lifecycleMembershipRefusal(...args: Parameters<Manager["lifecycleMembershipRefusal"]>): ReturnType<Manager["lifecycleMembershipRefusal"]> { return this.deps.lifecycleMembershipRefusal(...args); }
   private list(...args: Parameters<Manager["list"]>): ReturnType<Manager["list"]> { return this.deps.list(...args); }
   private listSpawnDirectory(...args: Parameters<Manager["listSpawnDirectory"]>): ReturnType<Manager["listSpawnDirectory"]> { return this.deps.listSpawnDirectory(...args); }
@@ -351,7 +353,7 @@ export class CommandDispatch {
           // User-mode lifecycles have no manager-local mgrslot row; their per-name projection remains
           // the live map until the auth service exposes an equivalent mediated reader.
           if (this.auth && !this.userMode) {
-            const recordsKv = this.goalWriter?.ctx.kv;
+            const recordsKv = this.parts.goalWriter.goalWriter?.ctx.kv;
             if (!recordsKv)
               throw new EpEnvelopeError("unavailable", `the durable static slot store is not ready while inspecting "${name}"`, [
                 { kind: STATIC_SLOT_READ_FAILED_DETAIL, name, record: "slot", operation: "read" },
@@ -387,7 +389,7 @@ export class CommandDispatch {
         // the very ambiguity #1274 is about.
         if (!this.auth || this.userMode)
           throw new EpEnvelopeError("failed-precondition", "user-mode and open managers own no durable static slot rows; the projection is static-manager local");
-        const recordsKv = this.goalWriter?.ctx.kv;
+        const recordsKv = this.parts.goalWriter.goalWriter?.ctx.kv;
         if (!recordsKv)
           throw new EpEnvelopeError("unavailable", "the durable static slot store is not ready", [
             { kind: STATIC_SLOT_READ_FAILED_DETAIL, name: "*", record: "slot", operation: "scan" },
@@ -415,7 +417,7 @@ export class CommandDispatch {
         return { catalogs: Array.isArray(data) ? data : [data] };
       }),
       goalResult: (ctx) => this.serveGated(ctx, async () => {
-        const gw = this.goalWriter;
+        const gw = this.parts.goalWriter.goalWriter;
         if (!gw || gw.nc.isClosed()) throw new EpEnvelopeError("unavailable", "the manager goal-reader connection is not standing; the accepted goal is unaffected");
         const goalId = args(ctx).goalId as string;
         // Only the broker-authenticated caller's full incarnation can name this read. The
@@ -458,6 +460,13 @@ export class CommandDispatch {
         const denied = await this.authorizeNamed(a, callerOf(ctx), await this.epAnyModeAdmin(ctx), ctx.subject.caller);
         if (denied) throw new EpEnvelopeError("permission-denied", denied, undefined, "not-executed");
         return this.inputAuthorized(a, args(ctx));
+      }),
+      // `interrupt`: the same authorization as `input`, written out for the same reason.
+      interrupt: (ctx) => this.serveGated(ctx, async () => {
+        const a = targetAgent(ctx);
+        const denied = await this.authorizeNamed(a, callerOf(ctx), await this.epAnyModeAdmin(ctx), ctx.subject.caller);
+        if (denied) throw new EpEnvelopeError("permission-denied", denied, undefined, "not-executed");
+        return this.interruptAuthorized(a);
       }),
       // The turn relay (§8 durable actions): `turn` shares despawn/input's reach policy — the
       // caller must hold owner-equality or admin over the TARGET seat — written out for the same

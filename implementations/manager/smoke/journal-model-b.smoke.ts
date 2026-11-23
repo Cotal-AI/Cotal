@@ -98,7 +98,7 @@ c("WRONG-TODAY: only spawn, turn, and once-task acceptance write goalidx",
 // same Model-B dependence on a live incarnation's memory, and both go when the flip lands.
 c("WRONG-TODAY: the boot sweep skips goals via `goalAcceptances` (and its turn twin), IN-MEMORY maps the serve paths fill",
   count("this.goalAcceptances.has(key) || this.turnRelay.hasAcceptance(key)") === 1
-    && count("this.goalAcceptances.set(") === 1);
+    && count("this.parts.goalWriter.goalAcceptances.set(") === 1);
 pending("the CANONICALIZER writes goalidx create-only BEFORE the bind (step 4a), so the index no longer depends on a live manager's memory");
 
 console.log("\n── THE MECHANISM THAT MUST LIVE — read this before deleting anything ──");

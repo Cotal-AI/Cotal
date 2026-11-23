@@ -309,7 +309,7 @@ export function printCommandHelp(cmd: Command, sub?: Subcommand, out: (line: str
   out(renderReport({ sections }, "rich", width));
 }
 
-/** Resolve declared subcommands and aliases, stopping at operands. */
+/** Resolve declared subcommands and aliases, then use operands to scope their help where applicable. */
 export function printHelpPath(cmd: Command, words: readonly string[], out: (line: string) => void = console.log, width = terminalWidth(process.stdout)): void {
   if (cmd.positionals !== undefined && !cmd.subcommands?.length) return printCommandHelp(cmd, undefined, out, width);
   let surface: Pick<Command, "subcommands"> = cmd;
@@ -318,7 +318,7 @@ export function printHelpPath(cmd: Command, words: readonly string[], out: (line
   for (const word of words) {
     const sub = findSubcommand(surface, word);
     if (!sub && surface === cmd && cmd.name === "history") break;
-    if (!sub || sub.hidden) {
+    if (!sub || (sub.hidden && sub.name.startsWith("__"))) {
       // The parser's usage error for the same word: the reason, then the help of the path that exists,
       // both on stderr, so painted for it whatever stream the caller paints for.
       const at = [cmd.name, ...path].join(" ");
@@ -328,8 +328,11 @@ export function printHelpPath(cmd: Command, words: readonly string[], out: (line
       });
       process.exit(1);
     }
+    if (sub.hidden) break;
     path.push(sub.name); selected = sub; surface = sub;
     if (!sub.subcommands?.length) break;
   }
+  if (cmd.name === "service" && selected?.name === "start" && words[1] === "broker")
+    selected = { ...selected, flagNames: selected.flagNames?.filter((flag) => flag !== "no-open") };
   printCommandHelp(cmd, selected ? { ...selected, name: path.join(" ") } : undefined, out, width);
 }

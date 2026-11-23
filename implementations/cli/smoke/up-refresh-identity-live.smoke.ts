@@ -44,7 +44,7 @@ const rootEnv = { ...process.env };
 for (const key of Object.keys(rootEnv)) if (key.startsWith("COTAL_")) delete rootEnv[key];
 
 let passed = 0;
-const EXPECTED_CHECKS = 29 + 12 + 13 + 5 + 15 + 2 + 15 + (process.platform === "linux" ? 9 + 13 : 0); // Includes suspended legacy broker and wildcard bind checks on Linux.
+const EXPECTED_CHECKS = 29 + 12 + 13 + 5 + 15 + 2 + 15 + 2 + (process.platform === "linux" ? 9 + 13 : 0); // Includes suspended legacy broker and wildcard bind checks on Linux.
 const check = (name: string, ok: boolean, detail?: unknown): void => {
   if (!ok) throw new Error(`FAIL: ${name}${detail === undefined ? "" : `\n${JSON.stringify(detail, null, 2)}`}`);
   passed++;
@@ -547,11 +547,32 @@ async function foregroundCrashKeepsRecord(): Promise<void> {
     });
     check("(control) SIGINT (intended stop) exits 130", controlExit === 130, { exitCode: controlExit, signal: control.signalCode, output: controlOutput });
     check("(control) SIGINT drops the record", findMesh(space) === undefined, findMesh(space));
+    checkStoppedOpenWatch(fixture, space);
   } finally {
     if (control.exitCode === null) { try { control.kill("SIGKILL"); } catch { /* already gone */ } }
     rmSync(fixture.home, { recursive: true, force: true });
     rmSync(fixture.root, { recursive: true, force: true });
   }
+}
+
+function checkStoppedOpenWatch(fixture: Awaited<ReturnType<typeof makeFixture>>, space: string): void {
+  const read = (requested: string[]) => {
+    const result = cotal(fixture, ["watch", "--json", ...requested]);
+    const records = result.stdout.trim().split("\n").filter(Boolean).map((line) => JSON.parse(line) as {
+      type: string; target: { requestedSpace: string | null; space?: string }; data: { code?: string; message?: string; remedy?: string; reason?: string };
+    });
+    return { status: result.status, records };
+  };
+  const implicit = read([]), named = read(["--space", space]), other = read(["--space", `${space}-other`]);
+  const error = named.records[0]?.data;
+  check("watch names the stopped foreground space and gives its restart with or without --space",
+    named.status === 2 && implicit.status === 2 && named.records.map((row) => row.type).join() === "error,end"
+    && named.records.every((row) => row.target.requestedSpace === space && row.target.space === space)
+    && error?.code === "TARGET_UNAVAILABLE" && error.message?.includes(fixture.server) === true
+    && /^start it again with `(?:pnpm )?cotal up` in /.test(error.remedy ?? "") && error.remedy?.endsWith(fixture.root) === true
+    && JSON.stringify(error) === JSON.stringify(implicit.records[0]?.data) && named.records[1]?.data.reason === "setup-failed", { named, implicit });
+  check("watch does not use this project's stopped record for a different space name",
+    other.status === 2 && other.records[0]?.data.code === "TARGET_NOT_FOUND" && other.records[0].target.space === undefined, other);
 }
 
 /** #1697 — `--host` takes a bind HOST, not a URL and not a host:port. Both refusals used to be

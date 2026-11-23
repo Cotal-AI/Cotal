@@ -691,6 +691,12 @@ try {
   check("the other-manager command keeps the selected catalog, refresh request and broker",
     otherManager !== undefined && strip(unlistedHuman.out).includes(`cotal models --space ${space} --harness models-unlisted --refresh --server ${SERVERS} --on ${otherManager}`),
     { status: unlistedHuman.status, out: strip(unlistedHuman.out) });
+  const answeringManager = /Answering manager: +(\S+)/.exec(strip(unlistedHuman.out))?.[1];
+  check("refresh on the answering manager keeps the application and explicit broker",
+    (answeringManager === IID1 || answeringManager === IID2) && strip(unlistedHuman.out).includes(`cotal models --space ${space} --harness models-unlisted --refresh --server ${SERVERS} --on ${answeringManager}`),
+    { status: unlistedHuman.status, out: strip(unlistedHuman.out) });
+  check("a read of all catalogs leaves the application as a placeholder for the refresh",
+    modelsOut.includes(`cotal models --space ${space} -H <application> --refresh --on ${asked}`), modelsOut.slice(-900));
   check("the report gives the reason the install lists no catalog and no failure",
     unlistedHuman.status === 0 && strip(unlistedHuman.out).includes("this fixture install lists no catalog; pass --model") && !/could not be read/.test(strip(unlistedHuman.out)),
     { status: unlistedHuman.status, out: strip(unlistedHuman.out).slice(-400) });

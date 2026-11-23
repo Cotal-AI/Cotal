@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { accountFromCreds, credsClaims, credsRenewalDelayMs, divergentSecretStoreNotice, inspectCredHealth, mintCreds, parseDaemonStoreAnswer, parseSecretStoreIdentity, rejectionText, REMOTE_MANAGER_IDENTITY_NAMES, requestSafeReconnect, sameSecretStoreIdentity, serveIssuanceGateKv, STANDING_RENEWABLE_TTL_SEC, type ControlReply, type CredHealth, type DaemonStoreAnswer, type DeliveryLeaseInfo, type EpServeHandle, type SecretStoreIdentity } from "@cotal-ai/core";
+import { accountFromCreds, credsClaims, credsRenewalDelayMs, divergentSecretStoreNotice, EpEnvelopeError, inspectCredHealth, mintCreds, parseDaemonStoreAnswer, parseSecretStoreIdentity, rejectionText, REMOTE_MANAGER_IDENTITY_NAMES, requestSafeReconnect, sameSecretStoreIdentity, serveIssuanceGateKv, STANDING_RENEWABLE_TTL_SEC, type ControlReply, type CredHealth, type DaemonStoreAnswer, type DeliveryLeaseInfo, type EpServeHandle, type SecretStoreIdentity } from "@cotal-ai/core";
 import { agentSecretKeyForFile, DELIVERY_CREDS_KIND, MEMBERSHIP_RW_CREDS_KIND, remintDaemonCreds, spaceMaterialKey, SYSTEM_CREDS_FILES, writeRenewalRecord, type RenewalRecord } from "@cotal-ai/workspace";
 import type { KV } from "@nats-io/kv";
 import { credsAuthenticator, RequestError, type NatsConnection } from "@nats-io/transport-node";
@@ -10,6 +10,7 @@ import { MANAGER_ENDPOINT } from "./manager-service-contract.js";
 import { withTimeout } from "./manager-timeout.js";
 import type { Manager } from "./manager.js";
 import type { ManagerConfig } from "./manager-config.js";
+import type { ManagerParts } from "./manager-parts.js";
 
 /** The delivery-admin `reloadCreds` request bound — STRICTLY GREATER than the daemon's internal
  * per-component preflight bound (4s each, run in parallel) so a slow or refused proof returns the
@@ -72,17 +73,11 @@ export interface CredentialRenewalDeps {
   agents: () => Manager["agents"];
   auth: () => Manager["auth"];
   ep: () => Manager["ep"];
-  goalWriter: () => Manager["goalWriter"];
-  goalWriterCreds: () => Manager["goalWriterCreds"];
-  setGoalWriterCreds: (value: Manager["goalWriterCreds"]) => void;
   leaseStopping: () => Manager["leaseStopping"];
   managerInstanceId: () => Manager["managerInstanceId"];
   remoteAuthority: () => Manager["remoteAuthority"];
   runHosting: () => Manager["runHosting"];
   serviceServe: () => Manager["serviceServe"];
-  sessionLedgerConn: () => Manager["sessionLedgerConn"];
-  sessionLedgerCreds: () => Manager["sessionLedgerCreds"];
-  setSessionLedgerCreds: (value: Manager["sessionLedgerCreds"]) => void;
   userMode: () => Manager["userMode"];
   deliveryShard: () => (typeof Manager)["DELIVERY_SHARD"];
   beginLifecycle: (...args: Parameters<Manager["beginLifecycle"]>) => ReturnType<Manager["beginLifecycle"]>;
@@ -104,17 +99,11 @@ export function credentialRenewalDeps(m: Manager): CredentialRenewalDeps {
     agents: () => m["agents"],
     auth: () => m["auth"],
     ep: () => m["ep"],
-    goalWriter: () => m["goalWriter"],
-    goalWriterCreds: () => m["goalWriterCreds"],
-    setGoalWriterCreds: (value) => { m["goalWriterCreds"] = value; },
     leaseStopping: () => m["leaseStopping"],
     managerInstanceId: () => m["managerInstanceId"],
     remoteAuthority: () => m["remoteAuthority"],
     runHosting: () => m["runHosting"],
     serviceServe: () => m["serviceServe"],
-    sessionLedgerConn: () => m["sessionLedgerConn"],
-    sessionLedgerCreds: () => m["sessionLedgerCreds"],
-    setSessionLedgerCreds: (value) => { m["sessionLedgerCreds"] = value; },
     userMode: () => m["userMode"],
     deliveryShard: () => (m.constructor as typeof Manager).DELIVERY_SHARD,
     beginLifecycle: (...args) => m["beginLifecycle"](...args),
@@ -133,7 +122,7 @@ export function credentialRenewalDeps(m: Manager): CredentialRenewalDeps {
 /** Renewal of the manager's own standing credentials: the delivery daemon's reload, the remote
  *  standing bundle, and the pushes of renewed credentials to the live connections. */
 export class CredentialRenewal {
-  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: CredentialRenewalDeps) {}
+  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: CredentialRenewalDeps, private readonly parts: Pick<ManagerParts, "goalWriter" | "servePlane">) {}
 
   /** Named identity of {@link ManagerConfig.secrets}: the same coordinate the delivery daemon must reload from.
    *  Set at construction for an injected store; the workspace store is named on first challenge. */
@@ -159,7 +148,8 @@ export class CredentialRenewal {
   /** A refused or failed standing candidate is cleanup debt, never a silent loss: the last-good
    * family stays live and this records what the host may have signed but the manager never adopted. */
   remoteRenewalDebt?: { at: number; processEpoch: number; reason: string; unadoptedSubjects: string[] };
-  credentialPushRetry?: ReturnType<typeof setTimeout>;
+  private credentialPushRetry?: ReturnType<typeof setTimeout>;
+  private remoteStandingRetry?: ReturnType<typeof setTimeout>;
   readonly credentialPushes: Map<NatsConnection, Promise<void>> = new Map<NatsConnection, Promise<void>>();
   supervisorCredentialPush?: Promise<void>;
   readonly pendingCredentialPushes: Set<NatsConnection> = new Set<NatsConnection>();
@@ -170,17 +160,11 @@ export class CredentialRenewal {
   private get agents() { return this.deps.agents(); }
   private get auth() { return this.deps.auth(); }
   private get ep() { return this.deps.ep(); }
-  private get goalWriter() { return this.deps.goalWriter(); }
-  private get goalWriterCreds() { return this.deps.goalWriterCreds(); }
-  private set goalWriterCreds(value: Manager["goalWriterCreds"]) { this.deps.setGoalWriterCreds(value); }
   private get leaseStopping() { return this.deps.leaseStopping(); }
   private get managerInstanceId() { return this.deps.managerInstanceId(); }
   private get remoteAuthority() { return this.deps.remoteAuthority(); }
   private get runHosting() { return this.deps.runHosting(); }
   private get serviceServe() { return this.deps.serviceServe(); }
-  private get sessionLedgerConn() { return this.deps.sessionLedgerConn(); }
-  private get sessionLedgerCreds() { return this.deps.sessionLedgerCreds(); }
-  private set sessionLedgerCreds(value: Manager["sessionLedgerCreds"]) { this.deps.setSessionLedgerCreds(value); }
   private get userMode() { return this.deps.userMode(); }
   private beginLifecycle(...args: Parameters<Manager["beginLifecycle"]>): ReturnType<Manager["beginLifecycle"]> { return this.deps.beginLifecycle(...args); }
   private dialRemoteStanding(...args: Parameters<Manager["dialRemoteStanding"]>): ReturnType<Manager["dialRemoteStanding"]> { return this.deps.dialRemoteStanding(...args); }
@@ -399,6 +383,26 @@ export class CredentialRenewal {
     this.credentialPushRetry.unref();
   }
 
+  stopRetries(): void {
+    clearTimeout(this.credentialPushRetry);
+    this.credentialPushRetry = undefined;
+    clearTimeout(this.remoteStandingRetry);
+    this.remoteStandingRetry = undefined;
+  }
+
+  private scheduleRemoteStandingRetry(): void {
+    if (this.remoteStandingRetry || this.leaseStopping) return;
+    this.remoteStandingRetry = setTimeout(() => {
+      this.remoteStandingRetry = undefined;
+      const release = this.beginLifecycle();
+      if (!release) return;
+      void this.deps.renewRemoteStandingBundle().catch((error) => {
+        console.error(`! remote manager renewal pass failed: ${rejectionText(error)}`);
+      }).finally(release);
+    }, 2_000);
+    this.remoteStandingRetry.unref();
+  }
+
   /** Retain a busy transport and retry its adopted credential without replaying requests. */
   private pushRenewedCreds(nc: NatsConnection): Promise<void> {
     const active = this.credentialPushes.get(nc);
@@ -586,12 +590,12 @@ export class CredentialRenewal {
       // through the scoped executor (never the standing seed). Without this the standing goal-writer
       // connection dies at its TTL and spawn-as-action stops accepting until a restart. The
       // connection's authenticator presents the refreshed credential on its next (re)connect.
-      if (this.goalWriter && this.goalWriterCreds && this.auth) {
-        const gw = this.goalWriter;
+      if (this.parts.goalWriter.goalWriter && this.parts.goalWriter.goalWriterCreds && this.auth) {
+        const gw = this.parts.goalWriter.goalWriter;
         try {
-          if (inspectCredHealth(this.goalWriterCreds).state !== "healthy") {
+          if (inspectCredHealth(this.parts.goalWriter.goalWriterCreds).state !== "healthy") {
             const fresh = await this.withEndpointServeExecutor(({ authKv }) => this.mintAndStageGoalWriter(authKv));
-            this.goalWriterCreds = fresh;
+            this.parts.goalWriter.goalWriterCreds = fresh;
             gw.creds = fresh;
             await this.pushRenewedCreds(gw.nc);
           }
@@ -607,12 +611,12 @@ export class CredentialRenewal {
       // SPEC 14.6: every hosted drive's per-run `run-driver` credential is the manager's to renew
       // for the same nkey; a run parked in a pause for days must not die at the credential's TTL.
       await this.runHosting?.renew();
-      if (this.sessionLedgerConn && this.sessionLedgerCreds && this.auth) {
-        const sw = this.sessionLedgerConn;
+      if (this.parts.servePlane.sessionLedgerConn && this.parts.servePlane.sessionLedgerCreds && this.auth) {
+        const sw = this.parts.servePlane.sessionLedgerConn;
         try {
-          if (inspectCredHealth(this.sessionLedgerCreds).state !== "healthy") {
+          if (inspectCredHealth(this.parts.servePlane.sessionLedgerCreds).state !== "healthy") {
             const fresh = await this.withEndpointServeExecutor(({ authKv }) => this.mintAndStageSessionLedger(authKv));
-            this.sessionLedgerCreds = fresh;
+            this.parts.servePlane.sessionLedgerCreds = fresh;
             sw.creds = fresh;
             await this.pushRenewedCreds(sw.nc);
           }
@@ -647,6 +651,8 @@ export class CredentialRenewal {
   async renewRemoteStandingBundle(force = false): Promise<void> {
     if (this.remoteBundleRenewal) return this.remoteBundleRenewal;
     if (this.leaseStopping) return;
+    clearTimeout(this.remoteStandingRetry);
+    this.remoteStandingRetry = undefined;
     this.remoteBundleAdoption = new Promise<void>((resolve) => { this.finishRemoteBundleAdoption = resolve; });
     const renewal = this.renewRemoteStandingBundleOnce(force, performance.now() + REMOTE_STANDING_BUDGET_MS);
     this.remoteBundleRenewal = renewal;
@@ -674,7 +680,7 @@ export class CredentialRenewal {
     const remote = this.remoteAuthority;
     if (!remote?.renewStandingBundle || !this.serviceServe) return;
     const current = [this.remoteSupervisorCreds, this.remoteExecutorCreds, this.serviceServe.creds,
-      this.goalWriterCreds, this.sessionLedgerCreds];
+      this.parts.goalWriter.goalWriterCreds, this.parts.servePlane.sessionLedgerCreds];
     if (!force && current.every((cred) => cred && inspectCredHealth(cred).state === "healthy")) {
       await Promise.all([
         ...[...this.pendingCredentialPushes].map((nc) => this.pushRenewedCreds(nc)),
@@ -724,10 +730,10 @@ export class CredentialRenewal {
       this.remoteExecutorCreds = candidate.executor;
       this.serviceServe.creds = candidate.serve;
       adopted = true;
-      this.goalWriterCreds = candidate.goalWriter;
-      this.sessionLedgerCreds = candidate.sessionLedger;
-      if (this.goalWriter) this.goalWriter.creds = candidate.goalWriter;
-      if (this.sessionLedgerConn) this.sessionLedgerConn.creds = candidate.sessionLedger;
+      this.parts.goalWriter.goalWriterCreds = candidate.goalWriter;
+      this.parts.servePlane.sessionLedgerCreds = candidate.sessionLedger;
+      if (this.parts.goalWriter.goalWriter) this.parts.goalWriter.goalWriter.creds = candidate.goalWriter;
+      if (this.parts.servePlane.sessionLedgerConn) this.parts.servePlane.sessionLedgerConn.creds = candidate.sessionLedger;
       // Adoption is committed above; a connection that cannot come back yet is a push failure the
       // endpoint's own reconnect loop retries with the adopted credential, not unadopted debt.
       this.remoteRenewalDebt = undefined;
@@ -747,8 +753,8 @@ export class CredentialRenewal {
             await previous.nc.close();
           }
         })().catch((e) => console.error(`! remote manager retired serve drainage after renewal: ${rejectionText(e)}`)),
-        ...(this.goalWriter ? [this.pushRenewedCreds(this.goalWriter.nc)] : []),
-        ...(this.sessionLedgerConn ? [this.pushRenewedCreds(this.sessionLedgerConn.nc)] : []),
+        ...(this.parts.goalWriter.goalWriter ? [this.pushRenewedCreds(this.parts.goalWriter.goalWriter.nc)] : []),
+        ...(this.parts.servePlane.sessionLedgerConn ? [this.pushRenewedCreds(this.parts.servePlane.sessionLedgerConn.nc)] : []),
       ]), remoteStandingTimeLeft(deadline), "remote manager standing reconnect exceeded its 10000ms aggregate budget; adopted transports keep their native reconnect ownership");
     } catch (e) {
       if (replacement) {
@@ -763,6 +769,7 @@ export class CredentialRenewal {
         : REMOTE_MANAGER_IDENTITY_NAMES.map((name) => remote.identities[name].id);
       this.remoteRenewalDebt = { at: Date.now(), processEpoch, reason: rejectionText(e), unadoptedSubjects };
       console.error(`! remote manager all-duty renewal: ${this.remoteRenewalDebt.reason} - no unsigned or local replacement is available`);
+      if (candidate === undefined && e instanceof EpEnvelopeError && e.code === "unavailable") this.scheduleRemoteStandingRetry();
       if (force) throw e;
     }
   }

@@ -48,19 +48,9 @@ import { getSpaceAuth, putSpaceAuth, rotateSystemCreds, spaceMaterialDir, staleS
 import { doctor } from "../src/commands/doctor.js";
 import { up } from "../src/commands/up.js";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal, createSuite } from "@cotal-ai/smoke-kit";
 
-let pass = 0,
-  fail = 0;
-const check = (name: string, cond: boolean, extra?: unknown) => {
-  if (cond) {
-    pass++;
-    console.log(`  ✓ ${name}`);
-  } else {
-    fail++;
-    console.log(`  ✗ FAIL: ${name}`, extra ?? "");
-  }
-};
+const { check, finish, passed, failed } = createSuite();
 const enc = (s: string) => new TextEncoder().encode(s);
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -556,5 +546,6 @@ try {
   rmSync(root, { recursive: true, force: true });
 }
 
-console.log(`\n${fail === 0 ? "✓" : "✗"} sys-rotation smoke: ${pass} passed, ${fail} failed`);
-process.exit(fail === 0 ? 0 : 1);
+console.log(`\n${failed() === 0 ? "✓" : "✗"} sys-rotation smoke: ${passed()} passed, ${failed()} failed`);
+finish();
+process.exit(failed() === 0 ? 0 : 1);

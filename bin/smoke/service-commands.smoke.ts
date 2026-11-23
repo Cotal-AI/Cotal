@@ -267,6 +267,15 @@ try {
   check("bare service offers the broker with --server <url> when the space has no registered broker", brokerRow === `cotal service start broker --config <file> --binary <file> --server <url> --space ${PREPARED}`, brokerRow);
   const selected = cotal(["use", SPACE, "--json"]);
   check("the calling project has selected the other space", selected.status === 0, out(selected));
+  for (const verb of ["logs", "status"]) {
+    const missing = cotal(["service", verb, "absent-worker", "--space", PREPARED, "--json"]);
+    const { error, target } = JSON.parse(missing.stdout);
+    const inventory = /`cotal (service --space [^`]+)`/.exec(error?.remedy)?.[1];
+    const listed = inventory ? cotal([...inventory.split(" "), "--json"]) : undefined;
+    check(`a missing custom service ${verb} offers a read of the requested space's definitions`,
+      missing.status === 2 && error?.code === "TARGET_NOT_FOUND" && target.space === PREPARED && error.message.endsWith("nothing was read")
+        && listed?.status === 0 && JSON.parse(listed.stdout).target.space === PREPARED, { missing: out(missing), listed: listed && out(listed) });
+  }
   const missingLog = cotal(["service", "logs", "stack-manager", "--space", PREPARED, "--tail", "30", "--json"]);
   const logError = JSON.parse(missingLog.stdout).error;
   const managerStart = /`cotal (manager start [^`]+)`/.exec(logError.remedy)?.[1];
@@ -369,6 +378,27 @@ try {
   const confirmed = cotal(confirm.split(" ").slice(1));
   check("  and running it forgets that space's service and keeps this folder's",
     confirmed.status === 0 && serviceDefinitionStore(PREPARED).read("hello") === undefined && serviceDefinitionStore(SPACE).read("hello") !== undefined, out(confirmed));
+
+  const definitionFile = join(prepared, "service definition.json");
+  writeFileSync(definitionFile, JSON.stringify({ schemaVersion: 1, space: PREPARED, launch: { type: "process", executable: "echo", args: ["hello"], cwd: prepared }, readiness: { type: "process", timeoutMs: 1000 } }));
+  for (const [name, source, preset] of [
+    ["preset-example", ["--preset", "manager", "--runtime", "pty"], "manager"],
+    ["file-example", ["--file", definitionFile], null],
+    ["exec-example", ["--exec", "echo 'hello world'", "--cwd", prepared], null],
+  ] as const) {
+    const flags = [...source, "--space", PREPARED, "--json"];
+    const refused = cotal(["service", "add", ...flags]);
+    const { outcome, error } = JSON.parse(refused.stdout);
+    check(`${source[0]} without a name asks to insert only the definition name`,
+      refused.status === 1 && refused.stderr === "" && outcome === "refused" && error?.code === "USAGE_INVALID"
+        && error.message === "scripted service add needs a definition name"
+        && error.remedy === "insert your definition name immediately after `add` in the original command, keeping all flags and values unchanged", out(refused));
+    const retry = cotal(["service", "add", name, ...flags]);
+    const { result } = JSON.parse(retry.stdout);
+    check(`adding the name to ${source[0]} saves in the requested space without starting the service`,
+      retry.status === 0 && result?.name === name && result.space === PREPARED && result.preset === preset && result.started === false
+        && serviceDefinitionStore(PREPARED).read(name) !== undefined && serviceDefinitionStore(SPACE).read(name) === undefined, out(retry));
+  }
 } catch (e) {
   check(`suite ran without throwing: ${e instanceof Error ? e.message : String(e)}`, false, e instanceof Error ? e.stack : e);
 } finally {

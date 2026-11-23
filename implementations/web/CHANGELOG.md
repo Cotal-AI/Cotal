@@ -1,5 +1,19 @@
 # @cotal-ai/web
 
+## 0.175.2
+
+### Patch Changes
+
+- beddddf: Read captured delivery logs after stopping a stack, start the read-only dashboard without requesting unauthorized live traffic, and show how to restart a stopped open space when `watch` names it.
+
+## 0.175.1
+
+No changes in this release.
+
+## 0.175.0
+
+No changes in this release.
+
 ## 0.174.4
 
 No changes in this release.

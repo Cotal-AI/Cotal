@@ -367,7 +367,7 @@ try {
   {
     // The retry is the caller's own resubmission: the same args under the same pinned id. A miss
     // that ran the accept path again was refused at the index CAS of the entry the terminal cleared.
-    const heldIds = () => [...(mgr as unknown as { goalAcceptances: Map<string, { goalId: string }> }).goalAcceptances.values()].map((a) => a.goalId);
+    const heldIds = () => [...(mgr as unknown as { goalWriterComponent: { goalAcceptances: Map<string, { goalId: string }>; } }).goalWriterComponent.goalAcceptances.values()].map((a) => a.goalId);
     const held = (goalId: unknown) => heldIds().includes(goalId as string);
     const floor = (d: Record<string, unknown>) => JSON.stringify([d.name, d.owner, d.actor, d.uid, d.goalId, d.fingerprint]);
     // A loaded host can miss a 2s presence join, and this needs a real `succeeded`; the same long
@@ -422,7 +422,7 @@ try {
     // CRASH: drop the goal-writer FIRST so the graceful shutdown cannot settle the goal (the
     // child-exit's terminal commit then fails on the closed connection) — the goal is orphaned
     // exactly as after a real crash, an accepted goal with no terminal and a live index entry.
-    (mgr as unknown as { goalWriter?: { nc: NatsConnection } }).goalWriter?.nc.close();
+    (mgr as unknown as { goalWriterComponent: { goalWriter?: { nc: NatsConnection }; } }).goalWriterComponent.goalWriter?.nc.close();
     await mgr!.stop();
     mgr = undefined;
     await wait(2200); // past the 2s readiness deadline, so the successor's sweep settles uncertain at once

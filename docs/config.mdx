@@ -180,8 +180,10 @@ and before the product default.
 variables override a saved value. `cotal config` shows the winning value and the values it overrides.
 
 `harness` is checked against the official connectors and the ones installed extensions provide.
-`persona` must be a persona name, made of letters, digits, `_` and `-`, or a path to a persona file
-with no control characters. When the catalog of the space a command here uses (`--space`, else the
+`persona` accepts a catalog name or a path to a persona file with no control characters. A direct
+launch or preview checks the catalog first for a bare name ending in `.md`, such as `review.md`.
+Use a path such as `./review.md` to select a file relative to the mesh root. When the catalog of
+the space a command here uses (`--space`, else the
 space `spawn` resolves from this folder, which is a running space registered here even when another
 space is selected) does not hold it, the value is still saved, since the file may be created later,
 with a `PERSONA_NOT_FOUND` warning naming that catalog; a launch checks it again when it uses it. A

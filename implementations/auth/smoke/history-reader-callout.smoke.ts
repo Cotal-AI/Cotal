@@ -176,7 +176,7 @@ try {
   await jsm.consumers.delete(CHAT, victim.name).catch(() => {});
 
   // 3. A reconnect is a new connection, so its reader names are new, and reads go on.
-  const dashNc = (dash as unknown as { nc: NatsConnection }).nc;
+  const dashNc = (dash as unknown as { conn: { nc: NatsConnection } }).conn.nc;
   const cidBefore = dashNc.info?.client_id;
   await dashNc.reconnect();
   // The client clears its INFO when it starts to dial and sets it again when the new server's INFO arrives.
