@@ -77,7 +77,7 @@ import { noticeOnInterrupt } from "./interrupt-notice.js";
 import { displayCmd } from "./self-exec.js";
 import { assertEndpointUnreachable } from "./endpoint-cut.js";
 import { acquireStackOperationLock } from "./stack-journal.js";
-import { foreignEntriesRefusal, oldStoreForeignEntries } from "./store-dir.js";
+import { foreignEntriesRefusal, missingRestoreStoreParent, oldStoreForeignEntries } from "./store-dir.js";
 import { admitAndRestoreSeatCheckpoints } from "./seat-resume.js";
 import { assertControllerRestorable, reconfigureControllerBroker, rollbackRestoreWithBroker } from "./controller-restore.js";
 import { assertControllerCoupling, newControllerAttemptLaunch } from "./controller-resume.js";
@@ -353,10 +353,8 @@ function artifactOverlapRefusal(root: string, artifact: string, store: string): 
 /** An explicit `--store-dir` names the directory a restore creates and owns for its rollback.
  *  Its parent must resolve to a directory, and the target must be absent unless it is the preserved store. */
 function assertNewStorePath(target: string, source: string): void {
-  const parent = dirname(target);
+  if (!statSync(dirname(target), { throwIfNoEntry: false })?.isDirectory()) throw missingRestoreStoreParent(target);
   const remedy = "name a --store-dir path that does not exist yet, inside an existing directory; the restore creates it";
-  if (!statSync(parent, { throwIfNoEntry: false })?.isDirectory())
-    throw new CommandFailure("refused", "USAGE_INVALID", `the --store-dir parent ${parent} does not resolve to an existing directory; no restore was started`, { target: { storeDir: target, path: parent }, remedy });
   if (target !== source && lstatSync(target, { throwIfNoEntry: false }))
     throw new CommandFailure("refused", "USAGE_INVALID", `the --store-dir path ${target} already exists, and a restore creates its store directory itself; nothing was restored`, { target: { storeDir: target }, remedy });
 }

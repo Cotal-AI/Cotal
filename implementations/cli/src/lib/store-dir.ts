@@ -224,6 +224,13 @@ function blockedStoreAncestor(path: string): { path: string; chmod?: string } | 
   } catch { return undefined; }
 }
 
+export function missingRestoreStoreParent(storeDir: string): CommandFailure {
+  const path = dirname(storeDir);
+  return new CommandFailure("refused", "USAGE_INVALID", `the --store-dir parent ${path} does not resolve to an existing directory; no restore was started`, {
+    target: { storeDir, path }, remedy: "name a --store-dir path that does not exist yet, inside an existing directory; the restore creates it", selfContained: true,
+  });
+}
+
 function checkStoreDirPath(path: string, root: string, purpose: "start" | "restore"): void {
   // A dangling link has no real path, so its own target is named instead.
   if (statIfPresent(path, lstatSync)?.isSymbolicLink()) {
@@ -251,6 +258,7 @@ function checkStoreDirPath(path: string, root: string, purpose: "start" | "resto
     throw new CommandFailure("refused", "USAGE_INVALID", `${existing === path ? `the --store-dir path ${path}` : `${existing}, in the --store-dir path ${path},`} is not a directory; nothing was started or written`, { target: { storeDir: path }, remedy: "name a directory, or a path to create in one, with --store-dir" });
   protectedLocalDirectory(realpathSync.native(existing), "the --store-dir path");
   if (existing === path) return;
+  if (purpose === "restore" && existing !== dirname(path)) throw missingRestoreStoreParent(path);
   try { accessSync(existing, constants.W_OK | constants.X_OK); }
   catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
