@@ -4,7 +4,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { copyFileSync, cpSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, renameSync, rmdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
-import { delimiter, dirname, join } from "node:path";
+import { delimiter, dirname, join, parse } from "node:path";
 import { pathToFileURL } from "node:url";
 import { countedAssert, emitSentinel } from "../../../bin/smoke/sentinel.mjs";
 import { executeUpdate, updateRuntime, type UpdateRuntime } from "../src/commands/update.js";
@@ -139,9 +139,15 @@ function npmNodeEngine(): void {
     copyFileSync(process.execPath, alternate);
     const version = JSON.parse(readFileSync(join(repoBin, "package.json"), "utf8")).version;
     const record = join(root, "npm-runtime");
-    const recordedRuntimes = () => readFileSync(record, "utf8").trim().split(/\r?\n/);
+    type NpmLaunch = { node: string; cwd: string; pathHead: string };
+    const recordedLaunches = (): NpmLaunch[] => readFileSync(record, "utf8").trim().split(/\r?\n/).map(line => JSON.parse(line));
     writeFileSync(join(npmRoot, "package.json"), JSON.stringify({ name: "npm", bin: { npm: "bin/npm-cli.js" }, engines: { node: process.version } }));
-    writeFileSync(cli, `#!/usr/bin/env node\nrequire('node:fs').appendFileSync(${JSON.stringify(record)}, process.execPath + '\\n');\nconsole.log(JSON.stringify(${JSON.stringify(version)}));\n`, { mode: 0o755 });
+    writeFileSync(cli, `#!/usr/bin/env node
+require('node:fs').appendFileSync(${JSON.stringify(record)}, JSON.stringify({
+  node: process.execPath, cwd: process.cwd(), pathHead: (process.env.PATH ?? '').split(require('node:path').delimiter)[0],
+}) + '\\n');
+console.log(JSON.stringify(${JSON.stringify(version)}));
+`, { mode: 0o755 });
     if (process.platform === "win32") writeFileSync(join(npmBin, "npm.cmd"), '@node "%~dp0node_modules\\npm\\bin\\npm-cli.js" %*\r\n');
     else symlinkSync(cli, join(npmBin, "npm"));
     const prefix = join(root, "prefix");
@@ -169,8 +175,8 @@ function npmNodeEngine(): void {
     mkdirSync(onlyNode);
     if (process.platform === "win32") copyFileSync(process.execPath, join(onlyNode, exe));
     else symlinkSync(process.execPath, join(onlyNode, exe));
-    const run = (flag: string, extraPath: string[] = [], npmPath = npmBin) => spawnSync(join(onlyNode, exe), [entry, "update", flag], {
-      cwd: root, encoding: "utf8", timeout: 60_000,
+    const run = (flag: string, extraPath: string[] = [], npmPath = npmBin, cwd = root) => spawnSync(join(onlyNode, exe), [entry, "update", flag], {
+      cwd, encoding: "utf8", timeout: 60_000,
       env: { ...env, HOME: root, USERPROFILE: root, APPDATA: join(root, "config"), LOCALAPPDATA: join(root, "config"),
         COTAL_HOME: join(root, "cotal"), XDG_CONFIG_HOME: join(root, "config"), XDG_RUNTIME_DIR: root, npm_config_prefix: prefix,
         COTAL_TELEMETRY: "off", COTAL_NO_UPDATE_CHECK: "1", COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_ALLOW_CHECKOUT_SEED: "1",
@@ -180,7 +186,7 @@ function npmNodeEngine(): void {
     const first = run("--check", posixLauncher ? [] : [dirname(alternate)]);
     assert.equal(first.status, 0, first.stdout + first.stderr);
     assert.match(first.stdout, /Registry latest:/);
-    assert.ok(recordedRuntimes().every(node => realpathSync(node) === realpathSync(alternate)));
+    assert.ok(recordedLaunches().every(({ node }) => realpathSync(node) === realpathSync(alternate)));
     // Record all built-ins as deliberately removed so self-update needs no fixture npm installs.
     const seed = join(root, "config", "cotal", "seed");
     mkdirSync(seed, { recursive: true });
@@ -200,7 +206,7 @@ function npmNodeEngine(): void {
     const viaCorepack = run("--self", [dirname(alternate)], corepackDir);
     assert.equal(viaCorepack.status, 0, viaCorepack.stdout + viaCorepack.stderr);
     assert.match(viaCorepack.stdout, /Registry latest:/);
-    assert.equal(realpathSync(recordedRuntimes().at(-1)!), realpathSync(alternate), "npm's Corepack entry runs on the compatible Node");
+    assert.equal(realpathSync(recordedLaunches().at(-1)!.node), realpathSync(alternate), "npm's Corepack entry runs on the compatible Node");
     renameSync(alternate, `${alternate}.gone`);
     if (process.platform !== "win32") {
       const shimDir = join(root, "shim-bin");
@@ -211,14 +217,30 @@ function npmNodeEngine(): void {
       const viaShim = run("--self", [shimDir]);
       assert.equal(viaShim.status, 0, viaShim.stdout + viaShim.stderr);
       assert.match(viaShim.stdout, /Registry latest:/);
-      assert.equal(realpathSync(recordedRuntimes().at(-1)!), realpathSync(`${alternate}.gone`), "npm runs through the compatible Node shim");
+      assert.equal(realpathSync(recordedLaunches().at(-1)!.node), realpathSync(`${alternate}.gone`), "npm uses the Node selected by the name-sensitive shim");
+
+      const projectNode = join(root, "project runtime", "bin", "node");
+      mkdirSync(dirname(projectNode), { recursive: true });
+      copyFileSync(process.execPath, projectNode);
+      const project = join(root, "project");
+      mkdirSync(project);
+      mkdirSync(join(root, ".cotal"));
+      writeFileSync(join(project, ".tool-versions"), `nodejs ${process.versions.node}\n`);
+      writeFileSync(dispatcher, `#!/bin/sh\n[ "\${0##*/}" = node ] && [ -f .tool-versions ] || exit 126\nexec "${projectNode}" "$@"\n`);
+      const before = recordedLaunches().length;
+      const viaProject = run("--self", [shimDir], npmBin, project);
+      assert.equal(viaProject.status, 0, viaProject.stdout + viaProject.stderr);
+      assert.match(viaProject.stdout, /Registry latest:/);
+      assert.deepEqual(recordedLaunches().slice(before), [{
+        node: realpathSync(projectNode), cwd: parse(root).root, pathHead: dirname(realpathSync(projectNode)),
+      }], "npm uses the project-selected executable and its bin directory outside the project");
     }
     const updated = run("--self");
     assert.equal(updated.status, 0, updated.stdout + updated.stderr);
     assert.match(updated.stdout, /Registry latest:/);
     assert.deepEqual(readFileSync(entry), before);
     const projectNode = process.platform === "win32" ? join(onlyNode, exe) : process.execPath;
-    assert.equal(realpathSync(recordedRuntimes().at(-1)!), realpathSync(projectNode), "npm can succeed on the project Node even when its declared range excludes it");
+    assert.equal(realpathSync(recordedLaunches().at(-1)!.node), realpathSync(projectNode), "npm can succeed on the project Node even when its declared range excludes it");
   } finally { rmSync(root, { recursive: true, force: true }); }
 }
 

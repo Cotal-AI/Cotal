@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { spawnSync } from "node:child_process";
 import { lstatSync, readFileSync, realpathSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -6,6 +7,7 @@ import { basename, delimiter, dirname, isAbsolute, join, parse, resolve } from "
 import { logicalExecutionEntry, resolveOnPath } from "@cotal-ai/workspace";
 
 const { satisfies } = createRequire(import.meta.url)("semver") as { satisfies: (version: string, range: string) => boolean };
+export const npmProjectDirectory = new AsyncLocalStorage<string | undefined>();
 
 function npmEngine(file: string): { entry: string; range: string } | undefined {
   try {
@@ -35,6 +37,17 @@ function recordedNode(): string | undefined {
   } catch { return undefined; }
 }
 
+function probeNode(file: string, cwd: string, env: NodeJS.ProcessEnv): { path: string; version: string } | undefined {
+  const result = spawnSync(file, ["-p", "JSON.stringify({ path: process.execPath, version: process.version })"], {
+    cwd, env, encoding: "utf8", timeout: 1000, killSignal: "SIGKILL", windowsHide: true,
+  });
+  if (result.status !== 0) return;
+  try {
+    const { path, version } = JSON.parse(result.stdout) as { path?: unknown; version?: unknown };
+    if (typeof path === "string" && isAbsolute(path) && typeof version === "string") return { path, version };
+  } catch { return undefined; }
+}
+
 export function npmInvocation(env: NodeJS.ProcessEnv, args: string[]) {
   const cwd = parse(homedir()).root;
   const windows = process.platform === "win32";
@@ -53,14 +66,18 @@ export function npmInvocation(env: NodeJS.ProcessEnv, args: string[]) {
     const seen = new Set<string>();
     const probeEnv = { ...env };
     delete probeEnv.NODE_OPTIONS;
+    const project = npmProjectDirectory.getStore() ?? cwd;
     for (const candidate of [recordedNode(), ...[dirname(file), ...directories].map(dir => resolveOnPath("node", { ...env, [pathKey]: dir }))]) {
       if (!candidate || seen.has(candidate)) continue;
       seen.add(candidate);
       try { if (realpathSync(candidate) === current) continue; } catch { continue; }
       // Version-manager shims can select the tool by the invoked filename.
-      const version = spawnSync(candidate, ["--version"], { cwd, env: probeEnv, encoding: "utf8", timeout: 1000, killSignal: "SIGKILL", windowsHide: true });
-      if (version.status === 0 && satisfies(version.stdout.trim(), engine.range))
-        return { file: candidate, args: [engine.entry, ...args], env: withNode(candidate), cwd };
+      const selected = probeNode(candidate, project, probeEnv);
+      if (!selected || !satisfies(selected.version, engine.range)) continue;
+      // Confirm npm can use the same executable without the shim or its project context.
+      const verified = candidate === selected.path && project === cwd ? selected : probeNode(selected.path, cwd, probeEnv);
+      if (verified?.path === selected.path && verified.version === selected.version)
+        return { file: verified.path, args: [engine.entry, ...args], env: withNode(verified.path), cwd };
     }
   }
   if (windows) return { file: "npm", args, env, cwd };
