@@ -129,8 +129,8 @@ function cardStepText(phase: string): string {
 function assertSummaryNotElsewhere({ root, space }: PersonaCatalog, deploymentId: string): void {
   const recordedRoot = freshTeamSummaryRecordedElsewhere(root, deploymentId);
   if (!recordedRoot) return;
-  const inspect = `cd ${shellPath(root)} && cotal status --space=${shellWord(space)}`;
-  throw new CommandFailure("refused", "CONFLICT", `the fresh launch summary ${deploymentId} was recorded at ${recordedRoot}, not at this folder; the folder was moved or copied since, so it reports only that earlier boot`, { target: { root, recordedRoot, deploymentId }, remedy: `nothing in this folder depends on it; inspect this project's stack with ${codeSpan(inspect)}` });
+  const atRoot = `cd ${shellPath(root)} && `;
+  throw new CommandFailure("refused", "CONFLICT", `the fresh launch summary ${deploymentId} was recorded at ${recordedRoot}, not at this folder; the folder was moved or copied since, so it reports only that earlier boot`, { target: { root, recordedRoot, deploymentId }, remedy: `nothing in this folder depends on it; inspect this project's stack with ${codeSpan(`${atRoot}cotal status --space=${shellWord(space)}`)}` });
 }
 
 function freshRecorded(summary: FreshTeamSummary) {
