@@ -560,9 +560,7 @@ function parseOrExit(cmd: Command, rest: string[]): ParsedArgs {
     throw e;
   }
   const first = parsed.positionals[0];
-  // History also accepts a root channel positional; only its reserved clear token is a mode.
-  if (cmd.subcommands?.length && first !== undefined && cmd.name !== "history" && !findSubcommand(cmd, first))
-    usageExit(unknownSubcommandMessage(cmd.name, cmd, first), cmd, json, plain);
+  const canonical = canonicalSubcommand(cmd, parsed, json, plain);
   // Target resolution reads an empty space as no space and falls back to the selected one, so a script
   // whose variable is unset would act on whichever space is selected.
   const spaceFlag = cmd.flags?.find((flag) => flag.name === "space");
@@ -575,7 +573,6 @@ function parseOrExit(cmd: Command, rest: string[]): ParsedArgs {
     failureExit(cmd, storeDirRefusal(storeDir), json, parsed.values.plain === true);
   // `--json` implies `--no-input`: a script reading one document cannot answer a prompt.
   if (structured(cmd, first) && parsed.values.json === true) disableInput();
-  const canonical = canonicalSubcommand(cmd, parsed);
   refuseRemovedFolder(cmd, canonical, rest);
   try {
     cmd.validate?.(canonical);
@@ -631,18 +628,24 @@ function refuseRemovedFolder(cmd: Command, parsed: ParsedArgs, rest: readonly st
   failureExit(cmd, new CommandFailure("refused", "USAGE_INVALID", "this folder no longer exists", { remedy: "cd to an existing folder and run the command again", selfContained: true }), structured(cmd, parsed.positionals[0]) && parsed.values.json === true, parsed.values.plain === true, undefined, rest);
 }
 
-/** The parsed args with a subcommand alias in the first positional replaced by its name, so `run`
- *  only ever sees canonical subcommands. */
-function canonicalSubcommand(cmd: Command, parsed: ParsedArgs): ParsedArgs {
+/** Resolve subcommand aliases and refuse a word that names no subcommand before checking operands. */
+function canonicalSubcommand(cmd: Command, parsed: ParsedArgs, json: boolean, plain: boolean): ParsedArgs {
   const positionals = [...parsed.positionals];
   let surface: Pick<Command, "subcommands"> = cmd;
   let changed = false;
-  for (let index = 0; index < positionals.length; index++) {
-    const sub = findSubcommand(surface, positionals[index]);
-    if (!sub) break;
-    changed ||= sub.name !== positionals[index]; positionals[index] = sub.name;
+  for (let index = 0; index < positionals.length && surface.subcommands?.length; index++) {
+    const word = positionals[index]!;
+    const sub: Subcommand | undefined = findSubcommand(surface, word);
+    if (!sub) {
+      // History also accepts a channel as its first positional.
+      if (index === 0 && cmd.name === "history") break;
+      const message = unknownSubcommandMessage([cmd.name, ...positionals.slice(0, index)].join(" "), surface, word);
+      if (index === 0) usageExit(message, cmd, json, plain);
+      failureExit(cmd, new CommandFailure("refused", "USAGE_INVALID", message), json, plain, undefined, parsed.raw);
+    }
+    changed ||= sub.name !== word;
+    positionals[index] = sub.name;
     surface = sub;
-    if (!sub.subcommands?.length) break;
   }
   return changed ? { ...parsed, positionals } : parsed;
 }

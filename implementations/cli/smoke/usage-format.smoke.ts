@@ -85,6 +85,7 @@ const run = (args: string[], extra: Record<string, string> = {}, cwd = neutral) 
 const runShell = (args: string, extra: Record<string, string> = {}, cwd = neutral) =>
   spawnSync("sh", ["-c", `exec "$0" "$1" ${args}`, process.execPath, BIN], { cwd, env: { ...env, ...extra }, encoding: "utf8", timeout: 120_000 });
 const shown = (r: ReturnType<typeof run>) => ({ status: r.status, stdout: r.stdout.slice(0, 600), stderr: r.stderr.slice(0, 900) });
+const parsed = (r: ReturnType<typeof run>) => { try { return JSON.parse(r.stdout) as { target?: unknown; error?: { code?: string; message?: string } }; } catch { return undefined; } };
 const usageShape = (r: ReturnType<typeof run>, message: RegExp) =>
   r.status === 1 && r.stdout === "" && /^✗ /m.test(r.stderr) && message.test(r.stderr) && /Usage/.test(r.stderr) && !/Request refused|Code:/.test(r.stderr);
 
@@ -752,6 +753,27 @@ check("history clear does not suggest a flag only history reads take",
 const far = run(["frobnicate"]);
 check("control: a word near nothing gets no suggestion", far.status === 1 && /unknown command: frobnicate - run `cotal help` to list commands/.test(far.stderr) && !/did you mean/.test(far.stderr), shown(far));
 
+for (const [args, suggestion] of [
+  [["auth", "handle", "inspec"], "inspect"],
+  [["endpoint", "work", "commti"], "commit"],
+] as const) {
+  const [command, parent, typo] = args;
+  const message = `cotal ${command} ${parent} has no subcommand "${typo}" - did you mean ${suggestion}? Or run \`cotal help ${command} ${parent}\``;
+  const text = run([...args]);
+  const help = run([...args, "--help"]);
+  const json = run([...args, "--json"]);
+  check(`${args.join(" ")} refuses with the same text and parent help as --help`,
+    text.status === 1 && help.status === 1 && text.stdout === "" && help.stdout === ""
+    && text.stderr.startsWith(`✗ ${message}\n`) && text.stderr === help.stderr, { text: shown(text), help: shown(help) });
+  check(`${args.join(" ")} --json reports the nested typo as USAGE_INVALID`,
+    json.status === 1 && json.stderr === "" && parsed(json)?.error?.code === "USAGE_INVALID"
+    && parsed(json)?.error?.message === message, shown(json));
+}
+const missingHandleFile = run(["auth", "handle", "inspect", "--json"]);
+check("auth handle inspect without a file still reports the missing operand",
+  missingHandleFile.status === 1 && missingHandleFile.stderr === "" && parsed(missingHandleFile)?.error?.code === "USAGE_INVALID"
+  && parsed(missingHandleFile)?.error?.message === "use auth handle inspect <private-file>", shown(missingHandleFile));
+
 // A word that is no subcommand is refused naming the subcommands the command takes, as telemetry
 // names its levels, and a hidden subcommand is not offered.
 const level = run(["telemetry", "bogus"]);
@@ -773,7 +795,6 @@ check("an over-long unknown command is repeated as its first 128 characters and 
 const longSub = run(["telemetry", long]);
 check("an over-long unknown subcommand is repeated the same way", usageShape(longSub, /cotal telemetry has no subcommand "x{128}… \(100000 characters\)"; it takes off, minimal or regular/) && longest(longSub.stderr) < 400, shown(longSub));
 const longSubJson = run(["telemetry", long, "--json"]);
-const parsed = (r: ReturnType<typeof run>) => { try { return JSON.parse(r.stdout) as { target?: unknown; error?: { code?: string; message?: string } }; } catch { return undefined; } };
 check("its --json message is repeated the same way", longSubJson.status === 1 && parsed(longSubJson)?.error?.code === "USAGE_INVALID" && parsed(longSubJson)?.error?.message?.startsWith(`cotal telemetry has no subcommand "${"x".repeat(128)}… (100000 characters)"`) === true && longSubJson.stdout.length < 1_000, shown(longSubJson));
 check("its --json target is what a short word's refusal carries", JSON.stringify(parsed(longSubJson)?.target) === JSON.stringify(parsed(levelJson)?.target), { long: parsed(longSubJson)?.target, short: parsed(levelJson)?.target });
 const longRun = run(["run", "show", `run-${long}`]);
