@@ -195,9 +195,12 @@ A qualified address can reach a registered agent that is offline. If a bare name
 other owners' agents, Cotal refuses and lists their qualified addresses when available.
 Open and no-login spaces accept bare display names and exact IDs, but not `user/agent`.
 
-The roster and message attribution display `name (role: role)`, or a bare name when no role is set.
+The roster displays `name (role: role)`, or a bare name when no role is set. A decorated label is
+not an address. Use the full principal to copy a destination or reply to a specific sender.
 Control characters, Unicode line and paragraph separators, and brackets render as spaces.
-That display label is not an address. Use the launch name or the full address instead.
+Using a decorated display label as a target refuses. In a per-user-auth space, a prompt can show a
+foreign sender as `user/agent` when the registry confirms the username. Otherwise it shows the
+verified principal. The prompt label is not a reply key.
 
 A managed lifecycle UID distinguishes an incarnation from a later reuse of its name or principal.
 The manager's internal session recovery component checks connector state and control-socket proof,

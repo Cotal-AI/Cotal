@@ -241,8 +241,8 @@ export class NativeChatSession implements AdmittedChatSession {
   }
 
   /** This session as {@link resolveDmTarget} reads it. */
-  private self(): { readonly principal: string; readonly name: string; readonly answerOne: string } {
-    return { principal: this.inputs.identity.principal, name: this.inputs.identity.label, answerOne: this.inputs.words.answerOne };
+  private self() {
+    return { principal: this.inputs.identity.principal, name: this.inputs.identity.label, answerOne: this.inputs.words.answerOne, mode: this.inputs.identity.mode };
   }
 
   subscribe(listener: (event: SessionEvent) => void): () => void {
@@ -265,7 +265,9 @@ export class NativeChatSession implements AdmittedChatSession {
 
   private ingest(m: CotalMessage, d: Delivery, meta?: MessageMeta): void {
     if (this.closed) return; // unacked: a durable copy redelivers to nobody once retired
-    const mentionsMe = mentionsName(m.mentions, this.inputs.identity.label);
+    const mentionsMe = meta?.kind === "channel" && (m.mentionIds !== undefined
+      ? Array.isArray(m.mentionIds) && m.mentionIds.includes(this.inputs.identity.principal)
+      : mentionsName(m.mentions, this.inputs.identity.label));
     const disp = this.engine.accept(m, d, meta, mentionsMe);
     if (disp.kind === "surface") this.emit({ type: "message", message: disp.message });
     const over = this.engine.takeOverflow();

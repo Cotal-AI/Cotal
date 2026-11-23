@@ -426,6 +426,9 @@ interface CotalMessageBase {
    *  routing substitute for `channel`/`to`; the message still multicasts to the whole channel.
    *  Omitted when empty. */
   mentions?: string[];
+  /** Resolved channel mention principals, in exact `<owner>.<actor>` form. When present, even
+   *  empty, this list replaces name matching for recipient priority. It grants no read access. */
+  mentionIds?: string[];
   parts: Part[];
   /** Id of the message being replied to. */
   replyTo?: string;

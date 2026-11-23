@@ -318,9 +318,15 @@ Delivery messages are UTF-8 JSON objects with this shape (`CotalMessage`):
 | `to` | string | one-of | unicast target instance id |
 | `toService` | string | one-of | anycast target role |
 | `mentions` | string[] | MAY | lowercased peer names; wakes the mentioned peer. On a `live` channel it also routes a durable copy to each mentioned target authorized to read that channel (§4); it never delivers content outside the target's read ACL and is not a routing substitute for `channel`/`to` |
+| `mentionIds` | string[] | MAY | resolved channel mention principals in exact `<owner>.<actor>` form. For readers that support it, presence of this field replaces `mentions` name matching for priority, even when empty. |
 | `parts` | `Part[]` | MUST | content |
 | `replyTo` | string | MAY | id of the message replied to |
 | `contextId` | string | MAY | thread/conversation correlation id |
+
+`mentionIds` is a reader hint. It does not grant channel access or change routing. Readers compare
+each entry with their own principal and do not resolve it as a name. If the field is absent, readers
+use `mentions` as before. History and replay stay historical regardless of the hint. Publishers in
+this phase continue to write only `mentions`.
 
 `Part` is one of the three core shapes, or an extension object whose `kind` is namespaced
 as described in §11:

@@ -97,6 +97,9 @@ Anycast does not follow work to its end; a [workflow run](workflows.mdx) does.
 An open mesh runs no delivery daemon, so anycast there has no notices, status or cancel ([SPEC §8.1](../SPEC.md#81-anycast-request-status)).
 
 A channel mention raises a named peer's priority while keeping the message addressed to the whole channel.
+When a received post carries `mentionIds`, readers compare that list with their own principal
+instead of matching a name. An empty list matches no one. An absent list keeps name matching.
+The hint does not grant read access or cause historical traffic to wake the reader.
 The wire carries names so that a mention can still match after a reconnect.
 Whether a mention wakes the session depends on its connector and attention settings.
 On a `live` channel, a mention also gets a durable copy for a uniquely resolved target whose read ACL permits the channel.

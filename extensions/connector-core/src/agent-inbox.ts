@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { channelInAllow, isConcreteChannel, partsToText, type AnycastTakeOutcome, type AttentionMode, type ChannelMode, type CotalEndpoint, type CotalMessage, type Delivery, type MessageMeta } from "@cotal-ai/core";
+import { channelInAllow, isConcreteChannel, isDerivedOwner, parsePrincipalKey, partsToText, type AnycastTakeOutcome, type AttentionMode, type ChannelMode, type CotalEndpoint, type CotalMessage, type Delivery, type MessageMeta } from "@cotal-ai/core";
 import type { AgentConfig } from "./config.js";
 import { CHANNEL_CATCHUP_AGE_MS, afterRecallMark, MAX_INBOX, TAKE_WAIT_MS, TAKE_RETRY_MS, MAX_IN_FLIGHT, MAX_AHEAD, CLASSIFICATION_CAP, FOCUS_EXCLUSION_CAP, IDLESS_READS, PROTECTED_DISPOSITION_CAP, handOver, idlessDigest, ingestDedupKey } from "./agent-inbox-model.js";
 import type { AgentInboxDeps, InboxItem, InboxSnapshot, Pending, IdlessTally, IdlessCopy, RecallMark, InboxScope, ExactDrainResult, DeliveryNotice } from "./agent-inbox-model.js";
@@ -596,9 +596,26 @@ export class AgentInbox {
    *  from {@link MessageMeta} (subject-derived), never the forgeable payload `to`/`toService`;
    *  core has already normalized `channel` and `toService` from the authenticated chat and svc
    *  subjects. Shared by live ingest and focus recall ({@link recallAmbient}). */
+  private readonly senderUsernames = new Map<string, Promise<string | undefined>>();
+
+  private foreignSenderLabel(id: string): string | Promise<string> | undefined {
+    if (!this.config.userAuth) return undefined;
+    const sender = parsePrincipalKey(id);
+    if (!sender || sender.owner === this.ep.principal.owner) return undefined;
+    if (!isDerivedOwner(sender.owner)) return id;
+    let read = this.senderUsernames.get(sender.owner);
+    if (!read) {
+      if (this.senderUsernames.size >= 128) return id;
+      read = this.ep.readUsername(sender.owner).catch(() => undefined).finally(() => this.senderUsernames.delete(sender.owner));
+      this.senderUsernames.set(sender.owner, read);
+    }
+    return read.then((username) => username ? `${username}/${sender.actor}` : id);
+  }
+
   private toInboxItem(m: CotalMessage, kind: InboxItem["kind"], historical: boolean): InboxItem {
     const text = partsToText(m.parts);
-    return {
+    const label = this.foreignSenderLabel(m.from.id);
+    const item: InboxItem = {
       id: m.id,
       // The wire id when there is one; a minted opaque key when the id is the empty string (#624:
       // an empty id is never a dedup key, so it is never an address either; but the delivery still
@@ -608,16 +625,21 @@ export class AgentInbox {
       fromId: m.from.id,
       fromName: m.from.name,
       fromRole: m.from.role,
+      ...(label === undefined ? {} : { verifiedFromLabel: typeof label === "string" ? label : m.from.id }),
       kind,
       channel: m.channel,
       service: m.toService,
       mentions: m.mentions,
-      mentionsMe: m.mentions?.includes(this.ep.card.name.toLowerCase()) ?? false,
+      mentionsMe: kind === "channel" && (m.mentionIds !== undefined
+        ? Array.isArray(m.mentionIds) && m.mentionIds.includes(this.ep.card.id)
+        : m.mentions?.includes(this.ep.card.name.toLowerCase()) === true),
       historical,
       text,
       replyTo: m.replyTo,
       contextId: m.contextId,
     };
+    if (typeof label === "object") void label.then((value) => { item.verifiedFromLabel = value; });
+    return item;
   }
 
   /** Return pending messages in stable receive order. Automatic delivery excludes quiet ambient;

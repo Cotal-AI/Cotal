@@ -42,6 +42,7 @@ import { isJetStreamMissing } from "./jetstream-missing.js";
 import { assertValidKind } from "./agent-file.js";
 import { assertValidName } from "./resolve.js";
 import { PeerAddressError, resolvePeerAddress } from "./peer-address.js";
+import { readUsername } from "./username-registry.js";
 import {
   JetStreamApiCodes,
   type JetStreamManager,
@@ -781,15 +782,12 @@ export class CotalEndpoint extends EventEmitter {
     return this.stopPromise ??= this.stopOnce();
   }
 
-  /** Forwards to the connection component's {@link EndpointConnection.stopOnce}. */
-  private stopOnce(): Promise<void> {
-    return this.connection.stopOnce();
-  }
+  private stopOnce(): Promise<void> { return this.connection.stopOnce(); }
 
   /** Native bindings for an account census. Throws while a connection transition is unsettled. */
-  nativeConnections(): NativeConnectionBinding[] {
-    return this.connection.nativeConnections();
-  }
+  nativeConnections(): NativeConnectionBinding[] { return this.connection.nativeConnections(); }
+  /** An owner's reciprocal username registry binding on this connection. */
+  readUsername(owner: string): Promise<string | undefined> { return this.conn.nc ? readUsername(this.conn.nc, this.space, owner) : Promise.reject(new Error(this.notLiveMsg())); }
 
   // ---- messaging -----------------------------------------------------------
 
