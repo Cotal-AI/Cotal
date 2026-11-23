@@ -772,7 +772,12 @@ retry from the same working directory and remove only the named flags and their 
   A permission failure refuses `PERMISSION_DENIED` (exit 2), keeps the store in place and names
   `chmod -R u+rwX` on its root. Cleanup and reset also check for write and search access to the store's
   parent, where they move the store aside. If that check fails, they name the parent and
-  `chmod u+w` on it instead. A stopped named open space is identified by its retained broker
+  `chmod u+w` on it instead. If `clean` cannot search the path to the store, it refuses
+  `PERMISSION_DENIED` and names the blocking directory when it can identify it. Restore search
+  access there. If the directory is yours and lacks owner search permission, use `chmod u+x` on it.
+  If the store path is an unresolved link, `clean` refuses `CONFLICT` and names the recorded link
+  target. Put the real store directory back at that path or pass its real location with `--store-dir`.
+  A stopped named open space is identified by its retained broker
   configuration, so its own streams do not count as another space's data.
 - `all` is `store` plus the space identity (`.cotal/auth`), the local creds and markers tied to
   it, any crash residue a normal `down` would have swept (stale pidfiles, `run/`), and the mesh's
@@ -899,6 +904,10 @@ from that root after `cotal down` to preview what would be removed. A reset prev
 the space refuses `TARGET_NOT_FOUND`, names `cotal space`, and suggests the matching cleanup preview.
 An apply that refuses there names `cotal clean store --force` or `cotal clean all --force` instead.
 Add `--store-dir <dir>` when the stack used a custom store.
+
+Both resets leave a ready preserved legacy store in place. From its project root, run `cotal up`
+to resume it, then `cotal down --yes` to stop it without preserving again. Preview cleanup there
+with `cotal clean store --dry-run` or `cotal clean all --dry-run`.
 
 Removing the store removes what the broker kept in it: workflow runs and their journals, channel
 history, stored messages and every other record. A run still waiting for an answer goes with it and
