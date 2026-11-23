@@ -8,6 +8,7 @@
  * `DeltaJournal` writes at most one line per 250 ms, mode 0600. `StreamedParts` closes a streamed
  * part with the rest of its saved text, ends it and maps the saved text anew after a provider retry,
  * and leaves a part that never streamed to the mapper. `streamSeed` rebuilds that state at a cursor.
+ * `DeltaJournal.abandon` ends a stream no saved record will close, so the run can close after it.
  *
  * Files only; no broker. Run: pnpm smoke:delta-merge
  */
@@ -39,7 +40,8 @@ const throws = async (fn: () => Promise<unknown>): Promise<string | undefined> =
   }
 };
 
-type H = { i: string };
+/** A harness record; one with a `key` is the saved record of the part streamed under it. */
+type H = { i: string; key?: string };
 const label = (v: Merged<H>): string => ("harness" in v ? v.harness.i : v.deltas.map((d) => d.text).join("+"));
 const labels = (r: SourceRead<Merged<H>>): string => r.records.map((x) => label(x.value)).join(",");
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -56,10 +58,53 @@ function fixture() {
   writeFileSync(jPath, "", { mode: 0o600 });
   const harness = new JsonlFileSource<H>(hPath);
   const merged = new DeltaMergedSource<H>(harness, jPath);
-  const record = (i: string) => appendFileSync(hPath, `${JSON.stringify({ i })}\n`);
+  const record = (i: string, key?: string) => appendFileSync(hPath, `${JSON.stringify({ i, ...(key ? { key } : {}) })}\n`);
   const line = (text: string, anchor = harness.endSync(), ts = 1) =>
     appendFileSync(jPath, `${JSON.stringify({ anchor, ts, deltas: [{ key: "k", kind: "text", text }] } satisfies DeltaRecord)}\n`);
   return { dir, hPath, jPath, harness, merged, record, line };
+}
+
+/**
+ * An emitter over a fixture's merged records, publishing into `published`. The run opens at the first
+ * record; a harness record with a key closes that streamed part, and any other is a message of its
+ * own; each journal line streams into its parts and ends the ones it abandons. `boot` starts the
+ * emitter again from its WAL, as a restart does.
+ */
+function rig(f: ReturnType<typeof fixture>, c0: string) {
+  const published: AguiEvent[] = [];
+  const ep: EmitterEndpoint = {
+    principal: { owner: "local", actor: "seat" }, actorIsEphemeral: false, maxPayload: 100_000,
+    assertExpectationSemantics: async () => {},
+    encodedSize: (o) => Buffer.byteLength(JSON.stringify(o)) + 100,
+    multicastExpecting: async (o) => {
+      for (const p of o.parts as Part[]) published.push(...((p as unknown as { events?: AguiEvent[] }).events ?? []));
+      return { ack: { seq: published.length, duplicate: false } };
+    },
+  };
+  const walPath = join(f.dir, "wal.json");
+  const frontier = memorySubjectFrontier();
+  const mapper = (run: string | undefined, seed?: StreamSeed): RecordMapper<Merged<H>> => {
+    let open = run;
+    const parts = new StreamedParts(seed);
+    const own = (i: string) => [textMessageStart({ messageId: i, timestamp: 1 }), textMessageContent({ messageId: i, delta: i, timestamp: 1 }), textMessageEnd({ messageId: i, timestamp: 1 })];
+    return (r) => {
+      const events: AguiEvent[] = [];
+      if (!open) events.push(runStarted({ threadId: "t", runId: (open = "run"), timestamp: 1 }));
+      if ("deltas" in r) events.push(...r.deltas.flatMap((d) => parts.delta(d, r.timestamp)), ...parts.end(r.ends ?? [], r.timestamp));
+      else if (r.harness.key) {
+        const closed = parts.saved(r.harness.key, r.harness.i, 1);
+        events.push(...closed.events, ...(closed.mapAsNew ? own(r.harness.i) : []));
+      } else events.push(...own(r.harness.i));
+      return { runId: open, events };
+    };
+  };
+  const boot = async () => {
+    const wal = await EventWal.open(walPath, { space: "s", threadId: "t", principal: "local.seat", subjectMayExist: false });
+    if (wal.frontier.sourceCursor === undefined) await wal.advanceCursorOnly(c0);
+    const seed = await streamSeed(f.jPath, wal.frontier.sourceCursor, wal.brackets);
+    return AguiEmitter.start({ endpoint: ep, wal, subjectFrontier: frontier, source: f.merged, map: mapper(wal.brackets?.run, seed) });
+  };
+  return { published, boot };
 }
 
 try {
@@ -235,37 +280,7 @@ try {
     f.record("R1");
     const anchor = f.harness.endSync(); // the other process takes its anchor here...
     f.record("R2");
-    const published: AguiEvent[] = [];
-    const ep: EmitterEndpoint = {
-      principal: { owner: "local", actor: "seat" }, actorIsEphemeral: false, maxPayload: 100_000,
-      assertExpectationSemantics: async () => {},
-      encodedSize: (o) => Buffer.byteLength(JSON.stringify(o)) + 100,
-      multicastExpecting: async (o) => {
-        for (const p of o.parts as Part[]) published.push(...((p as unknown as { events?: AguiEvent[] }).events ?? []));
-        return { ack: { seq: published.length, duplicate: false } };
-      },
-    };
-    const walPath = join(f.dir, "wal.json");
-    const frontier = memorySubjectFrontier();
-    // A mapper over the merged records: the run opens at the first record, each harness record is a
-    // message of its own, and each journal line streams into one part.
-    const mapper = (run: string | undefined, seed?: StreamSeed): RecordMapper<Merged<H>> => {
-      let open = run;
-      const parts = new StreamedParts(seed);
-      return (r) => {
-        const events: AguiEvent[] = [];
-        if (!open) events.push(runStarted({ threadId: "t", runId: (open = "run"), timestamp: 1 }));
-        if ("deltas" in r) events.push(...r.deltas.flatMap((d) => parts.delta(d, r.timestamp)));
-        else events.push(textMessageStart({ messageId: r.harness.i, timestamp: 1 }), textMessageContent({ messageId: r.harness.i, delta: r.harness.i, timestamp: 1 }), textMessageEnd({ messageId: r.harness.i, timestamp: 1 }));
-        return { runId: open, events };
-      };
-    };
-    const boot = async () => {
-      const wal = await EventWal.open(walPath, { space: "s", threadId: "t", principal: "local.seat", subjectMayExist: false });
-      if (wal.frontier.sourceCursor === undefined) await wal.advanceCursorOnly(c0);
-      const seed = await streamSeed(f.jPath, wal.frontier.sourceCursor, wal.brackets);
-      return AguiEmitter.start({ endpoint: ep, wal, subjectFrontier: frontier, source: f.merged, map: mapper(wal.brackets?.run, seed) });
-    };
+    const { published, boot } = rig(f, c0);
     const first = await boot();
     await first.pump();
     // ...and writes its line only now, after the reader passed the anchor.
@@ -300,6 +315,103 @@ try {
     const closed = resumed.saved("open", "Hello world", 2);
     check("the resumed part closes with the rest of its saved text", (closed.events[0] as { delta?: string }).delta === " world");
     check("a harness cursor stored alone streamed nothing", (await streamSeed(f.jPath, f.harness.endSync(), null)).open.length === 0);
+  }
+
+  console.log("abandoned streams");
+  {
+    const f = fixture();
+    const path = join(f.dir, "abandon.jsonl");
+    let writes = 0;
+    const journal = DeltaJournal.open({ path, anchor: () => f.harness.endSync(), onWrite: () => writes++, onError: () => {} });
+    const lines = () => readFileSync(path, "utf8").trim().split("\n").map((l) => JSON.parse(l) as DeltaRecord);
+    journal.append({ key: "a", kind: "text", text: "first" });
+    await sleep(DELTA_JOURNAL_INTERVAL_MS + 100);
+    journal.append({ key: "a", kind: "text", text: " pending" });
+    journal.abandon(["a"]);
+    const now = lines();
+    check("abandon writes at once, inside the interval, with the pending deltas and the keys it ends",
+      now.length === 2 && JSON.stringify(now[1]!.ends) === '["a"]' && now[1]!.deltas.map((d) => d.text).join("") === " pending" && writes === 2, now);
+    await sleep(DELTA_JOURNAL_INTERVAL_MS + 100);
+    check("and leaves nothing pending behind it", lines().length === 2);
+    journal.abandon([]);
+    check("abandoning no keys writes nothing", lines().length === 2);
+    journal.close();
+    check("a closed journal refuses abandon", (await throws(async () => journal.abandon(["a"])))?.includes("closed") === true);
+    const parts = new StreamedParts();
+    parts.delta({ key: "s", kind: "text", text: "Hel" }, 1);
+    parts.saved("s", "Hello", 2);
+    check("end of a key its saved record closed sends nothing", parts.end(["s"], 3).length === 0);
+    check("end of a key that never streamed sends nothing", parts.end(["never"], 4).length === 0);
+    check("and a later delta under an ended key publishes nothing", parts.delta({ key: "never", kind: "text", text: "late" }, 5).length === 0);
+  }
+
+  console.log("a run closes after its abandoned stream ends");
+  {
+    const f = fixture();
+    const c0 = f.merged.start(f.harness.endSync());
+    const journal = DeltaJournal.open({ path: f.jPath, anchor: () => f.harness.endSync(), onWrite: () => {}, onError: () => {} });
+    const { published, boot } = rig(f, c0);
+    const types = () => published.map((e) => e.type).join(",");
+    const em = await boot();
+    journal.append({ key: "saved", kind: "text", text: "Hel" });
+    await sleep(DELTA_JOURNAL_INTERVAL_MS + 50);
+    f.record("Hello", "saved");
+    journal.append({ key: "failed", kind: "text", text: "Partial" });
+    await sleep(DELTA_JOURNAL_INTERVAL_MS + 50);
+    await em.pump();
+    const refused = await throws(() => em.closeRun({ timestamp: 9 }));
+    check("a run whose streamed part no record closed refuses to close", refused !== undefined, types());
+    journal.abandon(["saved", "failed"]);
+    await em.pump();
+    const closed = await em.closeRun({ timestamp: 10 });
+    const ends = published.filter((e) => e.type === AGUI_EVENT_TYPE.TEXT_MESSAGE_END).map((e) => (e as { messageId: string }).messageId);
+    check("abandon ends the open part once, ignores the saved one, and the run then closes",
+      closed === "run" && JSON.stringify(ends) === '["saved","failed"]' && published.at(-1)?.type === AGUI_EVENT_TYPE.RUN_FINISHED, types());
+    journal.close();
+  }
+
+  console.log("a restart replays an abandoned stream");
+  {
+    const f = fixture();
+    const c0 = f.merged.start(f.harness.endSync());
+    const journal = DeltaJournal.open({ path: f.jPath, anchor: () => f.harness.endSync(), onWrite: () => {}, onError: () => {} });
+    const { published, boot } = rig(f, c0);
+    const first = await boot();
+    journal.append({ key: "r", kind: "text", text: "Part" });
+    await sleep(DELTA_JOURNAL_INTERVAL_MS + 50);
+    await first.pump();
+    journal.abandon(["r"]); // the seat stops before it reads this line
+    const second = await boot();
+    await second.pump();
+    const third = await boot();
+    await third.pump();
+    const r = published.filter((e) => (e as { messageId?: string }).messageId === "r").map((e) => e.type);
+    check("a restarted emitter resumes the part and ends it once, and a later restart sends nothing more",
+      JSON.stringify(r) === JSON.stringify([AGUI_EVENT_TYPE.TEXT_MESSAGE_START, AGUI_EVENT_TYPE.TEXT_MESSAGE_CONTENT, AGUI_EVENT_TYPE.TEXT_MESSAGE_END]), r);
+    check("and the run closes", (await third.closeRun({ timestamp: 3 })) === "run");
+    journal.close();
+  }
+
+  console.log("a late abandon line from another process");
+  {
+    const f = fixture();
+    const c0 = f.merged.start(f.harness.endSync());
+    const { published, boot } = rig(f, c0);
+    f.line("Late"); // the stream, under key "k"
+    const anchor = f.harness.endSync(); // the other process takes its anchor here...
+    f.record("R1");
+    f.record("R2");
+    const first = await boot();
+    await first.pump();
+    // ...and writes its line only after the reader passed the anchor.
+    execFileSync(process.execPath, ["-e", `require("node:fs").appendFileSync(${JSON.stringify(f.jPath)}, ${JSON.stringify(`${JSON.stringify({ anchor, ts: 2, deltas: [], ends: ["k"] })}\n`)})`]);
+    await first.pump();
+    const second = await boot();
+    await second.pump();
+    const order = published.filter((e) => e.type === AGUI_EVENT_TYPE.TEXT_MESSAGE_END).map((e) => (e as { messageId: string }).messageId);
+    check("the late line ends the stream once, after the records already published, across a restart",
+      JSON.stringify(order) === '["R1","R2","k"]', order);
+    check("and the run closes", (await second.closeRun({ timestamp: 3 })) === "run");
   }
 } finally {
   rmSync(root, { recursive: true, force: true });
