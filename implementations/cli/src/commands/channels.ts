@@ -315,7 +315,7 @@ function registryView(result: { action: string; name?: string; space: string; re
 
 async function confirmRemoval(name: string, space: string, values: Values, presentation: Presentation): Promise<boolean> {
   if (values.yes) return true;
-  if (presentation === "json" || !canPrompt()) throw new ConfirmationRequired(`${yesRequired("channel removal", presentation === "json")}; --purge also deletes retained history for that channel`, { remedy: `confirm with ${codeSpan(`cotal channel remove ${shellWord(name.startsWith("-") ? `#${name}` : name)}${targetWords(values)}${values.purge ? " --purge" : ""} --yes`)}` });
+  if (presentation === "json" || !canPrompt()) throw new ConfirmationRequired(`${yesRequired("channel removal", presentation === "json")}; --purge also deletes retained history for that channel`, { remedy: `confirm with ${codeSpan(`cotal channel remove ${shellWord(name.startsWith("-") ? `#${name}` : name)}${targetWords(values)}${values.purge ? " --purge" : ""} --yes${presentation === "json" ? " --json" : ""}`)}` });
   const question = `Remove #${name} from ${space}? ${values.purge ? "Its retained history will also be deleted." : "Its retained history will be kept."} Access grants and members are unchanged.`;
   if (presentation === "plain") return (await prompts.askLine(`${question}\n1) Cancel\n2) Remove\nChoice [1]: `))?.trim() === "2";
   const answer = await prompts.confirm({ message: question, initialValue: false });
