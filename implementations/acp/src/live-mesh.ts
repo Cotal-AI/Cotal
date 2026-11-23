@@ -34,7 +34,7 @@ import { connectTargetOrThrow, isConnectRefusal, ownManagerInstances, resolveCon
 import { askManager, controlPs, liveManagerIds, managerCandidate, managerRailGone, reportedManagerHost, startStackManagerRemedy, START_TIMEOUT_MS, type ControlClient, type ControlCtx, type ManagerReply } from "@cotal-ai/workspace/control";
 import { readManagedLaunch, requestManagedLaunch } from "@cotal-ai/workspace/launch";
 import { openObserver } from "@cotal-ai/workspace/view";
-import { AgentCallFailed, deregisterRemedy, LaunchListsRefused, NoLaunchManager, SignInRequired, type AgentCatalog, type AguiEventLike, type EndpointDeclaration, type ManagerChoice, type Mesh, type RosterEntry, type SeatFrame, type SeatRef, type SeatRow, type SpawnRequest } from "./mesh.js";
+import { AgentCallFailed, deregisterRemedy, LaunchListsRefused, NoLaunchManager, SignInRequired, type AgentCatalog, type AguiEventLike, type ManagerChoice, type Mesh, type RosterEntry, type SeatFrame, type SeatRef, type SeatRow, type SpawnRequest } from "./mesh.js";
 
 const OBSERVER_NAME = "acp";
 /** A seat's retained event history is read up to this many frames. */
@@ -319,14 +319,13 @@ function launchCalls(c: Connected, p: Controls, defaultPersona: string | null | 
       const [status, models] = await Promise.all([ask("managerStatus", undefined, instanceId), ask("models", undefined, instanceId)]);
       if (!status.ok) throw listFailure(status, "the manager did not report its applications");
       if (!models.ok) throw listFailure(models, "the manager did not list its models");
-      const rows = (status.data as { connectors?: { agent: string; state: string; eventPlane: boolean; agentEndpoint?: EndpointDeclaration; reason?: string }[] } | undefined)?.connectors ?? [];
+      const rows = (status.data as { connectors?: { agent: string; state: string; eventPlane: boolean; reason?: string }[] } | undefined)?.connectors ?? [];
       if (!Array.isArray(models.data)) throw new Error("the manager did not list its models");
       const catalogs = models.data as { agent: string; models?: { id: string; name?: string; variants?: { name: string }[] }[] }[];
       return rows.map((row): AgentCatalog => ({
         agent: row.agent,
         available: row.state === "available",
         eventPlane: row.eventPlane,
-        ...(row.agentEndpoint ? { endpoint: row.agentEndpoint } : {}),
         ...(row.reason ? { reason: row.reason } : {}),
         models: (catalogs.find((c) => c.agent === row.agent)?.models ?? []).map((m) => ({
           id: m.id,
@@ -393,7 +392,7 @@ function launchCalls(c: Connected, p: Controls, defaultPersona: string | null | 
 
 /** The seat's `agent` endpoint (SPEC 13.22), called as its owner. An agent serves it only under a
  *  user-auth credential (SPEC 13.21), so a space where people do not sign in has none. */
-function agentCalls(c: Connected): Pick<Mesh, "agentEndpoints" | "agentCall" | "promptCounter"> {
+function agentCalls(c: Connected): Pick<Mesh, "agentEndpoints" | "agentCall" | "promptCounter" | "served"> {
   const { started, observer } = c;
   /** The seat's current presence row, when it is live and is the incarnation the bridge holds. */
   const row = (seat: SeatRef) => {
@@ -431,6 +430,10 @@ function agentCalls(c: Connected): Pick<Mesh, "agentEndpoints" | "agentCall" | "
     promptCounter(seat) {
       const r = row(seat);
       return r?.prompts && r.runtime ? { runtime: r.runtime.id, open: r.prompts.open, seq: r.prompts.seq } : undefined;
+    },
+
+    served(seat) {
+      return started ? row(seat)?.agentEndpoint : undefined;
     },
   };
 }
