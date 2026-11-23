@@ -184,6 +184,20 @@ try {
   for (let i = 0; i < 25 && asking?.status !== "waiting"; i++, await sleep(200)) asking = otto();
   check("waiting:an open question form reads waiting, with the form's title as the activity",
     asking?.status === "waiting" && asking.activity === "Questions", { status: asking?.status, activity: asking?.activity });
+  // An answered ask leaves the turn running, so the seat reads working again until the turn ends.
+  const settledOn = async (status: string) => {
+    let now = otto();
+    for (let i = 0; i < 25 && now?.status !== status; i++, await sleep(200)) now = otto();
+    return now;
+  };
+  second.feed({ type: "form.replied", data: { id: "frm_1", sessionID: SESSIONS[1]!, answer: {} } });
+  const answered = await settledOn("working");
+  check("answered:a question form answered while its turn runs reads working again", answered?.status === "working", { status: answered?.status, activity: answered?.activity });
+  second.feed({ type: "permission.asked", data: { id: "per_1", sessionID: SESSIONS[1]!, action: "shell", resources: ["sleep 60"], save: ["sleep *"], source: { type: "tool", messageID: "msg_1", id: "call_1" } } });
+  await settledOn("waiting");
+  second.feed({ type: "permission.replied", data: { sessionID: SESSIONS[1]!, requestID: "per_1", reply: "once" } });
+  const allowed = await settledOn("working");
+  check("answered:a permission ask answered while its turn runs reads working again", allowed?.status === "working", { status: allowed?.status, activity: allowed?.activity });
   fed("session.execution.interrupted", { sessionID: SESSIONS[1]! });
   await sleep(300);
 
@@ -292,7 +306,7 @@ try {
   process.exit = exit;
 }
 
-const EXPECTED = 19;
+const EXPECTED = 21;
 check(`meta:every cell ran - ${EXPECTED} expected`, passed() + failed() === EXPECTED, `${passed() + failed()} cells reported`);
 finish();
 process.exit();
