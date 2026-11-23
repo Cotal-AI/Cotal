@@ -126,6 +126,15 @@ for (const { args, message } of cases) {
   const authManifest = join(manifests, "cotal.yaml"), openManifest = join(manifests, "open.yaml");
   writeFileSync(authManifest, "apiVersion: cotal/v1\nkind: Mesh\nspace: flagaudit\nchannels: {}\n");
   writeFileSync(openManifest, "apiVersion: cotal/v1\nkind: Mesh\nspace: flagauditopen\nbroker:\n  auth: false\nchannels: {}\n");
+  for (const flags of [[], ["--json"], ["--plain"]]) {
+    const refused = run(["up", "--dry-run", ...flags]);
+    const remedy = refused.envelope?.error?.remedy ?? refused.stderr;
+    const retryFlags = flags.filter((flag) => !remedy.includes(`omit ${flag}`));
+    const preview = run(["up", "--dry-run", "-f", openManifest, ...retryFlags]);
+    check(`missing-manifest advice with ${flags[0] ?? "default output"} leads to a read-only plan`,
+      refused.status === 1 && remedy.includes("pass -f <cotal.yaml>") && (flags.length > 0 || !remedy.includes("and omit --"))
+        && preview.status === 0 && preview.stdout.includes("flagauditopen") && readdirSync(folder).length === 0, shown(preview));
+  }
   for (const { label, args, json, help, message, remedy } of [
     { label: "-f --dry-run --max-file-store", args: ["-f", authManifest, "--dry-run", "--max-file-store", "1073741824"], json: true, help: false,
       message: "--max-file-store cannot be combined with --file/-f: a manifest launch does not render a store cap, so nothing was started", remedy: "drop --max-file-store, or start the mesh without -f" },
