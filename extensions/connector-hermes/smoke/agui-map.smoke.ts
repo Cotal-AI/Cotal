@@ -121,6 +121,27 @@ const overlap = mapAll([
 ]);
 check("two messages in progress at once share one run, which finishes when both are done", overlap.types.filter((t) => t === "RUN_STARTED").length === 1 && overlap.types.at(-1) === "RUN_FINISHED" && overlap.types.indexOf("TOOL_CALL_RESULT") < overlap.types.indexOf("RUN_FINISHED") && overlap.bracketError === undefined, overlap.types);
 
+// Two messages in progress at once, written by the plugin: the first fails, the second answers.
+const mixedPath = join(root, "mixed.jsonl");
+writeFileSync(mixedPath, "");
+writeJournal(mixedPath, `
+j.processing_started("a")
+j.processing_started("b")
+j.model_response("cotal", {"content": "for a", "tool_calls": []})
+j.processing_done("a", "failure")
+j.model_response("cotal", {"content": "for b", "tool_calls": []})
+j.processing_done("b", "success")
+`);
+const failThenAnswer = mapAll(records(mixedPath));
+check(
+  "a message that fails while another is in progress leaves the run to finish with the other's answer",
+  failThenAnswer.types.join() === "RUN_STARTED,TEXT_MESSAGE_START,TEXT_MESSAGE_CONTENT,TEXT_MESSAGE_END,TEXT_MESSAGE_START,TEXT_MESSAGE_CONTENT,TEXT_MESSAGE_END,RUN_FINISHED" &&
+    failThenAnswer.bracketError === undefined,
+  failThenAnswer.types,
+);
+const answerThenFail = mapAll([rec("start", { key: "a" }), rec("start", { key: "b" }), rec("assistant", { content: "for a" }), rec("done", { key: "a", outcome: "success" }), rec("done", { key: "b", outcome: "failure" })]);
+check("the run ends RUN_ERROR when the message that ends it fails", answerThenFail.types.at(-1) === "RUN_ERROR" && answerThenFail.bracketError === undefined, answerThenFail.types);
+
 const failed = mapAll([rec("start", { key: "a" }), rec("assistant", { calls: [call("t2")] }), rec("done", { key: "a", outcome: "failure" })]);
 check("a failed message ends its open tool call without a result, and the run with RUN_ERROR", failed.types.join() === "RUN_STARTED,TOOL_CALL_START,TOOL_CALL_ARGS,TOOL_CALL_END,RUN_ERROR" && failed.bracketError === undefined, failed.types);
 

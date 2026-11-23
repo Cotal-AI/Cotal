@@ -55,7 +55,9 @@ export interface HermesJournalRecord {
  * concurrent messages share the run. A `reply`, the gateway's own answer in the operator chat such
  * as a slash command's output, maps as a model response's text does. Tool calls are tracked by their
  * own ids, and a call still open when the run ends is ended without a result rather than given one.
- * A `failure` ends the run with `RUN_ERROR`, a `cancelled` with an interrupt outcome.
+ * The run ends as the message whose `done` ends it did: a `failure` with `RUN_ERROR`, a `cancelled`
+ * with an interrupt outcome. Hermes reports each message's outcome on that message alone, so one
+ * that ended while another was still in progress does not decide the run.
  *
  * Text the model streams before its response is saved arrives as delta lines merged in among the
  * records (connector-core's DeltaMergedSource). A delta while a message is in progress opens the run
@@ -82,24 +84,21 @@ export function createHermesMapper(opts: {
   let open: string | null = null;
   const pending = new Set<string>();
   const tools = new Set<string>();
-  let failed = false;
-  let cancelled = false;
   // The replay below only rebuilds which runs and messages are open; the streams come from `seed`.
   let parts = new StreamedParts();
 
   const started = (runId: string, ts: number): AguiEvent =>
     runStarted({ threadId, runId, timestamp: ts, cotal: { runIdSource: "connector" } });
-  const close = (runId: string, ts: number): AguiEvent[] => {
+  const close = (runId: string, ts: number, outcome: HermesJournalRecord["outcome"]): AguiEvent[] => {
     const events: AguiEvent[] = [...parts.endAll(ts), ...[...tools].map((toolCallId) => toolCallEnd({ toolCallId, timestamp: ts }))];
     events.push(
-      failed
+      outcome === "failure"
         ? runError({ message: "Hermes could not process a message of this run", code: "hermes_processing_failed", timestamp: ts })
-        : cancelled
+        : outcome === "cancelled"
           ? runFinished({ threadId, runId, timestamp: ts, outcome: { type: "interrupt", interrupts: [{ id: runId, reason: "cancelled" }] } })
           : runFinished({ threadId, runId, timestamp: ts }),
     );
     tools.clear();
-    failed = cancelled = false;
     open = null;
     return events;
   };
@@ -152,17 +151,11 @@ export function createHermesMapper(opts: {
         pending.add(String(rec.key));
         return null;
       case "done": {
-        if (!pending.delete(String(rec.key))) return null;
-        failed ||= rec.outcome === "failure";
-        cancelled ||= rec.outcome === "cancelled";
-        if (pending.size > 0) return null;
-        if (open !== null) return { runId: open, events: close(open, rec.ts) };
-        if (!failed) {
-          cancelled = false;
-          return null;
-        }
+        if (!pending.delete(String(rec.key)) || pending.size > 0) return null;
+        if (open !== null) return { runId: open, events: close(open, rec.ts, rec.outcome) };
+        if (rec.outcome !== "failure") return null;
         const runId = mint();
-        return { runId, events: [started(runId, rec.ts), ...close(runId, rec.ts)] };
+        return { runId, events: [started(runId, rec.ts), ...close(runId, rec.ts, rec.outcome)] };
       }
       case "assistant":
       case "reply": {

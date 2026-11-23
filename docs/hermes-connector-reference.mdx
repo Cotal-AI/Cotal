@@ -156,9 +156,11 @@ off the mesh. Each record also wakes the sidecar's reader over the control socke
 A run opens at the first model response or operator reply while a message is in progress, and
 finishes when no message is in progress. The gateway processes a message that arrives during its startup once
 without running the model, and that pass opens no run. Messages processed at the same time share
-one run, because the plane has one run open at a time. A message that fails ends the run with
-`RUN_ERROR`, even when it failed before any model response, and a cancelled one ends it as an
-interrupt. A tool call still open when its run ends is ended without a result.
+one run, because the plane has one run open at a time. The run ends as the message that ends it
+did. When that message failed, the run ends with `RUN_ERROR`, even when it failed before any model
+response. When it was cancelled, the run ends as an interrupt. Hermes shows each message's outcome
+on that message alone, so a message that fails or is cancelled while another is still in progress
+does not decide the run. A tool call still open when its run ends is ended without a result.
 
 The model's text streams while the model writes it. Hermes gives a gateway adapter a reply before
 it is saved only through its own streaming, so a managed profile with the event plane armed turns
