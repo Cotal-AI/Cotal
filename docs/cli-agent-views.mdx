@@ -159,6 +159,7 @@ unregistered `--space` retain the raw open-broker connection, with or without `-
 JSON has `identity`, `execution`, `mesh` and `activity` fields; missing optional observations
 are null with source annotations. The Identity Agent field shows the id when the name is missing or only whitespace. JSON `identity.name` stays the name the manager returned.
 `--on <manager-instance>` restricts the read and never redirects to a different owner.
+If `cotal ps` refuses an invalid manager ID, its roster lookup keeps the space and broker you supplied.
 On a static or open space, if the manager registry shows that the pin is absent, the refusal
 names the registered managers without waiting for a reply from the missing instance.
 Its Next names the agent it read, with the `--space` and `--server` you gave and the manager's
