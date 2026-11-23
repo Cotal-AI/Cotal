@@ -455,7 +455,8 @@ not distinguish the two states either. Each of these refusals carries
 the stamp. A remote Manager briefly retries registration on `in-flight` using exponential backoff
 with jitter. Each attempt reads the governance head again. If the holder is still in flight when
 the retry budget runs out, the Manager can ask its host for a guarded gate reconciliation. A
-definite governance-slot CAS loss still reports a conflict.
+definite governance-slot CAS loss still reports a conflict from core, and the Manager can retry
+it within the same budget using the `GovernanceSlotCasLost` error type.
 
 For the instance that cannot cooperate, an operator names it:
 `cotal endpoint deregister <endpoint> <full-instance-id>`
