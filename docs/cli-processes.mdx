@@ -1210,8 +1210,9 @@ local control listener is bound and verified, not that a mesh or Cloud connectio
 
 On Linux the endpoint is `$XDG_RUNTIME_DIR/cotal/daemon.sock`. The configured directory must already
 exist. If `XDG_RUNTIME_DIR` is unset, the daemon and its clients use `/run/user/<effective uid>` if it
-is a private directory owned by that user with mode `0700`. If the selected directory is missing,
-`serve` and `status` refuse `TARGET_UNAVAILABLE` (`NO_RUNTIME_DIR`) without creating it. Set
+is a private directory owned by that user with mode `0700`. If the selected path is missing or
+`XDG_RUNTIME_DIR` points to a file, `serve` and `status` refuse `TARGET_UNAVAILABLE`
+(`NO_RUNTIME_DIR`) before creating the socket or its lifetime lock. Set
 `XDG_RUNTIME_DIR` to an existing private directory you own with mode `0700` before retrying.
 On macOS the endpoint is `cotal/daemon.sock` in your cache
 directory under `/var/folders`, the one `confstr(_CS_DARWIN_USER_CACHE_DIR)` names. No environment

@@ -633,6 +633,16 @@ async function planSetup(inputs: SetupInputs, runtimes: readonly RuntimeChoice[]
 async function prepare(plan: SetupPlan, opts: { demo: boolean; interactive: boolean; presentation: Presentation; start: boolean; detach: boolean; configureOnly: boolean; managerInstanceId?: string }): Promise<void> {
   const { inputs, candidate } = plan;
   const target = { space: inputs.space };
+  if (opts.demo) {
+    for (const name of Object.keys(DEMO_AGENTS)) {
+      const path = join(personaDir(inputs.project), `${name}.md`);
+      if (isDir(path)) {
+        throw new CommandFailure("refused", "CONFLICT", `a directory at ${path} blocks the demo persona`, {
+          target: { ...target, path }, remedy: `move the directory at ${path} aside, then run the same setup again`,
+        });
+      }
+    }
+  }
   const written: Written[] = [];
   const wrote = (what: string, path: string): void => {
     written.push({ what, path });

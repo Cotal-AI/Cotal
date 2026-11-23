@@ -822,6 +822,26 @@ if (process.platform !== "win32") {
 }
 
 {
+  const dir = project("blocked-demo");
+  const agents = join(dir, ".cotal", "agents");
+  const path = join(agents, "david.md");
+  mkdirSync(path, { recursive: true, mode: 0o700 });
+  writeFileSync(join(path, "keep"), "untouched");
+  const args = [...FULL("blocked-demo", "."), "--yes", "--demo"];
+  const blocked = await json(args, dir);
+  check("a directory blocking a demo persona refuses before writing space or personas",
+    refused(blocked, 2, "CONFLICT") && blocked.env?.target?.space === "blocked-demo" && blocked.env.target.path === path
+      && blocked.env.error.message.includes(path) && blocked.env.error.remedy === `move the directory at ${path} aside, then run the same setup again`
+      && findPreparedSpace("blocked-demo") === undefined && !existsSync(join(agents, "default.md"))
+      && readFileSync(join(path, "keep"), "utf8") === "untouched", shown(blocked));
+  renameSync(path, `${path}.saved`);
+  const retried = await json(args, dir);
+  check("moving the directory aside lets setup prepare the space and seed the demo team",
+    retried.status === 0 && findPreparedSpace("blocked-demo")?.root === dir
+      && ["default", "david", "sven", "me"].every((name) => existsSync(join(agents, `${name}.md`))), shown(retried));
+}
+
+{
   const dir = project("blocked-log");
   const path = join(dir, ".cotal", "setup.log");
   mkdirSync(path, { recursive: true, mode: 0o700 });
