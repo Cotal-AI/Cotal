@@ -4,9 +4,9 @@
  *
  * Covered: no dispatcher serves nothing; a pi-like dispatcher (commands, interrupt, turn, images,
  * usage) serves all four; one without images or without turn serves only what it has. A dispatcher
- * whose `unsupported()` names a cause serves neither `interrupt` nor `turn` nor `images` and still
- * serves `usage`, and `turn` is then refused `unimplemented` with that cause, as `command` and
- * `interrupt` are. `openAgentEndpoint` shows the derived value when it serves, calls the dispatcher's
+ * whose `unsupported()` names a cause serves none of the four: `turn` is then refused `unimplemented`
+ * with that cause, as `command` and `interrupt` are, and `usage` answers `{ supported: false }` without
+ * asking the harness. `openAgentEndpoint` shows the derived value when it serves, calls the dispatcher's
  * `watch` once, shows the value again each time the dispatcher says it changed, and shows nothing
  * after it closed.
  *
@@ -19,6 +19,7 @@ import { openAgentEndpoint } from "../src/agent-endpoint.js";
 
 const { check, finish } = createSuite();
 const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
+let usageReads = 0;
 const served = (interrupt: boolean, turn: boolean, images: boolean, usage: boolean): PresenceAgentEndpoint => ({ interrupt, turn, images, usage });
 
 function dispatcher(o: { interrupt?: boolean; turn?: boolean; images?: boolean; usage?: boolean; cause?: () => string | undefined } = {}): CommandDispatcher & { watched: (() => void)[] } {
@@ -32,7 +33,7 @@ function dispatcher(o: { interrupt?: boolean; turn?: boolean; images?: boolean; 
     ...(o.interrupt ? { interrupt: async () => "idle" as const } : {}),
     ...(o.turn ? { turn: async () => {} } : {}),
     ...(o.images ? { images: true } : {}),
-    ...(o.usage ? { usage: async () => ({}) } : {}),
+    ...(o.usage ? { usage: async () => (usageReads++, {}) } : {}),
     watch: (changed) => void watched.push(changed),
   };
 }
@@ -48,7 +49,7 @@ check("a dispatcher with only commands serves none of the four", same(servedComm
 
 let cause: string | undefined = "the command mod is not running";
 const flipping = dispatcher({ ...PI_LIKE, cause: () => cause });
-check("while unsupported() names a cause: no interrupt, turn or images, and usage still served", same(servedCommands(flipping), served(false, false, false, true)));
+check("while unsupported() names a cause: none of the four", same(servedCommands(flipping), served(false, false, false, false)));
 cause = undefined;
 check("once it names none: all four", same(servedCommands(flipping), served(true, true, true, true)));
 
@@ -65,6 +66,13 @@ console.log("\nthe endpoint refuses what presence does not show");
   cause = undefined;
   const accepted = await turn.handler(ctx) as { id?: string };
   check("...and queued once it names none", typeof accepted?.id === "string" && lane.queued === 1);
+  const usage = lane.handlers.find((h) => h.command === "usage")!;
+  cause = "the command mod is not running";
+  const off = await usage.handler(ctx);
+  check("usage answers { supported: false }, and the harness is not asked, while unsupported() names a cause", same(off, { supported: false }) && usageReads === 0, { off, usageReads });
+  cause = undefined;
+  const on = await usage.handler(ctx);
+  check("...and reads the harness once it names none", same(on, { supported: true }) && usageReads === 1, { on, usageReads });
   lane.close();
 }
 
@@ -82,7 +90,7 @@ console.log("\nopenAgentEndpoint shows it and follows the dispatcher");
   cause = "the command mod is not running";
   const d = dispatcher({ ...PI_LIKE, cause: () => cause });
   const endpoint = await openAgentEndpoint(fakeEp as never, { warn: () => {}, dispatcher: d });
-  check("it shows the derived value when it serves, and calls watch once", same(shown, [served(false, false, false, true)]) && d.watched.length === 1, { shown, watched: d.watched.length });
+  check("it shows the derived value when it serves, and calls watch once", same(shown, [served(false, false, false, false)]) && d.watched.length === 1, { shown, watched: d.watched.length });
   cause = undefined;
   d.watched[0]!();
   check("a change the dispatcher reports shows the new value", same(shown.at(-1), served(true, true, true, true)) && shown.length === 2, shown);

@@ -151,13 +151,13 @@ async function watching(): Promise<void> {
   const watched = claudeCommands({ feed: () => feed, interrupting: () => undefined, warn: () => {}, imageDir, onStop: (stop) => stops.push(stop) });
   const shown: string[] = [];
   watched.watch!(() => shown.push(JSON.stringify(servedCommands(watched))));
-  const off = JSON.stringify({ interrupt: false, turn: false, images: false, usage: true });
+  const off = JSON.stringify({ interrupt: false, turn: false, images: false, usage: false });
   const on = JSON.stringify({ interrupt: true, turn: true, images: true, usage: true });
-  check("with no mod, the seat shows only usage served", JSON.stringify(servedCommands(watched)) === off, servedCommands(watched));
+  check("with no mod, the seat shows none of the four served", JSON.stringify(servedCommands(watched)) === off, servedCommands(watched));
   const r = startReader("2.1.330");
   check("a mod saying hello calls the watcher, and the seat shows interrupt, turn, images and usage", await until(() => shown.at(-1) === on), shown);
   r.child.kill("SIGTERM");
-  check("the mod leaving calls it again, and the seat no longer shows interrupt or turn", await until(() => shown.at(-1) === off), shown);
+  check("the mod leaving calls it again, and the seat shows none of the four again", await until(() => shown.at(-1) === off), shown);
   for (const stop of stops) stop();
   stops = [];
   const seen = shown.length;
@@ -268,7 +268,7 @@ async function usageReading(): Promise<void> {
   check("before Claude's first response, usage reports nothing it has not given", fresh.ok && JSON.stringify(fresh.value) === '{"supported":true}', fresh);
   const none = laneOver(claudeCommands({ feed: () => undefined, interrupting: () => undefined, warn: () => {} }));
   const off = await none.call("usage");
-  check("with no command mod, usage is unavailable naming the cause", /^unavailable\/not-executed: .*named no Claude Code process/.test(refusal(off)), refusal(off));
+  check("with no command mod, usage answers supported: false", off.ok && JSON.stringify(off.value) === '{"supported":false}', off);
   const offTurn = await none.call("turn", { text: "hi" });
   check("with no command mod, turn is unimplemented naming the cause", /^unimplemented\/not-executed: .*named no Claude Code process/.test(refusal(offTurn)), refusal(offTurn));
 }

@@ -45,8 +45,8 @@ export interface CommandDispatcher {
    *  `supported: false`. */
   readonly targets: ReadonlySet<CommandTarget>;
   /** Why the harness runs no commands now, or undefined while it does. While it names a cause,
-   *  `commands` answers `supported: false`, and `command`, `turn` and `interrupt` are `unimplemented`
-   *  with that cause. Without it, the harness always runs them. */
+   *  `commands` and `usage` answer `supported: false`, and `command`, `turn` and `interrupt` are
+   *  `unimplemented` with that cause. Without it, the harness always runs them. */
   unsupported?(): string | undefined;
   /** Called once when the endpoint opens. The dispatcher calls `changed` each time what
    *  {@link unsupported} answers may have changed, and the agent then republishes the commands its
@@ -71,8 +71,8 @@ export interface CommandDispatcher {
   turn?(turn: AgentTurn): Promise<void>;
   /** The harness takes images with a turn. Without it, a `turn` with images is `unimplemented`. */
   readonly images?: boolean;
-  /** What the harness reports now. A field it has not reported yet is absent. Without it, `usage`
-   *  answers `supported: false`. */
+  /** What the harness reports now. A field it has not reported yet is absent. Without it, or while
+   *  {@link unsupported} names a cause, `usage` answers `supported: false`. */
   usage?(): Promise<AgentUsage>;
 }
 
@@ -130,7 +130,7 @@ function within<T>(work: () => Promise<T>, ms: number): Promise<T> {
 }
 
 /** The `agent` endpoint commands a dispatcher serves now, as presence shows them (SPEC §6). It never
- *  claims more than the handlers serve: `interrupt` and `turn` only while {@link
+ *  claims more than the handlers serve: `interrupt`, `turn` and `usage` only while {@link
  *  CommandDispatcher.unsupported} names no cause, and `images` only with `turn`. */
 export function servedCommands(dispatcher: CommandDispatcher | undefined): PresenceAgentEndpoint {
   const now = dispatcher !== undefined && dispatcher.unsupported?.() === undefined;
@@ -139,7 +139,7 @@ export function servedCommands(dispatcher: CommandDispatcher | undefined): Prese
     interrupt: now && typeof dispatcher.interrupt === "function",
     turn,
     images: turn && dispatcher.images === true,
-    usage: typeof dispatcher?.usage === "function",
+    usage: now && typeof dispatcher.usage === "function",
   };
 }
 
@@ -222,7 +222,7 @@ export function createCommandLane(dispatcher: CommandDispatcher | undefined, onQ
   }
 
   async function usage(): Promise<UsageOutput> {
-    if (!dispatcher?.usage) return { supported: false };
+    if (!dispatcher?.usage || dispatcher.unsupported?.() !== undefined) return { supported: false };
     let got: AgentUsage;
     try {
       got = await within(() => dispatcher.usage!(), COMMAND_LIST_MS);
