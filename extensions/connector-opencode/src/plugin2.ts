@@ -14,7 +14,7 @@
  * differ from 1.x's (`{data:...}` wrapping, no `prompt_async`).
  */
 import { randomUUID } from "node:crypto";
-import { loadAgentFile, principalKey, type CommandEntry, type CommandTarget, type PresenceCondition, type PresenceStatus } from "@cotal-ai/core";
+import { loadAgentFile, principalKey, type PresenceCondition, type PresenceStatus } from "@cotal-ai/core";
 import {
   configFromEnv,
   eventPlaneArmed,
@@ -32,8 +32,6 @@ import {
   FileSubjectFrontier,
   ensureEventWalDir,
   resolveEventsStateRoot,
-  CommandRefused,
-  type CommandDispatcher,
   type InboxItem,
   type PrincipalLock,
 } from "@cotal-ai/connector-core";
@@ -43,9 +41,10 @@ import { OpenCode2SessionSource, type OpenCode2MessagePage, type OpenCode2Record
 import { createOpenCode2Mapper, type OpenCode2Mapper } from "./agui-map2.js";
 import { buildCotalTools2 } from "./tools.js";
 import { ReplyCheck } from "./reply-check.js";
-import { RECONNECT_COMMAND } from "./reconnect-command.js";
 import { opencode2FailureCondition } from "./failure-condition.js";
 import { opencode2Asks, type Send } from "./prompt-asks.js";
+import { opencode2Commands } from "./commands2.js";
+import { OpenCodeHttpError, type OpenCodeApi } from "./opencode2-http.js";
 
 function log(msg: string): void {
   process.stderr.write(`[cotal-connector] ${msg}\n`);
@@ -97,43 +96,6 @@ async function verifyServerModel2(
   }
 }
 
-class OpenCodeHttpError extends Error {
-  constructor(
-    readonly status: number,
-    readonly tag: string | undefined,
-    readonly field: string | undefined,
-    message: string,
-  ) {
-    super(message);
-    this.name = "OpenCodeHttpError";
-  }
-
-  static async from(res: Response, path: string): Promise<OpenCodeHttpError> {
-    const raw = await res.text().catch(() => "");
-    let parsed: { _tag?: unknown; field?: unknown } = {};
-    try { parsed = JSON.parse(raw) as typeof parsed; } catch {}
-    const text = (v: unknown) => (typeof v === "string" ? v : undefined);
-    const body = Buffer.from(raw).subarray(0, 2048).toString("utf8");
-    return new OpenCodeHttpError(res.status, text(parsed._tag), text(parsed.field), `OpenCode HTTP ${res.status} ${res.statusText} for ${path}${body ? `: ${body}` : ""}`);
-  }
-}
-
-/** How OpenCode lists and runs each command target, measured on 2.2.5. The field `key` of a listed
- *  entry is the name `run` sends, so a listed name is one a command runs. A built-in skill's `id`
- *  differs from its `name`, and `/prompt` attaches a skill by `id`. `loaded` is the event OpenCode
- *  emits once it loaded the list. */
-const COMMAND_ROUTES: Record<CommandTarget, { list: string; loaded: string; key: "name" | "id"; run(name: string, args: string): [path: string, body: Record<string, unknown>] }> = {
-  command: { list: "/api/command", loaded: "command.updated", key: "name", run: (name, args) => ["command", { name, text: args }] },
-  skill: { list: "/api/skill", loaded: "skill.updated", key: "id", run: (name, args) => ["prompt", { text: args, skills: [{ id: name }] }] },
-};
-
-const isReconnect = (c: { target: CommandTarget; name: string }) => c.target === "command" && c.name === RECONNECT_COMMAND.name;
-
-/** How long the first list waits for OpenCode to load the lists. OpenCode loads a location's commands
- *  and skills on the first request for them, answers that request with what it already holds, and
- *  emits each list's `loaded` event once the load ended (measured on 2.2.5). */
-const LISTS_LOAD_MS = 3_000;
-
 /** How long a command OpenCode accepted has to start its turn. 2.2.5 accepts some commands, such as
  *  `goal clear`, without starting one, and then no execution event frees the session. */
 const COMMAND_TURN_START_MS = 5_000;
@@ -167,25 +129,6 @@ export async function setupCotal(ctx: OpenCode2Context): Promise<(() => Promise<
     if (guard.__cotalOpencodeSetup === state) delete guard.__cotalOpencodeSetup;
     throw error;
   }
-}
-
-/** `opencodeApi` inside {@link setupSession}: the server's authenticated HTTP API. */
-type OpenCodeApi = <T>(path: string, init?: RequestInit, timeoutMs?: number) => Promise<T>;
-
-async function readLists(opencodeApi: OpenCodeApi): Promise<CommandEntry[]> {
-  const lists = await Promise.all((Object.keys(COMMAND_ROUTES) as CommandTarget[]).map(async (target) => {
-    const { list, key } = COMMAND_ROUTES[target];
-    const data = (await opencodeApi<{ data?: unknown } | undefined>(list))?.data;
-    if (!Array.isArray(data)) throw new Error(`OpenCode answered ${list} with no data list`);
-    return data.map((e: unknown) => {
-      const entry = (typeof e === "object" && e !== null ? e : {}) as Record<string, unknown>;
-      const name = entry[key];
-      if (typeof name !== "string") throw new Error(`OpenCode listed a ${target} with no ${key} at ${list}`);
-      return { name, target, ...(typeof entry.description === "string" ? { description: entry.description } : {}) };
-    });
-  }));
-  // The launch's own `/reconnect` runs only at the agent's terminal (reconnect-command.ts).
-  return lists.flat().filter((e) => !isReconnect(e));
 }
 
 /** OpenCode answers a reply to an ask it does not hold with a 404, or for a form already
@@ -229,61 +172,16 @@ async function setupSession(ctx: OpenCode2Context): Promise<() => Promise<void>>
     await verifyServerModel2(serverUrl, serverAuth, selectedModel, settleMs);
   })();
 
-  // The `loaded` events still to come, set from the event loop, and the one bounded wait for them.
-  const listsLoading = new Set(Object.values(COMMAND_ROUTES).map((r) => r.loaded));
-  let markListsLoaded!: () => void;
-  const listsLoaded = new Promise<void>((resolve) => { markListsLoaded = resolve; });
-  let listsWait: Promise<void> | undefined;
-  const commands: CommandDispatcher = {
-    targets: new Set(Object.keys(COMMAND_ROUTES) as CommandTarget[]),
-    async list() {
-      const loaded = listsLoading.size === 0;
-      const first = await readLists(opencodeApi);
-      if (loaded) return first;
-      await (listsWait ??= new Promise<void>((resolve) => {
-        const late = setTimeout(resolve, LISTS_LOAD_MS);
-        void listsLoaded.then(() => { clearTimeout(late); resolve(); });
-      }).then(() => listsLoading.clear()));
-      return readLists(opencodeApi);
-    },
-    async dispatch(command) {
-      if (isReconnect(command))
-        throw new CommandRefused("failed-precondition", `/${RECONNECT_COMMAND.name} recovers this agent's own mesh link and runs only at its terminal`);
-      const id = await ensureSession();
-      if (!id) throw new CommandRefused("failed-precondition", "this agent has no OpenCode session yet");
-      const system = firstTurnSystem();
-      const [path, body] = COMMAND_ROUTES[command.target].run(command.name, command.args);
-      try {
-        // No client timeout: OpenCode answers only once the template's shell snippets finish, and a
-        // client that leaves first cancels the command (measured on 2.2.5).
-        await opencodeApi(`/api/session/${encodeURIComponent(id)}/${path}`, {
-          method: "POST",
-          body: JSON.stringify({ ...body, ...(system ? { system } : {}) }),
-          signal: controller.signal,
-        });
-      } catch (e) {
-        // Measured on OpenCode 2.2.5: an unknown command answers a 404 `CommandNotFoundError` and an
-        // unknown skill a 400 `InvalidRequestError` whose field is `skills`; any 4xx refuses before the
-        // turn starts.
-        if (!(e instanceof OpenCodeHttpError) || e.status < 400 || e.status >= 500) throw e;
-        const unknown = (e.status === 404 && e.tag === "CommandNotFoundError") || (e.status === 400 && e.tag === "InvalidRequestError" && e.field === "skills");
-        if (unknown) throw new CommandRefused("not-found", `OpenCode has no ${command.target} named "${command.name}"`);
-        throw new CommandRefused("failed-precondition", e.message);
-      }
-      if (system) primed = true;
-    },
-    // Measured on OpenCode 2.2.5: the route answers `{ interrupted }`, false when no execution ran, and
-    // a stopped execution ends as `session.execution.interrupted`, which completes the turn below. Without
-    // `resume`, OpenCode resumes nothing of its own, so the next queued command runs next.
-    async interrupt() {
-      if (!sessionID) return "idle"; // no session yet, so no turn of ours runs
-      const r = await opencodeApi<{ interrupted?: unknown } | undefined>(`/api/session/${encodeURIComponent(sessionID)}/interrupt`, { method: "POST" });
-      if (typeof r?.interrupted !== "boolean") throw new Error("OpenCode answered /interrupt with no interrupted flag");
-      return r.interrupted ? "interrupted" : "idle";
-    },
-  };
-  const agent = new MeshAgent(config, undefined, { commands });
   const controller = new AbortController(); // aborted when teardown begins
+  const commands = opencode2Commands({
+    api: <T>(path: string, init?: RequestInit, timeoutMs?: number) => opencodeApi<T>(path, init, timeoutMs),
+    ensureSession: () => ensureSession(),
+    session: () => sessionID,
+    firstTurnSystem: () => firstTurnSystem(),
+    primed: () => { primed = true; },
+    signal: controller.signal,
+  });
+  const agent = new MeshAgent(config, undefined, { commands: commands.dispatcher });
 
   async function opencodeApi<T>(path: string, init?: RequestInit, timeoutMs = 10_000): Promise<T> {
     const res = await fetch(`${serverUrl}${path}`, {
@@ -716,7 +614,7 @@ async function setupSession(ctx: OpenCode2Context): Promise<() => Promise<void>>
         // Only a durable event of the session changes its message list, and the list already holds
         // the change when the event arrives (measured), so each one is the wake to read it again.
         if (events?.path !== undefined && ev.durable?.aggregateID === events.path) events.flush(events.path);
-        if (listsLoading.delete(ev.type) && listsLoading.size === 0) markListsLoaded();
+        commands.event(ev.type);
         asks.event(ev.type, data);
         switch (ev.type) {
           case "session.created": {
