@@ -637,9 +637,9 @@ async function setupSession(ctx: OpenCode2Context): Promise<() => Promise<void>>
   });
 
   // The event stream — a detached loop, never awaited here (setup must return). Maps
-  // `session.execution.*`, `permission.asked`, `form.created` and session lifecycle events to
-  // presence and turn-end/ack the same way plugin.ts's own event switch does, trimmed to this
-  // adapter's single-session scope (no swap, no `/new` reset), and wakes the event plane.
+  // `session.execution.*`, `permission.asked`, `form.created`, their replies and session lifecycle
+  // events to presence and turn-end/ack the same way plugin.ts's own event switch does, trimmed to
+  // this adapter's single-session scope (no swap, no `/new` reset), and wakes the event plane.
   const eventLoop = (async () => {
     try {
       for await (const ev of ctx.event.subscribe({ signal: controller.signal })) {
@@ -702,6 +702,12 @@ async function setupSession(ctx: OpenCode2Context): Promise<() => Promise<void>>
           case "form.created": { // a form, such as the question tool's, waits on a person as an ask does
             const p = (ev.type === "form.created" ? data.form : data) as { sessionID?: string; title?: string } | undefined;
             if (p && (!p.sessionID || !sessionID || p.sessionID === sessionID)) await safeStatus("waiting", p.title);
+            break;
+          }
+          case "permission.replied":
+          case "form.replied":
+          case "form.cancelled": { // an answered ask leaves its turn running until the execution ends
+            if (data.sessionID === sessionID && execution === "running") await safeStatus("working");
             break;
           }
           case "session.deleted": {
