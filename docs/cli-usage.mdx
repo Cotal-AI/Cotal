@@ -84,6 +84,7 @@ or in this folder, it names `cotal use <name>` and `cotal space` instead. When t
 space, its Start here section shows `cotal space` to list spaces and `cotal use <name>` to switch.
 Every command generates its own help, usage, and shell completion from its declared flags.
 `cotal <command> --help` prints the same help as `cotal help <command>`.
+Help requests never start the background update check or write its cache.
 Both forms accept operands after the command or its final subcommand. For example,
 `cotal help docs cli` and `cotal docs cli --help` both show the usage for `docs`.
 `cotal help service status manager` and `cotal service status manager --help` both show the usage
