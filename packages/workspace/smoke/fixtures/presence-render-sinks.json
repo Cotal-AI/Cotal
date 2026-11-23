@@ -5581,7 +5581,7 @@
     {
       "path": "implementations/cli/src/commands/space.ts",
       "kind": "status-token",
-      "anchor": "p.rootProblem)}`, tone: \"waiting\" },\n      { text: disp",
+      "anchor": "p.rootProblem)}`, tone: \"waiting\" },\n      { text: displa",
       "class": "non-render/control",
       "rationale": "Prepared space view: \"waiting\" is the color tone for an unavailable prepared root, not any peer's presence."
     },
