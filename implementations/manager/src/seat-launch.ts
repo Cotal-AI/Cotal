@@ -177,21 +177,17 @@ export interface SeatLaunchDeps {
   eventsRefusal: (...args: Parameters<Manager["eventsRefusal"]>) => ReturnType<Manager["eventsRefusal"]>;
   fileDigest: (...args: Parameters<Manager["fileDigest"]>) => ReturnType<Manager["fileDigest"]>;
   hostLaunchFields: (...args: Parameters<Manager["hostLaunchFields"]>) => ReturnType<Manager["hostLaunchFields"]>;
-  issuanceSeam: (...args: Parameters<Manager["issuanceSeam"]>) => ReturnType<Manager["issuanceSeam"]>;
-  launchHarness: (...args: Parameters<Manager["launchHarness"]>) => ReturnType<Manager["launchHarness"]>;
   launchOwner: (...args: Parameters<Manager["launchOwner"]>) => ReturnType<Manager["launchOwner"]>;
   leaseStopping: () => Manager["leaseStopping"];
   loadSeatRuntime: (...args: Parameters<Manager["loadSeatRuntime"]>) => ReturnType<Manager["loadSeatRuntime"]>;
   namesCapacity: () => Manager["namesCapacity"];
   openOnceDelivery: (...args: Parameters<Manager["openOnceDelivery"]>) => ReturnType<Manager["openOnceDelivery"]>;
-  personaOwner: (...args: Parameters<Manager["personaOwner"]>) => ReturnType<Manager["personaOwner"]>;
   place: (...args: Parameters<Manager["place"]>) => ReturnType<Manager["place"]>;
   provisionUserAgent: (...args: Parameters<Manager["provisionUserAgent"]>) => ReturnType<Manager["provisionUserAgent"]>;
   readerRemedy: (...args: Parameters<Manager["readerRemedy"]>) => ReturnType<Manager["readerRemedy"]>;
   resolveConnector: (...args: Parameters<Manager["resolveConnector"]>) => ReturnType<Manager["resolveConnector"]>;
   retirement: () => Manager["retirement"];
   runtimeFor: (...args: Parameters<Manager["runtimeFor"]>) => ReturnType<Manager["runtimeFor"]>;
-  seatCapRefusal: (...args: Parameters<Manager["seatCapRefusal"]>) => ReturnType<Manager["seatCapRefusal"]>;
   seatCustody: () => Manager["seatCustody"];
   sessionRecovery: () => Manager["sessionRecovery"];
   shredUserSecrets: (...args: Parameters<Manager["shredUserSecrets"]>) => ReturnType<Manager["shredUserSecrets"]>;
@@ -231,21 +227,17 @@ export function seatLaunchDeps(m: Manager): SeatLaunchDeps {
     eventsRefusal: (...args) => m["eventsRefusal"](...args),
     fileDigest: (...args) => m["fileDigest"](...args),
     hostLaunchFields: (...args) => m["hostLaunchFields"](...args),
-    issuanceSeam: (...args) => m["issuanceSeam"](...args),
-    launchHarness: (...args) => m["launchHarness"](...args),
     launchOwner: (...args) => m["launchOwner"](...args),
     leaseStopping: () => m["leaseStopping"],
     loadSeatRuntime: (...args) => m["loadSeatRuntime"](...args),
     namesCapacity: () => m["namesCapacity"],
     openOnceDelivery: (...args) => m["openOnceDelivery"](...args),
-    personaOwner: (...args) => m["personaOwner"](...args),
     place: (...args) => m["place"](...args),
     provisionUserAgent: (...args) => m["provisionUserAgent"](...args),
     readerRemedy: (...args) => m["readerRemedy"](...args),
     resolveConnector: (...args) => m["resolveConnector"](...args),
     retirement: () => m["retirement"],
     runtimeFor: (...args) => m["runtimeFor"](...args),
-    seatCapRefusal: (...args) => m["seatCapRefusal"](...args),
     seatCustody: () => m["seatCustody"],
     sessionRecovery: () => m["sessionRecovery"],
     shredUserSecrets: (...args) => m["shredUserSecrets"](...args),
@@ -268,7 +260,7 @@ export class SeatLaunch {
   /** The agent-start path. Shares this component's deps, and calls back into it for its leaf steps. */
   private readonly seatStart: SeatStart;
 
-  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: SeatLaunchDeps, private readonly parts: Pick<ManagerParts, "connectorInventory" | "servePlane">, private readonly state: ManagerStartState) {
+  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: SeatLaunchDeps, private readonly parts: Pick<ManagerParts, "brokerTransport" | "connectorInventory" | "harnessResolution" | "namesCapacity" | "personaCatalog" | "servePlane">, private readonly state: ManagerStartState) {
     this.seatStart = new SeatStart(config, deps, parts, {
       checkSpawnCwd: (...args) => this.checkSpawnCwd(...args),
       harnessUnavailableError: (...args) => this.harnessUnavailableError(...args),
