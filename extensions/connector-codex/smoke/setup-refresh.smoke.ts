@@ -4,6 +4,7 @@ import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { ConnectorRefreshDeferred } from "@cotal-ai/core";
 
 const ROOT = mkdtempSync(join(tmpdir(), "cotal-codex-refresh-"));
 const keys = ["HOME", "USERPROFILE", "CODEX_HOME", "COTAL_HOME", "PATH"] as const;
@@ -267,13 +268,21 @@ if (args === "plugin list") {
         const broken = codex("plugin", "list");
         assert.notEqual(broken.status, 0);
         assert.match(broken.stderr, /marketplace root does not contain a supported manifest/);
-        await assert.rejects(async () => refresh(), /Codex marketplace cotal-mesh could not be refreshed\. Restore the Cotal marketplace/);
+        await assert.rejects(async () => refresh(), (error: unknown) => {
+          assert.ok(error instanceof ConnectorRefreshDeferred);
+          assert.match(error.message, /Codex marketplace cotal-mesh could not be refreshed\. Restore the Cotal marketplace/);
+          return true;
+        });
         assert.equal(readFileSync(config, "utf8"), originalConfig);
         renameSync(missing, replacement);
 
         const changed = [process.execPath, join(ROOT, "updated-cotal.js")];
         chmodSync(config, 0o444);
-        await assert.rejects(async () => codexSetupProvider.refresh!.run({ cotal: changed }), /Codex marketplace cotal-mesh could not be refreshed\..*read-only/);
+        await assert.rejects(async () => codexSetupProvider.refresh!.run({ cotal: changed }), (error: unknown) => {
+          assert.ok(error instanceof ConnectorRefreshDeferred);
+          assert.match(error.message, /Codex marketplace cotal-mesh could not be refreshed\..*read-only/);
+          return true;
+        });
         assert.equal(statSync(config).mode & 0o777, 0o444);
         assert.equal(readFileSync(config, "utf8"), originalConfig);
         chmodSync(config, 0o600);

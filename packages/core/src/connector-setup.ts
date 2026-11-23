@@ -13,6 +13,10 @@ export interface ConnectorSetupAction<Input = void> {
   readonly run: (input: Input) => Promise<string> | string;
 }
 
+/** An installed harness integration needs operator repair. An explicit refresh fails, but a seed
+ * migration may report the deferral and commit verified extension packages so repair stays reachable. */
+export class ConnectorRefreshDeferred extends Error {}
+
 /** What a connector's install action receives. */
 export interface ConnectorSetupInput {
   /** The argv that runs this Cotal CLI, `[node, ...loaderFlags, entry]` by absolute path, so an asset

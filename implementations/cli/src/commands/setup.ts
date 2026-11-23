@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import * as p from "../lib/prompts.js";
-import { parseCommandArgs, registry, token, writePrivateRecord, type ClientSetupProvider, type Command, type Connector, type ConnectorAssist, type ConnectorSetupAction, type ConnectorSetupProvider, type ConnectorShareSetupInput, type ConnectorSkillsSetupInput, type FlagSpec, type FlagValues, type ParsedArgs, type RuntimeProvider } from "@cotal-ai/core";
+import { ConnectorRefreshDeferred, parseCommandArgs, registry, token, writePrivateRecord, type ClientSetupProvider, type Command, type Connector, type ConnectorAssist, type ConnectorSetupAction, type ConnectorSetupProvider, type ConnectorShareSetupInput, type ConnectorSkillsSetupInput, type FlagSpec, type FlagValues, type ParsedArgs, type RuntimeProvider } from "@cotal-ai/core";
 import {
   CommandFailure,
   OFFICIAL_CONNECTORS,
@@ -1256,8 +1256,8 @@ async function reconcileOtherConnectorSkills(
   }
 }
 
-/** Report each completed refresh and throw after the pass if any connector could not refresh. */
-export async function refreshConnectorInstalls(report: (line: string) => void): Promise<void> {
+/** Report each completed refresh and throw after the pass. Only migration can report deferrals separately. */
+export async function refreshConnectorInstalls(report: (line: string) => void, reportDeferred?: (line: string) => void): Promise<void> {
   const failures: string[] = [];
   for (const name of setupConnectorNames()) {
     let line: string;
@@ -1267,9 +1267,16 @@ export async function refreshConnectorInstalls(report: (line: string) => void): 
       // distinguish an absent integration from one it cannot update; availability must not hide it.
       const refresh = (await connectorSetupProvider(connector))?.refresh;
       if (!refresh) continue;
+      const input = { cotal: selfArgv(), skills: connectorSkillsInput() };
       const started = Date.now();
       console.error(`Refreshing ${refresh.title}`);
-      line = `${refresh.title}: ${await refresh.run({ cotal: selfArgv(), skills: connectorSkillsInput() })}`;
+      try {
+        line = `${refresh.title}: ${await refresh.run(input)}`;
+      } catch (error) {
+        if (!(error instanceof ConnectorRefreshDeferred) || !reportDeferred) throw error;
+        reportDeferred(`${name}: ${error.message}`);
+        continue;
+      }
       console.error(`✓ integration ${name} refreshed (${((Date.now() - started) / 1000).toFixed(1)} s)`);
     } catch (error) {
       failures.push(`${name}: ${error instanceof Error ? error.message : String(error)}`);

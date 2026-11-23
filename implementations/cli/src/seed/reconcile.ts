@@ -292,7 +292,10 @@ async function reconcileUnderClosure(mode: Mode, automatic: boolean, resumeFirst
         releaseMutation();
         releaseMutation = () => {};
         const { refreshConnectorInstalls } = await import("../commands/setup.js");
-        await refreshConnectorInstalls((line) => console.error(c.dim(`→ ${line}`)));
+        await refreshConnectorInstalls(
+          (line) => console.error(c.dim(`→ ${line}`)),
+          (line) => console.error(c.yellow(`! connector refresh deferred: ${line}`)),
+        );
         releaseMutation = claimExtensionMutation({ waitMs: 30000 });
         if (JSON.stringify(loadExtensionsManifest()) !== before)
           throw new Error("installed extensions changed during connector refresh; retry the upgrade before committing its generation");
@@ -631,8 +634,8 @@ async function runUnderLocks(mode: Mode, generation: string, nonce: string, refr
     }
   }
 
-  // An npm upgrade reaches this path before the command runs. Refresh harness-owned copies before
-  // stamping the generation: a failed refresh must remain an incomplete upgrade on the next boot.
+  // Refresh harness-owned copies before stamping the verified package generation. A hard failure
+  // blocks the stamp, but an integration that needs operator repair must leave setup reachable.
   if (migrationFrom) await refreshInstalls();
   await checkInterrupted(true);
 

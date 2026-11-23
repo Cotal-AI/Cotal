@@ -5,9 +5,9 @@
  * a synthetic newer stamp and reports that stored provenance. Run: pnpm smoke:seed-migration-provenance
  */
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import { createSuite } from "@cotal-ai/smoke-kit";
 
 const REPO = join(import.meta.dirname, "..", "..", "..");
@@ -31,9 +31,17 @@ function cotal(cfg: string, home: string, args: string[]): { status: number; std
   delete env.CODEX_HOME;
   const run = spawnSync("node", [BIN, ...args], {
     encoding: "utf8",
-    env: { ...env, HOME: home, USERPROFILE: home, COTAL_HOME: join(home, ".cotal"), XDG_CONFIG_HOME: cfg, COTAL_ALLOW_CHECKOUT_SEED: "1" },
+    env: { ...env, PATH: `${join(home, "bin")}${delimiter}${env.PATH ?? ""}`, HOME: home, USERPROFILE: home, COTAL_HOME: join(home, ".cotal"), XDG_CONFIG_HOME: cfg, COTAL_ALLOW_CHECKOUT_SEED: "1" },
   });
   return { status: run.status ?? -1, stdout: run.stdout ?? "", stderr: run.stderr ?? "" };
+}
+
+function stageBrokenCodexMarketplace(home: string): void {
+  mkdirSync(join(home, ".codex/plugins/cache/cotal-mesh/cotal/0.1.0"), { recursive: true });
+  mkdirSync(join(home, "bin"));
+  const message = "Error: failed to load configured marketplace snapshot(s):\n" +
+    `- \`cotal-mesh\` at ${join(home, ".cotal", "codex-plugin")}: marketplace root does not contain a supported manifest`;
+  writeFileSync(join(home, "bin", "codex"), `#!${process.execPath}\nconsole.error(${JSON.stringify(message)});\nprocess.exitCode = 1;\n`, { mode: 0o700 });
 }
 
 const cfg = mkdtempSync(join(tmpdir(), "cotal-seed-migration-provenance-"));
@@ -48,6 +56,7 @@ try {
   const currentGeneration = JSON.parse(readFileSync(join(REPO, "bin", "package.json"), "utf8")).version as string;
   const priorGeneration = "0.35.0";
   writeFileSync(stampPath, JSON.stringify({ generation: priorGeneration }));
+  if (process.platform !== "win32") stageBrokenCodexMarketplace(home);
 
   const migrated = cotal(cfg, home, BOOT);
   const stamp = JSON.parse(readFileSync(stampPath, "utf8")) as { generation?: string; writtenBy?: string; writtenAt?: string };
@@ -64,6 +73,9 @@ try {
     migrated.stderr);
   check("isolation: the migration's connector refresh finds no Claude plugin in the private home",
     migrated.stderr.includes("Refresh the Claude Code plugin: not installed"), migrated.stderr);
+  if (process.platform !== "win32") check("migration commits verified packages while reporting an unrepaired Codex integration",
+    stamp.generation === currentGeneration && migrated.stderr.includes("connector refresh deferred: codex: Codex marketplace cotal-mesh could not be refreshed") &&
+      !migrated.stderr.includes("✓ integration codex refreshed"), migrated.stderr);
   const steady = cotal(cfg, home, BOOT);
   check("migration provenance: a current no-op boot does not claim another migration",
     !steady.stderr.includes("migrated operator-global seed store generation"), steady.stderr);

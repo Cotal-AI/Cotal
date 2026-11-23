@@ -9,7 +9,7 @@ import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, rea
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { acquireLock, registry, type ConnectorSetupInput, type ConnectorSetupProvider, type ConnectorStatusInput, type ConnectorStatusRow } from "@cotal-ai/core";
+import { acquireLock, ConnectorRefreshDeferred, registry, type ConnectorSetupInput, type ConnectorSetupProvider, type ConnectorStatusInput, type ConnectorStatusRow } from "@cotal-ai/core";
 import { isConfigProtected } from "@cotal-ai/connector-core";
 import { CLI_RECORD } from "./cli-record.js";
 
@@ -239,8 +239,9 @@ function repairMovedMarketplace(previous: string): string | undefined {
   const desired = resolve(codexMarketplaceDir());
   const config = join(codexHome(), "config.toml");
   const remedy = `Restore the Cotal marketplace at ${previous}, then run \`cotal update\`.`;
+  if (isAbsolute(previous) && resolve(previous) === desired) return `${remedy} If the directory was deleted, run \`cotal setup\` and select Codex to rebuild it.`;
   try {
-    if (!isAbsolute(previous) || basename(previous) !== basename(desired) || resolve(previous) === desired ||
+    if (!isAbsolute(previous) || basename(previous) !== basename(desired) ||
         lstatSync(previous, { throwIfNoEntry: false })) return remedy;
     const plugin = join(desired, "plugins", PLUGIN);
     if (!snapshotFile(join(desired, MARKETPLACE_MANIFEST))?.equals(marketplaceManifest) ||
@@ -313,10 +314,10 @@ export const codexSetupProvider: ConnectorSetupProvider = {
           const missing = missingMarketplace(listed);
           if (missing) {
             const deferred = repairMovedMarketplace(missing);
-            if (deferred) throw new Error(`Codex marketplace ${MARKETPLACE} could not be refreshed. ${deferred}`);
+            if (deferred) throw new ConnectorRefreshDeferred(`Codex marketplace ${MARKETPLACE} could not be refreshed. ${deferred}`);
             listed = codex("plugin", "list");
             if (missingMarketplace(listed)) {
-              throw new Error(`Codex still cannot load marketplace ${MARKETPLACE}. Restore the Cotal marketplace at ${missing}, then run \`cotal update\`.`);
+              throw new ConnectorRefreshDeferred(`Codex still cannot load marketplace ${MARKETPLACE}. Restore the Cotal marketplace at ${missing}, then run \`cotal update\`.`);
             }
           }
           installed = installedPlugin(listed);

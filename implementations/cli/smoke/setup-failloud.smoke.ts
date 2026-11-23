@@ -17,7 +17,7 @@ import { countedAssert, emitSentinel } from "@cotal-ai/smoke-kit";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { registry, type Connector, type ConnectorSetupProvider } from "@cotal-ai/core";
+import { ConnectorRefreshDeferred, registry, type Connector, type ConnectorSetupProvider } from "@cotal-ai/core";
 import { setInstalledExtensionsEnabled } from "../src/ext-loader.js";
 import { connectorSetupProvider, refreshConnectorInstalls, setupConnectorSurface } from "../src/commands/setup.js";
 const counted = countedAssert(nodeAssert);
@@ -77,17 +77,30 @@ try {
 
   writeManifest([brokenConnector]);
   registry.register(phantom);
+  registerRefresh("deferred-refresh", () => { throw new ConnectorRefreshDeferred("restore the integration"); });
   registerRefresh("rejected-refresh", async () => { throw new Error("ownership refused\nUse the owning home."); });
   registerRefresh("working-refresh", () => "repaired");
   const reported: string[] = [];
   process.argv[1] = join(import.meta.dirname, "..", "..", "..", "bin", "cotal.ts");
   await assert.rejects(refreshConnectorInstalls((line) => reported.push(line)), (error: Error) => {
+    assert.match(error.message, /^deferred-refresh: restore the integration$/m);
     assert.match(error.message, /^failloud-phantom: no installed extension provides connector-setup/m);
     assert.match(error.message, /^rejected-refresh: ownership refused\nUse the owning home\.$/m);
     assert.match(error.message, /^unfamiliar: .* is in the manifest but not installed/m);
     return true;
   });
   assert.deepEqual(reported, ["Refresh working-refresh: repaired"], "a later provider still refreshes and reports its result");
+
+  const deferred: string[] = [];
+  reported.length = 0;
+  await assert.rejects(refreshConnectorInstalls((line) => reported.push(line), (line) => deferred.push(line)), (error: Error) => {
+    assert.doesNotMatch(error.message, /deferred-refresh/);
+    assert.match(error.message, /^rejected-refresh: ownership refused/m);
+    assert.match(error.message, /^unfamiliar: .* is in the manifest but not installed/m);
+    return true;
+  });
+  assert.deepEqual(deferred, ["deferred-refresh: restore the integration"]);
+  assert.deepEqual(reported, ["Refresh working-refresh: repaired"]);
 
   console.log("setup-failloud.smoke: all assertions passed");
 } finally {
