@@ -299,7 +299,9 @@ is captured at adopt, before any prompt is admitted.
 Both OpenCode lines publish the same events. On 2.x the connector reads the session it launched
 through OpenCode's message list, `GET /api/session/:id/message`, from its first record, and publishes
 each item once it is final. Text and reasoning are final when their model step has finished
-streaming, and a tool call when it has completed or failed. OpenCode 2.x keeps a streaming text empty
+streaming. A tool call is published in two parts: its start and end once OpenCode runs the tool, so a
+client shows the call while it runs, and its result once it has completed or failed. On 1.x a tool
+call is published whole once it has completed or failed. OpenCode 2.x keeps a streaming text empty
 in that list until its step ends. A 2.x session's activity on the event stream is what prompts each
 read. Each finished tool call is followed
 by a `cotal.toolResult` marker, which carries the call id and whether OpenCode recorded the call as

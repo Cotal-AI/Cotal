@@ -5,8 +5,9 @@
  *
  * - `text`      -> `TEXT_MESSAGE_*`, assistant only
  * - `reasoning` -> `REASONING_*`, off by default
- * - `tool`      -> `TOOL_CALL_START` / `ARGS` / `END` / `RESULT`, `toolCallId` is the native call id,
- *   then the `cotal.toolResult` marker with the element's own error status
+ * - `tool`      -> `TOOL_CALL_START` / `ARGS` / `END` at its call record, which the source hands over
+ *   once the tool runs, and `TOOL_CALL_RESULT` then the `cotal.toolResult` marker with the element's
+ *   own error status at its result record. `toolCallId` is the native call id.
  * - `user`      -> nothing of its own: it closes the open run, because a new turn began. Its text is
  *   never published, for the 1.x reason: a peer batch is prepended into the person's own prompt, so
  *   the record has no boundary between the two authors to filter on.
@@ -152,12 +153,15 @@ export function createOpenCode2Mapper(opts: OpenCode2MapperOptions): OpenCode2Ma
       const closed = streams.saved(streamKey2(message.id, element.type, ordinal), element.text, ts);
       events.push(...closed.events);
       if (closed.mapAsNew && element.text) events.push(...wholeElement(element.type, messageId, element.text, ts, cotal));
-    } else if (element.type === "tool") {
-      const isError = element.state.status === "error";
+    } else if (element.type === "tool" && record.call) {
       events.push(
         toolCallStart({ toolCallId: element.id, toolCallName: element.name, timestamp: ts, parentMessageId: messageId, cotal }),
         toolCallArgs({ toolCallId: element.id, delta: JSON.stringify(element.state.input ?? null), timestamp: ts }),
         toolCallEnd({ toolCallId: element.id, timestamp: ts }),
+      );
+    } else if (element.type === "tool") {
+      const isError = element.state.status === "error";
+      events.push(
         toolCallResult({
           messageId: `${messageId}#result`,
           toolCallId: element.id,

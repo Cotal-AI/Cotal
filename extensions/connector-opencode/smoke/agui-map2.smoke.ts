@@ -187,6 +187,56 @@ for (const s of all) {
     { tool: stamp(T.TOOL_CALL_START), text: stamp(T.TEXT_MESSAGE_START), end: stamp(T.RUN_FINISHED) });
 }
 
-const EXPECTED = 23;
+{
+  // A tool shown while it runs: its call publishes when the read first finds it running, and its
+  // result once it completes, as OpenCode's own ACP agent shows a call before its result.
+  let n = 0;
+  const { map } = createOpenCode2Mapper({ threadId: THREAD, mintRunId: () => `run-${++n}`, reasoning: false });
+  const brackets = new AguiBrackets();
+  let violation: string | undefined;
+  let messages: OpenCode2Message[] = [];
+  const src = new OpenCode2SessionSource({ page: async () => ({ data: messages, cursor: { next: null } }) });
+  const drain = async (cursor: string) => {
+    const read = await src.read(cursor);
+    const types: string[] = [];
+    for (const { value } of read.records) {
+      const unit = map(value);
+      if (unit === null || !("runId" in unit)) continue;
+      for (const e of applyAguiEgressPolicy(unit.events)) {
+        try {
+          brackets.accept(e);
+        } catch (err) {
+          violation ??= (err as Error).message;
+        }
+        types.push(e.type === T.CUSTOM ? String((e as { name?: string }).name) : e.type);
+      }
+    }
+    return { types, cursor: read.cursor };
+  };
+  const shell = (status: "running" | "completed") => ({
+    type: "tool" as const, id: "call_9", name: "shell",
+    state: { status, input: { command: "[input 9]" }, ...(status === "completed" ? { content: [{ type: "text", text: "[result 9]" }] } : {}) },
+    time: { created: 42, ran: 43, ...(status === "completed" ? { completed: 50 } : {}) },
+  });
+  messages = [
+    { id: "msg_1", type: "user", time: { created: 41 } },
+    { id: "msg_2", type: "assistant", time: { created: 42, streamed: 43 }, content: [shell("running")] },
+  ];
+  const running = await drain("");
+  check("call:a tool first read running publishes its run, start and end, and no result yet",
+    JSON.stringify(running.types) === JSON.stringify([T.RUN_STARTED, T.TOOL_CALL_START, T.TOOL_CALL_END]) && violation === undefined && brackets.open,
+    { types: running.types, violation });
+  messages = [
+    messages[0]!,
+    { id: "msg_2", type: "assistant", time: { created: 42, streamed: 43, completed: 50 }, content: [shell("completed")] },
+    { id: "msg_3", type: "idle", time: { created: 51 }, outcome: "succeeded" },
+  ];
+  const done = await drain(running.cursor);
+  check("call:once it completes, it publishes only its result marker, and the turn end closes the run",
+    JSON.stringify(done.types) === JSON.stringify([TOOL_RESULT_EVENT, T.RUN_FINISHED]) && violation === undefined && !brackets.open,
+    { types: done.types, violation });
+}
+
+const EXPECTED = 25;
 check(`meta:every cell ran - ${EXPECTED} expected`, passed() + failed() === EXPECTED, `${passed() + failed()} cells reported`);
 finish();
