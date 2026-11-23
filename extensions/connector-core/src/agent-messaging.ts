@@ -4,6 +4,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import {
   normalizeMentions,
+  parsePrincipalKey,
   isConcreteChannel,
   resolvePeer as resolvePeerInRoster,
   shownPeerName,
@@ -345,7 +346,7 @@ export class AgentMessaging {
   private heldSender(target: string, byName: boolean, peer?: Presence): { id: string; name: string } | undefined {
     const name = this.senders.get(target);
     if (name !== undefined) return { id: target, name };
-    if (!byName) return undefined;
+    if (!byName || this.config.userAuth) return undefined;
     const want = target.trim().toLowerCase();
     // A sender rostered again under a new name has a row now, so its old name must not collide here.
     const rostered = new Set(this.ep.getRoster().map((p) => p.card.id));
@@ -398,13 +399,18 @@ export class AgentMessaging {
     // #1229: a miss is only a real "no peer" when the roster read succeeded; under a failed read the
     // target refuses naming the read's error (never "no peer"), and the DM does not go out.
     const { roster, failure } = await this.readRoster();
-    const peer = this.senders.has(target) ? roster.find((p) => p.card.id === target) : this.resolvePeer(target);
+    const address = target;
+    const owner = this.ep.principal.owner;
+    const peer = this.senders.has(address) || (this.config.userAuth && parsePrincipalKey(address))
+      ? roster.find((p) => p.card.id !== this.id && p.card.id === address)
+      : this.config.userAuth ? roster.find((p) => p.card.id !== this.id && p.card.id === `${owner}.${address.trim()}`)
+        : this.resolvePeer(address);
     // #384: a target with no roster row may still be a peer that messaged us (its id is
     // authenticated), which a one-shot `cotal send` always is. The DM goes to that identity and the
     // space's DM stream keeps it, instead of refusing a reply nothing could ever deliver.
-    const held = peer?.card.id === target
+    const held = peer?.card.id === address
       ? undefined
-      : this.heldSender(target, !failure, peer);
+      : this.heldSender(address, !failure, peer);
     if (!peer && !held) {
       if (!failure) throw new Error(this.noPeer(target));
       throw this.cannotVerify(`peer "${target}"`, failure, "The DM was not sent.");

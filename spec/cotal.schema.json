@@ -22,6 +22,13 @@
               "description": "Unique message id.",
               "type": "string"
             },
+            "mentionIds": {
+              "description": "Resolved channel mention principals, in exact `<owner>.<actor>` form. When present, even empty, this list replaces name matching for recipient priority. It grants no read access.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
             "mentions": {
               "description": "Lowercased peer names called out within a `channel` message — a wake hint that also, on a `live` channel, routes a durable copy to each mentioned target **authorized to read that channel** (SPEC §4/§5). It never carries content outside the target's read ACL and is not a routing substitute for `channel`/`to`; the message still multicasts to the whole channel. Omitted when empty.",
               "items": {
@@ -83,6 +90,13 @@
             "id": {
               "description": "Unique message id.",
               "type": "string"
+            },
+            "mentionIds": {
+              "description": "Resolved channel mention principals, in exact `<owner>.<actor>` form. When present, even empty, this list replaces name matching for recipient priority. It grants no read access.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
             },
             "mentions": {
               "description": "Lowercased peer names called out within a `channel` message — a wake hint that also, on a `live` channel, routes a durable copy to each mentioned target **authorized to read that channel** (SPEC §4/§5). It never carries content outside the target's read ACL and is not a routing substitute for `channel`/`to`; the message still multicasts to the whole channel. Omitted when empty.",
@@ -149,6 +163,13 @@
             "id": {
               "description": "Unique message id.",
               "type": "string"
+            },
+            "mentionIds": {
+              "description": "Resolved channel mention principals, in exact `<owner>.<actor>` form. When present, even empty, this list replaces name matching for recipient priority. It grants no read access.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
             },
             "mentions": {
               "description": "Lowercased peer names called out within a `channel` message — a wake hint that also, on a `live` channel, routes a durable copy to each mentioned target **authorized to read that channel** (SPEC §4/§5). It never carries content outside the target's read ACL and is not a routing substitute for `channel`/`to`; the message still multicasts to the whole channel. Omitted when empty.",

@@ -41,6 +41,7 @@ import type { EpVerbTarget, EpAttributedReply } from "./endpoint-verbs.js";
 import { isJetStreamMissing } from "./jetstream-missing.js";
 import { assertValidKind } from "./agent-file.js";
 import { assertValidName } from "./resolve.js";
+import { readUsername } from "./username-registry.js";
 import {
   JetStreamApiCodes,
   type JetStreamManager,
@@ -784,10 +785,7 @@ export class CotalEndpoint extends EventEmitter {
     return this.stopPromise ??= this.stopOnce();
   }
 
-  /** Forwards to the connection component's {@link EndpointConnection.stopOnce}. */
-  private stopOnce(): Promise<void> {
-    return this.connection.stopOnce();
-  }
+  private stopOnce(): Promise<void> { return this.connection.stopOnce(); }
 
   /** The native binding of every connection this endpoint holds. A host compares the list with a
    *  complete native census of the account to show that no other connection uses it. The list
@@ -795,9 +793,10 @@ export class CotalEndpoint extends EventEmitter {
    *  connections all closed reports none. It throws while there is no settled answer: before
    *  start, during a start, rebuild or stop, while a credential transaction or its connection swap
    *  is pending, and while the connection is down or redialing. */
-  nativeConnections(): NativeConnectionBinding[] {
-    return this.connection.nativeConnections();
-  }
+  nativeConnections(): NativeConnectionBinding[] { return this.connection.nativeConnections(); }
+
+  /** An owner's reciprocal username registry binding on this connection. */
+  readUsername(owner: string): Promise<string | undefined> { return this.conn.nc ? readUsername(this.conn.nc, this.space, owner) : Promise.reject(new Error(this.notLiveMsg())); }
 
   // ---- messaging -----------------------------------------------------------
 

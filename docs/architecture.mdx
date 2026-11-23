@@ -192,10 +192,12 @@ A `role` selects anycast work for a service, while a display `name` is a reusabl
 A unique live name resolves to a principal. An ambiguous name refuses with the candidate IDs.
 The manager auto-numbers persona-derived names when they collide.
 
-The roster and message attribution display `name/role`, or a bare name when no role is set.
+The roster displays `name (role: role)`, or a bare name when no role is set. A decorated label is
+not an address. Use the full principal to copy a destination or reply to a specific sender.
 Control characters, Unicode line and paragraph separators, and brackets render as spaces.
-That display label is not an address. The slash is reserved for future `owner/name` handles.
-Using a display label as a target refuses and names the bare name to use.
+Using a decorated display label as a target refuses. In a per-user-auth space, a prompt can show a
+foreign sender as `user/agent` when the registry confirms the username. Otherwise it shows the
+verified principal. The prompt label is not a reply key.
 
 A managed lifecycle UID distinguishes an incarnation from a later reuse of its name or principal.
 The manager's internal session recovery component checks connector state and control-socket proof,
