@@ -3,11 +3,12 @@
  *
  * The real JcodeDeltaStream, JcodeJournalSource, DeltaMergedSource, Jcode mapper and AguiEmitter run
  * over files. A stand-in client emits the Harness events, the test appends what Jcode would save, and
- * a stand-in endpoint records what the emitter publishes. No broker and no Jcode.
+ * a stand-in endpoint records what the emitter publishes. No broker and no Jcode. A fold whose new
+ * journal reuses the folded one's inode, as ext4 does, is made by truncating the journal in place.
  * Run: pnpm smoke:jcode-stream
  */
 import { EventEmitter } from "node:events";
-import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, rmSync, truncateSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { JcodeClient } from "@1jehuang/jcode-sdk";
@@ -90,6 +91,8 @@ const streamIds = (events: AguiEvent[]) => [...new Set(of(events).filter((e) => 
 const textOf = (events: AguiEvent[], id: string) => of(events).filter((e) => e.messageId === id && e.delta !== undefined).map((e) => e.delta).join("");
 const typesOf = (events: AguiEvent[], id: string): string[] => of(events).filter((e) => e.messageId === id).map((e) => e.type);
 const reply = (...content: unknown[]) => ({ role: "assistant", content });
+/** Whether two positions name one inode on one device, as the cursor writes them. */
+const sameFile = (a: string, b: string) => a.split(":").slice(0, 2).join(":") === b.split(":").slice(0, 2).join(":");
 
 try {
   console.log("a reply streams");
@@ -206,6 +209,33 @@ try {
     check("the run closes", (await s.endTurn(em)) === "run-2");
   }
 
+  console.log("a fold whose new journal has the folded one's identity");
+  {
+    const s = seat();
+    const em = await s.boot();
+    s.save({ role: "user", content: [{ type: "text", text: "first prompt" }] });
+    s.save(reply({ type: "text", text: "A saved reply long enough that the journal holding it ends past the next journal's end." }));
+    await em.pump();
+    const before = s.harness.anchor();
+    s.say("text_delta", { text: "Before the fold" });
+    await lineWritten();
+    s.snapshot();
+    truncateSync(s.journalPath, 0);
+    s.stream.turnEnded();
+    s.save({ role: "user", content: [{ type: "text", text: "next" }] });
+    check("the new journal has the folded one's identity", sameFile(before, s.harness.anchor()));
+    s.say("text_delta", { text: "After" });
+    await lineWritten();
+    await em.pump();
+    const [old, next] = streamIds(s.published);
+    const error = of(s.published).findIndex((e) => e.type === AGUI_EVENT_TYPE.RUN_ERROR);
+    check("a delta anchored on the folded journal streams and ends before the fold's RUN_ERROR",
+      old !== undefined && textOf(s.published, old) === "Before the fold" && error > of(s.published).findLastIndex((e) => e.messageId === old) &&
+        typesOf(s.published, old).at(-1) === AGUI_EVENT_TYPE.TEXT_MESSAGE_END, of(s.published).map((e) => `${e.type}:${e.delta ?? ""}`));
+    check("and the next delta streams after the fold, in a new run", next !== undefined && textOf(s.published, next) === "After" &&
+      of(s.published).findIndex((e) => e.messageId === next) > of(s.published).findLastIndex((e) => e.type === AGUI_EVENT_TYPE.RUN_STARTED), of(s.published).map((e) => `${e.type}:${e.delta ?? ""}`));
+  }
+
   console.log("a restart mid-reply");
   {
     const s = seat();
@@ -257,6 +287,23 @@ try {
     check("and the next file's beginning is before it", s.harness.compare(gone, fresh) < 0 && s.harness.compare(fresh, gone) > 0);
     check("two positions on the same file compare by offset", s.harness.compare(fresh, fresh) === 0);
   }
+  console.log("positions across a fold that keeps the inode");
+  {
+    const s = seat();
+    s.save(reply({ type: "text", text: "a folded reply longer than the first one the next journal holds" }));
+    const old = s.harness.anchor();
+    s.snapshot();
+    truncateSync(s.journalPath, 0);
+    s.save(reply({ type: "text", text: "new" }));
+    const short = s.harness.anchor();
+    check("a position on the file at the path is after one past its end on the folded file",
+      sameFile(old, short) && s.harness.compare(short, old) > 0 && s.harness.compare(old, short) < 0);
+    s.save(reply({ type: "text", text: "a reply that takes the new journal past the folded position" }));
+    const long = s.harness.anchor();
+    check("...and still after it once the new journal grows past it", s.harness.compare(short, old) > 0 && s.harness.compare(old, short) < 0);
+    check("positions on the file at the path still compare by offset", s.harness.compare(short, long) < 0 && s.harness.compare(long, long) === 0);
+  }
+
 } finally {
   rmSync(root, { recursive: true, force: true });
 }

@@ -445,7 +445,9 @@ continue what streamed, as after a provider retry, the streamed message ends and
 publishes as a message of its own. A provider call that fails after it streamed leaves no saved
 reply, so the turn's end ends its streamed message. A turn's run ends with `RUN_FINISHED`, or with
 `RUN_ERROR` when Jcode failed the turn, whether the seat or the attached TUI started it. A delta that arrives while a checkpoint has left
-no journal waits until Jcode writes the next one. Tool activity arrives when Jcode persists the
+no journal waits until Jcode writes the next one. A delta journaled before a checkpoint is placed
+before it, also when the journal Jcode writes next has the inode number of the one it replaced, as
+ext4 can give it. Tool activity arrives when Jcode persists the
 tool-use and result blocks. User prompt text is not republished onto the event channel. The launcher sets
 `COTAL_EVENTS` by default; pass `--no-events` to opt out on an unrestricted space. A registration
 that requires events refuses `--no-events`, and its launch always carries the flag and the workspace
