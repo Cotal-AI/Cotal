@@ -152,7 +152,7 @@ try {
   }
   ok("the manager answers on the ep rails before the cut", railsUp);
 
-  const cut = runSync(["down", "--preserve-state"]);
+  const cut = runSync(["down", "--preserve-state", "--yes"]);
   ok("the cut exited 0", cut.status === 0, `${cut.stdout ?? ""}${cut.stderr ?? ""}`.slice(-1200));
   const resumeLaunch = (JSON.parse(readFileSync(resumeDocPath, "utf8")) as { launch?: { maxFileStore?: unknown } }).launch;
   ok("the cut journals the store cap in the preserved launch", resumeLaunch?.maxFileStore === CAP, resumeLaunch);
@@ -241,7 +241,7 @@ try {
   ok("the adopted mesh record keeps the store cap", recordedCap(space) === CAP, recordedCap(space));
   ok("…and the attach host and the session ceiling", recorded(space)?.attachHost === "127.0.0.1" && recorded(space)?.maxSessions === 7, recorded(space));
 
-  const restoreCut = runSync(["down", "--preserve-state"]);
+  const restoreCut = runSync(["down", "--preserve-state", "--yes"]);
   ok("the resumed mesh can be preserved again", restoreCut.status === 0, `${restoreCut.stdout}${restoreCut.stderr}`);
   const artifact = join(root, "cap-backup");
   const backup = runSync(["backup", "create", artifact]);

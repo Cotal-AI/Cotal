@@ -215,7 +215,7 @@ try {
 
   // ---------- C. the preserve cut ----------
   console.log("C) down --preserve-state");
-  await must("preserve cut", ["down", "--preserve-state"]);
+  await must("preserve cut", ["down", "--preserve-state", "--yes"]);
   const ready = readJournal();
   check("preserve cut reaches a ready journal", ready.state === "ready", ready);
   check("broker is offline after the cut", !(await isReachable(SERVER)));
@@ -286,7 +286,7 @@ try {
   console.log("F) owner-secret drift before a second restore must fail CLOSED");
   await must("retire the first restore's fallback",
     ["clean", "restore-fallback", "--attempt", active.restore!.attemptId, "--force", "--discard-history"]);
-  await must("second preserve cut", ["down", "--preserve-state"]);
+  await must("second preserve cut", ["down", "--preserve-state", "--yes"]);
   check("the second cut is ready", readJournal().state === "ready");
   const journalBefore = readFileSync(journalPath, "utf8");
   const sourceBefore = lstatSync(sourcePath, { bigint: true });
