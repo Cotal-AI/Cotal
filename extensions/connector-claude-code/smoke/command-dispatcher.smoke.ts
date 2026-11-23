@@ -29,12 +29,12 @@ import { CONNECTOR_VERSION } from "@cotal-ai/connector-core/version";
 import { EpEnvelopeError, type CommandState, type PresenceStatus } from "@cotal-ai/core";
 import { createSuite } from "@cotal-ai/smoke-kit";
 // The built lane, so its `CommandRefused` is the class the dispatcher throws.
-import { createCommandLane } from "../../connector-core/dist/agent-commands.js";
+import { createCommandLane, servedCommands } from "../../connector-core/dist/agent-commands.js";
 import { commandSocketPath, openCommandFeed, type CommandFeed } from "../src/command-feed.js";
 import { claudeCommands, commandTurns } from "../src/commands.js";
 import { createClaudeHandle } from "../src/hooks.js";
 
-const EXPECTED_CELLS = 47;
+const EXPECTED_CELLS = 51;
 const READER = join(dirname(fileURLToPath(import.meta.url)), "..", "dist", "command-reader.cjs");
 const scratch = mkdtempSync(join(tmpdir(), "cmd-disp-"));
 process.env.TMPDIR = scratch;
@@ -142,6 +142,30 @@ async function unsupported(): Promise<void> {
   const skewRun = await call("command", { target: "command", name: "context" });
   check("another mod version: command is unimplemented, naming both versions", refusal(skewRun).endsWith(`the mod is 0.0.1 and the server is ${CONNECTOR_VERSION}; reload the plugin or restart the session`), refusal(skewRun));
   skew.destroy();
+}
+
+/** Presence follows the mod: the dispatcher's watcher runs as a reader comes and goes, and what the
+ *  seat shows it serves is derived again each time. */
+async function watching(): Promise<void> {
+  let stops: (() => void)[] = [];
+  const watched = claudeCommands({ feed: () => feed, interrupting: () => undefined, warn: () => {}, imageDir, onStop: (stop) => stops.push(stop) });
+  const shown: string[] = [];
+  watched.watch!(() => shown.push(JSON.stringify(servedCommands(watched))));
+  const off = JSON.stringify({ interrupt: false, turn: false, images: false, usage: true });
+  const on = JSON.stringify({ interrupt: true, turn: true, images: true, usage: true });
+  check("with no mod, the seat shows only usage served", JSON.stringify(servedCommands(watched)) === off, servedCommands(watched));
+  const r = startReader("2.1.330");
+  check("a mod saying hello calls the watcher, and the seat shows interrupt, turn, images and usage", await until(() => shown.at(-1) === on), shown);
+  r.child.kill("SIGTERM");
+  check("the mod leaving calls it again, and the seat no longer shows interrupt or turn", await until(() => shown.at(-1) === off), shown);
+  for (const stop of stops) stop();
+  stops = [];
+  const seen = shown.length;
+  const again = startReader("2.1.330");
+  await until(() => feed.unsupported() === undefined);
+  check("once the agent stopped, the feed calls the watcher no more", shown.length === seen, shown);
+  again.child.kill("SIGTERM");
+  await until(() => feed.unsupported() !== undefined);
 }
 
 async function listing(): Promise<void> {
@@ -367,6 +391,7 @@ async function hookTurns(): Promise<void> {
 try {
   feed = await openCommandFeed(process.pid, { warn: (msg) => warnings.push(msg) });
   await unsupported();
+  await watching();
   await listing();
   await running();
   await turning();

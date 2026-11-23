@@ -31,6 +31,8 @@ interface ClaudeCommandsOptions {
   warn(msg: string): void;
   /** The seat's image folder (turn-images.ts). Without one, a turn takes no images. */
   imageDir?: string;
+  /** Hands over what stops the feed's calls to `watch`, to run when the agent stops. */
+  onStop?(stop: () => void): void;
   bounds?: typeof BOUNDS;
 }
 
@@ -62,6 +64,10 @@ export function claudeCommands(o: ClaudeCommandsOptions): CommandDispatcher {
   return {
     targets: new Set(["command"]),
     unsupported,
+    watch(changed) {
+      const stop = o.feed()?.watch(changed);
+      if (stop) o.onStop?.(stop);
+    },
     async list(): Promise<CommandEntry[]> {
       const { commands } = expect(await served().request({ op: "list" }), "list");
       return commands.map((c) => ({ name: c.name, target: "command", description: c.description, inputHint: c.argumentHint }));
