@@ -166,16 +166,8 @@ export class SimHandler implements EffectHandler {
         reject(new Cancelled(ctx.signal.reason ?? "cancelled"));
         return;
       }
-      const wake = this.virtualNow + ms;
-      // Allow the last exact millisecond, 2^53, but not advances the clock or report would round.
-      const limit = Number.MAX_SAFE_INTEGER + 1 + Math.min(0, this.script.clock?.start ?? 0);
-      if (!Number.isSafeInteger(ms) || wake > limit || wake - this.virtualNow !== ms) {
-        reject(new EffectError("L6003", "simulation-clock",
-          `L6003 Simulation clock lost precision\n\nThe virtual clock cannot advance by ${ms} ms from ${this.virtualNow} without losing millisecond precision.\n\nFix: set clock.start closer to zero or shorten the simulated delays, then rerun the simulation.`));
-        return;
-      }
       const event: ParkedEvent = {
-        wake,
+        wake: this.virtualNow + ms,
         seq: this.parkSeq++,
         done: false,
         deliver: () => {

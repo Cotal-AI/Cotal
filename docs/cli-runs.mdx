@@ -348,9 +348,7 @@ from 1, while the step key counts occurrences from 0. JSON includes `target.step
 journal entry matches the error code. That can be a different step from the one in the message,
 for example when parallel branches both raise L6001.
 
-The simulator raises L6003 before a delay that cannot advance the virtual clock or be counted
-in elapsed time with millisecond precision. Start the clock closer to zero or shorten the delays.
-If L6001, L6003 or a statement such as `throw "boom"` goes uncaught, the simulator produces no report.
+If L6001 or a statement such as `throw "boom"` goes uncaught, the simulator produces no report.
 The CLI exits 5 with `OPERATION_FAILED`. Its JSON envelope has `outcome: "failed"` and
 `result: null`.
 
