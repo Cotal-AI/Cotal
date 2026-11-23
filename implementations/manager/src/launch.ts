@@ -3,7 +3,7 @@ import { randomBytes } from "node:crypto";
 import { dirname, join, resolve } from "node:path";
 import { stringify as stringifyYaml } from "yaml";
 import { z } from "zod";
-import { assertDerivedOwnerToken, assertValidChannel, assertValidName, ensureDirNoSymlink, isConcreteChannel, isPersonaSourceRef, realDirNoSymlink, unlinkFileNoFollow, type MeshLaunchAgent, type MeshLaunchSpec } from "@cotal-ai/core";
+import { agentFilePath, assertDerivedOwnerToken, assertValidChannel, assertValidName, ensureDirNoSymlink, isConcreteChannel, isPersonaSourceRef, personaSourceRef, realDirNoSymlink, saveAgentFile, unlinkFileNoFollow, type AgentDef, type MeshLaunchAgent, type MeshLaunchSpec } from "@cotal-ai/core";
 
 /**
  * Load + materialize a resolved launch spec for `supervise --launch`.
@@ -182,6 +182,14 @@ export function materializePersona(root: string, runId: string, a: MeshLaunchAge
 /** Older file-backed specs name a path but do not prove which filesystem provided it. */
 export function manifestPersonaSource(a: Pick<MeshLaunchAgent, "personaPath" | "personaSource">): string {
   return a.personaSource ?? (a.personaPath === undefined ? "none" : "unknown");
+}
+
+/** Record the inline seat's catalog origin only after the create-only save succeeds. */
+export function saveInlinePersonaSource(root: string, ref: string, copy: AgentDef | undefined): string {
+  if (copy === undefined) return "none";
+  const path = agentFilePath(root, ref);
+  saveAgentFile(path, copy, { createOnly: true });
+  return personaSourceRef(path) ?? "unknown";
 }
 
 /** The snapshots unsaved inline personas launch from (SPEC 13.7). No spawn may name a file here. */
