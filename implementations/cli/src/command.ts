@@ -104,6 +104,28 @@ function takeGlobalFlag(word: string): boolean {
   return true;
 }
 
+/** Apply leading globals and carry leading output options to the command's arguments. A `--`
+ *  ends the leading flags so the next word is the command word. */
+function parseLeadingArgs(argv: readonly string[]) {
+  const output: string[] = [];
+  const leadingGlobals = new Set<string>();
+  let repeatedLeading: string | undefined;
+  let lead = 0;
+  for (; lead < argv.length; lead++) {
+    const word = argv[lead]!;
+    if (OUTPUT_FLAG_WORDS.has(word)) output.push(word);
+    else if (leadingGlobals.has(word)) repeatedLeading ??= word;
+    else if (takeGlobalFlag(word)) leadingGlobals.add(word);
+    else break;
+  }
+  if (argv[lead] === "--") lead++;
+  const original = argv[lead];
+  const word = original === "--version" || original === "-V" ? "version"
+    : original === "--help" || original === "-h" ? "help" : original;
+  const words = [...output, ...argv.slice(lead + 1)];
+  return { word, original, words, output, leadingGlobals, repeatedLeading };
+}
+
 /** Collect globals before `--`; the parser still needs their original positions. */
 function collectGlobalFlags(words: readonly string[], leading: ReadonlySet<string>): { flags: Set<string>; repeated?: string } {
   const flags = new Set<string>();
@@ -738,26 +760,7 @@ async function serviceSurface(found: Command | undefined, words: string[], forRe
  */
 export async function runCli(registry: Registry, argv: string[], opts: RunCliOptions = {}): Promise<void> {
   const startedAt = Date.now();
-  // Global flags before the command word apply whatever the command is. The output flags are the
-  // command's own, so one written before the command word moves after it, and a `--` there ends
-  // the leading flags. A command that takes its words raw has no flags to read them as, so it
-  // refuses them there. The built-in surface decides that before any extension overlay is read.
-  const output: string[] = [];
-  const leadingGlobals = new Set<string>();
-  let repeatedLeading: string | undefined;
-  let lead = 0;
-  for (; lead < argv.length; lead++) {
-    const word = argv[lead]!;
-    if (OUTPUT_FLAG_WORDS.has(word)) output.push(word);
-    else if (leadingGlobals.has(word)) repeatedLeading ??= word;
-    else if (takeGlobalFlag(word)) leadingGlobals.add(word);
-    else break;
-  }
-  if (argv[lead] === "--") lead++;
-  const original = argv[lead];
-  const word = original === "--version" || original === "-V" ? "version"
-    : original === "--help" || original === "-h" ? "help" : original;
-  const words = [...output, ...argv.slice(lead + 1)];
+  const { word, original, words, output, leadingGlobals, repeatedLeading } = parseLeadingArgs(argv);
   const wantsHelp = asksForHelp(words);
   if (opts.notifyUpdate && word !== "help" && !wantsHelp) await opts.notifyUpdate();
   const builtin = findCommand(registry.all<Command>("command"), word);
