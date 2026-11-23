@@ -143,6 +143,46 @@ function endFailed(inner: string | undefined, payload: Record<string, unknown>):
   return ok === undefined ? undefined : ok.isError === true;
 }
 
+/** What the open run's end records said about each call, until its output is mapped. An end record
+ *  that comes after its output, as for a command still running when its output is written, stays
+ *  until the run closes. */
+function createFailedCalls() {
+  const failedCalls = new Map<string, boolean>();
+  return {
+    clear: (): void => failedCalls.clear(),
+    /** Notes what an `event_msg` record says about its call, when it is an end record that says. */
+    note(inner: string | undefined, payload: Record<string, unknown>): void {
+      const failed = endFailed(inner, payload);
+      const callId = asString(payload.call_id);
+      if (failed !== undefined && callId !== undefined) failedCalls.set(callId, failed);
+    },
+    /** What the end records said about `toolCallId`, read once. */
+    take(toolCallId: string): boolean | undefined {
+      const isError = failedCalls.get(toolCallId);
+      failedCalls.delete(toolCallId);
+      return isError;
+    },
+  };
+}
+
+/**
+ * A tool output's result unit. The marker rides in the same unit as the result. The fence keeps the
+ * result off the public channel, and a read that starts with this record then still has a public
+ * unit for the payload rail to follow. Without it the emitter refuses the read, and re-reads it
+ * forever.
+ */
+function resultEvents(toolCallId: string, payload: Record<string, unknown>, isError: boolean | undefined, ts: number): AguiEvent[] {
+  // The `messageId` every connector owes on a tool result. Codex has no message id for one:
+  // the record's own `id`, present on 2 437 of 6 733, is the response item's id and not a
+  // message's. Synthesized from the call id so it is STABLE across a replay of the same
+  // record, which a mint would not be.
+  const messageId = `res:${toolCallId}`;
+  return [
+    toolCallResult({ messageId, toolCallId, content: outputText(payload), timestamp: ts, ...(isError === undefined ? {} : { cotal: { isError } }) }),
+    toolResultMarker({ toolCallId, ...(isError === undefined ? {} : { isError }), timestamp: ts }),
+  ];
+}
+
 /**
  * @param threadId The native thread id, which is `session_meta.payload.id` and the rollout
  *  filename key. Passed in rather than read from the file: the caller resolved the path FROM this
@@ -161,10 +201,7 @@ export function createCodexMapper(opts: { threadId: string; mintRunId: () => str
    *  close it. Codex retries a failed turn with a fresh turn id, and each retry is its own run. */
   let openTurn: string | undefined;
   let last = 0;
-  /** What the open run's end records said about each call, until its output is mapped. An end record
-   *  that comes after its output, as for a command still running when its output is written, stays
-   *  until the run closes. */
-  const failedCalls = new Map<string, boolean>();
+  const failedCalls = createFailedCalls();
 
   const map = (record: CodexRecord): { runId: string; events: AguiEvent[] } | null => {
     // A LINE THAT IS NOT AN OBJECT IS A DROP, NOT A THROW, and the difference is the whole plane.
@@ -248,11 +285,7 @@ export function createCodexMapper(opts: { threadId: string; mintRunId: () => str
     if (open === null) return null;
     const runId = open;
 
-    if (envelope === "event_msg") {
-      const failed = endFailed(inner, payload);
-      const callId = asString(payload.call_id);
-      if (failed !== undefined && callId !== undefined) failedCalls.set(callId, failed);
-    }
+    if (envelope === "event_msg") failedCalls.note(inner, payload);
 
     // ---- assistant text -----------------------------------------------------------------
     if (envelope === "response_item" && inner === "message") {
@@ -328,23 +361,7 @@ export function createCodexMapper(opts: { threadId: string; mintRunId: () => str
     if (envelope === "response_item" && (inner === "function_call_output" || inner === "custom_tool_call_output")) {
       const toolCallId = asString(payload.call_id);
       if (toolCallId === undefined) return null;
-      // The `messageId` every connector owes on a tool result. Codex has no message id for one:
-      // the record's own `id`, present on 2 437 of 6 733, is the response item's id and not a
-      // message's. Synthesized from the call id so it is STABLE across a replay of the same
-      // record, which a mint would not be.
-      const messageId = `res:${toolCallId}`;
-      // The marker rides in the same unit as the result. The fence keeps the result off the public
-      // channel, and a read that starts with this record then still has a public unit for the
-      // payload rail to follow. Without it the emitter refuses the read, and re-reads it forever.
-      const isError = failedCalls.get(toolCallId);
-      failedCalls.delete(toolCallId);
-      return {
-        runId,
-        events: [
-          toolCallResult({ messageId, toolCallId, content: outputText(payload), timestamp: ts, ...(isError === undefined ? {} : { cotal: { isError } }) }),
-          toolResultMarker({ toolCallId, ...(isError === undefined ? {} : { isError }), timestamp: ts }),
-        ],
-      };
+      return { runId, events: resultEvents(toolCallId, payload, failedCalls.take(toolCallId), ts) };
     }
 
     // Unmapped in v1, and stated rather than dropped silently: `world_state`, `turn_context`,
