@@ -570,8 +570,6 @@ export interface EffectHandler {
   monitor(req: MonitorRequest, ctx: EffectContext): Promise<null>;
   openConclave(req: ConclaveRequest, ctx: EffectContext): Promise<ChannelHandleValue>;
   closeConclave(req: ConclaveRequest, ctx: EffectContext): Promise<null>;
-  /** Optional simulation hook for a scope with no handler dispatch of its own. */
-  checkScope?(req: null, ctx: EffectContext): Promise<void>;
   /**
    * Optional. A host that runs the program in another realm (the worker bridge) calls this once
    * with a function that resolves when the program has reacted to everything the handler has

@@ -391,8 +391,8 @@ prompts an `unblock` turn, and the unnamed wait reads the `wait` entry.
 | `clock` | `{start, turn, ask, checkpoint, wait}`: `start` is a safe integer in milliseconds, between -9007199254740991 and 9007199254740991, so the virtual clock can advance by whole milliseconds. Effect durations take values such as `"5m"`. A turn takes 5 minutes and the others 1 minute unless set |
 | `faults` | `[{at, kind, code, message}]`: the step at `at`, a step key such as `turn:build#1`, fails with that error |
 
-To fail a race before any branch runs, target its own step key, such as `/race:first#0`. To fail
-an effect inside the race, use that effect's step key instead.
+To fail a race before any branch runs in `run simulate`, target the race's own step key, such as
+`/race:first#0`. To fail an effect inside the race, use that effect's step key instead.
 
 An invalid clock duration is refused before simulation with `SCHEMA_INVALID`, exit 1, even if the
 program does not reach that effect. The refusal names the results file and the field to correct.

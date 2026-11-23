@@ -13,6 +13,7 @@ import { atMostOnce, digest, holdRequestId, requestId, scopePathString, scopeTra
 import { Journal, JournalAppendRejected, RunClock, type EntryError, type JournalEntry, type LookupVerdict } from "./journal.js";
 import { NotCrossable, assertCrossable, assertScopeValueCrossable, deepFreeze } from "./values.js";
 import { type EffectKind } from "./primitives.js";
+import { simScopeFaults } from "./sim-scope-faults.js";
 import {
   Cancelled,
   RunReleased,
@@ -809,7 +810,7 @@ export async function performScope(
   // branches all succeeded and whose settling append was refused must not be recorded as failed.
   let outcome: ScopeOutcome;
   try {
-    if (!dispatches && host.options.handler.checkScope) await host.options.handler.checkScope(null, ctx);
+    if (scopeKey.kind === "race" && !ctx.signal.cancelled) simScopeFaults.get(host.options.handler)?.(ctx);
     outcome = await body(ctx);
   } catch (raw) {
     // The interpreter's facts come out of the envelope; the program's thrown value comes out

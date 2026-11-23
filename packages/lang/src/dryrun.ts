@@ -19,6 +19,7 @@
 
 import { run } from "./interpret.js";
 import { SimHandler, type SimScript } from "./sim.js";
+import { simScopeFaults } from "./sim-scope-faults.js";
 import { stepKeyString } from "./keys.js";
 import { EFFECT_KINDS } from "./primitives.js";
 import { Journal } from "./journal.js";
@@ -124,15 +125,14 @@ export interface DryRunFailure extends Omit<DryRunReport, "steps"> {
  * It implements every member, the optional ones included, so a member added to the contract is a
  * type error here until it is forwarded rather than a hook the wrapper silently drops.
  */
-export class RecordingHandler implements Omit<Required<EffectHandler>, "checkScope">, Pick<EffectHandler, "checkScope"> {
+export class RecordingHandler implements Required<EffectHandler> {
   readonly spawns: SpawnRequest[] = [];
   readonly checkpointsAsked: { req: CheckpointRequest; step: string }[] = [];
   readonly waits: { req: ObserveRequest; step: string }[] = [];
 
-  readonly checkScope?: (req: null, ctx: EffectContext) => Promise<void>;
-
   constructor(private readonly inner: EffectHandler) {
-    if (inner.checkScope) this.checkScope = inner.checkScope.bind(inner);
+    const check = simScopeFaults.get(inner);
+    if (check) simScopeFaults.set(this, check);
   }
 
   now(): number {

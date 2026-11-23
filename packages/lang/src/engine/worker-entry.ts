@@ -72,7 +72,7 @@ port.on("message", (message: unknown) => {
 const { request, stop, bridge } = workerData as {
   request: WorkerRunRequest;
   stop: SharedArrayBuffer;
-  bridge?: { port: MessagePort; clock: SharedArrayBuffer; checksScopes: boolean };
+  bridge?: { port: MessagePort; clock: SharedArrayBuffer };
 };
 
 /**
@@ -133,7 +133,7 @@ async function buildSeam(): Promise<{ handler: EffectHandler; journal?: Journal 
         `request ${request.runId} names the bridged handler route but the thread was started without a bridge port; runInWorker is the caller that wires one`,
       );
     }
-    const seam = bridgedSeam(bridge.port, bridge.clock, bridge.checksScopes);
+    const seam = bridgedSeam(bridge.port, bridge.clock);
     return {
       handler: seam.handler,
       journal: new Journal({

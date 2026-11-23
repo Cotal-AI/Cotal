@@ -1891,20 +1891,6 @@ for (const hostPackageVersion of [undefined, "0.0.0-different-worker"]) {
     heldStored.map((e) => `${e.kind}:${e.state}:${e.status ?? ""}`));
 }
 
-{
-  const source = 'await race({ slow: () => sleep("3s"), fast: () => sleep("1s") }, { name: "first" });';
-  const handler = new SimHandler({ faults: [{ at: "/race:first#0", kind: "test-refusal", code: "L4002", message: "injected race failure" }] });
-  const rows: JournalEntry[] = [];
-  const worker = await runInWorker(
-    { source, module: transform(source).module, runId: "host-race-fault", handler: "bridged" },
-    { entry: WORKER_ENTRY, bridge: { handler, store: { append: async (entry) => { rows.push(entry); } } } },
-  ).done;
-  ok("a bridged simulation records a scripted race fault without launching the branches", !worker.ok
-    && rows.length === 2 && rows[0]?.kind === "race" && rows[0].state === "pending" && rows[1]?.kind === "race"
-    && rows[1].status === "failed" && rows[1].error?.code === "L4002" && rows[1].error?.kind === "test-refusal"
-    && rows[1].error?.message === "injected race failure" && handler.now() === 0, { worker, rows });
-}
-
 // ---- a race loser's cancellation crosses the bridge while the loser is parked -------------------
 //
 // The signal's one in-run producer: a `race` settling fires `signal.cancel` on every arm whose

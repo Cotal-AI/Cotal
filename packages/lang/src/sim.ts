@@ -34,6 +34,7 @@ import type {
 import { Cancelled, EffectError, askSchemaShape, conformsToAskSchema } from "./effects.js";
 import { parseDuration } from "./duration.js";
 import { stepKeyString } from "./keys.js";
+import { simScopeFaults } from "./sim-scope-faults.js";
 
 /** A scripted outcome: one value used for every occurrence, or one per occurrence in order. */
 export type Scripted<T> = T | readonly T[];
@@ -142,14 +143,10 @@ export class SimHandler implements EffectHandler {
   private parkSeq = 0;
   private pumpScheduled = false;
   private settled: (() => Promise<void>) | undefined;
-  readonly checkScope?: (req: null, ctx: EffectContext) => Promise<void>;
 
   constructor(readonly script: SimScript = {}) {
     this.virtualNow = script.clock?.start ?? 0;
-    if (script.faults?.length) this.checkScope = async (_req, ctx) => {
-      if (ctx.signal.cancelled) throw new Cancelled(ctx.signal.reason ?? "cancelled");
-      this.checkFault(ctx);
-    };
+    if (script.faults?.length) simScopeFaults.set(this, (ctx) => this.checkFault(ctx));
   }
 
   now(): number {
