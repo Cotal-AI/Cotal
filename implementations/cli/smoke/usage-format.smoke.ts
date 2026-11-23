@@ -230,6 +230,16 @@ check("a typo in --search names a replacement option that searches for the same 
   && !!searchRetry && searchRetry.status === 0 && searchRetry.stderr === ""
   && JSON.parse(searchRetry.stdout).result.kind === "docs-search" && JSON.parse(searchRetry.stdout).result.query === noHitQuery,
   { refused: shown(searchTypo), retry: searchRetry && shown(searchRetry) });
+for (const args of [["--search", noHitQuery], [`--search=${noHitQuery}`]]) {
+  const refused = run(["docs", "--json", ...args, "--serch", "other"]);
+  const error = JSON.parse(refused.stdout).error;
+  const retry = run(["docs", "--json", ...args]);
+  check(`a typo after ${args.join(" ")} asks to drop the extra option and its value`,
+    refused.status === 1 && refused.stderr === "" && error.code === "USAGE_INVALID"
+    && error.message === "Unknown option '--serch'" && error.remedy === "drop the unknown option and its value, if any; --search is already set"
+    && retry.status === 0 && retry.stderr === "" && JSON.parse(retry.stdout).result.query === noHitQuery,
+    { refused: shown(refused), retry: shown(retry) });
+}
 const shortEquals = run(["send", "-c=general", "hello"]);
 check("-c=value is refused naming the value it would give", usageShape(shortEquals, /-c=general gives -c the value "=general"/) && /write -c general or --channel=general/.test(shortEquals.stderr), shown(shortEquals));
 for (const typed of ["\u2014json", "\u2212\u2212json", "\u2013json"]) {

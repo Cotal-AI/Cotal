@@ -521,8 +521,10 @@ function parseRefusal(error: Error & { code?: string }, cmd: Command, rest: read
     const nearest = option ? nearestWords(option, [...(flagNames ?? (cmd.flags ?? []).map((flag) => flag.name)).map((name) => `--${name}`), "--no-color", "--no-input", "--help"]) : [];
     const spellings = nearest.join(" or ");
     const flag = cmd.flags?.find((item) => `--${item.name}` === spellings);
-    if (flag?.type === "boolean" && !flag.multiple && parseArgs({ args: [...rest], options: parserOptions(cmd), strict: false, allowPositionals: true }).values[flag.name] === true)
-      return { message: reason, remedy: `drop the unknown option; --${flag.name} is already set` };
+    if (flag && !flag.multiple && typeof parseArgs({ args: [...rest], options: parserOptions(cmd), strict: false, allowPositionals: true }).values[flag.name] === flag.type) {
+      const value = flag.type === "string" ? " and its value, if any" : "";
+      return { message: reason, remedy: `drop the unknown option${value}; --${flag.name} is already set` };
+    }
     const message = spellings ? `${reason} - did you mean ${spellings}?` : reason;
     const remedy = cmd.name === "completion" ? "drop the unknown option"
       : !takesOperands ? undefined : spellings ? `use ${spellings}`
