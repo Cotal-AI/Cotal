@@ -13,6 +13,7 @@ import {
   epAuthBucket,
   fetchContractArtifact,
   foreignSlotHeldFrom,
+  GovernanceSlotCasLost,
   principalKey,
   provisionEndpointGateOpen,
   publishContractArtifact,
@@ -33,7 +34,7 @@ async function registerAfterContention<T>(register: () => Promise<T>, deadline: 
       return await register();
     } catch (error) {
       // A fresh attempt re-reads the governance head and validates the registration under its gate.
-      if (foreignSlotHeldFrom(error)?.condition !== "in-flight") throw error;
+      if (!(error instanceof GovernanceSlotCasLost) && foreignSlotHeldFrom(error)?.condition !== "in-flight") throw error;
       const wait = Math.random() * Math.min(15_000, 250 * 2 ** retries);
       if (Date.now() + wait >= deadline) throw error;
       await delay(wait);
