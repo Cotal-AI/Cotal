@@ -1,5 +1,12 @@
 # @cotal-ai/acp
 
+## 0.175.2
+
+### Patch Changes
+
+- 4a49d39: The ACP sign-in step writes the command it runs in backticks, like every other command the CLI names in a message.
+- 29aeddc: ACP hides sign-in on spaces without user authentication, sends prose beginning with `/despawn` to the agent, explains how to start a missing manager, and documents that `--server` overrides the recorded broker.
+
 ## 0.175.1
 
 No changes in this release.
