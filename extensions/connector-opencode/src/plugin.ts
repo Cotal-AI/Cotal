@@ -51,6 +51,8 @@ import {
   AguiEmitterHolder,
   eventPlaneStopped,
   BoundStartSource,
+  DeltaMergedSource,
+  streamSeed,
   EventWal,
   FileSubjectFrontier,
   ensureEventWalDir,
@@ -59,12 +61,14 @@ import {
   scrubLaunchMaterial,
   registerOnceExit,
   type InboxItem,
+  type Merged,
   type PrincipalLock,
 } from "@cotal-ai/connector-core";
 import { principalKey } from "@cotal-ai/core";
 import { randomUUID } from "node:crypto";
 import { OpenCodeSessionSource, type OpenCodeMessageWithParts, type OpenCodeRecord } from "./agui-source.js";
 import { createOpenCodeMapper, type OpenCodeMapper } from "./agui-map.js";
+import { OpenCode1DeltaStream } from "./stream1.js";
 import type { Plugin, Hooks, ToolDefinition } from "@opencode-ai/plugin";
 import { buildCotalTools } from "./tools.js";
 import { opencode1FailureCondition } from "./failure-condition.js";
@@ -163,7 +167,9 @@ export const cotal: Plugin = async () => {
    * is on. A personal `opencode` never publishes, because the launcher sets that variable only for
    * a managed session.
    */
-  let events: AguiEmitterHolder<OpenCodeRecord> | undefined;
+  let events: AguiEmitterHolder<Merged<OpenCodeRecord>> | undefined;
+  /** Each holder's delta stream, which journals what its session streams. */
+  const deltaStreams = new WeakMap<AguiEmitterHolder<Merged<OpenCodeRecord>>, OpenCode1DeltaStream>();
   /** Per session, the cursor of its end when the connector last reported a turn over. */
   const turnEndedAt = new Map<string, string>();
   /** This principal's event WAL lock, taken by whichever holder started first and held until the
@@ -197,7 +203,7 @@ export const cotal: Plugin = async () => {
    * its own emitter and its own log, which is the sequential-sessions-one-principal case the shared
    * subject frontier exists for.
    */
-  function newEventHolder(): AguiEmitterHolder<OpenCodeRecord> {
+  function newEventHolder(): AguiEmitterHolder<Merged<OpenCodeRecord>> {
     // Scoped to this holder, not to the process: the run-closed callback below has to reach the
     // mapper, and the two are assigned at different times because the mapper is built inside the
     // factory, keyed on the session the bus names.
@@ -206,18 +212,21 @@ export const cotal: Plugin = async () => {
     // this factory again, and the boundary captured below is the position the thread adopted at;
     // a second capture would sit at the re-establish, and every message between the two would be
     // lost without a word. Same rule as the Claude Code connector's holder.
-    let source: BoundStartSource<OpenCodeRecord> | undefined;
+    let start: { session: OpenCodeSessionSource; boundary: string } | undefined;
+    let source: BoundStartSource<Merged<OpenCodeRecord>> | undefined;
+    let merged: DeltaMergedSource<OpenCodeRecord> | undefined;
+    const stream = new OpenCode1DeltaStream(config.reasoningEvents === true);
     // Built LAZILY, on the first event that names a session: `start()` reaches the broker, and that
     // work must not run for a session that never emits.
-    return new AguiEmitterHolder<OpenCodeRecord>(
+    const holder = new AguiEmitterHolder<Merged<OpenCodeRecord>>(
       async (id: string) => {
         // Captured as the FACTORY'S FIRST ACT, before the mesh wait below: a lazily-built source
         // otherwise positions itself on its own first read, which happens only after the mesh wait
         // and everything else this bind does first, and anything the session writes to its message
         // list in that window is silently dropped.
-        const bound =
-          source ??
-          (source = await (async () => {
+        const at =
+          start ??
+          (start = await (async () => {
             const session = new OpenCodeSessionSource({
               // The session's end when its turn was last reported over: a part still filling then
               // is settled by that, not by marks it will never get.
@@ -232,8 +241,7 @@ export const cotal: Plugin = async () => {
               // compared as an order and never dereferenced as an identity.
               onVanished: (cursor) => log(`AG-UI: the resume cursor was removed from the session (revert): ${cursor}`),
             });
-            const boundary = await session.read(undefined);
-            return new BoundStartSource(session, boundary.cursor);
+            return { session, boundary: (await session.read(undefined)).cursor };
           })());
         // WAIT FOR THE MESH FIRST. This factory runs off the first `session.created` on the bus,
         // and the shim creates that session before the mesh link binds, so `AguiEmitter.start`
@@ -248,7 +256,7 @@ export const cotal: Plugin = async () => {
         const workspaceRoot = resolveEventsStateRoot(process.env);
         const threadId = id; // the native session IS the AG-UI thread
         const principal = principalKey(agent.ep.principal.owner, agent.ep.principal.actor).key;
-        const { walPath, subjectPath, lock } = await ensureEventWalDir({ workspaceRoot, space: config.space, principal, threadId });
+        const { walPath, subjectPath, deltaJournalPath, lock } = await ensureEventWalDir({ workspaceRoot, space: config.space, principal, threadId });
         // HELD FOR THE PROCESS, NOT FOR THIS HOLDER, and holding it at all is the half #599 named
         // that this connector did not do. `ensureEventWalDir` hands back the lock it actually took;
         // dropping it on the floor here left `release()` with no caller anywhere in shipped source,
@@ -268,25 +276,38 @@ export const cotal: Plugin = async () => {
         // expects an empty subject its own first session filled, and halts for good.
         const subjectFrontier = await FileSubjectFrontier.open(subjectPath, { space: config.space, principal });
         const wal = await EventWal.open(walPath, { space: config.space, threadId, principal, subjectMayExist: false });
+        if (!source) {
+          stream.open(id, {
+            path: deltaJournalPath,
+            onWrite: () => holder.flush(id),
+            onError: (e) => log(`AG-UI: streamed text could not be journaled, the saved part carries it: ${e.message}`),
+          });
+          merged = new DeltaMergedSource(at.session, deltaJournalPath);
+          source = new BoundStartSource(merged, merged.start(at.boundary));
+        }
         // Seeded from the bracket state that will exist AFTER `start` settles a pending frame: a
         // re-established plane starts with the log's run open, and a mapper that opened with none
         // would drop every record until the next prompt, whose `RUN_STARTED` the brackets refuse.
-        const resumeRunId = wal.pending === null ? wal.brackets?.run : wal.pending.brackets.run;
-        mapper = createOpenCodeMapper({ threadId, mintRunId: () => randomUUID(), resumeRunId, reasoning: config.reasoningEvents });
-        return AguiEmitter.start<OpenCodeRecord>({
+        const brackets = wal.pending === null ? wal.brackets : wal.pending.brackets;
+        const seed = await streamSeed(deltaJournalPath, wal.pending === null ? wal.frontier.sourceCursor : wal.pending.sourceCursor, brackets);
+        mapper = createOpenCodeMapper({ threadId, mintRunId: () => randomUUID(), resumeRunId: brackets?.run, reasoning: config.reasoningEvents, seed });
+        return AguiEmitter.start<Merged<OpenCodeRecord>>({
           endpoint: agent.ep,
           withholdPayloads: config.eventPayloadsWithheld,
           wal,
           subjectFrontier,
-          source: bound,
-          map: mapper.map,
-          onUnreadable: (gap) => log(`AG-UI source: skipped an unreadable session record at offset ${gap.offset} (${gap.bytes} bytes): ${gap.reason}`),
+          source,
+          map: mapper.mapMerged,
+          onUnreadable: (gap) =>
+            log(`AG-UI source: skipped an unreadable ${gap.file ? "delta journal line" : "session record"} at offset ${gap.offset} (${gap.bytes} bytes): ${gap.reason}`),
         });
       },
       {
         onError: eventPlaneStopped({ log }),
         // The session's end when `session.idle` or `session.error` reports the turn over: what
         // names the turn a terminal held through an outage ends.
+        // Before the first start opens the journal nothing is journaled, so the session's end is
+        // the whole position: the merged source reads a session cursor alone as that position.
         sourceEnd: async (sessionId: string) => {
           const end = await new OpenCodeSessionSource({
             read: () => opencodeApi<OpenCodeMessageWithParts[]>(`/session/${encodeURIComponent(sessionId)}/message`, undefined, 30_000),
@@ -294,7 +315,10 @@ export const cotal: Plugin = async () => {
           // Recorded for the session's source: every record at or before this end belongs to a
           // turn that has ended, and is read as settled whatever its own marks say.
           turnEndedAt.set(sessionId, end);
-          return end;
+          if (!merged) return end;
+          // The streams no saved part will close end here, before the run does.
+          stream.turnEnded(end);
+          return merged.start(end);
         },
         // The turn terminal closes a run the record stream never described, so without this the
         // mapper would still believe that run is open, attribute the next records to it, and have
@@ -302,8 +326,20 @@ export const cotal: Plugin = async () => {
         onRunClosed: (runId: string) => mapper?.forgetOpenRun(runId),
       },
     );
+    deltaStreams.set(holder, stream);
+    return holder;
   }
   if (eventsArmed) events = newEventHolder();
+
+  /** Close a holder and then its delta journal. */
+  const closeHolder = async (holder: AguiEmitterHolder<Merged<OpenCodeRecord>> | undefined): Promise<void> => {
+    if (!holder) return;
+    try {
+      await holder.close();
+    } finally {
+      deltaStreams.get(holder)?.close();
+    }
+  };
 
   /**
    * Give this principal's event WAL lock back, ONCE, at the final event teardown.
@@ -576,7 +612,7 @@ export const cotal: Plugin = async () => {
     }
     await safeStatus("offline");
     await settleWithin(swapChain, SWAP_SETTLE_MS, "swap chain at teardown");
-    await settleWithin(events?.close(), SWAP_SETTLE_MS, "event holder at teardown");
+    await settleWithin(closeHolder(events), SWAP_SETTLE_MS, "event holder at teardown");
     await releaseEventLock();
     clearErrorRetry(true);
     await agent.stop();
@@ -672,7 +708,7 @@ export const cotal: Plugin = async () => {
    * CALL SITE and not by membership, so a site added later is not covered by it. Feed a site an
    * event-carried id off that chain and this becomes reachable.
    */
-  function eventsFor(id: string | undefined): AguiEmitterHolder<OpenCodeRecord> | undefined {
+  function eventsFor(id: string | undefined): AguiEmitterHolder<Merged<OpenCodeRecord>> | undefined {
     const holder = events;
     if (holder === undefined || id === undefined) return undefined;
     return holder.path === undefined || holder.path === id ? holder : undefined;
@@ -1154,6 +1190,7 @@ export const cotal: Plugin = async () => {
   const intake = {
     event: async ({ event }) => {
       asks.event(event.type, event.properties as Record<string, unknown>);
+      if (events) deltaStreams.get(events)?.event(event.type, event.properties);
       // The server emits `permission.asked` (the SDK's `permission.updated` type ships but never
       // fires — #11616), so match the real runtime name out of band. With permission:"allow" this
       // rarely triggers, but it keeps presence correct if the posture tightens.
@@ -1221,7 +1258,7 @@ export const cotal: Plugin = async () => {
               // releases no durable state, because the log's lifetime and the lock's are not the
               // holder's to decide. Bounded like every other join here, for the same reason.
               const retired = previous.path;
-              await settleWithin(previous.close(), SWAP_SETTLE_MS, `release of ${retired}`);
+              await settleWithin(closeHolder(previous), SWAP_SETTLE_MS, `release of ${retired}`);
               // The lifetime is stated on the reaper, not decided here: this hands over what only the
               // swap knows, which is whether the drain settled or spent its bound.
               await reapRetiredWal(retired, drained);
