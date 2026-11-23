@@ -131,6 +131,7 @@ A launch summary does not authorize stopping resources and does not prove that w
 A live `team deploy` records its own intent and returned native receipts.
 Removal names the full deployment ID, not a manifest file or whichever agent currently has the same name.
 Run it from the root and space that own those records.
+When `team remove` requires confirmation, the suggested preview and apply commands name the resolved space and keep `--json` or `--plain` if requested.
 
 Current removal can retire a returned static-auth agent team, remove unchanged cards from a returned channel-only team, or retire a returned static mixed team before removing its cards.
 Agent retirement checks the original manager, identity, and lifecycle UID and requires native retirement and cleanup evidence.
