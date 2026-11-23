@@ -1475,7 +1475,13 @@ for (const assistant of [
       /mutually exclusive/,
     );
     checks += 6;
-    assert.throws(() => piConnector.buildLaunch({ space: "test", name: "pi", variant: "high" }), /variant/);
+    ok(piConnector.supportsModelVariant === true, "Pi declares model variants");
+    const thinking = piConnector.buildLaunch({ space: "test", name: "pi", model: "flag/model", variant: "high", prompt: "go", events: false });
+    const thinkingAt = thinking.args.indexOf("--thinking");
+    ok(thinkingAt >= 0 && thinking.args[thinkingAt + 1] === "high" && thinking.env?.COTAL_VARIANT === "high", "a variant is Pi's --thinking level");
+    ok(thinking.args.at(-1) === "go", "the thinking level comes before the initial prompt");
+    assert.throws(() => piConnector.buildLaunch({ space: "test", name: "pi", variant: "turbo" }), /not a pi thinking level/);
+    checks += 3;
     assert.throws(() => piConnector.buildLaunch({ space: "test", name: "pi", mcpServers: { x: { command: "x" } } }), /MCP/);
     assert.throws(() => piConnector.buildLaunch({ space: "test", name: "pi", launchOptions: { offline: true } }), /launch options/);
     // `--prompt` is Pi's positional initial message: delivered as the LAST argument (Pi's parser

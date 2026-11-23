@@ -14,6 +14,7 @@ import {
   type ModelCatalog,
   type ModelCatalogOpts,
   type ModelInfo,
+  type ModelVariantInfo,
 } from "@cotal-ai/core";
 import {
   aclEnv,
@@ -51,18 +52,38 @@ interface PiRpcResponse {
 
 const unavailable = (reason: string): ModelCatalog => ({ models: [], unavailable: reason });
 
+/** pi's thinking levels, lowest first, as `--thinking` takes them. */
+const PI_THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
+
+/** The thinking levels pi offers for a model, as pi's own `getSupportedThinkingLevels` picks them:
+ *  none for a model without reasoning, else each level its `thinkingLevelMap` does not mark `null`,
+ *  with `xhigh` and `max` only where the map names them. */
+function thinkingLevels(model: { reasoning?: unknown; thinkingLevelMap?: unknown }): ModelVariantInfo[] {
+  if (model.reasoning !== true) return [];
+  const map = (model.thinkingLevelMap && typeof model.thinkingLevelMap === "object" ? model.thinkingLevelMap : {}) as Record<string, unknown>;
+  return PI_THINKING_LEVELS
+    .filter((level) => map[level] !== null && (level !== "xhigh" && level !== "max" || map[level] !== undefined))
+    .map((name) => ({ name }));
+}
+
 /** Map pi's `get_available_models` response to the catalog. The ids are `provider/id`, the form
- *  pi's `--model` takes, so a model offered by two providers stays two choices. */
+ *  pi's `--model` takes, so a model offered by two providers stays two choices. A model's variants
+ *  are its thinking levels. */
 function piCatalog(reply: PiRpcResponse): ModelCatalog {
   if (reply.success !== true)
     return unavailable(`pi refused get_available_models: ${typeof reply.error === "string" ? reply.error : "no reason given"}`);
   const entries = reply.data?.models;
   if (!Array.isArray(entries)) return unavailable("pi answered get_available_models without a models list");
   const models: ModelInfo[] = [];
-  for (const m of entries as { provider?: unknown; id?: unknown; name?: unknown }[]) {
+  for (const m of entries as { provider?: unknown; id?: unknown; name?: unknown; reasoning?: unknown; thinkingLevelMap?: unknown }[]) {
     if (typeof m?.provider !== "string" || !m.provider || typeof m.id !== "string" || !m.id)
       return unavailable("pi answered get_available_models with a model that has no provider or id");
-    models.push({ id: `${m.provider}/${m.id}`, provider: m.provider, ...(typeof m.name === "string" && m.name ? { name: m.name } : {}) });
+    const variants = thinkingLevels(m);
+    models.push({
+      id: `${m.provider}/${m.id}`, provider: m.provider,
+      ...(typeof m.name === "string" && m.name ? { name: m.name } : {}),
+      ...(variants.length ? { variants } : {}),
+    });
   }
   // pi lists only the models of providers it holds credentials for.
   if (models.length === 0)
@@ -136,6 +157,8 @@ export const piConnector: Connector = {
   // The driver wakes the session for a run turn and hands a once task over at most once.
   supportsTurnRelay: true,
   listModels: listPiModels,
+  // A variant is a pi thinking level, which pi clamps to what the model supports.
+  supportsModelVariant: true,
   eventChannel,
   supportsLaunchValidation: true,
   buildLaunch(opts: LaunchOpts): LaunchSpec {
@@ -143,7 +166,8 @@ export const piConnector: Connector = {
       throw new Error(`pi connector: cannot resume ${JSON.stringify(opts.resume)}: a session id cannot start with '-' (pi reads it as an option)`);
     if ([opts.resume, opts.continueSession, opts.reopenSession].filter(Boolean).length > 1)
       throw new Error("pi connector: resume (fork source), continueSession and reopenSession (same session) are mutually exclusive");
-    if (opts.variant) throw new Error("pi connector: model variants (variant) are not implemented");
+    if (opts.variant !== undefined && !(PI_THINKING_LEVELS as readonly string[]).includes(opts.variant))
+      throw new Error(`pi connector: variant ${JSON.stringify(opts.variant)} is not a pi thinking level (${PI_THINKING_LEVELS.join(", ")})`);
     if (opts.mcpServers && Object.keys(opts.mcpServers).length > 0)
       throw new Error("pi connector: MCP tool-sharing is not implemented");
     if (connectorLaunchOptions("pi", opts.launchOptions).length > 0)
@@ -227,6 +251,10 @@ export const piConnector: Connector = {
     if (opts.model) {
       env.COTAL_MODEL = opts.model;
       args.push("--model", opts.model);
+    }
+    if (opts.variant) {
+      env.COTAL_VARIANT = opts.variant;
+      args.push("--thinking", opts.variant);
     }
     if (prompt !== undefined) args.push(prompt);
 
