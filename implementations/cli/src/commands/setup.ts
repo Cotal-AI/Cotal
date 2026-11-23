@@ -624,6 +624,18 @@ async function planSetup(inputs: SetupInputs, runtimes: readonly RuntimeChoice[]
   return { inputs, runtimes, candidate, space: { kind: "local", state } };
 }
 
+function checkDemoPersonaPaths(inputs: SetupInputs): void {
+  const agents = personaDir(inputs.project);
+  for (const name of Object.keys(DEMO_AGENTS)) {
+    const path = join(agents, `${name}.md`);
+    if (isDir(path)) {
+      throw new CommandFailure("refused", "CONFLICT", `a directory at ${path} blocks the demo persona`, {
+        target: { space: inputs.space, path }, remedy: `move the directory at ${path} aside, then run the same setup again`,
+      });
+    }
+  }
+}
+
 /**
  * Writes what the plan checked: the space, the personas, the `harness` preference, the
  * application's own setup actions, Cotal's skills and the chosen runtimes. A harness or runtime
@@ -633,16 +645,7 @@ async function planSetup(inputs: SetupInputs, runtimes: readonly RuntimeChoice[]
 async function prepare(plan: SetupPlan, opts: { demo: boolean; interactive: boolean; presentation: Presentation; start: boolean; detach: boolean; configureOnly: boolean; managerInstanceId?: string }): Promise<void> {
   const { inputs, candidate } = plan;
   const target = { space: inputs.space };
-  if (opts.demo) {
-    for (const name of Object.keys(DEMO_AGENTS)) {
-      const path = join(personaDir(inputs.project), `${name}.md`);
-      if (isDir(path)) {
-        throw new CommandFailure("refused", "CONFLICT", `a directory at ${path} blocks the demo persona`, {
-          target: { ...target, path }, remedy: `move the directory at ${path} aside, then run the same setup again`,
-        });
-      }
-    }
-  }
+  if (opts.demo) checkDemoPersonaPaths(inputs);
   const written: Written[] = [];
   const wrote = (what: string, path: string): void => {
     written.push({ what, path });
