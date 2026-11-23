@@ -6,7 +6,7 @@ import {
   resolveAuthProvider, AUTH_ENDPOINT, EP_CMD_RETIRE_LIFECYCLE, resolveService, invokeCommand,
   rejectionText, attemptCleanup, describeCleanupFailures,
   type CleanupFailure, type DeprovisionResourceAccounting, type Identity, type RuntimeReference,
-  type SpaceAuth, type dialerFor,
+  type dialerFor,
 } from "@cotal-ai/core";
 import { agentLifecycleSecretFilePaths, agentSecretKeyForFile, userAuthStateDir } from "@cotal-ai/workspace";
 import { MANAGER_ENDPOINT } from "./manager-service-contract.js";
@@ -15,6 +15,7 @@ import type { Manager } from "./manager.js";
 import { DEPROVISION_TIMEOUT_MS } from "./seat-stop.js";
 import { withTimeout } from "./manager-timeout.js";
 import type { ManagerConfig } from "./manager-config.js";
+import type { ManagerAuthState } from "./manager-auth-state.js";
 
 /** What the teardown chain (trackDeprovision → deprovision → driveDeprovision →
  *  driveStaticRetirement) needs to tear one incarnation down. Each hop passes the value on as a
@@ -55,8 +56,6 @@ export interface RetirementHold {
 /** The retirement coordinator reads current authority at each call and delegates process and
  * maintenance ownership to its manager. */
 export interface RetirementDeps {
-  auth(): SpaceAuth | undefined;
-  userMode(): boolean;
   serveIdentity(): Identity | undefined;
   instanceId(): string;
   serveEpoch(): number | undefined;
@@ -76,8 +75,6 @@ export interface RetirementDeps {
  *  field the Manager assigns later is current and a member a test replaces on the instance is the one that runs. */
 export function retirementDeps(m: Manager): RetirementDeps {
   return {
-    auth: () => m["auth"],
-    userMode: () => m["userMode"],
     serveIdentity: () => m["managerServeIdentity"],
     instanceId: () => m["managerInstanceId"],
     serveEpoch: () => m["servePlane"].serviceServe?.grant.epoch,
@@ -132,11 +129,11 @@ export class Retirement {
    *  gets its own flight; a fresh trigger after settle re-drives only if the hold still stands. */
   private deprovisioningFlight = new Map<string, Promise<void>>();
 
-  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: RetirementDeps) {}
+  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: RetirementDeps, private readonly state: ManagerAuthState) {}
 
-  private get auth() { return this.deps.auth(); }
+  private get auth() { return this.state.auth; }
   private get remoteAuthority() { return this.config.remoteAuthority; }
-  private get userMode() { return this.deps.userMode(); }
+  private get userMode() { return this.state.userMode; }
   private get managerServeIdentity() { return this.deps.serveIdentity(); }
   private get managerInstanceId() { return this.deps.instanceId(); }
   private dial(opts: Parameters<ReturnType<typeof dialerFor>>[0]) { return this.deps.dial(opts); }

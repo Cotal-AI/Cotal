@@ -6,13 +6,13 @@ import { parse as parseYaml } from "yaml";
 import type { Manager } from "./manager.js";
 import { userMeshEndpointsRefusal } from "./seat-launch.js";
 import type { ManagerConfig } from "./manager-config.js";
+import type { ManagerAuthState } from "./manager-auth-state.js";
 
 /** What {@link PersonaCatalog} reads from the Manager. Every entry is read at use, so a field the Manager
  *  assigns after construction is always current, and a Manager method a test replaces is the one that runs. */
 export interface PersonaCatalogDeps {
   agents: () => Manager["agents"];
   meshMode: () => Manager["meshMode"];
-  userMode: () => Manager["userMode"];
   executionRefusal: (...args: Parameters<Manager["executionRefusal"]>) => ReturnType<Manager["executionRefusal"]>;
   managedPrincipal: (...args: Parameters<Manager["managedPrincipal"]>) => ReturnType<Manager["managedPrincipal"]>;
   nameError: (...args: Parameters<Manager["nameError"]>) => ReturnType<Manager["nameError"]>;
@@ -27,7 +27,6 @@ export function personaCatalogDeps(m: Manager): PersonaCatalogDeps {
   return {
     agents: () => m["agents"],
     meshMode: () => m["meshMode"],
-    userMode: () => m["userMode"],
     executionRefusal: (...args) => m["executionRefusal"](...args),
     managedPrincipal: (...args) => m["managedPrincipal"](...args),
     nameError: (...args) => m["nameError"](...args),
@@ -39,7 +38,7 @@ export function personaCatalogDeps(m: Manager): PersonaCatalogDeps {
 
 /** The persona catalog doors: define, remove, list and show, with the definer's grant check and read reach. */
 export class PersonaCatalog {
-  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: PersonaCatalogDeps) {}
+  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: PersonaCatalogDeps, private readonly state: ManagerAuthState) {}
 
   // The Manager members these bodies read, under their Manager names. Each reads through its dep at
   // use, so a field the Manager assigns later is current and a method a test replaces on the Manager
@@ -47,7 +46,7 @@ export class PersonaCatalog {
   private get agents() { return this.deps.agents(); }
   private get meshMode() { return this.deps.meshMode(); }
   private get remoteAuthority() { return this.config.remoteAuthority; }
-  private get userMode() { return this.deps.userMode(); }
+  private get userMode() { return this.state.userMode; }
   private executionRefusal(...args: Parameters<Manager["executionRefusal"]>): ReturnType<Manager["executionRefusal"]> { return this.deps.executionRefusal(...args); }
   private managedPrincipal(...args: Parameters<Manager["managedPrincipal"]>): ReturnType<Manager["managedPrincipal"]> { return this.deps.managedPrincipal(...args); }
   private nameError(...args: Parameters<Manager["nameError"]>): ReturnType<Manager["nameError"]> { return this.deps.nameError(...args); }
