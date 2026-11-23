@@ -793,12 +793,12 @@ export async function runCodexHost(): Promise<void> {
   });
   driver.on("itemCompleted", (item: ThreadItem) => {
     agent.noteActivity();
-    if (item.type === "agentMessage" && item.id) events?.settle(item.id);
+    if ((item.type === "agentMessage" || item.type === "reasoning") && item.id) events?.settle(item.id);
     flushEvents();
     if (item.type === "agentMessage" && item.text?.trim()) feed(`● ${item.text.trim()}`);
   });
   driver.on("work", () => agent.noteActivity());
-  driver.on("textDelta", (itemId: string, text: string) => events?.delta(itemId, text));
+  driver.on("textDelta", (itemId: string, text: string, kind: "text" | "reasoning") => events?.delta(itemId, text, kind));
   /** Has a restart overtaken the incarnation `gen` names? A launch/restart tail is a long chain of
    *  awaits, and at any of them its own app-server can die and the crash rail can bring up a
    *  replacement. From that moment the tail owns NOTHING: continuing would set the context id,
