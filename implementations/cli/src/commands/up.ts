@@ -701,7 +701,7 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
     // restore of this root's own controller stack has nothing left to commit; it takes the
     // controller stack route below, which applies --no-manager as an ordinary start does.
     if (values["no-manager"] && readMaintenanceJournal(root) && !admittedStackRestore(root))
-      throw new Error(NO_MANAGER_DURING_RECOVERY);
+      throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", NO_MANAGER_DURING_RECOVERY, { target: { root } });
     // Refuse first-enable IdP failures and explicit pin conflicts before even recovery's lock
     // creates its layout. Existing recovery keeps its own recorded startup and trust checks.
     const stackSpace = values.space ?? folderSpace();
@@ -750,7 +750,7 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
         // through to the controller stack route below. The lock is released before a
         // foreground stack holds this terminal. `--no-manager` is rechecked here, under the lock.
         if (!admittedStackRestore(root)) {
-          if (values["no-manager"]) throw new Error(NO_MANAGER_DURING_RECOVERY);
+          if (values["no-manager"]) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", NO_MANAGER_DURING_RECOVERY, { target: { root } });
           const foreground = await resumeControllerStack(lock, root, values);
           // Released here, once, so the foreground hold below does not keep the maintenance lock.
           handedOff = true;
