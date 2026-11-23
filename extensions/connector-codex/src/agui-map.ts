@@ -190,24 +190,23 @@ function resultEvents(toolCallId: string, payload: Record<string, unknown>, isEr
   ];
 }
 
-/** The delta journal's key for the agent message Codex streams as item `itemId`. The item id is the
- *  saved message's `id`, which a message mapped whole publishes under, so the key adds a prefix. */
+/** The delta journal's key for the agent message or reasoning summary Codex streams as item `itemId`.
+ *  The item id is the saved record's `id`, which a part mapped whole publishes under, so the key adds
+ *  a prefix. */
 export function codexStreamKey(itemId: string): string {
   return `stream:${itemId}`;
 }
 
-/** A saved assistant message. One that streamed sends the rest of its text and its END under the
- *  stream key. Any other is published whole, after the END of a stream whose text it does not
- *  continue. */
-function assistantText(streams: StreamedParts, messageId: string, text: string, ts: number): AguiEvent[] {
+/** A saved assistant message or reasoning summary. One that streamed sends the rest of its text and
+ *  its END under the stream key. Any other is published whole, after the END of a stream whose text
+ *  it does not continue. */
+function savedPart(streams: StreamedParts, kind: "text" | "reasoning", messageId: string, text: string, ts: number): AguiEvent[] {
   const closed = streams.saved(codexStreamKey(messageId), text, ts);
   if (!closed.mapAsNew) return closed.events;
-  return [
-    ...closed.events,
-    textMessageStart({ messageId, timestamp: ts, role: "assistant" }),
-    textMessageContent({ messageId, delta: text, timestamp: ts }),
-    textMessageEnd({ messageId, timestamp: ts }),
-  ];
+  const whole = kind === "text"
+    ? [textMessageStart({ messageId, timestamp: ts, role: "assistant" }), textMessageContent({ messageId, delta: text, timestamp: ts })]
+    : [reasoningMessageStart({ messageId, timestamp: ts }), reasoningMessageContent({ messageId, delta: text, timestamp: ts })];
+  return [...closed.events, ...whole, kind === "text" ? textMessageEnd({ messageId, timestamp: ts }) : reasoningMessageEnd({ messageId, timestamp: ts })];
 }
 
 /**
@@ -341,7 +340,7 @@ export function createCodexMapper(opts: { threadId: string; mintRunId: () => str
       if (role !== "assistant") return null;
       const text = contentText(payload);
       if (text.length === 0) return null;
-      return { runId, events: assistantText(streams, asString(payload.id) ?? `msg:${runId}:${ts}`, text, ts) };
+      return { runId, events: savedPart(streams, "text", asString(payload.id) ?? `msg:${runId}:${ts}`, text, ts) };
     }
 
     // The `event_msg` mirror of the same assistant turn. Dropped, or every reply publishes twice.
@@ -364,15 +363,7 @@ export function createCodexMapper(opts: { threadId: string; mintRunId: () => str
       // opaque to this plane and publishing it would put bytes on the subject that no renderer
       // can read. A record whose summary is empty therefore carries nothing to emit.
       if (text.length === 0) return null;
-      const messageId = asString(payload.id) ?? `rsn:${runId}:${ts}`;
-      return {
-        runId,
-        events: [
-          reasoningMessageStart({ messageId, timestamp: ts }),
-          reasoningMessageContent({ messageId, delta: text, timestamp: ts }),
-          reasoningMessageEnd({ messageId, timestamp: ts }),
-        ],
-      };
+      return { runId, events: savedPart(streams, "reasoning", asString(payload.id) ?? `rsn:${runId}:${ts}`, text, ts) };
     }
 
     // ---- tool calls ---------------------------------------------------------------------

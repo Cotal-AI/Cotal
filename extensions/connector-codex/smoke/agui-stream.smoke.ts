@@ -1,8 +1,9 @@
 /**
- * A Codex reply streams on the event plane from the delta journal, and the saved message closes it.
+ * A Codex reply and reasoning summary stream on the event plane from the delta journal, and the saved
+ * record closes each.
  *
- * The host journals each `item/agentMessage/delta` under `stream:<item id>`, and the item id is the
- * `id` of the message Codex saves. These cells write the rollout and the journal lines by hand,
+ * The host journals each `item/agentMessage/delta` and `item/reasoning/summaryTextDelta` under
+ * `stream:<item id>`, and the item id is the `id` of the record Codex saves. These cells write the rollout and the journal lines by hand,
  * each line anchored at the rollout's end as the journal anchors it, and read them through the
  * shipped mapper, the shared merged source and the shared emitter over a fake endpoint. No broker
  * is started.
@@ -33,11 +34,14 @@ const started = (turn: string): CodexRecord => ({ timestamp: at(0), type: "event
 const saved = (id: string, text: string): CodexRecord =>
   ({ timestamp: at(500), type: "response_item", payload: { type: "message", role: "assistant", id, content: [{ type: "output_text", text }] } });
 const complete = (turn: string): CodexRecord => ({ timestamp: at(900), type: "event_msg", payload: { type: "task_complete", turn_id: turn, error: null } });
+const reasoning = (id: string, text: string): CodexRecord =>
+  ({ timestamp: at(300), type: "response_item", payload: { type: "reasoning", id, summary: [{ type: "summary_text", text }], encrypted_content: "opaque" } });
 const aborted = (turn: string): CodexRecord => ({ timestamp: at(900), type: "event_msg", payload: { type: "turn_aborted", turn_id: turn, reason: "interrupted" } });
 
-/** One step of a script: a rollout record, a journal line of `[item id, text]` deltas, a line that
- *  ends streams, or a restart of the emitter. Every step is read on its own. */
-type Step = { record: CodexRecord } | { deltas: [string, string][] } | { ends: string[] } | "restart" | "closeRun";
+/** One step of a script: a rollout record, a journal line of `[item id, text]` reply deltas or
+ *  reasoning deltas, a line that ends streams, or a restart of the emitter. Every step is read on
+ *  its own. */
+type Step = { record: CodexRecord } | { deltas: [string, string][] } | { thinking: [string, string][] } | { ends: string[] } | "restart" | "closeRun";
 
 async function publish(script: Step[]) {
   const root = mkdtempSync(join(tmpdir(), "cotal-codex-stream-"));
@@ -79,6 +83,7 @@ async function publish(script: Step[]) {
       else if (step === "closeRun") await emitter.closeRun({ timestamp: ts++ }).catch((e: Error) => errors.push(e.message));
       else if ("record" in step) appendFileSync(rollout, `${JSON.stringify(step.record)}\n`);
       else if ("deltas" in step) line({ deltas: step.deltas.map(([id, text]) => ({ key: codexStreamKey(id), kind: "text", text })) });
+      else if ("thinking" in step) line({ deltas: step.thinking.map(([id, text]) => ({ key: codexStreamKey(id), kind: "reasoning", text })) });
       else line({ deltas: [], ends: step.ends.map(codexStreamKey) });
       await emitter.pump().catch((e: Error) => errors.push(e.message));
     }
@@ -93,11 +98,11 @@ function summary(p: Awaited<ReturnType<typeof publish>>) {
   const text = new Map<string, string>();
   for (const e of p.events) {
     const m = e as { messageId?: string; delta?: string };
-    if (e.type === "TEXT_MESSAGE_CONTENT") text.set(m.messageId!, (text.get(m.messageId!) ?? "") + m.delta);
+    if (e.type === "TEXT_MESSAGE_CONTENT" || e.type === "REASONING_MESSAGE_CONTENT") text.set(m.messageId!, (text.get(m.messageId!) ?? "") + m.delta);
   }
   const types = p.events.map((e) => {
     const id = (e as { messageId?: string }).messageId;
-    return e.type.startsWith("TEXT_MESSAGE") ? `${e.type}(${id})` : e.type;
+    return id !== undefined && e.type.includes("_MESSAGE_") ? `${e.type}(${id})` : e.type;
   });
   return { types, text: Object.fromEntries(text), errors: p.errors };
 }
@@ -139,6 +144,21 @@ console.log("A turn interrupted while its reply streamed");
 const interrupted = summary(await publish([{ record: started("t1") }, { deltas: [["m1", "Half a re"]] }, { record: aborted("t1") }]));
 check("the stream ends before the run's terminal",
   JSON.stringify(interrupted.types.slice(-2)) === JSON.stringify(["TEXT_MESSAGE_END(stream:m1)", "RUN_FINISHED"]) && interrupted.errors.length === 0, interrupted);
+
+console.log("A reasoning summary that streamed, then a reply that streamed");
+const thought = summary(await publish([
+  { record: started("t1") }, { thinking: [["rs1", "Weigh "], ["rs1", "the rivers"]] }, { record: reasoning("rs1", "Weigh the rivers.") },
+  { deltas: [["m1", "The Nile"]] }, { record: saved("m1", "The Nile is longer.") }, { record: complete("t1") },
+]));
+check("the summary streams as reasoning under its stream key, and its saved record sends the rest and ends it",
+  JSON.stringify(thought.types.slice(0, 6)) === JSON.stringify(["RUN_STARTED", "REASONING_MESSAGE_START(stream:rs1)", "REASONING_MESSAGE_CONTENT(stream:rs1)",
+    "REASONING_MESSAGE_CONTENT(stream:rs1)", "REASONING_MESSAGE_CONTENT(stream:rs1)", "REASONING_MESSAGE_END(stream:rs1)"]) &&
+    thought.text["stream:rs1"] === "Weigh the rivers.", thought);
+check("the reply then streams as text, and neither part is published again under its own id",
+  thought.text["stream:m1"] === "The Nile is longer." && !thought.types.some((t) => t.endsWith("(rs1)") || t.endsWith("(m1)")) && thought.types.at(-1) === "RUN_FINISHED", thought);
+const halfThought = summary(await publish([{ record: started("t1") }, { thinking: [["rs1", "Weigh"]] }, { record: aborted("t1") }]));
+check("a turn interrupted while its summary streams ends the summary before the run's terminal",
+  JSON.stringify(halfThought.types.slice(-2)) === JSON.stringify(["REASONING_MESSAGE_END(stream:rs1)", "RUN_FINISHED"]) && halfThought.errors.length === 0, halfThought);
 
 console.log("An emitter restarted mid-reply");
 const restarted = summary(await publish([

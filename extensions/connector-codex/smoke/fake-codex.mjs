@@ -5,6 +5,7 @@
 // TOOLREC → also leave in the rollout the two records a real tool call leaves;
 // SLOW → hold the turn open ~1.2s (a steer window); HANG → hold until an interrupt
 // arrives, else self-interrupt after ~1s; FAIL → fail in the same frame the turn started in;
+// THINK → stream a reasoning summary as summary deltas before saving it;
 // STREAM → stream the reply as agent-message deltas before saving it;
 // WAITEND → hold the turn until FAKE_CODEX_END_MARK exists; default → complete.
 //
@@ -424,6 +425,19 @@ async function runTurn(text) {
   }
   // STREAM: the reply streams as agent-message deltas under the item id its saved record carries,
   // one piece every 400 ms, as Codex sends them before it saves the message.
+  // THINK: a reasoning summary streams the same way, under its reasoning item's id, and is saved
+  // before the reply.
+  if (text.includes("THINK")) {
+    let summary = "";
+    for (const piece of [`weighing:${turnSeq}:`, "the ", "rivers"]) {
+      summary += piece;
+      notify("item/reasoning/summaryTextDelta", { threadId: THREAD, turnId, itemId: `rs_${turnSeq}`, summaryIndex: 0, delta: piece });
+      await new Promise((r) => setTimeout(r, 400));
+    }
+    journal({ ev: "reasoningSaved", turnId, at: Date.now() });
+    rolloutRecord("response_item", { type: "reasoning", id: `rs_${turnSeq}`, summary: [{ type: "summary_text", text: summary }], encrypted_content: "opaque" });
+    notify("item/completed", { threadId: THREAD, turnId, item: { type: "reasoning", id: `rs_${turnSeq}`, summary: [summary], content: [] } });
+  }
   let reply = `ok:${turnSeq}`;
   if (text.includes("STREAM")) {
     reply = "";
