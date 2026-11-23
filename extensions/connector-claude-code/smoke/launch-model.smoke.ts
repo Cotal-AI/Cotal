@@ -97,6 +97,21 @@ check(
   refusalFor({ model: "xai/grok-4.6" }) !== null,
 );
 
+// ---- A variant is a Claude effort level, rendered as --effort ---------------------------------------
+{
+  const spec = launch({ model: "sonnet", variant: "high" }) as { args: string[]; env: Record<string, string> };
+  const i = spec.args.indexOf("--effort");
+  check("a variant is rendered as --effort <level>", i >= 0 && spec.args[i + 1] === "high", spec.args);
+  check("COTAL_VARIANT names the effort level for the session", spec.env.COTAL_VARIANT === "high", spec.env.COTAL_VARIANT);
+  const plain = launch({ model: "sonnet" }) as { args: string[]; env: Record<string, string> };
+  check("no variant, no --effort and no COTAL_VARIANT", !plain.args.includes("--effort") && plain.env.COTAL_VARIANT === undefined, plain.args);
+  const unknown = refusalFor({ variant: "turbo" });
+  check("a variant that is not a Claude effort level refuses the launch", unknown !== null && /not a Claude effort level/.test(unknown), unknown);
+  const twice = refusalFor({ variant: "high", launchOptions: { effort: "low" } });
+  check("a variant with an effort launch option refuses the launch", twice !== null && /effort too/.test(twice), twice);
+  check("the connector declares model variants", claudeConnector.supportsModelVariant === true);
+}
+
 // ---- The cell count itself, because three cells above are conditional ------------------------
 // The argv and COTAL_MODEL checks only run when the launch was accepted, so a regression that makes
 // the guard refuse EVERYTHING does not fail them - it DELETES them. Six assertions stop existing
@@ -105,7 +120,7 @@ check(
 //
 // A count is the only thing that sees a cell that is not there. It is a real assertion and it is
 // allowed to fail on a legitimate edit: change the cases above and change this number deliberately.
-const EXPECTED = 21;
+const EXPECTED = 27;
 check(
   `every cell ran - ${EXPECTED} expected, a conditional cell that vanishes is invisible without this`,
   passed() + failed() === EXPECTED, // counted BEFORE this check lands, so it counts the cells above it
