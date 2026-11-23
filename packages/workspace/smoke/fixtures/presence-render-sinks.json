@@ -127,7 +127,7 @@
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
         "path": "extensions/connector-core/smoke/orientation.smoke.ts",
-        "anchor": "assert.match(o.peers.summary, /bob\\/worker \\(working · progress unknown\\)/,"
+        "anchor": "assert.match(o.peers.summary, /bob \\(role: worker\\) \\(working · progress unknown\\)/,"
       }
     },
     {
@@ -138,7 +138,7 @@
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
         "path": "extensions/connector-core/smoke/orientation.smoke.ts",
-        "anchor": "assert.match(o.peers.summary, /bob\\/worker \\(working · progress unknown\\)/,"
+        "anchor": "assert.match(o.peers.summary, /bob \\(role: worker\\) \\(working · progress unknown\\)/,"
       }
     },
     {
