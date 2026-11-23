@@ -1,6 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { readFileSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { assertValidChannel, isConcreteChannel, utf16Problem, validateChannelConfig, validateChannelDefaults, type ChannelConfig, type ChannelDefaults, type ChannelRegistryFile } from "@cotal-ai/core";
 import { CommandFailure, isCommandFailure } from "@cotal-ai/workspace";
 
@@ -9,9 +9,13 @@ import { CommandFailure, isCommandFailure } from "@cotal-ai/workspace";
  *  which a second open finds empty or waits on for a writer that is gone. */
 export const channelsReads = new AsyncLocalStorage<Map<string, ChannelRegistryFile>>();
 
+function defaultChannelsPath(root: string): string {
+  return join(root, ".cotal", "channels.json");
+}
+
 /** Read the optional default channels file from the root that would start. */
 export function readDefaultChannelsFile(root: string): ChannelRegistryFile | undefined {
-  const path = join(root, ".cotal", "channels.json");
+  const path = defaultChannelsPath(root);
   let stat: ReturnType<typeof statSync>;
   try { stat = statSync(path, { throwIfNoEntry: false }); }
   catch { throw new CommandFailure("refused", "USAGE_INVALID", `the channels file ${path} is unreadable`, { remedy: `fix or remove ${path}` }); }
@@ -19,6 +23,20 @@ export function readDefaultChannelsFile(root: string): ChannelRegistryFile | und
   // Opening a default FIFO or device could block. An explicitly named pipe is read once.
   if (!stat.isFile()) throw new CommandFailure("refused", "USAGE_INVALID", `the channels file ${path} is not a regular file, such as a FIFO; it was not read`, { remedy: `fix or remove ${path}` });
   return readChannelsFile(path, false);
+}
+
+/** Read a startup seed for the effective broker mode before preparing or starting the broker. */
+export function loadChannelsFile(root: string, explicit: string | undefined, open: boolean): ChannelRegistryFile | undefined {
+  const path = explicit ? resolve(explicit) : defaultChannelsPath(root);
+  const seed = explicit ? readChannelsFile(path) : readDefaultChannelsFile(root);
+  if (!open || !seed) return seed;
+  const entries = Object.entries(seed.channels ?? {}).filter(([, config]) => config.deliveryClass === "durable")
+    .map(([name]) => `channel ${JSON.stringify(name)}`);
+  if (seed.defaults?.deliveryClass === "durable") entries.unshift("defaults.deliveryClass");
+  if (entries.length) throw new CommandFailure("refused", "UNSUPPORTED", `the channels file ${path} requests durable delivery for ${entries.join(", ")}, but an open mesh has no delivery daemon`, {
+    target: { root, path }, remedy: 'set deliveryClass to "live" in those entries, or use an authenticated space for durable delivery',
+  });
+  return seed;
 }
 
 /** The failure that prevents a bare `up` from using this root's default channel seed. */

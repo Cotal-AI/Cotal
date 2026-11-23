@@ -28,7 +28,6 @@ import { c } from "../ui.js";
 import { cotalRoot } from "../lib/paths.js";
 import { STACK_DEFINITION } from "../lib/stack-journal.js";
 import { observeServiceProcess, serviceInstances } from "../lib/service-instances.js";
-import { loadChannelsFile } from "./up-transport.js";
 
 export function registeredAddressHolder(server: string, space: string) {
   const key = brokerAddressKey(server);
@@ -214,7 +213,7 @@ export async function recreateAdoptedMemoryBuckets(root: string, space: string, 
 /** `cotal space delete` removes a space's streams from a broker that keeps running. When a stack
  *  reuses that broker and every canonical stream of the space is gone, create them again, empty, as
  *  a broker start does, and return true. A broker that still holds any of them is left as it is. */
-export async function recreateDeletedStreams(opts: { root: string; space: string; server: string; mode: "open" | "auth" | "user"; channels?: string; seed?: ChannelRegistryFile }): Promise<boolean> {
+export async function recreateDeletedStreams(opts: { root: string; space: string; server: string; mode: "open" | "auth" | "user"; seed?: ChannelRegistryFile }): Promise<boolean> {
   let setup: { creds: string } | undefined;
   if (opts.mode !== "open") {
     const auth = await getSpaceAuth(workspaceSecretStore(opts.root), opts.space);
@@ -241,6 +240,6 @@ export async function recreateDeletedStreams(opts: { root: string; space: string
     await drainAndClose(nc);
   }
   if (held) return false;
-  await postStart(opts.server, opts.space, setup, opts.seed ?? loadChannelsFile(opts.channels));
+  await postStart(opts.server, opts.space, setup, opts.seed);
   return true;
 }

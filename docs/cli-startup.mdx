@@ -1071,7 +1071,10 @@ name, as `channel set` takes it, and its object takes those three fields plus `d
 registry, and fields the file leaves out keep their values. Any other key, a wildcard or invalid
 channel name, or an invalid value refuses `SCHEMA_INVALID` before anything starts, naming the file
 and the entry. A default file that is invalid refuses the same way, with a remedy to fix or remove
-it. A manifest start (`-f`) seeds from the manifest's own channels and defaults instead. Preview
+it. An open mesh has no delivery daemon. If the seed sets `deliveryClass: durable` in defaults or
+on any channel, startup refuses with `UNSUPPORTED` and names those entries before starting a broker
+or seeding the registry. Set those entries to `live`, or use an authenticated space for durable
+delivery. A manifest start (`-f`) seeds from the manifest's own channels and defaults instead. Preview
 and apply warn if you pass `--channels` with `-f` and do not read that file. Set channels and defaults
 in the manifest. A start also writes the space's default delivery class when the defaults key has
 none. When that key holds a value that

@@ -1497,6 +1497,13 @@ if (process.platform === "linux") {
       refused(badSeed, 1, "SCHEMA_INVALID") && (badSeed.env?.error?.message ?? "").includes(seedPath) && (badSeed.env?.error?.message ?? "").includes(named) &&
         cotalFiles() === beforeRuntime.files && JSON.stringify(registryFiles()) === JSON.stringify(beforeRuntime.registry), shown(badSeed));
   }
+  const durableSeed = join(fresh, "durable-channels.json");
+  writeFileSync(durableSeed, '{"channels":{"wire.seeded":{"deliveryClass":"durable","replay":false}}}');
+  const durableChannel = await json(["up", "--open", "--no-manager", "--channels", durableSeed, "--server", LIVE], fresh);
+  check("open up refuses an explicit durable channel before writing or starting a stack",
+    refused(durableChannel, 2, "UNSUPPORTED") && durableChannel.env?.error?.message?.includes(durableSeed) && durableChannel.env?.error?.message?.includes('channel "wire.seeded"') &&
+      durableChannel.env?.error?.remedy?.includes('"live"') && durableChannel.env?.error?.remedy?.includes("authenticated space") &&
+      cotalFiles() === beforeRuntime.files && JSON.stringify(registryFiles()) === JSON.stringify(beforeRuntime.registry), shown(durableChannel));
   // The `✗` line quotes the parser's excerpt of a file that is not JSON with its control characters
   // escaped, so an escape sequence in a cloned file never reaches the terminal.
   const escSeed = join(fresh, "esc-channels.json");
@@ -1516,6 +1523,11 @@ if (process.platform === "linux") {
   // The default file is read once the root is settled, so it refuses after the stack lock's layout
   // exists and before a store, a broker or a registration.
   const defaultSeed = join(fresh, ".cotal", "channels.json");
+  writeFileSync(defaultSeed, '{"defaults":{"deliveryClass":"durable"},"channels":{"ops":{"deliveryClass":"live"}}}');
+  const durableDefault = await json(["up", "--open", "--no-manager", "--server", LIVE], fresh);
+  check("open up refuses a durable seed default even when every named channel is live",
+    refused(durableDefault, 2, "UNSUPPORTED") && durableDefault.env?.error?.message?.includes(defaultSeed) && durableDefault.env?.error?.message?.includes("defaults.deliveryClass") &&
+      !existsSync(join(fresh, ".cotal", "nats")) && JSON.stringify(registryFiles()) === JSON.stringify(beforeRuntime.registry), shown(durableDefault));
   writeFileSync(defaultSeed, '{"chanels":{}}');
   const badDefault = await json(["up", "--open", "--server", server], fresh);
   check("an invalid default .cotal/channels.json refuses the same way, with a remedy to fix or remove it, before a store or a registration",
@@ -1544,7 +1556,7 @@ if (process.platform === "linux") {
   // Its seed comes through a FIFO written once, which a second open would wait on forever.
   const seedFifo = join(home, "channels-seed.fifo");
   spawnSync("mkfifo", ["-m", "600", seedFifo]);
-  const feeder = spawn("sh", ["-c", 'printf %s "$1" > "$2"', "sh", '{"channels":{"news":{"description":"Neuigkeiten"}}}', seedFifo], { stdio: "ignore" });
+  const feeder = spawn("sh", ["-c", 'printf %s "$1" > "$2"', "sh", '{"channels":{"news":{"description":"Neuigkeiten","deliveryClass":"live"}}}', seedFifo], { stdio: "ignore" });
   const coRooted = await json(["space", "add", "co-rooted-remote", "--server", DEAD, "--root", fresh, "--mode", "open", "--force"], fresh);
   check("a manual connection can register at the prepared root", coRooted.status === 0 && findMesh("co-rooted-remote")?.root === fresh, shown(coRooted));
   const up = await run(["up", "--detach", "--open", "--no-manager", "--server", server], {}, fresh);
@@ -1563,7 +1575,10 @@ if (process.platform === "linux") {
   feeder.kill();
   unlinkSync(seedFifo);
   const seeded = await run(["channel", "--space", "demo", "--plain"], {}, fresh);
-  check("it reads a --channels FIFO written once a single time and seeds the channel from it", fifoUp.status === 0 && seeded.status === 0 && seeded.stdout.includes("Neuigkeiten"), { up: shown(fifoUp), seeded: shown(seeded) });
+  const seededLive = await json(["channel", "show", "news", "--space", "demo"], fresh);
+  check("it reads a --channels FIFO once and seeds the live channel from it",
+    fifoUp.status === 0 && seeded.status === 0 && seeded.stdout.includes("Neuigkeiten") && seededLive.env?.result?.registry?.channels?.news?.deliveryClass === "live",
+    { up: shown(fifoUp), seeded: shown(seeded), live: shown(seededLive) });
   check("the selection still names it", getCurrent() === "demo", getCurrent());
   check("a default channels file that begins with a UTF-8 byte-order mark seeds its channels",
     bomSeeded.status === 0 && JSON.stringify(bomSeeded.env?.result ?? null).includes("saved with a BOM"), shown(bomSeeded));
