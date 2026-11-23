@@ -190,13 +190,13 @@ try {
   const types = seen.map((e) => e.type);
   const TEXT = ["TEXT_MESSAGE_START", "TEXT_MESSAGE_CONTENT", "TEXT_MESSAGE_END"];
   const expected = [
-    "RUN_STARTED", "TOOL_CALL_START", "TOOL_CALL_END", ...TEXT, "RUN_FINISHED",
+    "RUN_STARTED", "TOOL_CALL_START", "TOOL_CALL_END", "CUSTOM", ...TEXT, "RUN_FINISHED",
     "RUN_STARTED", ...TEXT, "RUN_FINISHED",
     "RUN_STARTED", ...TEXT, "RUN_ERROR",
     "RUN_STARTED", ...TEXT, "RUN_FINISHED",
   ];
   check("control:the stream reads back from the subject, so the cells below grade something", seen.length > 0, { frames: seen.length });
-  check("order:each turn's run, its tool call's start and end, its text, and its close, in order and once each",
+  check("order:each turn's run, its tool call's start, end and result marker, its text, and its close, in order and once each",
     JSON.stringify(types) === JSON.stringify(expected), types);
   check("control:the first session was read once for each of the 11 durable events fed to it, so the once-each order above held under repeated reads",
     readsFirst >= 11, { reads: readsFirst });
