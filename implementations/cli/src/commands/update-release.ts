@@ -144,9 +144,7 @@ export async function checkReleaseArchives(version: string, rt: UpdateRuntime): 
   }
 }
 
-export class ReleaseNotAvailable extends Error {
-  constructor(message: string, readonly scopedMetadataMissing = false) { super(message); }
-}
+export class ReleaseNotAvailable extends Error {}
 export class ReleaseDateExcluded extends Error {}
 export class DependencyCheckInterrupted extends Error {}
 export class DependencyCheckNoSpace extends Error {}
@@ -168,12 +166,13 @@ export function releaseReadError(result: CommandResult, detail: string, { instal
       // A first-party scoped read can fail while the public registry still answers.
       if (!detail.includes("@cotal-ai/") && typeof error?.code === "string" && NETWORK_ERROR_CODE.test(error.code)) return new RegistryUnavailable(detail);
       if (error?.code === "E404" || error?.code === "ETARGET") {
-        if (error.code === "E404" && metadataSpec?.startsWith("@cotal-ai/")) {
-          const request = typeof error.summary === "string" ? /\bGET (https?:\/\/\S+) - /.exec(error.summary)?.[1] : undefined;
+        // `npm view` also returns E404 when the package exists but the requested version does not.
+        if (error.code === "E404" && metadataSpec?.startsWith("@cotal-ai/") &&
+            error.summary !== `No match found for version ${metadataSpec.slice(metadataSpec.lastIndexOf("@") + 1)}`) {
+          const request = typeof error.summary === "string" ? /\bGET (https?:\/\/\S+)/.exec(error.summary)?.[1] : undefined;
           // Use only the origin so npm diagnostics cannot expose credentials or URL tokens.
           const origin = request ? URL.parse(request)?.origin : undefined;
-          const registryDetail = `${metadataSpec} was not found (npm E404${origin ? ` from ${origin}` : ""}). Check @cotal-ai:registry in .npmrc`;
-          return new ReleaseNotAvailable(registryDetail, true);
+          return new Error(`${metadataSpec} was not found (npm E404${origin ? ` from ${origin}` : ""}). Check @cotal-ai:registry in .npmrc`);
         }
         if (!installedSpecs) return new ReleaseNotAvailable(detail);
         // A scoped registry 404 or a missing third-party dependency does not prove release lag.
@@ -209,12 +208,11 @@ export async function waitForReleasePreflight(version: string, current: string, 
       if (remaining <= 0) {
         if (releasePackages) throw error;
         recordUpdateDeferral(version, "waiting for registry or extension closure availability", true);
-        const reason = error.scopedMetadataMissing ? `cotal-ai@${version} release archives are still unavailable. ${error.message}.` : `cotal-ai@${version} is still reaching the registry.`;
-        rt.out(`${reason} Keeping cotal-ai@${current}; no global install was attempted. A later update check will try again.`);
+        rt.out(`cotal-ai@${version} is still reaching the registry. Keeping cotal-ai@${current}; no global install was attempted. A later update check will try again.`);
         return "deferred";
       }
       const pending = releasePackages ? `an installed extension: ${error.message}`
-        : `cotal-ai@${version} release archives${error.scopedMetadataMissing ? `: ${error.message}` : " to reach the registry"}`;
+        : `cotal-ai@${version} release archives to reach the registry`;
       rt.out(`Waiting for ${pending} (${Math.ceil(remaining / 1000)} s remaining); cotal-ai@${current} stays installed.`);
       await (rt.sleep ?? (milliseconds => new Promise(resolveSleep => setTimeout(resolveSleep, milliseconds))))(Math.min(15_000, remaining));
     }
