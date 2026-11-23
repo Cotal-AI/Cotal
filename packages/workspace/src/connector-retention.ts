@@ -207,16 +207,39 @@ function ownedAncestors(path: string): void {
   }
 }
 
-// Only the config base may be an alias. Managed descendants keep their fixed path and no-link checks.
+function recordedConfigBase(saved: string, expected: string, config: string): string | undefined {
+  if (expected !== config && !expected.startsWith(`${config}${sep}`)) return;
+  const suffix = expected.slice(config.length);
+  if (!isAbsolute(saved) || !saved.endsWith(suffix)) return;
+  const base = saved.slice(0, saved.length - suffix.length);
+  if (base && resolve(base) === base) return base;
+}
+
+// Only the config base may be an alias. Update snapshots require the original location or an alias.
 function sameConfigPath(saved: string, expected: string): boolean {
   if (saved === expected) return true;
   const config = resolve(globalConfigDir());
-  if (expected !== config && !expected.startsWith(`${config}${sep}`)) return false;
-  const suffix = expected.slice(config.length);
-  if (!isAbsolute(saved) || !saved.endsWith(suffix)) return false;
-  const base = saved.slice(0, saved.length - suffix.length);
-  if (!base || resolve(base) !== base || !existsSync(base) || !existsSync(config)) return false;
+  const base = recordedConfigBase(saved, expected, config);
+  if (!base || !existsSync(base) || !existsSync(config)) return false;
   return protectedResolvedDirectory(base, "the connector config folder") === protectedResolvedDirectory(config, "the connector config folder");
+}
+
+function retainedSelectionRoot(saved: string, versionDir: string, mismatch: string): string {
+  const name = basename(saved);
+  if (!/^cotal(?:-[a-f0-9]{16})?$/.test(name) || resolve(saved) !== saved) throw new Error(mismatch);
+  const savedDir = dirname(saved);
+  if (sameConfigPath(savedDir, versionDir)) return saved;
+  const config = resolve(globalConfigDir());
+  const base = recordedConfigBase(savedDir, versionDir, config);
+  if (!base || basename(base) !== basename(config)) throw new Error(mismatch);
+  if (lstatSync(base, { throwIfNoEntry: false })) {
+    throw new Error(`${mismatch}: the saved config folder ${base} still exists and does not resolve to ${config}. Use the original protected configuration before retrying.`);
+  }
+  // Prove absence under a protected parent. A dangling ancestor link is not a move.
+  let parent = dirname(base);
+  while (!lstatSync(parent, { throwIfNoEntry: false })) parent = dirname(parent);
+  protectedResolvedDirectory(parent, "the former connector config parent");
+  return join(versionDir, name);
 }
 
 function previousConfig(id: { entry: string; path: string }, prepare?: (path: string) => void): string | undefined {
@@ -226,9 +249,10 @@ function previousConfig(id: { entry: string; path: string }, prepare?: (path: st
   if (!bytes) return;
   ownedAncestors(sets);
   const record = parseSelection(bytes, path);
+  const mismatch = "invalid previous connector retention selection";
+  if (record.entry !== id.entry || !/^\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?$/.test(record.version)) throw new Error(mismatch);
   const versionDir = join(sets, record.version);
-  if (record.v !== 1 || record.entry !== id.entry || !/^\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?$/.test(record.version) || !sameConfigPath(dirname(record.root), versionDir) || !/^cotal(?:-[a-f0-9]{16})?$/.test(basename(record.root))) throw new Error("invalid previous connector retention selection");
-  const { root } = record;
+  const root = retainedSelectionRoot(record.root, versionDir, mismatch);
   const expected = join(versionDir, basename(root));
   prepare?.(expected);
   ownedAncestors(expected);
@@ -292,14 +316,15 @@ function currentConfig(id: { entry: string; version: string; path: string }, pre
   }
   ownedAncestors(id.path);
   const record = parseSelection(bytes, path);
-  if (record.v !== 1 || record.entry !== id.entry || record.version !== id.version || !sameConfigPath(dirname(record.root), id.path) || !/^cotal(?:-[a-f0-9]{16})?$/.test(basename(record.root))) throw new Error("connector retention selection differs from this installation");
+  const mismatch = "connector retention selection differs from this installation";
+  if (record.entry !== id.entry || record.version !== id.version) throw new Error(mismatch);
+  const root = retainedSelectionRoot(record.root, id.path, mismatch);
   const snapshot = updateSnapshot(id);
-  const { root } = record;
   if (!snapshot || record.snapshot === snapshot) prepare?.(join(id.path, basename(root)));
   ownedDirectory(root);
   for (const name of ["seed", "extensions"]) {
-    const path = join(root, name);
-    if (existsSync(path) && (!lstatSync(path).isDirectory() || lstatSync(path).isSymbolicLink())) throw new Error(`retained connector state is not a real directory: ${path}`);
+    const path = join(root, name), stat = lstatSync(path, { throwIfNoEntry: false });
+    if (stat && !stat.isDirectory()) throw new Error(`retained connector state is not a real directory: ${path}`);
   }
   return snapshot && record.snapshot !== snapshot ? undefined : root;
 }
