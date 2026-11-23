@@ -273,13 +273,20 @@ export default async function cotalMesh(pi: ExtensionAPI): Promise<void> {
       runtime.mesh.noteActivity();
     runtime.events?.delta(update);
   });
-  // Pi saves the message after its extensions see message_end.
+  // Pi saves the message after its extensions see message_end, so that hook cannot read it yet.
   pi.on("message_end", () => runtime.events?.settle());
+  /** Read what Pi has saved so far onto the event plane. */
+  const readSaved = (context: ExtensionContext): void => {
+    runtime.events?.start(context.sessionManager.getSessionId(), context.sessionManager.getSessionFile());
+    runtime.events?.flush(context.sessionManager.getSessionId(), context.sessionManager.getSessionFile());
+  };
   pi.on("context", (event) => runtime.driver.onContext(event.messages));
   pi.on("after_provider_response", (event) => runtime.driver.onProviderResponse(event.status));
-  pi.on("tool_execution_start", (event) => {
+  // Pi saves a reply before it runs the reply's tools, so its tool calls show while they run.
+  pi.on("tool_execution_start", (event, context) => {
     runtime.mesh.noteActivity();
     runtime.driver.onToolStart(event.toolName);
+    readSaved(context);
   });
   pi.on("tool_execution_update", () => runtime.mesh.noteActivity());
   pi.on("tool_execution_end", () => {
@@ -288,10 +295,7 @@ export default async function cotalMesh(pi: ExtensionAPI): Promise<void> {
   });
   pi.on("session_before_compact", (event) => runtime.driver.onBeforeCompact(event.reason, event.willRetry));
   pi.on("agent_end", (event, context) => runtime.driver.onAgentEnd(event.messages, asContext(context)));
-  pi.on("turn_end", (_event, context) => {
-    runtime.events?.start(context.sessionManager.getSessionId(), context.sessionManager.getSessionFile());
-    runtime.events?.flush(context.sessionManager.getSessionId(), context.sessionManager.getSessionFile());
-  });
+  pi.on("turn_end", (_event, context) => readSaved(context));
   pi.on("session_shutdown", async (event, context) => {
     runtime.session = undefined;
     runtime.driver.onSessionShutdown();

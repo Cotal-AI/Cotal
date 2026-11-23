@@ -177,7 +177,9 @@ anything other than text, such as an image, publishes the whole content array as
 The thread id is Pi's native session id. Pi's native session JSONL is the durable source, read
 together with the thread's [delta journal](connector-runtime-reference.mdx#streamed-text): each text
 delta Pi reports while it writes a reply is journaled, at most one line every 250 ms, and wakes the
-reader. Other extension hooks only wake the reader after persistence.
+reader. Other extension hooks only wake the reader after persistence. Pi saves a reply before it
+runs the reply's tools, and each tool's start wakes the reader, so a call shows as started while it
+runs.
 The event plane is enabled by default. `--no-events` opts out only on unrestricted spaces.
 A registration that requires events arms the plane independently of the environment flag, and
 the seat must hold the channel's publish grant. An event-enabled launch needs a stable
