@@ -1,11 +1,11 @@
 /** Broker URL syntax and transport intent through the shipped CLI on owned open brokers. */
 import { execFile, spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { isReachable, seedChannelRegistry, setupSpaceStreams } from "@cotal-ai/core";
 import { awaitBrokerReady, createSuite, freePort, killAndAwaitExit, SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
-import { recordMesh } from "@cotal-ai/workspace";
+import { recordMesh, spaceSegment } from "@cotal-ai/workspace";
 
 const BIN = join(import.meta.dirname, "../../../bin/dist/cotal.js");
 if (!existsSync(BIN)) throw new Error("build the shipped CLI first: pnpm --filter cotal-ai... build");
@@ -21,14 +21,27 @@ const env = { ...cleanEnv, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(
 const port = await freePort();
 const wsPort = await freePort();
 const server = `nats://127.0.0.1:${port}`;
-const wsServer = `ws://127.0.0.1:${wsPort}/mesh-ws`;
-const config = join(scratch, "server.conf");
-writeFileSync(config, `host: 127.0.0.1\nport: ${port}\njetstream { store_dir: ${JSON.stringify(join(scratch, "js"))} }\nwebsocket { host: 127.0.0.1, port: ${wsPort}, no_tls: true }\n`);
-const broker = spawn("nats-server", ["-c", config], { stdio: ["ignore", "ignore", "pipe"] });
-const releaseBroker = teardownOnSignal(broker);
-let brokerOutput = "";
-broker.stderr!.on("data", (chunk: Buffer) => { brokerOutput += chunk.toString(); });
-type Reply = { status: number; stdout: string; stderr: string; envelope?: { outcome?: string; error?: { code?: string; message?: string }; result?: unknown } };
+const wsAddress = `ws://127.0.0.1:${wsPort}`;
+const wsServer = `${wsAddress}/mesh-ws`;
+async function withBroker(websocket: boolean, runChecks: () => Promise<void>): Promise<void> {
+  const tcpPort = websocket ? port : wsPort;
+  const config = join(scratch, websocket ? "websocket.conf" : "native.conf");
+  const listener = websocket ? `websocket { host: 127.0.0.1, port: ${wsPort}, no_tls: true }\n` : "";
+  writeFileSync(config, `host: 127.0.0.1\nport: ${tcpPort}\njetstream { store_dir: ${JSON.stringify(join(scratch, "js"))} }\n${listener}`);
+  const broker = spawn("nats-server", ["-c", config], { stdio: ["ignore", "ignore", "pipe"] });
+  const releaseBroker = teardownOnSignal(broker);
+  let brokerOutput = "";
+  broker.stderr!.on("data", (chunk: Buffer) => { brokerOutput += chunk.toString(); });
+  try {
+    const readyAt = `nats://127.0.0.1:${tcpPort}`;
+    await awaitBrokerReady(() => isReachable(readyAt), { servers: readyAt, attempts: 50, delayMs: 100, output: () => brokerOutput });
+    await runChecks();
+  } finally {
+    await killAndAwaitExit(broker);
+    releaseBroker();
+  }
+}
+type Reply = { status: number; stdout: string; stderr: string; envelope?: { outcome?: string; error?: { code?: string; message?: string; remedy?: string }; result?: unknown } };
 const run = (args: string[]): Promise<Reply> => new Promise((resolve, reject) => {
   execFile(process.execPath, [BIN, ...args], { cwd: root, env, timeout: 30_000 }, (error, stdout, stderr) => {
     if (error && typeof error.code !== "number") { reject(error); return; }
@@ -41,8 +54,9 @@ const commands = (url: string, space: string, text: string) => [
   ["history", "general", "--limit", "100", "--server", url, "--space", space, "--json"],
   ["who", "--server", url, "--space", space, "--json"],
 ];
-try {
-  await awaitBrokerReady(() => isReachable(server), { servers: server, attempts: 50, delayMs: 100, output: () => brokerOutput });
+const addOpen = (space: string, url: string) => ["space", "add", space, "--server", url, "--root", root, "--mode", "open", "--json"];
+const wsRegistration = addOpen("websocket", wsAddress);
+await withBroker(true, async () => {
   for (const space of ["registered", "raw"]) {
     await setupSpaceStreams({ servers: server, space });
     await seedChannelRegistry({ servers: server, space, file: { channels: { general: {} } } });
@@ -91,8 +105,41 @@ try {
   check("positive control: registration already refuses https", registration.status === 1 && registration.envelope?.error?.code === "USAGE_INVALID", registration);
   const creds = await run(["who", "--server", server.replace("nats:", "https:"), "--creds", join(scratch, "must-not-read.creds"), "--json"]);
   check("explicit credentials: invalid server refuses before reading a credential", creds.status === 1 && creds.envelope?.error?.code === "USAGE_INVALID", creds);
-} finally {
-  await killAndAwaitExit(broker);
-  releaseBroker();
-}
+  await setupSpaceStreams({ servers: server, space: "websocket" });
+  const registered = await run(wsRegistration);
+  check("register an open space through its WebSocket listener", registered.status === 0 && registered.envelope?.outcome === "ok", registered);
+});
+
+const registrationFile = join(env.COTAL_HOME, "meshes", `${spaceSegment("websocket")}.json`);
+const snapshot = () => {
+  const { ino, mtimeNs } = statSync(registrationFile, { bigint: true });
+  return [ino, mtimeNs, readFileSync(registrationFile, "utf8")].join("\n");
+};
+const before = snapshot();
+const offline = await run(wsRegistration);
+check("an offline recheck keeps the recorded port and does not offer force",
+  offline.status === 2 && offline.envelope?.error?.code === "TARGET_UNAVAILABLE" &&
+  offline.envelope.error.remedy === `check that the mesh is up and listening on port ${wsPort} of 127.0.0.1, then retry` &&
+  snapshot() === before, offline);
+await withBroker(false, async () => {
+  const tcpAddress = `nats://127.0.0.1:${wsPort}`;
+  const recheck = await run(wsRegistration);
+  check("an existing WebSocket registration diagnoses the native listener and asks to restore the recorded transport",
+    recheck.status === 2 && recheck.envelope?.error?.code === "TARGET_UNAVAILABLE" &&
+    recheck.envelope.error.message?.includes(`one answers at ${tcpAddress}`) === true &&
+    recheck.envelope.error.remedy === `restore the broker listener at ${wsAddress} with its recorded transport, then rerun the check unchanged`, recheck);
+  const changed = await run(addOpen("websocket", tcpAddress));
+  check("the alternate transport still conflicts and leaves the checked registration alone",
+    changed.status === 2 && changed.envelope?.error?.code === "CONFLICT" && snapshot() === before, changed);
+  const fresh = await run(addOpen("fresh", wsAddress));
+  check("an unregistered name still gets the alternate address and force advice",
+    fresh.status === 2 && fresh.envelope?.error?.code === "TARGET_UNAVAILABLE" &&
+    fresh.envelope.error.remedy?.startsWith(`run it again with --server ${tcpAddress}`) === true &&
+    fresh.envelope.error.remedy.includes("pass --force"), fresh);
+});
+await withBroker(true, async () => {
+  const restored = await run(wsRegistration);
+  check("restoring the recorded transport lets the unchanged recheck succeed without rewriting the record",
+    restored.status === 0 && restored.envelope?.outcome === "no-op" && snapshot() === before, restored);
+});
 finish();

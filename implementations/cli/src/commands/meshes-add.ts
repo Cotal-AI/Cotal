@@ -378,18 +378,20 @@ export function verifyFailureMessage(kind: PreflightFailure, space: string, serv
   }
 }
 
+interface RegistrationCheckOptions { recheck: boolean }
+
 /** Probe the candidate for real (liveness + credentials), after {@link checkEnforcement} has
  *  settled what the broker is. */
-export async function verifyTarget(target: MeshTarget): Promise<Check<void>> {
+export async function verifyTarget(target: MeshTarget, options?: RegistrationCheckOptions): Promise<Check<void>> {
   const r = await preflightTarget(target);
   if (r.ok) return good(undefined);
-  return (r.kind === "unreachable" && (await unreachableAt(target.server))) || bad(verifyFailureMessage(r.kind, target.space, target.server, target.root, r.pid), preflightCode(r.kind));
+  return (r.kind === "unreachable" && (await unreachableAt(target.server, "--server", options))) || bad(verifyFailureMessage(r.kind, target.space, target.server, target.root, r.pid), preflightCode(r.kind));
 }
 
 export { openSpaceNames };
 
 /** A bare connection alone cannot establish that an open broker serves this space. */
-export async function checkOpenSpace(server: string, name: string, tlsRequired: boolean, options?: { recheck: boolean }): Promise<Check<void>> {
+export async function checkOpenSpace(server: string, name: string, tlsRequired: boolean, options?: RegistrationCheckOptions): Promise<Check<void>> {
   let served: string[];
   try { served = await openSpaceNames(server, tlsRequired); }
   catch {
@@ -425,7 +427,7 @@ const DEFAULT_PORTS: Readonly<Record<string, number>> = { nats: 4222, tls: 4222,
 /** Why no broker answered at a single `server` address: nothing took a connection at its port, or a
  *  broker answers there under another scheme, which the remedy names. `undefined` for an address
  *  this cannot take apart, such as a list, so the general sentence stands. */
-async function unreachableAt(server: string, what = "--server"): Promise<Check<never> | undefined> {
+async function unreachableAt(server: string, what: string, { recheck }: RegistrationCheckOptions = { recheck: false }): Promise<Check<never> | undefined> {
   if (server.includes(",")) return undefined;
   let url: URL;
   try { url = new URL(server.includes("://") ? server : `nats://${server}`); } catch { return undefined; }
@@ -436,9 +438,10 @@ async function unreachableAt(server: string, what = "--server"): Promise<Check<n
   const refused = (message: string, remedy: string): Check<never> => ({ ok: false, message: `✗ ${message}`, code: "TARGET_UNAVAILABLE", remedy });
   const answer = await portAnswer(url.hostname.replace(/^\[|\]$/g, ""), port);
   if (answer === "unresolved")
-    return refused(`no broker answered at ${server}: the host name ${url.hostname} does not resolve`, `check the host name in ${what}`);
+    return refused(`no broker answered at ${server}: the host name ${url.hostname} does not resolve`, recheck ? `restore DNS resolution for ${url.hostname}, then retry` : `check the host name in ${what}`);
   if (answer === "silent")
-    return refused(`no broker answered at ${server}: nothing accepted a connection at ${at}`, `check that the mesh is up and listening on port ${port} of ${url.hostname}, or pass --server with the port it listens on`);
+    return refused(`no broker answered at ${server}: nothing accepted a connection at ${at}`, `check that the mesh is up and listening on port ${port} of ${url.hostname}${recheck ? ", then retry" : ", or pass --server with the port it listens on"}`);
+  const restore = `restore the broker listener at ${server} with its recorded transport, then rerun the check unchanged`;
   // A websocket route keeps its path, which a TCP address cannot have.
   const route = url.pathname === "/" ? "" : url.pathname;
   const schemes = ["nats", "tls", "ws", "wss"].filter((other) => !route || other.startsWith("ws"));
@@ -448,9 +451,9 @@ async function unreachableAt(server: string, what = "--server"): Promise<Check<n
     const probe = await probeConnect(candidate, { timeoutMs: SCHEME_PROBE_TIMEOUT_MS });
     if (!probe.ok && probe.reason !== "auth-required") continue;
     const plain = (scheme === "tls" || scheme === "wss") && (other === "nats" || other === "ws") ? ", without TLS" : "";
-    return refused(`no broker answered at ${server}, but one answers at ${candidate}${plain}`, `run it again with --server ${candidate}`);
+    return refused(`no broker answered at ${server}, but one answers at ${candidate}${plain}`, recheck ? restore : `run it again with --server ${candidate}`);
   }
-  return refused(`no broker answered at ${server}: something accepted the connection at ${at}, but no broker answered there as ${schemes.slice(0, -1).join(", ")} or ${schemes.at(-1)}`, `check that ${what} names the broker's own address and port`);
+  return refused(`no broker answered at ${server}: something accepted the connection at ${at}, but no broker answered there as ${schemes.slice(0, -1).join(", ")} or ${schemes.at(-1)}`, recheck ? restore : `check that ${what} names the broker's own address and port`);
 }
 
 /** Whether anything accepts a TCP connection at `host:port`: `silent` when the port refuses or does

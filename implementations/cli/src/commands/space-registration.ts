@@ -255,12 +255,13 @@ async function addFromServer(name: string | undefined, v: AddValues, prompt: boo
     (existing.unencryptedOverlay === true) === Boolean(dial.residual));
   const verified = v.force !== true;
   if (verified) {
+    const options = { recheck: existing !== undefined };
     take(checkEnforcement(mode, await probeEnforcement(server), server, name, root), target);
-    const reached = await verifyTarget(candidateTarget(name, server, root, mode, auth, tlsRequired));
+    const reached = await verifyTarget(candidateTarget(name, server, root, mode, auth, tlsRequired), options);
     // Only a new registration needs the option to save it unchecked when a broker is down.
     if (!existing && !reached.ok && reached.code === "TARGET_UNAVAILABLE") throw refuse("TARGET_UNAVAILABLE", reached.message.replace(/^✗ /, ""), target, `${reached.remedy ? `${reached.remedy}; ` : ""}pass --force to add "${name}" unchecked, as for a space that is down right now`);
     take(reached, target);
-    if (mode === "open") take(await checkOpenSpace(server, name, tlsRequired, { recheck: existing !== undefined }), target);
+    if (mode === "open") take(await checkOpenSpace(server, name, tlsRequired, options), target);
   }
   const warnings: OutputWarning[] = [];
   if (dial.residual) warnings.push({ code: "UNENCRYPTED_OVERLAY", target, message: dial.residual });
