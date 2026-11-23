@@ -6,15 +6,17 @@
  * builds and runs plugin/cotal/models.py under the project-pinned Hermes, which asks Hermes which
  * provider that is and lists its models. One bounded run per read, with no cache. A managed seat's
  * profile reads nothing from `~/.hermes`, so the read runs on an empty profile of its own, and on
- * the operator's profile when `COTAL_HERMES_ADOPT_HOME` names one.
+ * the operator's profile when `COTAL_HERMES_ADOPT_HOME` names one. Each model's variants are the
+ * reasoning efforts that Hermes takes, which a managed profile sets as `agent.reasoning_effort`.
  */
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { launchEnv, MODEL_PROVIDER_KEYS } from "@cotal-ai/connector-core";
 import type { ModelCatalog, ModelCatalogOpts } from "@cotal-ai/core";
+import { hermesUvCommand } from "./binary.js";
 
 /** The provider keys a Hermes launch forwards, and so the catalog read too. */
 export const HERMES_PROVIDER_KEYS: readonly string[] = [
@@ -29,6 +31,8 @@ export const HERMES_PROVIDER_KEYS: readonly string[] = [
 
 const PKG_DIR = fileURLToPath(new URL("..", import.meta.url));
 const MODELS_SCRIPT = join(PKG_DIR, "plugin", "cotal", "models.py");
+// `-P` keeps the plugin directory off sys.path: its tools.py would shadow Hermes' own `tools`.
+const SCRIPT_ARGS = ["run", "--project", PKG_DIR, "--quiet", "python", "-P", MODELS_SCRIPT];
 /** How long one read may take, as Codex's app-server read is bounded. */
 const READ_MS = 10_000;
 
@@ -36,8 +40,7 @@ const READ_MS = 10_000;
  *  killed at the bound, so uv's Python child does not outlive the read. */
 function runScript(uv: string, env: NodeJS.ProcessEnv): Promise<string> {
   return new Promise((resolve, reject) => {
-    // `-P` keeps the plugin directory off sys.path: its tools.py would shadow Hermes' own `tools`.
-    const child = spawn(uv, ["run", "--project", PKG_DIR, "--quiet", "python", "-P", MODELS_SCRIPT], { env, stdio: ["ignore", "pipe", "pipe"], detached: true });
+    const child = spawn(uv, SCRIPT_ARGS, { env, stdio: ["ignore", "pipe", "pipe"], detached: true });
     let out = "";
     let err = "";
     child.stdout.setEncoding("utf8").on("data", (d: string) => (out += d));
@@ -62,22 +65,53 @@ function runScript(uv: string, env: NodeJS.ProcessEnv): Promise<string> {
   });
 }
 
+const isStrings = (v: unknown): v is string[] => Array.isArray(v) && v.every((x) => typeof x === "string");
+
+/** The reasoning efforts the project-pinned Hermes takes, read as the launcher reads its version:
+ *  with no bound, since the first launch after an install may build the Python environment. */
+export function hermesEfforts(opts: {
+  env?: NodeJS.ProcessEnv;
+  execFileImpl?: (file: string, args: readonly string[], options: { encoding: "utf8"; env: NodeJS.ProcessEnv }) => string;
+} = {}): string[] {
+  const env = opts.env ?? process.env;
+  const exec = opts.execFileImpl ?? ((file, args, options) => execFileSync(file, args, options));
+  let line: string;
+  try {
+    line = exec(hermesUvCommand(env), [...SCRIPT_ARGS, "efforts"], { encoding: "utf8", env }).trim().split("\n").at(-1) ?? "";
+  } catch (e) {
+    throw new Error(`could not read the reasoning efforts Hermes takes through uv: ${(e as Error).message}`);
+  }
+  let efforts: unknown;
+  try {
+    efforts = JSON.parse(line);
+  } catch {
+    efforts = undefined;
+  }
+  if (!isStrings(efforts) || !efforts.length) throw new Error(`Hermes printed no list of reasoning efforts: ${JSON.stringify(line.slice(0, 200))}`);
+  return efforts;
+}
+
 export async function listHermesModels(opts: ModelCatalogOpts = {}): Promise<ModelCatalog> {
   const adopted = process.env.COTAL_HERMES_ADOPT_HOME?.trim();
   const home = adopted || mkdtempSync(join(tmpdir(), "cotal-hermes-models-"));
   try {
     const env = { ...launchEnv({ providerKeys: HERMES_PROVIDER_KEYS, envAllow: opts.envAllow }), HERMES_HOME: home };
     const line = await runScript(opts.resolvedBinaries?.uv ?? "uv", env);
-    let read: { provider?: string; models?: unknown; unavailable?: string };
+    let read: { provider?: string; models?: unknown; efforts?: unknown; unavailable?: string };
     try {
       read = JSON.parse(line) as typeof read;
     } catch {
       throw new Error(`the Hermes model read printed no catalog: ${JSON.stringify(line.slice(0, 200))}`);
     }
     if (typeof read.unavailable === "string") return { models: [], unavailable: read.unavailable };
-    if (!Array.isArray(read.models) || !read.models.every((m) => typeof m === "string"))
-      throw new Error("the Hermes model read printed a catalog without a list of model ids");
-    return { source: `the ${read.provider} provider Hermes resolves from the launch environment`, models: read.models.map((id) => ({ id })) };
+    if (!isStrings(read.models)) throw new Error("the Hermes model read printed a catalog without a list of model ids");
+    if (!isStrings(read.efforts) || !read.efforts.length) throw new Error("the Hermes model read printed a catalog without the reasoning efforts Hermes takes");
+    // An adopted profile keeps the effort its own config.yaml sets, so a launch there takes no variant.
+    const variants = adopted ? undefined : read.efforts.map((name) => ({ name }));
+    return {
+      source: `the ${read.provider} provider Hermes resolves from the launch environment`,
+      models: read.models.map((id) => ({ id, ...(variants ? { variants } : {}) })),
+    };
   } finally {
     if (!adopted) rmSync(home, { recursive: true, force: true });
   }
