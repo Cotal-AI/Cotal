@@ -1032,6 +1032,14 @@ if (process.platform !== "win32") {
   const helpSvcStartMgr = run(["help", "service", "start", "manager"]);
   const svcStartMgrHelp = run(["service", "start", "manager", "--help"]);
   check("help service start manager prints the same preset-augmented help as service start manager --help", helpSvcStartMgr.status === 0 && helpSvcStartMgr.stdout === svcStartMgrHelp.stdout && /--runtime/.test(helpSvcStartMgr.stdout), shown(helpSvcStartMgr));
+  check("manager preset start help keeps --instance and omits --new-instance in Usage and Options",
+    svcStartMgrHelp.status === 0 && /\[--instance <id>\]/.test(svcStartMgrHelp.stdout) && !svcStartMgrHelp.stdout.includes("--new-instance"), shown(svcStartMgrHelp));
+  const genericStartHelp = run(["service", "start", "--help"]);
+  check("generic service start help still lists --new-instance in Usage and Options",
+    genericStartHelp.status === 0 && /\[--instance <id>\|--new-instance\]/.test(genericStartHelp.stdout) && /^  --new-instance\s/m.test(genericStartHelp.stdout), shown(genericStartHelp));
+  const multiManager = run(["service", "start", "manager", "--new-instance", "--dry-run", "--json", "--space", "presetspace"], {}, presetSpace);
+  const multiRefusal = parsed(multiManager) as { outcome?: string; error?: { code?: string } } | undefined;
+  check("manager preset still refuses --new-instance in a preview", multiManager.status === 2 && multiRefusal?.outcome === "refused" && multiRefusal.error?.code === "UNSUPPORTED", shown(multiManager));
   const serviceList = run(["service", "list", "--space", "presetspace", "--json"], {}, presetSpace);
   const helpService = run(["service", "--help"]);
   const helpServiceList = run(["help", "service", "list"]);
