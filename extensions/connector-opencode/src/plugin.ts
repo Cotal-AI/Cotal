@@ -396,6 +396,12 @@ export const cotal: Plugin = async () => {
   const noteTurnEnd = (): void => {
     turnEndsSeen += 1;
   };
+  // A turn started in `id`, whoever submitted it; a command's dispatch waits for this.
+  const noteTurnStart = (id: string): void => {
+    commands.turnStarted(id);
+    agent.noteActivity();
+    busy = true;
+  };
   let errorRetryTimer: ReturnType<typeof setTimeout> | undefined;
   let errorRetryMs = ERROR_RETRY_INITIAL_MS;
   let interruptIntent: { sessionID?: string; expires: number } | undefined;
@@ -1308,8 +1314,7 @@ export const cotal: Plugin = async () => {
           const s = event.properties.status;
           // Presence only — session.idle owns ack + drive (so a duplicate idle can't mis-ack).
           if (s.type === "busy") {
-            agent.noteActivity();
-            busy = true;
+            noteTurnStart(event.properties.sessionID);
             await safeStatus("working");
           } else if (s.type === "idle") {
             noteTurnEnd();

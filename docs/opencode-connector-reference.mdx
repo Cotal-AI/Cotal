@@ -48,11 +48,13 @@ skill with `source: "skill"` and an MCP prompt as a command, and only each entry
 description leave the plugin. Both run through `/session/:id/command` by name, only while no other
 turn runs. A name OpenCode does not list ends `refused` with `not-found` without reaching OpenCode,
 because OpenCode 1.19.6 answers an unknown name with a 500. OpenCode answers a command only once the
-turn it started has ended, so the command reads `taken` until OpenCode calls its
-`command.execute.before` hook, right before it submits the command's prompt, and `started` from
-then. An error answer before that hook ends `refused` with `failed-precondition`. The command route
-takes no `system` field, so when a command is the first turn the plugin submits, the persona rides
-the next message turn instead. Waiting messages go before the next queued command, as on 2.x.
+turn it started has ended, so the command reads `taken` until that turn starts: OpenCode calls its
+`command.execute.before` hook, stores the command's prompt, and reports the session busy. The
+command reads `started` from then. An error answer before the turn starts ends `refused` with
+`failed-precondition`. OpenCode 1.19.6 answers a 500 after the hook, with nothing stored, when a
+plugin's `chat.message` hook throws. A command whose turn has not started 5 s after the hook ends
+`unknown`, and the plugin sends what waits. The command route takes no `system` field, so when a
+command is the first turn the plugin submits, the persona rides the next message turn instead. Waiting messages go before the next queued command, as on 2.x.
 `interrupt` answers `idle` when no turn runs, by the plugin's own turn state, because OpenCode's
 `/session/:id/abort` answers `true` either way. Otherwise it posts that route and answers
 `interrupted`. The stopped turn ends with a `MessageAbortedError`, which the plugin handles as a

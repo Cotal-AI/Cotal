@@ -2,10 +2,10 @@
  * The OpenCode 1.x dispatcher on the `agent` endpoint (SPEC 13.22), as measured on 1.19.6.
  * `GET /command` lists commands and skills, a skill with `source: "skill"`, and
  * `POST /session/:id/command` runs either by name. That route answers only once the turn it started
- * has ended, so a dispatch resolves at the `command.execute.before` hook, which OpenCode calls right
- * before it submits the command's prompt. An owner's turn goes out as a prompt, each image as a file
- * part with a data URL, and `usage` reads the session's messages the way T3 Code's OpenCode provider
- * does.
+ * has ended, so a dispatch resolves once that turn starts: OpenCode calls the
+ * `command.execute.before` hook, stores the command's prompt, and reports the session busy. An
+ * owner's turn goes out as a prompt, each image as a file part with a data URL, and `usage` reads
+ * the session's messages the way T3 Code's OpenCode provider does.
  */
 import { CommandRefused, type AgentTurn, type AgentUsage, type CommandDispatcher } from "@cotal-ai/connector-core";
 import type { CommandEntry, CommandTarget } from "@cotal-ai/core";
@@ -29,13 +29,20 @@ export interface Commands1Deps {
 
 export interface Commands1 {
   readonly dispatcher: CommandDispatcher;
-  /** The `command.execute.before` hook: OpenCode is about to submit a command's prompt. */
+  /** The `command.execute.before` hook: OpenCode is about to store a command's prompt. */
   starting(sessionID: string, command: string): void;
+  /** OpenCode reported `session` busy: a turn started in it. */
+  turnStarted(sessionID: string): void;
   /** Teardown began: stop waiting on a command's answer. */
   close(): void;
 }
 
 const isReconnect = (c: { target: CommandTarget; name: string }) => c.target === "command" && c.name === RECONNECT_COMMAND.name;
+
+/** How long a command has to start its turn once its hook ran. OpenCode only stores the prompt in
+ *  between (10 ms measured on 1.19.6), and a command that neither starts a turn nor answers leaves
+ *  no event that frees the session. */
+const TURN_START_MS = 5_000;
 
 interface StepTokens { input: number; output: number; cache: { read: number; write: number } }
 interface UsageMessage {
@@ -70,8 +77,9 @@ function entryOf(e: unknown): CommandEntry {
 
 export function opencode1Commands(deps: Commands1Deps): Commands1 {
   const controller = new AbortController();
-  // The dispatch waiting for its command's turn to start. The agent dispatches one command at a time.
-  let waiting: { session: string; name: string; start(): void } | undefined;
+  // The dispatch waiting for its command's hook and then for its turn. The agent dispatches one
+  // command at a time.
+  let waiting: { session: string; name: string; hooked: boolean; hook(): void; start(): void } | undefined;
   // Each model's context window. `GET /provider` can be megabytes, and a window does not change.
   const windows = new Map<string, number | undefined>();
 
@@ -91,24 +99,37 @@ export function opencode1Commands(deps: Commands1Deps): Commands1 {
       throw new CommandRefused("not-found", `OpenCode has no ${command.target} named "${command.name}"`);
     const session = await deps.ensureSession();
     if (!session) throw new CommandRefused("failed-precondition", "this agent has no OpenCode session yet");
-    const started = new Promise<void>((start) => { waiting = { session, name: command.name, start }; });
-    // No client timeout: the command's shell snippets run before its turn starts, and the answer
-    // comes only once that turn ended.
+    let hook!: () => void, start!: () => void;
+    const hooked = new Promise<void>((resolve) => { hook = resolve; });
+    const started = new Promise<void>((resolve) => { start = resolve; });
+    waiting = { session, name: command.name, hooked: false, hook, start };
+    // No client timeout: the command's shell snippets run before its hook, and the answer comes only
+    // once its turn ended.
     const answer = deps.api(`/session/${encodeURIComponent(session)}/command`, {
       method: "POST",
       body: JSON.stringify({ command: command.name, arguments: command.args }),
       signal: controller.signal,
     });
+    const ended = (e: Error) => deps.warn(`the ${command.target} "${command.name}" ended with ${e.message}`);
+    let bound: ReturnType<typeof setTimeout> | undefined;
     try {
-      await Promise.race([started, answer]);
+      await Promise.race([hooked, answer]);
+      await Promise.race([started, answer, new Promise<never>((_, fail) => {
+        bound = setTimeout(() => {
+          answer.catch(ended);
+          fail(new Error(`OpenCode ran the hook of the ${command.target} "${command.name}" and started no turn within ${TURN_START_MS / 1000} s`));
+        }, TURN_START_MS);
+      })]);
     } catch (e) {
-      // An error answer before the hook means OpenCode never submitted the prompt, so no turn started.
+      // An error answer before the turn started: OpenCode failed before it stored the prompt
+      // (measured on 1.19.6), so nothing ran.
       if (typeof (e as { status?: unknown }).status === "number") throw new CommandRefused("failed-precondition", (e as Error).message);
       throw e;
     } finally {
+      clearTimeout(bound);
       waiting = undefined;
     }
-    answer.catch((e: Error) => deps.warn(`the ${command.target} "${command.name}" ended with ${e.message}`));
+    answer.catch(ended);
   }
 
   /** The owner's words as the user's own prompt. `prompt_async` answers once OpenCode took it. */
@@ -180,7 +201,12 @@ export function opencode1Commands(deps: Commands1Deps): Commands1 {
   return {
     dispatcher,
     starting(sessionID, command) {
-      if (waiting?.session === sessionID && waiting.name === command) waiting.start();
+      if (waiting?.session !== sessionID || waiting.name !== command) return;
+      waiting.hooked = true;
+      waiting.hook();
+    },
+    turnStarted(sessionID) {
+      if (waiting?.hooked && waiting.session === sessionID) waiting.start();
     },
     close: () => controller.abort(),
   };
