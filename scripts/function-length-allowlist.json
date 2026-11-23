@@ -31,7 +31,7 @@
     "extensions/connector-hermes/src/bridge.ts": [226],
     "extensions/connector-hermes/src/launch.ts": [172],
     "extensions/connector-jcode/src/host-turns.ts": [832, 257],
-    "extensions/connector-jcode/src/host.ts": [1142],
+    "extensions/connector-jcode/src/host.ts": [1052],
     "extensions/connector-opencode/src/extension.ts": [160],
     "extensions/connector-opencode/src/launch.ts": [230],
     "extensions/connector-opencode/src/plugin.ts": [1365, 209, 156],
