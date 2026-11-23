@@ -467,7 +467,8 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
                 if (req.op === "service-status" && result.state === "not-requested" && !entry) return notRegistered;
                 if (entry && entry.mode !== "user") {
                   if (req.op === "service-status") return { space: req.space, state: "unsupported", message: NON_USER_AUTH_MESSAGE, remedy: NON_USER_AUTH_REMEDY };
-                  return { ...result, manager: { ...manager, next: NON_USER_AUTH_REMEDY } };
+                  return { ...result, message: result.removedRecords?.length === 0 ? "This space does not use the machine service. There was nothing to disconnect." : result.message,
+                    manager: { ...manager, next: NON_USER_AUTH_REMEDY } };
                 }
               }
             } catch (error) {
