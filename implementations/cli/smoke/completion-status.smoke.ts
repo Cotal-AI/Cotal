@@ -487,26 +487,32 @@ if (process.platform !== "win32" && process.getuid?.() !== 0) {
     check("install refuses an rc it cannot read, exit 2, with nothing written", unreadable.status === 2 && /could not be opened safely/.test(unreadable.stderr) && !existsSync(stub), shown(unreadable));
     chmodSync(rc, 0o400);
     const readOnly = s.run(["completion", "install", "zsh"]);
+    const chmod = `chmod u+w ${rc}`;
+    check("read-only startup reports partial installation and tells the user to restore permission and retry", readOnly.status === 4 && /OPERATION_PARTIAL/.test(readOnly.stderr) && readOnly.stderr.includes(`restore owner write permission with \`${chmod}\`, then run \`cotal completion install zsh\` again without editing the startup file`) && (statSync(rc).mode & 0o777) === 0o400 && readFileSync(rc, "utf8") === "# mine\n", shown(readOnly));
     chmodSync(rc, 0o600);
-    // The line is the one the owned block would hold, single-quoted as the shell needs.
-    check("an rc it can read but not extend reports partial installation, exit 4, naming the line to add", readOnly.status === 4 && /OPERATION_PARTIAL/.test(readOnly.stderr) && /wrote .*completion\.zsh but could not add its line/.test(readOnly.stderr) && readOnly.stderr.includes(`source '${stub}'`) && readFileSync(rc, "utf8") === "# mine\n", shown(readOnly));
     const record = `${stub}.ownership.json`;
     check("the partial report lists both files written and does not list the startup file", existsSync(stub) && existsSync(record) && readOnly.stderr.includes(`Confirmed changes\n  ${stub}\n  ${record}\n\n`), shown(readOnly));
     const installed = s.run(["completion", "install", "zsh"]);
     const wired = readFileSync(rc, "utf8");
+    check("retry after restoring write permission adds the managed startup block", installed.status === 0 && wired.startsWith("# mine\n") && wired.includes(`# >>> cotal completion >>>\nsource '${stub}'\n# <<< cotal completion <<<`), shown(installed));
     chmodSync(rc, 0o400);
     const lockedOut = s.run(["completion", "uninstall", "zsh", "--plain"]);
     check("uninstall refuses a read-only rc and keeps its mode, startup block, stub and record",
       installed.status === 0 && lockedOut.status === 2 && lockedOut.stderr.includes(`${rc} is read-only, so its completion block was not removed`) &&
         lockedOut.stderr.includes("PERMISSION_DENIED") && (statSync(rc).mode & 0o777) === 0o400 && readFileSync(rc, "utf8") === wired &&
         existsSync(stub) && existsSync(record), { install: shown(installed), uninstall: shown(lockedOut) });
-    const chmod = `chmod u+w ${rc}`;
     check("uninstall tells the user to restore write permission and retry without editing the block",
       lockedOut.stderr.includes(`restore owner write permission with \`${chmod}\`, then run \`cotal completion uninstall zsh\` again without editing the startup block`), shown(lockedOut));
     chmodSync(rc, 0o600);
     const retried = s.run(["completion", "uninstall", "zsh", "--plain"]);
     check("uninstall succeeds after restoring owner write permission without editing the block",
       retried.status === 0 && !existsSync(stub) && !existsSync(record) && readFileSync(rc, "utf8") === "# mine\n", shown(retried));
+    chmodSync(rc, 0o400);
+    s.run(["completion", "install", "zsh"]);
+    chmodSync(rc, 0o600);
+    appendFileSync(rc, `source '${stub}'\n`);
+    const customStatus = s.run(["completion", "--plain"]);
+    check("status shows a custom startup reference without offering a managed refresh", customStatus.status === 0 && customStatus.stdout.includes("startup reference found") && customStatus.stdout.includes("cotal completion script zsh") && !customStatus.stdout.includes("cotal completion install zsh"), shown(customStatus));
   }
 }
 

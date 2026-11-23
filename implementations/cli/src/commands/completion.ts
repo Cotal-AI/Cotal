@@ -159,11 +159,11 @@ export async function completion(args: ParsedArgs): Promise<void> {
   const values = args.values as FlagValues<typeof completionFlags>;
   const presentation = presentationOf(values);
   if (sub === undefined) {
-    const { status, unread, unsafe, repairs } = completionStatus();
+    const { status, unread, unsafe, repairs, customStartup } = completionStatus();
     const count = unread.length + unsafe.reduce((sum, folder) => sum + folder.unopened, 0);
     const warnings = [...unsafe.map(folderWarning), ...unread];
     const partial = count ? { completeness: "partial" as const, warnings, partial: { message: `completion could not read ${count === 1 ? "one file" : `${count} files`}`, remedy: unread.length ? "review each named file without overwriting custom startup content" : "fix the folder the warning names, then run `cotal completion` again" } } : warnings.length ? { warnings } : {};
-    return writeResult(presentation, { command: "completion", target: null, result: status, ...partial }, (result) => statusView(result, unsafe, repairs));
+    return writeResult(presentation, { command: "completion", target: null, result: status, ...partial }, (result) => statusView(result, unsafe, repairs, customStartup));
   }
   if (sub === "script") { process.stdout.write(SCRIPTS[shell!]!); return; }
   const sh = shell ?? currentShell();
@@ -246,10 +246,11 @@ function readText(path: string): string | undefined | NodeJS.ErrnoException {
 
 /** Each shell's stub against the script this binary prints, a warning for each file it could not
  *  read, and each unsafe folder above them. Reads local files only. */
-export function completionStatus(): { status: CompletionStatus; unread: OutputWarning[]; unsafe: UnsafeFolder[]; repairs: FileRepair[] } {
+export function completionStatus(): { status: CompletionStatus; unread: OutputWarning[]; unsafe: UnsafeFolder[]; repairs: FileRepair[]; customStartup: Set<string> } {
   const unread: OutputWarning[] = [];
   const unsafe = new Map<string, UnsafeFolder>();
   const repairs: FileRepair[] = [];
+  const customStartup = new Set<string>();
   /** The unsafe folders above `path`, noted once for every shell under them. A check that cannot run
    *  here is left to the read, which reports it. */
   const unsafeAbove = (shell: string, path: string): UnsafeFolder | undefined => {
@@ -281,8 +282,13 @@ export function completionStatus(): { status: CompletionStatus; unread: OutputWa
     if (!paths) return { shell, stub: null, state: "not-installed-by-cotal", wiredIn: null, ownership: "manual", legacyWiring: false };
     const content = read(shell, paths.stub);
     const state: StubState = content === null ? "unreadable" : content === undefined ? "missing" : content === SCRIPTS[shell] ? "current" : "differs";
+    const rc = paths.rc ? read(shell, paths.rc) : undefined;
     let ownership: ShellCompletion["ownership"];
-    try { ownership = completionOwnership(shell, paths); }
+    try {
+      const [owned, custom] = completionOwnership(shell, paths, rc ?? "");
+      ownership = owned;
+      if (custom) customStartup.add(shell);
+    }
     // The refusal names the record or folder and why, so it is passed on rather than a generic sentence.
     catch (error) {
       ownership = "unreadable";
@@ -295,12 +301,11 @@ export function completionStatus(): { status: CompletionStatus; unread: OutputWa
       }
     }
     if (!paths.rc) return { shell, stub: paths.stub, state, wiredIn: content === undefined || content === null ? null : dirname(paths.stub), ownership, legacyWiring: false };
-    const rc = read(shell, paths.rc);
     const legacyWiring = typeof rc === "string" && new RegExp(`cotal[ \t]+completion[ \t]+${shell}(?:[ \t;|)]|$)`, "m").test(rc);
     return { shell, stub: paths.stub, state, wiredIn: rc && holdsSourceLine(rc, paths.stub, shell) ? paths.rc : null, ownership, legacyWiring };
   });
   const detected = currentShell();
-  return { status: { shell: Object.hasOwn(SCRIPTS, detected) ? detected : null, shells }, unread, unsafe: [...unsafe.values()], repairs };
+  return { status: { shell: Object.hasOwn(SCRIPTS, detected) ? detected : null, shells }, unread, unsafe: [...unsafe.values()], repairs, customStartup };
 }
 
 const STATE: Record<ShellCompletion["state"], Styled> = {
@@ -321,7 +326,7 @@ function completionCell(shell: ShellCompletion): Styled {
   return { ...STATE[shell.state], mark: shell.state === "unreadable" || shell.state === "differs" ? "●" : "○" };
 }
 
-function statusView(status: CompletionStatus, unsafe: readonly UnsafeFolder[] = [], repairs: readonly FileRepair[] = []): Report {
+function statusView(status: CompletionStatus, unsafe: readonly UnsafeFolder[], repairs: readonly FileRepair[], customStartup: ReadonlySet<string>): Report {
   const selected = status.shells.find((shell) => shell.shell === status.shell);
   // An unsafe folder, a refused file or an unreadable record makes install and uninstall refuse, so its
   // chmod comes first. They are offered only when every block has one. Uninstall is offered only when
@@ -354,12 +359,12 @@ function statusView(status: CompletionStatus, unsafe: readonly UnsafeFolder[] = 
         // A modified integration refuses a plain install or uninstall, so it is offered only with --force.
         ...blocking.flatMap((folder) => folder.chmod ? [{ command: folder.chmod, description: "Remove the access another local account could use, so completion can read and change its files there" }] : []),
         ...fileChmods.map((command) => ({ command, description: "Remove the access another local account could use, so completion can read and change this file" })),
-        ...status.shells.filter((shell) => shell.ownership === "modified" && shell !== selected).map((shell) => ({ command: `cotal completion install ${shell.shell} --force`, description: "Rewrite the modified owned integration; text outside the cotal markers is kept" })),
-        ...!changeable ? [] : [selected?.ownership === "modified"
+        ...status.shells.filter((shell) => shell.ownership === "modified" && shell !== selected && !customStartup.has(shell.shell)).map((shell) => ({ command: `cotal completion install ${shell.shell} --force`, description: "Rewrite the modified owned integration; text outside the cotal markers is kept" })),
+        ...!changeable || selected && customStartup.has(selected.shell) ? [] : [selected?.ownership === "modified"
           ? { command: `cotal completion install ${selected.shell} --force`, description: "Rewrite the modified owned integration; text outside the cotal markers is kept" }
           : { command: `cotal completion install ${selected?.shell ?? "<shell>"}`, description: "Install or refresh the managed integration" }],
         { command: `cotal completion script ${selected?.shell ?? "<shell>"}`, description: "Print the script for manual setup" },
-        ...!changeable || !installed ? [] : [selected?.ownership === "modified"
+        ...!changeable || !installed || selected?.wiredIn && customStartup.has(selected.shell) ? [] : [selected?.ownership === "modified"
           ? { command: `cotal completion uninstall ${selected.shell} --force`, description: "Remove the modified owned integration; text outside the cotal markers is kept" }
           : { command: `cotal completion uninstall ${selected?.shell ?? "<shell>"}`, description: "Remove only unchanged recorded material" }],
       ] }] },
