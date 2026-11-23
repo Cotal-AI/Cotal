@@ -2,7 +2,8 @@
  * A Jcode seat takes its owner's `turn` from the agent endpoint as the user's own message: the text
  * as typed and the images as Jcode's attachments, in a turn of its own that carries no inbox traffic.
  * The turn starts once Jcode acknowledges the send, Jcode refusing it first is a refusal, and a send
- * Jcode never acknowledged leaves the outcome unknown.
+ * Jcode never acknowledged leaves the outcome unknown. Its `usage` is the context Jcode's last call
+ * used against the budget Jcode reported with it, read by Jcode's own rule.
  *
  * The shipped turn closures and dispatcher run over a fake client that answers `run()` as Jcode
  * 0.99.0 was measured to: `message_accepted` for the session, then the turn's end. The command queue
@@ -111,6 +112,7 @@ function seat() {
   } as unknown as HostTurnDeps;
   const turns = createHostTurns(hostState, deps);
   startTurn = turns.runOwnerTurn;
+  turns.watchClient(client as unknown as JcodeClient);
   const queue = (turn: AgentTurn) => jobs.push(turn);
   const dm = (text: string) => inbox.push({ id: text, recvKey: text, ts: Date.now(), fromId: "u_peer.peer", fromName: "peer", kind: "dm", mentionsMe: false, historical: false, text } as InboxItem);
   const stop = () => { hostState.stopping = true; };
@@ -198,6 +200,34 @@ console.log("Jcode owner's turn");
   const refused = await s.dispatcher.turn!({ text: "hi", images: [] }).then(() => "started", (e) => (e instanceof CommandRefused ? `${e.code}: ${e.message}` : String(e)));
   check("a turn before Jcode's session is ready is refused and sends nothing",
     refused === "failed-precondition: Jcode's session is not ready" && s.client.sent.length === 0, refused);
+  s.stop();
+}
+
+console.log("Jcode usage");
+{
+  const s = seat();
+  const emit = (ev: string, fields: Record<string, unknown>, session = SESSION) => s.client.emit(ev, { v: 1, ev, session_id: session, ...fields });
+  const usage = () => s.dispatcher.usage!();
+  check("the dispatcher answers usage", typeof s.dispatcher.usage === "function");
+  check("before Jcode reported a call, usage has no context", JSON.stringify(await usage()) === "{}", await usage());
+  emit("runtime_info", { provider: "cliproxy", model: "gpt-6.2-sol", routes: [] });
+  emit("token_usage", { input: 10250, output: 5, cache_read_input: 9728 });
+  check("a Jcode that reports no budget, as 0.99.0 does, gives no context", JSON.stringify(await usage()) === "{}", await usage());
+  emit("token_usage", { input: 10250, output: 5, cache_read_input: 9728, effective_budget: 1_050_000 });
+  check("an OpenAI-compatible call counts its input, which holds the cache reads, against Jcode's budget",
+    JSON.stringify(await usage()) === JSON.stringify({ context: { used: 10250, size: 1_050_000 } }), await usage());
+  emit("token_usage", { input: 120, output: 5, cache_read_input: 9000, cache_creation_input: 300, effective_budget: 1_050_000 });
+  check("a call whose cache reads exceed its input is split accounting, so reads and writes are added",
+    JSON.stringify(await usage()) === JSON.stringify({ context: { used: 9420, size: 1_050_000 } }), await usage());
+  emit("model_info", { provider: "Anthropic", model: "claude-opus-5" });
+  emit("token_usage", { input: 40, output: 9, cache_read_input: 30, effective_budget: 200_000 });
+  check("on Anthropic, cache reads are always added to the input",
+    JSON.stringify(await usage()) === JSON.stringify({ context: { used: 70, size: 200_000 } }), await usage());
+  emit("model_info", { provider: "OpenAI", model: "gpt-5.5" });
+  emit("token_usage", { input: 400, output: 9, cache_read_input: 900, cache_creation_input: 50, effective_budget: 400_000 });
+  check("on OpenAI, the input alone is the context", JSON.stringify(await usage()) === JSON.stringify({ context: { used: 400, size: 400_000 } }), await usage());
+  emit("token_usage", { input: 1, output: 1, effective_budget: 9 }, "session_other");
+  check("another session's call is not this seat's", (await usage()).context?.used === 400, await usage());
   s.stop();
 }
 

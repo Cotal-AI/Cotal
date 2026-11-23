@@ -1,3 +1,4 @@
 # A Jcode seat takes its owner's turn as the user's own message, images included, starts it at
-# Jcode's acknowledgement, and reports a refused or unacknowledged send as such.
+# Jcode's acknowledgement, reports a refused or unacknowledged send as such, and answers usage
+# from the context Jcode's last call used against the budget Jcode reported.
 smoke:jcode-endpoint
