@@ -23,7 +23,8 @@ import {
   type AgentConfig,
 } from "@cotal-ai/connector-core";
 import { hermesHookHandle } from "./hermes-hooks.js";
-import { startBridgeServer } from "./bridge.js";
+import { startBridgeServer, type BridgeServer } from "./bridge.js";
+import { hermesCommands } from "./commands.js";
 import { startHermesEvents, type HermesEvents } from "./events.js";
 import { hermesToolDescriptors } from "./tool-schema.js";
 
@@ -48,7 +49,8 @@ export function startSidecar(): Sidecar {
   // The gateway posts every turn's output, and its own busy notices, back to the channel as a reply
   // to the message that started the turn. A peer's reply is therefore never a new task for us.
   config.channelRepliesPullOnly = true;
-  const agent = new MeshAgent(config);
+  let bridge: BridgeServer | undefined;
+  const agent = new MeshAgent(config, undefined, { commands: hermesCommands(() => bridge) });
   // The launcher names the turn journal only for an armed event plane; an armed plane without one
   // (a standalone sidecar) has nothing to publish from, so it is refused.
   const armed = eventPlaneArmed(config);
@@ -78,7 +80,23 @@ export function startSidecar(): Sidecar {
     if (journal) events?.holder.flush(journal);
     return hermesHookHandle(a, ev);
   }, { fatalBind: true });
-  const bridge = startBridgeServer(agent, config, bridgeSock, control, startAgent);
+  // The owner's queued turns start one at a time, each only once the gateway has no Cotal message
+  // or turn in progress: the gateway's own busy handling would interrupt a turn in progress.
+  let draining = false;
+  const drain = (): void => {
+    const b = bridge;
+    if (draining || !b?.idle()) return;
+    draining = true;
+    void (async () => {
+      try {
+        while (b.idle() && (await agent.dispatchNextCommand()) !== "empty");
+      } finally {
+        draining = false;
+      }
+    })();
+  };
+  agent.on("command", drain);
+  bridge = startBridgeServer(agent, config, bridgeSock, control, { onSubscribe: startAgent, onIdle: drain });
   // The launch's initial prompt is the gateway's first turn, in the user's own words. Read once and
   // dropped from the environment the gateway inherits.
   const prompt = process.env.COTAL_HERMES_PROMPT;
@@ -96,7 +114,7 @@ export function startSidecar(): Sidecar {
       // Both servers have closed, with every accepted connection ended, before stop resolves, so a
       // launcher that removes their directory next leaves nothing listening or connected in it. A
       // control connection ends on its own within the exchange's deadlines.
-      await Promise.all([bridge.close(), new Promise<void>((resolve) => controlServer.close(() => resolve()))]);
+      await Promise.all([bridge!.close(), new Promise<void>((resolve) => controlServer.close(() => resolve()))]);
       await events?.close();
       await agent.stop();
     },

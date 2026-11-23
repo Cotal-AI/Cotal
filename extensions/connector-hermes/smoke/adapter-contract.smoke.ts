@@ -92,6 +92,10 @@ base.BasePlatformAdapter = BasePlatformAdapter
 base.MessageEvent = MessageEvent
 base.MessageType = MessageType
 base.SendResult = SendResult
+base.cache_image_from_bytes = lambda data, ext=".jpg": ""
+
+session = types.ModuleType("gateway.session")
+session.build_session_key = lambda source, **kw: ""
 
 cfg = types.ModuleType("gateway.config")
 class Platform:
@@ -104,7 +108,7 @@ platforms = types.ModuleType("gateway.platforms")
 gateway = types.ModuleType("gateway")
 sys.modules.update({
     "gateway": gateway, "gateway.platforms": platforms,
-    "gateway.platforms.base": base, "gateway.config": cfg,
+    "gateway.platforms.base": base, "gateway.config": cfg, "gateway.session": session,
 })
 
 sys.path.insert(0, PLUGIN_PARENT)
