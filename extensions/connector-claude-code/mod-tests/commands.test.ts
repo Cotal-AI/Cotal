@@ -138,6 +138,13 @@ describe('policy', () => {
     for (const { name } of OPEN) expect((await ask({ op: 'run', command: name, args: 'go' })).outcome).toBe('started')
     expect(record.runs).toEqual(OPEN.map(({ name }) => [name, 'go']))
   })
+  test('a refusing row applies whatever source Claude gives the command', async ($, on) => {
+    const { ask, record } = seat(on, { list: [{ name: 'diff', description: 'Toggle the diff panel', source: 'plugin' }] })
+    await start($)
+    expect(await ask({ op: 'list' })).toEqual({ id: 'r1', op: 'list', commands: [] })
+    expect((await ask({ op: 'run', command: 'diff', args: '' })).outcome).toBe('refused')
+    expect(record.runs).toHaveLength(0)
+  })
 })
 
 describe('exact names', () => {
@@ -151,10 +158,11 @@ describe('exact names', () => {
     expect(record.runs).toHaveLength(0)
   })
   test('a name listed twice runs only when every entry allows it', async ($, on) => {
-    const { ask, record } = seat(on, { list: [{ name: 'model', description: 'mine', source: 'user' }, builtin('model')] })
+    // /exit has no row, so the person's own /exit alone would run.
+    const { ask, record } = seat(on, { list: [{ name: 'exit', description: 'mine', source: 'user' }, builtin('exit')] })
     await start($)
-    expect(await ask({ op: 'run', command: 'model', args: 'haiku' })).toEqual({
-      id: 'r1', op: 'run', outcome: 'refused', reason: '/model changes Claude Code settings at the seat',
+    expect(await ask({ op: 'run', command: 'exit', args: '' })).toEqual({
+      id: 'r1', op: 'run', outcome: 'refused', reason: '/exit is a Claude Code command that does not run remotely',
     })
     expect(record.runs).toHaveLength(0)
   })

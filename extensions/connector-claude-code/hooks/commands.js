@@ -72,11 +72,12 @@ let turnId;
 const clip = (text, max) => [...text].slice(0, max).join('');
 const messageOf = (error) => String(error?.message ?? error) || 'unknown error';
 
+// A refusing row comes first: Claude ships some of its own commands, such as /diff, as plugins.
 function verdict({ name, source }) {
-  if (OPEN_SOURCES.has(source)) return undefined;
   const row = BUILTINS.get(name);
-  if (row === ALLOW) return undefined;
-  return row ? REFUSALS[row](name) : `/${name} is a Claude Code command that does not run remotely`;
+  if (row && row !== ALLOW) return REFUSALS[row](name);
+  if (row === ALLOW || OPEN_SOURCES.has(source)) return undefined;
+  return `/${name} is a Claude Code command that does not run remotely`;
 }
 
 // Why a remote request may not run `name`, or undefined when it may. Claude picks the entry a name

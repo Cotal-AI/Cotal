@@ -390,6 +390,14 @@
       "replace": "",
       "expectRed": "serves a managed seat",
       "cell": "serves a managed seat"
+    },
+    {
+      "name": "let the source decide before a refusing row",
+      "file": "extensions/connector-claude-code/hooks/commands.js",
+      "find": "  if (row && row !== ALLOW) return REFUSALS[row](name);\n",
+      "replace": "",
+      "expectRed": "a refusing row applies whatever source Claude gives the command",
+      "cell": "a refusing row applies whatever source Claude gives the command"
     }
   ]
 }
