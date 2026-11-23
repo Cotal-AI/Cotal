@@ -82,7 +82,7 @@ try {
 `], { env: { ...childEnv, XDG_CONFIG_HOME: join(root, "repair-config"), COTAL_HOME: join(root, "repair-home") }, encoding: "utf8", timeout: 30_000 });
   assert.equal(repair.status, 0, `${repair.stdout}${repair.stderr}`);
   passed++;
-  for (const scenario of ["unfinished-root", "unfinished-holders", "unfinished-seat", "unfinished-live-seat", "unfinished-dead-seat", "unfinished-link", "unselected-holder", "seat-holder", "unknown-set", "unknown-seat", "previous-read", "previous-wrong-entry", "previous-wrong-root", "previous-wrong-version", "previous-linked-ancestor", "previous-nonprivate-ancestor", "retain", "linked-config", "pnpm-dlx-refresh", "no-identity", "invalid-selection", "linked-prefix", "linked-parent", "stage-root", "next-version", "live-holder", "removal-failure", "orphan-child", "interrupted-lineage", "interrupted-canonical-move", "interrupted-canonical-cleanup", "initial-inherit", "checkout", "desktop", "windows"] as const) {
+  for (const scenario of ["unfinished-root", "unfinished-holders", "unfinished-seat", "unfinished-live-seat", "unfinished-dead-seat", "unfinished-link", "unselected-holder", "seat-holder", "unknown-set", "unknown-seat", "previous-read", "previous-wrong-entry", "previous-wrong-root", "previous-wrong-version", "previous-linked-ancestor", "previous-nonprivate-ancestor", "retain", "linked-config", "moved-config", "pnpm-dlx-refresh", "no-identity", "invalid-selection", "linked-prefix", "linked-parent", "stage-root", "next-version", "live-holder", "removal-failure", "orphan-child", "interrupted-lineage", "interrupted-canonical-move", "interrupted-canonical-cleanup", "initial-inherit", "checkout", "desktop", "windows"] as const) {
     const config = join(root, scenario);
     mkdirSync(join(config, "cotal/seed/store/0.162.0"), { recursive: true, mode: 0o700 });
     mkdirSync(join(config, "cotal/extensions/node_modules/old"), { recursive: true, mode: 0o700 });
@@ -138,6 +138,54 @@ rmSync(selectionFile);
 assert.equal(connectorConfigDir(),selected,'the physical path can use the same-version lineage');
 writeFileSync(selectionFile,selection,{mode:0o600});
 process.env.XDG_CONFIG_HOME=safe;
+` : ""}
+${scenario === "moved-config" ? `
+const from=process.env.XDG_CONFIG_HOME, to=from+' café';
+const selectedAt=path=>to+path.slice(from.length);
+const selection=selectedAt(join(dirname(selected),'selection.json'));
+const lineage=join(dirname(dirname(selection)),'current.json');
+const moved=selectedAt(selected);
+renameSync(from,to);
+process.env.XDG_CONFIG_HOME=to;
+const before=snapshot(to);
+assert.equal(connectorConfigDir(),moved);
+assert.equal(readFileSync(join(moved,'extensions/node_modules/old/lazy.js'),'utf8'),'old graph\\n');
+assert.deepEqual(snapshot(to),before,'reading a moved selection does not write it back');
+const {updateSnapshotConfig}=await import(${JSON.stringify(module)});
+assert.equal(updateSnapshotConfig({snapshot:join(selected,'.update-snapshot-test'),previous:'0.165.4'}),undefined,'update recovery must not rebase a recorded snapshot');
+renameSync(selection,selection+'.saved');
+assert.equal(connectorConfigDir(),moved,'the moved lineage can name the current set');
+assert.equal(canRecoverConnectorConfig(),true);
+const originalMetadata=readFileSync(metadata);
+try {
+  writeFileSync(metadata,JSON.stringify({...JSON.parse(originalMetadata),version:'0.165.5'}));
+  assert.equal(connectorConfigDir(),moved,'the moved lineage can name a previous set');
+  assert.equal(canRecoverConnectorConfig(),false);
+} finally { writeFileSync(metadata,originalMetadata); }
+assert.equal(JSON.parse(readFileSync(lineage,'utf8')).root,selected);
+renameSync(selection+'.saved',selection);
+mkdirSync(join(from,'cotal'),{recursive:true,mode:0o700});
+assert.throws(()=>connectorConfigDir(),/differs.*recorded root.*expected a connector root/,'a separate existing config is not a move');
+rmSync(join(from,'cotal'),{recursive:true});
+symlinkSync(join(from,'missing'),join(from,'cotal'));
+assert.throws(()=>connectorConfigDir(),/differs/,'a dangling old config link is not a move');
+rmSync(from,{recursive:true});
+symlinkSync(from+'-missing',from);
+assert.throws(()=>connectorConfigDir(),/ENOENT/,'a dangling old ancestor is not a move');
+rmSync(from);
+renameSync(moved,moved+'.saved');
+symlinkSync(moved+'.saved',moved);
+assert.throws(()=>connectorConfigDir(),/private/,'the moved root must be a real directory');
+rmSync(moved);
+renameSync(moved+'.saved',moved);
+const seed=join(moved,'seed');
+renameSync(seed,seed+'.saved');
+symlinkSync(seed+'.missing',seed);
+assert.throws(()=>connectorConfigDir(),/retained connector state is not a real directory/);
+rmSync(seed);
+renameSync(seed+'.saved',seed);
+renameSync(to,from);
+process.env.XDG_CONFIG_HOME=from;
 ` : ""}
 ${scenario === "retain" ? `const unrelated=join(original,'installs','other-install');mkdirSync(unrelated,{mode:0o500});fs.chmodSync(selected,0o520);fs.chmodSync(join(selected,'seed'),0o500);prepareConnectorConfigForUpdate();assert.equal(connectorConfigDir(),selected);assert.equal(fs.statSync(selected).mode&0o777,0o700);assert.equal(fs.statSync(join(selected,'seed')).mode&0o777,0o700);assert.equal(fs.statSync(unrelated).mode&0o777,0o500);fs.chmodSync(unrelated,0o700);` : ""}
 assert.equal(readFileSync(join(selected,'extensions/node_modules/old/lazy.js'),'utf8'),'old graph\\n');
