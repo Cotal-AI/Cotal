@@ -38,7 +38,7 @@ function run(args: string[], terminal = false, extra: Record<string, string> = {
   return result.stdout + result.stderr;
 }
 
-async function coldHelp(): Promise<void> {
+async function coldEntryAndHelp(): Promise<void> {
   const requests: string[] = [];
   const latest = "99.0.0";
   const registry = createServer((req, res) => {
@@ -54,8 +54,12 @@ async function coldHelp(): Promise<void> {
     const invoke = (args: string[], cotalHome: string) => terminal("script", ptyArgs(args), {
       cwd: root, env: { ...env, COTAL_HOME: cotalHome, npm_config_registry: `http://127.0.0.1:${address.port}` }, timeout: 30_000,
     });
+    const bareHome = join(root, "bare-home");
+    const entryHome = join(root, "entry-home");
     const helpHome = join(root, "help-home");
     const docsHome = join(root, "docs-home");
+    assert.match((await invoke([], bareHome)).stdout, /No space is selected\./);
+    assert.match((await invoke(["--no-color"], entryHome)).stdout, /No space is selected\./);
     assert.match((await invoke(["--no-color", "--help"], helpHome)).stdout, /lateral agent coordination/);
     assert.match((await invoke(["--no-color", "docs"], docsHome)).stdout, /documentation/);
     const cache = join(docsHome, "update-check.json");
@@ -65,6 +69,8 @@ async function coldHelp(): Promise<void> {
     assert.equal(JSON.parse(readFileSync(cache, "utf8")).latest, latest);
     assert.equal(existsSync(lock), false);
     assert.deepEqual(requests, ["GET /cotal-ai"]);
+    assert.equal(existsSync(bareHome), false);
+    assert.equal(existsSync(entryHome), false);
     assert.equal(existsSync(helpHome), false);
   } finally {
     await new Promise<void>(resolve => registry.close(() => resolve()));
@@ -91,5 +97,5 @@ assert.match(run(["update", "--notify", "off"]), /Update notices: off/);
 assert.doesNotMatch(run(["--version"], true), /Cotal update available:/);
 assert.match(run(["update", "--notify", "on"]), /Update notices: on/);
 assert.equal((run(["--version"], true).match(/Cotal update available:/g) ?? []).length, 1);
-await coldHelp();
+await coldEntryAndHelp();
 emitSentinel({ passed: counted.cells(), failed: 0 });

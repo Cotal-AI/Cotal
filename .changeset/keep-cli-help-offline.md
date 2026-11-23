@@ -3,4 +3,4 @@
 "@cotal-ai/cli": patch
 ---
 
-CLI help no longer checks npm for updates or writes an update cache.
+CLI help and the entry screen no longer check npm for updates or write an update cache.

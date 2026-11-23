@@ -413,7 +413,7 @@ export interface RunCliOptions {
    *  command's work begins, or kept for a command that declares `keepsStartupNotice`, whose own
    *  notice takes it over. */
   startupNotice?: StartupNotice;
-  /** Start the binary's background update notice only for an invocation other than help. */
+  /** Start the binary's background update notice for commands other than help. */
   notifyUpdate?: () => Promise<void>;
 }
 
@@ -762,7 +762,7 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
   const startedAt = Date.now();
   const { word, original, words, output, leadingGlobals, repeatedLeading } = parseLeadingArgs(argv);
   const wantsHelp = asksForHelp(words);
-  if (opts.notifyUpdate && word !== "help" && !wantsHelp) await opts.notifyUpdate();
+  if (opts.notifyUpdate && word !== undefined && word !== "help" && !wantsHelp) await opts.notifyUpdate();
   const builtin = findCommand(registry.all<Command>("command"), word);
   const globals = collectGlobalFlags(words, leadingGlobals);
   const ownWords = (cmd: Command | undefined): string[] => {
