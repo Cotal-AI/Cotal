@@ -3,8 +3,12 @@ import { homedir, tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { discardLaunchArtifacts, registry, type Connector, type LaunchOpts, type LaunchSpec } from "@cotal-ai/core";
-import { aclEnv, nameEnv, controlEndpoint, eventChannel, launchArmsEvents, launchEnv, MODEL_PROVIDER_KEYS, materialEnv } from "@cotal-ai/connector-core";
+import { aclEnv, nameEnv, controlEndpoint, eventChannel, launchArmsEvents, launchEnv, materialEnv } from "@cotal-ai/connector-core";
+import { HERMES_PROVIDER_KEYS, listHermesModels } from "./models.js";
 import { HERMES_FORK_RECORD, hermesSeatHome } from "./seat-home.js";
+
+// Part of the package's public exports, through index.ts.
+export { HERMES_PROVIDER_KEYS };
 
 /** The launcher owns the mesh endpoint and supervises the Hermes gateway as a child — see launch.ts.
  *  From the BUILD, `launch.js` is a self-contained ESM bundle (core + connector-core inlined): run it with
@@ -19,16 +23,6 @@ const LAUNCH_COMMAND = FROM_BUILD
 /** A Hermes session id as its own store mints them (`20261003_010101_ab12cd`), with room for older
  *  shapes. It reaches a SQL parameter only, but a path or a flag is never a session. */
 const HERMES_SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/;
-
-export const HERMES_PROVIDER_KEYS: readonly string[] = [
-  ...MODEL_PROVIDER_KEYS,
-  "OPENCODE_GO_API_KEY", "OPENCODE_ZEN_API_KEY", "XAI_API_KEY", "GEMINI_API_KEY",
-  "NOVITA_API_KEY", "DEEPSEEK_API_KEY", "GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY",
-  "KIMI_API_KEY", "KIMI_CODING_API_KEY", "KIMI_CN_API_KEY", "MINIMAX_API_KEY",
-  "MINIMAX_CN_API_KEY", "DASHSCOPE_API_KEY", "ALIBABA_CODING_PLAN_API_KEY",
-  "STEPFUN_API_KEY", "ARCEEAI_API_KEY", "GMI_API_KEY", "NVIDIA_API_KEY", "KILOCODE_API_KEY",
-  "XIAOMI_API_KEY", "TOKENHUB_API_KEY", "OLLAMA_API_KEY", "AZURE_FOUNDRY_API_KEY",
-];
 
 /**
  * The Hermes (Nous Research) connector. Unlike Claude Code / Codex — where the harness *is* the
@@ -58,6 +52,8 @@ export const hermesConnector: Connector = {
   // prompt desk (src/approvals.ts).
   supportsAskPermissions: true,
   prompts: true,
+  // The models of the provider a launch's environment picks (src/models.ts).
+  listModels: listHermesModels,
   buildLaunch(opts: LaunchOpts): LaunchSpec {
     if (opts.continueSession) throw new Error("the Hermes connector does not support exact-session continuation");
     // Hermes is Unix-only: its sidecar bridge + hook relay use AF_UNIX `.sock` paths and a Python

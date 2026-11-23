@@ -371,7 +371,8 @@ They do not read `spawn.env`. The binary resolves from the operator pin (`COTAL_
 then the absolute path recorded at manager boot, then the bare name. The seat allow-list does not apply to these short-lived reads.
 The `claude` and `pi` catalog reads receive a launch's environment: the seat allow-list and the
 connector's provider keys, without `spawn.env`. Their binary is the absolute path recorded at
-manager boot, then the bare name. The manager hands every catalog read the `spawn.env` names from
+manager boot, then the bare name. The `hermes` catalog read receives the same environment with the
+`spawn.env` names, as a Hermes launch does, and runs `uv` from the same places. The manager hands every catalog read the `spawn.env` names from
 the config a spawn would read at that moment, and each connector decides whether its read uses them.
 
 ### Launch material
