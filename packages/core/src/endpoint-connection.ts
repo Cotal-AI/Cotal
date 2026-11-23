@@ -697,6 +697,9 @@ export class EndpointConnection {
     this.cred.cancelBearerRenewal?.();
     this.cancelCredsRefresh();
     if (this.cred.authExpiryReconnectTimer) clearTimeout(this.cred.authExpiryReconnectTimer);
+    // A reconnecting connection is still open, but cannot delete consumers. Close it before
+    // retiring watches so their cleanup cannot buffer requests for a broker that is not there.
+    if (!this.conn.nativeBound) await this.closeWithoutLibraryReconnect(this.conn.nc);
     for (const watch of this.conn.membershipFeedWatches) {
       watch.stopped = true;
       watch.arm = watch.arm.catch(() => {}).then(async () => {
@@ -707,7 +710,7 @@ export class EndpointConnection {
     // Permanent endpoint shutdown has no future epoch. Try strict cleanup on the current live epoch;
     // if the broker is already gone, terminate local ownership rather than hanging shutdown forever.
     await Promise.all([...this.conn.membershipFeedWatches].map((watch) => watch.arm.catch((err) => {
-      if (this.conn.nc && !this.conn.nc.isClosed()) throw err;
+      if (this.conn.nativeBound && this.conn.nc && !this.conn.nc.isClosed()) throw err;
     })));
     for (const watch of this.conn.membershipFeedWatches) {
       watch.resolveStop?.();
