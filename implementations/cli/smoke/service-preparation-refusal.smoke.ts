@@ -110,7 +110,7 @@ process.on("exit", () => rmSync(home, { recursive: true, force: true }));
 const HOST_ENV = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("COTAL_") && k !== "FORCE_COLOR" && k !== "NO_COLOR"));
 const env = { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config"), COTAL_HOME: join(home, ".cotal"), COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1", COTAL_TELEMETRY: "off" };
 const run = (args: string[], extra: NodeJS.ProcessEnv = {}) => {
-  const r = spawnSync(process.execPath, [BIN, ...args, "--json"], { cwd: root, env: { ...env, ...extra }, encoding: "utf8", timeout: 120_000 });
+  const r = spawnSync(process.execPath, [BIN, ...args, ...(args.includes("--json") ? [] : ["--json"])], { cwd: root, env: { ...env, ...extra }, encoding: "utf8", timeout: 120_000 });
   let envelope: Envelope | undefined;
   try { envelope = JSON.parse(r.stdout) as Envelope; } catch { envelope = undefined; }
   return { status: r.status, stdout: r.stdout, stderr: r.stderr, envelope };
@@ -158,8 +158,9 @@ check("a bare status with two records is TARGET_AMBIGUOUS, exit 2, naming each w
   ambiguous.status === 2 && ambiguous.envelope?.error?.code === "TARGET_AMBIGUOUS" && [one, two].every((id) => new RegExp(`${id} \\(\\w+\\)`).test(ambiguousNext)), shown(ambiguous));
 check("its Next names the remove --instance command for each stopped record", [one, two].every((id) => ambiguousNext.includes(`cotal service remove worker --instance ${id} --space b1 --yes`)), ambiguous.envelope?.error);
 const unconfirmed = run(["service", "remove", "worker", "--instance", String(two), "--space", "b1"]);
-check("remove --instance in a script needs --yes: USAGE_INVALID, exit 1", unconfirmed.status === 1 && unconfirmed.envelope?.error?.code === "USAGE_INVALID", shown(unconfirmed));
-const cleared = run(["service", "remove", "worker", "--instance", String(two), "--space", "b1", "--yes"]);
+const confirm = unconfirmed.envelope?.error?.remedy?.match(/^confirm with `cotal (.+)`$/)?.[1];
+check("remove --instance in a script needs --yes and its confirmation keeps --json", unconfirmed.status === 1 && unconfirmed.envelope?.error?.code === "USAGE_INVALID" && confirm === `svc remove worker --space b1 --instance ${two} --yes --json`, shown(unconfirmed));
+const cleared = run(confirm?.split(" ") ?? []);
 check("remove --instance forgets that stopped record, exit 0", cleared.status === 0 && cleared.envelope?.result?.kind === "service-instance-record-removed" && cleared.envelope.result.instanceId === two, shown(cleared));
 const again = run(["service", "remove", "worker", "--instance", String(two), "--space", "b1", "--yes"]);
 check("the same ID again is TARGET_NOT_FOUND, exit 2", again.status === 2 && again.envelope?.error?.code === "TARGET_NOT_FOUND", shown(again));
@@ -210,7 +211,7 @@ check("service show lists the reference by name", shownText.status === 0 && /Env
 const envRemoved = run(["service", "remove", "envsvc", "--space", "b1", "--yes"]);
 check("rig: the definition is forgotten", envRemoved.status === 0, shown(envRemoved));
 const gone = run(["service", "show", "envsvc", "--space", "b1"]);
-check("service show of a definition that is not saved is TARGET_NOT_FOUND, exit 2, naming where the saved ones are", gone.status === 2 && gone.envelope?.error?.code === "TARGET_NOT_FOUND" && gone.envelope.error.remedy === "see the saved definitions with `cotal service`", shown(gone));
+check("service show of a definition that is not saved is TARGET_NOT_FOUND, exit 2, naming where the saved ones are", gone.status === 2 && gone.envelope?.error?.code === "TARGET_NOT_FOUND" && gone.envelope.error.remedy === "see the saved definitions with `cotal service --space b1`", shown(gone));
 
 // A readiness value that breaks the schema names the field and its rule, never the value, and its
 // Next says to correct readiness.

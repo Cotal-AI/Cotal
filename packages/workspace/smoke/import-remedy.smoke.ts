@@ -11,10 +11,12 @@
  * Fixtures live under a temp cotal config home (XDG_CONFIG_HOME) inside the repo, so each one's
  * `@cotal-ai/core` resolves to the repo copy this smoke also measures against.
  */
+import { spawnSync } from "node:child_process";
 import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { readFileSync } from "node:fs";
-import type { ExtensionRef } from "@cotal-ai/core";
+import { registry, type ExtensionRef } from "@cotal-ai/core";
 import { bindExtensionPeers, CorruptExtensionPackageError, extensionPackageDir, extensionsDir, hostPackageDir, importExtensionEntry, importInstalledExtension, installedExtensionPackage, installedExtensionVersion, type InstalledExtension } from "@cotal-ai/workspace";
 // Not on the package's public surface: the same module instance the entry point above loads.
 import { upgradeRemedy } from "../dist/import-diagnosis.js";
@@ -123,6 +125,43 @@ try {
     check("control, non-export failure: claims no side", !/is BEHIND|older side|Same version|Neither side/.test(m), m);
     check("control, non-export failure: keeps the plain reinstall remedy", m.includes("cotal ext add @cotal-ai/remedy-"), m);
   }
+  // A package whose `main` names a directory resolves through that directory's index file, the
+  // way Node's own resolution does. The add-time existence check already passes for such a package
+  // (the directory exists), so only the import failed.
+  {
+    const pkg = "@third/directory-entry";
+    const dir = join(extensionsDir(), "node_modules", ...pkg.split("/"));
+    mkdirSync(join(dir, "dist"), { recursive: true });
+    writeFileSync(join(dir, "package.json"), JSON.stringify({ name: pkg, version: "1.0.0", type: "module", main: "./dist", peerDependencies: { "@cotal-ai/core": "*" } }));
+    writeFileSync(join(dir, "dist", "index.js"), `import { registry } from "@cotal-ai/core";\nregistry.register({ kind: "command", name: "directory-entry-example", summary: "Print a greeting", run() { console.log("Hello"); } });\n`);
+    const ref: ExtensionRef = { kind: "command", name: "directory-entry-example" };
+    const ext: InstalledExtension = { pkg, version: "1.0.0", spec: `${pkg}@1.0.0`, commands: [], provides: [ref] };
+    await importInstalledExtension(ext, ref);
+    check("directory entry: imports and registers the command", registry.has("command", "directory-entry-example"));
+    // The native loader is the arbiter here: tsx resolves a directory import to its index file on
+    // its own, so the check above would pass without the fix. Drive the same fixture through plain
+    // node, where a directory import fails unless the entry was resolved first.
+    const probeEnv: NodeJS.ProcessEnv = { ...process.env, XDG_CONFIG_HOME: tmp };
+    for (const key of Object.keys(probeEnv)) if (key.startsWith("COTAL_")) delete probeEnv[key];
+    const probe = spawnSync(process.execPath, ["--input-type=module", "-e",
+      `import { importInstalledExtension } from ${JSON.stringify(pathToFileURL(join(import.meta.dirname, "..", "dist", "index.js")).href)};\n` +
+      `import { registry } from ${JSON.stringify(pathToFileURL(join(import.meta.dirname, "..", "..", "core", "dist", "index.js")).href)};\n` +
+      `await importInstalledExtension({ pkg: "@third/directory-entry", version: "1.0.0", spec: "@third/directory-entry@1.0.0", commands: [], provides: [{ kind: "command", name: "directory-entry-example" }] }, { kind: "command", name: "directory-entry-example" });\n` +
+      `console.log(registry.has("command", "directory-entry-example") ? "registered" : "not-registered");\n`,
+    ], { encoding: "utf8", env: probeEnv });
+    check("directory entry: plain node imports and registers the command", probe.status === 0 && probe.stdout.includes("registered"), probe.stderr || probe.stdout);
+    // A directory with nothing to resolve keeps the old failure instead of silently succeeding.
+    // (The exact wording differs by loader: plain Node reports a directory import, tsx reports
+    // the missing index file. The suite asserts the failure and its remedy, not the phrasing.)
+    const emptyPkg = "@third/directory-empty";
+    const emptyDir = join(extensionsDir(), "node_modules", ...emptyPkg.split("/"));
+    mkdirSync(join(emptyDir, "dist"), { recursive: true });
+    writeFileSync(join(emptyDir, "package.json"), JSON.stringify({ name: emptyPkg, version: "1.0.0", type: "module", main: "./dist", peerDependencies: { "@cotal-ai/core": "*" } }));
+    let emptyError: unknown;
+    try { await importExtensionEntry(emptyPkg, "1.0.0", "fixture remedy"); } catch (e) { emptyError = e; }
+    check("directory entry: an unresolvable directory still fails", emptyError instanceof Error && emptyError.message.includes("failed to import"));
+    check("directory entry: the failure keeps the plain remedy", emptyError instanceof Error && emptyError.message.includes("fixture remedy"));
+  }
   // 7. The remedy's SHAPE, proven on hand-built paths because nothing in this repo can make the peer
   //    resolve into an installed tree — hostPackageDir always finds the source checkout above. Cells
   //    1-6 prove the real entry point reaches this function; these two prove the branch it takes for
@@ -163,7 +202,7 @@ try {
     check("no declared range: remains an unrankable pair", m.includes("Neither side can be named as behind") && m.includes("is not a @cotal-ai/* package"), m);
     check("no declared range: is not reported as damaged metadata", !m.includes("is corrupt or unreadable"), m);
   }
-  check("all import-remedy assertions ran", passed + failed === 36, { passed, failed });
+  check("all import-remedy assertions ran", passed + failed === 40, { passed, failed });
 
   // The common reader's absence/corruption policy also governs peer binding and direct entry loads.
   // These are native private files, not intercepted filesystem calls.

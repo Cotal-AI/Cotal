@@ -257,6 +257,25 @@ try {
   check("another prepared space is selected and bare ps cannot list its agents", prepared.status === 0 && selected.status === 0 && wrongRoster.status === 2 && /Mesh: otheraudit/.test(wrongRoster.out), wrongRoster);
   const route = ["--space", space, "--server", SERVERS];
   const roster = `cotal ps ${route.join(" ")}`;
+  const emptyPicker = await new Promise<Run>((res) => {
+    const hostEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))) as Record<string, string>;
+    const child = pty.spawn(process.execPath, [BIN, "attach", "--on", IID2, ...route], {
+      cwd: other, env: { ...hostEnv, COTAL_HOME: home, XDG_CONFIG_HOME: join(home, "xdg"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" },
+      cols: 180, rows: 30,
+    });
+    let out = "";
+    child.onData((data) => { out += data; });
+    const timer = setTimeout(() => child.kill("SIGKILL"), 30_000);
+    child.onExit(({ exitCode }) => { clearTimeout(timer); res({ status: exitCode, out }); });
+  });
+  const emptyRoute = `--on ${IID2} ${route.join(" ")}`;
+  const [emptyRoster, emptySpawn] = [...emptyPicker.out.matchAll(/`([^`]+)`/g)].map((match) => match[1]);
+  check("interactive attach with an empty roster keeps the explicit manager, space and broker in both commands",
+    emptyPicker.status === 2 && /Code:\s+TARGET_NOT_FOUND/.test(emptyPicker.out)
+    && emptyRoster === `cotal ps ${emptyRoute}` && emptySpawn === `cotal spawn ${emptyRoute}`, emptyPicker);
+  const emptyRosterResult = emptyRoster === `cotal ps ${emptyRoute}` ? await cotal(emptyRoster.split(" ").slice(1), other) : undefined;
+  check("the empty picker's roster command reaches the selected manager",
+    emptyRosterResult?.status === 0 && emptyRosterResult.out.includes(IID2) && !emptyRosterResult.out.includes(IID1), emptyRosterResult ?? emptyPicker);
   const noName = await cotal(["attach", ...route], other);
   const [suggestedRoster, suggestedAttach] = [...noName.out.matchAll(/`([^`]+)`/g)].map((match) => match[1]);
   check("noninteractive attach without a name keeps the target in both commands",

@@ -52,6 +52,7 @@ import { pickFreePort } from "./_free-port.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const PORT = await pickFreePort();
+const monitorPort = await pickFreePort();
 const SERVERS = `nats://127.0.0.1:${PORT}`;
 const enc = (s: string) => new TextEncoder().encode(s);
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -68,7 +69,7 @@ const pkey = (id: string) => principalKey(DEV_OWNER, id).key;
 const space = `membership-${randomUUID().slice(0, 8)}`;
 const auth = await createSpaceAuth(space); // sys.signingSeed lives in-memory here — mint the observer below
 const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
-writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: join(dir, "js") }));
+writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: join(dir, "js") }) + `\nhttp: 127.0.0.1:${monitorPort}\n`);
 const srv = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
 const releaseBroker = teardownOnSignal(srv, dir);
 
@@ -239,6 +240,26 @@ try {
   const aliceAfter = out.get(membershipKey(pkey(alice.id)));
   check("a disconnected live subscriber keeps its durable membership", !!aliceAfter && eq(aliceAfter.durable, ["general"]), aliceAfter);
   check("a disconnected live subscriber's live set is pruned to empty", !!aliceAfter && eq(aliceAfter.live, []), aliceAfter?.live);
+
+  // After a warm poll, unchanged members need no replay. The feed reads only its changed keys.
+  // Use the native connection's output counters so this checks broker traffic, not a JS call count.
+  const cid = feed.nativeDataConnections()[0]!.cid;
+  const outbound = async () => {
+    const response = await fetch(`http://127.0.0.1:${monitorPort}/connz?cid=${cid}`);
+    const stats = await response.json() as { connections: Array<{ out_msgs: number }> };
+    return stats.connections[0]!.out_msgs;
+  };
+  const idleCost = async () => {
+    const start = await outbound();
+    await feed!.poll();
+    return await outbound() - start;
+  };
+  const idleBefore = await idleCost();
+  for (let i = 0; i < 64; i++) await commitMember(members, rec(`cold.${i}`, pkey(bob.id)));
+  await feed.poll();
+  check("feed sees durable memberships added after startup", (await readFeed()).out.get(membershipKey(pkey(bob.id)))?.durable.includes("cold.63") === true);
+  const idleAfter = await idleCost();
+  check("unchanged membership poll transfers no extra rows as the registry grows", idleAfter <= idleBefore + 2, { idleBefore, idleAfter });
 
   // --- incomplete-sweep guard (review-general): a poll that gets ZERO CONNZ replies must NOT prune the
   // live half or advance the freshness heartbeat. Simulate deterministically by running a feed with a

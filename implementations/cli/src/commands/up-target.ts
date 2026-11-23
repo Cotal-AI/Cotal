@@ -34,6 +34,12 @@ export function preparedUpRoot(value: string): string {
   return root;
 }
 
+/** An invoking folder that vanished during up cannot be restored. Keep the operation's outcome. */
+export function restoreUpCwd(previousCwd: string): void {
+  try { process.chdir(previousCwd); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+}
+
 /** Only new spaces need the creation grammar. A stopped legacy stack may have lost its
  *  registration while its own journal, broker configuration or account still names it. */
 export function checkNewUpSpace(space: unknown, root: string | undefined): void {

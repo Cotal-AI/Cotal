@@ -160,6 +160,28 @@ check("help service remove lists --instance <full-id> in its usage and options",
   }
   const listed = run(["service", "--space", "sa", "--json"], a);
   check("...and sa lists both", listed.status === 0 && listed.stdout.includes('"name":"viafolder"') && listed.stdout.includes('"name":"viaspace"'), shown(listed));
+
+  const noSource = run(["service", "add", "retry", "-s", "sb", "--json"]);
+  const addReceipt = JSON.parse(noSource.stdout);
+  const retryFlags = /^cotal service add retry --exec "<command>" (--space sb --json)$/.exec(addReceipt.error?.remedy)?.[1];
+  check("add without a launch source refuses before resolving space and keeps the selector and JSON in its retry",
+    noSource.status === 1 && addReceipt.target === null && addReceipt.error?.code === "USAGE_INVALID" && retryFlags !== undefined, shown(noSource));
+  const retried = retryFlags === undefined ? undefined : run(["service", "add", "retry", "--exec", "/bin/sleep 300", ...retryFlags.split(" ")]);
+  check("following the add retry saves in sb instead of the selected sa",
+    retried?.status === 0 && JSON.parse(retried.stdout).target?.space === "sb" &&
+    run(["service", "show", "retry", "--json"]).status === 2, retried && shown(retried));
+
+  for (const [flags, cwd, space, saved] of [[["--space", "sb"], neutral, "sb", "retry"], [[], b, "sa", "tick"]] as const) {
+    const missing = run(["service", "show", "missing", ...flags, "--json"], cwd);
+    const receipt = JSON.parse(missing.stdout);
+    const listFlags = /^see the saved definitions with `cotal service (--space s[ab])`$/.exec(receipt.error?.remedy)?.[1];
+    check(`show with ${flags.length ? "an explicit" : "a selected"} space points to ${space}'s inventory`,
+      missing.status === 2 && receipt.error?.code === "TARGET_NOT_FOUND" && receipt.target?.space === space && listFlags === `--space ${space}`, shown(missing));
+    const inventory = listFlags === undefined ? undefined : run(["service", ...listFlags.split(" "), "--json"]);
+    const result = inventory?.status === 0 ? JSON.parse(inventory.stdout).result : undefined;
+    check(`following the show remedy lists ${space} from the neutral folder without starting the saved service`,
+      result?.definitions.some((row: { name: string }) => row.name === saved) && result.instances.length === 0, inventory && shown(inventory));
+  }
 }
 
 const reference = readFileSync(join(import.meta.dirname, "../../../docs/cli-services.mdx"), "utf8");

@@ -56,6 +56,7 @@ attempt tree. Restore artifacts and targets likewise cannot nest inside or conta
 preserved source, or the maintenance attempt tree.
 
 `backup create` checks its preconditions before it claims the cut or creates any maintenance state.
+If it receives an option it does not accept, such as `--yes`, it names the option and asks you to remove it.
 A root with no preserved cut refuses. A plain `cotal down` records no cut, and `down --preserve-state`
 only cuts a running stack, so the refusal says to start the stack with `cotal up`, stop it with
 `cotal down --preserve-state`, then create the backup. A cut in another state
@@ -124,8 +125,10 @@ not a plain file name in the folder, such as one with `../` or an absolute path,
 `manifest-invalid`. `backup restore` and `up --restore` refuse each of these `SCHEMA_INVALID` with
 the same file and fault, before they stage or change anything.
 A directory with no `manifest.json` that holds files a `backup create` writes is refused as an
-incomplete artifact with the fault `manifest-missing`. The refusal names `backup recover` only
-when the current root records an interrupted create that owns the directory. Otherwise, verify
+incomplete artifact with the fault `manifest-missing`. The refusal names the real directory even
+when the supplied path is a symbolic link. The refusal names `backup recover` only when the current
+root's interrupted create still owns the directory at its recorded destination. The recorded path
+can pass through a linked parent, but its final component must be that directory. Otherwise, verify
 another intact copy or create a new backup from a stopped preserved cut.
 A file, or a directory that holds neither a manifest nor such a file, is not a backup artifact and
 refuses `TARGET_NOT_FOUND` (exit 2), naming it and saying whether it is a file, an empty folder or

@@ -18,7 +18,9 @@ cotal runtimes [--json | --plain]
 
 Lists every agent runtime the manager can spawn through: the built-in `pty`, the official providers
 (`orca`, `tmux`, `cmux`, `herdr`), and any custom provider installed via `cotal ext add`. Each installed
-provider is probed so you can see what is actually reachable on this machine before selecting it:
+provider is probed so you can see what is reachable on this machine. A provider that reports
+itself unreachable still gives a complete result. If the provider fails to load or its availability
+check throws, the report exits 4. The row and warning identify which step failed.
 
 ```
 RUNTIME  STATE                  PACKAGE
@@ -74,6 +76,8 @@ with `TARGET_NOT_FOUND` and a missing connector with `DEPENDENCY_UNAVAILABLE`, b
 and the connector refusal names the `cotal ext add` that installs it. `--file` (`-f`) names a
 persona file, never a manifest: manifests deploy with `cotal team deploy <file>`, and a manifest
 passed to `--file` is refused with that command. An invalid persona file is refused with `SCHEMA_INVALID` (exit 1), naming the field or YAML position without echoing YAML source excerpts.
+A persona path with a symbolic-link loop also refuses with `SCHEMA_INVALID`, naming the path.
+Correct the link's target, or move the link aside and put a regular persona file in its place.
 
 On a terminal, a bare `spawn` uses this terminal without asking where to run. When several of
 your Managers are live, one line lists them with the `--on <name>` selectors that launch there.
@@ -250,7 +254,9 @@ If the installed connector supports direct preview validation, it checks resume,
 native options without creating launch files or checking its binary or login. Otherwise the preview
 reports connector arguments as not checked.
 A managed preview warns about an unknown local harness and reports `not-checked`, since the
-selected manager checks its own connectors at launch.
+selected manager checks its own connectors at launch. On an open or static space, a managed
+preview refuses a `--on` value that cannot be a manager instance id with `USAGE_INVALID`
+(exit 1). On a user-auth space, a manager name or host stays a valid pin.
 Both launch and preview reject a blank `--resume` value with `USAGE_INVALID` (exit 1) before preparing the launch.
 
 With `-d --json`, an invalid agent name or a local resume that needs `--on` produces a
@@ -358,7 +364,7 @@ the host first. When the host refuses that enrollment, for example for a role or
 does not carry, and the manager removes the secrets it staged for the agent, the spawn is refused
 with the host's reason and `PERMISSION_DENIED` (exit 2). A host that fails or does not answer leaves
 `OPERATION_UNKNOWN`. See [Connect Claude Code](connect-claude.mdx) and
-[Agent files](agent-files.mdx). (`cotal start` was merged into `cotal spawn --detach`.)
+[Agent files](agent-files.mdx).
 A managed spawn onto a manager from another Cotal release is refused before any request is sent
 when the manager's contract does not declare a field this CLI sends. The refusal names the field,
 calls it version skew, and gives this CLI's version and the version that manager reports in its
@@ -366,6 +372,10 @@ calls it version skew, and gives this CLI's version and the version that manager
 `cotal manager restart`, or a CLI at the manager's version. When this CLI is older, it names
 `cotal update --self` here. A manager that reports no version is asked to run at this CLI's version.
 A field you leave unset is not sent, so it never causes that refusal.
+
+`cotal start` refuses without installing connectors. To migrate `cotal start --config default --name example`,
+run `cotal spawn default --detach --name example`. For a persona file, run
+`cotal spawn --detach --file <persona-file>` and keep the other launch options.
 
 
 ### Manager capacity
@@ -467,7 +477,7 @@ and launch can still refuse one.
 A connector without a catalog says so with `supported: false`, and one whose install has no
 catalog it can list, such as a logged-out Claude Code or a pi without provider credentials, gives
 the reason in `unavailable`; neither is a failed read. A connector whose catalog could not be
-read, or that the manager could not load, makes the read `partial` (exit 4) with one `MODEL_CATALOG_UNREADABLE` warning naming its cause. The
+read, or that the manager could not load, makes an all-catalog read `partial` (exit 4) with one `MODEL_CATALOG_UNREADABLE` warning naming its cause. When `--harness` names that one catalog, the read fails instead (exit 5, `OPERATION_FAILED`) with the connector's reason. The
 screen points to that warning without repeating it inline. The remedy is to correct the stated
 cause before retrying; a refresh cannot repair missing connector configuration. A manager-level
 refusal is reported separately. When the space's service registry lists no live manager, an
@@ -514,12 +524,14 @@ create work on that manager's catalog instead, and edit and remove refuse there,
 belongs to `persona create --on`; without `--on` it refuses with `USAGE_INVALID` and changes no file.
 
 Persona names for create, edit and remove use letters, digits, `_` and `-`, up to 128 characters.
-A local `persona show` also accepts periods and internal spaces in a catalog name.
+A local `persona show` takes the exact filename stem from the catalog, including punctuation,
+Unicode and spaces. It refuses paths and control characters.
 Quote a name with spaces: `cotal persona show 'a b'` reads `.cotal/agents/a b.md`.
 `cotal persona show review.md` reads `.cotal/agents/review.md.md` in the selected space,
 not `review.md` in the project root.
 If a catalog name starts with `-`, put options before `--` and the name after it, as in `cotal persona show --json -- -reviewer`.
 Local create and show reports use that form in their follow-up commands and keep explicit `--space` and `--server` selectors.
+If `persona show` cannot find the name, its suggested list command keeps those selectors too.
 Local creation uses the catalog name as the default agent name. Choose a name that starts with a
 letter, digit or `_`. A leading hyphen is refused with `USAGE_INVALID` before anything is written.
 Creation accepts one of `--file/-f` (a complete [agent file](agent-files.mdx)), `--prompt`, or
@@ -598,9 +610,10 @@ saved, an unchanged draft is removed, a changed one is kept and named, and the C
 129. An editor such as vim that takes Ctrl-C as a key keeps the edit going. A draft left as it was
 saves nothing and says the persona is unchanged. A changed
 or removed source refuses with `CONFLICT` (exit 2), leaving the current definition intact. The
-refusal says which one happened and keeps your edited draft in its private folder, naming it, so
-the edit is not lost. Local
-CLI create, edit and remove share a per-persona lock during comparison and commit, not while an
+refusal says which one happened and names the private draft it kept. If the source was removed,
+copy the draft back to the original catalog path without replacing any file there. This restores
+the saved bytes under the original catalog name, even when the definition names a different agent.
+Local CLI create, edit and remove share a per-persona lock during comparison and commit, not while an
 editor or confirmation is open. Manager and external writes do not participate in that lock.
 Create, edit and remove refuse a catalog folder you cannot write, such as one set to mode 0500,
 with `PERMISSION_DENIED`, and leave it and its files as they were. An edit whose save fails for

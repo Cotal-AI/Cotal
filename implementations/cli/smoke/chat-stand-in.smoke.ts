@@ -36,7 +36,7 @@ import { fileURLToPath } from "node:url";
 import { createSuite } from "@cotal-ai/smoke-kit";
 import type { CotalEndpoint } from "@cotal-ai/core";
 import { loadChatFrontEnd } from "../src/chat/frontend.js";
-import { ENDING_NOTICE_MS, MAX_BUFFER, NativeChatSession, closeSummary, parseRecipient, publish, type AdmittedChatSession, type CloseReport, type SessionEvent, type SessionIdentity } from "@cotal-ai/workspace/chat";
+import { ENDING_NOTICE_MS, MAX_BUFFER, MAX_DRAFT, NativeChatSession, closeSummary, parseRecipient, publish, type AdmittedChatSession, type CloseReport, type SessionEvent, type SessionIdentity } from "@cotal-ai/workspace/chat";
 import { runPlain } from "../src/chat/plain.js";
 import { StdioParticipant, dispatch, parseRequestLine } from "../src/chat/stdio.js";
 import { shownTime } from "@cotal-ai/workspace";
@@ -136,6 +136,16 @@ if (mode === "plain" || mode === "stdio") {
       drafts.includes("unfinished multi-line draft discarded at end of input (2 lines, 15 characters; content not repeated)") && drafts.includes("unsent draft discarded at end of input (12 characters"), drafts);
     const none = await transcript([]);
     check("with no recipient, line mode names :to, not the Tab key", none.includes("to no recipient (:to)") && !none.includes("(Tab)"), none);
+
+    const channel = { kind: "channel", channel: "general" } as const;
+    const boundary = "/" + "x".repeat(MAX_DRAFT - 3) + "😀";
+    const atLimit = await transcript([`/${boundary}`], channel);
+    check("a draft at the limit gets confirmation after removing the slash escape", atLimit.includes("send to #general?") && !atLimit.includes("draft exceeds"), atLimit);
+    const overLimit = await transcript(["keep me", "n", `/${boundary}x`], channel);
+    check("an oversized draft is refused without asking to send it or replacing the kept draft",
+      overLimit.includes(`draft exceeds the ${MAX_DRAFT} UTF-16 code unit limit`) &&
+      overLimit.split("send to #general?").length === 2 &&
+      overLimit.includes("unsent draft discarded at end of input (7 characters"), overLimit);
   }
 
   console.log("2. a reader that closes the output still closes the session");

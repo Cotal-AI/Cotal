@@ -533,6 +533,16 @@ try {
       check("L8 setup refuses CONFLICT / RUNNING_WITHOUT_UNIT, exit 2", r.status === 2 && r.doc.error?.code === "CONFLICT" && r.doc.error?.cause?.code === "RUNNING_WITHOUT_UNIT", { status: r.status, out: r.out.slice(0, 300) });
       check("L8 it installed nothing: no unit receipt", !existsSync(receipt));
       check("L8 the running daemon is untouched and still answers its own pid", (await cli("status", "--json")).doc.result?.pid === running.pid);
+      const saved = JSON.stringify({ v: 1, unit: "cotal-daemon.service", unitPath: join(root, "missing.service"), unitSha256: "0".repeat(64), installedAt: new Date().toISOString() });
+      writeFileSync(receipt, saved, { flag: "wx", mode: 0o600 });
+      try {
+        const inspection = await cli("uninstall", "--dry-run", "--json");
+        check("L8 the receipt names a missing unit", inspection.status === 2 && inspection.doc.error?.code === "TARGET_NOT_FOUND", inspection.doc.error);
+        for (const flags of [[], ["--space", "demo"]]) {
+          const setup = await cli("setup", ...flags, "--json");
+          check("L8 setup keeps the unit inspection failure without offering sign-in", setup.status === 2 && setup.doc.error?.code === inspection.doc.error.code && setup.doc.error.message === inspection.doc.error.message && setup.doc.error.remedy === inspection.doc.error.remedy && !setup.err.includes("Signing in") && readFileSync(receipt, "utf8") === saved, setup.doc.error);
+        }
+      } finally { rmSync(receipt); }
     } finally {
       await kill(running.proc, "SIGTERM");
     }

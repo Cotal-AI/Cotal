@@ -297,4 +297,31 @@ try {
   }
 }
 
+{
+  const name = "revoke-retained", project = folder(name);
+  const broker = `nats://127.0.0.1:${await freePort()}`;
+  const key = "UAQGWOEVJKMIO4WXSYOTLARXYOZTCXFK67JASEH6AFFFYK6FOPSKQCAD";
+  mkdirSync(join(project, ".cotal"), { mode: 0o700 });
+  anchors.set(project, recordSmokeSandbox({ root: project, cotalHome: home, xdgConfigHome: configDir }));
+  try {
+    const started = cli(project, "up", "--no-manager", "--space", name, "--server", broker);
+    check("an unprepared static stack starts", started.status === 0, shown(started));
+    const stopped = cli(project, "down", "--yes");
+    check("the unprepared static stack stops", stopped.status === 0, shown(stopped));
+    const digest = accountDigest(project);
+    const args = ["auth", "revoke-credential", key];
+    const named = cli(project, ...args, "--space", name, "--plain");
+    const retry = `cotal auth revoke-credential ${key} --space ${name} --plain --yes`;
+    check("named offline revocation reaches confirmation without changing the account",
+      named.status === 1 && named.stderr.includes("USAGE_INVALID") && named.stderr.replace(/\s+/g, " ").includes(codeSpan(retry)) && accountDigest(project) === digest, shown(named));
+    const wrong = cli(project, ...args, "--space", "other-space", "--plain");
+    check("a different name does not resolve or recommend starting the broker",
+      wrong.status === 2 && wrong.stderr.includes("TARGET_NOT_FOUND") && !wrong.stderr.includes("cotal up"), shown(wrong));
+    const confirmed = cli(project, ...retry.split(" ").slice(1));
+    check("the printed retry revokes the key offline", confirmed.status === 0 && confirmed.stdout.includes("Credential revoked") && accountDigest(project) !== digest, shown(confirmed));
+  } finally {
+    cli(project, "down", "--yes");
+  }
+}
+
 finish();

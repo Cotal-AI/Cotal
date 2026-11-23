@@ -31,7 +31,7 @@ const legal = [
 // [source, destination inside the plugin directory]
 const plugins = {
   cotal: [
-    ...[".claude-plugin/plugin.json", ".mcp.json", "hooks/hooks.json", "hooks/native-wake.js", "monitors/monitors.json", "dist/seat.cjs", "dist/mcp.cjs", "dist/docs-bundle.bin", "dist/docs-index.bin", "dist/hook.cjs", "dist/monitor.cjs"].map((asset) => [join(connector, asset), asset]),
+    ...[".claude-plugin/plugin.json", ".mcp.json", "hooks/hooks.json", "hooks/native-wake.js", "monitors/monitors.json", "dist/seat.cjs", "dist/mcp.cjs", "dist/docs-bundle.bin", "dist/docs-index.bin", "dist/hook.cjs", "dist/monitor.cjs", "dist/command-reader.cjs"].map((asset) => [join(connector, asset), asset]),
     [join(connector, "PLUGIN.md"), "README.md"],
     ...legal,
   ],

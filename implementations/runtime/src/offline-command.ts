@@ -1,7 +1,7 @@
-import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, statSync, type Stats } from "node:fs";
+import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, statSync, writeSync, type Stats } from "node:fs";
 import { hasDuplicateNames } from "@cotal-ai/core";
 import { dryRunOutcome, DurationError, Journal, journalEntryKeyString, LangErrors, parseDuration, validate, type SimScript } from "@cotal-ai/lang";
-import { CommandFailure, isCommandFailure, oneLine, presentationOf, recordOperationWarning, writeResult, type Report } from "@cotal-ai/workspace";
+import { codeSpan, CommandFailure, envelopeLine, exitCode, failureEnvelope, isCommandFailure, oneLine, presentationOf, recordOperationWarning, renderReport, shellPath, writeResult, type Report } from "@cotal-ai/workspace";
 import { logLineText } from "./log-line.js";
 
 interface OfflineValues {
@@ -88,6 +88,11 @@ function scriptOf(file: string | undefined): SimScript {
   const start = clock?.start;
   if (start !== undefined && (typeof start !== "number" || !Number.isFinite(start)))
     throw new CommandFailure("refused", "SCHEMA_INVALID", "clock.start must be a finite number in milliseconds", { target: { file } });
+  // A start the clock cannot step from by whole milliseconds reports a successful simulation
+  // with the delay lost: 9007199254740992 + 1ms rounds back to the start, so elapsedMs is 0.
+  // Refuse it before simulation, naming the supported range.
+  if (start !== undefined && typeof start === "number" && Number.isFinite(start) && !Number.isSafeInteger(start))
+    throw new CommandFailure("refused", "SCHEMA_INVALID", `clock.start must be a safe integer in milliseconds so the clock can advance by whole milliseconds; ${start} cannot represent a one-millisecond step`, { target: { file }, remedy: `use a clock.start between -9007199254740991 and 9007199254740991 in ${file}, then rerun the simulation` });
   // A misspelled clock key is silently ignored: the simulator falls back to the 1m default,
   // so `clock.checkpoints` measures a delay the author never asked for. Refuse it before
   // simulation, naming the singular key when the typo is a plural of one.
@@ -209,7 +214,9 @@ function callSites(ast: ReturnType<typeof validate>["ast"]): { call: string; lin
       const simple = callee.type === "Identifier" ? callee.name : undefined;
       const object = callee.object as Record<string, unknown> | undefined;
       const property = callee.property as Record<string, unknown> | undefined;
-      const call = typeof simple === "string" ? simple : object?.type === "Identifier" && typeof object.name === "string" && property?.type === "Identifier" && typeof property.name === "string" ? `${object.name}.${property.name}` : "derived call";
+      const call = typeof simple === "string" ? simple : callee.type === "MemberExpression" && callee.computed === false
+        && object?.type === "Identifier" && typeof object.name === "string" && property?.type === "Identifier" && typeof property.name === "string"
+        ? `${object.name}.${property.name}` : "derived call";
       const { start, loc } = node as typeof ast;
       if (!loc) throw new Error("validated call is missing its source location");
       sites.push({ call, offset: start, line: loc.start.line });
@@ -229,14 +236,25 @@ function faultParts(error: unknown): { title: string; cause?: string; fix?: stri
 
 /** Why a simulation did not complete. An L6xxx code is the simulator's: the script does not cover
  *  the program, and `target.step` names the step it stopped at. */
-function simulationFailure(error: unknown, file: string, journal: Journal): CommandFailure {
+function simulationFailure(error: unknown, file: string, journal: Journal, handler?: string): CommandFailure {
   const code = (error as { code?: unknown }).code;
   const native = typeof code === "string" && /^L[0-9]+$/.test(code) ? code : undefined;
   const failed = journal.entries().findLast((e) => e.state === "settled" && e.status === "failed" && e.error?.code === native);
   const step = failed === undefined ? undefined : journalEntryKeyString(failed);
   const { title, cause, fix } = faultParts(error);
   const why = (cause ?? title).replace(/\.$/, "");
-  const remedy = fix ?? (native?.startsWith("L6") ? "script a result for that step; unscripted effects are not invented" : undefined);
+  // A missing scripted result has no file to edit yet when no results file was passed: the
+  // remedy names the file to save and the command that passes it to the simulator, instead of
+  // only showing the result object. When a results file was passed, it names that file.
+  const sourceWord = shellPath(file.startsWith("-") ? `./${file}` : file);
+  const handlerArg = `${handler?.startsWith("-") ? "=" : " "}${shellPath(handler ?? "results.json")}`;
+  const command = codeSpan(`cotal run simulate ${sourceWord} --handler${handlerArg}`);
+  const rerun = handler !== undefined
+    ? `add it to ${oneLine(handler)} and rerun with ${command}`
+    : `save it in a results file, for example results.json, and rerun with ${command}`;
+  const remedy = native?.startsWith("L6")
+    ? `${fix ?? "script a result for that step; unscripted effects are not invented"}; ${rerun}`
+    : fix;
   return new CommandFailure("failed", "OPERATION_FAILED", `the offline simulation did not complete: ${why.charAt(0).toLowerCase()}${why.slice(1)}`, {
     target: { file, ...(step !== undefined ? { step } : {}) }, ...(native !== undefined ? { native: { code: native } } : {}), ...(remedy !== undefined ? { remedy } : {}),
   });
@@ -273,13 +291,22 @@ export async function offlineWorkflow(mode: "validate" | "plan" | "simulate", fi
     const problems = error.errors.map((item) => ({ code: item.code, title: item.title, span: item.span, cause: item.cause, fix: item.fix }));
     const count = `${problems.length} problem${problems.length === 1 ? "" : "s"}`;
     const failure = new CommandFailure("refused", "SCHEMA_INVALID", `the workflow is not valid cotal-lang (${count})`, { target: { file }, native: { code: "LANG_INVALID", detail: error.errors.map((item) => ({ code: item.code, span: item.span })) } });
-    writeResult(presentation, { command: "run", target: { file }, result: { kind: "workflow-validation", valid: false, problems }, failure }, (result): Report => ({ sections: [
+    const result = { kind: "workflow-validation", valid: false, problems };
+    const view = (): Report => ({ sections: [
       { title: "Workflow not valid", blocks: [
-        { kind: "fields", rows: [["File", file], ["Problems", String(result.problems.length)]] },
-        ...result.problems.map((problem) => ({ kind: "lines" as const, lines: [{ text: `${problem.code} ${problem.title} (${problem.span.file}:${problem.span.line}:${problem.span.column})`, tone: "failed" as const }, `  ${problem.cause}`, `  fix: ${problem.fix}`] })),
+        { kind: "fields", rows: [["File", file], ["Problems", String(problems.length)]] },
+        ...problems.map((problem) => ({ kind: "lines" as const, lines: [{ text: `${problem.code} ${problem.title} (${problem.span.file}:${problem.span.line}:${problem.span.column})`, tone: "failed" as const }, `  ${problem.cause}`, `  fix: ${problem.fix}`] })),
         { kind: "lines", lines: [{ text: "Language validation only. No mesh, authority, runtime, application or broker message limit was checked.", tone: "hint" }] },
       ] },
-    ] }));
+    ] });
+    if (presentation === "json") {
+      process.exitCode = exitCode(failure.outcome, failure.code);
+      process.stdout.write(envelopeLine({ ...failureEnvelope("run", failure), completeness: "complete", result }), (error) => {
+        if (!error || (error as NodeJS.ErrnoException).code === "EPIPE") return;
+        // The write callback runs before the binary's stdout error listener reports the error and exits.
+        try { writeSync(2, `${renderReport(view(), "rich", process.stderr)}\n`); } catch { /* stderr failed too */ }
+      });
+    } else writeResult(presentation, { command: "run", target: { file }, result, failure }, view);
     return;
   }
   // A warning says what it found and how to fix it, as a problem does: L3021 on a literal list is a
@@ -301,14 +328,12 @@ export async function offlineWorkflow(mode: "validate" | "plan" | "simulate", fi
   }
   const journal = new Journal({ run: "dry-run" });
   let report: Awaited<ReturnType<typeof dryRunOutcome>>;
-  // A simulation that throws never reaches the report, so the validation warnings go into the
-  // run's recorded warnings first: the failure envelope carries them, and text mode prints them
-  // with the failure.
+  // A refused script or failed simulation keeps the validation warnings in its failure receipt.
   try { report = await dryRunOutcome(source, scriptOf(values.handler), { file, journal }); }
   catch (error) {
     for (const warning of warnings) recordOperationWarning(warning, { echo: presentation !== "json" });
-    if (error instanceof CommandFailure) throw error;
-    throw simulationFailure(error, file, journal);
+    if (isCommandFailure(error)) throw error;
+    throw simulationFailure(error, file, journal, values.handler);
   }
   // A program that fails under its script is a completed simulation, and the failure is its outcome.
   const failure = "fault" in report ? programFailure(report.fault, journal) : null;

@@ -20,6 +20,7 @@ import {
   homeCotalDir,
   inputDisabledByFlag,
   jsonFlag,
+  knownHarnesses,
   loadMeshes,
   manifestExtensionNames,
   meshFile,
@@ -47,7 +48,7 @@ import {
   type Presentation,
   type Report,
 } from "@cotal-ai/workspace";
-import { OFFICIAL_RUNTIMES, OFFICIAL_RUNTIME_TOOLS, materializeExtension } from "../ext-loader.js";
+import { OFFICIAL_RUNTIMES, OFFICIAL_RUNTIME_TOOLS, extensionNames, materializeExtension } from "../ext-loader.js";
 import { agentSkillsHome, agentSkillsSkew, canonicalSkillsDir, installAgentSkills, type AgentSkillsResult } from "../lib/agent-skills.js";
 import { cliVersion } from "../lib/version.js";
 import { seedWriterKind } from "../seed/paths.js";
@@ -238,6 +239,10 @@ export function validateSetupArguments(args: ParsedArgs): void {
   }
   if (values.start && !values.detach && !interactive) throw usage("setup --start requires --detach when it cannot open an interactive terminal");
   if (!interactive) scriptedInputs(values, runtimeChoices());
+  if (values.harness !== undefined && !Object.hasOwn(OFFICIAL_CONNECTORS, values.harness)) {
+    const known = knownHarnesses(extensionNames("connector"));
+    if (!known.includes(values.harness)) throw usage(`no harness ${JSON.stringify(values.harness)}; known harnesses: ${known.join(", ")}`, HARNESS_REMEDY);
+  }
 }
 
 /**
@@ -663,7 +668,7 @@ async function prepare(plan: SetupPlan, opts: { demo: boolean; interactive: bool
     if (inputs.createProject && mkdirPrivate(inputs.project, "the project root") !== undefined) {
       wrote("project folder", inputs.project);
     }
-    if (plan.space.state === "created") wrote("prepared space", recordLocalSpace(inputs.space, inputs.project).file);
+    if (plan.space.state === "created") wrote("prepared space", recordLocalSpace(inputs.space, inputs.project, "--project").file);
     spaceState = plan.space.state;
   }
 

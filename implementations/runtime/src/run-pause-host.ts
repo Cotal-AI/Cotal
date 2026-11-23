@@ -21,6 +21,7 @@ export interface RunPauseHost {
   arm(token: string, deadline: number): Promise<void>;
   heartbeat(token: string, deadline: number): Promise<void>;
   readSettle(token: string): Promise<CheckpointSettleFact | undefined>;
+  pollSettle(token: string): Promise<CheckpointSettleFact | undefined>;
   readAnswer(token: string): Promise<CheckpointAnswerValue | undefined>;
   takeFire(token: string): Promise<boolean>;
   claim(token: string): Promise<void>;
@@ -87,6 +88,12 @@ export function createRunPauseHost(
       await authority.pause(token, "read");
       return readCheckpointSettle(jsm, space, ref(token));
     },
+    async pollSettle(token: string): Promise<CheckpointSettleFact | undefined> {
+      // The wait checks its token before it starts. Empty polls expose no settlement.
+      const settled = await readCheckpointSettle(jsm, space, ref(token));
+      if (settled !== undefined) await authority.pause(token, "read");
+      return settled;
+    },
     async readAnswer(token: string): Promise<CheckpointAnswerValue | undefined> {
       await authority.pause(token, "read");
       const settled = await readCheckpointSettle(jsm, space, ref(token));
@@ -94,13 +101,13 @@ export function createRunPauseHost(
       return readCheckpointAnswer(kv, pinned.endpoint, token, settled.answerId);
     },
     async takeFire(token: string): Promise<boolean> {
-      await authority.pause(token, "fire");
       const subject = eptSubject(space, pinned.endpoint, pinned.instanceId, pinned.epoch, token, "fire");
       const fired = await jsm.streams.getMessage(eptStreamName(space), { last_by_subj: subject }).catch((error: unknown) => {
         if ((error as { code?: unknown })?.code === 10037) return null;
         throw error;
       });
       if (fired === null || fired === undefined) return false;
+      await authority.pause(token, "fire");
       const result = await handleCheckpointFire(kv, js, jsm, space, {
         ref: ref(token), instanceId: pinned.instanceId, epoch: pinned.epoch,
         msg: { subject, ...(fired.header === undefined ? {} : { headers: fired.header }), data: fired.data },

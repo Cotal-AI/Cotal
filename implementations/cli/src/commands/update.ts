@@ -11,7 +11,6 @@ import {
   renderReport,
   writeResult,
   type OutputWarning,
-  cmdSpawnSpec,
   oneLine,
   claimUpdateClosureAccess,
   updateClosureOwner,
@@ -81,7 +80,6 @@ import {
 import {
   latestVersion,
   npmProxyRefused,
-  checkInstalledClosure,
   checkReleaseArchives,
   ReleaseNotAvailable,
   ReleaseDateExcluded,
@@ -89,7 +87,7 @@ import {
   DependencyCheckNoSpace,
   registryNetworkFailure,
   releaseReadError,
-  waitForReleaseArchives,
+  waitForReleasePreflight,
 } from "./update-release.js";
 import { refusal, reportRunningManagers } from "./update-continuity.js";
 export { isStoppedLocalMesh, reportRunningManagers, readUpdateManagerContinuity, readManagerContinuity, printLegacyReport } from "./update-continuity.js";
@@ -484,8 +482,7 @@ export async function recoverInterruptedUpdate(rt: UpdateRuntime = updateRuntime
           entry = execution.entry;
         } else {
           await checkReleaseArchives(record.previous, rt);
-          const command = cmdSpawnSpec("npm", ["install", "-g", ...(prefix ? ["--prefix", prefix] : []), `cotal-ai@${record.previous}`]);
-          const installed = await rt.spawnGlobal(root, "install", command.file, command.args, rt.env, true, command.windowsVerbatimArguments);
+          const installed = await rt.spawnGlobal(root, "install", "npm", ["install", "-g", ...(prefix ? ["--prefix", prefix] : []), `cotal-ai@${record.previous}`], rt.env, true);
           if (installed.status !== 0) throw new Error(failure(installed));
           entry = rt.verifyGlobalEntry(root, record.previous);
         }
@@ -877,19 +874,17 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
   let repairedSelection = false;
   const releaseChecksStarted = Date.now();
   try {
-    rt.out(`Checking cotal-ai@${targetVersion} release archives`);
-    const releasePackages = await waitForReleaseArchives(targetVersion, current, rt);
-    if (!releasePackages) return 0;
-    // Dependency checks and the rollback snapshot need a readable connector graph.
-    try {
-      repairedSelection = repairUpdateConnectorSelection(Boolean(rt.prepareExecution), line => rt.err(line));
-    } catch (error) {
-      recordUpdateDeferral(targetVersion, `connector configuration preflight: ${preflightDetail(error)}`);
-      rt.err(`Cannot prepare the Cotal connector configuration: ${message(error)}. No CLI update was staged.`);
-      return 1;
-    }
-    rt.out(`Checking installed extension dependencies for ${targetVersion}`);
-    checkInstalledClosure(targetVersion, releasePackages, rt);
+    const release = await waitForReleasePreflight(targetVersion, current, rt, () => {
+      try {
+        repairedSelection = repairUpdateConnectorSelection(Boolean(rt.prepareExecution), line => rt.err(line));
+        return true;
+      } catch (error) {
+        recordUpdateDeferral(targetVersion, `connector configuration preflight: ${preflightDetail(error)}`);
+        rt.err(`Cannot prepare the Cotal connector configuration: ${message(error)}. No CLI update was staged.`);
+        return false;
+      }
+    });
+    if (release !== "ready") return release === "deferred" ? 0 : 1;
     // In-place rollback downloads the previous release. Staged rollback retains its complete graph.
     if (!rt.prepareExecution) {
       rt.out(`Checking cotal-ai@${current} recovery archives`);
@@ -1069,7 +1064,7 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
   }
   recordUpdateReplacement(targetVersion);
   writeUpdateRecovery({ previous: current, target: targetVersion, installed: current, phase: "replacing", reason: "global replacement in progress", owner: updateClosureOwner(), preparedRestart: rt.preparedRestart?.() ?? false, snapshot: snapshot.path, ...(execution ? { execution: execution.journal } : {}) });
-  const npmInstall = cmdSpawnSpec("npm", ["install", "-g", ...prefixArgs, `cotal-ai@${targetVersion}`, "--json", "--fetch-retries=2", "--fetch-retry-mintimeout=1000", "--fetch-retry-maxtimeout=2000", "--fetch-timeout=15000"]);
+  const npmInstall = ["install", "-g", ...prefixArgs, `cotal-ai@${targetVersion}`, "--json", "--fetch-retries=2", "--fetch-retry-mintimeout=1000", "--fetch-retry-maxtimeout=2000", "--fetch-timeout=15000"];
   const installStarted = Date.now();
   const installed: CommandResult = execution ? (() => {
     execution.publish();
@@ -1077,11 +1072,10 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
   })() : await rt.spawnGlobal(
     root,
     "install",
-    npmInstall.file,
-    npmInstall.args,
+    "npm",
+    npmInstall,
     rt.env,
     false,
-    npmInstall.windowsVerbatimArguments,
   );
   if (!execution) rt.out(`✓ global package install finished (${((Date.now() - installStarted) / 1000).toFixed(1)} s)`);
   if (latestNotAvailable(installed, targetVersion)) {
@@ -1193,8 +1187,7 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
         execution.restore();
       } else {
         await checkReleaseArchives(current, rt);
-        const command = cmdSpawnSpec("npm", ["install", "-g", ...prefixArgs, `cotal-ai@${current}`]);
-        const restored = await rt.spawnGlobal(root, "install", command.file, command.args, rt.env, true, command.windowsVerbatimArguments);
+        const restored = await rt.spawnGlobal(root, "install", "npm", ["install", "-g", ...prefixArgs, `cotal-ai@${current}`], rt.env, true);
         if (restored.status !== 0) throw new Error(failure(restored));
         rt.verifyGlobalEntry(root, current);
       }

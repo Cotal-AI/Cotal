@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { accessSync, constants, existsSync, lstatSync, readdirSync, realpathSync, renameSync, rmdirSync, rmSync } from "node:fs";
+import { accessSync, constants, existsSync, lstatSync, readdirSync, readlinkSync, realpathSync, renameSync, rmdirSync, rmSync, statSync, type Stats } from "node:fs";
 import { dirname, isAbsolute, join, parse, relative, resolve } from "node:path";
 import { clearSpaceHistory, isReachable, registry, resolveAuthProvider, type AuthProvider, type CompletionResult, type ParsedArgs, type SecretStore } from "@cotal-ai/core";
 import {
@@ -21,6 +21,7 @@ import {
   localProcessPath,
   foreignStoreEntries,
   localMeshesForRoot,
+  oneLine,
   presentationOf,
   readMaintenanceJournal,
   recordsElsewhereError,
@@ -52,7 +53,7 @@ import { localProcessSurface } from "../ext-loader.js";
 import { readStackJournal, recordResetStore, STACK_DEFINITION, stackJournalPath } from "../lib/stack-journal.js";
 import { rollbackRestoreWithBroker } from "../lib/controller-restore.js";
 import { maintenanceNextStep, restoreNextStep } from "../lib/restore.js";
-import { displayCmd } from "../lib/self-exec.js";
+import { displayCmd, displayRemedy } from "../lib/self-exec.js";
 import { MissingFlags } from "../lib/missing-flags.js";
 import { attemptProcessesGone } from "../lib/isolated-broker.js";
 import { observeServiceProcess, serviceInstances } from "../lib/service-instances.js";
@@ -228,7 +229,7 @@ export async function clean(args: ParsedArgs): Promise<void> {
   const elsewhere = recordsElsewhereError(root);
   if (elsewhere) {
     const { message, remedy } = workspaceErrorParts({ kind: "target", error: elsewhere });
-    throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `${message}; nothing was removed`, { target: { ...spaceRootTarget({ root, space: targetErrorSpace(elsewhere.details) }), recordedRoot: elsewhere.details.recordedRoot }, ...(remedy ? { remedy } : {}) });
+    throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `${message}; nothing was removed`, { target: { ...spaceRootTarget({ root, space: targetErrorSpace(elsewhere.details) }), recordedRoot: elsewhere.details.recordedRoot }, ...(remedy ? { remedy: displayRemedy(remedy) } : {}) });
   }
 
   // store | all: the JetStream store delete, plus (for `all`) the space identity. The broker-wide
@@ -271,10 +272,7 @@ export async function clean(args: ParsedArgs): Promise<void> {
     const defaultStore = join(root, ".cotal", "nats");
     const storeDir = values["store-dir"] ?? (existsSync(join(defaultStore, "jetstream")) ? undefined : lastServedStore(root, defaultStore));
     const requested = resolve(storeDir ?? defaultStore);
-    if (existsSync(requested) && lstatSync(requested).isSymbolicLink()) {
-      const linked = realpathSync.native(requested);
-      throw new CommandFailure("refused", "CONFLICT", `the store cleanup path ${requested} is a link to ${linked}, and cleanup removes only a real directory; nothing was removed`, { target: { root, storeDir: requested, linkTarget: linked }, remedy: "replace the link with the directory it points to, then run this command again" });
-    }
+    checkCleanStorePath(root, requested);
     // An absent store was not removed by this clean. Leave unexpected loss visible in status.
     const stack = readStackJournal(root)?.journal;
     const recordedStore = stack?.broker?.storeDir;
@@ -315,6 +313,43 @@ export async function clean(args: ParsedArgs): Promise<void> {
   if (target === "all") console.log(c.dim(`a fresh space identity is minted on the next \`cotal up${userAuthRemoved ? " --user-auth --idp <auth base URL>" : ""}\``));
   if (userAuthRemoved) console.error(c.yellow("! this clean removed the IdP trust and the actor ledger of this user-auth space, so every actor grant is lost. A later up needs `cotal up --user-auth --idp <auth base URL>`, and each actor needs `cotal actor grant` again"));
   if (trustRemoved) console.error(c.yellow("! full backups taken before this clean no longer restore into this root: each is bound to the space trust it removed. Only their registry restores, with backup restore <dir> --only registry, and chat and DM history start empty. Take a new full backup after the next `cotal up`"));
+}
+
+/** Check the requested path without following its final component, even if it is a dangling link. */
+function checkCleanStorePath(root: string, requested: string): void {
+  let stat: Stats | undefined;
+  try { stat = lstatSync(requested, { throwIfNoEntry: false }); }
+  catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code !== "EACCES" && code !== "EPERM") throw error;
+    let blocked: string | undefined, chmod: string | undefined;
+    for (let dir = dirname(requested); dir !== dirname(dir); dir = dirname(dir)) {
+      try { accessSync(dir, constants.X_OK); break; }
+      catch (cause) {
+        const denied = (cause as NodeJS.ErrnoException).code;
+        if (denied !== "EACCES" && denied !== "EPERM") { blocked = undefined; break; }
+        blocked = dir;
+      }
+    }
+    if (blocked && process.getuid && oneLine(blocked) === blocked) {
+      try {
+        const parent = statSync(blocked);
+        if (parent.isDirectory() && parent.uid === process.getuid() && !(parent.mode & constants.S_IXUSR))
+          chmod = ` with ${codeSpan(`chmod u+x ${shellWord(blocked)}`)}`;
+      } catch { /* The denied directory cannot be inspected. */ }
+    }
+    throw new CommandFailure("refused", "PERMISSION_DENIED", `this account cannot search ${blocked ?? `the path to ${requested}`} (${code}); nothing was moved or removed`, {
+      target: { root, storeDir: requested, ...(blocked ? { path: blocked } : {}) }, remedy: `restore search access${chmod ?? " for this account to the directories in the store path"}, then run this command again`,
+    });
+  }
+  if (!stat?.isSymbolicLink()) return;
+  let linked: string, resolved: boolean;
+  try { linked = realpathSync.native(requested); resolved = true; }
+  catch { linked = readlinkSync(requested); resolved = false; }
+  throw new CommandFailure("refused", "CONFLICT", `the store cleanup path ${requested} is ${resolved ? "a link" : "an unresolved link"} to ${linked}, and cleanup removes only a real directory; nothing was removed`, {
+    target: { root, storeDir: requested, linkTarget: linked }, remedy: resolved ? "replace the link with the directory it points to, then run this command again"
+      : "put the intended real store directory back at this path, or pass its real location with --store-dir, then run this command again",
+  });
 }
 
 /** The live-purge half, shared with the `cotal history clear` alias. Resolves the running mesh (from

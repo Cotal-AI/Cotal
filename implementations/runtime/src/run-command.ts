@@ -103,6 +103,7 @@ import {
   SHOWN_VALUE_MAX,
   shellPath,
 } from "@cotal-ai/workspace";
+import { startStackManagerRemedy } from "@cotal-ai/workspace/control";
 import { offlineWorkflow, sourceOf } from "./offline-command.js";
 import { seatTurnCommand } from "./seat-turn-command.js";
 import { openRequestKeys, printRunDetail, printRunList, runReceipt } from "./workflow-views.js";
@@ -508,7 +509,16 @@ async function journal(values: RunValues, planes: Planes, endpoint: string, runI
   }
   // The replay durable is named by the takeover id this call's credential was minted for.
   const view = await runHost.status(planes, { endpoint, runId, takeoverId });
-  if (!view) throw new CommandFailure("refused", "TARGET_NOT_FOUND", "no workflow record was returned for this run", { target: { space: planes.space, endpoint, run: runId } });
+  if (!view) {
+    const selectors = retryFlag("space", planes.space) + (["server", "creds", "endpoint"] as const).map((flag) => retryFlag(flag, values[flag])).join("");
+    const output = values.json ? " --json" : values.plain ? " --plain" : "";
+    const privateServer = values.server !== undefined && brokerAddressForDisplay(values.server) !== oneLine(values.server);
+    throw new CommandFailure("refused", "TARGET_NOT_FOUND", "no workflow record was returned for this run", {
+      target: { space: planes.space, endpoint, run: runId },
+      remedy: privateServer ? "replace the subcommand and run ID with `list` in the original command, and omit `--limit` if given"
+        : `list the recorded runs with ${codeSpan(`cotal run list --local${selectors}${output}`)}`,
+    });
+  }
   printRunDetail(planes.space, view, values);
 }
 
@@ -807,7 +817,7 @@ async function askHost(values: RunValues, command: string, args: Record<string, 
   try {
     // Only the operator's own unpinned instrument holds the registry rows `ps` scatters on; a seat's
     // credential and a user's manager view hold none.
-    if (!seat && auth.bearer === undefined && (auth.managerInstanceId === undefined || values.on !== undefined)) await refuseWithoutLiveManager(nc, t.space, values.on);
+    if (!seat && auth.bearer === undefined && (auth.managerInstanceId === undefined || values.on !== undefined)) await refuseWithoutLiveManager(nc, t, values.on);
     // A logged-in user's manager view is issued at the callout (SPEC 13.15): its generation is read
     // back from this connection's accepted row, and every request rides `ep.v1` under it.
     const caller = auth.bearer !== undefined && auth.managerInstanceId !== undefined
@@ -883,7 +893,7 @@ async function chatStreamGone(nc: NatsConnection, space: string): Promise<boolea
  *  it, rather than after the describe has waited out its whole deadline for an answer no manager
  *  can send. So is an `on` pin that names none of the live managers, with the ones that run. Any
  *  other registry outcome, an unreadable registry included, leaves the describe to decide. */
-async function refuseWithoutLiveManager(nc: NatsConnection, space: string, on?: string): Promise<void> {
+async function refuseWithoutLiveManager(nc: NatsConnection, { space, server }: ControlTarget, on?: string): Promise<void> {
   let live: Awaited<ReturnType<typeof freezeExpectedSet>>;
   try {
     live = await freezeExpectedSet(await jetstreamManager(nc, { checkAPI: false }), space, BASELINE_LIFECYCLE_ENDPOINT);
@@ -892,7 +902,7 @@ async function refuseWithoutLiveManager(nc: NatsConnection, space: string, on?: 
     throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "no manager is running for this space to host or read its workflow runs", {
       target: { space },
       native: { code: e.code, detail: `${e.code}: ${e.message}` },
-      remedy: "start the stack's manager with bare `cotal up`; a stack started with --no-manager has none",
+      remedy: startStackManagerRemedy(space, server),
     });
   }
   // A pin that names none of the running managers can only wait out its describe, so it is refused
@@ -1172,6 +1182,8 @@ export function workflowArguments(args: ParsedArgs): { values: RunValues; verb: 
     if (first !== undefined) usage(`run ${raw} takes no positional argument`);
   } else if (verb === "answer" || verb === "amend") {
     if (!first || !second) usage(`run ${verb} requires a run id and step key`);
+  } else if (verb === "revoke" && first === undefined) {
+    usage("run revoke takes one identifier", "add a run ID after `run revoke` in the original command. A revoke requires `--local --by <actor> --reason <text>`");
   } else if (!first || second !== undefined) usage(`run ${raw} takes one identifier`, verb === "yield" ? "`cotal run turns` lists your turns. Run `cotal run yield <turn-id> --status <done|blocked|handoff>`. For a handoff, add `--to <agent>`." : `\`cotal run\` lists the runs; run \`cotal run ${raw} <run-id>\``);
   const scopes: Record<string, readonly string[]> = {
     timeout: ["start", "resume"], by: ["answer", "amend", "revoke"], reason: ["revoke"], value: ["answer", "amend"], artifact: ["answer", "amend"],
@@ -1216,6 +1228,8 @@ export function workflowArguments(args: ParsedArgs): { values: RunValues; verb: 
   // `a b`, would admit a channel nobody named.
   for (const flag of ["admit-read", "admit-publish"] as const) {
     const entries = (values[flag] ?? "").split(",").map((s) => s.trim()).filter((s) => s.length > 0);
+    if (verb === "start" && values.local === true && entries.length === 0)
+      usage(`run start --local requires --${flag} <channels>; a local run is admitted under the ceiling you name`, `pass --${flag} <channels> (comma-separated channel patterns, or \`none\`)`);
     if (entries.length === 1 && entries[0] === "none") continue;
     for (const entry of entries) {
       try { assertValidChannel(entry); } catch (error) { usage(`--${flag}: ${oneLine((error as Error).message)}`); }
@@ -1235,10 +1249,12 @@ export function workflowArguments(args: ParsedArgs): { values: RunValues; verb: 
   if (values.by !== undefined && values.local !== true) usage("the hosted manager records the authenticated caller; --by is only for the local path");
   if ((verb === "start" || verb === "resume") && values.endpoint !== undefined && values.local !== true) usage("a hosted run uses the manager's endpoint; --endpoint is only for the local path");
   if (verb === "resume" && values.file !== undefined && values.local !== true)
-    usage("run resume: the manager resumes a run from its recorded program, so --file is not taken", `omit --file to resume the recorded program with \`cotal run resume ${a}${values.space ? ` --space ${values.space}` : ""}${values.on ? ` --on ${values.on}` : ""}\`; a run with no recorded program uses \`cotal run resume ${a} --local --file <program>\``);
+    usage("run resume: the manager resumes a run from its recorded program, so --file is not taken", `remove only --file and its value from the original command, then rerun it to resume the recorded program. A run with no recorded program uses \`cotal run resume ${a} --local --file <program>\``);
   if (values.value !== undefined) checkAnswerValue(values.value, usage);
   if (values.artifact !== undefined && !values.artifact.trim()) usage("--artifact names the artifact the answer cites, so it cannot be empty");
   if (values.handler !== undefined && verb !== "simulate") usage("--handler belongs to run simulate");
+  if (verb === "simulate" && values.handler !== undefined && !values.handler.trim())
+    usage("--handler names the simulation results file, so it cannot be empty", "pass `--handler <results.json>` to name the results file, or omit `--handler` when no results file is needed");
   if ((values.status !== undefined || values.to !== undefined || values.note !== undefined) && verb !== "yield") usage("--status, --to and --note belong to run yield");
   if (verb === "yield") {
     if (!["done", "blocked", "handoff"].includes(values.status ?? "")) usage("run yield requires --status done, blocked or handoff");

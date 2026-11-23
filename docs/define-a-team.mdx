@@ -131,6 +131,7 @@ A launch summary does not authorize stopping resources and does not prove that w
 A live `team deploy` records its own intent and returned native receipts.
 Removal names the full deployment ID, not a manifest file or whichever agent currently has the same name.
 Run it from the root and space that own those records.
+When `team remove` requires confirmation, the suggested preview and apply commands name the resolved space and keep `--json` or `--plain` if requested.
 
 Current removal can retire a returned static-auth agent team, remove unchanged cards from a returned channel-only team, or retire a returned static mixed team before removing its cards.
 Agent retirement checks the original manager, identity, and lifecycle UID and requires native retirement and cleanup evidence.
@@ -155,6 +156,9 @@ A legacy ledger preview supplies no authority for a new `team remove`, and legac
 ## Deploy to a running mesh [#deploying-onto-a-shared-mesh-spawn--f]
 
 Register the mesh locally and run the deployment from the project root that owns that registration.
+If you stopped a local stack, run `cotal up` from its recorded project root before previewing or applying a deployment.
+If the manifest names a single broker URL, its scheme can use either case and its trailing slash is optional.
+The URL must still name the registered broker and transport.
 For an agent or mixed deployment, use a static-auth or open mesh and set `deliveryClass: live` on every declared channel.
 A new deployment accepts one to 100 new agents and at most 100 new live channel cards.
 It refuses user-auth agent apply, default or bind changes, existing-card mutation, and a registered list of brokers.
