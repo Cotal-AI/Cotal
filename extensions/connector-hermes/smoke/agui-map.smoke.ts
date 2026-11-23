@@ -133,8 +133,16 @@ check("a cancelled message ends the run as an interrupt", fin?.outcome?.type ===
 const twice = mapAll([rec("start", { key: "a" }), rec("assistant", { calls: [call("t3")] }), rec("assistant", { content: "done", calls: [call("t3")] }), rec("tool", { id: "t3", result: "r" }), rec("done", { key: "a", outcome: "success" })]);
 check("a call a later response repeats starts once", twice.types.filter((t) => t === "TOOL_CALL_START").length === 1 && twice.bracketError === undefined, twice.types);
 
-const outside = mapAll([rec("assistant", { content: "late" }), rec("tool", { id: "zz", result: "r" }), rec("done", { key: "q", outcome: "success" })]);
+const outside = mapAll([rec("assistant", { content: "late" }), rec("reply", { content: "late" }), rec("tool", { id: "zz", result: "r" }), rec("done", { key: "q", outcome: "success" })]);
 check("records outside a run map to nothing", outside.events.length === 0);
+
+const commandReply = mapAll([rec("start", { key: "a" }), rec("reply", { content: "Session: 3 messages" }), rec("done", { key: "a", outcome: "success" })]);
+check(
+  "a reply no model response carried opens a run with its text, finished at the done",
+  commandReply.types.join() === "RUN_STARTED,TEXT_MESSAGE_START,TEXT_MESSAGE_CONTENT,TEXT_MESSAGE_END,RUN_FINISHED" &&
+    commandReply.events.some((e) => e.type === "TEXT_MESSAGE_CONTENT" && e.delta === "Session: 3 messages") && commandReply.bracketError === undefined,
+  commandReply.types,
+);
 
 // A re-established plane replays what it consumed and resumes the open run under the wire's id.
 const prefix = [rec("start", { key: "a" }), rec("start", { key: "b" }), rec("assistant", { calls: [call("t4")] }), rec("done", { key: "a", outcome: "success" })];

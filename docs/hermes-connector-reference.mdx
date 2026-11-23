@@ -138,12 +138,14 @@ publish from their transcripts.
 
 The plugin appends one record when the gateway starts or finishes processing a Cotal message
 (the adapter's `on_processing_start` and `on_processing_complete`), one per model response
-(`post_api_request`) and one per tool result (`post_tool_call`). It records only Cotal-platform
-work, so an adopted profile's other platforms stay off the mesh. Each record also wakes the
-sidecar's reader over the control socket.
+(`post_api_request`) and one per tool result (`post_tool_call`). It also records the gateway's
+reply in the operator chat when the model was not called for that message, as for a slash
+command's output or an error the gateway wrote itself. A reply the model wrote is recorded once, as
+its responses. It records only Cotal-platform work, so an adopted profile's other platforms stay
+off the mesh. Each record also wakes the sidecar's reader over the control socket.
 
-A run opens at the first model response while a message is in progress and finishes when no
-message is in progress. The gateway processes a message that arrives during its startup once
+A run opens at the first model response or operator reply while a message is in progress, and
+finishes when no message is in progress. The gateway processes a message that arrives during its startup once
 without running the model, and that pass opens no run. Messages processed at the same time share
 one run, because the plane has one run open at a time. A message that fails ends the run with
 `RUN_ERROR`, even when it failed before any model response, and a cancelled one ends it as an
@@ -158,8 +160,8 @@ On a per-user mesh, the seat serves `turn`, `interrupt` and `usage` on its
 
 `turn` runs the owner's words as the user's own message in the gateway's operator chat, a session
 that no peer message reaches. Each image is cached by the gateway and goes with the text, as a photo
-sent in a chat does. A turn that starts with `/` runs as a Hermes slash command, and its reply has no
-record on the event plane. A turn starts only while the gateway has no Cotal message or turn in
+sent in a chat does. A turn that starts with `/` runs as a Hermes slash command, and its reply shows
+on the event plane as the turn's text. A turn starts only while the gateway has no Cotal message or turn in
 progress, because the gateway would interrupt the running turn with it. It reads `started` once the
 gateway took it. When the gateway refuses it, it ends `refused` with `failed-precondition`, and when
 the gateway disconnects before it answers, it ends `unknown`. A launch's initial prompt is the first
