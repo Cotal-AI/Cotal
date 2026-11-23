@@ -167,6 +167,48 @@ function missingServiceDefinition(space: string, name: string, mode: string, com
   return new CommandFailure("refused", "TARGET_NOT_FOUND", `no saved service definition resolves this name in the selected space; ${effect}`, { target: { space, name }, remedy });
 }
 
+async function handoffDashboardBrowser(space: string, name: string, instance: ServiceInstanceSnapshot, foreground: boolean, noOpen: boolean) {
+  const browserWarnings: { code: string; message: string; target: { space: string; name: string } }[] = [];
+  const serviceTarget = `${shellWord(name)} --space ${shellWord(space)}`;
+  const sessionSource = foreground ? "the original foreground terminal" : codeSpan(`cotal service logs ${serviceTarget}`);
+  const noBrowser = (message = `No browser was opened. Find the private session record in ${sessionSource} and open its single-use link locally.`) => browserWarnings.push({ code: "BROWSER_NOT_OPENED", target: { space, name }, message });
+  let refreshedSessionPath: string | undefined;
+  const value = instance.record.value;
+  try {
+    const path = serviceWebSessionPath({ space, instanceId: value.instanceId, launchRequestId: value.launchRequestId, stateDirectory: serviceInstanceStore(space).directory()! });
+    const bytes = readLocalRecordSource(path, 16384, true);
+    const session = JSON.parse(bytes!.toString("utf8"));
+    if (session.instanceId !== value.instanceId || session.launchRequestId !== value.launchRequestId || session.process?.pid !== value.process?.pid || session.process?.token !== value.process?.token || typeof session.launchNonce !== "string") throw new Error("session mismatch");
+    if (observeServiceProcess(value) !== "running") throw new Error("browser launch requires a live listener");
+    if (["127.0.0.1", "::1"].includes(session.host)) {
+      const response = await fetch(new URL("/api/browser-launch", webBoundUrl(session.host, session.port)), { method: "POST", headers: { "x-cotal-browser-launch": session.launchNonce }, redirect: "manual", signal: AbortSignal.timeout(5000) });
+      if (!response.ok) throw new Error("browser handoff refused");
+      const { launchUrl } = await response.json() as { launchUrl: string };
+      const url = new URL(launchUrl);
+      if (url.origin !== new URL(session.launchUrl).origin || url.protocol !== "http:" || url.username || url.password || url.pathname !== "/" || !url.searchParams.get("k")) throw new Error("invalid launch URL");
+      refreshedSessionPath = path;
+      if (!noOpen) {
+        if (process.platform === "linux" && !process.env.DISPLAY && !process.env.WAYLAND_DISPLAY) noBrowser();
+        else {
+          const executable = process.platform === "darwin" ? "open" : process.platform === "win32" ? "cmd" : "xdg-open";
+          const child = spawn(executable, process.platform === "win32" ? ["/c", "start", "", launchUrl] : [launchUrl], { stdio: "ignore", detached: true });
+          await new Promise<void>((resolve, reject) => { child.once("spawn", resolve); child.once("error", reject); });
+          child.unref();
+        }
+      }
+    } else if (!noOpen) {
+      throw new Error("browser launch requires a local listener");
+    }
+  } catch (error) {
+    const missingOpener = (error as NodeJS.ErrnoException).code === "ENOENT" && (error as NodeJS.ErrnoException).syscall?.startsWith("spawn ");
+    const retry = codeSpan(`cotal service start ${serviceTarget}`);
+    if (!missingOpener && name === "web") throw new CommandFailure("partial", "OPERATION_PARTIAL", refreshedSessionPath ? "the dashboard is running, but its browser session could not be opened" : "the dashboard is running, but a fresh browser link was not confirmed", { target: { space, name, instanceId: value.instanceId }, remedy: refreshedSessionPath ? `find the private session record in ${sessionSource}, or retry ${retry}` : `inspect ${sessionSource} before retrying ${retry}` });
+    // The custom-name start succeeds once its dashboard is running, even if the browser handoff fails.
+    noBrowser(missingOpener || refreshedSessionPath ? undefined : `A fresh browser link was not confirmed. Check ${sessionSource} before retrying ${retry}.`);
+  }
+  return { refreshedSessionPath, browserWarnings };
+}
+
 /** `root` is the selected space's root, where a definition must have been added to launch. */
 export async function serviceAction(args: ParsedArgs, space: string, root: string, commandName = "service", resolved?: PresetServiceTarget): Promise<void> {
   const [mode, name] = args.positionals as [string, string];
@@ -425,47 +467,10 @@ export async function serviceAction(args: ParsedArgs, space: string, root: strin
     finally { release?.(); }
   }
   const result = instanceProjection(started.instance);
-  const browserWarnings: { code: string; message: string; target: { space: string; name: string } }[] = [];
-  const serviceTarget = `${shellWord(name)} --space ${shellWord(space)}`;
-  const sessionSource = result.foreground ? "the original foreground terminal" : codeSpan(`cotal service logs ${serviceTarget}`);
-  const noBrowser = (message = `No browser was opened. Find the private session record in ${sessionSource} and open its single-use link locally.`) => browserWarnings.push({ code: "BROWSER_NOT_OPENED", target: { space, name }, message });
   const noOpen = args.values["no-open"] === true;
-  let refreshedSessionPath: string | undefined;
-  if (mode === "start" && prepared?.adapter?.pin.name === WEB_SERVICE_ADAPTER && !values.foreground && (!noOpen || started.noOp)) {
-    try {
-      const value = started.instance.record.value;
-      const path = serviceWebSessionPath({ space, instanceId: value.instanceId, launchRequestId: value.launchRequestId, stateDirectory: serviceInstanceStore(space).directory()! });
-      const bytes = readLocalRecordSource(path, 16384, true);
-      const session = JSON.parse(bytes!.toString("utf8"));
-      if (session.instanceId !== value.instanceId || session.launchRequestId !== value.launchRequestId || session.process?.pid !== value.process?.pid || session.process?.token !== value.process?.token || typeof session.launchNonce !== "string") throw new Error("session mismatch");
-      if (observeServiceProcess(value) !== "running") throw new Error("browser launch requires a live listener");
-      if (["127.0.0.1", "::1"].includes(session.host)) {
-        const response = await fetch(new URL("/api/browser-launch", webBoundUrl(session.host, session.port)), { method: "POST", headers: { "x-cotal-browser-launch": session.launchNonce }, redirect: "manual", signal: AbortSignal.timeout(5000) });
-        if (!response.ok) throw new Error("browser handoff refused");
-        const { launchUrl } = await response.json() as { launchUrl: string };
-        const url = new URL(launchUrl);
-        if (url.origin !== new URL(session.launchUrl).origin || url.protocol !== "http:" || url.username || url.password || url.pathname !== "/" || !url.searchParams.get("k")) throw new Error("invalid launch URL");
-        refreshedSessionPath = path;
-        if (!noOpen) {
-          if (process.platform === "linux" && !process.env.DISPLAY && !process.env.WAYLAND_DISPLAY) noBrowser();
-          else {
-            const executable = process.platform === "darwin" ? "open" : process.platform === "win32" ? "cmd" : "xdg-open";
-            const child = spawn(executable, process.platform === "win32" ? ["/c", "start", "", launchUrl] : [launchUrl], { stdio: "ignore", detached: true });
-            await new Promise<void>((resolve, reject) => { child.once("spawn", resolve); child.once("error", reject); });
-            child.unref();
-          }
-        }
-      } else if (!noOpen) {
-        throw new Error("browser launch requires a local listener");
-      }
-    } catch (error) {
-      const missingOpener = (error as NodeJS.ErrnoException).code === "ENOENT" && (error as NodeJS.ErrnoException).syscall?.startsWith("spawn ");
-      const retry = codeSpan(`cotal service start ${serviceTarget}`);
-      if (!missingOpener && name === "web") throw new CommandFailure("partial", "OPERATION_PARTIAL", refreshedSessionPath ? "the dashboard is running, but its browser session could not be opened" : "the dashboard is running, but a fresh browser link was not confirmed", { target: { space, name, instanceId: result.instanceId }, remedy: refreshedSessionPath ? `find the private session record in ${sessionSource}, or retry ${retry}` : `inspect ${sessionSource} before retrying ${retry}` });
-      // The custom-name start succeeds once its dashboard is running, even if the browser handoff fails.
-      noBrowser(missingOpener || refreshedSessionPath ? undefined : `A fresh browser link was not confirmed. Check ${sessionSource} before retrying ${retry}.`);
-    }
-  }
+  const { refreshedSessionPath, browserWarnings } = mode === "start" && prepared?.adapter?.pin.name === WEB_SERVICE_ADAPTER && !values.foreground && (!noOpen || started.noOp)
+    ? await handoffDashboardBrowser(space, name, started.instance, result.foreground, noOpen)
+    : { refreshedSessionPath: undefined, browserWarnings: [] };
   writeResult(presentation, { command: commandName, target: { ...target, instanceId: result.instanceId }, result: { kind: mode === "restart" ? "service-restart" : "service-start", ...result, ...(mode === "restart" ? { originalStopImpact: nativePlan ?? kernelPlan ?? null } : {}), ...(resolved ? { presetDefinition: resolved.saved } : {}) }, noOp: started.noOp && !refreshedSessionPath, warnings: browserWarnings }, (row) => {
     const view = instanceView(row, started.noOp ? "Already running; nothing was started" : row.nativeEndpoint ? "Owned process running; native adapter readiness recorded" : row.reportedListener ? "Owned broker process reported its listener" : row.readinessObservation === "http-reachable" ? "Owned process running; HTTP reachable" : "Owned service process running");
     // A background child reports how to reach it, such as the dashboard's bootstrap file, in its own log.
