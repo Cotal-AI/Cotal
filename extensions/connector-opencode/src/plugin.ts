@@ -132,6 +132,8 @@ export const cotal: Plugin = async () => {
     ensureSession,
     running: () => (busy || batch.open ? sessionID : undefined),
     markInterrupt: markInterruptIntent,
+    firstTurnSystem: () => firstTurnSystem(),
+    primed: () => { primed = true; },
     warn: log,
   });
   const agent = new MeshAgent(config, undefined, { commands: commands.dispatcher });
@@ -342,6 +344,7 @@ export const cotal: Plugin = async () => {
   let driving = false; // re-entrancy guard around an in-flight server prompt
   let lastTurnWasCommand = false; // the last turn the connector started ran an agent command
   let primed = false; // persona goes out as `system` on the first CONNECTOR-SUBMITTED turn, once
+  const firstTurnSystem = (): string | undefined => (!primed && persona ? `${persona}\n\n${briefing(config, "opencode")}` : undefined);
   // Set on the first connector-submitted turn whether or not there was a briefing to send: the flag
   // records that the attempt was made, so an empty briefing is not retried on every later turn.
   let briefed = false;
@@ -860,7 +863,7 @@ export const cotal: Plugin = async () => {
       const body: { parts: typeof parts; system?: string } = { parts };
       // persona once, as system (no --append-system-prompt), with the shared briefing after it —
       // gated on persona so we never replace OpenCode's default system.
-      if (!primed && persona) body.system = `${persona}\n\n${briefing(config, "opencode")}`;
+      body.system = firstTurnSystem();
       // The surface opens the batch, which arms the turn end BEFORE the await: a turn-end signal can
       // land before the server request resolves, and completeTurn bails unless armed — arming after
       // would drop it and wedge the agent.

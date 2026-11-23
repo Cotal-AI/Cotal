@@ -1,8 +1,10 @@
 /**
- * The OpenCode 2.x dispatcher on the `agent` endpoint (SPEC 13.22): its commands and skills, and
- * interrupt.
+ * The OpenCode 2.x dispatcher on the `agent` endpoint (SPEC 13.22): its commands and skills,
+ * interrupt, the owner's turns with images, and usage. A turn goes out as a prompt, each image a file
+ * attached by its data URL, and `usage` reads the session and its last model step the way T3 Code's
+ * OpenCode 2 provider does, as measured on 2.0.24.
  */
-import { CommandRefused, type CommandDispatcher } from "@cotal-ai/connector-core";
+import { CommandRefused, type AgentTurn, type AgentUsage, type CommandDispatcher } from "@cotal-ai/connector-core";
 import type { CommandEntry, CommandTarget } from "@cotal-ai/core";
 import { RECONNECT_COMMAND } from "./reconnect-command.js";
 import { OpenCodeHttpError, type OpenCodeApi } from "./opencode2-http.js";
@@ -39,6 +41,14 @@ async function readLists(opencodeApi: OpenCodeApi): Promise<CommandEntry[]> {
   return lists.flat().filter((e) => !isReconnect(e));
 }
 
+/** A record of the session's message list, as far as `usage` reads it. An assistant record is one
+ *  model step. */
+interface StepRecord {
+  type?: unknown;
+  model?: { id?: unknown; providerID?: unknown };
+  tokens?: { input: number; output: number; cache: { read: number; write: number } };
+}
+
 export interface Commands2Deps {
   api: OpenCodeApi;
   /** The owned session, created first when there is none yet. */
@@ -60,6 +70,61 @@ export interface Commands2 {
 }
 
 export function opencode2Commands(deps: Commands2Deps): Commands2 {
+  // Each model's context window. A window does not change while the server runs.
+  const windows = new Map<string, number | undefined>();
+
+  /** The owner's words as the user's own prompt. The route answers once OpenCode stored it. */
+  async function turn({ text, images }: AgentTurn): Promise<void> {
+    const id = await deps.ensureSession();
+    if (!id) throw new CommandRefused("failed-precondition", "this agent has no OpenCode session yet");
+    const system = deps.firstTurnSystem();
+    const files = images.map(({ mimeType, data }) => ({ uri: `data:${mimeType};base64,${data}` }));
+    try {
+      await deps.api(
+        `/api/session/${encodeURIComponent(id)}/prompt`,
+        { method: "POST", body: JSON.stringify({ text, ...(files.length ? { files } : {}), ...(system ? { system } : {}) }) },
+        10_000,
+      );
+    } catch (e) {
+      if (e instanceof OpenCodeHttpError && e.status >= 400 && e.status < 500) throw new CommandRefused("failed-precondition", e.message);
+      throw e;
+    }
+    if (system) deps.primed();
+  }
+
+  /** The window T3 Code shows: the model's input limit, else its context limit. */
+  async function windowOf(providerID: unknown, modelID: unknown): Promise<number | undefined> {
+    const key = `${String(providerID)}/${String(modelID)}`;
+    if (windows.has(key)) return windows.get(key);
+    const data = (await deps.api<{ data?: unknown } | undefined>("/api/model", undefined, 30_000))?.data;
+    if (!Array.isArray(data)) throw new Error("OpenCode answered /api/model with no data list");
+    const entry = (data as { providerID?: unknown; modelID?: unknown; limit?: { input?: unknown; context?: unknown } }[])
+      .find((m) => m.providerID === providerID && m.modelID === modelID);
+    const size = [entry?.limit?.input, entry?.limit?.context].find((n): n is number => typeof n === "number" && n > 0);
+    windows.set(key, size);
+    return size;
+  }
+
+  /** The context the next request starts from, as the last step's prompt plus its output, and the
+   *  session's cost once it is above zero. */
+  async function usage(): Promise<AgentUsage> {
+    const id = deps.session();
+    if (!id) return {};
+    const path = `/api/session/${encodeURIComponent(id)}`;
+    const [info, page] = await Promise.all([
+      deps.api<{ data?: { cost?: unknown } } | undefined>(path, undefined, 30_000),
+      deps.api<{ data?: unknown } | undefined>(`${path}/message?limit=200&order=desc`, undefined, 30_000),
+    ]);
+    if (!Array.isArray(page?.data)) throw new Error("OpenCode answered the session's messages with no data list");
+    const step = (page.data as StepRecord[]).find((r) => r.type === "assistant" && typeof r.tokens?.input === "number");
+    const size = step ? await windowOf(step.model?.providerID, step.model?.id) : undefined;
+    const cost = info?.data?.cost;
+    return {
+      ...(step?.tokens && size ? { context: { used: step.tokens.input + step.tokens.cache.read + step.tokens.cache.write + step.tokens.output, size } } : {}),
+      ...(typeof cost === "number" && cost > 0 ? { cost: { amount: cost, currency: "USD" } } : {}),
+    };
+  }
+
   // The `loaded` events still to come, set from the event loop, and the one bounded wait for them.
   const listsLoading = new Set(Object.values(COMMAND_ROUTES).map((r) => r.loaded));
   let markListsLoaded!: () => void;
@@ -113,6 +178,9 @@ export function opencode2Commands(deps: Commands2Deps): Commands2 {
       if (typeof r?.interrupted !== "boolean") throw new Error("OpenCode answered /interrupt with no interrupted flag");
       return r.interrupted ? "interrupted" : "idle";
     },
+    turn,
+    images: true,
+    usage,
   };
   return {
     dispatcher,
