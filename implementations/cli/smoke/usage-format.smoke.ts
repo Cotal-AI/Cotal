@@ -754,6 +754,12 @@ for (const [args, message, remedy] of [
   const r = run([...args], {}, project);
   check(`${args.join(" ")} without --yes prints its refusal and remedy without the help`, confirmShape(r, message, remedy), shown(r));
 }
+const jsonDelete = run(["space", "delete", "delete-target", "--json"], {}, project);
+check("space delete --json confirmation preserves --json in both preview and confirmed remedy",
+  jsonDelete.status === 1 && jsonDelete.stdout.includes('"remedy":"inspect `cotal space delete delete-target --dry-run --json` first, then run `cotal space delete delete-target --yes --json`"'), shown(jsonDelete));
+const plainDelete = run(["space", "delete", "delete-target", "--plain"], {}, project);
+check("space delete --plain confirmation preserves --plain in remedies",
+  plainDelete.status === 1 && plainDelete.stderr.includes("cotal space delete delete-target --dry-run --plain") && plainDelete.stderr.includes("cotal space delete delete-target --yes --plain"), shown(plainDelete));
 
 // A mistyped command, leading flag, subcommand or option names the nearest one; a word near nothing
 // keeps the plain line.
