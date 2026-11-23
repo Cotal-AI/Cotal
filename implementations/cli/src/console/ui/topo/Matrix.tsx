@@ -69,10 +69,11 @@ export function Matrix({
   );
   if (!rows.length || !cols.length)
     return <Text dimColor>(no traffic in the window - waiting for peer messages)</Text>;
+  if (width < CELL_W + 2) return null;
   // Viewports: rows under header + footer; columns follow the cursor.
   const labelLimit = Math.max(18, Math.min(32, Math.floor(width / 3)));
   const labelNeed = Math.max(11, ...rows.map((n) => displayWidth(nodeLabel(n)) + 3));
-  const labelW = Math.max(0, Math.min(width - CELL_W, labelLimit, labelNeed));
+  const labelW = Math.max(2, Math.min(width - CELL_W, labelLimit, labelNeed));
   const visCols = Math.max(1, Math.floor((width - labelW) / CELL_W));
   const colTop = Math.max(0, Math.min(c - visCols + 1, cols.length - visCols));
   const visRows = Math.max(1, height - 1 - FOOTER_H);
@@ -126,11 +127,10 @@ export function Matrix({
       </Text>
       {shownRows.map((row, ri) => {
         const glyph = STATUS[row.status ?? "offline"];
-        const prefix = labelW >= 2 ? glyph.dot + " " : "";
         return (
           <Text key={row.key} wrap="truncate-end">
-            <Text color={glyph.color}>{prefix}</Text>
-            <Text color={agentColor(row.name)}>{fitLabel(nodeLabel(row), labelW - displayWidth(prefix), 1)}</Text>
+            <Text color={glyph.color}>{glyph.dot + " "}</Text>
+            <Text color={agentColor(row.name)}>{fitLabel(nodeLabel(row), labelW - 2, 1)}</Text>
             {shownCols.map((col, ci) => {
               const selected = active && rowTop + ri === r && colTop + ci === c;
               if (row.key === col.key)
