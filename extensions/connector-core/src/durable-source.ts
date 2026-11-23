@@ -281,17 +281,40 @@ export class JsonlFileSource<T = unknown> implements OrderedSource<T> {
         }
         searched += len;
       }
-      // The seal over the window before it, as `sealAt` computes it.
-      const span = Math.min(at, 512);
-      const seal = createHash("sha256").update(readAt(span, at - span)).digest("hex").slice(0, 16);
-      return `${String(st.dev)}:${String(st.ino)}:${at}:${seal}`;
+      return `${String(st.dev)}:${String(st.ino)}:${at}:${JsonlFileSource.sealSync(fd, at)}`;
+    } finally {
+      closeSync(fd);
+    }
+  }
+
+  /** {@link sealAt}, read synchronously. */
+  private static sealSync(fd: number, offset: number): string {
+    const span = Math.min(offset, 512);
+    const buf = Buffer.allocUnsafe(span);
+    const read = span > 0 ? readSync(fd, buf, 0, span, offset - span) : 0;
+    return createHash("sha256").update(buf.subarray(0, read)).digest("hex").slice(0, 16);
+  }
+
+  /**
+   * Whether `cursor` is a position on the file at the path now: the file it names, at least as long
+   * as its offset, with the bytes before that offset unchanged. These are the checks {@link read}
+   * makes, so `read` refuses a cursor this answers false for. Read synchronously, like
+   * {@link endSync}. Throws when the file does not exist.
+   */
+  holdsSync(cursor: string): boolean {
+    const c = JsonlFileSource.parseCursor(cursor);
+    const fd = openSync(this.path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    try {
+      const st = fstatSync(fd);
+      return String(st.dev) === c.dev && String(st.ino) === c.ino && c.offset <= st.size && JsonlFileSource.sealSync(fd, c.offset) === c.seal;
     } finally {
       closeSync(fd);
     }
   }
 
   /** Orders two cursors of this file by offset. Cursors of different files throw
-   *  {@link JsonlFileResetError}: the file was replaced between them. */
+   *  {@link JsonlFileResetError}: the file was replaced between them. A replacement that reused the
+   *  inode is not seen here; {@link holdsSync} sees it. */
   compare(a: string, b: string): number {
     const x = JsonlFileSource.parseCursor(a);
     const y = JsonlFileSource.parseCursor(b);

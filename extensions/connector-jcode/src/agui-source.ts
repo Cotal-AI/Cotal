@@ -84,18 +84,18 @@ export class JcodeJournalSource implements OrderedSource<JcodeJournalRecord> {
    */
   compare(a: string, b: string): number {
     if (a === NEXT_FILE || b === NEXT_FILE) return a === b ? 0 : a === NEXT_FILE ? this.nextFileAgainst(b) : -this.nextFileAgainst(a);
+    const aNow = this.onFile(a), bNow = this.onFile(b);
+    if (aNow !== bNow) return aNow ? 1 : -1;
     try {
       return this.file.compare(a, b);
     } catch (error) {
       if (!(error instanceof JsonlFileResetError)) throw error;
+      return 0;
     }
-    const now = this.currentEnd();
-    const aNow = this.onFile(a, now), bNow = this.onFile(b, now);
-    return aNow === bNow ? 0 : aNow ? 1 : -1;
   }
 
   private nextFileAgainst(cursor: string): number {
-    return this.onFile(cursor, this.currentEnd()) ? -JsonlFileSource.offsetOf(cursor) : 1;
+    return this.onFile(cursor) ? -JsonlFileSource.offsetOf(cursor) : 1;
   }
 
   private currentEnd(): string | undefined {
@@ -107,13 +107,13 @@ export class JcodeJournalSource implements OrderedSource<JcodeJournalRecord> {
     }
   }
 
-  private onFile(cursor: string, end: string | undefined): boolean {
-    if (end === undefined) return false;
+  /** Whether `cursor` is on the journal at the path now. A fold's new journal can reuse the inode of
+   *  the one it replaced, as ext4 does, so the file's identity alone does not tell them apart. */
+  private onFile(cursor: string): boolean {
     try {
-      this.file.compare(cursor, end);
-      return true;
+      return this.file.holdsSync(cursor);
     } catch (error) {
-      if (error instanceof JsonlFileResetError) return false;
+      if (isMissing(error)) return false;
       throw error;
     }
   }
