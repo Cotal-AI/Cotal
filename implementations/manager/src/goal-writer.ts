@@ -18,7 +18,6 @@ export interface GoalWriterDeps {
   auth: () => Manager["auth"];
   leaseStopping: () => Manager["leaseStopping"];
   managerInstanceId: () => Manager["managerInstanceId"];
-  remoteAuthority: () => Manager["remoteAuthority"];
   turnRelay: () => Manager["turnRelay"];
   adoptTurnGoal: (...args: Parameters<Manager["adoptTurnGoal"]>) => ReturnType<Manager["adoptTurnGoal"]>;
   boundedReconnect: (...args: Parameters<Manager["boundedReconnect"]>) => ReturnType<Manager["boundedReconnect"]>;
@@ -37,7 +36,6 @@ export function goalWriterDeps(m: Manager): GoalWriterDeps {
     auth: () => m["auth"],
     leaseStopping: () => m["leaseStopping"],
     managerInstanceId: () => m["managerInstanceId"],
-    remoteAuthority: () => m["remoteAuthority"],
     turnRelay: () => m["turnRelay"],
     adoptTurnGoal: (...args) => m["adoptTurnGoal"](...args),
     boundedReconnect: (...args) => m["boundedReconnect"](...args),
@@ -88,7 +86,7 @@ export class GoalWriter {
   private get auth() { return this.deps.auth(); }
   private get leaseStopping() { return this.deps.leaseStopping(); }
   private get managerInstanceId() { return this.deps.managerInstanceId(); }
-  private get remoteAuthority() { return this.deps.remoteAuthority(); }
+  private get remoteAuthority() { return this.config.remoteAuthority; }
   private get turnRelay() { return this.deps.turnRelay(); }
   private adoptTurnGoal(...args: Parameters<Manager["adoptTurnGoal"]>): ReturnType<Manager["adoptTurnGoal"]> { return this.deps.adoptTurnGoal(...args); }
   private boundedReconnect(...args: Parameters<Manager["boundedReconnect"]>): ReturnType<Manager["boundedReconnect"]> { return this.deps.boundedReconnect(...args); }

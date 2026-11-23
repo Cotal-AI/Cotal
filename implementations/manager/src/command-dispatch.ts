@@ -23,7 +23,6 @@ export interface CommandDispatchDeps {
   auth: () => Manager["auth"];
   managerInstanceId: () => Manager["managerInstanceId"];
   participants: () => Manager["participants"];
-  remoteAuthority: () => Manager["remoteAuthority"];
   resumeRequired: () => Manager["resumeRequired"];
   runHosting: () => Manager["runHosting"];
   transcripts: () => Manager["transcripts"];
@@ -87,7 +86,6 @@ export function commandDispatchDeps(m: Manager): CommandDispatchDeps {
     auth: () => m["auth"],
     managerInstanceId: () => m["managerInstanceId"],
     participants: () => m["participants"],
-    remoteAuthority: () => m["remoteAuthority"],
     resumeRequired: () => m["resumeRequired"],
     runHosting: () => m["runHosting"],
     transcripts: () => m["transcripts"],
@@ -155,7 +153,7 @@ export class CommandDispatch {
   private get auth() { return this.deps.auth(); }
   private get managerInstanceId() { return this.deps.managerInstanceId(); }
   private get participants() { return this.deps.participants(); }
-  private get remoteAuthority() { return this.deps.remoteAuthority(); }
+  private get remoteAuthority() { return this.config.remoteAuthority; }
   private get resumeRequired() { return this.deps.resumeRequired(); }
   private get runHosting() { return this.deps.runHosting(); }
   private get transcripts() { return this.deps.transcripts(); }
