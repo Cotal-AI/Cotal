@@ -37,6 +37,7 @@ import {
   type Report,
   readMaintenanceJournal,
   readMaintenanceLockHolder,
+  readBrokerPolicy,
   readContainedRecord,
   keepsRegistration,
   recordMesh,
@@ -52,6 +53,7 @@ import {
 } from "@cotal-ai/workspace";
 import {
   isReachable,
+  MANAGER_START_PAYLOAD_FLOOR,
   realDirNoSymlink,
 } from "@cotal-ai/core";
 import { localProcessSurface } from "../ext-loader.js";
@@ -782,7 +784,12 @@ async function downCommand(args: ParsedArgs): Promise<void> {
     console.error(c.red("Nothing running for the local stack (no recorded pidfiles)."));
     process.exit(1);
   }
-  console.log(`\n${renderReport({ sections: [{ title: "Next", blocks: [{ kind: "commands", items: [{ command: `${displayCmd()} up`, description: "Start it again" }] }] }] }, "rich", process.stdout)}`);
+  let payload: number | undefined;
+  // The retained policy determines the restart, not whether the stop succeeded.
+  try { if (guarded.mode === "open") payload = readBrokerPolicy(folderCtx().root)?.maxPayload; }
+  catch { return; }
+  const restart = payload !== undefined && payload < MANAGER_START_PAYLOAD_FLOOR ? "up --no-manager" : "up";
+  console.log(`\n${renderReport({ sections: [{ title: "Next", blocks: [{ kind: "commands", items: [{ command: `${displayCmd()} ${restart}`, description: "Start it again" }] }] }] }, "rich", process.stdout)}`);
 }
 
 /** What an interrupted bare down of a legacy stack left: the members it stopped, the ones still
