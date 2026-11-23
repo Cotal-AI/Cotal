@@ -1,4 +1,5 @@
 # A Jcode seat takes its owner's turn as the user's own message, images included, starts it at
 # Jcode's acknowledgement, reports a refused or unacknowledged send as such, and answers usage
-# from the context Jcode's last call used against the budget Jcode reported.
+# from the context Jcode's last call used against the budget Jcode reported. A turn Jcode failed
+# closes its run with the error, whether the seat or the TUI drove it.
 smoke:jcode-endpoint
