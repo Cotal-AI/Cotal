@@ -205,6 +205,12 @@ The prompts:
 - When the prompt would pass the desk's size limit, as a patch that deletes a large file does, its
   input is left out and only deny and deny and stop the turn are offered. Nobody can read that
   input remotely, so it cannot be approved there; the attached TUI can still approve it.
+- A permissions request opens a `permission` prompt for `request_permissions`. Codex sends one when
+  the model calls its `request_permissions` tool, which a launch turns on with
+  `features.request_permissions_tool`, to ask for network access or file system access the sandbox
+  does not give. The input is what it asks for, `{ permissions: { network?, fileSystem? } }`, and the
+  body gives the model's reason and names the access. Allow for this turn or for this session
+  grants what it asked for, and deny grants nothing.
 - A `request_user_input` call opens a `question` prompt with a form, one field per question. A
   question with choices and no free answer is a single choice. A question marked secret is not put
   on the desk, because a form never asks for a secret.
@@ -213,8 +219,8 @@ The answer goes back as the request's result. The attached TUI shows the same re
 whichever answer reaches Codex first applies. Codex reports only that the request was resolved,
 not who answered, so a prompt the TUI answered first closes `withdrawn`, and one answered remotely
 closes unconfirmed. A request nobody answers stays open for seven days and is then declined, and an
-asking policy on any other space is refused at launch. Permission requests and MCP elicitations
-are still declined.
+asking policy on any other space is refused at launch. A permissions request that no prompt
+desk holds grants nothing. MCP elicitations are still declined.
 
 What the sandbox guarantees, stated literally: it **blocks out-of-workspace local filesystem
 writes**. It does **not** block reads, exfiltration, or networked side effects.
