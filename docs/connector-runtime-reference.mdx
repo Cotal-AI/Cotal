@@ -336,6 +336,20 @@ A value `deliver` resolves that is not a delivery result is a failed call, and n
 Stopping the client endpoint ends the serve and not the prompts, so call the agent endpoint's `close()` first. It closes every prompt and answers every waiting caller, and it does not wait for a `deliver` that has not ended.
 The answer checks, the bounds and the states are in [SPEC §13.22](../SPEC.md#1322-the-agent-endpoint).
 
+## Streamed text [#streamed-text]
+
+The event plane publishes only what a durable record carries, and most harnesses save a reply once it is complete.
+A connector whose harness reports deltas while it writes a reply journals them, so the reply streams on the event plane and a restart publishes the same events.
+
+- `DeltaJournal.open({ path, anchor, onWrite, onError })` opens the thread's journal at the `deltaJournalPath` of its WAL location, next to `wal.json`, with mode 0600. `append({ key, kind, text })` queues a delta. `key` names one part of one reply from its first delta to its saved record, and `kind` is `text` or `reasoning`. The journal writes at most one line every 250 ms, holding the deltas since the last line and `anchor()`, the harness source's position at that moment. Each line wakes the emitter through `onWrite`, and a line that cannot be written goes to `onError`. `settle()` drops what is not written yet, for when the harness is about to save the reply that carries it. The journal lives and dies with the thread's `wal.json`, and only the seat process writes it: a connector whose deltas arrive in another process, such as a hook, relays them to the seat.
+- `DeltaMergedSource(harness, journalPath)` reads the harness's own source with the journal's lines among its records. The harness source implements `OrderedSource`, whose `compare(a, b)` orders two of its cursors, as `JsonlFileSource` does. A line goes before the first harness record that ends after its anchor, so a read after a restart answers the same records in the same order under the same cursors. A connector stores `start(harnessCursor)` where it stored a harness cursor, and gives the holder `() => source.end()` as its `sourceEnd`. A WAL that holds a harness cursor alone starts the journal at its end.
+- `StreamedParts` holds what the mapper needs. `delta(d, ts)` opens a part at its first delta and adds content for each. `saved(key, text, ts)` at the saved record sends the rest of the text and ends the part. When the saved text does not begin with what streamed, as after a provider retry, it ends the part and answers `mapAsNew`, so the saved text publishes as a message of its own and a reader sees the abandoned text once. A part that never streamed answers `mapAsNew` with nothing to send, and maps as it would without the journal. `endAll(ts)` ends the parts a saved reply left out.
+- `streamSeed(journalPath, cursor, brackets)` rebuilds that state for an emitter that starts again mid-reply, from the journal up to the cursor and the parts the WAL holds open.
+
+The saved record stays the text of record: text that was never journaled reaches the plane with it.
+The journal grows with the thread's streamed text.
+A harness in another process can save a record between a line's anchor and its write, and a reader that already passed the anchor places that line where its read starts.
+
 ## Connector contracts
 
 - [Claude Code reference](claude-connector-reference.mdx)
