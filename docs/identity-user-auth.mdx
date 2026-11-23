@@ -447,9 +447,9 @@ target a foreign manager slot holder in the same space, but it runs only after t
 proves the frozen gate's holder gone under a complete sweep. The participant receives neither an
 evictor credential nor authority over another instance's records or gate. A clean stop refreshes an
 unhealthy executor before deregistration. A restart verify-evicts its old family. A Manager that
-loses the governance-slot write or finds another registration in flight briefly retries from a fresh
-read. If the foreign holder still has the slot at its frozen gate's generation, the Manager asks
-the host to reconcile that holder and retries registration once. The goal-writer and session-ledger
+finds another registration in flight retries from a fresh read, with exponential backoff and jitter
+within a 15-second budget. If the foreign holder is still in flight when that budget runs out, the
+Manager asks the host to reconcile that holder and retries registration once. The goal-writer and session-ledger
 credentials carry a random `issuance:` tag, so a restart that re-mints them within the second of an
 earlier issuance gets new ledger rows and never re-signs a credential its barrier revoked.
 

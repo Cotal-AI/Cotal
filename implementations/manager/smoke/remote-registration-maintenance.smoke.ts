@@ -41,51 +41,70 @@ try {
     observers.push(nc);
     return new Kvm(nc).open(epAuthBucket(space));
   };
-  // Hold the first two governance reads until both Managers have observed the same head.
-  // Their registrations and the deciding CAS both run against the live broker.
   const open = Kvm.prototype.open;
-  let reads = 0;
-  let releaseReads!: () => void;
-  const bothRead = new Promise<void>(resolve => { releaseReads = resolve; });
+  const pair = [owner, `u_${"b".repeat(26)}`].map(owner => ({ owner, instanceId: mintLifecycleUid() }));
+  const registrationFixture = async ({ owner, instanceId }: (typeof pair)[number]) => {
+    const { executor, serve } = remoteManagerActors(instanceId);
+    const prepareCreds = await mintCreds(auth, newIdentity(), "remote-manager", {
+      principal: { owner, actor: executor }, remoteManager: { instanceId, owner, actor: executor }, expiresInSeconds: 120,
+    });
+    return { space, server, owner, instanceId, serveActor: serve, tlsRequired: false,
+      prepareCreds, evict: async () => { throw new Error("first registration must not evict a holder"); } };
+  };
+  const [first, second] = await Promise.all([registrationFixture(pair[0]!), registrationFixture(pair[1]!)]);
+  let markHeld!: () => void;
+  const held = new Promise<void>(resolve => { markHeld = resolve; });
+  let releaseHolder!: () => void;
+  const releaseSlot = new Promise<void>(resolve => { releaseHolder = resolve; });
+  let firstRun: ReturnType<typeof registerRemoteManagerAuthority>;
+  let connections = 0, contenderReads = 0, repairs = 0;
   Kvm.prototype.open = async function (this: Kvm, ...args: Parameters<typeof open>) {
     const kv = await open.apply(this, args);
     if (args[0] === recordsBucket(space)) {
+      const side = ++connections;
       const get = kv.get.bind(kv);
+      let holderReads = 0;
       kv.get = async (...query) => {
-        const entry = await get(...query);
-        if (query[0] === "govern.manager" && ++reads <= 2) {
-          if (reads === 2) releaseReads();
-          await bothRead;
+        if (query[0] === "govern.manager") {
+          // The holder's second read is the promote, while its governance slot is live.
+          if (side === 1 && ++holderReads === 2) {
+            markHeld();
+            await releaseSlot;
+          }
+          if (side === 2 && ++contenderReads === 2) {
+            releaseHolder();
+            await firstRun;
+          }
         }
-        return entry;
+        return get(...query);
       };
     }
     return kv;
   };
-  const managers = [owner, `u_${"b".repeat(26)}`].map(owner => ({ owner, instanceId: mintLifecycleUid() }));
-  const readDeadline = setTimeout(releaseReads, 10_000);
+  const deadline = setTimeout(() => { releaseHolder(); markHeld(); }, 10_000);
   try {
-    const results = await Promise.allSettled(managers.map(async ({ owner, instanceId }) => {
-      const { executor, serve } = remoteManagerActors(instanceId);
-      const prepareCreds = await mintCreds(auth, newIdentity(), "remote-manager", {
-        principal: { owner, actor: executor }, remoteManager: { instanceId, owner, actor: executor }, expiresInSeconds: 120,
-      });
-      return registerRemoteManagerAuthority({ space, server, owner, instanceId, serveActor: serve, tlsRequired: false,
-        prepareCreds, evict: async () => { throw new Error("first registration must not evict a holder"); } });
-    }));
-    suite.check("concurrent first registrations: both Managers acquire their own serving grants", results.every((result, i) =>
+    firstRun = registerRemoteManagerAuthority(first);
+    const results = await Promise.allSettled([firstRun, held.then(() => registerRemoteManagerAuthority({ ...second,
+      reconcileForeignRegistration: async () => {
+        repairs++;
+        releaseHolder();
+        await firstRun;
+        throw new Error("holder already reopened its gate before reconciliation");
+      },
+    }))]);
+    suite.check("live foreign holder: both Managers acquire original serving grants without host repair", repairs === 0 && results.every((result, i) =>
       result.status === "fulfilled" && result.value.processEpoch === 0 &&
-      result.value.serveGrant.instanceId === managers[i]!.instanceId && result.value.serveGrant.owner === managers[i]!.owner),
+      result.value.serveGrant.instanceId === pair[i]!.instanceId && result.value.serveGrant.owner === pair[i]!.owner),
     results.map(result => result.status === "rejected" ? String(result.reason) : result.value.registrationRevision));
   } finally {
-    clearTimeout(readDeadline);
+    clearTimeout(deadline);
     Kvm.prototype.open = open;
   }
-  const gates = await Promise.all(managers.map(async ({ instanceId }) =>
+  const gates = await Promise.all(pair.map(async ({ instanceId }) =>
     serveIssuanceGateKv(await openAuth(instanceId), space, { endpoint: "manager", instanceId }).observe()));
-  suite.check("concurrent first registrations: the loser reopened and retried at the original epoch",
-    gates.every(gate => gate?.state === "open" && gate.processEpoch === 0) &&
-      gates.map(gate => gate?.generation).sort().join(",") === "1,2", gates);
+  suite.check("live foreign holder: the contender retries at its original epoch",
+    gates.every(gate => gate?.state === "open" && gate.processEpoch === 0 && gate.registrationRevision > 0) &&
+      (gates[1]?.generation ?? 0) > 1, gates);
 
   const statusRaceId = mintLifecycleUid();
   const statusRaceActors = remoteManagerActors(statusRaceId);
@@ -218,7 +237,7 @@ try {
   const contenderCreds = (ttl: number) => mintCreds(auth, contenderIdentity, "remote-manager", {
     principal: { owner, actor: contenderActor }, remoteManager: { instanceId: contenderId, owner, actor: contenderActor }, expiresInSeconds: ttl,
   });
-  const short = await contenderCreds(5);
+  const short = await contenderCreds(25);
   const expiry = credsClaims(short).exp!;
   let reconciliations = 0, refreshes = 0;
   let error: unknown;

@@ -2,4 +2,4 @@
 "@cotal-ai/manager": patch
 ---
 
-Remote Managers retry temporary registration conflicts when they start at the same time in one space.
+Remote Managers briefly wait and retry when another Manager in the same space is still registering, before requesting host repair.

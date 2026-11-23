@@ -3,7 +3,6 @@ import { Kvm } from "@nats-io/kv";
 import { UserAuthenticationExpiredError, type NatsConnection } from "@nats-io/transport-node";
 import {
   accountFromCreds,
-  authorizeServeGrant,
   credsClaims,
   contractArtifactCanonicalBytes,
   contractArtifactDigestHex,
@@ -12,7 +11,6 @@ import {
   dialerFor,
   endpointRegistrationBarrier,
   epAuthBucket,
-  EpEnvelopeError,
   fetchContractArtifact,
   foreignSlotHeldFrom,
   principalKey,
@@ -21,45 +19,27 @@ import {
   readEndpointGateGeneration,
   rejectionText,
   recordsBucket,
-  registerServiceInstance,
+  registerServingInstance,
   serveIssuanceGateKv,
-  SERVICE_READY,
   standaloneConnectOpts,
-  writeServiceStatus,
   type EpServeGrant,
   type EpIssuanceBarrier,
 } from "@cotal-ai/core";
 import { MANAGER_ENDPOINT, managerAuthorityContractSource, managerClusterArtifacts } from "./manager-service-contract.js";
 
-async function registerAfterContention<T>(register: () => Promise<T>): Promise<T> {
+async function registerAfterContention<T>(register: () => Promise<T>, deadline: number): Promise<T> {
   for (let retries = 0; ; retries++) {
     try {
       return await register();
     } catch (error) {
       // A fresh attempt re-reads the governance head and validates the registration under its gate.
-      if (retries === 4 || !(error instanceof EpEnvelopeError && error.code === "conflict"))
-        throw error;
-      await delay(100);
+      if (foreignSlotHeldFrom(error)?.condition !== "in-flight") throw error;
+      const wait = Math.random() * Math.min(15_000, 250 * 2 ** retries);
+      if (Date.now() + wait >= deadline) throw error;
+      await delay(wait);
+      if (Date.now() >= deadline) throw error;
     }
   }
-}
-
-async function finishManagerRegistration(
-  recordsKv: Parameters<typeof registerServiceInstance>[0],
-  args: Parameters<typeof registerServiceInstance>[1],
-  { registrationRevision, processEpoch }: Awaited<ReturnType<typeof registerServiceInstance>>,
-): Promise<EpServeGrant> {
-  const { space, instanceId, spec: { endpoint }, registrant: holder, authority, readClusterArtifact, barrier } = args;
-  const readProcessEpoch = async (): Promise<number> => {
-    const gate = await barrier.observe();
-    if (gate === null)
-      throw new EpEnvelopeError("failed-precondition", `no issuance gate for "${endpoint}/${instanceId}" after its registration; a gate is never deleted (SPEC 13.12)`);
-    return gate.processEpoch;
-  };
-  const grant = await authorizeServeGrant(recordsKv, { space, endpoint, instanceId, epoch: processEpoch, holder, authority, readClusterArtifact, readProcessEpoch });
-  await writeServiceStatus(recordsKv, { endpoint, instanceId, epoch: processEpoch, readProcessEpoch,
-    status: { state: SERVICE_READY, epoch: processEpoch, observedSpecRevision: registrationRevision } });
-  return grant;
 }
 
 /**
@@ -87,6 +67,7 @@ export async function registerRemoteManagerAuthority(args: {
   let prepareCreds = args.prepareCreds;
   const identity = credsClaims(prepareCreds).sub;
   const account = accountFromCreds(prepareCreds);
+  let contentionDeadline: number | undefined;
   let lastProgressAt = 0;
   const onRevocationProgress: NonNullable<EpIssuanceBarrier["onRevocationProgress"]> = ({ revoked, total }) => {
     const now = Date.now();
@@ -169,7 +150,7 @@ export async function registerRemoteManagerAuthority(args: {
           }
         },
       });
-      const registrationArgs = {
+      const register = () => registerServingInstance(recordsKv, {
         space: args.space,
         spec: { endpoint: MANAGER_ENDPOINT, owner: args.owner, clusterDigests: [artifacts.closureDigest], protocol: { v: 1 } },
         instanceId: args.instanceId,
@@ -180,11 +161,11 @@ export async function registerRemoteManagerAuthority(args: {
         // A foreign slot is reclaimed only after its gate provably reopens past the slot stamp.
         observeHolderGeneration: (holderInstanceId) =>
           readEndpointGateGeneration(authKv, { endpoint: MANAGER_ENDPOINT, instanceId: holderInstanceId }),
-      } satisfies Parameters<typeof registerServiceInstance>[1];
-      const register = () => registerServiceInstance(recordsKv, registrationArgs);
+      });
       let registered: Awaited<ReturnType<typeof register>>;
       try {
-        registered = await registerAfterContention(register);
+        contentionDeadline ??= Date.now() + 15_000;
+        registered = await registerAfterContention(register, Math.min(contentionDeadline, (expiry ?? Infinity) * 1000));
       } catch (error) {
         // Only a holder still at the slot stamp needs guarded host reconciliation.
         const held = foreignSlotHeldFrom(error);
@@ -197,11 +178,10 @@ export async function registerRemoteManagerAuthority(args: {
         }
         registered = await register();
       }
-      // A status CAS can lose after registration committed. Never re-register on that conflict.
-      return { ...registered, serveGrant: await finishManagerRegistration(recordsKv, registrationArgs, registered) };
+      const { registrationRevision, processEpoch, grant } = registered;
+      return { registrationRevision, processEpoch, serveGrant: grant };
     } catch (error) {
       if (maintenanceFailure) throw maintenanceFailure.error;
-      if (error instanceof EpEnvelopeError && error.code === "conflict") throw error;
       // Retry only an authentication-expiry error or an elapsed credential on a closed connection.
       // Completed row CASes and verified-holder progress belong to the same freeze.
       // Some transports close without retaining the broker's expiry error. In that case require
