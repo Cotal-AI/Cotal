@@ -34,13 +34,14 @@ function recordedNode(): string | undefined {
 
 export function npmInvocation(env: NodeJS.ProcessEnv, args: string[]) {
   const cwd = parse(homedir()).root;
-  const pathKey = process.platform === "win32"
+  const windows = process.platform === "win32";
+  const pathKey = windows
     ? Object.keys(env).find(key => key.toLowerCase() === "path") ?? "PATH" : "PATH";
   const path = env[pathKey];
   if (path === undefined) return { file: "npm", args, env, cwd };
   const directories = path.split(delimiter).map(dir => resolve(cwd, dir));
   const lookup = { ...env, [pathKey]: directories.join(delimiter) };
-  const file = resolveOnPath("npm", lookup);
+  const file = resolveOnPath("npm", windows ? env : lookup);
   if (!file) return { file: "npm", args, env, cwd };
   const engine = npmEngine(file);
   const withNode = (node: string) => ({ ...env, [pathKey]: `${dirname(node)}${delimiter}${path}` });
@@ -58,9 +59,8 @@ export function npmInvocation(env: NodeJS.ProcessEnv, args: string[]) {
       if (version.status === 0 && satisfies(version.stdout.trim(), engine.range))
         return { file: node, args: [engine.entry, ...args], env: withNode(node), cwd };
     }
-    throw new Error(`npm on PATH requires Node.js ${engine.range}, but Cotal is running ${process.version} and no compatible Node.js was found. Restore the Node.js used to install Cotal or put a compatible Node.js on PATH, then retry.`);
   }
-  if (process.platform === "win32") return { file, args, env, cwd };
+  if (windows) return { file: "npm", args, env, cwd };
   const node = resolveOnPath("node", lookup);
   if (node && realpathSync(node) === realpathSync(process.execPath)) return { file: "npm", args, env, cwd };
   return { file, args, env: withNode(process.execPath), cwd };

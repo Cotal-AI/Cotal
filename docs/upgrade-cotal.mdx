@@ -124,8 +124,7 @@ On Linux and macOS, self-update refreshes an existing npm launcher when it can s
 Self-update keeps the npm selected on `PATH`, including when it installs built-in connectors.
 If that npm requires a different Node version, Cotal tries the Node recorded by its installation
 launcher, when present, and then looks for a compatible Node alongside npm or on `PATH`.
-This does not change the Node running Cotal or the caller's `PATH`. If Cotal can read npm's
-requirement but cannot find a compatible Node, self-update refuses without replacing packages.
+This does not change the Node running Cotal or the caller's `PATH`.
 A timestamp-only change to the npm package manifest keeps the verified release in use.
 After a staged update, npm's listing can be behind; `cotal --version` is the version in use, and
 `cotal status --verbose` and `cotal status --json` report both (`npm lists <old>; in use <new>`).

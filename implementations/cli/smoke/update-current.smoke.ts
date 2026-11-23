@@ -8,6 +8,7 @@ import { delimiter, dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { countedAssert, emitSentinel } from "../../../bin/smoke/sentinel.mjs";
 import { executeUpdate, updateRuntime, type UpdateRuntime } from "../src/commands/update.js";
+import { SEED_BUILTINS } from "../src/seed/paths.js";
 const counted = countedAssert(strictAssert);
 const assert: typeof strictAssert = counted.assert as typeof strictAssert;
 const effects: string[] = [], output: string[] = [];
@@ -179,14 +180,20 @@ function npmNodeEngine(): void {
     assert.equal(first.status, 0, first.stdout + first.stderr);
     assert.match(first.stdout, /Registry latest:/);
     assert.ok(readFileSync(record, "utf8").trim().split(/\r?\n/).every(node => node === alternate));
+    // Record all built-ins as deliberately removed so self-update needs no fixture npm installs.
+    const seed = join(root, "config", "cotal", "seed");
+    mkdirSync(seed, { recursive: true });
+    writeFileSync(join(seed, "authority.json"), JSON.stringify({ everSeeded: SEED_BUILTINS }));
+    writeFileSync(join(seed, "witness.json"), JSON.stringify({ initialized: true, firstGeneration: version }));
+    writeFileSync(join(seed, "stamp.json"), JSON.stringify({ generation: version }));
     const before = readFileSync(entry);
-    const npmCalls = readFileSync(record, "utf8");
     renameSync(alternate, `${alternate}.gone`);
-    const refused = run("--self", false);
-    assert.equal(refused.status, 1, refused.stdout + refused.stderr);
-    assert.match(refused.stderr, /no compatible Node\.js was found/);
+    const updated = run("--self", false);
+    assert.equal(updated.status, 0, updated.stdout + updated.stderr);
+    assert.match(updated.stdout, /Registry latest:/);
     assert.deepEqual(readFileSync(entry), before);
-    assert.equal(readFileSync(record, "utf8"), npmCalls, "the incompatible npm was not run");
+    const projectNode = process.platform === "win32" ? join(onlyNode, exe) : process.execPath;
+    assert.equal(readFileSync(record, "utf8").trim().split(/\r?\n/).at(-1), projectNode, "npm can succeed on the project Node even when its declared range excludes it");
   } finally { rmSync(root, { recursive: true, force: true }); }
 }
 
