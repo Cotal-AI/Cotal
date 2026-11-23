@@ -29,6 +29,8 @@ const { check, finish } = createSuite();
 const children = new Set<ChildProcess>();
 const warnings: string[] = [];
 const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+/** Whether `p` settles within `ms`, so a broken rule fails its cell instead of stalling the suite. */
+const within = (p: Promise<unknown>, ms = 5_000) => Promise.race([p.then(() => true), wait(ms).then(() => false)]);
 
 async function until(cond: () => boolean, ms = 5_000): Promise<boolean> {
   for (const end = Date.now() + ms; Date.now() < end; await wait(20)) if (cond()) return true;
@@ -144,16 +146,14 @@ async function refusals(feed: CommandFeed, path: string): Promise<void> {
   const skew = await rawHello(path, { op: "hello", mod: "0.0.1", claude: "2.1.400" });
   const cause = `the mod is 0.0.1 and the server is ${CONNECTOR_VERSION}; reload the plugin or restart the session`;
   check("a reader of another version is refused with its cause", JSON.stringify(JSON.parse(skew.reply)) === JSON.stringify({ op: "refused", reason: cause }), skew.reply);
-  await skew.closed;
-  check("the server ends a refused reader's connection", skew.socket.destroyed);
+  check("the server ends a refused reader's connection", await within(skew.closed));
   check("the skew cause stays until a later hello is accepted", feed.unsupported() === cause, feed.unsupported());
 
   const first = await rawHello(path, { op: "hello", mod: CONNECTOR_VERSION, claude: "2.1.400" });
   check("a later hello is accepted", first.reply === '{"op":"ready"}' && feed.unsupported() === undefined, first.reply);
   const pending = settle(feed.request({ op: "list" }));
   const second = await rawHello(path, { op: "hello", mod: CONNECTOR_VERSION, claude: "2.1.400" });
-  await first.closed;
-  check("a new hello replaces the earlier reader and rejects its requests", second.reply === '{"op":"ready"}' && (await until(() => pending.state() === "rejected")) && /replaced/.test(pending.error()?.message ?? ""), pending.error()?.message);
+  check("a new hello replaces the earlier reader and rejects its requests", second.reply === '{"op":"ready"}' && (await within(first.closed)) && (await until(() => pending.state() === "rejected")) && /replaced/.test(pending.error()?.message ?? ""), pending.error()?.message);
 
   const malformed = await rawHello(path, { op: "hello", mod: CONNECTOR_VERSION }).catch(() => undefined);
   check("a malformed frame closes its connection with a warning", malformed === undefined && warnings.some((w) => /claude does not match/.test(w)), warnings.at(-1));
@@ -162,8 +162,7 @@ async function refusals(feed: CommandFeed, path: string): Promise<void> {
   feed.close();
   check("closing rejects the requests still waiting", (await until(() => left.state() === "rejected")) && /feed closed/.test(left.error()?.message ?? ""), left.error()?.message);
   check("closing removes the socket file", await until(() => !existsSync(path)));
-  await second.closed;
-  check("closing ends the reader's connection", second.socket.destroyed);
+  check("closing ends the reader's connection", await within(second.closed));
 }
 
 try {

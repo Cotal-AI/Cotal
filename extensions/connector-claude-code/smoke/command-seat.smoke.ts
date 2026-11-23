@@ -59,6 +59,7 @@ function hello(path: string): Promise<string> {
     const socket = createConnection(path);
     let reply = "";
     socket.setEncoding("utf8");
+    socket.setTimeout(5_000, () => socket.destroy());
     socket.on("connect", () => socket.write(`${JSON.stringify({ op: "hello", mod: CONNECTOR_VERSION, claude: "2.1.330" })}\n`));
     socket.on("data", (d: string) => {
       reply += d;
