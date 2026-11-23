@@ -176,7 +176,16 @@ terminal. The defaults follow from that, and all three are overridable per spawn
 ### Answering approvals
 
 With an asking `approval_policy` on a space where people sign in, the seat serves Codex's requests
-on its `agent` endpoint (SPEC 13.22) and declares `prompts`:
+on its `agent` endpoint (SPEC 13.22) and declares `prompts`.
+
+The connector declares `supportsAskPermissions`. A Manager launch with `askPermissions` starts the
+thread with `approvalPolicy: "untrusted"`, a `read-only` sandbox and the user as the approvals
+reviewer, as T3 Code's approval-required mode does. These go on `thread/start`, because codex 0.162
+refuses `approval_policy = "untrusted"` in config, and they replace the autonomy defaults above. Such
+a launch is refused when its launch options set `approval_policy`, `sandbox_mode` or
+`approvals_reviewer`.
+
+The prompts:
 
 - A command approval opens a `permission` prompt for `exec_command` (or `write_stdin` for input to
   a running command) with the command, its working directory and Codex's reason.
