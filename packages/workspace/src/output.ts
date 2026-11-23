@@ -1,5 +1,4 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import { writeSync } from "node:fs";
 import type { FlagSpec, OutputMode } from "@cotal-ai/core";
 import { terminalWidth, wrapWords } from "./text-wrap.js";
 
@@ -292,21 +291,6 @@ export function envelopeLine(envelope: Envelope): string {
   const problem = outcomeCodeProblem(envelope.outcome, envelope.error?.code);
   if (problem) throw new Error(`internal error: ${problem}`);
   return `${JSON.stringify(envelope)}\n`;
-}
-
-/** Write every byte synchronously or throw the write error. */
-export function writeAllSync(fd: number, chunk: Buffer): void {
-  for (let done = 0; done < chunk.length;) {
-    const wrote = writeSync(fd, chunk, done, chunk.length - done);
-    if (wrote === 0) throw Object.assign(new Error("stdout took no bytes"), { code: "EIO" });
-    done += wrote;
-  }
-}
-
-/** Say on stderr, in one line, that stdout could not be written. A closed pipe says nothing. */
-export function reportLostOutput(error: NodeJS.ErrnoException): void {
-  if (error.code === "EPIPE") return;
-  try { writeSync(2, `✗ could not write to stdout: ${error.message}\n`); } catch { /* stderr failed too; the exit status still says so */ }
 }
 
 /** Write one envelope as the whole of stdout. */

@@ -33,12 +33,10 @@ import {
   paintFor,
   preferencesFolderWarning,
   recordOperationWarning,
-  reportLostOutput,
   renderReport,
   renderWorkspaceError,
   runOperation,
   workspaceErrorParts,
-  writeAllSync,
   spaceRootTarget,
   targetErrorCode,
   targetErrorSpace,
@@ -74,6 +72,7 @@ import { chooseMeshTarget, spaceChoiceRemedy } from "./lib/choose-target.js";
 import { registryFailure } from "./lib/registry-errors.js";
 import { FlagValueRefusal } from "./lib/flag-value-refusal.js";
 import { workingFolderRemoved } from "./lib/paths.js";
+import { reportLostOutput, writeAllSync } from "./lib/stdout-owner.js";
 import { shellWord } from "./lib/endpoint-errors.js";
 import { displayRemedy } from "./lib/self-exec.js";
 import { GLOBAL_FLAG_WORDS, OUTPUT_FLAG_WORDS } from "./lib/leading-flags.js";
@@ -623,8 +622,8 @@ function canonicalSubcommand(cmd: Command, parsed: ParsedArgs): ParsedArgs {
   return changed ? { ...parsed, positionals } : parsed;
 }
 
-/** The subcommand path the words in `rest` name under `cmd`, and the first word where a subcommand
- *  belongs that names none. Read from the declared specs, so a stub's help never imports its package. */
+/** The subcommand path and its operands for help, and the first word where a subcommand belongs
+ *  that names none. Read from the declared specs, so a stub's help never imports its package. */
 function helpPath(cmd: Command, rest: readonly string[]): { path: string[]; unknown?: string } {
   const words = metadataPositionals(cmd, rest).positionals.map((item) => item.value);
   let surface: Pick<Command, "subcommands"> = cmd;
@@ -635,7 +634,7 @@ function helpPath(cmd: Command, rest: readonly string[]): { path: string[]; unkn
     if (!sub && surface.subcommands?.length && !(surface === cmd && cmd.name === "history")) return { path, unknown: word };
     if (!sub || sub.hidden) break;
     path.push(sub.name); surface = sub;
-    if (!sub.subcommands?.length) break;
+    if (!sub.subcommands?.length) return { path: [...path, ...words.slice(path.length)] };
   }
   return { path };
 }
@@ -660,7 +659,7 @@ async function serviceSurface(found: Command | undefined, words: string[], forRe
   } catch (error) {
     if (forRefusal || asksForHelp(words)) return { cmd: found, rest: words };
     const failure = isCommandFailure(error) ? error : new CommandFailure("refused", "SCHEMA_INVALID", "service preset metadata could not be read; no provider was imported or installed");
-    return failureExit(found, failure, asksForJson(found, words), words.includes("--plain"));
+    return failureExit(found, failure, asksForJson(found, words), words.includes("--plain"), undefined, words);
   }
 }
 
@@ -739,7 +738,8 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
   // The built-in updater repairs its connector paths before opening any promotion journal.
   const selfUpdate = builtin?.name === "update" && words.includes("--self") && !asksForHelp(words)
     && parseOrExit(builtin, ownWords(builtin)).values.self === true;
-  let useExtensionOverlay = opts.extensions && !updateCheck && !selfUpdate;
+  // The removed start command only gives migration advice and needs no extension inventory.
+  let useExtensionOverlay = opts.extensions && !updateCheck && !selfUpdate && builtin?.name !== "start";
   function skipUnreadableConnectorOverlay(error: unknown): boolean {
     if (!(error instanceof UnreadableConnectorSelection) || !builtin || !["version", "status", "down"].includes(builtin.name)) return false;
     if (builtin.name === "down") {

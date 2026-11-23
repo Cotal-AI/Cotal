@@ -215,6 +215,9 @@ the space and, when this machine started it elsewhere, its root, and its next st
 `down` from that root. `--json` and `--plain` carry that refusal as structured output, because the
 folder has no stack for a bare stop to print its own lines about.
 
+A manual or catalog connection records the folder that uses it. If a named stop or preview finds
+only that connection in another folder, run the stop or preview in the project that started the stack.
+
 When the folder of a running controller stack is deleted, its stack journal and broker
 configuration go with it, so no member's own stop can run. A running broker writes `.cotal/nats`
 back into the folder, which does not bring them back. `down --space <space>` from any folder stops
@@ -292,7 +295,9 @@ reached the project journal. Missing launch evidence does not mean that nothing 
 A bare `down` in a folder whose stack is already stopped stops nothing. It reports that the stack
 in that folder is not running, with outcome `no-op` and exit 0, and writes nothing, so it needs no
 `--yes`. `--dry-run`, `--json` and `--plain` also report the no-op. The text receipt and preview
-name `cotal up --no-manager` for a stopped broker-only controller stack and `cotal up` otherwise.
+name `cotal up --no-manager` for a stopped broker-only controller stack. For a stopped legacy
+user-auth stack they show a foreground restart without a manager, with `--user-auth` and the
+recorded space and broker address. Other stacks show `cotal up`.
 Before the first `up`,
 `down --space <name>` gives the same no-op when the name matches the space prepared in this folder.
 A different name is refused. A controller stack

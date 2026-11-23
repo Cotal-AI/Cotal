@@ -1,7 +1,7 @@
-import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, statSync, type Stats } from "node:fs";
+import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, statSync, writeSync, type Stats } from "node:fs";
 import { hasDuplicateNames } from "@cotal-ai/core";
 import { dryRunOutcome, DurationError, Journal, journalEntryKeyString, LangErrors, parseDuration, validate, type SimScript } from "@cotal-ai/lang";
-import { CommandFailure, isCommandFailure, oneLine, presentationOf, recordOperationWarning, writeResult, type Report } from "@cotal-ai/workspace";
+import { CommandFailure, envelopeLine, exitCode, failureEnvelope, isCommandFailure, oneLine, presentationOf, recordOperationWarning, renderReport, writeResult, type Report } from "@cotal-ai/workspace";
 import { logLineText } from "./log-line.js";
 
 interface OfflineValues {
@@ -273,13 +273,22 @@ export async function offlineWorkflow(mode: "validate" | "plan" | "simulate", fi
     const problems = error.errors.map((item) => ({ code: item.code, title: item.title, span: item.span, cause: item.cause, fix: item.fix }));
     const count = `${problems.length} problem${problems.length === 1 ? "" : "s"}`;
     const failure = new CommandFailure("refused", "SCHEMA_INVALID", `the workflow is not valid cotal-lang (${count})`, { target: { file }, native: { code: "LANG_INVALID", detail: error.errors.map((item) => ({ code: item.code, span: item.span })) } });
-    writeResult(presentation, { command: "run", target: { file }, result: { kind: "workflow-validation", valid: false, problems }, failure }, (result): Report => ({ sections: [
+    const result = { kind: "workflow-validation", valid: false, problems };
+    const view = (): Report => ({ sections: [
       { title: "Workflow not valid", blocks: [
-        { kind: "fields", rows: [["File", file], ["Problems", String(result.problems.length)]] },
-        ...result.problems.map((problem) => ({ kind: "lines" as const, lines: [{ text: `${problem.code} ${problem.title} (${problem.span.file}:${problem.span.line}:${problem.span.column})`, tone: "failed" as const }, `  ${problem.cause}`, `  fix: ${problem.fix}`] })),
+        { kind: "fields", rows: [["File", file], ["Problems", String(problems.length)]] },
+        ...problems.map((problem) => ({ kind: "lines" as const, lines: [{ text: `${problem.code} ${problem.title} (${problem.span.file}:${problem.span.line}:${problem.span.column})`, tone: "failed" as const }, `  ${problem.cause}`, `  fix: ${problem.fix}`] })),
         { kind: "lines", lines: [{ text: "Language validation only. No mesh, authority, runtime, application or broker message limit was checked.", tone: "hint" }] },
       ] },
-    ] }));
+    ] });
+    if (presentation === "json") {
+      process.exitCode = exitCode(failure.outcome, failure.code);
+      process.stdout.write(envelopeLine({ ...failureEnvelope("run", failure), completeness: "complete", result }), (error) => {
+        if (!error || (error as NodeJS.ErrnoException).code === "EPIPE") return;
+        // The write callback runs before the binary's stdout error listener reports the error and exits.
+        try { writeSync(2, `${renderReport(view(), "rich", process.stderr)}\n`); } catch { /* stderr failed too */ }
+      });
+    } else writeResult(presentation, { command: "run", target: { file }, result, failure }, view);
     return;
   }
   // A warning says what it found and how to fix it, as a problem does: L3021 on a literal list is a
@@ -301,13 +310,11 @@ export async function offlineWorkflow(mode: "validate" | "plan" | "simulate", fi
   }
   const journal = new Journal({ run: "dry-run" });
   let report: Awaited<ReturnType<typeof dryRunOutcome>>;
-  // A simulation that throws never reaches the report, so the validation warnings go into the
-  // run's recorded warnings first: the failure envelope carries them, and text mode prints them
-  // with the failure.
+  // A refused script or failed simulation keeps the validation warnings in its failure receipt.
   try { report = await dryRunOutcome(source, scriptOf(values.handler), { file, journal }); }
   catch (error) {
     for (const warning of warnings) recordOperationWarning(warning, { echo: presentation !== "json" });
-    if (error instanceof CommandFailure) throw error;
+    if (isCommandFailure(error)) throw error;
     throw simulationFailure(error, file, journal);
   }
   // A program that fails under its script is a completed simulation, and the failure is its outcome.

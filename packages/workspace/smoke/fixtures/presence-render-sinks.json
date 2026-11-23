@@ -1,10 +1,10 @@
 {
   "expected": {
-    "total": 1111,
+    "total": 1117,
     "honest-text": 71,
     "presence-only-glyph/count": 138,
     "command-ack": 13,
-    "non-render/control": 889
+    "non-render/control": 895
   },
   "classRationales": {
     "non-render/control": "This candidate handles presence state without making a human work-progress claim. Status tokens, routing, component inputs and presentation metadata are control data; exceptions that report a different kind of status carry an entry-specific reason."
@@ -5115,6 +5115,48 @@
       "anchor": "`; ${refusal.remedy}`",
       "class": "non-render/control",
       "rationale": "Down preview warning text: appends the service refusal's remedy; a registration record, not presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/down.ts",
+      "kind": "derived-output",
+      "anchor": "existsSync(at)",
+      "class": "non-render/control",
+      "rationale": "Down refusal control flow: tests whether the folder a registration records exists; mesh is a registration record, not presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/down.ts",
+      "kind": "derived-output",
+      "anchor": "canonicalRoot(at)",
+      "class": "non-render/control",
+      "rationale": "Down refusal control flow: compares the registration's recorded folder with this folder's root; no rendering."
+    },
+    {
+      "path": "implementations/cli/src/commands/down.ts",
+      "kind": "derived-output",
+      "anchor": "`the connection to space \"${space}\" is registered at ${at}; its registration does not identify the folder that started the stack`",
+      "class": "non-render/control",
+      "rationale": "Down refusal text: names the folder a manual or catalog registration records; mesh is a registration record, not presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/down.ts",
+      "kind": "derived-output",
+      "anchor": "readStackJournal(at)",
+      "class": "non-render/control",
+      "rationale": "Down refusal control flow: reads the stack journal at the registration's recorded folder to choose the stop command; no rendering."
+    },
+    {
+      "path": "implementations/cli/src/commands/down.ts",
+      "kind": "derived-output",
+      "anchor": "`the stack of space \"${space}\" is recorded at ${at}, not at this folder's root, and \\`cotal down\\` stops only the stack recorded where it runs`",
+      "class": "non-render/control",
+      "rationale": "Down refusal text: names the folder where the space's stack is recorded; mesh is a registration record, not presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/down.ts",
+      "kind": "derived-output",
+      "anchor": "`run \\`${stop}\\` in ${at}; to stop one saved service, run \\`cotal service stop <service-name> --space ${space}\\``",
+      "class": "non-render/control",
+      "rationale": "Down refusal remedy: names the stop command and the folder to run it in; mesh is a registration record, not presence."
     },
     {
       "path": "implementations/cli/src/commands/down-preserve.ts",

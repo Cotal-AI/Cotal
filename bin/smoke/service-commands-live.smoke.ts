@@ -360,6 +360,15 @@ try {
       textCode === 0 && lastLine(textFollow.text) === "manager is no longer running, so the follow ended." && !/^end: /m.test(textFollow.text), { textCode, text: textFollow.text });
 
     // ---- After down: the log it left, and install names the unit line ---------------------------
+    const stoppedStatus = upCotal(["manager", "status", "--space", UP_SPACE, "--json"]);
+    const report = JSON.parse(stoppedStatus.stdout);
+    const stackStart = `cotal up --root ${realpathSync(upProject)} --space ${UP_SPACE}`;
+    check("manager status after down reports the PID-only manager gone without changing the JSON shape",
+      stoppedStatus.status === 0 && report.outcome === "ok" && report.result?.kind === "service-status" && report.result.observedProcess === "gone"
+      && report.result.recordedProcess?.savedService === false && !Object.hasOwn(report.result, "next"), out(stoppedStatus));
+    const stoppedPlain = upCotal(["manager", "status", "--space", UP_SPACE, "--plain"]);
+    check("plain manager status says stopped and offers the stack start", stoppedPlain.status === 0
+      && out(stoppedPlain).includes("The manager is stopped") && out(stoppedPlain).includes(stackStart), out(stoppedPlain));
     const stoppedLogs = upCotal(["manager", "logs", "--tail", "3"]);
     check("cotal manager logs after down reads the log it left, marked stopped, with cotal up next",
       stoppedLogs.status === 0 && out(stoppedLogs).includes("Manager log tail, from a stopped manager") && /State:\s+stopped/.test(out(stoppedLogs)) && /Next\s+cotal up\s/.test(out(stoppedLogs)), out(stoppedLogs));
@@ -388,6 +397,10 @@ try {
     // ---- A preset broker stops even when its log file was moved away -----------------------------
     const presetSpace = cotal(["space", "create", PRESET_SPACE, "--root", presetRoot]);
     check("space create prepares a space for a preset broker", presetSpace.status === 0, out(presetSpace));
+    const neverStarted = cotal(["manager", "status", "--space", PRESET_SPACE, "--json"]);
+    const neverStartedError = JSON.parse(neverStarted.stdout).error;
+    check("manager status still distinguishes a space with no manager history", neverStarted.status === 2
+      && neverStartedError?.code === "TARGET_NOT_FOUND" && neverStartedError.message.includes("no manager has been started"), out(neverStarted));
     const custom = cotal(["service", "add", "stack-broker", "--exec", "/bin/sleep 600", "--space", PRESET_SPACE]);
     check("a never-started space accepts a process service named stack-broker", custom.status === 0, out(custom));
     const foregroundStart = ["service", "start", "stack-broker", "--space", PRESET_SPACE, "--foreground", "--json"];

@@ -175,7 +175,7 @@ const noop = async (): Promise<void> => {};
     const scriptPlain = run([...badScript, "--plain"]);
     assert.equal(scriptPlain.status, 1, scriptPlain.stdout + scriptPlain.stderr);
     assert.equal(scriptPlain.stdout, "");
-    assert.match(scriptPlain.stderr, /L3021[\s\S]*Fix: Pass a key function[\s\S]*unknown clock field 'checkpoints'[\s\S]*use clock\.checkpoint/);
+    assert.match(scriptPlain.stderr.replace(/\s+/g, " "), /L3021 .*Fix: Pass a key function.*unknown clock field 'checkpoints'.*use clock\.checkpoint in bad-clock\.json/);
 
     for (const [field, delay] of [["checkpoint", "soon"], ["turn", 100], ["ask", null], ["wait", "9007199254740992ms"]] as const) {
       writeFileSync(join(root, "bad-clock.json"), JSON.stringify({ checkpoints: { "approve-plan": { status: "resolved" } }, clock: { [field]: delay } }));

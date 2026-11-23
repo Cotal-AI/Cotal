@@ -10,6 +10,7 @@ import { listStaticSlotObservations, observeStaticSlot, renderStaticSlotObservat
 import type { TranscriptReceiveInput } from "./transcript-receive.js";
 import { measureManagerVitals } from "./vitals.js";
 import type { ManagerConfig } from "./manager-config.js";
+import type { ManagerParts } from "./manager-parts.js";
 
 export function participantKey(owner: string, actor: string, uid: string): string {
   return `${owner}.${actor}.${uid}`;
@@ -20,7 +21,6 @@ export function participantKey(owner: string, actor: string, uid: string): strin
 export interface CommandDispatchDeps {
   agents: () => Manager["agents"];
   auth: () => Manager["auth"];
-  goalWriter: () => Manager["goalWriter"];
   managerInstanceId: () => Manager["managerInstanceId"];
   participants: () => Manager["participants"];
   remoteAuthority: () => Manager["remoteAuthority"];
@@ -85,7 +85,6 @@ export function commandDispatchDeps(m: Manager): CommandDispatchDeps {
   return {
     agents: () => m["agents"],
     auth: () => m["auth"],
-    goalWriter: () => m["goalWriter"],
     managerInstanceId: () => m["managerInstanceId"],
     participants: () => m["participants"],
     remoteAuthority: () => m["remoteAuthority"],
@@ -147,14 +146,13 @@ export function commandDispatchDeps(m: Manager): CommandDispatchDeps {
 
 /** The typed manager command table, the control admission both doors share, and the admin reach it reads. */
 export class CommandDispatch {
-  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: CommandDispatchDeps) {}
+  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: CommandDispatchDeps, private readonly parts: Pick<ManagerParts, "goalWriter">) {}
 
   // The Manager members these bodies read, under their Manager names. Each reads through its dep at
   // use, so a field the Manager assigns later is current and a method a test replaces on the Manager
   // is the one that runs.
   private get agents() { return this.deps.agents(); }
   private get auth() { return this.deps.auth(); }
-  private get goalWriter() { return this.deps.goalWriter(); }
   private get managerInstanceId() { return this.deps.managerInstanceId(); }
   private get participants() { return this.deps.participants(); }
   private get remoteAuthority() { return this.deps.remoteAuthority(); }
@@ -355,7 +353,7 @@ export class CommandDispatch {
           // User-mode lifecycles have no manager-local mgrslot row; their per-name projection remains
           // the live map until the auth service exposes an equivalent mediated reader.
           if (this.auth && !this.userMode) {
-            const recordsKv = this.goalWriter?.ctx.kv;
+            const recordsKv = this.parts.goalWriter.goalWriter?.ctx.kv;
             if (!recordsKv)
               throw new EpEnvelopeError("unavailable", `the durable static slot store is not ready while inspecting "${name}"`, [
                 { kind: STATIC_SLOT_READ_FAILED_DETAIL, name, record: "slot", operation: "read" },
@@ -391,7 +389,7 @@ export class CommandDispatch {
         // the very ambiguity #1274 is about.
         if (!this.auth || this.userMode)
           throw new EpEnvelopeError("failed-precondition", "user-mode and open managers own no durable static slot rows; the projection is static-manager local");
-        const recordsKv = this.goalWriter?.ctx.kv;
+        const recordsKv = this.parts.goalWriter.goalWriter?.ctx.kv;
         if (!recordsKv)
           throw new EpEnvelopeError("unavailable", "the durable static slot store is not ready", [
             { kind: STATIC_SLOT_READ_FAILED_DETAIL, name: "*", record: "slot", operation: "scan" },
@@ -419,7 +417,7 @@ export class CommandDispatch {
         return { catalogs: Array.isArray(data) ? data : [data] };
       }),
       goalResult: (ctx) => this.serveGated(ctx, async () => {
-        const gw = this.goalWriter;
+        const gw = this.parts.goalWriter.goalWriter;
         if (!gw || gw.nc.isClosed()) throw new EpEnvelopeError("unavailable", "the manager goal-reader connection is not standing; the accepted goal is unaffected");
         const goalId = args(ctx).goalId as string;
         // Only the broker-authenticated caller's full incarnation can name this read. The

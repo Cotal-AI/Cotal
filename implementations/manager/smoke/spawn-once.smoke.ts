@@ -174,7 +174,7 @@ try {
       ...(args !== undefined ? { args } : {}),
       ...(opts.target ? { target: { mode: opts.target.mode ?? "owner", owner: DEV_OWNER, actor: opts.target.actor, lifecycleUid: opts.target.lifecycleUid } } : {}),
     }, { deadlineMs: 15_000, currentEpoch: async () => 0 }).then((r) => r.reply as Reply, asValue);
-  const actx = (manager as unknown as { goalWriter: { ctx: Parameters<typeof readGoalResult>[0] } }).goalWriter.ctx;
+  const actx = (manager as unknown as { goalWriterComponent: { goalWriter: { ctx: Parameters<typeof readGoalResult>[0] }; } }).goalWriterComponent.goalWriter.ctx;
   const refOf = (goalId: string) => ({ endpoint: MANAGER_ENDPOINT, caller: runner, goalId });
   const resultOf = async (goalId: string, ms: number) => {
     const until = Date.now() + ms;

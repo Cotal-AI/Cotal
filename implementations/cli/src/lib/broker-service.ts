@@ -34,6 +34,15 @@ const refuse = (code: "CONFLICT" | "LIFECYCLE_BLOCKED" | "UNSUPPORTED" | "TARGET
 };
 
 const LISTENER_PROBE_TIMEOUT_MS = 5000;
+
+/** A single broker URL with a lower-case scheme and no bare trailing slash. Leave other inputs as written. */
+export function canonicalServer(server: string): string {
+  let url: URL;
+  try { url = new URL(server); } catch { return server; }
+  if ((url.protocol !== "nats:" && url.protocol !== "tls:") || url.username || url.password || url.search || url.hash || (url.pathname !== "" && url.pathname !== "/") || server.includes(",")) return server;
+  return `${url.protocol}//${url.host}`;
+}
+
 const portsDirectory = (context: ServiceAdapterContext) => join(context.stateDirectory, `.broker-ports-${context.launchRequestId}`);
 const launchReceipt = (context: Pick<ServiceAdapterContext, "stateDirectory" | "launchRequestId">) => join(context.stateDirectory, `.broker-launch-${context.launchRequestId}.json`);
 

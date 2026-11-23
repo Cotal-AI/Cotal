@@ -124,8 +124,10 @@ not a plain file name in the folder, such as one with `../` or an absolute path,
 `manifest-invalid`. `backup restore` and `up --restore` refuse each of these `SCHEMA_INVALID` with
 the same file and fault, before they stage or change anything.
 A directory with no `manifest.json` that holds files a `backup create` writes is refused as an
-incomplete artifact with the fault `manifest-missing`. The refusal names `backup recover` only
-when the current root records an interrupted create that owns the directory. Otherwise, verify
+incomplete artifact with the fault `manifest-missing`. The refusal names the real directory even
+when the supplied path is a symbolic link. The refusal names `backup recover` only when the current
+root's interrupted create still owns the directory at its recorded destination. The recorded path
+can pass through a linked parent, but its final component must be that directory. Otherwise, verify
 another intact copy or create a new backup from a stopped preserved cut.
 A file, or a directory that holds neither a manifest nor such a file, is not a backup artifact and
 refuses `TARGET_NOT_FOUND` (exit 2), naming it and saying whether it is a file, an empty folder or

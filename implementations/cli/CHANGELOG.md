@@ -1,5 +1,53 @@
 # @cotal-ai/cli
 
+## 0.175.2
+
+### Patch Changes
+
+- 5795212: Both help forms accept `service list`, and usage errors keep periods in arguments, report missing values before grouped short options, and suggest `--search` for a docs search typo.
+- 3c50054: `cotal backup verify` and `cotal backup inspect` now report a missing manifest at the real backup directory when it is opened through a symbolic link.
+- 04680eb: Backup commands report inaccessible artifact paths and unsupported recovery options clearly, show only the supported restore selection in help, and tell you how to roll back a pre-commit restore when fallback cleanup refuses.
+- 9983e6f: Broker start help omits the web-only `--no-open` option, which remains available for web starts.
+- a4f500d: Report missing manager launch specifications with the correct flags, and show a stopped stack manager with the command to start its stack again.
+- 5828f27: Resolve dotted default persona names from the catalog for direct launches and previews, and give usable advice when a persona link points to a missing file.
+- 71b06f2: Move the up command's argument validation, writability checks, server and host refusals and folder-root resolution out of `up.ts` into an internal `up-args.ts`. `up.ts` re-exports `validateUpArguments`, so the module surface is unchanged.
+- 12e22cf: Move the up command's detached broker start, listener supervision, root claims and mesh recording out of `up.ts` into an internal `up-detach.ts`. `up.ts` re-exports every name it exported before, so the module surface is unchanged.
+- 42aae23: Move the up command's manifest boot and team-boot preparation out of `up.ts` into an internal `up-manifest.ts`. `up.ts` re-exports every name it exported before, so the module surface is unchanged.
+- f7eac15: A shutdown refusal no longer directs operators to stop a stack from another folder that only registered a connection to it. A preview still recommends a preview in the hosting project.
+- 8faf6ba: Name the blocked directory component when `endpoint init` cannot scaffold and ask for a reference JSON path when `endpoint add --file` is empty.
+- a79695b: After a foreground stack loses its terminal, the printed stop command changes to that stack's project folder before running `cotal down`.
+- d164d0d: The preview and confirmation commands suggested by `cotal history clear` keep your requested output format, so scripts can read the JSON receipt from the first purge.
+- cfbc1c1: When startup refuses a space that does not belong to the selected project root, the suggested command for the hosted space now keeps that root.
+- 744ba35: When a broker address is registered for another project, name that project without claiming its broker is stopped. A manifest preview now suggests another preview instead of starting a stack or forgetting the other project.
+- cc3d82c: When self-update restores write access to an installation directory and then cannot reach the registry, report that no installed packages were replaced. Keep the existing exit status.
+- aaa3e93: Legacy `personas new` rejects non-UTF-8 body input without writing a persona, and local `persona show` accepts catalog names with internal spaces.
+- 5c86786: Reject invalid space names and the removed start command without installing connectors, and print a valid spawn command to replace start.
+- 138db65: Show how to fix blocked first starts, recover a space record path occupied by a directory, or start a service that has no instance to restart.
+- 5bf58dd: The store symlink and prepared registry recovery instructions now quote paths with spaces or shell special characters so the commands can be pasted as printed.
+- bc64c9a: Self-update finds npm in relative PATH entries from the folder where you ran the command.
+- ccc74e4: Keep the project folder in the recovery command when startup finds an unconfirmed stop request in another folder.
+- bc2e9c5: Keep the project root and space in the startup retry when a separately started service blocks the requested stack.
+- 2c8ac32: Keep the send-refusal smoke test from timing out on an unused presence watch.
+- 3d6dcc7: Show the required name for every scripted `service add` form and, if it is missing, explain how to add it without changing the original flags.
+- ad0f7c7: After a project folder is renamed, component status reports refused checks instead of false absences, and a confirmed stop releases foreground `up`.
+- 1afa1b1: Keep the original CLI options when correcting an attach manager ID, removing a source file from hosted resume, or adding a missing run ID to local revoke.
+- 43cecd8: Report that stopped open spaces cannot mint credentials, let explicitly named stopped static-auth spaces reach revocation confirmation, and print a working restart command for stopped legacy user-auth spaces.
+- beddddf: Read captured delivery logs after stopping a stack, start the read-only dashboard without requesting unauthorized live traffic, and show how to restart a stopped open space when `watch` names it.
+- df874d6: Stopped-space deletion previews point to a read-only reset preview, and `clean store` and `clean all` reject restore attempt selectors without removing anything.
+- e4fb5de: Accept equivalent broker URLs in team deploy, show how to restart a stopped local stack, and give pending agent launches time to settle when you interrupt foreground startup.
+- 43cad4b: `cotal ps` points launch commands at the space it listed and names an occupied broker address before suggesting a stopped stack's restart.
+- e06a2a4: Self-update waits for installed first-party connectors and extensions to reach the registry and keeps the existing installation if a required version is still missing.
+- da49122: JSON watch and history follow streams report an invalid broker URL or empty space selector with an error record and an end record. They exit with status 1 without connecting to the broker.
+- Updated dependencies [7ca1d02]
+- Updated dependencies [138db65]
+- Updated dependencies [5bf58dd]
+- Updated dependencies [d4ecdff]
+- Updated dependencies [c940ed9]
+- Updated dependencies [a2486a2]
+- Updated dependencies [beddddf]
+  - @cotal-ai/core@0.175.2
+  - @cotal-ai/workspace@0.175.2
+
 ## 0.175.1
 
 ### Patch Changes

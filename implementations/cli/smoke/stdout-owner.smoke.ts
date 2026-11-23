@@ -231,10 +231,10 @@ if (mode !== undefined) {
       const file = join(dir, "invalid.cotal.js");
       writeFileSync(file, "const = ;\n");
       const invalid = await runToFile([cli, "run", "validate", file, "--json"], 0);
-      check("an unwritable JSON validation refusal keeps exit 1 and prints each problem and its fix to stderr",
-        invalid.code === 1 && invalid.bytes === 0 && invalid.stderr.startsWith("✗ could not write to stdout: EFBIG: file too large, write\n")
-          && invalid.stderr.includes("Workflow not valid") && invalid.stderr.includes("L1008")
-          && invalid.stderr.includes(`${file}:1:7`) && invalid.stderr.includes("fix:"), invalid);
+      check("an unwritable JSON validation refusal keeps exit 1 and prints the write error, problem and fix to stderr",
+        invalid.code === 1 && invalid.bytes === 0 && invalid.stderr.includes("✗ could not write to stdout: EFBIG: file too large, write\n")
+          && invalid.stderr.includes("Workflow not valid") && invalid.stderr.includes(`L1008 Invalid syntax or newline hazard (${file}:1:7)`)
+          && invalid.stderr.includes("fix: Fix the syntax at the marked position."), invalid);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

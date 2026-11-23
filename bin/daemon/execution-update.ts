@@ -16,11 +16,12 @@ export function executionInstallRoot(): string {
   return dirname(dirname(entry));
 }
 
-export function preflightExecutionUpdate(): void {
+export function preflightExecutionUpdate(): boolean {
   const root = executionInstallRoot();
   if (existsSync(join(root, "desktop-runtime.json"))) throw new Error("staged execution updates are unavailable on the desktop runtime");
-  assertExecutionDestination(root);
+  const repaired = assertExecutionDestination(root);
   if (basename(dirname(root)) !== "node_modules") throw new Error("staged update requires an installed npm or pnpm package; use the owning installer");
+  return repaired;
 }
 
 function verifySelected(root: string, version: string): void {

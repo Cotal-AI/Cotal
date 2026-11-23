@@ -19,6 +19,7 @@ import { createSuite, listenOn, onFreePort } from "@cotal-ai/smoke-kit";
 import { CommandFailure } from "@cotal-ai/workspace";
 import { telemetryErrorText } from "../src/telemetry.js";
 import { clean, cotalPty, wait } from "./_console-pty.js";
+import { openTelemetryIntake } from "./_telemetry-intake.js";
 
 const BIN = join(import.meta.dirname, "..", "..", "..", "bin", "dist", "cotal.js");
 if (!existsSync(BIN)) {
@@ -36,19 +37,8 @@ process.on("exit", () => {
 });
 
 type Body = Record<string, unknown>;
-const received: Body[] = [];
-const intake = createServer((req, res) => {
-  let text = "";
-  req.on("data", (chunk) => (text += chunk));
-  req.on("end", () => {
-    if (req.method === "POST" && req.headers["content-type"] === "application/json") received.push(JSON.parse(text) as Body);
-    res.statusCode = 204;
-    res.end();
-  });
-});
+const { server: intake, received, url } = await openTelemetryIntake();
 servers.push(intake);
-const port = await onFreePort((p) => listenOn(intake, p));
-const url = `http://127.0.0.1:${port}/v1/telemetry`;
 // A black hole: it accepts the connection and never answers, so the client's timeout is what ends the send.
 const blackHole = createServer(() => {});
 servers.push(blackHole);
@@ -141,6 +131,24 @@ for (const level of ["regular", "minimal"]) {
     replay.status === 1 && replay.stderr.includes("must be launched by its recorded parent") && replay.sent.length === 0 && !existsSync(s.settingsPath), shown(replay));
 }
 
+for (const level of ["regular", "minimal"]) {
+  const s = sandbox();
+  const r = await s.run(["ext", "remove", "not-installed"], {
+    COTAL_SKIP_CONNECTOR_SEED: undefined, COTAL_ALLOW_CHECKOUT_SEED: "1", COTAL_TELEMETRY: level,
+    PATH: s.project, APPDATA: s.home, LOCALAPPDATA: s.home,
+  });
+  const commands = r.sent.filter((body) => body.event === "command");
+  check(`a seed child failed before removal at ${level}`, r.status === 1 && r.stderr.includes("failed to seed connector") && r.stderr.includes("npm install failed"), shown(r));
+  check(`only the operator's command reports at ${level}`, commands.length === 1 && commands[0]?.command === "ext" && commands[0]?.exitCode === 1 && commands[0]?.outcome === "error" && (level === "minimal" ? sameKeys(commands[0], MINIMAL) : commands[0]?.subcommand === "remove"), commands.map((body) => body.subcommand));
+  check(`the seed child sends no install event at ${level}`, r.sent.filter((body) => body.event === "install").length === (level === "regular" ? 1 : 0));
+}
+
+{
+  const r = await sandbox().run(["ext", "add", "./missing-extension"]);
+  const commands = r.sent.filter((body) => body.event === "command");
+  check("an explicit extension add still reports its own failure", r.status === 1 && commands.length === 1 && commands[0]?.subcommand === "add" && commands[0]?.outcome === "error");
+}
+
 // ---- no argument or flag value leaks, and a refusal carries its code ----
 {
   const s = sandbox();
@@ -171,6 +179,16 @@ for (const level of ["regular", "minimal"]) {
   const unknown = await s.run(["frobnicate"]);
   await settled();
   check("an unknown command word names no command and sends nothing", unknown.status === 1 && unknown.sent.length === 0, shown(unknown));
+}
+
+for (const level of ["regular", "minimal"]) {
+  const s = sandbox();
+  const r = await s.run(["status", "--components", "--space", "missing-fixture-space"], { COTAL_TELEMETRY: level });
+  const events = r.sent.filter((body) => body.event === "command");
+  const event = events[0];
+  check(`a refused component target reports refused at ${level}`, r.status === 3 && /target\s+refused/.test(r.stdout) && events.length === 1 && event?.outcome === "refused" && event.exitCode === 3);
+  check(`component facts stay local at ${level}`, !JSON.stringify(events).includes("missing-fixture-space") && (level === "regular"
+    ? sameKeys(event, REGULAR) && event?.errorCode === null && event.errorMessage === null && event.errorStack === null : sameKeys(event, MINIMAL)));
 }
 
 // Native spawn diagnostics can contain arbitrary terminal output, even without quotes or paths.

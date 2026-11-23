@@ -39,7 +39,8 @@ Without an agent name or an interactive terminal, `attach` refuses and suggests 
 and an attach command with a name. Both keep the explicit `--space` and `--server`, and the attach
 retry keeps `--no-reconnect`. Both commands keep a valid `--on` selector. On an open or static-auth
 space, if the manager ID is malformed, the roster command omits `--on` so you can find the full ID
-to put in the attach retry.
+to put in the attach retry. When you name the agent and mistype the manager ID, the attach retry
+also keeps `--no-reconnect`.
 
 On a controller stack started with `--no-manager`, `ps` refuses `TARGET_UNAVAILABLE`: no manager
 runs, so there are no managed agents to list. Bare `cotal up` adds the manager. A `manager` preset
@@ -81,7 +82,7 @@ the refusal. Otherwise, `ps` reports `TARGET_UNAVAILABLE`. If the recorded root'
 `.cotal/channels.json` would prevent `up` from restarting the stack, the refusal names the file
 and the repair instead of recommending a restart. After `down` removes a foreground stack's
 registration, `ps` still checks its channel seed and saved broker address. If another program holds
-the address and blocks the start, the refusal says to stop that listener or start on another port.
+the controller stack's recorded address, the refusal tells you to free it before restarting the stack.
 `ps` does not change the store or the file, and it does not stop the listener.
 
 On a stopped local stack, `ps` reports an unreadable or invalid stack journal and its recovery step
@@ -102,8 +103,9 @@ owner-filtered substitute for the refused read.
 
 `ps` shows the instance id `--on` takes for each manager that answered, with or without agents. One
 manager is listed under `Manager` as its `instance`, and with several each gets a `manager <id>`
-header. With no agents its Next is `cotal spawn`, or `cotal setup` when no agent application is set
-up here, as `status` reports it.
+header. With no agents it suggests `cotal spawn` for the space just listed, keeping any explicit
+broker address it can safely print. If `status` reports that no agent application is set up here,
+it suggests `cotal setup` instead.
 
 When `ps` asks every manager, it then asks each manager that answered for the host name in its own
 status reply. The host shows as `· reports host <host>` after the id, or as a `reported host` row

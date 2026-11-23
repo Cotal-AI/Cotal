@@ -358,7 +358,7 @@ the host first. When the host refuses that enrollment, for example for a role or
 does not carry, and the manager removes the secrets it staged for the agent, the spawn is refused
 with the host's reason and `PERMISSION_DENIED` (exit 2). A host that fails or does not answer leaves
 `OPERATION_UNKNOWN`. See [Connect Claude Code](connect-claude.mdx) and
-[Agent files](agent-files.mdx). (`cotal start` was merged into `cotal spawn --detach`.)
+[Agent files](agent-files.mdx).
 A managed spawn onto a manager from another Cotal release is refused before any request is sent
 when the manager's contract does not declare a field this CLI sends. The refusal names the field,
 calls it version skew, and gives this CLI's version and the version that manager reports in its
@@ -366,6 +366,10 @@ calls it version skew, and gives this CLI's version and the version that manager
 `cotal manager restart`, or a CLI at the manager's version. When this CLI is older, it names
 `cotal update --self` here. A manager that reports no version is asked to run at this CLI's version.
 A field you leave unset is not sent, so it never causes that refusal.
+
+`cotal start` refuses without installing connectors. To migrate `cotal start --config default --name example`,
+run `cotal spawn default --detach --name example`. For a persona file, run
+`cotal spawn --detach --file <persona-file>` and keep the other launch options.
 
 
 ### Manager capacity
