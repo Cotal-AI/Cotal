@@ -73,7 +73,7 @@ try {
     if (row?.state !== expected) failures.push(`${name}: inventory state ${row?.state}, status recorded state ${expected}`);
     const line = human.stdout.split("\n").find((line) => line.trim().startsWith(`${name} `));
     if (!line || !new RegExp(`\\b${expected}\\b`).test(line.split("cotal ")[0]!)) failures.push(`${name}: human row does not show ${expected}: ${line}`);
-    if (name === "notready" && row?.next !== "cotal service status notready") failures.push(`notready: unsafe next command ${row?.next}`);
+    if (name === "notready" && row?.next !== "cotal service status notready --space list-state") failures.push(`notready: unsafe next command ${row?.next}`);
     cells++;
   }
   assert.deepEqual(failures, []);
