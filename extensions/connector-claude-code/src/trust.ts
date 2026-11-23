@@ -14,8 +14,9 @@ export const CLAUDE_WORKSPACE_TRUST_REPLIES: readonly StartupReply[] = Object.fr
 /** Claude's input screen. Claude skips the development-channels warning when channels are off for
  * the session, for example under a Team or Enterprise org that has not set `channelsEnabled`, or on
  * a third-party provider. Its footer then shows `(shift+tab to cycle)` in every permission mode but
- * the default one, which shows `? for shortcuts`. No startup dialog draws either text. */
-export const CLAUDE_READY_TEXTS: readonly string[] = Object.freeze(["(shift+tab to cycle)", "? for shortcuts"]);
+ * the default one, which shows `? for shortcuts`, or `manual mode on` from Claude Code 2.1.330. No
+ * startup dialog draws any of these texts. */
+export const CLAUDE_READY_TEXTS: readonly string[] = Object.freeze(["(shift+tab to cycle)", "? for shortcuts", "manual mode on"]);
 
 /** Screens Claude shows before its input screen that only its user may answer: the first-run text
  * style picker, the login method choice, and the Bypass Permissions warning that a managed seat's
