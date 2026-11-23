@@ -67,7 +67,7 @@ export function Matrix({
     return <Text dimColor>(no traffic in the window - waiting for peer messages)</Text>;
 
   // Viewports: rows under header + footer; columns follow the cursor.
-  const labelW = Math.min(18, Math.max(10, ...rows.map((n) => nodeLabel(n).length + 2)) + 1);
+  const labelW = Math.min(Math.max(18, Math.min(32, Math.floor(width / 3))), Math.max(10, ...rows.map((n) => nodeLabel(n).length + 2)) + 1);
   const visCols = Math.max(1, Math.floor((width - labelW) / CELL_W));
   const colTop = Math.max(0, Math.min(c - visCols + 1, cols.length - visCols));
   const visRows = Math.max(1, height - 1 - FOOTER_H);

@@ -203,7 +203,7 @@ try {
     const empty = await run(["who", ...flags, "--waiting", "--plain"]);
     check(`--waiting reports no matching ${label} when everyone is idle`,
       empty.status === 0 && empty.stderr === "" && empty.stdout.includes(`no ${label} match --waiting in ${space}`) &&
-      !empty.stdout.includes(`no ${label} present`) && !empty.stdout.includes("alice/builder"), shown(empty));
+      !empty.stdout.includes(`no ${label} present`) && !empty.stdout.includes("alice (role: builder)"), shown(empty));
   }
   await alice.setStatus("working");
   await bob.setStatus("waiting");
@@ -274,7 +274,7 @@ try {
   const rosterRetry = rosterCommand && await run(rosterCommand.split(" ").slice(1));
   check("the live endpoint roster shortcut preserves the space and broker and reads that roster",
     targetedPresence.status === 0 && rosterCommand === `cotal who --plain --space ${space} --server ${servers}` &&
-    !!rosterRetry && rosterRetry.status === 0 && rosterRetry.stdout.startsWith(`Mesh: ${space}\n`) && rosterRetry.stdout.includes("bob/reviewer"),
+    !!rosterRetry && rosterRetry.status === 0 && rosterRetry.stdout.startsWith(`Mesh: ${space}\n`) && rosterRetry.stdout.includes("bob (role: reviewer)"),
     { presence: shown(targetedPresence), rosterCommand, rosterRetry: rosterRetry && shown(rosterRetry) });
 
   const plain = await run(["who", "--plain"], { FORCE_COLOR: "1" });

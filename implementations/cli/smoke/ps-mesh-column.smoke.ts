@@ -70,8 +70,8 @@ for (const name of [" ", "", "\n", " \n\t"]) {
   judge(`a seat named ${JSON.stringify(name)} is shown as its id`, label === "local.blank" && !label.includes("\n"));
 }
 judge("a seat keeps its name", psSeatLabel({ name: "ada", id: "local.ada" }) === "ada");
-judge("a seat keeps its name and role", psSeatLabel({ name: "ada", id: "local.ada", role: "worker" }) === "ada/worker");
-judge("a blank seat name with a role uses the id", psSeatLabel({ name: " ", id: "local.blank", role: "worker" }) === "local.blank/worker");
+judge("a seat keeps its name and role", psSeatLabel({ name: "ada", id: "local.ada", role: "worker" }) === "ada (role: worker)");
+judge("a blank seat name with a role uses the id", psSeatLabel({ name: " ", id: "local.blank", role: "worker" }) === "local.blank (role: worker)");
 judge("an attach choice uses the id when the name is blank", attachChoiceLabel({ name: " ", id: "local.blank", status: "idle" }) === "local.blank · idle");
 judge("an attach choice uses the id when the name is empty", attachChoiceLabel({ name: "", id: "local.blank", status: "idle" }) === "local.blank · idle");
 judge("an attach choice uses the id when the name is a newline", attachChoiceLabel({ name: "\n", id: "local.blank", status: "idle" }) === "local.blank · idle");
