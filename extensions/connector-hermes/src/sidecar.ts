@@ -22,6 +22,7 @@ import {
   startControlServer,
   type AgentConfig,
 } from "@cotal-ai/connector-core";
+import { createHermesApprovals } from "./approvals.js";
 import { gatewayIdle, hermesHookHandle } from "./hermes-hooks.js";
 import { startBridgeServer, type BridgeServer } from "./bridge.js";
 import { drainWhileIdle, hermesCommands } from "./commands.js";
@@ -86,7 +87,18 @@ export function startSidecar(): Sidecar {
     void gatewayIdle(agent, bridge);
     drain();
   };
-  bridge = startBridgeServer(agent, config, bridgeSock, control, { onSubscribe: startAgent, onIdle });
+  const approvals = config.askPermissions
+    ? createHermesApprovals({
+        desk: () => agent.prompts,
+        send: (answer) => bridge?.answerApproval(answer) ?? false,
+        warn: (msg) => process.stderr.write(`[cotal-hermes] ${msg}\n`),
+      })
+    : undefined;
+  const onApproval = (frame: Record<string, unknown>): void => {
+    if (frame.t === "approval") approvals?.request(frame);
+    else approvals?.ended(frame);
+  };
+  bridge = startBridgeServer(agent, config, bridgeSock, control, { onSubscribe: startAgent, onIdle, onApproval });
   // The launch's initial prompt is the gateway's first turn, in the user's own words. Read once and
   // dropped from the environment the gateway inherits.
   const prompt = process.env.COTAL_HERMES_PROMPT;

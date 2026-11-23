@@ -27,7 +27,8 @@ import socket
 import sys
 from typing import Any
 
-from . import journal
+from . import approvals, journal
+from .bridge_client import get_client
 from .control_exchange import ClientExchange, ControlConfigError, ExchangeRefused, control_key, socket_dir_problem
 
 _TIMEOUT_S = 2.0
@@ -112,7 +113,18 @@ def pre_llm_call(*args: Any, **kwargs: Any) -> None:
 
 def pre_tool_call(*args: Any, **kwargs: Any) -> None:
     name, inp = _extract_tool(args, kwargs)
+    approvals.tool_started(name, str(kwargs.get("tool_call_id") or ""))
     relay("pre_tool_call", tool_name=name, tool_input=inp)
+
+
+def pre_approval_request(*args: Any, **kwargs: Any) -> None:
+    approvals.approval_requested(str(kwargs.get("session_key") or ""))
+    relay("approval_wait")
+
+
+def post_approval_response(*args: Any, **kwargs: Any) -> None:
+    approvals.ended(get_client(), str(kwargs.get("session_key") or ""), str(kwargs.get("choice") or ""))
+    relay("approval_done")
 
 
 def post_llm_call(*args: Any, **kwargs: Any) -> None:

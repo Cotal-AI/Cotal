@@ -29,6 +29,11 @@
  *     {t:"busy", count}                        adapter: Cotal messages and turns in progress, sent on
  *                                              every subscribe and every change
  *     {t:"answer", id, ok, data?, error?}      adapter: the answer to request <id>
+ *     {t:"approval", id, session, command, description, tool, toolCallId?, choices, note, timeoutMs}
+ *                                              adapter: a command waits for the owner's approval
+ *                                              (src/approvals.ts)
+ *     {t:"approval_end", session, outcome}     adapter: the oldest approval waiting in <session>
+ *                                              stopped waiting
  *
  *   sidecar → Python
  *     {t:"incoming", msg}                      push one buffered mesh message (for handle_message)
@@ -36,6 +41,7 @@
  *                                              adapter's operator chat (see submitTurn)
  *     {t:"interrupt"|"usage"|"commands", id}   a request the adapter answers (see ask)
  *     {t:"tool_result", id, ok, text?, isError?, error?}   reply to a {t:"tool"} request
+ *     {t:"approval_answer", id, choice, reason?}   the owner's answer to approval <id>
  *
  * Delivery is **serial + ack-on-surface**: the sidecar pushes the oldest buffered message, waits
  * for the adapter's `delivered`, then `drainInbox(1)` acks exactly that message before pushing the
@@ -132,6 +138,8 @@ export interface BridgeServer {
   /** An adapter is subscribed, the gateway has no Cotal message or turn in progress, and no turn
    *  waits for its answer. */
   idle(): boolean;
+  /** Send the owner's answer to an approval to the subscribed adapter. False when none is. */
+  answerApproval(answer: { id: string; choice: string; reason?: string }): boolean;
 }
 
 /** What the bridge tells its owner. */
@@ -140,6 +148,8 @@ interface BridgeEvents {
   onSubscribe?(): void;
   /** The bridge may have become {@link BridgeServer.idle}. */
   onIdle?(): void;
+  /** The subscribed adapter sent an `approval` or `approval_end` frame. */
+  onApproval?(frame: Record<string, unknown>): void;
 }
 
 /** The token the adapter presents in its first frame: HMAC-SHA256 keyed with the UTF-8 bytes of the
@@ -332,6 +342,10 @@ export function startBridgeServer(agent: MeshAgent, config: AgentConfig, socketP
         desk.pushTurns();
         pump();
         return;
+      case "approval":
+      case "approval_end":
+        if (sock === adapter) events.onApproval?.(frame);
+        return;
       case "busy":
         if (sock !== adapter || typeof frame.count !== "number") return;
         busy = frame.count;
@@ -436,6 +450,11 @@ export function startBridgeServer(agent: MeshAgent, config: AgentConfig, socketP
     ask: desk.ask,
     idle() {
       return adapter !== undefined && busy === 0 && desk.pending() === 0;
+    },
+    answerApproval(answer) {
+      if (!adapter) return false;
+      sendFrame(adapter, { t: "approval_answer", ...answer });
+      return true;
     },
     close() {
       // A subscription holds its connection open for the life of the gateway, so close ends each
