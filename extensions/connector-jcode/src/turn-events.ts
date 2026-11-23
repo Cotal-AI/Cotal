@@ -12,6 +12,8 @@ export function watchTurnEvents(
   deps: Pick<HostTurnDeps, "agent" | "closeEventRun" | "relayTurnCondition" | "finishHostIdleTurn" | "publishInboundHealth">,
 ): void {
   const { agent, closeEventRun, relayTurnCondition, finishHostIdleTurn, publishInboundHealth } = deps;
+  /** The error frame of the TUI-owned turn under way, which its run closes with. */
+  let tuiTurnError: HarnessError | undefined;
   connected.on("session_status", (event: ApiEvent) => {
     if (!("session_id" in event) || event.session_id !== hostState.sessionId || event.ev !== "session_status") return;
     // Advisory idle between tool rounds does not mean the Cotal-owned run() has ended.
@@ -26,10 +28,13 @@ export function watchTurnEvents(
   // throw it. A host-owned turn reports the same frame through drive()'s catch. Scoped like the
   // SDK's own run(): a frame naming another session is not this seat's.
   connected.on("harness_error", (event: ApiEvent) => {
-    if (hostState.driving || event.ev !== "error" || ("session_id" in event && event.session_id !== hostState.sessionId)) return;
+    if (event.ev !== "error" || ("session_id" in event && event.session_id !== hostState.sessionId)) return;
+    const error = new HarnessError(String(event.code ?? "internal"), String(event.message ?? "harness error"));
+    if (hostState.turnActive && !hostState.hostRun) tuiTurnError = error;
+    if (hostState.driving) return;
     agent.releaseInFlight(hostState.surfacedIds);
     hostState.surfacedIds = [];
-    const condition = jcodeTurnCondition(new HarnessError(String(event.code ?? "internal"), String(event.message ?? "harness error")));
+    const condition = jcodeTurnCondition(error);
     if (condition) relayTurnCondition(condition);
   });
   connected.on("turn_done", (event: ApiEvent) => {
@@ -37,7 +42,11 @@ export function watchTurnEvents(
       // The SDK's run() takes turn_done as a turn's success. drive() clears the kept error for a
       // host-owned turn; a TUI-owned turn clears it here unless it relayed an error of its own.
       if (!hostState.driving && !hostState.turnConditionPublished) hostState.lastTurnError = undefined;
-      closeEventRun();
+      // The host's own turn closes its run when run() settles, with the error if it failed. Jcode
+      // sends a failed turn's error just before its turn_done, so closing here would close that turn
+      // as finished.
+      if (!hostState.hostRun) closeEventRun(tuiTurnError);
+      tuiTurnError = undefined;
       hostState.turnActive = false;
       void finishHostIdleTurn();
     }

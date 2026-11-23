@@ -43,6 +43,8 @@ export interface HostTurnState {
   bridgeRecoveryUsed: boolean;
   sessionId: string | undefined;
   driving: boolean;
+  /** The host's own run() waits on the session's turn: from its send until runPrompt closes the run. */
+  hostRun: boolean;
   turnActive: boolean;
   briefed: boolean;
   initialized: boolean;
@@ -344,6 +346,7 @@ export function createHostTurns(hostState: HostTurnState, deps: HostTurnDeps) {
       // unsent. Once run() is invoked, a close or timeout cannot prove the model rejected it, so never
       // retry it.
       hostState.pendingKickoff = undefined;
+      hostState.hostRun = true;
       const { dispatched: runTurn, ownSend: sent } = await withExclusiveDispatch(() => dispatchRun(turnClient!, prompt));
       ownSend = sent;
       await runTurn;
@@ -388,6 +391,7 @@ export function createHostTurns(hostState: HostTurnState, deps: HostTurnDeps) {
         `[cotal-jcode] turn failed (${hostState.consecutiveFailures} in a row): ${(error as Error).message}\n`,
       );
     } finally {
+      hostState.hostRun = false;
       await endHostTurn(turnClient);
     }
   };
