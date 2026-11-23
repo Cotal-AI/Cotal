@@ -224,6 +224,14 @@ try {
   check("condition:the next turn's start cleared it, and a turn someone stopped sets none",
     stoppedPresence?.status === "idle" && stoppedPresence.condition === undefined, { status: stoppedPresence?.status, condition: stoppedPresence?.condition });
 
+  // A question waits on a person as a permission ask does (the event as OpenCode 1.19.6 sends it).
+  await fire({ type: "question.asked", properties: { id: "que_1", sessionID: A, questions: [{ question: "Which color?", header: "Color", options: [{ label: "Red" }] }] } });
+  let asking = otto();
+  for (let i = 0; i < 25 && asking?.status !== "waiting"; i++, await sleep(200)) asking = otto();
+  check("waiting:an open question reads waiting, with its header as the activity",
+    asking?.status === "waiting" && asking.activity === "Color", { status: asking?.status, activity: asking?.activity });
+  await fire({ type: "question.rejected", properties: { sessionID: A, requestID: "que_1" } });
+
   // ---- Turn 3: a turn that ends on `session.idle`, the same barrier on the other arm.
   content.set(A, [...turn(A, 1), ...turn(A, 2), ...turn(A, 3)]);
   await part(A);
@@ -416,7 +424,7 @@ try {
     a7i >= 0 && earlyCloses.length === 1 && earlyCloses[0]?.type === "RUN_ERROR", { a7i, earlyCloses });
 
   // ---- Cell count, because a harness that threw early would DELETE cells rather than fail them.
-  const EXPECTED = 27;
+  const EXPECTED = 28;
   check(`every cell ran - ${EXPECTED} expected, a cell that vanishes is invisible without this`,
     pass + fail === EXPECTED, `${pass + fail} cells reported`);
 
