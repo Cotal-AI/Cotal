@@ -304,7 +304,7 @@ A manager keeps the last name a seat showed with the seat, apart from its alias.
 
 The prompt desk is the `prompts` field of the agent endpoint, where an authorized session reads and answers the prompts the agent's harness raises.
 A connector built on `MeshAgent` reads it as `agent.prompts`. It is undefined until the broker accepted the serve, and on an open or static mesh, and then the adapter leaves each dialog to the harness.
-The Claude Code connector is the shipped adapter; see its [tool permissions](claude-connector-reference.mdx#tool-permissions).
+The Claude Code and OpenCode connectors are the shipped adapters; see Claude Code's [tool permissions](claude-connector-reference.mdx#tool-permissions) and OpenCode's [permissions and questions](opencode-connector-reference.mdx#prompts).
 
 The desk knows no harness. An adapter calls `open({ content, openMs, settleMs }, hooks)` for each native dialog it offers.
 `openMs` bounds how long the prompt is offered, from 1 s to 7 days.

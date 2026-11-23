@@ -18,6 +18,7 @@ export interface PluginIoDeps {
 
 export interface PluginIo {
   reapRetiredWal(threadId: string, drained: boolean): Promise<void>;
+  /** An answer that is not 2xx throws an Error carrying the HTTP `status`. */
   opencodeApi<T>(path: string, init?: RequestInit, timeoutMs?: number): Promise<T>;
   isMessageAbortedError(error: unknown): boolean;
   runErrorOf(error: unknown): { message: string; code?: string };
@@ -106,7 +107,7 @@ export function pluginIo(deps: PluginIoDeps): PluginIo {
         ...(init?.headers ?? {}),
       },
     });
-    if (!res.ok) throw new Error(`OpenCode HTTP ${res.status} ${res.statusText} for ${path}`);
+    if (!res.ok) throw Object.assign(new Error(`OpenCode HTTP ${res.status} ${res.statusText} for ${path}`), { status: res.status });
     if (res.status === 204) return undefined as T;
     return (await res.json()) as T;
   }
