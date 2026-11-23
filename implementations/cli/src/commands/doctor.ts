@@ -64,6 +64,7 @@ import {
   workspaceSecretStore,
   writeRenewalRecord,
   recordOperationSpace,
+  isMeshRegistryError,
   agentGrants,
   grantMintFlags,
   type AgentGrants,
@@ -165,7 +166,10 @@ function recordedOpenSpace(root: string, space: string | undefined, fix: boolean
     }
     const entry = here.find((m) => m.space === target.space) ?? findMesh(target.space);
     return { root: child ? target.root : root, space: target.space, checked: entry !== undefined && entry.unchecked !== true };
-  } catch { return undefined; }
+  } catch (error) {
+    if (isMeshRegistryError(error)) throw error;
+    return undefined;
+  }
 }
 
 /** A stopped unprepared open root can retain its mode and name in the rendered broker file. */
