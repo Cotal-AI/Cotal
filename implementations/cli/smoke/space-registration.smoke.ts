@@ -1518,9 +1518,17 @@ if (process.platform === "linux") {
         !existsSync(join(fresh, ".cotal", "nats")) && JSON.stringify(registryFiles()) === JSON.stringify(beforeRuntime.registry), shown(fifoDefault));
     unlinkSync(defaultSeed);
   }
+  const durableSeed = join(home, "durable-channels.json");
+  writeFileSync(durableSeed, '{"channels":{"wire.seeded":{"deliveryClass":"durable","replay":false}}}');
+  const durableChannel = await json(["up", "--open", "--no-manager", "--channels", durableSeed, "--server", server], fresh);
+  check("open up refuses an explicit durable channel before writing a store or stack journal",
+    refused(durableChannel, 2, "UNSUPPORTED") && durableChannel.env?.error?.message.includes(durableSeed) && durableChannel.env?.error?.message.includes('channel "wire.seeded"') &&
+      durableChannel.env?.error?.remedy?.includes('"live"') && durableChannel.env?.error?.remedy?.includes("authenticated space") &&
+      !existsSync(join(fresh, ".cotal", "nats")) && !readStackJournal(fresh) && JSON.stringify(registryFiles()) === JSON.stringify(beforeRuntime.registry), shown(durableChannel));
+
   // A channels file that begins with a UTF-8 byte-order mark, as some Windows editors save one, seeds
   // as the JSON after it.
-  writeFileSync(defaultSeed, '\uFEFF{"channels":{"bomseed":{"description":"saved with a BOM"}}}');
+  writeFileSync(defaultSeed, '\uFEFF{"channels":{"bomseed":{"description":"saved with a BOM","deliveryClass":"live"}}}');
 
   // Its seed comes through a FIFO written once, which a second open would wait on forever.
   const seedFifo = join(home, "channels-seed.fifo");
@@ -1540,14 +1548,21 @@ if (process.platform === "linux") {
   // An explicit --channels replaces the default file, and only a start seeds, so the FIFO seed is
   // read by the next start after a down.
   check("down --yes stops it for the FIFO start", (await json(["down", "--yes"], fresh)).status === 0);
+  const stopped = readStackJournal(fresh)?.sha256;
+  writeFileSync(defaultSeed, '{"defaults":{"deliveryClass":"durable"}}');
+  const durableDefault = await json(["up", "--no-manager"], fresh);
+  check("up without a mode flag refuses a durable default on a stopped open stack without changing its journal",
+    refused(durableDefault, 2, "UNSUPPORTED") && durableDefault.env?.error?.message.includes(defaultSeed) && durableDefault.env?.error?.message.includes('"defaults"') &&
+      stopped !== undefined && readStackJournal(fresh)?.sha256 === stopped, shown(durableDefault));
   const fifoUp = await run(["up", "--detach", "--open", "--no-manager", "--server", server, "--channels", seedFifo], {}, fresh);
   feeder.kill();
   unlinkSync(seedFifo);
   const seeded = await run(["channel", "--space", "demo", "--plain"], {}, fresh);
   check("it reads a --channels FIFO written once a single time and seeds the channel from it", fifoUp.status === 0 && seeded.status === 0 && seeded.stdout.includes("Neuigkeiten"), { up: shown(fifoUp), seeded: shown(seeded) });
   check("the selection still names it", getCurrent() === "demo", getCurrent());
-  check("a default channels file that begins with a UTF-8 byte-order mark seeds its channels",
-    bomSeeded.status === 0 && JSON.stringify(bomSeeded.env?.result ?? null).includes("saved with a BOM"), shown(bomSeeded));
+  const bomChannel = bomSeeded.env?.result?.registry?.channels?.bomseed;
+  check("a default file that begins with a UTF-8 byte-order mark seeds the explicit live channel",
+    bomSeeded.status === 0 && bomChannel?.description === "saved with a BOM" && bomChannel?.deliveryClass === "live", shown(bomSeeded));
   // A default seed in the root sets those fields again at the next start, and the edit says so. It
   // begins with a byte-order mark, which the start ignores, so the warning reads past it too.
   writeFileSync(defaultSeed, '\uFEFF{"channels":{"news":{"description":"Neuigkeiten"}}}');

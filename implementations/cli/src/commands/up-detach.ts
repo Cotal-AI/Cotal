@@ -73,7 +73,8 @@ import { knownStackRecoveryHost, readStackJournal } from "../lib/stack-journal.j
 import { warnForeignStoreEntries } from "../lib/store-dir.js";
 import { brokerAddressConflict } from "../lib/broker-service.js";
 import { pendingOrdinaryResumes } from "./up-pending.js";
-import { authTimeoutArgs, loadChannelsFile, commitTransportPolicy, assertServesDialHost } from "./up-transport.js";
+import { authTimeoutArgs, commitTransportPolicy, assertServesDialHost } from "./up-transport.js";
+import { loadChannelsFile } from "../lib/channel-seed.js";
 import { postStart, recreateMemoryBuckets } from "./up-stores.js";
 import { type BrokerFacts, brokerVersion, writeOpenBrokerConf, authSetup } from "./up-broker-auth.js";
 import { folderSpace } from "./up-args.js";
@@ -524,6 +525,7 @@ export async function prepareBrokerStart(opts: DetachOpts) {
   ensureRootForSpace(space); // may pin the cwd as this space's root — before any cotalPath use
   refuseStartOverUserState(Boolean(opts.open), opts.userAuth !== undefined, space);
   const root = cotalRoot();
+  const seedFile = opts.seed ?? loadChannelsFile(root, opts.channels, !useAuth && !opts.resumeAttempt);
   const storeDir = opts.storeDir ? resolve(opts.storeDir) : cotalPath("nats");
   if (opts.storeDir) warnForeignStoreEntries(storeDir);
   if (opts.existingStore) {
@@ -531,7 +533,6 @@ export async function prepareBrokerStart(opts: DetachOpts) {
     recheckExistingStore(opts.existingStore, { space, storeDir });
   } else mkdirSync(storeDir, { recursive: true, mode: 0o700 });
   await claimSpace(space, server, root);
-  const seedFile = opts.seed ?? loadChannelsFile(opts.channels);
   const host = opts.host ?? "127.0.0.1";
   // The transport arrives decided. The dial-host SAN is re-checked here because THIS is where the
   // effective server is finally known — a manifest may name a different host than the flags did, and

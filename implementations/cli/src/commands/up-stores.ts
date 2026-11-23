@@ -28,7 +28,7 @@ import { c } from "../ui.js";
 import { cotalRoot } from "../lib/paths.js";
 import { STACK_DEFINITION } from "../lib/stack-journal.js";
 import { observeServiceProcess, serviceInstances } from "../lib/service-instances.js";
-import { loadChannelsFile } from "./up-transport.js";
+import { loadChannelsFile } from "../lib/channel-seed.js";
 
 export function registeredAddressHolder(server: string, space: string) {
   const key = brokerAddressKey(server);
@@ -241,6 +241,6 @@ export async function recreateDeletedStreams(opts: { root: string; space: string
     await drainAndClose(nc);
   }
   if (held) return false;
-  await postStart(opts.server, opts.space, setup, opts.seed ?? loadChannelsFile(opts.channels));
+  await postStart(opts.server, opts.space, setup, opts.seed ?? loadChannelsFile(opts.root, opts.channels, opts.mode === "open"));
   return true;
 }

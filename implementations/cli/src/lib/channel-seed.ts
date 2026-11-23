@@ -1,13 +1,28 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { readFileSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { assertValidChannel, isConcreteChannel, utf16Problem, validateChannelConfig, validateChannelDefaults, type ChannelConfig, type ChannelDefaults, type ChannelRegistryFile } from "@cotal-ai/core";
 import { CommandFailure, isCommandFailure } from "@cotal-ai/workspace";
 
-/** The channels files one `up` has read, by path. It reads its seed when it checks the flags, when it
- *  prepares the broker and when it seeds the registry, and `--channels` may name a pipe or a FIFO,
+/** The channels files one `up` has read, by path. Flag checking, startup preflight and broker
+ *  preparation share the parsed seed. `--channels` may name a pipe or a FIFO,
  *  which a second open finds empty or waits on for a writer that is gone. */
 export const channelsReads = new AsyncLocalStorage<Map<string, ChannelRegistryFile>>();
+
+/** Load the explicit seed, or the optional default, for startup. */
+export function loadChannelsFile(root: string, explicit: string | undefined, open: boolean): ChannelRegistryFile | undefined {
+  const path = explicit ? resolve(explicit) : join(root, ".cotal", "channels.json");
+  const file = explicit ? readChannelsFile(path) : readDefaultChannelsFile(root);
+  if (!file || !open) return file;
+  const entries = Object.entries(file.channels ?? {})
+    .filter(([, channel]) => channel.deliveryClass === "durable")
+    .map(([channel]) => `channel ${JSON.stringify(channel)}`);
+  if (file.defaults?.deliveryClass === "durable") entries.unshift('"defaults"');
+  if (entries.length) throw new CommandFailure("refused", "UNSUPPORTED", `the channels file ${path} requests durable delivery for ${entries.join(", ")}, but an open mesh has no delivery daemon`, {
+    remedy: 'set deliveryClass to "live" in those entries, or start an authenticated space for durable delivery',
+  });
+  return file;
+}
 
 /** Read the optional default channels file from the root that would start. */
 export function readDefaultChannelsFile(root: string): ChannelRegistryFile | undefined {
