@@ -510,6 +510,50 @@ const kinds = (evts: AguiEvent[]): Record<string, number> => {
   const starts = direct.filter((e) => e.type === "TOOL_CALL_START").map((e) => e.toolCallId);
   c("plan:a direct update_plan call publishes its plan once, as itself", JSON.stringify(starts) === '["call_plan"]', starts);
   c("plan:a plan line read with no run open publishes nothing", merged([planLine("plan_3", null)]).length === 0);
+
+  // A call the script makes starts as `item/started`, which the seat journals, and ends in the
+  // rollout's `item_completed`. Shapes from a live codex 0.162 code-mode turn.
+  const startedLine = (item: Record<string, unknown>): Merged<CodexRecord> => ({ deltas: [], timestamp: 6, records: [{ type: "started", item }] } as Merged<CodexRecord>);
+  const ended = (item: Record<string, unknown>) => at({ timestamp: ts, type: "event_msg", payload: { type: "item_completed", thread_id: "th", turn_id: "t1", item } });
+  const script = at({ timestamp: ts, type: "response_item", payload: { type: "custom_tool_call", status: "completed", call_id: "call_wrap", name: "exec", input: "..." } });
+  const scriptDone = at({ timestamp: ts, type: "response_item", payload: { type: "custom_tool_call_output", call_id: "call_wrap", output: [{ type: "input_text", text: "Script completed" }] } });
+  const cmdStarted = { type: "commandExecution", id: "exec-cmd", command: "/usr/bin/zsh -lc 'cat notes.txt'", cwd: "/w/work", processId: "3071", source: "unifiedExecStartup", status: "inProgress", aggregatedOutput: null, exitCode: null };
+  const cmdEnded = { type: "CommandExecution", id: "exec-cmd", command: ["/usr/bin/zsh", "-lc", "cat notes.txt"], cwd: "file:///w/work", status: "completed", aggregated_output: "alpha\nbeta\n", exit_code: 0 };
+  const running = merged([start, script, startedLine(cmdStarted)]);
+  const runArgs = running.find((e) => e.type === "TOOL_CALL_ARGS" && e.toolCallId === "exec-cmd")?.delta;
+  c("started:a command the script starts is published while it runs, with its script and folder",
+    running.some((e) => e.type === "TOOL_CALL_START" && e.toolCallId === "exec-cmd" && e.toolCallName === "exec_command") &&
+      runArgs === JSON.stringify({ cmd: "cat notes.txt", workdir: "/w/work" }) && !running.some((e) => e.type === "TOOL_CALL_RESULT"), running.map((e) => e.type));
+  const whole = merged([start, script, startedLine(cmdStarted), ended(cmdEnded), scriptDone, done]);
+  const ofCmd = whole.filter((e) => e.toolCallId === "exec-cmd").map((e) => e.type);
+  c("started:its end publishes only its result", JSON.stringify(ofCmd) === JSON.stringify(["TOOL_CALL_START", "TOOL_CALL_ARGS", "TOOL_CALL_END", "TOOL_CALL_RESULT"]) &&
+    whole.find((e) => e.type === "TOOL_CALL_RESULT")?.content === "alpha\nbeta\n", ofCmd);
+  const brackets = new AguiBrackets();
+  let bracketError: string | null = null;
+  for (const e of whole) try { brackets.accept(e as unknown as AguiEvent); } catch (err) { bracketError ??= (err as Error).message; }
+  c("started:brackets legal", bracketError === null, bracketError);
+  const quoted = merged([start, script, startedLine({ ...cmdStarted, id: "exec-q", command: "/bin/bash -lc 'echo '\\''hi there'\\'' \"$HOME\"'" })])
+    .find((e) => e.type === "TOOL_CALL_ARGS")?.delta;
+  c("started:a quoted command reads back as the script it runs", quoted === JSON.stringify({ cmd: "echo 'hi there' \"$HOME\"", workdir: "/w/work" }), quoted);
+  const patch = merged([start, script, startedLine({ type: "fileChange", id: "exec-patch", status: "inProgress",
+    changes: [{ path: "/w/work/notes.txt", kind: { type: "update", move_path: null }, diff: "@@ -1,2 +1,2 @@\n alpha\n-beta\n+gamma\n" }] })]);
+  c("started:a file change starts as apply_patch with Codex's change list",
+    patch.find((e) => e.type === "TOOL_CALL_START")?.toolCallName === "apply_patch" && patch.find((e) => e.type === "TOOL_CALL_ARGS")?.delta ===
+      JSON.stringify({ changes: [{ path: "/w/work/notes.txt", kind: { type: "update" }, diff: "@@ -1,2 +1,2 @@\n alpha\n-beta\n+gamma\n" }] }), patch);
+  const mcp = merged([start, script, startedLine({ type: "mcpToolCall", id: "exec-mcp", server: "cotal", tool: "cotal_status", status: "inProgress", arguments: { state: "working" } })]);
+  c("started:an MCP call starts under its tool's name with its arguments",
+    mcp.find((e) => e.type === "TOOL_CALL_START")?.toolCallName === "cotal_status" && mcp.find((e) => e.type === "TOOL_CALL_ARGS")?.delta === JSON.stringify({ state: "working" }), mcp);
+  const directStart = merged([start,
+    at({ timestamp: ts, type: "response_item", payload: { type: "function_call", name: "hello", namespace: "mcp__elicit", call_id: "toolu_1", arguments: "{}" } }),
+    startedLine({ type: "mcpToolCall", id: "toolu_1", server: "elicit", tool: "hello", status: "inProgress", arguments: {} }),
+    at({ timestamp: ts, type: "response_item", payload: { type: "function_call_output", call_id: "toolu_1", output: "hello" } }), done]);
+  c("started:a direct call's start publishes nothing", directStart.filter((e) => e.type === "TOOL_CALL_START").length === 1, directStart.map((e) => e.type));
+  c("started:a start with no script running publishes nothing", merged([start, startedLine({ ...cmdStarted, id: "call_x" }), done]).every((e) => !e.type.startsWith("TOOL_CALL")));
+  const late = merged([start, script, startedLine({ ...cmdStarted, id: "call_late" }),
+    at({ timestamp: ts, type: "response_item", payload: { type: "function_call", name: "exec_command", call_id: "call_late", arguments: '{"cmd":"cat notes.txt"}' } }),
+    at({ timestamp: ts, type: "response_item", payload: { type: "function_call_output", call_id: "call_late", output: "alpha" } }), scriptDone, done]);
+  c("started:a call record read after its start publishes no second start",
+    late.filter((e) => e.type === "TOOL_CALL_START" && e.toolCallId === "call_late").length === 1 && late.some((e) => e.type === "TOOL_CALL_RESULT" && e.toolCallId === "call_late"), late.map((e) => `${e.type}:${e.toolCallId}`));
 }
 
 // The census is printed, not just asserted: a reader who sees "28 passed" learns nothing about

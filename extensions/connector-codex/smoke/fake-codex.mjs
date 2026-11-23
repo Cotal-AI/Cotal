@@ -9,6 +9,7 @@
 // arrives, else self-interrupt after ~1s; FAIL → fail in the same frame the turn started in;
 // THINK → stream a reasoning summary as summary deltas before saving it;
 // PLAN → set a plan from a code-mode exec script, which clients see only as turn/plan/updated;
+// NESTED → run a command from a code-mode exec script for ~1s, which the rollout records once it ends;
 // STREAM → stream the reply as agent-message deltas before saving it;
 // WAITEND → hold the turn until FAKE_CODEX_END_MARK exists; default → complete.
 //
@@ -469,6 +470,18 @@ async function runTurn(text) {
     await new Promise((r) => setTimeout(r, 150));
     notify("turn/plan/updated", { threadId: THREAD, turnId, explanation: null, plan: [{ step: "read", status: "completed" }, { step: `fix:${turnSeq}`, status: "inProgress" }] });
     await new Promise((r) => setTimeout(r, 150));
+    rolloutRecord("response_item", { type: "custom_tool_call_output", call_id: `exec_${turnSeq}`, output: [{ type: "input_text", text: "Script completed" }] });
+  }
+  // NESTED: app-server reports the script's command as item/started when it starts, and the rollout
+  // records it only as an item_completed once it ends.
+  if (text.includes("NESTED")) {
+    const id = `exec-nested-${turnSeq}`;
+    rolloutRecord("response_item", { type: "custom_tool_call", status: "completed", call_id: `exec_${turnSeq}`, name: "exec", input: "await tools.exec_command({ cmd });" });
+    notify("item/started", { threadId: THREAD, turnId, item: { type: "commandExecution", id, command: "/bin/sh -lc 'sleep 1'", cwd: "/w", source: "unifiedExecStartup", status: "inProgress", aggregatedOutput: null, exitCode: null } });
+    await new Promise((r) => setTimeout(r, 1000));
+    journal({ ev: "nestedEnded", turnId, at: Date.now() });
+    rolloutRecord("event_msg", { type: "item_completed", thread_id: THREAD, turn_id: turnId, item: { type: "CommandExecution", id, command: ["/bin/sh", "-lc", "sleep 1"], cwd: "file:///w", status: "completed", aggregated_output: "", exit_code: 0 } });
+    notify("item/completed", { threadId: THREAD, turnId, item: { type: "commandExecution", id, command: "/bin/sh -lc 'sleep 1'", cwd: "/w", status: "completed", aggregatedOutput: "", exitCode: 0 } });
     rolloutRecord("response_item", { type: "custom_tool_call_output", call_id: `exec_${turnSeq}`, output: [{ type: "input_text", text: "Script completed" }] });
   }
   let reply = `ok:${turnSeq}`;
