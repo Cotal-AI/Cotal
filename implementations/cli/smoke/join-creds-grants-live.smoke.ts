@@ -130,6 +130,13 @@ try {
     await joins(`${kind}-repair`, repaired, replacementUid, "review.code");
   }
 
+  const blankPath = cli("join", "--space", space, "--name", "blankpath", "--creds", "");
+  await until(() => blankPath.proc.exitCode !== null || blankPath.output().includes("holding presence"));
+  check("an explicitly empty credential path refuses before joining", blankPath.proc.exitCode === 1 &&
+    await blankPath.exited === 1 && /Code: +USAGE_INVALID/.test(blankPath.output()) &&
+    blankPath.output().includes("nonempty credential path") && blankPath.output().includes("omit --creds") &&
+    !blankPath.output().includes("holding presence"), blankPath.output());
+
   const foreign = join(dir, "foreign.creds"), foreignUid = mintLifecycleUid();
   const foreignAuth = await createSpaceAuth("elsewhere");
   writeFileSync(foreign, await mintCreds(foreignAuth, newIdentity(), "agent", {
