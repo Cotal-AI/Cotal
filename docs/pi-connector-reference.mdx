@@ -148,9 +148,22 @@ one when no model with credentials is selected. `interrupt` calls Pi's abort and
 `interrupted` once the turn ended, or `idle` when no turn ran. The stopped turn ends as one its user
 stopped with Escape.
 
+`turn` sends the owner's words to Pi as the user's own message, with `sendUserMessage` and without
+`expandPromptTemplates`, so Pi takes the text as typed, a leading `/` included. Each image follows
+the text in the same message. Pi replaces an image with a placeholder for a model that takes none,
+so a turn with images for such a model, or a turn while no model is selected, ends `refused` with
+`failed-precondition` before Pi sees it. A turn waits in the same queue as commands, and reads
+`started` once its Pi turn starts, or `unknown` when none starts within 5 s.
+
+`usage` reports what Pi's footer shows: the context tokens and window from `getContextUsage()`,
+and the session's cost in USD, summed from the usage Pi records in the session. It leaves out the
+tokens while Pi does not know them, such as right after a compaction, and the cost while it is zero
+or Pi runs on a subscription sign-in, which Pi prices at list prices.
+
 An older Pi ignores `expandPromptTemplates`, so before 0.84.2 `commands` answers
-`supported: false`. Pi has no API that reports its version. The connector reads it from Pi's own
-module, which Pi resolves to itself unless a copy of Pi is installed beside the extension.
+`supported: false`, while `turn`, `usage` and `interrupt` work. Pi has no API that reports its
+version. The connector reads it from Pi's own module, which Pi resolves to itself unless a copy of
+Pi is installed beside the extension.
 
 ## Event plane
 
