@@ -109,6 +109,8 @@ const adapter: LocalProcess = {
       root: { type: "string", description: "the root" },
       token: { type: "string", description: "a required option with no default" },
       count: { type: "integer", description: "a number with a default" },
+      ratio: { type: "number", exclusiveMinimum: 0, maximum: 1, description: "a bounded ratio" },
+      limits: { type: "array", maxItems: 2, items: { type: "integer", exclusiveMaximum: 10 } },
       server: { type: "string", description: "the broker" },
       creds: { type: "string", description: "a file the space keeps" },
       logFile: { type: "string", description: "a camelCase option, taken as --log-file" },
@@ -122,6 +124,14 @@ const flag = (name: string) => flags.find((row) => row.name === name)?.descripti
 check("help shows each defaulted option's default", flag("root").includes("(default: this space's root)") && flag("count").includes("(default: 3)") && flag("creds").includes("(default: this space's fixture.creds)"), flags);
 check("  and no default for an option that has none", !flag("token").includes("(default:"), flag("token"));
 check("a camelCase option takes its dashed flag, as `cotal up --log-file` spells it", flags.some((row) => row.name === "log-file") && !flags.some((row) => row.name === "logFile"), flags.map((row) => row.name));
+
+const ratioRange = "a number greater than 0 and at most 1";
+check("numeric preset help and guided validation preserve inclusive and exclusive bounds",
+  flag("ratio").includes(ratioRange) && ["0", "1.5"].every((value) => presetOptionRefusal(preset, "ratio", value)?.includes(ratioRange))
+    && presetOptionRefusal(preset, "ratio", "1") === undefined, flags);
+const nestedInvalid = presetOptionRefusal(preset, "limits", "[7,1234]");
+check("a nested numeric refusal identifies the item and its exclusive bound without printing its value",
+  nestedInvalid?.includes("at --limits.1, which must be an integer less than 10") === true && !nestedInvalid.includes("1234"), nestedInvalid);
 
 const SPACE = "servicecommands";
 const missing = refusal(() => servicePresetDefinition(preset, SPACE, {}, root, "start"));
@@ -218,6 +228,9 @@ try {
 
   const managerStartPath = ["service", "start", "manager"];
   const managerPresetHelp = cotal([...managerStartPath, "--help"]);
+  const portRange = "an integer from 0 through 65535";
+  check("manager preset help shows the console port range and explains zero",
+    managerPresetHelp.status === 0 && managerPresetHelp.stdout.split("\n").some((line) => line.includes("--console-port <integer>") && line.includes(portRange) && line.includes("zero allocates a port")), out(managerPresetHelp));
   const managerHelpCommand = cotal(["help", ...managerStartPath]);
   const managerStartRefusal = cotal([...managerStartPath, "--no-open", "--dry-run"]);
   const noOpenOption = /^  --no-open\b/m;
@@ -322,6 +335,20 @@ try {
     followed.status === 0 && serviceDefinitionStore(PREPARED).read("b0") !== undefined && serviceDefinitionStore(SPACE).read("b0") === undefined, out(followed));
 
   const managerArgs = ["manager", "start", "--space", PREPARED, "--dry-run", "--json"];
+  const refusedPort = cotal([...managerArgs, "--console-port", "65536"]);
+  const portError = JSON.parse(refusedPort.stdout).error;
+  check("a manager preview refuses an out-of-range console port with its range and without its value",
+    refusedPort.status === 1 && portError?.code === "SCHEMA_INVALID"
+      && portError.message.includes(`--console-port, which must be ${portRange}`) && !out(refusedPort).includes("65536")
+      && portError.remedy?.includes("cotal service start manager --help"), out(refusedPort));
+  for (const port of ["0", "65535"]) {
+    const preview = cotal([...managerArgs, "--console-port", port]);
+    const result = JSON.parse(preview.stdout).result;
+    check(`the console port boundary ${port} previews without side effects`,
+      preview.status === 0 && result?.dryRun === true && result.saved === false && result.allocated === false && result.providerCodeLoaded === false
+        && serviceDefinitionStore(PREPARED).read("manager") === undefined, out(preview));
+  }
+
   const launchFile = join(prepared, ".cotal", "manager launch.json"), launchBytes = "{}\n";
   writeFileSync(launchFile, launchBytes, { mode: 0o600 });
   const digest = createHash("sha256").update(launchBytes).digest("hex");

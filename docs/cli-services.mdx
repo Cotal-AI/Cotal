@@ -73,6 +73,8 @@ from the preset's defaults and starts it; stderr says what it saved. A start pre
 adapter's foreground and multi-instance capabilities even before the definition is saved.
 The manager preset does not support `--new-instance`, so `cotal service start manager --help`
 omits it. Generic `cotal service start --help` lists it for services that support it.
+Preset help shows the declared bounds for numeric options. A refusal for an out-of-range value
+also names the bounds without printing the submitted value.
 A preset that needs something only you can give, such as the intake's keys, refuses with those flags
 named, and takes them on the start line. A default the space cannot fill yet, such as the `web`
 dashboard's `web.creds` on a space
