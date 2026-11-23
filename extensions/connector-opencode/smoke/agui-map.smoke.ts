@@ -13,14 +13,15 @@
  *
  * The derivation is checked rather than trusted: over the real session the mapper produced 2911
  * events (RUN 13/13, TEXT 232, REASONING 83, TOOL 485 of each), and over the fixture it produces the
- * same counts. That equality is the evidence the redaction preserved what these cells assert.
+ * same counts. That equality is the evidence the redaction preserved what these cells assert. The
+ * `cotal.toolResult` marker adds one event per tool call to both.
  *
  * Never prints record content: cells report counts, type names, and the fixture's own ids.
  */
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { AguiBrackets, AGUI_EVENT_TYPE, runFinished } from "@cotal-ai/connector-core";
+import { AguiBrackets, AGUI_EVENT_TYPE, TOOL_RESULT_EVENT, runFinished } from "@cotal-ai/connector-core";
 import { OpenCodeSessionSource, type OpenCodeMessageWithParts, type OpenCodePart } from "../src/agui-source.js";
 import { createOpenCodeMapper } from "../src/agui-map.js";
 
@@ -197,6 +198,14 @@ const R = await replay(true);
   c("tool:a FAILED call reports its error as the content, not an empty string",
     badResult.content === "boom", badResult.content);
   c("tool:and is marked isError", (badResult.cotal as { isError?: boolean } | undefined)?.isError === true, badResult.cotal);
+  const marker = (events: Record<string, unknown>[]) => {
+    const i = events.findIndex((e) => e.type === AGUI_EVENT_TYPE.CUSTOM && e.name === TOOL_RESULT_EVENT);
+    return { after: i > events.findIndex((e) => e.type === AGUI_EVENT_TYPE.TOOL_CALL_RESULT), value: events[i]?.value };
+  };
+  c("tool:the result marker follows the result, naming the call, not failed",
+    JSON.stringify(marker(ok)) === JSON.stringify({ after: true, value: { toolCallId: "toolu_native", isError: false } }), marker(ok));
+  c("tool:and for a FAILED call it says failed",
+    JSON.stringify(marker(failed)) === JSON.stringify({ after: true, value: { toolCallId: "toolu_bad", isError: true } }), marker(failed));
 }
 
 // ---------------------------------------------------------------------------- run boundaries
@@ -260,7 +269,7 @@ const R = await replay(true);
     control?.runId === "run-new" && (control.events[0] as { type: string }).type === AGUI_EVENT_TYPE.RUN_STARTED, control);
 }
 
-const EXPECTED = 41;
+const EXPECTED = 43;
 c(`meta:every cell ran - ${EXPECTED} expected`, pass + fail === EXPECTED, `${pass + fail} cells reported`);
 
 console.log(
