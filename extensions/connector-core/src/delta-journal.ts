@@ -8,7 +8,8 @@
  * the same order.
  *
  * The journal holds granularity, never the text of record: the saved message stays the truth, and
- * text that was never journaled reaches the stream when the saved message does.
+ * text that was never journaled reaches the stream when the saved message does. A connector can also
+ * journal records of its own, for what its harness reports and never saves.
  */
 import { closeSync, constants, fstatSync, openSync, writeSync } from "node:fs";
 
@@ -34,6 +35,8 @@ export interface DeltaRecord {
   deltas: StreamDelta[];
   /** Keys whose streams the harness abandoned: no saved record will close them. */
   ends?: string[];
+  /** Records the connector defines, in the order it wrote them. The journal does not read them. */
+  records?: unknown[];
 }
 
 /** The least time between two lines of one journal. */
@@ -53,8 +56,9 @@ export interface DeltaJournalOptions {
 export function assertDeltaRecord(value: unknown, where: string): asserts value is DeltaRecord {
   const r = value as Partial<DeltaRecord> | null;
   const ends = r?.ends === undefined || (Array.isArray(r.ends) && r.ends.length > 0 && r.ends.every((k) => typeof k === "string" && k.length > 0));
+  const records = r?.records === undefined || (Array.isArray(r.records) && r.records.length > 0);
   const ok = typeof r === "object" && r !== null && typeof r.anchor === "string" && Number.isSafeInteger(r.ts) &&
-    Array.isArray(r.deltas) && r.deltas.length + (r.ends?.length ?? 0) > 0 && ends &&
+    Array.isArray(r.deltas) && r.deltas.length + (r.ends?.length ?? 0) + (r.records?.length ?? 0) > 0 && ends && records &&
     r.deltas.every((d) => typeof d?.key === "string" && d.key.length > 0 && (d.kind === "text" || d.kind === "reasoning") &&
       typeof d.text === "string" && d.text.length > 0);
   if (!ok) throw new Error(`delta journal: ${where} is not a delta record`);
@@ -128,6 +132,21 @@ export class DeltaJournal {
     this.writeLine(deltas, [...keys]);
   }
 
+  /**
+   * Write `value`, a record the connector defines, for something its harness reports and never
+   * saves. The line is written at once, with the deltas still pending, so the merged source hands
+   * the record back by the harness position it was written at.
+   */
+  record(value: unknown): void {
+    if (this.fd === undefined) throw new Error(`delta journal: ${this.opts.path} is closed`);
+    if (JSON.stringify(value) === undefined) throw new Error("delta journal: a record must be a JSON value");
+    clearTimeout(this.timer);
+    this.timer = undefined;
+    const deltas = this.pending;
+    this.pending = [];
+    this.writeLine(deltas, undefined, [value]);
+  }
+
   /** Drop what is pending and release the file. */
   close(): void {
     this.settle();
@@ -148,11 +167,11 @@ export class DeltaJournal {
     if (deltas.length > 0) this.writeLine(deltas);
   }
 
-  private writeLine(deltas: StreamDelta[], ends?: string[]): void {
+  private writeLine(deltas: StreamDelta[], ends?: string[], records?: unknown[]): void {
     if (this.fd === undefined) return;
     try {
       this.lastWrite = performance.now();
-      const record: Omit<DeltaRecord, "anchor" | "ts"> = { deltas, ...(ends ? { ends } : {}) };
+      const record: Omit<DeltaRecord, "anchor" | "ts"> = { deltas, ...(ends ? { ends } : {}), ...(records ? { records } : {}) };
       const line = Buffer.from(`${JSON.stringify({ anchor: this.opts.anchor(), ts: Date.now(), ...record })}\n`);
       for (let at = 0; at < line.length; ) at += writeSync(this.fd, line, at);
     } catch (e) {

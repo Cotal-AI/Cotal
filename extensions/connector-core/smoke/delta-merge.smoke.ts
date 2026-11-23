@@ -9,6 +9,8 @@
  * part with the rest of its saved text, ends it and maps the saved text anew after a provider retry,
  * and leaves a part that never streamed to the mapper. `streamSeed` rebuilds that state at a cursor.
  * `DeltaJournal.abandon` ends a stream no saved record will close, so the run can close after it.
+ * `DeltaJournal.record` writes a record the connector defines, which the reader hands back as written
+ * in the line's place.
  *
  * Files only; no broker. Run: pnpm smoke:delta-merge
  */
@@ -42,7 +44,8 @@ const throws = async (fn: () => Promise<unknown>): Promise<string | undefined> =
 
 /** A harness record; one with a `key` is the saved record of the part streamed under it. */
 type H = { i: string; key?: string };
-const label = (v: Merged<H>): string => ("harness" in v ? v.harness.i : v.deltas.map((d) => d.text).join("+"));
+const label = (v: Merged<H>): string =>
+  "harness" in v ? v.harness.i : [...v.deltas.map((d) => d.text), ...(v.records ?? []).map((r) => JSON.stringify(r))].join("+");
 const labels = (r: SourceRead<Merged<H>>): string => r.records.map((x) => label(x.value)).join(",");
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -431,6 +434,41 @@ try {
     check("the late line ends the stream once, after the records already published, across a restart",
       JSON.stringify(order) === '["R1","R2","k"]', order);
     check("and the run closes", (await second.closeRun({ timestamp: 3 })) === "run");
+  }
+
+  console.log("connector records");
+  {
+    const f = fixture();
+    const c0 = f.merged.start(f.harness.endSync());
+    const path = f.jPath;
+    let writes = 0;
+    const journal = DeltaJournal.open({ path, anchor: () => f.harness.endSync(), onWrite: () => writes++, onError: () => {} });
+    const lines = () => readFileSync(path, "utf8").trim().split("\n").map((l) => JSON.parse(l) as DeltaRecord);
+    f.record("R1");
+    journal.append({ key: "k", kind: "text", text: "first" });
+    await sleep(DELTA_JOURNAL_INTERVAL_MS + 100);
+    journal.append({ key: "k", kind: "text", text: " pending" });
+    journal.record?.({ type: "plan", steps: ["read", "fix"] });
+    f.record("R2");
+    const now = lines();
+    check("record writes at once, inside the interval, with the pending deltas and the record",
+      now.length === 2 && now[1]!.deltas.map((d) => d.text).join("") === " pending" &&
+        JSON.stringify(now[1]!.records) === '[{"type":"plan","steps":["read","fix"]}]' && writes === 2, now);
+    const merged = labels(await f.merged.read(c0));
+    check("the reader hands the record back as written, in its line's place", merged === 'R1,first, pending+{"type":"plan","steps":["read","fix"]},R2', merged);
+    check("streamSeed reads past a record line", JSON.stringify(await streamSeed(path, (await f.merged.end()), null)) === '{"open":[],"closed":["k"]}',
+      await streamSeed(path, await f.merged.end(), null));
+    check("a record that is not JSON is refused", (await throws(async () => journal.record?.(undefined)))?.includes("delta journal") === true);
+    journal.close();
+    check("a closed journal refuses record", (await throws(async () => journal.record?.({ type: "plan" })))?.includes("closed") === true);
+
+    const g = fixture();
+    const d = g.merged.start(g.harness.endSync());
+    appendFileSync(g.jPath, `${JSON.stringify({ anchor: g.harness.endSync(), ts: 1, deltas: [], records: [{ n: 1 }] })}\n`);
+    const only = await g.merged.read(d).then(labels, (e: Error) => e.message);
+    check("a line with only records is a delta record", only === '{"n":1}', only);
+    appendFileSync(g.jPath, `${JSON.stringify({ anchor: g.harness.endSync(), ts: 2, deltas: [], records: [] })}\n`);
+    check("and a line whose records list is empty is not", (await throws(() => g.merged.read(d)))?.includes("not a delta record") === true);
   }
 } finally {
   rmSync(root, { recursive: true, force: true });
