@@ -214,7 +214,9 @@ function callSites(ast: ReturnType<typeof validate>["ast"]): { call: string; lin
       const simple = callee.type === "Identifier" ? callee.name : undefined;
       const object = callee.object as Record<string, unknown> | undefined;
       const property = callee.property as Record<string, unknown> | undefined;
-      const call = typeof simple === "string" ? simple : object?.type === "Identifier" && typeof object.name === "string" && property?.type === "Identifier" && typeof property.name === "string" ? `${object.name}.${property.name}` : "derived call";
+      const call = typeof simple === "string" ? simple : callee.type === "MemberExpression" && callee.computed === false
+        && object?.type === "Identifier" && typeof object.name === "string" && property?.type === "Identifier" && typeof property.name === "string"
+        ? `${object.name}.${property.name}` : "derived call";
       const { start, loc } = node as typeof ast;
       if (!loc) throw new Error("validated call is missing its source location");
       sites.push({ call, offset: start, line: loc.start.line });
