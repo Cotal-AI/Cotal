@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer, connect, type Socket } from "node:net";
 import { assertSmokeSandboxDown, createSuite, freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
-import { clean, COTAL, cotalPty, wait, type Pty } from "./_console-pty.js";
+import { clean, COTAL, cotalPty, screen, wait, type Pty } from "./_console-pty.js";
 
 const home = mkdtempSync(join(tmpdir(), "cotal-chat-recipient-home-"));
 const root = mkdtempSync(join(tmpdir(), "cotal-chat-recipient-root-"));
@@ -33,8 +33,8 @@ async function until(done: () => boolean, ms = 30_000): Promise<boolean> {
   return done();
 }
 const sessions: { name: string; pty: Pty; raw: string; exit: number | undefined }[] = [];
-function open(name: string, server?: string) {
-  const pty = cotalPty(["chat", "general", "--name", name, ...(server ? ["--server", server] : [])], { cwd: root, env, cols: 120, rows: 40 });
+function open(name: string, server?: string, channel = "general", cols = 120, rows = 40) {
+  const pty = cotalPty(["chat", channel, "--name", name, ...(server ? ["--server", server] : [])], { cwd: root, env, cols, rows });
   const session = { name, pty, raw: "", exit: undefined as number | undefined };
   pty.onData((data) => { session.raw += data; });
   pty.onExit(({ exitCode }) => { session.exit = exitCode; });
@@ -62,6 +62,34 @@ function history(label: string, ...args: string[]): string {
   writeFileSync(join(evidence, `${label}.txt`), `status=${result.status}\n${result.stdout}\n${result.stderr}`);
   check(`${label} history read succeeds`, result.status === 0, result.stderr);
   return clean(result.stdout);
+}
+
+async function historyViewport(): Promise<void> {
+  const channel = "viewport";
+  const setup = cli("channel", "set", channel, "--no-replay");
+  if (setup.status !== 0) throw new Error(setup.stderr);
+  const writer = spawnSync(process.execPath, ["--import", import.meta.resolve("tsx"), COTAL, "chat", channel, "--stdio", "--name", "writer"], {
+    cwd: root, env, encoding: "utf8", timeout: 30_000,
+    input: Array.from({ length: 25 }, (_, i) => JSON.stringify({
+      schemaVersion: 1, type: "send", id: `m${i}`, channel, text: `viewport-marker-${String(i + 1).padStart(2, "0")}`,
+    })).join("\n") + "\n",
+  });
+  if (writer.status !== 0 || (writer.stdout.match(/"outcome":"stored"/g) ?? []).length !== 25) throw new Error(writer.stdout + writer.stderr);
+  const reader = open("reader", undefined, channel, 80, 24);
+  if (!await until(() => clean(reader.raw).includes("Enter send"))) throw new Error("history reader did not open the terminal composer");
+  await line(reader, "/history 25");
+  await until(() => reader.raw.includes("viewport-marker-25"));
+  const latest = await screen(reader.raw, 80, 24);
+  check("overflowing history shows the latest rows and the scroll hint", latest.includes("viewport-marker-25") && !latest.includes("viewport-marker-01") && latest.includes("Page Up/Down: scroll"), latest);
+  reader.pty.write("\x1b[5~");
+  await until(() => reader.raw.includes("viewport-marker-01"), 3_000);
+  const older = await screen(reader.raw, 80, 24);
+  check("Page Up reveals the history rows above the initial viewport", older.includes("viewport-marker-01") && !older.includes("viewport-marker-25"), older);
+  const from = reader.raw.length;
+  reader.pty.write("\x1b[6~");
+  await until(() => reader.raw.slice(from).includes("viewport-marker-25"), 3_000);
+  const newer = await screen(reader.raw, 80, 24);
+  check("Page Down returns to the latest history rows", newer.includes("viewport-marker-25") && !newer.includes("viewport-marker-01"), newer);
 }
 
 try {
@@ -181,6 +209,7 @@ try {
   if (!await until(() => clean(ana.raw).includes("private during command"))) throw new Error("command completion lost the held draft");
   const slashDm = history("delayed-slash-dms", "--dms");
   check("a delayed command preserves the held draft for explicit DM choice", /DM[^\n]*private during command/.test(slashDm), slashDm);
+  await historyViewport();
 } finally {
   release();
   for (const session of sessions) {
