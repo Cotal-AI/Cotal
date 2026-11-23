@@ -144,7 +144,7 @@ export async function invokeCmd(args: ParsedArgs, commandName = "invoke"): Promi
     if (endpoint === BASELINE_LIFECYCLE_ENDPOINT && seatName !== undefined && values.creds === undefined &&
         resolveMeshTarget(process.cwd(), { space: selection.space, readOnly: true }).mode !== "user") {
       const roster = await rosterOf({ space: selection.space, ...(values.server === undefined ? {} : { server: String(values.server) }) });
-      const seat = presenceSeat(roster, seatName);
+      const seat = await presenceSeat(roster, seatName);
       on ??= seat.instanceId;
       selectedSeat = seat.expectedSeat;
       if (command === "inspect") input!.name = selectedSeat.name;

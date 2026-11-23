@@ -36,6 +36,8 @@ export interface InboxItem {
   fromId: string;
   fromName: string;
   fromRole?: string;
+  /** Locally derived prompt label for a sender under another owner. */
+  verifiedFromLabel?: string;
   kind: "channel" | "dm" | "anycast";
   /** Set when kind === "channel". */
   channel?: string;
@@ -43,7 +45,7 @@ export interface InboxItem {
   service?: string;
   /** Lowercased names called out on a channel message (priority hint). */
   mentions?: string[];
-  /** True iff this message mentions us by name — computed once, here. Drives high-priority wake. */
+  /** Whether this message mentions this principal, or uses its name in a legacy post. */
   mentionsMe: boolean;
   /** True iff this is backfilled history (a "catching up" block on join), not a live message. */
   historical: boolean;

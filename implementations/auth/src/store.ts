@@ -55,6 +55,7 @@ import {
   type UserTokenIssuer,
 } from "./issuer.js";
 import { STORE_VER, parseStoreDoc, readStoreFile } from "./store-file.js";
+import { parseUsernamePolicy, type UsernamePolicy } from "./username-policy.js";
 
 export { clearAuthServiceInfo, clearAuthServiceRefusal, loadAuthServiceInfo, loadAuthServiceRefusal, saveAuthServiceInfo, saveAuthServiceRefusal, type AuthServiceInfo, type AuthServiceRefusal } from "./store-file.js";
 
@@ -359,6 +360,7 @@ export interface PinnedIdp {
   /** The dedicated `aud` of `dm-reader` proofs (#4189), set only by editing the pin deliberately.
    *  Never derived from `audience`, and refused when equal to it. Absent: no `dm-reader` exchange. */
   dmReaderAudience?: string;
+  username?: UsernamePolicy;
 }
 
 interface IdpFile extends PinnedIdp {
@@ -373,7 +375,9 @@ export function loadPinnedIdp(dir: string): PinnedIdp | undefined {
     throw new Error(`${join(dir, IDP_FILE)}: malformed IdP pin - re-pin with \`cotal up --user-auth --idp <url>\``);
   if (f.dmReaderAudience !== undefined && (typeof f.dmReaderAudience !== "string" || !f.dmReaderAudience || f.dmReaderAudience === f.audience))
     throw new Error(`${join(dir, IDP_FILE)}: dmReaderAudience must be a non-empty string that differs from audience`);
-  return { url: f.url, issuer: f.issuer, audience: f.audience, jwksUri: f.jwksUri, ...(f.dmReaderAudience !== undefined ? { dmReaderAudience: f.dmReaderAudience } : {}) };
+  return { url: f.url, issuer: f.issuer, audience: f.audience, jwksUri: f.jwksUri,
+    ...(f.dmReaderAudience !== undefined ? { dmReaderAudience: f.dmReaderAudience } : {}),
+    ...(f.username !== undefined ? { username: parseUsernamePolicy(f.username) } : {}) };
 }
 
 /** Pin-or-verify the space's IdP. First call REQUIRES a URL (there is no default IdP); later calls

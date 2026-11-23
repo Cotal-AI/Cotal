@@ -59,7 +59,7 @@ const jwk = { ...await exportJWK(publicKey), kid: "held-idp", alg: "EdDSA" };
 const idp = createServer((_req, res) => { res.setHeader("content-type", "application/json"); res.end(JSON.stringify({ keys: [jwk] })); });
 await new Promise<void>((resolve) => idp.listen(0, "127.0.0.1", resolve));
 const origin = `http://127.0.0.1:${(idp.address() as import("node:net").AddressInfo).port}`;
-const idpToken = await new SignJWT({}).setProtectedHeader({ alg: "EdDSA", kid: "held-idp" }).setSubject("held-human").setIssuer(origin).setAudience(origin).setIssuedAt().setExpirationTime("10m").sign(privateKey);
+const idpToken = await new SignJWT({ name: "Fixture Member" }).setProtectedHeader({ alg: "EdDSA", kid: "held-idp" }).setSubject("held-human").setIssuer(origin).setAudience(origin).setIssuedAt().setExpirationTime("10m").sign(privateKey);
 
 const connector: Connector = { kind: "connector", name: "held-fixture", requires: [], buildLaunch: () => ({ command: "fixture", args: [] }) };
 const runtime: RuntimeProvider = { kind: "runtime", name: "held-fixture", available: () => true, create: () => ({

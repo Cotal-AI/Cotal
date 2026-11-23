@@ -47,15 +47,17 @@ try {
 
   const wire = await connect({ servers });
   stops.push(() => wire.close());
-  const publish = async (id: string, text: string) => {
+  const publish = async (id: string, text: string, mentionIds?: string[]) => {
     wire.publish(`cotal.${space}.chat.local.publisher.general`, JSON.stringify({
       id, ts: Date.now(), space, from: { id: "local.publisher", name: "publisher" },
       channel: "general", parts: [{ kind: "text", text }],
+      ...(mentionIds === undefined ? {} : { mentions: ["bob"], mentionIds }),
     }));
     await wire.flush();
   };
   await publish("", "empty-history-first");
   await publish("", "empty-history-second");
+  await publish("principal-history", "addressed in history", [bob.card.id]);
 
   const view = new MeshView(openObserver({ space, server: servers, name: "watch" }), {});
   stops.unshift(() => view.stop());
@@ -79,6 +81,8 @@ try {
 
   const channel = await alice.multicast("@bob look", { channel: "general", mentions: ["bob", "carol"], replyTo: "m-1", contextId: "ctx-channel" });
   const bare = await alice.multicast("no thread fields", { channel: "general" });
+  await publish("principal-live", "addressed live", [bob.card.id]);
+  await publish("principal-empty", "addressed to nobody", []);
   const dm = await alice.unicast(bob.card.id, "answer", { replyTo: channel.id, contextId: "ctx-dm" });
   const task = await alice.anycast("reviewer", "please review", { replyTo: "m-task", contextId: "ctx-task" });
   const firstTwin = await alice.unicast(bob.card.id, "same text", { contextId: "ctx-a" });
@@ -92,15 +96,18 @@ try {
   check("a history row carries replyTo", history?.replyTo === "m-history", history);
   check("a history row carries the mentioned names", same(history?.mentions, ["bob"]), history);
   check("a history row carries contextId", history?.contextId === "ctx-history", history);
+  check("a history row preserves the wire's resolved mention IDs", same(row("principal-history")?.mentionIds, [bob.card.id]), row("principal-history"));
 
   const live = row(channel.id);
   check("a live channel row carries replyTo", live?.replyTo === "m-1", live);
   check("a live channel row carries the mentioned names", same(live?.mentions, ["bob", "carol"]), live);
   check("a live channel row carries contextId", live?.contextId === "ctx-channel", live);
+  check("a live channel row preserves the wire's resolved mention IDs", same(row("principal-live")?.mentionIds, [bob.card.id]), row("principal-live"));
+  check("an empty ID list stays present beside the legacy name", same(row("principal-empty")?.mentionIds, []) && same(row("principal-empty")?.mentions, ["bob"]), row("principal-empty"));
 
   const plain = row(bare.id);
   check("a row whose message carries none of them has none of them",
-    plain !== undefined && !("replyTo" in plain) && !("mentions" in plain) && !("contextId" in plain), plain);
+    plain !== undefined && !("replyTo" in plain) && !("mentions" in plain) && !("mentionIds" in plain) && !("contextId" in plain), plain);
 
   const direct = row(dm.id);
   check("a DM row carries replyTo", direct?.replyTo === channel.id, direct);

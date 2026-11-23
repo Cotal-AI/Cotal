@@ -79,7 +79,8 @@ export function isLivenessPlane(plane: string): plane is LivenessPlane {
 /** THE ANSWER, AND EVERYTHING IT IS NOT.
  *
  *  Two fields: whether a responder is bound for the named plane, and an OPAQUE token for which
- *  responder said so. No holder, no pid, no workspace root, no instance id, no runtime, no roster,
+ *  responder said so, plus the qualified DM feature version on a supporting delivery responder. No
+ *  holder, no pid, no workspace root, no instance id, no runtime, no roster,
  *  no membership — none of which a peer needs in order to learn WHICH PLANE IS BROKEN, and all of
  *  which the issue explicitly says the surface does not need to expose.
  *
@@ -95,6 +96,8 @@ export function isLivenessPlane(plane: string): plane is LivenessPlane {
  *  `since`/`uptime` are deliberately absent too, though `$SRV.INFO` would carry them: a timestamp
  *  on the manager's lease dates the operator's last restart, which is state. */
 export interface LivenessAnswer {
+  /** Version of qualified DM compatibility advertised by a delivery responder. */
+  qualifiedDmVersion?: 1;
   /** The plane this answer is about, echoed so a reply cannot be mistaken for another plane's. */
   plane: LivenessPlane;
   /** Whether a responder is bound for that plane, in #1594's vocabulary. */
@@ -203,11 +206,11 @@ export function responderFromProbe(outcome: ProbeOutcome, answered?: ResponderSt
  *  readable: it is an answer from a responder that predates the field. */
 export function parseLivenessAnswer(body: unknown, expectPlane: LivenessPlane): LivenessAnswer | undefined {
   if (typeof body !== "object" || body === null) return undefined;
-  const { plane, responder, instance } = body as { plane?: unknown; responder?: unknown; instance?: unknown };
+  const { plane, responder, instance, qualifiedDmVersion } = body as { plane?: unknown; responder?: unknown; instance?: unknown; qualifiedDmVersion?: unknown };
   if (typeof plane !== "string" || !isLivenessPlane(plane) || plane !== expectPlane) return undefined;
   if (responder !== "bound" && responder !== "unbound" && responder !== "stale" && responder !== "unknown") return undefined;
   if (instance !== undefined && (typeof instance !== "string" || instance === "")) return undefined;
-  return instance === undefined ? { plane, responder } : { plane, responder, instance };
+  return { plane, responder, ...(instance === undefined ? {} : { instance }), ...(plane === "delivery" && qualifiedDmVersion === 1 ? { qualifiedDmVersion } : {}) };
 }
 
 /** The consequence of an unbound responder, in the operator's terms rather than the daemon's — per

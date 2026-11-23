@@ -72,7 +72,7 @@ const idp = createServer(async (req: IncomingMessage, res: ServerResponse) => {
   if (req.url === "/api/auth/jwks") return void res.end(JSON.stringify({ keys: [jwk] }));
   if (req.url === "/api/auth/token" && req.headers.authorization === "Bearer session-a") {
     const now = nowS();
-    return void res.end(JSON.stringify({ token: await new SignJWT({}).setProtectedHeader({ alg: "EdDSA", kid: jwk.kid }).setIssuer(origin).setAudience(origin)
+    return void res.end(JSON.stringify({ token: await new SignJWT({ name: "Fixture Member" }).setProtectedHeader({ alg: "EdDSA", kid: jwk.kid }).setIssuer(origin).setAudience(origin)
       .setSubject("user-a").setIssuedAt(now).setExpirationTime(now + 120).sign(key.privateKey) }));
   }
   res.writeHead(401); res.end("{}");

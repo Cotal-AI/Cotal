@@ -86,6 +86,7 @@ import { type ManagerCluster } from "./manager-contract.js";
 import { authorityBarrierGrants, authorityWriterGrants, openAuthorityClient, openSupervisedConnectReader, remoteManagerIssuerGrants, registrationExecutorGrants, servedRunRequestSubjects, servedRunCancelRequestSubject, servedSpawnRequestSubjects, serviceCalloutWriterGrants, serviceHostDiscoveryGrants, type AuthorityClient } from "./authority-client.js";
 import { createNativeServiceCalloutAuthority, type NativeServiceCalloutAuthority } from "./native-service-callout.js";
 import { openChatSessionAuthority } from "./chat-session-authority.js";
+import { openUsernameAssignment } from "./username-assignment.js";
 import { CorruptNativeIssuanceEvidence, pruneNativeIssuance } from "./native-issuance.js";
 import { ensureRootCredential } from "./root-credential.js";
 import { activateLifecycleAtUid, observeGate, openLifecycleRegistry, readLifecycleHeadForOperation, type LifecycleRegistry } from "./lifecycle-registry.js";
@@ -119,6 +120,7 @@ import {
   AUTH_PROVIDER_NAME,
   claimAuthInstanceIdentity,
   dataAccountAuth,
+  loadPinnedIdp,
   type ServiceKeys,
 } from "./store.js";
 import { managedRetirementAuthority } from "./service-managed-retirement.js";
@@ -519,6 +521,7 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
   // A failed open closes the scanners deliberately, which must not fence like a mid-life death.
   unwind.push(async () => { closing = true; });
   opts.probePlaneDeath?.({ ledger: () => ledgerCand.close(), records: () => recordsCand.close() });
+  const assignUsername = await openUsernameAssignment(writer.nc, space, hold.guard, log, loadPinnedIdp(opts.dir)?.username);
   const barrierReg = await openLifecycleRegistry(barrier.nc, space, scanner, recordsScanner);
   const evictPrincipal = opts.probeEvictor ?? makeDeliveryAdminEvictor({ onConnection, space, server, dataAccount, log });
   // The RETIREMENT deps (#29 piece 4): the barrier's injected mechanics, assembled from reviewed
@@ -976,6 +979,7 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
     }
   };
   const chat = openChatSessionAuthority({
+    assignUsername,
     space,
     dir: opts.dir,
     registry,
@@ -1019,6 +1023,10 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
   });
   return {
     ...callout,
+    assignUsername: (owner, claims, supplied) => {
+      refuseIfFenced();
+      return assignUsername(owner, claims, supplied);
+    },
     openChatSession: async (args) => {
       refuseIfFenced();
       return chat.admit(args);

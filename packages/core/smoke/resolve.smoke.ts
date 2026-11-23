@@ -4,6 +4,8 @@
  */
 import assert from "node:assert/strict";
 import { resolvePeer, sharedNameIds, AmbiguousPeerError, assertValidName } from "../src/resolve.js";
+import { resolvePeerAddress, PeerAddressError } from "../src/peer-address.js";
+import { peerLabel } from "../src/peer-label.js";
 import type { Presence, PresenceStatus } from "../src/types.js";
 
 let seq = 0;
@@ -13,6 +15,16 @@ function p(name: string, status: PresenceStatus = "idle", id = `id-${++seq}`): P
 function expectAmbiguous(fn: () => unknown, count: number): void {
   assert.throws(fn, (e: unknown) => e instanceof AmbiguousPeerError && e.candidates.length === count);
 }
+
+const legacy = { authority: { mode: "static" } } as const;
+const local = p("Local Peer", "idle", "local.actor");
+assert.equal(await resolvePeerAddress([local], "local peer", legacy), local);
+assert.equal(await resolvePeerAddress([local], "local.actor", legacy), local);
+await assert.rejects(resolvePeerAddress([local], "someone/actor", legacy), (e: unknown) =>
+  e instanceof PeerAddressError && e.code === "USAGE_INVALID" && e.message.includes("signed-in space"));
+const labelled: Presence = { ...local, card: { ...local.card, role: "reviewer" } };
+assert.equal(peerLabel(labelled.card), "Local Peer (role: reviewer)");
+await assert.rejects(resolvePeerAddress([labelled], peerLabel(labelled.card), legacy), /roster label.*not an address/);
 
 // exact id beats a same-name peer
 {
@@ -48,6 +60,15 @@ assert.equal(resolvePeer([p("me", "idle", "ME")], "me", { selfId: "ME" }), undef
 
 // no match → undefined
 assert.equal(resolvePeer([p("alice")], "nobody"), undefined);
+
+{
+  const seat = p("ben", "idle", "local.ben");
+  seat.card.role = "reviewer";
+  const label = peerLabel(seat.card);
+  assert.equal(label, "ben (role: reviewer)");
+  assert.throws(() => resolvePeer([seat, p("reviewer")], label), /not an address/);
+  assert.equal(resolvePeer([seat], seat.card.id), seat);
+}
 
 // a shared name marks every live id that carries it, and not a unique one
 {

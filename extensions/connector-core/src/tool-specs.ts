@@ -630,7 +630,7 @@ export function cotalToolSpecs(
         "Private message to one agent. Other agents can't read it. It wakes that agent even in dnd, and an offline agent gets it when it comes back. " +
         "Use it for a question only that agent can answer, or a private detail. To tell an agent about shared work, such as a status or a result, or anything others could use now or later, post it on the task's channel with cotal_send and mention the agent there.",
       schema: {
-        to: z.string().describe("The peer's name (or instance id)."),
+        to: z.string().describe("Your agent's launch name, user/agent in a signed-in space, or the exact instance ID."),
         text: z.string().describe("The message."),
         replyTo: z
           .string()
@@ -642,6 +642,7 @@ export function cotalToolSpecs(
       async run(agent, _config, { to, text: msg, replyTo }: { to: string; text: string; replyTo?: string }) {
         try {
           const { recipient, ack, recipientStatusAtSend } = await agent.dm(to, msg, { replyTo });
+          if (to.includes("/")) return ok(`DM stored at sequence ${ack.seq} for ${recipient.id}. Storage does not confirm a recipient or delivery.`);
           const dup = ack.duplicate ? " duplicate publication." : "";
           const who = recipient.name.trim() ? recipient.name : shownParticipant(recipient.name, recipient.id);
           const unrostered = recipientStatusAtSend === "unrostered"

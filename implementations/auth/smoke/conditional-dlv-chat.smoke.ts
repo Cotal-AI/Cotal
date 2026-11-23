@@ -37,7 +37,7 @@ try {
   const jsm = await jetstreamManager(nc);
   service = await startAuthService({ context: { accountPublicKey: account.accountPublicKey, lifecycleUid: mintLifecycleUid() },
     space: account.space, servers: fx.servers, stateDir: account.stateDir, store: account.store, storeIdentity: account.store.identity });
-  const token = await new SignJWT({}).setProtectedHeader({ alg: "EdDSA", kid }).setSubject("chat-person").setIssuer(issuer)
+  const token = await new SignJWT({ name: "Chat Person" }).setProtectedHeader({ alg: "EdDSA", kid }).setSubject("chat-person").setIssuer(issuer)
     .setAudience(issuer).setIssuedAt().setExpirationTime("10m").sign(privateKey);
   const open = async (read: string[], holderHash: string) => {
     const response = await fetch(`${service!.url}/chat-session/open`, { method: "POST", signal: AbortSignal.timeout(15_000),

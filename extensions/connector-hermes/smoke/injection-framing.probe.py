@@ -135,6 +135,10 @@ CASES = {
                    "historical": True, "text": "@hermes old request"},
     # The honest baseline: whatever the rule costs, it must not cost this.
     "honest": {"kind": "dm", "fromId": "m", "fromName": "Ada", "fromRole": "agent", "text": "just a normal message"},
+    "verified_address": {"kind": "dm", "fromId": "u_foreign.reviewer", "fromName": "forged name",
+                         "fromRole": "forged role", "verifiedFromLabel": "ben/reviewer", "text": "hello"},
+    "verified_principal": {"kind": "dm", "fromId": "u_foreign.reviewer", "fromName": "forged name",
+                           "verifiedFromLabel": "u_foreign.reviewer", "text": "hello"},
     # A name that is only whitespace is not a name. The id is the participant.
     "blank_space": {"kind": "dm", "fromId": "local.blank", "fromName": " ", "text": "hello"},
     "blank_newline": {"kind": "dm", "fromId": "local.blank", "fromName": "\n", "text": "hello"},

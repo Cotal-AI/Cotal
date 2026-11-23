@@ -6,6 +6,7 @@ import { eventPayloadStream } from "./event-payloads.js";
 import { TTL_RECONCILE_CANARY_KEY, ttlBuckets } from "./streams.js";
 import { BROKER_USER_INFO_SUBJECT } from "./broker-identity.js";
 import { spacePrefix, principalKey, deprovisionTargetPrincipal, unicastSubject, artifactBucket, objectStoreStream, chatStream, dmStream, taskStream, dlvStream, inboxStream, dmDurable, dlvDurable, presenceBucket, channelBucket, membersBucket, aclBucket, aclKey, memberKey, assertLifecycleToken, type DeprovisionTarget, membershipBucket, deliveryBucket, managerBucket, connzRequestSubject, accountConnectSubject, accountDisconnectSubject, MEMBERSHIP_INBOX_PREFIX, INBOX_READER_DURABLE, livenessServeFilter, livenessReplyGrant, takeServeFilter, takeReplyGrant, anycastBucket } from "./subjects.js";
+import { usernameBucket } from "./subjects.js";
 import { goalWriterGrants, sessionLedgerGrants, epAuthBucket, epcStreamName, endpointPlaneStreamNames, eptReqStreamName, eptStreamName, hardenedAuthorityStreamNames, timerWriterDurable, timerWriterGrants } from "./endpoint-binding.js";
 import { epsSubject } from "./endpoint-subjects.js";
 import { acceptedBucket, issuedBucket } from "./issued-authority.js";
@@ -76,7 +77,7 @@ export function provisionerPermissions(space: string, pr: MintPrincipal): Record
   // ownership list consumed by inventory and teardown. The provisioner holds create-or-verify only on
   // those authority stores; lifecycle/session writes ride their narrower executor credentials.
   const buckets = [
-    presenceBucket, channelBucket, membersBucket, aclBucket, membershipBucket, anycastBucket, deliveryBucket, managerBucket,
+    presenceBucket, channelBucket, membersBucket, aclBucket, membershipBucket, anycastBucket, deliveryBucket, managerBucket, usernameBucket,
   ].map((b) => `KV_${b(space)}`);
   // STREAM.CREATE + INFO for each (idempotent setup at `cotal up`; CREATE is create-if-matching, INFO covers
   // the client's existence checks). NO DELETE/PURGE — provisioning never tears a stream down.

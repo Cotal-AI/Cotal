@@ -40,7 +40,7 @@ async function main() {
   const idp = createServer((q, s) => { if (q.url !== "/api/auth/jwks") { s.writeHead(404); s.end(); return; } s.setHeader("content-type", "application/json"); s.end(JSON.stringify({ keys: [jwk] })); });
   await new Promise<void>((r) => idp.listen(0, "127.0.0.1", r));
   const origin = `http://127.0.0.1:${(idp.address() as import("node:net").AddressInfo).port}`;
-  const jwt = (sub: string) => new SignJWT({}).setProtectedHeader({ alg: "EdDSA", kid: jwk.kid }).setIssuer(origin).setAudience(origin).setSubject(sub).setIssuedAt().setExpirationTime("10m").sign(pair.privateKey);
+  const jwt = (sub: string) => new SignJWT({ name: sub }).setProtectedHeader({ alg: "EdDSA", kid: jwk.kid }).setIssuer(origin).setAudience(origin).setSubject(sub).setIssuedAt().setExpirationTime("10m").sign(pair.privateKey);
   const fx = await startHostedAuthFixture("native-selected", 1); const a = fx.accounts[0]!;
   // The disposable fixture's existing dummy pin is replaced before service boot. No live issuer changes.
   writeFileSync(join(a.stateDir, "idp.json"), JSON.stringify({ ver: 1, url: `${origin}/api/auth`, issuer: origin, audience: origin, jwksUri: `${origin}/api/auth/jwks` }), { mode: 0o600 });

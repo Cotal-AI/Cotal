@@ -219,6 +219,30 @@ addressing axis, is distinct from a channel's `live`/`durable` **delivery class*
 payload `to`, but cannot publish on your private unicast subject. Reference:
 `MessageMeta.kind`.
 
+### Direct-message addressing
+
+The wire target is the exact principal `owner.actor`. A client in a per-user-auth space resolves a
+bare launch name only within the sender's authenticated owner. It MUST NOT send to another owner on
+a bare-name match. If only another owner's agent matches, the refusal lists its `user/agent` address
+when the username registry supplies one. An exact instance ID can address a peer directly.
+
+In `user/agent`, `user` is a username from §6, with ASCII uppercase letters folded to lowercase.
+`agent` is the exact case-sensitive principal actor, not a display name. Launches enforce the
+launch-name grammar at admission. For bare names, an exact own actor wins over a case-insensitive
+launch-name match. A unique own launch-name match can resolve without exact case. Two such matches
+are ambiguous. Non-launch actors match only exact bytes.
+Open and no-login spaces resolve bare names as display names and do not accept `user/agent`.
+Reply shortcuts address the authenticated sender principal, not a remembered display name.
+
+The sender reads the username binding and builds `owner.actor` without testing recipient existence.
+An absent username is a refusal. A failed registry read is unavailable and nothing is published.
+A broker acknowledgement reports storage at a sequence. It says nothing about whether the actor
+exists or read the message. A publish timeout leaves the outcome unknown, and the sender does not
+retry automatically. Only upgraded senders interpret `user/agent`. Before publishing a qualified
+send, the client MUST observe a bound delivery responder advertising `qualifiedDmVersion: 1`
+(§6.1). If the version is missing or cannot be verified, nothing is published. The DM uses the
+existing principal address on the wire.
+
 **Delivery guarantee: `live` and `durable` classes.** Channel delivery has two classes, fixed
 per channel and wire-observable (§7); the guarantee is defined here, its NATS realization is the
 binding in §8. A receiver MUST derive its effective class from channel config (§7), not from
@@ -295,9 +319,15 @@ Delivery messages are UTF-8 JSON objects with this shape (`CotalMessage`):
 | `to` | string | one-of | unicast target instance id |
 | `toService` | string | one-of | anycast target role |
 | `mentions` | string[] | MAY | lowercased peer names; wakes the mentioned peer. On a `live` channel it also routes a durable copy to each mentioned target authorized to read that channel (§4); it never delivers content outside the target's read ACL and is not a routing substitute for `channel`/`to` |
+| `mentionIds` | string[] | MAY | resolved channel mention principals in exact `<owner>.<actor>` form. For readers that support it, presence of this field replaces `mentions` name matching for priority, even when empty. |
 | `parts` | `Part[]` | MUST | content |
 | `replyTo` | string | MAY | id of the message replied to |
 | `contextId` | string | MAY | thread/conversation correlation id |
+
+`mentionIds` is a reader hint. It does not grant channel access or change routing. Readers compare
+each entry with their own principal and do not resolve it as a name. If the field is absent, readers
+use `mentions` as before. History and replay stay historical regardless of the hint. Publishers in
+this phase continue to write only `mentions`.
 
 `Part` is one of the three core shapes, or an extension object whose `kind` is namespaced
 as described in §11:
@@ -471,6 +501,7 @@ channel that can end the process, and it keeps serving.
 | `plane` | `manager` \| `delivery` | MUST | the plane asked about; a caller MUST reject a reply whose `plane` differs from the plane it asked |
 | `responder` | `ResponderState` | MUST | `bound` \| `unbound` \| `stale` \| `unknown` |
 | `instance` | string | MAY | an opaque token naming the responder that answered. Non-empty when present |
+| `qualifiedDmVersion` | integer `1` | MAY | A bound delivery responder advertises support for qualified DM clients. |
 
 A responder MUST put nothing else in the reply. In particular it carries no lease holder, pid,
 workspace path, instance id, runtime or roster.
@@ -521,6 +552,50 @@ Reference implementation: `livenessSubject`, `livenessServeFilter` and `liveness
 in `packages/core/src/subjects.ts`; `LivenessAnswer`, `parseLivenessAnswer` and
 `responderFromProbe` in `packages/core/src/liveness.ts`; `CotalEndpoint.serveLiveness`,
 `serveDeliveryLiveness` and `probeLiveness` in `packages/core/src/endpoint.ts`.
+
+### 6.2 Username registry
+
+A per-user-auth space records immutable owner usernames in the JetStream KV bucket
+`cotal_usernames_<space>`, backed by `KV_cotal_usernames_<space>`. It keeps one value per key and
+has no expiry. The value of `owner.<owner>` is the UTF-8 username. The value of
+`username.<username>` is the UTF-8 owner token. A username has 1 to 40 characters drawn from
+`[a-z0-9_]`, may start with a digit, and is unique in the space. Open and no-login spaces have no
+bindings. The reserved owner `local` and platform owners (`p_`) never have bindings. Per-user-auth
+space setup creates the bucket before members connect.
+
+Only the auth service writes these keys during ordinary operation. It uses create-only revision
+checks to reserve the username key before writing the owner key. A reader MUST observe both keys
+agreeing before it reports an assignment. Not found, permission denied, and unavailable are
+distinct results. At startup the auth service reports every orphan key by name and deletes none.
+It completes a reservation only for the owner named by that key and only while that owner has no
+binding. Further reservations for that owner stay reserved and unused. Grant revocation and
+owner deletion MUST leave both keys in place. The service MUST NOT rewrite a binding, delete a
+reservation, or reassign a reserved username to a different owner.
+
+A space selects exactly one username source. The default uses verified `preferred_username`,
+then a verified `name`, then a generated `user_<short>` name. Email addresses in name claims are
+not username candidates. The operator MAY opt in to using the email local part before the
+generated name. The derived name may gain a suffix on collision.
+A claims-source grant MUST refuse a supplied username. A directory-source grant can carry a
+trusted username. At the next exchange the service validates and binds that exact value or
+refuses an invalid, conflicting, or different binding. A directory row without a supplied value
+can exchange without creating a binding. Replacing an existing grant with a row that omits the
+username MUST leave any existing binding intact. Participants cannot set or rename a username.
+
+Space membership is the visibility boundary for username reads. Any member may read both
+directions in its space. Credentials outside the space cannot read either direction. The broker
+grants each member credential in a per-user-auth space publish access to the two
+Direct Get request subjects below, with responses on its existing connection inbox:
+
+- `$JS.API.DIRECT.GET.KV_cotal_usernames_<space>.$KV.cotal_usernames_<space>.owner.*`
+- `$JS.API.DIRECT.GET.KV_cotal_usernames_<space>.$KV.cotal_usernames_<space>.username.*`
+
+Member credentials MUST NOT hold registry KV publish, stream administration or consumer grants.
+Credentials minted before the registry grant was available get it at their next credential
+refresh. Reconnecting with the same credential does not add a grant.
+Direct Get may carry an explicit reply subject. Returned data is broker-marked and consists of
+the registry's fixed token values. It is not an application message or proof of sender identity.
+The registry is used for direct-message addressing (§4). It does not change mentions or presence display.
 
 ---
 

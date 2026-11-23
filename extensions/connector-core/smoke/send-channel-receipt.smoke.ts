@@ -13,7 +13,7 @@
  *
  * Run: `pnpm smoke:send-channel-receipt`
  */
-import { MAX_CHANNEL_LENGTH } from "@cotal-ai/core";
+import { MAX_CHANNEL_LENGTH, resolvePeerAddress } from "@cotal-ai/core";
 import { MeshAgent, type MeshAgent as MeshAgentType } from "../src/agent.js";
 import { AgentMessaging, closeChannelNames, type AgentMessagingDeps } from "../src/agent-messaging.js";
 import { cotalToolSpecs } from "../src/tool-specs.js";
@@ -230,7 +230,12 @@ const proto = MeshAgent.prototype as unknown as {
     const a = new MeshAgent({ ...cfg1229 });
     a.on("error", () => {});
     (a as unknown as { _connected: boolean })._connected = true;
-    (a as unknown as { ep: Record<string, unknown> }).ep = ep;
+    (a as unknown as { ep: Record<string, unknown> }).ep = {
+      principal: { owner: "local", actor: "alice" },
+      resolvePeerAddress: (target: string, opts: { roster: Parameters<typeof resolvePeerAddress>[0]; selfId: string }) =>
+        resolvePeerAddress(opts.roster, target, { authority: { mode: "open" }, selfId: opts.selfId }),
+      ...ep,
+    };
     return a;
   }
 

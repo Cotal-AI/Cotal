@@ -139,7 +139,7 @@ try {
 
   // ── 1. the send result names holders and the seq ───────────────────────────────────────────
   console.log("[1] send, then the holder shows it only after its take");
-  const sent = await run({ role: "reviewer", text: "review the gate please" });
+  const sent = await sender.agent.withCorrelation({ contextId: "question-context" }, () => run({ role: "reviewer", text: "review the gate please" }));
   const seq = Number(/seq (\d+)/.exec(sent.text)?.[1]);
   check("1a the send result gives a seq", Number.isSafeInteger(seq) && !sent.isError, sent.text);
   check("1b it names the holder online at send, by name and id", sent.text.includes(`reviewer_x (${holder.id})`), sent.text);
@@ -163,6 +163,14 @@ try {
 
   const st = await run({ seq });
   check("1l status names the taker and points to cotal_run", st.text.includes(`taken by reviewer_x (${holder.id})`) && st.text.includes("cotal_run"), st.text);
+  if (shown) {
+    const answer = await holder.agent.dm(sender.id, "recorded taker answer", { replyTo: shown.id });
+    const msg = await until(() => sender.agent.peekInbox().find((item) => item.id === answer.msg.id));
+    check("the recorded taker's correlated reply is an answer", msg !== undefined && await sender.agent.answersQuestion(msg));
+    check("a matching context and claimed role do not substitute for the recorded taker", msg !== undefined &&
+      !await sender.agent.answersQuestion({ ...msg, fromId: sender.id, fromRole: "reviewer" }));
+    if (msg) sender.agent.drainInboxDeliveries([msg.recvKey]);
+  }
   const cx = await run({ seq, cancel: true });
   check("1m a cancel after the take is refused, naming the taker", cx.text.startsWith("Not cancelled") && cx.text.includes(holder.id), cx.text);
 

@@ -67,8 +67,7 @@ const ANNOTATIONS = {
     effect: "sends a private message to one peer",
     availability: "always",
     notes:
-      "A name must match a present peer's name in full (case-insensitive) or its instance id. On a miss nothing is sent, and the refusal lists present names that start with the target so you can choose one; it never picks one for you. Your own name is refused as this session, not as a missing peer. " +
-      "A DM publish timeout names its NATS subject and reports an unknown storage outcome. A timeout is not proof that the message was rejected or not delivered. Check before resending.",
+      "In a signed-in space, a bare launch name matches only an agent you own. Use `user/agent` for another owner's agent or give its exact instance ID. The username is case-insensitive and the launch name is case-sensitive. For a qualified address the result reports the stored sequence and principal, not whether an actor exists or read it. Open and no-login spaces accept bare display names and exact IDs, but not `user/agent`. On a miss nothing is sent. A DM publish timeout reports an unknown storage outcome. Check before resending.",
   },
   cotal_anycast: {
     effect: "queues a request for one holder of a role; with `seq`, reads or cancels one you sent",
@@ -280,7 +279,7 @@ for (const s of specs) {
   }
   if (s.name === "cotal_dm") {
     lines.push(
-      "On success the tool answers `Sent to <name>. Other agents can't read it. If others could use it, post it on the task's channel.`, appending ` duplicate publication.` when the publish was a duplicate. The broker stored the DM; nothing confirms the recipient read it. When the recipient was `offline`, the answer adds `<name> is offline: the DM is delivered when <name> reconnects, and a new agent spawned as <name> does not receive it.` The DM durable belongs to the recipient's lifecycle ([SPEC §8](../SPEC.md#8-nats--jetstream-binding)), so the same session receives the DM when it comes back, and a new spawn under that name starts after it. When `to` names a peer with no roster row that sent you a DM or anycast, such as a one-shot [`cotal send`](cli.md#send), the DM goes to that sender's id and the answer says it has no roster row. The space's DM history keeps the DM, so an operator's DM view shows it, but it may never reach an inbox. A name that two such senders share is refused with their ids.",
+      "On success the tool answers `Sent to <name>. Other agents can't read it. If others could use it, post it on the task's channel.`, appending ` duplicate publication.` when the publish was a duplicate. The broker stored the DM; nothing confirms the recipient read it. When the recipient was `offline`, the answer adds `<name> is offline: the DM is delivered when <name> reconnects, and a new agent spawned as <name> does not receive it.` The DM durable belongs to the recipient's lifecycle ([SPEC §8](../SPEC.md#8-nats--jetstream-binding)), so the same session receives the DM when it comes back, and a new spawn under that name starts after it. When `to` names a peer with no roster row that sent you a DM or anycast, such as a one-shot [`cotal send`](cli.md#send), the DM goes to that sender's id and the answer says it has no roster row. The space's DM history keeps the DM, so an operator's DM view shows it, but it may never reach an inbox. Use the exact sender principal to reply. Remembered display names are not addresses.",
     );
     lines.push("");
   }

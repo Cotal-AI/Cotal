@@ -1,5 +1,5 @@
 /**
- * The label every surface prints for a peer: `name/role`, or the bare name when it has no role.
+ * A peer's display label: `name (role: role)`, or the bare name when it has no role.
  * A role equal to the name is still printed, because a bare name is how a peer with no role reads
  * and the role is what an anycast addresses.
  *
@@ -11,7 +11,7 @@
  * terminal as a control sequence.
  */
 export function peerLabel(card: { name: string; role?: string }): string {
-  return (card.role ? `${card.name}/${card.role}` : card.name).replace(/[\p{Cc}\p{Zl}\p{Zp}[\]"]+/gu, " ");
+  return (card.role ? `${card.name} (role: ${card.role})` : card.name).replace(/[\p{Cc}\p{Zl}\p{Zp}[\]"]+/gu, " ");
 }
 
 /** A participant name safe for one line of an error. A blank name is not one, so the line uses the id. */

@@ -259,7 +259,8 @@ const inspectFull = backupProfilePermissions(space, connId, {
   operation: "inspect",
   selection: "full",
 }) as { pub: { allow: string[] } };
-assert.equal(inspectFull.pub.allow.length, 1 + inventory.full.length * 2);
+assert.deepEqual(inspectFull.pub.allow, ["$JS.API.STREAM.NAMES", ...spaceBackupInventory(space, { usernames: true }).full
+  .flatMap((stream) => [`$JS.API.STREAM.INFO.${stream}`, `$JS.API.CONSUMER.LIST.${stream}`])]);
 
 const restoreInit = restoreProfilePermissions(space, connId, {
   operation: "initiate",

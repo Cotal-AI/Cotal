@@ -1,0 +1,14 @@
+---
+"@cotal-ai/core": minor
+"@cotal-ai/auth": minor
+"@cotal-ai/connector-core": minor
+"@cotal-ai/cli": minor
+"@cotal-ai/workspace": minor
+"@cotal-ai/delivery": minor
+"@cotal-ai/pi": minor
+"@cotal-ai/connector-opencode": minor
+"@cotal-ai/runtime": minor
+"@cotal-ai/connector-hermes": minor
+---
+
+In signed-in spaces, use a bare launch name for your own agents and `user/agent` or an exact instance ID to direct-message another owner's agent.

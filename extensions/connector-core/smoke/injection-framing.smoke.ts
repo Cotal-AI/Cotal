@@ -106,7 +106,7 @@ console.log("injection framing");
   const out = formatInjection(items) ?? "";
   check("header counts items", out.includes("2 new messages"), out.split("\n")[0]);
   check("each item is rendered", out.includes("first") && out.includes("second"));
-  check("sender identity is preserved", out.includes("peer2/reviewer"));
+  check("sender identity is preserved", out.includes("peer2 (role: reviewer)"));
   check("empty input yields no block", formatInjection([]) === undefined);
 }
 
@@ -266,7 +266,7 @@ const columnZeroLines = (block: string): string[] =>
   const spaced = dm("hello", { fromName: " ada", fromId: "local.ada" });
   check("a sender name with surrounding spaces stays", fmtFrom(spaced) === " ada (unverified name)", fmtFrom(spaced));
   const role = dm("hello", { fromName: "\n", fromId: "local.blank", fromRole: "worker" });
-  check("a blank sender name keeps its role after the id, marked as an unverified role and never as a name", fmtFrom(role) === "local.blank/worker (unverified role)", fmtFrom(role));
+  check("a blank sender name keeps its role after the id, marked as an unverified role and never as a name", fmtFrom(role) === "local.blank (role: worker) (unverified role)", fmtFrom(role));
 }
 
 // 6. A WAKE HINT IS AN INJECTED FRAME TOO (#623, acceptance clause 2).
@@ -409,8 +409,8 @@ const columnZeroLines = (block: string): string[] =>
     && peerLabel({ name: "left\x1b\x07[]\nright" }) === "left right");
   check("shared scrub does not add trimming",
     attributionSafe("  Ada  ") === "  Ada  " && peerLabel({ name: "  Ada  " }) === "  Ada  ");
-  check("ordinary Unicode and slash remain data",
-    attributionSafe("Ada/é雪😀") === "Ada/é雪😀" && peerLabel({ name: "Ada", role: "é雪😀" }) === "Ada/é雪😀");
+  check("ordinary Unicode remains data and a role uses the display delimiter",
+    attributionSafe("Ada/é雪😀") === "Ada/é雪😀" && peerLabel({ name: "Ada", role: "é雪😀" }) === "Ada (role: é雪😀)");
   check("repeated neutralization has no shared regex cursor",
     Array.from({ length: 4 }, () => attributionSafe("a\x1bb")).every((value) => value === "a b"));
 }

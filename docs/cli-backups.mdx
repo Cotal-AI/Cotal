@@ -321,9 +321,11 @@ and do the work again. Until then, on an authenticated mesh, its sender reads it
 workflow run that waited at a checkpoint or a timer at the cut is back after a full restore, and the
 manager takes it over as after a restart. The records store also holds the endpoint authority rows,
 such as lifecycle heads, obligations and policy versions, and a full restore rolls them back to the
-cut with the runs. A user-mode full backup holds no workflow run store, because the records store's
-lifecycle heads name credential rows in the auth store, which a backup does not carry; its restore
-recreates the run stores empty and says so. An artifact in the earlier `cotal-space-backup/v1`
+cut with the runs. A user-mode full backup includes the username registry when present.
+A registry-only backup holds only the channel registry. A user-mode full backup holds no workflow
+run store, because the records store's lifecycle heads name credential rows in the auth store,
+which a backup does not carry. Its restore recreates the run stores empty and says so. An artifact
+in the earlier `cotal-space-backup/v1`
 format still restores; it holds no workflow run, so the run stores come back empty and the restore
 says so. `backup create` says so too when its artifact holds no runs, as a registry or user-mode
 artifact does. After a restore that left the runs out, the store it set aside holds their only copy:

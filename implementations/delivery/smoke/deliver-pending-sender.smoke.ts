@@ -169,17 +169,17 @@ try {
   const line = (id: string) => plain.stdout.split("\n").find((l) => l.startsWith(`  ${id}  `));
   check(
     "a healthy card prints the subject principal, then its label",
-    line(ok.id) === `  ${ok.id}  from=${healthy.principal}  ts=${ok.ts}  label=healthy-sender/writer`,
+    line(ok.id) === `  ${ok.id}  from=${healthy.principal}  ts=${ok.ts}  label=healthy-sender (role: writer)`,
     line(ok.id),
   );
   check(
     "a card naming another principal prints the subject principal, never the claimed one",
-    line(claimed.id) === `  ${claimed.id}  from=${forger.principal}  ts=${claimed.ts}  label=healthy-sender/writer`,
+    line(claimed.id) === `  ${claimed.id}  from=${forger.principal}  ts=${claimed.ts}  label=healthy-sender (role: writer)`,
     line(claimed.id),
   );
   check(
     "a card with control bytes prints a sanitized label after the subject principal",
-    line(escaped.id) === `  ${escaped.id}  from=${forger.principal}  ts=${escaped.ts}  label=ctl 31mred   fake  from=local.forged  ts=1/r x`,
+    line(escaped.id) === `  ${escaped.id}  from=${forger.principal}  ts=${escaped.ts}  label=ctl 31mred   fake  from=local.forged  ts=1 (role: r x)`,
     line(escaped.id),
   );
   check(

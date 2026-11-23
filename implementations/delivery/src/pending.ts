@@ -16,6 +16,7 @@ import {
   parsePrincipalKey,
   parseSubject,
   peerLabel,
+  parsePeerAddress,
   resolvePeer,
   standaloneConnectOpts,
   unicastSubject,
@@ -42,9 +43,12 @@ export function pendingCandidateLabel(name: unknown, role: unknown, sender: stri
 /** A short presence watch, the shape `send.ts` polls: an `offline` card still counts as a resolved
  *  peer (the recipient may be dead, that is exactly what this verb exists to inspect). */
 async function pollPresence(ep: CotalEndpoint, target: string): Promise<Presence | undefined> {
+  const address = parsePeerAddress(target);
+  if (address.kind === "qualified") throw new Error("Inspect a DM inbox by bare name, exact principal, or --durable.");
   let peer: Presence | undefined;
   for (let i = 0; i < 20 && !peer; i++) {
-    peer = resolvePeer(ep.getRoster(), target);
+    const roster = ep.getRoster();
+    peer = address.kind === "principal" ? roster.find((p) => p.card.id === address.value) : resolvePeer(roster, address.value);
     if (!peer) await new Promise((r) => setTimeout(r, 100));
   }
   return peer;

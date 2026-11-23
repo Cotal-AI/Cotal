@@ -50,8 +50,14 @@ selects an agent for you.
 
 ### Message addressing
 
+In a signed-in space, `--to reviewer` names your own agent. Use `--to user/reviewer` to name
+another owner's agent. The username is case-insensitive and the launch name is case-sensitive.
+An exact instance ID still works. A qualified send reports storage, not whether the recipient exists or read it.
+Qualified input requires an upgraded delivery responder. If its version cannot be verified, nothing is sent.
+Open and no-login spaces accept bare display names and exact IDs, but not `user/agent`.
+
 For a channel post, repeat `--mention <agent>` to add explicit wake hints without changing the
-destination. Each one resolves like a direct target and is sent as that agent's name, which is what
+destination. Each one resolves by display name or exact ID and is sent as that agent's name, which is what
 a receiving session compares. An instance id is refused when its name also resolves to another
 participant, and a shared name refuses with the full identities to send to with `--to` instead.
 Direct and role sends have no native mention field and refuse that option as `USAGE_INVALID`
@@ -290,9 +296,11 @@ sender's principal and quotes the message id, with no name lookup. A sender show
 and with its principal when another principal in the session carries the same name, ignoring case.
 A display name that is only whitespace is shown as the principal.
 `--plain` cannot relabel a line it already printed, so it prints one line naming those principals
-when a name becomes shared. A typed `@<name>` must name one principal among the present peers and
-the senders the session heard from. A name that more than one of them carries refuses and lists
-them, so type `@<owner>.<actor>` instead. A target that parses as `<owner>.<actor>` goes to that
+when a name becomes shared. In a signed-in space, `@<name>` resolves only an agent you own by exact
+launch name. Use `@user/agent` for another owner's agent. The username is case-insensitive and the
+actor in a qualified address is case-sensitive. A qualified send reports storage, not delivery or existence.
+Open and no-login spaces use bare display names and refuse `user/agent`. A remembered sender's
+display name is not an address. A target that parses as `<owner>.<actor>` goes to that
 principal whether or not it is present or was heard from, and is never matched against display
 names. A peer whose display name parses as a principal therefore cannot be reached by that name;
 `/reply` and its full principal still reach it. A roster or heard name that is missing or only whitespace is shown as the principal. Typing the session's own principal refuses with

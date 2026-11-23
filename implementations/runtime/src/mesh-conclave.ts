@@ -1,4 +1,4 @@
-/** A run's conclaves: planning the member set from presence, executing the plan against the channel,
+/** A run's conclaves: planning the member set from recorded spawn identities, executing the plan against the channel,
  *  members and ACL registries, releasing it at close or discharge, and the lazily opened registry
  *  handles those steps share. The component owns the open plans and the registry handles; the mesh
  *  handler composes it and every other input is read through the handler at its use. */
@@ -19,7 +19,6 @@ import {
   commitMemberRevision,
   tombstoneMember,
   StaleMembershipWrite,
-  type Presence,
   assertAdmittedPublish,
   assertAdmittedSubscribe,
   isStreamNotFound,
@@ -44,7 +43,7 @@ import type { MeshHandler } from "./mesh-handler.js";
  */
 interface ConclavePlanMember {
   readonly agent: string;
-  /** The member's owner+actor dot-form principal, resolved from its presence row. */
+  /** The member's owner+actor dot-form principal recorded by this run. */
   readonly principal: string;
   readonly uid: string;
   readonly generation: number;
@@ -89,16 +88,9 @@ function isConclavePlan(v: unknown): v is ConclavePlan {
       && typeof r.generation === "number" && typeof r.joined === "boolean";
   });
 }
-/** The one presence row that carries the handle's name AND incarnation, as a principal. None is
- *  the effect's own catchable failure — the agent is down or gone (L4002) — and more than one is
- *  an ambiguity no membership row may be written under. */
-function resolveMemberPrincipal(rows: readonly Presence[], agent: string, name: string, uid: string): string {
-  const matches = rows.filter((p) => p.card.name === name && p.lifecycleUid === uid);
-  if (matches.length === 1) return matches[0]!.card.id;
-  if (matches.length === 0)
-    throw new EffectError("L4002", "conclave",
-      `conclave member "${agent}" is not present on the mesh: no live presence row carries that name and incarnation, so the agent is down or gone`);
-  throw new Error(`conclave member "${agent}" is ambiguous: ${matches.length} presence rows claim that name and incarnation`);
+function resolveMemberPrincipal(record: { owner?: string; actor?: string; uid: string } | undefined, agent: string, uid: string, runId: string): string {
+  if (record?.uid === uid && record.owner && record.actor) return principalKey(record.owner, record.actor).key;
+  throw new EffectError("L4002", "conclave", `conclave member "${agent}" has no current recorded spawn identity in run "${runId}"`);
 }
 
 /** A program-named conclave channel: valid channel grammar AND concrete — membership rows and a
@@ -117,7 +109,7 @@ export interface MeshConclaveDeps {
   jsm: () => MeshHandler["jsm"];
   nc: () => MeshHandler["nc"];
   now: (...args: Parameters<MeshHandler["now"]>) => ReturnType<MeshHandler["now"]>;
-  presenceRows: (...args: Parameters<MeshHandler["presenceRows"]>) => ReturnType<MeshHandler["presenceRows"]>;
+  recordedMember: (name: string) => { owner?: string; actor?: string; uid: string } | undefined;
   services: () => MeshHandler["services"];
 }
 
@@ -132,7 +124,6 @@ export class MeshConclave {
   private get jsm() { return this.deps.jsm(); }
   private get nc() { return this.deps.nc(); }
   private now(...args: Parameters<MeshHandler["now"]>): ReturnType<MeshHandler["now"]> { return this.deps.now(...args); }
-  private presenceRows(...args: Parameters<MeshHandler["presenceRows"]>): ReturnType<MeshHandler["presenceRows"]> { return this.deps.presenceRows(...args); }
   private get services() { return this.deps.services(); }
 
   private membersKvOpen: Promise<KV> | undefined;
@@ -299,14 +290,13 @@ export class MeshConclave {
       : assertConclaveChannel(req.channel!);
     const members: ConclavePlanMember[] = [];
     if (req.members.length > 0) {
-      const presence = await this.presenceRows();
       const membersKv = await this.membersRegistry();
       const seen = new Set<string>();
       for (const m of req.members) {
         const { name, uid } = parseAgentHandle(m.agent);
         if (seen.has(`${name}#${uid}`)) continue;
         seen.add(`${name}#${uid}`);
-        const principal = resolveMemberPrincipal(presence, m.agent, name, uid);
+        const principal = resolveMemberPrincipal(this.deps.recordedMember(name), m.agent, uid, this.binding.runId);
         const existing = await readMember(membersKv, channel, principal, uid);
         const open = existing !== undefined && existing.record.state === "durable-active" && existing.record.leaveCursor === undefined;
         members.push({

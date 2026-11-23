@@ -166,8 +166,8 @@ for (const name of [" ", "", "\n", " \n\t"]) {
   check(`join shows the id for a participant named ${JSON.stringify(name)}`, label === "local.blank" && !label.includes("\n"));
 }
 check("join keeps a participant name", joinPeerLabel({ name: "ada", id: "local.ada" }) === "ada");
-check("join keeps a name and its role", joinPeerLabel({ name: "ada", id: "local.ada", role: "worker" }) === "ada/worker");
-check("join uses the id when a blank name has a role", joinPeerLabel({ name: " ", id: "local.blank", role: "worker" }) === "local.blank/worker");
+check("join keeps a name and its role", joinPeerLabel({ name: "ada", id: "local.ada", role: "worker" }) === "ada (role: worker)");
+check("join uses the id when a blank name has a role", joinPeerLabel({ name: " ", id: "local.blank", role: "worker" }) === "local.blank (role: worker)");
 const waitingReport = renderReport(watchReport(s, "waiting"), "plain", 200);
 check("the waiting view keeps the agent-only signal scope", waitingReport.includes("bob") && !waitingReport.includes("console") && !waitingReport.includes("alice"));
 {
@@ -309,12 +309,12 @@ async function streamLines(plain: boolean, locale: string): Promise<string[]> {
 for (const [what, plain, locale] of [["--plain under a UTF-8 locale", true, "C.UTF-8"], ["a pipe under LC_ALL=C", false, "C"]] as const) {
   const text = (await streamLines(plain, locale)).join("\n");
   check(`line stream on ${what} is ASCII: no status marks, -> for the arrow, x for a count`,
-    !/[^\x00-\x7F]/.test(text) && /alice\/alice working - progress unknown/.test(text) && /alice\/alice -> #general: a -> b/.test(text) && /\(3x\)/.test(text));
+    !/[^\x00-\x7F]/.test(text) && /alice \(role: alice\) working - progress unknown/.test(text) && /alice \(role: alice\) -> #general: a -> b/.test(text) && /\(3x\)/.test(text));
 }
 {
   const text = (await streamLines(false, "C.UTF-8")).join("\n");
   check("control: a pipe under a UTF-8 locale draws the status mark, the arrow and the count sign",
-    /● working · progress unknown/.test(text) && /alice\/alice → #general: a → b/.test(text) && /\(3×\)/.test(text));
+    /● working · progress unknown/.test(text) && /alice \(role: alice\) → #general: a → b/.test(text) && /\(3×\)/.test(text));
 }
 
 {
@@ -342,8 +342,8 @@ for (const name of [" ", "", "\n", " \n\t"]) {
   check(`who shows the id for a name ${JSON.stringify(name)}`, label === "local.blank" && !label.includes("\n"));
 }
 check("who keeps a participant name", whoLabel("ada", "local.ada") === "ada");
-check("who keeps a name and its role", whoLabel("ada", "local.ada", "worker") === "ada/worker");
-check("who uses the id when a blank name has a role", whoLabel(" ", "local.blank", "worker") === "local.blank/worker");
+check("who keeps a name and its role", whoLabel("ada", "local.ada", "worker") === "ada (role: worker)");
+check("who uses the id when a blank name has a role", whoLabel(" ", "local.blank", "worker") === "local.blank (role: worker)");
 
 console.log(failures ? `\n${failures} check(s) failed` : "\nall checks passed");
 process.exit(failures ? 1 : 0);

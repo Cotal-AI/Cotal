@@ -28,6 +28,7 @@ _LINE_BREAK = re.compile("\r\n?|[\n\v\f\u0085\u2028\u2029]")
 # the opening one starts a fresh frame inside it, and a reader that takes the innermost pair reads
 # the forged attribution rather than the real one. The measured forgery used both, so both go.
 _UNSAFE_IN_ATTRIBUTION = re.compile("[\r\n\v\f\u0085\u2028\u2029\\[\\]]+")
+_SENDER_LABEL_LIMIT = 160
 
 
 def attribution_safe(value: object) -> str:
@@ -40,11 +41,23 @@ def body_safe(text: object) -> str:
     return _LINE_BREAK.sub("\n  ", "" if text is None else str(text))
 
 
+def _verified_sender(msg: dict) -> str | None:
+    """Use only the bridge's locally derived label for verified attribution."""
+    label = msg.get("verifiedFromLabel")
+    if not isinstance(label, str) or not label.strip():
+        return None
+    label = attribution_safe(label)
+    return label if len(label) <= _SENDER_LABEL_LIMIT else label[:_SENDER_LABEL_LIMIT - 1] + "…"
+
+
 def shown_sender(msg: dict) -> str:
-    """The sender to render. A missing or whitespace-only name is that participant's id.
+    """The sender to render. Prefer verified attribution, then name, then principal.
 
     ``peer`` is the word left when the message carries no id either.
     """
+    verified = _verified_sender(msg)
+    if verified is not None:
+        return verified
     raw = msg.get("fromName")
     if isinstance(raw, str) and raw.strip():
         return raw
@@ -66,9 +79,11 @@ def format_injection(msg: dict) -> str:
     guarantee belongs to somebody else's code.
     """
     kind = attribution_safe(msg.get("kind"))
-    sender = attribution_safe(shown_sender(msg))
-    role = msg.get("fromRole")
-    who = f"{sender} / {attribution_safe(role)}" if role else sender
+    who = _verified_sender(msg)
+    if who is None:
+        sender = attribution_safe(shown_sender(msg))
+        role = msg.get("fromRole")
+        who = f"{sender} / {attribution_safe(role)}" if role else sender
     # A backfilled item pre-dates this session; say so the way connector-core's fmtItem does (#2205).
     history = "(history) " if msg.get("historical") is True else ""
     # A notice is the mesh's own word about something this seat sent, checked against the delivery

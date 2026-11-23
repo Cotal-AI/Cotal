@@ -392,45 +392,43 @@ const task = msg({ id: "t1", kind: "anycast", service: "reviewer", from: { id: "
 {
   const roster = [presence("u_c.alice", "alice"), presence("o.bob", "bob")];
   const engine = heard(["u_a.alice", "alice"]);
-  const both = resolveDmTarget("alice", roster, "current", engine, me);
-  check("a name a present peer and a heard sender both carry refuses and lists both principals",
-    "outcome" in both && both.code === "TARGET_AMBIGUOUS" && both.message.includes("u_c.alice") && both.message.includes("u_a.alice"), both);
-  const exact = resolveDmTarget("u_a.alice", roster, "current", engine, me);
+  const both = await resolveDmTarget("alice", roster, "current", engine, me);
+  check("a remembered sender's display name does not interfere with a present peer's address",
+    !("outcome" in both) && both.id === "u_c.alice", both);
+  const exact = await resolveDmTarget("u_a.alice", roster, "current", engine, me);
   check("a heard sender's principal resolves to that sender", !("outcome" in exact) && exact.id === "u_a.alice" && exact.name === "alice", exact);
-  const named = resolveDmTarget("u_a.alice", [...roster, presence("u_d.mallory", "u_a.alice")], "current", engine, me);
+  const named = await resolveDmTarget("u_a.alice", [...roster, presence("u_d.mallory", "u_a.alice")], "current", engine, me);
   check("a present peer whose display name is a heard principal does not capture that principal", !("outcome" in named) && named.id === "u_a.alice", named);
-  const unheard = resolveDmTarget("u_z.alice", [...roster, presence("u_d.mallory", "u_z.alice")], "current", heard(), me);
+  const unheard = await resolveDmTarget("u_z.alice", [...roster, presence("u_d.mallory", "u_z.alice")], "current", heard(), me);
   check("a typed principal absent from the roster and never heard goes to that principal, not to a peer whose display name spells it",
     !("outcome" in unheard) && unheard.id === "u_z.alice" && unheard.name === "u_z.alice", unheard);
-  const typedSelf = resolveDmTarget(identity.principal, roster, "current", engine, me);
+  const typedSelf = await resolveDmTarget(identity.principal, roster, "current", engine, me);
   check("a typed target that is this session's principal refuses as usage, as the exact target does", "outcome" in typedSelf && typedSelf.code === "USAGE_INVALID", typedSelf);
-  const bob = resolveDmTarget("bob", roster, "current", engine, me);
+  const bob = await resolveDmTarget("bob", roster, "current", engine, me);
   check("a name one principal carries still resolves", !("outcome" in bob) && bob.id === "o.bob", bob);
-  const went = resolveDmTarget("alice", [presence("u_c.alice", "alice"), presence("u_a.alice", "alice", "offline")], "current", engine, me);
-  check("a heard sender now offline still makes its name ambiguous beside a live peer", "outcome" in went && went.code === "TARGET_AMBIGUOUS", went);
-  const reply = resolveDmTarget({ principal: "u_a.alice" }, roster, "current", engine, me);
+  const went = await resolveDmTarget("alice", [presence("u_c.alice", "alice"), presence("u_a.alice", "alice", "offline")], "current", engine, me);
+  check("the legacy roster prefers the live peer over an offline row", !("outcome" in went) && went.id === "u_c.alice", went);
+  const reply = await resolveDmTarget({ principal: "u_a.alice" }, roster, "current", engine, me);
   check("an exact principal is sent as is and keeps the name this session heard", !("outcome" in reply) && reply.id === "u_a.alice" && reply.name === "alice", reply);
-  const absent = resolveDmTarget({ principal: "u_z.zed" }, [], "stale", heard(), me);
+  const absent = await resolveDmTarget({ principal: "u_z.zed" }, [], "stale", heard(), me);
   check("an exact principal needs neither the roster nor a current view", !("outcome" in absent) && absent.id === "u_z.zed", absent);
-  const bad = resolveDmTarget({ principal: "not a principal" }, roster, "current", engine, me);
+  const bad = await resolveDmTarget({ principal: "not a principal" }, roster, "current", engine, me);
   check("an exact target that is not <owner>.<actor> refuses as usage", "outcome" in bad && bad.code === "USAGE_INVALID", bad);
-  const self = resolveDmTarget({ principal: identity.principal }, roster, "current", engine, me);
+  const self = await resolveDmTarget({ principal: identity.principal }, roster, "current", engine, me);
   check("an exact target that is this session refuses as usage", "outcome" in self && self.code === "USAGE_INVALID", self);
-  const unknown = resolveDmTarget("zed", roster, "stale", engine, me);
+  const unknown = await resolveDmTarget("zed", roster, "stale", engine, me);
   check("an unknown name on a stale roster is unavailable, never absent", "outcome" in unknown && unknown.code === "TARGET_UNAVAILABLE", unknown);
-  // Two one-shot sends under one name used to be told to use the full principal, which no one reads.
   const gone = heard(["o.send1", "dev@host"], ["o.send2", "dev@host"]);
-  const exited = resolveDmTarget("dev@host", roster, "current", gone, me);
-  check("a name only absent senders carry refuses, saying they are no longer present and how to answer one message",
-    "outcome" in exited && exited.code === "TARGET_AMBIGUOUS" && exited.message.includes("names 2 senders that are no longer present (o.send1, o.send2)")
-      && exited.message.includes("answer one message with /reply, or over --stdio with to set to its from.id and replyTo to its id"), exited);
-  const unsure = resolveDmTarget("dev@host", roster, "stale", gone, me);
-  check("on a roster that is not current, absent senders are not called gone", "outcome" in unsure && unsure.code === "TARGET_AMBIGUOUS" && !unsure.message.includes("no longer present"), unsure);
+  const exited = await resolveDmTarget("dev@host", roster, "current", gone, me);
+  check("a name only absent senders carry is not a typed address",
+    "outcome" in exited && exited.code === "TARGET_NOT_FOUND", exited);
+  const unsure = await resolveDmTarget("dev@host", roster, "stale", gone, me);
+  check("a stale roster cannot verify a typed name", "outcome" in unsure && unsure.code === "TARGET_UNAVAILABLE", unsure);
   // A DM to the session's own name used to say no peer has it.
-  const ownName = resolveDmTarget("Dana", roster, "current", engine, { ...me, name: "dana" });
+  const ownName = await resolveDmTarget("Dana", roster, "current", engine, { ...me, name: "dana" });
   check("a name only this session carries refuses as usage, saying it is the session's own name",
     "outcome" in ownName && ownName.code === "USAGE_INVALID" && ownName.message === `"Dana" is this session's own name; a direct message needs another participant`, ownName);
-  const sharedOwn = resolveDmTarget("bob", roster, "current", engine, { ...me, name: "bob" });
+  const sharedOwn = await resolveDmTarget("bob", roster, "current", engine, { ...me, name: "bob" });
   check("a name this session shares with a present peer still resolves to that peer", !("outcome" in sharedOwn) && sharedOwn.id === "o.bob", sharedOwn);
 }
 /** An engine that received one message on #review from each sender. A channel's subject names its
@@ -444,13 +442,14 @@ const heardOnChannel = (...senders: readonly (readonly [string, string])[]): Par
 };
 {
   const engine = heardOnChannel(["u_a.alice", "alice"]);
-  const only = resolveDmTarget("alice", [presence("o.bob", "bob")], "current", engine, me);
-  check("a name only a channel sender carries resolves to that sender's principal", !("outcome" in only) && only.id === "u_a.alice" && only.name === "alice", only);
-  const offline = resolveDmTarget("alice", [presence("u_c.alice", "alice")], "current", engine, me);
-  check("a channel sender no longer present still makes its name ambiguous beside a live peer",
-    "outcome" in offline && offline.code === "TARGET_AMBIGUOUS", offline);
-  check("...and the refusal lists both principals", "outcome" in offline && offline.message.includes("u_c.alice") && offline.message.includes("u_a.alice"), offline);
-  const live = resolveDmTarget("alice", [presence("u_c.alice", "alice"), presence("u_a.alice", "alice")], "current", engine, me);
+  const only = await resolveDmTarget("alice", [presence("o.bob", "bob")], "current", engine, me);
+  check("a name only a remembered channel sender carries is not an address", "outcome" in only && only.code === "TARGET_NOT_FOUND", only);
+  const offline = await resolveDmTarget("alice", [presence("u_c.alice", "alice")], "current", engine, me);
+  check("the rostered peer is selected without searching remembered channel senders",
+    !("outcome" in offline) && offline.id === "u_c.alice", offline);
+  const original = await resolveDmTarget("u_a.alice", [], "current", engine, me);
+  check("a remembered channel sender's exact principal retains its label", !("outcome" in original) && original.name === "alice", original);
+  const live = await resolveDmTarget("alice", [presence("u_c.alice", "alice"), presence("u_a.alice", "alice")], "current", engine, me);
   check("a name a live peer and a live channel sender both carry refuses", "outcome" in live && live.code === "TARGET_AMBIGUOUS", live);
   const blind = new ParticipantEngine(identity.principal);
   blind.accept({ id: "n1", ts: 0, space: "selected-space", from: { id: "u_a.alice", name: "alice" }, channel: "review", parts: [{ kind: "text", text: "hi" }] },
