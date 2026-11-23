@@ -36,12 +36,18 @@ export function normalizeMentions(mentions?: readonly string[], legacyBare = fal
  *  Any other character may precede one, so `你好@rover` mentions `rover` in a script written
  *  without spaces. */
 export function mentionsIn(text: string): string[] {
+  if (!text.includes("@")) return [];
   const out: string[] = [];
   for (const [word] of text.matchAll(/[^\s,;:!?()[\]{}<>"'`\p{Ps}\p{Pe}\p{Pi}\p{Pf}]+/gu)) {
     const at = word.search(/(?<![A-Za-z0-9_.\/-])@/);
     if (at < 0) continue;
-    if (word.lastIndexOf("/") > at) out.push(word.slice(at + 1).replace(/\.+$/, ""));
-    else for (const match of word.matchAll(/(?<![A-Za-z0-9_.\/-])@([A-Za-z0-9_.-]*[A-Za-z0-9_])/g)) out.push(match[1]!);
+    if (word.lastIndexOf("/") > at) {
+      let end = word.length;
+      while (word[end - 1] === ".") end--;
+      out.push(word.slice(at + 1, end));
+    } else {
+      for (const match of word.matchAll(/(?<![A-Za-z0-9_.\/-])@([A-Za-z0-9_.-]*[A-Za-z0-9_])/g)) out.push(match[1]!);
+    }
   }
   return out;
 }
