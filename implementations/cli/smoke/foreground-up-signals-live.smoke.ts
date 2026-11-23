@@ -1030,7 +1030,7 @@ async function managerNameCell(): Promise<void> {
   await refuseWhileBusy("KeptManager", "RefusedOverride");
   await bootAndStop();
   passed++;
-  console.log("PASS foreground-up-signals manager name is saved only after the manager starts");
+  console.log("PASS foreground-up-signals refused starts leave the manager name unchanged");
 }
 
 async function userAuthRestartCell(): Promise<void> {
