@@ -81,8 +81,9 @@ export interface OpenCodeMapper {
  *
  * - `text`      -> `TEXT_MESSAGE_*`, assistant only, `synthetic` and `ignored` skipped
  * - `reasoning` -> `REASONING_*`, off by default
- * - `tool`      -> `TOOL_CALL_START` / `ARGS` / `END` / `RESULT`, `toolCallId` is the native `callID`,
- *   then the `cotal.toolResult` marker with the part's own error status. The egress fence drops the
+ * - `tool`      -> `TOOL_CALL_START` / `ARGS` / `END` at its call record, which the source hands over
+ *   once the tool runs, and `TOOL_CALL_RESULT` then the `cotal.toolResult` marker with the part's own
+ *   error status at its result record. `toolCallId` is the native `callID`. The egress fence drops the
  *   result, so the marker is what tells a public reader that the call finished and whether it failed.
  * - `step-start` and `step-finish` -> NOTHING IN v1. There is no step name and no shared key between
  *   them, so AG-UI's `STEP_STARTED` / `STEP_FINISHED`, which require a `stepName`, could only be
@@ -114,6 +115,33 @@ function stampOf(record: OpenCodeRecord, now: () => number): { ts: number; arriv
     record.part.time?.end ??
     record.message.time?.created;
   return typeof t === "number" && Number.isFinite(t) ? { ts: t, arrival: false } : { ts: now(), arrival: true };
+}
+
+/** A tool part's call: its start, its whole input and its end. The part id IS the per-observation
+ *  identity, so nothing has to be synthesized. */
+function toolCall(part: OpenCodeRecord["part"], toolCallId: string, ts: number, cotal: CotalMeta): AguiEvent[] {
+  return [
+    toolCallStart({ toolCallId, toolCallName: part.tool ?? "", timestamp: ts, parentMessageId: part.id, cotal }),
+    toolCallArgs({ toolCallId, delta: JSON.stringify(part.state?.input ?? null), timestamp: ts }),
+    toolCallEnd({ toolCallId, timestamp: ts }),
+  ];
+}
+
+/** A settled tool part's result, then the result marker with the part's own error status. */
+function toolResult(part: OpenCodeRecord["part"], toolCallId: string, ts: number, arrivalMeta: CotalMeta | undefined): AguiEvent[] {
+  const isError = part.state?.status === "error";
+  return [
+    toolCallResult({
+      // `messageId` is REQUIRED by the schema and must not collide with the call's own observation
+      // id, which the call spends as `parentMessageId`.
+      messageId: `${part.id}#result`,
+      toolCallId,
+      content: toolResultContent(part.state),
+      timestamp: ts,
+      ...(isError || arrivalMeta ? { cotal: { ...(isError ? { isError: true } : {}), ...arrivalMeta } } : {}),
+    }),
+    toolResultMarker({ toolCallId, isError, timestamp: ts, ...(arrivalMeta ? { cotal: arrivalMeta } : {}) }),
+  ];
 }
 
 /**
@@ -214,9 +242,7 @@ export function createOpenCodeMapper(opts: OpenCodeMapperOptions): OpenCodeMappe
     const runId = open;
 
     if (HANDLED.has(part.type)) {
-      // The part id IS the per-observation identity, so nothing has to be synthesized. The message
-      // id is preserved for correlation and is never spent as `messageId`.
-      const messageId = part.id;
+      // The message id is preserved for correlation and is never spent as `messageId`.
       const cotal = { providerMessageId: part.messageID, ...arrivalMeta };
 
       if (part.type === "text" && !part.synthetic && !part.ignored) {
@@ -224,28 +250,7 @@ export function createOpenCodeMapper(opts: OpenCodeMapperOptions): OpenCodeMappe
       } else if (part.type === "reasoning" && opts.reasoning) {
         events.push(...savedPart("reasoning", part, ts, cotal));
       } else if (part.type === "tool" && part.callID) {
-        const isError = part.state?.status === "error";
-        events.push(
-          toolCallStart({
-            toolCallId: part.callID,
-            toolCallName: part.tool ?? "",
-            timestamp: ts,
-            parentMessageId: messageId,
-            cotal,
-          }),
-          toolCallArgs({ toolCallId: part.callID, delta: JSON.stringify(part.state?.input ?? null), timestamp: ts }),
-          toolCallEnd({ toolCallId: part.callID, timestamp: ts }),
-          toolCallResult({
-            // `messageId` is REQUIRED by the schema and must not collide with the call's own
-            // observation id, which is already spent as `parentMessageId` above.
-            messageId: `${part.id}#result`,
-            toolCallId: part.callID,
-            content: toolResultContent(part.state),
-            timestamp: ts,
-            ...(isError || arrivalMeta ? { cotal: { ...(isError ? { isError: true } : {}), ...arrivalMeta } } : {}),
-          }),
-          toolResultMarker({ toolCallId: part.callID, isError, timestamp: ts, ...(arrivalMeta ? { cotal: arrivalMeta } : {}) }),
-        );
+        events.push(...(record.call ? toolCall(part, part.callID, ts, cotal) : toolResult(part, part.callID, ts, arrivalMeta)));
       }
     }
 
