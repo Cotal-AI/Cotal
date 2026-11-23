@@ -277,7 +277,7 @@ Without a dispatcher, `commands` answers `{ supported: false }` and `command` is
 In this release OpenCode 2.x, [pi](pi-connector-reference.mdx#agent-commands) 0.84.2 or later and [Claude Code](claude-connector-reference.mdx#agent-commands) 2.1.330 or later with mods on have one, [Codex](codex-connector-reference.mdx#agent-commands) has one that runs skills, and [Jcode](jcode-connector-reference.mdx#agent-commands) has one that runs its native session operations.
 Pi's also takes `turn` with images and answers `usage`, on every Pi version, and so does Claude Code's while its mod runs, with images only in a session Cotal launched.
 [Hermes](hermes-connector-reference.mdx#agent-commands) has one that runs the gateway's slash commands and skill commands, and takes `turn` with images, `interrupt` and `usage`.
-Jcode's also takes `turn` with images and answers `usage`.
+Jcode's and Codex's also take `turn` with images and answer `usage`.
 
 The agent's presence carries `agentEndpoint: { interrupt, turn, images, usage }` while it serves the endpoint, so a caller can pick its path before it sends anything.
 `MeshAgent` derives it from the dispatcher, and a connector declares nothing:
