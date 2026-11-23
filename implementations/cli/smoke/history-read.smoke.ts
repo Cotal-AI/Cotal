@@ -1088,6 +1088,11 @@ try {
       listed.status === 0 && row(listed.stdout, "policy") === "#policy  Operations  off - inherited  live - inherited", shown(listed));
     const defaultsCard = await channel("defaults");
     check("saved channel defaults are explicit and carry no inheritance marks", policyIs(defaultsCard, "off", "1h", "live"), shown(defaultsCard));
+    // The defaults report's Next command acts on the space it just inspected, keeping the broker
+    // it was read from, so running it as printed cannot edit another space.
+    const defaultsNext = await run(["channel", "defaults", "--space", space, "--server", servers, "--plain"]);
+    check("the channel defaults report names a Next command that keeps the inspected space and broker",
+      defaultsNext.status === 0 && defaultsNext.stdout.includes(`cotal ch defaults --replay --window 24h --space ${space} --server ${servers}`), shown(defaultsNext));
     const observerDefaults = await run(["channel", "defaults", "--creds", observer, "--server", servers, "--space", space, "--json"]);
     const observerRegistry = (observerDefaults.envelope?.result as { registry?: ChannelRegistryRead })?.registry;
     check("channel defaults JSON scopes the registry read with an observer credential",
