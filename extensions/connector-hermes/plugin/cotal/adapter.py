@@ -44,13 +44,16 @@ class InjectionRefused(Exception):
 # turn's reply to a notice is not sent: a notice wants no answer, and its sender is the daemon, not a
 # peer.
 NOTICE_KINDS = ("anycast", "mention")
+# The chat a turn in the user's own words runs in. It has no mesh target either, so its reply shows on
+# the event plane and is not sent.
+OPERATOR_CHAT = "operator"
 
 
 def chat_type_for(chat_id: str) -> Optional[str]:
     """The chat type of a chat_id minted on inbound, or None for an id this adapter did not mint."""
     if chat_id.startswith("channel:"):
         return "group"
-    if chat_id.startswith("dm:") or chat_id in tuple(f"notice:{k}" for k in NOTICE_KINDS):
+    if chat_id.startswith("dm:") or chat_id == OPERATOR_CHAT or chat_id in tuple(f"notice:{k}" for k in NOTICE_KINDS):
         return "dm"
     return None
 
@@ -119,7 +122,7 @@ class CotalAdapter(BasePlatformAdapter):
             # reader, which is exactly the kind of pause an operator would report as the gateway
             # hanging on reconnect. `to_thread` keeps the loop free while the join runs.
             await asyncio.to_thread(self._client.reopen)
-        self._client.start(self._on_incoming, self._on_bridge_refused)  # reader thread → _on_incoming
+        self._client.start(self._on_incoming, self._on_bridge_refused, self._on_turn)  # reader thread → _on_incoming
 
         # THE BRIDGE MUST BE PROVED LIVE BEFORE THE PLATFORM IS CALLED CONNECTED.
         #
@@ -210,6 +213,30 @@ class CotalAdapter(BasePlatformAdapter):
             return
         fut = asyncio.run_coroutine_threadsafe(self._inject(msg), loop)
         fut.add_done_callback(lambda f: self._maybe_ack(msg, f))
+
+    def _on_turn(self, frame: dict) -> None:
+        """A turn in the user's own words (the launch's initial prompt), off-loop like _on_incoming.
+        It runs in the operator chat, whose reply has no mesh target and is not sent."""
+        loop = self._loop
+        turn_id = str(frame.get("id") or "")
+        if loop is None:
+            self._client.turn_taken(turn_id, "the gateway is not running")
+            return
+        fut = asyncio.run_coroutine_threadsafe(self._inject_turn(str(frame.get("text") or "")), loop)
+        fut.add_done_callback(lambda f: self._turn_done(turn_id, f))
+
+    def _turn_done(self, turn_id: str, fut: Any) -> None:
+        error = "cancelled" if fut.cancelled() else fut.exception()
+        self._client.turn_taken(turn_id, None if error is None else str(error))
+
+    async def _inject_turn(self, text: str) -> None:
+        source = self.build_source(
+            chat_id=OPERATOR_CHAT, chat_name=OPERATOR_CHAT, chat_type="dm", user_id=OPERATOR_CHAT, user_name=OPERATOR_CHAT
+        )
+        fork = os.environ.get("COTAL_HERMES_FORK_SESSION")
+        if fork:
+            seed_chat(getattr(self, "_session_store", None), source, fork)
+        await self.handle_message(MessageEvent(text=text, message_type=MessageType.TEXT, source=source))
 
     def _maybe_ack(self, msg: dict, fut: Any) -> None:
         """Ack a message on the mesh stream once it has been surfaced into a turn.

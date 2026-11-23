@@ -51,7 +51,7 @@ const assert: typeof nodeAssert = new Proxy(nodeAssert, {
  * guarantee is the false-green shape this package keeps being bitten by. Pinning the floor turns a
  * smaller green into a red. Raise it deliberately when you add a cell; a drop means one vanished.
  */
-const EXPECTED_CELLS = 183;
+const EXPECTED_CELLS = 185;
 
 if (process.platform === "win32") skipSuite("the Hermes connector is Unix-only; buildLaunch throws");
 
@@ -170,10 +170,12 @@ assert.equal(bare.NOUS_API_KEY, "smoke-NOUS_API_KEY", "empty spawn.env does not 
 assert.ok(!("GH_TOKEN" in bare), "empty spawn.env still withholds undeclared names");
 assert.ok(bare.PATH !== undefined, "an empty spawn.env still carries the OS allow-list");
 
+assert.equal(buildLaunch({ space: "smoke", name: "hermes-1", prompt: "  greet the operator\n" }).env?.COTAL_HERMES_PROMPT, "greet the operator", "an initial prompt reaches the launcher, which submits it as the first turn");
+assert.equal(env.COTAL_HERMES_PROMPT, undefined, "a launch without a prompt carries none");
 assert.throws(
-  () => hermesConnector.buildLaunch({ space: "smoke", name: "hermes-1", prompt: "greet the operator" }),
-  /initial prompt/,
-  "a prompt the connector cannot submit must refuse the launch",
+  () => buildLaunch({ space: "smoke", name: "hermes-1", prompt: "   " }),
+  /empty initial prompt/,
+  "an empty prompt would start no turn, so it refuses the launch",
 );
 
 const bootResolved = buildLaunch({

@@ -213,8 +213,10 @@ Hermes' own `/resume`.
 - **Not containerized**: the [deploy](deploy.mdx) image bundles only Claude Code and OpenCode (no
   `uv`/`hermes-agent`), so there is no containerized Hermes today.
 - **Brings its own toolchain**: you supply `uv` and a `hermes-agent` inside the supported range.
-- **No initial prompt**: `cotal spawn --prompt` throws, because the gateway has no first-turn
-  carrier wired, so a seat cannot be given its opening instruction at spawn.
+- **Initial prompt in its own chat**: `cotal spawn --prompt` hands the text to the gateway once,
+  as the first turn, in the user's own words. It runs in the adapter's `operator` chat, which has
+  no mesh target, so its reply shows on the [event plane](#event-plane) and is not posted. A
+  prompt the gateway did not confirm, because the adapter disconnected first, is not sent again.
 - **Answers to other platforms need Hermes 0.20.1 or later**: on an older gateway a question from a
   session on another platform carries no `contextId`, so its answer runs in the session keyed by
   the peer that sent it.

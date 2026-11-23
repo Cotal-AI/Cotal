@@ -46,6 +46,7 @@ class BridgeClient:
         self._lock = threading.Lock()
         self._pending: dict[str, tuple[threading.Event, dict]] = {}
         self._on_incoming: Optional[Callable[[dict], None]] = None
+        self._on_turn: Optional[Callable[[dict], None]] = None
         self._on_refused: Optional[Callable[[str], None]] = None
         # Why this bridge refuses to dial, once its socket's directory has been found present and not
         # private to this user. That is a configuration fault no retry repairs, so it is permanent.
@@ -57,8 +58,14 @@ class BridgeClient:
         # correctness never depends on guessing whether a dying thread has finished dying.
         self._gen = 0
 
-    def start(self, on_incoming: Callable[[dict], None], on_refused: Optional[Callable[[str], None]] = None) -> None:
-        """Begin the reader thread. ``on_incoming`` is called (off-loop) for each mesh message, and
+    def start(
+        self,
+        on_incoming: Callable[[dict], None],
+        on_refused: Optional[Callable[[str], None]] = None,
+        on_turn: Optional[Callable[[dict], None]] = None,
+    ) -> None:
+        """Begin the reader thread. ``on_incoming`` is called (off-loop) for each mesh message,
+        ``on_turn`` for each turn in the user's own words (``{t:"turn", id, text}``), and
         ``on_refused`` (off-loop, once) if the reader stops because the socket's directory is not
         private to this user.
 
@@ -67,6 +74,7 @@ class BridgeClient:
         each see None and put two readers on one socket.
         """
         self._on_incoming = on_incoming
+        self._on_turn = on_turn
         self._on_refused = on_refused
         with self._lock:
             if self._reader is not None:
@@ -203,6 +211,10 @@ class BridgeClient:
             cb = self._on_incoming
             if cb:
                 cb(frame.get("msg") or {})
+        elif t == "turn":
+            cb = self._on_turn
+            if cb:
+                cb(frame)
         elif t == "tool_result":
             entry = self._pending.get(frame.get("id"))
             if entry:
@@ -234,6 +246,10 @@ class BridgeClient:
         """Tell the sidecar delivery ``recv_key`` was not taken into a turn: it stays unacked, and
         the sidecar offers it again later while the messages behind it keep flowing."""
         self._send({"t": "deferred", "recvKey": recv_key})
+
+    def turn_taken(self, turn_id: str, error: Optional[str] = None) -> None:
+        """Tell the sidecar whether the gateway took turn ``turn_id``."""
+        self._send({"t": "turn_taken", "id": turn_id} if error is None else {"t": "turn_refused", "id": turn_id, "error": error})
 
     def reply(
         self, target: dict, text: str, reply_to: Optional[str] = None, context_id: Optional[str] = None
