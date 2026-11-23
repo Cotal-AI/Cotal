@@ -8,9 +8,9 @@ import { displayCmd } from "./self-exec.js";
 export function spaceChoiceRemedy(error: unknown, command: string, args: ParsedArgs, rest: readonly string[]): string | undefined {
   if (!isWorkspaceTargetError(error) || error.code !== "ambiguous-target" || !error.details.spaces?.length) return undefined;
   const show = command === "space" && args.positionals[0] === "show";
-  const inventory = command === "endpoint" && (args.positionals[0] ?? "list") === "list";
-  if (args.values.creds !== undefined && !inventory) return undefined;
-  if (!show && !inventory && command !== "who") return undefined;
+  const endpointRead = command === "endpoint" && ["list", "show"].includes(args.positionals[0] ?? "list");
+  if (args.values.creds !== undefined && !endpointRead) return undefined;
+  if (!show && !endpointRead && command !== "who") return undefined;
   const server = args.values.server;
   if (server !== undefined && (show || typeof server !== "string" || brokerAddressForDisplay(server) !== server)) return undefined;
   const cli = displayCmd({ fromAnyFolder: true });
