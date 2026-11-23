@@ -21,7 +21,7 @@ import { PiDriver, type CotalBatchDetails, type PiContextLike } from "./driver.j
 import { registerCotalTools } from "./tools.js";
 import { wrapped } from "./wrap.js";
 import { PiEvents } from "./events.js";
-import { piCommandDispatcher, piRunsCommands, type PiCommandHost } from "./commands.js";
+import { piCommandDispatcher, piRunsCommands, type PiCommandHost, type PiSessionView } from "./commands.js";
 
 const CUSTOM_TYPE = "cotal-inbox";
 const RUNTIMES = Symbol.for("cotal.pi.runtimes");
@@ -37,6 +37,8 @@ interface PiRuntime {
   events?: PiEvents;
   /** The API of the latest load, which a reload replaces. */
   commandHost?: PiCommandHost;
+  /** The context of the open session's start. It reads the live session until pi replaces it. */
+  session?: PiSessionView;
 }
 
 type GlobalWithPi = typeof globalThis & { [RUNTIMES]?: Map<string, PiRuntime> };
@@ -139,7 +141,12 @@ function cleanPersonaFile(runtime: PiRuntime): void {
 
 function createRuntime(config: AgentConfig, control: ReturnType<typeof controlFromEnv>, runsCommands: boolean): PiRuntime {
   let runtime: PiRuntime | undefined;
-  const commands = runsCommands ? piCommandDispatcher(() => runtime?.commandHost, (): PiDriver => driver) : undefined;
+  const commands = piCommandDispatcher({
+    host: () => runtime?.commandHost,
+    turns: (): PiDriver => driver,
+    session: () => runtime?.session,
+    commands: runsCommands,
+  });
   const mesh = new MeshAgent(config, undefined, { commands });
   const driver = new PiDriver(mesh);
   runtime = {
@@ -239,6 +246,7 @@ export default async function cotalMesh(pi: ExtensionAPI): Promise<void> {
   }
 
   pi.on("session_start", async (_event, context) => {
+    runtime.session = context;
     cleanPersonaFile(runtime);
     runtime.sessionId = context.sessionManager.getSessionId();
     if (runtime.expectedSessionId && runtime.sessionId !== runtime.expectedSessionId)
@@ -280,6 +288,7 @@ export default async function cotalMesh(pi: ExtensionAPI): Promise<void> {
     runtime.events?.flush(context.sessionManager.getSessionId(), context.sessionManager.getSessionFile());
   });
   pi.on("session_shutdown", async (event, context) => {
+    runtime.session = undefined;
     runtime.driver.onSessionShutdown();
     runtime.events?.flush(context.sessionManager.getSessionId(), context.sessionManager.getSessionFile());
     await runtime.events?.shutdown();
