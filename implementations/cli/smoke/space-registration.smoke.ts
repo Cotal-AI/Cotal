@@ -482,6 +482,25 @@ setCurrent("keep");
       { detail: shown(detail), shell: verified && shown(verified), checked: shown(checked) });
     setCurrent("keep");
   }
+
+  // Withdraw the checked space from the smoke broker while keeping the other spaces available.
+  const { chatStream, dialerFor, presenceBucket, setupSpaceStreams } = await import("@cotal-ai/core");
+  const { jetstreamManager } = await import("@nats-io/jetstream");
+  const nc = await dialerFor(LIVE)({ servers: LIVE });
+  try {
+    const { streams } = await jetstreamManager(nc);
+    await streams.delete(chatStream("open4"));
+    await streams.delete(`KV_${presenceBucket("open4")}`);
+    const beforeMissing = registryFiles();
+    const missing = await json(realRegistration);
+    check("a checked recheck on a broker that no longer serves the space keeps the record and gives a safe remedy",
+      refused(missing, 2, "TARGET_NOT_FOUND") && missing.env?.error?.message.includes('it serves "open1", "open3", "open5"') &&
+      missing.env?.error?.remedy === 'start or restore "open4" on that broker, then retry' &&
+      JSON.stringify(registryFiles()) === JSON.stringify(beforeMissing) && getCurrent() === "keep", shown(missing));
+  } finally {
+    await nc.close();
+    await setupSpaceStreams({ servers: LIVE, space: "open4" });
+  }
 }
 
 // ── Adding a user-auth space from a bundle ─────────────────────────────────────────────────────────────

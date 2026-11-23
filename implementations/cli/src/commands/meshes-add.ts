@@ -389,15 +389,21 @@ export async function verifyTarget(target: MeshTarget): Promise<Check<void>> {
 export { openSpaceNames };
 
 /** A bare connection alone cannot establish that an open broker serves this space. */
-export async function checkOpenSpace(server: string, name: string, tlsRequired: boolean): Promise<Check<void>> {
+export async function checkOpenSpace(server: string, name: string, tlsRequired: boolean, options?: { recheck: boolean }): Promise<Check<void>> {
   let served: string[];
   try { served = await openSpaceNames(server, tlsRequired); }
-  catch { return { ok: false, code: "TARGET_UNAVAILABLE", message: `the broker at ${server} answered, but the spaces it serves could not be read`, remedy: `retry, or pass --force to add "${name}" unchecked` }; }
+  catch {
+    return {
+      ok: false, code: "TARGET_UNAVAILABLE", message: `the broker at ${server} answered, but the spaces it serves could not be read`,
+      remedy: options?.recheck ? "check that JetStream is available on that broker, then retry" : `retry, or pass --force to add "${name}" unchecked`,
+    };
+  }
   if (served.includes(token(name))) return good(undefined);
   return {
     ok: false, code: "TARGET_NOT_FOUND",
     message: served.length ? `the broker at ${server} serves no space named "${name}"; it serves ${served.map((space) => `"${space}"`).join(", ")}` : `the broker at ${server} serves no space yet, so "${name}" is not running there`,
-    remedy: served.length ? `add one of those names, or pass --force to add "${name}" before it starts there` : `pass --force to add "${name}" unchecked, or start the space on that broker first`,
+    remedy: options?.recheck ? `start or restore "${name}" on that broker, then retry`
+      : served.length ? `add one of those names, or pass --force to add "${name}" before it starts there` : `pass --force to add "${name}" unchecked, or start the space on that broker first`,
   };
 }
 

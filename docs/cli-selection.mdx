@@ -122,7 +122,7 @@ When no broker answers at `--server`, or at a bundle's server, the `TARGET_UNAVA
 whether its host name resolves and whether anything took a connection at its port. When a broker
 answers there under another scheme, such as `nats://` for a `tls://` address, the remedy names that
 address, and says when it has no TLS. A port that takes no connection gets the port check as its
-remedy. For `--server`, the `--force` route follows either one.
+remedy. For a new `--server` registration, the `--force` route follows either one.
 `--force` replaces a registration added by hand, never one this machine started or a catalog lists,
 and adds a `--server` space without checking its broker, which suits a
 space that is down right now; a user-auth space is always checked. Such a registration records that
@@ -135,7 +135,8 @@ same root directory does not prevent this check. The command quotes the root whe
 or expand it. With the same broker, root, mode and transport policy, repeating `space add --server`
 without `--force` checks the broker again. If the record was already checked and the check passes,
 the command reports that the space is already registered and exits 0 without rewriting it. A failed
-check keeps the record and the selection.
+check keeps the record and the selection. If the broker no longer serves the space, start or restore
+the space on that broker, then retry the check without `--force`.
 Declining the question is a `no-op` with a `USER_CANCELLED` warning. `--json` gives the registration
 under `space`, in the shape `space show` gives, with `verified` and `replaced`. A successful recheck
 of an already checked registration reports `outcome: "no-op"`, `verified: true` and `replaced: false`.
