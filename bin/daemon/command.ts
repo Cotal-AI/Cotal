@@ -43,6 +43,7 @@ import { watchDaemonGeneration } from "./generation.js";
 import { isDaemonSpaceName, SPACE_PATTERN } from "./protocol.js";
 import { nativeDaemonLog } from "./native-log.js";
 import { readReceipt } from "./install-receipt.js";
+import { processBirth, readLifetimeRecord } from "./lifetime.js";
 import { liveUpdateClosureOwner, readUpdateRecovery } from "@cotal-ai/workspace";
 import type { ConnectCheckResult, DaemonStatus, RegisterResult, ServiceConnectionResult } from "./protocol.js";
 
@@ -140,6 +141,14 @@ function asFailure(e: unknown, home?: string): unknown {
   return new CommandFailure("refused", r.code, e.message, { ...(remedy ? { remedy } : {}), native: { code: e.code } });
 }
 
+function otherRuntimeRefusal(error: unknown, paths: DaemonPaths, home?: string): unknown {
+  if (process.platform !== "linux" || !(error instanceof EndpointRefusal) || (error.code !== "NOT_RUNNING" && error.code !== "LOCK_HELD")) return error;
+  const holder = readLifetimeRecord(paths.lock);
+  if (!holder?.socket || holder.socket.path === paths.socket || !holder.start || processBirth(holder.pid) !== holder.start) return error;
+  return new EndpointRefusal(error.code, `${error.message}. The live daemon recorded a socket in a different runtime directory.`,
+    `use the same XDG_RUNTIME_DIR as the running daemon, then run ${codeSpan(daemonCommandCopy("status", home))}`);
+}
+
 function capacityText(total: number, free: number): string {
   const gib = (value: number) => (value / 1024 ** 3).toFixed(1);
   const used = total === 0 ? 0 : 100 * (total - free) / total;
@@ -172,6 +181,8 @@ async function status(args: ParsedArgs): Promise<void> {
     await repairMissingInstalledProgram(paths, home);
     reply = await queryDaemon({ paths, peerUid, peerPid });
   } catch (e) {
+    const refusal = otherRuntimeRefusal(e, paths, home);
+    if (refusal !== e) throw asFailure(refusal, home);
     const installed = process.platform === "linux" && e instanceof EndpointRefusal && e.code === "NOT_RUNNING" ? readReceipt(paths) : undefined;
     if (e instanceof EndpointRefusal && installed && /^cotal-daemon(?:-[a-f0-9]{16})?\.service$/.test(installed.unit)) {
       throw new CommandFailure("refused", "TARGET_UNAVAILABLE", e.message, {
@@ -553,7 +564,7 @@ async function serve(args: ParsedArgs): Promise<void> {
       log: (l) => process.stderr.write(`${l}\n`), ...(home !== undefined ? { sessionDir: home } : {}) });
   } catch (e) {
     if (process.env.COTAL_DAEMON_NATIVE_SERVICE === "1") process.stderr.write(`daemon startup refused: ${e instanceof Error ? e.message : String(e)}\n`);
-    throw asFailure(e);
+    throw asFailure(otherRuntimeRefusal(e, paths, home));
   }
   updates = automaticUpdates({ version: binVersion(), eligible: () => home === undefined && (owned || (ownershipPending ? "pending" : false)), prepare: async () => { const seats = await running.generationSeats(); if (seats.some(row => row.seats > 0)) throw new Error("running agents remain"); }, abort: async () => {}, report: line => process.stderr.write(`${line}\n`) });
   if (process.platform === "linux" && process.env.COTAL_DAEMON_NATIVE_SERVICE === "1" && process.env.NOTIFY_SOCKET) {

@@ -1288,6 +1288,8 @@ created or repaired. Bash and Zsh completion offer file paths for `--daemon-home
 existing directories; the directory checks still apply when the command runs.
 On Linux, when a foreground daemon is stopped, `daemon status` and `daemon service-connect`
 name the `cotal daemon serve` command for the selected home, including `--daemon-home` if supplied.
+If the daemon is running but its socket is in a different runtime directory, `status` and a second
+`serve` tell you to use the running daemon's `XDG_RUNTIME_DIR` before checking status again.
 
 `serve` holds the lifetime lock `<dir>/daemon.lock` while it runs. The default daemon holds the
 same lock at `<COTAL_HOME>/daemon/daemon.lock`. A second `serve` for the same daemon refuses
@@ -1528,7 +1530,8 @@ credentials, ready records, registration request and service identity. It lists 
 without their contents. A later connection needs a new registration and approval. Stopping the
 daemon alone closes its connections without removing these records. The lifetime lock remains;
 its empty file is not a credential. Local cleanup does not revoke remote authority: remove the
-computer in the dashboard for that, since its remote record may remain.
+computer in the dashboard for that, since its remote record may remain. For a registered open or
+static-auth space with no service records to remove, disconnect reports that there was nothing to do.
 Disconnect and graceful shutdown cancel an in-flight service authority or sign-in proof request,
 including a startup resume, before waiting for the connection attempt to settle.
 This also applies to a pending `daemon register`. If removing any service record fails, disconnect
