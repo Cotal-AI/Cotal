@@ -118,6 +118,9 @@ export interface CommandFeed {
   /** Send one request to the mod; resolves with its answer. Rejects at once when unsupported, and
    *  when the reader disconnects or the feed closes before the answer. No timeout of its own. */
   request(ask: CommandAsk): Promise<ModAnswer>;
+  /** Call `listener` each time {@link unsupported} may answer differently: a reader said hello, its
+   *  hello was refused, it disconnected, or the feed closed. Returns what stops the calls. */
+  watch(listener: () => void): () => void;
   /** Close every connection and remove the socket file. */
   close(): void;
 }
@@ -128,6 +131,7 @@ class CommandSocket implements CommandFeed {
   private reader: Reader = { state: "absent" };
   private readonly pending = new Map<string, Pending>();
   private readonly connections = new Set<Socket>();
+  private readonly listeners = new Set<() => void>();
 
   constructor(private readonly warn: (msg: string) => void) {}
 
@@ -147,8 +151,13 @@ class CommandSocket implements CommandFeed {
     });
   };
 
+  readonly watch = (listener: () => void): (() => void) => {
+    this.listeners.add(listener);
+    return () => void this.listeners.delete(listener);
+  };
+
   readonly close = (): void => {
-    this.reader = { state: "absent" };
+    this.setReader({ state: "absent" });
     this.rejectAll("the command feed closed");
     for (const s of this.connections) s.destroy();
     this.server.close();
@@ -172,7 +181,7 @@ class CommandSocket implements CommandFeed {
   private disconnected(s: Socket): void {
     this.connections.delete(s);
     if (this.reader.state !== "ready" || this.reader.socket !== s) return;
-    this.reader = { state: "absent" };
+    this.setReader({ state: "absent" });
     this.rejectAll("the command mod's reader disconnected before it answered");
   }
 
@@ -184,11 +193,11 @@ class CommandSocket implements CommandFeed {
     }
     const refusal = helloRefusal(frame);
     if (refusal !== undefined) {
-      this.reader = { state: "refused", reason: refusal };
+      this.setReader({ state: "refused", reason: refusal });
       s.end(`${JSON.stringify({ op: "refused", reason: refusal })}\n`);
       return;
     }
-    this.reader = { state: "ready", socket: s };
+    this.setReader({ state: "ready", socket: s });
     s.write('{"op":"ready"}\n');
   }
 
@@ -200,6 +209,17 @@ class CommandSocket implements CommandFeed {
     this.pending.delete(frame.id);
     waiting.resolve(frame);
     s.end("ok\n");
+  }
+
+  private setReader(reader: Reader): void {
+    this.reader = reader;
+    for (const listener of this.listeners) {
+      try {
+        listener();
+      } catch (e) {
+        this.warn(`command socket: a watcher failed: ${(e as Error).message}`);
+      }
+    }
   }
 
   private drop(s: Socket, why: string): void {
@@ -216,7 +236,7 @@ class CommandSocket implements CommandFeed {
 /** Serve this process's command socket for the Claude Code process `claudePid`. */
 export async function openCommandFeed(claudePid: number, opts: { warn(msg: string): void }): Promise<CommandFeed> {
   if (process.platform === "win32") {
-    return { unsupported: () => WINDOWS_UNSUPPORTED, request: () => Promise.reject(new Error(WINDOWS_UNSUPPORTED)), close: () => {} };
+    return { unsupported: () => WINDOWS_UNSUPPORTED, request: () => Promise.reject(new Error(WINDOWS_UNSUPPORTED)), watch: () => () => {}, close: () => {} };
   }
   removeDeadSockets();
   const feed = new CommandSocket(opts.warn);
