@@ -279,6 +279,11 @@ export interface ModelCatalogOpts {
    *  these files rather than resolving the bare name again, so it runs the binary a spawn will run.
    *  Absent when no manager boot inventory exists, as for a standalone call. */
   resolvedBinaries?: Readonly<Record<string, string>>;
+  /** The extra environment names the operator declared in `spawn.env`, read from the config a spawn
+   *  would read now: what a managed launch receives as {@link LaunchOpts.envAllow}. A catalog that
+   *  runs its harness passes them on as the launch does, so it lists the models a seat reaches.
+   *  Absent when none are declared, or for a standalone call. */
+  envAllow?: readonly string[];
 }
 
 /** Manager-facing wrapper for one connector's catalog lookup. */
