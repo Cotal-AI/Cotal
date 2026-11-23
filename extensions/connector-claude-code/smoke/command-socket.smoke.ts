@@ -4,7 +4,9 @@
  * `process.ppid` names the same sockets, as it does under Claude Code. The reader says hello, the
  * feed is acknowledged, requests reach the reader's stdout with their `route`, and answers sent
  * through `answer <route>` resolve them. Refusals (an old Claude, version skew) carry their causes,
- * and a reader that goes away rejects what it left unanswered.
+ * and a reader that goes away rejects what it left unanswered. A feed that streams asks each reader
+ * it accepts for the session's reply text, and takes `deltas` only under the id it sent the current
+ * reader.
  *
  * Run: pnpm smoke:claude-command-socket
  * Graded: node scripts/mutation-proof.mjs --config extensions/connector-claude-code/smoke/mutations/command-socket.json
@@ -144,6 +146,27 @@ async function served(feed: CommandFeed, path: string): Promise<void> {
   check("with its reader gone the feed names the missing mod again", /^the command mod is not running/.test(feed.unsupported() ?? ""), feed.unsupported());
 }
 
+/** The stream request, and the reply text answered under it. */
+async function streaming(feed: CommandFeed, path: string): Promise<void> {
+  const got: unknown[] = [];
+  const first = startReader("2.1.330");
+  await until(() => feed.unsupported() === undefined);
+  feed.stream((deltas) => got.push(...deltas));
+  const ask = await first.next();
+  check("a feed that streams asks its reader for the reply text", ask?.op === "stream" && ask.route === path && /^[a-z2-7]{26}$/.test(String(ask.id)), ask);
+  const delta = { key: "stream:4b5c1a7e-1f0e-4f4e-9c55-6f0bb2f1a001:1", text: "one\n" };
+  check("reply text under that id reaches the sink, and the helper exits 0",
+    (await answer(path, { id: ask?.id, op: "deltas", deltas: [delta] })) === 0 && JSON.stringify(got) === JSON.stringify([delta]), got);
+  const second = startReader("2.1.330");
+  const again = await second.next();
+  check("a reader that replaces it is asked under a new id", again?.op === "stream" && again.id !== ask?.id, again);
+  check("reply text under the replaced reader's id is refused, and the sink gets nothing more",
+    (await answer(path, { id: ask?.id, op: "deltas", deltas: [delta] })) === 1 && got.length === 1, got);
+  first.child.kill("SIGTERM");
+  second.child.kill("SIGTERM");
+  await until(() => feed.unsupported() !== undefined);
+}
+
 async function refusals(feed: CommandFeed, path: string): Promise<void> {
   const old = startReader("2.1.329");
   check("an old Claude is refused with its cause", await until(() => feed.unsupported() === "Claude Code 2.1.329 is older than 2.1.330"), feed.unsupported());
@@ -181,6 +204,7 @@ try {
   const path = commandSocketPath(process.pid);
   await noReader(feed, path);
   await served(feed, path);
+  await streaming(feed, path);
   await refusals(feed, path);
   console.log("command-socket.smoke: done");
 } catch (e) {

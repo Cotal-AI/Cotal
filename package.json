@@ -407,6 +407,7 @@
     "smoke:claude-command-socket": "pnpm --filter @cotal-ai/connector-claude-code... build && tsx extensions/connector-claude-code/smoke/command-socket.smoke.ts",
     "smoke:claude-command-seat": "pnpm --filter @cotal-ai/connector-claude-code... build && tsx extensions/connector-claude-code/smoke/command-seat.smoke.ts",
     "smoke:claude-command-dispatcher": "pnpm --filter @cotal-ai/connector-claude-code... build && tsx extensions/connector-claude-code/smoke/command-dispatcher.smoke.ts",
+    "smoke:claude-stream": "tsx extensions/connector-claude-code/smoke/claude-stream.smoke.ts",
     "smoke:claude-connection-owner": "pnpm --filter @cotal-ai/connector-claude-code... build && tsx extensions/connector-claude-code/smoke/connection-owner.smoke.ts",
     "smoke:claude-launch-model": "tsx extensions/connector-claude-code/smoke/launch-model.smoke.ts",
     "smoke:claude-models": "tsx extensions/connector-claude-code/smoke/models.smoke.ts",

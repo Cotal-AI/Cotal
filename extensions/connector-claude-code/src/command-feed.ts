@@ -11,7 +11,9 @@ import { createServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CONNECTOR_VERSION } from "@cotal-ai/connector-core/version";
-import { MAX_LINE_BYTES, MAX_REQUEST_BYTES, parseModFrame, type CommandAsk, type CommandRequest, type ModAnswer, type ModHello } from "./command-frames.js";
+import {
+  MAX_LINE_BYTES, MAX_REQUEST_BYTES, parseModFrame, type CommandAsk, type CommandRequest, type ModAnswer, type ModDelta, type ModHello, type StreamRequest,
+} from "./command-frames.js";
 
 /** The oldest Claude Code with the mod API the command mod uses. */
 const CLAUDE_FLOOR = [2, 1, 330] as const;
@@ -121,6 +123,10 @@ export interface CommandFeed {
   /** Call `listener` each time {@link unsupported} may answer differently: a reader said hello, its
    *  hello was refused, it disconnected, or the feed closed. Returns what stops the calls. */
   watch(listener: () => void): () => void;
+  /** Ask each reader this feed accepts, now and later, to relay the reply text the session streams,
+   *  and hand each batch to `sink`. Only a `deltas` answer under the id sent to the current reader
+   *  reaches it. */
+  stream(sink: (deltas: ModDelta[]) => void): void;
   /** Close every connection and remove the socket file. */
   close(): void;
 }
@@ -132,6 +138,9 @@ class CommandSocket implements CommandFeed {
   private readonly pending = new Map<string, Pending>();
   private readonly connections = new Set<Socket>();
   private readonly listeners = new Set<() => void>();
+  private sink?: (deltas: ModDelta[]) => void;
+  /** The id of the stream request the current reader was sent. */
+  private streamId?: string;
 
   constructor(private readonly warn: (msg: string) => void) {}
 
@@ -154,6 +163,11 @@ class CommandSocket implements CommandFeed {
   readonly watch = (listener: () => void): (() => void) => {
     this.listeners.add(listener);
     return () => void this.listeners.delete(listener);
+  };
+
+  readonly stream = (sink: (deltas: ModDelta[]) => void): void => {
+    this.sink = sink;
+    this.askStream();
   };
 
   readonly close = (): void => {
@@ -199,10 +213,27 @@ class CommandSocket implements CommandFeed {
     }
     this.setReader({ state: "ready", socket: s });
     s.write('{"op":"ready"}\n');
+    this.askStream();
+  }
+
+  private askStream(): void {
+    if (!this.sink || this.reader.state !== "ready") return;
+    const frame: StreamRequest = { id: requestId(), op: "stream" };
+    this.streamId = frame.id;
+    this.reader.socket.write(`${JSON.stringify(frame)}\n`);
   }
 
   /** An answer connection carries one answer; the server resolves its request and says `ok`. */
   private answer(s: Socket, frame: ModAnswer): void {
+    if (frame.op === "deltas") {
+      if (frame.id !== this.streamId) return this.drop(s, "reply text under a stream this server did not ask the current reader for");
+      try {
+        this.sink?.(frame.deltas);
+      } catch (e) {
+        this.warn(`command socket: streamed reply text was not journaled: ${(e as Error).message}`);
+      }
+      return void s.end("ok\n");
+    }
     const waiting = this.pending.get(frame.id);
     if (!waiting) return this.drop(s, `an answer to unknown request ${frame.id}`);
     if (frame.op !== waiting.op && frame.op !== "error") return this.drop(s, `a ${frame.op} answer to a ${waiting.op} request`);
@@ -213,6 +244,7 @@ class CommandSocket implements CommandFeed {
 
   private setReader(reader: Reader): void {
     this.reader = reader;
+    this.streamId = undefined;
     for (const listener of this.listeners) {
       try {
         listener();
@@ -236,7 +268,7 @@ class CommandSocket implements CommandFeed {
 /** Serve this process's command socket for the Claude Code process `claudePid`. */
 export async function openCommandFeed(claudePid: number, opts: { warn(msg: string): void }): Promise<CommandFeed> {
   if (process.platform === "win32") {
-    return { unsupported: () => WINDOWS_UNSUPPORTED, request: () => Promise.reject(new Error(WINDOWS_UNSUPPORTED)), watch: () => () => {}, close: () => {} };
+    return { unsupported: () => WINDOWS_UNSUPPORTED, request: () => Promise.reject(new Error(WINDOWS_UNSUPPORTED)), watch: () => () => {}, stream: () => {}, close: () => {} };
   }
   removeDeadSockets();
   const feed = new CommandSocket(opts.warn);

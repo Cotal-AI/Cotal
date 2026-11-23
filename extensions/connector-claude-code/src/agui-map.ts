@@ -87,6 +87,7 @@
  */
 import {
   type AguiEvent,
+  type Merged,
   type RecordMapper,
   runStarted,
   runFinished,
@@ -102,6 +103,7 @@ import {
   reasoningMessageContent,
   reasoningMessageEnd,
 } from "@cotal-ai/connector-core";
+import { mapStreamLine, savedText, type ClaudeStreamState } from "./claude-stream.js";
 
 /**
  * One JSONL entry, typed to what the mapping actually reads and no further.
@@ -124,6 +126,8 @@ export interface ClaudeEntry {
    * against the values `ABSENT_ORIGIN_RULE` enumerates.
    */
   promptSource?: string;
+  /** The id of the prompt a `user` entry belongs to, on the prompt and on its tool results alike. */
+  promptId?: string;
   /** The harness's own compaction record. A string-content `user` entry that is not a turn. */
   isCompactSummary?: boolean;
   isVisibleInTranscriptOnly?: boolean;
@@ -317,11 +321,16 @@ interface ClaudeMapperOptions {
    * rather than being given a real-looking number.
    */
   now?: () => number;
+  /** Streamed reply text: the numbering that ties a saved text block to what streamed under it, and
+   *  the parts open on the wire. Without it, every text block maps whole from its saved entry. */
+  stream?: ClaudeStreamState;
 }
 
 /** What {@link createClaudeMapper} returns: the mapper plus the report of a run the emitter closed. */
 export interface ClaudeMapper {
   map: RecordMapper<ClaudeEntry>;
+  /** {@link map} over the transcript merged with the delta journal (`claude-stream.ts`). */
+  mapMerged: RecordMapper<Merged<ClaudeEntry>>;
   /**
    * Forget a run the EMITTER closed out of band, so this mapper stops treating it as open.
    *
@@ -543,11 +552,7 @@ export function createClaudeMapper(opts: ClaudeMapperOptions): ClaudeMapper {
       const cotal = Object.keys(meta).length > 0 ? { cotal: meta } : {};
 
       if (b.type === "text" && typeof b.text === "string") {
-        events.push(
-          textMessageStart({ messageId, timestamp: ts, role: "assistant", ...cotal }),
-          textMessageContent({ messageId, delta: b.text, timestamp: ts }),
-          textMessageEnd({ messageId, timestamp: ts }),
-        );
+        events.push(...savedText(opts.stream, entry, messageId, b.text, ts, cotal));
         return;
       }
       // A block whose display Claude omitted has empty text; it maps to nothing, not an empty message.
@@ -589,5 +594,11 @@ export function createClaudeMapper(opts: ClaudeMapperOptions): ClaudeMapper {
     if (open === runId) open = null;
   };
 
-  return { map, forgetOpenRun };
+  const mapMerged: RecordMapper<Merged<ClaudeEntry>> = (record) => {
+    if (!("harness" in record)) return opts.stream ? mapStreamLine(opts.stream, open, record) : null;
+    opts.stream?.order.observe(record.harness);
+    return map(record.harness);
+  };
+
+  return { map, mapMerged, forgetOpenRun };
 }
