@@ -62,8 +62,7 @@ import { SeedChildFailure, deferredSeedRefusal, reconcileSeededConnectors, seedD
 import { deferSeedToLaunch } from "./seed/launch.js";
 import { isAuthenticSeedChild } from "./seed/lock.js";
 import { printHelpPath, printEntry } from "./help.js";
-import { membershipSetupFailureRecords } from "./commands/channel-members.js";
-import { historySetupFailureRecords } from "./commands/history.js";
+import { historySetupFailureRecords, membershipSetupFailureRecords } from "./lib/follow-setup-failure.js";
 import { watchSetupFailureRecords } from "./commands/watch.js";
 import { HISTORY_LIMIT_FLAGS } from "./commands/history-limit.js";
 import { CatalogPreparationError, prepareCatalogCommand } from "./commands/sync.js";
