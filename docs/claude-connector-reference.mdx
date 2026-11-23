@@ -789,6 +789,10 @@ takes no images.
 model's context window, and the session's cost in US dollars as `/cost` totals it. Before the first
 response it reports the cost alone.
 
+The seat's presence shows `interrupt`, `turn` and `images` served only while a mod serves the
+session, and it changes as the mod's reader connects or leaves. A client such as an ACP thread picks
+the endpoint or the Manager's interrupt key and `input` from it.
+
 While no mod serves the session, `commands` answers `supported: false`, and `command`, `turn` and
 `interrupt` are `unimplemented` with the cause. `usage` answers `unavailable`:
 

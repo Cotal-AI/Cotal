@@ -267,7 +267,10 @@ async function startSession(
   const agent: MeshAgent = new MeshAgent(config, env, {
     withholdProcessCwd: true,
     onceClaimBound: true,
-    commands: claudeCommands({ feed: () => commands, interrupting: () => claude.interrupting(agent), warn, imageDir: env[TURN_IMAGES_ENV] || undefined }),
+    commands: claudeCommands({
+      feed: () => commands, interrupting: () => claude.interrupting(agent), warn,
+      imageDir: env[TURN_IMAGES_ENV] || undefined, onStop: (stop) => agent.once("stopping", stop),
+    }),
   });
   const turns = commandTurns(agent);
   const plane = eventPlaneArmed(config, env) ? createClaudeEventPlane(agent, config, env) : undefined;
