@@ -4,7 +4,6 @@ import { authDir, claimIdentityRecord, createManagerInstanceIdentity, getSpaceAu
 import { jetstreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
 import type { KV } from "@nats-io/kv";
-import type { NatsConnection } from "@nats-io/transport-node";
 import { existsSync } from "node:fs";
 import { hostname } from "node:os";
 import { resolve } from "node:path";
@@ -50,11 +49,9 @@ export interface ManagerBootDeps {
   transcripts: () => Manager["transcripts"];
   setTranscripts: (value: Manager["transcripts"]) => void;
   transportDown: () => Manager["transportDown"];
-  adoptReleasedSeats: (...args: Parameters<Manager["adoptReleasedSeats"]>) => ReturnType<Manager["adoptReleasedSeats"]>;
   claimDaemonRenewalOwnership: (...args: Parameters<Manager["claimDaemonRenewalOwnership"]>) => ReturnType<Manager["claimDaemonRenewalOwnership"]>;
   dial: (...args: Parameters<Manager["dial"]>) => ReturnType<Manager["dial"]>;
   executionRecordPath: (...args: Parameters<Manager["executionRecordPath"]>) => ReturnType<Manager["executionRecordPath"]>;
-  keepDaemonRenewalLease: (...args: Parameters<Manager["keepDaemonRenewalLease"]>) => ReturnType<Manager["keepDaemonRenewalLease"]>;
   logSeatMeshTransitions: (...args: Parameters<Manager["logSeatMeshTransitions"]>) => ReturnType<Manager["logSeatMeshTransitions"]>;
   reconcileGoalIndex: (...args: Parameters<Manager["reconcileGoalIndex"]>) => ReturnType<Manager["reconcileGoalIndex"]>;
   reconcileStaticLifecycles: (...args: Parameters<Manager["reconcileStaticLifecycles"]>) => ReturnType<Manager["reconcileStaticLifecycles"]>;
@@ -63,9 +60,6 @@ export interface ManagerBootDeps {
   renewRemoteExecutor: (...args: Parameters<Manager["renewRemoteExecutor"]>) => ReturnType<Manager["renewRemoteExecutor"]>;
   renewRemoteStandingBundle: (...args: Parameters<Manager["renewRemoteStandingBundle"]>) => ReturnType<Manager["renewRemoteStandingBundle"]>;
   serviceIdentityObservation: (...args: Parameters<Manager["serviceIdentityObservation"]>) => ReturnType<Manager["serviceIdentityObservation"]>;
-  startGoalWriter: (...args: Parameters<Manager["startGoalWriter"]>) => ReturnType<Manager["startGoalWriter"]>;
-  startSessionPlane: (...args: Parameters<Manager["startSessionPlane"]>) => ReturnType<Manager["startSessionPlane"]>;
-  withTransferReader: <T>(fn: (nc: NatsConnection) => Promise<T>) => Promise<T>;
 }
 
 /** Builds the {@link ManagerBootDeps} for a Manager. It reads Manager members by name at each use, so a
@@ -94,11 +88,9 @@ export function bootDeps(m: Manager): ManagerBootDeps {
     transcripts: () => m["transcripts"],
     setTranscripts: (value) => { m["transcripts"] = value; },
     transportDown: () => m["transportDown"],
-    adoptReleasedSeats: (...args) => m["adoptReleasedSeats"](...args),
     claimDaemonRenewalOwnership: (...args) => m["claimDaemonRenewalOwnership"](...args),
     dial: (...args) => m["dial"](...args),
     executionRecordPath: (...args) => m["executionRecordPath"](...args),
-    keepDaemonRenewalLease: (...args) => m["keepDaemonRenewalLease"](...args),
     logSeatMeshTransitions: (...args) => m["logSeatMeshTransitions"](...args),
     reconcileGoalIndex: (...args) => m["reconcileGoalIndex"](...args),
     reconcileStaticLifecycles: (...args) => m["reconcileStaticLifecycles"](...args),
@@ -107,15 +99,12 @@ export function bootDeps(m: Manager): ManagerBootDeps {
     renewRemoteExecutor: (...args) => m["renewRemoteExecutor"](...args),
     renewRemoteStandingBundle: (...args) => m["renewRemoteStandingBundle"](...args),
     serviceIdentityObservation: (...args) => m["serviceIdentityObservation"](...args),
-    startGoalWriter: (...args) => m["startGoalWriter"](...args),
-    startSessionPlane: (...args) => m["startSessionPlane"](...args),
-    withTransferReader: (fn) => m["withTransferReader"](fn),
   };
 }
 
 /** Starting the manager: admitting its execution state, connecting and registering it, taking its instance lease, and healing a predecessor's frozen registration gate. */
 export class ManagerBoot {
-  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: ManagerBootDeps, private readonly parts: Pick<ManagerParts, "connectorInventory" | "credentialRenewal" | "lease" | "servePlane">, private readonly state: ManagerStartState) {}
+  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: ManagerBootDeps, private readonly parts: Pick<ManagerParts, "brokerTransport" | "connectorInventory" | "credentialRenewal" | "goalWriter" | "lease" | "preservation" | "servePlane">, private readonly state: ManagerStartState) {}
 
   // The Manager members these bodies read, under their Manager names. Each reads through its dep at
   // use, so a field the Manager assigns later is current and a method a test replaces on the Manager
@@ -149,11 +138,9 @@ export class ManagerBoot {
   private get transportDown() { return this.deps.transportDown(); }
   private get userMode() { return this.state.userMode; }
   private set userMode(value: ManagerStartState["userMode"]) { this.state.userMode = value; }
-  private adoptReleasedSeats(...args: Parameters<Manager["adoptReleasedSeats"]>): ReturnType<Manager["adoptReleasedSeats"]> { return this.deps.adoptReleasedSeats(...args); }
   private claimDaemonRenewalOwnership(...args: Parameters<Manager["claimDaemonRenewalOwnership"]>): ReturnType<Manager["claimDaemonRenewalOwnership"]> { return this.deps.claimDaemonRenewalOwnership(...args); }
   private dial(...args: Parameters<Manager["dial"]>): ReturnType<Manager["dial"]> { return this.deps.dial(...args); }
   private executionRecordPath(...args: Parameters<Manager["executionRecordPath"]>): ReturnType<Manager["executionRecordPath"]> { return this.deps.executionRecordPath(...args); }
-  private keepDaemonRenewalLease(...args: Parameters<Manager["keepDaemonRenewalLease"]>): ReturnType<Manager["keepDaemonRenewalLease"]> { return this.deps.keepDaemonRenewalLease(...args); }
   private logSeatMeshTransitions(...args: Parameters<Manager["logSeatMeshTransitions"]>): ReturnType<Manager["logSeatMeshTransitions"]> { return this.deps.logSeatMeshTransitions(...args); }
   private reconcileGoalIndex(...args: Parameters<Manager["reconcileGoalIndex"]>): ReturnType<Manager["reconcileGoalIndex"]> { return this.deps.reconcileGoalIndex(...args); }
   private reconcileStaticLifecycles(...args: Parameters<Manager["reconcileStaticLifecycles"]>): ReturnType<Manager["reconcileStaticLifecycles"]> { return this.deps.reconcileStaticLifecycles(...args); }
@@ -162,9 +149,6 @@ export class ManagerBoot {
   private renewRemoteExecutor(...args: Parameters<Manager["renewRemoteExecutor"]>): ReturnType<Manager["renewRemoteExecutor"]> { return this.deps.renewRemoteExecutor(...args); }
   private renewRemoteStandingBundle(...args: Parameters<Manager["renewRemoteStandingBundle"]>): ReturnType<Manager["renewRemoteStandingBundle"]> { return this.deps.renewRemoteStandingBundle(...args); }
   private serviceIdentityObservation(...args: Parameters<Manager["serviceIdentityObservation"]>): ReturnType<Manager["serviceIdentityObservation"]> { return this.deps.serviceIdentityObservation(...args); }
-  private startGoalWriter(...args: Parameters<Manager["startGoalWriter"]>): ReturnType<Manager["startGoalWriter"]> { return this.deps.startGoalWriter(...args); }
-  private startSessionPlane(...args: Parameters<Manager["startSessionPlane"]>): ReturnType<Manager["startSessionPlane"]> { return this.deps.startSessionPlane(...args); }
-  private withTransferReader<T>(fn: (nc: NatsConnection) => Promise<T>): Promise<T> { return this.deps.withTransferReader(fn); }
 
   claimExecutionRecord(instanceId: string): void {
     const record = claimIdentityRecord(this.executionRecordPath(instanceId), "manager execution capability", (raw) => {
@@ -425,7 +409,7 @@ export class ManagerBoot {
     // start adopts that seat, or retires it when the runtime proves it gone. Static seats stay on
     // the sweep above.
     if (this.userMode)
-      void this.adoptReleasedSeats().catch((e) => console.error(`! a released seat was not adopted: ${rejectionText(e)}`));
+      void this.parts.preservation.adoptReleasedSeats().catch((e) => console.error(`! a released seat was not adopted: ${rejectionText(e)}`));
     // The manager serves NO ctl tiers - its whole control surface is the v0.4
     // service endpoint registered below. The old three-tier rail (self/manager/admin) is deleted;
     // `ctl.delivery`/`ctl.delivery-admin` (the delivery daemon) and `ctl.auth-admin` (the auth
@@ -446,7 +430,7 @@ export class ManagerBoot {
       // the SecretStore, and a slow or contended store makes the one pass outlast the lease's
       // MANAGER_LEASE_TTL_MS. Arming afterwards leaves the whole first remint unprotected: the lease
       // expires mid-pass, a second manager's CAS create succeeds, and both remint into one store.
-      this.daemonRenewalLeaseTimer = setInterval(() => { void this.keepDaemonRenewalLease(); }, MANAGER_LEASE_RENEW_MS);
+      this.daemonRenewalLeaseTimer = setInterval(() => { void this.parts.credentialRenewal.keepDaemonRenewalLease(); }, MANAGER_LEASE_RENEW_MS);
       this.daemonRenewalLeaseTimer.unref?.();
       await this.renewDaemonCreds();
       this.credRenewTimer = setInterval(() => { void this.renewDaemonCreds(); }, credRenewIntervalMs(STANDING_RENEWABLE_TTL_SEC));
@@ -499,11 +483,11 @@ export class ManagerBoot {
     if (this.staticLifecycle.stopping) return;
     // Stand up the standing goal-writer connection for spawn-as-action — AFTER
     // registration (it writes this endpoint's goal facts/records), disjoint from the serve cred.
-    await this.startGoalWriter();
+    await this.parts.goalWriter.startGoalWriter();
     // Stand up the ONE §13.6 session plane for `attach` — AFTER registration too (it
     // rides the serve grant's epoch + the family-staged session-ledger cred), on its own standing
     // connection disjoint from both the serve and goal-writer creds.
-    await this.startSessionPlane();
+    await this.parts.servePlane.startSessionPlane();
     // Reconcile any accepted-but-unterminal goals inherited from a predecessor
     // BEFORE spawn-as-action begins accepting (the goalReconcileDone gate) — a fresh incarnation
     // never drops a goal a dead predecessor accepted. Never fatal; the gate opens either way.
@@ -554,7 +538,7 @@ export class ManagerBoot {
         space: this.config.space,
         instanceId: this.managerInstanceId,
         workspaceRoot: this.config.workspaceRoot,
-        withReader: (fn) => this.withTransferReader(fn),
+        withReader: (fn) => this.parts.brokerTransport.withTransferReader(fn),
         log: (line) => console.error(line),
       });
       await this.transcripts.start();
