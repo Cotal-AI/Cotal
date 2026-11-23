@@ -27,6 +27,7 @@ import {
   toolCallArgs,
   toolCallEnd,
   toolCallResult,
+  toolResultMarker,
   reasoningMessageStart,
   reasoningMessageContent,
   reasoningMessageEnd,
@@ -127,6 +128,22 @@ function outputText(payload: Record<string, unknown>): string {
 }
 
 /**
+ * Whether a tool's end record says the call failed, or `undefined` when the record is not an end
+ * record or does not say. A `function_call_output` carries no error flag, so these records are the
+ * only source. An MCP result without `isError` succeeded, as the MCP schema defines it.
+ */
+function endFailed(inner: string | undefined, payload: Record<string, unknown>): boolean | undefined {
+  if (inner === "exec_command_end") return typeof payload.exit_code === "number" ? payload.exit_code !== 0 : undefined;
+  if (inner === "patch_apply_end") return typeof payload.success === "boolean" ? !payload.success : undefined;
+  if (inner !== "mcp_tool_call_end") return undefined;
+  const result = asRecord(payload.result);
+  if (result === undefined) return undefined;
+  if ("Err" in result) return true;
+  const ok = asRecord(result.Ok);
+  return ok === undefined ? undefined : ok.isError === true;
+}
+
+/**
  * @param threadId The native thread id, which is `session_meta.payload.id` and the rollout
  *  filename key. Passed in rather than read from the file: the caller resolved the path FROM this
  *  id, so reading it back would make the two independently derivable and let them disagree.
@@ -144,6 +161,10 @@ export function createCodexMapper(opts: { threadId: string; mintRunId: () => str
    *  close it. Codex retries a failed turn with a fresh turn id, and each retry is its own run. */
   let openTurn: string | undefined;
   let last = 0;
+  /** What the open run's end records said about each call, until its output is mapped. An end record
+   *  that comes after its output, as for a command still running when its output is written, stays
+   *  until the run closes. */
+  const failedCalls = new Map<string, boolean>();
 
   const map = (record: CodexRecord): { runId: string; events: AguiEvent[] } | null => {
     // A LINE THAT IS NOT AN OBJECT IS A DROP, NOT A THROW, and the difference is the whole plane.
@@ -170,6 +191,7 @@ export function createCodexMapper(opts: { threadId: string; mintRunId: () => str
       const runId = mintRunId();
       open = runId;
       openTurn = asString(payload.turn_id);
+      failedCalls.clear();
       return { runId, events: [runStarted({ threadId, runId, timestamp: ts })] };
     }
 
@@ -225,6 +247,12 @@ export function createCodexMapper(opts: { threadId: string; mintRunId: () => str
     // ahead of the first `task_started`, and all five are withheld anyway.
     if (open === null) return null;
     const runId = open;
+
+    if (envelope === "event_msg") {
+      const failed = endFailed(inner, payload);
+      const callId = asString(payload.call_id);
+      if (failed !== undefined && callId !== undefined) failedCalls.set(callId, failed);
+    }
 
     // ---- assistant text -----------------------------------------------------------------
     if (envelope === "response_item" && inner === "message") {
@@ -305,13 +333,25 @@ export function createCodexMapper(opts: { threadId: string; mintRunId: () => str
       // message's. Synthesized from the call id so it is STABLE across a replay of the same
       // record, which a mint would not be.
       const messageId = `res:${toolCallId}`;
-      return { runId, events: [toolCallResult({ messageId, toolCallId, content: outputText(payload), timestamp: ts })] };
+      // The marker rides in the same unit as the result. The fence keeps the result off the public
+      // channel, and a read that starts with this record then still has a public unit for the
+      // payload rail to follow. Without it the emitter refuses the read, and re-reads it forever.
+      const isError = failedCalls.get(toolCallId);
+      failedCalls.delete(toolCallId);
+      return {
+        runId,
+        events: [
+          toolCallResult({ messageId, toolCallId, content: outputText(payload), timestamp: ts, ...(isError === undefined ? {} : { cotal: { isError } }) }),
+          toolResultMarker({ toolCallId, ...(isError === undefined ? {} : { isError }), timestamp: ts }),
+        ],
+      };
     }
 
     // Unmapped in v1, and stated rather than dropped silently: `world_state`, `turn_context`,
     // `session_meta`, `token_count`, `thread_settings_applied`, `sub_agent_activity`,
-    // `compacted`, `context_compacted`, the exec/patch/mcp/web-search `event_msg` families, and
-    // the `_end`-only tool families that have no begin record to bracket against.
+    // `compacted`, `context_compacted`, the exec/patch/mcp/web-search `event_msg` families (their
+    // end records only set a result's `isError`), and the `_end`-only tool families that have no
+    // begin record to bracket against.
     return null;
   };
 
