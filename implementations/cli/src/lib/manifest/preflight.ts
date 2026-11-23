@@ -8,7 +8,7 @@
  */
 import { existsSync } from "node:fs";
 import { basename, dirname, extname, join, relative } from "node:path";
-import { loadAgentFile, type AgentDef } from "@cotal-ai/core";
+import { loadAgentFile, personaSourceRef, type AgentDef } from "@cotal-ai/core";
 import { findCotalRoot } from "@cotal-ai/workspace";
 import type { ResolvedManifest } from "./model.js";
 import { prepareAgent, type AgentWarning, type PreparedAgent } from "./prepare.js";
@@ -57,6 +57,7 @@ export function preparePersonas(manifest: ResolvedManifest): PreparedManifest {
       }
     }
     const r = prepareAgent(a, persona, declared);
+    if (a.persona) r.prepared.personaSource = personaSourceRef(a.persona);
     issues.push(...r.issues);
     warnings.push(...r.warnings);
     agents.push(r.prepared);

@@ -44,6 +44,8 @@ export interface MeshLaunchAgent {
   allowPublish: string[];
   /** Original persona path — for user-facing output only; never read for authority. */
   personaPath?: string;
+  /** Advisory reference captured on the machine that prepared the original file. */
+  personaSource?: string;
   /** Content hash of the resolved launch fields (drift detection: a changed hash ⇒ restart-required). */
   hash: string;
 }

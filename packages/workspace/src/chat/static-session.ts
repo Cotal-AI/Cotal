@@ -17,7 +17,7 @@
  */
 import {
   CotalEndpoint, DEV_OWNER, EP_UNANSWERED, SealRecipient, assertLifecycleToken, assertValidChannel, idFromCreds, isCurvePublicKey, principalKey, resolveReadAcl,
-  type SpaceAuth,
+  PERSONA_SOURCE_META_KEY, type SpaceAuth,
 } from "@cotal-ai/core";
 import { isConnectRefusal, mintControlInstrument, preflightOrThrow } from "../connect.js";
 import { askManager, managerFailure, refuseWithoutLiveManager, type ControlClient, type ManagerReply } from "../control/manager.js";
@@ -215,7 +215,7 @@ export async function openStaticChatSession(target: MeshTarget, options: {
     servers: mesh.server,
     tls: mesh.tlsRequired,
     creds,
-    card: { owner: DEV_OWNER, actor: slot.actor, name: options.label, kind: "endpoint", meta: { sessionKind: "chat" } },
+    card: { owner: DEV_OWNER, actor: slot.actor, name: options.label, kind: "endpoint", meta: { sessionKind: "chat", [PERSONA_SOURCE_META_KEY]: "none" } },
     lifecycleUid: slot.lifecycleUid,
     // A copy: the endpoint edits its list on /leave and /join, and the read grant may be this array.
     channels: [...subscribe],

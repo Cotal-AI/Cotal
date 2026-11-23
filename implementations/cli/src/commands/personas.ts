@@ -167,7 +167,7 @@ async function list(verbose: boolean, running: boolean, values: ConnectValues): 
       continue;
     }
     const d = e.def!;
-    const status = overlay?.status(e.path, d.kind ?? "agent");
+    const status = overlay?.status(e.path);
     const live = status === "running" ? c.green("● running")
       : status === "not running" ? c.dim("○ not running")
       : status === "unknown" ? c.yellow("? running status unknown") : undefined;

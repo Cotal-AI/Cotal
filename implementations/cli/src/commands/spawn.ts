@@ -742,6 +742,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   }
   const launchOpts: LaunchOpts = {
     space, name, role, servers: server, configPath: path,
+    ...(handoffText === undefined ? {} : { personaSource: "unknown" }),
     model, variant, launchOptions, subscribe, allowSubscribe, allowPublish,
     endpoints: copyPersonaEndpoints(def.endpoints) ?? [], prompt: values.prompt,
     resume: values.resume, events: launchEvents, eventPayloads, eventsRequired,

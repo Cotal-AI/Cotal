@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { userInfo } from "node:os";
-import { DEFAULT_SERVER, DEV_OWNER, LAUNCH_MATERIAL_ENV, assertValidName, brokerUrlHasUserinfo, discardLaunchMaterial, assertLifecycleToken, assertValidChannel, assertValidKind, channelInAllow, credsClaims, eventChannel, idFromCreds, isConcreteChannel, loadAgentFile, parseJoinLink, parsePersonaEndpoints, personaSourceRef, resolveReadAcl, type AgentDef, type EndpointKind, type PersonaEndpoint } from "@cotal-ai/core";
+import { DEFAULT_SERVER, DEV_OWNER, LAUNCH_MATERIAL_ENV, assertValidName, brokerUrlHasUserinfo, discardLaunchMaterial, assertLifecycleToken, assertValidChannel, assertValidKind, channelInAllow, credsClaims, eventChannel, idFromCreds, isConcreteChannel, isLocalPersonaSourceRef, loadAgentFile, parseJoinLink, parsePersonaEndpoints, personaSourceRef, resolveReadAcl, type AgentDef, type EndpointKind, type PersonaEndpoint } from "@cotal-ai/core";
 import { readMaterial } from "./session-env.js";
 
 /** Keyed beta intake — used when a `COTAL_FEEDBACK_KEY` is configured. */
@@ -239,6 +239,9 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): AgentConfig
   const link = env.COTAL_LINK?.trim() ? parseJoinLink(env.COTAL_LINK.trim()) : undefined;
   const agentFile = env.COTAL_AGENT_FILE?.trim();
   const def: AgentDef | undefined = agentFile ? loadAgentFile(agentFile) : undefined;
+  const source = env.COTAL_PERSONA_SOURCE;
+  const personaSource = source === undefined ? (agentFile ? personaSourceRef(agentFile) : "none")
+    : source === "none" || isLocalPersonaSourceRef(source) ? source : undefined;
   const name = env.COTAL_NAME?.trim() || def?.name || (link ? userInfo().username : undefined);
   if (!name)
     throw new Error("COTAL_NAME, COTAL_AGENT_FILE or COTAL_LINK is required — a Cotal session needs an explicit identity from its launcher");
@@ -393,7 +396,7 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): AgentConfig
     description: def?.description,
     tags: def?.tags,
     meta: def?.meta,
-    personaSource: agentFile ? personaSourceRef(agentFile) : "none",
+    personaSource,
     capabilities: splitList(env.COTAL_CAPABILITIES).length ? splitList(env.COTAL_CAPABILITIES) : def?.capabilities,
     endpoints: env.COTAL_ENDPOINTS !== undefined ? endpointsEnv(env.COTAL_ENDPOINTS) : def?.endpoints,
     model: env.COTAL_MODEL?.trim() || undefined,

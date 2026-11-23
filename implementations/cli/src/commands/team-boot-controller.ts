@@ -162,7 +162,7 @@ async function startTeamBoot(request: ControllerTeamBootRequest, plan: FreshTeam
             catch (error) { throw new CommandFailure("refused", "AUTH_REQUIRED", "the invoking user's login could not resolve an owner for this space; no launch spec was written and the manager was not started", { target: { space, deploymentId }, native: { code: "OWNER_FOR_LOGIN", outcome: "refused", detail: (error as Error).message }, remedy: "cotal login, then inspect the stack before another boot" }); }
           }
           let path: string;
-          try { path = writeLaunchSpec(root, buildLaunchSpec(plan.prepared, deploymentId, owner)); }
+          try { path = writeLaunchSpec(root, buildLaunchSpec(plan.prepared, deploymentId, owner, { localBoot: true })); }
           catch { throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "launch-spec creation did not confirm its outcome; the manager was not started and the intent remains for inspection", { target: { space, deploymentId } }); }
           return { path, sha256: createHash("sha256").update(readFileSync(path)).digest("hex") };
         },

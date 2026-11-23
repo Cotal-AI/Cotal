@@ -3,7 +3,7 @@ import { randomBytes } from "node:crypto";
 import { dirname, join, resolve } from "node:path";
 import { stringify as stringifyYaml } from "yaml";
 import { z } from "zod";
-import { assertDerivedOwnerToken, assertValidChannel, assertValidName, ensureDirNoSymlink, isConcreteChannel, realDirNoSymlink, unlinkFileNoFollow, type MeshLaunchAgent, type MeshLaunchSpec } from "@cotal-ai/core";
+import { assertDerivedOwnerToken, assertValidChannel, assertValidName, ensureDirNoSymlink, isConcreteChannel, isPersonaSourceRef, realDirNoSymlink, unlinkFileNoFollow, type MeshLaunchAgent, type MeshLaunchSpec } from "@cotal-ai/core";
 
 /**
  * Load + materialize a resolved launch spec for `supervise --launch`.
@@ -39,6 +39,7 @@ const LaunchAgentSchema = z.strictObject({
   allowSubscribe: z.array(z.string()),
   allowPublish: z.array(z.string()),
   personaPath: z.string().optional(),
+  personaSource: z.string().refine(isPersonaSourceRef, "invalid persona source reference").optional(),
   hash: z.string().regex(/^[A-Za-z0-9]+$/, "hash must be alphanumeric"),
 });
 
@@ -176,6 +177,11 @@ export function materializePersona(root: string, runId: string, a: MeshLaunchAge
   writeFileSync(tmp, `${fm.join("\n")}${header}\n\n${body}`, { mode: 0o600, flag: "wx" });
   renameSync(tmp, path);
   return path;
+}
+
+/** Older file-backed specs name a path but do not prove which filesystem provided it. */
+export function manifestPersonaSource(a: Pick<MeshLaunchAgent, "personaPath" | "personaSource">): string {
+  return a.personaSource ?? (a.personaPath === undefined ? "none" : "unknown");
 }
 
 /** The snapshots unsaved inline personas launch from (SPEC 13.7). No spawn may name a file here. */

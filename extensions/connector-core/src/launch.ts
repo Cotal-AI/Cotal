@@ -184,13 +184,12 @@ export function launchEnv(
   return env;
 }
 
-/** The seat's names as `COTAL_*` env: the launch name, and the display name a relaunch restores
- *  when `set-name` changed it. Every connector forwards both, so a seat keeps its actor and shows
- *  its last name. */
-export function nameEnv(opts: { name: string; displayName?: string }): Record<string, string> {
+/** Launcher-owned seat identity and persona provenance, kept separate from user environment. */
+export function nameEnv(opts: { name: string; displayName?: string; personaSource?: string }): Record<string, string> {
   const env: Record<string, string> = {};
   env.COTAL_NAME = opts.name;
   if (opts.displayName !== undefined) env.COTAL_DISPLAY_NAME = opts.displayName;
+  if (opts.personaSource !== undefined) env.COTAL_PERSONA_SOURCE = opts.personaSource;
   return env;
 }
 

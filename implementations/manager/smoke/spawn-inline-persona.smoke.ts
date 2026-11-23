@@ -26,6 +26,7 @@ import {
   mintCreds,
   mintLifecycleUid,
   newIdentity,
+  personaSourceRef,
   principalKey,
   registry,
   runDriverCaller,
@@ -760,7 +761,7 @@ try {
     mkdirSync(join(root, ".cotal"), { recursive: true });
     const A = managerAt(root, {});
     stoppable(A.mgr);
-    const d = okData(await A.mgr.startAgent({ name: "carried", agent: "smoke-inline", events: false, persona: { prompt: "carried across" } }));
+    const d = okData(await A.mgr.startAgent({ name: "carried", agent: "smoke-inline", events: false, persona: { prompt: "carried across", subscribe: [], save: true } }));
     const path = d ? inlineSnapshotPath(root, d.lifecycleUid) : "";
     let inventory: ManagerResumeInventory | undefined;
     const cut = await A.mgr.preserveState({ attemptId: "inline-cut", persistInventory: async (inv) => { inventory = inv; } });
@@ -772,6 +773,9 @@ try {
     const resumed = await B.mgr.resumePreserved(inventory!);
     const seat = seatOf(B.M, "carried");
     check("a replacement manager resumes the inline seat from its snapshot", resumed.ok && seat?.launch.source.kind === "inline" && seat.launch.source.configPath === path && B.spawned.get("carried") === 1, resumed);
+    const savedOrigin = personaSourceRef(join(root, ".cotal", "agents", "carried.md")) ?? "unknown";
+    check("preserved inline seats retain the saved catalog source, distinct from the loaded snapshot",
+      resumed.ok && launched.get("carried")?.personaSource === savedOrigin, launched.get("carried")?.personaSource);
     await exitAndSettle(B.M, B.seats, "carried");
     check("and the resumed seat's retirement removes the snapshot", !existsSync(path));
   }

@@ -8,6 +8,7 @@ import {
   mintLifecycleUid,
   newIdentity,
   mentionsIn,
+  PERSONA_SOURCE_META_KEY,
   type SpaceAuth,
 } from "@cotal-ai/core";
 import { c } from "@cotal-ai/workspace";
@@ -153,7 +154,7 @@ export async function sendAsOperator(
  *  when there is one. The id is fixed here. The credential names it on a static mesh, and an open
  *  mesh pins one, so a start retried after a failure keeps it. */
 export function operatorPoster(target: { space: string; server: string; tls: boolean }, operator: OperatorCred | undefined): OperatorPoster {
-  const card = { ...(operator ? {} : { id: randomUUID().replace(/-/g, "") }), name: "operator", role: "operator", kind: "endpoint" as const };
+  const card = { ...(operator ? {} : { id: randomUUID().replace(/-/g, "") }), name: "operator", role: "operator", kind: "endpoint" as const, meta: { [PERSONA_SOURCE_META_KEY]: "none" } };
   const build = (): CotalEndpoint => {
     const e = new CotalEndpoint({
       space: target.space,

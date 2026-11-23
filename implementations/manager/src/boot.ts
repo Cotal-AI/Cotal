@@ -1,4 +1,4 @@
-import { CotalEndpoint, credsClaims, DEFAULT_SERVER, drainAndClose, ensureAuthorityStores, epgateKey, listGoalIndex, MANAGER_LEASE_RENEW_MS, mintCreds, mintLifecycleUid, newIdentity, parseEndpointGate, recordsBucket, rejectionText, standaloneConnectOpts, STANDING_RENEWABLE_TTL_SEC } from "@cotal-ai/core";
+import { CotalEndpoint, credsClaims, DEFAULT_SERVER, drainAndClose, ensureAuthorityStores, epgateKey, listGoalIndex, MANAGER_LEASE_RENEW_MS, mintCreds, mintLifecycleUid, newIdentity, parseEndpointGate, PERSONA_SOURCE_META_KEY, recordsBucket, rejectionText, standaloneConnectOpts, STANDING_RENEWABLE_TTL_SEC } from "@cotal-ai/core";
 import type { SpaceAuth } from "@cotal-ai/core";
 import { authDir, claimIdentityRecord, createManagerInstanceIdentity, getSpaceAuth, hasUserAuthState, loadManagerInstanceIdentity, loadMeshes, localTrustOfSpace, userAuthStateDir } from "@cotal-ai/workspace";
 import { jetstreamManager } from "@nats-io/jetstream";
@@ -369,7 +369,7 @@ export class ManagerBoot {
       watchChannels: false,
       // `host` says which machine runs this manager, as an agent's card does: an owner with several
       // managers tells them apart by it. Advisory display metadata, never a routing input.
-      card: { id, ...(this.remoteAuthority ? { owner: this.remoteAuthority.owner, actor: this.remoteAuthority.actors.supervisor } : {}), name: this.config.name, role: "manager", kind: "endpoint", meta: { host: hostname(), terminal: this.streamsTerminal ? "stream" : "none" } },
+      card: { id, ...(this.remoteAuthority ? { owner: this.remoteAuthority.owner, actor: this.remoteAuthority.actors.supervisor } : {}), name: this.config.name, role: "manager", kind: "endpoint", meta: { host: hostname(), terminal: this.streamsTerminal ? "stream" : "none", [PERSONA_SOURCE_META_KEY]: "none" } },
     });
     // Raw failures ride error; conditions the endpoint is already surviving ride warning. Both
     // matter to a supervisor operator, especially a failed standing-credential renewal.

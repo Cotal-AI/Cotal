@@ -76,6 +76,9 @@ export interface LaunchOpts {
    *  passes it through (`COTAL_AGENT_FILE`) so the joined session reads its own
    *  card from it, and applies the file's persona at launch. */
   configPath?: string;
+  /** Advisory provenance when configPath is a generated copy: a source reference, `none` for
+   *  known no catalog file, or `unknown` when its origin cannot be asserted. */
+  personaSource?: string;
   /** The model the launcher resolved: the `--model` flag, else the agent file's `model:`. The
    *  launcher checks and records this value, so a connector renders it as given in its host form
    *  (Claude `--model`, OpenCode `config.model`, Hermes `HERMES_MODEL`) and never re-reads it from

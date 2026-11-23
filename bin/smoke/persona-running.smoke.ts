@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { linkSync, mkdirSync, mkdtempSync, renameSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { configFromEnv, MeshAgent } from "@cotal-ai/connector-core";
 import { CotalEndpoint, PERSONA_SOURCE_META_KEY, isReachable, personaSourceRef, setupSpaceStreams } from "@cotal-ai/core";
-import { SMOKE_BROKER_TOKEN, awaitBrokerReady, createSuite, freePort, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, awaitBrokerReady, createSuite, freePort, killAndAwaitExit, skipSuite, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { recordMesh } from "@cotal-ai/workspace";
 
 const { check, finish } = createSuite();
@@ -14,6 +14,8 @@ const root = mkdtempSync(join(tmpdir(), "cotal-persona-running-"));
 const project = join(root, "project");
 const catalog = join(project, ".cotal", "agents");
 mkdirSync(catalog, { recursive: true });
+const sample = file(join(root, "scope.md"), "scope");
+if (personaSourceRef(sample) === undefined) skipSuite("filesystem-scoped persona matching requires Linux boot and inode identity");
 const env = {
   HOME: root, USERPROFILE: root, COTAL_HOME: join(root, "home"), XDG_CONFIG_HOME: join(root, "config"),
   PATH: process.env.PATH, COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_TELEMETRY: "off", NO_COLOR: "1",
@@ -59,6 +61,7 @@ try {
   file(join(catalog, "duplicate.md"), "displayed");
   const external = file(join(catalog, "external.md"), "external");
   file(join(catalog, "joiner.md"), "joiner");
+  linkSync(mismatch, join(catalog, "alias.md"));
   const running = await startSession("displayed", mismatch);
   await startSession("control", control);
   // A file outside this catalog with the same basename and display name supplies no match.
@@ -68,11 +71,16 @@ try {
   check("a different display name still marks the source catalog entry running", /^mismatch\s+● running$/m.test(listed), listed);
   check("a matching display name still works", /^control\s+● running$/m.test(listed), listed);
   check("unrelated files and fileless sessions do not match, even with colliding names or frontmatter metadata",
-    ["duplicate", "external", "joiner"].every((name) => new RegExp(`^${name}\\s+○ not running$`, "m").test(listed)), listed);
+    ["alias", "duplicate", "external", "joiner"].every((name) => new RegExp(`^${name}\\s+○ not running$`, "m").test(listed)), listed);
 
   await running.ep.setCardName("renamed");
   const renamed = await listRunning();
   check("renaming a running session keeps the source match", /^mismatch\s+● running$/m.test(renamed), renamed);
+  renameSync(mismatch, join(root, "original.md"));
+  file(mismatch, "displayed");
+  const replaced = await listRunning();
+  check("a different file at the same path is not mistaken for the launched file", /^mismatch\s+○ not running$/m.test(replaced), replaced);
+  renameSync(join(root, "original.md"), mismatch);
   const legacy = new CotalEndpoint({
     servers: server, space, channels: [], consume: false, watchPresence: false,
     card: { name: "duplicate", kind: "agent" },

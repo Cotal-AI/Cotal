@@ -5,7 +5,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { lstatSync, realpathSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { sameStrings } from "./credential-renewal.js";
-import { launchSpecForRun } from "./launch.js";
+import { launchSpecForRun, manifestPersonaSource } from "./launch.js";
 import type { Manager, FreeSlotCause, ManagerResumeAgent, ManagerResumeIdentity, ManagerResumeInventory, ManagerResumeResult, SupervisedRestart } from "./manager.js";
 import { MAX_AGENTS, parseResumeCommitArgs, parseResumeControlArgs, parseResumeFinalizeArgs } from "./resume.js";
 import { requireRuntimeReap } from "./runtime/index.js";
@@ -953,6 +953,7 @@ export class PreservedResume {
         return { ok: false, error: `${connector.name} connector does not support exact-session continuation` };
 
       let launchOptions: Record<string, unknown> | undefined;
+      let personaSource: string | undefined;
       let exact = false;
       if (entry.launch.source.kind === "manifest") {
         const launchSource = entry.launch.source;
@@ -970,8 +971,10 @@ export class PreservedResume {
         if (!spec || spec.hash !== launchSource.hash)
           return { ok: false, error: `retained manifest agent ${launchSource.requested} is missing or its hash changed; refusing same-principal resume` };
         launchOptions = spec.launchOptions;
+        personaSource = manifestPersonaSource(spec);
         exact = spec.continuity === "exact";
       } else {
+        if (entry.launch.source.kind === "inline") personaSource = entry.launch.source.personaSource ?? "unknown";
         try {
           launchOptions = loadAgentFile(entry.launch.source.configPath).launchOptions;
         } catch (e) {
@@ -1010,6 +1013,7 @@ export class PreservedResume {
           backfillFloor: entry.backfillFloor,
           acceptedToken: entry.identity.mode === "static" ? entry.identity.issued?.acceptedToken : undefined,
           configPath: entry.launch.source.configPath,
+          personaSource,
           model: entry.launch.model,
           variant: entry.launch.variant,
           launchOptions,

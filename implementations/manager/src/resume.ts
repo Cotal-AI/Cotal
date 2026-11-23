@@ -1,6 +1,6 @@
 import { mkdirSync, readFileSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { assertValidName, parsePersonaEndpoints, parseShareSelection, writeSecretFileAtomic } from "@cotal-ai/core";
+import { assertValidName, isPersonaSourceRef, parsePersonaEndpoints, parseShareSelection, writeSecretFileAtomic } from "@cotal-ai/core";
 import { z } from "zod";
 import type { ManagerResumeInventory } from "./manager.js";
 
@@ -63,6 +63,7 @@ const source = z.discriminatedUnion("kind", [
     ref: label,
     configPath: path,
     configSha256: digest,
+    personaSource: z.union([z.literal("none"), z.literal("unknown"), z.string().refine(isPersonaSourceRef)]).optional(),
   }),
   z.strictObject({
     kind: z.literal("manifest"),

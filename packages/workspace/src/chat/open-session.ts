@@ -8,6 +8,7 @@ import {
   isConsumerNotFound,
   isJetStreamMissing,
   mintLifecycleUid,
+  PERSONA_SOURCE_META_KEY,
   standaloneConnectOpts,
   unicastRecvFilter,
 } from "@cotal-ai/core";
@@ -48,7 +49,7 @@ export async function openRoutingChatSession(target: MeshTarget, options: {
     space: target.space,
     servers: target.server,
     tls: target.tlsRequired,
-    card: { owner, actor, name: options.label, kind: "endpoint", meta: { sessionKind: "chat" } },
+    card: { owner, actor, name: options.label, kind: "endpoint", meta: { sessionKind: "chat", [PERSONA_SOURCE_META_KEY]: "none" } },
     lifecycleUid: uid,
     channels: [...options.channels],
     inactiveThresholdMs: 600_000,

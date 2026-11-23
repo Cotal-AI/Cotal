@@ -384,7 +384,7 @@ export async function upManifest(file: string, opts: UpManifestFlags): Promise<v
     catch { throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the fresh boot's bind address was not confirmed after owner preparation; no launch spec or listener was requested, but its retained intent and any prepared trust were not discarded", { target: { space: m.space, deploymentId, server: brokerAddressForDisplay(server) ?? "not displayable" }, remedy: "inspect the exact retained intent, trust state and address before deciding another boot; this bind probe does not reserve the listener" }); }
   }
   let specPath: string;
-  try { specPath = writeLaunchSpec(cotalRoot(), buildLaunchSpec(eff, deploymentId, owner)); }
+  try { specPath = writeLaunchSpec(cotalRoot(), buildLaunchSpec(eff, deploymentId, owner, { localBoot: true })); }
   catch (error) {
     if (opts.freshTeamBoot) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the fresh boot intent was recorded, but launch-spec creation did not confirm its outcome; no broker launch was attempted and the intent remains for inspection", { target: { space: m.space, deploymentId, root: cotalRoot() }, remedy: "inspect the original intent and launch-spec path before another boot; no effect was retried" });
     throw error;

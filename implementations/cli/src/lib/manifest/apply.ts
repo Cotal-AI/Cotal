@@ -71,15 +71,18 @@ function toLaunchAgent(a: PreparedAgent): MeshLaunchAgent {
   };
 }
 
-/** Build the launch spec the manager boots from. `owner` (user-auth meshes) is the logged-in
- *  operator every launched agent runs under — resolved by the caller at apply time. */
-export function buildLaunchSpec(prepared: PreparedManifest, runId: string, owner?: string): MeshLaunchSpec {
+/** Build a spec for an existing manager. Local boot owns both sides of the on-disk artifact and
+ *  can carry source information without changing the strict shape older managers accept. */
+export function buildLaunchSpec(prepared: PreparedManifest, runId: string, owner?: string, options?: { localBoot: true }): MeshLaunchSpec {
   return {
     apiVersion: "cotal-launch/v1",
     space: prepared.manifest.space,
     runId,
     ...(owner ? { owner } : {}),
-    agents: prepared.agents.map(toLaunchAgent),
+    agents: prepared.agents.map((agent) => ({
+      ...toLaunchAgent(agent),
+      ...(options?.localBoot && agent.personaSource !== undefined ? { personaSource: agent.personaSource } : {}),
+    })),
   };
 }
 

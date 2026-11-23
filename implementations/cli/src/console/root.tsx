@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { CotalEndpoint, chatWildcard } from "@cotal-ai/core";
+import { CotalEndpoint, chatWildcard, PERSONA_SOURCE_META_KEY } from "@cotal-ai/core";
 import { openObserver, type ObserverAuth } from "@cotal-ai/workspace/view";
 import { App } from "./app.js";
 import { SpacePicker } from "./ui/SpacePicker.js";
@@ -16,7 +16,7 @@ export function makeParticipant(observer: CotalEndpoint, server: string): CotalE
   const peer = new CotalEndpoint({
     space: observer.space,
     servers: server,
-    card: { ...observer.card },
+    card: { ...observer.card, meta: { ...observer.card.meta, [PERSONA_SOURCE_META_KEY]: "none" } },
     channels: [],
     consume: false,
     registerPresence: true,
