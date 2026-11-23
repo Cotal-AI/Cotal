@@ -131,6 +131,24 @@ for (const level of ["regular", "minimal"]) {
     replay.status === 1 && replay.stderr.includes("must be launched by its recorded parent") && replay.sent.length === 0 && !existsSync(s.settingsPath), shown(replay));
 }
 
+for (const level of ["regular", "minimal"]) {
+  const s = sandbox();
+  const r = await s.run(["ext", "remove", "not-installed"], {
+    COTAL_SKIP_CONNECTOR_SEED: undefined, COTAL_ALLOW_CHECKOUT_SEED: "1", COTAL_TELEMETRY: level,
+    PATH: s.project, APPDATA: s.home, LOCALAPPDATA: s.home,
+  });
+  const commands = r.sent.filter((body) => body.event === "command");
+  check(`a seed child failed before removal at ${level}`, r.status === 1 && r.stderr.includes("failed to seed connector") && r.stderr.includes("npm install failed"), shown(r));
+  check(`only the operator's command reports at ${level}`, commands.length === 1 && commands[0]?.command === "ext" && commands[0]?.exitCode === 1 && commands[0]?.outcome === "error" && (level === "minimal" ? sameKeys(commands[0], MINIMAL) : commands[0]?.subcommand === "remove"), commands.map((body) => body.subcommand));
+  check(`the seed child sends no install event at ${level}`, r.sent.filter((body) => body.event === "install").length === (level === "regular" ? 1 : 0));
+}
+
+{
+  const r = await sandbox().run(["ext", "add", "./missing-extension"]);
+  const commands = r.sent.filter((body) => body.event === "command");
+  check("an explicit extension add still reports its own failure", r.status === 1 && commands.length === 1 && commands[0]?.subcommand === "add" && commands[0]?.outcome === "error");
+}
+
 // ---- no argument or flag value leaks, and a refusal carries its code ----
 {
   const s = sandbox();

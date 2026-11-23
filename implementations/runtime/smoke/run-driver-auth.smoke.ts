@@ -47,9 +47,12 @@ import {
   timerWriterDurable,
   armCheckpointTimer,
   readCheckpointSpec,
+  readCheckpointSettle,
   readCheckpointStatus,
   resumeCheckpoint,
   eptReqStreamName,
+  eptStreamName,
+  epfStreamName,
   eptSubject,
   chatSubject,
   admissionBucket,
@@ -857,6 +860,10 @@ const A = await driver(RUN_A, TK_A);
   const copiedRead = await pauses.readSettle(sleep.requestId)
     .then(() => "allowed", (e) => e instanceof RunScopeDenied ? "denied" : short(e));
   c("copying a foreign token into the driver's own journal grants no host access", copiedRead === "denied", copiedRead);
+  const fact = await readCheckpointSettle(B.hostPlanes.jsm, S, { endpoint: EP, token: sleep.requestId });
+  const copiedPoll = await pauses.pollSettle(sleep.requestId)
+    .then(() => "allowed", (e) => e instanceof RunScopeDenied ? "denied" : short(e));
+  c("the settlement poll refuses to return a foreign run's existing fact", fact !== undefined && copiedPoll === "denied", copiedPoll);
 
 }
 
@@ -1051,11 +1058,11 @@ const A = await driver(RUN_A, TK_A);
   }
 }
 
-// ── createRunEffectHost constructs EpfSettleWatcher over pauses.readSettle (#3344) ─────────────
+// The hosted settlement watcher shares the broker-backed polling loop.
 {
   const hostSrc = readFileSync(new URL("../src/run-effect-host.ts", import.meta.url), "utf8");
-  c("createRunEffectHost constructs EpfSettleWatcher over pauses.readSettle (#3344)",
-    hostSrc.includes("new EpfSettleWatcher((ref) => pauses.readSettle(ref.token))")
+  c("createRunEffectHost constructs EpfSettleWatcher over pauses.pollSettle",
+    hostSrc.includes("new EpfSettleWatcher((ref) => pauses.pollSettle(ref.token))")
       && !hostSrc.includes("awaitSettle") && !hostSrc.includes("2_000"));
   const authority = createRunScopeAuthority(A.hostPlanes, RUN_A, lease(TK_A, 1));
   const pauses = createRunPauseHost(A.hostPlanes, {
@@ -1072,6 +1079,38 @@ const A = await driver(RUN_A, TK_A);
     .then(() => "allowed", (e) => e instanceof RunScopeDenied ? "denied" : short(e));
   c("a pause-mediated EpfSettleWatcher enforces run-scope authority on settle reads (#3344)",
     deniedWatch === "denied", deniedWatch);
+}
+
+{
+  const runId = "run-idle-pause-polls";
+  const takeoverId = newTakeoverId();
+  const H = await driver(runId, takeoverId);
+  const { streams, consumers } = H.hostPlanes.jsm;
+  const getMessage = streams.getMessage.bind(streams);
+  const add = consumers.add.bind(consumers);
+  let fires = 0, settles = 0, replays = 0;
+  streams.getMessage = async (stream, query) => {
+    if ("last_by_subj" in query) {
+      if (stream === eptStreamName(S) && query.last_by_subj.endsWith(".fire")) fires++;
+      if (stream === epfStreamName(S) && query.last_by_subj.includes(".cp.")) settles++;
+    }
+    return getMessage(stream, query);
+  };
+  consumers.add = async (stream, ...args) => {
+    if (stream === wfjStreamName(S)) replays++;
+    return add(stream, ...args);
+  };
+  const driven = startRun(H.js, H.jsm, { space: S, endpoint: EP, runId,
+    source: 'await sleep("10s", { name: "idle" });', kv: H.kv, lease: lease(takeoverId, 1), handler: H.handler });
+  c("the hosted sleep starts both live pollers", await until(async () => fires > 0 && settles > 0, 5_000));
+  await wait(150);
+  const before = { fires, settles, replays };
+  const observed = await until(async () => fires > before.fires && settles > before.settles, 5_000);
+  c("each idle poll reads its plane without creating a journal consumer", observed && replays === before.replays,
+    { before, after: { fires, settles, replays } });
+  const out = await withDeadline(driven, 15_000, "the idle hosted sleep");
+  c("the same hosted sleep settles once when its timer fires", out?.status === "completed"
+    && out.result.journal.entries().filter(row => row.kind === "sleep" && row.state === "settled" && row.status === "ok").length === 1);
 }
 } catch (error) {
   fail++;
