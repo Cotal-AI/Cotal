@@ -1,16 +1,33 @@
 import { principalKey } from "@cotal-ai/core";
 import { existsSync } from "node:fs";
 import {
-  AguiEmitter, AguiEmitterHolder, EventWal, FileSubjectFrontier, JsonlFileSource,
-  ensureEventWalDir, resolveEventsStateRoot, type MeshAgent, type PrincipalLock,
+  AguiEmitter, AguiEmitterHolder, DeltaJournal, DeltaMergedSource, EventWal, FileSubjectFrontier,
+  ensureEventWalDir, resolveEventsStateRoot, streamSeed, type HeldEventWalLocation, type Merged, type MeshAgent, type PrincipalLock,
 } from "@cotal-ai/connector-core";
-import { createPiMapper, type PiSessionEntry } from "./agui-map.js";
+import { createPiMapper, piStreamKey, type PiSessionEntry } from "./agui-map.js";
 import { PiSessionSource } from "./agui-source.js";
+
+const FIRST_FILE = "pi:first-file";
+
+/** The fields of Pi's `message_update` event a delta is taken from. */
+interface PiStreamUpdate {
+  type: string;
+  contentIndex?: number;
+  delta?: string;
+  partial?: { timestamp: number };
+}
+
+/** What one adopted native session reads: Pi's file merged with the deltas its replies streamed. */
+interface Adopted {
+  source: DeltaMergedSource<PiSessionEntry>;
+  journalPath: string;
+}
 
 /** One holder per native session. The file is the source, while hooks only wake its reader. */
 export class PiEvents {
-  private holder?: AguiEmitterHolder<PiSessionEntry>;
+  private holder?: AguiEmitterHolder<Merged<PiSessionEntry>>;
   private lock?: PrincipalLock;
+  private deltas?: DeltaJournal;
   private sessionId?: string;
   private path?: string;
   private pending: Promise<void> = Promise.resolve();
@@ -24,6 +41,7 @@ export class PiEvents {
     private readonly space: string,
     private readonly stopped: (error: Error, retryInMs: number | null) => void,
     private readonly withholdPayloads = false,
+    private readonly reasoning = false,
   ) {}
 
   async start(sessionId: string, path: string | undefined, freshSession = false): Promise<void> {
@@ -38,9 +56,10 @@ export class PiEvents {
       this.sessionId = sessionId;
       this.path = path;
       const existed = existsSync(path);
-      if (!existed && freshSession) await this.prepareFirstFile(sessionId);
-      if (existed) await this.prepareExistingFile(sessionId, path);
-      const holder = this.newHolder(sessionId, path, !existed && freshSession);
+      const adopted = await this.adopt(sessionId, path);
+      if (!existed && freshSession) await this.prepareFirstFile(sessionId, adopted.source);
+      if (existed) await this.prepareExistingFile(sessionId, path, adopted.source);
+      const holder = this.newHolder(sessionId, path, !existed && freshSession, adopted);
       this.holder = holder;
       holder.adopt(path);
       if (existsSync(path)) holder.flush(path);
@@ -66,6 +85,19 @@ export class PiEvents {
     this.pending = step.catch((error: Error) => this.fail(error));
   }
 
+  /** A piece of the reply Pi is streaming. Thinking is journaled only when reasoning is published. */
+  delta(update: PiStreamUpdate): void {
+    if (this.closing || !this.deltas || update.partial === undefined || update.contentIndex === undefined || update.delta === undefined) return;
+    const at = (kind: "text" | "thinking") => piStreamKey(update.partial!.timestamp, kind, update.contentIndex!);
+    if (update.type === "text_delta") this.deltas.append({ key: at("text"), kind: "text", text: update.delta });
+    else if (update.type === "thinking_delta" && this.reasoning) this.deltas.append({ key: at("thinking"), kind: "reasoning", text: update.delta });
+  }
+
+  /** Pi is about to save a message: its record carries the text not journaled yet. */
+  settle(): void {
+    this.deltas?.settle();
+  }
+
   async shutdown(): Promise<void> {
     this.closing = true;
     await this.pending;
@@ -77,6 +109,8 @@ export class PiEvents {
     const holder = this.holder;
     this.holder = undefined;
     if (holder) await holder.close();
+    this.deltas?.close();
+    this.deltas = undefined;
     const lock = this.lock;
     this.lock = undefined;
     if (lock) await lock.release();
@@ -84,69 +118,83 @@ export class PiEvents {
     this.path = undefined;
   }
 
-  /** A file-free native session needs its durable start cursor before Pi may save its first answer.
-   * This is local filesystem work only: no broker dial or AG-UI preflight blocks the host hook. */
-  private async prepareFirstFile(threadId: string): Promise<void> {
+  /** The thread's WAL directory, holding this principal's lock. */
+  private async walDir(threadId: string): Promise<HeldEventWalLocation> {
     const workspaceRoot = resolveEventsStateRoot(process.env);
     const principal = principalKey(this.mesh.ep.principal.owner, this.mesh.ep.principal.actor).key;
-    const { walPath, lock } = await ensureEventWalDir({ workspaceRoot, space: this.space, principal, threadId });
-    this.lock = lock;
-    const wal = await EventWal.open(walPath, { space: this.space, principal, threadId, subjectMayExist: false });
-    if (wal.frontier.sourceCursor === undefined) await wal.advanceCursorOnly("pi:first-file");
-    if (wal.frontier.sourceCursor !== "pi:first-file" && wal.frontier.seq === 0)
+    const loc = await ensureEventWalDir({ workspaceRoot, space: this.space, principal, threadId });
+    this.lock = loc.lock;
+    return loc;
+  }
+
+  /** Open the session's delta journal before anything positions on it. A written line wakes the
+   *  emitter, and a line that cannot be written stops the plane by name. */
+  private async adopt(sessionId: string, path: string): Promise<Adopted> {
+    const harness = new PiSessionSource(path);
+    const { deltaJournalPath } = await this.walDir(sessionId);
+    this.deltas = DeltaJournal.open({
+      path: deltaJournalPath,
+      anchor: () => harness.anchor(),
+      onWrite: () => this.flush(sessionId, path),
+      onError: (error) => this.fail(new Error(`Pi AG-UI: streamed text could not be journaled: ${error.message}`)),
+    });
+    return { source: new DeltaMergedSource(harness, deltaJournalPath), journalPath: deltaJournalPath };
+  }
+
+  private async openWal(threadId: string): Promise<{ wal: EventWal; subjectPath: string }> {
+    const { walPath, subjectPath } = await this.walDir(threadId);
+    const principal = principalKey(this.mesh.ep.principal.owner, this.mesh.ep.principal.actor).key;
+    return { wal: await EventWal.open(walPath, { space: this.space, principal, threadId, subjectMayExist: false }), subjectPath };
+  }
+
+  /** A file-free native session needs its durable start cursor before Pi may save its first answer.
+   * This is local filesystem work only: no broker dial or AG-UI preflight blocks the host hook. */
+  private async prepareFirstFile(threadId: string, source: DeltaMergedSource<PiSessionEntry>): Promise<void> {
+    const { wal } = await this.openWal(threadId);
+    if (wal.frontier.sourceCursor === undefined) await wal.advanceCursorOnly(source.start(FIRST_FILE));
+    if (source.harnessOf(wal.frontier.sourceCursor!) !== FIRST_FILE && wal.frontier.seq === 0)
       throw new Error("Pi AG-UI: fresh native session has a different source boundary");
   }
 
   /** A resumed/forked native file can already contain history. Capture its end before allowing
    * the next turn to append. An acknowledged WAL cursor takes precedence on a process restart. */
-  private async prepareExistingFile(threadId: string, path: string): Promise<void> {
-    const workspaceRoot = resolveEventsStateRoot(process.env);
-    const principal = principalKey(this.mesh.ep.principal.owner, this.mesh.ep.principal.actor).key;
-    const { walPath, lock } = await ensureEventWalDir({ workspaceRoot, space: this.space, principal, threadId });
-    this.lock = lock;
-    const wal = await EventWal.open(walPath, { space: this.space, principal, threadId, subjectMayExist: false });
+  private async prepareExistingFile(threadId: string, path: string, source: DeltaMergedSource<PiSessionEntry>): Promise<void> {
+    const { wal } = await this.openWal(threadId);
     if (wal.frontier.sourceCursor === undefined)
-      await wal.advanceCursorOnly((await new JsonlFileSource(path).read(undefined)).cursor);
+      await wal.advanceCursorOnly(source.start((await new PiSessionSource(path).read(undefined)).cursor));
   }
 
-  private newHolder(sessionId: string, path: string, freshFile: boolean): AguiEmitterHolder<PiSessionEntry> {
-    return new AguiEmitterHolder<PiSessionEntry>(async () => {
+  private newHolder(sessionId: string, path: string, freshFile: boolean, adopted: Adopted): AguiEmitterHolder<Merged<PiSessionEntry>> {
+    const { source, journalPath } = adopted;
+    return new AguiEmitterHolder<Merged<PiSessionEntry>>(async () => {
       await this.mesh.waitUntilConnected();
       if (!freshFile && !existsSync(path))
         throw new Error("Pi AG-UI: resumed native session file does not exist; refusing to classify copied history as a fresh turn");
-      const workspaceRoot = resolveEventsStateRoot(process.env);
       const principal = principalKey(this.mesh.ep.principal.owner, this.mesh.ep.principal.actor).key;
-      const { walPath, subjectPath, lock } = await ensureEventWalDir({ workspaceRoot, space: this.space, principal, threadId: sessionId });
-      this.lock = lock;
+      const { wal, subjectPath } = await this.openWal(sessionId);
       const subjectFrontier = await FileSubjectFrontier.open(subjectPath, { space: this.space, principal });
-      const wal = await EventWal.open(walPath, { space: this.space, principal, threadId: sessionId, subjectMayExist: false });
       // A re-establish starts this factory again with the cursor the first turns acknowledged, so
       // an acknowledged cursor alone no longer says the file vanished; the file does (Sol, review
       // of 2026-10-12: the first cut threw here on every re-establish of a new session).
-      if (freshFile && wal.frontier.sourceCursor !== undefined && wal.frontier.sourceCursor !== "pi:first-file" && !existsSync(path))
+      const acknowledged = wal.frontier.sourceCursor;
+      if (freshFile && acknowledged !== undefined && source.harnessOf(acknowledged) !== FIRST_FILE && !existsSync(path))
         throw new Error("Pi AG-UI: native session file vanished after an event cursor was acknowledged");
       // For an existing transcript, capture its boundary before subsequent turns. A restart keeps
       // its acknowledged cursor. A new file is read from its beginning to retain the first turn.
-      if (wal.frontier.sourceCursor === undefined) {
-        if (freshFile) await wal.advanceCursorOnly("pi:first-file");
-        else {
-          const boundary = await new JsonlFileSource(path).read(undefined);
-          await wal.advanceCursorOnly(boundary.cursor);
-        }
-      }
+      if (acknowledged === undefined)
+        await wal.advanceCursorOnly(source.start(freshFile ? FIRST_FILE : (await new PiSessionSource(path).read(undefined)).cursor));
       // Seeded from the pending frame when there is one: `start` settles that frame, and its
-      // brackets are the run and tool calls the wire will have open once it has.
+      // brackets are the run, tool calls and streamed parts the wire will have open once it has.
       const brackets = wal.pending === null ? wal.brackets : wal.pending.brackets;
-      const map = createPiMapper(sessionId, brackets?.run, brackets?.tools);
+      const at = wal.pending === null ? wal.frontier.sourceCursor : wal.pending.sourceCursor;
+      const map = createPiMapper(sessionId, brackets?.run, brackets?.tools, this.reasoning, await streamSeed(journalPath, at, brackets));
       return AguiEmitter.start({
         withholdPayloads: this.withholdPayloads,
-        endpoint: this.mesh.ep, wal, subjectFrontier,
-        source: new PiSessionSource(path),
-        map,
+        endpoint: this.mesh.ep, wal, subjectFrontier, source, map,
         onUnreadable: (gap) =>
-          console.error(`Pi AG-UI source: skipped an unreadable session record at offset ${gap.offset} (${gap.bytes} bytes): ${gap.reason}`),
+          console.error(`Pi AG-UI source: skipped an unreadable ${gap.file ? "delta journal line" : "session record"} at offset ${gap.offset} (${gap.bytes} bytes): ${gap.reason}`),
       });
-    }, { onError: (error, retryInMs) => this.stopped(error, retryInMs), sourceEnd: (p) => new JsonlFileSource(p).end() });
+    }, { onError: (error, retryInMs) => this.stopped(error, retryInMs), sourceEnd: () => source.end() });
   }
 
   private fail(error: Error): void {

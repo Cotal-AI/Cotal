@@ -14,7 +14,7 @@ import { mkdtempSync, rmSync, writeFileSync, appendFileSync, mkdirSync } from "n
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Part } from "@cotal-ai/core";
-import { AguiEmitter, EventWal, TOOL_RESULT_EVENT, type AguiEvent, type EmitterEndpoint } from "@cotal-ai/connector-core";
+import { AguiEmitter, DeltaMergedSource, EventWal, TOOL_RESULT_EVENT, type AguiEvent, type EmitterEndpoint } from "@cotal-ai/connector-core";
 import { emitSentinel, memorySubjectFrontier } from "@cotal-ai/smoke-kit";
 import { createPiMapper, type PiSessionEntry } from "../src/agui-map.js";
 import { PiSessionSource } from "../src/agui-source.js";
@@ -41,6 +41,9 @@ console.log("Pi tool payloads through the shared emitter");
     mkdirSync(join(root, "thread"));
     const path = join(root, "session.jsonl");
     writeFileSync(path, "");
+    // A seat reads its session through the delta journal; nothing streams here, so it stays empty.
+    const journal = join(root, "thread", "deltas.jsonl");
+    writeFileSync(journal, "", { mode: 0o600 });
     const published: { rail: "public" | "payload"; parts: Part[] }[] = [];
     const ep: EmitterEndpoint = {
       principal: { owner: "local", actor: "seat" }, actorIsEphemeral: false, maxPayload: 100_000,
@@ -50,7 +53,7 @@ console.log("Pi tool payloads through the shared emitter");
       publishEventPayload: async (o) => { published.push({ rail: "payload", parts: o.parts }); return { ack: { seq: published.length, duplicate: false } }; },
     };
     const wal = await EventWal.open(join(root, "thread", "wal.json"), { space: "pi", threadId: "native", principal: "local.seat", subjectMayExist: false });
-    const emitter = await AguiEmitter.start({ endpoint: ep, wal, subjectFrontier: memorySubjectFrontier(), source: new PiSessionSource(path), map: createPiMapper("native") });
+    const emitter = await AguiEmitter.start({ endpoint: ep, wal, subjectFrontier: memorySubjectFrontier(), source: new DeltaMergedSource(new PiSessionSource(path), journal), map: createPiMapper("native") });
     await emitter.pump();
 
     const ts = 1_795_432_945_229;
@@ -96,7 +99,7 @@ console.log("Pi thinking blocks");
     { type: "thinking", thinking: "[Reasoning redacted]", thinkingSignature: "opaque", redacted: true },
     { type: "text", text: "answer" },
   ], "stop");
-  const types = (reasoning?: boolean) => (createPiMapper("think", undefined, [], reasoning)(entry) as { events: AguiEvent[] } | null)?.events ?? [];
+  const types = (reasoning?: boolean) => (createPiMapper("think", undefined, [], reasoning)({ harness: entry }) as { events: AguiEvent[] } | null)?.events ?? [];
   check("thinking is not published by default", !types().some((e) => e.type.startsWith("REASONING")), types().map((e) => e.type));
   const on = types(true).filter((e) => e.type === "REASONING_MESSAGE_CONTENT").map((e) => (e as { delta?: string }).delta);
   check("the reasoning option publishes thinking, and never a redacted placeholder", JSON.stringify(on) === JSON.stringify(["Check the file first."]), on);

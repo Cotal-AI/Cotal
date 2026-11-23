@@ -13,7 +13,7 @@ import cotalMesh, { persistSessionId, supervisedProjectTrust } from "./src/exten
 import { InboxTurn } from "./src/inbox-turn.js";
 import { piConnector } from "./src/connector.js";
 import { wrapped } from "./src/wrap.js";
-import { createPiMapper } from "./src/agui-map.js";
+import { createPiMapper, type PiSessionEntry } from "./src/agui-map.js";
 /** The unit a record mapped to, or `null`: a turn the mapper opens no run for maps to none. */
 const unitOf = <U extends { runId: string }>(r: U | { turn: true } | null): U | null => (r !== null && "runId" in r ? r : null);
 import { PiSessionSource } from "./src/agui-source.js";
@@ -177,7 +177,12 @@ function confirm(driver: PiDriver, details: CotalBatchDetails): void {
 
 const tick = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
 
-// The persistent Pi JSONL is the data path. Live extension deltas never enter the source.
+// The persistent Pi JSONL is the data path. A session whose replies streamed nothing maps from its
+// saved records alone, so these cells read them without a delta journal.
+const savedMapper = (threadId: string) => {
+  const map = createPiMapper(threadId);
+  return (entry: PiSessionEntry) => map({ harness: entry });
+};
 {
   const root = mkdtempSync(join(tmpdir(), "cotal-pi-native-source-"));
   const path = join(root, "session.jsonl");
@@ -193,7 +198,7 @@ const tick = (): Promise<void> => new Promise((resolve) => setImmediate(resolve)
       entry("partial", "assistant", { content: [{ type: "text", text: "uncommitted" }] }).slice(0, -1));
     const read = await source.read("pi:first-file");
     ok(read.records.length === 6, "first-file sentinel reads complete native JSONL lines but not trailing partial line");
-    const map = createPiMapper("native");
+    const map = savedMapper("native");
     const events = read.records.flatMap(({ value }) => unitOf(map(value))?.events ?? []);
     ok(events.map((event) => event.type).join() ===
       "RUN_STARTED,TEXT_MESSAGE_START,TEXT_MESSAGE_CONTENT,TEXT_MESSAGE_END,TOOL_CALL_START,TOOL_CALL_ARGS,TOOL_CALL_END,TOOL_CALL_RESULT,CUSTOM,TEXT_MESSAGE_START,TEXT_MESSAGE_CONTENT,TEXT_MESSAGE_END,RUN_FINISHED",
@@ -201,10 +206,10 @@ const tick = (): Promise<void> => new Promise((resolve) => setImmediate(resolve)
     ok(!JSON.stringify(applyAguiEgressPolicy(events)).includes("private"), "mixed-authorship user content and tool output never enter the public event plane");
     ok((await source.read(read.cursor)).records.length === 0, "the durable cursor never rereads an acknowledged native message");
     ok((await new PiSessionSource(path).read(undefined)).records.length === 0, "an existing resumed transcript begins at its end, not old history");
-    const boundaryMap = createPiMapper("resumed");
+    const boundaryMap = savedMapper("resumed");
     ok(boundaryMap({ type: "message", id: "orphan", message: { role: "toolResult", toolCallId: "old-call" } }) === null,
       "a result for a call before the adopted boundary is not emitted as an orphan tool end");
-    const failedMap = createPiMapper("failed");
+    const failedMap = savedMapper("failed");
     const failure = unitOf(failedMap({ type: "message", id: "error-call", timestamp: "2026-01-01T00:00:00.000Z", message: {
       role: "assistant", timestamp: 1_767_225_600_000, content: [{ type: "toolCall", id: "err-tool", name: "bash" }], stopReason: "error",
     } }));
@@ -215,7 +220,7 @@ const tick = (): Promise<void> => new Promise((resolve) => setImmediate(resolve)
     } }));
     ok(recovered?.events[0]?.type === "RUN_STARTED" && recovered.events.at(-1)?.type === "RUN_FINISHED",
       "a native error does not silence the next completed turn");
-    const aborted = unitOf(createPiMapper("aborted")({ type: "message", id: "abort-call", timestamp: "2026-01-01T00:00:00.000Z", message: {
+    const aborted = unitOf(savedMapper("aborted")({ type: "message", id: "abort-call", timestamp: "2026-01-01T00:00:00.000Z", message: {
       role: "assistant", timestamp: 1_767_225_600_000, content: [{ type: "toolCall", id: "abort-tool", name: "bash" }], stopReason: "aborted",
     } }));
     ok(aborted?.events.map((event) => event.type).join() === "RUN_STARTED,TOOL_CALL_START,TOOL_CALL_ARGS,TOOL_CALL_END,RUN_FINISHED" &&
@@ -224,7 +229,7 @@ const tick = (): Promise<void> => new Promise((resolve) => setImmediate(resolve)
       "an aborted assistant closes its native tool calls and ends its run as an interrupt, not an error");
     // The shape Pi 0.84.3 wrote live when Escape landed during a bash call: the tool result, then a
     // reply recorded as an error with the platform's AbortError text and no content.
-    const toolAbortMap = createPiMapper("tool-abort");
+    const toolAbortMap = savedMapper("tool-abort");
     const toolAbort = [
       { type: "message", id: "tool-turn", message: { role: "assistant", timestamp: 1_767_225_600_000, content: [{ type: "toolCall", id: "loop", name: "bash" }], stopReason: "toolUse" } },
       { type: "message", id: "tool-result", message: { role: "toolResult", timestamp: 1_767_225_601_000, toolCallId: "loop" } },

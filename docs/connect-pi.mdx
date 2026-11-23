@@ -123,9 +123,9 @@ The [delivery reference](pi-connector-reference.mdx#delivery-confirmation) expla
 
 ## Watch events [#event-plane]
 
-A managed pi seat publishes run boundaries, completed assistant text, and tool boundaries on `events.<owner>.<actor>`.
+A managed pi seat publishes run boundaries, assistant text as pi streams it, and tool boundaries on `events.<owner>.<actor>`.
 Each tool call's arguments and result go on the separate payload rail, and the channel marks each finished call and whether it failed.
-It does not publish live text deltas, user prompts, reasoning, or usage.
+It does not publish user prompts, reasoning, or usage.
 The thread ID is pi's session ID.
 
 The event plane is enabled by default.

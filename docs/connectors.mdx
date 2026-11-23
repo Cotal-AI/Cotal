@@ -58,7 +58,7 @@ For containers, see the current [deployment limits](deploy.mdx).
 | Codex | Wakes a turn and steers connector-started turns. External turns defer automatic delivery. | Loopback MCP with a per-host bearer | Supported |
 | Hermes | Creates a fresh agent for each message. | Unix socket in a private directory, with a token derived from the control key | Completed-message events |
 | Jcode | Injects a Harness turn; directed messages steer its live session. | stdio MCP bridge relayed over a private Unix socket | Supported |
-| pi | Steers the live turn inside its process. | In-process tools | Completed-message events |
+| pi | Steers the live turn inside its process. | In-process tools | Supported, with streamed text |
 
 Jcode requires Node 22.13 or later; Node 23 requires 23.4 or later.
 All managed connectors also use connector-core's local control endpoint, authenticated by the [control exchange](authoring-a-connector.mdx#control-exchange).
