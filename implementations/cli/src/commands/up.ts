@@ -39,7 +39,6 @@ import {
   processStopped,
   readManagerName,
   readManagerSeatCap, DEFAULT_SEAT_CAP,
-  recordManagerName,
   parseSeatCapFlag,
   seatCapText,
   CommandFailure,
@@ -1071,16 +1070,12 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
       ensureRootForSpace(spaceForRoot);
     }
   }
-  // `--manager-name` is recorded for this root, where the manager reads it at each start. A running
-  // manager keeps the name it started with, so a different name while one runs is refused.
-  if (values["manager-name"] !== undefined) {
-    const name = assertManagerName(values["manager-name"]);
+  // A running manager keeps the name it started with.
+  const managerName = values["manager-name"] === undefined ? undefined : assertManagerName(values["manager-name"]);
+  if (managerName !== undefined) {
     const named = { root: cotalRoot(), space: values.space ?? folderSpace() };
-    if (readManagerName(named) !== name) {
-      if (managerRecordState(named.space, named.root).state === "alive")
-        throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `a manager already runs for space ${named.space}, and it keeps the name it started with`, { target: { root: named.root, space: named.space }, remedy: `stop it with \`cotal down\`, then run ${codeSpan(`cotal up --manager-name ${shellWord(name)}`)}` });
-      if (!values["dry-run"]) recordManagerName(named, name);
-    }
+    if (readManagerName(named) !== managerName && managerRecordState(named.space, named.root).state === "alive")
+      throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `a manager already runs for space ${named.space}, and it keeps the name it started with`, { target: { root: named.root, space: named.space }, remedy: `stop it with \`cotal down\`, then run ${codeSpan(`cotal up --manager-name ${shellWord(managerName)}`)}` });
   }
   // The manager records this cap once it serves. A running manager keeps the cap it started with.
   const managerSeatCap = parseSeatCapFlag("--seat-cap", values["seat-cap"]);
@@ -1176,7 +1171,7 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
           const stackServer = values.server ?? readStackJournal(meshRoot)?.journal.server ?? localMeshesForRoot(meshRoot).find((m) => m.space === stackSpace)?.server ?? await unrecordedStackServer(meshRoot, stackSpace, values.host);
           if (values.foreground && presentation !== "json") stackUpForegroundNotice(presentation, stackSpace, takeover);
           return await stackUp({ maintenanceLock: stackLock, root: meshRoot, space: stackSpace, server: stackServer, transport, runtime: values.runtime ?? "pty", noManager, managerSeatCap, ...(stackMode ? { mode: stackMode } : {}), ...(values.idp ? { idp: values.idp } : {}), ...(values.host ? { host: values.host } : {}), ...(values["store-dir"] ? { storeDir: values["store-dir"] } : {}), ...(values["rotate-sys"] ? { rotateSys: true } : {}), ...(values["recreate-membership-store"] ? { recreateMembershipStore: true } : {}), ...(values["recreate-issued-stores"] !== undefined ? { recreateIssuedStores: resolve(values["recreate-issued-stores"]) } : {}), ...(maxFileStore !== undefined ? { maxFileStore } : {}), ...(logFile !== undefined ? { logFile } : {}), ...(logfileSizeLimit !== undefined ? { logfileSizeLimit } : {}), ...(logfileMaxNum !== undefined ? { logfileMaxNum } : {}), ...(authTimeout !== undefined ? { authTimeout } : {}), ...(maxPayload !== undefined ? { maxPayload } : {}), ...(accountResolver !== undefined ? { accountResolver } : {}), ...(maxSessions !== undefined ? { maxSessions } : {}), ...(values.channels ? { channels: values.channels } : {}), ...(values.__invokedRoot ? { invokedRoot: values.__invokedRoot } : {}), foreground: values.foreground === true, presentation,
-            retryAtAnotherAddress: (host) => retryStackAddress(args.raw, invokedFrom, stackServer, host),
+            managerName, retryAtAnotherAddress: (host) => retryStackAddress(args.raw, invokedFrom, stackServer, host),
           }, native);
         } finally { releaseMaintenanceLock(stackLock); }
       };
@@ -1776,6 +1771,7 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
         runtime: values.runtime,
         attachHost: attachHostFor(held.space, values.host),
         maxSessions: maxSessionsFor(held.space, maxSessions),
+        managerName,
         managerSeatCap,
         noManager,
       }, startAuth);
@@ -1902,6 +1898,7 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
       host: values.host,
       runtime: values.runtime,
       maxSessions,
+      managerName,
       managerSeatCap,
       noManager,
       resumeAttempt,
@@ -2169,6 +2166,7 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
       ...(values["recreate-membership-store"] ? { recreateMembershipStore: true } : {}),
       host: values.host,
       maxSessions,
+      managerName,
       managerSeatCap,
       maxFileStore,
       publicExchange,

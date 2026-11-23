@@ -75,6 +75,7 @@ import { listAdditiveTeamAttempts, retainedAdditiveTeamAttempts, type AdditiveTe
 import { freshTeamAttemptSettled, listFreshTeamAttempts, listFreshTeamSummaries } from "../lib/team-fresh.js";
 import { foreignLocalProcesses, newStackOperation, readStackJournal, removeStaleLocalRecords, runningStackRoles, serviceHeldRecords, settleRetainedStackStops, settleStackOperation, STACK_ADAPTER, STACK_DEFINITION, STACK_ROLES, stackDefinitionsAt, stackMaintenanceFence, stackNeverStarted, stackRecoveryHost, stackOperationUnsettled, stackRoleApplies, stackSettlementNotice, staleRecordWarning, withSettledMembers, writeStackJournal, type LocalRecord, type StackJournal, type StackJournalSnapshot, type StackMember, type StackMode, type StackRole, type StackSettlement } from "../lib/stack-journal.js";
 import { retryStackAddress } from "../lib/up-broker-address.js";
+import { withManagerName } from "../lib/up-manager-name.js";
 import { NATS_DEFAULT_MAX_PAYLOAD, natsServerLabel, type NatsServer } from "../lib/nats-bin.js";
 import { sharedStoreAtStart, sharedStoreWarning, type StoreTenant } from "../lib/store-dir.js";
 import { readStoreIdentity, stackStoreWarnings } from "../lib/store-identity.js";
@@ -172,6 +173,7 @@ export interface StackUpRequest {
   /** How the broker resolves space accounts (`--account-resolver`). Absent: the recorded one. */
   accountResolver?: "memory" | "full";
   maxSessions?: number;
+  managerName?: string;
   managerSeatCap?: SeatCap;
   channels?: string;
   foreground: boolean;
@@ -1203,7 +1205,7 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
         options["launch-sha256"] = launch.sha256;
       }
       const manager = ensureDefinition(space, "manager", adapterDefinition(space, STACK_ADAPTER.manager, options, 60000), root, replace("manager"));
-      await start("manager", manager);
+      await withManagerName({ root, space }, request.managerName, () => start("manager", manager));
     }
     if (!loginBlock) settle("completed");
   } catch (caught) {
