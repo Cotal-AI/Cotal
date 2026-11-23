@@ -207,7 +207,12 @@ principal channel.
   sandbox hooks remain on the normal agent path.
 - `cotal_inbox` destructively pulls quiet ambient while the driver retains ownership of automatic
   traffic; normal focus recall shown alongside it remains read-only.
-- Pi model variants, MCP sharing, and raw launch options fail loudly until implemented.
+- MCP sharing and raw launch options fail loudly until implemented.
+- A model variant is a Pi thinking level (`off`, `minimal`, `low`, `medium`, `high`, `xhigh` or
+  `max`), passed as `--thinking`, and any other value fails the launch. Pi clamps a level to what
+  the model supports. `cotal models` lists each model's variants as Pi offers them: none for a model
+  without reasoning, else each level its thinking level map does not rule out, with `xhigh` and
+  `max` only where the map names them.
 
 ### Run turns
 
