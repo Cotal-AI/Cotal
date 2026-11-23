@@ -1,5 +1,5 @@
 import { BASELINE_LIFECYCLE_ENDPOINT, EpEnvelopeError, unansweredRequest, type EpAttributedReply } from "@cotal-ai/core";
-import { CommandFailure, codeSpan, isCommandFailure, isConnectRefusal, nativeEndpointRefusal } from "@cotal-ai/workspace";
+import { CommandFailure, brokerAddressForDisplay, codeSpan, isCommandFailure, isConnectRefusal, nativeEndpointRefusal } from "@cotal-ai/workspace";
 
 export class NativeReplyError extends Error {
   constructor(readonly response: EpAttributedReply, readonly phase: "invocation" | "target-inspection") { super("the native reply did not report success"); }
@@ -31,6 +31,13 @@ export function endpointFailure(error: unknown, target: Record<string, unknown>,
 
 /** `value` as one POSIX shell word, quoted when a shell would split or expand it. */
 export const shellWord = (value: string): string => /^[A-Za-z0-9_./:+-]+$/.test(value) ? value : `'${value.replace(/'/g, `'\\''`)}'`;
+
+export function verifyPinnedEndpoint(space: string, server: string | undefined): string {
+  const inventory = `cotal endpoint list --live --space ${shellWord(space)}`;
+  if (server === undefined) return `verify the full instance ID with ${codeSpan(inventory)}`;
+  if (brokerAddressForDisplay(server) === server) return `verify the full instance ID with ${codeSpan(`${inventory} --server ${shellWord(server)}`)}`;
+  return "verify the full instance ID against the same space and broker";
+}
 
 /** The operator instrument holds request rows for the manager endpoint only, so the broker refuses
  *  its call to any other endpoint before execution. A paired caller file for that endpoint can make
