@@ -37,7 +37,7 @@
  * Run: pnpm smoke:spawn-foreground-events
  */
 import { spawn as spawnProcess, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, symlinkSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -241,14 +241,17 @@ try {
         const loopEnv: NodeJS.ProcessEnv = { ...process.env, NO_COLOR: "1" };
         for (const key of Object.keys(loopEnv)) if (key.startsWith("COTAL_")) delete loopEnv[key];
         Object.assign(loopEnv, { COTAL_HOME: home, COTAL_NO_PROMPT: "1", COTAL_SKIP_CONNECTOR_SEED: "1" });
-        for (const source of [["--", "loop"], ["--file", loop]]) {
-          const refused = spawnSync(process.execPath, [binary, "spawn", "--foreground", "--server", server, "--space", "fgevents", ...source], {
-            cwd: caller, env: loopEnv, encoding: "utf8", timeout: 30_000,
-          });
-          check(`foreground spawn ${source[0]} names the looping persona and how to fix it`,
-            refused.status === 1 && refused.stderr.includes(`the persona path contains a symbolic-link loop: ${loop}`) &&
-            refused.stderr.includes("correct the link's target") && refused.stderr.includes("put a regular persona file in its place") &&
-            !refused.stderr.includes("spawning loop"), refused.stderr || refused.error);
+        for (const mode of [[], ["--dry-run", "--plain"]]) {
+          for (const source of [["--", "loop"], ["--file", loop]]) {
+            const refused = spawnSync(process.execPath, [binary, "spawn", "--foreground", "--server", server, "--space", "fgevents", ...mode, ...source], {
+              cwd: caller, env: loopEnv, encoding: "utf8", timeout: 30_000,
+            });
+            check(`foreground ${mode.length ? "preview" : "spawn"} ${source[0]} names the looping persona and how to fix it`,
+              refused.status === 1 && /Code:\s+SCHEMA_INVALID/.test(refused.stderr) &&
+              refused.stderr.includes(`the persona path contains a symbolic-link loop: ${loop}`) &&
+              refused.stderr.includes("correct the link's target") && refused.stderr.includes("put a regular persona file in its place") &&
+              readlinkSync(loop) === "loop.md" && !refused.stderr.includes("spawning loop"), refused.stderr || refused.error);
+          }
         }
         rmSync(loop);
       }
@@ -461,7 +464,7 @@ try {
   rmSync(store, { recursive: true, force: true });
 }
 
-const EXPECTED = process.platform === "win32" ? 36 : 38;
+const EXPECTED = process.platform === "win32" ? 36 : 40;
 check(`every cell ran - ${EXPECTED} expected`, pass + fail === EXPECTED, `${pass + fail} cells reported`);
 console.log(`SUITE COMPLETE: ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

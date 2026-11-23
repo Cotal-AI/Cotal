@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 import type { CompletionResult, FlagSpec, FlagValues, ParsedArgs } from "@cotal-ai/core";
-import { boundedValue, canonicalRoot, clearCurrent, codeSpan, CommandFailure, cotalDirLink, findCotalRoot, findMesh, findPreparedSpace, folderSpace, folderSpaceHeld, getCurrent, isMeshRegistryError, readCurrentSelection, jsonFlag, loadMeshes, loadPreparedSpaces, plainFlag, preparedLifecycle, presentationOf, readCurrent, setCurrent, shellPath, SHOWN_VALUE_MAX, stackElsewhereRemedy, writeResult, type Cell, type MeshEntry, type OutputWarning, type PreparedSpace, type Report } from "@cotal-ai/workspace";
+import { boundedValue, canonicalRoot, clearCurrent, codeSpan, CommandFailure, cotalDirLink, findCotalRoot, findMesh, findPreparedSpace, folderSpace, folderSpaceHeld, getCurrent, isMeshRegistryError, readCurrentSelection, jsonFlag, loadMeshes, loadPreparedSpaces, plainFlag, preparedLifecycle, presentationOf, readCurrent, setCurrent, shellPath, SHOWN_VALUE_MAX, stackElsewhereRemedy, stoppedStack, writeResult, type Cell, type MeshEntry, type OutputWarning, type PreparedSpace, type Report } from "@cotal-ai/workspace";
 import { registryFailure } from "../lib/registry-errors.js";
 import { displayRemedy } from "../lib/self-exec.js";
 import { journalRecordedElsewhere } from "../lib/stack-journal.js";
@@ -123,7 +123,7 @@ function selectionView(s: Selection, project: string, moved: ReturnType<typeof j
       { text: `  this folder holds the stack journal of "${s.current}" and was moved from ${moved.recordedRoot}`, tone: "waiting" },
       { text: `  ${displayRemedy(stackElsewhereRemedy(project, moved.recordedRoot, moved.journal.space, moved.journal.members, moved.journal.operation))}`, tone: "hint" });
   } else if (s.preparedRoot) lines.push(!existsSync(s.preparedRoot) ? { text: `  ${s.currentRecorded ? "recorded" : "prepared"} in ${s.preparedRoot}, which no longer exists - forget it with ${codeSpan(`cotal space forget ${shellPath(s.current)}`)}`, tone: "waiting" }
-    : s.preparedState === "stopped" ? { text: `  stopped; its last operation, ${s.lastOperation} - start it again with \`cotal up\` in ${s.preparedRoot}`, tone: "hint" }
+    : s.preparedState === "stopped" ? { text: `  stopped; its last operation, ${s.lastOperation} - start it again with ${codeSpan(stoppedStack(s.preparedRoot, s.current)?.noManager ? "cotal up --no-manager" : "cotal up")} in ${s.preparedRoot}`, tone: "hint" }
     : s.preparedState === "unsettled" ? { text: `  its last operation, ${s.lastOperation} - run \`cotal status\` in ${s.preparedRoot}, which names the step that finishes or settles it`, tone: "waiting" }
     : { text: `  prepared, not started - start it with \`cotal up\` in ${s.preparedRoot}`, tone: "hint" });
   // `use` reads no broker, so it says when this folder's space is the target rather than whether it is.
