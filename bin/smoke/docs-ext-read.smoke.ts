@@ -83,6 +83,17 @@ let specBody = "";
   check("the CLI hub read to a pipe keeps its Markdown heading and links", piped.status === 0 && piped.stdout.includes("\n# CLI reference\n") && piped.stdout.includes("[CLI usage](cli-usage.mdx#structured-output)"), shown(piped));
   const usage = run(["docs", "cli-usage"]);
   check("a reference page read to a pipe keeps its Markdown table", usage.status === 0 && usage.stdout.includes("\n# CLI usage\n") && /^\|---\|---\|$/m.test(usage.stdout) && /^\| `schemaVersion` \| `1` \|$/m.test(usage.stdout), shown(usage));
+  const structured = usage.stdout.split(/^## Structured output.*$/m)[1]?.split(/^## /m)[0]?.replace(/\s+/g, " ") ?? "";
+  const history = run(["history", "general", "--limit", "--json"]);
+  const follow = run(["history", "general", "--limit", "--follow", "--json"]);
+  const records = follow.stdout.trim().split("\n").filter(Boolean).map((line) => JSON.parse(line));
+  check("the bundled reference distinguishes finite JSON refusals from NDJSON streams",
+    usage.status === 0 && structured.includes("Finite JSON output is one document on stdout") &&
+    structured.includes("newline-delimited JSON (NDJSON)") && /usage error[^.]+finite `--json` output[^.]+`USAGE_INVALID`/.test(structured) &&
+    ["[`history --follow`](cli-messaging.mdx#history)", "[`channel members --follow`](cli-messaging.mdx#channel)", "[`watch`](cli-observation.mdx#observer-stream)"].every((link) => structured.includes(link)) &&
+    history.status === 1 && history.envelope?.outcome === "refused" && history.envelope.error?.code === "USAGE_INVALID" &&
+    follow.status === 1 && records.length === 2 && records[0]?.stream === "history" && records[0]?.type === "error" &&
+    records[0]?.data?.code === "USAGE_INVALID" && records[1]?.type === "end" && records[1]?.data?.reason === "setup-failed", { history: shown(history), follow: shown(follow) });
   const help = run(["help"]);
   const mcpHelp = run(["mcp", "--help"]);
   check("the CLI command table links the MCP entry that help lists",
