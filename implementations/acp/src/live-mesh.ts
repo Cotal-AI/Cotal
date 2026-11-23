@@ -548,7 +548,7 @@ function spaceReads(c: Connected): Pick<Mesh, "followFrames" | "frameHistory" | 
         observer.eventPayloadHistory(seat.owner, seat.actor, { limit: HISTORY_FRAMES }),
       ]);
       // A payload frame shares its event frame's epoch and seq, and goes right before it. One whose
-      // event frame the space no longer holds belongs to no call the thread shows.
+      // event frame the space has dropped belongs to no call the thread shows.
       const key = (f: SeatFrame) => `${f.epoch}:${f.seq}`;
       const before = new Map<string, SeatFrame[]>();
       for (const f of payloadRows.map((m) => frameOf(m, "payloads"))) if (f) before.set(key(f), [...(before.get(key(f)) ?? []), f]);
