@@ -53,7 +53,7 @@ cotal up -f <cotal.yaml> [--dry-run] [--runtime <name>]
 | `--exchange-trusted-proxy` | off | Legacy user-auth startup only. With `--exchange-public-port`, attribute public failure buckets to the last `X-Forwarded-For` hop. Enable only when the listener is reachable solely through a trusted proxy. Otherwise it uses the socket address |
 | `--advertised-server <url>` | `--server` | Legacy user-auth startup only. With `--exchange-public-port`, advertise the broker address participants dial, such as a `wss://` address behind your proxy. Must be a `nats://`, `tls://`, `ws://` or `wss://` URL |
 | `--agent-provisioning-url <https://…>` | none | Legacy user-auth startup only. With `--exchange-public-port`, advertise the deployment's HTTPS agent-provisioning endpoint. A participant's `cotal spawn` on a remote user-auth mesh sends its login bearer there to provision the agent. Without one, that spawn needs a one-time enrollment ([Run a mesh](run-a-mesh.mdx#remote-supervised-seats-by-enrollment)) |
-| `--service-endpoints` | off | With `--user-auth`: the auth service also hosts service endpoints: the public registration door and the authenticated host route that `cotal service-endpoint` drives |
+| `--service-endpoints` | off | Legacy user-auth startup only. The auth service hosts the service endpoint registration route and the authenticated host route that `cotal service-endpoint` drives. Set `--max-payload` to at least 2098176 bytes |
 | `--detach`, `-d` | on | Run in the background, which is also the no-flag default |
 | `--foreground` | off | Keep native stack lifetime in this terminal. Required when a systemd/launchd unit supervises `up` itself. Cannot combine with `--detach` |
 | `--tls-cert <path>` | none | PEM certificate to serve TLS with. Must be given together with `--tls-key`. Before starting the broker, Cotal checks readability, private-key mode, key/certificate match, the validity window, and host coverage. `nats-server` accepts an expired certificate and leaves the failure to clients, so Cotal performs these checks first. The decision is recorded; a later bare `cotal up` keeps serving TLS. Cotal's own clients, `up` included, check the certificate against Node's trusted CAs and the address they dial. For a self-signed certificate or a local CA, set `NODE_EXTRA_CA_CERTS` to that certificate or CA file (PEM) for `cotal up` and every other `cotal` command of the space; the stack's delivery daemon and manager inherit it from `up`. A manager or other service that `cotal manager start` or `cotal service start` launches inherits it from that command. The stack's address is `tls://`, so every dial checks the certificate against the address it names: an address `up` chooses, the default or the one a stopped folder last ran at, becomes `tls://`, and the `TLS: serving` line of the receipt names it. A root prepared with `cotal space create`, or one whose stack the service controller owns, has no route that serves TLS: there `--tls-cert`, `--tls-key` or a `tls://` `--server` refuses `UNSUPPORTED`, exit 2, before anything starts. On a prepared root that refusal names `cotal up -f <cotal.yaml> --tls-cert <cert.pem> --tls-key <key.pem>` with a `tls://` address in the manifest's `broker.servers`, which serves TLS there. Elsewhere a `--server nats://` with `--tls-cert` refuses `USAGE_INVALID` before anything starts and names the `tls://` form, and so does `up -f` whose manifest `broker.servers` names a `nats://` address. A `--server nats://` on a root whose recorded policy serves TLS refuses the same way, naming `.cotal/broker-policy.json` and the `tls://` address to pass, because the broker it would start serves TLS while the address it would record is dialed in cleartext. When this client refuses the certificate in the handshake, `up`, with or without `-f`, stops the broker, records nothing and fails `OPERATION_FAILED`, naming the native error and the step to take |
@@ -78,11 +78,12 @@ startup receipt from a controller-owned stack, use `--json` or `--plain` without
 `--open` with `--service-endpoints` or any public exchange flag refuses `USAGE_INVALID` (exit 1)
 before startup. Remove those flags for an open space, or use them with `--user-auth` instead of `--open`.
 
-A freshly prepared or controller-owned root refuses the public exchange flags as `UNSUPPORTED`,
-exit 2. To start a space with a public exchange, run `cotal up --user-auth` with the IdP, broker
-and [public exchange flags](remote-supervision.mdx#split-host-bind) from a new project folder.
-Use an unused space name and do not run `cotal space create` first. An existing legacy user-auth
-root can keep using these flags.
+A freshly prepared or controller-owned root refuses `--service-endpoints` and the public exchange
+flags as `UNSUPPORTED`, exit 2. To use either feature, run `cotal up --user-auth` with the IdP,
+broker and applicable flags from a new project folder. Use an unused space name and do not run
+`cotal space create` first. For a public exchange, see the
+[public exchange flags](remote-supervision.mdx#split-host-bind). An existing legacy user-auth root
+can keep using these flags.
 
 If a separately started manager service blocks `up`, the refusal names the command to stop that
 instance. When you used `--root` from another project, the retry keeps the target root and space.
@@ -799,8 +800,8 @@ is left to the manager's start. `cotal manager start` refuses the same
 way, with `AUTH_REQUIRED` and exit 2, before it saves or launches anything. Stopping the manager
 needs no sign-in in the folder that hosts the space: `cotal down` and `cotal manager stop` read its
 stop impact from the manager's own local receipt. `--no-manager` omits that member and its
-login requirement. Unknown outcomes are never continued or replayed. Public exchange faces and
-TLS-required or remote user-auth brokers still require the retained native route.
+login requirement. Unknown outcomes are never continued or replayed. Service endpoint hosting,
+public exchange faces, and TLS-required or remote user-auth brokers require the legacy launcher.
 
 The journal reads earlier three-member auth/open records with an unattempted auth-service row.
 Its next write records all four roles. It neither adopts legacy processes nor converts a mode.

@@ -246,8 +246,8 @@ process.on("exit", () => rmSync(prepared, { recursive: true, force: true }));
 const created = run(["space", "create", "upusage", "--root", prepared, "--json"]);
 check("space create prepares a folder", created.status === 0, shown(created));
 const upHelp = run(["up", "--help"]);
-check("up help marks every public exchange flag as legacy user-auth only",
-  ["exchange-public-port", "exchange-public-url", "exchange-trusted-proxy", "advertised-server", "agent-provisioning-url"].every((flag) =>
+check("up help marks public exchange and service endpoint flags as legacy user-auth only",
+  ["exchange-public-port", "exchange-public-url", "exchange-trusted-proxy", "advertised-server", "agent-provisioning-url", "service-endpoints"].every((flag) =>
     new RegExp(`^  --${flag} .*legacy user-auth startup only`, "m").test(upHelp.stdout)), shown(upHelp));
 const preparedExchange = run(["up", "--user-auth", "--no-manager", "--server", "nats://127.0.0.1:1", "--idp", "https://idp.example.test/auth",
   "--exchange-public-port", "0", "--exchange-public-url", "https://mesh.example.test", "--json"], prepared);
@@ -259,6 +259,21 @@ check("a prepared root refuses public exchange and names a route that keeps the 
     && exchangeError.remedy.includes("cotal up --user-auth --idp <auth base URL>")
     && exchangeError.remedy.includes("Keep the broker and public exchange flags")
     && !existsSync(join(prepared, ".cotal", "stack-controller.json")), shown(preparedExchange));
+const serviceHostingFlags = ["--user-auth", "--no-manager", "--idp", "http://127.0.0.1:1/auth",
+  "--service-endpoints", "--max-payload", "2098176", "--json"];
+const serviceHostingRemedy = (remedy: string | undefined) => remedy?.includes("cotal up --user-auth --idp <auth base URL> --service-endpoints --max-payload 2098176") === true
+  && remedy.includes("new, unprepared project folder without running `cotal space create` first")
+  && remedy.includes("use `--space <unused-name>`, and omit `--root`, `--json` and `--plain`");
+for (const exchange of [[], ["--exchange-public-port", "0"]]) {
+  const before = readdirSync(join(prepared, ".cotal"));
+  const result = run(["up", ...serviceHostingFlags, "--server", "nats://127.0.0.1:1", ...exchange], prepared);
+  const error = result.envelope?.error;
+  check(`a fresh prepared root refuses --service-endpoints${exchange.length ? " with public exchange" : ""} before startup and names the legacy route`,
+    result.status === 2 && result.envelope?.outcome === "refused" && error?.code === "UNSUPPORTED"
+      && error.message?.includes(`no route for ${exchange.length ? "--exchange-public-port and " : ""}--service-endpoints`) === true
+      && serviceHostingRemedy(error.remedy) && (!exchange.length || error.remedy?.includes("Keep the broker and public exchange flags") === true)
+      && JSON.stringify(readdirSync(join(prepared, ".cotal")).sort()) === JSON.stringify(before.sort()), shown(result));
+}
 const named = run(["up", "--server", "nats://localhost:43131", "--json"], prepared);
 check("in a prepared folder a host name is the same USAGE_INVALID refusal, exit 1, naming 127.0.0.1", named.status === 1 && named.envelope?.error?.code === "USAGE_INVALID" && /names the host localhost/.test(named.envelope.error.message ?? "") && named.stdout.includes("--server nats://127.0.0.1:43131"), shown(named));
 check("it wrote no stack journal", !existsSync(join(prepared, ".cotal", "stack-controller.json")), readdirSync(join(prepared, ".cotal")));
@@ -700,6 +715,13 @@ try {
     members: (["broker", "auth", "delivery", "manager"] as const).map((role) => role === "auth" ? { role, definition: `stack-${role}`, instanceId: null, state: "not-attempted" as const } : { role, definition: `stack-${role}`, instanceId: randomUUID(), state: "stopped" as const }),
     operation: { id: randomUUID(), kind: "down", phase: "completed", recordedAt: now, withAgents: false }, updatedAt: now,
   });
+  const stackBefore = readStackJournal(journalRoot)?.sha256;
+  const recordedHosting = run(["up", ...serviceHostingFlags, "--space", "upusagejournal", "--server", `nats://127.0.0.1:${held}`], journalRoot);
+  check("an existing controller stack refuses --service-endpoints without rewriting its journal",
+    recordedHosting.status === 2 && recordedHosting.envelope?.outcome === "refused" && recordedHosting.envelope.error?.code === "UNSUPPORTED"
+      && recordedHosting.envelope.error.message?.includes("this root's stack is owned by the service controller, which has no route for --service-endpoints") === true
+      && serviceHostingRemedy(recordedHosting.envelope.error.remedy)
+      && stackBefore !== undefined && readStackJournal(journalRoot)?.sha256 === stackBefore && !started(journalRoot), shown(recordedHosting));
   writeFileSync(join(journalRoot, "cotal.yaml"), `apiVersion: cotal/v1\nkind: Mesh\nspace: upusagejournal\nbroker:\n  servers: nats://127.0.0.1:${held}\nchannels:\n  general:\n    subscribe: []\n`);
   for (const args of [["up", "-f", "cotal.yaml"], ["up", "-f", "cotal.yaml", "--dry-run"]]) {
     const beside = run(args, journalRoot);
