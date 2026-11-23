@@ -228,24 +228,53 @@ function sameConfigBase(left: string, right: string): boolean {
   return existsSync(left) && existsSync(right) && protectedResolvedDirectory(left, what) === protectedResolvedDirectory(right, what);
 }
 
-function selectedRoot(saved: string, set: string, mismatch: string): string {
-  const name = basename(saved), parent = dirname(saved);
-  if (saved === join(parent, name) && /^cotal(?:-[a-f0-9]{16})?$/.test(name)) {
-    if (parent === set) return saved;
-    const config = resolve(globalConfigDir());
-    const oldBase = recordedConfigBase(parent, set, config);
-    if (oldBase) {
-      if (sameConfigBase(oldBase, config)) return saved;
-      // A move is accepted for protected selections only, never for update snapshots.
-      if (basename(oldBase) === basename(config) && !lstatSync(oldBase, { throwIfNoEntry: false })) {
-        let ancestor = dirname(oldBase);
-        while (!lstatSync(ancestor, { throwIfNoEntry: false })) ancestor = dirname(ancestor);
-        protectedResolvedDirectory(ancestor, "the former connector config folder");
-        return join(set, name);
+function resolveSelectedRoot(saved: string, set: string, expected: string): string | undefined {
+  if (saved === expected) return saved;
+  const config = resolve(globalConfigDir());
+  const oldBase = recordedConfigBase(dirname(saved), set, config);
+  if (!oldBase) return;
+  if (sameConfigBase(oldBase, config)) return saved;
+  // A move is accepted for protected selections only, never for update snapshots.
+  if (basename(oldBase) !== basename(config) || lstatSync(oldBase, { throwIfNoEntry: false })) return;
+  let ancestor = dirname(oldBase);
+  while (!lstatSync(ancestor, { throwIfNoEntry: false })) ancestor = dirname(ancestor);
+  protectedResolvedDirectory(ancestor, "the former connector config folder");
+  return expected;
+}
+
+function selectionMismatch(saved: string, destination: string, mismatch: string, cause?: unknown): Error {
+  const detail = cause instanceof Error ? ` (${JSON.stringify(cause.message)})` : "";
+  return new Error(
+    `${mismatch}: recorded root ${JSON.stringify(saved)}, ${destination}${detail}. ` +
+    "Restore access to the original location, then return the intact Cotal configuration there or restore it there from a backup. " +
+    "Set XDG_CONFIG_HOME to the parent of that cotal configuration folder before retrying. Keep the selection records with the connector set",
+    { cause },
+  );
+}
+
+function selectedRoot(saved: string, set: string, mismatch: string, prepare?: (path: string) => void): string {
+  const name = basename(saved), expected = join(set, name);
+  if (saved === join(dirname(saved), name) && /^cotal(?:-[a-f0-9]{16})?$/.test(name)) {
+    const destination = `expected connector root ${JSON.stringify(expected)}`;
+    try {
+      const root = resolveSelectedRoot(saved, set, expected);
+      if (root !== undefined) {
+        prepare?.(expected);
+        ownedDirectory(set);
+        ownedDirectory(root);
+        for (const name of ["seed", "extensions"]) {
+          const path = join(root, name), stat = lstatSync(path, { throwIfNoEntry: false });
+          if (stat && !stat.isDirectory()) throw new Error(`retained connector state is not a real directory: ${path}`);
+        }
+        return root;
       }
+    } catch (cause) {
+      if (saved === expected) throw cause;
+      throw selectionMismatch(saved, destination, mismatch, cause);
     }
+    throw selectionMismatch(saved, destination, mismatch);
   }
-  throw new Error(`${mismatch}: recorded root ${JSON.stringify(saved)}, expected a connector root under ${JSON.stringify(set)}. Use the original configuration location or restore its connector set from a backup`);
+  throw selectionMismatch(saved, `expected a connector root under ${JSON.stringify(set)}`, mismatch);
 }
 
 function previousConfig(id: { entry: string; path: string }, prepare?: (path: string) => void): string | undefined {
@@ -258,15 +287,7 @@ function previousConfig(id: { entry: string; path: string }, prepare?: (path: st
   const versionDir = join(sets, record.version);
   const mismatch = "invalid previous connector retention selection";
   if (record.entry !== id.entry || !/^\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?$/.test(record.version)) throw new Error(mismatch);
-  const root = selectedRoot(record.root, versionDir, mismatch);
-  const expected = join(versionDir, basename(root));
-  prepare?.(expected);
-  ownedAncestors(expected);
-  for (const name of ["seed", "extensions"]) {
-    const path = join(root, name), stat = lstatSync(path, { throwIfNoEntry: false });
-    if (stat && (!stat.isDirectory() || stat.isSymbolicLink())) throw new Error(`previous connector state is not a real directory: ${path}`);
-  }
-  return root;
+  return selectedRoot(record.root, versionDir, mismatch, prepare);
 }
 
 /** Identify the snapshot's config root without following links inside a retained set. */
@@ -324,15 +345,10 @@ function currentConfig(id: { entry: string; version: string; path: string }, pre
   const record = parseSelection(bytes, path);
   const mismatch = "connector retention selection differs from this installation";
   if (record.entry !== id.entry || record.version !== id.version) throw new Error(mismatch);
-  const root = selectedRoot(record.root, id.path, mismatch);
   const snapshot = updateSnapshot(id);
-  if (!snapshot || record.snapshot === snapshot) prepare?.(join(id.path, basename(root)));
-  ownedDirectory(root);
-  for (const name of ["seed", "extensions"]) {
-    const path = join(root, name), stat = lstatSync(path, { throwIfNoEntry: false });
-    if (stat && !stat.isDirectory()) throw new Error(`retained connector state is not a real directory: ${path}`);
-  }
-  return snapshot && record.snapshot !== snapshot ? undefined : root;
+  const selected = !snapshot || record.snapshot === snapshot;
+  const root = selectedRoot(record.root, id.path, mismatch, selected ? prepare : undefined);
+  return selected ? root : undefined;
 }
 
 /** Read selected, update snapshot, predecessor or legacy state, then the fresh installation's future root. */

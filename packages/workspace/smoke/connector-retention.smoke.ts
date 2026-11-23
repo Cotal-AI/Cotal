@@ -164,16 +164,24 @@ try {
 } finally { writeFileSync(metadata,originalMetadata); }
 assert.equal(JSON.parse(readFileSync(lineage,'utf8')).root,selected);
 renameSync(selection+'.saved',selection);
+const explainsMove=reason=>error=>error.message.includes(JSON.stringify(selected)) &&
+  error.message.includes(JSON.stringify(moved)) && error.message.includes(reason) &&
+  error.message.includes('restore it there from a backup') && error.message.includes('Set XDG_CONFIG_HOME');
 mkdirSync(join(from,'cotal'),{recursive:true,mode:0o700});
-assert.throws(()=>connectorConfigDir(),/differs.*recorded root.*expected a connector root/,'a separate existing config is not a move');
+assert.throws(()=>connectorConfigDir(),explainsMove('differs'),'a separate existing config is not a move');
 rmSync(join(from,'cotal'),{recursive:true});
 symlinkSync(join(from,'missing'),join(from,'cotal'));
 assert.throws(()=>connectorConfigDir(),/differs/,'a dangling old config link is not a move');
 rmSync(from,{recursive:true});
 symlinkSync(from+'-missing',from);
-assert.throws(()=>connectorConfigDir(),/ENOENT/,'a dangling old ancestor is not a move');
+assert.throws(()=>connectorConfigDir(),explainsMove('ENOENT'),'a dangling old ancestor is not a move');
 rmSync(from);
 renameSync(moved,moved+'.saved');
+assert.throws(()=>connectorConfigDir(),explainsMove('ENOENT'),'a missing destination identifies both roots');
+assert.throws(()=>prepareConnectorConfigForUpdate(),explainsMove('ENOENT'),'preflight does not recreate the missing root');
+renameSync(selection,selection+'.saved');
+assert.throws(()=>connectorConfigDir(),explainsMove('ENOENT'),'a missing root named only by lineage identifies both roots');
+renameSync(selection+'.saved',selection);
 symlinkSync(moved+'.saved',moved);
 assert.throws(()=>connectorConfigDir(),/private/,'the moved root must be a real directory');
 rmSync(moved);
