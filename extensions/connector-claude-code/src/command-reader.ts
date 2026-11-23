@@ -9,7 +9,7 @@
  */
 import { createConnection, type Socket } from "node:net";
 import { CONNECTOR_VERSION } from "@cotal-ai/connector-core/version";
-import { commandSockets } from "./command-feed.js";
+import { commandSockets, WINDOWS_UNSUPPORTED } from "./command-feed.js";
 import { MAX_LINE_BYTES, parseModFrame } from "./command-frames.js";
 
 /** How often to look for a server that opened its socket since. */
@@ -128,6 +128,7 @@ function fail(e: unknown): void {
 function main(): void {
   const [command, ...rest] = process.argv.slice(2);
   try {
+    if (process.platform === "win32") throw new Error(WINDOWS_UNSUPPORTED);
     if (command === "read" && rest.length === 2 && rest[0] === "--claude") return read(process.ppid, rest[1]!);
     if (command === "answer" && rest.length === 1) return void answer(process.ppid, rest[0]!).catch(fail);
     throw new Error("usage: command-reader.cjs read --claude <version> | answer <route>");
