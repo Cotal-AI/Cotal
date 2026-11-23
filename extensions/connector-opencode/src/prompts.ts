@@ -11,7 +11,7 @@
  * The adapters build each ask from their line's event shapes; this module holds the desk side and
  * the content both lines share.
  */
-import { AGENT_PROMPT_CONTENT_MAX_BYTES, canonicalJson, type PromptContent, type PromptEffect, type PromptOption } from "@cotal-ai/core";
+import { AGENT_PROMPT_CONTENT_MAX_BYTES, canonicalJson, type PromptContent, type PromptEffect, type PromptOption, type PromptSubject } from "@cotal-ai/core";
 import type { PromptDesk, PromptHold, PromptVerdict } from "@cotal-ai/connector-core";
 
 /** How long a prompt is offered: OpenCode waits for its reply without a limit. */
@@ -87,6 +87,8 @@ export interface PermissionAsk {
   /** What "always" allows from then on, beside this call. */
   always?: string;
   toolCallId?: string;
+  /** The tool call the ask gates, as the plugin saw it start. */
+  tool?: { name: string; input: unknown };
   /** The child session that asked, when it is not the agent's own. */
   scope?: string;
 }
@@ -94,21 +96,27 @@ export interface PermissionAsk {
 const ONCE: PromptOption = { id: "once", label: "Allow once", effect: "proceed" };
 const REJECT: PromptOption = { id: "reject", label: "Reject", effect: "refuse", note: "optional" };
 
-/** The prompt for a permission ask. What the call would touch shows in full or not at all: a content
- *  over the size limit says how large it is and offers only Reject. */
+/** The prompt for a permission ask. Its subject is the gated tool call; with no call seen, it is what
+ *  the call would touch. A content over the desk's limit leaves the input out, or says how large the
+ *  patterns are, and then offers only Reject: the desk lets nobody approve an input it cannot show. */
 export function permissionContent(p: PermissionAsk): PromptContent {
   const options = [ONCE, ...(p.always ? [{ id: "always", label: "Allow always", effect: "proceed" as const, persists: p.always }] : []), REJECT];
-  const content = (data: unknown, opts: PromptOption[], body?: string): PromptContent => ({
+  const content = (subject: PromptSubject, opts: PromptOption[], body?: string): PromptContent => ({
     kind: "permission",
     title: title(`Allow ${p.action}?`),
     ...(body ? { body: { format: "text" as const, text: body } } : {}),
-    subject: { type: "ai.cotal.opencode.permission", data },
+    subject,
     options: opts,
     source: { harness: "opencode", ...(p.scope ? { scope: p.scope } : {}), ...(p.toolCallId ? { toolCallId: p.toolCallId } : {}) },
   });
-  const full = content({ action: p.action, patterns: p.patterns }, options, p.patterns.join("\n"));
-  if (Buffer.byteLength(canonicalJson(full)) <= AGENT_PROMPT_CONTENT_MAX_BYTES) return full;
-  return content({ action: p.action, omittedBytes: Buffer.byteLength(canonicalJson(p.patterns)) }, [REJECT]);
+  const fits = (c: PromptContent) => Buffer.byteLength(canonicalJson(c)) <= AGENT_PROMPT_CONTENT_MAX_BYTES;
+  const body = p.patterns.join("\n");
+  const tool = p.tool;
+  const shown = content(tool ? { type: "tool", name: tool.name, input: { kind: "shown", value: tool.input } } : { type: "ai.cotal.opencode.permission", data: { action: p.action, patterns: p.patterns } }, options, body);
+  if (fits(shown)) return shown;
+  const omitted = tool && content({ type: "tool", name: tool.name, input: { kind: "omitted", bytes: Buffer.byteLength(canonicalJson(tool.input)) } }, [REJECT], body);
+  if (omitted && fits(omitted)) return omitted;
+  return content({ type: "ai.cotal.opencode.permission", data: { action: p.action, omittedBytes: Buffer.byteLength(canonicalJson(p.patterns)) } }, [REJECT]);
 }
 
 /** One field of an OpenCode form, in 2.x's `Form.Field` shape. 1.x questions are read into it. */

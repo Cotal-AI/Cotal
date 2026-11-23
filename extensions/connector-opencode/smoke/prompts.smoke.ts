@@ -6,12 +6,13 @@
  * `prompt-answer` call on the desk's own handler, and OpenCode's HTTP API is a recorder that answers
  * as told. Covered: the prompt each ask opens, every reply and its request, an ask OpenCode does not
  * hold, a reply given at OpenCode's own dialog, the turn end, the sessions served, a form the
- * profile cannot carry, no desk, and the connector's `prompts` declaration.
+ * profile cannot carry, no desk, the gated tool call as a permission's subject, and the connector's
+ * `prompts` declaration.
  *
  * Run: pnpm smoke:opencode-prompts
  */
 import { isDeepStrictEqual } from "node:util";
-import type { AgentPrompt, CotalEndpoint, EpPrincipalServeContext, PromptState, PromptsOutput } from "@cotal-ai/core";
+import { AGENT_PROMPT_CONTENT_MAX_BYTES, canonicalJson, type AgentPrompt, type CotalEndpoint, type EpPrincipalServeContext, type PromptState, type PromptsOutput } from "@cotal-ai/core";
 import { createSuite } from "@cotal-ai/smoke-kit";
 import { createPromptDesk, type ServedPromptDesk } from "../../connector-core/src/prompt-desk.js";
 import { opencode1Asks, opencode2Asks, type OpenCodeAsks } from "../src/prompt-asks.js";
@@ -138,6 +139,47 @@ console.log("\nOpenCode 2.x: a permission ask");
   const p = read(w, only(w).id);
   check("a subagent session's ask opens a prompt scoped to that session",
     isDeepStrictEqual(p.content.source, { harness: "opencode", scope: "ses_child", toolCallId: "call_1" }), p.content.source);
+}
+
+console.log("\nThe gated tool call as the subject");
+{
+  const w = world(2);
+  // The hook's event as 2.x hands it over; a later hook may replace its input before the tool runs.
+  const started = { tool: "shell", id: "call_1", input: { command: "echo perm-check" } as Record<string, unknown> };
+  w.asks.toolStarted(started.id, { name: started.tool, input: () => started.input });
+  started.input = { command: "echo perm-check", timeout: 120 };
+  w.asks.event("permission.asked", permission2());
+  const p = read(w, only(w).id);
+  check("a permission ask's subject is its tool call, with the input as the last hook left it, and the patterns as its body",
+    isDeepStrictEqual(p.content.subject, { type: "tool", name: "shell", input: { kind: "shown", value: { command: "echo perm-check", timeout: 120 } } })
+      && p.content.body?.text === "echo perm-check" && p.content.options.length === 3 && w.warnings.length === 0, { content: p.content, warnings: w.warnings });
+}
+{
+  const w = world(2);
+  const input = { path: "big.txt", content: "x".repeat(AGENT_PROMPT_CONTENT_MAX_BYTES) };
+  w.asks.toolStarted("call_1", { name: "write", input: () => input });
+  w.asks.event("permission.asked", { ...permission2(), action: "edit", resources: ["big.txt"], save: [] });
+  const p = read(w, only(w).id);
+  check("an input over the content limit is left out with its size, and only Reject is offered, since nobody may approve an input they cannot see",
+    isDeepStrictEqual(p.content.subject, { type: "tool", name: "write", input: { kind: "omitted", bytes: Buffer.byteLength(canonicalJson(input)) } })
+      && isDeepStrictEqual(p.content.options.map((o) => o.id), ["reject"]) && p.content.body?.text === "big.txt", p.content);
+}
+{
+  const w = world(2);
+  w.asks.toolStarted("call_1", { name: "shell", input: () => ({ command: "echo perm-check" }) });
+  w.asks.turnEnded();
+  w.asks.event("permission.asked", permission2());
+  const p = read(w, only(w).id);
+  check("a call from an ended turn is forgotten, so an ask naming a call not seen shows what the call would touch, and says why",
+    p.content.subject?.type === "ai.cotal.opencode.permission" && w.warnings.some((m) => m.includes("call_1")), { subject: p.content.subject, warnings: w.warnings });
+}
+{
+  const w = world(1);
+  const output = { args: { command: "git push" } };
+  w.asks.toolStarted("call_1", { name: "bash", input: () => output.args });
+  w.asks.event("permission.asked", { id: "per_1", sessionID: SESSION, permission: "bash", patterns: ["git push"], metadata: {}, always: [], tool: { messageID: "msg_1", callID: "call_1" } });
+  check("on 1.x the subject is the call `tool.execute.before` saw, its arguments shown",
+    isDeepStrictEqual(read(w, only(w).id).content.subject, { type: "tool", name: "bash", input: { kind: "shown", value: { command: "git push" } } }), read(w, only(w).id).content);
 }
 
 console.log("\nOpenCode 2.x: a question");

@@ -162,10 +162,12 @@ A seat launches with OpenCode's `permission` set to `allow`, so it asks nothing.
 On a signed-in space each ask then opens a prompt on the agent's `agent` endpoint, on 1.x and 2.x,
 while OpenCode's own dialog stays open. The first reply wins.
 
-- **A permission ask** offers Allow once, Allow always and Reject, and shows what the call would
-  touch. On 1.x, Allow always allows the ask's patterns for the rest of the OpenCode session. On
-  2.x it saves an allow rule for the project. A note on Reject reaches the model as OpenCode's
-  rejection message. An ask too large to show offers only Reject.
+- **A permission ask** offers Allow once, Allow always and Reject. Its subject is the tool call it
+  gates, with the tool's name and input as the call started, so a client can show the command or
+  the edit. Its text says what the call would touch. On 1.x, Allow always allows the ask's
+  patterns for the rest of the OpenCode session. On 2.x it saves an allow rule for the project. A
+  note on Reject reaches the model as OpenCode's rejection message. An ask whose input is too large
+  to show leaves the input out and offers only Reject.
 - **A question** from OpenCode's question tool opens a form with one field per question. A
   question's listed choices are offered as a choice, and typing an answer of your own works only
   in OpenCode's dialog. Dismiss rejects the question. A 2.x form with a field the form profile has
