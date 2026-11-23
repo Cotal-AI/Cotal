@@ -1100,13 +1100,19 @@ export async function attach(args: ParsedArgs): Promise<void> {
   }
   const v = { ...args.values, name: name ?? selection!.name, ...(selection ? { on: selection.on } : {}) } as FlagValues<typeof attachFlags> & { name: string };
   const reconnecting = v["no-reconnect"] !== true;
-  const on = v.on !== undefined ? (await pinForTarget(v as never, "cotal attach", reconnecting ? [] : ["--no-reconnect"])).instanceId : undefined;
-  // A typed pin the registry does not list is refused at once, as stop refuses it.
-  if (selection === undefined && on !== undefined) {
-    const reader = await resolveControlTarget(v, "control-caller-privileged", on);
-    if (!reader.auth.bearer) await refuseUnregisteredManager(reader.space, reader.server, reader.auth, on);
+  let verdict: AttachVerdict;
+  try {
+    const on = v.on !== undefined ? (await pinForTarget(v as never, "cotal attach", reconnecting ? [] : ["--no-reconnect"])).instanceId : undefined;
+    // A typed pin the registry does not list is refused at once, as stop refuses it.
+    if (selection === undefined && on !== undefined) {
+      const reader = await resolveControlTarget(v, "control-caller-privileged", on);
+      if (!reader.auth.bearer) await refuseUnregisteredManager(reader.space, reader.server, reader.auth, on);
+    }
+    verdict = await attachSeat({ space: v.space, server: v.server, creds: v.creds, name: v.name, ...(selection ? { expectedTarget: selection.expectedTarget } : {}) }, { reconnect: reconnecting, onRefusal: "exit", on });
+  } catch (error) {
+    if (isConnectRefusal(error) && error.code === "PERMISSION_DENIED") throw error.failure();
+    throw error;
   }
-  const verdict = await attachSeat({ space: v.space, server: v.server, creds: v.creds, name: v.name, ...(selection ? { expectedTarget: selection.expectedTarget } : {}) }, { reconnect: reconnecting, onRefusal: "exit", on });
   if (verdict.kind === "failed") throw new CommandFailure("failed", "OPERATION_FAILED", verdict.message);
   const detached = verdict.kind === "ended" && verdict.reason === "detached";
   console.error(renderReport({ sections: [{ title: verdict.kind === "gone" ? "Attach target no longer available" : detached ? "Detached" : "Attach session ended", blocks: [
