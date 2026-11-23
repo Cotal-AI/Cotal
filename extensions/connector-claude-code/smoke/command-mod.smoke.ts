@@ -19,8 +19,9 @@ const config = mkdtempSync(join(tmpdir(), "cotal-command-mod-"));
 const env = Object.fromEntries(Object.entries(process.env).filter(([key]) =>
   !key.startsWith("CLAUDE") && !key.startsWith("ANTHROPIC_")));
 
+// A mod that never answers runs every cell to the kit's 5 s limit, so leave room for all of them.
 const run = spawnSync("claude", ["plugin", "test", plugin], {
-  encoding: "utf8", env: { ...env, CLAUDE_CONFIG_DIR: config }, timeout: 300_000,
+  encoding: "utf8", env: { ...env, CLAUDE_CONFIG_DIR: config }, timeout: 900_000,
 });
 rmSync(config, { recursive: true, force: true });
 if (run.error) throw new Error(`\`claude plugin test\` did not run: ${run.error.message}`);
