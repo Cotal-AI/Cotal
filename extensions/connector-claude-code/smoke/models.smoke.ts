@@ -59,7 +59,13 @@ console.log("claude connector: the model catalog asks claude, and never hangs or
   );
   const names = new Map(recorded.loggedIn.response.response.models.map((m: { value: string; displayName: string }) => [m.value, m.displayName]));
   check("each model carries claude's display name", catalog.models.length > 0 && catalog.models.every((m) => m.name === names.get(m.id)), catalog.models);
-  check("no model offers a variant, because this connector refuses a variant at launch", catalog.models.length > 0 && catalog.models.every((m) => m.variants === undefined), catalog.models);
+  const levels = new Map<string, string[] | undefined>(recorded.loggedIn.response.response.models.map((m: { value: string; supportsEffort?: boolean; supportedEffortLevels?: string[] }) => [m.value, m.supportsEffort ? m.supportedEffortLevels : undefined]));
+  check(
+    "each model's variants are the effort levels claude lists for it, and a model without effort has none",
+    catalog.models.length > 0 && catalog.models.every((m) => JSON.stringify(m.variants?.map((v) => v.name)) === JSON.stringify(levels.get(m.id))),
+    catalog.models,
+  );
+  check("the recording has a model without effort and one without xhigh", levels.get("claude-haiku-4-5-20251001") === undefined && !levels.get("claude-opus-4-6")?.includes("xhigh"));
   const requests = rest.filter((entry) => entry.request);
   check(
     "asking writes one initialize control request and no user message",
@@ -116,6 +122,16 @@ console.log("claude connector: the model catalog asks claude, and never hangs or
 {
   const catalog = await ask(standIn("row-without-value", withModels([...recorded.loggedIn.response.response.models, { displayName: "Unnamed" }])).bin);
   check("one model row with no value makes the catalog unavailable, not a partial list", catalog.models.length === 0 && /without a model list/.test(catalog.unavailable ?? ""), catalog);
+}
+
+{
+  const rows = [{ value: "opus", displayName: "Opus", supportsEffort: true, supportedEffortLevels: ["low", "turbo", "max"] }, { value: "haiku", displayName: "Haiku", supportsEffort: false, supportedEffortLevels: ["low"] }];
+  const catalog = await ask(standIn("odd-effort", withModels(rows)).bin);
+  check(
+    "a level --effort does not take is left out, and a model claude marks without effort has no variants",
+    JSON.stringify(catalog.models.map((m) => m.variants?.map((v) => v.name))) === JSON.stringify([["low", "max"], undefined]),
+    catalog.models,
+  );
 }
 
 {

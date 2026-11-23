@@ -2,7 +2,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { ModelCatalog, ModelCatalogOpts } from "@cotal-ai/core";
+import type { ModelCatalog, ModelCatalogOpts, ModelVariantInfo } from "@cotal-ai/core";
 import { launchEnv } from "@cotal-ai/connector-core";
 import { CLAUDE_PROVIDER_KEYS } from "./provider-keys.js";
 
@@ -23,11 +23,22 @@ interface ControlLine {
   };
 }
 
+/** The effort levels `claude --effort` takes, lowest first. */
+export const CLAUDE_EFFORT_LEVELS: readonly string[] = ["low", "medium", "high", "xhigh", "max"];
+
 const unavailable = (why: string): ModelCatalog => ({ models: [], unavailable: why });
 
-function isModelRow(row: unknown): row is { value: string; displayName: string } {
+interface ModelRow { value: string; displayName: string; supportsEffort?: unknown; supportedEffortLevels?: unknown }
+
+function isModelRow(row: unknown): row is ModelRow {
   const { value, displayName } = (row ?? {}) as { value?: unknown; displayName?: unknown };
   return typeof value === "string" && typeof displayName === "string";
+}
+
+/** A model's variants are the effort levels claude lists for it that `--effort` takes. */
+function effortVariants(row: ModelRow): ModelVariantInfo[] {
+  if (row.supportsEffort !== true || !Array.isArray(row.supportedEffortLevels)) return [];
+  return row.supportedEffortLevels.filter((level) => CLAUDE_EFFORT_LEVELS.includes(level)).map((name: string) => ({ name }));
 }
 
 function initializeAnswer(text: string): ModelCatalog | undefined {
@@ -46,7 +57,11 @@ function initializeAnswer(text: string): ModelCatalog | undefined {
   const rows = result?.models;
   if (!Array.isArray(rows) || !rows.every(isModelRow)) return unavailable("claude answered without a model list");
   // `default` points at claude's own default model, which a launch that names no model gets anyway.
-  return { source: "claude stream-json initialize", models: rows.filter((m) => m.value !== "default").map((m) => ({ id: m.value, name: m.displayName })) };
+  const models = rows.filter((m) => m.value !== "default").map((m) => {
+    const variants = effortVariants(m);
+    return { id: m.value, name: m.displayName, ...(variants.length ? { variants } : {}) };
+  });
+  return { source: "claude stream-json initialize", models };
 }
 
 export async function listClaudeModels(opts: ModelCatalogOpts = {}): Promise<ModelCatalog> {
