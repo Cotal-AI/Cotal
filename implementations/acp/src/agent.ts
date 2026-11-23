@@ -34,7 +34,7 @@ import { FrameMapper, type RunSignal } from "./frames.js";
 import { answer, permissionRequest, plainOptions, PromptFollower } from "./prompts.js";
 import { deregisterRemedy, LaunchListsRefused, NoLaunchManager, SignInRequired, type ManagerChoice, type Mesh, type SeatFrame, type SeatList, type SeatRef, type SeatRow } from "./mesh.js";
 import { awaitTaken, promptParts, spaceImageRefusal, takeTurn, usageUpdate } from "./turns.js";
-import { applyOption, configOptions, modelState, DEFAULT_PERSONA, DEFAULT_VARIANT, defaultManager, initialSelection, MAX_CHOICES, NO_CHANNEL, parseModel, reconcile, refusal, type Offer, type Selection } from "./options.js";
+import { applyOption, configOptions, modelState, DEFAULT_PERSONA, DEFAULT_VARIANT, defaultManager, initialSelection, MAX_CHOICES, NO_CHANNEL, noMachine, parseModel, reconcile, refusal, type Offer, type Selection } from "./options.js";
 
 /** The slash commands every session offers. */
 export const COMMANDS = [
@@ -372,8 +372,9 @@ function launchOffers(options: CotalAgentOptions) {
       return [];
     });
     const managers = heldId === undefined || listed.some((x) => x.instanceId === heldId) ? listed : [...listed, typeof held === "string" ? await m.manager(held) : held!];
-    // Read the lists of the manager a new session starts on, never whichever the exchange picks.
-    const from = machine ?? defaultManager(managers)?.instanceId;
+    // Read the lists of the manager a new session starts on, never whichever the exchange picks. With
+    // none chosen, show a live one's lists until the Machine option names one.
+    const from = machine ?? (defaultManager(managers) ?? managers.find((x) => x.live) ?? managers[0])?.instanceId;
     const [catalogs, personas, channels] = await Promise.all([m.catalogs(from), m.personas(from), m.channels()]);
     if (personas.length >= MAX_CHOICES) options.log(`the persona catalog holds ${personas.length} personas, more than a client select shows; the persona option is not offered`);
     if (channels.length >= MAX_CHOICES) options.log(`the space holds ${channels.length} channels, more than a client select shows; the channel option is not offered`);
@@ -732,6 +733,7 @@ function threadHandlers(b: Bridge, offers: Offers, runTurn: ReturnType<typeof tu
         return { stopReason };
       }
       if (session.offer.seatOnly) throw RequestError.invalidParams(undefined, `${session.id} opened without a grant that may spawn, so this thread cannot start another agent`);
+      if (!session.selection.machine) throw new RequestError(-32602, noMachine(m.space));
       const { agent: harness, model } = parseModel(session.selection.model);
       const why = refusal(session.offer.catalogs, harness) ?? (images.length ? spaceImageRefusal(m, harness) : undefined);
       const catalog = session.offer.catalogs.find((c) => c.agent === harness);

@@ -27,6 +27,8 @@ export const DEFAULT_VARIANT = "default";
 export const DEFAULT_PERSONA = "default";
 /** The value of a channel choice that subscribes the new seat to no extra channel. */
 export const NO_CHANNEL = "none";
+/** The value the Machine option shows while no manager is chosen. */
+const NO_MACHINE = "none";
 /** A client caps a select at this many choices (T3 Code's limit). A list that does not fit is not
  *  offered rather than cut. */
 export const MAX_CHOICES = 64;
@@ -38,7 +40,7 @@ export interface Selection {
   persona: string;
   /** A channel the new seat subscribes to, or {@link NO_CHANNEL}. */
   channel: string;
-  /** A manager instance id, or undefined for the space's own choice. */
+  /** A manager instance id, or undefined while none is chosen: the thread then starts no agent. */
   machine?: string;
 }
 
@@ -76,12 +78,17 @@ export function refusal(catalogs: readonly AgentCatalog[], agent: string): strin
   return undefined;
 }
 
-/** The manager a new session starts on: this machine's, else one whose presence is current, else the
- *  first listed. A registration whose computer is gone stays listed on a space where people sign in,
- *  so sort order alone could choose it. Leaving it unpinned would let the space's exchange choose,
- *  and that refuses when several of a person's own managers are live. */
+/** The manager a new session starts on: this machine's live one. Another computer's is never the
+ *  default, since it cannot use this machine's folder; with none here, a thread starts only on a
+ *  manager its Machine option names. */
 export function defaultManager(managers: readonly ManagerChoice[]): ManagerChoice | undefined {
-  return managers.find((m) => m.local) ?? managers.find((m) => m.live) ?? managers[0];
+  return managers.find((m) => m.local && m.live);
+}
+
+/** Why a thread with no manager chosen starts no agent. It never leaves the spawn unpinned, which
+ *  would let the space's exchange pick any manager. */
+export function noMachine(space: string): string {
+  return `No manager of yours runs on this machine. Start one with \`cotal manager start --space ${space}\`, or choose another computer in the Machine option.`;
 }
 
 /** The selection a new session starts with. */
@@ -144,6 +151,7 @@ export function applyOption(offer: Offer, selection: Selection, configId: string
       if (value !== NO_CHANNEL && !offer.channels.includes(value)) throw new Error(`the space has no channel "${value}"`);
       return { ...selection, channel: value };
     case "machine":
+      if (value === NO_MACHINE && selection.machine === undefined) return selection;
       if (!offer.managers.some((m) => m.instanceId === value)) throw new Error(`no manager "${value}" is live`);
       return { ...selection, machine: value };
     default:
@@ -234,13 +242,18 @@ export function configOptions(offer: Offer, selection: Selection): SessionConfig
       currentValue: selection.channel,
       options: [{ value: NO_CHANNEL, name: "No channel" }, ...offer.channels.map((c) => ({ value: c, name: `#${c}` }))],
     });
-  if (offer.managers.length > 1 && offer.managers.length <= MAX_CHOICES)
+  // With none of this machine's, the list is the only way to start an agent, so even one is offered.
+  const managers = offer.managers.length;
+  if (managers > 0 && managers <= MAX_CHOICES && (managers > 1 || !defaultManager(offer.managers)))
     options.push({
       id: "machine",
       name: "Machine",
       type: "select",
-      currentValue: selection.machine ?? defaultManager(offer.managers)!.instanceId,
-      options: offer.managers.map((m) => ({ value: m.instanceId, name: `${m.host ?? m.instanceId}${m.local ? " (this machine)" : ""}` })),
+      currentValue: selection.machine ?? NO_MACHINE,
+      options: [
+        ...(selection.machine === undefined ? [{ value: NO_MACHINE, name: "No machine chosen" }] : []),
+        ...offer.managers.map((m) => ({ value: m.instanceId, name: `${m.host ?? m.instanceId}${m.local ? " (this machine)" : ""}` })),
+      ],
     });
   return options;
 }
