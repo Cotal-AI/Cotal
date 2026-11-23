@@ -3,7 +3,7 @@
   "info": {
     "title": "Auth host HTTP API",
     "version": "1",
-    "description": "Host-only HTTP operations of the stock auth service. These six routes exist only on the loopback listener and return 404 on the public listener. The owner-private auth-service discovery record supplies its port and exchange capability. Every operation requires the exact Authorization bearer capability, application/json and no Origin header. Requests match the exact target, so query strings and trailing slashes return 404. Bodies default to 65536 bytes. More than 30 invalid capability attempts in a rolling minute receive 429.\n\nThe loopback listener also serves /health, /jwks, /exchange, /manager-service-authority, /manager-instances, /service-endpoint-authority, /service-endpoint-host and /chat-session/open, /chat-session/bearer, /chat-session/retire. Their public request and response shapes are in the [Auth HTTP API](https://docs.cotal.ai/api/auth/). Proof operations additionally require the loopback capability. The loopback /health handler also accepts other methods. Elevated exchange views and operator host operations are loopback-only. Mesh discovery is public-listener-only. This implementation reference does not establish a stable cloud API.",
+    "description": "Host-only HTTP operations of the stock auth service. These eight routes exist only on the loopback listener and return 404 on the public listener. The owner-private auth-service discovery record supplies its port and exchange capability. Every operation requires the exact Authorization bearer capability, application/json and no Origin header. Requests match the exact target, so query strings and trailing slashes return 404. Bodies default to 65536 bytes. More than 30 invalid capability attempts in a rolling minute receive 429.\n\nThe loopback listener also serves /health, /jwks, /exchange, /manager-service-authority, /manager-instances, /service-endpoint-authority, /service-endpoint-host and /chat-session/open, /chat-session/bearer, /chat-session/retire. Their public request and response shapes are in the [Auth HTTP API](https://docs.cotal.ai/api/auth/). Proof operations additionally require the loopback capability. The loopback /health handler also accepts other methods. Elevated exchange views and operator host operations are loopback-only. Mesh discovery is public-listener-only. This implementation reference does not establish a stable cloud API.",
     "license": {
       "name": "Apache-2.0"
     }
@@ -26,6 +26,42 @@
     }
   ],
   "paths": {
+    "/username/reserve": {
+      "post": {
+        "operationId": "auth-host-reserve-username", "summary": "Reserve a directory username",
+        "description": "Requires directory mode. Reserve the exact username for a derived owner before writing its grant. Retrying the same pair returns the existing binding.",
+        "requestBody": { "required": true, "content": { "application/json": { "schema": {
+          "type": "object", "additionalProperties": false, "required": ["owner", "username"],
+          "properties": { "owner": { "type": "string", "pattern": "^u_[a-z2-7]{26}$" }, "username": { "type": "string", "pattern": "^[a-z0-9_]{1,40}$" } }
+        } } } },
+        "responses": {
+          "200": { "$ref": "#/components/responses/UsernameBound" }, "400": { "$ref": "#/components/responses/UsernameError" },
+          "401": { "$ref": "#/components/responses/UsernameError" }, "403": { "$ref": "#/components/responses/UsernameError" },
+          "405": { "$ref": "#/components/responses/UsernameError" }, "409": { "$ref": "#/components/responses/UsernameError" },
+          "412": { "$ref": "#/components/responses/UsernameError" }, "413": { "$ref": "#/components/responses/UsernameError" },
+          "415": { "$ref": "#/components/responses/UsernameError" }, "429": { "$ref": "#/components/responses/UsernameError" },
+          "500": { "$ref": "#/components/responses/UsernameError" }, "503": { "$ref": "#/components/responses/UsernameError" }
+        }
+      }
+    },
+    "/username/backfill": {
+      "post": {
+        "operationId": "auth-host-backfill-username", "summary": "Backfill a granted owner's username",
+        "description": "Requires claims mode and a current interactive grant for the owner. Assigns a generated suggestion when the owner has no binding. An existing binding is returned unchanged.",
+        "requestBody": { "required": true, "content": { "application/json": { "schema": {
+          "type": "object", "additionalProperties": false, "required": ["owner"],
+          "properties": { "owner": { "type": "string", "pattern": "^u_[a-z2-7]{26}$" } }
+        } } } },
+        "responses": {
+          "200": { "$ref": "#/components/responses/UsernameBound" }, "400": { "$ref": "#/components/responses/UsernameError" },
+          "401": { "$ref": "#/components/responses/UsernameError" }, "403": { "$ref": "#/components/responses/UsernameError" },
+          "405": { "$ref": "#/components/responses/UsernameError" }, "409": { "$ref": "#/components/responses/UsernameError" },
+          "412": { "$ref": "#/components/responses/UsernameError" }, "413": { "$ref": "#/components/responses/UsernameError" },
+          "415": { "$ref": "#/components/responses/UsernameError" }, "429": { "$ref": "#/components/responses/UsernameError" },
+          "500": { "$ref": "#/components/responses/UsernameError" }, "503": { "$ref": "#/components/responses/UsernameError" }
+        }
+      }
+    },
     "/interactive-lifecycle/retire": {
       "post": {
         "operationId": "auth-host-retire-interactive",
@@ -922,6 +958,12 @@
     }
   },
   "components": {
+    "responses": {
+      "UsernameBound": { "description": "The permanent binding.", "content": { "application/json": { "schema": {
+        "type": "object", "additionalProperties": false, "required": ["username"], "properties": { "username": { "type": "string", "pattern": "^[a-z0-9_]{1,40}$" } }
+      } } } },
+      "UsernameError": { "description": "The username operation was refused or could not be confirmed.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+    },
     "securitySchemes": {
       "HostCapability": {
         "type": "http",

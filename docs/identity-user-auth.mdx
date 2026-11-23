@@ -37,12 +37,17 @@ channels; scope `spawn,run,role:default`, so it may spawn, start workflow runs w
 three left off and no `--full` is refused.
 No ledger row, no access; there is no allow-by-default.
 
-The default username source uses the first usable verified claim, `preferred_username` or `name`,
-then generates a `user_<short>` name. The service skips name claims containing `@`. An operator
-must opt in before the service uses an email's local part before generation. It limits names to 40 lowercase letters,
-digits and underscores, and adds a suffix if a derived name is taken. A username can start with a
-digit. Existing owners get a username at their next authorized exchange. A space that uses a
-directory instead leaves owners unnamed until a trusted grant supplies a username.
+In a space that uses verified claims, interactive `cotal login` suggests a username. You can
+accept it or change it before confirming. The service refuses a taken or reserved choice and
+asks you to choose again. A confirmed username is permanent. It can start with a digit and
+contain up to 40 lowercase letters, digits, and underscores. The reserved names are `admin`,
+`cotal`, `support`, `root`, and `system`.
+
+The service suggests a name from `preferred_username`, `name`, or a generated `user_<short>`
+value. It skips name claims containing `@`. Using an email local part before generation requires
+an operator opt-in. Existing owners without a username pick at their next interactive sign-in.
+Nonterminal login does not reserve a name. A directory space leaves owners unnamed until its
+trusted directory supplies a username.
 
 All members can read the registry in their space. A connection that holds an older credential
 needs a refresh to get the read grant. Reconnecting with the same credential does not add it.
@@ -457,9 +462,10 @@ host accepts it only when its single sealed scan of the caller instance's
 target a foreign manager slot holder in the same space, but it runs only after the delivery daemon
 proves the frozen gate's holder gone under a complete sweep. The participant receives neither an
 evictor credential nor authority over another instance's records or gate. A clean stop refreshes an
-unhealthy executor before deregistration. A restart verify-evicts its old family, and a manager
-blocked by a foreign governance slot whose holder's gate is still frozen at the slot's stamp asks
-the host to reconcile that holder and retries the registration once. The goal-writer and session-ledger
+unhealthy executor before deregistration. A restart verify-evicts its old family. A Manager that
+finds another registration in flight retries from a fresh read, with exponential backoff and jitter
+within a 15-second budget. If the foreign holder is still in flight when that budget runs out, the
+Manager asks the host to reconcile that holder and retries registration once. The goal-writer and session-ledger
 credentials carry a random `issuance:` tag, so a restart that re-mints them within the second of an
 earlier issuance gets new ledger rows and never re-signs a credential its barrier revoked.
 

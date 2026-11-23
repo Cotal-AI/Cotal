@@ -200,8 +200,10 @@ folder is not replaced: `down` refuses `CONFLICT` and names `cotal space forget 
 which `down` stops the stack through its journal. While another registered space names this
 stack's exact broker address, bare `down` refuses `LIFECYCLE_BLOCKED`, exit 2, and stops nothing,
 because one listener answers for both registrations. It names each of those spaces with the
-`cotal space show <space>` that reads one, the `cotal space forget <space>` that takes it off this
-address once its own stack is stopped, and the `cotal down` to run again after that. A user-auth stack's registration is not rebuilt,
+`cotal space show <space>` that reads one, the `cotal space forget <space> --plain` that takes it off
+this address once its own stack is stopped, and the `cotal down` to run again after that. For a
+retained name that starts with `-`, use `cotal space show -- -old` and
+`cotal space forget --plain -- -old`, replacing `-old` with that name. A user-auth stack's registration is not rebuilt,
 so it refuses `UNSUPPORTED`. A stop that refuses or is cancelled before any member stops puts the
 registration back as it was.
 
@@ -300,7 +302,8 @@ user-auth stack they show a foreground restart without a manager, with `--user-a
 recorded space and broker address. Other stacks show `cotal up`.
 Before the first `up`,
 `down --space <name>` gives the same no-op when the name matches the space prepared in this folder.
-A different name is refused. A controller stack
+A different name is refused. For a stop with `--json` or `--plain`, the refusal names the mismatch
+and directs you to the requested space's project root. A controller stack
 counts as stopped when its last whole-stack operation was a completed `down` and no member and no
 other service instance of its space runs. That check reads no process record under the root; those
 are read only as described below. A stack that stopped any other way takes the full stop, which
@@ -391,6 +394,9 @@ instead of reporting a stopped stack. Press Ctrl-C in the first terminal, or wai
 retry `cotal down --yes`. Once the broker is registered, `down` waits up to 20 seconds for startup
 to finish before stopping the stack. If it cannot finish waiting, it gives the same next step and
 stops nothing. A refused manager stop leaves delivery and the broker running.
+Once the mesh is registered, `down --preserve-state` refuses with `LIFECYCLE_BLOCKED`, exit 2,
+if startup or another maintenance operation still holds the lock. Nothing was stopped. After the
+other operation finishes, repeat the preserve command from the same folder with the same options.
 When a legacy open broker stops cleanly and its saved payload limit is below the manager's
 minimum, the receipt shows `cotal up --no-manager`. That starts the broker at the same limit.
 The machine home is not an isolated project root, so bare `down` refuses the home stack. Stop it
@@ -892,7 +898,8 @@ no store to reset, so both refuse `TARGET_NOT_FOUND` and name `cotal up`. So doe
 no stack has run for, which also names `cotal space forget`. A stack whose last
 operation is not a completed `down` refuses `LIFECYCLE_BLOCKED` and names `cotal down --yes`. Each
 refusal names one reason and the command that clears it. A space that may still run names
-`cotal down` from its root, and lists each process that may run once. A stack member whose
+`cotal down --dry-run` to review the stop and `cotal down --yes` to confirm it, both from its root,
+and lists each process that may run once. A stack member whose
 process also holds its component's record, such as the manager's pidfile, is listed as that member
 with the record's pid. A member that exited without a recorded stop, as after a crash, is
 settled by `cotal down --yes`: it finds the member gone and records it as already stopped, and the

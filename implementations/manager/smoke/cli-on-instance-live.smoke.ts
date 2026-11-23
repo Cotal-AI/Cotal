@@ -331,7 +331,7 @@ try {
     const out = strip(r.out);
     check(site.what,
       r.status !== 0
-        && /--on wants the manager INSTANCE id as `cotal ps` prints it/.test(out)
+        && out.includes(`--on wants the manager INSTANCE id as \`cotal ps${site.argv[0] === "ps" ? ` --space ${space}` : ""}\` prints it`)
         && /not the roster's principal id/.test(out)
         && /is a principal id/.test(out)
         && !/no describe reply|did not answer/i.test(out),
@@ -628,6 +628,7 @@ try {
   const mixedManager = new VariantManager({ space, servers: SERVERS, runtime: "pty", workspaceRoot: root3 });
   m2 = mixedManager;
   await mixedManager.start();
+  const mixedManagerId = (mixedManager as unknown as MgrPriv).managerInstanceId;
   const seatA = await m1.startAgent({ name: "census-a", agent: "ps-census-stub", cwd: repoRoot, events: false });
   const seatB = await mixedManager.startAgent({ name: "census-b", agent: "ps-census-stub", cwd: repoRoot, events: false });
   check("both real managers started a seat", seatA.ok === true && seatB.ok === true, { seatA, seatB });
@@ -713,8 +714,8 @@ try {
     { status: unlistedHuman.status, out: strip(unlistedHuman.out) });
   const answeringManager = /Answering manager: +(\S+)/.exec(strip(unlistedHuman.out))?.[1];
   check("refresh on the answering manager keeps the application and explicit broker",
-    (answeringManager === IID1 || answeringManager === IID2) && strip(unlistedHuman.out).includes(`cotal models --space ${space} --harness models-unlisted --refresh --server ${SERVERS} --on ${answeringManager}`),
-    { status: unlistedHuman.status, out: strip(unlistedHuman.out) });
+    (answeringManager === IID1 || answeringManager === mixedManagerId) && strip(unlistedHuman.out).includes(`cotal models --space ${space} --harness models-unlisted --refresh --server ${SERVERS} --on ${answeringManager}`),
+    { status: unlistedHuman.status, liveManagerIds: [IID1, mixedManagerId], out: strip(unlistedHuman.out) });
   check("a read of all catalogs leaves the application as a placeholder for the refresh",
     modelsOut.includes(`cotal models --space ${space} -H <application> --refresh --on ${asked}`), modelsOut.slice(-900));
   check("the report gives the reason the install lists no catalog and no failure",

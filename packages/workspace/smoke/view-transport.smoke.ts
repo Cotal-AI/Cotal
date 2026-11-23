@@ -1,6 +1,6 @@
 /**
- * MeshView connection status across a real broker outage. Run: pnpm smoke:view-transport (needs
- * nats-server on PATH).
+ * MeshView startup cancellation and connection status across a real broker outage. Run:
+ * pnpm smoke:view-transport (needs nats-server on PATH).
  *
  * When the broker stops, nats.js reconnects on its own and the endpoint's `connection` event can
  * stay true for the whole outage; only its `transport` edge goes false. Every surface reads
@@ -25,6 +25,19 @@ async function until(probe: () => boolean, ms: number): Promise<boolean> {
   return probe();
 }
 
+async function checkStoppedDuringStart(space: string, server: string): Promise<void> {
+  const view = new MeshView(openObserver({ space, server, name: "cancelled-watch" }));
+  let emitted = false;
+  view.on("change", () => { emitted = true; });
+  try {
+    const starting = view.start();
+    await Promise.all([starting, view.stop()]);
+    check("a view stopped during startup never begins emitting snapshots", !(await until(() => emitted, 300)));
+  } finally {
+    await view.stop();
+  }
+}
+
 const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 const port = await freePort();
 const servers = `nats://127.0.0.1:${port}`;
@@ -38,6 +51,7 @@ try {
   await ready();
   const space = "view-transport";
   await setupSpaceStreams({ servers, space });
+  await checkStoppedDuringStart(space, servers);
   const ep = openObserver({ space, server: servers, name: "watch" });
   view = new MeshView(ep, {});
   let rendered: MeshSnapshot | undefined;

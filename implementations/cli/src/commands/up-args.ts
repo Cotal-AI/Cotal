@@ -6,6 +6,7 @@ import { SERVICE_AUTHORITY_MAX_BYTES, SERVICE_CALLER_PAYLOAD_FLOOR, type ParsedA
 import {
   parseSeatCapFlag,
   CommandFailure,
+  codeSpan,
   assertSingleSpaceBroker,
   authDir,
   soleSpaceOf,
@@ -76,7 +77,12 @@ export function validateUpArguments(args: ParsedArgs): void {
   if (args.values.open === true) {
     publicExchangeArgs(args.values, false);
     serviceEndpointsArgs(args.values, false);
-  } else if (typeof args.values["exchange-public-port"] === "string") checkPublicExchangePort(args.values["exchange-public-port"]);
+  } else {
+    if (typeof args.values["exchange-public-port"] === "string") checkPublicExchangePort(args.values["exchange-public-port"]);
+    const url = args.values["exchange-public-url"];
+    if (typeof url === "string" && !url.startsWith("https://"))
+      throw new CommandFailure("refused", "USAGE_INVALID", "--exchange-public-url must be an https:// URL (TLS terminates at the reverse proxy); nothing was started or written");
+  }
   if (args.values.idp !== undefined && args.values["user-auth"] !== true && !args.values.file)
     throw new CommandFailure("refused", "USAGE_INVALID", '--idp is for user-auth spaces; pair it with --user-auth, or set broker.auth: "user" in a manifest', { remedy: "use --user-auth --idp <auth base URL>, without --open" });
   if (args.values.restore !== undefined && args.values["no-manager"] === true)
@@ -113,7 +119,12 @@ export function validateUpArguments(args: ParsedArgs): void {
   // checks the certificate against the address it names.
   if (!args.values.file && args.values["tls-cert"] !== undefined && typeof args.values.server === "string" && /^nats:\/\//i.test(args.values.server))
     throw new CommandFailure("refused", "USAGE_INVALID", "--tls-cert serves the broker over TLS, so --server must be a tls:// address; nothing was started or written", { remedy: `pass --server ${tlsAddress(args.values.server)}`, selfContained: true });
-  if (args.values.file !== undefined && args.values.foreground === true) throw new CommandFailure("refused", "UNSUPPORTED", "manifest boot has no native foreground custody path; a detached broker was not substituted for the requested terminal-bound lifetime");
+  if (typeof args.values.file === "string" && args.values.foreground === true) {
+    const boot = `cotal team boot ${shellWord(args.values.file)} --foreground`;
+    const remedy = args.values["dry-run"] === true ? `preview with ${codeSpan(`${boot} --dry-run`)}`
+      : `prepare the project if needed with \`cotal space create <space> --root .\`, then run ${codeSpan(boot)}`;
+    throw new CommandFailure("refused", "UNSUPPORTED", "manifest boot has no native foreground custody path; a detached broker was not substituted for the requested terminal-bound lifetime", { remedy });
+  }
   if (args.values.foreground === true && (args.values.json === true || args.values.plain === true)) throw new CommandFailure("refused", "USAGE_INVALID", "foreground up keeps native terminal custody and cannot produce a finite JSON or plain receipt", { remedy: `omit ${args.values.json ? "--json" : "--plain"} to keep the stack in this terminal, or omit --foreground for a finite receipt from a controller-owned stack` });
   // Flag values and combinations are usage, so they refuse here, before any effect. The run keeps
   // its own checks for maintenance re-entries, which do not pass through this validation.
@@ -155,7 +166,7 @@ export function validateUpArguments(args: ParsedArgs): void {
     if (args.values.open === true) throw new CommandFailure("refused", "USAGE_INVALID", "--account-resolver sets how the broker resolves space accounts, and the open broker configuration has none; nothing was started", { remedy: "drop --account-resolver, or start an auth space without --open" });
     if (args.values.file !== undefined || args.values.restore !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", `--account-resolver cannot be combined with ${args.values.file !== undefined ? "--file/-f" : "--restore"}, which starts the broker its own record describes; nothing was started`, { remedy: "start it without --account-resolver; a recorded resolver is rendered again" });
   }
-  if (typeof args.values["store-dir"] === "string") assertStoreDirArgument(args.values["store-dir"], typeof args.values.root === "string" ? resolve(args.values.root) : freshFolderRoot(args.values) ?? cotalRoot());
+  if (typeof args.values["store-dir"] === "string") assertStoreDirArgument(args.values["store-dir"], typeof args.values.root === "string" ? resolve(args.values.root) : freshFolderRoot(args.values) ?? cotalRoot(), args.values.restore ? "restore" : "start");
   const restoreOnly = args.values["restore-only"];
   if (restoreOnly !== undefined && restoreOnly !== "registry") throw new CommandFailure("refused", "USAGE_INVALID", `--restore-only takes registry (got ${JSON.stringify(restoreOnly)})`);
   if (!args.values.restore && (restoreOnly !== undefined || args.values["accept-missing-source"] === true)) throw new CommandFailure("refused", "USAGE_INVALID", "--restore-only and --accept-missing-source require --restore <dir>");
@@ -303,7 +314,7 @@ export function freshFolderRoot(values: ParsedArgs["values"]): string | undefine
 /** The space a bare `up` starts in a new project: the name of the project folder, when no `--space`
  *  names one and the folder's records name no space. The name passes the rules `space create`
  *  applies, and a name another folder on this machine holds, running, stopped or prepared, refuses
- *  rather than being taken over. Each refusal names `--space`, before anything is written. */
+ *  rather than being taken over. Both checks run before anything is written. */
 export function folderNamedSpace(values: ParsedArgs["values"]): string | undefined {
   if (values.space !== undefined || values.root !== undefined || values.file !== undefined || values.restore !== undefined) return undefined;
   const root = freshFolderRoot(values) ?? (machineHomeRoot() ? undefined : cotalRoot());
@@ -312,8 +323,12 @@ export function folderNamedSpace(values: ParsedArgs["values"]): string | undefin
   const named = `up names a new project's space after its folder, and`;
   const checked = checkSpaceName(space);
   const invalid = spaceNameTooLong(space) ?? (checked.ok ? undefined : checked.message.replace(/^✗ /, ""));
-  if (invalid)
-    throw new CommandFailure("refused", "USAGE_INVALID", `${named} the folder name ${JSON.stringify(space)} cannot be one: ${invalid}; nothing was started or written`, { target: { root }, remedy: "name the space with `cotal up --space <name>`", selfContained: true });
+  if (invalid) {
+    const remedy = presentationOf(values) === "rich"
+      ? "repeat your startup command with the same options, adding `--space <name>` with a valid unused name"
+      : "for a controller-supported start, prepare this folder with `cotal space create <name> --root .` using a valid unused name, then repeat your startup command with the same options; for native startup, add `--space <name>` and omit the output flag instead";
+    throw new CommandFailure("refused", "USAGE_INVALID", `${named} the folder name ${JSON.stringify(space)} cannot be one: ${invalid}; nothing was started or written`, { target: { root }, remedy, selfContained: true });
+  }
   assertSelectionNotMoved(root, space);
   const held = findMesh(space) ?? findPreparedSpace(space);
   if (held)

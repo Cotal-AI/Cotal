@@ -6,7 +6,7 @@ audience: "HTTP client authors"
 ---
 Source: [OpenAPI description](../implementations/auth/host.openapi.json).
 
-Host-only HTTP operations of the stock auth service. These six routes exist only on the loopback listener and return 404 on the public listener. The owner-private auth-service discovery record supplies its port and exchange capability. Every operation requires the exact Authorization bearer capability, application/json and no Origin header. Requests match the exact target, so query strings and trailing slashes return 404. Bodies default to 65536 bytes. More than 30 invalid capability attempts in a rolling minute receive 429.
+Host-only HTTP operations of the stock auth service. These eight routes exist only on the loopback listener and return 404 on the public listener. The owner-private auth-service discovery record supplies its port and exchange capability. Every operation requires the exact Authorization bearer capability, application/json and no Origin header. Requests match the exact target, so query strings and trailing slashes return 404. Bodies default to 65536 bytes. More than 30 invalid capability attempts in a rolling minute receive 429.
 
 The loopback listener also serves /health, /jwks, /exchange, /manager-service-authority, /manager-instances, /service-endpoint-authority, /service-endpoint-host and /chat-session/open, /chat-session/bearer, /chat-session/retire. Their public request and response shapes are in the [Auth HTTP API](https://docs.cotal.ai/api/auth/). Proof operations additionally require the loopback capability. The loopback /health handler also accepts other methods. Elevated exchange views and operator host operations are loopback-only. Mesh discovery is public-listener-only. This implementation reference does not establish a stable cloud API.
 
@@ -17,6 +17,395 @@ The [interactive reference](https://docs.cotal.ai/api/auth-host/) and [downloada
 Schema references in the sections below resolve inside the downloadable specification.
 
 See [API reference](api-reference.mdx) for the other integration interfaces.
+
+## Reserve a directory username [#auth-host-reserve-username]
+
+```http
+POST /username/reserve
+```
+
+Requires directory mode. Reserve the exact username for a derived owner before writing its grant. Retrying the same pair returns the existing binding.
+
+### Parameters
+
+No operation parameters.
+
+### Request body
+
+The request uses the schema below.
+
+Required: yes.
+
+Content type: `application/json`.
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "owner",
+    "username"
+  ],
+  "properties": {
+    "owner": {
+      "type": "string",
+      "pattern": "^u_[a-z2-7]{26}$"
+    },
+    "username": {
+      "type": "string",
+      "pattern": "^[a-z0-9_]{1,40}$"
+    }
+  }
+}
+```
+
+### Responses
+
+#### HTTP 200
+
+The permanent binding.
+
+Content type: `application/json`.
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "username"
+  ],
+  "properties": {
+    "username": {
+      "type": "string",
+      "pattern": "^[a-z0-9_]{1,40}$"
+    }
+  }
+}
+```
+
+#### HTTP 400
+
+The username operation was refused or could not be confirmed.
+
+Content type: `application/json`.
+
+```json
+{
+  "$ref": "#/components/schemas/Error"
+}
+```
+
+#### HTTP 401
+
+The username operation was refused or could not be confirmed.
+
+Content type: `application/json`.
+
+```json
+{
+  "$ref": "#/components/schemas/Error"
+}
+```
+
+#### HTTP 403
+
+The username operation was refused or could not be confirmed.
+
+Content type: `application/json`.
+
+```json
+{
+  "$ref": "#/components/schemas/Error"
+}
+```
+
+#### HTTP 405
+
+The username operation was refused or could not be confirmed.
+
+Content type: `application/json`.
+
+```json
+{
+  "$ref": "#/components/schemas/Error"
+}
+```
+
+#### HTTP 409
+
+The username operation was refused or could not be confirmed.
+
+Content type: `application/json`.
+
+```json
+{
+  "$ref": "#/components/schemas/Error"
+}
+```
+
+#### HTTP 412
+
+The username operation was refused or could not be confirmed.
+
+Content type: `application/json`.
+
+```json
+{
+  "$ref": "#/components/schemas/Error"
+}
+```
+
+#### HTTP 413
+
+The username operation was refused or could not be confirmed.
+
+Content type: `application/json`.
+
+```json
+{
+  "$ref": "#/components/schemas/Error"
+}
+```
+
+#### HTTP 415
+
+The username operation was refused or could not be confirmed.
+
+Content type: `application/json`.
+
+```json
+{
+  "$ref": "#/components/schemas/Error"
+}
+```
+
+#### HTTP 429
+
+The username operation was refused or could not be confirmed.
+
+Content type: `application/json`.
+
+```json
+{
+  "$ref": "#/components/schemas/Error"
+}
+```
+
+#### HTTP 500
+
+The username operation was refused or could not be confirmed.
+
+Content type: `application/json`.
+
+```json
+{
+  "$ref": "#/components/schemas/Error"
+}
+```
+
+#### HTTP 503
+
+The username operation was refused or could not be confirmed.
+
+Content type: `application/json`.
+
+```json
+{
+  "$ref": "#/components/schemas/Error"
+}
+```
+
+## Backfill a granted owner's username [#auth-host-backfill-username]
+
+```http
+POST /username/backfill
+```
+
+Requires claims mode and a current interactive grant for the owner. Assigns a generated suggestion when the owner has no binding. An existing binding is returned unchanged.
+
+### Parameters
+
+No operation parameters.
+
+### Request body
+
+The request uses the schema below.
+
+Required: yes.
+
+Content type: `application/json`.
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "owner"
+  ],
+  "properties": {
+    "owner": {
+      "type": "string",
+      "pattern": "^u_[a-z2-7]{26}$"
+    }
+  }
+}
+```
+
+### Responses
+
+#### HTTP 200
+
+The permanent binding.
+
+Content type: `application/json`.
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "username"
+  ],
+  "properties": {
+    "username": {
+      "type": "string",
+      "pattern": "^[a-z0-9_]{1,40}$"
+    }
+  }
+}
+```
+
+#### HTTP 400
+
+The username operation was refused or could not be confirmed.
+
+Content type: `application/json`.
+
+```json
+{
+  "$ref": "#/components/schemas/Error"
+}
+```
+
+#### HTTP 401
+
+The username operation was refused or could not be confirmed.
+
+Content type: `application/json`.
+
+```json
+{
+  "$ref": "#/components/schemas/Error"
+}
+```
+
+#### HTTP 403
+
+The username operation was refused or could not be confirmed.
+
+Content type: `application/json`.
+
+```json
+{
+  "$ref": "#/components/schemas/Error"
+}
+```
+
+#### HTTP 405
+
+The username operation was refused or could not be confirmed.
+
+Content type: `application/json`.
+
+```json
+{
+  "$ref": "#/components/schemas/Error"
+}
+```
+
+#### HTTP 409
+
+The username operation was refused or could not be confirmed.
+
+Content type: `application/json`.
+
+```json
+{
+  "$ref": "#/components/schemas/Error"
+}
+```
+
+#### HTTP 412
+
+The username operation was refused or could not be confirmed.
+
+Content type: `application/json`.
+
+```json
+{
+  "$ref": "#/components/schemas/Error"
+}
+```
+
+#### HTTP 413
+
+The username operation was refused or could not be confirmed.
+
+Content type: `application/json`.
+
+```json
+{
+  "$ref": "#/components/schemas/Error"
+}
+```
+
+#### HTTP 415
+
+The username operation was refused or could not be confirmed.
+
+Content type: `application/json`.
+
+```json
+{
+  "$ref": "#/components/schemas/Error"
+}
+```
+
+#### HTTP 429
+
+The username operation was refused or could not be confirmed.
+
+Content type: `application/json`.
+
+```json
+{
+  "$ref": "#/components/schemas/Error"
+}
+```
+
+#### HTTP 500
+
+The username operation was refused or could not be confirmed.
+
+Content type: `application/json`.
+
+```json
+{
+  "$ref": "#/components/schemas/Error"
+}
+```
+
+#### HTTP 503
+
+The username operation was refused or could not be confirmed.
+
+Content type: `application/json`.
+
+```json
+{
+  "$ref": "#/components/schemas/Error"
+}
+```
 
 ## Retire an interactive lifecycle [#auth-host-retire-interactive]
 

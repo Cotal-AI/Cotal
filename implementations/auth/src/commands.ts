@@ -34,6 +34,7 @@ import { findInteractiveActor, findManagedActor, loadActorLedger, withManagedGra
 import { INTERACTIVE_RETIRE_PATH } from "./service.js";
 import { runAuthService } from "./service-host.js";
 import { loadAuthServiceInfo, loadOwnerSecret, loadPinnedIdp } from "./store.js";
+import { backfillUsername, pickLoginUsername } from "./username-login.js";
 
 import { isDiscoveryName, resolveDiscoveryLogin, resolveNativeMigration, COTAL_CLOUD_IDP, cloudAuthUrl, openLoginBrowser, readCurrent, setAdoptedCurrent } from "@cotal-ai/workspace";
 
@@ -293,11 +294,12 @@ async function runLogin(args: ParsedArgs): Promise<void> {
       if (choice && !readCurrent()) { setAdoptedCurrent(choice); selected = choice; }
     }
     const saved = resolvePreference("name").value;
+    const username = await pickLoginUsername(idp, session, canChooseAccount(), args.values.space as string | undefined);
     // WHO signed in must be human-readable (per-user auth exists for operator-visible identity):
     // prefer the IdP's email/name claim; the raw `sub` stays as the stable id (dim when secondary).
     console.log(renderReport({ sections: [
       { title: "Signed in", blocks: [
-        { kind: "fields", rows: [["Account", label || sub], ["Subject", sub], ["Provider", idp], ["Session expires", new Date(session.expiresAt * 1000).toISOString()], ["Chat name", session.name ?? "none"]] },
+        { kind: "fields", rows: [["Account", label || sub], ["Subject", sub], ["Provider", idp], ["Session expires", new Date(session.expiresAt * 1000).toISOString()], ["Chat name", session.name ?? "none"], ...(username ? [["Username", username] as [string, string]] : [])] },
         { kind: "lines", lines: [
           ...(saved ? [{ text: `Chat sessions use your saved name "${saved}".`, tone: "hint" as const }]
             : session.name ? []
@@ -720,13 +722,14 @@ const authCommands: Command[] = [
     group: "Identity",
     summary: "sign in to Cotal Cloud or another host with device approval",
     examples: [{ command: "cotal login", note: "sign in to Cotal Cloud and approve sign-in" }, { command: "cotal login --idp <url>", note: "sign in to one provider" }],
-    usage: "cotal login [<name> | --cloud | --idp <auth base URL> | --migrate-from <old auth URL>] [--client-id <id>] [--no-browser] [--plain]",
+    usage: "cotal login [<name> | --cloud | --idp <auth base URL> | --migrate-from <old auth URL>] [--space <s>] [--client-id <id>] [--no-browser] [--plain]",
     positionals: "[<name>]",
     prepareMeshTarget: false,
     outputs: ["plain"],
     validate: (args) => validateAccountArguments(args, "login"),
     flags: [
       plainFlag,
+      spaceFlag,
       { name: "cloud", type: "boolean", description: "Sign in to Cotal Cloud" },
       { name: "migrate-from", type: "string", value: "<old auth URL>", description: "Approve an endorsed native origin migration for a registered account" },
       { name: "no-browser", type: "boolean", description: "Print approval instructions without opening a browser" },
@@ -782,6 +785,13 @@ function validateAuthArguments(args: ParsedArgs): void {
   if (mode === "signer") {
     if (actor !== undefined || extra.length || Object.keys(args.values).some((key) => !["space", "out", "force", "json", "plain", "no-color", "no-input"].includes(key))) throw new CommandFailure("refused", "USAGE_INVALID", "use auth signer --out <private-file> [--space <space>] [--force] without actor or grant selectors");
     validateSignerExportInput(args.values);
+    return;
+  }
+  if (mode === "backfill-username") {
+    if (!actor || extra.length || Object.keys(args.values).some((key) => !GRANT_COMMON_FLAGS.includes(key)))
+      throw new CommandFailure("refused", "USAGE_INVALID", "use auth backfill-username <owner> [--space <space>]");
+    try { assertDerivedOwnerToken(actor); }
+    catch { throw new CommandFailure("refused", "USAGE_INVALID", "username backfill requires a derived owner token"); }
     return;
   }
   if (mode === undefined) {
@@ -925,6 +935,15 @@ function localAuthTarget(values: { space?: string }): AuthTarget {
 async function authGroup(args: ParsedArgs): Promise<void> {
   validateAuthArguments(args);
   const mode = args.positionals[0];
+  if (mode === "backfill-username") {
+    const { dir, space } = actorState(localAuthTarget(args.values as { space?: string }));
+    const owner = args.positionals[1]!;
+    return legibly(async () => {
+      const username = await backfillUsername(dir, owner);
+      writeResult(presentationOf(args.values), { command: "auth backfill-username", target: { space, owner }, result: { username } },
+        () => ({ sections: [{ title: "Username", blocks: [{ kind: "fields", rows: [["Owner", owner], ["Username", username]] }] }] }));
+    });
+  }
   if (mode === "mint" || mode === "revoke-credential") {
     if (!registry.has("credential-action", mode)) throw new CommandFailure("refused", "UNSUPPORTED", `this composition has no registered native credential ${mode} action; no other implementation was substituted`);
     const action = registry.resolve<CredentialAction>("credential-action", mode);
@@ -1005,13 +1024,14 @@ async function authGroup(args: ParsedArgs): Promise<void> {
 
 const authCommand: Command = {
   kind: "command", name: "auth", group: "Identity",
-  positionals: "[grants | grant <actor> | revoke <actor> | signer | mint <name> | revoke-credential <key | file> | handle inspect <file> | redeem <file> | retire <lifecycle-uid>]",
+  positionals: "[grants | grant <actor> | revoke <actor> | backfill-username <owner> | signer | mint <name> | revoke-credential <key | file> | handle inspect <file> | redeem <file> | retire <lifecycle-uid>]",
   summary: "inspect account metadata, manage actor grants and export a protected account signer",
   examples: [{ command: "cotal auth", note: "list the accounts this machine is signed in to" }, { command: "cotal auth grants", note: "list who may use this space" }, { command: "cotal auth grant <actor> --sub <subject> --full", note: "grant a person the wide default access" }],
-  usage: "cotal auth [grants | grant <actor> | revoke <actor> | signer --out <private-file> | mint <name> | revoke-credential <key | file> | handle inspect <file> | redeem <file> | retire <lifecycle-uid>] [--space <s>] [--json|--plain]",
+  usage: "cotal auth [grants | grant <actor> | revoke <actor> | backfill-username <owner> | signer --out <private-file> | mint <name> | revoke-credential <key | file> | handle inspect <file> | redeem <file> | retire <lifecycle-uid>] [--space <s>] [--json|--plain]",
   flagNames: ["space", "json", "plain"],
   flags: authFlags, outputs: ["json", "plain"], reads: true, prepareMeshTarget: false,
   subcommands: ([
+    { name: "backfill-username", flagNames: ["space", "json", "plain"], summary: "reserve a generated username for one granted owner", usage: "cotal auth backfill-username <owner> [--space <space>]", prepareMeshTarget: false },
     { name: "mint", flagNames: credentialMintFlags.map((flag) => flag.name), summary: "write a fixed-profile or supported endpoint caller credential privately", examples: [{ command: "cotal auth mint <name>", note: "issue an agent credential" }, { command: "cotal auth mint <name> --out <private-file>", note: "write it to a private file" }], usage: "cotal auth mint <name> [--profile agent|observer|admin] [--out <private-file>] | <name> --endpoint <class> --out <private-file> [--channels <a,b>]", prepareMeshTarget: false },
     { name: "revoke-credential", flagNames: ["space", "yes", "json", "plain"], summary: "stop one static credential by its public key or creds file on a stopped stack; the broker refuses it from the next up", examples: [{ command: "cotal auth revoke-credential <creds-file>", note: "revoke one issued credential" }], usage: "cotal auth revoke-credential <public-key | creds-file> [--space <space>] [--yes]", prepareMeshTarget: false },
     { name: "handle", flagNames: ["space", "json", "plain"], summary: "inspect protected claims or static-registry signatures without conferring authority", examples: [{ command: "cotal auth handle inspect <private-file>", note: "read what a handle file claims" }], usage: "cotal auth handle inspect <private-file> [--space <space>] [--json|--plain]", reads: true, prepareMeshTarget: false, subcommands: [{ name: "inspect", flagNames: ["space", "json", "plain"], summary: "offline metadata; --space checks native static signer/revocation records", examples: [{ command: "cotal auth handle inspect <private-file>", note: "read what a handle file claims, offline" }, { command: "cotal auth handle inspect <private-file> --space <space>", note: "also check it against a space's records" }], usage: "cotal auth handle inspect <private-file> [--space <space>] [--json|--plain]", reads: true, prepareMeshTarget: false, outputs: ["json", "plain"] }] },

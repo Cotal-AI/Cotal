@@ -677,6 +677,11 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
   check("pinned spawn with --plain gives the same compatible remedy",
     pinnedPlain.status === 1 && /Code:\s+USAGE_INVALID/.test(pinnedPlain.stderr) && pinnedPlain.stderr.trimEnd().endsWith(`\n  ${detachRemedy}`), shown(pinnedPlain));
   const missingTurn = cotal(["run", "yield"], undefined, noSeed);
+  for (const verb of [["turns"], ["yield", "turn-1", "--status", "done"]]) {
+    const r = cotal(["run", ...verb, "--creds", "./unused.creds", "--json"], undefined, noSeed);
+    check(`run ${verb[0]} rejects an operator credential override`, r.status === 1 &&
+      JSON.parse(r.stdout).error?.code === "USAGE_INVALID" && r.stdout.includes("managed seat's own identity"), shown(r));
+  }
   const yieldForm = /^✗ run yield takes one identifier\n {2}`cotal run turns` lists your turns\. Run `(cotal run yield <turn-id> --status <done\|blocked\|handoff>)`\. For a handoff, add `(--to <agent>)`\./.exec(missingTurn.stderr);
   check("run yield without an id names the required status and handoff destination without printing help",
     missingTurn.status === 1 && !!yieldForm && !missingTurn.stderr.includes("Usage"), shown(missingTurn));
@@ -1108,6 +1113,16 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
     writeFileSync(join(home, "..", "agents", "sec.md"), "---\nname: sec\nmodel: [SECRETPERSONA42\n---\nSec.\n");
     writeFileSync(join(home, "..", "m.yaml"), manifest);
   };
+  const help = cotal(["team", "check", "--help"], undefined, noSeed);
+  check("team check help explains the manifest space assertion", help.status === 0 &&
+    help.stdout.includes("[--space <name>]") && /--space must match\s+the manifest/.test(help.stdout), shown(help));
+  const manifest = files(`${head}channels:\n  ops: {}\n`);
+  const match = cotal(["team", "check", "m.yaml", "--space", "entry", "--json"], manifest, noSeed);
+  check("team check accepts the manifest space without a broker", match.status === 0 &&
+    JSON.parse(match.stdout).result?.space === "entry", shown(match));
+  const mismatch = cotal(["team", "check", "m.yaml", "--space", "another", "--json"], manifest, noSeed);
+  check("team check refuses a different space as a conflict", mismatch.status === 2 &&
+    JSON.parse(mismatch.stdout).error?.code === "CONFLICT", shown(mismatch));
   const cases: [string, string, string[]][] = [
     ["a tab indent", `${head}channels:\n\tops: {}\n`, ["m.yaml:6:1: Tabs are not allowed as indentation at line 6, column 1"]],
     ["a misspelt key", `${head}chanels: {}\n`, ["m.yaml:5:", 'unknown key "chanels": did you mean "channels", which is required?', "has a problem,"]],

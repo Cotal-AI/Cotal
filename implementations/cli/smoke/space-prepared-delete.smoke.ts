@@ -62,10 +62,16 @@ const fits80 = (display: string) => display.split("\n").every((line) => [...line
 
 const empty = run(["space"]);
 check("rig: no spaces are registered or prepared", empty.status === 0 && empty.stdout.includes("No spaces registered."), shown(empty));
+const seeded = mkdtempSync(join(home, "seeded-"));
+mkdirSync(join(seeded, ".cotal"), { mode: 0o700 });
+writeFileSync(join(seeded, ".cotal", "channels.json"), '{"channels":{}}\n');
 const unknownStep = 'Unknown space "b4b". Run `cotal space` to check the name. For a new local space, run `cotal space create b4b` in its project folder, then run `cotal up` there.';
-const unknownPlain = run(["doctor", "auth", "--space", "b4b", "--plain"]);
+const unknownPlain = run(["doctor", "auth", "--space", "b4b", "--plain"], seeded);
 check("doctor auth --space for an unknown space gives preparation guidance instead of a root",
   unknownPlain.status === 2 && `${unknownPlain.stdout}${unknownPlain.stderr}`.includes(`Next\n  ${unknownStep}\n`), shown(unknownPlain));
+const noScope = run(["doctor", "auth", "--plain"], seeded);
+check("bare doctor auth in a never-started project lists where to find a space root",
+  noScope.status === 4 && noScope.stderr.includes("`cotal space` lists each space's root") && !noScope.stderr.includes("server-open.conf"), shown(noScope));
 
 const created = run(["space", "create", "b4b", "--root", root]);
 check("rig: the space is prepared and not started", created.status === 0, shown(created));
@@ -139,6 +145,23 @@ check("running it again in the same root gives the same refusal and writes nothi
 // Without --space the report is partial rather than a refusal, and its step was the same "run it in a
 // space's root". It now names the space this root prepared; the outcome, exit and scope stay.
 const BARE_HERE = '"b4b" is prepared but not started; start it with `cotal up`, then run `cotal doctor auth` again';
+{
+  const record = join(env.COTAL_HOME, "prepared", `${spaceSegment("b4b")}.json`);
+  const saved = readFileSync(record);
+  writeFileSync(record, "{\n");
+  try {
+    const plain = run(["doctor", "auth", "--plain"]);
+    const json = run(["doctor", "auth", "--json"]);
+    const step = json.envelope?.error?.remedy ?? "";
+    check("bare doctor auth gives the damaged prepared record's recovery as its primary step in text and JSON",
+      plain.status === 4 && json.status === 4 && json.envelope?.warnings?.some(({ code }) => code === "PREPARED_RECORD_SKIPPED") === true &&
+      step.includes(record) && step.includes("`cotal space forget b4b`") && plain.stderr.includes(`-> ${step}`) &&
+      !step.includes("server-open.conf") && readFileSync(record, "utf8") === "{\n", { plain: shown(plain), json: shown(json) });
+    const named = run(["doctor", "auth", "--space", "b4b", "--json"]);
+    check("named doctor auth keeps the damaged record refusal and its recovery",
+      named.status === 1 && named.envelope?.error?.code === "SCHEMA_INVALID" && named.envelope.error.remedy === "remove it with `cotal space forget b4b`", shown(named));
+  } finally { writeFileSync(record, saved); }
+}
 const bareJson = run(["doctor", "auth", "--json"]);
 check("bare doctor auth in a prepared space's root stays partial, exit 4, with no space or credential scope established",
   bareJson.status === 4 && bareJson.envelope?.outcome === "partial" && bareJson.envelope.error?.code === "OPERATION_PARTIAL" && bareJson.envelope.target?.root === realpathSync(root)

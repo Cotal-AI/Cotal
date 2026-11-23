@@ -327,6 +327,10 @@ try {
     credsRead.status === 0 && credsRead.envelope?.outcome === "ok" && credsRead.envelope.completeness === "complete" && credsRead.envelope.result?.managers === "denied" &&
     credsRead.envelope.warnings.some((w) => w.code === "MANAGERS_DENIED") && !credsRead.envelope.warnings.some((w) => w.code === "MANAGERS_UNREAD") &&
     rowsOf(credsRead).alice?.managed === null, shown(credsRead));
+  const credentialPresence = await run(["endpoints", "--plain", "--creds", reader, "--space", space, "--server", servers]);
+  check("live endpoint presence with a raw caller names the selectors for describe instead of printing a contract shortcut",
+    credentialPresence.status === 0 && credentialPresence.stdout.includes("with the same `--space` and `--server`") &&
+    credentialPresence.stdout.includes("use a paired native caller file") && !/^  cotal endpoint describe /m.test(credentialPresence.stdout), shown(credentialPresence));
 
   // ── whoami ──────────────────────────────────────────────────────────────────────────────────────
   const me = await run(["whoami", "--json"]);
@@ -476,7 +480,7 @@ try {
   check("whoami on a prepared space whose folder holds its signer reports the signer", signed.status === 0 && signed.envelope?.result?.identity?.kind === "space-signer" && signed.envelope.result.read === "all" && signed.envelope.result.server === null, shown(signed));
   const freshPlain = await run(["whoami", "--space", "prep-fresh", "--plain"]);
   check("its report says the space is not started and where to start it",
-    freshPlain.status === 0 && /server:\s+not started/.test(freshPlain.stdout) && freshPlain.stdout.includes(`start it with \`cotal up\` in ${prepFresh}`) && !freshPlain.stdout.includes("--creds"), shown(freshPlain));
+    freshPlain.status === 0 && /server:\s+not started/.test(freshPlain.stdout) && ["cotal", "pnpm cotal"].some((cli) => freshPlain.stdout.includes(`start it with \`${cli} up\` in ${prepFresh}`)) && !freshPlain.stdout.includes("--creds"), shown(freshPlain));
   const preparedServer = await run(["whoami", "--space", "prep-fresh", "--server", "nats://127.0.0.1:3", "--json"]);
   check("control: a prepared space with --server is still refused", preparedServer.status === 2 && preparedServer.envelope?.error?.code === "TARGET_UNAVAILABLE", shown(preparedServer));
   const both = await run(["who", "--json", "--plain"]);
