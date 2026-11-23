@@ -1375,6 +1375,9 @@ That exit replaces the report's own, so a partial report followed by a clean pas
   A cleanly stopped controller target reports `absent` and exits `1` without dialing another space.
   If its store is not writable or its broker address is occupied, the target row names what to fix
   before restarting.
+  Inside a renamed open project without a saved selection, the check reports `target refused` when
+  the journal matches the local registration and the recorded project folder is gone. It keeps the
+  move-back guidance and reports `reachable` if the broker answers.
   For open and static-auth plaintext NATS targets with no absent local process, the probe also checks JetStream and the
   recorded authentication requirement. An unauthenticated substitute for a static-auth broker
   is not reported as serving. When the address and process identity match this space's running
