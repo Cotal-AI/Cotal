@@ -1,0 +1,191 @@
+{
+  "suite": [
+    "extensions/connector-claude-code/smoke/command-socket.smoke.ts",
+    "extensions/connector-claude-code/smoke/command-seat.smoke.ts"
+  ],
+  "guard": "the seat command socket opens with its server and is removed when it exits, refuses readers it cannot serve with their causes, and settles every request it sent",
+  "command": "pnpm --filter @cotal-ai/connector-claude-code build && pnpm exec tsx extensions/connector-claude-code/smoke/command-socket.smoke.ts",
+  "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-claude-code/smoke/mutations/command-socket.json",
+  "why": [
+    "S1 to S4 cut the socket's lifetime in mcp.ts: a seat or session that exits without closing leaves the file behind, and a Desktop server must open none.",
+    "S5 to S16 break the feed and the reader one rule at a time. The suites run dist/seat.cjs and dist/command-reader.cjs, so every mutation builds the package first and rebuilds after the restore."
+  ],
+  "mutations": [
+    {
+      "name": "S1 a managed seat's close leaves the command socket open",
+      "file": "extensions/connector-claude-code/src/mcp.ts",
+      "find": "      commands?.close();\n      wake?.stop();\n",
+      "replace": "      void commands;\n      wake?.stop();\n",
+      "expectRed": "a managed seat removes the command socket when it exits",
+      "cell": "a managed seat removes the command socket when it exits",
+      "command": "pnpm --filter @cotal-ai/connector-claude-code build && pnpm exec tsx extensions/connector-claude-code/smoke/command-seat.smoke.ts",
+      "completionMarker": "command-seat.smoke: done",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code build"
+    },
+    {
+      "name": "S2 a plain session's end leaves the command socket open",
+      "file": "extensions/connector-claude-code/src/mcp.ts",
+      "find": "        feed?.close();\n        commands?.close();\n",
+      "replace": "        feed?.close();\n        void commands;\n",
+      "expectRed": "a plain session removes the command socket when it exits",
+      "cell": "a plain session removes the command socket when it exits",
+      "command": "pnpm --filter @cotal-ai/connector-claude-code build && pnpm exec tsx extensions/connector-claude-code/smoke/command-seat.smoke.ts",
+      "completionMarker": "command-seat.smoke: done",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code build"
+    },
+    {
+      "name": "S3 a managed seat names no Claude pid",
+      "file": "extensions/connector-claude-code/src/mcp.ts",
+      "find": "    claudePid: process.ppid,\n",
+      "replace": "",
+      "expectRed": "a managed seat opens the command socket for its Claude process",
+      "cell": "a managed seat opens the command socket for its Claude process",
+      "command": "pnpm --filter @cotal-ai/connector-claude-code build && pnpm exec tsx extensions/connector-claude-code/smoke/command-seat.smoke.ts",
+      "completionMarker": "command-seat.smoke: done",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code build"
+    },
+    {
+      "name": "S4 a Desktop server opens a command socket",
+      "file": "extensions/connector-claude-code/src/mcp.ts",
+      "find": "  const commands = desktop ? undefined : await openCommandFeed(",
+      "replace": "  const commands = await openCommandFeed(",
+      "expectRed": "a Claude Desktop server opens no command socket",
+      "cell": "a Claude Desktop server opens no command socket",
+      "command": "pnpm --filter @cotal-ai/connector-claude-code build && pnpm exec tsx extensions/connector-claude-code/smoke/command-seat.smoke.ts",
+      "completionMarker": "command-seat.smoke: done",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code build"
+    },
+    {
+      "name": "S5 a reader of another version is accepted",
+      "file": "extensions/connector-claude-code/src/command-feed.ts",
+      "find": "  if (mod !== CONNECTOR_VERSION)\n",
+      "replace": "  if (mod !== CONNECTOR_VERSION && mod === \"\")\n",
+      "expectRed": "a reader of another version is refused with its cause",
+      "cell": "a reader of another version is refused with its cause",
+      "command": "pnpm --filter @cotal-ai/connector-claude-code build && pnpm exec tsx extensions/connector-claude-code/smoke/command-socket.smoke.ts",
+      "completionMarker": "command-socket.smoke: done",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code build"
+    },
+    {
+      "name": "S6 the floor admits 2.1.329",
+      "file": "extensions/connector-claude-code/src/command-feed.ts",
+      "find": "const CLAUDE_FLOOR = [2, 1, 330] as const;",
+      "replace": "const CLAUDE_FLOOR = [2, 1, 329] as const;",
+      "expectRed": "an old Claude is refused with its cause",
+      "cell": "an old Claude is refused with its cause",
+      "command": "pnpm --filter @cotal-ai/connector-claude-code build && pnpm exec tsx extensions/connector-claude-code/smoke/command-socket.smoke.ts",
+      "completionMarker": "command-socket.smoke: done",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code build"
+    },
+    {
+      "name": "S7 a reader that disconnects leaves its requests waiting",
+      "file": "extensions/connector-claude-code/src/command-feed.ts",
+      "find": "    this.rejectAll(\"the command mod's reader disconnected before it answered\");\n",
+      "replace": "",
+      "expectRed": "a reader that disconnects rejects its pending request",
+      "cell": "a reader that disconnects rejects its pending request",
+      "command": "pnpm --filter @cotal-ai/connector-claude-code build && pnpm exec tsx extensions/connector-claude-code/smoke/command-socket.smoke.ts",
+      "completionMarker": "command-socket.smoke: done",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code build"
+    },
+    {
+      "name": "S8 an answer of another op resolves the request",
+      "file": "extensions/connector-claude-code/src/command-feed.ts",
+      "find": "    if (frame.op !== waiting.op && frame.op !== \"error\") return this.drop(s, `a ${frame.op} answer to a ${waiting.op} request`);\n",
+      "replace": "",
+      "expectRed": "a list answer to a run request is refused",
+      "cell": "a list answer to a run request is refused",
+      "command": "pnpm --filter @cotal-ai/connector-claude-code build && pnpm exec tsx extensions/connector-claude-code/smoke/command-socket.smoke.ts",
+      "completionMarker": "command-socket.smoke: done",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code build"
+    },
+    {
+      "name": "S9 the answer helper sends to any route",
+      "file": "extensions/connector-claude-code/src/command-reader.ts",
+      "find": "  if (!commandSockets(claude).includes(route)) throw new Error(`${route} is not a command socket of this Claude Code session`);\n",
+      "replace": "",
+      "expectRed": "the answer helper refuses a route that is not this session's",
+      "cell": "the answer helper refuses a route that is not this session's",
+      "command": "pnpm --filter @cotal-ai/connector-claude-code build && pnpm exec tsx extensions/connector-claude-code/smoke/command-socket.smoke.ts",
+      "completionMarker": "command-socket.smoke: done",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code build"
+    },
+    {
+      "name": "S10 the answer helper sends a hello",
+      "file": "extensions/connector-claude-code/src/command-reader.ts",
+      "find": "  if (parseModFrame(line).op === \"hello\") throw new Error(\"an answer cannot be a hello\");\n",
+      "replace": "",
+      "expectRed": "the answer helper refuses to send a hello, which would replace the reader",
+      "cell": "the answer helper refuses to send a hello, which would replace the reader",
+      "command": "pnpm --filter @cotal-ai/connector-claude-code build && pnpm exec tsx extensions/connector-claude-code/smoke/command-socket.smoke.ts",
+      "completionMarker": "command-socket.smoke: done",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code build"
+    },
+    {
+      "name": "S11 opening keeps sockets whose server exited",
+      "file": "extensions/connector-claude-code/src/command-feed.ts",
+      "find": "  if (process.platform === \"win32\") return;\n  const dir = commandDir();\n",
+      "replace": "  if (process.platform !== \"win32\") return;\n  const dir = commandDir();\n",
+      "expectRed": "opening removes a socket whose server has exited",
+      "cell": "opening removes a socket whose server has exited",
+      "command": "pnpm --filter @cotal-ai/connector-claude-code build && pnpm exec tsx extensions/connector-claude-code/smoke/command-socket.smoke.ts",
+      "completionMarker": "command-socket.smoke: done",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code build"
+    },
+    {
+      "name": "S12 the socket keeps the umask's mode",
+      "file": "extensions/connector-claude-code/src/command-feed.ts",
+      "find": "    if (process.platform !== \"win32\") chmodSync(path, 0o600);\n",
+      "replace": "    if (process.platform === \"win32\") chmodSync(path, 0o600);\n",
+      "expectRed": "the socket file is 0600",
+      "cell": "the socket file is 0600",
+      "command": "pnpm --filter @cotal-ai/connector-claude-code build && pnpm exec tsx extensions/connector-claude-code/smoke/command-socket.smoke.ts",
+      "completionMarker": "command-socket.smoke: done",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code build"
+    },
+    {
+      "name": "S13 a replaced reader's requests keep waiting",
+      "file": "extensions/connector-claude-code/src/command-feed.ts",
+      "find": "      this.rejectAll(\"a new command reader replaced the one this request was sent to\");\n",
+      "replace": "",
+      "expectRed": "a new hello replaces the earlier reader and rejects its requests",
+      "cell": "a new hello replaces the earlier reader and rejects its requests",
+      "command": "pnpm --filter @cotal-ai/connector-claude-code build && pnpm exec tsx extensions/connector-claude-code/smoke/command-socket.smoke.ts",
+      "completionMarker": "command-socket.smoke: done",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code build"
+    },
+    {
+      "name": "S14 closing leaves requests waiting",
+      "file": "extensions/connector-claude-code/src/command-feed.ts",
+      "find": "    this.rejectAll(\"the command feed closed\");\n",
+      "replace": "",
+      "expectRed": "closing rejects the requests still waiting",
+      "cell": "closing rejects the requests still waiting",
+      "command": "pnpm --filter @cotal-ai/connector-claude-code build && pnpm exec tsx extensions/connector-claude-code/smoke/command-socket.smoke.ts",
+      "completionMarker": "command-socket.smoke: done",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code build"
+    },
+    {
+      "name": "S15 a refused reader says hello again",
+      "file": "extensions/connector-claude-code/src/command-reader.ts",
+      "find": "if (!reading.has(route) && !refused.has(route)) follow(route);",
+      "replace": "if (!reading.has(route)) follow(route);",
+      "expectRed": "a refused reader does not say hello again",
+      "cell": "a refused reader does not say hello again",
+      "command": "pnpm --filter @cotal-ai/connector-claude-code build && pnpm exec tsx extensions/connector-claude-code/smoke/command-socket.smoke.ts",
+      "completionMarker": "command-socket.smoke: done",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code build"
+    },
+    {
+      "name": "S16 the reader prints requests without their route",
+      "file": "extensions/connector-claude-code/src/command-reader.ts",
+      "find": "  process.stdout.write(`${JSON.stringify({ ...frame, route })}\\n`);\n",
+      "replace": "  process.stdout.write(`${JSON.stringify(frame)}\\n`);\n",
+      "expectRed": "the reader prints the request with its route",
+      "cell": "the reader prints the request with its route",
+      "command": "pnpm --filter @cotal-ai/connector-claude-code build && pnpm exec tsx extensions/connector-claude-code/smoke/command-socket.smoke.ts",
+      "completionMarker": "command-socket.smoke: done",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code build"
+    }
+  ]
+}

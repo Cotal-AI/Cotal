@@ -343,11 +343,12 @@ start saves the space's `manager` service from the preset's defaults and says so
 service show manager` reads it. A start that names another `--runtime` or other option for a
 stopped manager saves it again with that option, and says so. With `--dry-run` it checks the
 registered broker URL and installed runtime metadata without loading provider code, saving a
-definition or starting a process. An invalid `--name` or a `--console-host` with whitespace or control
-characters is refused before changing the saved definition or stopped instance. With a manager
-running, start checks the replacement's runtime and broker before recommending a stop. For a valid
-replacement that changes the running manager's options, it refuses with `LIFECYCLE_BLOCKED` and names
-`cotal manager stop`.
+definition or starting a process. It also rejects a `--console-host` with whitespace or control
+characters, including when no manager is saved yet. An invalid `--name`, malformed `--console-host`,
+or launch digest override that does not match its file leaves the saved definition and stopped
+instance unchanged. With a manager running, start checks the replacement's runtime and broker
+before recommending a stop. If those checks pass and the start would change the running manager's
+options, it refuses with `LIFECYCLE_BLOCKED` and names `cotal manager stop`.
 
 On a user-auth space this folder hosts, `start` and `restart` need your signed-in, granted login,
 as `cotal up` does for its manager. On a user-auth space registered here from another host, they

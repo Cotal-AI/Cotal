@@ -30,7 +30,6 @@ export interface SpawnGoalDeps {
   agentGoals: () => Manager["agentGoals"];
   managerInstanceId: () => Manager["managerInstanceId"];
   onceWatched: () => Manager["onceWatched"];
-  serviceServe: () => Manager["serviceServe"];
   userMode: () => Manager["userMode"];
   acceptOnceTurn: (...args: Parameters<Manager["acceptOnceTurn"]>) => ReturnType<Manager["acceptOnceTurn"]>;
   assertGoalWriterEpochCurrent: (...args: Parameters<Manager["assertGoalWriterEpochCurrent"]>) => ReturnType<Manager["assertGoalWriterEpochCurrent"]>;
@@ -47,7 +46,6 @@ export function spawnGoalDeps(m: Manager): SpawnGoalDeps {
     agentGoals: () => m["agentGoals"],
     managerInstanceId: () => m["managerInstanceId"],
     onceWatched: () => m["onceWatched"],
-    serviceServe: () => m["serviceServe"],
     userMode: () => m["userMode"],
     acceptOnceTurn: (...args) => m["acceptOnceTurn"](...args),
     assertGoalWriterEpochCurrent: (...args) => m["assertGoalWriterEpochCurrent"](...args),
@@ -60,7 +58,7 @@ export function spawnGoalDeps(m: Manager): SpawnGoalDeps {
 
 /** Serving `spawn` and `launch` as goals: acceptance, the cached acceptance a retry reads, and its expiry. */
 export class SpawnGoal {
-  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: SpawnGoalDeps, private readonly parts: Pick<ManagerParts, "goalWriter">) {}
+  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: SpawnGoalDeps, private readonly parts: Pick<ManagerParts, "goalWriter" | "servePlane">) {}
 
   // The Manager members these bodies read, under their Manager names. Each reads through its dep at
   // use, so a field the Manager assigns later is current and a method a test replaces on the Manager
@@ -68,7 +66,6 @@ export class SpawnGoal {
   private get agentGoals() { return this.deps.agentGoals(); }
   private get managerInstanceId() { return this.deps.managerInstanceId(); }
   private get onceWatched() { return this.deps.onceWatched(); }
-  private get serviceServe() { return this.deps.serviceServe(); }
   private get userMode() { return this.deps.userMode(); }
   private acceptOnceTurn(...args: Parameters<Manager["acceptOnceTurn"]>): ReturnType<Manager["acceptOnceTurn"]> { return this.deps.acceptOnceTurn(...args); }
   private assertGoalWriterEpochCurrent(...args: Parameters<Manager["assertGoalWriterEpochCurrent"]>): ReturnType<Manager["assertGoalWriterEpochCurrent"]> { return this.deps.assertGoalWriterEpochCurrent(...args); }
@@ -108,7 +105,7 @@ export class SpawnGoal {
     const { fingerprint } = submissionFingerprint(ctx.request as unknown, ctx.subject);
     const ref = goalRefOf(ctx.subject, goalId);
     const key = goalKey(ref);
-    const executor = { lifecycleUid: this.managerInstanceId, epoch: this.serviceServe?.grant.epoch ?? 0 };
+    const executor = { lifecycleUid: this.managerInstanceId, epoch: this.parts.servePlane.serviceServe?.grant.epoch ?? 0 };
     const epoch = executor.epoch;
     const acceptedAt = Date.now();
 

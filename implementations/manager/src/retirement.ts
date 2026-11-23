@@ -83,7 +83,7 @@ export function retirementDeps(m: Manager): RetirementDeps {
     userMode: () => m["userMode"],
     serveIdentity: () => m["managerServeIdentity"],
     instanceId: () => m["managerInstanceId"],
-    serveEpoch: () => m["serviceServe"]?.grant.epoch,
+    serveEpoch: () => m["servePlane"].serviceServe?.grant.epoch,
     dial: (opts) => m["dial"](opts),
     withRetirementSlot: (run) => m["withRetirementSlot"](run),
     driveStaticRetirement: (a) => m["driveStaticRetirement"](a),

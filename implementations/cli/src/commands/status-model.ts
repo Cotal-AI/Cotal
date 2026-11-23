@@ -108,7 +108,8 @@ export interface StatusResult {
     nats: MachineStatus["nats"];
     natsServer: MachineStatus["natsServer"];
     natsProblem: MachineStatus["natsProblem"];
-    integrations: { name: string; state: "ok" | "warn" | "error" | "off"; text: string }[];
+    /** One row per piece a connector or client provider installed. `client` marks an ACP client's row. */
+    integrations: { name: string; state: "ok" | "warn" | "error" | "off"; text: string; client?: true }[];
     connectors: { name: string; requires: string[]; missing: string[] }[] | null;
     /** For a resolved space, the bare direct launch's persona and effective harness, including its pin. */
     defaults: { harness: string | null; persona: string | null } | null;

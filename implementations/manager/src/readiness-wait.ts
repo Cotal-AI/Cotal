@@ -16,6 +16,9 @@ const READINESS_EXIT_POLL_MS = 1_000;
  *  exits first and is reported as failed. */
 const OPERATOR_READINESS_MS = 3_000;
 
+/** Room for a refusal paragraph that names a full filesystem path, while a runaway line stays bounded. */
+const TAIL_MAX = 4096;
+
 /** What {@link ReadinessWait} reads from the Manager. Every entry is read at use, so a field the Manager
  *  assigns after construction is always current, and a Manager method a test replaces is the one that runs. */
 export interface ReadinessWaitDeps {
@@ -213,10 +216,11 @@ export class ReadinessWait {
     });
   }
 
-  /** Last non-empty line of the session's rendered backlog as a single trimmed snippet (≤160 chars)
-   *  — a readable one-line cause for an early-exit diagnostic. The backlog repaints cells a TUI
-   *  skipped with cursor moves, so it is rendered and the line is read off the terminal; stripping
-   *  its escapes would glue the words those moves separate. */
+  /** Last non-empty line of the session's rendered backlog, trimmed, as the cause for an early-exit
+   *  diagnostic. A harness that refuses its launch prints the reason as one long line that names
+   *  the cause first, so the line is kept whole up to {@link TAIL_MAX} code points. The backlog
+   *  repaints cells a TUI skipped with cursor moves, so it is rendered and the line is read off the
+   *  terminal; stripping its escapes would glue the words those moves separate. */
   async tail(session: AttachSession): Promise<string> {
     const backlog = await session.backlog();
     // Sized after the snapshot: a custodial seat's snapshot carries the geometry it was taken at.
@@ -238,7 +242,7 @@ export class ReadinessWait {
     text = text.trim();
     // Cut on code points: half a surrogate pair is not I-JSON, and a launch terminal carrying it is refused.
     const chars = [...text];
-    return chars.length > 160 ? `…${chars.slice(-160).join("")}` : text;
+    return chars.length > TAIL_MAX ? `…${chars.slice(-TAIL_MAX).join("")}` : text;
   }
 
   /** Subscribe to a managed agent's process-exit so a self-driven exit frees its slot and reaps

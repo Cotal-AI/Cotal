@@ -235,8 +235,8 @@ try {
   if (!persisted) throw new Error("predecessor did not persist a manager instance identity");
   const iid = persisted.instanceId;
   const serveActor = persisted.serveIdentity.id;
-  const M1 = mgr as unknown as { serviceServe?: { grant: { epoch: number } } };
-  const epoch1 = M1.serviceServe!.grant.epoch;
+  const M1 = mgr as unknown as { servePlane: { serviceServe?: { grant: { epoch: number } }; } };
+  const epoch1 = M1.servePlane.serviceServe!.grant.epoch;
   check("predecessor registered a persisted instanceId at epoch 0", typeof iid === "string" && iid.length > 0 && epoch1 === 0, { iid, epoch1 });
   await mgr.stop({ withAgents: true });
   mgr = undefined;
@@ -261,10 +261,10 @@ try {
     );
     if (r.ok) {
       mgr = r.mgr;
-      const M2 = mgr as unknown as { managerInstanceId: string; serviceServe?: { grant: { epoch: number; instanceId: string } } };
+      const M2 = mgr as unknown as { managerInstanceId: string; servePlane: { serviceServe?: { grant: { epoch: number; instanceId: string } }; } };
       check("DEAD HOLDER: logical instanceId is preserved", M2.managerInstanceId === iid, { iid, got: M2.managerInstanceId });
       check("DEAD HOLDER: process epoch ADVANCED through the normal takeover after abort-reopen",
-        (M2.serviceServe?.grant.epoch ?? -1) > epoch1, { epoch1, epoch2: M2.serviceServe?.grant.epoch });
+        (M2.servePlane.serviceServe?.grant.epoch ?? -1) > epoch1, { epoch1, epoch2: M2.servePlane.serviceServe?.grant.epoch });
       await mgr.stop({ withAgents: true });
       mgr = undefined;
     }

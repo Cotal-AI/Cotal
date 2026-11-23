@@ -212,7 +212,7 @@ if (process.platform === "linux") {
     };
     const rt: UpdateRuntime = {
       ...updateRuntime, env: {}, pid: process.pid, version: () => "0.13.1", checkout: () => false, installPrefix: () => globalPrefix,
-      reportRunningManager: async () => "none", reconcile: async () => {}, refreshConnectors: async () => [],
+      reportRunningManager: async () => "none", reconcile: async () => {}, refreshConnectors: async () => [], refreshClients: async () => [],
       extensions: () => [], claimUpdatePass: () => () => {}, claimGlobalUpdate: () => () => {},
       verifyGlobalEntry: (_r, v) => join(globalModules, `cotal-${v}.js`),
       npm: args => args[0] === "view" ? { status: 0, stdout: newer ? '"0.13.2"' : '"0.13.1"', stderr: "" } : args[0] === "root" ? { status: 0, stdout: `${globalModules}\n`, stderr: "" } : { status: 0, stdout: "", stderr: "" },
@@ -277,7 +277,7 @@ for (const self of [true, false]) {
     ...updateRuntime, ...preflight, env: {}, version: () => "0.13.1",
     reportRunningManager: async () => "none",
     reconcile: async () => { effects.push("reconcile"); },
-    refreshConnectors: async () => [], extensions: () => [], claimUpdatePass: () => () => {},
+    refreshConnectors: async () => [], refreshClients: async () => [], extensions: () => [], claimUpdatePass: () => () => {},
     npm: args => {
       // Only latest-tag discovery precedes the preflight on the self path.
       if (args[0] === "view" && args[1] === "cotal-ai@latest") return { status: 0, stdout: '"0.13.2"', stderr: "" };
@@ -457,7 +457,7 @@ for (const outcome of ["not-ready", "reconcile-failed", "activation-deferred"] a
       installPrefix: () => globalPrefix,
       reportRunningManager: async () => "none",
       reconcile: async () => {},
-      refreshConnectors: async () => [],
+      refreshConnectors: async () => [], refreshClients: async () => [],
       extensions: () => [],
       claimUpdatePass: () => () => {},
       claimGlobalUpdate: () => () => {},
