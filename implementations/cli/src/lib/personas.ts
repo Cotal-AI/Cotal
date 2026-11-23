@@ -28,8 +28,7 @@ import { shellWord } from "./endpoint-errors.js";
  */
 export type PersonaEntry = PersonaCatalogEntry;
 
-/** The refusal for a catalog folder `dir` that exists but is no folder, such as a file or a link that
- *  loops, which holds no personas. Undefined for a folder, or when nothing is there. */
+/** The refusal when the catalog path is a file or a link that does not resolve to a folder. */
 export function catalogFolderProblem(dir: string): CommandFailure | undefined {
   let what: string;
   try {
@@ -37,7 +36,14 @@ export function catalogFolderProblem(dir: string): CommandFailure | undefined {
     const own = lstatSync(dir);
     what = own.isSymbolicLink() ? "a link to something that is not a folder" : own.isFile() ? "a file, not a folder" : "not a folder";
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ELOOP") return undefined;
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT") {
+      const target = linkTarget(dir);
+      return target === undefined ? undefined : new CommandFailure("refused", "CONFLICT", `${dir} is a link to the missing target ${target}`, {
+        remedy: "restore the link's target or move the broken link aside",
+      });
+    }
+    if (code !== "ELOOP") return undefined;
     what = "a link that loops back on itself";
   }
   return new CommandFailure("refused", "CONFLICT", `${dir} is ${what}, so it holds no personas`, {
@@ -50,6 +56,8 @@ export function catalogFolderProblem(dir: string): CommandFailure | undefined {
  *  above it that this account cannot enter, or a folder another account owns, is named without one,
  *  and any other error is refused without a step. */
 export function catalogReadRefusal(dir: string, error: unknown): CommandFailure {
+  const folder = catalogFolderProblem(dir);
+  if (folder) return folder;
   const refusal = (remedy?: string) => new CommandFailure("refused", "PERMISSION_DENIED", `cannot read persona catalog: ${dir}`, remedy ? { remedy } : {});
   const code = (error as NodeJS.ErrnoException).code;
   if ((code !== "EACCES" && code !== "EPERM") || process.getuid === undefined) return refusal();

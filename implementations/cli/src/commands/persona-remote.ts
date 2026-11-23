@@ -13,7 +13,7 @@ import {
   nativeEndpointRefusal,
 } from "@cotal-ai/workspace";
 import { openEndpointConnection } from "../lib/endpoint-client.js";
-import { onInstance } from "../lib/control.js";
+import { onInstance, type ManagerRetry } from "../lib/control.js";
 import { managerPin } from "../lib/manager-choice.js";
 import { openTransient } from "../lib/transient.js";
 import { PERSONA_LIMIT, reservedPersonaName } from "../lib/persona-files.js";
@@ -21,8 +21,11 @@ import type { PersonaValues } from "./persona.js";
 
 const CONTENT_FLAGS = ["file", "prompt", "from", "role", "model", "subscribe", "harness", "allow-subscribe", "allow-publish", "announce"] as const;
 
-/** The command an `--on` refusal tells the caller to rerun with `--on <instance>` added. */
-function personaVerb(mode: string | undefined, name: string | undefined): string {
+function personaRetry(mode: string | undefined, name: string | undefined, values: PersonaValues): ManagerRetry {
+  if (mode === "create") return {
+    remedy: "run `cotal ps` against the same space, then replace only the --on value in the original command with the full manager instance id" +
+      (values.file === "-" || values.from === "-" ? "; pipe the original input into the command again" : ""),
+  };
   return mode === undefined || mode === "list" || name === undefined ? "cotal persona" : `cotal persona ${mode} ${name}`;
 }
 
@@ -30,7 +33,7 @@ export function validateRemotePersonaArguments(args: ParsedArgs): void {
   presentationOf(args.values);
   const values = args.values as PersonaValues;
   const [mode, name, ...extra] = args.positionals;
-  onInstance(values.on!, personaVerb(mode, name));
+  onInstance(values.on!, personaRetry(mode, name, values));
   if (mode !== undefined && !["list", "show", "create"].includes(mode)) throw new CommandFailure("refused", "UNSUPPORTED", "remote persona operations support list, show and create only; no local edit or removal was substituted");
   if (extra.length || (mode === undefined || mode === "list" ? name !== undefined : !name)) throw new CommandFailure("refused", "USAGE_INVALID", "use persona --on <full-manager-instance>, persona show <name> --on <id>, or persona create <name> --on <id>");
   if (name !== undefined) {
@@ -119,7 +122,7 @@ export async function remotePersona(args: ParsedArgs): Promise<void> {
   const values = args.values as PersonaValues;
   const [mode = "list", name] = args.positionals;
   const input = mode === "create" ? definitionInput(values, name!) : undefined;
-  const instanceId = (await managerPin(values, personaVerb(mode, name)))!;
+  const instanceId = (await managerPin(values, personaRetry(mode, name, values)))!;
   const requestId = randomUUID();
   let connection: Awaited<ReturnType<typeof openEndpointConnection>> | undefined;
   let sender: Awaited<ReturnType<typeof openTransient>> | undefined;

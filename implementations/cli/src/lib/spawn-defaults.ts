@@ -15,9 +15,9 @@ export function spawnPersona(configFlag: string | undefined, positionals: readon
   return winner.source === "default" ? { ref: winner.value } : { ref: winner.value, from: describeLayer(winner) };
 }
 
-/** A positional catalog entry takes precedence over a same-named legacy path. */
-export function directPersonaPath(root: string, ref: string, positional: boolean): string {
-  if (positional && ref.endsWith(".md") && !isAbsolute(ref) && !/[\\/]/.test(ref)) {
+/** A positional or preferred catalog entry takes precedence over a same-named legacy path. */
+export function directPersonaPath(root: string, ref: string, catalogFirst = true): string {
+  if (catalogFirst && ref.endsWith(".md") && !isAbsolute(ref) && !/[\\/]/.test(ref)) {
     const catalogPath = join(personaDir(root), `${ref}.md`);
     if (lstatSync(catalogPath, { throwIfNoEntry: false })) return catalogPath;
   }

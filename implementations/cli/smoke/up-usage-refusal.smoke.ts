@@ -158,6 +158,14 @@ for (const [flag, value] of [
       && error.remedy?.includes("--user-auth instead of --open") === true && !existsSync(join(folder, ".cotal")), shown(result));
 }
 
+for (const port of ["nope", "", "-1", "1.5", "65536"]) {
+  const result = run(["up", "--user-auth", "--no-manager", "--space", "bad-exchange", "--exchange-public-port", port, "--json"]);
+  check(`up refuses exchange port ${JSON.stringify(port)} before touching the project`,
+    result.status === 1 && result.envelope?.error?.code === "USAGE_INVALID"
+      && result.envelope.error.message?.includes("--exchange-public-port must be a whole number from 0 to 65535") === true
+      && !existsSync(join(folder, ".cotal")), shown(result));
+}
+
 // First-enable user auth must not leave static signing authority on any startup route.
 for (const route of ["foreground", "detach", "prepared", "manifest"] as const) {
   for (const idp of [undefined, "not-an-idp", "https://user:secret@example.com/auth"]) {
@@ -237,6 +245,20 @@ const prepared = mkdtempSync(join(tmpdir(), "cotal-up-usage-prepared-"));
 process.on("exit", () => rmSync(prepared, { recursive: true, force: true }));
 const created = run(["space", "create", "upusage", "--root", prepared, "--json"]);
 check("space create prepares a folder", created.status === 0, shown(created));
+const upHelp = run(["up", "--help"]);
+check("up help marks every public exchange flag as legacy user-auth only",
+  ["exchange-public-port", "exchange-public-url", "exchange-trusted-proxy", "advertised-server", "agent-provisioning-url"].every((flag) =>
+    new RegExp(`^  --${flag} .*legacy user-auth startup only`, "m").test(upHelp.stdout)), shown(upHelp));
+const preparedExchange = run(["up", "--user-auth", "--no-manager", "--server", "nats://127.0.0.1:1", "--idp", "https://idp.example.test/auth",
+  "--exchange-public-port", "0", "--exchange-public-url", "https://mesh.example.test", "--json"], prepared);
+const exchangeError = preparedExchange.envelope?.error;
+check("a prepared root refuses public exchange and names a route that keeps the broker, IdP and exchange flags",
+  preparedExchange.status === 2 && exchangeError?.code === "UNSUPPORTED"
+    && exchangeError.message?.includes("--exchange-public-port and --exchange-public-url") === true
+    && exchangeError.remedy?.includes("new, unprepared project folder") === true
+    && exchangeError.remedy.includes("cotal up --user-auth --idp <auth base URL>")
+    && exchangeError.remedy.includes("Keep the broker and public exchange flags")
+    && !existsSync(join(prepared, ".cotal", "stack-controller.json")), shown(preparedExchange));
 const named = run(["up", "--server", "nats://localhost:43131", "--json"], prepared);
 check("in a prepared folder a host name is the same USAGE_INVALID refusal, exit 1, naming 127.0.0.1", named.status === 1 && named.envelope?.error?.code === "USAGE_INVALID" && /names the host localhost/.test(named.envelope.error.message ?? "") && named.stdout.includes("--server nats://127.0.0.1:43131"), shown(named));
 check("it wrote no stack journal", !existsSync(join(prepared, ".cotal", "stack-controller.json")), readdirSync(join(prepared, ".cotal")));

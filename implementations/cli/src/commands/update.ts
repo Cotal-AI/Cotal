@@ -81,7 +81,6 @@ import {
 import {
   latestVersion,
   npmProxyRefused,
-  checkInstalledClosure,
   checkReleaseArchives,
   ReleaseNotAvailable,
   ReleaseDateExcluded,
@@ -89,7 +88,7 @@ import {
   DependencyCheckNoSpace,
   registryNetworkFailure,
   releaseReadError,
-  waitForReleaseArchives,
+  waitForReleasePreflight,
 } from "./update-release.js";
 import { refusal, reportRunningManagers } from "./update-continuity.js";
 export { isStoppedLocalMesh, reportRunningManagers, readUpdateManagerContinuity, readManagerContinuity, printLegacyReport } from "./update-continuity.js";
@@ -140,8 +139,8 @@ export interface UpdateRuntime {
   now?(): number;
   sleep?(milliseconds: number): Promise<void>;
   recoveryOwnerStart?(pid: number): string | undefined;
-  /** Refuse unsupported or unwritable execution destinations before any persistent writes. */
-  preflightExecution?(): void;
+  /** Check the execution destination and return true if its directory permissions were repaired. */
+  preflightExecution?(): boolean | void;
   executionGlobalRoot?(): string;
   /** Preserve the selected execution binding while hardening installer-owned modes. */
   repairInstallModes?(root: string): number;
@@ -345,8 +344,9 @@ async function updateInstallation(args: ParsedArgs, rt: UpdateRuntime): Promise<
     });
   }
   let connectorSelection: UnreadableConnectorSelection | undefined;
+  let repairedModes = false;
   if (args.values.self === true) {
-    try { rt.preflightExecution?.(); }
+    try { repairedModes = rt.preflightExecution?.() === true; }
     catch (error) {
       if (isCommandFailure(error)) throw error;
       const refusal = `This installation cannot update itself from this account: ${message(error)}; no changes were made`;
@@ -397,9 +397,12 @@ async function updateInstallation(args: ParsedArgs, rt: UpdateRuntime): Promise<
   const install = launcherInstallRoot();
   for (const { what, root } of args.values.self === true && rt.prepareExecution ? [] : [...(install ? [{ what: "install", root: install }] : []), { what: "config", root: globalConfigDir() }]) {
     const repaired = (rt.repairInstallModes ?? repairInstallModes)(root);
-    if (repaired) rt.out(c.green(`✓ removed group and other write from ${repaired} ${repaired === 1 ? "entry" : "entries"} in Cotal's ${what} at ${root}`));
+    if (repaired) {
+      repairedModes = true;
+      rt.out(c.green(`✓ removed group and other write from ${repaired} ${repaired === 1 ? "entry" : "entries"} in Cotal's ${what} at ${root}`));
+    }
   }
-  const code = await executeUpdate(Boolean(args.values.self), rt, args.values, restored ? undefined : connectorSelection);
+  const code = await executeUpdate(Boolean(args.values.self), rt, args.values, restored ? undefined : connectorSelection, repairedModes);
   if (code !== 0) process.exitCode = code;
   else if (args.values.self !== true && childBinding(rt).kind !== "bound") {
     clearUpdateRecovery();
@@ -512,7 +515,7 @@ export function validateUpdateArguments(args: ParsedArgs): void {
   presentationOf(args.values);
   if (args.values["stop-agents"] && args.values.self !== true) throw new CommandFailure("refused", "USAGE_INVALID", "--stop-agents requires `cotal update --self`");
   if (args.values.auto || args.values.notify) {
-    if (args.values.auto && args.values.notify || args.values.self || args.values.check || args.values.space || args.values.server || args.values.creds || args.values.on || args.positionals.length > 1 || args.positionals.some(value => value !== "on" && value !== "off"))
+    if (args.values.auto && args.values.notify || args.values.self || args.values.check || args.values.space || args.values.server || args.values.creds || args.values.on !== undefined || args.positionals.length > 1 || args.positionals.some(value => value !== "on" && value !== "off"))
       throw new CommandFailure("refused", "USAGE_INVALID", "use `cotal update --auto [off|on]` or `cotal update --notify [off|on]` without other update flags");
     return;
   }
@@ -573,7 +576,7 @@ function checkUpdate(args: ParsedArgs, rt: UpdateRuntime): void {
 }
 
 /** Injectable command body: production keeps one process seam; the smoke covers every decision branch. */
-export async function executeUpdate(self: boolean, rt: UpdateRuntime = updateRuntime, target: Record<string, unknown> = {}, unreadableSelection?: UnreadableConnectorSelection): Promise<number> {
+export async function executeUpdate(self: boolean, rt: UpdateRuntime = updateRuntime, target: Record<string, unknown> = {}, unreadableSelection?: UnreadableConnectorSelection, repairedModes = false): Promise<number> {
   const current = rt.version();
   const child = childBinding(rt);
   if (child.kind === "invalid") {
@@ -631,7 +634,7 @@ export async function executeUpdate(self: boolean, rt: UpdateRuntime = updateRun
         rt.err("The npm proxy refused the connection (ECONNREFUSED). The update did not start. Check HTTP_PROXY and HTTPS_PROXY, then retry.");
         return 1;
       }
-      rt.out("The registry cannot be reached; nothing was changed.");
+      rt.out(offlineUpdateMessage(repairedModes));
       return 0;
     }
     const upgrading = compareSemver(latest.version, current) > 0;
@@ -645,7 +648,7 @@ export async function executeUpdate(self: boolean, rt: UpdateRuntime = updateRun
       recordUpdateDeferral(current, "waiting for update preflight");
     }
     if (upgrading) {
-      const code = await upgradeAndReconcile(latest.version, current, rt, target);
+      const code = await upgradeAndReconcile(latest.version, current, rt, target, repairedModes);
       if (code === 0 && rt.env.COTAL_AUTO_UPDATE !== "1") rt.generationWaited = true;
       return code;
     }
@@ -847,11 +850,15 @@ export function verifyCurrentExtension(entry: InstalledExtension, generation: st
   return undefined;
 }
 
+function offlineUpdateMessage(repaired: boolean): string {
+  return repaired ? "The registry cannot be reached; no installed packages were replaced." : "The registry cannot be reached; nothing was changed.";
+}
+
 function preflightDetail(error: unknown): string {
   return message(error).replace(/[\r\n\u001b]+/g, " ").replace(/(?:[A-Za-z]:[\\/]|\/)[^\s,;"']+/g, "<config path>").slice(0, 500);
 }
 
-async function upgradeAndReconcile(targetVersion: string, current: string, rt: UpdateRuntime, target: Record<string, unknown>): Promise<number> {
+async function upgradeAndReconcile(targetVersion: string, current: string, rt: UpdateRuntime, target: Record<string, unknown>, repairedModes: boolean): Promise<number> {
   try { await rt.preflightReplacement?.(); }
   catch (error) {
     recordUpdateDeferral(targetVersion, "installed daemon preflight refused");
@@ -869,19 +876,17 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
   let repairedSelection = false;
   const releaseChecksStarted = Date.now();
   try {
-    rt.out(`Checking cotal-ai@${targetVersion} release archives`);
-    const releasePackages = await waitForReleaseArchives(targetVersion, current, rt);
-    if (!releasePackages) return 0;
-    // Dependency checks and the rollback snapshot need a readable connector graph.
-    try {
-      repairedSelection = repairUpdateConnectorSelection(Boolean(rt.prepareExecution), line => rt.err(line));
-    } catch (error) {
-      recordUpdateDeferral(targetVersion, `connector configuration preflight: ${preflightDetail(error)}`);
-      rt.err(`Cannot prepare the Cotal connector configuration: ${message(error)}. No CLI update was staged.`);
-      return 1;
-    }
-    rt.out(`Checking installed extension dependencies for ${targetVersion}`);
-    checkInstalledClosure(targetVersion, releasePackages, rt);
+    const release = await waitForReleasePreflight(targetVersion, current, rt, () => {
+      try {
+        repairedSelection = repairUpdateConnectorSelection(Boolean(rt.prepareExecution), line => rt.err(line));
+        return true;
+      } catch (error) {
+        recordUpdateDeferral(targetVersion, `connector configuration preflight: ${preflightDetail(error)}`);
+        rt.err(`Cannot prepare the Cotal connector configuration: ${message(error)}. No CLI update was staged.`);
+        return false;
+      }
+    });
+    if (release !== "ready") return release === "deferred" ? 0 : 1;
     // In-place rollback downloads the previous release. Staged rollback retains its complete graph.
     if (!rt.prepareExecution) {
       rt.out(`Checking cotal-ai@${current} recovery archives`);
@@ -906,7 +911,7 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
     }
     if (registryNetworkFailure(e)) {
       recordUpdateDeferral(targetVersion, "waiting for registry access", true);
-      rt.out(repairedSelection ? "The registry cannot be reached; no installed packages were replaced." : "The registry cannot be reached; nothing was changed.");
+      rt.out(offlineUpdateMessage(repairedModes || repairedSelection));
       return 0;
     }
     recordUpdateDeferral(targetVersion, "waiting for registry or extension closure availability", true);
@@ -1004,7 +1009,7 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
       releaseGlobal();
       if (!execution && (error instanceof RegistryUnavailable || message(error).startsWith("target staging failed: ") && registryNetworkFailure(error))) {
         recordUpdateDeferral(targetVersion, "waiting for registry access", true);
-        rt.out(repairedSelection ? "The registry cannot be reached; no installed packages were replaced." : "The registry cannot be reached; nothing was changed.");
+        rt.out(offlineUpdateMessage(repairedModes || repairedSelection));
         return 0;
       }
       recordUpdateDeferral(targetVersion, `staged pre-install check refused: ${preflightDetail(error)}`);

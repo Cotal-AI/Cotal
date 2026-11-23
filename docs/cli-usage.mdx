@@ -88,6 +88,8 @@ Both forms accept operands after the command or its final subcommand. For exampl
 `cotal help docs cli` and `cotal docs cli --help` both show the usage for `docs`.
 `cotal help service status manager` and `cotal service status manager --help` both show the usage
 for `service status`.
+`cotal help service list` and `cotal service list --help` both show the help for bare `service`.
+The `list` spelling works but is not listed under Commands.
 Both forms also accept a channel for `history`: `cotal help history general` and
 `cotal history general --help` show the usage for `history`. The words `clear` and `limit` select
 their own help. Both forms refuse a misspelled word where a subcommand is required and exit 1.
@@ -178,13 +180,15 @@ longer than 128 characters, such as an unknown command, a space name or a run id
 still checks and uses the whole value. A usage error is found before any effect, so it never seeds
 connectors or writes configuration. Help, version and completion never do either.
 A word that starts with `-` reads as an option. A message or name that starts with one goes after
-`--`, which the refusal names when the command takes an operand rather than a subcommand name.
+`--`. The refusal names `--` when the command takes an operand and there is no spelling suggestion.
+When the refusal suggests an option spelling, replace the mistyped option and keep its value,
+as in `cotal docs --search <query>`.
 An option value that starts with `-` is written `--limit=-1`,
 which the refusal gives. The refusal quotes values that a POSIX shell would split or expand, as in
 `--search='-help usage'`. An option given with no value at the end of the command or just before
-another option or `--` is refused with the option and its placeholder. Put the value before `--`
-and leave the operands after it. Before another option or `--`, a missing value on an option
-that cannot be repeated can also report the duplicate and ask you to use the option once.
+another option, a group of short options, or `--` is refused with the option and its placeholder.
+Put the value before `--` and leave the operands after it. Before another option or `--`, a missing
+value on an option that cannot be repeated can also report the duplicate and ask you to use the option once.
 A short option takes its value after a space, so `-c=general` is refused rather than read as the
 value `=general`. An option such as `--help` or `-h` typed with a typographic dash is refused
 rather than read as a positional. Use `--` before the word to pass it as text. The correction keeps
@@ -280,8 +284,9 @@ The version command does not repair the manifest itself.
 | `changed` | What a command that did not succeed changed anyway |
 
 Diagnostics stay on stderr. A command that refuses or fails under `--json` reports it with the
-envelope alone and writes no text report on stderr. The text report goes to stderr only when the
-envelope cannot be written to stdout, and the exit code is the same either way. A usage error under
+envelope alone and writes no text report on stderr. If the reader closes stdout early, the command
+keeps its exit code without printing a text report. Other failures to write the envelope send the
+text report to stderr and keep the same exit code. A usage error under
 `--json` is a `refused` envelope with code `USAGE_INVALID`, and the help it names stays off stdout.
 This also applies to `-j` grouped before a short option that needs a value, as in `cotal config get harness -js`.
 A word that names none of a command's subcommands and is near none of them is a usage error that
@@ -398,7 +403,9 @@ On Linux, a broker on a loopback address whose process is stopped by a signal, s
 still accepts connections and never answers. Once the first dial to it times out, the refusal names
 that process's pid and gives `kill -CONT <pid>` as the remedy, without waiting out the longer
 confirm, so a command such as `send` or `run` returns in a few seconds. `cotal status` shows the
-connection as `broker process <pid> is stopped` and offers the same command. A broker that runs but
+connection as `broker process <pid> is stopped` and offers the same command. On Linux, if a stopped
+listener holds the broker address and its executable identifies it as another program, `status` and `ps` name the
+occupied address without suggesting a signal. A broker that runs but
 does not answer, or one on another host, still waits out the confirm.
 
 
@@ -535,7 +542,8 @@ interrupted. Ctrl-C ends it at once with exit 130, as it ends the commands above
 
 The table has one row per command, including the hidden ones `cotal help` leaves out, under the
 section help lists it in.
-Installed extensions add their own: `@cotal-ai/linear` adds the [`linear`](cli-integrations.mdx#linear) command, and
+Installed extensions add their own: `@cotal-ai/linear` adds the [`linear`](cli-integrations.mdx#linear) command,
+`@cotal-ai/acp` adds the [`acp`](acp-clients.mdx#acp) command, and
 `@cotal-ai/web` adds the [web dashboard](cli-observation.mdx#web) as a service preset.
 
 The manifest modes of `up`, `spawn`, and `down` (`-f <cotal.yaml>`) plus `topology` are covered

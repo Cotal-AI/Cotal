@@ -215,6 +215,26 @@ try {
   delete seedEnv.COTAL_SKIP_CONNECTOR_SEED;
   const setupConfig = join(sandbox, "setup-config"), controlConfig = join(sandbox, "setup-control-config");
   for (const dir of [setupConfig, controlConfig]) mkdirSync(dir, { mode: 0o700 });
+  const fixtureExtensions = join(xdg, "cotal", "extensions");
+  mkdirSync(fixtureExtensions, { recursive: true });
+  writeFileSync(join(fixtureExtensions, "extensions.json"), JSON.stringify({ extensions: [{ pkg: "@cotal-ai/pi", version, commands: [],
+    provides: [{ kind: "connector", name: "pi" }], connectors: [{ name: "pi", requires: ["pi"], eventPlane: true, setup: null }] }] }));
+  writeFileSync(join(tools, "pi"), "#!/bin/sh\nexit 1\n", { mode: 0o700 });
+  const reselected = run(["use", "other-project"], otherRoot);
+  for (const [flags, scope] of [
+    [["--space", space], `--space ${space}`],
+    [["--server", server], `--server ${server}`],
+    [["--space", space, "--server", server], `--space ${space} --server ${server}`],
+  ] as const) {
+    const listing = run(["ps", "--plain", ...flags], otherRoot);
+    const launch = /^\s+(.+?) {2}Launch your default agent$/m.exec(listing.stdout)?.[1];
+    const preview = launch ? spawnSync("/bin/sh", ["-c", `${launch} --dry-run -d --json`], { cwd: otherRoot, env, encoding: "utf8", timeout: 60_000 }) : undefined;
+    suite.check(`copying the empty roster's spawn for ${scope} previews that space, not the selection`,
+      reselected.code === 0 && listing.code === 0 && listing.stdout.includes(`Mesh: ${space}`) && listing.stdout.includes("No managed agents.")
+      && launch?.endsWith(` spawn ${scope}`) === true && preview?.status === 0 && JSON.parse(preview.stdout).target?.space === space, { listing, preview });
+  }
+  const selectedBack = run(["use", space]);
+  if (selectedBack.code !== 0) throw new Error(`selection did not restore: ${selectedBack.output}`);
   // Each setup reconciles every bundled connector serially.
   const seedTimeout = 300_000;
   if (setupCommand) {

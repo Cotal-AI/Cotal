@@ -192,9 +192,10 @@ const VERBS = ["start", "resume", "ps", "journal", "answer", "amend", "revoke", 
   c("hosted `resume --endpoint` is refused", usageRefusal(got2, "--endpoint is only for the local path"), got2);
   reset();
   const got3 = await attempt(["resume", "run-0"], { file: "p.cotal.js" });
-  c("hosted `resume --file` is refused, and the sentence hands back a command with the run id in it",
+  c("hosted `resume --file` is refused with instructions to keep all the other options",
     usageRefusal(got3, "--file is not taken") && isCommandFailure(got3)
-      && got3.remedy?.includes("omit --file") === true && got3.remedy.includes("cotal run resume run-0 --local --file <program>"), got3);
+      && got3.remedy?.startsWith("remove only --file and its value from the original command") === true
+      && got3.remedy.includes("cotal run resume run-0 --local --file <program>"), got3);
   for (const verb of ["check", "migrate"]) for (const [flag, value] of [["adopt", "h1"], ["release", "h1"], ["discard-approvals", true]] as const) {
     const got = await attempt([verb, "run-0", "p.cotal.js"], { [flag]: value });
     c(`${verb} --${flag} is a usage refusal before a connection`, usageRefusal(got, `--${flag} decides what a commit does`), got);
@@ -613,6 +614,29 @@ log([].filter(() => true), [].find(() => true) === undefined, [].findLast(() => 
     if (cases.some(([file]) => file === unreadable)) chmodSync(unreadable, 0o600);
     rmSync(dir, { recursive: true, force: true });
   }
+}
+
+// An in-process caller can capture an invalid workflow's complete JSON refusal through stdout.write.
+{
+  const dir = mkdtempSync(join(tmpdir(), "run-invalid-workflow-"));
+  const program = join(dir, "invalid.cotal.js");
+  writeFileSync(program, "const = ;\n");
+  const chunks: string[] = [];
+  const write = process.stdout.write, previousExit = process.exitCode;
+  process.stdout.write = ((chunk: string) => { chunks.push(chunk); return true; }) as typeof process.stdout.write;
+  let status: typeof process.exitCode;
+  try {
+    await runWorkflow({ values: { json: true }, positionals: ["validate", program], raw: [] });
+    status = process.exitCode;
+  } finally {
+    process.stdout.write = write;
+    process.exitCode = previousExit;
+    rmSync(dir, { recursive: true, force: true });
+  }
+  const receipt = JSON.parse(chunks.join("") || "null");
+  c("a validation refusal reaches an in-process stdout.write capture with its findings and exit 1",
+    status === 1 && receipt?.outcome === "refused" && receipt.error.code === "SCHEMA_INVALID"
+    && receipt.result.problems[0].code === "L1008" && receipt.result.problems[0].span.column === 7, receipt);
 }
 
 // A validator warning names its code, position, cause and fix, as a problem does. L3021 on a literal

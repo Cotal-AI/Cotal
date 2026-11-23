@@ -1134,10 +1134,10 @@ export function removeStoppedInstanceRecords(space: string, name: string): strin
 const LOG_TAIL_BYTES = LOG_ROTATE_BYTES;
 
 /** Read only bounded regular-file bytes; log data is not promised to be secret-redacted. */
-export function readServiceLog(space: string, id: string, tail: number) {
+export function readServiceLog(space: string, id: string, tail: number, requireFile = false) {
   const path = serviceLogPath(space, id);
   if (!path) return { lines: [] as string[], omittedBytes: 0, path: null };
-  return readOwnedLogTail(path, tail);
+  return readOwnedLogTail(path, tail, requireFile);
 }
 
 /** The refusal for a log this account cannot open, with the step that gives its owner read and write back. */
@@ -1147,12 +1147,15 @@ function unreadableLog(path: string, code: string) {
 
 /** The last `tail` lines of an owned private log file, from at most its last 1 MiB. A log this
  *  account cannot read is refused with the step that gives its owner read and write back. */
-export function readOwnedLogTail(path: string, tail: number) {
+export function readOwnedLogTail(path: string, tail: number, requireFile = false) {
   let fd: number;
   try { fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); }
   catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
-    if (code === "ENOENT") return { lines: [] as string[], omittedBytes: 0, path };
+    if (code === "ENOENT") {
+      if (requireFile) throw new CommandFailure("refused", "TARGET_NOT_FOUND", `the captured service log ${path} does not exist`, { target: { path } });
+      return { lines: [] as string[], omittedBytes: 0, path };
+    }
     if (code === "EACCES" || code === "EPERM") throw unreadableLog(path, code);
     throw error;
   }

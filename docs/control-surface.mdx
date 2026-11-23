@@ -128,9 +128,13 @@ See the [attach session contract](control-lifecycle.mdx#attach-sessions).
 
 `input` writes text into a running seat's terminal in one request.
 It lets an operator send a command such as `/compact` without maintaining an attach stream.
-This is terminal control, so the command is limited to operator credentials and runtimes that own the input stream.
+This is terminal control, so the command is limited to operator credentials, a person's own sign-in for the agents under their owner, and runtimes that own the input stream.
 
 See the [input authority and outcome reference](control-lifecycle.mdx#seat-input) for the distinction between refusal before delivery and failure after delivery starts.
+
+The manager's `interrupt` command writes the key a seat's connector declares, such as Escape, into the seat's terminal, which stops a live turn.
+Its reply means the key was written. It has the same authority as `input`.
+The `agent` endpoint's own `interrupt`, described above, is a separate command that stops the turn through the agent's connector and answers `interrupted` or `idle`.
 
 ## Grants [#grants]
 

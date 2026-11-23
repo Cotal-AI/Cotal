@@ -22,5 +22,10 @@ export function serviceConfirmCommand(verb: string, name: string, space: string,
 /** The `--space`, `--server` and `--creds` a refused command was given, for the confirming command
  *  it prints: without them that command acts on the selected space instead (#7564). */
 export function targetWords(values: { space?: unknown; server?: unknown; creds?: unknown }): string {
-  return (["space", "server", "creds"] as const).map((name) => values[name] === undefined ? "" : ` --${name} ${shellWord(String(values[name]))}`).join("");
+  return (["space", "server", "creds"] as const).map((name) => {
+    const raw = values[name];
+    if (raw === undefined) return "";
+    const value = String(raw);
+    return ` --${name}${value.startsWith("-") ? "=" : " "}${shellWord(value)}`;
+  }).join("");
 }

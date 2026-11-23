@@ -44,16 +44,12 @@ import {
 import { authDir, saveSpaceAuth } from "@cotal-ai/workspace";
 import { Manager } from "../src/manager.js";
 import { MANAGER_ENDPOINT, MANAGER_CONTRACTS, MANAGER_STATUS_CONTRACT, type ManagerStatus } from "../src/manager-service-contract.js";
-import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal, createSuite } from "@cotal-ai/smoke-kit";
 
 const PORT = await freePort();
 const SERVERS = `nats://127.0.0.1:${PORT}`;
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
-let pass = 0, fail = 0;
-const check = (name: string, cond: boolean, extra?: unknown) => {
-  if (cond) { pass++; console.log(`  ✓ ${name}`); }
-  else { fail++; console.log(`  ✗ FAIL: ${name}`, extra ?? ""); }
-};
+const { check, finish, passed, failed } = createSuite();
 const enc = new TextEncoder(), dec = new TextDecoder();
 
 const space = `mgrsvc-${randomUUID().slice(0, 8)}`;
@@ -278,5 +274,6 @@ try {
   releaseBroker(); // last: ownership is held until this teardown has actually finished
 }
 
-console.log(`\n${fail === 0 ? "MANAGER SERVICE SMOKE OK ✅" : "MANAGER SERVICE SMOKE FAILED"}  (${pass} passed, ${fail} failed)`);
-process.exit(fail === 0 ? 0 : 1);
+console.log(`\n${failed() === 0 ? "MANAGER SERVICE SMOKE OK ✅" : "MANAGER SERVICE SMOKE FAILED"}  (${passed()} passed, ${failed()} failed)`);
+finish();
+process.exit(failed() === 0 ? 0 : 1);

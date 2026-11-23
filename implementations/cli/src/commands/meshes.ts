@@ -3,9 +3,11 @@ import { readFileSync } from "node:fs";
 import { type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
 import {
   authDir,
+  brokerUrlKey,
   checkDiscoveryDocument,
   clearCurrent,
   discoveryDocumentUrl,
+  findPreparedSpace,
   getCurrent,
   keepsRegistration,
   isMeshRegistryError,
@@ -14,6 +16,7 @@ import {
   loadMeshes,
   pinnedFetch,
   PinnedFetchRefused,
+  recordMesh,
   removeMeshes,
   renderReport,
   type MeshEntry,
@@ -21,6 +24,7 @@ import {
 import { c, stderrLine } from "../ui.js";
 import { pruneStaleMeshes } from "../lib/meshes.js";
 import { completingFlagValue } from "../lib/completion.js";
+import { shellWord } from "../lib/endpoint-errors.js";
 import { liveMeshOwner } from "./clean.js";
 import { readStackJournal } from "../lib/stack-journal.js";
 import {
@@ -229,7 +233,10 @@ async function addMesh(positionals: string[], v: Values): Promise<void> {
   // A prepared space, or one this machine started or a catalog lists, is refused here as `space add`
   // refuses it: replacing that registration leaves its running stack with nothing to stop it by.
   const existing = handAddedRegistration(space, Boolean(v.force), { space });
-  if (existing && !v.force) {
+  const checking = !v.force && existing?.unchecked === true && brokerUrlKey(existing.server) === brokerUrlKey(server) &&
+    existing.root === root && existing.mode === mode && (existing.tlsRequired === true) === tlsRequired &&
+    (existing.unencryptedOverlay === true) === Boolean(dial.residual);
+  if (existing && !v.force && !checking) {
     stderrLine("✗ ", `"${space}" is already registered at ${existing.server} (${existing.root}) - \`cotal meshes rm ${space}\` first, or --force to replace it`, c.red);
     process.exit(1);
   }
@@ -244,12 +251,17 @@ async function addMesh(positionals: string[], v: Values): Promise<void> {
     const verified = await verifyTarget(candidateTarget(space, server, root, mode, auth, tlsRequired));
     if (!verified.ok) {
       console.error(c.red(verified.message));
-      console.error(c.dim("nothing was registered - fix the above, or `--force` to record it without verifying (e.g. the mesh is down right now)"));
+      console.error(c.dim(checking ? "the unchecked registration was kept" : "nothing was registered - fix the above, or `--force` to record it without verifying (e.g. the mesh is down right now)"));
       process.exit(1);
     }
     if (mode === "open") take(await checkOpenSpace(server, space, tlsRequired));
   }
 
+  if (checking) {
+    recordMesh({ ...existing, unchecked: undefined });
+    console.log(c.green(`✓ verified "${space}"`), c.dim(`${server}  ${mode}  ${root}`));
+    return;
+  }
   const result = writeRecord({ space, server, root, mode, origin: "manual", ...(tlsRequired ? { tlsRequired: true } : {}), ...(dial.residual ? { unencryptedOverlay: true } : {}), ...(v.force ? { unchecked: true } : {}), ts: new Date().toISOString() });
   console.log(
     c.green(`✓ registered "${space}"`),
@@ -437,7 +449,11 @@ async function rmMeshes(names: string[], v: Values): Promise<void> {
   for (const space of new Set(names)) {
     const m = byName.get(space);
     if (!m) {
-      stderrLine("✗ ", `no mesh named "${space}" is registered - see \`cotal meshes\``, c.red);
+      const prepared = findPreparedSpace(space);
+      const forget = `cotal space forget ${space.startsWith("-") ? "-- " : ""}${shellWord(space)}`;
+      stderrLine("✗ ", prepared
+        ? `${JSON.stringify(space)} is a prepared space, not a registered mesh. Remove its local record with \`${forget}\``
+        : `no mesh named "${space}" is registered - see \`cotal meshes\``, c.red);
       failed = true;
       continue;
     }

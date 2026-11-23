@@ -36,13 +36,12 @@ import { acquirePlaneClaim, parsePlaneClaimRow, planeClaimRefusal, scannerDeathC
 import { openAuthAuthorityPlane } from "../src/service.js";
 import type { EvictPrincipal } from "../src/credential-ledger.js";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal, createSuite } from "@cotal-ai/smoke-kit";
 
 const PORT = await pickFreePort();
 const SERVERS = `nats://127.0.0.1:${PORT}`;
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
-let pass = 0, fail = 0;
-const check = (name: string, cond: boolean, extra?: unknown) => { if (cond) { pass++; console.log(`  ✓ ${name}`); } else { fail++; console.log(`  ✗ FAIL: ${name}`, extra ?? ""); } };
+const { check, finish, passed, failed } = createSuite();
 const rejects = async (fn: () => Promise<unknown>): Promise<string> => { try { await fn(); return ""; } catch (e) { return (e as Error)?.message ?? String(e); } };
 
 const space = `plcl-${randomUUID().slice(0, 8)}`;
@@ -408,5 +407,6 @@ try {
   releaseBroker(); // last: ownership is held until this teardown has actually finished
 }
 
-console.log(fail === 0 ? `\nPLANE-CLAIM SMOKE OK ✅  (${pass} passed, ${fail} failed)` : `\nPLANE-CLAIM SMOKE FAILED ❌  (${pass} passed, ${fail} failed)`);
-if (fail > 0) process.exit(1);
+console.log(failed() === 0 ? `\nPLANE-CLAIM SMOKE OK ✅  (${passed()} passed, ${failed()} failed)` : `\nPLANE-CLAIM SMOKE FAILED ❌  (${passed()} passed, ${failed()} failed)`);
+finish();
+if (failed() > 0) process.exit(1);

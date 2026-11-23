@@ -113,7 +113,11 @@ check("not JSON → refused with id null", refused("{nope", null, /not valid JSO
 check("a JSON array → refused with id null", refused("[]", null, /JSON object/));
 check("a JSON string → refused with id null", refused('"x"', null, /JSON object/));
 check("missing id → id null", refused(JSON.stringify({ schemaVersion: 1, type: "roster" }), null, /request id/));
-check("id with a space → id null", refused(JSON.stringify({ schemaVersion: 1, id: "a b", type: "roster" }), null));
+check("an ASCII space is valid anywhere in an id", ["a b", " a ", " "].every((id) => {
+  const parsed = parseRequestLine(req({ type: "roster", id }));
+  return parsed.ok && parsed.request.id === id;
+}));
+check("empty, control and non-ASCII ids → id null", ["", "a\t", "a\n", "\x7f", "é"].every((id) => refused(req({ type: "roster", id }), null, /request id/)));
 check("id longer than MAX_REQUEST_ID → id null", refused(JSON.stringify({ schemaVersion: 1, id: "a".repeat(MAX_REQUEST_ID + 1), type: "roster" }), null));
 check("id of exactly MAX_REQUEST_ID is accepted", parseRequestLine(JSON.stringify({ schemaVersion: 1, id: "a".repeat(MAX_REQUEST_ID), type: "roster" })).ok);
 check("schemaVersion 2 → refused, id kept", refused(JSON.stringify({ schemaVersion: 2, id: "r1", type: "roster" }), "r1", /schemaVersion/));

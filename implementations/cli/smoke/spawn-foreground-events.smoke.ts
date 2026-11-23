@@ -202,6 +202,7 @@ console.log("cotal spawn (foreground): the launch bag an armed session needs");
 try {
   {
     const previous = process.cwd();
+    const previousDefault = process.env.COTAL_DEFAULT_PERSONA;
     writeFileSync(join(caller, "probe.md"), "---\nname: caller-probe\n---\nCaller persona.\n");
     writeFileSync(join(root, "probe.md"), "---\nname: mesh-probe\n---\nMesh persona.\n");
     const dotted = join(root, ".cotal", "agents", "probe.md.md");
@@ -215,6 +216,13 @@ try {
       const dottedArgs = ["spawn", "--foreground", "probe.md", "--space", "fgevents", "-H", "fg-probe-live"];
       const shadowed = await run(dottedArgs);
       check("a catalog name ending in .md wins over a same-named project file", shadowed.opts?.name === "catalog-probe", shadowed.stderr);
+      const preferredArgs = ["spawn", "--foreground", "--space", "fgevents", "-H", "fg-probe-live"];
+      process.env.COTAL_DEFAULT_PERSONA = "probe.md";
+      const preferred = await run(preferredArgs);
+      check("a preferred catalog name ending in .md wins over a same-named project file", preferred.opts?.name === "catalog-probe", preferred.stderr);
+      process.env.COTAL_DEFAULT_PERSONA = "./probe.md";
+      const relative = await run(preferredArgs);
+      check("an explicit relative default persona path still selects the project file", relative.opts?.name === "mesh-probe", relative.stderr);
       const explicit = await run(["spawn", "--foreground", "--file", join(root, "probe.md"), "--space", "fgevents", "-H", "fg-probe-live"]);
       check("an explicit file selects the project file even when its basename is a catalog name", explicit.opts?.name === "mesh-probe", explicit.stderr);
       rmSync(join(root, "probe.md"));
@@ -225,7 +233,10 @@ try {
       const bad = await run(["spawn", "--foreground", "--file", malformed, "--space", "fgevents", "-H", "fg-probe-live"]);
       check("foreground spawn refuses invalid UTF-8 before building a launch", bad.opts === undefined && bad.exited === 1, bad);
       rmSync(malformed);
-    } finally { process.chdir(previous); }
+    } finally {
+      if (previousDefault === undefined) delete process.env.COTAL_DEFAULT_PERSONA; else process.env.COTAL_DEFAULT_PERSONA = previousDefault;
+      process.chdir(previous);
+    }
   }
   {
     const path = process.env.PATH;
@@ -431,7 +442,7 @@ try {
   rmSync(store, { recursive: true, force: true });
 }
 
-const EXPECTED = 34;
+const EXPECTED = 36;
 check(`every cell ran - ${EXPECTED} expected`, pass + fail === EXPECTED, `${pass + fail} cells reported`);
 console.log(`SUITE COMPLETE: ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

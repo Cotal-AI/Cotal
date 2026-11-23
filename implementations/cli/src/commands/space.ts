@@ -47,7 +47,7 @@ import { shellWord } from "../lib/endpoint-errors.js";
 import { registryFailure } from "../lib/registry-errors.js";
 import { displayCmd, displayRemedy } from "../lib/self-exec.js";
 import { checkRoot, SPACE_MODES } from "./meshes-add.js";
-import { ADD_FLAGS, spaceAdd, spaceCreate, spaceForget } from "./space-registration.js";
+import { ADD_FLAGS, spaceAdd, spaceCreate, spaceForget, validateLocalSpaceName } from "./space-registration.js";
 import { spaceDelete } from "./space-delete.js";
 import { spaceExport } from "./space-export.js";
 import { journalRecordedElsewhere, stackRootGone } from "../lib/stack-journal.js";
@@ -141,7 +141,7 @@ export interface SpaceDetail extends Omit<SpaceRow, "catalog"> {
   readonly catalog: (NonNullable<SpaceRow["catalog"]> & { readonly id: string | null; readonly slug: string | null; readonly kind: string | null; readonly role: string | null }) | null;
 }
 
-/** Refuse empty names and directory flags before reading or changing space records. */
+/** Refuse invalid create names and empty names or directory flags before changing space records. */
 export function validateSpaceArguments(args: ParsedArgs): void {
   const values = args.values as FlagValues<typeof spaceFlags>;
   presentationOf(values);
@@ -158,8 +158,11 @@ export function validateSpaceArguments(args: ParsedArgs): void {
   }
   if ((sub === "add" || sub === "create") && values.root !== undefined && !values.root.trim())
     throw usage("--root cannot be empty");
-  if (sub === "create" && (args.positionals.length !== 2 || !name?.trim()))
-    throw usage("usage: cotal space create <name> [--root <dir>] [--adopt]");
+  if (sub === "create") {
+    if (args.positionals.length !== 2 || !name?.trim())
+      throw usage("usage: cotal space create <name> [--root <dir>] [--adopt]");
+    validateLocalSpaceName(name);
+  }
 }
 
 /**

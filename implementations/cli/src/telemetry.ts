@@ -155,15 +155,14 @@ interface Pending {
   readonly flags: string[];
   readonly startedAt: number;
   readonly version: string;
-  failure?: { outcome: Outcome; code: ErrorCode };
+  failure?: { outcome: Outcome; code: ErrorCode | null };
   error?: ErrorText;
 }
 
 let pending: Pending | undefined;
 
-/** Record the typed failure the kernel is exiting with, so the event carries its code, and its
- *  text unless {@link recordTelemetryError} already recorded the error it was classified from. */
-export function recordTelemetryFailure(outcome: Outcome, code: ErrorCode, error?: unknown): void {
+/** Record the command's failure outcome and its typed code, if it has one. */
+export function recordTelemetryFailure(outcome: Outcome, code: ErrorCode | null, error?: unknown): void {
   if (!pending) return;
   pending.failure = { outcome, code };
   if (error !== undefined) recordTelemetryError(error);
@@ -251,9 +250,7 @@ function base(p: Pending) {
   };
 }
 
-/** The outcome and code an exit carries: the typed failure the kernel recorded, else what the exit
- *  code alone says (2 is a refusal, 3 and 4 each stand for one code, and any other non-zero code is
- *  an error whose code the kernel never saw). */
+/** Prefer the recorded failure to the generic meaning of a nonzero exit code. */
 function classify(p: Pending, exitCode: number): { outcome: "ok" | "error" | "refused"; errorCode: ErrorCode | null } {
   if (exitCode === 0) return { outcome: "ok", errorCode: null };
   if (p.failure) return { outcome: p.failure.outcome === "refused" ? "refused" : "error", errorCode: p.failure.code };

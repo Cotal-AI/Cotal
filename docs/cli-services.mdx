@@ -92,12 +92,17 @@ the refusal is the stream's `error` record, which carries that step as `remedy`,
 
 ## Adding a service [#adding-a-service]
 
-Run `service add` from a prepared or registered space's project folder, or pass `--space <name>`.
-In a new project, prepare the space first. Neither command starts a broker or the service.
+In a script, `service add` needs a definition name with each source: `--exec`, `--preset` or `--file`.
+If you supplied a source but no name, insert the name after `add` in your original command.
+Keep the source and its options, including any `--space`, `--json` or `--plain` flags.
+
+In a new project, prepare the space first, then pass `--space` to save the definition there. A
+prepared project folder does not override the current space selection. Neither command starts a
+broker or the service.
 
 ```bash
 cotal space create reviews-dev --root .
-cotal service add reviews --exec "node /srv/reviews/server.mjs --port 8080"
+cotal service add reviews --space reviews-dev --exec "node /srv/reviews/server.mjs --port 8080"
 ```
 
 `--exec` splits its text into the program and its arguments as a shell quotes words, but runs no
@@ -122,10 +127,11 @@ takes a path shows `<dir>`, `<file>` or `<path>`, and the broker's `--server` sh
 of one that exists, and a relative one is refused. An option the service names in camelCase takes a
 dashed flag, so the broker's `logFile` is `--log-file <path>`, as `cotal up` spells it, and `add`
 takes it as `cotal up --log-file` does: a relative path is made absolute against the folder `add`
-runs in, and the file need not exist yet. A missing required option is refused with each one named,
-and the refusal prints the command line with them. That line also names each option whose default
-the space cannot fill yet, such as the broker's `--server <url>` in a space with no registered
-broker, and keeps an explicit `--space` so the retry saves in the same space.
+runs in, and the file need not exist yet. When a preset refuses because required options are missing,
+it names them and any defaults the space cannot fill, such as the broker's `--server <url>` in a
+space with no registered broker. If you supplied other options, add just the missing flags to your
+original command. Keep your supplied values, the selected `--space`, and flags such as `--json` or
+`--dry-run`. The refusal does not repeat the option values you entered.
 
 A preset's options describe the service and never choose its space. `add` saves into the space
 `--space` names, or else the selected space or the folder's, as other commands resolve it.
@@ -234,6 +240,11 @@ start or stop that finds nothing to do says so and reports `no-op`. For a saved 
 recorded instances, `stop` and `stop --dry-run` report `no-op` without asking for confirmation or
 allocating an instance. An explicit `--instance` that does not belong to the service still refuses
 with `TARGET_NOT_FOUND` (exit 2).
+With no recorded instance, `restart` without `--instance` also refuses with `TARGET_NOT_FOUND`.
+Its Next names `cotal service start <name> --space <space>` to create the first instance.
+
+If a custom service name has no saved definition in the requested space, `service logs` and
+`service status` exit 2 and show how to list the saved definitions in that space.
 
 `service status <name>` reports `not started` and exits 0 for a saved definition with no recorded
 instances. It does not allocate an instance or start a process. With `--json`, the result has
@@ -289,7 +300,7 @@ a submitted or unknown step may have changed the original unit even if its insta
 is absent. A legacy PID record is not adopted into the new instance controller. Unreadable
 component records make the inventory partial. Reads do not start, repair or install a service.
 
-`service add [name] --file <definition.json>` imports the version-1 service object described under
+`service add <name> --file <definition.json>` imports the version-1 service object described under
 [Adding a service](#adding-a-service). A declared preset uses
 `service add <name> --preset <preset> <declared-options>`. Guided input offers installed presets
 and file import. Defaulted options show the same default description as their flag help. Enter

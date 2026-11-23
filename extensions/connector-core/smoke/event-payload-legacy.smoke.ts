@@ -52,7 +52,7 @@ try {
   // Wait for the endpoint's real history surface before starting the emitter.
   await endpoint.channelHistoryPage("general", { limit: 1 });
   // Count real transport requests, including any JetStream-internal retries.
-  const agentNc = (endpoint as unknown as { nc: NatsConnection }).nc;
+  const agentNc = (endpoint as unknown as { conn: { nc: NatsConnection } }).conn.nc;
   const request = agentNc.request.bind(agentNc);
   const requests: string[] = [];
   const countedRequest: NatsConnection["request"] = (subject, data, options) => {
@@ -110,8 +110,8 @@ try {
 
   // Synthetic taxonomy controls complement the real permission refusal above.
   const { PermissionViolationError, AuthorizationError } = requireCore("@nats-io/nats-core");
-  const surface = endpoint as unknown as { jsm: { streams: { info: (stream: string) => Promise<never> } } };
-  const originalManager = surface.jsm;
+  const surface = endpoint as unknown as { conn: { jsm: { streams: { info: (stream: string) => Promise<never> } } } };
+  const originalManager = surface.conn.jsm;
   try {
     for (const failure of [
       new AuthorizationError("authorization sentinel"),
@@ -121,12 +121,12 @@ try {
       new PermissionViolationError("inbox denied", "subscription", "_INBOX.test.*"),
       new PermissionViolationError("wrong operation", "subscription", infoSubject),
     ]) {
-      surface.jsm = { streams: { info: async () => { throw failure; } } };
+      surface.conn.jsm = { streams: { info: async () => { throw failure; } } };
       const count = warnings.length;
       await assert.rejects(endpoint.eventPayloadLimit(), error => error === failure);
       assert.equal(warnings.length, count);
     }
-  } finally { surface.jsm = originalManager; }
+  } finally { surface.conn.jsm = originalManager; }
   console.log("PASS auth, transport, untyped text, other subjects and subscription refusals remain loud");
 } finally {
   await endpoint?.stop();

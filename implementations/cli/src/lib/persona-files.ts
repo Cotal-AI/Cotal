@@ -34,7 +34,7 @@ export function personaCatalog(values: { space?: string; server?: string }): Per
     if (!isWorkspaceTargetError(error)) throw error;
     if (error.code === "not-started" && !values.server && error.details.root && error.details.space && !error.details.rootMissing)
       return catalogAt(error.details.root, error.details.space);
-    if (error.code === "unknown-space" && values.space !== undefined && values.server === undefined) {
+    if ((error.code === "unknown-space" || error.code === "not-started" && error.details.lastRun) && values.space !== undefined && values.server === undefined) {
       const root = findCotalRoot();
       // Legacy down can drop the registration, but the rendered open config still names the space.
       if (isGenuineSpace(root) && cotalDirLink(root) === undefined && !existsSync(stackJournalPath(root)) &&
@@ -77,11 +77,33 @@ export function personaNameProblem(name: string): string | undefined {
   return undefined;
 }
 
-export function personaPath(root: string, name: string, access: "show" | "write" = "write"): string {
-  const allowDots = access === "show" && name !== "." && name !== "..";
-  const problem = personaNameProblem(allowDots ? name.replaceAll(".", "_") : name);
+export function personaNameWords(name: string, flags = ""): string {
+  const word = shellWord(name);
+  return name.startsWith("-") ? `${flags} -- ${word}` : ` ${word}${flags}`;
+}
+
+export function personaPath(root: string, name: string, access: "show" | "legacy-remove" | "write" = "write"): string {
+  const allowDots = access !== "write" && name !== "." && name !== "..";
+  const stem = allowDots ? name.replaceAll(".", "_") : name;
+  const problem = personaNameProblem(access === "show" && name === name.trim() ? stem.replaceAll(" ", "_") : stem);
   if (problem) throw new CommandFailure("refused", "USAGE_INVALID", problem);
   return join(personaDir(root), `${name}.md`);
+}
+
+function personaLinkRemedy(path: string): string | undefined {
+  const link = linkTarget(path);
+  if (link === undefined) return undefined;
+  try {
+    if (statSync(path).isFile()) {
+      accessSync(path, constants.R_OK);
+      return `${path} is a link to ${link}; replace the link with a copy of that file`;
+    }
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT" || code === "ENOTDIR")
+      return `${path} is a link to ${link}, but its target is missing. Restore the target if you still need it, or move the broken link aside and put a regular persona file in its place.`;
+  }
+  return `${path} is a link to ${link}, but its target is not a readable regular file. Move the link aside and put a regular persona file in its place.`;
 }
 
 /** Only absence is absent. Unreadable and non-regular sources refuse rather than becoming empty. */
@@ -89,8 +111,8 @@ export function readPersonaSource(path: string): PersonaSource | undefined {
   try {
     const stat = lstatSync(path);
     if (!stat.isFile()) {
-      const link = stat.isSymbolicLink() ? linkTarget(path) : undefined;
-      throw new CommandFailure("refused", "PERMISSION_DENIED", `persona is not a regular file: ${path}`, link === undefined ? {} : { remedy: `${path} is a link to ${link}; replace the link with a copy of that file` });
+      const remedy = stat.isSymbolicLink() ? personaLinkRemedy(path) : undefined;
+      throw new CommandFailure("refused", "PERMISSION_DENIED", `persona is not a regular file: ${path}`, remedy === undefined ? {} : { remedy });
     }
     return { bytes: readFileSync(path), ino: stat.ino, dev: stat.dev, mtimeMs: stat.mtimeMs };
   } catch (error) {
@@ -169,7 +191,7 @@ export function commitPersona(path: string, expected: PersonaSource | undefined,
       throw new CommandFailure("refused", "CONFLICT", `persona ${current === undefined ? "was removed" : "changed"} while the operation was open: ${path}`, { remedy: current === undefined ? "list the catalog with `cotal persona` and retry" : "read the current definition and retry" });
     const twin = current === undefined && bytes !== undefined ? caseTwin(path) : undefined;
     if (twin !== undefined) {
-      const edit = twin.startsWith("-") ? `${target} -- ${shellWord(twin)}` : ` ${shellWord(twin)}${target}`;
+      const edit = personaNameWords(twin, target);
       throw new CommandFailure("refused", "CONFLICT", `persona '${basename(path, ".md")}' differs from the existing '${twin}' only in case; nothing was written`, { remedy: `choose another name, or change the existing one with \`cotal persona edit${edit}\`` });
     }
     if (bytes === undefined) unlinkSync(path);
@@ -291,7 +313,7 @@ export async function editPersona(path: string, name: string, catalog: PersonaCa
   assertCatalogWritable(dirname(path));
   const editor = resolvePreference("editor", { preferences: cachedPreferences(), space: catalog.space }).value;
   if (!editor) throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "no editor is set", { remedy: "set VISUAL or EDITOR, or run `cotal config set editor vim`" });
-  const retry = `cotal persona edit${name.startsWith("-") ? `${target} -- ${name}` : ` ${name}${target}`}`;
+  const retry = `cotal persona edit${personaNameWords(name, target)}`;
   // A draft the editor may have changed and that was not saved is kept, and the failure names it.
   let keep = false;
   const edit = await withDraft(name, async (draft): Promise<PersonaEdit | { action: "interrupted"; signal: InterruptSignal; draft?: string }> => {

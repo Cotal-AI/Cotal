@@ -32,7 +32,7 @@
  */
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
@@ -269,6 +269,12 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
   refused("help of a hidden internal subcommand is a usage error", cotal(["help", "ext", "__update-add"]), /cotal ext has no subcommand "__update-add"/);
   check("command help does not list a hidden subcommand", !cotal(["help", "ext"]).stdout.includes("__update-add"));
   refused("help of a hidden internal command is a usage error", cotal(["help", "__complete"]), /unknown command: __complete/);
+  const serviceHelp = cotal(["service", "--help"]);
+  const serviceListHelp = cotal(["help", "service", "list"]);
+  check("both help forms for service list show the parent help without listing the hidden mode",
+    serviceHelp.status === 0 && serviceHelp.stderr === "" && /^cotal service$/m.test(serviceHelp.stdout)
+    && /^Commands$/m.test(serviceHelp.stdout) && !/^  list\s/m.test(serviceHelp.stdout)
+    && same(serviceHelp, serviceListHelp) && same(serviceHelp, cotal(["service", "list", "--help"])), shown(serviceListHelp));
   // An official extension's command, before the extension is added, names the package to add.
   const linearAdd = /^✗ no installed extension provides command "linear" - install it with `cotal ext add @cotal-ai\/linear`$/m;
   refused("help linear without its extension names cotal ext add @cotal-ai/linear", cotal(["help", "linear"]), linearAdd);
@@ -635,6 +641,7 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
     [["spawn", "dev", "--foreground", "--on", "a".repeat(30)], /^✗ a spawn in this terminal takes no structured receipt, manager credential or manager pin\n {2}omit --on to launch in this terminal, or replace --foreground with -d/],
     [["attach"], /^✗ name the agent to attach without an interactive terminal\n {2}run `cotal ps`, then `cotal attach <name>`/],
     [["run", "show"], /^✗ run show takes one identifier\n {2}`cotal run` lists the runs; run `cotal run show <run-id>`/],
+    [["run", "revoke", "--local", "--by", "operator", "--reason", "audit"], /^✗ run revoke takes one identifier\n {2}add a run ID after `run revoke` in the original command\. A revoke requires `--local --by <actor> --reason <text>`/],
   ] as const) {
     const r = cotal([...argv], undefined, noSeed);
     check(`${argv.join(" ")} refuses with its fix and no help`, r.status === 1 && said.test(r.stderr) && !r.stderr.includes("Usage"), shown(r));
@@ -903,7 +910,7 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
     persona(home);
     writeFileSync(join(home, "..", ".cotal", "agents", "bad.md"), "---\nname: bad\nsubscribe: [\n---\nbody\n");
   };
-  for (const [what, name, status, reason] of [["missing", "nosuch", 2, "TARGET_NOT_FOUND"], ["malformed", "bad", 1, "SCHEMA_INVALID"], ["badly named", "a b", 1, "persona names use letters"]] as const) {
+  for (const [what, name, status, reason] of [["missing", "nosuch", 2, "TARGET_NOT_FOUND"], ["malformed", "bad", 1, "SCHEMA_INVALID"], ["badly named", "a/b", 1, "persona names use letters"]] as const) {
     const legacy = cotal(["personas", "show", name], malformed, noSeed);
     const current = cotal(["persona", "show", name], malformed, noSeed);
     check(`personas show refuses a ${what} persona as persona show does`,
@@ -973,6 +980,24 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
       check(`${argv.join(" ")} refuses a linked persona with the file it links to as Next`,
         r.status === 2 && r.stderr.includes("PERMISSION_DENIED") && r.stderr.includes(`is a link to ${real}; replace the link with a copy of that file`) && lstatSync(link).isSymbolicLink(), shown(r));
     }
+    const absentTarget = "../../../stubs/missing.md";
+    for (const command of ["persona", "personas"]) {
+      const r = cotal([command, "show", "dangling"], (home) => {
+        persona(home);
+        link = join(home, "..", ".cotal", "agents", "dangling.md");
+        symlinkSync(absentTarget, link);
+      }, noSeed);
+      check(`${command} show names a missing link target and suggests restoring it or replacing the link`,
+        r.status === 2 && r.stderr.includes("PERMISSION_DENIED") && r.stderr.includes(`is a link to ${absentTarget}, but its target is missing`)
+        && r.stderr.includes("Restore the target if you still need it, or move the broken link aside and put a regular persona file in its place")
+        && !r.stderr.includes("with a copy") && !existsSync(link) && readlinkSync(link) === absentTarget, shown(r));
+    }
+    const folderLink = cotal(["persona", "show", "linked"], (home) => {
+      persona(home);
+      symlinkSync(outside, join(home, "..", ".cotal", "agents", "linked.md"), "dir");
+    }, noSeed);
+    check("persona show does not suggest copying a link's directory target",
+      folderLink.status === 2 && folderLink.stderr.includes("PERMISSION_DENIED") && folderLink.stderr.includes("its target is not a readable regular file") && !folderLink.stderr.includes("with a copy"), shown(folderLink));
   }
   // A catalog folder that is a file or a link to itself holds no personas: every catalog command
   // refuses CONFLICT naming it and what it is, and the listing is not shown as empty.
@@ -1032,6 +1057,21 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
   const outside = cotal(["persona", "create", "q", "--prompt", "body", "--subscribe", "general", "--allow-subscribe", "ops", "--json"], persona, noSeed);
   check("persona create with --subscribe outside --allow-subscribe is USAGE_INVALID, naming both flags",
     outside.status === 1 && outside.stdout.includes('"code":"USAGE_INVALID"') && outside.stdout.includes("every --subscribe channel must be within --allow-subscribe") && !outside.stdout.includes("cotal-persona-"), shown(outside));
+}
+
+{
+  const server = "nats://127.0.0.1:1";
+  const args = ["run", "resume", "run-example", "--file", "recovery.cotal.js", "--space", "custom-workflows", "--server", server, "--timeout", "30s", "--json"];
+  const refused = cotal(args, undefined, noSeed);
+  const receipt = JSON.parse(refused.stdout);
+  check("hosted resume tells the caller to remove only the source file option",
+    refused.status === 1 && refused.stderr === "" && receipt.error?.code === "USAGE_INVALID"
+    && receipt.error.remedy.startsWith("remove only --file and its value from the original command, then rerun it"), shown(refused));
+  const retried = cotal([...args.slice(0, 3), ...args.slice(5)], undefined, noSeed);
+  const retryReceipt = JSON.parse(retried.stdout);
+  check("following the resume advice keeps JSON and reaches the explicit broker without a space registration",
+    retried.status === 2 && retried.stderr === "" && retryReceipt.target?.space === "custom-workflows"
+    && retryReceipt.error?.code === "TARGET_UNAVAILABLE" && retryReceipt.error.message.includes(server), shown(retried));
 }
 
 // ── team check names each located manifest problem, without quoting a persona file ───────────────

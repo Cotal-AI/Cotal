@@ -569,6 +569,11 @@ const takeoverRun = startedId()!;
   c("...and its start fails OPERATION_FAILED with only the first line, so no newline reaches the one-line report",
     isCommandFailure(refused) && refused.code === "OPERATION_FAILED" && refused.message.endsWith("erste Zeile") && !refused.message.includes("\n") && !refused.message.includes("zweite"),
     refused?.message);
+  reset();
+  await wf(["show", tid], { plain: true });
+  c("a local read of a failure outside any step points to the driving process, not manager logs",
+    captured().includes("zweite Zeile") && captured().includes("check the driving process's output")
+      && !captured().includes("cotal service logs stack-manager"), captured());
   await checkTerminalResume(tid, "failed");
 }
 
@@ -667,6 +672,10 @@ const takeoverRun = startedId()!;
   c("the run to be revoked is open and held, so the control below reads a live record", openPause && rid !== "", captured());
 
   const revokeArgs = { endpoint: EP, by: "smoke-operator", reason: "broker outage" };
+  const missingId = await wf(["revoke"], revokeArgs).then(() => undefined, (e: unknown) => e);
+  c("revoke without an ID asks to add it to the original command",
+    isCommandFailure(missingId) && exitCode(missingId.outcome, missingId.code) === 1
+      && missingId.remedy?.startsWith("add a run ID after `run revoke` in the original command") === true, missingId);
   reset();
   const refusal = await wf(["revoke", rid], { ...revokeArgs, json: true }).then(() => undefined, (e: unknown) => e);
   c("revoke with --json asks to remove only that flag from the original invocation",
@@ -682,7 +691,7 @@ const takeoverRun = startedId()!;
 
   reset();
   await wf(["revoke", rid], revokeArgs);
-  c("revoke acknowledges with the revoker and the reason",
+  c("adding the run ID to the original revoke records the supplied revoker and reason",
     captured().includes("revoked by smoke-operator (broker outage)"), captured());
   c("...and says what the table will now show, so the two surfaces cannot drift apart unnoticed",
     captured().includes(`cotal run now lists ${rid} as revoked`), captured());
@@ -1097,7 +1106,7 @@ const takeoverRun = startedId()!;
 
 // The sentinel: a skipped block above would exit green while running fewer cells than the suite
 // declares, and a count is the only reader that can see that.
-const DECLARED = 134;
+const DECLARED = 136;
 if (ok + fail !== DECLARED) {
   fail += 1;
   console.error(`  ✗ FAIL: the suite declares ${DECLARED} cells but ran ${ok + fail - 1}`);

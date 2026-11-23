@@ -75,10 +75,10 @@ type InventorySeat = {
 };
 type Internals = {
   agents: Map<string, InventorySeat>;
-  ep: { nc: NatsConnection };
+  ep: { conn: { nc: NatsConnection } };
   serviceServe?: { nc: NatsConnection; creds?: string; grant: { epoch: number } };
-  goalWriter?: { nc: NatsConnection };
-  sessionLedgerConn?: { nc: NatsConnection };
+  servePlane: { sessionLedgerConn?: { nc: NatsConnection }; };
+  goalWriterComponent: { goalWriter?: { nc: NatsConnection }; };
 };
 type Observation = {
   id: string; command: string; start: number; end?: number; ok?: boolean;
@@ -239,8 +239,8 @@ try {
   const m = manager as unknown as Internals;
   const dispatchObserved = new WeakSet<NatsConnection>();
   const instrument = () => {
-    for (const [duty, nc] of [["supervisor", m.ep.nc], ["serve", m.serviceServe?.nc],
-      ["goalWriter", m.goalWriter?.nc], ["sessionLedger", m.sessionLedgerConn?.nc]] as const)
+    for (const [duty, nc] of [["supervisor", m.ep.conn.nc], ["serve", m.serviceServe?.nc],
+      ["goalWriter", m.goalWriterComponent.goalWriter?.nc], ["sessionLedger", m.servePlane.sessionLedgerConn?.nc]] as const)
       if (nc) observeConnection(nc, duty);
     const nc = m.serviceServe?.nc;
     if (!nc || dispatchObserved.has(nc)) return;
@@ -315,7 +315,7 @@ try {
   assert.equal(candidateOldNc.isClosed(), false, "failed replacement cleanup leaves the old transport alive");
   await wait(100);
   assert.ok(candidateClosedAt > candidateFlushAt, "failed candidate socket closes without receiving a drain PONG");
-  const adoption = manager as unknown as { remoteBundleAdoption?: Promise<void>; remoteBundleRenewal?: Promise<void>; remoteRenewalDebt?: { reason: string } };
+  const adoption = (manager as unknown as { credentialRenewal: { remoteBundleAdoption?: Promise<void>; remoteBundleRenewal?: Promise<void>; remoteRenewalDebt?: { reason: string } } }).credentialRenewal;
   assert.equal(adoption.remoteBundleAdoption, undefined, "failed native cleanup releases executor adoption waiters");
   assert.equal(adoption.remoteBundleRenewal, undefined, "failed native cleanup releases renewal ownership");
   assert.match(adoption.remoteRenewalDebt!.reason, /standing serve flush exceeded/);

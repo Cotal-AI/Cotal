@@ -420,7 +420,9 @@ function addedView(r: SpaceAdded | AddCancelled): Report {
  */
 export async function spaceCreate(name: string, rootFlag: string | undefined, adopt: boolean, presentation: Presentation): Promise<void> {
   const root = resolve(rootFlag ?? process.cwd());
-  if (!isDir(root)) throw usage(`--root ${root} is not a directory`, "create the folder first, or pass an existing one");
+  const kind = projectRootKind(root);
+  if (kind !== "directory" && (kind !== "missing" || rootFlag === undefined || adopt))
+    throw usage(`--root ${root} is not a directory`, "pass an existing directory");
   if (adopt) {
     // Its own rules come first, so a folder moved on this machine is told to move back, not to forget.
     let found: ReturnType<typeof journalRecordedElsewhere>;
@@ -438,8 +440,9 @@ export async function spaceCreate(name: string, rootFlag: string | undefined, ad
     if (lstatSync(dir, { throwIfNoEntry: false })) protectedLocalDirectory(dir, "the project's .cotal directory");
   }
   const adoptedFrom = adopt ? adoptStackJournal(root, name) : undefined;
+  const createdRoot = kind === "missing" && mkdirPrivate(root, "the project root") !== undefined;
   const { file, preparedAt } = existing ? { file: undefined, preparedAt: existing.ts } : recordLocalSpace(name, root);
-  const written = [...(adoptedFrom !== undefined ? [{ what: `stack journal, adopted from ${adoptedFrom}`, path: stackJournalPath(canonicalRoot(root)) }] : []), ...(file ? [{ what: "prepared space", path: file }] : [])];
+  const written = [...(createdRoot ? [{ what: "project folder", path: root }] : []), ...(adoptedFrom !== undefined ? [{ what: `stack journal, adopted from ${adoptedFrom}`, path: stackJournalPath(canonicalRoot(root)) }] : []), ...(file ? [{ what: "prepared space", path: file }] : [])];
   const personaPath = join(personaDir(root), "default.md");
   let persona: ReturnType<typeof seedDefaultPersona>;
   try { persona = seedDefaultPersona(root); }
@@ -461,6 +464,14 @@ export async function spaceCreate(name: string, rootFlag: string | undefined, ad
  *  there before. */
 export type LocalSpaceState = "created" | "prepared" | "started";
 
+/** A local space must have a name that `up` can start. */
+export function validateLocalSpaceName(name: string): void {
+  const requested = { requested: name };
+  const tooLong = spaceNameTooLong(name);
+  if (tooLong) throw refuse("USAGE_INVALID", `${tooLong}; nothing was written`, requested, `choose a name of at most ${SPACE_NAME_MAX} characters`);
+  take(checkSpaceName(name), requested);
+}
+
 /**
  * The checks `space create` runs before it prepares `name` at `root`; it writes nothing. `flag`
  * names the input that chose the root. With `again`, a space already prepared or started at this
@@ -471,12 +482,7 @@ export type LocalSpaceState = "created" | "prepared" | "started";
  */
 export function checkLocalSpace(name: string, root: string, flag: "--root" | "--project", again: boolean | "prepared", adopting = false): LocalSpaceState {
   const target = { space: name };
-  // `cotal up` starts a space only under a name that is one native routing token, short enough for
-  // the file names that carry it. A name it refuses names no space, so its refusal is not headed with it.
-  const requested = { requested: name };
-  const tooLong = spaceNameTooLong(name);
-  if (tooLong) throw refuse("USAGE_INVALID", `${tooLong}; nothing was written`, requested, `choose a name of at most ${SPACE_NAME_MAX} characters`);
-  take(checkSpaceName(name), requested);
+  validateLocalSpaceName(name);
   if (resolve(root, ".cotal") === resolve(homeCotalDir()) || canonicalRoot(root) === canonicalRoot(homedir()))
     throw refuse("CONFLICT", `${root} is your home folder, whose .cotal holds this machine's own records`, target, `create the space in a project folder, or pass ${flag} <dir>`);
   // Such a space could be prepared but never started: its first `up` would refuse to record the root.
@@ -580,11 +586,11 @@ export function recordLocalSpace(name: string, root: string): { file: string; pr
 
 const unwritable = (error: unknown): boolean => ["EACCES", "EPERM", "EROFS"].includes((error as NodeJS.ErrnoException).code ?? "");
 
-function isDir(path: string): boolean {
+function projectRootKind(path: string): "directory" | "missing" | "other" {
   try {
-    return statSync(path).isDirectory();
-  } catch {
-    return false;
+    return statSync(path).isDirectory() ? "directory" : "other";
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "ENOENT" ? "missing" : "other";
   }
 }
 
@@ -622,11 +628,13 @@ export async function spaceForget(rest: readonly string[], presentation: Present
   const legacy = encodeURIComponent(name);
   const damaged = registry.unusable.filter((e) => e.file === meshFile(name)
     || !/^space\.[0-9a-f]+$/.test(legacy) && e.file === join(homeCotalDir(), "meshes", `${legacy}.json`));
+  const directory = damaged.find((e) => e.recordDirectory);
+  if (directory) throw refuse("SCHEMA_INVALID", `${directory.summary}; nothing was forgotten`, { ...target, file: directory.file }, directory.remedy);
   const unrelated = registry.unusable.filter((e) => !damaged.includes(e));
   // Only the recovery offered for an exact damaged registration bypasses other damaged records.
   if (damaged.length === 0 && unrelated[0]) throw unrelated[0];
   const damagedWarnings: OutputWarning[] = unrelated.map((error) =>
-    ({ code: "MESH_REGISTRY_DAMAGED", target: { file: error.file }, message: `mesh registry file ${error.file} is still damaged: ${removeStep(error.file)}` }));
+    ({ code: "MESH_REGISTRY_DAMAGED", target: { file: error.file }, message: `mesh registry file ${error.file} is still damaged: ${error.remedy ?? removeStep(error.file)}` }));
   const removeDamaged = () => { for (const error of damaged) rmSync(error.file, { force: true }); };
   const m = registry.entries.find((entry) => entry.space === name);
   if (!m) {
@@ -638,6 +646,7 @@ export async function spaceForget(rest: readonly string[], presentation: Present
     } catch (e) {
       // Its own record cannot be read, so it names no root to release definitions at: remove the file.
       if (!isMeshRegistryError(e) || preparedRecordSpace(e.file) !== name) throw e;
+      if (e.recordDirectory) throw refuse("SCHEMA_INVALID", `${e.summary}; nothing was forgotten`, { ...target, file: e.file }, e.remedy);
       removeDamaged();
       removePreparedSpace(name);
       return forgotten(presentation, { space: name, server: null, root: null, origin: "prepared", releasedDefinitions: [], keptServices: savedServicesLeft(name, undefined) }, preferencesRevision, damagedWarnings);

@@ -51,7 +51,7 @@
  * Run: pnpm smoke:mint-provision:auth
  */
 import { strict as assert } from "node:assert";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createServer, type AddressInfo } from "node:net";
 import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
@@ -818,6 +818,34 @@ try {
       check(`#7528: ${flag} '${val}' exits 1 naming the flag and channel without creating folders`,
         bad.code === 1 && !existsSync(unwantedDir) && bad.out.includes(`${flag} channel "${val}" is not a valid channel pattern`) && bad.out.includes(hint), bad.out);
     }
+  }
+
+  {
+    const openRoot = mkdtempSync(join(tmpdir(), "cotal-stopped-open-"));
+    const openHome = mkdtempSync(join(tmpdir(), "cotal-stopped-open-home-"));
+    const out = join(openRoot, "open.creds");
+    cleanup.push(() => { for (const folder of [openRoot, openHome]) rmSync(folder, { recursive: true, force: true }); });
+    const env = { ...process.env, COTAL_HOME: openHome, XDG_CONFIG_HOME: join(openHome, "xdg"), COTAL_SKIP_CONNECTOR_SEED: "1" };
+    const anchor = recordSmokeSandbox({ root: openRoot, cotalHome: env.COTAL_HOME, xdgConfigHome: env.XDG_CONFIG_HOME });
+    const options = { cwd: openRoot, env, encoding: "utf8" as const, timeout: 120_000 };
+    const cli = (args: string[]) => {
+      assertSmokeSandboxDown(anchor, args, options);
+      return spawnSync(process.execPath, [join(import.meta.dirname, "../../../bin/dist/cotal.js"), ...args], options);
+    };
+    const prepared = cli(["space", "create", "stoppedopen"]);
+    check("the open stack is prepared", prepared.status === 0, prepared.stdout + prepared.stderr);
+    const server = `nats://127.0.0.1:${await freePort()}`;
+    const started = cli(["up", "--open", "--no-manager", "--space", "stoppedopen", "--server", server]);
+    try {
+      check("the prepared stack starts open", started.status === 0 && started.stdout.includes("open, no authentication"), started.stdout + started.stderr);
+    } finally {
+      const stopped = cli(["down", "--yes"]);
+      check("the prepared open stack stops", stopped.status === 0 && stopped.stdout.includes("Controller stack stopped"), stopped.stdout + stopped.stderr);
+    }
+    const refused = cli(["auth", "mint", "agentcase", "--space", "stoppedopen", "--out", out, "--plain"]);
+    check("a stopped open space refuses minting without recommending a restart",
+      refused.status === 2 && refused.stderr.includes("UNSUPPORTED") && refused.stderr.includes("connect to it without credentials") &&
+      !refused.stderr.includes("cotal up") && !existsSync(out), refused.stdout + refused.stderr);
   }
 
   // A legacy down removes a registration unless the space is named after its folder.

@@ -21,15 +21,17 @@ export function unwritableInstallation(installedRoot: string, directory?: string
   return new Error(`installation is not writable${directory ? `: ${directory}` : ""}; have an administrator ${administrator}; then run \`cotal update\` ${normalAccount}`);
 }
 
-export function assertWritableExecutionDirectory(path: string, installed: string, setMode?: (mode: number) => void): void {
+export function assertWritableExecutionDirectory(path: string, installed: string, setMode?: (mode: number) => void): boolean {
   const stat = lstatSync(path);
   const owned = stat.uid === process.getuid?.();
+  const restoreWrite = owned && stat.isDirectory() && (stat.mode & 0o200) === 0;
   try {
-    if (owned && stat.isDirectory() && (stat.mode & 0o200) === 0) {
+    if (restoreWrite) {
       const mode = (stat.mode & 0o7777) | 0o200;
       if (setMode) setMode(mode); else chmodSync(path, mode);
     }
     accessSync(path, constants.W_OK);
+    return restoreWrite;
   } catch {
     if (owned) throw new Error(`installation directory is not writable: ${path}; restore write access to this user-owned directory, then run \`cotal update --self\` again without sudo`);
     throw unwritableInstallation(installed, setMode ? path : undefined);

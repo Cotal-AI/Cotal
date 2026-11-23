@@ -67,7 +67,7 @@ const workspaceRoot = mkdtempSync(join(tmpdir(), "cotal-mrf-ws-"));
 mkdirSync(join(workspaceRoot, ".cotal", "agents"), { recursive: true });
 
 const kids: ChildProcess[] = [];
-type MgrPriv = { managerInstanceId: string; serviceServe?: { grant: { epoch: number; instanceId: string } }; goalWriter?: { ctx: ActionContext }; lease: { renewLease: () => Promise<void>; renewLeaseAttempt: () => Promise<void> }; ep: CotalEndpoint };
+type MgrPriv = { managerInstanceId: string; serviceServe?: { grant: { epoch: number; instanceId: string } }; lease: { renewLease: () => Promise<void>; renewLeaseAttempt: () => Promise<void> }; ep: CotalEndpoint; goalWriterComponent: { goalWriter?: { ctx: ActionContext }; } };
 // THE FIXTURE'S HARNESS. `spawn` on the class rail needs a manager whose boot inventory holds an
 // AVAILABLE connector (#1724): a manager with none declines the class `one` rail for spawn/launch,
 // so an unpinned `manager.spawn` has no responder at all — `unavailable no responder` — and the
@@ -114,7 +114,7 @@ try {
 
   // A goal ACCEPTED under epoch 0 and terminated by incarnation 1 before it dies. This is the
   // legitimate pre-restart winner: the work really ran and its outcome is already durable.
-  const gw1 = M1.goalWriter!.ctx;
+  const gw1 = M1.goalWriterComponent.goalWriter!.ctx;
   const ref1 = goalRefOf(reqFor("g-pre-restart"), "g-pre-restart");
   await bindGoal(gw1, ref1, "fp-pre-restart");
   await createGoal(gw1, ref1, {
@@ -140,11 +140,11 @@ try {
   });
   client.on("error", () => {});
   await client.start();
-  const cache = (client as unknown as { resolvedServices: Map<string, { responder: { instanceId: string; epoch: number } }> }).resolvedServices;
+  const cache = (client as unknown as { controlPlane: { resolvedServices: Map<string, { responder: { instanceId: string; epoch: number } }> } }).controlPlane.resolvedServices;
   // Recovery drops the full handle and resolves only the command being retried.
-  const commandCache = (client as unknown as { resolvedCommandServices: Map<string, Map<string, { responder: { instanceId: string; epoch: number } }>> }).resolvedCommandServices;
+  const commandCache = (client as unknown as { controlPlane: { resolvedCommandServices: Map<string, Map<string, { responder: { instanceId: string; epoch: number } }>> } }).controlPlane.resolvedCommandServices;
   const boundFor = (command: string) => (cache.get(MANAGER_ENDPOINT) ?? commandCache.get(MANAGER_ENDPOINT)?.get(command))?.responder;
-  const pubs = (): number => (client as unknown as { nc: { stats(): { outMsgs: number } } }).nc.stats().outMsgs;
+  const pubs = (): number => (client as unknown as { conn: { nc: { stats(): { outMsgs: number } } } }).conn.nc.stats().outMsgs;
   await client.describeService(MANAGER_ENDPOINT);
   const warm = await client.invokeService(MANAGER_ENDPOINT, "ps");
   check("a long-lived client is bound to incarnation 1 before the restart",
@@ -159,10 +159,10 @@ try {
   });
   reader.on("error", () => {});
   await reader.start();
-  const readerCache = (reader as unknown as { resolvedServices: Map<string, { responder: { instanceId: string; epoch: number } }> }).resolvedServices;
-  const readerCommandCache = (reader as unknown as { resolvedCommandServices: Map<string, Map<string, { responder: { instanceId: string; epoch: number } }>> }).resolvedCommandServices;
+  const readerCache = (reader as unknown as { controlPlane: { resolvedServices: Map<string, { responder: { instanceId: string; epoch: number } }> } }).controlPlane.resolvedServices;
+  const readerCommandCache = (reader as unknown as { controlPlane: { resolvedCommandServices: Map<string, Map<string, { responder: { instanceId: string; epoch: number } }>> } }).controlPlane.resolvedCommandServices;
   const readerBound = () => (readerCache.get(MANAGER_ENDPOINT) ?? readerCommandCache.get(MANAGER_ENDPOINT)?.get("ps"))?.responder;
-  const readerPubs = (): number => (reader as unknown as { nc: { stats(): { outMsgs: number } } }).nc.stats().outMsgs;
+  const readerPubs = (): number => (reader as unknown as { conn: { nc: { stats(): { outMsgs: number } } } }).conn.nc.stats().outMsgs;
   await reader.describeService(MANAGER_ENDPOINT);
   const readerWarm = await reader.invokeService(MANAGER_ENDPOINT, "ps");
   check("...and so is a second client, kept for the read arm",
@@ -353,7 +353,7 @@ try {
 
   // THE INVERSION, driven by a real restart. The advanced epoch does not hide the pre-restart fact
   // and does not license overwriting it: one goal has ONE terminal subject, and the first fact won.
-  const gw2 = M2.goalWriter!.ctx;
+  const gw2 = M2.goalWriterComponent.goalWriter!.ctx;
   const survived = await readGoalResult(gw2, ref1);
   check("the pre-restart terminal SURVIVES the restart and is exactly what the restarted incarnation reads",
     survived?.state === "failed" && (survived?.data as { by?: string })?.by === "pre-restart", survived);

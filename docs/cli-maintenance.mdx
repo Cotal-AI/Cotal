@@ -315,7 +315,7 @@ and an unconfirmed native stop cannot be forgotten just because its process disa
 cotal manager start [--runtime <name>] [--roster <file>] [--name <name>] [--launch <file> --launch-sha256 <digest>] [--foreground] [--dry-run] [--space <s>]
 cotal manager stop [--with-agents] [--yes|--dry-run] [--space <s>]
 cotal manager restart [--with-agents] [--yes|--dry-run] [--space <s>]
-cotal manager status [--instance <full-id>] [--space <s>]
+cotal manager status [--instance <full-id>] [--space <s>] [--json]
 cotal manager logs [--tail <n>] [--follow] [--space <s>]
 cotal manager install [--space <s>]
 cotal manager uninstall [--yes|--dry-run] [--space <s>]
@@ -333,7 +333,10 @@ and its flags and the manager preset's options (`--runtime`, `--roster`, `--name
 `--console-port`, `--console-host`, `--ws-port`, `--max-sessions`, `--launch`, `--launch-sha256`) are
 taken on the line. Pass both launch flags together: `--launch` takes the absolute path to an
 existing private resolved launch spec for the selected space, and `--launch-sha256` takes the full
-SHA-256 of those file bytes. See [Native manager service definition](#native-manager-service-definition).
+SHA-256 of those file bytes. If you pass only one flag, the command names the missing flag before
+checking the file. If the file is missing, give `--launch` an existing absolute path and update the
+digest to match. Keep your other flags, including `--dry-run` for a preview.
+See [Native manager service definition](#native-manager-service-definition).
 `cotal help manager <verb>` and `cotal manager <verb> --help` print the verb's help with those
 options. The first
 start saves the space's `manager` service from the preset's defaults and says so on stderr; `cotal
@@ -378,8 +381,11 @@ with the manager preset. `cotal service add custom-manager --preset manager --he
 
 Two saved manager services in one space refuse `TARGET_AMBIGUOUS`, naming each with its `cotal service`
 command. An unpinned `start` or `status` reports the PID of a manager that `cotal up` or
-`cotal supervise` started without a saved service. `start` starts nothing beside it. With
-`--instance`, these commands require a matching owned service instance and refuse `TARGET_NOT_FOUND`
+`cotal supervise` started without a saved service. With `--json`, `status` reports
+`result.observedProcess` as `running`. `start` starts nothing beside it. When retained local records
+show that a manager without a saved service has stopped, the human report says it is stopped and
+names the `cotal up` command for that root and space. JSON reports `result.observedProcess` as `gone`.
+With `--instance`, these commands require a matching owned service instance and refuse `TARGET_NOT_FOUND`
 (exit 2) when there is none. Without a pin, `logs` reads the log `cotal up`
 opened for it, `<root>/.cotal/manager.<spaceKey>.log`, and changes nothing. It takes `--tail`,
 `--follow` and `--json` as a service's `logs` does, and a follow ends when that manager's process is

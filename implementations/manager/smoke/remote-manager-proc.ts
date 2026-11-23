@@ -247,7 +247,7 @@ async function probe(runId: string) {
     return { sub: c.sub, exp: c.exp, account: c.nats?.issuer_account };
   };
   let executorDialRefused: boolean | null = null;
-  const execCreds = (manager as any).remoteExecutorCreds;
+  const execCreds = (manager as any).credentialRenewal.remoteExecutorCreds;
   if (typeof execCreds === "string") {
     try {
       const nc = await connect({ servers, reconnect: false, authenticator: credsAuthenticator(new TextEncoder().encode(execCreds)) });
@@ -352,17 +352,17 @@ let nextServeConnectionId = 0;
 function standingMeta() {
   const m = manager as any;
   const held: Record<string, unknown> = {
-    supervisor: m.remoteSupervisorCreds,
-    executor: m.remoteExecutorCreds,
+    supervisor: m.credentialRenewal.remoteSupervisorCreds,
+    executor: m.credentialRenewal.remoteExecutorCreds,
     serve: m.serviceServe?.creds,
-    goalWriter: m.goalWriterCreds,
-    sessionLedger: m.sessionLedgerCreds,
+    goalWriter: m.goalWriterComponent.goalWriterCreds,
+    sessionLedger: m.servePlane.sessionLedgerCreds,
   };
   const now = Math.floor(Date.now() / 1000);
   const nc = m.serviceServe?.nc;
   if (nc && !serveConnectionIds.has(nc)) serveConnectionIds.set(nc, ++nextServeConnectionId);
   const out: Record<string, unknown> = {
-    debt: m.remoteRenewalDebt?.reason ?? null,
+    debt: m.credentialRenewal.remoteRenewalDebt?.reason ?? null,
     serveConnClosed: nc ? nc.isClosed() : null,
     serveConnectionId: nc ? serveConnectionIds.get(nc) : null,
   };

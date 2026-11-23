@@ -50,7 +50,9 @@ export async function spawnLaunchPreview(args: Pick<ParsedArgs, "positionals"> &
     root = selected.root; space = selected.space; broker = brokerAddressForDisplay(selected.server) ?? null; targetMode = selected.mode; site = selected;
   } catch (error) {
     if (!isWorkspaceTargetError(error)) throw error;
-    if (error.code === "not-started" && error.details.root && error.details.space) { root = error.details.root; space = error.details.space; site = { root, space, personaRoot: personaDir(root), origin: "up" }; }
+    const { root: localRoot, space: preparedSpace, stackSpace, lastRun, recordedRoot } = error.details;
+    const offlineSpace = preparedSpace ?? (!spawnUsesManager(values) && lastRun && recordedRoot === undefined ? stackSpace : undefined);
+    if (error.code === "not-started" && localRoot && offlineSpace) { root = localRoot; space = offlineSpace; site = { root, space, personaRoot: personaDir(root), origin: "up" }; }
     else if (error.code === "unknown-space" && values["enrollment-file"] && values.file && values.space && token(values.space) === values.space) { root = process.cwd(); space = values.space; site = { root, space, personaRoot: personaDir(root) }; }
     // Every other resolution failure keeps the sentence and next step the reads print for it, so a
     // preview in a copied, moved or taken-over folder names that folder rather than reporting only
@@ -87,7 +89,7 @@ export async function spawnLaunchPreview(args: Pick<ParsedArgs, "positionals"> &
     ] }));
     return;
   }
-  const path = values.file !== undefined || (values["enrollment-file"] && values.config) ? resolve(ref) : directPersonaPath(root, ref, values.config === undefined && args.positionals.length > 0);
+  const path = values.file !== undefined || (values["enrollment-file"] && values.config) ? resolve(ref) : directPersonaPath(root, ref, values.config === undefined);
   let definition: AgentDef;
   // A missing product default is what the launch writes from the shipped template, so the preview
   // reads that template and writes nothing.

@@ -32,8 +32,9 @@ export const cliControl: ControlClient = {
  *  ({@link managerPin}). */
 export const onFlag = { name: "on", type: "string", value: "<instance>", description: "ask only this manager, by the instance id `ps` prints or, on a user-auth mesh, by its name or host" } as const satisfies FlagSpec;
 
-export type ManagerRetry = string | { command: string };
-export const onRetry = (retry: ManagerRetry): string => codeSpan(typeof retry === "string" ? `${retry} --on <instance>` : retry.command);
+export type ManagerRetry = string | { command: string } | { remedy: string };
+export const onRetry = (retry: ManagerRetry): string | undefined =>
+  typeof retry === "string" ? codeSpan(`${retry} --on <instance>`) : "command" in retry ? codeSpan(retry.command) : undefined;
 
 /** Read `--on` at the site that declares it. Absent stays absent (class rails). An EMPTY value
  *  (`--on=`, `--on ""`, or `--on "$INSTANCE"` with the variable unset) is refused here, up front:
@@ -45,10 +46,13 @@ export const onRetry = (retry: ManagerRetry): string => codeSpan(typeof retry ==
  *  instance id, name or host, which {@link managerPin} resolves to an instance id before use. */
 export function onInstance(on: string | undefined, verb: ManagerRetry): string | undefined {
   if (on === undefined) return undefined;
+  const command = onRetry(verb);
+  const example = command === undefined ? "" : `: ${command}`;
+  const remedy = typeof verb === "object" && "remedy" in verb ? verb.remedy : undefined;
   if (on === "")
-    throw new CommandFailure("refused", "USAGE_INVALID", `--on requires a manager instance id (the whole id, as \`cotal ps\` prints it), or on a user-auth mesh a manager's name or host: ${onRetry(verb)}. An empty value is refused, not dropped`, { selfContained: true });
+    throw new CommandFailure("refused", "USAGE_INVALID", `--on requires a manager instance id (the whole id, as \`cotal ps\` prints it), or on a user-auth mesh a manager's name or host${example}. An empty value is refused, not dropped`, { selfContained: true, remedy });
   if (on.startsWith("local."))
-    throw new CommandFailure("refused", "USAGE_INVALID", `"${on}" is a principal id. --on wants the manager INSTANCE id as \`cotal ps\` prints it (the \`instance\` it lists for a manager that answered, or the \`manager <id>\` header when several did), not the roster's principal id (\`local.U…\`, as \`cotal endpoints\` shows it): ${onRetry(verb)}`, { selfContained: true });
+    throw new CommandFailure("refused", "USAGE_INVALID", `"${on}" is a principal id. --on wants the manager INSTANCE id as \`cotal ps\` prints it (the \`instance\` it lists for a manager that answered, or the \`manager <id>\` header when several did), not the roster's principal id (\`local.U…\`, as \`cotal endpoints\` shows it)${example}`, { selfContained: true, remedy });
   return on;
 }
 
@@ -72,7 +76,10 @@ export function onInstanceId(on: string | undefined, verb: ManagerRetry): string
   try {
     assertLifecycleToken(value, "instanceId");
   } catch (e) {
-    throw new CommandFailure("refused", "USAGE_INVALID", `${(e as Error).message}. --on wants the INSTANCE id as \`cotal ps\` prints it (the \`instance\` it lists for a manager that answered, or the \`manager <id>\` header when several did): ${onRetry(verb)}`, { selfContained: true });
+    const command = onRetry(verb);
+    const example = command === undefined ? "" : `: ${command}`;
+    const remedy = typeof verb === "object" && "remedy" in verb ? verb.remedy : undefined;
+    throw new CommandFailure("refused", "USAGE_INVALID", `${(e as Error).message}. --on wants the INSTANCE id as \`cotal ps\` prints it (the \`instance\` it lists for a manager that answered, or the \`manager <id>\` header when several did)${example}`, { selfContained: true, remedy });
   }
   return value;
 }

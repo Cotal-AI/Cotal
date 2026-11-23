@@ -176,7 +176,7 @@ try {
   mkdirSync(join(cHome, ".cotal"), { recursive: true, mode: 0o700 });
   const cs = new ConsoleSession(["--space", space, "--server", OPEN], cHome, homeEnv, { cols: 140, rows: 36, cwd: cHome });
   stops.push(async () => cs.close());
-  check("the console opens on the all feed", await cs.waitFor(`${space} · #all`, 40_000), clean(cs.out).slice(-200));
+  check("the console opens on the all feed", await cs.waitFor(`${space} · all`, 40_000), clean(cs.out).slice(-200));
 
   // Identify the console's peer by what it IS, not by a name this file already used: section A's
   // own operator is still on the roster as an offline record, and the console names its peer after

@@ -51,7 +51,7 @@ import { pidfileState, pidfileTargets } from "./down.js";
 import { localProcessSurface } from "../ext-loader.js";
 import { readStackJournal, recordResetStore, STACK_DEFINITION, stackJournalPath } from "../lib/stack-journal.js";
 import { rollbackRestoreWithBroker } from "../lib/controller-restore.js";
-import { maintenanceNextStep } from "../lib/restore.js";
+import { maintenanceNextStep, restoreNextStep } from "../lib/restore.js";
 import { displayCmd } from "../lib/self-exec.js";
 import { MissingFlags } from "../lib/missing-flags.js";
 import { attemptProcessesGone } from "../lib/isolated-broker.js";
@@ -85,8 +85,8 @@ function recordedAttemptStep(root: string, journal: ReturnType<typeof readMainte
 
 export function validateCleanArguments(args: ParsedArgs): void {
   const target = args.positionals[0];
-  if (target === "history" && args.values.attempt !== undefined)
-    throw new CommandFailure("refused", "USAGE_INVALID", "clean history cannot be scoped by --attempt. That option selects a restore for clean restore-attempt or clean restore-fallback. Nothing was purged.", { selfContained: true });
+  if ((target === "history" || target === "store" || target === "all") && args.values.attempt !== undefined)
+    throw new CommandFailure("refused", "USAGE_INVALID", `clean ${target} cannot be scoped by --attempt. That option selects a restore for clean restore-attempt or clean restore-fallback. Nothing was ${target === "history" ? "purged" : "removed"}.`, { selfContained: true });
   if (args.values["store-dir"] === undefined) return;
   if (target === "history")
     throw new CommandFailure("refused", "USAGE_INVALID", "clean history targets a running mesh. Nothing was purged. Only clean store and clean all take --store-dir.", { selfContained: true });
@@ -199,6 +199,11 @@ export async function clean(args: ParsedArgs): Promise<void> {
         throw new CommandFailure("refused", "TARGET_NOT_FOUND", `no maintenance record at this root names restore attempt ${values.attempt}; nothing was deleted`, {
           target: { root, attemptId: values.attempt },
           remedy: recordedAttemptStep(root, journal, "this root holds no restore attempt. Check that you are in the original project folder and verify the attempt ID before retrying"),
+        });
+      if (journal.state === "restore-ready")
+        throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `restore attempt ${values.attempt} is still pre-commit; nothing was deleted`, {
+          target: { root, attemptId: values.attempt, state: journal.state },
+          remedy: restoreNextStep(journal.state, values.attempt),
         });
       const active = journal.state === "active" && journal.restore.attemptId === values.attempt && !journal.restore.cleanup ? journal : undefined;
       const leftOut = active ? restoreLeftOut(active) : undefined;
@@ -636,8 +641,8 @@ function pathContains(parent: string, child: string): boolean {
 /** Inspect the same pinned local store path that the existing guarded cleanup deletes. */
 export function safeStoreCleanupPath(root: string, override: string | undefined): { path: string; identity?: { dev: bigint; ino: bigint } } {
   const requested = resolve(override ?? join(root, ".cotal", "nats"));
-  if (!existsSync(requested)) return { path: requested };
-  const stat = lstatSync(requested, { bigint: true });
+  const stat = lstatSync(requested, { bigint: true, throwIfNoEntry: false });
+  if (!stat) return { path: requested };
   if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error(`store cleanup target is not a real directory: ${requested}`);
   const target = realpathSync.native(requested);
   const canonicalRoot = realpathSync.native(root);

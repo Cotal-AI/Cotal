@@ -9,12 +9,14 @@
  * Run: pnpm smoke:read-no-seed
  */
 import { spawnSync } from "node:child_process";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { isDeepStrictEqual } from "node:util";
 import { createSuite } from "@cotal-ai/smoke-kit";
 import { displayCmd } from "../src/lib/self-exec.js";
+import { shellWord } from "../src/lib/endpoint-errors.js";
 
 const BIN = join(import.meta.dirname, "..", "..", "..", "bin", "dist", "cotal.js");
 if (!existsSync(BIN)) {
@@ -35,9 +37,9 @@ function sandbox() {
   roots.push(home);
   mkdirSync(join(home, ".cotal"));
   const xdg = join(home, ".config");
-  const run = (args: string[], extraEnv: Record<string, string> = {}) => {
+  const run = (args: string[], extraEnv: Record<string, string> = {}, cwd = home) => {
     const r = spawnSync(process.execPath, [BIN, ...args], {
-      cwd: home,
+      cwd,
       env: { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: xdg, COTAL_HOME: join(home, ".cotal"), ...extraEnv },
       encoding: "utf8",
       timeout: 120_000,
@@ -185,6 +187,67 @@ channels:
     const error = r.stdout ? JSON.parse(r.stdout).error : undefined;
     check(`history limit --${flag} still reaches the seed gate`, r.status === 2 && error?.code === "DEPENDENCY_UNAVAILABLE" && GATE.test(error.message), shown(r));
   }
+}
+
+{
+  const { home, xdg, run } = sandbox();
+  const offline = { COTAL_NO_UPDATE_CHECK: "1", COTAL_TELEMETRY: "off" };
+  for (const [selector, space, diagnosis] of [
+    [["--server", "http://127.0.0.1:1"], null, /--server scheme "http" is not a broker scheme/],
+    [["--space", ""], "", /--space\/-s is empty; name one space/],
+  ] as const) {
+    for (const [args, target] of [
+      [["watch"], { requestedSpace: space }],
+      [["history", "general", "--follow"], { space, channel: "general", dms: false }],
+    ] as const) {
+      const r = run([...args, ...selector, "--json"], offline);
+      const records = r.stdout.trimEnd().split("\n").map((line) => JSON.parse(line));
+      const [error, end] = records;
+      check(`${args.join(" ")} frames an invalid ${selector[0]} as a stream failure`,
+        r.status === 1 && r.stderr === "" && records.length === 2 && records.every((record) =>
+          record.schemaVersion === 1 && record.stream === args[0] && isDeepStrictEqual(record.target, target)) &&
+        error.type === "error" && error.data.code === "USAGE_INVALID" && diagnosis.test(error.data.message) &&
+        end.type === "end" && end.data.reason === "setup-failed", shown(r));
+    }
+    const finite = run(["history", "general", ...selector, "--json"], offline);
+    const receipt = JSON.parse(finite.stdout);
+    check(`finite history keeps its refusal receipt for an invalid ${selector[0]}`,
+      finite.status === 1 && finite.stderr === "" && receipt.command === "history" && receipt.outcome === "refused" &&
+      receipt.error.code === "USAGE_INVALID" && diagnosis.test(receipt.error.message), shown(finite));
+  }
+  check("invalid stream selectors do not seed extensions or select a mesh",
+    !existsSync(join(xdg, "cotal", "extensions")) && !existsSync(join(home, ".cotal", "current-mesh")));
+}
+
+// ── Argument and migration refusals leave a fresh installation untouched ──────────────────────────
+{
+  const { home, xdg, run } = sandbox();
+  const project = join(home, "project");
+  mkdirSync(project);
+  const offline = { npm_config_offline: "true", npm_config_cache: join(home, "empty-npm-cache"), COTAL_TELEMETRY: "off" };
+  const invalid = run(["space", "create", "dotted.name", "--json"], offline, project);
+  const receipt = invalid.stdout ? JSON.parse(invalid.stdout) : undefined;
+  check("space create refuses an invalid name before the connector gate",
+    invalid.status === 1 && invalid.stderr === "" && receipt?.outcome === "refused" &&
+    receipt.target?.requested === "dotted.name" && receipt.error?.code === "USAGE_INVALID" &&
+    receipt.error.message.includes("a space name is 1 to 64 letters") &&
+    receipt.error.remedy === "choose a name of only letters, digits, underscores and hyphens", shown(invalid));
+
+  const launch = ["--name", "example"];
+  const catalog = run(["start", "--config", "default", ...launch], offline, project);
+  const path = "./Owner's persona.md";
+  const file = run(["start", `--config=${path}`, ...launch, "--prompt", "review the first draft"], offline, project);
+  const command = (r: ReturnType<typeof run>) => r.stderr.split("\n").find(line => line.startsWith("  "))?.trim();
+  const migratedCatalog = command(catalog);
+  const migratedFile = command(file);
+  check("start refuses without the gate and prints the catalog retry",
+    catalog.status === 1 && catalog.stdout === "" && catalog.stderr.includes("`cotal start` was removed") &&
+    !GATE.test(catalog.stderr) && migratedCatalog?.endsWith(" spawn default --detach --name example") === true, shown(catalog));
+  check("start replaces a file config with a quoted --file and retains launch options",
+    file.status === 1 && file.stdout === "" && !GATE.test(file.stderr) &&
+    migratedFile?.endsWith(` spawn --detach --file ${shellWord(path)} --name example --prompt 'review the first draft'`) === true, shown(file));
+  check("refusals leave the project, seed store and extensions untouched",
+    readdirSync(project).length === 0 && !existsSync(join(xdg, "cotal", "seed")) && !existsSync(join(xdg, "cotal", "extensions")));
 }
 
 // ── A command that is not a read still meets the gate ───────────────────────────────────────────────

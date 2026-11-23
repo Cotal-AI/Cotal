@@ -97,8 +97,18 @@ function checkCleanStoreCli(): void {
     const store = join(root, fixture);
     const force = `cotal clean store --store-dir='${fixture}' --force`;
     const flag = `--store-dir=${fixture}`;
+    const data = join(store, "jetstream");
+    mkdirSync(data, { recursive: true });
+    for (const target of ["store", "all"]) {
+      for (const mode of ["--dry-run", "--force"]) {
+        const result = spawnSync(process.execPath, [cli, "clean", target, flag, mode, "--attempt", `restore-${randomUUID()}`], options);
+        check(`clean ${target} ${mode} rejects --attempt and leaves the store intact`,
+          result.status === 1 && result.stdout === "" && result.stderr.includes(`clean ${target} cannot be scoped by --attempt.`) &&
+            result.stderr.includes("That option selects a restore for clean restore-attempt or clean restore-fallback.") && existsSync(data), result.stderr);
+      }
+    }
     for (const preview of [true, false]) {
-      mkdirSync(join(store, "jetstream"), { recursive: true });
+      mkdirSync(data, { recursive: true });
       const result = preview ? run(flag, "--dry-run") : run(flag);
       const output = preview ? result.stdout : result.stderr;
       assert.equal(result.status, preview ? 0 : 1, output);

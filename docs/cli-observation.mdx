@@ -147,6 +147,8 @@ folder. The terminal gets the refusal's report, with the mesh it resolved and it
 `--json` gets that code, message and next step in the stream's `error` record, ahead of its `end`.
 Both records include `target.space` when a space resolved. `target.requestedSpace` holds the
 explicit `--space` value, or `null` when no space was requested.
+From the project folder of a stopped open space, `watch --space <name>` names the same restart step
+as bare `watch` when the name matches the last run.
 After a controller stack stops cleanly, the next step is `cotal up --no-manager` in its project
 folder if the stop records no manager or the broker's payload limit is too low to start one.
 
@@ -154,6 +156,8 @@ folder if the stop records no manager or the broker's payload limit is too low t
 ### Observer stream [#observer-stream]
 
 `watch --json` emits versioned watch NDJSON records from the same MeshView as the terminal.
+An invalid `--server` URL or an empty `--space` value emits a `USAGE_INVALID` `error` record
+followed by an `end` record with `reason: "setup-failed"`. The command exits 1 without connecting.
 Activity, events and messages filters use the shared classifier. Metadata snapshots identify
 scope, reported roster state, native channel counts and membership-read failures. Feed rows keep
 native message IDs and timestamps; coalesced updates are identified as observed rows, not new
