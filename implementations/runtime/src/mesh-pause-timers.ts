@@ -329,17 +329,9 @@ export class PauseTimers {
       ]);
     } finally {
       wait.over = true;
-      // THE PUMP IS DRAINED BEFORE THE SETTLE RETURNS (#1460). The race above has already decided
-      // — the fact, the failure, or the cancellation is this call's answer — but the pump's
-      // in-flight `takeFire` is a journal replay under the run's takeover id, created, read and
-      // deleted inside one `replayRunJournal` call with nothing serialising it across two
-      // authorities for the same run and lease. A settle that returned past it let a completed
-      // `driveRun` hold the replay open after it resolved, and the next reader under the same
-      // takeover hit `RunJournalReplayRaced` about a driver that did not exist. So only the RETURN
-      // is delayed, until the pump has ended: `wait.over` stops it after its current `takeFire`
-      // without starting another, and awaiting it here means no pump fire is left in flight on any
-      // exit. A pump that FAILED raises through this await on its way out, exactly as it did
-      // through the race; the settle's own answer is decided either way and is what this returns.
+      // Drain the pump before the caller can move on. Handling a fire can replay the journal
+      // under this run's takeover id and must not overlap a subsequent reader of that attempt.
+      // Awaiting the pump also propagates any error from its in-flight check.
       await pump;
     }
   }
@@ -368,11 +360,7 @@ export class PauseTimers {
   private async pumpFires(ref: CheckpointRef, wait: { over: boolean }): Promise<void> {
     while (!wait.over) {
       await this.takeFire(ref);
-      // THE FLAG IS RE-READ AFTER THE FIRE, before the poll sleeps (#1460): `takeFire` is a journal
-      // replay under the run's takeover id, so the wait can have ENDED while this one was in
-      // flight — and a pump that slept another poll on a wait that is over keeps exactly one more
-      // fire in flight past the drain `settleOnce` awaits. Checked here, the pump ends right after
-      // its current fire without starting another.
+      // End the drain promptly if settlement finished while the fire check was in flight.
       if (wait.over) break;
       await delay(FIRE_POLL_MS);
     }
