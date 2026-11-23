@@ -293,8 +293,7 @@ const FIXTURE: Record<string, { publish: string[]; subscribe: string[] }> = {
     "$JS.API.STREAM.MSG.GET.KV_cotal_usernames_d32m",
     "$KV.cotal_usernames_d32m.owner.*",
     "$KV.cotal_usernames_d32m.username.*",
-    "cotal.d32m.address.*.*.reply.*",
-  ], subscribe: ["_INBOX_ibxconn0123456789.>", "cotal.d32m.address.*.*"] },
+  ], subscribe: ["_INBOX_ibxconn0123456789.>"] },
   "environment-admission-index": { publish: [
     "$JS.API.INFO", "$JS.API.STREAM.CREATE.KV_cotal_environment_managers_d32m",
     "$JS.API.STREAM.INFO.KV_cotal_environment_managers_d32m",

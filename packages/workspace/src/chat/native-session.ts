@@ -31,6 +31,7 @@ import {
   type Delivery,
   type MessageMeta,
   type Presence,
+  type ResolvedPeerAddress,
   type PresenceStatus,
   type PresenceView,
 } from "@cotal-ai/core";
@@ -132,7 +133,7 @@ export async function resolveDmTarget(
   rosterState: PresenceView["state"],
   engine: ParticipantEngine,
   self: { readonly principal: string; readonly name?: string; readonly answerOne?: string },
-  resolve: (target: string, roster: readonly Presence[]) => Promise<Presence | undefined> =
+  resolve: (target: string, roster: readonly Presence[]) => Promise<ResolvedPeerAddress | undefined> =
     (target, peers) => resolvePeerAddress(peers, target, { authority: { mode: "open" } }),
 ): Promise<{ readonly id: string; readonly name: string; readonly status?: PresenceStatus } | Refused> {
   if (typeof to !== "string" || parsePrincipalKey(to)) {
@@ -144,7 +145,7 @@ export async function resolveDmTarget(
     return { id: principal, name: dmName(cardName ?? heard, principal) };
   }
   const peers = rosterState === "current" ? roster.filter((p) => p.card.id !== self.principal) : [];
-  let peer: Presence | undefined;
+  let peer: ResolvedPeerAddress | undefined;
   try {
     peer = await resolve(to, peers);
   } catch (e) {
@@ -337,11 +338,12 @@ export class NativeChatSession implements AdmittedChatSession {
     const { status, ...recipient } = resolved;
     const gone = await this.beforePublish();
     if (gone) return gone;
+    const qualified = typeof to === "string" && to.includes("/");
     const recipientStatusAtSend: PresenceStatus | "unrostered" = status ?? ep.getRoster().find((p) => p.card.id === recipient.id)?.status ?? "unrostered";
     try {
       const { msg, ack } = await ep.unicastAttributed(recipient.id, text, replyTo !== undefined ? { replyTo } : {});
       this.streamsGone = undefined;
-      return { outcome: "stored", messageId: msg.id, seq: ack.seq, duplicate: ack.duplicate, recipient, recipientStatusAtSend };
+      return { outcome: "stored", messageId: msg.id, seq: ack.seq, duplicate: ack.duplicate, recipient, ...(qualified ? {} : { recipientStatusAtSend }) };
     } catch (e) {
       return this.afterPublish(e);
     }

@@ -10,7 +10,10 @@ export async function presenceSeat(roster: readonly Presence[], name: string): P
   // Static/open manager rows expose the bare actor, while presence keys include its owner.
   const address = live.some(p => p.card.id === `${DEV_OWNER}.${name}`) ? `${DEV_OWNER}.${name}` : name;
   let peer: Presence | undefined;
-  try { peer = await resolvePeerAddress(live, address, { authority: { mode: "static" } }); }
+  try {
+    const match = await resolvePeerAddress(live, address, { authority: { mode: "static" } });
+    peer = match && !("routingOnly" in match) ? match : undefined;
+  }
   catch (error) {
     if (error instanceof AmbiguousPeerError) throw new CommandFailure("refused", "TARGET_AMBIGUOUS", error.message, { target });
     if (error instanceof PeerAddressError) throw new CommandFailure("refused", error.code, error.message, { target });

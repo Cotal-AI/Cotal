@@ -43,7 +43,7 @@ const supplied = `9_${"d".repeat(38)}`;
 const row = grantActor(a.stateDir, { owner, actor: "lister", scope: [], allowSubscribe: [], allowPublish: [] });
 const narrow = { actor: "lister", scope: [], allowSubscribe: [], allowPublish: [] };
 const otherRow = grantActor(a.stateDir, { owner: otherOwner, ...narrow });
-const senderRow = grantActor(a.stateDir, { owner, ...narrow, actor: "sender" });
+const senderRow = grantActor(a.stateDir, { owner, ...narrow, actor: "address_sender" });
 grantActor(a.stateDir, { owner: directoryOwner, ...narrow, username: supplied });
 grantActor(a.stateDir, { owner: unnamedOwner, ...narrow });
 const idpToken = (subject: string, claims: Record<string, unknown>) => {
@@ -133,6 +133,25 @@ async function checkReaders(authService: AuthServiceHandle, username: string): P
     assert.ok(await saw(right, secondHeld.id));
     const reply = await right.dm(peer.card.id, "principal reply", { replyTo: secondHeld.id });
     suite.check("an explicit reply reaches its unrostered sender by principal", reply.recipient.id === peer.card.id && !!await awaitValue(() => replies.has(reply.msg.id) ? true : undefined));
+    const sharedId = "same-directed-id";
+    const otherSender = await core.dialerFor(fx.servers)({ servers: fx.servers,
+      ...core.standaloneConnectOpts({ bearer: await leftGrant.userAuth.bearer(), sentinelCreds: a.sentinelCreds, tls: false }) });
+    const sendShared = (from: CotalEndpoint, connection: NatsConnection) => connection.request(
+      core.unicastSubject(a.space, otherOwner, "reviewer", from.principal.owner, from.principal.actor),
+      JSON.stringify({ id: sharedId, ts: Date.now(), space: a.space, from: from.ref(), to: right.ep.card.id, parts: [{ kind: "text", text: "question" }] }),
+      { timeout: 2_000 });
+    try {
+      await sendShared(peer, nc!);
+      await sendShared(left.ep, otherSender);
+    } finally { await otherSender.close(); }
+    const duplicateIds = await awaitValue(() => {
+      const items = right.peekInbox().filter((item) => item.id === sharedId);
+      return items.length === 2 ? items : undefined;
+    });
+    const byRight = await right.dm(peer.card.id, "first answer", { replyTo: sharedId });
+    const byLeft = await right.dm(left.ep.card.id, "second answer", { replyTo: sharedId });
+    suite.check("the same wire DM ID from two senders has independent inbox and reply keys", duplicateIds !== undefined &&
+      duplicateIds[0]?.recvKey !== duplicateIds[1]?.recvKey && byRight.msg.replyTo === sharedId && byLeft.msg.replyTo === sharedId);
     await left.stop();
     await channelPost("recent_durable", [left.ep.card.id]);
     await channelPost("historical_ids", [left.ep.card.id], 6 * 60_000);
@@ -170,6 +189,11 @@ async function checkAddresses(sender: CotalEndpoint, nc: NatsConnection, own: Co
   assert(ids.every((id) => roster.some((peer) => peer.card.id === id)), "both signed-in peers published presence");
   const ownMatch = await select(roster, "lister");
   suite.check("a bare name selects the sender's own live agent among two signed-in owners", ownMatch === own.card.id, ownMatch);
+  suite.check("a unique own launch name permits a case-insensitive match", await select(roster, "LISTER") === own.card.id);
+  const namesakes = ["Build", "build"].map((actor): core.Presence => ({ ...roster.find((p) => p.card.id === own.card.id)!, card: { id: `${own.principal.owner}.${actor}`, kind: "agent", name: "display" } }));
+  suite.check("exact actor spelling wins over a case-insensitive collision", await select(namesakes, "Build") === namesakes[0]!.card.id && await select(namesakes, "build") === namesakes[1]!.card.id);
+  const ambiguous = await select(namesakes, "BUILD");
+  suite.check("a mixed-case name listing two own actors is ambiguous", ambiguous.includes("ambiguous") && namesakes.every((p) => ambiguous.includes(p.card.id)), ambiguous);
   suite.check("one owner's visible roster accepts its bare own name", await select(roster.filter((p) => p.card.id !== foreign.card.id), "lister") === own.card.id);
   await own.stop();
   for (let attempt = 0; attempt < 30; attempt++) {
@@ -192,11 +216,11 @@ async function checkAddresses(sender: CotalEndpoint, nc: NatsConnection, own: Co
   suite.check("the other owner never receives the refused bare DM", !received.includes("bare-must-not-cross-owners"), received);
   suite.check("the other owner receives the explicitly qualified DM", delivered === foreign.card.id && received.includes("qualified-recipient"), { delivered, received });
   const missing = await select(roster, `${foreignName}/absent`);
-  suite.check("a known username with no such agent fails clearly", /has no agent.*absent/i.test(missing), missing);
+  suite.check("a known username resolves an unobserved actor without inferring existence", missing === `${foreign.principal.owner}.absent`, missing);
   const unknown = await select(roster, "unknown_address_user/lister");
   suite.check("an unknown username fails clearly", /unknown username.*unknown_address_user/i.test(unknown), unknown);
   const wrongCase = await select(roster, `${foreignName}/Lister`);
-  suite.check("the actor half is byte-exact", /has no agent.*Lister/.test(wrongCase), wrongCase);
+  suite.check("the actor half is byte-exact", wrongCase === `${foreign.principal.owner}.Lister`, wrongCase);
   const folded = await select(roster, `${foreignName.toUpperCase()}/lister`);
   suite.check("only the username half folds case", folded === foreign.card.id, folded);
   const noPresence = await select([], qualified);
@@ -221,10 +245,12 @@ async function checkChat(sender: CotalEndpoint, foreign: CotalEndpoint, foreignN
     const qualified = await session.dm(`${foreignName}/lister`, "chat-qualified");
     for (let i = 0; i < 30 && !received.includes("chat-qualified") && !received.includes("chat-bare-must-not-cross"); i++) await delay(100);
     suite.check("native chat stores the qualified target at the foreign principal", qualified.outcome === "stored" && qualified.recipient?.id === foreign.card.id && received.includes("chat-qualified"), { qualified, received });
+    const unknownActor = await session.dm(`${foreignName}/absent`, "storage without presence");
+    suite.check("native chat reports storage at an unobserved principal without asserting existence", unknownActor.outcome === "stored" && !!unknownActor.seq && unknownActor.recipient?.id === `${foreign.principal.owner}.absent` && unknownActor.recipientStatusAtSend === undefined, unknownActor);
     await foreign.stop();
     for (let i = 0; i < 30 && sender.getRoster().some((p) => p.card.id === foreign.card.id && p.status !== "offline"); i++) await delay(100);
     const offline = await session.dm(`${foreignName}/lister`, "chat-qualified-offline");
-    suite.check("native chat stores a qualified DM while the target is offline", offline.outcome === "stored" && offline.recipientStatusAtSend === "offline", offline);
+    suite.check("native chat stores a qualified DM without claiming the target exists", offline.outcome === "stored" && offline.seq !== undefined && offline.recipientStatusAtSend === undefined, offline);
     await reopen();
     for (let i = 0; i < 30 && !received.includes("chat-qualified-offline"); i++) await delay(100);
     suite.check("the same lifecycle gets both qualified DMs and no foreign bare DM", received.includes("chat-qualified") && received.includes("chat-qualified-offline") && !received.includes("chat-bare-must-not-cross"), received);
@@ -344,7 +370,7 @@ try {
   await checkReaders(service, names[0]!);
   const received: string[] = [];
   const { ep: foreign } = await connect(otherToken, otherRow, true, received);
-  const { ep: sender, nc: senderNc } = await connect(await bearer("lister-human", {}, undefined, "sender"), senderRow);
+  const { ep: sender, nc: senderNc } = await connect(await bearer("lister-human", {}, undefined, senderRow.actor), senderRow);
   await second.stop();
   await checkAddresses(sender, senderNc, first, foreign, names[1]!, received, ncOfSecond);
   await checkChat(sender, foreign, names[1]!, received, async () => (await connect(otherToken, otherRow, true, received)).ep);

@@ -117,12 +117,17 @@ const putPresence = async (s: { name: string; uid: string; principal: string }):
 const handleSrc = (s: { name: string; uid: string }, persona = "dev") =>
   `{ agent: "${s.name}#${s.uid}", persona: "${persona}" }`;
 
-const mk = (runId: string): MeshHandler => new MeshHandler(
+const mk = (runId: string, ...seats: ReturnType<typeof seat>[]): MeshHandler => {
+  const handler = new MeshHandler(
   nc, kv, js, jsm,
   { space: SPACE, endpoint: EP, runId, caller: CALLER, instanceId: "i".repeat(26), epoch: 1, holder: HOLDER, defaultCheckpointTimeout: "1h" },
   new EpfSettleWatcher(jsm, SPACE, 3_000),
   () => Date.now(),
-);
+  );
+  const entries = seats.map((s) => ({ kind: "spawn", state: "settled", status: "ok", result: { agent: s.handle, persona: "dev" }, external: { owner: "local", actor: s.actor } }));
+  (handler as unknown as { seedRunMemos(entries: unknown[]): void }).seedRunMemos(entries);
+  return handler;
+};
 /** A step context as the interpreter hands it over, with the suite's hand on the cancel signal. */
 const stepCtx = (requestId: string, resume?: Record<string, unknown>) => {
   const listeners: ((reason: string) => void)[] = [];
@@ -165,13 +170,13 @@ const derivedChannel = (requestId: string) => `conclave-${createHash("sha256").u
   console.log("• 1 — a driven conclave joins, runs, and releases");
   const a = seat("dev-1", "seat1", uid("b"));
   const b = seat("dev-2", "seat2", uid("c"));
-  await putPresence(a);
+  await putPresence({ ...a, name: "unrelated-display" });
   await putPresence(b);
   const out = await withDeadline(driven({
     space: SPACE, endpoint: EP, kv, runId: "cv-1", lease: lease(),
     source: `const a = ${handleSrc(a)};\nconst b = ${handleSrc(b)};\n`
       + `const r = await conclave([a, b], async (room) => { log("room", room.channel); return 42; }, { name: "huddle" });\nlog("value", r);`,
-    handler: mk("cv-1"),
+    handler: mk("cv-1", a, b),
   }), 30_000, "the conclave run");
   c("the run completes", out?.status === "completed", JSON.stringify(out));
 
@@ -213,7 +218,7 @@ const derivedChannel = (requestId: string) => `conclave-${createHash("sha256").u
   console.log("• 2 — between open and close the membership is live");
   const a = seat("dev-open", "seat3", uid("d"));
   await putPresence(a);
-  const handler = mk("cv-2");
+  const handler = mk("cv-2", a);
   const T = token("b");
   const s = stepCtx(T);
   const room = await withDeadline(
@@ -251,7 +256,7 @@ const derivedChannel = (requestId: string) => `conclave-${createHash("sha256").u
     space: SPACE, endpoint: EP, kv, runId: "cv-3", lease: lease(),
     source: `const a = ${handleSrc(a)};\nconst b = ${handleSrc(b)};\n`
       + `await conclave([a, b], async (room) => { log("room", room.channel); return null; }, { name: "sync", channel: "war-room" });`,
-    handler: mk("cv-3"),
+    handler: mk("cv-3", a, b),
   }), 30_000, "the pinned-channel run");
   c("the run completes on the pinned channel", out?.status === "completed", JSON.stringify(out));
   const bound = (await journalEntries("cv-3", "conclave")).filter((e) => e.state === "pending").at(-1);
@@ -306,7 +311,7 @@ const derivedChannel = (requestId: string) => `conclave-${createHash("sha256").u
       + `  fast: () => sleep("2s", { name: "quick" }),\n`
       + `  room: () => conclave([a], async (room) => { await sleep("30s", { name: "long-park" }); return 1; }, { name: "doomed" }),\n`
       + `}, { name: "decide" });\nlog("winner", r.index);`,
-    handler: mk("cv-5"),
+    handler: mk("cv-5", a),
   });
   await armPending(2);
   await armPending(1); // sweep a mint that landed after the first fetch window
@@ -358,7 +363,7 @@ const derivedChannel = (requestId: string) => `conclave-${createHash("sha256").u
   const req = { members: [{ agent: a.handle, persona: "dev" }] };
 
   // (a) first entry: plan bound, row committed.
-  const h1 = mk("cv-7");
+  const h1 = mk("cv-7", a);
   const s1 = stepCtx(T);
   const room = await withDeadline(h1.openConclave(req, s1.ctx).then((v) => v, (e: unknown) => { console.log("  ! open rejected:", (e as Error)?.message?.slice(0, 120)); return undefined; }), 20_000, "the first open");
   const ch = room?.channel ?? "";
@@ -405,7 +410,7 @@ const derivedChannel = (requestId: string) => `conclave-${createHash("sha256").u
   await putPresence(a);
   const T = token("d");
   const req = { members: [{ agent: a.handle, persona: "dev" }] };
-  const handler = mk("cv-8");
+  const handler = mk("cv-8", a);
   const s = stepCtx(T);
   const room = await withDeadline(handler.openConclave(req, s.ctx).then((v) => v, (e: unknown) => { console.log("  ! open rejected:", (e as Error)?.message?.slice(0, 120)); return undefined; }), 20_000, "the open");
   const ch = room?.channel ?? "";

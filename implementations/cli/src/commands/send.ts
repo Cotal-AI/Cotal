@@ -8,7 +8,7 @@ import {
   assertValidName,
   assertValidRole,
   isPublishPermissionDenied,
-  parsePrincipalKey,
+  parsePeerAddress,
   resolveAuthProvider,
   credsClaims,
   effectiveDeliveryClass,
@@ -27,6 +27,7 @@ import {
   type FlagValues,
   type PeerCandidate,
   type Presence,
+  type ResolvedPeerAddress,
   type CompletionResult,
   type ParsedArgs,
 } from "@cotal-ai/core";
@@ -114,7 +115,7 @@ export function sendArguments(args: ParsedArgs): SendInput {
     else if (/[\u0000-\u001f\u007f]/u.test(destination.target)) throw new Error("use an agent name, user/agent, or full instance id");
     // No participant can carry a name the endpoint refuses, so it is refused before the presence wait.
     // The lookup trims the name, and an instance id is not held to the name rule.
-    else if (!destination.target.includes("/") && !parsePrincipalKey(destination.target)) assertValidName(destination.target.trim());
+    else if (parsePeerAddress(destination.target).kind === "name") assertValidName(destination.target.trim());
   } catch (error) {
     throw new CommandFailure("refused", "USAGE_INVALID", (error as Error).message);
   }
@@ -277,7 +278,7 @@ function identityLabel(candidate: PeerCandidate, p: Presence | undefined): strin
   return `${candidate.id} (${name}, ${kind}${p.runtime ? `, started ${new Date(p.runtime.startedAt).toLocaleTimeString()}` : ""})`;
 }
 
-async function directPeer(ep: Awaited<ReturnType<typeof openTransient>>["ep"], space: string, name: string, use: "to" | "mention", values: ConnectFlags): Promise<Presence> {
+async function directPeer(ep: Awaited<ReturnType<typeof openTransient>>["ep"], space: string, name: string, use: "to" | "mention", values: ConnectFlags): Promise<ResolvedPeerAddress> {
   // Presence arrives asynchronously. Never turn a partial name into a fuzzy target.
   if (use === "to" && !name.includes("/")) {
     await ep.waitForPresenceSnapshot(ROSTER_MS);
@@ -530,7 +531,7 @@ export async function send(args: ParsedArgs): Promise<void> {
       throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "No storage acknowledgement was established. The message may have been stored; it was not retried.", { target, remedy: "Inspect the destination before sending again. The native publisher did not return a message identifier." });
     }
     if (peer) {
-      if (peer.status === "offline") warnings.push({ code: "RECIPIENT_OFFLINE", target, message: offlineRecipientNotice(peer.card.name) });
+      if (peer.status === "offline" && parsePeerAddress(input.target).kind !== "qualified") warnings.push({ code: "RECIPIENT_OFFLINE", target, message: offlineRecipientNotice(peer.card.name) });
     } else if (input.mode === "ask") {
       const unheld = await unheldRole(ep, input.target, target);
       if (unheld) warnings.push(unheld);

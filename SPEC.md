@@ -227,20 +227,19 @@ a bare-name match. If only another owner's agent matches, the refusal lists its 
 when the username registry supplies one. An exact instance ID can address a peer directly.
 
 In `user/agent`, `user` is a username from §6, with ASCII uppercase letters folded to lowercase.
-`agent` is the exact case-sensitive launch actor, 1 to 64 characters from `[A-Za-z0-9_]`, not a
-display name. A member reads the username binding, then checks the recorded principal, so an
-offline lifecycle can still receive a queued DM. An unknown username and a known user without the
-named agent are distinct refusals. A failed registry or principal read is unavailable, not absent.
+`agent` is the exact case-sensitive principal actor, not a display name. Launches enforce the
+launch-name grammar at admission. For bare names, an exact own actor wins over a case-insensitive
+launch-name match. A unique own launch-name match can resolve without exact case. Two such matches
+are ambiguous. Non-launch actors match only exact bytes.
 Open and no-login spaces resolve bare names as display names and do not accept `user/agent`.
 Reply shortcuts address the authenticated sender principal, not a remembered display name.
 
-The signed-in principal lookup uses `cotal.<space>.address.<caller-owner>.<caller-actor>` with the
-target principal as UTF-8 text. Only the caller may request on that subject. Only the auth service
-may reply, and only to `<request-subject>.reply.<nonce>` under the authenticated request subject.
-The service reads the exact lifecycle head from the records leader. It returns JSON with `id` and
-`lifecycleUid` (a UID for an active lifecycle, `null` for no active lifecycle), or `id` and
-`unavailable: true` when it cannot verify the result. The UID is for offline status and inbox
-inspection, not authorization. Members do not obtain raw lifecycle-record reads.
+The sender reads the username binding and builds `owner.actor` without testing recipient existence.
+An absent username is a refusal. A failed registry read is unavailable and nothing is published.
+A broker acknowledgement reports storage at a sequence. It says nothing about whether the actor
+exists or read the message. A publish timeout leaves the outcome unknown, and the sender does not
+retry automatically. Only upgraded senders interpret `user/agent`. The string never goes on the
+wire: both old and new delivery components receive the existing principal address.
 
 **Delivery guarantee: `live` and `durable` classes.** Channel delivery has two classes, fixed
 per channel and wire-observable (§7); the guarantee is defined here, its NATS realization is the

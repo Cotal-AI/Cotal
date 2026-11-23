@@ -6,7 +6,6 @@ export { dispatchManagerAuthorityRequest, handleManagerServiceAuthority, type Ma
 import { send, sendRequestError } from "./service-http.js";
 import { registryStores } from "./lifecycle-registry.js";
 import { makeToolResultConsentRecorder } from "./tool-result-consent.js";
-import { servePeerAddressLookup } from "./peer-address-lookup.js";
 /**
  * The AUTH SERVICE daemon — the one server-side process a user-auth space runs alongside its broker
  * (the delivery-daemon pattern: spawned detached by `cotal up`, pid-filed per space, torn down by
@@ -839,8 +838,6 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
         `the auth service for space "${space}" is momentarily unavailable (it detected a fault and is restarting); retry shortly`);
   };
   const issuerAuth = (): SpaceAuth => dataAccountAuth(space, dataAccount);
-  const stopPeerAddressLookup = await servePeerAddressLookup(writer.nc, space, refuseIfFenced);
-  unwind.push(async () => stopPeerAddressLookup());
   // The source check the issuing host resolves with: an actor-ledger row is attested here, from the
   // ledger this service owns; every other coordinate goes to core's check (SPEC 13.15).
   const composedSourceIsLive = (session: IssuerSession) => (source: IssuedSourceRef): Promise<boolean> =>
@@ -1131,7 +1128,6 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
       // act), then the barrier that wrote it. An unreachable release keeps the barrier alive
       // for a later close retry; successful scanner teardown is not run a second time.
       closing = true;
-      stopPeerAddressLookup();
       // Before the first await: no service host call enters once close has begun.
       serviceHost?.refuse();
       registryHost?.refuse();

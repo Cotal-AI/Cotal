@@ -41,7 +41,7 @@ import type { EpVerbTarget, EpAttributedReply } from "./endpoint-verbs.js";
 import { isJetStreamMissing } from "./jetstream-missing.js";
 import { assertValidKind } from "./agent-file.js";
 import { assertValidName } from "./resolve.js";
-import { PeerAddressError, resolvePeerAddress } from "./peer-address.js";
+import { PeerAddressError, resolvePeerAddress, type ResolvedPeerAddress } from "./peer-address.js";
 import { readUsername } from "./username-registry.js";
 import {
   JetStreamApiCodes,
@@ -1189,7 +1189,7 @@ export class CotalEndpoint extends EventEmitter {
   }
 
   /** Resolve a typed address with this endpoint's bound messaging authority. */
-  async resolvePeerAddress(target: string, { roster = this.getRoster(), selfId }: { roster?: readonly Presence[]; selfId?: string } = {}): Promise<Presence | undefined> {
+  async resolvePeerAddress(target: string, { roster = this.getRoster(), selfId }: { roster?: readonly Presence[]; selfId?: string } = {}): Promise<ResolvedPeerAddress | undefined> {
     if (!this.identity.userMode) return resolvePeerAddress(roster, target, { authority: { mode: this.authed ? "static" : "open" }, selfId });
     const nc = this.conn.nc;
     if (!nc || !this.conn.nativeBound) throw new PeerAddressError(target, "TARGET_UNAVAILABLE", this.notLiveMsg());

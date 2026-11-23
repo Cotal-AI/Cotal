@@ -642,6 +642,7 @@ export function cotalToolSpecs(
       async run(agent, _config, { to, text: msg, replyTo }: { to: string; text: string; replyTo?: string }) {
         try {
           const { recipient, ack, recipientStatusAtSend } = await agent.dm(to, msg, { replyTo });
+          if (to.includes("/")) return ok(`DM stored at sequence ${ack.seq} for ${recipient.id}. Storage does not confirm a recipient or delivery.`);
           const dup = ack.duplicate ? " duplicate publication." : "";
           const who = recipient.name.trim() ? recipient.name : shownParticipant(recipient.name, recipient.id);
           const unrostered = recipientStatusAtSend === "unrostered"

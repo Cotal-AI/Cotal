@@ -75,7 +75,7 @@ function log(msg: string): void {
 }
 
 /** The inbox item, flattened for the Python side (handle_message builds a MessageEvent from it). */
-function wireItem(agent: MeshAgent, i: InboxItem): Record<string, unknown> {
+async function wireItem(agent: MeshAgent, i: InboxItem): Promise<Record<string, unknown>> {
   return {
     id: i.id,
     // #624: the opaque per-delivery receive key. The sidecar echoes this back on `delivered`, so
@@ -103,7 +103,7 @@ function wireItem(agent: MeshAgent, i: InboxItem): Record<string, unknown> {
     notice: i.notice,
     // The DM answers a question this seat asked, from the peer it asked: only then may the adapter
     // route it by its contextId (see MeshAgent.answersQuestion).
-    answersQuestion: agent.answersQuestion(i),
+    answersQuestion: await agent.answersQuestion(i),
   };
 }
 
@@ -173,14 +173,15 @@ export function startBridgeServer(agent: MeshAgent, config: AgentConfig, socketP
     const to = adapter;
     const push = ++pushes;
     awaitingId = next.recvKey;
-    void agent.takeChosen("automatic", () => [next]).then(([shown]) => {
+    void agent.takeChosen("automatic", () => [next]).then(async ([shown]) => {
       if (push !== pushes || adapter !== to) return;
       if (!shown) {
         awaitingId = undefined;
         pump();
         return;
       }
-      sendFrame(to, { t: "incoming", msg: wireItem(agent, shown) });
+      const msg = await wireItem(agent, shown);
+      if (push === pushes && adapter === to) sendFrame(to, { t: "incoming", msg });
     });
   };
 

@@ -1,8 +1,6 @@
-import { randomUUID } from "node:crypto";
 import type { NatsConnection } from "@nats-io/transport-node";
 import { AmbiguousPeerError, resolvePeer } from "./resolve.js";
-import { DEV_OWNER, parsePrincipalKey, principalKey, spacePrefix } from "./subjects.js";
-import { LIFECYCLE_TOKEN } from "./subject-grammar.js";
+import { DEV_OWNER, parsePrincipalKey, principalKey } from "./subjects.js";
 import type { Presence } from "./types.js";
 import { assertValidUsername, readUsername, readUsernameOwner } from "./username-registry.js";
 
@@ -24,22 +22,6 @@ export class PeerAddressError extends Error {
   }
 }
 
-/** The caller-scoped request route for an exact principal's addressability. */
-export function peerAddressLookupSubject(space: string, caller: { owner: string; actor: string }): string {
-  return `${spacePrefix(space)}.address.${principalKey(caller.owner, caller.actor).key}`;
-}
-
-export function peerAddressLookupFilter(space: string): string {
-  return `${spacePrefix(space)}.address.*.*`;
-}
-
-export function withPeerAddressLookup(space: string, caller: { owner: string; actor: string }, permissions: Record<string, unknown>): Record<string, unknown> {
-  const subject = peerAddressLookupSubject(space, caller);
-  const pub = permissions.pub as { allow?: string[] } | undefined;
-  const sub = permissions.sub as { allow?: string[] } | undefined;
-  return { ...permissions, pub: { ...pub, allow: [...pub?.allow ?? [], subject] }, sub: { ...sub, allow: [...sub?.allow ?? [], `${subject}.reply.*`] } };
-}
-
 type UserAuthority = Extract<PeerAddressAuthority, { mode: "user" }>;
 
 async function readRegistry<T>(target: string, read: () => Promise<T>): Promise<T> {
@@ -47,63 +29,68 @@ async function readRegistry<T>(target: string, read: () => Promise<T>): Promise<
   catch (cause) { throw new PeerAddressError(target, "TARGET_UNAVAILABLE", `Cannot read the username registry for ${JSON.stringify(target)}.`, [], { cause }); }
 }
 
-const ACTOR = /^[A-Za-z0-9_]{1,64}$/;
+export type PeerAddress = { kind: "principal"; value: string } | { kind: "name"; value: string } | { kind: "qualified"; username: string; actor: string };
 
-async function qualifiedPeer(roster: readonly Presence[], target: string, authority: UserAuthority, selfId: string | undefined): Promise<Presence> {
-  const [user, actor, extra] = target.trim().split("/");
-  let username: string;
+/** Classify an entire target before performing any lookup. */
+export function parsePeerAddress(target: string): PeerAddress {
+  const value = target.trim();
+  if (parsePrincipalKey(value)) return { kind: "principal", value };
+  if (!value.includes("/")) return { kind: "name", value };
+  const [user, actor, extra] = value.split("/");
   try {
-    if (!user || !ACTOR.test(user) || !actor || !ACTOR.test(actor) || extra !== undefined) throw new Error();
-    username = assertValidUsername(user.toLowerCase());
+    if (!user || !/^[A-Za-z0-9_]+$/.test(user) || !actor || !parsePrincipalKey(`local.${actor}`) || extra !== undefined) throw new Error();
+    return { kind: "qualified", username: assertValidUsername(user.toLowerCase()), actor };
   } catch {
-    throw new PeerAddressError(target, "USAGE_INVALID", `Invalid peer address ${JSON.stringify(target)}. Use user/agent with a username and a launch name.`);
+    throw new PeerAddressError(target, "USAGE_INVALID", `Invalid peer address ${JSON.stringify(target)}. Use user/agent with a username and an actor token.`);
   }
+}
+
+/** A routing-only result carries an address but makes no presence observation. */
+export interface PrincipalAddress {
+  readonly card: { readonly id: string; readonly name: string; readonly kind: "endpoint" };
+  readonly routingOnly: true;
+  readonly status?: never;
+}
+
+export type ResolvedPeerAddress = Presence | PrincipalAddress;
+
+async function qualifiedPeer(target: string, address: Extract<PeerAddress, { kind: "qualified" }>, authority: UserAuthority, selfId: string | undefined): Promise<PrincipalAddress> {
+  const { username, actor } = address;
   const { nc, space } = authority;
   const owner = await readRegistry(target, () => readUsernameOwner(nc, space, username));
   if (owner === undefined) throw new PeerAddressError(target, "TARGET_NOT_FOUND", `Unknown username ${JSON.stringify(username)}.`);
   const id = principalKey(owner, actor).key;
   if (id === selfId) throw new PeerAddressError(target, "USAGE_INVALID", `${JSON.stringify(target)} is this session. Choose another peer.`);
-  const subject = peerAddressLookupSubject(space, authority);
-  let lifecycleUid: string | null;
-  try {
-    const reply = await nc.request(subject, id, { timeout: 2_000, noMux: true, reply: `${subject}.reply.${randomUUID()}` });
-    const result = reply.json<{ id?: unknown; lifecycleUid?: unknown }>();
-    if (result.id !== id || (result.lifecycleUid !== null && (typeof result.lifecycleUid !== "string" || !LIFECYCLE_TOKEN.test(result.lifecycleUid))))
-      throw new Error("invalid principal lookup reply");
-    lifecycleUid = result.lifecycleUid;
-  } catch (cause) {
-    throw new PeerAddressError(target, "TARGET_UNAVAILABLE", `Cannot verify the registered agent for ${JSON.stringify(target)}.`, [], { cause });
-  }
-  if (!lifecycleUid) throw new PeerAddressError(target, "TARGET_NOT_FOUND", `Username ${JSON.stringify(username)} has no agent ${JSON.stringify(actor)}.`);
-  const observed = roster.find((p) => p.card.id === id && p.lifecycleUid === lifecycleUid);
-  return observed ?? { card: { id, name: actor, kind: "agent", owner, actor }, lifecycleUid, status: "offline", ts: 0 };
+  return { card: { id, name: actor, kind: "endpoint" }, routingOnly: true };
 }
 
 /** Resolve a typed target without crossing owner namespaces on a bare name. Exact roster IDs win. */
-export async function resolvePeerAddress(roster: readonly Presence[], target: string, options: PeerAddressOptions): Promise<Presence | undefined> {
+export async function resolvePeerAddress(roster: readonly Presence[], target: string, options: PeerAddressOptions): Promise<ResolvedPeerAddress | undefined> {
   const { authority, selfId } = options;
+  const address = parsePeerAddress(target);
   const peers = roster.filter((p) => p.card.id !== selfId);
+  if (address.kind === "principal") return peers.find((p) => p.card.id === address.value);
+  if (authority.mode !== "user") {
+    if (address.kind === "qualified")
+      throw new PeerAddressError(target, "USAGE_INVALID", "A user/agent address requires a signed-in space. Use a bare name or an instance ID here.");
+    return resolvePeer(peers, target);
+  }
+  if (address.kind === "qualified") return qualifiedPeer(target, address, authority, selfId);
   const exact = peers.find((p) => p.card.id === target);
   if (exact) return exact;
-  if (authority.mode !== "user") {
-    const legacy = resolvePeer(peers, target);
-    if (!legacy && target.includes("/"))
-      throw new PeerAddressError(target, "USAGE_INVALID", "A user/agent address requires a signed-in space. Use a bare name or an instance ID here.");
-    return legacy;
-  }
-  if (target.includes("/")) return qualifiedPeer(peers, target, authority, selfId);
-  const want = target.trim();
+  const want = address.value;
   const own: Presence[] = [];
   const foreign: { peer: Presence; owner: string; actor: string }[] = [];
   for (const peer of peers) {
     const principal = parsePrincipalKey(peer.card.id);
-    if (principal?.actor !== want) continue;
+    if (!principal || (principal.actor !== want && !(peer.card.kind === "agent" && principal.actor.toLowerCase() === want.toLowerCase()))) continue;
     if (principal.owner === authority.owner) own.push(peer);
     else foreign.push({ peer, ...principal });
   }
-  const live = own.filter((p) => p.status !== "offline");
-  if (live.length || (own.length && !foreign.some(({ peer }) => peer.status !== "offline"))) {
-    const pool = live.length ? live : own;
+  const eligible = own.filter((peer) => peer.status !== "offline" || !foreign.some(({ peer: other }) => other.status !== "offline"));
+  const explicit = eligible.find((p) => parsePrincipalKey(p.card.id)?.actor === want);
+  const pool = explicit ? [explicit] : eligible;
+  if (pool.length) {
     if (pool.length === 1) return pool[0];
     throw new AmbiguousPeerError(target, pool.map(({ card: { id, name, role }, status, ts }) => ({ id, name, role, status, ts })));
   }

@@ -234,7 +234,7 @@ export class AgentInbox {
     // empty-id messages arrived and only the first ever buffered. Treating an empty id as NO id
     // costs the coalescing for those messages only (a redelivered copy can surface twice), which is
     // the wire contract's at-least-once stance; collapsing distinct messages is not a stance at all.
-    const key = ingestDedupKey(m.id);
+    const key = this.receiveKey(m, meta?.kind);
     // Already SURFACED and drained? This is a post-handle cross-path duplicate (the transition window's
     // second copy, arriving after the first was handled). Don't surface it again; if it's the durable
     // copy, ack it so JetStream stops redelivering — safe because the logical message was already
@@ -256,7 +256,7 @@ export class AgentInbox {
     // dropped as-is. A durable duplicate also re-announces the still-pending item through the
     // ordinary `incoming` policy path. That turns JetStream redelivery into a timer-free retry for
     // a wake the host dropped, without bypassing quiet/attention or adapter in-flight guards.
-    const existing = key === undefined ? undefined : this.inbox.find((p) => p.item.id === key) ?? this.gated.find((p) => p.item.id === key);
+    const existing = key === undefined ? undefined : this.inbox.find((p) => p.item.recvKey === key) ?? this.gated.find((p) => p.item.recvKey === key);
     if (existing) {
       if (delivery.durable) {
         existing.ack = delivery.ack;
@@ -612,6 +612,11 @@ export class AgentInbox {
     return read.then((username) => username ? `${username}/${sender.actor}` : id);
   }
 
+  private receiveKey(m: CotalMessage, kind?: InboxItem["kind"]): string | undefined {
+    const id = ingestDedupKey(m.id);
+    return id !== undefined && this.config.userAuth && (kind === "dm" || kind === "anycast") ? JSON.stringify([m.from.id, id]) : id;
+  }
+
   private toInboxItem(m: CotalMessage, kind: InboxItem["kind"], historical: boolean): InboxItem {
     const text = partsToText(m.parts);
     const label = this.foreignSenderLabel(m.from.id);
@@ -620,7 +625,7 @@ export class AgentInbox {
       // The wire id when there is one; a minted opaque key when the id is the empty string (#624:
       // an empty id is never a dedup key, so it is never an address either; but the delivery still
       // needs to be individually drainable/ackable, or it can never clear and never commit).
-      recvKey: m.id !== "" ? m.id : `${this.recvKeySecret}.${++this.recvKeySeq}`,
+      recvKey: this.receiveKey(m, kind) ?? `${this.recvKeySecret}.${++this.recvKeySeq}`,
       ts: m.ts,
       fromId: m.from.id,
       fromName: m.from.name,
@@ -979,7 +984,7 @@ export class AgentInbox {
   private commitPending(taken: Pending[]): InboxItem[] {
     for (const p of taken) {
       p.ack();
-      this.markHandled(p.item.id, p.pullOnly);
+      if (p.item.id !== "") this.markHandled(p.item.recvKey, p.pullOnly);
       this.evictedClassifications.delete(p.item.id);
     }
     return taken.map((p) => p.item);

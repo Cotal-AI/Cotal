@@ -52,7 +52,7 @@ selects an agent for you.
 
 In a signed-in space, `--to reviewer` names your own agent. Use `--to user/reviewer` to name
 another owner's agent. The username is case-insensitive and the launch name is case-sensitive.
-An exact instance ID still works. A qualified address can reach an offline registered agent.
+An exact instance ID still works. A qualified send reports storage, not whether the recipient exists or read it.
 Open and no-login spaces accept bare display names and exact IDs, but not `user/agent`.
 
 For a channel post, repeat `--mention <agent>` to add explicit wake hints without changing the
@@ -297,7 +297,7 @@ A display name that is only whitespace is shown as the principal.
 `--plain` cannot relabel a line it already printed, so it prints one line naming those principals
 when a name becomes shared. In a signed-in space, `@<name>` resolves only an agent you own by exact
 launch name. Use `@user/agent` for another owner's agent. The username is case-insensitive and the
-launch name is case-sensitive. A qualified address can reach a registered agent that is offline.
+actor in a qualified address is case-sensitive. A qualified send reports storage, not delivery or existence.
 Open and no-login spaces use bare display names and refuse `user/agent`. A remembered sender's
 display name is not an address. A target that parses as `<owner>.<actor>` goes to that
 principal whether or not it is present or was heard from, and is never matched against display

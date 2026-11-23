@@ -191,7 +191,7 @@ The connection's nkey authenticates its transport connection and is separate fro
 A `role` selects anycast work for a service. In a signed-in space, a bare launch name can reach
 only an agent you own. Use `user/agent` for another owner's agent, or give its exact instance ID.
 The username is case-insensitive. The launch name is case-sensitive and is not the display name.
-A qualified address can reach a registered agent that is offline. If a bare name matches only
+A qualified address maps to a principal without presence. Storage does not confirm a recipient exists or read the message. If a bare name matches only
 other owners' agents, Cotal refuses and lists their qualified addresses when available.
 Open and no-login spaces accept bare display names and exact IDs, but not `user/agent`.
 
