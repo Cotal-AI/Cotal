@@ -735,7 +735,17 @@ for (const [args, usage, foreign] of [
   for (const path of [["endpoint", "watch"], ["endpoint", "session"], ["endpoint", "work"], ["endpoint", "work", "lease"], ["endpoint", "work", "commit"]]) {
     const help = run([...path, "--help"]);
     check(`cotal ${path.join(" ")} help states the limit without offering working examples`,
-      help.status === 0 && /unavailable in this CLI/.test(help.stdout) && /^Usage$/m.test(help.stdout) && !/^Examples$/m.test(help.stdout), shown(help));
+      help.status === 0 && /unavailable in this CLI/.test(help.stdout) && /^Usage$/m.test(help.stdout) && !/^Examples$/m.test(help.stdout) &&
+      help.stdout.trimEnd().endsWith("Structured output: json, plain"), shown(help));
+  }
+
+  for (const operation of ["lease", "commit"]) {
+    const extra = operation === "commit" ? ["--lease", "missing.creds", "--result", "{}"] : [];
+    const refused = run(["endpoint", "work", operation, "ep:example", "review", ...extra, "--json"]);
+    const receipt = JSON.parse(refused.stdout);
+    check(`endpoint work ${operation} still returns the finite unsupported refusal`,
+      refused.status === 2 && receipt.schemaVersion === 1 && receipt.command === "endpoint" && receipt.outcome === "refused" &&
+      receipt.target?.capability === "work" && receipt.target.operation === operation && receipt.error?.code === "UNSUPPORTED", shown(refused));
   }
 
   // The persona create example, its placeholders filled in, run as written against a fresh Cotal home
@@ -769,6 +779,11 @@ for (const [args, usage, foreign] of [
 // No mark at all: the report names the outcome in words, and `!` stays the warning mark.
 const reportShape = (r: ReturnType<typeof run>, message: RegExp) =>
   r.status === 1 && r.stdout === "" && /^Request refused$/m.test(r.stderr) && /Code: +USAGE_INVALID/.test(r.stderr) && message.test(r.stderr) && /Usage/.test(r.stderr) && !/[✗↳]|^! /m.test(r.stderr);
+const describeLive = run(["endpoint", "describe", "manager", "--live", "--plain"]);
+check("endpoint describe explains the --live refusal and both available reads",
+  reportShape(describeLive, /endpoint describe already reads the contract live and does not take --live/) &&
+  describeLive.stderr.includes("remove --live") && describeLive.stderr.includes("cotal endpoint list --live") &&
+  !describeLive.stderr.includes("--file and --yes"), shown(describeLive));
 const ascii = { LANG: "C" };
 const plainOwn = run(["config", "get", "bogus", "--plain"]);
 check("under --plain a command's own usage refusal is the plain report with its Next, then the help", reportShape(plainOwn, /unknown preference "bogus"/) && /^Next$/m.test(plainOwn.stderr), shown(plainOwn));

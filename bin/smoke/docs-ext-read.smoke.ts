@@ -83,6 +83,10 @@ let specBody = "";
   check("the CLI hub read to a pipe keeps its Markdown heading and links", piped.status === 0 && piped.stdout.includes("\n# CLI reference\n") && piped.stdout.includes("[CLI usage](cli-usage.mdx#structured-output)"), shown(piped));
   const usage = run(["docs", "cli-usage"]);
   check("a reference page read to a pipe keeps its Markdown table", usage.status === 0 && usage.stdout.includes("\n# CLI usage\n") && /^\|---\|---\|$/m.test(usage.stdout) && /^\| `schemaVersion` \| `1` \|$/m.test(usage.stdout), shown(usage));
+  const observation = run(["docs", "cli-observation"]);
+  const watch = observation.stdout.split("\n## watch\n")[1]?.split("\n## ")[0] ?? "";
+  check("the bundled watch reference lists its target selectors and links to observer credential restrictions",
+    observation.status === 0 && /\| `--space <s>`[^\n]+\n\| `--server <url>`[^\n]+\n\| `--creds <path>`[^\n]+off-registry broker[^\n]+\(watch-a-mesh\.mdx#what-each-surface-can-see\)/.test(watch), watch.slice(0, 950));
   const help = run(["help"]);
   const mcpHelp = run(["mcp", "--help"]);
   check("the CLI command table links the MCP entry that help lists",

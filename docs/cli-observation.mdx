@@ -125,6 +125,12 @@ It uses the existing observer view authority; a user-auth space requires the cor
 admin view grant. It does not register a participant, bind an inbox or expose local process
 controls. Leaving with `q`, Esc or Ctrl-C stops only this observer.
 
+| Flag | What it selects |
+|---|---|
+| `--space <s>` | The target space. Defaults to the resolved mesh. |
+| `--server <url>` | The broker URL. Overrides the address in the space registry. |
+| `--creds <path>` | The observer credential file for an off-registry broker. See the [observer credential restrictions](watch-a-mesh.mdx#what-each-surface-can-see). |
+
 Use `--view events` or `--view messages` to select a feed, or press `f` to change it in the
 terminal. Arrow keys scroll; `g` returns to the latest observations. The feed retains at most
 300 entries. A reported turn ending is not task completion. An interrupted feed keeps its
