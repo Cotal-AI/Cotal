@@ -52,6 +52,8 @@ export const hermesConnector: Connector = {
   supportsLaunchValidation: true,
   // The AG-UI event plane, published from the plugin's turn journal (plugin/cotal/journal.py).
   eventChannel,
+  // The journal records the reasoning text a provider returns; a launch asks for it on the plane.
+  supportsReasoningEvents: true,
   buildLaunch(opts: LaunchOpts): LaunchSpec {
     if (opts.continueSession) throw new Error("the Hermes connector does not support exact-session continuation");
     // Hermes is Unix-only: its sidecar bridge + hook relay use AF_UNIX `.sock` paths and a Python
@@ -136,7 +138,7 @@ export const hermesConnector: Connector = {
       // The exit watcher owns the socket directory and the single carrier even on a forced stop.
       const control = controlEndpoint(opts.space, opts.name, artifacts);
       env.COTAL_CONTROL_SOCKET = control.path;
-      Object.assign(env, materialEnv({ creds: opts.creds, servers: opts.servers, control, eventsRequired: opts.eventsRequired, eventPayloads: opts.eventPayloads, userAuth: opts.userAuth }, artifacts));
+      Object.assign(env, materialEnv({ creds: opts.creds, servers: opts.servers, control, eventsRequired: opts.eventsRequired, eventPayloads: opts.eventPayloads, reasoningEvents: opts.reasoningEvents, userAuth: opts.userAuth }, artifacts));
       const seat = hermesSeatHome(opts.space, opts.name);
       if (!adoptHome && !opts.resume && !existsSync(join(seat.home, HERMES_FORK_RECORD))) {
         const root = mkdtempSync(join(tmpdir(), "cotal-hermes-"));

@@ -188,6 +188,7 @@ See the [presence mapping](hermes-connector-reference.mdx#presence-mapping) for 
 
 Each seat publishes its turns as AG-UI events on its event channel, so an [ACP client](acp-clients.mdx) or a dashboard can show them.
 The events carry runs, the model's text, and tool calls with their status.
+The model's reasoning is added only for a launch with `reasoningEvents`, which an [ACP client](acp-clients.mdx) thread sets.
 Tool arguments and results ride the payload rail.
 Add `--no-events`, or `events: false` in a manifest or workflow, to launch without it.
 See [Event plane](hermes-connector-reference.mdx#event-plane) for how turns become runs.
