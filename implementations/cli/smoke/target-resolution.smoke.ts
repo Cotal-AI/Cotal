@@ -151,6 +151,29 @@ const QUESTION = "Which one?";
           retry.status === 0 && retry.stdout?.startsWith(`Mesh: ${space}\n`) && retry.stdout.includes("Saved endpoint references") && getCurrent() === undefined, shown(retry));
       }
     }
+    // The same shared folder hides a saved reference's space the same way: `show` refuses with
+    // both names and the exact retry for each, preserving the reference name and output format.
+    writeFileSync(join(home, "beta-ref.json"), JSON.stringify({ schemaVersion: 1, space: "beta", endpoint: "example.beta" }));
+    writeFileSync(join(home, "gamma-ref.json"), JSON.stringify({ schemaVersion: 1, space: "gamma", endpoint: "example.gamma" }));
+    for (const space of ["beta", "gamma"]) {
+      const added = run(["endpoint", "add", "probe", "--space", space, "--file", join(home, `${space}-ref.json`), "--plain"], root);
+      check(`saving probe in ${space} succeeds`, added.status === 0, shown(added));
+    }
+    for (const flags of [["--plain"], ["--json"]]) {
+      const show = run(["endpoint", "show", "probe", ...flags], root);
+      const error = envelope(show)?.error;
+      const remedy: unknown = error?.remedy;
+      const guidance = typeof remedy === "string" ? remedy : show.stderr.split("\nNext\n")[1] ?? "";
+      const retries = Array.from(guidance.matchAll(/`([^`]+)`/g), (match) => match[1]!);
+      check("ambiguous endpoint show names its spaces and preserves the reference name and output format",
+        show.status === 2 && /TARGET_AMBIGUOUS/.test(error?.code ?? show.stderr) && /registered spaces: beta, gamma/.test(error?.message ?? show.stderr) &&
+          retries.length === 2 && ["beta", "gamma"].every((space, i) => retries[i]?.endsWith(` endpoint show probe ${flags.join(" ")} --space ${space}`)), shown(show));
+      if (flags[0] === "--plain" && process.platform !== "win32") for (const [i, space] of ["beta", "gamma"].entries()) {
+        const retry = spawnSync("sh", ["-c", retries[i] ?? ""], { cwd: root, env, encoding: "utf8", timeout: 120_000 });
+        check(`the printed show retry reads the saved reference for ${space} without selecting it`,
+          retry.status === 0 && retry.stdout?.startsWith(`Mesh: ${space}\n`) && retry.stdout.includes("Saved endpoint reference") && retry.stdout.includes(`example.${space}`) && getCurrent() === undefined, shown(retry));
+      }
+    }
     for (const space of ["beta", "gamma"]) {
       const picked = run(["who", "--plain", "--space", space], root);
       check(`the exact roster read for ${space} succeeds without choosing a default`, picked.status === 0 && picked.stdout.startsWith(`Mesh: ${space}\n`) && getCurrent() === undefined, shown(picked));
