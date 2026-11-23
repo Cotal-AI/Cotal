@@ -238,9 +238,12 @@ try {
         const loop = join(root, ".cotal", "agents", "loop.md");
         const binary = fileURLToPath(new URL("../../../bin/dist/cotal.js", import.meta.url));
         symlinkSync("loop.md", loop);
+        const loopEnv: NodeJS.ProcessEnv = { ...process.env, NO_COLOR: "1" };
+        for (const key of Object.keys(loopEnv)) if (key.startsWith("COTAL_")) delete loopEnv[key];
+        Object.assign(loopEnv, { COTAL_HOME: home, COTAL_NO_PROMPT: "1", COTAL_SKIP_CONNECTOR_SEED: "1" });
         for (const source of [["--", "loop"], ["--file", loop]]) {
           const refused = spawnSync(process.execPath, [binary, "spawn", "--foreground", "--server", server, "--space", "fgevents", ...source], {
-            cwd: caller, env: { ...process.env, COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" }, encoding: "utf8", timeout: 30_000,
+            cwd: caller, env: loopEnv, encoding: "utf8", timeout: 30_000,
           });
           check(`foreground spawn ${source[0]} names the looping persona and how to fix it`,
             refused.status === 1 && refused.stderr.includes(`the persona path contains a symbolic-link loop: ${loop}`) &&
