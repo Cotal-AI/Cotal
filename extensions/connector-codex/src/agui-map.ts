@@ -31,7 +31,10 @@ import {
   reasoningMessageStart,
   reasoningMessageContent,
   reasoningMessageEnd,
+  StreamedParts,
   type AguiEvent,
+  type Merged,
+  type StreamSeed,
 } from "@cotal-ai/connector-core";
 import type { PresenceCondition, PresenceConditionCode } from "@cotal-ai/core";
 
@@ -43,8 +46,12 @@ export interface CodexRecord {
   payload?: unknown;
 }
 
+type Mapped = { runId: string; events: AguiEvent[] } | null;
+
 export interface CodexMapper {
-  map: (record: CodexRecord) => { runId: string; events: AguiEvent[] } | null;
+  map: (record: CodexRecord) => Mapped;
+  /** {@link map} over the rollout read with the thread's delta journal. */
+  mapMerged: (record: Merged<CodexRecord>) => Mapped;
   /** Drop a run the record stream never closed, when a turn terminal says it ended. Keyed on the
    *  id so a newer run opened in between is left alone. */
   forgetOpenRun: (runId: string) => void;
@@ -183,6 +190,41 @@ function resultEvents(toolCallId: string, payload: Record<string, unknown>, isEr
   ];
 }
 
+/** The delta journal's key for the agent message Codex streams as item `itemId`. The item id is the
+ *  saved message's `id`, which a message mapped whole publishes under, so the key adds a prefix. */
+export function codexStreamKey(itemId: string): string {
+  return `stream:${itemId}`;
+}
+
+/** A saved assistant message. One that streamed sends the rest of its text and its END under the
+ *  stream key. Any other is published whole, after the END of a stream whose text it does not
+ *  continue. */
+function assistantText(streams: StreamedParts, messageId: string, text: string, ts: number): AguiEvent[] {
+  const closed = streams.saved(codexStreamKey(messageId), text, ts);
+  if (!closed.mapAsNew) return closed.events;
+  return [
+    ...closed.events,
+    textMessageStart({ messageId, timestamp: ts, role: "assistant" }),
+    textMessageContent({ messageId, delta: text, timestamp: ts }),
+    textMessageEnd({ messageId, timestamp: ts }),
+  ];
+}
+
+/**
+ * A delta journal line. Read inside a run, it streams its parts and ends the ones it names. Read
+ * with no run open, it publishes nothing, and its keys are closed, so a later line cannot open a
+ * message partway through its text.
+ */
+function lineEvents(streams: StreamedParts, runId: string | null, line: Extract<Merged<CodexRecord>, { deltas: unknown }>): Mapped {
+  const keys = [...line.deltas.map((d) => d.key), ...(line.ends ?? [])];
+  if (runId === null) {
+    streams.end(keys, line.timestamp);
+    return null;
+  }
+  const events = [...line.deltas.flatMap((d) => streams.delta(d, line.timestamp)), ...streams.end(line.ends ?? [], line.timestamp)];
+  return events.length > 0 ? { runId, events } : null;
+}
+
 /**
  * @param threadId The native thread id, which is `session_meta.payload.id` and the rollout
  *  filename key. Passed in rather than read from the file: the caller resolved the path FROM this
@@ -193,9 +235,11 @@ function resultEvents(toolCallId: string, payload: Record<string, unknown>, isEr
  *  source cursor is ordered, so the next native task terminal closes this run before another task
  *  can start. Without this handoff, the terminal is dropped and the next RUN_STARTED collides with
  *  the WAL bracket that correctly survived the outage.
+ * @param seed The stream state {@link streamSeed} rebuilt for a restarted emitter.
  */
-export function createCodexMapper(opts: { threadId: string; mintRunId: () => string; resumeRunId?: string }): CodexMapper {
+export function createCodexMapper(opts: { threadId: string; mintRunId: () => string; resumeRunId?: string; seed?: StreamSeed }): CodexMapper {
   const { threadId, mintRunId, resumeRunId } = opts;
+  const streams = new StreamedParts(opts.seed);
   let open: string | null = resumeRunId ?? null;
   /** The turn this run was opened for, so an abort or a completion for a DIFFERENT turn cannot
    *  close it. Codex retries a failed turn with a fresh turn id, and each retry is its own run. */
@@ -203,7 +247,7 @@ export function createCodexMapper(opts: { threadId: string; mintRunId: () => str
   let last = 0;
   const failedCalls = createFailedCalls();
 
-  const map = (record: CodexRecord): { runId: string; events: AguiEvent[] } | null => {
+  const map = (record: CodexRecord): Mapped => {
     // A LINE THAT IS NOT AN OBJECT IS A DROP, NOT A THROW, and the difference is the whole plane.
     // `JsonlFileSource` hands over `JSON.parse(line)` unchecked, so a line reading `null` arrives
     // here as `null` and every field read below would throw. A throw from a mapper does not lose
@@ -256,9 +300,9 @@ export function createCodexMapper(opts: { threadId: string; mintRunId: () => str
       if (failed) {
         const message = asString(errRecord?.message) ?? errText ?? "codex turn failed";
         const code = asString(errRecord?.codex_error_info);
-        return { runId, events: [runError({ message, timestamp: ts, ...(code ? { code } : {}) })] };
+        return { runId, events: [...streams.endAll(ts), runError({ message, timestamp: ts, ...(code ? { code } : {}) })] };
       }
-      return { runId, events: [runFinished({ threadId, runId, timestamp: ts, outcome: { type: "success" } })] };
+      return { runId, events: [...streams.endAll(ts), runFinished({ threadId, runId, timestamp: ts, outcome: { type: "success" } })] };
     }
 
     if (envelope === "event_msg" && inner === "turn_aborted") {
@@ -275,7 +319,7 @@ export function createCodexMapper(opts: { threadId: string; mintRunId: () => str
       const reason = asString(payload.reason) ?? "aborted";
       return {
         runId,
-        events: [runFinished({ threadId, runId, timestamp: ts, outcome: { type: "interrupt", interrupts: [{ id, reason }] } })],
+        events: [...streams.endAll(ts), runFinished({ threadId, runId, timestamp: ts, outcome: { type: "interrupt", interrupts: [{ id, reason }] } })],
       };
     }
 
@@ -297,15 +341,7 @@ export function createCodexMapper(opts: { threadId: string; mintRunId: () => str
       if (role !== "assistant") return null;
       const text = contentText(payload);
       if (text.length === 0) return null;
-      const messageId = asString(payload.id) ?? `msg:${runId}:${ts}`;
-      return {
-        runId,
-        events: [
-          textMessageStart({ messageId, timestamp: ts, role: "assistant" }),
-          textMessageContent({ messageId, delta: text, timestamp: ts }),
-          textMessageEnd({ messageId, timestamp: ts }),
-        ],
-      };
+      return { runId, events: assistantText(streams, asString(payload.id) ?? `msg:${runId}:${ts}`, text, ts) };
     }
 
     // The `event_msg` mirror of the same assistant turn. Dropped, or every reply publishes twice.
@@ -374,6 +410,7 @@ export function createCodexMapper(opts: { threadId: string; mintRunId: () => str
 
   return {
     map,
+    mapMerged: (record) => ("deltas" in record ? lineEvents(streams, open, record) : map(record.harness)),
     forgetOpenRun: (runId: string): void => {
       if (open === runId) {
         open = null;

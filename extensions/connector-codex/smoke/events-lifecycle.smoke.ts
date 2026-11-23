@@ -31,7 +31,9 @@
  *   1. first bind: an armed seat publishes its thread's activity, and the frames carry the run.
  *   2. restart: the app-server dies, the host brings up a NEW thread, and the plane KEEPS
  *      PUBLISHING, with every run the dead thread opened closed before the swap.
- *   3. shutdown: a mid-turn exit closes the run the record stream never got to close.
+ *   1b. streaming: a reply's text is on the wire before Codex saves it, and it is the saved text.
+ *   3. shutdown: a mid-turn exit closes the run the record stream never got to close, ending the
+ *      reply it was streaming first.
  *   4. late file: a seat whose rollout did not exist when the launch looked still binds later, and
  *      publishes what it had already written.
  *   5. restart INTO a late file: the successor thread's rollout misses the bind budget while a
@@ -91,6 +93,8 @@ interface AguiFramePart {
   events: { type: string; [k: string]: unknown }[];
 }
 const frames: AguiFramePart[] = [];
+/** When each frame in `frames` arrived, by index. */
+const frameAt: number[] = [];
 const evTypes = (): string[] => frames.flatMap((f) => f.events.map((e) => e.type));
 /** Runs whose RUN_STARTED was seen but whose terminal was not. The plane's whole promise. */
 function openRunsIn(list: AguiFramePart[]): string[] {
@@ -200,7 +204,11 @@ operator.on("presence", (e: { type: string; presence: { card: { id: string; name
   if (e.type !== "offline") online.add(e.presence.card.name);
 });
 operator.on("message", (msg: { parts: unknown[] }) => {
-  for (const part of msg.parts) if (isAguiFramePart(part)) frames.push(part as AguiFramePart);
+  for (const part of msg.parts)
+    if (isAguiFramePart(part)) {
+      frames.push(part as AguiFramePart);
+      frameAt.push(Date.now());
+    }
 });
 
 let hostA: ReturnType<typeof spawn> | undefined;
@@ -327,6 +335,28 @@ let storeRemoveError: unknown;
  *  rather than every seat that ever existed. */
 const stoppedOnPurpose = new Set<number>();
 
+/** The fake's own journal of a seat, one entry per line. */
+const fakeLog = (path: string): { ev: string; turnId?: string; at?: number }[] =>
+  existsSync(path) ? readFileSync(path, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)) : [];
+
+/** The streamed message in `list`: its key, its text on the wire, how often it started and ended, and
+ *  when its first content arrived. `from` is the index of `list[0]` in `frames`. */
+function streamedMessage(list: AguiFramePart[], from: number) {
+  const evs = list.flatMap((f, i) => f.events.map((e) => ({ e, at: frameAt[from + i]! })));
+  const key = evs.find(({ e }) => e.type === "TEXT_MESSAGE_START" && String(e.messageId).startsWith("stream:"))?.e.messageId as string | undefined;
+  const of = (type: string) => evs.filter(({ e }) => e.type === type && e.messageId === key);
+  const contents = of("TEXT_MESSAGE_CONTENT");
+  return {
+    key,
+    text: contents.map(({ e }) => String(e.delta)).join(""),
+    contents: contents.length,
+    firstContentAt: contents[0]?.at,
+    starts: of("TEXT_MESSAGE_START").length,
+    ends: of("TEXT_MESSAGE_END").length,
+    types: evs.map(({ e }) => (e.messageId === key ? `${e.type}*` : e.type)),
+  };
+}
+
 /** DM a peer by its ROSTER id (principal dot-form), names are not unicast recipients. */
 async function dm(peer: string, text: string): Promise<void> {
   const id = operator.getRoster().find((p) => p.card.name === peer)?.card.id;
@@ -371,12 +401,15 @@ try {
       "and the run it published opened and closed",
       "and the assistant's text reached the wire",
       "every frame so far carries ONE thread",
+      "a streamed reply reaches the wire before Codex saves it",
+      "and the wire carries the saved text once, as one message",
       "the restarted app-server really is a NEW thread",
       "the plane KEEPS PUBLISHING after the restart",
       "and no run the dead thread opened was left open",
       "the emitter never refused a second adopt",
       "a mid-turn exit CLOSES the run it left open",
       "and there was a run to close, so the cell is not vacuous",
+      "and the reply it was streaming ended before the run closed",
     ])
   ) {
     // Phases 2 and 3 both publish through the SAME first binding this cell just judged: a seat that
@@ -387,6 +420,19 @@ try {
     check("and the assistant's text reached the wire", evTypes().includes("TEXT_MESSAGE_CONTENT"), evTypes());
     const threadA = threadsSeen()[0];
     check("every frame so far carries ONE thread", threadsSeen().length === 1, threadsSeen());
+
+  // ---- (1b) a streamed reply -------------------------------------------------------------------
+  // The fake streams the reply in four deltas, 400 ms apart, and only then saves the message. The
+  // seat journals the deltas, so the reply is on the wire before the record that carries it exists.
+  const streamFrom = frames.length;
+  await dm(A, "STREAM a reply");
+  const streamDone = await settle("A:the streamed run finished", () => frames.slice(streamFrom).some((f) => f.events.some((e) => e.type === "RUN_FINISHED")));
+  const sm = streamedMessage(frames.slice(streamFrom), streamFrom);
+  const n = sm.key?.match(/^stream:msg_(\d+)$/)?.[1];
+  const savedAt = fakeLog(join(dir, "a.log.jsonl")).find((r) => r.ev === "saved" && r.turnId === `turn_${n}`)?.at;
+  check("a streamed reply reaches the wire before Codex saves it", streamDone && sm.contents >= 2 && savedAt !== undefined && sm.firstContentAt! < savedAt, { ...sm, savedAt, ...margin("A:the streamed run finished") });
+  check("and the wire carries the saved text once, as one message", sm.starts === 1 && sm.ends === 1 && sm.text === `streamed:${n}:one two three` &&
+    !frames.slice(streamFrom).some((f) => f.events.some((e) => e.type === "TEXT_MESSAGE_START" && e.messageId === `msg_${n}`)), sm);
 
   // ---- (2) restart: the defect that killed the plane ------------------------------------------
   // `DIE now` kills the app-server mid-turn. The host's crash rail brings up a replacement, which
@@ -416,8 +462,12 @@ try {
   // A SLOW turn holds the thread open. SIGTERM lands mid-turn, so the interrupt's own record may
   // never reach the file: `interrupt()` returns when the RPC is acknowledged, not when codex has
   // written anything. The backstop is what closes the run.
-  await dm(A, "SLOW hold this turn open");
+  const exitFrom = frames.length;
+  await dm(A, "STREAM SLOW hold this turn open");
   const opened = await settle("A:a run is open mid-turn", () => openRuns().length > 0);
+  // SIGTERM lands while the reply is streaming: the run cannot close until that message ends. The
+  // wait is bounded well inside the turn's 2.8 s, so the exit still lands mid-turn without a stream.
+  const midStream = await settle("A:the reply is streaming", () => streamedMessage(frames.slice(exitFrom), exitFrom).contents > 0, 1500);
   const openAtExit = openRuns();
   hostA.kill("SIGTERM");
   if (hostA.pid !== undefined) stoppedOnPurpose.add(hostA.pid);
@@ -429,6 +479,9 @@ try {
     closed: margin("A:the open run closes at exit"),
   });
   check("and there was a run to close, so the cell is not vacuous", openAtExit.length > 0, { openAtExit });
+  const exitMessage = streamedMessage(frames.slice(exitFrom), exitFrom);
+  const ended = exitMessage.types.indexOf("TEXT_MESSAGE_END*");
+  check("and the reply it was streaming ended before the run closed", midStream && ended !== -1 && ended < exitMessage.types.indexOf("RUN_FINISHED"), { ...exitMessage, ...margin("A:the reply is streaming") });
   }
 
   // ---- (4) the file that was not there yet ----------------------------------------------------
@@ -825,7 +878,11 @@ try {
       tail: errE.slice(-400),
     },
   );
-  check("bind:the start boundary is on disk before the first pump (#705)", boundE && walEReady && walE?.frontier.sourceCursor !== undefined && walE?.frontier.sourceCursor === expectedBindCursorE, { ...margin("E:the start boundary lands on disk after the launch bind"), sourceCursor: walE?.frontier.sourceCursor, expectedBindCursorE, walPath });
+  // The log holds the merged cursor `[rollout, journal]`, whose rollout half is the bind's boundary,
+  // as the merged source reads it; a rollout cursor alone is read as that half.
+  const cursorE = walE?.frontier.sourceCursor;
+  const rolloutHalfE = cursorE?.startsWith("[") ? (JSON.parse(cursorE) as string[])[0] : cursorE;
+  check("bind:the start boundary is on disk before the first pump (#705)", boundE && walEReady && rolloutHalfE !== undefined && rolloutHalfE === expectedBindCursorE, { ...margin("E:the start boundary lands on disk after the launch bind"), sourceCursor: walE?.frontier.sourceCursor, expectedBindCursorE, walPath });
   }
 
   completed = true;

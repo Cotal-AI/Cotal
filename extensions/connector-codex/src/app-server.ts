@@ -220,6 +220,7 @@ interface DriverOpts {
  *    `owned` is false for a turn the attached TUI started: this host may observe it, but only
  *    a turn it started itself may finalize its own delivery accounting.
  *  - `"itemStarted"` / `"itemCompleted"` (item, turnId) — thread items (feed/presence)
+ *  - `"textDelta"` (itemId, text)                      — a piece of an agent message as it streams
  *  - `"waiting"` (detail)                              — an approval was requested
  *  - `"answered"` (detail)                             — that request's reply is written (→ working)
  *  - `"resolved"` (requestId)                          — the app-server stopped waiting on a request
@@ -918,8 +919,9 @@ export class AppServerDriver extends EventEmitter {
       case "item/reasoning/textDelta":
       case "item/commandExecution/outputDelta":
       case "item/fileChange/outputDelta":
-        if (params.threadId === this.threadId && typeof params.delta === "string" && params.delta.length > 0)
-          this.emit("work");
+        if (params.threadId !== this.threadId || typeof params.delta !== "string" || params.delta.length === 0) return;
+        this.emit("work");
+        if (method === "item/agentMessage/delta" && typeof params.itemId === "string") this.emit("textDelta", params.itemId, params.delta);
         return;
       case "mcpServer/startupStatus/updated": {
         const name = typeof params.name === "string" ? params.name : undefined;
