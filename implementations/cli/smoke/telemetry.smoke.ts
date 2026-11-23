@@ -170,6 +170,9 @@ for (const level of ["regular", "minimal"]) {
   await settled();
   check("a usage refusal is an event too: refused, USAGE_INVALID, exit 1", usage.status === 1 && usage.sent.length === 1 && usage.sent[0]?.outcome === "refused" && usage.sent[0]?.errorCode === "USAGE_INVALID" && usage.sent[0]?.subcommand === null, { ...shown(usage), sent: usage.sent });
   check("…whose message masks the unknown word the user typed", typeof usage.sent[0]?.errorMessage === "string" && !(usage.sent[0]!.errorMessage as string).includes("frobnicate") && (usage.sent[0]!.errorMessage as string).includes("<value>"), usage.sent[0]?.errorMessage);
+  const help = await s.run(["help", "ext", "frobnicate"]);
+  await settled();
+  check("unknown nested help reports a usage refusal without the requested topic", help.status === 1 && help.stderr.includes('no subcommand "frobnicate"') && help.sent.length === 1 && help.sent[0]?.command === "help" && help.sent[0]?.outcome === "refused" && help.sent[0]?.errorCode === "USAGE_INVALID" && help.sent[0]?.errorMessage === null && help.sent[0]?.errorStack === null && !JSON.stringify(help.sent).includes("frobnicate"), shown(help));
   const prompt = "private `prompt` text";
   const spawn = await s.run(["spawn", "-d", "--on=", "--prompt", prompt]);
   await settled();
