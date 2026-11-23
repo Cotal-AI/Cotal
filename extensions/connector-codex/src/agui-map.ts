@@ -235,8 +235,10 @@ function lineEvents(streams: StreamedParts, runId: string | null, line: Extract<
  *  can start. Without this handoff, the terminal is dropped and the next RUN_STARTED collides with
  *  the WAL bracket that correctly survived the outage.
  * @param seed The stream state {@link streamSeed} rebuilt for a restarted emitter.
+ * @param reasoning Whether the launch asked for reasoning events. Off by default: reasoning is the
+ *  model's private working, so a reasoning record publishes nothing without it.
  */
-export function createCodexMapper(opts: { threadId: string; mintRunId: () => string; resumeRunId?: string; seed?: StreamSeed }): CodexMapper {
+export function createCodexMapper(opts: { threadId: string; mintRunId: () => string; resumeRunId?: string; seed?: StreamSeed; reasoning?: boolean }): CodexMapper {
   const { threadId, mintRunId, resumeRunId } = opts;
   const streams = new StreamedParts(opts.seed);
   let open: string | null = resumeRunId ?? null;
@@ -352,7 +354,7 @@ export function createCodexMapper(opts: { threadId: string; mintRunId: () => str
     // ---- reasoning ----------------------------------------------------------------------
     if (envelope === "response_item" && inner === "reasoning") {
       const summary = payload.summary;
-      if (!Array.isArray(summary)) return null;
+      if (opts.reasoning !== true || !Array.isArray(summary)) return null;
       let text = "";
       for (const p of summary) {
         const r = asRecord(p);

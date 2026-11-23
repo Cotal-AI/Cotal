@@ -75,7 +75,7 @@ import type { CodexRecord } from "./agui-map.js";
 import { codexEventBindings, type CodexEventBinding } from "./codex-events.js";
 import { waitForRollout } from "./agui-rollout.js";
 import { startCotalMcp, MCP_SERVER_NAME, MCP_TOKEN_ENV, type CotalMcpEndpoint } from "./mcp.js";
-import { ASKING_THREAD, configOverrides, mcpOverrides } from "./codex-config.js";
+import { ASKING_THREAD, configOverrides, mcpOverrides, reasoningTurn } from "./codex-config.js";
 import { launchTui } from "./tui.js";
 
 const ERROR_RETRY_INITIAL_MS = 1_000;
@@ -260,6 +260,7 @@ function createDriver(
     configOverrides: [...baseOverrides, ...mcpOverrides(mcp)],
     developerInstructions: developerInstructions(config, persona),
     threadSettings: config.askPermissions ? ASKING_THREAD : undefined,
+    turnSettings: config.reasoningEvents ? reasoningTurn(baseOverrides) : undefined,
     extraEnv: { [MCP_TOKEN_ENV]: mcp.token },
     bin: codexBin,
     log,

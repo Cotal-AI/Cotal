@@ -51,7 +51,7 @@ import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { CotalEndpoint, eventChannel, isAguiFramePart, seedChannelRegistry, isReachable } from "@cotal-ai/core";
+import { CotalEndpoint, eventChannel, isAguiFramePart, seedChannelRegistry, isReachable, LAUNCH_MATERIAL_ENV, writeLaunchMaterial, type LaunchMaterial } from "@cotal-ai/core";
 import { eventWalLocation, JsonlFileSource, type WalDoc } from "@cotal-ai/connector-core";
 import { skipSuite, freePort, killAndAwaitExit, SMOKE_BROKER_TOKEN, awaitBrokerReady, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
@@ -256,6 +256,9 @@ function startHost(
    *  first pump open, in ms, so a caller can read the log there. Test-only, omitted here means
    *  the variable is never set and the seat runs with no hold. */
   postStartHoldMs?: number,
+  /** The launch material a launcher hands the seat, such as `reasoningEvents`. It carries the
+   *  broker URL too, since a seat refuses a material file beside COTAL_SERVERS. */
+  material?: LaunchMaterial,
 ): ReturnType<typeof spawn> {
   const cleanEnv: NodeJS.ProcessEnv = { ...process.env };
   for (const k of Object.keys(cleanEnv)) if (k.startsWith("COTAL_")) delete cleanEnv[k];
@@ -267,7 +270,7 @@ function startHost(
       COTAL_SPACE: space,
       COTAL_NAME: name,
       COTAL_ID: name,
-      COTAL_SERVERS: servers,
+      ...(material === undefined ? { COTAL_SERVERS: servers } : { [LAUNCH_MATERIAL_ENV]: writeLaunchMaterial({ ...material, servers }) }),
       COTAL_SUBSCRIBE: "team",
       COTAL_ROLE: "coder",
       COTAL_CODEX_BIN: BIN,
@@ -391,7 +394,8 @@ try {
   // ---- (1) first bind ------------------------------------------------------------------------
   const A = "eventspeer";
   const homeA = join(dir, "a");
-  hostA = startHost(A, homeA, "1", join(dir, "a.log.jsonl"), (chunk) => (errA += chunk));
+  // Seat A is launched with reasoningEvents, so it publishes the model's reasoning. Seat B is not.
+  hostA = startHost(A, homeA, "1", join(dir, "a.log.jsonl"), (chunk) => (errA += chunk), undefined, undefined, undefined, { reasoningEvents: true });
   check("setup:seat A came online", await settle("online:A", () => online.has(A)), margin("online:A"));
   await joinEventsOf(A);
 
@@ -539,6 +543,7 @@ try {
       "late-file:the wait for the post-bind frames did not expire",
       "and from the bind onward the seat publishes normally",
       "late-file:the stream carries the turn that ran AFTER the bind and neither of the two that ran before it",
+      "a seat launched without reasoningEvents publishes its reply and none of its reasoning",
     ])
   ) {
   check("and the seat SAID it was starting from there rather than losing them quietly", errB.includes("not republished"), {
@@ -572,6 +577,18 @@ try {
     startsB === 1 && finishesB === 1 && !deltasB.includes("ok:1") && !deltasB.includes("ok:2") && deltasB.includes("ok:3"),
     { starts: startsB, finishes: finishesB, deltas: deltasB },
   );
+  // The fake streams and saves a summary whether or not the seat asked for one, as Codex does for
+  // an operator's own model_reasoning_summary.
+  const thinkFrom = frames.length;
+  await dm(B, "THINK then STREAM, launched without reasoningEvents");
+  const thinkDone = await settle("B:the THINK run finished", () =>
+    frames.slice(thinkFrom).some((f) => f.threadId === bThread && f.events.some((e) => e.type === "RUN_FINISHED")),
+  );
+  const thinkTypes = frames.slice(thinkFrom).filter((f) => f.threadId === bThread).flatMap((f) => f.events.map((e) => e.type));
+  const thoughtSaved = fakeLog(join(dir, "b.log.jsonl")).some((r) => r.ev === "reasoningSaved");
+  check("a seat launched without reasoningEvents publishes its reply and none of its reasoning",
+    thinkDone && thoughtSaved && thinkTypes.includes("TEXT_MESSAGE_CONTENT") && !thinkTypes.some((t) => t.startsWith("REASONING")),
+    { thoughtSaved, types: thinkTypes, ...margin("B:the THINK run finished") });
   }
 
   // ---- (5) the restart INTO a file that was not there yet -------------------------------------

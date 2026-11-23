@@ -105,6 +105,15 @@ function pushAutonomy(overrides: [string, string][], asks: boolean): void {
  */
 export const ASKING_THREAD: Readonly<Record<string, unknown>> = { approvalPolicy: "untrusted", sandbox: "read-only", approvalsReviewer: "user" };
 
+/** What a launch with `reasoningEvents` puts on every `turn/start`: the reasoning summary the
+ *  operator's `model_reasoning_summary` names, else `auto`. Codex's model catalog can default
+ *  summaries to none, and turn/start overrides the config, so T3 Code's own Codex provider sends
+ *  this on each turn too. */
+export function reasoningTurn(overrides: readonly (readonly [string, string])[]): { summary: string } {
+  const set = overrides.find(([k]) => k === "model_reasoning_summary")?.[1];
+  return { summary: set === undefined ? "auto" : set.replace(/^"(.*)"$/, "$1") };
+}
+
 /** An asking launch sets these itself, so a launch option that sets one is refused. */
 const ASKING_KEYS = new Set(["approval_policy", "sandbox_mode", "approvals_reviewer"]);
 
