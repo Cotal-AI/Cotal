@@ -146,6 +146,8 @@ export const SPAWN_INPUT_SCHEMA = deepFreeze({
     resumeAgent: nonBlank(),
     events: { type: "boolean" },
     eventPayloads: { type: "boolean" },
+    askPermissions: { type: "boolean" },
+    reasoningEvents: { type: "boolean" },
     cwd: nonBlank(),
     prompt: nonBlank(),
     // An inline persona: the helper's definition, carried here instead of read from the catalog.
