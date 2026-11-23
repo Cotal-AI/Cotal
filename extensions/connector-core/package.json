@@ -28,6 +28,10 @@
       "types": "./dist/relay.d.ts",
       "import": "./dist/relay.js"
     },
+    "./version": {
+      "types": "./dist/version.generated.d.ts",
+      "import": "./dist/version.generated.js"
+    },
     "./seat-cache": {
       "types": "./dist/seat-compile-cache.d.ts",
       "import": "./dist/seat-compile-cache.js"

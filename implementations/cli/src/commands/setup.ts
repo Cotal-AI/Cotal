@@ -668,7 +668,7 @@ async function prepare(plan: SetupPlan, opts: { demo: boolean; interactive: bool
     if (inputs.createProject && mkdirPrivate(inputs.project, "the project root") !== undefined) {
       wrote("project folder", inputs.project);
     }
-    if (plan.space.state === "created") wrote("prepared space", recordLocalSpace(inputs.space, inputs.project).file);
+    if (plan.space.state === "created") wrote("prepared space", recordLocalSpace(inputs.space, inputs.project, "--project").file);
     spaceState = plan.space.state;
   }
 

@@ -70,10 +70,14 @@ Check the connector rows before launching an agent.
 The component check distinguishes absent processes, components that are not serving, and refused requests.
 If the project folder of a locally started static-auth stack is moved or deleted, checks that need its
 records report `refused` (exit 3), not `absent`. The broker row still notes when its registered address is reachable.
+From inside the moved project, the same refusal and listener observation apply without `--space`.
+For a moved open stack, the broker row reports `refused` and preserves reachability when known.
 An open mesh needs no delivery daemon, so its absence does not fail the check.
 An observed store write failure or full store makes the broker `not-serving` even when its listener answers.
 On a stopped local stack, `status` and `ps` name an unwritable store and its permission repair before recommending a restart.
-If the manager exits but a legacy open stack's broker still runs, `status` checks `.cotal/channels.json` before suggesting a stop and restart. Fix or remove an invalid seed file while the broker is still running.
+`status` also checks the stopped project in the current folder when it reports a different selected space.
+If the manager exits while a local controller stack's broker still runs, `status` and `ps` check `.cotal/channels.json` before recommending a restart.
+Fix or remove an invalid seed file while the broker is still running.
 Follow the report's next action if the stack is incomplete.
 The report also warns if the recorded broker store is missing or its directory was replaced.
 `status --space <name>` checks that local stack's root even from another folder. Coincident folder

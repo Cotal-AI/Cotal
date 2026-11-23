@@ -249,7 +249,7 @@ async function addFromServer(name: string | undefined, v: AddValues, prompt: boo
   const mode = take(checkMode(name, root, accounts, v.mode, false), target);
   const auth = take(checkTrust(mode, root, name), target);
   const replaced = replaceable(name, v.force === true, target, (existing) =>
-    brokerUrlKey(existing.server) === brokerUrlKey(server) && existing.root === root && existing.mode === mode && (existing.tlsRequired === true) === tlsRequired &&
+    brokerUrlKey(existing.server) === brokerUrlKey(server) && canonicalRoot(existing.root) === canonicalRoot(root) && existing.mode === mode && (existing.tlsRequired === true) === tlsRequired &&
     (existing.unencryptedOverlay === true) === Boolean(dial.residual));
   const verified = v.force !== true;
   if (verified) {
@@ -560,7 +560,7 @@ export function checkLocalSpace(name: string, root: string, flag: "--root" | "--
 
 /** Prepares a space {@link checkLocalSpace} cleared: makes `<root>/.cotal/` and records the space.
  *  Returns the record it wrote and when. */
-export function recordLocalSpace(name: string, root: string): { file: string; preparedAt: string } {
+export function recordLocalSpace(name: string, root: string, flag: "--root" | "--project" = "--root"): { file: string; preparedAt: string } {
   protectedLocalDirectory(root, "the project root");
   const target = { space: name, root };
   const dir = join(root, ".cotal");
@@ -571,7 +571,7 @@ export function recordLocalSpace(name: string, root: string): { file: string; pr
     if ((error as NodeJS.ErrnoException).code === "ENOENT" && lstatSync(dir, { throwIfNoEntry: false })?.isSymbolicLink())
       throw refuse("TARGET_NOT_FOUND", `${dir} links to ${resolve(root, readlinkSync(dir))}, which does not exist; nothing was written`, target, "remove the link or make the folder it names, then run this create again");
     if (!unwritable(error)) throw localWriteFailure(error, dir, { requested: name, root });
-    throw refuse("PERMISSION_DENIED", `${root} is not writable by this account, so its .cotal could not be made; nothing was written`, target, "create the space in a folder you own, or pass --root <dir>");
+    throw refuse("PERMISSION_DENIED", `${root} is not writable by this account, so its .cotal could not be made; nothing was written`, target, `create the space in a folder you own, or pass ${flag} <dir>`);
   }
   protectedLocalDirectory(dir, "the project's .cotal directory");
   const preparedAt = new Date().toISOString();

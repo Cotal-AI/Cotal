@@ -34,8 +34,8 @@
  *     submission before its outcome, and the cards in manifest order, in text and JSON.
  *  L. on an open mesh, apply and preview recommend live delivery and name the requirement for
  *     durable channels. Setting the card to live lets the deployment succeed.
- *  M. a confirmation refusal in that space keeps the target and output mode in both commands
- *     even with another space selected. Replaying the JSON commands previews and removes the card.
+ *  M. the deploy receipt's space locates its record even with another space selected.
+ *     The confirmation commands retain the target and output mode, and replay previews and removes the card.
  *  N. the printed fresh boot summary command works with a different space selected.
  *
  * Channels only, so no agent launches. COTAL_HOME is sandboxed, the child environment carries no
@@ -79,9 +79,6 @@ const answered = (run: ReturnType<typeof cotal>) => { const e = envelope(run.std
 const reported = (run: ReturnType<typeof cotal>, caveat: string) => run.status === 0 && run.stdout.includes(caveat) && !run.stderr.includes(caveat);
 
 function checkRemovalConfirmation(deployment: string): void {
-  const chosen = cotal(b, "use", SPACE_B);
-  const selection = envelope(cotal(c, "use", "--json").stdout)?.result;
-  check("the saved selection differs from the card's space", chosen.status === 0 && selection?.current === SPACE_B && selection.folder === OTHER, selection);
   const refused = cotal(c, "team", "remove", deployment, "--space", OTHER, "--json");
   const refusal = envelope(refused.stdout);
   check("unconfirmed removal refuses in the explicit space", refused.status === 1 && refusal?.outcome === "refused" && refusal.target?.space === OTHER && refusal.error?.code === "USAGE_INVALID", refused.out);
@@ -475,7 +472,19 @@ try {
     answered(bootWhileRetained) && envelope(bootWhileRetained.stdout)?.warnings?.some((warning) =>
       warning.code === "ADDITIVE_ATTEMPT_REMAINS" && JSON.stringify(warning.target.deploymentIds) === JSON.stringify([openId])) === true, bootWhileRetained.out);
 
-  console.log("\nM. confirmation commands retain the target space and output mode");
+  console.log("\nM. deployment lookup and confirmation commands pin the target space");
+  const chosen = cotal(b, "use", SPACE_B);
+  const selection = envelope(cotal(c, "use", "--json").stdout)?.result;
+  check("the saved selection differs from the deployment's space", chosen.status === 0 && selection?.current === SPACE_B && selection.folder === OTHER, selection);
+  const deploymentSpace = openResult?.target?.space;
+  if (deploymentSpace !== OTHER) throw new Error("the open deployment did not return its space");
+  const deploymentShow = cotal(c, "team", "show", openId, "--space", deploymentSpace, "--json");
+  const shownDeployment = envelope(deploymentShow.stdout);
+  const recordedReceipt = shownDeployment?.result?.receipt as { createdChannels?: unknown } | undefined;
+  check("team show with the receipt's space returns the original card revisions without changing the selection",
+    answered(deploymentShow) && shownDeployment?.target?.space === deploymentSpace && shownDeployment.target.deploymentId === openId &&
+    JSON.stringify(recordedReceipt?.createdChannels) === JSON.stringify(openResult?.result?.createdChannels) &&
+    envelope(cotal(c, "use", "--json").stdout)?.result?.current === SPACE_B, deploymentShow.out);
   checkRemovalConfirmation(openId);
 
   const openDown = cotal(c, "down", "--yes");
