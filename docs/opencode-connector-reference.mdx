@@ -344,7 +344,9 @@ Four things are specific to OpenCode and worth knowing before you read a stream:
   the connector closes its run as an ordinary end when the turn ends, and the next turn waits for
   that close's position read as above. On 2.x a turn that ends before any output, such as one the
   provider refused, publishes a run of its own when its end is recorded, so a failed one still ends
-  with `RUN_ERROR`. On 1.x such a turn opened no run, so it publishes nothing.
+  with `RUN_ERROR`. On 1.x the assistant message of a turn that failed before any output holds the
+  error and no parts. That message opens the turn's run, so its `session.error` still closes it with
+  `RUN_ERROR`.
 
 Reasoning is off by default.
 
