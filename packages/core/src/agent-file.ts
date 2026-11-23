@@ -531,8 +531,6 @@ export interface PersonaCatalogEntry {
   def?: AgentDef;
   /** Why the selector or file cannot be used. */
   error?: string;
-  /** Set when the filename has no usable catalog selector. */
-  invalidSelector?: true;
   /** The encoding problem when the file is not valid UTF-8. */
   encoding?: string;
   /** Set when the file is not a regular file, such as a FIFO, so it was not opened (see `error`). */
@@ -581,7 +579,7 @@ export function readPersonaCatalog(root: string): PersonaCatalogEntry[] {
     const name = f.slice(0, -3);
     const path = join(dir, f);
     if (!name.trim()) return {
-      name, path, invalidSelector: true as const,
+      name, path,
       error: `persona filename has a blank stem: ${path}. Rename the file or launch it with \`cotal spawn --file <persona.md>\`.`,
     };
     const link = personaLinkTarget(path);

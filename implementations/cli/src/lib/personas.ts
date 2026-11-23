@@ -88,11 +88,15 @@ export function readPersonas(root: string): PersonaEntry[] {
   return readPersonaCatalog(root);
 }
 
+export function hasBlankPersonaSelector(entry: Pick<PersonaEntry, "name">): boolean {
+  return !entry.name.trim();
+}
+
 /** Just the persona names: the completion source for `cotal spawn`, `persona show` and `personas
  *  show/rm`. Only an absent folder is an empty catalog. One that cannot be read throws an error that
  *  names it, so the completion offers nothing and COTAL_COMPLETE_DEBUG says why. */
 export function listPersonaNames(root: string): string[] {
-  return completionPersonas(root).filter((p) => !p.invalidSelector).map((p) => p.name);
+  return completionPersonas(root).filter((p) => !hasBlankPersonaSelector(p)).map((p) => p.name);
 }
 
 /** {@link readPersonas} for a completion: a catalog folder that cannot be read throws an error that

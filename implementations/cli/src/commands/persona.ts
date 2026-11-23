@@ -11,7 +11,7 @@ import {
   personaDefinitionProblem, recordOperationSpace,
 } from "@cotal-ai/workspace";
 import { completedFlagValue, completingFlagValue, positionalsForCompletion } from "../lib/completion.js";
-import { catalogReadRefusal, listPersonaNames, readPersonas } from "../lib/personas.js";
+import { catalogReadRefusal, hasBlankPersonaSelector, listPersonaNames, readPersonas } from "../lib/personas.js";
 import {
   assertLabels, commitPersona, editPersona, personaCatalog, personaCatalogContext, personaNameProblem, personaNameWords, personaPath, readPersonaSource,
   requirePersonaSource, reservedPersonaName, serializePersona, validatePersona, type PersonaCatalog, type PersonaEdit,
@@ -219,23 +219,23 @@ function list(catalog: PersonaCatalog, presentation: Presentation): void {
   writeResult(presentation, {
     command: "persona", target: catalog, result: { kind: "personas", items }, completeness: invalid.length ? "partial" : "complete",
     warnings: [
-      ...invalid.map(entry => entry.invalidSelector
+      ...invalid.map(entry => hasBlankPersonaSelector(entry)
         ? { code: "USAGE_INVALID", target: { name: entry.name, path: entry.path }, message: entry.error! }
         : entry.notRegular
           ? { code: "PERMISSION_DENIED", target: { name: entry.name, path: entry.path }, message: `${entry.error}; it was not read` }
           : { code: "SCHEMA_INVALID", target: { name: entry.name, path: entry.path }, message: `cannot parse persona '${entry.name}' at ${entry.path}: ${personaDefinitionProblem(entry.error, entry.path)}` }),
       ...linked.map(entry => ({ code: "PERMISSION_DENIED", target: { name: entry.name, path: entry.path, link: entry.link }, message: `persona '${entry.name}' at ${entry.path} is a link to ${entry.link}; persona show, edit and remove refuse a link` })),
     ],
-    ...(invalid.length ? { partial: { message: invalid.some(entry => entry.invalidSelector) ? "some persona catalog entries could not be used" : "some persona definitions could not be read" } } : {}),
+    ...(invalid.length ? { partial: { message: invalid.some(hasBlankPersonaSelector) ? "some persona catalog entries could not be used" : "some persona definitions could not be read" } } : {}),
   }, result => ({ sections: [
     { title: "Personas", blocks: [
       { kind: "lines", lines: [{ text: `${catalog.space} · local persona files`, tone: "hint" }] },
       ...(result.items.length ? [{
         kind: "table" as const,
         columns: [{ key: "name", label: "Persona" }, { key: "role", label: "Role" }, { key: "harness", label: "Application" }, ...(result.items.some(item => item.model) ? [{ key: "model", label: "Model pin" }] : []), ...(invalid.length ? [{ key: "state", label: "Definition" }] : [])],
-        rows: result.items.map((item, index) => {
-          const invalidSelector = entries[index]?.invalidSelector;
-          return { name: invalidSelector ? JSON.stringify(item.name) : item.name, role: item.role ?? "not set", harness: item.harness ?? "user default", model: item.model ?? "application default", state: item.valid ? "readable" : { text: invalidSelector ? "invalid selector" : "unreadable", tone: "failed" as const } };
+        rows: result.items.map(item => {
+          const blankSelector = hasBlankPersonaSelector(item);
+          return { name: blankSelector ? JSON.stringify(item.name) : item.name, role: item.role ?? "not set", harness: item.harness ?? "user default", model: item.model ?? "application default", state: item.valid ? "readable" : { text: blankSelector ? "invalid selector" : "unreadable", tone: "failed" as const } };
         }),
       }] : [{ kind: "lines" as const, lines: ["No personas in this catalog."] }]),
       { kind: "lines", lines: [{ text: "Definitions, not running agents. Editing a persona does not change a live session.", tone: "hint" }] },
