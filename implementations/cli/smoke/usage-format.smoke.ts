@@ -133,6 +133,37 @@ const noValue = run(["history", "--limit"]);
 check("an option given last with no value is refused naming it and its placeholder", usageShape(noValue, /--limit needs a value/) && /write --limit <n>/.test(noValue.stderr) && !/argument missing/.test(noValue.stderr), shown(noValue));
 const flagValue = run(["history", "--limit", "--from", "bob"]);
 check("an option followed by another of the command's options is refused as missing its value", usageShape(flagValue, /--limit needs a value/) && /write --limit <n>/.test(flagValue.stderr), shown(flagValue));
+const separateJson = run(["config", "get", "harness", "--json", "-Z"]);
+const groupedJson = run(["config", "get", "harness", "-jZ"]);
+check("an unknown short option after grouped -j gives the same JSON refusal as separate options",
+  groupedJson.status === 1 && groupedJson.stderr === "" && groupedJson.stdout === separateJson.stdout
+  && JSON.parse(groupedJson.stdout).error.code === "USAGE_INVALID"
+  && JSON.parse(groupedJson.stdout).error.message === "Unknown option '-Z'", shown(groupedJson));
+const unknownBeforeJson = run(["config", "get", "harness", "-Zj"]);
+check("an unknown short option before j does not select JSON", usageShape(unknownBeforeJson, /Unknown option '-Z'/), shown(unknownBeforeJson));
+const missingLimit = run(["history", "--json", "--limit", "--from", "abc"]);
+for (const [global, operand] of [["--no-input", "abc"], ["--no-color", "1"]] as const) {
+  const result = run(["history", "--json", "--limit", global, operand]);
+  check(`a ${global} flag cannot move an operand into a missing option value`,
+    result.status === 1 && result.stderr === "" && result.stdout === missingLimit.stdout
+    && JSON.parse(result.stdout).error.code === "USAGE_INVALID"
+    && JSON.parse(result.stdout).error.message === "--limit needs a value"
+    && JSON.parse(result.stdout).error.remedy === "write --limit <n>", shown(result));
+}
+const followGlobal = run(["history", "--json", "--follow", "--limit", "--no-input", "abc"]);
+const followRecords = followGlobal.stdout.trim().split("\n").filter(Boolean).map((line) => JSON.parse(line));
+check("a global flag after a missing history follow value preserves the stream refusal and channel",
+  followGlobal.status === 1 && followGlobal.stderr === ""
+  && followRecords.map((record) => record.type).join() === "error,end"
+  && followRecords.every((record) => record.stream === "history" && record.target?.channel === "abc")
+  && followRecords[0]?.data?.code === "USAGE_INVALID" && followRecords[0]?.data?.message === "--limit needs a value"
+  && followRecords[0]?.data?.remedy === "write --limit <n>" && followRecords[1]?.data?.reason === "setup-failed", shown(followGlobal));
+const groupedSpace = run(["config", "get", "harness", "-js", "--no-input", "abc"]);
+check("a global flag cannot hide a missing value at the end of a short option group",
+  groupedSpace.status === 1 && groupedSpace.stderr === "" && JSON.parse(groupedSpace.stdout).error.message === "--space needs a value", shown(groupedSpace));
+const completeValue = run(["docs", "--json", "--search", "usage", "--no-input"]);
+check("a global flag after a supplied value is accepted", completeValue.status === 0 && completeValue.stderr === ""
+  && JSON.parse(completeValue.stdout).result.query === "usage", shown(completeValue));
 const groupedServer = run(["status", "--server", "-jv"]);
 const separateServer = run(["status", "--server", "-j", "-v"]);
 const groupedError = JSON.parse(groupedServer.stdout).error;
