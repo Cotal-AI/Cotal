@@ -492,7 +492,8 @@ application its install names, so an empty list says the answering manager has n
 application installed. A connector whose harness the manager did not find at boot
 reports the reason boot recorded, as a spawn does, so restart the manager after installing it. Pick
 a result with `cotal spawn --model <id> --variant <v>`, where `<id>` is the model id as the catalog
-printed it. OpenCode and Codex ids are the full `provider/model`, and pi ids are `provider/id`;
+printed it. Codex ids are bare (`gpt-6.2-sol`, not `openai/gpt-6.2-sol`). Do not prepend the
+separately reported provider. OpenCode ids are `provider/model`, and pi ids are `provider/id`.
 Jcode ids are bare (`opus-5`, not `cliproxy/opus-5`), because the provider is selected by the
 operator's Jcode config and a prefixed id is refused at launch with the bare form named.
 
