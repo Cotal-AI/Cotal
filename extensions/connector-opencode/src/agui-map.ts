@@ -18,11 +18,17 @@
  * a reverted session is: publish only on finality, drop the per-part state for the vanished ids, log
  * the divergence once, keep going. Because the source hands over only settled parts, this mapper
  * holds no per-part state to drop: a part arrives once, complete, and is mapped in one shot. So the
- * divergence log is the source's, and there is nothing here for a revert to invalidate.
+ * divergence log is the source's, and there is nothing here for a revert to invalidate. A part
+ * that streamed through the delta journal (stream1.ts) is the one exception: its stream stays open
+ * until its saved record or the turn's end closes it.
  */
 import {
   type AguiEvent,
+  type CotalMeta,
+  type Merged,
   type RecordMapper,
+  StreamedParts,
+  type StreamSeed,
   runStarted,
   runFinished,
   textMessageStart,
@@ -38,6 +44,7 @@ import {
   reasoningMessageEnd,
 } from "@cotal-ai/connector-core";
 import type { OpenCodeRecord } from "./agui-source.js";
+import { streamKey1 } from "./stream1.js";
 
 interface OpenCodeMapperOptions {
   /** The native session id. It is the `threadId` on every event and nothing else may claim it. */
@@ -49,12 +56,17 @@ interface OpenCodeMapperOptions {
   resumeRunId?: string;
   /** Emit `REASONING_*` for reasoning parts. Off by default (§7 Q1). */
   reasoning?: boolean;
+  /** The stream state {@link streamSeed} rebuilt for a restarted emitter. */
+  seed?: StreamSeed;
   /** Arrival clock, for the records carrying no usable source stamp. Injectable for determinism. */
   now?: () => number;
 }
 
 export interface OpenCodeMapper {
   map: RecordMapper<OpenCodeRecord>;
+  /** {@link map} over the session's records with its delta journal read in among them: a journal
+   *  line streams the parts it carries, and a part's saved record closes its stream. */
+  mapMerged: RecordMapper<Merged<OpenCodeRecord>>;
   /**
    * Forget a run the emitter closed out of band. KEYED ON THE ID: the report can arrive after this
    * mapper has already opened a newer run, and clearing unconditionally would orphan that one, whose
@@ -117,6 +129,7 @@ function toolResultContent(state: OpenCodeRecord["part"]["state"]): string {
 
 export function createOpenCodeMapper(opts: OpenCodeMapperOptions): OpenCodeMapper {
   const now = opts.now ?? (() => Date.now());
+  const streams = new StreamedParts(opts.seed);
   let open: string | null = opts.resumeRunId ?? null;
 
   const close = (timestamp: number) => {
@@ -124,10 +137,12 @@ export function createOpenCodeMapper(opts: OpenCodeMapperOptions): OpenCodeMappe
     const runId = open;
     open = null;
     // No `outcome`. A user record says a new turn began and nothing about how the last one ended,
-    // so manufacturing a `success` would assert something the source never said.
+    // so manufacturing a `success` would assert something the source never said. A part still
+    // streaming is ended first, because a run cannot close while a message is open.
     return {
       runId,
       events: [
+        ...streams.endAll(timestamp),
         runFinished({
           threadId: opts.threadId,
           runId,
@@ -135,6 +150,42 @@ export function createOpenCodeMapper(opts: OpenCodeMapperOptions): OpenCodeMappe
         }),
       ] as AguiEvent[],
     };
+  };
+
+  /** A saved text or reasoning part: the close of what streamed under its key, then the part as a
+   *  message of its own, under its id, when nothing streamed or the saved text does not continue
+   *  what did. */
+  const savedPart = (kind: "text" | "reasoning", part: OpenCodeRecord["part"], ts: number, cotal: CotalMeta): AguiEvent[] => {
+    const text = part.text ?? "";
+    const closed = streams.saved(streamKey1(part.id), text, ts);
+    if (!closed.mapAsNew || !text) return closed.events;
+    const messageId = part.id;
+    return kind === "text"
+      ? [
+          ...closed.events,
+          textMessageStart({ messageId, timestamp: ts, role: "assistant", cotal }),
+          textMessageContent({ messageId, delta: text, timestamp: ts }),
+          textMessageEnd({ messageId, timestamp: ts }),
+        ]
+      : [
+          ...closed.events,
+          reasoningMessageStart({ messageId, timestamp: ts, cotal }),
+          reasoningMessageContent({ messageId, delta: text, timestamp: ts }),
+          reasoningMessageEnd({ messageId, timestamp: ts }),
+        ];
+  };
+
+  /** A journal line: the parts it streams, opening the turn's run at its first delta, and the end
+   *  of each part the plugin abandoned. Reasoning streams only when it is published at all. */
+  const mapDeltas = (line: Extract<Merged<OpenCodeRecord>, { deltas: unknown }>): ReturnType<RecordMapper<OpenCodeRecord>> => {
+    const events = line.deltas.flatMap((d) => (d.kind === "reasoning" && !opts.reasoning ? [] : streams.delta(d, line.timestamp)));
+    events.push(...streams.end(line.ends ?? [], line.timestamp));
+    if (events.length === 0) return null;
+    if (open === null) {
+      open = opts.mintRunId();
+      events.unshift(runStarted({ threadId: opts.threadId, runId: open, timestamp: line.timestamp, cotal: { runIdSource: "connector" } }));
+    }
+    return { runId: open, events };
   };
 
   const map: RecordMapper<OpenCodeRecord> = (record) => {
@@ -168,18 +219,10 @@ export function createOpenCodeMapper(opts: OpenCodeMapperOptions): OpenCodeMappe
       const messageId = part.id;
       const cotal = { providerMessageId: part.messageID, ...arrivalMeta };
 
-      if (part.type === "text" && !part.synthetic && !part.ignored && part.text) {
-        events.push(
-          textMessageStart({ messageId, timestamp: ts, role: "assistant", cotal }),
-          textMessageContent({ messageId, delta: part.text, timestamp: ts }),
-          textMessageEnd({ messageId, timestamp: ts }),
-        );
-      } else if (part.type === "reasoning" && opts.reasoning && part.text) {
-        events.push(
-          reasoningMessageStart({ messageId, timestamp: ts, cotal }),
-          reasoningMessageContent({ messageId, delta: part.text, timestamp: ts }),
-          reasoningMessageEnd({ messageId, timestamp: ts }),
-        );
+      if (part.type === "text" && !part.synthetic && !part.ignored) {
+        events.push(...savedPart("text", part, ts, cotal));
+      } else if (part.type === "reasoning" && opts.reasoning) {
+        events.push(...savedPart("reasoning", part, ts, cotal));
       } else if (part.type === "tool" && part.callID) {
         const isError = part.state?.status === "error";
         events.push(
@@ -215,6 +258,7 @@ export function createOpenCodeMapper(opts: OpenCodeMapperOptions): OpenCodeMappe
 
   return {
     map,
+    mapMerged: (r) => ("deltas" in r ? mapDeltas(r) : map(r.harness)),
     forgetOpenRun: (runId) => {
       if (open === runId) open = null;
     },

@@ -22,7 +22,7 @@
  * the record it names having to still exist. That is what makes the ruling implementable: publish
  * on finality, and treat a later removal as a logged divergence rather than a halt.
  */
-import type { DurableSource, SourceRead } from "@cotal-ai/connector-core";
+import type { OrderedSource, SourceRead } from "@cotal-ai/connector-core";
 
 /** The message fields the mapper needs. Deliberately not the whole `Message`: the source hands on
  *  identity, authorship and the turn-level completion mark, and nothing it does not read. */
@@ -120,6 +120,18 @@ function parseCursor(cursor: string): { messageId: string; partId: string } {
   return { messageId: cursor.slice(0, i), partId: cursor.slice(i + 1) };
 }
 
+/** Negative when position `a` is before `b`, zero at the same position, positive after. The empty
+ *  cursor of an empty session is before every record. */
+export function compareCursors(a: string, b: string): number {
+  if (a === b) return 0;
+  if (a === "") return -1;
+  if (b === "") return 1;
+  const x = parseCursor(a);
+  const y = parseCursor(b);
+  if (x.messageId !== y.messageId) return x.messageId < y.messageId ? -1 : 1;
+  return x.partId < y.partId ? -1 : x.partId > y.partId ? 1 : 0;
+}
+
 /** Strictly after the cursor, comparing the pair rather than either half alone. */
 function isAfter(record: OpenCodeRecord, at: { messageId: string; partId: string }): boolean {
   if (record.message.id !== at.messageId) return record.message.id > at.messageId;
@@ -148,7 +160,7 @@ interface OpenCodeSessionSourceOptions {
   endedAt?: () => string | undefined;
 }
 
-export class OpenCodeSessionSource implements DurableSource<OpenCodeRecord> {
+export class OpenCodeSessionSource implements OrderedSource<OpenCodeRecord> {
   readonly kind = "opencode-session";
   private readonly read0: ReadSessionMessages;
   private readonly onVanished?: (cursor: string) => void;
@@ -186,6 +198,10 @@ export class OpenCodeSessionSource implements DurableSource<OpenCodeRecord> {
       for (const part of parts) ordered.push({ part, message: m.info });
     }
     return ordered;
+  }
+
+  compare(a: string, b: string): number {
+    return compareCursors(a, b);
   }
 
   /** The position of the end: the last record's cursor, or the empty cursor of an empty session,
