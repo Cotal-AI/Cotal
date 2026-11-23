@@ -548,7 +548,8 @@ export function createClaudeMapper(opts: ClaudeMapperOptions): ClaudeMapper {
         );
         return;
       }
-      if (b.type === "thinking" && opts.reasoning && typeof b.thinking === "string") {
+      // A block whose display Claude omitted has empty text; it maps to nothing, not an empty message.
+      if (b.type === "thinking" && opts.reasoning && typeof b.thinking === "string" && b.thinking !== "") {
         // `signature` is not read here and is not reachable from here. §3.5.
         events.push(
           reasoningMessageStart({ messageId, timestamp: ts, ...cotal }),

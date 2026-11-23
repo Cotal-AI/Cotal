@@ -38,7 +38,7 @@ export function createClaudeEventPlane(agent: MeshAgent, config: AgentConfig, en
     const subjectFrontier = await FileSubjectFrontier.open(subjectPath, { space: config.space, principal });
     const wal = await EventWal.open(walPath, { space: config.space, threadId, principal, subjectMayExist: false });
     const resumeRunId = wal.pending === null ? wal.brackets?.run : wal.pending.brackets.run;
-    mapper = createClaudeMapper({ threadId, mintRunId: () => randomUUID(), resumeRunId });
+    mapper = createClaudeMapper({ threadId, mintRunId: () => randomUUID(), resumeRunId, reasoning: config.reasoningEvents });
     return AguiEmitter.start<ClaudeEntry>({ endpoint: agent.ep, withholdPayloads: config.eventPayloadsWithheld, wal, subjectFrontier, source: boundSource, map: mapper.map,
       onUnreadable: (gap) => process.stderr.write(
         `[cotal-connector] AG-UI source: skipped an unreadable transcript record at offset ${gap.offset} ` +
