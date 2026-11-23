@@ -298,18 +298,19 @@ Both OpenCode lines publish the same events. On 2.x the connector reads the sess
 through OpenCode's message list, `GET /api/session/:id/message`, from its first record, and publishes
 each item once it is final. Text and reasoning are final when their model step has finished
 streaming, and a tool call when it has completed or failed. OpenCode 2.x keeps a streaming text empty
-in that list until the text ends, so assistant text arrives whole at the end of each step. A 2.x
-session's activity on the event stream is what prompts each read. Each finished tool call is followed
+in that list until its step ends. A 2.x session's activity on the event stream is what prompts each
+read. Each finished tool call is followed
 by a `cotal.toolResult` marker, which carries the call id and whether OpenCode recorded the call as
 failed, and nothing the tool read or returned.
 
-On 1.x a reply also streams. OpenCode creates a text or reasoning part empty, sends its text as
-`message.part.delta` events and then saves the part whole. The connector journals that text as it
-arrives ([streamed text](connector-runtime-reference.mdx#streamed-text)), so the part publishes as
-one message under its own stream id while OpenCode writes it, and its saved record ends that
-message. Reasoning streams only for a seat launched with `reasoningEvents`. A stream the turn left
-without a saved part ends at the turn's end, before the run closes. A part OpenCode had begun before
-the event plane started publishes whole when it is saved.
+A reply also streams. OpenCode 1.x creates a text or reasoning part empty, sends its text as
+`message.part.delta` events and then saves the part whole. OpenCode 2.x sends an element's text as
+`session.text.delta` and `session.reasoning.delta` events and saves it at its step's end. The
+connector journals that text as it arrives ([streamed text](connector-runtime-reference.mdx#streamed-text)),
+so the part publishes as one message under its own stream id while OpenCode writes it, and its saved
+record ends that message. Reasoning streams only for a seat launched with `reasoningEvents`. A stream
+the turn left without a saved part ends at the turn's end, before the run closes. A part OpenCode had
+begun before the event plane started publishes whole when it is saved.
 
 Four things are specific to OpenCode and worth knowing before you read a stream:
 

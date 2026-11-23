@@ -23,10 +23,18 @@
  * of its own, such as one recorded after an out-of-band close, maps to nothing. Tool arguments and
  * results are mapped here and dropped by the emitter's egress policy before anything is written,
  * the one place that decides what leaves.
+ *
+ * A text or reasoning element that streamed through the delta journal (stream2.ts) publishes as it
+ * streams, under its stream key, and its saved record ends that message. A run that closes with a
+ * stream still open ends the stream first.
  */
 import {
   type AguiEvent,
+  type CotalMeta,
+  type Merged,
   type RecordMapper,
+  StreamedParts,
+  type StreamSeed,
   runStarted,
   runFinished,
   runError,
@@ -43,6 +51,7 @@ import {
   reasoningMessageEnd,
 } from "@cotal-ai/connector-core";
 import type { OpenCode2Element, OpenCode2Record } from "./agui-source2.js";
+import { streamKey2 } from "./stream2.js";
 
 export interface OpenCode2MapperOptions {
   /** The native session id: the `threadId` on every event. */
@@ -54,6 +63,8 @@ export interface OpenCode2MapperOptions {
   resumeRunId?: string;
   /** Emit `REASONING_*` for reasoning elements. Off by default. */
   reasoning?: boolean;
+  /** The stream state {@link streamSeed} rebuilt for a restarted emitter. */
+  seed?: StreamSeed;
 }
 
 /** An element's own start time. A text element carries none, so it takes its message's. */
@@ -70,12 +81,31 @@ function toolResultContent(state: Extract<OpenCode2Element, { type: "tool" }>["s
 
 export interface OpenCode2Mapper {
   map: RecordMapper<OpenCode2Record>;
+  /** {@link map} over the session's records with its delta journal read in among them: a journal
+   *  line streams the elements it carries, and an element's saved record closes its stream. */
+  mapMerged: RecordMapper<Merged<OpenCode2Record>>;
   /** Forget a run the emitter closed out of band. Keyed on the id, as 1.x's `forgetOpenRun` is, so a
    *  newer run opened before the report arrives stays open. */
   forgetOpenRun: (runId: string) => void;
 }
 
+/** A saved text or reasoning element as a message of its own, under its position id. */
+function wholeElement(kind: "text" | "reasoning", messageId: string, text: string, ts: number, cotal: CotalMeta): AguiEvent[] {
+  return kind === "text"
+    ? [
+        textMessageStart({ messageId, timestamp: ts, role: "assistant", cotal }),
+        textMessageContent({ messageId, delta: text, timestamp: ts }),
+        textMessageEnd({ messageId, timestamp: ts }),
+      ]
+    : [
+        reasoningMessageStart({ messageId, timestamp: ts, cotal }),
+        reasoningMessageContent({ messageId, delta: text, timestamp: ts }),
+        reasoningMessageEnd({ messageId, timestamp: ts }),
+      ];
+}
+
 export function createOpenCode2Mapper(opts: OpenCode2MapperOptions): OpenCode2Mapper {
+  const streams = new StreamedParts(opts.seed);
   let open: string | null = opts.resumeRunId ?? null;
   /** When the turn no run has taken yet began: its `user` record's time. */
   let begunAt: number | undefined;
@@ -96,6 +126,7 @@ export function createOpenCode2Mapper(opts: OpenCode2MapperOptions): OpenCode2Ma
       const runId = open;
       open = null;
       const failed = message.type === "idle" && message.outcome === "failed";
+      events.push(...streams.endAll(timestamp));
       events.push(failed
         ? runError({ message: message.error?.message || "opencode turn failed", timestamp, ...(message.error?.type ? { code: message.error.type } : {}) })
         : runFinished({ threadId: opts.threadId, runId, timestamp }));
@@ -115,18 +146,12 @@ export function createOpenCode2Mapper(opts: OpenCode2MapperOptions): OpenCode2Ma
     const messageId = `${message.id}#${index}`;
     const cotal = { providerMessageId: message.id };
 
-    if (element.type === "text" && element.text) {
-      events.push(
-        textMessageStart({ messageId, timestamp: ts, role: "assistant", cotal }),
-        textMessageContent({ messageId, delta: element.text, timestamp: ts }),
-        textMessageEnd({ messageId, timestamp: ts }),
-      );
-    } else if (element.type === "reasoning" && opts.reasoning && element.text) {
-      events.push(
-        reasoningMessageStart({ messageId, timestamp: ts, cotal }),
-        reasoningMessageContent({ messageId, delta: element.text, timestamp: ts }),
-        reasoningMessageEnd({ messageId, timestamp: ts }),
-      );
+    if (element.type === "text" || (element.type === "reasoning" && opts.reasoning)) {
+      // The element's ordinal among its message's elements of its kind names its stream.
+      const ordinal = (message.content ?? []).slice(0, index).filter((e) => e.type === element.type).length;
+      const closed = streams.saved(streamKey2(message.id, element.type, ordinal), element.text, ts);
+      events.push(...closed.events);
+      if (closed.mapAsNew && element.text) events.push(...wholeElement(element.type, messageId, element.text, ts, cotal));
     } else if (element.type === "tool") {
       const isError = element.state.status === "error";
       events.push(
@@ -147,8 +172,23 @@ export function createOpenCode2Mapper(opts: OpenCode2MapperOptions): OpenCode2Ma
     return events.length === 0 ? null : { runId, events };
   };
 
+  /** A journal line: the elements it streams, opening the turn's run at its first delta, and the end
+   *  of each element the plugin abandoned. Reasoning streams only when it is published at all. */
+  const mapDeltas = (line: Extract<Merged<OpenCode2Record>, { deltas: unknown }>): ReturnType<RecordMapper<OpenCode2Record>> => {
+    const events = line.deltas.flatMap((d) => (d.kind === "reasoning" && !opts.reasoning ? [] : streams.delta(d, line.timestamp)));
+    events.push(...streams.end(line.ends ?? [], line.timestamp));
+    if (events.length === 0) return null;
+    if (open === null) {
+      open = opts.mintRunId();
+      begunAt = undefined;
+      events.unshift(runStarted({ threadId: opts.threadId, runId: open, timestamp: line.timestamp, cotal: { runIdSource: "connector" } }));
+    }
+    return { runId: open, events };
+  };
+
   return {
     map,
+    mapMerged: (r) => ("deltas" in r ? mapDeltas(r) : map(r.harness)),
     forgetOpenRun: (runId) => {
       if (open === runId) open = null;
     },
