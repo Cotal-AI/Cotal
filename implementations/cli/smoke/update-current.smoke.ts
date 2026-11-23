@@ -1,10 +1,11 @@
 import "./update-isolation.js";
 import strictAssert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmdirSync, rmSync, symlinkSync } from "node:fs";
+import { copyFileSync, cpSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, renameSync, rmdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { countedAssert, emitSentinel } from "../../../bin/smoke/sentinel.mjs";
 import { executeUpdate, updateRuntime, type UpdateRuntime } from "../src/commands/update.js";
 const counted = countedAssert(strictAssert);
@@ -122,6 +123,74 @@ assert.equal(seedInstallationCurrent(), false, "an unseeded checkout is not prov
 const { registryArrivalCell } = await import("../../../bin/smoke/update-registry-arrival.smoke.mjs");
 const cacheUpdate = await registryArrivalCell({ scenario: "cache" });
 assert.equal(cacheUpdate.code, 0, "real CLI and npm update succeed with a user-owned cache that is not writable");
+
+function npmNodeEngine(): void {
+  const root = mkdtempSync(join(tmpdir(), "cotal-npm-node-"));
+  try {
+    const repoBin = join(import.meta.dirname, "../../../bin");
+    const posixLauncher = process.platform === "linux" || process.platform === "darwin";
+    const exe = process.platform === "win32" ? "node.exe" : "node";
+    const alternate = join(root, "alternate Node", exe);
+    const npmBin = join(root, "npm-bin");
+    const npmRoot = join(npmBin, "node_modules", "npm");
+    const cli = join(npmRoot, "bin", "npm-cli.js");
+    for (const dir of [dirname(alternate), dirname(cli)]) mkdirSync(dir, { recursive: true });
+    copyFileSync(process.execPath, alternate);
+    const version = JSON.parse(readFileSync(join(repoBin, "package.json"), "utf8")).version;
+    const record = join(root, "npm-runtime");
+    writeFileSync(join(npmRoot, "package.json"), JSON.stringify({ name: "npm", bin: { npm: "bin/npm-cli.js" }, engines: { node: process.version } }));
+    writeFileSync(cli, `#!/usr/bin/env node\nrequire('node:fs').appendFileSync(${JSON.stringify(record)}, process.execPath + '\\n');\nconsole.log(JSON.stringify(${JSON.stringify(version)}));\n`, { mode: 0o755 });
+    if (process.platform === "win32") writeFileSync(join(npmBin, "npm.cmd"), '@node "%~dp0node_modules\\npm\\bin\\npm-cli.js" %*\r\n');
+    else symlinkSync(cli, join(npmBin, "npm"));
+    const prefix = join(root, "prefix");
+    let entry = join(repoBin, "dist", "cotal.js");
+    if (posixLauncher) {
+      const installed = join(prefix, "lib/node_modules/cotal-ai");
+      mkdirSync(join(prefix, "bin"), { recursive: true });
+      mkdirSync(join(installed, "scripts"), { recursive: true });
+      cpSync(join(repoBin, "dist"), join(installed, "dist"), { recursive: true });
+      copyFileSync(join(repoBin, "package.json"), join(installed, "package.json"));
+      symlinkSync(join(repoBin, "node_modules"), join(installed, "node_modules"));
+      entry = join(installed, "dist", "cotal.js");
+      symlinkSync(entry, join(prefix, "bin", "cotal"));
+      const pin = join(installed, "scripts", "pin-npm-node.cjs");
+      copyFileSync(join(repoBin, "scripts", "pin-npm-node.cjs"), pin);
+      const result = spawnSync(alternate, [pin], { cwd: root, encoding: "utf8" });
+      assert.equal(result.status, 0, result.stdout + result.stderr);
+      assert.match(readlinkSync(join(prefix, "bin", "cotal")), /cotal-npm$/);
+    }
+    // Vary the running CLI's Node version without downloading a second runtime onto every runner.
+    const versionOverride = join(root, "project-node.mjs");
+    writeFileSync(versionOverride, `if (process.argv[1]?.endsWith('cotal.js')) Object.defineProperty(process, 'version', { value: '${process.version === "v22.10.0" ? "v22.10.1" : "v22.10.0"}' });\n`);
+    const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^(cotal_|npm_config_|path$)/i.test(key)));
+    const onlyNode = join(root, "project-bin");
+    mkdirSync(onlyNode);
+    if (process.platform === "win32") copyFileSync(process.execPath, join(onlyNode, exe));
+    else symlinkSync(process.execPath, join(onlyNode, exe));
+    const run = (flag: string, includeAlternate: boolean) => spawnSync(join(onlyNode, exe), [entry, "update", flag], {
+      cwd: root, encoding: "utf8", timeout: 60_000,
+      env: { ...env, HOME: root, USERPROFILE: root, APPDATA: join(root, "config"), LOCALAPPDATA: join(root, "config"),
+        COTAL_HOME: join(root, "cotal"), XDG_CONFIG_HOME: join(root, "config"), XDG_RUNTIME_DIR: root, npm_config_prefix: prefix,
+        COTAL_TELEMETRY: "off", COTAL_NO_UPDATE_CHECK: "1", COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_ALLOW_CHECKOUT_SEED: "1",
+        NODE_OPTIONS: `--import=${pathToFileURL(versionOverride).href}`,
+        PATH: [onlyNode, npmBin, ...(includeAlternate ? [dirname(alternate)] : [])].join(delimiter) },
+    });
+    const first = run("--check", !posixLauncher);
+    assert.equal(first.status, 0, first.stdout + first.stderr);
+    assert.match(first.stdout, /Registry latest:/);
+    assert.ok(readFileSync(record, "utf8").trim().split(/\r?\n/).every(node => node === alternate));
+    const before = readFileSync(entry);
+    const npmCalls = readFileSync(record, "utf8");
+    renameSync(alternate, `${alternate}.gone`);
+    const refused = run("--self", false);
+    assert.equal(refused.status, 1, refused.stdout + refused.stderr);
+    assert.match(refused.stderr, /no compatible Node\.js was found/);
+    assert.deepEqual(readFileSync(entry), before);
+    assert.equal(readFileSync(record, "utf8"), npmCalls, "the incompatible npm was not run");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+}
+
+npmNodeEngine();
 if (process.platform !== "win32") {
   const home = mkdtempSync(join(tmpdir(), "cotal-update-cwd-"));
   try {
