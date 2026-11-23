@@ -19,12 +19,9 @@ export function assertConfigAncestorProtected(): void {
   protectedLocalDirectory(path, "the Cotal config folder");
 }
 
-export function prepareUpdateConnectorConfig(staged: boolean, onRepair?: () => void): void {
-  if (staged) prepareConnectorConfigForUpdate(onRepair);
-  if (recoverExtensionPromotion(staged)) {
-    onRepair?.();
-    if (staged) prepareConnectorConfigForUpdate(onRepair);
-  }
+export function prepareUpdateConnectorConfig(staged: boolean, onChange?: () => void): void {
+  if (staged) prepareConnectorConfigForUpdate(onChange);
+  if (recoverExtensionPromotion(staged, onChange) && staged) prepareConnectorConfigForUpdate(onChange);
 }
 
 /** Repair the selection before the updater checks installed extension dependencies. */

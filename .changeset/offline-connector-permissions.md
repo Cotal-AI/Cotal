@@ -3,5 +3,5 @@
 "@cotal-ai/workspace": patch
 ---
 
-When self-update repairs connector directory permissions but cannot reach the registry, it reports that no installed packages were replaced.
-It gives the same report if it recovers an interrupted extension promotion before the registry check.
+When self-update changes connector state before a registry outage, it reports that no installed packages were replaced.
+That includes permission repairs and recovery of interrupted connector updates. A staging refusal also reports that packages were not replaced without claiming that connector state is unchanged.

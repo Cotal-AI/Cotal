@@ -1011,7 +1011,7 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
         return 0;
       }
       recordUpdateDeferral(targetVersion, `staged pre-install check refused: ${preflightDetail(error)}`);
-      rt.err(`staged pre-install check refused: ${message(error)}; ${repairedSelection ? "no installed packages were replaced" : "no installed packages or connector state were changed"}`);
+      rt.err(`staged pre-install check refused: ${message(error)}; no installed packages were replaced`);
       return 1;
     }
   }

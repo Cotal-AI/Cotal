@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -171,6 +172,8 @@ syncBuiltinESMExports();\n`);
   check.equal(existsSync(join(prefix, "lib/.cotal-generations")), false);
   if (nodeOptions === undefined) delete env.NODE_OPTIONS;
   else env.NODE_OPTIONS = nodeOptions;
+  chmodSync(installed, 0o700);
+  checkRetiredConnectorRecovery();
   chmodSync(installed, 0o755);
   writeFileSync(join(installed, "desktop-runtime.json"), "{}");
   const desktop = run();
@@ -183,4 +186,43 @@ syncBuiltinESMExports();\n`);
   console.log(`COTAL_SMOKE_SENTINEL cells=${counted.cells()} passed=${counted.cells()} failed=0`);
 } finally {
   chmodSync(installed, 0o755); chmodSync(join(installed, "dist"), 0o755); chmodSync(join(prefix, "lib"), 0o755);
+}
+
+function checkRetiredConnectorRecovery(): void {
+  const entry = realpathSync(join(installed, "dist/cotal.js"));
+  const { version } = JSON.parse(packageBefore) as { version: string };
+  const sets = join(connectorRoot, "installs", createHash("sha256").update(entry).digest("hex"), "sets");
+  const set = join(sets, version), active = join(set, "cotal"), retired = join(set, ".retired-cotal");
+  const selected = join(set, "selection.json"), current = join(sets, "current.json");
+  const selection = JSON.stringify({ v: 1, entry, version, root: active });
+  mkdirSync(join(retired, "extensions/child"), { recursive: true });
+  writeFileSync(join(retired, "extensions/child/state"), "restored");
+  writeFileSync(selected, selection);
+  writeFileSync(current, selection);
+
+  for (const phase of ["restore", "cleanup"]) {
+    if (phase === "cleanup") {
+      renameSync(active, retired);
+      chmodSync(join(retired, "extensions/child"), 0o500);
+      mkdirSync(join(active, "extensions"), { recursive: true });
+      writeFileSync(join(active, "extensions/state"), "retained");
+    }
+    const restore = phase === "restore";
+    const inode = lstatSync(restore ? retired : active).ino;
+    const result = run(offlineRegistry);
+    check.equal(result.status, 0, result.stderr);
+    check.equal(result.stderr, "");
+    check.equal(result.stdout.trim(), packagesKept, phase);
+    check.equal(existsSync(retired), false);
+    check.equal(lstatSync(active).ino, inode);
+    check.equal(readFileSync(join(active, restore ? "extensions/child/state" : "extensions/state"), "utf8"), restore ? "restored" : "retained");
+    for (const record of [selected, current]) check.equal(readFileSync(record, "utf8"), selection);
+    check.equal(readFileSync(join(installed, "package.json"), "utf8"), packageBefore);
+    check.equal(existsSync(join(cotal, "update-recovery.json")), false);
+    check.equal(existsSync(join(prefix, "lib/.cotal-generations")), false);
+  }
+  const retry = run(offlineRegistry);
+  check.equal(retry.status, 0, retry.stderr);
+  check.equal(retry.stdout.trim(), noChange);
+  console.log("Offline self-update reports retained connector restoration and cleanup, and an unchanged retry.");
 }
