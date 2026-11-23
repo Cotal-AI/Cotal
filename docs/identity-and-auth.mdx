@@ -68,8 +68,8 @@ With `cotal up --user-auth --idp <auth base URL>`, people sign in through an ext
 
 The first enable pins the IdP. Later enables cannot replace it with a different IdP. A missing grant denies access. User-auth commands refuse missing login or unavailable auth service rather than trying static credentials.
 
-By default the auth service assigns a permanent username on the first authorized exchange. A
-space can instead use usernames supplied by its owner directory. Members can look up a binding
+By default people confirm a permanent username at interactive sign-in. A space can instead use
+usernames supplied by its owner directory. Members can look up a binding
 in either direction. This does not change peer addresses or display names. Platform owners, open
 spaces, and no-login spaces have no bindings.
 

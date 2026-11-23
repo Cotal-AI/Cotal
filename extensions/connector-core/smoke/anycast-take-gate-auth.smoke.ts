@@ -169,6 +169,15 @@ try {
     check("the recorded taker's correlated reply is an answer", msg !== undefined && await sender.agent.answersQuestion(msg));
     check("a matching context and claimed role do not substitute for the recorded taker", msg !== undefined &&
       !await sender.agent.answersQuestion({ ...msg, fromId: sender.id, fromRole: "reviewer" }));
+    if (msg) {
+      const read = sender.agent.ep.anycastStatus;
+      const refusal = new Error("anycast status unavailable");
+      sender.agent.ep.anycastStatus = async () => { throw refusal; };
+      try {
+        const seen = await sender.agent.answersQuestion(msg).catch((error: unknown) => error);
+        check("failure to read the recorded taker is surfaced to the caller", seen === refusal, seen);
+      } finally { sender.agent.ep.anycastStatus = read; }
+    }
     if (msg) sender.agent.drainInboxDeliveries([msg.recvKey]);
   }
   const cx = await run({ seq, cancel: true });

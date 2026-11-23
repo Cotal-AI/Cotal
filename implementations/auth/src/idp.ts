@@ -94,7 +94,7 @@ export interface CreateIdpBridgeOpts {
    *  emits a conformant credential id. (`validateUserToken` stays tolerant of an absent claim so
    *  the CONNECT boundary owns the signed deny-new denial for pre-cut/forged tokens.) */
   mintConnectCredential: (args: { owner: string; actor: string; lifecycleUid: string }) => Promise<string>;
-  /** A hosted space assigns usernames before issuing a human bearer. */
+  /** Directory spaces can bind a supplied username before issuing a human bearer. */
   assignUsername?: AssignUsername;
   /** The dedicated `aud` of `dm-reader` proofs (#4189), from the same pinned IdP issuer and keys.
    *  Explicit operator config: it is never derived from, or defaulted to, `idp.audience`, and

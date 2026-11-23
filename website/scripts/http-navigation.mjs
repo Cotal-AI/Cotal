@@ -19,6 +19,7 @@ export const httpSidebarTitles = {
     'auth-health': 'Health',
     'auth-jwks': 'Verification keys',
     'auth-exchange': 'Exchange token',
+    'auth-username-pick': 'Choose username',
     'auth-manager-service-authority': 'Manager authority',
     'auth-manager-instances': 'Manager instances',
     'auth-endpoint-deregister': 'Remove Manager registration',
@@ -31,6 +32,8 @@ export const httpSidebarTitles = {
     'auth-mesh-discovery': 'Mesh registration',
   },
   'auth-host': {
+    'auth-host-reserve-username': 'Reserve username',
+    'auth-host-backfill-username': 'Backfill username',
     'auth-host-retire-interactive': 'Retire interactive',
     'auth-host-activate-managed': 'Activate managed',
     'auth-host-retire-managed': 'Retire managed',

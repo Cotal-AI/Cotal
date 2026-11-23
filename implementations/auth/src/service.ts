@@ -86,7 +86,8 @@ import { type ManagerCluster } from "./manager-contract.js";
 import { authorityBarrierGrants, authorityWriterGrants, openAuthorityClient, openSupervisedConnectReader, remoteManagerIssuerGrants, registrationExecutorGrants, servedRunRequestSubjects, servedRunCancelRequestSubject, servedSpawnRequestSubjects, serviceCalloutWriterGrants, serviceHostDiscoveryGrants, type AuthorityClient } from "./authority-client.js";
 import { createNativeServiceCalloutAuthority, type NativeServiceCalloutAuthority } from "./native-service-callout.js";
 import { openChatSessionAuthority } from "./chat-session-authority.js";
-import { openUsernameAssignment } from "./username-assignment.js";
+import { fenceUsernameAssignment, openUsernameAssignment } from "./username-assignment.js";
+import { handleUsername, USERNAME_BACKFILL_PATH, USERNAME_PICK_PATH, USERNAME_RESERVE_PATH } from "./username-routes.js";
 import { CorruptNativeIssuanceEvidence, pruneNativeIssuance } from "./native-issuance.js";
 import { ensureRootCredential } from "./root-credential.js";
 import { activateLifecycleAtUid, observeGate, openLifecycleRegistry, readLifecycleHeadForOperation, type LifecycleRegistry } from "./lifecycle-registry.js";
@@ -521,7 +522,7 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
   // A failed open closes the scanners deliberately, which must not fence like a mid-life death.
   unwind.push(async () => { closing = true; });
   opts.probePlaneDeath?.({ ledger: () => ledgerCand.close(), records: () => recordsCand.close() });
-  const assignUsername = await openUsernameAssignment(writer.nc, space, hold.guard, log, loadPinnedIdp(opts.dir)?.username);
+  const usernames = await openUsernameAssignment(writer.nc, space, hold.guard, log, loadPinnedIdp(opts.dir)?.username);
   const barrierReg = await openLifecycleRegistry(barrier.nc, space, scanner, recordsScanner);
   const evictPrincipal = opts.probeEvictor ?? makeDeliveryAdminEvictor({ onConnection, space, server, dataAccount, log });
   // The RETIREMENT deps (#29 piece 4): the barrier's injected mechanics, assembled from reviewed
@@ -979,7 +980,7 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
     }
   };
   const chat = openChatSessionAuthority({
-    assignUsername,
+    assignUsername: (owner, claims, supplied) => supplied === undefined ? Promise.resolve(undefined) : usernames.exchange(owner, claims, supplied),
     space,
     dir: opts.dir,
     registry,
@@ -1023,10 +1024,7 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
   });
   return {
     ...callout,
-    assignUsername: (owner, claims, supplied) => {
-      refuseIfFenced();
-      return assignUsername(owner, claims, supplied);
-    },
+    username: fenceUsernameAssignment(usernames, refuseIfFenced),
     openChatSession: async (args) => {
       refuseIfFenced();
       return chat.admit(args);
@@ -1232,6 +1230,7 @@ async function resumeOpenOperations(reg: LifecycleRegistry, evictPrincipal: Evic
 type HumanHolder = Extract<ManagerAuthorityHolder, { scope: string[] }>;
 
 export interface HandlerCtx {
+  username?: AuthAuthorityPlane["username"];
   deregisterEndpoint: AuthAuthorityPlane["deregisterEndpoint"];
   /** The callout's connect limits, which the exchange checks before it mints. */
   connectLimiter: ConnectLimiter;
@@ -1309,6 +1308,9 @@ const ROUTES = new Map<string, RouteHandler>([
     },
   ],
   ["/exchange", (req, res, ctx) => handleExchange(req, res, ctx, LOOPBACK_POLICY)],
+  [USERNAME_PICK_PATH, (req, res, ctx) => handleUsername(req, res, ctx, LOOPBACK_POLICY, "pick")],
+  [USERNAME_RESERVE_PATH, (req, res, ctx) => handleUsername(req, res, ctx, LOOPBACK_POLICY, "reserve")],
+  [USERNAME_BACKFILL_PATH, (req, res, ctx) => handleUsername(req, res, ctx, LOOPBACK_POLICY, "backfill")],
   ["/manager-service-authority", (req, res, ctx) => handleManagerServiceAuthority(req, res, ctx, LOOPBACK_POLICY)],
   ["/endpoint-deregister", (req, res, ctx) => handleEndpointDeregister(req, res, ctx, LOOPBACK_POLICY)],
   ["/manager-instances", (req, res, ctx) => handleManagerInstances(req, res, ctx, LOOPBACK_POLICY)],
@@ -1411,6 +1413,7 @@ export function makePublicHandler(
       },
     ],
     ["/exchange", (req, res, c) => handleExchange(req, res, c, policy)],
+    [USERNAME_PICK_PATH, (req, res, c) => handleUsername(req, res, c, policy, "pick")],
     ["/manager-service-authority", (req, res, c) => handleManagerServiceAuthority(req, res, c, policy)],
     ["/endpoint-deregister", (req, res, c) => handleEndpointDeregister(req, res, c, policy)],
     ["/manager-instances", (req, res, c) => handleManagerInstances(req, res, c, policy)],

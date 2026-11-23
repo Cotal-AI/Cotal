@@ -173,8 +173,11 @@ const refuse = (code: RefusalCode, message: string, target: unknown, remedy?: st
  *  space, or a registration this machine started or a catalog lists, is never replaced that way, with
  *  or without `--force`: it is forgotten or stopped first. `space add` and `meshes add` share this. */
 export function handAddedRegistration(name: string, force: boolean, target: unknown): MeshEntry | undefined {
-  if (findPreparedSpace(name))
-    throw refuse("CONFLICT", `"${name}" is a space prepared on this machine`, target, `start it with \`cotal up\` in its root, or forget it with \`cotal space forget ${name}\``);
+  const prepared = findPreparedSpace(name);
+  if (prepared) {
+    const start = codeSpan(`${displayCmd()} up --root ${shellWord(prepared.root)} --space ${name}`);
+    throw refuse("CONFLICT", `"${name}" is a space prepared on this machine`, target, `to start the local space, restore its project folder first if it moved, then run ${start}; to register the other broker instead, run ${codeSpan(`${displayCmd()} space forget ${name}`)}, then repeat the add with the same options`);
+  }
   const existing = findMesh(name);
   // `--force` replaces only a registration added by hand, so the refusal offers it only for one.
   if (existing && existing.origin !== "manual") {

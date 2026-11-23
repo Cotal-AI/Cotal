@@ -4,8 +4,8 @@
  * binary reads the records a real `up`, `meshes add` or catalog sync leaves. A real broker answers
  * for one space; another points at a port nothing listens on; a discovered one points at a listener
  * that counts connections, so the suite can show a read never dials it.
- * A registry record that does not parse refuses the listing and show with SCHEMA_INVALID, and so does
- * every other command that reads the registry, changing nothing.
+ * A registry record that does not parse refuses reads with SCHEMA_INVALID. Clearing the selection
+ * reports that it cannot identify the folder's space but still clears the selection.
  *
  * Needs `nats-server` on PATH.
  *
@@ -32,7 +32,7 @@ const hintSandbox = recordSmokeSandbox({ root: hintProject, cotalHome, xdgConfig
 // Set before the workspace is imported: it reads COTAL_HOME on each call, so the real ~/.cotal is
 // never touched.
 process.env.COTAL_HOME = cotalHome;
-const { clearCurrent, findMesh, getCurrent, meshesDir, recordMesh, setCurrent } = await import("@cotal-ai/workspace");
+const { clearCurrent, findMesh, getCurrent, meshesDir, recordMesh, removeMesh, setCurrent } = await import("@cotal-ai/workspace");
 
 const { check, finish } = createSuite();
 const HOST_ENV = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("COTAL_") && k !== "FORCE_COLOR" && k !== "NO_COLOR"));
@@ -88,6 +88,36 @@ for (let i = 0; i < 50; i++) {
   const { isReachable } = await import("@cotal-ai/core");
   if (await isReachable(LIVE)) break;
   await new Promise((r) => setTimeout(r, 100));
+}
+
+// An implicit config scope outside a project requires a running broker.
+{
+  const space = "config-probe";
+  const entry = { space, server: DEAD, root: hintProject, mode: "open", origin: "manual", ts: new Date().toISOString() } as const;
+  recordMesh(entry);
+  try {
+    const set = json(["config", "set", "harness", "codex", "--space", space]);
+    check("fixture: the offline space holds a harness override", set.status === 0, shown(set));
+    const before = registryFiles();
+    const plain = run(["config", "get", "harness", "--plain"]);
+    const implicit = json(["config", "get", "harness"]);
+    check("without a running space, plain and JSON use defaults", plain.status === 0 && /Value:\s+claude/.test(plain.stdout) && /Scope:\s+your defaults/.test(plain.stdout) &&
+      implicit.status === 0 && implicit.env?.target === null && implicit.env.result.scope.space === null && implicit.env.result.setting.value === "claude", { plain: shown(plain), json: shown(implicit) });
+    const explicit = json(["config", "get", "harness", "--space", space]);
+    check("explicit config still reads the offline space without changing the registry", explicit.status === 0 && explicit.env?.result.setting.value === "codex" &&
+      explicit.env.result.scope.from === "flag" && JSON.stringify(registryFiles()) === JSON.stringify(before), shown(explicit));
+    setCurrent(space);
+    const selected = json(["config", "get", "harness"]);
+    check("a saved selection still reads the offline space", selected.status === 0 && selected.env?.result.setting.value === "codex" && selected.env.result.scope.from === "selected", shown(selected));
+    clearCurrent();
+    recordMesh({ ...entry, server: LIVE });
+    const running = json(["config", "get", "harness"]);
+    check("the only running space supplies its override", running.status === 0 && running.env?.result.setting.value === "codex" && running.env.result.scope.from === "running", shown(running));
+  } finally {
+    clearCurrent();
+    json(["config", "unset", "harness", "--space", space]);
+    removeMesh(space);
+  }
 }
 
 // ── An empty registry ────────────────────────────────────────────────────────────────────────────────
@@ -381,6 +411,15 @@ recordMesh({ space: "gamma", server: CATALOG, root, mode: "user", origin: "catal
     const r = json(args);
     check(`cotal ${args.join(" ")} refuses a record that does not parse with SCHEMA_INVALID, exit 1, naming the file`, r.status === 1 && r.env?.outcome === "refused" && r.env.error?.code === "SCHEMA_INVALID" && String(r.env.error.message).includes(file), shown(r));
   }
+  const cleared = json(["use", "--clear"]);
+  check("JSON clear removes the selection and reports the unreadable folder scope separately", cleared.status === 0 && cleared.env?.outcome === "ok" &&
+    cleared.env.completeness === "partial" && cleared.env.result.current === null && cleared.env.result.previous === selected && cleared.env.result.folder === null &&
+    cleared.env.warnings.some((w: { code: string; target: { file?: string } }) => w.code === "SCHEMA_INVALID" && w.target.file === file) && getCurrent() === undefined, shown(cleared));
+  if (selected !== undefined) setCurrent(selected);
+  const plain = run(["use", "--clear", "--plain"]);
+  check("plain clear also succeeds and reports the unreadable record", plain.status === 0 && plain.stdout.includes("cleared the selection") &&
+    plain.stderr.includes(file) && getCurrent() === undefined && readFileSync(file, "utf8") === '{"space":"omega"', shown(plain));
+  if (selected !== undefined) setCurrent(selected);
   rmSync(file);
   check("those refusals changed nothing: alpha is registered, the selection is kept and zeta was not prepared", findMesh("alpha") !== undefined && getCurrent() === selected && !existsSync(join(elsewhere, ".cotal")), { selected, now: getCurrent() });
 }

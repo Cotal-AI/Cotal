@@ -277,9 +277,19 @@ try {
       removedHello.status === 0 && !existsSync(helloPath) && !existsSync(`${helloPath}.1`) &&
         out(removedHello).includes("Deleted logs:") && out(removedHello).includes(helloPath), out(removedHello));
 
-    const stop = cotal(["manager", "stop", "--yes"]);
+    const refused = cotal(["manager", "stop", "--space", SPACE, "--with-agents", "--json"]);
+    const refusal = JSON.parse(refused.stdout);
+    const retryStop = /`([^`]+)`/.exec(refusal.error?.remedy ?? "")?.[1];
+    const expectedStop = `cotal svc stop manager --space ${SPACE} --with-agents --yes --json`;
+    check("manager stop confirmation keeps the selected space, agent policy, and JSON output",
+      refused.status === 1 && refusal.outcome === "refused" && refusal.error?.code === "USAGE_INVALID" && retryStop === expectedStop && inventory().running.includes("manager"), out(refused));
+    if (retryStop !== expectedStop) throw new Error(`unexpected manager stop confirmation: ${retryStop}`);
+    const stop = cotal(retryStop.split(" ").slice(1));
     managerUp = stop.status !== 0;
-    check("cotal manager stop stops it", stop.status === 0 && !inventory().running.includes("manager"), out(stop));
+    const stopReceipt = JSON.parse(stop.stdout);
+    check("the confirmation command stops the same manager and returns a JSON receipt", stop.status === 0 &&
+      stopReceipt.outcome === "ok" && stopReceipt.result?.kind === "service-stop" && stopReceipt.result.instanceId === refusal.target?.instanceId &&
+      stopReceipt.result.recordedState === "stopped" && !inventory().running.includes("manager"), out(stop));
     const after = row(inventory().services, "manager");
     check("  and the listing shows it stopped, with cotal manager start next", after?.state === "stopped" && after.next === "cotal manager start", after);
     const savedPreview = cotal(preview);
@@ -443,6 +453,11 @@ try {
     const custom = cotal(["service", "add", "stack-broker", "--exec", "/bin/sleep 600", "--space", PRESET_SPACE]);
     check("a never-started space accepts a process service named stack-broker", custom.status === 0, out(custom));
     const foregroundStart = ["service", "start", "stack-broker", "--space", PRESET_SPACE, "--foreground", "--json"];
+    for (const args of [["service", "start", "--help"], ["help", "service", "start"]]) {
+      const help = cotal(args);
+      check(`${args.join(" ")} lists the foreground and dry-run switches separately`, help.status === 0
+        && /\[--foreground\]\s+\[--dry-run\]/.test(help.stdout), out(help));
+    }
     const previewStart = cotal([...foregroundStart, "--dry-run"]);
     const previewReceipt = JSON.parse(previewStart.stdout);
     check("a foreground dry-run returns one JSON preview without allocating or signalling a process",
@@ -514,13 +529,25 @@ try {
       && beforeIdentity.observedProcess === "gone" && typeof beforeIdentity.revision === "string"
       && JSON.stringify(beforeIdentity) === JSON.stringify(afterIdentity), { beforeIdentity, afterIdentity });
     const brokerOnly = controller(["up", "--root", controllerRoot, "--space", controllerSpace, "--no-manager"]);
-    const addStandalone = controller(["service", "add", "manager", "--preset", "manager", "--space", controllerSpace, "--console-port", consolePort]);
+    const addStandalone = controller(["service", "add", "manager", "--preset", "manager", "--space", controllerSpace, "--console-port", consolePort, "--name", "standalone"]);
     const startStandalone = controller(["service", "start", "manager", "--space", controllerSpace, "--json"]);
     const standalone = JSON.parse(startStandalone.stdout).result;
     check("the broker-only route starts a separately configured manager",
       brokerOnly.status === 0 && addStandalone.status === 0 && startStandalone.status === 0
       && standalone?.definition === "manager" && standalone.observedProcess === "running",
       { brokerOnly: out(brokerOnly), add: out(addStandalone), start: out(startStandalone) });
+    const startHelp = controller(["manager", "start", "--help"]);
+    const helpText = out(startHelp).replace(/\s+/g, " ");
+    check("manager start help limits name selection to user-auth spaces and points open and static spaces to cotal ps",
+      startHelp.status === 0 && helpText.includes("--name <name> select by name with --on only on user-auth spaces") &&
+      helpText.includes("--name <string> manager name for presence and, on user-auth spaces only, --on. On open and static spaces, use the instance ID from `cotal ps`"), out(startHelp));
+    const listed = controller(["ps", "--space", controllerSpace, "--plain"]);
+    const managerId = listed.stdout.match(/^\s*instance:\s+([a-z0-9]{26,32})\b/m)?.[1];
+    const byName = controller(["ps", "--space", controllerSpace, "--on", "standalone", "--plain"]);
+    const byId = managerId ? controller(["ps", "--space", controllerSpace, "--on", managerId, "--plain"]) : undefined;
+    check("on the open space, the printed instance ID works and the manager name does not",
+      listed.status === 0 && byName.status === 1 && out(byName).includes("USAGE_INVALID") && byId?.status === 0,
+      { listed: out(listed), byName: out(byName), byId: byId && out(byId) });
     const stopStandalone = controller(["manager", "stop", "--space", controllerSpace, "--yes", "--json"]);
     check("the standalone manager stops before the stack starts its own",
       stopStandalone.status === 0 && JSON.parse(stopStandalone.stdout).outcome === "ok", out(stopStandalone));

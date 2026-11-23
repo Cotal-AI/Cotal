@@ -79,11 +79,11 @@ const connectSeat = async (name: string, role?: string) => {
   return { agent, config };
 };
 type Seat = Awaited<ReturnType<typeof connectSeat>>;
-const run = async (seat: Seat, tool: string, args: Record<string, unknown> = {}): Promise<{ text: string; isError: boolean }> => {
+const run = async (seat: Seat, tool: string, args: Record<string, unknown> = {}) => {
   const spec = cotalToolSpecs(seat.config, "smoke").find((s) => s.name === tool);
   if (!spec) throw new Error(`no ${tool}`);
   const r = await spec.run(seat.agent, seat.config, args);
-  return { text: r.text, isError: r.isError === true };
+  return { ...r, isError: r.isError === true };
 };
 const rowsOf = (text: string) => text.split("\n").filter((l) => /^[●○] #/.test(l)).map((l) => /^[●○] #(\S+)/.exec(l)![1]);
 const until = async (cond: () => boolean | Promise<boolean>, ms = 6000) => {
@@ -169,7 +169,8 @@ try {
     base.text,
   );
   const unrelated = await run(me, "cotal_dm", { to: "grace", text: "nobody" });
-  check("an unrelated name keeps the plain refusal", unrelated.isError && unrelated.text === `Couldn't DM: no peer "grace" in space "${space}"`, unrelated.text);
+  check("an unrelated name gets an explicit not-found refusal", unrelated.isError && unrelated.structured?.code === "TARGET_NOT_FOUND" &&
+    unrelated.text === `Couldn't DM (TARGET_NOT_FOUND): no peer "grace" in space "${space}"`, unrelated.text);
   const full = await run(me, "cotal_dm", { to: "ada-lovelace (web)", text: "by full name" });
   check("the full name delivers", !full.isError && full.text.startsWith("Sent to ada-lovelace (web)."), full.text);
   const texts = (seat: Seat) => seat.agent.inboxSnapshot(8).items.map((i) => i.text);

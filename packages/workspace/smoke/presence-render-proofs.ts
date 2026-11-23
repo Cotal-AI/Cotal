@@ -8,7 +8,7 @@ type Binding = { proof: SmokeProof; sites: { path: string; anchors: string[] }[]
 // unrelated outputs, so neither an import nor another assertion about that module is coverage.
 const smokeProofs: Binding[] = [
   {
-    proof: { path: "extensions/connector-core/smoke/orientation.smoke.ts", anchor: "assert.match(o.peers.summary, /bob\\/worker \\(working · progress unknown\\)/," },
+    proof: { path: "extensions/connector-core/smoke/orientation.smoke.ts", anchor: "assert.match(o.peers.summary, /bob \\(role: worker\\) \\(working · progress unknown\\)/," },
     sites: [{ path: "extensions/connector-core/src/orientation.ts", anchors: ['`${peerLabel({ name, ...(p.card.role ? { role: p.card.role } : {}) })} (${honestStatus(p.status)})`', "honestStatus(p.status)"] }],
   },
   {

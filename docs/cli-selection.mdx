@@ -241,8 +241,10 @@ was cut off before it recorded an outcome, as an `up` interrupted before it regi
 leaves it, the refusal says so and names `cotal status` in that root, which names the step that
 finishes or settles it. `cotal up --space <name>` in a folder
 that is already another local space's root refuses with `CONFLICT`, exit 2. `space add` refuses a
-prepared name. A registration for another broker in the same folder does not prevent a prepared
-local space from starting there. A prepared space records its folder by path, and moving the folder
+prepared name and gives the startup command for its recorded project folder. If the project moved,
+restore it to that path before starting it. To register the other broker instead, forget the prepared
+space and repeat the add with the same options. A registration for another broker in the same folder
+does not prevent a prepared local space from starting there. A prepared space records its folder by path, and moving the folder
 leaves nothing in it that names the space. A bare `cotal up` in a folder that names no space, while the selected space is
 prepared in a folder that no longer exists, refuses `TARGET_UNAVAILABLE`, exit 2, rather than start a
 space named after the folder there. Forget the space with `cotal space forget <name>`, prepare it again in its new
@@ -492,8 +494,9 @@ It names the file without changing it. Clear it with `cotal use --clear`, or sel
 If a directory occupies a saved selection file's path, either repair moves the directory aside and leaves its contents intact.
 `use --clear` removes the selection, so a command targets its folder's space again. Its receipt
 names the space that was selected, and `--json` gives `current: null` with that `previous`. With
-nothing selected it is a `no-op`, exit 0. In both cases, `folder` still identifies the local
-folder's space or is null when none is recorded. `use --clear` takes no space name.
+nothing selected it is a `no-op`, exit 0. In both cases, `folder` identifies the local folder's
+space or is null when none is recorded. If the folder's space cannot be read, the command still
+succeeds, reports a warning, and sets `folder` to null in JSON. `use --clear` takes no space name.
 A space stays selected through its `cotal down`: `use` then reports it as stopped, with its last
 operation, such as `` `cotal down`, completed ``, and names `cotal up` in its root. This also applies
 when a legacy space named after its folder keeps its registration after `down`. For that space,
@@ -618,8 +621,10 @@ this folder, adoption refreshes the recorded store identity from it, so a moved 
 no replacement warning before startup, while a missing store or a replacement made after adoption
 still warns. It refuses with `CONFLICT`, writing nothing, when the folder's `.cotal` is a
 link, when the recorded folder still holds the journal, when this machine records an instance of
-that stack, or when the space is prepared or registered on this machine. For a confirmed stopped
-stack at a missing path, follow the forget and adopt commands shown by `cotal status`. A copy brought from another machine and a
+that stack, or when the space is prepared or registered on this machine. If this machine still
+records an instance, moving the folder back to its recorded path makes the existing stack usable
+there without adoption. For a confirmed stopped stack at a missing path, follow the forget and
+adopt commands shown by `cotal status`. A copy brought from another machine and a
 folder moved after its record was forgotten are adopted. A folder renamed from a path that `cotal up`
 refuses, such as one with a tab in it, is told only to adopt, since moving it back would not start
 the stack. Without `--adopt`, nothing rewrites a journal.
@@ -1316,7 +1321,7 @@ catalogs, status names both and marks which one spawn launches from. A green `de
 passes the same agent-file loader spawn uses; a present but invalid file is reported as invalid.
 
 `cotal status --components` prints the report, then a fail-loud per-component health pass. It takes
-no `--json`, `--plain` or `--all`. The refusal's retry keeps the explicit space and broker address.
+no `--json`, `--plain` or `--all`. If you pass both output flags, remove both to run the component check. The refusal's retry keeps the explicit space and broker address.
 It reads **each
 component's own control surface**, rather than treating a PID, a lease, or a successful probe of a
 sibling as proof that the component serves. It prints one of `serving`, `absent`, `not-serving`, or
@@ -1369,6 +1374,8 @@ That exit replaces the report's own, so a partial report followed by a clean pas
   failure in its facts, even if that URL is reachable.
   For a locally owned stack, a missing or dead broker process is `absent`, not `not-serving`.
   A cleanly stopped controller target reports `absent` and exits `1` without dialing another space.
+  If its store is not writable or its broker address is occupied, the target row names what to fix
+  before restarting.
   For open and static-auth plaintext NATS targets with no absent local process, the probe also checks JetStream and the
   recorded authentication requirement. An unauthenticated substitute for a static-auth broker
   is not reported as serving. When the address and process identity match this space's running

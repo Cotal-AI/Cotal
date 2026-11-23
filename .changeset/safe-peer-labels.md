@@ -9,4 +9,4 @@
 "@cotal-ai/workspace": minor
 ---
 
-Peer labels separate the role from the name, replies use verified principals, and readers, including the private terminal app, recognize principal IDs in incoming mention hints.
+Peer labels separate the role from the name and fit within console matrix columns, replies use verified principals, and readers, including the private terminal app, recognize principal IDs in incoming mention hints.

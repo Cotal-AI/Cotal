@@ -99,6 +99,10 @@ try {
   }
   for (const recreated of [false, true]) {
     if (recreated) mkdirSync(join(root, ".cotal/nats"), { recursive: true });
+    const adoption = cli(moved, "space", "create", space, "--adopt", "--plain");
+    check(`adoption of a known instance names the move back without a second adoption, recreated=${recreated}`,
+      adoption.status === 2 && adoption.stderr.includes("this machine records instance") && adoption.stderr.includes(`move this folder back to ${root}`)
+        && adoption.stderr.includes("use the stack there without adopting it") && !adoption.stderr.includes("run the command again"));
     const status = json(other, "status", "--space", space);
     const show = json(other, "space", "show", space);
     check(`status diagnoses the missing stack root, recreated=${recreated}`, status.envelope.result?.selected?.rootGone === true && status.envelope.result.selected.connection === "root-gone");

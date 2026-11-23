@@ -18,6 +18,7 @@ class FakeAgent extends EventEmitter {
   attention = "open" as const;
   items: InboxItem[] = [
     { id: "quiet", recvKey: "quiet", ts: 1, fromId: "q", fromName: "Quiet", kind: "channel", channel: "quiet", mentionsMe: false, historical: false, text: "quiet body" },
+    { id: "uncertain", recvKey: "uncertain", ts: 2, fromId: "u_other.reviewer", fromName: "Reviewer", kind: "dm", mentionsMe: false, historical: false, text: "uncertain reply" },
     { id: "dm", recvKey: "dm", ts: 2, fromId: "u_foreign.reviewer", fromName: "claimed name", verifiedFromLabel: "ben/reviewer", kind: "dm", mentionsMe: false, historical: false, text: "dm body" },
   ];
   pullOnly = new Set(["quiet"]);
@@ -61,7 +62,8 @@ class FakeAgent extends EventEmitter {
     return Promise.resolve({ items: [], droppedChannels: [] });
   }
 
-  answersQuestion(): boolean {
+  async answersQuestion(item: InboxItem): Promise<boolean> {
+    if (item.id === "uncertain") throw new Error("taker lookup is unavailable");
     return false;
   }
 
@@ -151,11 +153,11 @@ try {
   client.write(JSON.stringify({ t: "tool", id: "pull", name: "cotal_inbox", args: {} }) + "\n");
   const tool = await waitFrame((frame) => frame.t === "tool_result" && frame.id === "pull");
   assert.match(String(tool.text), /quiet body/, "cotal_inbox must destructively surface quiet ambient");
-  assert.deepEqual(agent.items.map((item) => item.id), ["dm"], "the pull must leave connector-managed automatic traffic untouched");
+  assert.deepEqual(agent.items.map((item) => item.id), ["uncertain", "dm"], "the pull must leave connector-managed automatic traffic untouched");
 
   client.write(JSON.stringify({ t: "delivered", recvKey: "dm" }) + "\n");
-  for (let i = 0; i < 50 && agent.items.length; i++) await new Promise((resolve) => setTimeout(resolve, 10));
-  assert.equal(agent.items.length, 0, "Hermes completion must exact-ack the delivered DM");
+  for (let i = 0; i < 50 && agent.items.some((item) => item.id === "dm"); i++) await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.deepEqual(agent.items.map((item) => item.id), ["uncertain"], "correlation failures stay unacknowledged while the next DM can be delivered");
   client.destroy();
   console.log("✓ hermes quiet bridge: pull-only traffic is isolated from automatic delivery");
 } finally {

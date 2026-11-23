@@ -618,7 +618,7 @@ async function startAuthContext(o: AuthContextOptions): Promise<{ handle: Omit<A
       issuer,
       authorizeActor,
       mintConnectCredential: plane.mintConnectCredential,
-      assignUsername: plane.assignUsername,
+      assignUsername: plane.username.exchange,
       ...(idp.dmReaderAudience !== undefined ? { dmReaderAudience: idp.dmReaderAudience } : {}),
       connectLimiter,
     });
@@ -634,6 +634,7 @@ async function startAuthContext(o: AuthContextOptions): Promise<{ handle: Omit<A
     });
     const serviceEngine = plane.serviceEndpointHost !== undefined ? serviceHostEngineOf(plane.serviceEndpointHost) : undefined;
     const ctx: HandlerCtx = {
+      username: plane.username,
       connectLimiter,
       ...(issueToolResultConsent ? { issueToolResultConsent } : {}),
       ...(serviceEngine !== undefined ? { serviceAuthority: { space, accountPublicKey: keys.dataAccount.pub, engine: serviceEngine, material: issuer } } : {}),

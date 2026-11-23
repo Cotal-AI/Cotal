@@ -202,7 +202,9 @@ not an address. Use the full principal to copy a destination or reply to a speci
 Control characters, Unicode line and paragraph separators, and brackets render as spaces.
 Using a decorated display label as a target refuses. In a per-user-auth space, a prompt can show a
 foreign sender as `user/agent` when the registry confirms the username. Otherwise it shows the
-verified principal. The prompt label is not a reply key.
+verified principal. If a registry read fails or 128 distinct owner lookups are already in flight,
+that message keeps its principal label without retrying. Later messages can still look up the
+username. The prompt label is not a reply key.
 
 A managed lifecycle UID distinguishes an incarnation from a later reuse of its name or principal.
 The manager's internal session recovery component checks connector state and control-socket proof,
