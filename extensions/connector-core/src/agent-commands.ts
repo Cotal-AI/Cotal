@@ -31,6 +31,10 @@ export interface AgentCommand {
 /** Lists and starts commands on a connector's harness. */
 export interface CommandDispatcher {
   readonly targets: ReadonlySet<CommandTarget>;
+  /** Why the harness runs no commands now, or undefined while it does. While it names a cause,
+   *  `commands` answers `supported: false`, and `command` and `interrupt` are `unimplemented` with
+   *  that cause. Without it, the harness always runs them. */
+  unsupported?(): string | undefined;
   /** Every command and skill the harness runs now, each named as {@link dispatch} names it. A
    *  rejection is the caller's error reply. */
   list(): Promise<CommandEntry[]>;
@@ -118,7 +122,7 @@ export function createCommandLane(dispatcher: CommandDispatcher | undefined, onQ
   }
 
   async function list(): Promise<CommandsOutput> {
-    if (!dispatcher) return { supported: false };
+    if (!dispatcher || dispatcher.unsupported?.() !== undefined) return { supported: false };
     let listed: unknown;
     try {
       listed = await within(() => dispatcher.list(), COMMAND_LIST_MS);
@@ -149,6 +153,8 @@ export function createCommandLane(dispatcher: CommandDispatcher | undefined, onQ
     notSelf(ctx, "runs a command on itself");
     const input = ctx.request.args as unknown as CommandInput;
     if (!dispatcher) throw refused("unimplemented", "this agent's connector runs no commands or skills");
+    const cause = dispatcher.unsupported?.();
+    if (cause !== undefined) throw refused("unimplemented", `this agent's connector runs no commands now: ${cause}`);
     if (!dispatcher.targets.has(input.target)) throw refused("unimplemented", `this agent's connector runs no ${input.target}s`);
     if (closed) throw refused("unavailable", "this agent is stopping");
     if (queued().length >= MAX_QUEUED_COMMANDS) throw refused("resource-exhausted", `${MAX_QUEUED_COMMANDS} commands are already queued`);
@@ -162,6 +168,8 @@ export function createCommandLane(dispatcher: CommandDispatcher | undefined, onQ
   async function interrupt(ctx: EpPrincipalServeContext): Promise<InterruptOutput> {
     notSelf(ctx, "interrupts its own turn");
     if (!dispatcher?.interrupt) throw refused("unimplemented", "this agent's connector cannot interrupt a turn");
+    const cause = dispatcher.unsupported?.();
+    if (cause !== undefined) throw refused("unimplemented", `this agent's connector cannot interrupt a turn now: ${cause}`);
     if (closed) throw refused("unavailable", "this agent is stopping");
     try {
       return { state: await dispatcher.interrupt() };

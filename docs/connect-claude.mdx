@@ -419,6 +419,29 @@ If Claude reaches neither the development-channels prompt nor its input screen, 
 If Claude opens its input screen without the prompt, the seat stays running and the spawn receipt warns that mesh traffic cannot wake it while idle.
 Use `--foreground` to handle a native dialog yourself.
 
+### Managed settings refuse the plugin flag
+
+Cotal loads its plugin into a managed seat with `--plugin-dir`.
+When your organization's managed settings set `disableSideloadFlags`, Claude refuses that flag and exits at startup.
+The launch then fails with Claude's own reason.
+Managed launches need an administrator to remove `disableSideloadFlags`.
+
+An administrator can still install the Cotal plugin for sessions that people open themselves.
+Place a directory marketplace that lists the `cotal` plugin at a fixed path that only root can write, then add these managed settings:
+
+```json
+{
+	"extraKnownMarketplaces": {
+		"cotal-org": { "source": { "source": "directory", "path": "/opt/cotal-marketplace" } }
+	},
+	"enabledPlugins": { "cotal@cotal-org": true },
+	"prependPlugins": ["cotal@cotal-org", "sec-default@builtin"]
+}
+```
+
+If your organization manages settings from the Claude admin console, set these keys there.
+Claude ignores a managed settings file on the computer in that case.
+
 ### A second session cannot consume an inbox
 
 Keep the existing session and choose a distinct actor for the new launch.

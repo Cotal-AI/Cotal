@@ -1,0 +1,3 @@
+# The command socket parser accepts each valid mod frame and refuses each malformed one, one cell per rule.
+# Mutation-proofed - extensions/connector-claude-code/smoke/mutations/command-frames.json.
+smoke:claude-command-frames
