@@ -622,8 +622,12 @@ function refuseRemovedFolder(cmd: Command, parsed: ParsedArgs, rest: readonly st
     const root = removed ? undefined : findCotalRoot();
     if (typeof parsed.values.creds === "string" && !isAbsolute(parsed.values.creds) && !removed)
       parsed.values.creds = resolve(parsed.values.creds);
-    if (!removed && process.env.PATH !== undefined)
-      process.env.PATH = process.env.PATH.split(delimiter).map(dir => dir && !isAbsolute(dir) ? resolve(dir) : dir).join(delimiter);
+    if (!removed && process.env.PATH !== undefined) {
+      // On POSIX an empty PATH entry means the caller's folder, just like `.`.
+      process.env.PATH = process.env.PATH.split(delimiter)
+        .map(dir => isAbsolute(dir) || (dir === "" && process.platform === "win32") ? dir : resolve(dir))
+        .join(delimiter);
+    }
     process.chdir(root && existsSync(join(root, ".cotal")) ? root : parse(homedir()).root);
     return;
   }
