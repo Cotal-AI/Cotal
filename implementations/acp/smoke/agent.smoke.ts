@@ -23,7 +23,9 @@
  *    launch lists the caller may not read loads with only its own model and cannot start another
  *    after `/despawn`; a seat no manager listed while one did not answer is not called missing,
  *    and deleting it fails;
- *  - a new session with no manager on this machine starts on the first listed one;
+ *  - with no manager of the person's on this machine, a new session has no machine: the Machine
+ *    option offers the other computers, also only one, and a prompt before one is chosen fails with
+ *    one line and spawns nothing;
  *  - the slash commands answer locally, and `/despawn` stops the seat;
  *  - `/name` before the first prompt names the seat the thread spawns, refuses a name the manager
  *    would refuse, and on a running seat changes the name it shows or says why not;
@@ -120,7 +122,7 @@ class FakeMesh implements Mesh {
     if (this.launchRefused) throw new LaunchListsRefused("the manager did not report its applications: permission-denied");
     return this.catalogList;
   }
-  managerList: ManagerChoice[] = [{ instanceId: "m1", host: "here", local: true }, { instanceId: "m2", host: "there", local: false }];
+  managerList: ManagerChoice[] = [{ instanceId: "m1", host: "here", local: true, live: true }, { instanceId: "m2", host: "there", local: false }];
   /** The managers described one at a time, in order. */
   described: string[] = [];
   /** Managers that refuse to be described, as one that stopped. */
@@ -536,13 +538,14 @@ const backToM3 = await agent.request(methods.agent.session.setConfigOption, { se
 check("and choosing it again is accepted, its lists read from it", backFailed === undefined && machineOf(backToM3).current === "m3" && mesh.catalogsAsked.slice(askedBack).every((m) => m === "m3") && mesh.catalogsAsked.length > askedBack, backFailed ?? machineOf(backToM3));
 const listBefore = mesh.managerList;
 // The manager that holds it is already in a launch list of two: it is the current choice.
-mesh.managerList = [{ instanceId: "m1", host: "here", local: true }, { instanceId: "m3", host: "elsewhere", local: false }];
+mesh.managerList = [{ instanceId: "m1", host: "here", local: true, live: true }, { instanceId: "m3", host: "elsewhere", local: false }];
 const inList = await agent.request(methods.agent.session.load, { sessionId: "held", cwd: dir, mcpServers: [] });
 check("a loaded agent whose manager is in the launch list has it as the current choice", JSON.stringify(machineOf(inList)) === JSON.stringify({ current: "m3", choices: ["m1", "m3"] }), machineOf(inList));
-// The manager that holds it is the only one: there is no Machine list, and a new agent starts there.
+// The manager that holds it is the only one, on another computer: it is the Machine choice, and a new
+// agent starts there.
 mesh.managerList = [{ instanceId: "m3", host: "elsewhere", local: false }];
 const alone = await agent.request(methods.agent.session.load, { sessionId: "held", cwd: dir, mcpServers: [] });
-check("with one manager a loaded thread offers no Machine list", machineOf(alone).current === undefined, machineOf(alone));
+check("with one manager, on another computer, a loaded thread offers it as its current Machine", JSON.stringify(machineOf(alone)) === JSON.stringify({ current: "m3", choices: ["m3"] }), machineOf(alone));
 await agent.request(methods.agent.session.prompt, { sessionId: "held", prompt: [{ type: "text", text: "/despawn" }] });
 mesh.script = { before: [[{ type: "RUN_STARTED", runId: "r1" }]], after: [[{ type: "RUN_FINISHED", runId: "r1" }]] };
 const spawnsAlone = mesh.spawned.length;
@@ -551,20 +554,21 @@ mesh.script = { before: [], after: [] };
 check("and its next agent starts on that manager", aloneTurn?.stopReason === "end_turn" && mesh.spawned.length === spawnsAlone + 1 && mesh.spawned.at(-1)?.name === "held" && mesh.spawned.at(-1)?.managerInstanceId === "m3", { aloneTurn, spawned: mesh.spawned.at(-1) });
 // The held manager was in the launch list at the load, then stopped: it leaves the list and refuses to
 // be described. After /despawn the thread still switches to the other manager and keeps the held one.
-mesh.managerList = [{ instanceId: "m1", host: "here", local: true }, { instanceId: "m3", host: "elsewhere", local: false }];
+mesh.managerList = [{ instanceId: "m1", host: "here", local: true, live: true }, { instanceId: "m3", host: "elsewhere", local: false }];
 await agent.request(methods.agent.session.load, { sessionId: "held", cwd: dir, mcpServers: [] });
 await agent.request(methods.agent.session.prompt, { sessionId: "held", prompt: [{ type: "text", text: "/despawn" }] });
-mesh.managerList = [{ instanceId: "m1", host: "here", local: true }];
+mesh.managerList = [{ instanceId: "m1", host: "here", local: true, live: true }];
 mesh.gone.add("m3");
 const askedGone = mesh.catalogsAsked.length;
 let goneFailed: unknown;
 const awayFromGone = await agent.request(methods.agent.session.setConfigOption, { sessionId: "held", configId: "machine", value: "m1" }).catch((e: unknown) => { goneFailed = e; return undefined; });
 check("after the held manager stops, choosing the other machine reads its lists and keeps the held one as described at the load", goneFailed === undefined && machineOf(awayFromGone).current === "m1" && JSON.stringify(labels(awayFromGone)) === JSON.stringify(["here (this machine)", "elsewhere"]) && mesh.catalogsAsked.slice(askedGone).every((m) => m === "m1"), goneFailed ?? { machine: machineOf(awayFromGone), labels: labels(awayFromGone) });
 mesh.gone.clear();
-// A registration whose computer is gone stays listed, so a new thread prefers a manager whose presence is current.
+// A registration whose computer is gone stays listed, so a new thread with no machine chosen shows the
+// lists of a manager whose presence is current.
 mesh.managerList = [{ instanceId: "m1", host: "gone", local: false, live: false }, { instanceId: "m2", host: "there", local: false, live: true }];
 const preferLive = await agent.request(methods.agent.session.new, { cwd: dir, mcpServers: [] }).catch(() => undefined);
-check("a new thread starts on a manager whose presence is current before the first listed", machineOf(preferLive).current === "m2" && mesh.catalogsAsked.at(-1) === "m2", { machine: machineOf(preferLive), asked: mesh.catalogsAsked.at(-1) });
+check("with none on this machine, a new thread chooses no machine and shows a live manager's lists before the first listed", machineOf(preferLive).current === "none" && mesh.catalogsAsked.at(-1) === "m2", { machine: machineOf(preferLive), asked: mesh.catalogsAsked.at(-1) });
 mesh.managerList = [{ instanceId: "m1", host: "there", local: false, live: true }, { instanceId: "m2", host: "here", local: true, live: true }];
 const preferLocal = await agent.request(methods.agent.session.new, { cwd: dir, mcpServers: [] }).catch(() => undefined);
 check("this machine's manager comes before another live one listed first", machineOf(preferLocal).current === "m2", machineOf(preferLocal));
@@ -669,21 +673,31 @@ await tick(20);
 check("closing the client closes the space", mesh.closed);
 check("a thread's agent name is a valid user-mode actor token", (() => { try { return assertValidOwnerToken(defaultName()) !== ""; } catch { return false; } })());
 
-// With no manager on this machine, a new session starts on the first listed one. Left unpinned, the
-// space's exchange would choose, and it refuses when several of a person's managers are live.
-{
+// With no manager of the person's on this machine, as on a computer whose manager is not running while
+// another computer's is, a new thread has no machine. Another computer cannot use this machine's
+// folder, and an unpinned spawn would let the space's exchange pick any manager.
+for (const others of [["m2"], ["m2", "m3"]]) {
   const away = new FakeMesh();
-  away.managerList = [{ instanceId: "m2", host: "there", local: false }, { instanceId: "m3", host: "elsewhere", local: false }];
+  away.managerList = others.map((instanceId) => ({ instanceId, host: `host-${instanceId}`, local: false, live: true }));
   const c = connect(async () => away);
   await c.init;
+  const n = `${others.length} other ${others.length === 1 ? "computer" : "computers"}`;
   let failed: unknown;
   const s = await c.agent.request(methods.agent.session.new, { cwd: dir, mcpServers: [] }).catch((e: unknown) => { failed = e; return undefined; });
-  const machine = s?.configOptions?.find((o) => o.id === "machine") as { currentValue?: string } | undefined;
-  check("with no manager on this machine, session/new reads the first listed manager's lists", s !== undefined && away.catalogsAsked[0] === "m2", failed ?? away.catalogsAsked);
-  check("and shows that manager as the machine", machine?.currentValue === "m2", machine);
+  const machineIn = (r: { configOptions?: unknown[] | null } | undefined) => {
+    const o = r?.configOptions?.find((x) => (x as { id: string }).id === "machine") as { currentValue?: string; options?: { value: string }[] } | undefined;
+    return { current: o?.currentValue, choices: (o?.options ?? []).map((x) => x.value) };
+  };
+  check(`with ${n} and none here, session/new reads a named manager's lists`, s !== undefined && away.catalogsAsked[0] === "m2", failed ?? away.catalogsAsked);
+  check(`and offers the Machine option with no machine chosen, listing ${n}`, JSON.stringify(machineIn(s)) === JSON.stringify({ current: "none", choices: ["none", ...others] }), machineIn(s));
   away.script = { before: [[{ type: "RUN_STARTED", runId: "r1" }]], after: [[{ type: "RUN_FINISHED", runId: "r1" }]] };
+  const refused = s ? await errorOf(c.agent.request(methods.agent.session.prompt, { sessionId: s.sessionId, prompt: [{ type: "text", text: "go" }] })) : undefined;
+  check("a prompt before a Machine is chosen fails with one line saying none of yours runs here, and spawns nothing",
+    refused?.code === -32602 && refused.message === "No manager of yours runs on this machine. Start one with `cotal manager start --space fake`, or choose another computer in the Machine option." && away.spawned.length === 0, { refused, spawned: away.spawned });
+  const chosen = s ? await c.agent.request(methods.agent.session.setConfigOption, { sessionId: s.sessionId, configId: "machine", value: "m2" }).catch(() => undefined) : undefined;
+  check("choosing a computer makes it the Machine, and the list keeps it", JSON.stringify(machineIn(chosen)) === JSON.stringify({ current: "m2", choices: others }), machineIn(chosen));
   const first = s ? await within(c.agent.request(methods.agent.session.prompt, { sessionId: s.sessionId, prompt: [{ type: "text", text: "go" }] })) : undefined;
-  check("its first prompt spawns pinned to that manager and answers", first?.stopReason === "end_turn" && away.spawned[0]?.managerInstanceId === "m2", { first, pins: away.spawned.map((r) => r.managerInstanceId) });
+  check("then the prompt spawns pinned to the chosen computer and answers", first?.stopReason === "end_turn" && away.spawned.length === 1 && away.spawned[0]?.managerInstanceId === "m2", { first, pins: away.spawned.map((r) => r.managerInstanceId) });
   c.conn.close();
 }
 // The opt-in launch fields: asked for where the manager says the connector takes them.
