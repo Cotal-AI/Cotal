@@ -1,9 +1,9 @@
 /**
  * The Hermes seat's agent endpoint over the bridge (src/commands.ts, src/bridge.ts): the owner's
- * turns with their images, interrupt and usage, each answered by the adapter, and the busy gate that
- * starts a queued turn only while the gateway has no Cotal message or turn in progress. The adapter
- * here is a socket speaking the bridge frames; the dispatcher, the bridge and the drain are the
- * shipped ones.
+ * turns with their images, the gateway's commands and skills, interrupt and usage, each answered by
+ * the adapter, and the busy gate that starts a queued turn only while the gateway has no Cotal
+ * message or turn in progress. The adapter here is a socket speaking the bridge frames; the
+ * dispatcher, the bridge and the drain are the shipped ones.
  */
 import { EventEmitter, once } from "node:events";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -83,6 +83,10 @@ interface Adapter {
   pending: () => number;
 }
 
+/** How long the adapter waits for the sidecar's next frame, so a frame that never comes fails a cell
+ *  rather than hanging the suite. */
+const FRAME_MS = 5_000;
+
 /** Connect and subscribe as the adapter; read the frames the sidecar sends, one at a time. */
 async function adapter(): Promise<Adapter> {
   const sock = connect(socketPath);
@@ -101,7 +105,15 @@ async function adapter(): Promise<Adapter> {
   });
   await openBridge(sock, key);
   const next = async (): Promise<Record<string, unknown>> => {
-    while (read >= frames.length) await new Promise<void>((resolve) => (waiter = resolve));
+    const deadline = Date.now() + FRAME_MS;
+    while (read >= frames.length) {
+      const left = deadline - Date.now();
+      if (left <= 0) throw new Error(`the sidecar sent no frame within ${FRAME_MS} ms`);
+      await new Promise<void>((resolve) => {
+        waiter = resolve;
+        setTimeout(resolve, left).unref();
+      });
+    }
     return frames[read++]!;
   };
   return { sock, next, pending: () => frames.length - read };
@@ -161,6 +173,61 @@ async function interrupt(a: Adapter): Promise<void> {
   check("an unknown interrupt state is an error", !odd.out.ok && odd.out.e.message.includes("unknown interrupt state"), odd.out);
 }
 
+const LISTED = [
+  { name: "status", target: "command", description: "Show session info", inputHint: "" },
+  { name: "model", target: "command", description: "Switch model", inputHint: "[model]" },
+  { name: "release-notes", target: "skill", description: "" },
+];
+
+async function commandList(a: Adapter): Promise<void> {
+  check("the dispatcher runs commands and skills", commands.targets.has("command") && commands.targets.has("skill"));
+  const listed = await answered(a, () => commands.list(), { ok: true, data: { commands: LISTED } });
+  check("the list asks the adapter with a commands frame", listed.frame.t === "commands" && typeof listed.frame.id === "string", listed.frame);
+  const want = [
+    { name: "status", target: "command", description: "Show session info" },
+    { name: "model", target: "command", description: "Switch model", inputHint: "[model]" },
+    { name: "release-notes", target: "skill" },
+  ];
+  check("the list is the gateway's, with empty fields left out", listed.out.ok && JSON.stringify(listed.out.v) === JSON.stringify(want), listed.out);
+  const bad = await answered(a, () => commands.list(), { ok: true, data: { commands: [{ name: "x", target: "plugin" }] } });
+  check("an entry with an unknown target is an error", !bad.out.ok && bad.out.e.message.includes("invalid command"), bad.out);
+  const none = await answered(a, () => commands.list(), { ok: true, data: {} });
+  check("an answer with no list is an error, never an empty list", !none.out.ok && none.out.e.message.includes("no command list"), none.out);
+}
+
+/** Dispatch through the dispatcher: answer its list request, then return the frame that follows it. */
+async function dispatched(a: Adapter, command: { target: "command" | "skill"; name: string; args: string }) {
+  const out = settled(commands.dispatch(command));
+  const ask = await a.next();
+  send(a.sock, { t: "answer", id: ask.id, ok: true, data: { commands: LISTED } });
+  return { ask, out };
+}
+
+async function commandDispatch(a: Adapter): Promise<void> {
+  const model = await dispatched(a, { target: "command", name: "model", args: "claude-opus" });
+  const turn = await a.next();
+  check("a command reads the current list before it runs", model.ask.t === "commands", model.ask);
+  check("a listed command runs in the operator chat as /<name> <args>", turn.t === "turn" && turn.text === "/model claude-opus", turn);
+  send(a.sock, { t: "turn_taken", id: turn.id });
+  check("it resolves when the gateway took it", (await model.out).ok);
+
+  const skill = await dispatched(a, { target: "skill", name: "release-notes", args: "" });
+  const skillTurn = await a.next();
+  check("a skill runs by its slash name, with no args appended", skillTurn.t === "turn" && skillTurn.text === "/release-notes", skillTurn);
+  send(a.sock, { t: "turn_taken", id: skillTurn.id });
+  await skill.out;
+
+  for (const [command, why] of [
+    [{ target: "command", name: "restart", args: "" }, "a name the gateway does not list"],
+    [{ target: "skill", name: "status", args: "" }, "a listed name under the other target"],
+  ] as const) {
+    const refused = await dispatched(a, command);
+    const r = await refused.out;
+    await tick();
+    check(`${why} is refused as not-found and nothing runs`, !r.ok && r.e instanceof CommandRefused && r.e.code === "not-found" && a.pending() === 0, !r.ok && r.e.message);
+  }
+}
+
 async function busyGate(a: Adapter): Promise<void> {
   send(a.sock, { t: "busy", count: 1 });
   await tick();
@@ -204,17 +271,28 @@ async function disconnect(a: Adapter): Promise<void> {
   check("with no adapter subscribed, the bridge is not idle", bridge!.idle() === false);
 }
 
+/** Run one section; one that throws, such as on a frame that never came, fails by name. */
+async function section(name: string, run: () => Promise<void>): Promise<void> {
+  try {
+    await run();
+  } catch (e) {
+    check(`${name} ran to its end`, false, (e as Error).message);
+  }
+}
+
 try {
   check("the bridge is not idle before an adapter subscribes", bridge.idle() === false);
   const a = await adapter();
   await tick();
   check("an authenticated subscribe is reported", subscribed === 1);
   check("a subscribed adapter with nothing in progress is idle", bridge.idle() === true);
-  await frames(a);
-  await usage(a);
-  await interrupt(a);
-  await busyGate(a);
-  await disconnect(a);
+  await section("turns", () => frames(a));
+  await section("usage", () => usage(a));
+  await section("interrupt", () => interrupt(a));
+  await section("the command list", () => commandList(a));
+  await section("command dispatch", () => commandDispatch(a));
+  await section("the busy gate", () => busyGate(a));
+  await section("disconnect", () => disconnect(a));
 } finally {
   await bridge.close();
   rmSync(dir, { recursive: true, force: true });

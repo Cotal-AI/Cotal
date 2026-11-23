@@ -154,9 +154,16 @@ not published.
 
 ## Agent commands [#agent-commands]
 
-On a per-user mesh, the seat serves `turn`, `interrupt` and `usage` on its
-[agent endpoint](connector-runtime-reference.mdx#agent-commands). It lists no Hermes commands, so
-`commands` answers `{ supported: false }`.
+On a per-user mesh, the seat serves `commands`, `command`, `turn`, `interrupt` and `usage` on its
+[agent endpoint](connector-runtime-reference.mdx#agent-commands).
+
+`commands` lists what the gateway's own `/commands` lists for the operator chat. That is each
+gateway command Hermes offers on a messaging platform, with its argument hint, each plugin command,
+and each skill command as a skill named without its `/`. Once an operator turns on Hermes's slash
+access for the platform, a gateway command the operator chat may not run is left out, as the
+gateway would refuse it. `command` checks the name against that list at the moment it runs, ends
+`refused` with `not-found` for a name the list lacks, and otherwise runs `/<name> <args>` in the
+operator chat as a turn. A command's reply shows on the event plane, and a skill runs the model.
 
 `turn` runs the owner's words as the user's own message in the gateway's operator chat, a session
 that no peer message reaches. Each image is cached by the gateway and goes with the text, as a photo

@@ -71,7 +71,8 @@ class BridgeClient:
     ) -> None:
         """Begin the reader thread. ``on_incoming`` is called (off-loop) for each mesh message,
         ``on_turn`` for each turn in the user's own words (``{t:"turn", id, text, images?}``),
-        ``on_request`` for each ``interrupt`` or ``usage`` request (answered with ``answer``), and
+        ``on_request`` for each ``interrupt``, ``usage`` or ``commands`` request (answered with
+        ``answer``), and
         ``on_refused`` (off-loop, once) if the reader stops because the socket's directory is not
         private to this user.
 
@@ -223,7 +224,7 @@ class BridgeClient:
             cb = self._on_turn
             if cb:
                 cb(frame)
-        elif t in ("interrupt", "usage"):
+        elif t in ("interrupt", "usage", "commands"):
             cb = self._on_request
             if cb:
                 cb(frame)
