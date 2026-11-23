@@ -90,12 +90,12 @@ try {
   const mixed = run(["service"]);
   const mixedRow = mixed.envelope?.result?.services?.find((row) => row.name === "healthy");
   assert.equal(mixedRow?.state, "running, stopped");
-  assert.equal(mixedRow?.next, "cotal service status healthy");
+  assert.equal(mixedRow?.next, "cotal service status healthy --space list-state");
   assert.equal(run(["service", "stop", "healthy", "--instance", replacementId!, "--yes"]).status, 0);
   const settled = run(["service"]);
   const settledRow = settled.envelope?.result?.services?.find((row) => row.name === "healthy");
   assert.equal(settledRow?.state, "stopped");
-  assert.equal(settledRow?.next, "cotal service start healthy");
+  assert.equal(settledRow?.next, "cotal service start healthy --space list-state");
   cells++;
   console.log("PASS: multiple instances retain distinct states and deduplicate stopped records");
 } finally {
