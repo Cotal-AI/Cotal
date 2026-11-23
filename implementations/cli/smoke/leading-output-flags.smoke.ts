@@ -130,5 +130,19 @@ check("control: __complete still completes its own words", completed.status === 
 const undeclared = run(["--json", "ext", "root"]), trailing = run(["ext", "root", "--json"]);
 check("a mode without that output refuses the leading flag as it does after the word", undeclared.status === 1 && /has no --json or --plain/.test(undeclared.stderr) && trailing.status === 1 && /has no --json or --plain/.test(trailing.stderr), { before: shown(undeclared), after: shown(trailing) });
 
+for (const { args, command, status, code } of [
+  { args: ["backup", "inspect", "./not-there", "--json"], command: "backup inspect", status: 2, code: "TARGET_NOT_FOUND" },
+  { args: ["--json", "backup", "verify", "./not-there"], command: "backup verify", status: 2, code: "TARGET_NOT_FOUND" },
+  { args: ["backup", "--store-dir", "", "create", "./artifact", "--json"], command: "backup create", status: 1, code: "USAGE_INVALID" },
+  { args: ["backup", "restore", "--json"], command: "backup restore", status: 1, code: "USAGE_INVALID" },
+  { args: ["backup", "recover", "--json"], command: "backup recover", status: 1, code: "USAGE_INVALID" },
+  { args: ["backup", "cleanup-fallback", "--json"], command: "backup cleanup-fallback", status: 1, code: "USAGE_INVALID" },
+  { args: ["backup", "unknown", "--json"], command: "backup", status: 1, code: "USAGE_INVALID" },
+]) {
+  const r = run(args);
+  check(`${args.join(" ")} identifies its operation in the refusal`, r.status === status && r.stderr === "" &&
+    r.envelope?.command === command && r.envelope.outcome === "refused" && r.envelope.error?.code === code, shown(r));
+}
+
 finish();
 process.exit(process.exitCode ?? 0);

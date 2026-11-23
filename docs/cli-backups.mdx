@@ -24,6 +24,9 @@ cotal backup restore <dir> [--only registry] [--store-dir <dir>] [--accept-missi
 cotal up --restore <dir> [--restore-only registry] [--accept-missing-source]
 ```
 
+When you name a backup subcommand, its JSON `command` field identifies that operation, such as
+`backup inspect` or `backup verify`, on success and on refusal.
+
 On a controller root, one with a stack journal, `backup create`, `backup restore` and
 `up --restore` refuse `UNSUPPORTED` (exit 2) in this release. Each needs a preserved cut, and
 `down --preserve-state` cannot make one there. They refuse while validating their arguments,

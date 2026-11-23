@@ -189,9 +189,12 @@ function failureExit(cmd: Command, failure: CommandFailure, json: boolean, plain
   // envelope cannot be written for a reason other than a closed pipe. The exit status stands either way.
   if (!json) writeReport();
   else try {
-    // Mint receipts identify the operation, not the auth namespace used by account reports.
-    const command = cmd.name === "auth" && findSubcommand(cmd, metadataPositionals(cmd, words).positionals[0]?.value)?.name === "mint"
-      ? "auth mint" : cmd.name;
+    // Backup and mint receipts identify the operation. Auth account reports still use the namespace.
+    let command = cmd.name;
+    if (cmd.name === "backup" || cmd.name === "auth") {
+      const sub = findSubcommand(cmd, metadataPositionals(cmd, words).positionals[0]?.value);
+      if (sub && (cmd.name === "backup" || sub.name === "mint")) command = `${cmd.name} ${sub.name}`;
+    }
     const follow = validationArgs?.values.follow === true && validationArgs.values.plain !== true && !plain;
     const historyFollow = cmd.name === "history" && follow
       && !findSubcommand(cmd, validationArgs.positionals[0]);
@@ -589,7 +592,7 @@ function parseOrExit(cmd: Command, rest: string[]): ParsedArgs {
   // names a folder called ~ in the working folder.
   const storeDir = parsed.values["store-dir"];
   if (!(cmd.name === "clean" && first === "history") && typeof storeDir === "string" && (!storeDir.trim() || storeDir.startsWith("~")))
-    failureExit(cmd, storeDirRefusal(storeDir), json, parsed.values.plain === true);
+    failureExit(cmd, storeDirRefusal(storeDir), json, parsed.values.plain === true, undefined, rest);
   // `--json` implies `--no-input`: a script reading one document cannot answer a prompt.
   if (structured(cmd, first) && parsed.values.json === true) disableInput();
   refuseRemovedFolder(cmd, canonical, rest);
