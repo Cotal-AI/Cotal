@@ -13,7 +13,7 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createServer } from "node:net";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { countedAssert, emitSentinel, killAndAwaitExit, teardownOnSignal, SMOKE_BROKER_TOKEN } from "@cotal-ai/smoke-kit";
@@ -34,10 +34,16 @@ const entry = join(import.meta.dirname, "../../../bin/dist/cotal.js");
 const children: ChildProcess[] = [];
 const pause = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
-type Envelope = { outcome?: string; result?: { kind?: string; persona?: { source?: string }; requested?: { instanceId?: string | null; source?: string }; allocated?: boolean; launched?: boolean }; error?: { code?: string; message?: string; remedy?: string } };
+type Envelope = {
+  outcome?: string;
+  target?: { space?: string; path?: string };
+  result?: { kind?: string; persona?: { source?: string }; requested?: { instanceId?: string | null; source?: string }; cwd?: string; allocated?: boolean; launched?: boolean };
+  error?: { code?: string; message?: string; remedy?: string };
+};
 
+const cli = (args: string[]) => spawnSync(process.execPath, [entry, ...args], { cwd: join(root, "project"), env, encoding: "utf8", timeout: 60_000 });
 const preview = (args: string[]): { status: number | null; envelope: Envelope } => {
-  const run = spawnSync(process.execPath, [entry, ...args], { cwd: join(root, "project"), env, encoding: "utf8", timeout: 60_000 });
+  const run = cli(args);
   check.equal(run.error, undefined, run.stderr);
   let envelope: Envelope;
   try { envelope = JSON.parse(run.stdout) as Envelope; } catch { check.fail(`preview printed no JSON envelope: ${run.stdout}${run.stderr}`); }
@@ -107,6 +113,29 @@ try {
   await killAndAwaitExit(broker);
   releaseBroker();
   children.splice(children.indexOf(broker), 1);
+
+  const prepared = cli(["space", "create", "preview-cwd", "--root", join(root, "other-project"), "--plain"]);
+  check.equal(prepared.status, 0, prepared.stdout + prepared.stderr);
+  const direct = ["spawn", "--space", "preview-cwd", "--foreground", "--dry-run"];
+  const requestedCwd = join(realpathSync(join(root, "project")), "missing folder");
+  const badCwd = [...direct, "--cwd", "./missing folder"];
+  const plain = cli([...badCwd, "--plain"]);
+  check.equal(plain.status, 2, plain.stderr);
+  check.ok(plain.stderr.includes(JSON.stringify(requestedCwd)), plain.stderr);
+  check.match(plain.stderr, /Next\s+pass an existing directory to --cwd, or omit --cwd/);
+  const json = preview([...badCwd, "--json"]);
+  check.equal(json.status, 2);
+  check.equal(json.envelope.error?.code, "TARGET_UNAVAILABLE");
+  check.deepEqual(json.envelope.target, { space: "preview-cwd", path: requestedCwd });
+  check.match(json.envelope.error?.remedy ?? "", /existing directory to --cwd, or omit --cwd/);
+  check.equal(existsSync(requestedCwd), false);
+  for (const override of [[], ["--cwd", "."]]) {
+    const retry = preview([...direct, ...override, "--json"]);
+    check.equal(retry.status, 0, JSON.stringify(retry.envelope));
+    check.equal(retry.envelope.result?.cwd, realpathSync(join(root, "project")));
+    check.equal(retry.envelope.result?.allocated, false);
+    check.equal(retry.envelope.result?.launched, false);
+  }
 } finally {
   for (const child of children) {
     if (child.exitCode === null && child.signalCode === null) {

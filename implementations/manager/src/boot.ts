@@ -18,6 +18,7 @@ import { GateReconcileRefused, reconcileEndpointGate } from "./reconcile-gate.js
 import { RunHosting } from "./run-hosting.js";
 import { TranscriptReceiver } from "./transcript-receive.js";
 import type { ManagerConfig } from "./manager-config.js";
+import type { ManagerStartState } from "./manager-start-state.js";
 
 /** Startup reconciliation overlaps control-service registration. A spawn or attach for one of
  * these aliases must wait until THAT alias's exact-op terminal attempt returns rather than racing
@@ -30,8 +31,6 @@ export interface ManagerBootDeps {
   admittedLocalIdentity: () => Manager["admittedLocalIdentity"];
   setAdmittedLocalIdentity: (value: Manager["admittedLocalIdentity"]) => void;
   attach: () => Manager["attach"];
-  auth: () => Manager["auth"];
-  setAuth: (value: Manager["auth"]) => void;
   credRenewTimer: () => Manager["credRenewTimer"];
   setCredRenewTimer: (value: Manager["credRenewTimer"]) => void;
   daemonRenewalLeaseTimer: () => Manager["daemonRenewalLeaseTimer"];
@@ -39,11 +38,8 @@ export interface ManagerBootDeps {
   ep: () => Manager["ep"];
   setEp: (value: Manager["ep"]) => void;
   leaseStopping: () => Manager["leaseStopping"];
-  managerInstanceId: () => Manager["managerInstanceId"];
-  setManagerInstanceId: (value: Manager["managerInstanceId"]) => void;
   managerServeIdentity: () => Manager["managerServeIdentity"];
   setManagerServeIdentity: (value: Manager["managerServeIdentity"]) => void;
-  remoteAuthority: () => Manager["remoteAuthority"];
   resumeCredRenewal: () => Manager["resumeCredRenewal"];
   setResumeCredRenewal: (value: Manager["resumeCredRenewal"]) => void;
   runHosting: () => Manager["runHosting"];
@@ -54,8 +50,6 @@ export interface ManagerBootDeps {
   transcripts: () => Manager["transcripts"];
   setTranscripts: (value: Manager["transcripts"]) => void;
   transportDown: () => Manager["transportDown"];
-  userMode: () => Manager["userMode"];
-  setUserMode: (value: Manager["userMode"]) => void;
   adoptReleasedSeats: (...args: Parameters<Manager["adoptReleasedSeats"]>) => ReturnType<Manager["adoptReleasedSeats"]>;
   claimDaemonRenewalOwnership: (...args: Parameters<Manager["claimDaemonRenewalOwnership"]>) => ReturnType<Manager["claimDaemonRenewalOwnership"]>;
   dial: (...args: Parameters<Manager["dial"]>) => ReturnType<Manager["dial"]>;
@@ -81,8 +75,6 @@ export function bootDeps(m: Manager): ManagerBootDeps {
     admittedLocalIdentity: () => m["admittedLocalIdentity"],
     setAdmittedLocalIdentity: (value) => { m["admittedLocalIdentity"] = value; },
     attach: () => m["attach"],
-    auth: () => m["auth"],
-    setAuth: (value) => { m["auth"] = value; },
     credRenewTimer: () => m["credRenewTimer"],
     setCredRenewTimer: (value) => { m["credRenewTimer"] = value; },
     daemonRenewalLeaseTimer: () => m["daemonRenewalLeaseTimer"],
@@ -90,11 +82,8 @@ export function bootDeps(m: Manager): ManagerBootDeps {
     ep: () => m["ep"],
     setEp: (value) => { m["ep"] = value; },
     leaseStopping: () => m["leaseStopping"],
-    managerInstanceId: () => m["managerInstanceId"],
-    setManagerInstanceId: (value) => { m["managerInstanceId"] = value; },
     managerServeIdentity: () => m["managerServeIdentity"],
     setManagerServeIdentity: (value) => { m["managerServeIdentity"] = value; },
-    remoteAuthority: () => m["remoteAuthority"],
     resumeCredRenewal: () => m["resumeCredRenewal"],
     setResumeCredRenewal: (value) => { m["resumeCredRenewal"] = value; },
     runHosting: () => m["runHosting"],
@@ -105,8 +94,6 @@ export function bootDeps(m: Manager): ManagerBootDeps {
     transcripts: () => m["transcripts"],
     setTranscripts: (value) => { m["transcripts"] = value; },
     transportDown: () => m["transportDown"],
-    userMode: () => m["userMode"],
-    setUserMode: (value) => { m["userMode"] = value; },
     adoptReleasedSeats: (...args) => m["adoptReleasedSeats"](...args),
     claimDaemonRenewalOwnership: (...args) => m["claimDaemonRenewalOwnership"](...args),
     dial: (...args) => m["dial"](...args),
@@ -128,7 +115,7 @@ export function bootDeps(m: Manager): ManagerBootDeps {
 
 /** Starting the manager: admitting its execution state, connecting and registering it, taking its instance lease, and healing a predecessor's frozen registration gate. */
 export class ManagerBoot {
-  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: ManagerBootDeps, private readonly parts: Pick<ManagerParts, "connectorInventory" | "credentialRenewal" | "lease" | "servePlane">) {}
+  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: ManagerBootDeps, private readonly parts: Pick<ManagerParts, "connectorInventory" | "credentialRenewal" | "lease" | "servePlane">, private readonly state: ManagerStartState) {}
 
   // The Manager members these bodies read, under their Manager names. Each reads through its dep at
   // use, so a field the Manager assigns later is current and a method a test replaces on the Manager
@@ -136,8 +123,8 @@ export class ManagerBoot {
   private get admittedLocalIdentity() { return this.deps.admittedLocalIdentity(); }
   private set admittedLocalIdentity(value: Manager["admittedLocalIdentity"]) { this.deps.setAdmittedLocalIdentity(value); }
   private get attach() { return this.deps.attach(); }
-  private get auth() { return this.deps.auth(); }
-  private set auth(value: Manager["auth"]) { this.deps.setAuth(value); }
+  private get auth() { return this.state.auth; }
+  private set auth(value: ManagerStartState["auth"]) { this.state.auth = value; }
   private get credRenewTimer() { return this.deps.credRenewTimer(); }
   private set credRenewTimer(value: Manager["credRenewTimer"]) { this.deps.setCredRenewTimer(value); }
   private get daemonRenewalLeaseTimer() { return this.deps.daemonRenewalLeaseTimer(); }
@@ -145,11 +132,11 @@ export class ManagerBoot {
   private get ep() { return this.deps.ep(); }
   private set ep(value: Manager["ep"]) { this.deps.setEp(value); }
   private get leaseStopping() { return this.deps.leaseStopping(); }
-  private get managerInstanceId() { return this.deps.managerInstanceId(); }
-  private set managerInstanceId(value: Manager["managerInstanceId"]) { this.deps.setManagerInstanceId(value); }
+  private get managerInstanceId() { return this.state.managerInstanceId!; }
+  private set managerInstanceId(value: ManagerStartState["managerInstanceId"]) { this.state.managerInstanceId = value; }
   private get managerServeIdentity() { return this.deps.managerServeIdentity(); }
   private set managerServeIdentity(value: Manager["managerServeIdentity"]) { this.deps.setManagerServeIdentity(value); }
-  private get remoteAuthority() { return this.deps.remoteAuthority(); }
+  private get remoteAuthority() { return this.config.remoteAuthority; }
   private get resumeCredRenewal() { return this.deps.resumeCredRenewal(); }
   private set resumeCredRenewal(value: Manager["resumeCredRenewal"]) { this.deps.setResumeCredRenewal(value); }
   private get runHosting() { return this.deps.runHosting(); }
@@ -160,8 +147,8 @@ export class ManagerBoot {
   private get transcripts() { return this.deps.transcripts(); }
   private set transcripts(value: Manager["transcripts"]) { this.deps.setTranscripts(value); }
   private get transportDown() { return this.deps.transportDown(); }
-  private get userMode() { return this.deps.userMode(); }
-  private set userMode(value: Manager["userMode"]) { this.deps.setUserMode(value); }
+  private get userMode() { return this.state.userMode; }
+  private set userMode(value: ManagerStartState["userMode"]) { this.state.userMode = value; }
   private adoptReleasedSeats(...args: Parameters<Manager["adoptReleasedSeats"]>): ReturnType<Manager["adoptReleasedSeats"]> { return this.deps.adoptReleasedSeats(...args); }
   private claimDaemonRenewalOwnership(...args: Parameters<Manager["claimDaemonRenewalOwnership"]>): ReturnType<Manager["claimDaemonRenewalOwnership"]> { return this.deps.claimDaemonRenewalOwnership(...args); }
   private dial(...args: Parameters<Manager["dial"]>): ReturnType<Manager["dial"]> { return this.deps.dial(...args); }

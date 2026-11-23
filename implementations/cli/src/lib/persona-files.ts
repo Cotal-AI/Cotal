@@ -9,7 +9,7 @@ import {
 } from "@cotal-ai/core";
 import {
   cachedPreferences, codeSpan, CommandFailure, ConfirmationRequired, cotalDirLink, explicitNoInputFlag, findCotalRoot, isCommandFailure, isGenuineSpace, isWorkspaceTargetError, legacyStackOtherHome, loadMeshes, meshesForRoot, movedProject,
-  localWriteFailure, personaDefinitionProblem, preparedSpaceAt, resolveMeshTarget, resolvePreference, retainedLegacyBroker, retainedOpenSpace, stackJournalPath, targetErrorCode, workspaceErrorParts,
+  localWriteFailure, personaDefinitionProblem, preparedNeverStarted, preparedSpaceAt, resolveMeshTarget, resolvePreference, retainedLegacyBroker, retainedOpenSpace, stackJournalPath, targetErrorCode, workspaceErrorParts,
 } from "@cotal-ai/workspace";
 import { DEFAULT_AGENT_NAME } from "./default-persona.js";
 import { shellWord } from "./endpoint-errors.js";
@@ -36,7 +36,9 @@ export function personaCatalogContext(values: { space?: string; server?: string 
     return { catalog: catalogAt(target.root, target.space), userMode: target.mode === "user" };
   } catch (error) {
     if (!isWorkspaceTargetError(error)) throw error;
-    if (error.code === "not-started" && !values.server && error.details.root && error.details.space && !error.details.rootMissing)
+    if (error.code === "not-started" && error.details.root && error.details.space && !error.details.rootMissing &&
+        (!values.server || (values.space === error.details.space && preparedNeverStarted(error.details) &&
+          !existsSync(stackJournalPath(error.details.root)) && !retainedLegacyBroker(error.details.root))))
       return { catalog: catalogAt(error.details.root, error.details.space), userMode: false };
     if ((error.code === "unknown-space" || error.code === "not-started" && error.details.lastRun) && values.space !== undefined && values.server === undefined) {
       const root = findCotalRoot();

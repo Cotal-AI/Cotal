@@ -8,6 +8,7 @@ import type { FreeSlotCause, Manager } from "./manager.js";
 import type { TeardownTarget } from "./retirement.js";
 import type { ManagedAgent } from "./seat-types.js";
 import type { ManagerConfig } from "./manager-config.js";
+import type { ManagerStartState } from "./manager-start-state.js";
 import type { ManagerParts } from "./manager-parts.js";
 
 /** The stop family of {@link FreeSlotCause}: the causes a manager-initiated stop records. */
@@ -71,13 +72,10 @@ function onceStopReason(cause: FreeSlotStopCause): string {
 export interface SeatStopDeps {
   agentGoals: () => Manager["agentGoals"];
   agents: () => Manager["agents"];
-  auth: () => Manager["auth"];
   ep: () => Manager["ep"];
   lifecycleInFlight: () => Manager["lifecycleInFlight"];
   setLifecycleInFlight: (value: Manager["lifecycleInFlight"]) => void;
   maintenanceState: () => Manager["maintenanceState"];
-  managerInstanceId: () => Manager["managerInstanceId"];
-  remoteAuthority: () => Manager["remoteAuthority"];
   retirement: () => Manager["retirement"];
   unverifiedStops: () => Manager["unverifiedStops"];
   setUnverifiedStops: (value: Manager["unverifiedStops"]) => void;
@@ -106,13 +104,10 @@ export function seatStopDeps(m: Manager): SeatStopDeps {
   return {
     agentGoals: () => m["agentGoals"],
     agents: () => m["agents"],
-    auth: () => m["auth"],
     ep: () => m["ep"],
     lifecycleInFlight: () => m["lifecycleInFlight"],
     setLifecycleInFlight: (value) => { m["lifecycleInFlight"] = value; },
     maintenanceState: () => m["maintenanceState"],
-    managerInstanceId: () => m["managerInstanceId"],
-    remoteAuthority: () => m["remoteAuthority"],
     retirement: () => m["retirement"],
     unverifiedStops: () => m["unverifiedStops"],
     setUnverifiedStops: (value) => { m["unverifiedStops"] = value; },
@@ -138,20 +133,20 @@ export function seatStopDeps(m: Manager): SeatStopDeps {
 
 /** Stopping a seat, recording why it left, reaping its children, and the named despawn doors. */
 export class SeatStop {
-  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: SeatStopDeps, private readonly parts: Pick<ManagerParts, "goalWriter" | "servePlane">) {}
+  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: SeatStopDeps, private readonly parts: Pick<ManagerParts, "goalWriter" | "servePlane">, private readonly state: ManagerStartState) {}
 
   // The Manager members these bodies read, under their Manager names. Each reads through its dep at
   // use, so a field the Manager assigns later is current and a method a test replaces on the Manager
   // is the one that runs.
   private get agentGoals() { return this.deps.agentGoals(); }
   private get agents() { return this.deps.agents(); }
-  private get auth() { return this.deps.auth(); }
+  private get auth() { return this.state.auth; }
   private get ep() { return this.deps.ep(); }
   private get lifecycleInFlight() { return this.deps.lifecycleInFlight(); }
   private set lifecycleInFlight(value: Manager["lifecycleInFlight"]) { this.deps.setLifecycleInFlight(value); }
   private get maintenanceState() { return this.deps.maintenanceState(); }
-  private get managerInstanceId() { return this.deps.managerInstanceId(); }
-  private get remoteAuthority() { return this.deps.remoteAuthority(); }
+  private get managerInstanceId() { return this.state.managerInstanceId!; }
+  private get remoteAuthority() { return this.config.remoteAuthority; }
   private get retirement() { return this.deps.retirement(); }
   private get unverifiedStops() { return this.deps.unverifiedStops(); }
   private set unverifiedStops(value: Manager["unverifiedStops"]) { this.deps.setUnverifiedStops(value); }

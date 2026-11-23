@@ -1,7 +1,7 @@
 import { accessSync, constants, existsSync, lstatSync, realpathSync, statSync } from "node:fs";
 import { homedir, hostname } from "node:os";
 import { isAbsolute, join, sep } from "node:path";
-import { agentFilePath, assertLifecycleToken, assertValidChannel, DEFAULT_SERVER, digestIdToken, EpEnvelopeError, eventChannel, eventChannelPrincipal, grantOverreach, grantParts, isIssuedCaller, issuedSpawnerStanding, MAX_SCHEDULE_MS, parsePersonaEndpoints, personaDir, principalKey, registry, rejectionText, renderOnceTask, resolveReadAcl, runDriverCaller, shownSpawner, withIssuerSession, type AgentDef, type Connector, type ControlReply, type CotalEndpoint, type DelegatedGrant, type EpCaller, type EpCapability, type GrantOverreach, type InlinePersona, type IssuedStore, type IssuedSubjectPermissions, type LifecycleStateTransport, type RunAdmission, type RunRevocation, type SpaceAuth } from "@cotal-ai/core";
+import { agentFilePath, assertLifecycleToken, assertValidChannel, DEFAULT_SERVER, digestIdToken, EpEnvelopeError, eventChannel, eventChannelPrincipal, grantOverreach, grantParts, isIssuedCaller, issuedSpawnerStanding, MAX_SCHEDULE_MS, parsePersonaEndpoints, personaDir, principalKey, registry, rejectionText, renderOnceTask, resolveReadAcl, runDriverCaller, shownSpawner, withIssuerSession, type AgentDef, type Connector, type ControlReply, type CotalEndpoint, type DelegatedGrant, type EpCaller, type EpCapability, type GrantOverreach, type InlinePersona, type IssuedStore, type IssuedSubjectPermissions, type LifecycleStateTransport, type RunAdmission, type RunRevocation } from "@cotal-ai/core";
 import { loadLaunchPersonaFile, manifestExtensionNames, PersonaSourceError, resolveAgentType } from "@cotal-ai/workspace";
 import type { KV } from "@nats-io/kv";
 import { inlinePersonaDir } from "./launch.js";
@@ -15,6 +15,7 @@ import { SeatStart } from "./seat-start.js";
 import type { SpawnHooks, StartAgentOpts } from "./seat-types.js";
 import { onceTurnNote, turnHoldToken } from "./turn-relay.js";
 import type { ManagerConfig } from "./manager-config.js";
+import type { ManagerStartState } from "./manager-start-state.js";
 
 /** The goal index's bound on a relay note (core `GOAL_INDEX_NOTE_MAX`). A once task's note must
  *  fit it, and is refused at admission when it cannot. */
@@ -159,9 +160,6 @@ export function foreignEventChannels(channels: readonly string[], owner: string,
 export interface SeatLaunchDeps {
   installedExtensions: () => boolean;
   ep: () => CotalEndpoint;
-  auth: () => SpaceAuth | undefined;
-  userMode: () => boolean;
-  managerInstanceId: () => string;
   runHosting: () => RunHosting | undefined;
   requiredRuntime: () => Runtime;
   meshMode: () => "open" | "static" | "user";
@@ -190,7 +188,6 @@ export interface SeatLaunchDeps {
   place: (...args: Parameters<Manager["place"]>) => ReturnType<Manager["place"]>;
   provisionUserAgent: (...args: Parameters<Manager["provisionUserAgent"]>) => ReturnType<Manager["provisionUserAgent"]>;
   readerRemedy: (...args: Parameters<Manager["readerRemedy"]>) => ReturnType<Manager["readerRemedy"]>;
-  remoteAuthority: () => Manager["remoteAuthority"];
   resolveConnector: (...args: Parameters<Manager["resolveConnector"]>) => ReturnType<Manager["resolveConnector"]>;
   retirement: () => Manager["retirement"];
   runtimeFor: (...args: Parameters<Manager["runtimeFor"]>) => ReturnType<Manager["runtimeFor"]>;
@@ -216,9 +213,6 @@ export function seatLaunchDeps(m: Manager): SeatLaunchDeps {
   return {
     installedExtensions: () => m["installedExtensions"],
     ep: () => m["ep"],
-    auth: () => m["auth"],
-    userMode: () => m["userMode"],
-    managerInstanceId: () => m["managerInstanceId"],
     runHosting: () => m["runHosting"],
     requiredRuntime: () => m["requiredRuntime"],
     meshMode: () => m["meshMode"],
@@ -248,7 +242,6 @@ export function seatLaunchDeps(m: Manager): SeatLaunchDeps {
     place: (...args) => m["place"](...args),
     provisionUserAgent: (...args) => m["provisionUserAgent"](...args),
     readerRemedy: (...args) => m["readerRemedy"](...args),
-    remoteAuthority: () => m["remoteAuthority"],
     resolveConnector: (...args) => m["resolveConnector"](...args),
     retirement: () => m["retirement"],
     runtimeFor: (...args) => m["runtimeFor"](...args),
@@ -275,7 +268,7 @@ export class SeatLaunch {
   /** The agent-start path. Shares this component's deps, and calls back into it for its leaf steps. */
   private readonly seatStart: SeatStart;
 
-  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: SeatLaunchDeps, private readonly parts: Pick<ManagerParts, "connectorInventory" | "servePlane">) {
+  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: SeatLaunchDeps, private readonly parts: Pick<ManagerParts, "connectorInventory" | "servePlane">, private readonly state: ManagerStartState) {
     this.seatStart = new SeatStart(config, deps, parts, {
       checkSpawnCwd: (...args) => this.checkSpawnCwd(...args),
       harnessUnavailableError: (...args) => this.harnessUnavailableError(...args),
@@ -286,8 +279,11 @@ export class SeatLaunch {
       staticSpawnBound: (...args) => this.staticSpawnBound(...args),
       spawnBoundRefusal: (...args) => this.spawnBoundRefusal(...args),
       managedStaticInstanceReads: (...args) => this.managedStaticInstanceReads(...args),
-    });
+    }, state);
   }
+  private get managerInstanceId(): string { return this.state.managerInstanceId!; }
+  private get auth() { return this.state.auth; }
+  private get userMode() { return this.state.userMode; }
 
   /** The realpath, directory and search-permission checks a placed spawn directory must pass on this manager's host,
    * shared by the served `resolve-cwd` command and the `spawn` admission check (#385 item 2): one
@@ -480,7 +476,7 @@ export class SeatLaunch {
     } else {
       configPath = join(personaDir(this.config.workspaceRoot), `${ref}.md`);
       if (!existsSync(configPath))
-        return { error: `no persona "${ref}" in the catalog of manager ${this.deps.managerInstanceId()} on host ${hostname()}: ${configPath} not found; create it there` };
+        return { error: `no persona "${ref}" in the catalog of manager ${this.managerInstanceId} on host ${hostname()}: ${configPath} not found; create it there` };
     }
     // An inline snapshot belongs to its own seat's lifecycle, which removes it at retirement and
     // refuses a restart once it changed, so no other launch may read it. Compared after symlinks
@@ -503,7 +499,7 @@ export class SeatLaunch {
       // Shared operator files remain launchable. Owned content follows the catalog's visibility
       // decision before connector loading or any allocation. A hosted run acts for its admission;
       // only a complete authenticated caller can request the current ledger's admin decision.
-      if (this.deps.userMode() && def.owner !== undefined) {
+      if (this.userMode && def.owner !== undefined) {
         const acting = authenticatedCaller === undefined ? undefined
           : this.deps.runHosting()?.admittedCaller(authenticatedCaller) ?? authenticatedCaller;
         const personaCaller = acting === undefined ? spawner ?? "" : principalKey(acting.owner, acting.actor).key;
@@ -602,7 +598,7 @@ export class SeatLaunch {
       return { kind: "none", reason: "its credential carries no issued generation (an unissued mint or a legacy rail)" };
     const ref = { space: this.config.space, owner: caller.owner, actor: caller.actor, uid: caller.uid, generation: caller.generation };
     try {
-      const { evidence } = await withIssuerSession({ servers: this.config.servers ?? DEFAULT_SERVER, space: this.config.space, auth: this.deps.auth()!, tls: false }, (s) =>
+      const { evidence } = await withIssuerSession({ servers: this.config.servers ?? DEFAULT_SERVER, space: this.config.space, auth: this.auth!, tls: false }, (s) =>
         s.store.resolve(ref, s.sourceIsLive));
       return issuedSpawnerStanding(evidence) === "bounded" ? { kind: "bounded", caller, ceiling: evidence.permissions } : { kind: "exempt" };
     } catch (e) {
@@ -654,9 +650,9 @@ export class SeatLaunch {
   /** Ordinary static control seats can read their holding instance. A run's recorded ceiling is
    *  authoritative, so its helpers receive no additional instance reads. */
   managedStaticInstanceReads(capabilities: readonly string[] | undefined): EpCapability[] {
-    if (this.deps.meshMode() !== "static" || !this.deps.managerInstanceId() || !capabilities?.some(c => c === "spawn" || c === "run" || c === "admin")) return [];
+    if (this.deps.meshMode() !== "static" || !this.managerInstanceId || !capabilities?.some(c => c === "spawn" || c === "run" || c === "admin")) return [];
     return ["describe", "inspect"].map(command => ({
-      endpoint: MANAGER_ENDPOINT, command, instanceId: this.deps.managerInstanceId(), instanceOnly: true,
+      endpoint: MANAGER_ENDPOINT, command, instanceId: this.managerInstanceId, instanceOnly: true,
     }));
   }
 

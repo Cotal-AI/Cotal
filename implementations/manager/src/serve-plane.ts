@@ -26,6 +26,7 @@ import { lifecycleBlocked, lifecycleBlockedFrom } from "@cotal-ai/core";
 import { REMOTE_STANDING_BUDGET_MS, remoteStandingTimeLeft } from "./credential-renewal.js";
 import { withTimeout } from "./manager-timeout.js";
 import type { ManagerConfig } from "./manager-config.js";
+import type { ManagerStartState } from "./manager-start-state.js";
 
 type ServiceServe = { handle: EpServeHandle; nc: NatsConnection; identity: Identity; grant: EpServeGrant; creds?: string };
 type SessionLedgerConnection = { nc: NatsConnection; creds?: string };
@@ -56,12 +57,8 @@ function openMeshFrozenGateRefusal(e: unknown, instanceId: string): unknown {
 
 /** Current manager authority and shared renewal state, read when an operation runs. */
 export interface ServePlaneDeps {
-  auth(): SpaceAuth | undefined;
-  remoteAuthority(): Pick<NonNullable<ManagerOptions["remoteAuthority"]>, "identities" | "goalWriterCreds" | "sessionLedgerCreds" | "serveCreds" | "serveGrant" | "mintSessionServing"> | undefined;
-  managerInstanceId(): string;
   managerServeIdentity(): Identity;
   leaseStopping(): boolean;
-  userMode(): boolean;
   remoteStandingBudgetMs: number;
   dial: (opts: Parameters<ReturnType<typeof dialerFor>>[0]) => Promise<NatsConnection>;
   dialRemoteStanding: (opts: Parameters<ReturnType<typeof dialerFor>>[0], deadline: number) => Promise<NatsConnection>;
@@ -89,12 +86,8 @@ export interface ServePlaneDeps {
  *  field the Manager assigns later is current and a member a test replaces on the instance is the one that runs. */
 export function servePlaneDeps(m: Manager): ServePlaneDeps {
   return {
-    auth: () => m["auth"],
-    remoteAuthority: () => m["remoteAuthority"],
-    managerInstanceId: () => m["managerInstanceId"],
     managerServeIdentity: () => m["managerServeIdentity"],
     leaseStopping: () => m["leaseStopping"],
-    userMode: () => m["userMode"],
     remoteStandingBudgetMs: REMOTE_STANDING_BUDGET_MS,
     dial: (...args) => m["dial"](...args),
     dialRemoteStanding: (...args) => m["dialRemoteStanding"](...args),
@@ -151,18 +144,19 @@ export class ServePlane {
   serviceServe?: ServiceServe;
   sessionLedgerCreds?: string;
 
-  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: ServePlaneDeps, private readonly parts: Pick<ManagerParts, "connectorInventory" | "credentialRenewal" | "goalWriter">) {}
+  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: ServePlaneDeps, private readonly parts: Pick<ManagerParts, "connectorInventory" | "credentialRenewal" | "goalWriter">, private readonly state: ManagerStartState) {}
+  private get userMode() { return this.state.userMode; }
 
-  private get auth(): SpaceAuth | undefined { return this.deps.auth(); }
-  private get remoteAuthority(): Pick<NonNullable<ManagerOptions["remoteAuthority"]>, "identities" | "goalWriterCreds" | "sessionLedgerCreds" | "serveCreds" | "serveGrant" | "mintSessionServing"> | undefined { return this.deps.remoteAuthority(); }
-  private get managerInstanceId(): string { return this.deps.managerInstanceId(); }
+  private get auth(): SpaceAuth | undefined { return this.state.auth; }
+  private get remoteAuthority(): Pick<NonNullable<ManagerOptions["remoteAuthority"]>, "identities" | "goalWriterCreds" | "sessionLedgerCreds" | "serveCreds" | "serveGrant" | "mintSessionServing"> | undefined { return this.config.remoteAuthority; }
+  private get managerInstanceId(): string { return this.state.managerInstanceId!; }
   private get managerServeIdentity(): Identity { return this.deps.managerServeIdentity(); }
   private get leaseStopping(): boolean { return this.deps.leaseStopping(); }
   /** The connector rows a status read serves (see {@link servedConnectorStatuses}), after retrying the unavailable ones. */
   private get connectorStatuses(): readonly ManagerConnectorStatus[] {
     const inventory = this.parts.connectorInventory;
     inventory.refreshUnavailableConnectors();
-    return servedConnectorStatuses(inventory.connectorStatuses, this.deps.userMode());
+    return servedConnectorStatuses(inventory.connectorStatuses, this.userMode);
   }
 
   /** #2073: dial the manager's ONE control-plane connection and serve its typed command surface on

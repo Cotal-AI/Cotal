@@ -10,6 +10,7 @@ import type { Manager } from "./manager.js";
 import type { ManagerParts } from "./manager-parts.js";
 import type { ManagedAgent } from "./seat-types.js";
 import type { ManagerConfig } from "./manager-config.js";
+import type { ManagerStartState } from "./manager-start-state.js";
 
 // Capture the loaded package version before an installation can replace its files.
 export const MANAGER_VERSION = (JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string }).version;
@@ -23,22 +24,18 @@ const NO_OWNER_MATCHES = "-no-owner-";
  *  assigns after construction is always current, and a Manager method a test replaces is the one that runs. */
 export interface StatusAndModelsDeps {
   agents: () => Manager["agents"];
-  auth: () => Manager["auth"];
   ep: () => Manager["ep"];
   leaseStopping: () => Manager["leaseStopping"];
   lifecycleInFlight: () => Manager["lifecycleInFlight"];
   maintenanceState: () => Manager["maintenanceState"];
-  managerInstanceId: () => Manager["managerInstanceId"];
   namesCapacity: () => Manager["namesCapacity"];
   preservationAttemptId: () => Manager["preservationAttemptId"];
   preservationInventory: () => Manager["preservationInventory"];
-  remoteAuthority: () => Manager["remoteAuthority"];
   requiredRuntime: () => Manager["requiredRuntime"];
   resumeRequired: () => Manager["resumeRequired"];
   retirement: () => Manager["retirement"];
   runtimeKind: () => Manager["runtimeKind"];
   staticLifecycle: () => Manager["staticLifecycle"];
-  userMode: () => Manager["userMode"];
   classSpawnEnabled: (...args: Parameters<Manager["classSpawnEnabled"]>) => ReturnType<Manager["classSpawnEnabled"]>;
   connectorNames: (...args: Parameters<Manager["connectorNames"]>) => ReturnType<Manager["connectorNames"]>;
   epAdminReach: (...args: Parameters<Manager["epAdminReach"]>) => ReturnType<Manager["epAdminReach"]>;
@@ -56,22 +53,18 @@ export interface StatusAndModelsDeps {
 export function statusAndModelsDeps(m: Manager): StatusAndModelsDeps {
   return {
     agents: () => m["agents"],
-    auth: () => m["auth"],
     ep: () => m["ep"],
     leaseStopping: () => m["leaseStopping"],
     lifecycleInFlight: () => m["lifecycleInFlight"],
     maintenanceState: () => m["maintenanceState"],
-    managerInstanceId: () => m["managerInstanceId"],
     namesCapacity: () => m["namesCapacity"],
     preservationAttemptId: () => m["preservationAttemptId"],
     preservationInventory: () => m["preservationInventory"],
-    remoteAuthority: () => m["remoteAuthority"],
     requiredRuntime: () => m["requiredRuntime"],
     resumeRequired: () => m["resumeRequired"],
     retirement: () => m["retirement"],
     runtimeKind: () => m["runtimeKind"],
     staticLifecycle: () => m["staticLifecycle"],
-    userMode: () => m["userMode"],
     classSpawnEnabled: (...args) => m["classSpawnEnabled"](...args),
     connectorNames: (...args) => m["connectorNames"](...args),
     epAdminReach: (...args) => m["epAdminReach"](...args),
@@ -87,28 +80,28 @@ export function statusAndModelsDeps(m: Manager): StatusAndModelsDeps {
 
 /** What the manager reports about itself: status, the seat list and its owner filter, local seat facts, and the model catalog. */
 export class StatusAndModels {
-  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: StatusAndModelsDeps, private readonly parts: Pick<ManagerParts, "connectorInventory">) {}
+  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: StatusAndModelsDeps, private readonly parts: Pick<ManagerParts, "connectorInventory">, private readonly state: ManagerStartState) {}
 
   // The Manager members these bodies read, under their Manager names. Each reads through its dep at
   // use, so a field the Manager assigns later is current and a method a test replaces on the Manager
   // is the one that runs.
   private get agents() { return this.deps.agents(); }
-  private get auth() { return this.deps.auth(); }
+  private get auth() { return this.state.auth; }
   private get ep() { return this.deps.ep(); }
   private get leaseStopping() { return this.deps.leaseStopping(); }
   private get lifecycleInFlight() { return this.deps.lifecycleInFlight(); }
   private get maintenanceState() { return this.deps.maintenanceState(); }
-  private get managerInstanceId() { return this.deps.managerInstanceId(); }
+  private get managerInstanceId() { return this.state.managerInstanceId!; }
   private get namesCapacity() { return this.deps.namesCapacity(); }
   private get preservationAttemptId() { return this.deps.preservationAttemptId(); }
   private get preservationInventory() { return this.deps.preservationInventory(); }
-  private get remoteAuthority() { return this.deps.remoteAuthority(); }
+  private get remoteAuthority() { return this.config.remoteAuthority; }
   private get requiredRuntime() { return this.deps.requiredRuntime(); }
   private get resumeRequired() { return this.deps.resumeRequired(); }
   private get retirement() { return this.deps.retirement(); }
   private get runtimeKind() { return this.deps.runtimeKind(); }
   private get staticLifecycle() { return this.deps.staticLifecycle(); }
-  private get userMode() { return this.deps.userMode(); }
+  private get userMode() { return this.state.userMode; }
   private classSpawnEnabled(...args: Parameters<Manager["classSpawnEnabled"]>): ReturnType<Manager["classSpawnEnabled"]> { return this.deps.classSpawnEnabled(...args); }
   private connectorNames(...args: Parameters<Manager["connectorNames"]>): ReturnType<Manager["connectorNames"]> { return this.deps.connectorNames(...args); }
   private epAdminReach(...args: Parameters<Manager["epAdminReach"]>): ReturnType<Manager["epAdminReach"]> { return this.deps.epAdminReach(...args); }

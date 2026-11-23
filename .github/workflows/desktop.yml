@@ -171,7 +171,38 @@ jobs:
           if-no-files-found: error
           retention-days: 7
       - run: pnpm --filter cotal-ai seeded-connectors
+      # Notarization refuses unsigned nested code, and Tauri does not sign Mach-O files under Resources, so a
+      # release build signs the runtime's own before prepare:runtime hashes them. This keychain exists only for
+      # that step; Tauri imports the certificate again for the bundle.
+      - name: Import the macOS signing certificate for the runtime
+        if: runner.os == 'macOS' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: |
+          set -euo pipefail
+          if [ -z "$APPLE_CERTIFICATE" ]; then echo 'No macOS signing certificate: the runtime stays unsigned.'; exit 0; fi
+          keychain="$RUNNER_TEMP/cotal-runtime-signing.keychain-db"
+          password=$(openssl rand -hex 24)
+          security create-keychain -p "$password" "$keychain"
+          security set-keychain-settings -lut 3600 "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+          # shellcheck disable=SC2046 # the existing search list is one keychain path per word
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          printf '%s' "$APPLE_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/cotal-runtime-signing.p12"
+          security import "$RUNNER_TEMP/cotal-runtime-signing.p12" -k "$keychain" -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          rm -f "$RUNNER_TEMP/cotal-runtime-signing.p12"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$password" "$keychain" > /dev/null
+          echo "COTAL_RUNTIME_SIGNING_KEYCHAIN=$keychain" >> "$GITHUB_ENV"
+          echo "COTAL_RUNTIME_SIGNING_IDENTITY=$APPLE_SIGNING_IDENTITY" >> "$GITHUB_ENV"
       - run: pnpm --dir desktop prepare:runtime
+      - name: Remove the runtime signing keychain
+        if: always() && runner.os == 'macOS'
+        shell: bash
+        run: |
+          if [ -n "${COTAL_RUNTIME_SIGNING_KEYCHAIN:-}" ] && [ -e "$COTAL_RUNTIME_SIGNING_KEYCHAIN" ]; then security delete-keychain "$COTAL_RUNTIME_SIGNING_KEYCHAIN"; fi
       - run: pnpm --dir desktop check:runtime
       - name: Compile configured and no-key updater branches
         if: inputs.updater_compile && runner.os != 'Linux'
@@ -263,7 +294,12 @@ jobs:
           if ($env:SIGNED_BUILD -ne 'true') {
             Get-ChildItem Env:APPLE_* | Remove-Item
             Write-Output 'Building unsigned validation packages.'
-          } else { Write-Output 'Building signed release packages.' }
+          } else {
+            # Tauri uses the Apple ID login whenever APPLE_ID, APPLE_PASSWORD and APPLE_TEAM_ID exist, even
+            # empty, so the unused notarization set must be absent, not blank.
+            Get-ChildItem Env:APPLE_* | Where-Object { -not $_.Value } | Remove-Item
+            Write-Output 'Building signed release packages.'
+          }
           $args = @('--dir', 'desktop', 'exec', 'tauri', 'build', '--bundles', '${{ matrix.bundles }}')
           if ($env:WINDOWS_SIGNING_CONFIG) { $args += @('--config', $env:WINDOWS_SIGNING_CONFIG) }
           if ($env:RUNNER_OS -eq 'macOS' -and $env:SIGNED_BUILD -ne 'true') {

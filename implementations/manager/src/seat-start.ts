@@ -20,6 +20,7 @@ import { activateStaticLifecycle, casStaticSlot, readStaticSlot } from "./static
 import type { TranscriptClaim } from "./transcript-receive.js";
 import type { ProvisionedUserAgent } from "./user-provision.js";
 import type { ManagerConfig } from "./manager-config.js";
+import type { ManagerStartState } from "./manager-start-state.js";
 
 class LegacyEventCountPermissionError extends Error {}
 
@@ -52,12 +53,12 @@ export interface SeatStartLaunch {
 
 /** The agent-start path: admission, grant, launch, readiness and the rollback of a failed start. */
 export class SeatStart {
-  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: SeatLaunchDeps, private readonly parts: Pick<ManagerParts, "connectorInventory">, private readonly launch: SeatStartLaunch) {}
+  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: SeatLaunchDeps, private readonly parts: Pick<ManagerParts, "connectorInventory">, private readonly launch: SeatStartLaunch, private readonly state: ManagerStartState) {}
 
   // The Manager members startActive reads, under their Manager names. Each reads through its dep
   // at use, so a field the Manager assigns later is current and a method a test replaces on the
   // Manager is the one that runs.
-  private get auth() { return this.deps.auth(); }
+  private get auth() { return this.state.auth; }
   private awaitReadiness(...args: Parameters<Manager["awaitReadiness"]>): ReturnType<Manager["awaitReadiness"]> { return this.deps.awaitReadiness(...args); }
   private awaitStartupOutcome(...args: Parameters<Manager["awaitStartupOutcome"]>): ReturnType<Manager["awaitStartupOutcome"]> { return this.deps.awaitStartupOutcome(...args); }
   private capabilityRefusal(...args: Parameters<Manager["capabilityRefusal"]>): ReturnType<Manager["capabilityRefusal"]> { return this.deps.capabilityRefusal(...args); }
@@ -73,7 +74,7 @@ export class SeatStart {
   private launchOwner(...args: Parameters<Manager["launchOwner"]>): ReturnType<Manager["launchOwner"]> { return this.deps.launchOwner(...args); }
   private get leaseStopping() { return this.deps.leaseStopping(); }
   private loadSeatRuntime(...args: Parameters<Manager["loadSeatRuntime"]>): ReturnType<Manager["loadSeatRuntime"]> { return this.deps.loadSeatRuntime(...args); }
-  private get managerInstanceId() { return this.deps.managerInstanceId(); }
+  private get managerInstanceId() { return this.state.managerInstanceId!; }
   private get meshMode() { return this.deps.meshMode(); }
   private get namesCapacity() { return this.deps.namesCapacity(); }
   private openOnceDelivery(...args: Parameters<Manager["openOnceDelivery"]>): ReturnType<Manager["openOnceDelivery"]> { return this.deps.openOnceDelivery(...args); }
@@ -81,7 +82,7 @@ export class SeatStart {
   private place(...args: Parameters<Manager["place"]>): ReturnType<Manager["place"]> { return this.deps.place(...args); }
   private provisionUserAgent(...args: Parameters<Manager["provisionUserAgent"]>): ReturnType<Manager["provisionUserAgent"]> { return this.deps.provisionUserAgent(...args); }
   private readerRemedy(...args: Parameters<Manager["readerRemedy"]>): ReturnType<Manager["readerRemedy"]> { return this.deps.readerRemedy(...args); }
-  private get remoteAuthority() { return this.deps.remoteAuthority(); }
+  private get remoteAuthority() { return this.config.remoteAuthority; }
   private resolveConnector(...args: Parameters<Manager["resolveConnector"]>): ReturnType<Manager["resolveConnector"]> { return this.deps.resolveConnector(...args); }
   private get retirement() { return this.deps.retirement(); }
   private get runHosting() { return this.deps.runHosting(); }
@@ -94,7 +95,7 @@ export class SeatStart {
   private stopAndTrack(...args: Parameters<Manager["stopAndTrack"]>): ReturnType<Manager["stopAndTrack"]> { return this.deps.stopAndTrack(...args); }
   private trackDeprovision(...args: Parameters<Manager["trackDeprovision"]>): ReturnType<Manager["trackDeprovision"]> { return this.deps.trackDeprovision(...args); }
   private get transcripts() { return this.deps.transcripts(); }
-  private get userMode() { return this.deps.userMode(); }
+  private get userMode() { return this.state.userMode; }
   private get userProvision() { return this.deps.userProvision(); }
   private watchExit(...args: Parameters<Manager["watchExit"]>): ReturnType<Manager["watchExit"]> { return this.deps.watchExit(...args); }
   private watchOnceExit(...args: Parameters<Manager["watchOnceExit"]>): ReturnType<Manager["watchOnceExit"]> { return this.deps.watchOnceExit(...args); }

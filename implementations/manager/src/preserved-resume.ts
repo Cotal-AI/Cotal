@@ -15,6 +15,7 @@ import { foreignEventChannels } from "./seat-launch.js";
 import type { ManagedAgent } from "./seat-types.js";
 import { ownedBySibling } from "./static-lifecycle.js";
 import type { ManagerConfig } from "./manager-config.js";
+import type { ManagerStartState } from "./manager-start-state.js";
 
 /** How often a resumed seat whose readiness was uncertain is checked for a join its predecessor's
  *  presence row hides (see {@link Manager.watchResumeAdoption}). The wait has no end of its own, so
@@ -57,17 +58,13 @@ interface PreparedResume {
  *  assigns after construction is always current, and a Manager method a test replaces is the one that runs. */
 export interface PreservedResumeDeps {
   agents: () => Manager["agents"];
-  auth: () => Manager["auth"];
   ep: () => Manager["ep"];
-  managerInstanceId: () => Manager["managerInstanceId"];
   namesCapacity: () => Manager["namesCapacity"];
-  remoteAuthority: () => Manager["remoteAuthority"];
   resumeDurableCommitToken: () => Manager["resumeDurableCommitToken"];
   setResumeDurableCommitToken: (value: Manager["resumeDurableCommitToken"]) => void;
   resumeRequired: () => Manager["resumeRequired"];
   setResumeRequired: (value: Manager["resumeRequired"]) => void;
   retirement: () => Manager["retirement"];
-  userMode: () => Manager["userMode"];
   abortPreservation: (...args: Parameters<Manager["abortPreservation"]>) => ReturnType<Manager["abortPreservation"]>;
   armSessionRecovery: (...args: Parameters<Manager["armSessionRecovery"]>) => ReturnType<Manager["armSessionRecovery"]>;
   awaitHandleExit: (...args: Parameters<Manager["awaitHandleExit"]>) => ReturnType<Manager["awaitHandleExit"]>;
@@ -116,17 +113,13 @@ export interface PreservedResumeDeps {
 export function preservedResumeDeps(m: Manager): PreservedResumeDeps {
   return {
     agents: () => m["agents"],
-    auth: () => m["auth"],
     ep: () => m["ep"],
-    managerInstanceId: () => m["managerInstanceId"],
     namesCapacity: () => m["namesCapacity"],
-    remoteAuthority: () => m["remoteAuthority"],
     resumeDurableCommitToken: () => m["resumeDurableCommitToken"],
     setResumeDurableCommitToken: (value) => { m["resumeDurableCommitToken"] = value; },
     resumeRequired: () => m["resumeRequired"],
     setResumeRequired: (value) => { m["resumeRequired"] = value; },
     retirement: () => m["retirement"],
-    userMode: () => m["userMode"],
     abortPreservation: (...args) => m["abortPreservation"](...args),
     armSessionRecovery: (...args) => m["armSessionRecovery"](...args),
     awaitHandleExit: (...args) => m["awaitHandleExit"](...args),
@@ -173,23 +166,23 @@ export function preservedResumeDeps(m: Manager): PreservedResumeDeps {
 
 /** Resuming a preserved manager: the bound inventory, validating each retained seat's authority, relaunching or adopting it, and the commit and finalize doors. */
 export class PreservedResume {
-  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: PreservedResumeDeps, private readonly parts: Pick<ManagerParts, "connectorInventory">) {}
+  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: PreservedResumeDeps, private readonly parts: Pick<ManagerParts, "connectorInventory">, private readonly state: ManagerStartState) {}
 
   // The Manager members these bodies read, under their Manager names. Each reads through its dep at
   // use, so a field the Manager assigns later is current and a method a test replaces on the Manager
   // is the one that runs.
   private get agents() { return this.deps.agents(); }
-  private get auth() { return this.deps.auth(); }
+  private get auth() { return this.state.auth; }
   private get ep() { return this.deps.ep(); }
-  private get managerInstanceId() { return this.deps.managerInstanceId(); }
+  private get managerInstanceId() { return this.state.managerInstanceId!; }
   private get namesCapacity() { return this.deps.namesCapacity(); }
-  private get remoteAuthority() { return this.deps.remoteAuthority(); }
+  private get remoteAuthority() { return this.config.remoteAuthority; }
   private get resumeDurableCommitToken() { return this.deps.resumeDurableCommitToken(); }
   private set resumeDurableCommitToken(value: Manager["resumeDurableCommitToken"]) { this.deps.setResumeDurableCommitToken(value); }
   private get resumeRequired() { return this.deps.resumeRequired(); }
   private set resumeRequired(value: Manager["resumeRequired"]) { this.deps.setResumeRequired(value); }
   private get retirement() { return this.deps.retirement(); }
-  private get userMode() { return this.deps.userMode(); }
+  private get userMode() { return this.state.userMode; }
   private abortPreservation(...args: Parameters<Manager["abortPreservation"]>): ReturnType<Manager["abortPreservation"]> { return this.deps.abortPreservation(...args); }
   private armSessionRecovery(...args: Parameters<Manager["armSessionRecovery"]>): ReturnType<Manager["armSessionRecovery"]> { return this.deps.armSessionRecovery(...args); }
   private awaitHandleExit(...args: Parameters<Manager["awaitHandleExit"]>): ReturnType<Manager["awaitHandleExit"]> { return this.deps.awaitHandleExit(...args); }

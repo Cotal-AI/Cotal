@@ -38,7 +38,9 @@ this machine only, through the lookup the launch uses: `result.requested.runtime
 `error` when it is not. A runtime this machine cannot run is a `RUNTIME_UNAVAILABLE` warning,
 because a manager on another host checks its own.
 `--runtime auto` is refused as the launch refuses it. A direct preview resolves the local persona,
-harness precedence and physical working directory. Like the foreground launch, it refuses a
+harness precedence and physical working directory. If the directory is unavailable, the refusal
+names the path and suggests passing an existing directory to `--cwd` or omitting `--cwd` to use
+the current directory. The preview does not create a directory. Like the foreground launch, it refuses a
 symbolic-link loop in the persona path with `SCHEMA_INVALID` (exit 1), names the path, and explains
 how to correct or replace the link. It checks the effective name from `--name` or
 persona frontmatter with the launch's local name rule, including the actor-token rule for a selected
@@ -219,7 +221,7 @@ summary and retains the complete list in JSON; none are claimed to have joined. 
 or refused summary after boot is not a reason to boot again. A summary records the absolute folder
 `up -f` ran in. After that folder is moved or copied, the summary still reads but names the old
 path. It settles nothing in the new folder and blocks no `up` or `down` there, and `team show <id>`
-refuses it with CONFLICT, naming the folder it was recorded at.
+refuses it with CONFLICT, naming the folder it was recorded at. To inspect the project that holds the copy, the refusal gives a status command that changes to its folder and names its space.
 The inventory's `completeness` stays `partial` because older fresh boots may have no summary.
 That historical caveat does not change the exit status. If a local deployment record cannot be
 read or validated, `team` keeps the readable records, warns, and exits 4. Its JSON reports
@@ -245,9 +247,10 @@ but the full run ID selects the ledger; an edited manifest is not new teardown a
 the native plan before a separate apply. Listing ownership does not confer permission to stop
 anything. One guarded `team deploy <file>` route accepts a
 channel-only manifest whose declared cards are all absent and explicitly set
-`deliveryClass: live`. It refuses agents, runtime requests, defaults,
+`deliveryClass: live`. It refuses agents, runtime requests, nonempty defaults,
 broker bind changes, access edges, existing cards,
 a changed re-apply, registered broker lists and unresolved prior attempts before an effect.
+An empty `defaults: {}` requests no changes to space defaults.
 A card that does not set `deliveryClass: live` is refused with `UNSUPPORTED`. The refusal names
 the cards and asks you to set `deliveryClass: live` on each card. On an open mesh, durable channels
 require a different authenticated mesh with a delivery service. On an authenticated mesh, the
@@ -374,6 +377,8 @@ starts its agents from a launch spec pinned by digest. One rich, JSON or plain r
 the controller members and requested topology. Agent joins are not checked, so the receipt is
 partial. A manifest that requests no agents leaves no join unchecked, so its receipt is `ok`. The fresh attempt and summary are launch records, not stop authority. No additive
 ownership ledger is created; `cotal down` uses the stack journal and each member's native lifecycle.
+The text receipt offers `cotal team show <id> --space <space>` to read the launch summary in the
+booted space without changing your saved selection.
 
 Before writes it checks the selected root, auth mode, broker address, runtime, connectors and
 retained ownership records. A journal, legacy PID record, possibly live component, service instance,
@@ -450,7 +455,9 @@ extensions may produce their own output outside the finite result.
 ### Additive deployment verification
 
 `team deploy <file> --dry-run` resolves the manifest and personas and requires a
-registration for the declared space in this root. It shows the declared
+local registration for the declared space. From another checkout, the text preview names
+the registered project root required for apply. A channel-only apply from another checkout
+refuses and gives the command to retry from that root. The preview shows the declared
 channel delivery/replay/window values separately from its non-atomic live
 registry classification. If the selected running mesh is open, an explicit
 durable channel declaration is warned as unsupported by its missing delivery
