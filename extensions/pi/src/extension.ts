@@ -269,7 +269,10 @@ export default async function cotalMesh(pi: ExtensionAPI): Promise<void> {
     const update = event.assistantMessageEvent;
     if ((update.type === "text_delta" || update.type === "thinking_delta" || update.type === "toolcall_delta") && update.delta.length > 0)
       runtime.mesh.noteActivity();
+    runtime.events?.delta(update);
   });
+  // Pi saves the message after its extensions see message_end.
+  pi.on("message_end", () => runtime.events?.settle());
   pi.on("context", (event) => runtime.driver.onContext(event.messages));
   pi.on("after_provider_response", (event) => runtime.driver.onProviderResponse(event.status));
   pi.on("tool_execution_start", (event) => {
