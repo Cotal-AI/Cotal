@@ -957,7 +957,7 @@ async function userConnect(target: MeshTarget): Promise<Connection> {
  *  malformed file is refused naming the file and what is wrong with it, rather than reaching a
  *  serving broker as an unreachable one. A file other accounts can read is still used, with a
  *  warning on stderr: the private-file rule refuses only the credentials Cotal keeps itself. */
-export function readCredsFile(path: string, options?: { malformedRemedy?: string; missingRemedy?: string }): string {
+export function readCredsFile(path: string, options?: { malformedRemedy?: string }): string {
   const refuse = (problem: string, code: RefusalCode, remedy: string) =>
     new ConnectRefusal(`✗ creds file ${problem}`, `  ${remedy}`, { code, parts: { message: `creds file ${problem}`, remedy }, target: { path } });
   let stat: Stats;
@@ -978,7 +978,7 @@ export function readCredsFile(path: string, options?: { malformedRemedy?: string
   } catch (e) {
     if (isConnectRefusal(e)) throw e;
     const code = (e as NodeJS.ErrnoException).code;
-    if (code === "ENOENT") throw refuse(`not found: ${path}`, "TARGET_NOT_FOUND", options?.missingRemedy ?? "check the path; `cotal auth mint <label> --out <file>` writes a credential file");
+    if (code === "ENOENT") throw refuse(`not found: ${path}`, "TARGET_NOT_FOUND", "check the path; `cotal auth mint <label> --out <file>` writes a credential file");
     throw refuse(`${path} could not be read (${code ?? "read failed"})`, code === "EACCES" || code === "EPERM" ? "PERMISSION_DENIED" : "SCHEMA_INVALID", "check the file's owner and permissions");
   }
   const problem = credsProblem(text);
