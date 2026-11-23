@@ -728,6 +728,7 @@ function threadHandlers(b: Bridge, offers: Offers, runTurn: ReturnType<typeof tu
       if (session.offer.seatOnly) throw RequestError.invalidParams(undefined, `${session.id} opened without a grant that may spawn, so this thread cannot start another agent`);
       const { agent: harness, model } = parseModel(session.selection.model);
       const why = refusal(session.offer.catalogs, harness) ?? (images.length ? spaceImageRefusal(m, harness) : undefined);
+      const catalog = session.offer.catalogs.find((c) => c.agent === harness);
       if (why) throw RequestError.invalidParams(undefined, why);
       session.mapper = new FrameMapper(harness, session.cwd);
       // Images ride a turn, so a first prompt with images starts the seat with none and gives it the
@@ -743,6 +744,8 @@ function threadHandlers(b: Bridge, offers: Offers, runTurn: ReturnType<typeof tu
           cwd: session.cwd,
           ...(images.length ? {} : { prompt: text }),
           ...(session.selection.machine ? { managerInstanceId: session.selection.machine } : {}),
+          ...(catalog?.askPermissions ? { askPermissions: true } : {}),
+          ...(catalog?.reasoningEvents ? { reasoningEvents: true } : {}),
         });
         session.spawning = spawning;
         const seat = await spawning.finally(() => (session.spawning = undefined));

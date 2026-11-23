@@ -319,13 +319,16 @@ function launchCalls(c: Connected, p: Controls, defaultPersona: string | null | 
       const [status, models] = await Promise.all([ask("managerStatus", undefined, instanceId), ask("models", undefined, instanceId)]);
       if (!status.ok) throw listFailure(status, "the manager did not report its applications");
       if (!models.ok) throw listFailure(models, "the manager did not list its models");
-      const rows = (status.data as { connectors?: { agent: string; state: string; eventPlane: boolean; reason?: string }[] } | undefined)?.connectors ?? [];
+      type Row = { agent: string; state: string; eventPlane: boolean; prompts?: boolean; askPermissions?: boolean; reasoningEvents?: boolean; reason?: string };
+      const rows = (status.data as { connectors?: Row[] } | undefined)?.connectors ?? [];
       if (!Array.isArray(models.data)) throw new Error("the manager did not list its models");
       const catalogs = models.data as { agent: string; models?: { id: string; name?: string; variants?: { name: string }[] }[] }[];
       return rows.map((row): AgentCatalog => ({
         agent: row.agent,
         available: row.state === "available",
         eventPlane: row.eventPlane,
+        ...(row.askPermissions && row.prompts ? { askPermissions: true } : {}),
+        ...(row.reasoningEvents && row.eventPlane ? { reasoningEvents: true } : {}),
         ...(row.reason ? { reason: row.reason } : {}),
         models: (catalogs.find((c) => c.agent === row.agent)?.models ?? []).map((m) => ({
           id: m.id,
@@ -380,7 +383,8 @@ function launchCalls(c: Connected, p: Controls, defaultPersona: string | null | 
 
     async spawn(req: SpawnRequest) {
       const reply = await requestManagedLaunch(
-        { persona: req.persona ?? defaultPersona ?? "default", identity: req.name, agent: req.agent, model: req.model, variant: req.variant, cwd: req.cwd, ...(req.prompt ? { prompt: req.prompt } : {}), ...(req.subscribe ? { subscribe: [...req.subscribe] } : {}), events: true },
+        { persona: req.persona ?? defaultPersona ?? "default", identity: req.name, agent: req.agent, model: req.model, variant: req.variant, cwd: req.cwd, ...(req.prompt ? { prompt: req.prompt } : {}), ...(req.subscribe ? { subscribe: [...req.subscribe] } : {}), events: true,
+          ...(req.askPermissions ? { askPermissions: true } : {}), ...(req.reasoningEvents ? { reasoningEvents: true } : {}) },
         (args) => ask("start", args, req.managerInstanceId, START_TIMEOUT_MS),
       );
       if (!reply.ok) throw failure(reply, `${req.name} did not start`);
