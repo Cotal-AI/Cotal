@@ -135,6 +135,10 @@ try {
   check("#general lists anna and offers to follow it in the resolved space",
     general.status === 0 && general.out.includes("anna") && general.out.includes(`cotal ch members general --space ${SPACE} --follow`), general.out.slice(-600));
 
+  const inferredInventory = cotal("channel", "--plain");
+  check("the channel inventory suggests the resolved space even when none is passed",
+    inferredInventory.status === 0 && ["cotal", "pnpm cotal"].some((cli) => inferredInventory.stdout.includes(`${cli} ch show <name> --space ${SPACE}`)), inferredInventory.out);
+
   check("a leading hyphen is valid in a channel name", cotal("channel", "set", "#-audit", "--desc", "Dash-prefixed channel").status === 0);
   const dashShow = cotal("channel", "show", "#-audit", "--plain");
   check("channel show spells a dash-prefixed channel as a shell-safe operand",
@@ -179,6 +183,13 @@ try {
     check("an unknown removal suggests listing the intended space with its broker and credential",
       removal.status === 2 && missing?.error?.code === "TARGET_NOT_FOUND" && list?.status === 0
         && list.stdout.includes(`Mesh: ${SPACE}`) && list.stdout.includes("#general"), { removal: removal.out, list: list?.out });
+    const inventory = cotal("ch", ...target, "--plain");
+    const suggests = (action: string) => ["cotal", "pnpm cotal"].some((cli) => inventory.stdout.includes(`${cli} ch ${action} ${scope}`));
+    const suggestedShow = suggests("show <name>") ? cotal("ch", "show", "general", ...target, "--plain") : undefined;
+    check("the inventory's show, set and defaults commands keep the inspected space, broker and credential",
+      inventory.status === 0 && suggests('set <name> --desc "…"') && suggests("defaults")
+        && suggestedShow?.status === 0 && suggestedShow.stdout.includes(`Mesh: ${SPACE}`)
+        && /Description:\s+General talk/.test(suggestedShow.stdout), { inventory: inventory.out, show: suggestedShow?.out });
     const card = cotal("channel", "show", "archive", ...target, "--plain");
     const history = card.stdout.includes(`cotal history '#archive' ${scope}`) ? cotal("history", "#archive", ...target, "--json") : undefined;
     check("the suggested history read uses the inspected space, broker and credential",

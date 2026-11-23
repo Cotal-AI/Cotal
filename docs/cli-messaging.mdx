@@ -513,6 +513,9 @@ channel and `defaults` when the defaults key does not decode say the same. A `se
 that would write such a key refuses with `CONFLICT` and leaves the bytes as they are. `remove`
 of that key removes the entry.
 
+The inventory's `Next` commands name the space it read and keep any `--server` and `--creds`
+options you passed.
+
 The `channel show` text report, including `--plain`, shows the resolved replay, window and delivery settings.
 Each value with no per-channel override is marked `inherited`, whether it comes from space
 defaults or the built-in policy. The inventory uses the same mark for replay and delivery.
