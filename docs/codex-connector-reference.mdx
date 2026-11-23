@@ -137,6 +137,15 @@ TUI, and answers `interrupted`. It answers `idle` when no turn runs, and when Co
 the turn already ended. A stopped turn ends `interrupted`, which the host handles as an Escape in
 the TUI: the messages it carried count as delivered, and the next queued skill runs.
 
+`turn` runs the owner's words as a turn of its own on the same thread, again only while no other
+turn runs. `turn/start` carries the text, and each image as `{ type: "image", url }` with a `data:`
+URL, as T3 Code sends them. A turn of images alone sends no text. When Codex refuses the start, the
+turn ends `refused` with `failed-precondition`. `usage` answers the thread's context use from
+Codex's last `thread/tokenUsage/updated`: `used` is the last model call's total tokens, which is what
+Codex's own context meter counts, and `size` is the model's context window. It has no context until
+Codex reported both, and none again after an app-server restart starts a new thread. Codex reports
+no cost.
+
 Codex's app-server has no method that lists or runs its built-in slash commands or custom prompts,
 so the agent offers no `command` target, and a `command` for one is `unimplemented`.
 

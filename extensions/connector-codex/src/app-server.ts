@@ -39,7 +39,7 @@ import { randomBytes } from "node:crypto";
 import { closeSync, constants as fsConstants, openSync, rmSync, writeSync } from "node:fs";
 import { join } from "node:path";
 import WebSocket from "ws";
-import type { PresenceCondition } from "@cotal-ai/core";
+import type { PresenceCondition, TurnImage } from "@cotal-ai/core";
 import { codexCondition } from "./agui-map.js";
 
 /** Non-secret launch attribution variables a seat's shell needs for `cotal stop --self` and
@@ -263,6 +263,8 @@ export class AppServerDriver extends EventEmitter {
    *  event because the `ready` can land before anyone waits for it. */
   private readonly mcpStatus = new Map<string, { status: string; error?: string }>();
   private readonly mcpWaiters = new Set<() => void>();
+  /** The thread's context use, from its last `thread/tokenUsage/updated` that named a window. */
+  private context?: { used: number; size: number };
   /** Set by {@link stop}: this driver has been torn down ON PURPOSE, so the child's death is
    *  expected and must not be recovered from. */
   private terminal = false;
@@ -486,6 +488,7 @@ export class AppServerDriver extends EventEmitter {
     const id = started.thread?.id;
     if (!id) throw new Error("thread/start returned no thread id");
     this.threadId = id;
+    this.context = undefined;
     this.startedModel = started.model;
     // Materialize the thread's rollout file. `thread/start` alone writes NOTHING to disk, and
     // `thread/resume` (how the TUI attaches) fails with "no rollout found" until something does
@@ -541,13 +544,23 @@ export class AppServerDriver extends EventEmitter {
    *  order inside the read loop, so `turn/started` always precedes `turn/completed`, and by the
    *  time a terminal event is handled the id is set. Adopting from the awaited response instead
    *  would run as a later microtask — after a same-chunk `turn/started`+`turn/completed` already
-   *  cleared the id — and would resurrect the dead turn (falsely busy forever). */
-  async startTurn(text: string): Promise<void> {
+   *  cleared the id — and would resurrect the dead turn (falsely busy forever). Each image goes
+   *  as a data URL, and a turn of images alone sends no text. */
+  async startTurn(text: string, images: readonly TurnImage[] = []): Promise<void> {
     if (!this.threadId) throw new Error("thread not started");
     await this.request("turn/start", {
       threadId: this.threadId,
-      input: [{ type: "text", text, text_elements: [] }],
+      input: [
+        ...(text || images.length === 0 ? [{ type: "text", text, text_elements: [] }] : []),
+        ...images.map((i) => ({ type: "image", url: `data:${i.mimeType};base64,${i.data}` })),
+      ],
     });
+  }
+
+  /** The tokens in the thread's context window after its last model call, and the window's size,
+   *  as Codex's own context meter counts them. Absent until Codex reported both. */
+  get contextUsage(): { used: number; size: number } | undefined {
+    return this.context;
   }
 
   /** The skills Codex finds for this thread's working directory, re-read from disk. A repo skill
@@ -919,6 +932,13 @@ export class AppServerDriver extends EventEmitter {
       }
       case "turn/failed": // terminal, but turn/completed (status:"failed") follows on the same turn
         return;
+      case "thread/tokenUsage/updated": {
+        const usage = params.tokenUsage as { last?: { totalTokens?: unknown }; modelContextWindow?: unknown } | undefined;
+        const used = usage?.last?.totalTokens;
+        const size = usage?.modelContextWindow;
+        if (params.threadId === this.threadId && typeof used === "number" && typeof size === "number" && size > 0) this.context = { used, size };
+        return;
+      }
       case "serverRequest/resolved":
         if (params.threadId === this.threadId && (typeof params.requestId === "number" || typeof params.requestId === "string"))
           this.emit("resolved", params.requestId);
