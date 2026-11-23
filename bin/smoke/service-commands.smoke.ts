@@ -216,6 +216,24 @@ try {
     startHelp.status === 0 && out(startHelp).includes("cotal manager start [--runtime <name>]") && out(startHelp).includes('(default: "pty")') && out(startHelp).includes("--roster"), out(startHelp));
   check("  and none of service add's definition flags", !/--preset\b|--file\b|--new-instance\b|--exec\b/.test(out(startHelp)), out(startHelp));
 
+  const managerStartPath = ["service", "start", "manager"];
+  const managerPresetHelp = cotal([...managerStartPath, "--help"]);
+  const managerHelpCommand = cotal(["help", ...managerStartPath]);
+  const managerStartRefusal = cotal([...managerStartPath, "--no-open", "--dry-run"]);
+  const noOpenOption = /^  --no-open\b/m;
+  check("both manager preset help forms keep --runtime and omit the web-only option",
+    managerPresetHelp.status === 0 && managerHelpCommand.status === 0 && managerPresetHelp.stdout === managerHelpCommand.stdout
+    && /^  --runtime <string>/m.test(managerPresetHelp.stdout) && !noOpenOption.test(managerPresetHelp.stdout), out(managerPresetHelp));
+  check("the manager preset refuses --no-open without listing it in the usage help",
+    managerStartRefusal.status === 1 && managerStartRefusal.stdout === "" && managerStartRefusal.stderr.includes("--no-open belongs to service start web")
+    && managerStartRefusal.stderr.endsWith(managerPresetHelp.stdout) && !noOpenOption.test(managerStartRefusal.stderr), out(managerStartRefusal));
+  for (const [name, showsNoOpen] of [[undefined, true], ["web", true], ["broker", false], ["hello", false]] as const) {
+    const args = ["service", "start", ...(name === undefined ? [] : [name]), "--help"];
+    const result = cotal(args);
+    check(`cotal ${args.join(" ")} ${showsNoOpen ? "lists" : "omits"} --no-open`,
+      result.status === 0 && noOpenOption.test(result.stdout) === showsNoOpen, out(result));
+  }
+
   for (const args of [["manager", "install", "--help"], ["help", "manager", "install"]]) {
     const installHelp = cotal(args);
     check(`cotal ${args.join(" ")} explains that Manager unit installation is unsupported and shows the foreground command`,
