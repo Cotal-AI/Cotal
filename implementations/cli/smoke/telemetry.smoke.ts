@@ -15,6 +15,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { acquireLock } from "@cotal-ai/core";
 import { createSuite, listenOn, onFreePort } from "@cotal-ai/smoke-kit";
 import { CommandFailure } from "@cotal-ai/workspace";
 import { telemetryErrorText } from "../src/telemetry.js";
@@ -107,6 +108,42 @@ const INSTALL = [...COMMON, "account", "osRelease", "packageManager", "installMe
   const nextDay = await s.run(["version"]);
   await settled();
   check("a stale lastInstallEventAt sends the install event again", nextDay.sent.length === 2 && nextDay.sent[0]!.event === "install", nextDay.sent.map((b) => b.event));
+}
+
+// The desktop metadata request waits for stdin after reading the settings. A second command
+// can finish first and claim today's install event without changing the desktop request's outcome.
+{
+  const s = sandbox();
+  const before = received.length;
+  const desktop = spawn(process.execPath, [BIN, "daemon", "desktop"], { cwd: s.project, env: s.env, stdio: ["pipe", "ignore", "ignore"], timeout: 30_000 });
+  const exited = new Promise<number | null>((resolve, reject) => { desktop.once("error", reject); desktop.once("close", resolve); });
+  try {
+    const deadline = Date.now() + 10_000;
+    while (!existsSync(s.settingsPath) && desktop.exitCode === null && Date.now() < deadline) await wait(10);
+    check("the pending desktop request read a fresh telemetry identity", existsSync(s.settingsPath) && s.settings().lastInstallEventAt === undefined && desktop.exitCode === null);
+    const version = await s.run(["version"]);
+    check("version claims the daily report while desktop is waiting", version.status === 0 && version.sent.some((body) => body.event === "install"));
+  } finally { desktop.stdin.end('{"op":"about"}\n'); }
+  const code = await exited;
+  const rows = received.slice(before);
+  check("overlapping commands send one install and both command events for the same id", code === 0 && rows.length === 3 && rows.filter((body) => body.event === "install").length === 1 && rows.some((body) => body.command === "version") && rows.some((body) => body.command === "daemon" && body.subcommand === "desktop") && rows.every((body) => body.installId === s.settings().installId), rows.map((body) => body.event));
+}
+
+{
+  const s = sandbox();
+  const firstUse = acquireLock(`${s.settingsPath}.lock`);
+  try {
+    const busy = await s.run(["version"]);
+    check("a busy first-use identity does not fail the command or mint a second id", busy.status === 0 && busy.sent.length === 0 && !existsSync(s.settingsPath));
+  } finally { firstUse.release(); }
+  await s.run(["telemetry", "regular"]);
+  const held = acquireLock(`${s.settingsPath}.lock`);
+  try {
+    const busy = await s.run(["version"]);
+    check("a busy daily claim leaves the command event and exit unchanged", busy.status === 0 && busy.sent.length === 1 && busy.sent[0]?.command === "version" && s.settings().lastInstallEventAt === undefined);
+  } finally { held.release(); }
+  const next = await s.run(["version"]);
+  check("the next eligible command can claim the deferred day", next.status === 0 && next.sent.length === 2 && next.sent[0]?.event === "install");
 }
 
 {
