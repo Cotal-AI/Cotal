@@ -370,8 +370,10 @@ Twelve things are specific to Codex and worth knowing before you read a stream:
   reports no item for the script, so T3 Code's own Codex provider shows only the calls it makes.
   The seat does the same: the script and its output are not published. Each command, file change
   and MCP call the script makes is published as its own tool call, `exec_command`, `apply_patch`
-  with Codex's change list, or the MCP tool's name. Codex records such a call only once it has
-  ended, so it is published whole at its end and is not shown while it runs.
+  with Codex's change list, or the MCP tool's name. The rollout records such a call only once it
+  has ended, but app-server reports it when it starts, and the seat journals that. So the call is
+  published while it runs, and its result when it ends. A call that started before the seat opened
+  its journal is published whole at its end.
 - **The plan tool is off unless a launch turns it on.** Codex 0.162 offers `update_plan` only when
   its config enables the tool, as T3 Code's own Codex provider does for every thread. A seat gets
   it with `--opt 'tools={update_plan={enabled=true}}'`, since a launch-option key names one config

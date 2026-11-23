@@ -24,7 +24,7 @@ import {
   type SourceRead,
 } from "@cotal-ai/connector-core";
 import { codexStreamKey, createCodexMapper, type CodexMapper, type CodexRecord } from "./agui-map.js";
-import type { PlanRecord } from "./agui-nested.js";
+import type { PlanRecord, StartedRecord } from "./agui-nested.js";
 
 /**
  * The rollout source, positioned where the BIND was taken rather than where the emitter's own
@@ -81,6 +81,9 @@ interface BindingOptions {
   postStartHoldMs: number;
 }
 
+/** The `item/started` items a code-mode script's calls arrive as. */
+const STARTED_ITEMS = new Set(["commandExecution", "fileChange", "mcpToolCall"]);
+
 /** One bound rollout: the holder that publishes it, and the journal its agent messages stream into. */
 export class CodexEventBinding {
   readonly holder: AguiEmitterHolder<Merged<CodexRecord>>;
@@ -128,6 +131,13 @@ export class CodexEventBinding {
     if (this.journal === undefined || !Array.isArray(update.plan)) return;
     const explanation = typeof update.explanation === "string" ? update.explanation : null;
     this.journal.record({ type: "plan", id: `plan_${randomUUID()}`, explanation, plan: update.plan } satisfies PlanRecord);
+  }
+
+  /** Journal a tool call Codex reports as started. A call a code-mode script makes is in the
+   *  rollout only once it ends, so the plane reads its start here. */
+  started(item: { type?: unknown }): void {
+    if (this.journal === undefined || !STARTED_ITEMS.has(String(item.type))) return;
+    this.journal.record({ type: "started", item } satisfies StartedRecord);
   }
 
   /** Codex finished the item `itemId`: the record it saves carries the text not journaled yet. */

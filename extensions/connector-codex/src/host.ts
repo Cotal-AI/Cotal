@@ -784,6 +784,7 @@ export async function runCodexHost(): Promise<void> {
   });
   driver.on("itemStarted", (item: ThreadItem) => {
     agent.noteActivity();
+    events?.started(item);
     if (item.type === "commandExecution" && typeof item.command === "string") {
       feed(`$ ${item.command}`);
       void safeStatus("working", item.command.slice(0, 120));
