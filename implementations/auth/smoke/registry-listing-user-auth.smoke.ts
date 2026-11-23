@@ -13,6 +13,7 @@ import { SignJWT, exportJWK, generateKeyPair } from "jose";
 import { PermissionViolationError, type NatsConnection } from "@nats-io/transport-node";
 import { CotalEndpoint, dialerFor, mintCreds, mintLifecycleUid, newIdentity, readUsername, readUsernameOwner, setupSpaceStreams, standaloneConnectOpts, usernameBucket, type IssuedCaller } from "@cotal-ai/core";
 import * as core from "@cotal-ai/core";
+import { NativeChatSession } from "@cotal-ai/workspace/chat";
 import { createSuite } from "@cotal-ai/smoke-kit";
 import { deriveOwnerForIdpSubject, grantActor, loadOwnerSecret, startAuthService, type AuthServiceHandle } from "../src/index.js";
 import { startHostedAuthFixture } from "./_hosted-auth-fixture.js";
@@ -105,6 +106,29 @@ async function checkAddresses(sender: CotalEndpoint, nc: NatsConnection, own: Co
   suite.check("a failed registry read is visibly unavailable, not an unknown username", /cannot read.*username registry/i.test(unavailable), unavailable);
   suite.check("an exact ID still selects a foreign peer", await select(roster, foreign.card.id) === foreign.card.id);
   suite.check("a bare name absent from all owners still returns no match", await select(roster, "missing_actor") === "no match");
+}
+
+async function checkChat(sender: CotalEndpoint, foreign: CotalEndpoint, foreignName: string, received: string[], reopen: () => Promise<CotalEndpoint>): Promise<void> {
+  const session = new NativeChatSession({ endpoint: sender,
+    identity: { mode: "user", space: sender.space, principal: sender.card.id, lifecycleUid: senderRow.lifecycleUid!, label: "sender", allowSubscribe: [], allowPublish: [] },
+    retire: async () => { await sender.stop(); return { retirement: "not-applicable", connectionClosed: "confirmed", message: "stopped" }; },
+    words: { reopen: (channel) => channel, answerOne: "use the sender's principal" },
+  });
+  try {
+    await sender.waitForPresenceSnapshot();
+    const bare = await session.dm("lister", "chat-bare-must-not-cross");
+    suite.check("native chat refuses a foreign bare target without sending", bare.outcome === "refused" && bare.message.includes(`${foreignName}/lister`), bare);
+    const qualified = await session.dm(`${foreignName}/lister`, "chat-qualified");
+    for (let i = 0; i < 30 && !received.includes("chat-qualified") && !received.includes("chat-bare-must-not-cross"); i++) await delay(100);
+    suite.check("native chat stores the qualified target at the foreign principal", qualified.outcome === "stored" && qualified.recipient?.id === foreign.card.id && received.includes("chat-qualified"), { qualified, received });
+    await foreign.stop();
+    for (let i = 0; i < 30 && sender.getRoster().some((p) => p.card.id === foreign.card.id && p.status !== "offline"); i++) await delay(100);
+    const offline = await session.dm(`${foreignName}/lister`, "chat-qualified-offline");
+    suite.check("native chat stores a qualified DM while the target is offline", offline.outcome === "stored" && offline.recipientStatusAtSend === "offline", offline);
+    await reopen();
+    for (let i = 0; i < 30 && !received.includes("chat-qualified-offline"); i++) await delay(100);
+    suite.check("the same lifecycle gets both qualified DMs and no foreign bare DM", received.includes("chat-qualified") && received.includes("chat-qualified-offline") && !received.includes("chat-bare-must-not-cross"), received);
+  } finally { await session.close(); }
 }
 
 try {
@@ -222,6 +246,7 @@ try {
   const { ep: sender, nc: senderNc } = await connect(await bearer("lister-human", {}, undefined, "sender"), senderRow);
   await second.stop();
   await checkAddresses(sender, senderNc, first, foreign, names[1]!, received, ncOfSecond);
+  await checkChat(sender, foreign, names[1]!, received, async () => (await connect(otherToken, otherRow, true, received)).ep);
 } finally {
   for (const ep of endpoints) await ep.stop().catch(() => {});
   await registry?.stop().catch(() => {});

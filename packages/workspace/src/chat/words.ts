@@ -5,6 +5,6 @@
 export interface ChatWords {
   /** How to get a session that may use `channel`. It ends a grant refusal's sentence. */
   readonly reopen: (channel: string) => string;
-  /** How to answer one message. It ends the refusal for a name that several gone senders carry. */
+  /** How to answer one message by its exact sender. It ends a typed-name miss. */
   readonly answerOne: string;
 }

@@ -4,7 +4,6 @@ import {
   CotalEndpoint,
   assertValidChannel,
   parseJoinLink,
-  resolvePeer,
   AmbiguousPeerError,
   mintLifecycleUid,
   assertLifecycleToken,
@@ -665,7 +664,7 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
           const target = rest.slice(0, sp);
           const text = rest.slice(sp + 1);
           try {
-            const peer = resolvePeer(ep.getRoster(), target, { selfId: me });
+            const peer = await ep.resolvePeerAddress(target, { selfId: me });
             if (!peer) print(c.red(`no peer named "${target}" present`));
             else {
               await ep.unicast(peer.card.id, text);

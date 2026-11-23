@@ -36,7 +36,7 @@ ok(named.startsWith('Started ada ("reviewer" was taken)') && !named.includes("lo
 const same = await started({ name: "reviewer", id: "local.blank", mode: "pty" });
 ok(same.startsWith("Started reviewer on #review") && !same.includes("was taken"), "the requested name stays when the manager returns it", same);
 const role = await started({ name: " ", id: "local.blank", mode: "pty" }, { role: "worker" });
-ok(role.startsWith("Started local.blank/worker "), "a blank spawn name with a role is the id and role", role);
+ok(role.startsWith("Started local.blank (role: worker) "), "a blank spawn name with a role is the id and role", role);
 const unnamed = await started({ name: " ", mode: "pty" });
 ok(unnamed.startsWith("Started (unnamed) "), "a blank spawn name with no id is unnamed", unnamed);
 

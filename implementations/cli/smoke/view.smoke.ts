@@ -166,8 +166,8 @@ for (const name of [" ", "", "\n", " \n\t"]) {
   check(`join shows the id for a participant named ${JSON.stringify(name)}`, label === "local.blank" && !label.includes("\n"));
 }
 check("join keeps a participant name", joinPeerLabel({ name: "ada", id: "local.ada" }) === "ada");
-check("join keeps a name and its role", joinPeerLabel({ name: "ada", id: "local.ada", role: "worker" }) === "ada/worker");
-check("join uses the id when a blank name has a role", joinPeerLabel({ name: " ", id: "local.blank", role: "worker" }) === "local.blank/worker");
+check("join keeps a name and its role", joinPeerLabel({ name: "ada", id: "local.ada", role: "worker" }) === "ada (role: worker)");
+check("join uses the id when a blank name has a role", joinPeerLabel({ name: " ", id: "local.blank", role: "worker" }) === "local.blank (role: worker)");
 const waitingReport = renderReport(watchReport(s, "waiting"), "plain", 200);
 check("the waiting view keeps the agent-only signal scope", waitingReport.includes("bob") && !waitingReport.includes("console") && !waitingReport.includes("alice"));
 {
@@ -342,8 +342,8 @@ for (const name of [" ", "", "\n", " \n\t"]) {
   check(`who shows the id for a name ${JSON.stringify(name)}`, label === "local.blank" && !label.includes("\n"));
 }
 check("who keeps a participant name", whoLabel("ada", "local.ada") === "ada");
-check("who keeps a name and its role", whoLabel("ada", "local.ada", "worker") === "ada/worker");
-check("who uses the id when a blank name has a role", whoLabel(" ", "local.blank", "worker") === "local.blank/worker");
+check("who keeps a name and its role", whoLabel("ada", "local.ada", "worker") === "ada (role: worker)");
+check("who uses the id when a blank name has a role", whoLabel(" ", "local.blank", "worker") === "local.blank (role: worker)");
 
 console.log(failures ? `\n${failures} check(s) failed` : "\nall checks passed");
 process.exit(failures ? 1 : 0);

@@ -1,6 +1,7 @@
 import { EventEmitter } from "node:events";
 import {
-  resolvePeer as resolvePeerInRoster,
+  PeerAddressError,
+  AmbiguousPeerError,
   peerLabel,
   CotalEndpoint,
   DmDurableMissingError,
@@ -971,9 +972,15 @@ export class MeshAgent extends EventEmitter {
     let dropBearer: (() => void) | undefined;
     if (seatRead) {
       const roster = await this.ep.readPresence();
-      const live = roster.filter(p => p.status !== "offline" &&
-        (!this.config.userAuth || p.card.id.startsWith(`${this.config.userAuth.owner}.`)));
-      const peer = resolvePeerInRoster(live, args!.name as string);
+      const live = roster.filter(p => p.status !== "offline");
+      let peer: Presence | undefined;
+      try { peer = await this.ep.resolvePeerAddress(args!.name as string, { roster: live }); }
+      catch (error) {
+        if (error instanceof PeerAddressError || error instanceof AmbiguousPeerError)
+          throw new EpEnvelopeError(error instanceof AmbiguousPeerError ? "failed-precondition" : error.code === "TARGET_NOT_FOUND" ? "not-found" : error.code === "USAGE_INVALID" ? "bad-request" : "unavailable", error.message, undefined, "not-executed");
+        throw error;
+      }
+      if (peer?.status === "offline") peer = undefined;
       if (!peer) throw new EpEnvelopeError("not-found", `no agent ${JSON.stringify(args!.name)} is held in live presence`, undefined, "not-executed");
       const instance = peer.card.meta?.["ai.cotal.manager.instance"];
       if (typeof instance !== "string")
@@ -1265,7 +1272,7 @@ export class MeshAgent extends EventEmitter {
   }> { return this.messaging.anycast(role, text); }
   async anycastStatus(seq: number): Promise<AnycastStatus> { return this.messaging.anycastStatus(seq); }
   async cancelAnycast(seq: number): Promise<AnycastStatus> { return this.messaging.cancelAnycast(seq); }
-  resolvePeer(target: string): Presence | undefined { return this.messaging.resolvePeer(target); }
+  resolvePeer(target: string): Promise<Presence | undefined> { return this.messaging.resolvePeer(target); }
   async dm(target: string, text: string, opts: { replyTo?: string } = {}): Promise<{
     msg: CotalMessage;
     /** The roster row the target resolved to; absent when it resolved to an unrostered sender. */

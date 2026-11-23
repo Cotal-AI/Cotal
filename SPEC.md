@@ -219,6 +219,29 @@ addressing axis, is distinct from a channel's `live`/`durable` **delivery class*
 payload `to`, but cannot publish on your private unicast subject. Reference:
 `MessageMeta.kind`.
 
+### Direct-message addressing
+
+The wire target is the exact principal `owner.actor`. A client in a per-user-auth space resolves a
+bare launch name only within the sender's authenticated owner. It MUST NOT send to another owner on
+a bare-name match. If only another owner's agent matches, the refusal lists its `user/agent` address
+when the username registry supplies one. An exact instance ID can address a peer directly.
+
+In `user/agent`, `user` is a username from §6, with ASCII uppercase letters folded to lowercase.
+`agent` is the exact case-sensitive launch actor, 1 to 64 characters from `[A-Za-z0-9_]`, not a
+display name. A member reads the username binding, then checks the recorded principal, so an
+offline lifecycle can still receive a queued DM. An unknown username and a known user without the
+named agent are distinct refusals. A failed registry or principal read is unavailable, not absent.
+Open and no-login spaces resolve bare names as display names and do not accept `user/agent`.
+Reply shortcuts address the authenticated sender principal, not a remembered display name.
+
+The signed-in principal lookup uses `cotal.<space>.address.<caller-owner>.<caller-actor>` with the
+target principal as UTF-8 text. Only the caller may request on that subject. Only the auth service
+may reply, and only to `<request-subject>.reply.<nonce>` under the authenticated request subject.
+The service reads the exact lifecycle head from the records leader. It returns JSON with `id` and
+`lifecycleUid` (a UID for an active lifecycle, `null` for no active lifecycle), or `id` and
+`unavailable: true` when it cannot verify the result. The UID is for offline status and inbox
+inspection, not authorization. Members do not obtain raw lifecycle-record reads.
+
 **Delivery guarantee: `live` and `durable` classes.** Channel delivery has two classes, fixed
 per channel and wire-observable (§7); the guarantee is defined here, its NATS realization is the
 binding in §8. A receiver MUST derive its effective class from channel config (§7), not from
@@ -547,7 +570,7 @@ Direct Get request subjects below, with responses on its existing connection inb
 Member credentials MUST NOT hold registry KV publish, stream administration or consumer grants.
 Direct Get may carry an explicit reply subject. Returned data is broker-marked and consists of
 the registry's fixed token values. It is not an application message or proof of sender identity.
-The registry does not participate in addressing, mentions or presence display.
+The registry is used for direct-message addressing (§4). It does not change mentions or presence display.
 
 ---
 

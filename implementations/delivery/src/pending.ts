@@ -16,7 +16,6 @@ import {
   parsePrincipalKey,
   parseSubject,
   peerLabel,
-  resolvePeer,
   standaloneConnectOpts,
   unicastSubject,
   type EndpointRef,
@@ -44,7 +43,7 @@ export function pendingCandidateLabel(name: unknown, role: unknown, sender: stri
 async function pollPresence(ep: CotalEndpoint, target: string): Promise<Presence | undefined> {
   let peer: Presence | undefined;
   for (let i = 0; i < 20 && !peer; i++) {
-    peer = resolvePeer(ep.getRoster(), target);
+    peer = await ep.resolvePeerAddress(target);
     if (!peer) await new Promise((r) => setTimeout(r, 100));
   }
   return peer;

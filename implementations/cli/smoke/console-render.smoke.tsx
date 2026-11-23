@@ -281,7 +281,7 @@ console.log("6. every topology lens labels a peer as the roster does");
   }));
   const labels = cards.map(peerLabel);
   check("the shared label keeps an equal role and turns brackets into a space",
-    labels.join(",") === "ada/ada,eve/ops x y,bob,cy/reviewer", labels);
+    labels.join(",") === "ada (role: ada),eve (role: ops x y),bob,cy (role: reviewer)", labels);
   for (const [variant, lens] of (["sequence", "matrix", "map"] as const).entries()) {
     const out = await paint(
       <Topo feed={feed} agents={agents} channels={[{ channel: "general", messages: feed.length, deliveryClass: "live" }]}

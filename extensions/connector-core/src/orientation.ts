@@ -274,7 +274,7 @@ export function renderOrientation(o: Orientation): string {
   const lines: string[] = [
     `You are ${who} in space "${o.identity.space}" (id ${o.identity.id.slice(0, 8)}…).`,
     `Identity state: ${o.identity.state}`,
-    `  • display: ${o.identity.display.name}/${o.identity.display.role}`,
+    `  • display: ${peerLabel(o.identity.display)}`,
     `  • principal: ${o.identity.principal.owner}.${o.identity.principal.actor}`,
     `  • lifecycle UID: ${o.identity.lifecycleUid}`,
     `  • replacement: ${o.identity.replacement.state} · predecessor lifecycle UID: ${o.identity.replacement.predecessorLifecycleUid}`,

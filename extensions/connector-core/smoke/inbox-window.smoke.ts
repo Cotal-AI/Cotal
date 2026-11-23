@@ -1027,7 +1027,7 @@ try {
     agent.ep.emit("message", dmMsg("stuck2", "z".repeat(60_000)), track("stuck2"), dmMeta);
     // Delivery metadata includes sender_id and message_id. Size the payload from that rendered
     // header so this still lands on the boundary where no held-note fits beside the message.
-    const header = `[DM from Ada/orchestrator (unverified name)] [sender_id="orch" message_id="band"] `;
+    const header = `[DM from Ada (role: orchestrator) (unverified name)] [sender_id="orch" message_id="band"] `;
     const bodyRoom = INBOX_WINDOW_CHARS - "1 message:\n".length - header.length - " BAND_MARK".length;
     agent.ep.emit("message", dmMsg("band", `${"q".repeat(bodyRoom)} BAND_MARK`), track("band"), dmMeta);
 

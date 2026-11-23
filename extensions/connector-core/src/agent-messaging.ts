@@ -5,8 +5,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import {
   normalizeMentions,
   isConcreteChannel,
-  resolvePeer as resolvePeerInRoster,
-  shownPeerName,
+  parsePrincipalKey,
   type AnycastStatus,
   assertValidRole,
   type Presence,
@@ -331,34 +330,16 @@ export class AgentMessaging {
     return this.ep.cancelAnycast(seq, this.sentRequestId(seq));
   }
 
-  /** Resolve a peer by instance id (exact) or display name against the roster of the last
-   *  {@link readRoster}. Deterministic and fail-loud: returns
-   *  one peer, `undefined` if none match, or throws `AmbiguousPeerError` on a same-name collision —
-   *  it never silently picks. See `resolvePeer` in @cotal-ai/core. */
-  resolvePeer(target: string): Presence | undefined {
-    return resolvePeerInRoster(this.ep.getRoster(), target, { selfId: this.id });
+  /** Resolve an address against the last roster with this session's authenticated principal. */
+  resolvePeer(target: string): Promise<Presence | undefined> {
+    return this.ep.resolvePeerAddress(target, { selfId: this.id });
   }
 
-  /** #384: a peer that sent us a DM or anycast and has no roster row, by its exact id or, when the
-   *  roster read succeeded, by a display name only one such sender carried. A one-shot
-   *  `cotal send` never registers presence, so without this a reply to it could not be addressed. */
-  private heldSender(target: string, byName: boolean, peer?: Presence): { id: string; name: string } | undefined {
+  /** Exact principal of a sender the session received a message from. */
+  private heldSender(target: string): { id: string; name: string } | undefined {
+    if (target === this.id) return undefined;
     const name = this.senders.get(target);
-    if (name !== undefined) return { id: target, name };
-    if (!byName) return undefined;
-    const want = target.trim().toLowerCase();
-    // A sender rostered again under a new name has a row now, so its old name must not collide here.
-    const rostered = new Set(this.ep.getRoster().map((p) => p.card.id));
-    const matches = [...this.senders].filter(([id, n]) => !rostered.has(id) && n.toLowerCase() === want);
-    // A roster row cannot hide another authenticated sender that has no presence row.
-    if (peer) matches.unshift([peer.card.id, peer.card.name]);
-    if (matches.length > 1)
-      throw new Error(
-        `"${target}" is ambiguous - ${matches.length} known peers share that name; ` +
-          `DM by instance id instead: ${matches.map(([id, n]) => `${shownPeerName(n, id)} (${id})`).join("; ")}`,
-      );
-    const match = matches[0];
-    return match && match[0] !== peer?.card.id ? { id: match[0], name: match[1] } : undefined;
+    return name === undefined ? undefined : { id: target, name };
   }
 
   /** Why a DM target resolved to no one, under a roster read that succeeded. A target that names this
@@ -366,13 +347,17 @@ export class AgentMessaging {
    *  the target are listed for the caller to choose from; none of them is ever picked. */
   private noPeer(target: string): string {
     const want = target.trim().toLowerCase();
-    if (target === this.id || want === this.ep.card.name.toLowerCase())
+    const own = this.ep.principal;
+    if (target === this.id || (this.config.userAuth ? target.trim() === own.actor : want === this.ep.card.name.toLowerCase()))
       return `"${target}" is this session: a DM goes to another peer, so nothing was sent. cotal_roster lists who is present.`;
     const missing = `no peer "${target}" in space "${this.config.space}"`;
     if (!want) return missing;
-    const names = [...new Set(this.ep.getRoster()
-      .filter((p) => p.card.id !== this.id && p.card.name.toLowerCase().startsWith(want))
-      .map((p) => p.card.name))];
+    const names = [...new Set(this.ep.getRoster().flatMap((p) => {
+      if (p.card.id === this.id) return [];
+      if (!this.config.userAuth) return p.card.name.toLowerCase().startsWith(want) ? [p.card.name] : [];
+      const key = parsePrincipalKey(p.card.id);
+      return key?.owner === own.owner && key.actor.startsWith(target.trim()) ? [key.actor] : [];
+    }))];
     if (!names.length) return missing;
     const shown = names.slice(0, NAMED_SIMILAR).map((n) => JSON.stringify(n)).join(", ");
     const more = names.length > NAMED_SIMILAR ? ` and ${names.length - NAMED_SIMILAR} more` : "";
@@ -398,13 +383,11 @@ export class AgentMessaging {
     // #1229: a miss is only a real "no peer" when the roster read succeeded; under a failed read the
     // target refuses naming the read's error (never "no peer"), and the DM does not go out.
     const { roster, failure } = await this.readRoster();
-    const peer = this.senders.has(target) ? roster.find((p) => p.card.id === target) : this.resolvePeer(target);
-    // #384: a target with no roster row may still be a peer that messaged us (its id is
-    // authenticated), which a one-shot `cotal send` always is. The DM goes to that identity and the
-    // space's DM stream keeps it, instead of refusing a reply nothing could ever deliver.
-    const held = peer?.card.id === target
-      ? undefined
-      : this.heldSender(target, !failure, peer);
+    const known = this.heldSender(target);
+    const candidates = failure ? roster.filter((p) => p.card.id === target) : roster;
+    const peer = known ? candidates.find((p) => p.card.id === target)
+      : await this.ep.resolvePeerAddress(target, { roster: candidates, selfId: this.id });
+    const held = peer ? undefined : known;
     if (!peer && !held) {
       if (!failure) throw new Error(this.noPeer(target));
       throw this.cannotVerify(`peer "${target}"`, failure, "The DM was not sent.");

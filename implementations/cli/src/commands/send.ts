@@ -20,6 +20,7 @@ import {
   taskStream,
   subjectMatches,
   AmbiguousPeerError,
+  PeerAddressError,
   CotalEndpoint,
   mentionsIn,
   type FlagSpec,
@@ -110,10 +111,10 @@ export function sendArguments(args: ParsedArgs): SendInput {
       const problem = concreteChannelProblem(destination.target);
       if (problem) throw new Error(problem);
     } else if (destination.mode === "ask") assertValidRole(destination.target);
-    else if (/[\/\u0000-\u001f\u007f]/u.test(destination.target)) throw new Error("use an agent name or full instance id, not a roster label");
+    else if (/[\u0000-\u001f\u007f]/u.test(destination.target)) throw new Error("use an agent name, user/agent, or full instance id");
     // No participant can carry a name the endpoint refuses, so it is refused before the presence wait.
     // The lookup trims the name, and an instance id is not held to the name rule.
-    else if (!parsePrincipalKey(destination.target)) assertValidName(destination.target.trim());
+    else if (!destination.target.includes("/") && !parsePrincipalKey(destination.target)) assertValidName(destination.target.trim());
   } catch (error) {
     throw new CommandFailure("refused", "USAGE_INVALID", (error as Error).message);
   }
@@ -278,11 +279,18 @@ function identityLabel(candidate: PeerCandidate, p: Presence | undefined): strin
 
 async function directPeer(ep: Awaited<ReturnType<typeof openTransient>>["ep"], space: string, name: string, use: "to" | "mention", values: ConnectFlags): Promise<Presence> {
   // Presence arrives asynchronously. Never turn a partial name into a fuzzy target.
+  if (use === "to" && !name.includes("/")) {
+    await ep.waitForPresenceSnapshot(ROSTER_MS);
+    if (ep.presenceView().state !== "current" && !ep.getRoster().some((p) => p.card.id === name))
+      throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the authorized presence view is not current, so the recipient was not verified", { target: { space, name } });
+  }
   for (let attempt = 0; attempt < 20; attempt++) {
     try {
-      const peer = resolvePeer(ep.getRoster(), name);
+      const peer = use === "mention" ? resolvePeer(ep.getRoster(), name) : await ep.resolvePeerAddress(name);
       if (peer) return peer;
     } catch (error) {
+      if (error instanceof PeerAddressError)
+        throw new CommandFailure("refused", error.code, error.message, { target: { space, name, ...(error.addresses.length ? { addresses: error.addresses } : {}) } });
       if (!(error instanceof AmbiguousPeerError)) throw error;
       const roster = ep.getRoster();
       throw new CommandFailure("refused", "TARGET_AMBIGUOUS", "several participants have this name", { target: { space, name, candidates: error.candidates }, remedy: sharedNameRemedy(use, error.candidates.map((candidate) => identityLabel(candidate, roster.find((p) => p.card.id === candidate.id)))) });

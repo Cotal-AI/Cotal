@@ -126,10 +126,10 @@ const presence = (id: string, name: string, role?: string, status = "idle") => (
   });
   const roster = cotalToolSpecs(cfg({ creds: "CREDS" })).find((spec) => spec.name === "cotal_roster")!;
   const result = await roster.run(agent, cfg({ creds: "CREDS" }), {});
-  assert.match(result.text, /local\.blank\/worker — idle/, result.text);
+  assert.match(result.text, /local\.blank \(role: worker\) — idle/, result.text);
   assert.match(result.text, / ada — idle/, result.text);
   assert.equal(result.text.includes("\n"), true);
-  assert.equal(/\/worker — idle/.test(result.text.replace("local.blank/worker — idle", "")), false, result.text);
+  assert.equal(/\(role: worker\) — idle/.test(result.text.replace("local.blank (role: worker) — idle", "")), false, result.text);
 }
 
 // 4c — #1229: a failed roster read is part of the rendering. The rows are last-known, a missing

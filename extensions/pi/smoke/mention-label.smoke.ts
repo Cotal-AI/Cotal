@@ -91,7 +91,7 @@ try {
   await waitFor("the plain mention wake to reach the session", () => received.length >= 1);
   const control = received[0]!;
   check("the wake is one line in the connector's voice, naming the sender and role",
-    linesOf(control).length === 1 && control.startsWith(`Cotal: you were @mentioned on #${CHANNEL} by ada/worker (unverified name) while focused.`), control);
+    linesOf(control).length === 1 && control.startsWith(`Cotal: you were @mentioned on #${CHANNEL} by ada (role: worker) (unverified name) while focused.`), control);
   check("the mention body is held, not written into the session", !control.includes("plain mention"), control);
   endTurn();
 
