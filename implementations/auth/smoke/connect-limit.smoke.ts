@@ -253,7 +253,7 @@ try {
     space: a.space, servers: fx.servers, stateDir: a.stateDir, store: a.store, storeIdentity: a.store.identity,
     connectLimits: { actorPerMinute: 2 },
   });
-  const proof = () => new SignJWT({}).setProtectedHeader({ alg: "EdDSA", kid: "limit-idp" }).setSubject("limit-human").setIssuer(IDP)
+  const proof = () => new SignJWT({ name: "Fixture Member" }).setProtectedHeader({ alg: "EdDSA", kid: "limit-idp" }).setSubject("limit-human").setIssuer(IDP)
     .setAudience(IDP).setIssuedAt(now()).setExpirationTime(now() + 600).sign(idpKeys.privateKey);
   const exchange = async (body: Record<string, unknown>) => {
     const res = await fetch(`${service!.url}/exchange`, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${service!.cap}` }, body: JSON.stringify(body) });

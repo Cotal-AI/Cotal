@@ -41,7 +41,7 @@ const jwk = { ...await exportJWK(pair.publicKey), kid: "launch-idp", alg: "EdDSA
 const idp = createServer((q, s) => { if (q.url !== "/api/auth/jwks") { s.writeHead(404); s.end(); return; } s.setHeader("content-type", "application/json"); s.end(JSON.stringify({ keys: [jwk] })); });
 await new Promise<void>((r) => idp.listen(0, "127.0.0.1", r));
 const origin = `http://127.0.0.1:${(idp.address() as import("node:net").AddressInfo).port}`;
-const jwt = (sub: string) => new SignJWT({}).setProtectedHeader({ alg: "EdDSA", kid: jwk.kid }).setIssuer(origin).setAudience(origin).setSubject(sub).setIssuedAt().setExpirationTime("10m").sign(pair.privateKey);
+const jwt = (sub: string) => new SignJWT({ name: sub }).setProtectedHeader({ alg: "EdDSA", kid: jwk.kid }).setIssuer(origin).setAudience(origin).setSubject(sub).setIssuedAt().setExpirationTime("10m").sign(pair.privateKey);
 const fx = await startHostedAuthFixture("launch-probe", 1); const a = fx.accounts[0]!;
 writeFileSync(join(a.stateDir, "idp.json"), JSON.stringify({ ver: 1, url: `${origin}/api/auth`, issuer: origin, audience: origin, jwksUri: `${origin}/api/auth/jwks` }), { mode: 0o600 });
 const root = join(fx.dir, "participant"), controlRoot = join(fx.dir, "control"), delegatedRoot = join(fx.dir, "delegated");

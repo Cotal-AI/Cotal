@@ -581,7 +581,7 @@ export function backupProfilePermissions(
   if (scope.operation === "inspect") {
     if (scope.selection !== "full" && scope.selection !== "registry")
       throw new Error(`unsupported backup selection ${JSON.stringify(scope.selection)}`);
-    const streams = spaceBackupInventory(space)[scope.selection];
+    const streams = spaceBackupInventory(space, { usernames: true })[scope.selection];
     return {
       pub: {
         allow: [

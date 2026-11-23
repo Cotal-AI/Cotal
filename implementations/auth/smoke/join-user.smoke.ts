@@ -38,7 +38,7 @@ if (process.platform !== "linux") {
     }
     tokenReads++;
     const now = Math.floor(Date.now() / 1000);
-    const token = await new SignJWT({}).setProtectedHeader({ alg: "EdDSA", kid: jwk.kid }).setIssuer(origin).setAudience(origin).setSubject("human").setIssuedAt(now).setExpirationTime(now + 12).sign(key.privateKey);
+    const token = await new SignJWT({ name: "Fixture Member" }).setProtectedHeader({ alg: "EdDSA", kid: jwk.kid }).setIssuer(origin).setAudience(origin).setSubject("human").setIssuedAt(now).setExpirationTime(now + 12).sign(key.privateKey);
     res.end(JSON.stringify({ token }));
   });
   await new Promise<void>(resolve => idp.listen(0, "127.0.0.1", resolve));

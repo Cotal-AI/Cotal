@@ -62,7 +62,7 @@ const start = async (a: HostedAuthAccount) => {
   services.set(a.space, service);
   return service;
 };
-const idpToken = () => new SignJWT({}).setProtectedHeader({ alg: "EdDSA", kid: jwk.kid })
+const idpToken = () => new SignJWT({ name: "Fixture Member" }).setProtectedHeader({ alg: "EdDSA", kid: jwk.kid })
   .setSubject("registry-fixture-human").setIssuer(origin).setAudience(origin).setIssuedAt().setExpirationTime("10m").sign(privateKey);
 const bearer = async (a: HostedAuthAccount) => {
   const service = services.get(a.space)!;

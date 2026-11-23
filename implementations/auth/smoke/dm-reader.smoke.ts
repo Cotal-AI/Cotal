@@ -91,7 +91,7 @@ const consentAnchor: SignerAnchor = { keyId: CONSENT_KID, publicKey: consentSign
 
 type ProofClaims = Record<string, unknown>;
 const sign = (claims: ProofClaims, o: { aud?: string; exp?: number } = {}) =>
-  new SignJWT(claims).setProtectedHeader({ alg: "EdDSA", kid: KID }).setSubject(SUB).setIssuer(ISS)
+  new SignJWT({ name: "Reader Fixture", ...claims }).setProtectedHeader({ alg: "EdDSA", kid: KID }).setSubject(SUB).setIssuer(ISS)
     .setAudience(o.aud ?? ISS).setIssuedAt(now()).setExpirationTime(o.exp ?? now() + 600).sign(privateKey);
 const ordinary = (extra: ProofClaims = {}, o: { aud?: string; exp?: number } = {}) => sign(extra, o);
 const dmProof = (over: ProofClaims = {}, o: { aud?: string; exp?: number } = {}) =>

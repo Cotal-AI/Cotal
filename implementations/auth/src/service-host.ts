@@ -618,6 +618,7 @@ async function startAuthContext(o: AuthContextOptions): Promise<{ handle: Omit<A
       issuer,
       authorizeActor,
       mintConnectCredential: plane.mintConnectCredential,
+      assignUsername: plane.assignUsername,
       ...(idp.dmReaderAudience !== undefined ? { dmReaderAudience: idp.dmReaderAudience } : {}),
       connectLimiter,
     });

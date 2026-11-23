@@ -274,7 +274,7 @@ try {
   mkdirSync(join(wsDir, ".cotal"), { recursive: true });
 
   const mintIdpJwt = async (sub = IDP_SUB) =>
-    new SignJWT({})
+    new SignJWT({ name: "Continuity Fixture" })
       .setProtectedHeader({ alg: "EdDSA" })
       .setIssuer(IDP_ISS)
       .setAudience("cotal-services")

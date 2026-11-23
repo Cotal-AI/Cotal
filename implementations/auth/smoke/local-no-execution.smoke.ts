@@ -128,7 +128,7 @@ try {
   // This managed-secret specimen has no Manager custody.
   grantManagedActor(dir, { custody: { kind: "foreground" }, owner, actor: "child", scope: ["spawn", "run"], allowSubscribe: [], allowPublish: [],
     parent: `${owner}.cli`, tokenHash: secret.tokenHash, lifecycleUid: mintLifecycleUid() });
-  const token = await new SignJWT({}).setProtectedHeader({ alg: "EdDSA", kid: "fixture" }).setIssuer(origin).setAudience(origin)
+  const token = await new SignJWT({ name: "Fixture Member" }).setProtectedHeader({ alg: "EdDSA", kid: "fixture" }).setIssuer(origin).setAudience(origin)
     .setSubject("fixture-human").setIssuedAt().setExpirationTime("10m").sign(privateKey);
   humanProof = token;
   saveIdpSession(home, origin + "/api/auth", { token: "private-fixture-session", expiresAt: Math.floor(Date.now() / 1000) + 600, sub: "fixture-human" });

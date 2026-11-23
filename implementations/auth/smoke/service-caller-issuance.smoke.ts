@@ -30,7 +30,7 @@ const baseline = process.argv.includes("--baseline"), second = process.argv.incl
 const enc = new TextEncoder();
 const fx = await startHostedAuthFixture("callerissue", 1, baseline ? {} : { maxPayload: SERVICE_CALLER_PAYLOAD_FLOOR }), a = fx.accounts[0]!;
 const { publicKey, privateKey } = await generateKeyPair("EdDSA"), jwk = { ...await exportJWK(publicKey), kid: "caller-fixture" };
-const mintIdpToken = () => new SignJWT({}).setProtectedHeader({ alg: "EdDSA", kid: jwk.kid }).setIssuer(origin).setAudience(origin).setSubject("human").setIssuedAt().setExpirationTime("10m").sign(privateKey);
+const mintIdpToken = () => new SignJWT({ name: "Fixture Member" }).setProtectedHeader({ alg: "EdDSA", kid: jwk.kid }).setIssuer(origin).setAudience(origin).setSubject("human").setIssuedAt().setExpirationTime("10m").sign(privateKey);
 // `/token` trades the owner's CLI login session for a fresh IdP JWT, as `cotal login` leaves it (--cli).
 const idp = createServer(async (req, res) => {
   res.setHeader("content-type", "application/json");

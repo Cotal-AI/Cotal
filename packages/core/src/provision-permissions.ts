@@ -13,7 +13,7 @@ import { transferReaderGrants, transferWriterGrants } from "./transfer.js";
 import { environmentManagerPermissions, isEnvironmentManagerProfile } from "./environment-manager-grants.js";
 import { backupProfilePermissions, restoreProfilePermissions } from "./backup.js";
 import type { MintOpts, MintPrincipal } from "./provision-jwt.js";
-import { managerCallerPermissions, supervisorPermissions, remoteManagerPermissions, operatorPermissions, probePermissions, channelWriterPermissions, channelPurgerPermissions, teardownPermissions, membershipStoreRecreatePermissions, issuedStoreRecreatePermissions, controlCallerPermissions, issuedCallerFor, listingGrantRows, deployerPermissions, purgerPermissions, provisionerPermissions, issuerPermissions, registryReaderPermissions, runAdmitterPermissions, lifecycleExecutorPermissions, goalWriterPermissions, sessionCallerPermissions, dmReaderPermissions, sessionServingPermissions, sessionLedgerPermissions, endpointServeExecutorPermissions, deprovisionerPermissions, deliveryPermissions, membershipRwPermissions } from "./provision-permission-builders.js";
+import { managerCallerPermissions, supervisorPermissions, remoteManagerPermissions, operatorPermissions, probePermissions, channelWriterPermissions, channelPurgerPermissions, teardownPermissions, membershipStoreRecreatePermissions, issuedStoreRecreatePermissions, controlCallerPermissions, issuedCallerFor, listingGrantRows, deployerPermissions, purgerPermissions, provisionerPermissions, issuerPermissions, registryReaderPermissions, runAdmitterPermissions, lifecycleExecutorPermissions, goalWriterPermissions, sessionCallerPermissions, dmReaderPermissions, sessionServingPermissions, sessionLedgerPermissions, endpointServeExecutorPermissions, deprovisionerPermissions, deliveryPermissions, membershipRwPermissions, withUsernameRegistryRead } from "./provision-permission-builders.js";
 
 
 /** Cred profiles. Each profile has an explicit permission arm and a lifetime classification. */
@@ -158,7 +158,13 @@ const INSTRUMENT_PROFILES: ReadonlySet<Profile> = new Set<Profile>(["control-cal
  *  owner + ledger actor + the per-connection ephemeral nkey; the static/dev mint passes
  *  `{owner:"local", actor:<id>, connId:<id>}` via {@link principalOf}. EXPORTED so the callout's injected
  *  `permissionsFor` hook can feed a validated principal straight into the same builder. */
-export function permissionsFor(
+export function permissionsFor(profile: Profile, space: string, pr: MintPrincipal, opts: MintOpts): Record<string, unknown> {
+  const permissions = profilePermissions(profile, space, pr, opts);
+  // Only a per-user callout binds a broker-assigned reader identity to a member connection.
+  return pr.readerId === undefined ? permissions : withUsernameRegistryRead(space, permissions);
+}
+
+function profilePermissions(
   profile: Profile,
   space: string,
   pr: MintPrincipal,

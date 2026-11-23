@@ -37,7 +37,7 @@ let service: AuthServiceHandle | undefined;
 let resolvedAnchor: SignerAnchor | undefined = anchor;
 let reader: Awaited<ReturnType<typeof openAuthorityClient>> | undefined;
 const now = Math.floor(Date.now() / 1000);
-const token = await new SignJWT({ auth_time: now, amr: ["pwd"] }).setProtectedHeader({ alg: "EdDSA", kid: "human-proof" }).setIssuer(origin).setAudience(origin).setSubject("human").setIssuedAt(now).setExpirationTime(now + 900).sign(pair.privateKey);
+const token = await new SignJWT({ name: "Fixture Member", auth_time: now, amr: ["pwd"] }).setProtectedHeader({ alg: "EdDSA", kid: "human-proof" }).setIssuer(origin).setAudience(origin).setSubject("human").setIssuedAt(now).setExpirationTime(now + 900).sign(pair.privateKey);
 const body = { id: "consent_1", idpToken: token, subject: "human", accountPublicKey: a.accountPublicKey,
   holder: { actor: "web", lifecycleUid: holderUid }, target: { owner, actor: "worker", lifecycleUid: uid }, ttlMs: 86_400_000 };
 async function post(value: unknown, headers: Record<string, string> = {}) {

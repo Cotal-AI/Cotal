@@ -86,6 +86,7 @@ import { type ManagerCluster } from "./manager-contract.js";
 import { authorityBarrierGrants, authorityWriterGrants, openAuthorityClient, openSupervisedConnectReader, remoteManagerIssuerGrants, registrationExecutorGrants, servedRunRequestSubjects, servedRunCancelRequestSubject, servedSpawnRequestSubjects, serviceCalloutWriterGrants, serviceHostDiscoveryGrants, type AuthorityClient } from "./authority-client.js";
 import { createNativeServiceCalloutAuthority, type NativeServiceCalloutAuthority } from "./native-service-callout.js";
 import { openChatSessionAuthority } from "./chat-session-authority.js";
+import { openUsernameAssignment } from "./username-assignment.js";
 import { CorruptNativeIssuanceEvidence, pruneNativeIssuance } from "./native-issuance.js";
 import { ensureRootCredential } from "./root-credential.js";
 import { activateLifecycleAtUid, observeGate, openLifecycleRegistry, readLifecycleHeadForOperation, type LifecycleRegistry } from "./lifecycle-registry.js";
@@ -404,6 +405,7 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
   const writer = await openAuthorityClient({ onConnection, server, space, dataAccount, label: `cotal:auth-mint:${space}`, grants: (id) => authorityWriterGrants(space, id), log });
   unwind.push(() => writer.close());
   await ensureAuthorityStores(await jetstreamManager(writer.nc), new Kvm(writer.nc), space);
+  const assignUsername = await openUsernameAssignment(writer.nc, space);
   const registry = await openLifecycleRegistry(writer.nc, space);
   // #399 M2: register the auth plane itself as an ordinary `auth` service endpoint — the SAME
   // §13.7 registration ceremony the manager runs (`manager.ts:6562-6690`), before the listener
@@ -976,6 +978,7 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
     }
   };
   const chat = openChatSessionAuthority({
+    assignUsername,
     space,
     dir: opts.dir,
     registry,
@@ -1019,6 +1022,10 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
   });
   return {
     ...callout,
+    assignUsername: (owner, claims, supplied) => {
+      refuseIfFenced();
+      return assignUsername(owner, claims, supplied);
+    },
     openChatSession: async (args) => {
       refuseIfFenced();
       return chat.admit(args);

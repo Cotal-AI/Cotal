@@ -295,6 +295,14 @@ reset route. Hosted deprovisioning remains a separate composition.
 
 ## Bridge contract [#bridge]
 
+An operator integrating an owner directory can pass `username` on an interactive row written
+with `grantActor(dir, row)` from `@cotal-ai/auth`. The directory can derive the supplied value by
+replacing `-` with `_` in its own stored name without changing that record. The service requires
+1 to 40 lowercase letters, digits or underscores and allows a leading digit. It reserves that value
+at the first authorized exchange. It refuses an invalid name, a name held by another owner, or a
+different name for an owner who already has one. It never rewrites a supplied value. The directory
+needs no broker write credential, and the exchange request has no username input.
+
 The bridge (`createIdpBridge`) exchanges a verified IdP token for a Cotal bearer in three steps:
 
 1. **Bearer validation.** Verify the IdP's JWT offline against its **pinned JWKS**, with the token

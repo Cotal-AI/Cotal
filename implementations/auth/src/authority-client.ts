@@ -31,6 +31,7 @@ import { decode, encodeUser } from "@nats-io/jwt";
 import { fromPublic } from "@nats-io/nkeys";
 import { armRenewal, jitteredBackoffMs, nativeNkeySigner, epRequestObservationFilter, EpEnvelopeError, admissionBucket, dialerFor, sessionsBucket, assertInboxConnId, endpointToken, epAuthBucket, epcStreamName, epfStreamName, newIdentity, recordsBucket, retirementFrontierStreams, spacePrefix, assertPoolToken, principalTags, principalKey, remoteManagerRegistrationProof, assertLifecycleToken, epcredFamilyPrefix, epgateKey, eprepairKey, GOVERN_HEAD, RECORD_KINDS, recordAtomicKey, recordSpecKey, recordStatusKey, BASELINE_LIFECYCLE_ENDPOINT, epCallerGrantRows, instanceOnlyManagerCapabilities, type EpCaller, type PlaneConnTuple } from "@cotal-ai/core";
 import { chatAuthorityWriteSubjects } from "./chat-session-store.js";
+import { usernameWriterGrants } from "./username-assignment.js";
 import { authConnectReaderGrants, openConnectReader, type ConnectReader } from "./connect-reader.js";
 import { environmentManagerAdmissionIndexBucket } from "./environment-manager-admission-index.js";
 import type { ServiceWriteScope } from "./service-write.js";
@@ -101,12 +102,12 @@ function baseAuthorityWriterGrants(space: string, connId: string): { publish: st
   };
 }
 
-/** Only the auth mint writer records consents. Derived host writers use the shared base without it. */
+/** The auth mint writer holds consent, chat admission and username writes. Derived host writers do not. */
 export function authorityWriterGrants(space: string, connId: string): { publish: string[]; subscribe: string[] } {
   const base = baseAuthorityWriterGrants(space, connId);
   // Chat admission and the chat sweep run on this writer: the holder index, the owner quota and
   // the sweep cursor, each an exact-arity family (SPEC 13.9). Derived host writers do not get them.
-  return { publish: [...base.publish, `$KV.${epAuthBucket(space)}.consent.*`, ...chatAuthorityWriteSubjects(space)], subscribe: base.subscribe };
+  return { publish: [...base.publish, `$KV.${epAuthBucket(space)}.consent.*`, ...chatAuthorityWriteSubjects(space), ...usernameWriterGrants(space)], subscribe: base.subscribe };
 }
 
 /** Host-private environment reservation writer. It adds manager gates and multi-segment operation

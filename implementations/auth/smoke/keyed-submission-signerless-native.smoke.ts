@@ -55,7 +55,7 @@ const stateDir = join(fx.dir, "keyed-auth-state"); mkdirSync(stateDir);
 ensurePinnedIdp(stateDir, `${origin}/api/auth`);
 const owner = deriveOwnerForIdpSubject((await loadOwnerSecret(a.store, a.space))!, origin, "keyed-human");
 const cli = grantActor(stateDir, { owner, actor: "cli", scope: ["run", "supervise"], allowSubscribe: [], allowPublish: [] });
-const idpToken = await new SignJWT({}).setProtectedHeader({ alg: "EdDSA", kid: "keyed-idp" })
+const idpToken = await new SignJWT({ name: "Fixture Member" }).setProtectedHeader({ alg: "EdDSA", kid: "keyed-idp" })
   .setSubject("keyed-human").setIssuer(origin).setAudience(origin).setIssuedAt().setExpirationTime("10m").sign(privateKey);
 let service: AuthServiceHandle | undefined;
 let remote: Awaited<ReturnType<typeof nativeRemoteManager>> | undefined;

@@ -30,6 +30,7 @@ import {
   eventPayloadStream,
   isReachable,
   setupSpaceStreams,
+  usernameBucket,
   validateSpaceBackupInventory,
   validateCanonicalBackupStreamConfig,
 } from "../src/index.js";
@@ -83,6 +84,7 @@ try {
   // broker's list still names it, so the validator throws `unexpected` here.
   const equality = await validateAgainstBroker();
   check("the broker's own stream set equals the backup inventory exactly", equality === "", equality);
+  check("open space setup leaves the username registry absent", !(await readBrokerStreams()).includes(`KV_${usernameBucket(SPACE)}`));
 
   const payloadNc = await connect({ servers });
   try {

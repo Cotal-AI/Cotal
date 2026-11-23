@@ -470,7 +470,7 @@ export function journaledRestoredStreams(launch: Readonly<Record<string, JsonVal
 }
 
 const CLASS_WORDS: Record<string, string> = {
-  registry: "channel registry", messages: "messages", authorization: "channel ACLs and members", workflow: "workflow runs",
+  registry: "channel registry", messages: "messages", authorization: "channel ACLs and members", workflow: "workflow runs", usernames: "username registry",
   transient: "presence", derived: "membership", lease: "leases", control: "endpoint control stores", artifact: "artifact store",
 };
 
@@ -478,7 +478,7 @@ const CLASS_WORDS: Record<string, string> = {
  *  same in words. A full restore that brought back no workflow store carries a note that says why:
  *  a user-mode artifact holds none, and an older artifact was made before full backups held runs. */
 export function restoreComposition(space: string, restored: readonly string[], mode: MaintenanceReadyRecord["mode"]): { restored: string[]; recreatedEmpty: string[]; restoredWords: string; emptyWords: string; note?: string } {
-  const inventory = spaceBackupInventory(space);
+  const inventory = spaceBackupInventory(space, { usernames: mode === "user" });
   const all = [...inventory.backedUp, ...inventory.excluded];
   const empty = all.filter((entry) => !restored.includes(entry.name));
   const words = (entries: readonly { class: string }[]) => [...new Set(entries.map((entry) => CLASS_WORDS[entry.class]))].join(", ") || "none";

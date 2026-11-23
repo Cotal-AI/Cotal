@@ -37,6 +37,13 @@ channels; scope `spawn,run,role:default`, so it may spawn, start workflow runs w
 three left off and no `--full` is refused.
 No ledger row, no access; there is no allow-by-default.
 
+On the first use of an authorized grant, the auth service assigns the owner a username from the
+first usable IdP claim: `preferred_username`, the local part of `email`, or `name`. The service
+normalizes it to at most 40 lowercase letters, digits and underscores, and adds a suffix if the
+name is taken. A username can start with a digit. If the service cannot assign a name, it refuses
+the exchange. Later sign-ins keep the same username. It is readable by every member and separate
+from the chat name, which you can change.
+
 `cotal login` also records a handle from what the IdP gives: its preferred user name, else the part
 of its email before the `@`, else its name, the first that is a valid chat name. A
 [chat session](cli-messaging.mdx#chat) appears under it unless you choose another name. The email

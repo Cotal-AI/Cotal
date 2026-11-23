@@ -77,7 +77,7 @@ rmSync(join(a.stateDir, "idp.json"));
 ensurePinnedIdp(a.stateDir, `${origin}/api/auth`);
 const owner = deriveOwnerForIdpSubject((await loadOwnerSecret(a.store, a.space))!, origin, "expiry-human");
 grantActor(a.stateDir, { owner, actor: "cli", scope: ["admin", "spawn", "run", "supervise"], allowSubscribe: [">"], allowPublish: [">"] });
-const idpToken = await new SignJWT({}).setProtectedHeader({ alg: "EdDSA", kid: "expiry-idp" }).setSubject("expiry-human").setIssuer(origin).setAudience(origin).setIssuedAt().setExpirationTime("10m").sign(privateKey);
+const idpToken = await new SignJWT({ name: "Fixture Member" }).setProtectedHeader({ alg: "EdDSA", kid: "expiry-idp" }).setSubject("expiry-human").setIssuer(origin).setAudience(origin).setIssuedAt().setExpirationTime("10m").sign(privateKey);
 
 let service: AuthServiceHandle | undefined;
 let manager: Manager | undefined;

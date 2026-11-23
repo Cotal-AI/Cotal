@@ -17,6 +17,7 @@ import type { ManagerCaller, ManagerInstanceCatalog } from "./service.js";
  *  arm through the supervised, shape-proved reader — and (b) the exchange-time root-credential
  *  ensure both exchange arms stamp `act.credentialId` from. */
 export interface AuthAuthorityPlane extends CalloutAuthority {
+  assignUsername: import("./username-assignment.js").AssignUsername;
   deregisterEndpoint: (request: unknown, granter: EndpointDeregisterGranter) => Promise<import("@cotal-ai/core").RemoteEndpointDeregisterResult>;
   recordToolResultConsent: ToolResultConsentRecorder;
   mintConnectCredential: (args: { owner: string; actor: string; lifecycleUid: string }) => Promise<string>;
