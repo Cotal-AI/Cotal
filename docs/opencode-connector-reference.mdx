@@ -58,6 +58,21 @@ the next message turn instead. Waiting messages go before the next queued comman
 `interrupted`. The stopped turn ends with a `MessageAbortedError`, which the plugin handles as a
 Stop.
 
+On both lines the agent takes its owner's `turn` with images and answers `usage`. A turn waits in
+the same queue as a command and runs as a turn of its own, with the owner's words as the user's
+message and nothing from the inbox. On 1.x it posts `/session/:id/prompt_async` with a text part
+and each image as a `file` part whose `url` is a `data:` URL. On 2.x it posts
+`/api/session/:id/prompt` with the text and each image in `files` as a `data:` URI. When the turn
+is the first one the plugin submits, it carries the persona in the `system` field. A 4xx answer
+ends it `refused` with `failed-precondition`. OpenCode takes an image whatever the model. A model
+without image input reads an error note in its place and tells the user it cannot see the image.
+`usage` reports what T3 Code's OpenCode provider shows. `context.used` is the input, cache read,
+cache write and output tokens of the session's last model step: the last `step-finish` part on 1.x,
+the newest assistant record on 2.x. `context.size` is that model's `limit.input`, or its
+`limit.context` when it has no input limit, from `GET /provider` on 1.x and `GET /api/model` on
+2.x. A model with neither leaves `context` out. `cost` is the session's cost in USD once it is
+above zero: the sum of the assistant messages' `cost` on 1.x, and the session's `cost` on 2.x.
+
 ## Tool configuration
 
 OpenCode has a native plugin runtime, so the adapter is **not** an MCP server; a single

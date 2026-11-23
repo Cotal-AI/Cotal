@@ -1,5 +1,5 @@
 /**
- * Agent commands and interrupt on OpenCode 1.x through the agent endpoint (SPEC 13.22): the real
+ * Agent commands, interrupt, the owner's turns and usage on OpenCode 1.x through the agent endpoint (SPEC 13.22): the real
  * plugin, booted in-process, against a fake OpenCode server and a JWT broker with the shipped auth
  * callout. The fake answers as opencode 1.19.6 was measured to: `GET /command` is one list of
  * commands and skills, each `{ name, source, description?, template, hints, subtask? }` with `source`
@@ -7,9 +7,12 @@
  * `command.execute.before` hook, makes the session busy and answers only once that turn ended. A
  * command OpenCode cannot run, such as one naming an agent it lacks, publishes a `session.error` and
  * answers a 500 before the hook. `POST /session/:id/abort` answers `true` whether or not a turn runs,
- * and a stopped turn ends with a `MessageAbortedError` and an idle.
+ * and a stopped turn ends with a `MessageAbortedError` and an idle. `POST /session/:id/prompt_async`
+ * answers a 204 at once. `GET /session/:id/message` lists `{ info, parts }`, where an assistant's
+ * `info` carries `cost`, `providerID` and `modelID` and each model step ends in a `step-finish` part
+ * with its `tokens`. `GET /provider` lists each provider's models with their `limit`.
  *
- * Covered: presence says the agent serves interrupt. The owner's session lists the commands, the MCP
+ * Covered: presence says the agent serves interrupt, turns with images and usage. The owner's session lists the commands, the MCP
  * prompt as a command and the skills, with nothing else from OpenCode's entries, leaving out the
  * `/reconnect` the launch injects. A listed command runs under its name, and reads started once the
  * hook ran, with OpenCode's answer still owed. Commands sent while that turn runs are queued and one is
@@ -19,7 +22,12 @@
  * ends refused, failed-precondition, and leaves the session free. A command whose shell snippets run
  * reads taken until its hook. With no turn running, `interrupt` answers idle and asks OpenCode
  * nothing; during a command's turn it aborts once, answers interrupted, and the command queued
- * behind it then runs. The broker refuses a sibling agent of the same owner.
+ * behind it then runs. `usage` before any model step reports nothing. A turn goes out as one prompt, the
+ * text and then each image as a file part with a data URL, and an image-only turn has no text part. A
+ * 4xx answer ends it refused, failed-precondition. `usage` then reports the last step's input, cache
+ * and output tokens of the model's input limit, and the sum of the assistant messages' cost, reading
+ * the provider list once; a model the list has no window for leaves the context out. The broker
+ * refuses a sibling agent of the same owner.
  *
  * Run: pnpm smoke:opencode1-command:auth   (needs `nats-server` on PATH; local-only)
  */
@@ -108,6 +116,9 @@ const PERSONA = "You are Cody, a careful reviewer who explains every finding.";
 let hooks: Awaited<ReturnType<typeof bootPlugin>> | undefined;
 const fire = (type: string, properties: Record<string, unknown> = {}) => hooks!.event!({ event: { type, properties: { sessionID: SID, ...properties } } } as never);
 let snippetsMs = 0;
+let refuseTurn = false;
+let messages: unknown[] = [];
+const providers = { all: [{ id: "opencode", models: { "m1": { id: "m1", limit: { context: 200000, input: 160000, output: 32000 } }, "m2": { id: "m2" }, "m3": { id: "m3", limit: { context: 262144, output: 65536 } } } }], default: {}, connected: ["opencode"] };
 let held: (() => void) | undefined; // answers the POST of the command whose turn runs, ending that turn
 const calls: string[] = [];
 const bodies: Record<string, unknown>[] = [];
@@ -154,7 +165,13 @@ const oc = createServer((req, res) => {
     if (req.method === "POST" && req.url === `/session/${SID}/prompt_async`) {
       calls.push("prompt");
       bodies.push(body);
+      if (refuseTurn) return json(res, 400, { name: "BadRequest", data: { message: "invalid prompt" } });
       return void res.writeHead(204).end();
+    }
+    if (req.method === "GET" && req.url === `/session/${SID}/message`) return json(res, 200, messages);
+    if (req.method === "GET" && req.url === "/provider") {
+      calls.push("provider");
+      return json(res, 200, providers);
     }
     if (req.method === "POST" && req.url === `/session/${SID}/abort`) {
       calls.push("abort");
@@ -252,7 +269,7 @@ try {
   const served = await until(() => row()?.prompts !== undefined, 20_000);
   check("the plugin came online and serves its agent endpoint", served);
   await sleep(300);
-  check("presence says it serves interrupt, and no owner's turn or usage", same(row()?.agentEndpoint, { interrupt: true, turn: false, images: false, usage: false }), row()?.agentEndpoint);
+  check("presence says it serves interrupt, the owner's turns with images, and usage", same(row()?.agentEndpoint, { interrupt: true, turn: true, images: true, usage: true }), row()?.agentEndpoint);
 
   const listed = await call(webEp, "commands");
   const catalog = listed.ok && listed.value.ok ? listed.value.data : verdict(listed);
@@ -334,6 +351,47 @@ try {
     && same(calls.slice(beforeStop), ["command review", "abort", "command init"]),
     [long.label, verdict(stop), stop.ok && stop.value.ok ? stop.value.data : undefined, next.label, calls.slice(beforeStop)]);
   await endTurn();
+
+  const usageOf = async () => {
+    const r = await call(webEp, "usage");
+    return r.ok && r.value.ok ? r.value.data : verdict(r);
+  };
+  check("usage before any model step reports nothing yet", same(await usageOf(), { supported: true }), await usageOf());
+  const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC";
+  const beforeTurn = calls.length;
+  const turned = await call(webEp, "turn", { text: "What color is this?", images: [{ mimeType: "image/png", data: png }] });
+  const turnId = turned.ok && turned.value.ok ? (turned.value.data as { id?: string }).id : undefined;
+  const turnState = await settle(turnId);
+  check("a turn reads started and goes out as one prompt: the text, then the image as a file part with a data URL",
+    turnState.label === "started" && same(calls.slice(beforeTurn), ["prompt"])
+    && same(bodies.at(-1), { parts: [{ type: "text", text: "What color is this?" }, { type: "file", mime: "image/png", url: `data:image/png;base64,${png}` }] }),
+    [verdict(turned), turnState.label, calls.slice(beforeTurn), bodies.at(-1)]);
+  await runAndEndTurn();
+  const imageOnly = await call(webEp, "turn", { text: "", images: [{ mimeType: "image/png", data: png }] });
+  const imageOnlyState = await settle(imageOnly.ok && imageOnly.value.ok ? (imageOnly.value.data as { id?: string }).id : undefined);
+  check("an image-only turn carries no text part", imageOnlyState.label === "started" && same(bodies.at(-1), { parts: [{ type: "file", mime: "image/png", url: `data:image/png;base64,${png}` }] }), [imageOnlyState.label, bodies.at(-1)]);
+  await runAndEndTurn();
+  refuseTurn = true;
+  const refusedTurn = await call(webEp, "turn", { text: "refused" });
+  const refusedState = await settle(refusedTurn.ok && refusedTurn.value.ok ? (refusedTurn.value.data as { id?: string }).id : undefined);
+  refuseTurn = false;
+  check("a turn OpenCode answers with a 4xx ends refused, failed-precondition", refusedState.label === "refused/failed-precondition", refusedState);
+  const step = (input: number, output: number, read: number, write: number) => ({ type: "step-finish", reason: "stop", cost: 0, tokens: { total: input + output + read + write, input, output, reasoning: 7, cache: { read, write } } });
+  messages = [
+    { info: { role: "user", id: "msg_1" }, parts: [{ type: "text", text: "hi" }] },
+    { info: { role: "assistant", id: "msg_2", providerID: "opencode", modelID: "m1", cost: 0.25 }, parts: [{ type: "step-start" }, step(900, 40, 0, 0)] },
+    { info: { role: "assistant", id: "msg_3", providerID: "opencode", modelID: "m1", cost: 0.5 }, parts: [{ type: "step-start" }, step(500, 20, 100, 0), { type: "step-start" }, step(1000, 50, 3000, 200)] },
+  ];
+  const providerReads = calls.filter((c) => c === "provider").length;
+  const reported = await usageOf();
+  const again = await usageOf();
+  check("usage reports the last step's input, cache and output tokens of the model's input limit, and the summed cost, reading the provider list once",
+    same(reported, { supported: true, context: { used: 4250, size: 160000 }, cost: { amount: 0.75, currency: "USD" } }) && same(again, reported)
+    && calls.filter((c) => c === "provider").length === providerReads + 1, { reported, again, providerReads: calls.filter((c) => c === "provider").length - providerReads });
+  (messages[2] as { info: { modelID: string } }).info.modelID = "m2";
+  check("a model the provider list gives no window leaves the context out", same(await usageOf(), { supported: true, cost: { amount: 0.75, currency: "USD" } }), await usageOf());
+  (messages[2] as { info: { modelID: string } }).info.modelID = "m3";
+  check("a model with no input limit is measured against its context limit", same(await usageOf(), { supported: true, context: { used: 4250, size: 262144 }, cost: { amount: 0.75, currency: "USD" } }), await usageOf());
 
   const sibling = await call(siblingEp, "command", { target: "command", name: "review" });
   check("a sibling agent of the same owner: permission-denied, not-executed", verdict(sibling) === "permission-denied/not-executed", verdict(sibling));
