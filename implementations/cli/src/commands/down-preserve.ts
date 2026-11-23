@@ -166,7 +166,7 @@ async function restartFencedDelivery(space: string, server: string, tls: boolean
   }
 }
 
-export async function preserveStateDown(storeOverride?: string, sessionStores: readonly string[] = []): Promise<void> {
+export async function preserveStateDown(storeOverride: string | undefined, sessionStores: readonly string[], confirm: (target: LocalProcessContext) => Promise<boolean>): Promise<void> {
   const root = cotalRoot();
   const matching = loadMeshes().filter((mesh) => mesh.root === root);
   if (matching.length !== 1)
@@ -209,6 +209,7 @@ export async function preserveStateDown(storeOverride?: string, sessionStores: r
     // present): the shared commit block below is then skipped — the cut is already committed.
     let managerCommitJournaled = false;
     if (existing?.state === "cut-intent" || existing?.state === "cut-committed") {
+      if (!await confirm(context)) return;
       attemptId = existing.cut.attemptId;
       resume = existing.resume;
       if (existing.state === "cut-intent") {
@@ -281,6 +282,7 @@ export async function preserveStateDown(storeOverride?: string, sessionStores: r
           target: { root, space: mesh.space, server: mesh.server },
           remedy: "start this stack's manager with `cotal up`, then run `cotal down --preserve-state` again",
         });
+      if (!await confirm(context)) return;
       // The attempt binding is durable BEFORE the manager is fenced: a crash between manager
       // preparation and the cut-intent journal retries with the exact attempt the manager holds.
       const intent = readPreservationPrepareIntent(root);

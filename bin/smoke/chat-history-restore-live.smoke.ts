@@ -100,7 +100,7 @@ for (const stream of ["CHAT_x", "DM_x"]) {
     await njsm.streams.update(dlvStream(space), { ...dlv, max_age: nanos(recorded.dlv.maxAgeMs), max_msgs_per_subject: recorded.dlv.perSubject });
     await nc.close();
     check("control: the source takes an age and a count on each of the four streams", set.status === 0, s.shown(set));
-    const preserved = s.run("down", "--preserve-state");
+    const preserved = s.run("down", "--preserve-state", "--yes");
     up = preserved.status !== 0;
     const store = join(s.root, ".cotal", "nats");
     const SHORT_MS = 75_000;
@@ -220,7 +220,7 @@ for (const stream of ["CHAT_x", "DM_x"]) {
     const nc = await connect({ servers: server });
     await jetstream(nc).publish(`cotal.${space}.chat.o.a.general`, JSON.stringify({ kept: true }));
     await nc.close();
-    const preserved = s.run("down", "--preserve-state");
+    const preserved = s.run("down", "--preserve-state", "--yes");
     up = preserved.status !== 0;
     const backed = s.run("backup", "create", artifact);
     check("control: the backup is taken", preserved.status === 0 && backed.status === 0, { down: s.shown(preserved), backup: s.shown(backed) });

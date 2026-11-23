@@ -566,7 +566,7 @@ async function restoreStartupCell(): Promise<void> {
       const result = await probe(["channel", "set", "restore-probe", "--desc", "before restore", "--space", space]);
       return result.code === 0;
     }, 90_000, () => "source manager did not register");
-    await must(["down", "--preserve-state", "--store-dir", "./source store"]);
+    await must(["down", "--preserve-state", "--yes", "--store-dir", "./source store"]);
     await must(["backup", "create", "./full backup", "--store-dir", "./source store", "--plain"]);
 
     const restore = run = foreground(["--foreground", "--restore", "./full backup", "--store-dir", "./phase target"]);

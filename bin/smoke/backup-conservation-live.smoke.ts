@@ -365,7 +365,7 @@ async function conservationScenario(): Promise<void> {
       await sampler.close();
     }
 
-    must("preserve cut", run("down", "--preserve-state"));
+    must("preserve cut", run("down", "--preserve-state", "--yes"));
     assert.equal(mesh.journal().state, "ready");
     must("full backup", run("backup", "create", artifact));
 
@@ -469,7 +469,7 @@ async function restoredMeshWorksScenario(): Promise<void> {
       await sampler.close();
     }
 
-    must("preserve cut", run("down", "--preserve-state"));
+    must("preserve cut", run("down", "--preserve-state", "--yes"));
     must("full backup", run("backup", "create", artifact));
     must("restore", run("up", "--restore", artifact, "--detach", "--server", mesh.server, "--space", mesh.space));
     const restored = mesh.journal();

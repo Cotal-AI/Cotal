@@ -106,7 +106,7 @@ async function scenario(mode: "open" | "auth"): Promise<void> {
         cwd: join(worktree, "implementations", "cli"), env, encoding: "utf8", timeout: 30_000,
       }));
     }
-    must("preserve cut", run("down", "--preserve-state"));
+    must("preserve cut", run("down", "--preserve-state", "--yes"));
     const ready = JSON.parse(readFileSync(join(root, ".cotal", "maintenance", "v1", "journal.json"), "utf8")) as { state: string };
     assert.equal(ready.state, "ready");
 
@@ -344,7 +344,7 @@ async function scenario(mode: "open" | "auth"): Promise<void> {
     }
     must("ordinary same-principal resume", run("up", "--detach", "--server", server, "--space", space));
     assert.equal(existsSync(join(root, ".cotal", "maintenance", "v1", "journal.json")), false, "ordinary resume retires and consumes maintenance state");
-    must("preserve again for restore", run("down", "--preserve-state"));
+    must("preserve again for restore", run("down", "--preserve-state", "--yes"));
 
     // A restore into the preserved store's own path moves it aside whole, so a file in it that no
     // Cotal store writes is refused before anything moves.
@@ -384,7 +384,7 @@ async function scenario(mode: "open" | "auth"): Promise<void> {
       const legacyJournal = readMaintenanceJournal(root);
       assert.ok(legacyJournal?.state === "active");
       must("retire adapted v2 restore", run("backup", "cleanup-fallback", legacyJournal.restore.attemptId, "--discard-history", "--yes"));
-      must("preserve after adapted v2 restore", run("down", "--preserve-state"));
+      must("preserve after adapted v2 restore", run("down", "--preserve-state", "--yes"));
     }
     const restored = run("up", "--restore", restoreArtifact, "--detach", "--server", server, "--space", space);
     must("restore", restored);
@@ -530,7 +530,7 @@ async function occupiedRestoreScenario(): Promise<void> {
   let occupied: ChildProcess | undefined;
   try {
     assert.equal(run("up", "--detach", "--open", "--server", server, "--space", space).status, 0);
-    assert.equal(run("down", "--preserve-state").status, 0);
+    assert.equal(run("down", "--preserve-state", "--yes").status, 0);
     assert.equal(run("backup", "create", artifact, "--only", "registry").status, 0);
     occupied = await occupy(port);
     // The restore probes the address its broker will bind before anything moves, so another listener
@@ -565,7 +565,7 @@ async function restoreReentryScenario(
   const journalPath = join(root, ".cotal", "maintenance", "v1", "journal.json");
   try {
     assert.equal(run("up", "--detach", ...(authenticated ? [] : ["--open"]), "--server", server, "--space", space).status, 0);
-    assert.equal(run("down", "--preserve-state").status, 0);
+    assert.equal(run("down", "--preserve-state", "--yes").status, 0);
     assert.equal(run("backup", "create", artifact, "--only", "registry").status, 0);
 
     const failureEnv = {
@@ -639,7 +639,7 @@ async function ordinaryResumeReentryScenario(injection: "resume-commit" | "resum
   const journalPath = join(root, ".cotal", "maintenance", "v1", "journal.json");
   try {
     assert.equal(run("up", "--detach", "--open", "--server", server, "--space", space).status, 0);
-    assert.equal(run("down", "--preserve-state").status, 0);
+    assert.equal(run("down", "--preserve-state", "--yes").status, 0);
     const interrupted = spawnSync(
       tsx,
       [cliPath, "up", "--detach", "--server", server, "--space", space],
@@ -688,7 +688,7 @@ async function deadBoundListenerReplacementScenario(): Promise<void> {
   const journalPath = join(root, ".cotal", "maintenance", "v1", "journal.json");
   try {
     assert.equal(run("up", "--detach", "--open", "--server", server, "--space", space).status, 0);
-    assert.equal(run("down", "--preserve-state").status, 0);
+    assert.equal(run("down", "--preserve-state", "--yes").status, 0);
     assert.equal(run("backup", "create", artifact, "--only", "registry").status, 0);
     const interrupted = spawnSync(
       tsx,
@@ -736,7 +736,7 @@ async function unboundRestoreReentryScenario(detached: boolean): Promise<void> {
   let listenerPid: number | undefined;
   try {
     assert.equal(run("up", "--detach", "--open", "--server", server, "--space", space).status, 0);
-    assert.equal(run("down", "--preserve-state").status, 0);
+    assert.equal(run("down", "--preserve-state", "--yes").status, 0);
     assert.equal(run("backup", "create", artifact, "--only", "registry").status, 0);
     const first = spawnSync(
       tsx,
@@ -791,7 +791,7 @@ async function boundForeignListenerScenario(): Promise<void> {
   let foreign: ChildProcess | undefined;
   try {
     assert.equal(run("up", "--detach", "--open", "--server", server, "--space", space).status, 0);
-    assert.equal(run("down", "--preserve-state").status, 0);
+    assert.equal(run("down", "--preserve-state", "--yes").status, 0);
     assert.equal(run("backup", "create", artifact, "--only", "registry").status, 0);
     const failed = spawnSync(
       tsx,
@@ -847,7 +847,7 @@ async function missingPidfileListenerScenario(): Promise<void> {
     assert.equal(run("channel", "set", "preserved", "--desc", "listener probe", "--space", space).status, 0);
     const brokerPid = Number(readFileSync(pidPath, "utf8"));
     rmSync(pidPath);
-    const refusedCut = run("down", "--preserve-state", `--store-dir=${store}`);
+    const refusedCut = run("down", "--preserve-state", "--yes", `--store-dir=${store}`);
     assert.notEqual(refusedCut.status, 0, "a pidless live broker cannot become a ready cut");
     assert.match(refusedCut.stderr, /recorded NATS endpoint .* no listener/);
     // The manager's commitment is journaled BEFORE any stop, so the failed cut parks at the
@@ -855,7 +855,7 @@ async function missingPidfileListenerScenario(): Promise<void> {
     assert.equal((JSON.parse(readFileSync(journalPath, "utf8")) as { state: string }).state, "cut-committed");
     process.kill(brokerPid, "SIGTERM");
     await waitUntil(async () => (await probeConnect(server, { timeoutMs: 200 })).ok === false, "pidless broker shutdown");
-    const finished = run("down", "--preserve-state", `--store-dir=${store}`);
+    const finished = run("down", "--preserve-state", "--yes", `--store-dir=${store}`);
     assert.equal(finished.status, 0, `cut retry with stopped manager\nstdout:\n${finished.stdout}\nstderr:\n${finished.stderr}`);
     assert.equal((JSON.parse(readFileSync(journalPath, "utf8")) as { state: string }).state, "ready");
 
@@ -901,7 +901,7 @@ async function undisplayableBackupRetryScenario(): Promise<void> {
   const must = (result: SpawnSyncReturns<string>) => assert.equal(result.status, 0, `${result.stdout}${result.stderr}`);
   try {
     must(run("up", "--detach", "--open", "--server", server, "--space", "backup_undisplayable_retry", "--store-dir", store));
-    must(run("down", "--preserve-state", "--store-dir", store));
+    must(run("down", "--preserve-state", "--yes", "--store-dir", store));
     const journal = join(root, ".cotal", "maintenance", "v1", "journal.json");
     const ready = readFileSync(journal, "utf8");
     assert.equal(readMaintenanceJournal(root)?.state, "ready");
@@ -948,7 +948,7 @@ async function missingCustomSourceScenario(): Promise<void> {
   try {
     must("up on a custom store", run("up", "--detach", "--open", "--server", server, "--space", space, "--store-dir", store));
     must("send a message to keep", run("send", "-c", "preserved", "history-before-backup", "--space", space));
-    must("down --preserve-state", run("down", "--preserve-state"));
+    must("down --preserve-state", run("down", "--preserve-state", "--yes"));
     must("backup create", run("backup", "create", artifact));
     renameSync(store, join(root, "saved-source"));
     const elsewhere = run("backup", "restore", artifact, "--accept-missing-source", "--store-dir", join(root, "elsewhere"), "--json");
@@ -990,7 +990,7 @@ async function restoredStoreRestartScenario(): Promise<void> {
   try {
     must("up", run("up", "--detach", "--open", "--server", server, "--space", space));
     must("seed registry", run("channel", "set", "preserved", "--desc", "survives", "--space", space));
-    must("down --preserve-state", run("down", "--preserve-state"));
+    must("down --preserve-state", run("down", "--preserve-state", "--yes"));
     must("registry backup", run("backup", "create", artifact, "--only", "registry"));
     const restored = run("backup", "restore", artifact, "--only", "registry", "--store-dir", store, "--json");
     must("registry restore into another store", restored);
@@ -1042,11 +1042,11 @@ async function preservationCommitCrashScenario(): Promise<void> {
       encoding: "utf8" as const,
       timeout: 240_000,
     };
-    assertSmokeSandboxDown(sandbox, ["down", "--preserve-state"], interruptOptions);
-    const interrupted = spawnSync(tsx, [cliPath, "down", "--preserve-state"], interruptOptions);
+    assertSmokeSandboxDown(sandbox, ["down", "--preserve-state", "--yes"], interruptOptions);
+    const interrupted = spawnSync(tsx, [cliPath, "down", "--preserve-state", "--yes"], interruptOptions);
     assert.equal(interrupted.status, 90);
     assert.equal((JSON.parse(readFileSync(journalPath, "utf8")) as { state: string }).state, "cut-committed");
-    const recovered = run("down", "--preserve-state");
+    const recovered = run("down", "--preserve-state", "--yes");
     assert.equal(recovered.status, 0, `post-manager-commit cut recovery\nstdout:\n${recovered.stdout}\nstderr:\n${recovered.stderr}`);
     assert.equal((JSON.parse(readFileSync(journalPath, "utf8")) as { state: string }).state, "ready");
   } finally {
@@ -1073,8 +1073,8 @@ async function preservationStopCrashRecoveryScenario(): Promise<void> {
     assert.equal(run("up", "--detach", "--open", "--server", server, "--space", space).status, 0, `${suffix} up`);
     const mgrPid = Number(readFileSync(canonicalLocalProcessPath(MANAGER_PIDFILE, { root, space }), "utf8").trim());
     const crashOptions = { cwd: root, env: { ...env, [hook]: "1" }, encoding: "utf8" as const, timeout: 240_000 };
-    assertSmokeSandboxDown(sandbox, ["down", "--preserve-state"], crashOptions);
-    spawnSync(tsx, [cliPath, "down", "--preserve-state"], crashOptions);
+    assertSmokeSandboxDown(sandbox, ["down", "--preserve-state", "--yes"], crashOptions);
+    spawnSync(tsx, [cliPath, "down", "--preserve-state", "--yes"], crashOptions);
     assert.equal((JSON.parse(readFileSync(journalPath, "utf8")) as { state: string }).state, "cut-intent", `${suffix} parked at cut-intent`);
     if (alive(mgrPid)) process.kill(mgrPid, "SIGKILL");
     await waitUntil(() => !alive(mgrPid), `${suffix} manager dead`);
@@ -1085,7 +1085,7 @@ async function preservationStopCrashRecoveryScenario(): Promise<void> {
   // the journal; it finishes the cut forward to ready with the inventory intact.
   const a = await bootAndCrash("commit", "COTAL_SMOKE_EXIT_AFTER_MANAGER_STOP_BEFORE_JOURNAL");
   try {
-    const recovered = a.run("down", "--preserve-state");
+    const recovered = a.run("down", "--preserve-state", "--yes");
     assert.equal(recovered.status, 0, `stop-window cut recovery\nstdout:\n${recovered.stdout}\nstderr:\n${recovered.stderr}`);
     assert.equal(existsSync(a.journalPath), true, "the preserved cut journal survives recovery (not deleted)");
     assert.equal((JSON.parse(readFileSync(a.journalPath, "utf8")) as { state: string }).state, "ready");
@@ -1099,7 +1099,7 @@ async function preservationStopCrashRecoveryScenario(): Promise<void> {
   // Recovery must still abort, not finish forward.
   const b = await bootAndCrash("precommit", "COTAL_SMOKE_EXIT_AFTER_CUT_INTENT_BEFORE_COMMIT");
   try {
-    const aborted = b.run("down", "--preserve-state");
+    const aborted = b.run("down", "--preserve-state", "--yes");
     assert.notEqual(aborted.status, 0, "a genuinely pre-commit crash still aborts, not finishes forward");
     assert.match(aborted.stderr, /lost its manager before commit; the cut intent was aborted/);
     assert.equal(existsSync(b.journalPath), false, "the pre-commit cut is abandoned (nothing was stopped)");
@@ -1122,7 +1122,7 @@ async function restoreClaimRaceScenario(): Promise<void> {
   const { run } = sandboxRun(root, home);
   try {
     assert.equal(run("up", "--detach", "--open", "--server", server, "--space", space).status, 0);
-    assert.equal(run("down", "--preserve-state").status, 0);
+    assert.equal(run("down", "--preserve-state", "--yes").status, 0);
     assert.equal(run("backup", "create", artifact, "--only", "registry").status, 0);
 
     // A live attempt: this smoke process is the recorded (alive) coordinator.
@@ -1198,7 +1198,7 @@ async function backupRestoreCycleScenario(): Promise<void> {
       cwd: join(worktree, "implementations", "cli"), env, encoding: "utf8", timeout: 30_000,
     }));
     const first = join(root, "cycle-backup-1");
-    must("preserve cut 1", run("down", "--preserve-state"));
+    must("preserve cut 1", run("down", "--preserve-state", "--yes"));
     const sourceDigest = (dir: string): string => {
       const hash = createHash("sha256");
       const walk = (path: string): void => {
@@ -1222,7 +1222,7 @@ async function backupRestoreCycleScenario(): Promise<void> {
     assert.equal(restored.state, "active");
     must("retire restore 1", run("clean", "restore-fallback", "--attempt", restored.restore.attemptId, "--force"));
     const second = join(root, "cycle-backup-2");
-    must("preserve cut 2", run("down", "--preserve-state"));
+    must("preserve cut 2", run("down", "--preserve-state", "--yes"));
     must("backup 2", run("backup", "create", second));
     const firstCheckpoints = JSON.parse(readFileSync(join(first, "checkpoints.json"), "utf8")) as Checkpoint[];
     const secondCheckpoints = JSON.parse(readFileSync(join(second, "checkpoints.json"), "utf8")) as Checkpoint[];
@@ -1265,13 +1265,13 @@ async function rolledBackRunsScenario(): Promise<void> {
     const runId = (JSON.parse(must("start", run("run", "start", "zahlung.js", "--space", space, "--json")).stdout) as { result?: { result?: { runId?: string } } }).result?.result?.runId ?? "";
     assert.match(runId, /^run-/);
     await opens(runId, /\/checkpoint:zahlung#0\s+Bezahlen\?/);
-    must("preserve before the answer", run("down", "--preserve-state"));
+    must("preserve before the answer", run("down", "--preserve-state", "--yes"));
     const artifact = join(root, "before-answer");
     must("backup", run("backup", "create", artifact));
     must("resume", run("up", "--detach", "--server", server, "--space", space));
     must("answer", run("run", "answer", runId, "/checkpoint:zahlung#0", "--value", '"ja"', "--space", space));
     await opens(runId, /\/checkpoint:versand#0\s+Versenden\?/);
-    must("preserve after the answer", run("down", "--preserve-state"));
+    must("preserve after the answer", run("down", "--preserve-state", "--yes"));
     const restored = must("restore", run("backup", "restore", artifact, "--json"));
     const note = `Run ${runId} went back to where this backup left it: /checkpoint:zahlung#0 was answered after that and is open again. That answer is only in the previous store.`;
     const rows = [{ run: runId, reopened: ["/checkpoint:zahlung#0"] }];
@@ -1318,7 +1318,7 @@ async function otherAccountScenario(): Promise<void> {
     must("open send", run("send", "-c", "general", "open-account-marker", "--space", space));
     must("open down", run("down", "--yes"));
     must("static up again", run("up", "--detach", "--server", server, "--space", space));
-    must("preserve cut", run("down", "--preserve-state"));
+    must("preserve cut", run("down", "--preserve-state", "--yes"));
     const artifact = join(root, "static-backup");
     must("backup", run("backup", "create", artifact));
     const restored = must("restore", run("backup", "restore", artifact, "--json"));
@@ -1367,7 +1367,7 @@ async function linkedStoreScenario(): Promise<void> {
     symlinkSync(store, join(root, ".cotal", "nats"));
     must("up", run("up", "--detach", "--server", server, "--space", space));
     must("seed registry", run("channel", "set", "linked", "--desc", "restored behind a link", "--space", space));
-    must("preserve cut", run("down", "--preserve-state"));
+    must("preserve cut", run("down", "--preserve-state", "--yes"));
     mkdirSync(join(root, "bkreal"), { mode: 0o700 });
     symlinkSync(join(root, "bkreal"), join(root, "bklink"));
     const artifact = join(root, "bklink", "one");
