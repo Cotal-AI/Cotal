@@ -26,7 +26,8 @@
  * `usage` answers the harness's numbers, `supported: false` without a hook, and unavailable when the
  * harness fails; the broker refuses both to everyone but the owner's sessions. Presence shows
  * `agentEndpoint` with all four for a pi-like dispatcher and all false with none, follows the
- * dispatcher's `watch` as its `unsupported()` flips (and `turn` is then unimplemented), and carries
+ * dispatcher's `watch` as its `unsupported()` flips (all four false, `turn` then unimplemented and
+ * `usage` then `supported: false` without asking the harness), and carries
  * none on an offline record or on an open mesh.
  *
  * Run: pnpm smoke:agent-commands:auth   (needs nats-server on PATH; operator-mode callout, local-only)
@@ -706,7 +707,8 @@ try {
   {
     let cause: string | undefined;
     let changed: (() => void) | undefined;
-    const harness = { ...fake({ interrupt: async () => "idle", turn: async () => {}, images: true, usage: async () => ({}) }), unsupported: () => cause, watch: (c: () => void) => { changed = c; } };
+    let usageReads = 0;
+    const harness = { ...fake({ interrupt: async () => "idle", turn: async () => {}, images: true, usage: async () => (usageReads++, {}) }), unsupported: () => cause, watch: (c: () => void) => { changed = c; } };
     const agent = new MeshAgent(meshConfig(W.meshServed), {}, { commands: harness });
     agent.on("error", () => {});
     stops.push(() => agent.stop());
@@ -716,10 +718,13 @@ try {
     check("a MeshAgent with a pi-like dispatcher shows agentEndpoint with interrupt, turn, images and usage once it serves", await until(() => same(shown(), ALL), 10_000), shown());
     cause = "the command mod is not running";
     changed?.();
-    check("when its dispatcher reports that unsupported() names a cause, presence shows only usage",
-      await until(() => same(shown(), { interrupt: false, turn: false, images: false, usage: true })), shown());
+    check("when its dispatcher reports that unsupported() names a cause, presence shows none of the four",
+      await until(() => same(shown(), { interrupt: false, turn: false, images: false, usage: false })), shown());
     const turn = await settled(call(webEp, W.meshServed, "turn", { text: "hello" }));
     check("...and the owner's turn is unimplemented, not-executed, and the harness never got it", verdict(turn) === "unimplemented/not-executed" && harness.turns.length === 0, verdict(turn));
+    const usage = await settled(call(webEp, W.meshServed, "usage"));
+    check("...and usage answers { supported: false } without asking the harness",
+      usage.ok && usage.value.ok && same(usage.value.data, { supported: false }) && usageReads === 0, usage.ok ? usage.value : verdict(usage));
     cause = undefined;
     changed?.();
     check("once it names none again, presence shows all four", await until(() => same(shown(), ALL)), shown());

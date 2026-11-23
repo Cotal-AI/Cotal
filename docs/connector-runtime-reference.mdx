@@ -266,11 +266,11 @@ A connector hands `MeshAgent` a dispatcher as the `commands` option:
 - `list()` returns every command and skill the harness runs now as `{ name, target, description?, inputHint? }`, each named as `dispatch` names it. A rejection reaches the caller as `unavailable`, never as an empty list.
 - `dispatch({ target, name, args })` starts one and resolves once the harness accepted it. A command that runs the model runs as a turn of its own, and some, such as OpenCode's `goal clear`, run no turn. It throws `CommandRefused` with `not-found` or `failed-precondition` when the harness refused it and nothing started. Any other throw leaves the outcome unknown.
 - `interrupt()`, optional, stops the turn the harness is running and resolves `interrupted`, or `idle` when none ran. The connector then ends that turn as one its user stopped, so the next queued command starts. Without it, `interrupt` is `unimplemented`. A throw reaches the caller as `internal` with the outcome unknown.
-- `unsupported()`, optional, names why the harness runs no commands now, or returns undefined while it does. While it names a cause, `commands` answers `{ supported: false }`, and `command`, `turn` and `interrupt` are `unimplemented` with that cause. Claude Code uses it while no command mod serves the session.
+- `unsupported()`, optional, names why the harness runs no commands now, or returns undefined while it does. While it names a cause, `commands` and `usage` answer `{ supported: false }`, and `command`, `turn` and `interrupt` are `unimplemented` with that cause. Claude Code uses it while no command mod serves the session.
 - `watch(changed)`, optional, is called once when the endpoint opens. The dispatcher calls `changed` each time `unsupported()` may answer differently, and the agent then republishes what its presence says it serves.
 - `turn({ text, images })`, optional, hands the owner's words to the harness as its user's own message and resolves once the harness accepted it. It throws `CommandRefused` with `failed-precondition` when the harness refused it and nothing started. Without it, `turn` is `unimplemented`.
 - `images`, optional, says the harness takes images with a turn. Without it, a `turn` with images is `unimplemented`. Each image is `{ mimeType, data }`, `data` in base64.
-- `usage()`, optional, resolves what the harness reports now: `context` as `{ used, size }` in tokens and `cost` as `{ amount, currency }`, each left out until the harness reported it. A rejection, or no answer in 10 seconds, reaches the caller as `unavailable`. Without it, `usage` answers `{ supported: false }`.
+- `usage()`, optional, resolves what the harness reports now: `context` as `{ used, size }` in tokens and `cost` as `{ amount, currency }`, each left out until the harness reported it. A rejection, or no answer in 10 seconds, reaches the caller as `unavailable`. Without it, or while `unsupported()` names a cause, `usage` answers `{ supported: false }`.
 
 The runtime sends only those four fields of an entry. It leaves out a name `command` cannot carry and shortens a longer description or hint.
 Without a dispatcher, `commands` answers `{ supported: false }` and `command` is `unimplemented`.
@@ -285,7 +285,7 @@ The agent's presence carries `agentEndpoint: { interrupt, turn, images, usage }`
 - `interrupt` is true when the dispatcher has `interrupt()` and `unsupported()` names no cause.
 - `turn` is true when it has `turn()` and `unsupported()` names no cause.
 - `images` is true with `turn` when it sets `images`.
-- `usage` is true when it has `usage()`.
+- `usage` is true when it has `usage()` and `unsupported()` names no cause.
 
 Without a dispatcher, all four are false. The field never claims a call the endpoint would refuse.
 
