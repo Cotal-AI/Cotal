@@ -930,8 +930,9 @@ async function checkMovedRootStop(moved: string, home: string, env: NodeJS.Proce
   assert.equal(await portOpen(port), false, "the stopped stack's broker is gone"); passed++;
 }
 
-async function movedRootSignalCell(signal: "SIGTERM" | "SIGHUP"): Promise<void> {
-  const name = `controller-moved-root-${signal.toLowerCase()}`;
+async function movedRootSignalCell(mode: "sigterm" | "relative-path" | "absolute-path"): Promise<void> {
+  const signal = mode === "sigterm" ? "SIGTERM" : "SIGHUP";
+  const name = `controller-moved-root-${mode}`;
   const root = join(base, name), mesh = join(root, "project"), moved = `${mesh} moved`, outside = join(root, "outside");
   const home = join(root, "home"), space = "foreground-moved-root-signal", port = await freePort();
   const env = { ...cleanEnv, PATH: process.env.PATH, HOME: home, COTAL_HOME: join(home, "machine"), XDG_CONFIG_HOME: join(home, "xdg"), XDG_RUNTIME_DIR: join(home, "runtime"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" };
@@ -968,7 +969,7 @@ async function movedRootSignalCell(signal: "SIGTERM" | "SIGHUP"): Promise<void> 
     assert.equal(stopped.code, 0, stopped.out + stopped.err);
     await until(() => initial.state.closed, 10_000, initial.log);
     assert.equal(initial.state.code, 0, initial.log());
-    if (signal === "SIGHUP") env.PATH = relativeHangupPath(mesh, root, env.PATH);
+    if (mode !== "sigterm") env.PATH = projectHangupPath(mesh, root, mode, env.PATH);
     const holder = await start(signal === "SIGHUP" ? ["cotal"] : cli, "--root", mesh);
     const pins = readStackJournal(mesh)?.journal.members.flatMap(({ process }) => process ? [process] : []);
     assert.ok(pins?.length === 3 && pins.every(live), holder.log());
@@ -1007,14 +1008,15 @@ async function movedRootSignalCell(signal: "SIGTERM" | "SIGHUP"): Promise<void> 
   }
 }
 
-function relativeHangupPath(mesh: string, root: string, path: string | undefined): string {
+function projectHangupPath(mesh: string, root: string, mode: "relative-path" | "absolute-path", path: string | undefined): string {
   const tools = join(mesh, "tools"), other = join(root, "other-bin");
   for (const dir of [tools, other]) mkdirSync(dir, { mode: 0o700 });
   const entryLink = join(tools, "entry.ts");
   symlinkSync(cliEntry, entryLink);
   writeFileSync(join(tools, "cotal"), `#!/bin/sh\nexec ${[process.execPath, "--import", tsx, entryLink].map(shellWord).join(" ")} "$@"\n`, { mode: 0o700 });
   writeFileSync(join(other, "cotal"), "#!/bin/sh\necho 'wrong cotal' >&2\nexit 99\n", { mode: 0o700 });
-  return ["tools", other, ...(path ? [path] : [])].join(":");
+  const inherited = (path ?? "").split(":").filter((dir) => dir.startsWith("/"));
+  return [mode === "absolute-path" ? tools : "tools", other, ...inherited].join(":");
 }
 
 async function controllerHoldCell(kind: "takeover" | "other-home" | "broker-crash" | "broker-only-crash" | "time-wait" | "moved-root" = "takeover"): Promise<void> {
@@ -1377,8 +1379,9 @@ await controllerHoldCell("broker-only-crash");
 if (process.platform === "linux") await controllerHoldCell("time-wait");
 await controllerHoldCell("moved-root");
 if (process.platform === "linux") {
-  await movedRootSignalCell("SIGTERM");
-  await movedRootSignalCell("SIGHUP");
+  await movedRootSignalCell("sigterm");
+  await movedRootSignalCell("relative-path");
+  await movedRootSignalCell("absolute-path");
 }
 console.log(`foreground-up-signals: ${passed} passed, 0 failed`);
 emitSentinel({ cells: passed, passed, failed: 0 });

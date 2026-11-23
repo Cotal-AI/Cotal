@@ -200,14 +200,12 @@ function durableCotalsOnPath(env: NodeJS.ProcessEnv): string[] {
  *  installed entry under this Node runtime. A dev clone uses pnpm unless the command must run
  *  from another folder. Re-execs use {@link selfArgv}. */
 export function displayCmd({ fromAnyFolder = false } = {}): string {
-  // A relative or empty PATH entry can select a different executable in the destination folder.
-  if ((!fromAnyFolder || (process.env.PATH ?? "").split(delimiter).every(isAbsolute)) && cotalOnPath()) return "cotal";
+  if (cotalOnPath()) return "cotal";
   if (isNpx()) return "npx cotal-ai";
   if (isPnpmDlx()) return "pnpm dlx cotal-ai";
   if (runsCliEntry() && (fromAnyFolder || seedWriterKind() === "released")) {
-    const entry = entryScript();
-    if (seedWriterKind() !== "released") return [...selfArgv().slice(0, -1), entry].map(shellWord).join(" ");
-    const command = [process.execPath, entry].map(shellWord).join(" ");
+    if (seedWriterKind() !== "released") return selfArgv().map(shellWord).join(" ");
+    const command = [process.execPath, entryScript()].map(shellWord).join(" ");
     if (process.platform !== "win32" && process.env.COTAL_LAUNCHER === "1") {
       const prefix = process.env.npm_config_prefix;
       if (!prefix) throw new Error("the installer launcher did not provide its npm prefix");

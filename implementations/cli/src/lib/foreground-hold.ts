@@ -1,12 +1,13 @@
 /** The process record a foreground `up` writes while it holds a controller stack's lifetime. The
  *  holding process removes its own record as it exits. A whole-stack stop removes one whose process
  *  is gone, such as a holder that was killed, and leaves one that still runs or cannot be read. */
-import { readFileSync, unlinkSync } from "node:fs";
-import { join } from "node:path";
+import { readFileSync, realpathSync, unlinkSync } from "node:fs";
+import { isAbsolute, join, relative, sep } from "node:path";
 import { writeSecretFileAtomic } from "@cotal-ai/core";
 import { assertRecordIdentity, codeSpan, exitCode, findMesh, formatRecord, identityRecord, parseRecord, renderReport, shellPath } from "@cotal-ai/workspace";
+import { entryScript } from "../seed/paths.js";
 import { shellWord } from "./endpoint-errors.js";
-import { displayCmd } from "./self-exec.js";
+import { displayCmd, selfArgv } from "./self-exec.js";
 import { observeServiceProcess, serviceInstanceStore } from "./service-instances.js";
 import { readStackJournal, stackDefinitionsAt, stackRootGone, type StackJournal } from "./stack-journal.js";
 
@@ -37,11 +38,27 @@ export function releaseForegroundHold(root: string): void {
   } catch { /* nothing recorded */ }
 }
 
+/** Capture the physical entry before its launcher can move with the project. */
+export function foregroundStopLauncher(root: string): string | undefined {
+  const argv = selfArgv();
+  const project = realpathSync(root), node = realpathSync(process.execPath), entry = entryScript();
+  const inside = (path: string) => {
+    const rel = relative(project, path);
+    return !isAbsolute(rel) && rel !== ".." && !rel.startsWith(`..${sep}`);
+  };
+  if (inside(node) || inside(entry)) return undefined;
+  const loaders = entry.endsWith(".ts") ? argv.slice(1, -1) : [];
+  return [node, ...loaders, entry].map(shellWord).join(" ");
+}
+
 /** A hangup leaves the stack running. Release the hold before exiting without unwinding finally. */
-export function hangupForegroundStack(root: string, space: string, outsideCmd: string): never {
-  const remedy = stackRootGone(space, root)
-    ? `run ${codeSpan(`${outsideCmd} down --space ${shellWord(space)} --yes`)} from another folder to stop it`
-    : `${codeSpan(`cd ${shellWord(root)} && ${displayCmd()} down`)} stops it`;
+export function hangupForegroundStack(root: string, space: string, outsideCmd: string | undefined): never {
+  const stop = `down --space ${shellWord(space)} --yes`;
+  const remedy = !stackRootGone(space, root)
+    ? `${codeSpan(`cd ${shellWord(root)} && ${displayCmd()} down`)} stops it`
+    : outsideCmd !== undefined
+      ? `run ${codeSpan(`${outsideCmd} ${stop}`)} from another folder to stop it`
+      : `use a Cotal installation outside the project to run ${codeSpan(`cotal ${stop}`)} from another folder to stop it`;
   process.stderr.write(`The terminal closed. This stack is still running; ${remedy}.\n`);
   process.exitCode = 129;
   releaseForegroundHold(root);

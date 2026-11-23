@@ -118,7 +118,7 @@ import {
   stackUpInterrupted,
 } from "./stack-up.js";
 import { exitInterrupted, handOverStartupNotice, noticeOnInterrupt, releaseStartupNotice } from "../lib/interrupt-notice.js";
-import { claimForegroundHold, foregroundHolder, foregroundStackEnd, hangupForegroundStack, releaseForegroundHold } from "../lib/foreground-hold.js";
+import { claimForegroundHold, foregroundHolder, foregroundStackEnd, foregroundStopLauncher, hangupForegroundStack, releaseForegroundHold } from "../lib/foreground-hold.js";
 import { settleInterruptedLaunches } from "../lib/service-process.js";
 import { assertUserStackTransport, preflightUserStack } from "./stack-user-auth.js";
 import { stopForegroundStack } from "./stack-down.js";
@@ -347,8 +347,7 @@ export async function holdForegroundStack(root: string, space: string, start?: (
 }
 
 async function holdStack(root: string, space: string, start?: () => Promise<void | StackJournal>, releaseRestoreNotice?: () => void): Promise<void> {
-  // Resolve the outside command before a move can take the entry symlink with the project.
-  const outsideCmd = displayCmd({ fromAnyFolder: true });
+  const outsideCmd = foregroundStopLauncher(root);
   // The start's listeners go only once the hold's own are installed. Node runs a listener for a
   // signal when the loop next polls, and drops the signal if its last listener was removed first,
   // so a signal that lands in the start's last synchronous step would be lost in between.

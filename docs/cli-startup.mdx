@@ -242,10 +242,11 @@ uses the same recorded process checks as `cotal down --space <space> --yes` from
 A signal while the stack is still starting lets the start settle, then runs that stop. When the
 start fails, the stop still runs before the start failure is printed. A hangup, such as a closed
 terminal, leaves the stack running and exits 129. The printed stop command changes to the stack's project
-folder before running `cotal down`. If the folder was moved or deleted, run the printed
-`cotal down --space <space> --yes` command from another folder instead. Copy the full command,
-including the launcher path if one is printed. A hangup while the stack is still starting lets
-the start settle, prints the stop command and exits 129, and leaves what the start left.
+folder before running `cotal down`. If the folder was moved or deleted, the notice gives a stop
+command for another folder with an absolute launcher path. Copy the full command. If Cotal or
+its Node runtime was inside the project folder, use a Cotal installation outside the project to
+run `cotal down --space <space> --yes` from another folder. A hangup while the stack is still
+starting lets the start settle, prints the stop command and exits 129, and leaves what the start left.
 While a foreground `up` holds the stack, it records its process in `.cotal/stack-foreground.hold`,
 and a second foreground `up` on that stack refuses `CONFLICT`, exit 2, names that process, and
 starts nothing. If the journal records a different launching `COTAL_HOME`, the suggested stop and
