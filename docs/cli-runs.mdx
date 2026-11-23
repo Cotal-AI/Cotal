@@ -62,8 +62,9 @@ wait until one has activated and run it again. Any other refusal of `start`, `re
 
 An unpinned hosted verb run by the operator reads the space's service registry first. When it
 lists no live manager, as after `cotal down stack-manager`, the verb refuses `TARGET_UNAVAILABLE`
-(exit 2) at once, as `ps` does, and names bare `cotal up` as the next step, instead of waiting out
-the manager's answer deadline.
+(exit 2) before waiting for a reply. If this machine started the stack at the requested broker,
+the next step names its project folder. A machine that only registered the space points you to
+the host where its stack runs.
 
 A mesh a run verb cannot resolve or connect to is refused before any request under the refusal's
 own code, hosted or `--local`, as `ps` refuses it. With no mesh running that is `TARGET_NOT_FOUND`,
