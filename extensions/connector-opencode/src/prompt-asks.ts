@@ -12,10 +12,12 @@
  *   on `POST /api/session/:sid/form/:id/reply` with an answer per field key, or cancelled with
  *   `DELETE /api/session/:sid/form/:id`.
  *
- * A reject's note goes to OpenCode as its message, which OpenCode hands the model.
+ * A reject's note goes to OpenCode as its message, which OpenCode hands the model. A permission ask
+ * names the tool call it gates, and the plugin's `execute.before` hook, which OpenCode runs before the
+ * tool checks its permission, has handed that call over by then.
  */
 import type { PromptDesk, PromptVerdict } from "@cotal-ai/connector-core";
-import { createOpenCodePrompts, formContent, permissionContent, type FormField, type OpenCodeAsk, type OpenCodePrompts } from "./prompts.js";
+import { createOpenCodePrompts, formContent, permissionContent, type FormField, type OpenCodeAsk, type OpenCodePrompts, type PermissionAsk } from "./prompts.js";
 
 /** Sends one request to OpenCode: true once OpenCode applied it, false when OpenCode answered that it
  *  does not hold the ask. */
@@ -27,7 +29,7 @@ const message = (v: PromptVerdict) => (v.note ? { message: v.note } : {});
 
 interface Permission1 { id: string; sessionID: string; permission: string; patterns: string[]; always: string[]; tool?: { callID?: string } }
 
-function permission1Ask(p: Permission1, send: Send, scope?: string): OpenCodeAsk {
+function permission1Ask(p: Permission1, send: Send, tool: PermissionAsk["tool"], scope?: string): OpenCodeAsk {
   return {
     id: p.id,
     content: permissionContent({
@@ -35,6 +37,7 @@ function permission1Ask(p: Permission1, send: Send, scope?: string): OpenCodeAsk
       patterns: p.patterns,
       ...(p.always.length ? { always: `Allows ${p.permission} ${p.always.join(", ")} for the rest of this OpenCode session` } : {}),
       toolCallId: p.tool?.callID,
+      tool,
       scope,
     }),
     reply: (v) => send(`/permission/${enc(p.id)}/reply`, post({ reply: v.option, ...message(v) })),
@@ -72,7 +75,7 @@ function question1Ask(q: Question1, send: Send, scope?: string): OpenCodeAsk | s
 
 interface Permission2 { id: string; sessionID: string; action: string; resources: string[]; save?: string[]; source?: { id?: string } }
 
-function permission2Ask(p: Permission2, send: Send, scope?: string): OpenCodeAsk {
+function permission2Ask(p: Permission2, send: Send, tool: PermissionAsk["tool"], scope?: string): OpenCodeAsk {
   const save = p.save ?? [];
   return {
     id: p.id,
@@ -81,6 +84,7 @@ function permission2Ask(p: Permission2, send: Send, scope?: string): OpenCodeAsk
       patterns: p.resources,
       ...(save.length ? { always: `Saves an allow rule for this project: ${p.action} ${save.join(", ")}` } : {}),
       toolCallId: p.source?.id,
+      tool,
       scope,
     }),
     reply: (v) => send(`/api/session/${enc(p.sessionID)}/permission/${enc(p.id)}/reply`, post({ decision: v.option, ...message(v) })),
@@ -113,8 +117,34 @@ function form2Ask(form: Form2, send: Send, scope?: string): OpenCodeAsk | string
 export interface OpenCodeAsks {
   /** Every event the plugin sees, by its type and payload. */
   event(type: string, data: Record<string, unknown>): void;
+  /** A tool call started, from the plugin's `execute.before` hook. */
+  toolStarted(callID: string, call: ToolCallSeen): void;
   /** The session's turn ended, so OpenCode waits on no ask of it any more. */
   turnEnded(): void;
+}
+
+/** A started tool call. Its input is read when an ask names the call, so an input that a later
+ *  `execute.before` hook repaired is the one shown. */
+export interface ToolCallSeen {
+  name: string;
+  input(): unknown;
+}
+
+/** The turn's started tool calls, by call id, for the permission asks that name them. */
+function toolCalls(warn: (msg: string) => void) {
+  const calls = new Map<string, ToolCallSeen>();
+  return {
+    started: (id: string, call: ToolCallSeen) => void calls.set(id, call),
+    gated(id: string | undefined): PermissionAsk["tool"] {
+      if (id === undefined) return undefined;
+      const call = calls.get(id);
+      const input = call?.input();
+      if (input !== undefined) return { name: call!.name, input };
+      warn(`OpenCode asked permission for tool call ${id}, whose input this plugin did not see; the prompt shows what the call would touch`);
+      return undefined;
+    },
+    clear: () => calls.clear(),
+  };
 }
 
 interface AsksOptions {
@@ -142,13 +172,15 @@ function open(prompts: OpenCodePrompts, warn: (msg: string) => void, id: string,
 export function opencode1Asks(opts: AsksOptions): OpenCodeAsks {
   const prompts = createOpenCodePrompts(opts);
   const scope = scopes(opts.session);
+  const calls = toolCalls(opts.warn);
   return {
     event(type, p) {
       const info = p.info as { id?: unknown; parentID?: unknown } | undefined;
       if (type === "session.created") scope.child(info?.id, info?.parentID);
       else if (type === "permission.asked") {
         const who = scope.of(p.sessionID);
-        if (who) prompts.asked(permission1Ask(p as unknown as Permission1, opts.send, who.scope));
+        const ask = p as unknown as Permission1;
+        if (who) prompts.asked(permission1Ask(ask, opts.send, calls.gated(ask.tool?.callID), who.scope));
       } else if (type === "question.asked") {
         const who = scope.of(p.sessionID);
         if (who) open(prompts, opts.warn, String(p.id), question1Ask(p as unknown as Question1, opts.send, who.scope));
@@ -156,20 +188,26 @@ export function opencode1Asks(opts: AsksOptions): OpenCodeAsks {
       else if (type === "question.replied") prompts.replied(String(p.requestID), "proceed");
       else if (type === "question.rejected") prompts.replied(String(p.requestID), "cancel");
     },
-    turnEnded: () => prompts.turnEnded(),
+    toolStarted: calls.started,
+    turnEnded: () => {
+      prompts.turnEnded();
+      calls.clear();
+    },
   };
 }
 
 export function opencode2Asks(opts: AsksOptions): OpenCodeAsks {
   const prompts = createOpenCodePrompts(opts);
   const scope = scopes(opts.session);
+  const calls = toolCalls(opts.warn);
   return {
     event(type, d) {
       const form = d.form as Form2 | undefined;
       if (type === "session.created") scope.child(d.sessionID, d.parentID);
       else if (type === "permission.asked") {
         const who = scope.of(d.sessionID);
-        if (who) prompts.asked(permission2Ask(d as unknown as Permission2, opts.send, who.scope));
+        const ask = d as unknown as Permission2;
+        if (who) prompts.asked(permission2Ask(ask, opts.send, calls.gated(ask.source?.id), who.scope));
       } else if (type === "form.created" && form) {
         const who = scope.of(form.sessionID);
         if (who) open(prompts, opts.warn, form.id, form2Ask(form, opts.send, who.scope));
@@ -177,6 +215,10 @@ export function opencode2Asks(opts: AsksOptions): OpenCodeAsks {
       else if (type === "form.replied") prompts.replied(String(d.id), "proceed");
       else if (type === "form.cancelled") prompts.replied(String(d.id), "cancel");
     },
-    turnEnded: () => prompts.turnEnded(),
+    toolStarted: calls.started,
+    turnEnded: () => {
+      prompts.turnEnded();
+      calls.clear();
+    },
   };
 }
