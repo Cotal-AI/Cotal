@@ -34,7 +34,9 @@ async function until(done: () => boolean, ms = 30_000): Promise<boolean> {
 }
 const sessions: { name: string; pty: Pty; raw: string; exit: number | undefined }[] = [];
 function open(name: string, server?: string, channel = "general", cols = 120, rows = 40) {
-  const pty = cotalPty(["chat", channel, "--name", name, ...(server ? ["--server", server] : [])], { cwd: root, env, cols, rows });
+  const pty = cotalPty(["chat", channel, "--name", name, ...(server ? ["--server", server] : [])], {
+    cwd: root, env: { ...env, CI: "false", CONTINUOUS_INTEGRATION: "false" }, cols, rows,
+  });
   const session = { name, pty, raw: "", exit: undefined as number | undefined };
   pty.onData((data) => { session.raw += data; });
   pty.onExit(({ exitCode }) => { session.exit = exitCode; });
@@ -77,19 +79,22 @@ async function historyViewport(): Promise<void> {
   if (writer.status !== 0 || (writer.stdout.match(/"outcome":"stored"/g) ?? []).length !== 25) throw new Error(writer.stdout + writer.stderr);
   const reader = open("reader", undefined, channel, 80, 24);
   if (!await until(() => clean(reader.raw).includes("Enter send"))) throw new Error("history reader did not open the terminal composer");
+  const initial = await screen(reader.raw, 80, 24);
+  check("the terminal shows no overflow notice when the transcript fits", !/earlier rows? hidden/.test(initial), initial);
   await line(reader, "/history 25");
   await until(() => reader.raw.includes("viewport-marker-25"));
   const latest = await screen(reader.raw, 80, 24);
-  check("overflowing history shows the latest rows and the scroll hint", latest.includes("viewport-marker-25") && !latest.includes("viewport-marker-01") && latest.includes("Page Up/Down: scroll"), latest);
-  reader.pty.write("\x1b[5~");
-  await until(() => reader.raw.includes("viewport-marker-01"), 3_000);
-  const older = await screen(reader.raw, 80, 24);
-  check("Page Up reveals the history rows above the initial viewport", older.includes("viewport-marker-01") && !older.includes("viewport-marker-25"), older);
-  const from = reader.raw.length;
-  reader.pty.write("\x1b[6~");
-  await until(() => reader.raw.slice(from).includes("viewport-marker-25"), 3_000);
-  const newer = await screen(reader.raw, 80, 24);
-  check("Page Down returns to the latest history rows", newer.includes("viewport-marker-25") && !newer.includes("viewport-marker-01"), newer);
+  const visible = latest.match(/viewport-marker-\d\d/g) ?? [];
+  check("overflowing history counts the hidden rows and names the channel history command",
+    visible.length === 16 && visible[0] === "viewport-marker-10" && visible.at(-1) === "viewport-marker-25"
+    && latest.includes("10 earlier rows hidden. See `cotal history '#viewport'`"), latest);
+  const retained = history("viewport-retained", `#${channel}`);
+  check("the suggested command reads all 25 retained messages", (retained.match(/viewport-marker-\d\d/g) ?? []).length === 25, retained);
+  reader.pty.write("\t");
+  if (!await until(() => reader.raw.includes("Enter choose"))) throw new Error("history reader did not open the recipient picker");
+  await line(reader, "@ana");
+  const directed = await screen(reader.raw, 80, 24);
+  check("the overflowing transcript names DM history when the recipient is a DM", directed.includes("See `cotal history --dms`"), directed);
 }
 
 try {
