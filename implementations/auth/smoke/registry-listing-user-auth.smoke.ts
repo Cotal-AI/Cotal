@@ -166,11 +166,66 @@ async function checkSharedWriter(sender: MeshAgent, right: MeshAgent, left: Mesh
   } finally { right.ep.off("message", record); }
 }
 
+async function dialSignedFixture(bearer: () => Promise<string>): Promise<NatsConnection> {
+  return dialerFor(fx.servers)({ servers: fx.servers,
+    ...standaloneConnectOpts({ bearer: await bearer(), sentinelCreds: a.sentinelCreds, tls: false }) });
+}
+
+async function checkUnboundMentionWriter(writer: MeshAgent, username: string): Promise<void> {
+  const channel = "writer_live";
+  const responder = await writer.ep.probeLiveness("delivery");
+  assert.equal(responder.responder, "unbound");
+  const denied = await writer.ep.postChannel(`@${username}/reviewer`, { channel }).catch((error: unknown) => error);
+  suite.check("writer: an unbound delivery responder refuses mentions even on a live channel",
+    denied instanceof core.PeerAddressError && denied.code === "TARGET_UNAVAILABLE", denied);
+  const plain = await writer.ep.postChannel("plain post with no delivery responder", { channel });
+  suite.check("writer: a plain live post stores without a delivery responder", !!plain.id && plain.mentionIds === undefined, plain);
+}
+
+async function checkClaimedMentionCopies(sender: MeshAgent, right: MeshAgent, daemon: CotalEndpoint, observer: NatsConnection,
+    bearer: () => Promise<string>): Promise<void> {
+  const ep = sender.ep;
+  const channel = "writer_live";
+  const missingActor = "no_acl_actor";
+  const missing = `${right.ep.principal.owner}.${missingActor}`;
+  assert.equal(await daemon.aclForAlias(missing), undefined, "missing principal has no live ACL row");
+  assert.ok((await daemon.aclForAlias(sender.id))?.allowSubscribe.includes(channel), "sender has a live read ACL");
+  assert.ok((await daemon.aclForAlias(right.id))?.allowSubscribe.includes(channel), "positive control has a live read ACL");
+  const jsm = await jetstreamManager(observer);
+  const inbox = core.inboxStream(ep.space);
+  const frontier = async () => (await jsm.streams.info(inbox)).state.last_seq;
+  const nc = await dialSignedFixture(bearer);
+  try {
+    const publish = async (id: string, name: string, principal: string) => {
+      const ack = await jetstream(nc).publish(chatSubject(ep.space, ep.principal.owner, ep.principal.actor, channel), JSON.stringify({
+        id, ts: Date.now(), space: ep.space, from: ep.ref(), channel, mentions: [name], mentionIds: [principal],
+        parts: [{ kind: "text", text: `@${name}` }],
+      }));
+      const until = Date.now() + 5_000;
+      do {
+        const consumer = await jsm.consumers.info(core.chatStream(ep.space), core.FANOUT_DURABLE);
+        if (consumer.ack_floor.stream_seq >= ack.seq) return;
+        await delay(25);
+      } while (Date.now() < until);
+      assert.fail(`fan-out did not acknowledge stream sequence ${ack.seq}`);
+    };
+    const before = await frontier();
+    await publish("mention_missing_acl", missingActor, missing);
+    const afterMissing = await frontier();
+    suite.check("delivery: an acknowledged claimed ID without a live ACL writes no durable copy", afterMissing === before, { before, afterMissing });
+    await publish("mention_self_claim", ep.principal.actor, sender.id);
+    const afterSelf = await frontier();
+    suite.check("delivery: an acknowledged sender claim writes no durable copy despite its live read ACL", afterSelf === afterMissing, { afterMissing, afterSelf });
+    await publish("mention_copy_control", right.ep.principal.actor, right.id);
+    const afterControl = await frontier();
+    suite.check("delivery: the same fan-out writes one durable copy for an authorized non-sender", afterControl === afterSelf + 1, { afterSelf, afterControl });
+  } finally { await nc.close(); }
+}
+
 async function sendLegacyMention(ep: CotalEndpoint, bearer: () => Promise<string>): Promise<string> {
   const channel = "writer_live";
   const text = "legacy writer @reviewer";
-  const nc = await dialerFor(fx.servers)({ servers: fx.servers,
-    ...standaloneConnectOpts({ bearer: await bearer(), sentinelCreds: a.sentinelCreds, tls: false }) });
+  const nc = await dialSignedFixture(bearer);
   try {
     await nc.request(chatSubject(ep.space, ep.principal.owner, ep.principal.actor, channel), JSON.stringify({
       id: "writer_legacy_live", ts: Date.now(), space: ep.space, from: ep.ref(), channel,
@@ -189,7 +244,9 @@ async function checkReaders(authService: AuthServiceHandle, username: string): P
     writer_live: { replay: false, deliveryClass: "live" }, writer_durable: { replay: false, deliveryClass: "durable" },
     writer_restricted: { replay: false, deliveryClass: "live" } } } });
   const provisioner = new CotalEndpoint({ ...base, creds, channels: [], consume: false, registerPresence: false, watchPresence: false, card: { kind: "endpoint", name: "test_provisioner" } });
-  const daemon = new CotalEndpoint({ ...base, creds: await mintCreds(a.auth, newIdentity(), "delivery"), channels: [], consume: false, registerPresence: false, watchPresence: true, card: { kind: "endpoint", name: "delivery" } });
+  let deliveryConnection: NatsConnection | undefined;
+  const daemon = new CotalEndpoint({ ...base, creds: await mintCreds(a.auth, newIdentity(), "delivery"), channels: [], consume: false, registerPresence: false, watchPresence: true,
+    onConnection: (connection) => { deliveryConnection = connection; }, card: { kind: "endpoint", name: "delivery" } });
   const agents: MeshAgent[] = [];
   let peer: CotalEndpoint | undefined;
   let lease: number | undefined;
@@ -198,7 +255,6 @@ async function checkReaders(authService: AuthServiceHandle, username: string): P
     lease = await daemon.acquireDeliveryLease(0);
     await daemon.startPlane3((id, uid) => daemon.aclForOwner(id, uid));
     lease = await daemon.markDeliveryLeaseReady(0, lease);
-    daemon.serveDeliveryLiveness();
     const prepare = async (subject: string, owner: string, actor: string, allowPublish = allow) => {
       const lifecycleUid = mintLifecycleUid();
       grantActor(a.stateDir, { owner, actor, lifecycleUid, scope: [], allowSubscribe: allow, allowPublish });
@@ -225,10 +281,14 @@ async function checkReaders(authService: AuthServiceHandle, username: string): P
     const writer = await start(senderGrant);
     const writerRightGrant = await prepare("other-human", otherOwner, "reviewer");
     const writerRight = await start(writerRightGrant);
-    let writerLeftGrant: Awaited<ReturnType<typeof prepare>> | undefined;
-    const openLeft = async () => start(writerLeftGrant ??= await prepare("lister-human", owner, "reviewer"));
     const rightUsername = await writer.ep.readUsername(otherOwner);
     assert.ok(rightUsername);
+    await checkUnboundMentionWriter(writer, rightUsername);
+    daemon.serveDeliveryLiveness();
+    assert.ok(deliveryConnection);
+    await checkClaimedMentionCopies(writer, writerRight, daemon, deliveryConnection, senderGrant.userAuth.bearer);
+    let writerLeftGrant: Awaited<ReturnType<typeof prepare>> | undefined;
+    const openLeft = async () => start(writerLeftGrant ??= await prepare("lister-human", owner, "reviewer"));
     await checkMentionWriters(writer, writerRight, openLeft, () => start(writerRightGrant), rightUsername, daemon, senderGrant.userAuth.bearer);
     for (const agent of agents.splice(0).reverse()) await agent.stop();
     const leftGrant = writerLeftGrant!;
@@ -267,8 +327,7 @@ async function checkReaders(authService: AuthServiceHandle, username: string): P
     const reply = await right.dm(peer.card.id, "principal reply", { replyTo: secondHeld.id });
     suite.check("an explicit reply reaches its unrostered sender by principal", reply.recipient.id === peer.card.id && !!await awaitValue(() => replies.has(reply.msg.id) ? true : undefined));
     const sharedId = "same-directed-id";
-    const otherSender = await core.dialerFor(fx.servers)({ servers: fx.servers,
-      ...core.standaloneConnectOpts({ bearer: await leftGrant.userAuth.bearer(), sentinelCreds: a.sentinelCreds, tls: false }) });
+    const otherSender = await dialSignedFixture(leftGrant.userAuth.bearer);
     const sendShared = (from: CotalEndpoint, connection: NatsConnection) => connection.request(
       core.unicastSubject(a.space, otherOwner, "reviewer", from.principal.owner, from.principal.actor),
       JSON.stringify({ id: sharedId, ts: Date.now(), space: a.space, from: from.ref(), to: right.ep.card.id, parts: [{ kind: "text", text: "question" }] }),

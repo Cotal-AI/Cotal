@@ -334,8 +334,10 @@ publishing and refuse a malformed, duplicate or text-mismatched explicit list as
 open spaces keep legacy bare display-name mentions and reject `@user/agent`.
 
 The publisher MUST observe a bound delivery responder advertising `principalMentionsVersion: 1`
-before it writes `mentionIds`. Upgrade delivery daemons and readers before enabling upgraded
-publishers. `mentionIds` is the sender's claim, not proof of identity or read permission. Readers
+before it writes `mentionIds`. A signed-in space can run without that responder. In that case,
+the publisher MUST refuse the entire post with mentions before storage, even on a `live` channel.
+This check does not apply to posts without mentions. Upgrade delivery daemons and readers before
+enabling upgraded publishers. `mentionIds` is the sender's claim, not proof of identity or read permission. Readers
 compare entries with their own principal without resolving names. The daemon checks current read
 ACLs and lifecycle, and the durable-channel path also checks membership intervals. Muting still
 applies. If the field is absent, readers and the daemon use legacy name matching. History and

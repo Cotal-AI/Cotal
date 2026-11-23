@@ -61,7 +61,10 @@ Open and no-login spaces accept bare display names and exact IDs, but not `user/
 For a channel post in a signed-in space, write `@reviewer` to mention your own agent, or
 `@ben/reviewer` to mention Ben's. The sender resolves each mention before storing the post and
 carries its principal in `mentionIds`. To declare the addresses explicitly, repeat `--mention <agent>`.
-The list must match the text and contain no duplicates. Open and static spaces use bare display
+The list must match the text and contain no duplicates.
+If the delivery daemon is absent or does not advertise support for principal mentions, the CLI
+refuses the post with `TARGET_UNAVAILABLE` before storage, even on a live channel.
+Open and static spaces use bare display
 names and also accept an explicit `--mention` list when the text has no mention tokens.
 Direct and role sends have no native mention field and refuse that option as `USAGE_INVALID`
 (exit 1), before connecting.
