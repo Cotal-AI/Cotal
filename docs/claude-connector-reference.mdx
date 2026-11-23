@@ -854,6 +854,13 @@ the streamed message, and the saved text is then published as a message of its o
 also ends a stream no saved text closed. A subagent's reply does not stream, and neither does a
 reply while no mod serves the session.
 
+Claude Code's terminal turns its to-do tools off for current models, so a seat on one keeps no task
+list and a client shows no plan for it. The connector leaves that as Claude Code sets it. An
+operator can opt in: set `CLAUDE_CODE_ENABLE_TODO_TOOLS=true` in the environment that starts the
+Manager, and name it on `spawn.env` ([Launcher variables](config.mdx#launcher-variables)). The
+seat's task tool calls, such as `TaskCreate` and `TaskUpdate`, then publish as tool calls, and an
+ACP client shows them as the thread's plan.
+
 If the event plane stops, the seat keeps running and its mesh connection, on every connector and
 on every space. The connector log records `AG-UI emitter stopped` with the reason and the delay
 before it re-establishes the plane: at once after a failure, then every second while the plane
