@@ -1094,8 +1094,9 @@ mesh to inspect; it starts nothing.
 When `status` would suggest restarting the selected stopped local stack,
 `status` checks the recorded root's default `.cotal/channels.json` with the same validation as `up`.
 This includes a foreground stack whose `down` removed its registration. Next names an invalid file
-and how to fix it before restarting. The broker still
-reports as unreachable when dialed. The check does not change the file or start the stack.
+and how to fix it before restarting. In `status --components`, the target still reports `absent`
+without a restart command. The broker still reports as unreachable when dialed. The check does not
+change the file or start the stack.
 In `--json`, `selected.channelSeedBlocksRestart` is `true` when this check finds a blocker, and
 `hints` names the file and its repair.
 
