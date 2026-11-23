@@ -88,6 +88,7 @@ export async function userAuthTrustFingerprint(store: SecretStore, dir: string, 
       allowPublish: sortedUnique(row.allowPublish),
       role: row.role ?? null,
       parent: row.parent ?? null,
+      ...(row.username !== undefined ? { username: row.username } : {}),
       tokenHash: row.kind === "managed-agent" ? row.tokenHash! : null,
     }))
     .sort((a, b) => compareCodeUnits(`${a.kind}\0${a.owner}\0${a.actor}`, `${b.kind}\0${b.owner}\0${b.actor}`));
@@ -117,7 +118,7 @@ export async function userAuthTrustFingerprint(store: SecretStore, dir: string, 
       sentinelCreds: commitment("cotal-callout-sentinel-creds/v1", callout.sentinelCreds),
     },
     ownerSecret: commitment("cotal-owner-secret/v1", ownerSecret),
-    idp: { url: idp.url, issuer: idp.issuer, audience: idp.audience, jwksUri: idp.jwksUri, ...(idp.dmReaderAudience !== undefined ? { dmReaderAudience: idp.dmReaderAudience } : {}) },
+    idp: { url: idp.url, issuer: idp.issuer, audience: idp.audience, jwksUri: idp.jwksUri, ...(idp.dmReaderAudience !== undefined ? { dmReaderAudience: idp.dmReaderAudience } : {}), ...(idp.username !== undefined ? { username: idp.username } : {}) },
     issuer: { issuer: issuer.issuer, activeKid: issuer.activeKid(), keys: issuerKeys },
     ledger,
   };

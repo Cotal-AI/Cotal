@@ -32,6 +32,7 @@ import {
   anycastServeFilter,
   presenceBucket,
   channelBucket,
+  usernameBucket,
   membersBucket,
   aclBucket,
   membershipBucket,
@@ -177,8 +178,8 @@ export function spaceMessageStreamConfigs(space: string) {
 }
 
 /** Native durable registry-stream creation fields. The backup inventory stays independent. */
-export function spaceRegistryStreamConfigs(space: string) {
-  return [channelBucket(space), membersBucket(space), aclBucket(space)]
+export function spaceRegistryStreamConfigs(space: string, userAuth = false) {
+  return [channelBucket(space), membersBucket(space), aclBucket(space), ...(userAuth ? [usernameBucket(space)] : [])]
     .map((bucket) => canonicalBackupStreamConfig(space, `KV_${bucket}`));
 }
 
@@ -926,6 +927,8 @@ export function assertArtifactStoreConfig(config: StreamConfig, space: string): 
 export async function setupSpaceStreams(opts: {
   servers: string;
   space: string;
+  /** Provision the owner registry for a per-user-auth data account. */
+  userAuth?: boolean;
   /** Privileged creds for an authed mesh; omit on an open mesh (a bare connection has the rights). */
   creds?: string;
   /** Explicit consent plus exact delete authority for legacy File-backed derived membership. */
@@ -957,7 +960,7 @@ export async function setupSpaceStreams(opts: {
     for (const [bucket, ttl, storage] of ttlBuckets(opts.space)) await kvm.create(bucket, { ttl, storage });
     // The channel, durable-membership and read-ACL registries are privileged-write durable
     // config without TTL. Agents cannot create them; delivery re-auths against the read-ACL rows.
-    for (const definition of spaceRegistryStreamConfigs(opts.space)) await jsm.streams.add(definition);
+    for (const definition of spaceRegistryStreamConfigs(opts.space, opts.userAuth)) await jsm.streams.add(definition);
     // Derived channel-membership feed (broker CONNZ ∪ members registry): privileged-write (the
     // `membership-rw` cred), admin/observer-read, no TTL (the daemon prunes departed agents). Its
     // one-key-per-agent history and native value-size ceiling bound it without a storage reservation.

@@ -61,6 +61,7 @@ import { chatSessionAliasPresent } from "./chat-session-row.js";
 import type { ActorGrant } from "./idp.js";
 import type { ValidatedUserToken } from "./token.js";
 import type { AclResolver } from "./permissions.js";
+import { loadPinnedIdp } from "./store.js";
 
 const ACTORS_DIR = "actors";
 const MANAGED_DIR = "managed-actors";
@@ -327,7 +328,11 @@ export function grantActor(dir: string, row: Omit<ActorRow, "grantedAt">): Actor
 
 function rawGrantInteractive(dir: string, row: Omit<ActorRow, "grantedAt">): ActorRow {
   assertRowInputs(row);
-  if (row.username !== undefined) assertValidUsername(row.username);
+  if (row.username !== undefined) {
+    if (loadPinnedIdp(dir)?.username?.source !== "directory")
+      throw new Error('grantActor: a supplied username requires the space username source "directory"');
+    assertValidUsername(row.username);
+  }
   assertNotChatAlias(dir, row.owner, row.actor, "grantActor");
   if (row.tokenHash !== undefined)
     throw new Error("grantActor: an interactive grant cannot carry an agent token hash - managed-agent rows are written by the spawn path only");

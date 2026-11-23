@@ -59,7 +59,6 @@ type Internals = {
   userMode: boolean;
   managerInstanceId: string;
   managerServeIdentity: ReturnType<typeof newIdentity>;
-  serviceServe: { grant: { epoch: number } };
   provisionUserAgent(name: string, opts: { lifecycleUid: string }): Promise<unknown>;
   lifecycleInFlight: number;
   retirement: {
@@ -67,6 +66,7 @@ type Internals = {
     confirmedRetiredPredecessors: Map<string, unknown>;
     deprovisioningFlight: Map<string, Promise<void>>;
   };
+  servePlane: { serviceServe: { grant: { epoch: number } }; };
 };
 const expired = "the responder answered at a stale epoch";
 const denied = "the serve issuance gate belongs to another principal; retirement was a full no-op";
@@ -136,7 +136,7 @@ try {
   internal.userMode = true;
   internal.managerInstanceId = remoteAuthority.instanceId;
   internal.managerServeIdentity = identities.serve;
-  internal.serviceServe = { grant: { epoch: 1 } };
+  internal.servePlane.serviceServe = { grant: { epoch: 1 } };
   const allocated: Target[] = [];
   // Fixture provisioning replaces only allocation material, never rollback or retirement methods.
   internal.provisionUserAgent = async (name, opts) => {

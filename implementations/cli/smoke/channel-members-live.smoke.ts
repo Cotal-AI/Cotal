@@ -121,7 +121,7 @@ try {
   check("an unknown name is refused TARGET_NOT_FOUND, exit 2, naming the registered channels",
     unknown.status === 2 && refusal?.outcome === "refused" && refusal.error?.code === "TARGET_NOT_FOUND"
       && refusal.error.message === "#nosuch has no observed members, no saved entry and no retained messages; registered channels: #general"
-      && refusal.error.remedy === "name a channel the space has; `cotal ch` lists the registered ones", unknown.out.slice(-600));
+      && refusal.error.remedy === `name a channel the space has; \`cotal ch --space ${SPACE}\` lists the registered ones`, unknown.out.slice(-600));
   const cased = cotal("channel", "members", "General");
   check("General names the registered #general and the command for it, with no census",
     cased.status === 2 && cased.out.includes("channel names are case-sensitive, and the registered one is #general")
@@ -172,6 +172,13 @@ try {
     writeFileSync(join(s, path), await mintCreds(targetAuth, newIdentity(), "admin"), { mode: 0o600 });
     const target = ["--space", SPACE, "--server", SERVER, "--creds", path];
     const scope = `--space ${SPACE} --server ${SERVER} --creds '${path}'`;
+    const removal = cotal("channel", "remove", "genral", ...target, "--json");
+    const missing = envelope(removal.stdout);
+    const list = missing?.error?.remedy === `name a channel the space has; \`cotal ch ${scope}\` lists the registered ones`
+      ? cotal("ch", ...target, "--plain") : undefined;
+    check("an unknown removal suggests listing the intended space with its broker and credential",
+      removal.status === 2 && missing?.error?.code === "TARGET_NOT_FOUND" && list?.status === 0
+        && list.stdout.includes(`Mesh: ${SPACE}`) && list.stdout.includes("#general"), { removal: removal.out, list: list?.out });
     const card = cotal("channel", "show", "archive", ...target, "--plain");
     const history = card.stdout.includes(`cotal history '#archive' ${scope}`) ? cotal("history", "#archive", ...target, "--json") : undefined;
     check("the suggested history read uses the inspected space, broker and credential",

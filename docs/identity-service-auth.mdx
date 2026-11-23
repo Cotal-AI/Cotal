@@ -295,13 +295,23 @@ reset route. Hosted deprovisioning remains a separate composition.
 
 ## Bridge contract [#bridge]
 
-An operator integrating an owner directory can pass `username` on an interactive row written
-with `grantActor(dir, row)` from `@cotal-ai/auth`. The directory can derive the supplied value by
-replacing `-` with `_` in its own stored name without changing that record. The service requires
-1 to 40 lowercase letters, digits or underscores and allows a leading digit. It reserves that value
-at the first authorized exchange. It refuses an invalid name, a name held by another owner, or a
-different name for an owner who already has one. It never rewrites a supplied value. The directory
-needs no broker write credential, and the exchange request has no username input.
+Set the `username` object in the space's `idp.json` and start or restart the auth service. An
+omitted setting uses `{"source":"claims"}`. To use the email local part only when neither a
+preferred username nor a name is usable, set `{"source":"claims","emailLocalPart":true}`.
+To accept names only from an owner directory, set `{"source":"directory"}`. The two sources
+cannot be combined in one space.
+
+A trusted directory can pass `username` to `grantActor(dir, row)` from `@cotal-ai/auth`. It can
+replace `-` with `_` in the value it supplies without altering its own stored name. The auth
+service validates the supplied value without rewriting it. A directory-source row without a
+username allows an exchange without binding a name. A claims-source grant refuses a supplied
+username. A directory-source exchange refuses a name reserved by a different owner or a
+different name for an owner with an existing binding. The directory needs no broker write
+credential, and the exchange request has no username input.
+
+Clients can use `readUsername` or `readUsernameOwner` from `@cotal-ai/core`. A missing binding
+returns `undefined`. A failed broker read throws `UsernameRegistryReadError` with code `denied`
+or `unavailable`, so clients do not infer that a name is absent from a failed lookup.
 
 The bridge (`createIdpBridge`) exchanges a verified IdP token for a Cotal bearer in three steps:
 

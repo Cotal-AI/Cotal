@@ -91,7 +91,7 @@ const mkRoot = (tag: string): string => {
 };
 writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: join(dir, "js") }));
 
-type MgrPriv = { managerInstanceId: string; serviceServe?: { nc: NatsConnection }; leaseStopping: boolean };
+type MgrPriv = { managerInstanceId: string; leaseStopping: boolean; servePlane: { serviceServe?: { nc: NatsConnection }; } };
 const kids: ReturnType<typeof spawn>[] = [];
 let releaseBroker: (() => void) | undefined;
 let live: InstanceType<typeof Manager> | undefined;
@@ -197,7 +197,7 @@ try {
   // re-dials it (#2073), which would bring this corpse back to answer. Set the stop fence first,
   // as a host that dies mid-teardown does, so the close stays a close and nothing deregisters.
   (corpse as unknown as MgrPriv).leaseStopping = true;
-  await ((corpse as unknown as MgrPriv).serviceServe as { nc: NatsConnection }).nc.close();
+  await ((corpse as unknown as MgrPriv).servePlane.serviceServe as { nc: NatsConnection }).nc.close();
   await wait(500);
   check("the corpse's registration SURVIVES its host (nothing expires a record)", (await frozenIds()).includes(IID_CORPSE), IID_CORPSE);
 
@@ -348,7 +348,7 @@ try {
   await hung.start();
   const IID_HUNG = (hung as unknown as MgrPriv).managerInstanceId;
   (hung as unknown as MgrPriv).leaseStopping = true;
-  await ((hung as unknown as MgrPriv).serviceServe as { nc: NatsConnection }).nc.close();
+  await ((hung as unknown as MgrPriv).servePlane.serviceServe as { nc: NatsConnection }).nc.close();
   await wait(500);
   const hungCaller: EpCaller = { owner: DEV_OWNER, actor: newIdentity().id, uid: mintLifecycleUid() };
   const hungKvm = new Kvm(hungNc);

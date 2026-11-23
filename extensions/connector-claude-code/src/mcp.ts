@@ -43,6 +43,7 @@ import { createAppHost } from "./app-host.js";
 import { readCliRecord } from "./cli-record.js";
 import { openWakeFeed } from "./wake-feed.js";
 import { openCommandFeed, type CommandFeed } from "./command-feed.js";
+import { claudeCommands, commandTurns } from "./commands.js";
 import { endHost, recordHost } from "./once-exit.js";
 
 /** What a plain session's local server tells the model ahead of the gateway's own steps. */
@@ -94,6 +95,7 @@ async function serveLocal(desktop: boolean): Promise<void> {
     ...(feed ? { notify: (session, notice) => feed.notifyApproval(session, notice) } : {}),
     ...(feed ? { turn: (session, id, text) => feed.sendTurn(session, id, text) } : {}),
     participate: (connection) => connection.agent.participateInTurns(),
+    ...(commands ? { commands } : {}),
   });
   feed?.onNative((event) => host.nativeEvent(event));
   let rearm: (connection?: GatewayConnection, fireNow?: boolean) => void = () => {};
@@ -248,6 +250,7 @@ async function startSession(
     surfaced: (items) => wake?.surfaced(items),
     // Read lazily too: `agent` and `config` are built below. Unbound, there is no card to hand over yet.
     orientation: async () => (agent.connected ? orientationCard(agent, config, "claude-code", env) : undefined),
+    idle: () => turns.idle(),
   });
 
   const config = configFromEnv(env);
@@ -257,12 +260,19 @@ async function startSession(
   const channelFlag = envFlag(env, "COTAL_CHANNEL");
   // One process may host several sessions, so its own directory is not a session's: the card's
   // directory comes from that session's SessionStart hook instead.
-  const agent = new MeshAgent(config, env, { withholdProcessCwd: true, onceClaimBound: true });
+  const warn = (msg: string): void => void process.stderr.write(`[cotal-connector] ${msg}\n`);
+  // The command mod's socket opens below, once the session's teardown is in place.
+  let commands: CommandFeed | undefined;
+  const agent: MeshAgent = new MeshAgent(config, env, {
+    withholdProcessCwd: true,
+    onceClaimBound: true,
+    commands: claudeCommands({ feed: () => commands, interrupting: () => claude.interrupting(agent), warn }),
+  });
+  const turns = commandTurns(agent);
   const plane = eventPlaneArmed(config, env) ? createClaudeEventPlane(agent, config, env) : undefined;
   events = plane?.events;
   // Claude's tool permissions, answerable on the agent's own `agent` endpoint while Claude's dialog
   // stays open. The desk exists once the agent serves that endpoint, which only a user-auth mesh does.
-  const warn = (msg: string): void => void process.stderr.write(`[cotal-connector] ${msg}\n`);
   const prompts = createClaudePrompts({ desk: () => agent.prompts, warn });
   const hooks = launchedSessionHooks(prompts, claude, warn);
 
@@ -283,7 +293,6 @@ async function startSession(
   // `wake` is likewise assigned later, so a shutdown frame arriving before the MCP server exists
   // reads `undefined`.
   let controlServer: ReturnType<typeof startControlServer> | undefined;
-  let commands: CommandFeed | undefined;
   let mcp: McpServer | undefined;
   let stopping: Promise<void> | undefined;
   let shuttingDown = false;

@@ -42,7 +42,7 @@
   "implementations/auth/smoke/quiescence-queues.smoke.ts": 1,
   "implementations/auth/smoke/quiescence-workflows.smoke.ts": 1,
   "implementations/auth/smoke/registry-host.smoke.ts": 2,
-  "implementations/auth/smoke/registry-listing-user-auth.smoke.ts": 1,
+  "implementations/auth/smoke/registry-listing-user-auth.smoke.ts": 2,
   "implementations/auth/smoke/remote-agent-bearer.smoke.ts": 2,
   "implementations/auth/smoke/remote-exchange.smoke.ts": 1,
   "implementations/auth/smoke/remote-run-attempt-route.smoke.ts": 4,
