@@ -191,6 +191,10 @@ export interface Mesh {
   /** The managers this caller can spawn through. On a space where people sign in, rejects with
    *  {@link NoLaunchManager} when none may. */
   managers(): Promise<ManagerChoice[]>;
+  /** Start this machine's manager for the space, for a new agent that no manager may start. It stops
+   *  itself after a while with no agents. Resolves with the line the thread shows; rejects with
+   *  {@link NoLaunchManager} naming the start's reason. */
+  startManager(): Promise<string>;
   /** One manager as a choice, described from its presence, or from its own answer when its presence
    *  row is not found. */
   manager(instanceId: string): Promise<ManagerChoice>;

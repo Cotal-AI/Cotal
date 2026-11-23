@@ -58,6 +58,7 @@ import { agentPromptDigest, assertValidOwnerToken, type AgentPrompt, type Prompt
 import { cotalAgent, defaultName, type HiddenSessions, type ThreadLink, type ThreadLinks } from "../src/agent.js";
 import { MAX_CHOICES } from "../src/options.js";
 import { promptParts } from "../src/turns.js";
+import { startFailure, startLine } from "../src/manager-start.js";
 import { AgentCallFailed, LaunchListsRefused, NoLaunchManager, SignInRequired, type AgentCatalog, type AgentEndpointServes, type AguiEventLike, type ManagerChoice, type Mesh, type PromptCounter, type SeatFrame, type SeatRef, type SeatRow, type SpawnRequest } from "../src/mesh.js";
 
 let pass = 0, fail = 0;
@@ -142,9 +143,18 @@ class FakeMesh implements Mesh {
   }
   /** Why no manager may start a new agent, when none may. */
   noLaunch: string | undefined;
+  managersRead = 0;
   async managers() {
+    this.managersRead++;
     if (this.noLaunch) throw new NoLaunchManager(this.noLaunch);
     return this.managerList;
+  }
+  /** How many times this machine's manager was started, and what a start does. A throw is its refusal. */
+  starts = 0;
+  onStart: () => string = () => { throw new NoLaunchManager("Could not start this machine's manager for fake: no start scripted"); };
+  async startManager() {
+    this.starts++;
+    return this.onStart();
   }
   /** Each manager holds its own persona catalog. */
   personasAsked: (string | undefined)[] = [];
@@ -263,6 +273,46 @@ const errorOf = async (p: Promise<unknown>): Promise<{ code?: number; message?: 
   const d = await errorOf(down.agent.request(methods.agent.session.new, { cwd: dir, mcpServers: [] }));
   check("any other failure to open is an internal error naming it", d?.code === -32603 && d.message?.includes("broker down") === true, d);
   down.conn.close();
+}
+
+// a thread no manager may start starts this machine's manager
+{
+  const space = new FakeMesh();
+  const line = "Started this machine's manager for fake. It stops itself after 10 minutes with no agents.";
+  space.noLaunch = "the space lists no live manager for you";
+  space.onStart = () => { space.noLaunch = undefined; return line; };
+  const c = connect(async () => space);
+  await c.init;
+  const chunks = (sessionId: string) => c.updates.filter((u) => u.sessionId === sessionId && u.update.sessionUpdate === "agent_message_chunk").map((u) => (u.update as { content: { text: string } }).content.text);
+  const opened = await c.agent.request(methods.agent.session.new, { cwd: dir, mcpServers: [] });
+  await tick();
+  check("a new thread no manager may start starts this machine's manager, then reads the managers again", space.starts === 1 && space.managersRead === 2, { starts: space.starts, reads: space.managersRead });
+  check("the thread opens on it with its lists", space.catalogsAsked.at(-1) === "m1" && opened.configOptions?.some((o) => o.id === "model") === true, space.catalogsAsked);
+  check("and says in one line that the manager was started", JSON.stringify(chunks(opened.sessionId)) === JSON.stringify([line]), chunks(opened.sessionId));
+  const plain = await c.agent.request(methods.agent.session.new, { cwd: dir, mcpServers: [] });
+  await tick();
+  check("a new thread while a manager is live starts none and says nothing", space.starts === 1 && chunks(plain.sessionId).length === 0, space.starts);
+  // The manager stopped itself while the thread waited for its first prompt.
+  space.noLaunch = "the space lists no live manager for you";
+  space.script = { before: [[{ type: "RUN_STARTED", runId: "r1" }]], after: [[{ type: "RUN_FINISHED", runId: "r1" }]] };
+  const reply = await within(c.agent.request(methods.agent.session.prompt, { sessionId: plain.sessionId, prompt: [{ type: "text", text: "go" }] }));
+  check("a first prompt after the manager stopped starts it again before the spawn", space.starts === 2 && space.spawned.length === 1 && reply?.stopReason === "end_turn", { starts: space.starts, spawned: space.spawned.length, reply });
+  check("and the turn says so", chunks(plain.sessionId).includes(line), chunks(plain.sessionId));
+  const reads = space.managersRead;
+  space.noLaunch = "none of your managers is live (m9: offline)";
+  space.onStart = () => { throw new NoLaunchManager("Could not start this machine's manager for fake: the manager did not start: boom"); };
+  const failed = await errorOf(c.agent.request(methods.agent.session.new, { cwd: dir, mcpServers: [] }));
+  check("a failed start fails the new thread with the start's reason", failed?.code === -32603 && failed.message === "Could not start this machine's manager for fake: the manager did not start: boom", failed);
+  check("and nothing is read or started after it", space.starts === 3 && space.managersRead === reads + 1, { starts: space.starts, reads: space.managersRead - reads });
+  c.conn.close();
+}
+{
+  const refused = JSON.stringify({ outcome: "refused", error: { code: "TARGET_NOT_FOUND", message: "no space named \"x\" is registered here", remedy: "see `cotal space`" } });
+  check("a refused start's reason is its own message and remedy", startFailure(2, refused, "") === "no space named \"x\" is registered here; see `cotal space`", startFailure(2, refused, ""));
+  check("a start that printed no result is named by its last stderr line", startFailure(1, "", "starting\n✗ the manager did not start: boom\n") === "✗ the manager did not start: boom");
+  check("a start that printed nothing is named by its exit code", startFailure(null, "", "") === "it exited with code null");
+  check("a start that launched the manager says it started it", startLine("x", JSON.stringify({ outcome: "ok" })) === "Started this machine's manager for x. It stops itself after 10 minutes with no agents.");
+  check("a start that found it already running, as a second thread's does, says it is running", startLine("x", JSON.stringify({ outcome: "no-op" })) === "This machine's manager for x is running. It stops itself after 10 minutes with no agents.");
 }
 
 // session/new, options, delete of an unspawned session
@@ -543,7 +593,8 @@ await agent.request(methods.agent.session.load, { sessionId: "held", cwd: dir, m
 check("it loads while no manager may start a new agent, its lists read from the manager that holds it", heldFailed === undefined && mesh.catalogsAsked.slice(asked).every((m) => m === "m3") && mesh.catalogsAsked.length > asked, heldFailed ?? mesh.catalogsAsked.slice(asked));
 check("and its personas are read from that manager too", mesh.personasAsked.slice(personasAsked).every((m) => m === "m3") && mesh.personasAsked.length > personasAsked, mesh.personasAsked.slice(personasAsked));
 const noNew = await errorOf(agent.request(methods.agent.session.new, { cwd: dir, mcpServers: [] }));
-check("a new thread is refused with the reason in the message", noNew?.code === -32603 && noNew.message === "none of your managers is live", noNew);
+check("a new thread whose manager start fails is refused with the start's reason in the message", noNew?.code === -32603 && noNew.message === "Could not start this machine's manager for fake: no start scripted", noNew);
+check("loading an agent its manager holds starts no manager", mesh.starts === 1, mesh.starts);
 mesh.noLaunch = undefined;
 // After /despawn the loaded thread may choose another machine and come back to the one that held it.
 await agent.request(methods.agent.session.load, { sessionId: "held", cwd: dir, mcpServers: [] });

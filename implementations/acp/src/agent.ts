@@ -393,13 +393,25 @@ function launchOffers(options: CotalAgentOptions) {
     seatOnly: true,
   });
 
+  /** The managers a new agent may start on. When none may, this machine's manager is started and the
+   *  list read again, and `onStart` gets the line the thread shows. */
+  const launchManagers = async (m: Mesh, onStart: (line: string) => void): Promise<ManagerChoice[]> => {
+    try {
+      return await m.managers();
+    } catch (e) {
+      if (!(e instanceof NoLaunchManager)) throw e;
+      onStart(await m.startManager());
+      return m.managers();
+    }
+  };
+
   /** The launch lists of the manager a thread starts on. A loaded thread passes the manager that
    *  `held` its agent: it stays a choice, and the thread opens while no manager may start a new one.
    *  The load passes its id; a later change passes the choice the load described. */
-  const offerFor = async (m: Mesh, machine?: string, held?: string | ManagerChoice): Promise<Offer> => {
+  const offerFor = async (m: Mesh, machine?: string, held?: string | ManagerChoice, onStart: (line: string) => void = () => {}): Promise<Offer> => {
     const heldId = typeof held === "string" ? held : held?.instanceId;
-    const listed = await m.managers().catch((e: unknown) => {
-      if (heldId === undefined || !(e instanceof NoLaunchManager)) throw e;
+    const listed = heldId === undefined ? await launchManagers(m, onStart) : await m.managers().catch((e: unknown) => {
+      if (!(e instanceof NoLaunchManager)) throw e;
       return [];
     });
     const managers = heldId === undefined || listed.some((x) => x.instanceId === heldId) ? listed : [...listed, typeof held === "string" ? await m.manager(held) : held!];
@@ -431,7 +443,7 @@ function launchOffers(options: CotalAgentOptions) {
     const selection = { ...initialSelection(offer), model: `${row.agent}/${row.model ?? "default"}`, ...(row.managerInstanceId ? { machine: row.managerInstanceId } : {}) };
     return { offer, selection, ...(held ? { held } : {}) };
   };
-  return { seatOffer, offerFor, seatThread };
+  return { seatOffer, offerFor, seatThread, launchManagers };
 }
 
 type Offers = ReturnType<typeof launchOffers>;
@@ -761,12 +773,17 @@ function openCommand(b: Bridge, offers: Offers) {
 
 /** The handlers that open a thread, change its options and run its prompts. */
 function threadHandlers(b: Bridge, offers: Offers, runTurn: ReturnType<typeof turnRunner>, slash: ReturnType<typeof slashCommands>, newName: () => string) {
-  const { options, sessions, mesh, bind, sessionOf, announce, reportUsage } = b;
-  const { offerFor } = offers;
+  const { options, sessions, send, mesh, bind, sessionOf, announce, reportUsage } = b;
+  const { offerFor, launchManagers } = offers;
+  /** Show a line in the thread once the current reply is out, so a new thread's client knows its id. */
+  const tell = (session: Session) => (line: string): void => {
+    setImmediate(() => void send(session, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: line } }).catch((e: Error) => options.log(`session ${session.id}: update not sent: ${e.message}`)));
+  };
   return {
     newSession: async (params: NewSessionRequest, client: AgentContext) => {
       const m = await mesh();
-      const offer = await offerFor(m).catch((e: unknown) => {
+      let started: string | undefined;
+      const offer = await offerFor(m, undefined, undefined, (line) => (started = line)).catch((e: unknown) => {
         // ACP clients display the message, not necessarily the error data.
         if (e instanceof NoLaunchManager) throw new RequestError(-32603, e.message);
         throw e;
@@ -775,6 +792,7 @@ function threadHandlers(b: Bridge, offers: Offers, runTurn: ReturnType<typeof tu
       const session: Session = { id, cwd: params.cwd, offer, selection: initialSelection(offer), mapper: new FrameMapper(), open: new Map(), client };
       sessions.set(id, session);
       setImmediate(() => void announce(session).catch(() => {}));
+      if (started) tell(session)(started);
       return { sessionId: id, configOptions: configOptions(offer, session.selection), models: modelState(offer, session.selection) };
     },
     setConfigOption: async (params: SetSessionConfigOptionRequest) => {
@@ -792,7 +810,7 @@ function threadHandlers(b: Bridge, offers: Offers, runTurn: ReturnType<typeof tu
       if (session.offer.seatOnly && JSON.stringify(next) !== JSON.stringify(session.selection)) throw RequestError.invalidParams(undefined, fixed);
       if (next.machine !== session.selection.machine) {
         const m = await mesh();
-        const offer = await offerFor(m, next.machine, session.held);
+        const offer = await offerFor(m, next.machine, session.held, tell(session));
         try {
           next = reconcile(offer, next);
         } catch (e) {
@@ -829,6 +847,8 @@ function threadHandlers(b: Bridge, offers: Offers, runTurn: ReturnType<typeof tu
       // Images ride a turn, so a first prompt with images starts the seat with none and gives it the
       // prompt once it takes a turn.
       const stopReason = await runTurn(session, m, images.length ? "idle" : "run", async (signal) => {
+        // A thread left open past its manager's idle exit starts it again here.
+        await launchManagers(m, tell(session));
         const spawning = m.spawn({
           name: session.name ?? session.id,
           agent: harness,

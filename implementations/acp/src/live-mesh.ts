@@ -35,6 +35,7 @@ import { connectTargetOrThrow, isConnectRefusal, ownManagerInstances, resolveCon
 import { askManager, controlPs, liveManagerIds, managerCandidate, managerRailGone, reportedManagerHost, startStackManagerRemedy, START_TIMEOUT_MS, type ControlClient, type ControlCtx, type ManagerReply } from "@cotal-ai/workspace/control";
 import { readManagedLaunch, requestManagedLaunch } from "@cotal-ai/workspace/launch";
 import { openAgentCaller, openObserver } from "@cotal-ai/workspace/view";
+import { startManager } from "./manager-start.js";
 import { AgentCallFailed, deregisterRemedy, LaunchListsRefused, NoLaunchManager, SignInRequired, type AgentCatalog, type AguiEventLike, type ChannelRow, type ManagerChoice, type Mesh, type PersonaRow, type RosterEntry, type SeatFrame, type SeatRef, type SeatRow, type SpawnRequest } from "./mesh.js";
 
 const OBSERVER_NAME = "acp";
@@ -322,7 +323,7 @@ function controls(options: LiveMeshOptions, c: Connected) {
 type Controls = ReturnType<typeof controls>;
 
 /** The reads a new thread's options come from, and the launch. */
-function launchCalls(c: Connected, p: Controls, defaultPersona: string | null | undefined): Pick<Mesh, "catalogs" | "managers" | "manager" | "personas" | "spawn"> {
+function launchCalls(c: Connected, p: Controls, defaultPersona: string | null | undefined): Pick<Mesh, "catalogs" | "managers" | "startManager" | "manager" | "personas" | "spawn"> {
   const { target, started } = c;
   const { client, resolve, ask, choice, yourManagers } = p;
   return {
@@ -375,6 +376,8 @@ function launchCalls(c: Connected, p: Controls, defaultPersona: string | null | 
       }));
       return choices.filter((m): m is ManagerChoice => m !== undefined);
     },
+
+    startManager: () => startManager(target.space),
 
     async manager(instanceId) {
       const seen = choice(instanceId);
