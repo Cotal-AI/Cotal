@@ -175,6 +175,18 @@ try {
   check("condition:a turn someone stopped is not a failure, and the seat that ran it reports no condition",
     after?.status === "idle" && after.condition === undefined, { status: after?.status, condition: after?.condition });
 
+  // A form, such as the question tool's, waits on a person while it is open. This turn records
+  // nothing, so it publishes nothing.
+  const fed = (type: string, data: Record<string, unknown>) => second.feed({ type, durable: { aggregateID: SESSIONS[1]!, seq: seq++ }, data });
+  fed("session.execution.started", { sessionID: SESSIONS[1]! });
+  second.feed({ type: "form.created", data: { form: { id: "frm_1", sessionID: SESSIONS[1]!, title: "Questions", metadata: { kind: "question" }, fields: [] } } });
+  let asking = otto();
+  for (let i = 0; i < 25 && asking?.status !== "waiting"; i++, await sleep(200)) asking = otto();
+  check("waiting:an open question form reads waiting, with the form's title as the activity",
+    asking?.status === "waiting" && asking.activity === "Questions", { status: asking?.status, activity: asking?.activity });
+  fed("session.execution.interrupted", { sessionID: SESSIONS[1]! });
+  await sleep(300);
+
   // Read from here on, so a close can be told from one the next prompt makes.
   const reader = new CotalEndpoint({ space: SPACE, servers, card: { name: "Reader", kind: "agent", id: "reader" }, channels: [CHANNEL] });
   reader.on("error", () => {});
@@ -268,7 +280,7 @@ try {
   process.exit = exit;
 }
 
-const EXPECTED = 17;
+const EXPECTED = 18;
 check(`meta:every cell ran - ${EXPECTED} expected`, passed() + failed() === EXPECTED, `${passed() + failed()} cells reported`);
 finish();
 process.exit();
