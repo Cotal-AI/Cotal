@@ -70,8 +70,9 @@ function decisions(params: Record<string, unknown>): PromptOption[] {
   return DECISIONS.filter((o) => listed === undefined || listed.has(o.decision)).map(({ decision: _, ...option }) => option);
 }
 
-/** An approval prompt whose subject is the tool call it gates, with the input left out when the
- *  content would pass the desk's limit. */
+/** An approval prompt whose subject is the tool call it gates. When the content would pass the
+ *  desk's limit, the input is left out and only the decisions that refuse are offered: an input
+ *  nobody can read may be refused remotely, never approved. Codex's own TUI can still approve it. */
 function approval(title: string, tool: string, input: Record<string, unknown>, params: Record<string, unknown>, notes: (string | undefined)[]): PromptContent {
   const cwd = asString(params.cwd);
   const make = (shown: boolean): PromptContent => ({
@@ -79,7 +80,7 @@ function approval(title: string, tool: string, input: Record<string, unknown>, p
     title,
     ...(body(notes) ? { body: body(notes) } : {}),
     subject: { type: "tool", name: tool, input: shown ? { kind: "shown", value: input } : { kind: "omitted", bytes: Buffer.byteLength(canonicalJson(input)) }, ...(cwd ? { cwd } : {}) },
-    options: decisions(params),
+    options: shown ? decisions(params) : decisions(params).filter((o) => o.effect !== "proceed"),
     source: { harness: "codex", toolCallId: String(params.itemId) },
   });
   const full = make(true);

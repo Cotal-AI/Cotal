@@ -202,6 +202,9 @@ The prompts:
   list Codex proposed on the item, `{ changes: [{ path, kind, diff }] }`.
 - Both offer Codex's decisions: allow, allow for this session, deny, and deny and stop the turn.
   A server that lists its decisions gets only those.
+- When the prompt would pass the desk's size limit, as a patch that deletes a large file does, its
+  input is left out and only deny and deny and stop the turn are offered. Nobody can read that
+  input remotely, so it cannot be approved there; the attached TUI can still approve it.
 - A `request_user_input` call opens a `question` prompt with a form, one field per question. A
   question with choices and no free answer is a single choice. A question marked secret is not put
   on the desk, because a form never asks for a secret.
