@@ -82,10 +82,11 @@ Without `-f`, a freshly prepared or controller-owned root refuses `--service-end
 public exchange flags as `UNSUPPORTED`, exit 2. Manifest preview and startup (`up -f`) refuse
 `--service-endpoints` as `USAGE_INVALID`, exit 1. To use service endpoint hosting or a public
 exchange, run `cotal up --user-auth` with the IdP, broker and applicable flags from a new project
-folder. Use an unused space name and do not run `cotal space create` first. For a TLS broker,
-include its `tls://` address, certificate and key. For a public exchange, see the
-[public exchange flags](remote-supervision.mdx#split-host-bind). An existing legacy user-auth
-root can keep using these flags.
+folder. Use an unused space name and do not run `cotal space create` first. For a TLS broker, pass
+its `tls://` address with `--server` and pass `--tls-cert` and `--tls-key`. The new folder does not
+inherit these settings from a manifest or the old project's broker policy. For a public exchange,
+see the [public exchange flags](remote-supervision.mdx#split-host-bind). An existing legacy
+user-auth root can keep using these flags.
 
 If a separately started manager service blocks `up`, the refusal names the command to stop that
 instance. When you used `--root` from another project, the retry keeps the target root and space.

@@ -69,7 +69,7 @@ export function validateUpArguments(args: ParsedArgs): void {
     throw new CommandFailure("refused", "USAGE_INVALID", "--file is empty, so it names no manifest; nothing was started or written", { remedy: "name a manifest with --file <cotal.yaml>, or omit --file to start the folder's stack" });
   if (args.values.file !== undefined && args.values["service-endpoints"] === true)
     throw new CommandFailure("refused", "USAGE_INVALID", "--service-endpoints cannot be combined with --file/-f: manifest startup does not host service endpoints; nothing was started or written", {
-      remedy: `drop --service-endpoints to use the manifest, or ${legacyUserAuthRemedy({ serviceEndpoints: true, tls: requestsTls(args.values) })}`,
+      remedy: `drop --service-endpoints to use the manifest, or ${legacyUserAuthRemedy({ serviceEndpoints: true, tls: true })} The new folder does not inherit broker settings from the manifest or the project's recorded policy.`,
     });
   if (args.values.restore === "")
     throw new CommandFailure("refused", "USAGE_INVALID", "--restore is empty, so it names no backup folder; nothing was started or written", { remedy: "pass the backup folder as --restore <dir>, or omit --restore to start without restoring", selfContained: true });

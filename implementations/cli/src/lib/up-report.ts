@@ -15,7 +15,7 @@ export function controllerManifestRemedy(root: string, space: string, manifest: 
 export function legacyUserAuthRemedy({ serviceEndpoints, publicExchange, tls }: { serviceEndpoints?: boolean; publicExchange?: boolean; tls?: boolean }): string {
   const command = `cotal up --user-auth --idp <auth base URL>${serviceEndpoints ? ` --service-endpoints --max-payload ${SERVICE_CALLER_PAYLOAD_FLOOR}` : ""}`;
   const keep = publicExchange ? "broker and public exchange flags" : "other broker flags";
-  const transport = tls ? " For TLS, pass `--tls-cert <cert.pem> --tls-key <key.pem>` and a `tls://` broker address." : "";
+  const transport = tls ? " If the broker uses TLS, pass `--tls-cert <cert.pem> --tls-key <key.pem>` and a `tls://` broker address with `--server`." : "";
   return `to ${serviceEndpoints ? "host service endpoints" : "serve a public exchange"}, run \`${command}\` from a new, unprepared project folder without running \`cotal space create\` first. Keep the ${keep}, use \`--space <unused-name>\`, and omit \`--root\`, \`--json\` and \`--plain\`.${transport}`;
 }
 
