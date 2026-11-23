@@ -1,13 +1,14 @@
 /**
  * The Jcode seat's own commands on its `agent` endpoint (SPEC 13.22): Jcode's native session
- * operations, each one Harness request that starts no model turn, and the stop for a running turn.
+ * operations, each one Harness request that starts no model turn, the stop for a running turn, and
+ * the owner's own turns.
  *
  * `clear` is not offered. Jcode answers it with a session status of `attached`, which the host's
  * turn tracking reads as a busy session, so the seat would stop taking messages after it.
  */
 import { HarnessError, type JcodeClient } from "@1jehuang/jcode-sdk";
 import type { CommandEntry, CommandTarget } from "@cotal-ai/core";
-import { CommandRefused, type AgentCommand, type CommandDispatcher } from "@cotal-ai/connector-core";
+import { CommandRefused, type AgentCommand, type AgentTurn, type CommandDispatcher } from "@cotal-ai/connector-core";
 import type { HostTurnState } from "./host-turns.js";
 
 type Session = Pick<JcodeClient, "cancel" | "compact" | "rewind" | "renameSession">;
@@ -42,10 +43,16 @@ const NATIVE = new Map<string, NativeCommand>(Object.entries({
   },
 } satisfies Record<string, NativeCommand>));
 
-/** `host` is the host's turn state, read at each call: a bridge recovery replaces its client. */
-export function jcodeCommands(host: Pick<HostTurnState, "client" | "sessionId" | "turnActive">): CommandDispatcher {
+/** `host` is the host's turn state, read at each call: a bridge recovery replaces its client.
+ *  `startTurn` runs the owner's turn; the host binds it once its turn closures exist. */
+export function jcodeCommands(
+  host: Pick<HostTurnState, "client" | "sessionId" | "turnActive">,
+  startTurn: (turn: AgentTurn) => Promise<void>,
+): CommandDispatcher {
   return {
     targets: new Set<CommandTarget>(["command"]),
+    images: true,
+    turn: (turn) => startTurn(turn),
     async list(): Promise<CommandEntry[]> {
       return [...NATIVE].map(([name, c]) => ({ name, target: "command", description: c.description, ...(c.inputHint ? { inputHint: c.inputHint } : {}) }));
     },
