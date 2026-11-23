@@ -350,7 +350,6 @@ recorded components and asks for confirmation on an interactive terminal, defaul
 If `cotal down --yes --json` refuses the output format, it stops nothing and names `cotal down --yes` as the retry.
 Without an interactive terminal, or when prompts are disabled, it requires `--yes`, exit 1,
 before any stop or cleanup. This applies to a folder started with plain `cotal up` too.
-Preserving a running legacy stack also asks for confirmation. In a script, use `cotal down --preserve-state --yes`.
 `--dry-run` stays read-only and needs no confirmation. This acknowledgement does not establish
 process ownership or native agent impact. After confirmation, the stop checks the root,
 registration, lifecycle blockers, broker sharing and process-record containment again. A changed

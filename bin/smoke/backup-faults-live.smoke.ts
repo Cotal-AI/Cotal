@@ -190,7 +190,7 @@ async function backupStageFaultScenario(): Promise<void> {
     assertBackupUsage(run);
     must("up", run("up", "--detach", "--open", "--server", server, "--space", space));
     must("seed registry", run("channel", "set", "preserved", "--desc", "survives every fault", "--space", space));
-    must("preserve cut", run("down", "--preserve-state", "--yes"));
+    must("preserve cut", run("down", "--preserve-state"));
     assert.equal(journalState(root), "ready");
     const sourceBefore = lstatSync(sourcePath, { bigint: true });
 
@@ -440,7 +440,7 @@ async function restoreExactIdTimeoutReplayScenario(): Promise<void> {
     for (const text of seeded)
       must(`seed chat ${JSON.stringify(text)}`, run("send", "--channel", "seeded", text, "--space", space));
 
-    must("preserve cut", run("down", "--preserve-state", "--yes"));
+    must("preserve cut", run("down", "--preserve-state"));
     must("full backup", run("backup", "create", artifact));
     const manifest = assertValidManifest(artifact, space, "full");
     const chat = manifest.streams.find((stream) => stream.stream === chatStream(space));
@@ -496,7 +496,7 @@ async function restoreExactIdTimeoutReplayScenario(): Promise<void> {
     // artifact the replay was built from. A replay that installed over its own residue, or applied
     // a snapshot twice, shows up here as inflated counts.
     must("retire the replay fallback", run("clean", "restore-fallback", "--attempt", active.restore.attemptId, "--force"));
-    must("re-cut the replayed mesh", run("down", "--preserve-state", "--yes"));
+    must("re-cut the replayed mesh", run("down", "--preserve-state"));
     const verification = join(root, "verification-backup");
     must("verification backup", run("backup", "create", verification));
     const replayed = assertValidManifest(verification, space, "full");
@@ -539,7 +539,7 @@ async function interruptedRestoreScenario(): Promise<void> {
   try {
     must("up", run("up", "--detach", "--open", "--server", server, "--space", space));
     assert.ok(existsSync(join(root, ".cotal", "nats")), "up resolved this root");
-    must("preserve cut", run("down", "--preserve-state", "--yes"));
+    must("preserve cut", run("down", "--preserve-state"));
     must("full backup", run("backup", "create", artifact));
 
     // A create that meets another operation's maintenance lock names that operation, its process and

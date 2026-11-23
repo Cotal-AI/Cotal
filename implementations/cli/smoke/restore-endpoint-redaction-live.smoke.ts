@@ -62,7 +62,7 @@ try {
   running = true;
   must("ordinary boot", run("up", "--detach", "--open", "--server", server, "--space", space));
   must("registry write before preservation", run("channel", "set", "preserved", "--desc", "survives", "--space", space));
-  must("preserve real stopped cut", run("down", "--preserve-state", "--yes"));
+  must("preserve real stopped cut", run("down", "--preserve-state"));
   running = false;
   must("create real registry artifact", run("backup", "create", artifact, "--only", "registry"));
   originalJournal = readFileSync(journalPath, "utf8");

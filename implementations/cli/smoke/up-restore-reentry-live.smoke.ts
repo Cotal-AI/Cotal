@@ -166,7 +166,7 @@ try {
   }
   ok("the unmanaged endpoint reaches the roster", onRoster);
 
-  const refused = runSync(["down", "--preserve-state", "--yes"]);
+  const refused = runSync(["down", "--preserve-state"]);
   const refusedLog = tail(refused);
   ok("a live unmanaged endpoint refuses the cut before any child stops",
     refused.status !== 0 && /cannot preserve while unmanaged endpoints are live: bystander/.test(refusedLog),
@@ -188,7 +188,7 @@ try {
   }
   ok("the unmanaged endpoint leaves the roster once killed", offRoster);
 
-  const cut = runSync(["down", "--preserve-state", "--yes"]);
+  const cut = runSync(["down", "--preserve-state"]);
   ok("the cut exited 0", cut.status === 0, tail(cut).slice(-1200));
   const launcher = /^\s{2}(.+) <command> \[options\]$/m.exec(runSync([]).stdout)?.[1];
   mkdirSync(join(root, "private store"));

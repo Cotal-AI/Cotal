@@ -21,7 +21,7 @@
  * children. Needs `nats-server` on PATH. Run: pnpm smoke:down-preserve-refusal:live
  */
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve as resolvePath } from "node:path";
 import { CotalEndpoint, mintCreds, mintLifecycleUid, newIdentity, provisionAgent } from "@cotal-ai/core";
 import { getSpaceAuth, workspaceSecretStore } from "@cotal-ai/workspace";
@@ -106,10 +106,6 @@ try {
     else await sleep(1_000);
   }
   ok("the delivery daemon is running before the cut", deliveryBefore);
-  const unconfirmed = runSync(["down", "--preserve-state"]);
-  ok("noninteractive preserve requires --yes before stopping or recording a cut", unconfirmed.status === 1
-    && tail(unconfirmed).includes("down --preserve-state --yes") && !existsSync(join(root, ".cotal/maintenance/v1/resume.json"))
-    && deliveryUp(space, root) && runSync(["ps", "--space", space, "--server", server]).status === 0, tail(unconfirmed));
 
   const json = runSync(["down", "--preserve-state", "--json", "--yes"]);
   const receipt = JSON.parse(json.stdout);
@@ -162,7 +158,7 @@ try {
   ok("the unmanaged endpoint reaches the roster", onRoster, { names, child: readFileSync(bystanderLog, "utf8").slice(-1500) });
 
   console.log("\n3) SUBJECT: the refused cut names its refusal and leaves the delivery daemon running");
-  const refused = runSync(["down", "--preserve-state", "--yes"]);
+  const refused = runSync(["down", "--preserve-state"]);
   const log = tail(refused);
   ok("a live unmanaged endpoint refuses the cut",
     refused.status !== 0 && /cannot preserve while unmanaged endpoints are live: bystander/.test(log),
