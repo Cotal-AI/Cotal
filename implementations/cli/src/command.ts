@@ -192,7 +192,9 @@ function failureExit(cmd: Command, failure: CommandFailure, json: boolean, plain
     // Backup and mint receipts identify the operation. Auth account reports still use the namespace.
     let command = cmd.name;
     if (cmd.name === "backup" || cmd.name === "auth") {
-      const sub = findSubcommand(cmd, metadataPositionals(cmd, words).positionals[0]?.value);
+      const recognize = cmd.name === "backup" ? typographicOptions(cmd) : undefined;
+      const { positionals } = metadataPositionals(cmd, words, { optionSpelling: (word) => recognize?.(word)?.spelling });
+      const sub = findSubcommand(cmd, positionals[0]?.value);
       if (sub && (cmd.name === "backup" || sub.name === "mint")) command = `${cmd.name} ${sub.name}`;
     }
     const follow = validationArgs?.values.follow === true && validationArgs.values.plain !== true && !plain;
@@ -434,17 +436,25 @@ function usageExit(message: string, cmd?: Command, json = false, plain = false, 
 
 /** The refusal for a named or short option typed with a typographic dash pasted from
  *  typeset text, as `\u2013\u2013json`, naming it with hyphens; undefined when `word` is no such option. */
-function typographicOption(word: string, names: ReadonlySet<string>, flags: readonly FlagSpec[] = []): { message: string; remedy?: string } | undefined {
+function typographicOption(word: string, names: ReadonlySet<string>, flags: readonly FlagSpec[] = []) {
   const typed = /^[\u2010-\u2015\u2212][-\u2010-\u2015\u2212]*([^=]+)(?:=(.*))?$/su.exec(word);
   if (!typed) return undefined;
   const [, name, value] = typed;
   const long = names.has(name!);
   const flag = flags.find((flag) => long ? flag.name === name : flag.short === name);
   if (!long && !flag) return undefined;
+  const option = `${long ? "--" : "-"}${name}`;
+  const spelling = value === undefined ? option : `${option}=${value}`;
   const message = `${word} starts with a typographic dash, so it is not an option`;
-  if (value === undefined) return { message, remedy: `type the option with hyphens: ${long ? "--" : "-"}${name}` };
-  if (flag?.type !== "string") return { message };
-  return { message, remedy: `type the option with hyphens: --${flag.name}=${shellWord(value)}` };
+  if (value === undefined) return { message, spelling, remedy: `type the option with hyphens: ${option}` };
+  if (flag?.type !== "string") return { message, spelling };
+  return { message, spelling, remedy: `type the option with hyphens: --${flag.name}=${shellWord(value)}` };
+}
+
+function typographicOptions(cmd: Command, flagNames?: readonly string[]) {
+  const names = new Set<string>([...(flagNames ?? (cmd.flags ?? []).map((flag) => flag.name)), ...GLOBAL_FLAGS, "help"]);
+  const flags: FlagSpec[] = [...(cmd.flags ?? []), { name: "help", short: "h", type: "boolean" }];
+  return (word: string) => typographicOption(word, names, flags);
 }
 
 /** Identify seed before recovery, even when a typographic maintenance flag precedes it. */
@@ -462,8 +472,7 @@ function extSeedSubcommand(cmd: Command, words: readonly string[]): Subcommand |
  *  takes `=value` as its value, or a declared option typed with a typographic dash pasted from typeset
  *  text, which is read as a positional. */
 function misspelledOption(cmd: Command, rest: readonly string[], flagNames: readonly string[] | undefined): { message: string; remedy?: string } | undefined {
-  const names = new Set<string>([...(flagNames ?? (cmd.flags ?? []).map((flag) => flag.name)), ...GLOBAL_FLAGS, "help"]);
-  const flags: FlagSpec[] = [...(cmd.flags ?? []), { name: "help", short: "h", type: "boolean" }];
+  const recognize = typographicOptions(cmd, flagNames);
   const positionals = new Set(metadataPositionals(cmd, rest).positionals.map(({ index }) => index));
   for (const [index, word] of rest.entries()) {
     if (word === "--") return undefined;
@@ -478,7 +487,7 @@ function misspelledOption(cmd: Command, rest: readonly string[], flagNames: read
       const correction = value.startsWith("-") ? long : `-${short[1]} ${quoted} or ${long}`;
       return { message: `${word} gives -${short[1]} the value "=${value}"`, remedy: `write ${correction}` };
     }
-    const typed = positionals.has(index) ? typographicOption(word, names, flags) : undefined;
+    const typed = positionals.has(index) ? recognize(word) : undefined;
     if (typed) return typed;
   }
   return undefined;
