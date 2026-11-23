@@ -2,6 +2,7 @@ import { EventEmitter } from "node:events";
 import {
   PeerAddressError,
   AmbiguousPeerError,
+  parsePrincipalKey,
   peerLabel,
   CotalEndpoint,
   DmDurableMissingError,
@@ -989,8 +990,10 @@ export class MeshAgent extends EventEmitter {
       catch { throw new EpEnvelopeError("failed-precondition", `agent ${JSON.stringify(peer.card.name)} reports an invalid holding manager instance`, undefined, "not-executed"); }
       selected = peer;
       opts = { ...opts, instanceId: ownerInstance };
-      // Presence resolves the alias, but the manager's name lookup remains exact.
-      args = { ...args, name: peer.card.name };
+      const actor = parsePrincipalKey(peer.card.id)?.actor;
+      if (this.config.userAuth && actor === undefined)
+        throw new EpEnvelopeError("failed-precondition", "the selected seat has no valid launch principal", undefined, "not-executed");
+      args = { ...args, name: this.config.userAuth ? actor : peer.card.name };
     }
     try {
       let reply: EpAttributedReply;
