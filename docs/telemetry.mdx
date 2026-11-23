@@ -69,8 +69,9 @@ The install id is a persistent identifier for the settings file. The `account` f
 `regular` hashes the cached sign-in's IdP URL and subject id; it allows correlation across
 machines without sending those raw identifiers. The daemon, manager,
 connectors and workflow runtime send nothing; neither do internal
-entries (including extension update helpers), hidden daemon runners, `agent-bearer` and
-`cotal telemetry` itself.
+entries, hidden daemon runners, `agent-bearer` and `cotal telemetry` itself.
+Extension update helpers and the `ext add` processes that prepare built-in connectors send no events.
+Running `cotal ext add` yourself still reports the command at the configured level.
 The standalone `cotal --version` and `cotal -V` flags send no events.
 
 The intake receives the request's IP address even though the CLI does not put it in the
@@ -113,6 +114,8 @@ a later terminal run still shows it. An environment-selected level does not trig
 | `arch` | string | `process.arch`. |
 | `node` | integer | The Node major version. |
 | `ci` | boolean | Whether `CI` is set to anything but `0` or `false`. |
+
+When the `help` command encounters an unknown command or subcommand, it reports `refused` and exits 1. At `regular`, its code is `USAGE_INVALID`. The event omits the requested topic, diagnostic text and stack.
 
 At `regular` the event also carries:
 

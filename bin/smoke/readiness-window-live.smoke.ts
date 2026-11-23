@@ -30,12 +30,12 @@ const awaitExit = (p: ChildProcess, ms = 5000): Promise<void> =>
 const home = mkdtempSync(join(tmpdir(), "cotal-readiness-home-"));
 process.env.COTAL_HOME = home;
 
-const { probeConnect, registry, CotalEndpoint, GOAL_ENTITY_RUNNING_DETAIL_KIND } = await import("@cotal-ai/core");
+const { probeConnect, registry, CotalEndpoint, EpEnvelopeError, GOAL_ENTITY_RUNNING_DETAIL_KIND } = await import("@cotal-ai/core");
 const { recordMesh } = await import("@cotal-ai/workspace");
 const { launchAgent, START_TIMEOUT_MS } = await import("@cotal-ai/cli");
 const { MeshAgent, SPAWN_TIMEOUT_MS, cotalToolSpecs } = await import("@cotal-ai/connector-core");
 const { Manager } = await import("@cotal-ai/manager");
-import type { Connector } from "@cotal-ai/core";
+import type { Connector, EpServeContext } from "@cotal-ai/core";
 
 let pass = 0;
 const kids: ChildProcess[] = [];
@@ -68,7 +68,7 @@ const coreDist = join(import.meta.dirname, "..", "..", "packages", "core", "dist
 const CHILD = [
   "const{pathToFileURL}=require('node:url');",
   "setTimeout(()=>{import(pathToFileURL(process.env.CORE_DIST).href).then(async({CotalEndpoint})=>{",
-  "const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.COTAL_SERVERS,lifecycleUid:process.env.COTAL_LIFECYCLE_UID||undefined,channels:[],consume:false,registerPresence:true,watchPresence:false,card:{id:process.env.COTAL_ID||undefined,name:process.env.COTAL_NAME,kind:'agent'}});",
+  "const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.COTAL_SERVERS,lifecycleUid:process.env.COTAL_LIFECYCLE_UID||undefined,channels:[],consume:false,registerPresence:true,watchPresence:false,card:{id:process.env.COTAL_ID||undefined,name:process.env.COTAL_NAME,kind:'agent',meta:{'ai.cotal.manager.instance':process.env.COTAL_MANAGER_INSTANCE}}});",
   "ep.on('error',()=>{});await ep.start();",
   "setInterval(()=>{},1000);});},Number(process.env.JOIN_DELAY_MS));",
 ].join("");
@@ -144,6 +144,20 @@ const operatorCon: Connector = {
 };
 registry.register(operatorCon);
 
+class AuditRefusingManager extends Manager {
+  private refuseAudit = true;
+
+  override managerServiceDefs() {
+    return super.managerServiceDefs().map(def => def.command !== "inspect" ? def : { ...def, handler: (ctx: EpServeContext) => {
+      if (this.refuseAudit && (ctx.request.args as { name?: string } | undefined)?.name === "unaudited") {
+        this.refuseAudit = false;
+        throw new EpEnvelopeError("unavailable", "the model pin read is unavailable");
+      }
+      return def.handler(ctx);
+    } });
+  }
+}
+
 let mgr: InstanceType<typeof Manager> | undefined;
 let otherManager: InstanceType<typeof Manager> | undefined;
 let driver: InstanceType<typeof MeshAgent> | undefined;
@@ -160,7 +174,7 @@ try {
   }
   recordMesh({ space: SPACE, server: SERVER, root: workspaceRoot, mode: "open", ts: new Date().toISOString() });
 
-  mgr = new Manager({ space: SPACE, servers: SERVER, runtime: "pty", workspaceRoot });
+  mgr = new AuditRefusingManager({ space: SPACE, servers: SERVER, runtime: "pty", workspaceRoot });
   await mgr.start();
 
   // A — the MCP spawn door: MeshAgent.spawn against the real manager, real slow join.
@@ -178,6 +192,19 @@ try {
     ok("MeshAgent.spawn succeeds on the REAL join outcome", reply.ok === true, reply);
     ok(`...which arrived past the old 5s default (${elapsed}ms, window ${SPAWN_TIMEOUT_MS}ms)`, elapsed > 5_000 && elapsed < SPAWN_TIMEOUT_MS, elapsed);
     ok("...and reports the spawned identity", (reply.data as { name?: string })?.name === "slowpoke", reply.data);
+  }
+
+  {
+    writeFileSync(join(workspaceRoot, ".cotal", "agents", "unaudited.md"), "---\nname: unaudited\n---\nA fixture seat.\n");
+    const specs = cotalToolSpecs(driver.config);
+    const tool = specs.find(t => t.name === "cotal_spawn")!;
+    const reply = await tool.run(driver, driver.config, { name: "unaudited", agent: "slow-e2e", model: "gpt-6.2-sol", events: false });
+    ok("a joined spawn whose model audit fails explains the duplicate risk and names the inspect tool",
+      !reply.isError && reply.structured?.status === "partial" && reply.structured.joined === true &&
+      reply.text.endsWith("It is running, so spawning it again would start a second agent. To check which model it runs, inspect it with cotal_invoke on the manager endpoint."), reply);
+    const inspect = specs.find(t => t.name === "cotal_invoke")!;
+    const row = await inspect.run(driver, driver.config, { endpoint: "manager", command: "inspect", args: { name: "unaudited" } });
+    ok("the suggested inspect reads the running seat's recorded model", !row.isError && row.text.includes('"model": "gpt-6.2-sol"'), row);
   }
 
   // B — the manifest launch door: `spawn -f`'s launchAgent against the same manager.
@@ -429,7 +456,7 @@ try {
 
   // Tear the spawned keepalives down through the manager (they don't exit on broker loss):
   // inspect resolves the wire target, then the targeted ep despawn (the CLI's stop shape).
-  for (const name of ["slowpoke", "slowlaunch", "jcodeslow", "ghost", "picker", "ghostspawn", "latepending"]) {
+  for (const name of ["slowpoke", "unaudited", "slowlaunch", "jcodeslow", "ghost", "picker", "ghostspawn", "latepending"]) {
     const info = await ep.invokeService("manager", "inspect", { name });
     ok(`inspect resolves ${name}`, info.reply.ok === true, info.reply);
     const row = info.reply.data as { id: string; lifecycleUid: string };

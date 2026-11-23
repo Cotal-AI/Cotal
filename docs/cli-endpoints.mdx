@@ -500,7 +500,7 @@ If the inventory cannot find the named space, it refuses with `TARGET_NOT_FOUND`
 name in JSON as `target.requested`. Run `cotal space` to find the name, then retry with
 `cotal endpoint --space <name>`. The retry guidance keeps `--json` or `--plain` if you passed it.
 If several registered spaces match the project folder, the inventory refuses with `TARGET_AMBIGUOUS`.
-Next names a command for each space and keeps the original inventory options.
+Next names a command for each space and keeps the original inventory options. `show <name>` refuses the same way, naming each matching space and the retry for it.
 
 `endpoint add <name> --file <reference.json>` imports a strict version-1 reference object.
 An empty `--file` is refused with `USAGE_INVALID` (exit 1) before the command resolves a space.

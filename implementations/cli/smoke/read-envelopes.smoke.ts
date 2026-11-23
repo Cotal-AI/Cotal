@@ -50,7 +50,7 @@ function sandbox(manifest?: unknown, viaLink = false) {
   return (args: string[], extraEnv: Record<string, string> = {}) => {
     const r = spawnSync(process.execPath, [BIN, ...args], {
       cwd: home,
-      env: { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: xdg, COTAL_HOME: join(home, ".cotal"), COTAL_SKIP_CONNECTOR_SEED: "1", ...extraEnv },
+      env: { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: xdg, COTAL_HOME: join(home, ".cotal"), COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1", ...extraEnv },
       encoding: "utf8",
       timeout: 120_000,
     });
@@ -93,6 +93,31 @@ const ansi = /\x1b\[/;
   check("a RUNTIME_LOAD_FAILED warning names it", json.envelope?.warnings.some((w) => w.code === "RUNTIME_LOAD_FAILED" && JSON.stringify(w.target) === JSON.stringify({ runtime: "broken" })) === true, json.envelope?.warnings);
   const human = run(["runtimes"]);
   check("the human report exits 4 and names the failure on stderr", human.status === 4 && /broken\s+● installed · load failed/.test(human.stdout) && /1 installed runtime provider could not be loaded/.test(human.stderr), shown(human));
+}
+
+// A provider can load and then fail to answer its availability check.
+{
+  const root = mkdtempSync(join(tmpdir(), "cotal-probe-runtime-"));
+  roots.push(root);
+  const pkg = join(root, "package");
+  mkdirSync(pkg);
+  writeFileSync(join(pkg, "package.json"), JSON.stringify({ name: "probe-runtime", version: "1.0.0", type: "module", main: "index.js", peerDependencies: { "@cotal-ai/core": "*" } }));
+  writeFileSync(join(pkg, "index.js"), `import { registry } from "@cotal-ai/core";
+registry.register({ kind: "runtime", name: "probe", available() {
+  if (process.env.PROBE_FAIL) throw new Error("probe configuration missing");
+  return false;
+}, create() { throw new Error("runtime is not running"); } });`);
+  const run = sandbox();
+  const added = run(["ext", "add", pkg], { npm_config_offline: "true", npm_config_cache: join(root, "cache") });
+  check("the probe runtime installs from its local package", added.status === 0, shown(added));
+  const failure = run(["runtimes", "--json"], { PROBE_FAIL: "1" });
+  const row = failure.envelope?.result?.items.find((item) => item.name === "probe");
+  check("a probe exception keeps the installed row with unknown reachability", failure.status === 4 && row?.state === "installed" && row.reachable === null && row.error === "probe configuration missing", shown(failure));
+  check("the availability warning and recovery identify a probe failure", failure.envelope?.warnings.some((w) => w.code === "RUNTIME_UNAVAILABLE") === true && failure.envelope.error?.message === "1 runtime availability check failed" && !failure.envelope.error.remedy?.includes("reinstall"), shown(failure));
+  const human = run(["runtimes", "--plain"], { PROBE_FAIL: "1" });
+  check("the text row identifies the failed availability check", human.status === 4 && /probe\s+installed - availability check failed/.test(human.stdout), shown(human));
+  const answered = run(["runtimes", "--json"], { PROBE_FAIL: "" });
+  check("an unreachable answer is complete without reinstalling the runtime", answered.status === 0 && answered.envelope?.result?.items.find((item) => item.name === "probe")?.reachable === false, shown(answered));
 }
 
 // ── ps, models and run ps: no mesh to read is refused before any request ─────────────────────────

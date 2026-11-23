@@ -122,6 +122,48 @@ async function checkStoppedRestartAdvice(mesh: string, env: NodeJS.ProcessEnv, p
   }
 }
 
+async function checkStoppedOpenDiagnosis(mesh: string, env: NodeJS.ProcessEnv, space: string, port: number): Promise<void> {
+  const config = join(mesh, ".cotal", "server-open.conf");
+  const original = readFileSync(config);
+  const journal = join(mesh, ".cotal", "stack-controller.json");
+  const diagnose = (...args: string[]) => foregroundCliProbe(cliEntry, tsx, mesh, env, ["doctor", "auth", ...args]);
+  assert.equal(existsSync(journal), false, "foreground up has no controller journal");
+  for (const flags of [[], ["--space", space, "--fix"]]) {
+    const plain = await diagnose(...flags, "--plain");
+    assert.equal(plain.code, 0, plain.out + plain.err);
+    assert.match(plain.out, /No credentials to check/);
+    assert.match(plain.out, /Mode:\s+open, as recorded/);
+    const json = await diagnose(...flags, "--json");
+    assert.equal(json.code, 0, json.out + json.err);
+    const report = JSON.parse(json.out);
+    assert.equal(report.outcome, "no-op");
+    assert.deepEqual(report.target, { root: realpathSync(mesh), space });
+    assert.equal(report.result.credentialScope, "open-space");
+    assert.equal(report.result.brokerAuthorization, "not-checked");
+    assert.equal(report.result.repair.attempted, false);
+    passed++;
+  }
+  const wrong = await diagnose("--space", "another-open-space", "--json");
+  assert.equal(wrong.code, 2, wrong.out + wrong.err);
+  assert.equal(JSON.parse(wrong.out).error.code, "AUTH_REQUIRED");
+  renameSync(config, `${config}.saved`);
+  try {
+    for (const [flags, code] of [[[], 4], [["--space", space], 2]] as const) {
+      const missing = await diagnose(...flags, "--plain");
+      assert.equal(missing.code, code, missing.out + missing.err);
+      assert.ok((missing.out + missing.err).includes(config), missing.out + missing.err);
+      assert.doesNotMatch(missing.out + missing.err, /root folder|space create|No credentials to check/);
+      passed++;
+    }
+    assert.equal(existsSync(config), false, "doctor does not recreate the broker configuration");
+  } finally { renameSync(`${config}.saved`, config); }
+  assert.deepEqual(readFileSync(config), original, "doctor leaves the retained broker record alone");
+  assert.equal(existsSync(journal), false, "doctor does not prepare a stack");
+  assert.equal(await portOpen(port), false, "doctor does not restart the broker");
+  assert.equal(existsSync(join(env.COTAL_HOME!, "meshes", `space.${spaceKey(space)}.json`)), false, "doctor does not register the space");
+  passed++;
+}
+
 async function cell(name: string, options: { auth?: boolean; ready?: boolean; refusal?: boolean; managerCrash?: boolean; signal?: "SIGINT" | "SIGTERM"; twice?: boolean; crash?: boolean; nativeLog?: boolean; externalDown?: "named" | "folder"; repairDelivery?: boolean; openBrokerExit?: boolean; openManagerExit?: boolean }): Promise<boolean> {
   const root = join(base, name), home = join(root, "home"), folderNamed = options.externalDown === "folder" || options.openManagerExit;
   const mesh = join(root, folderNamed ? name : "mesh"), store = join(mesh, "store");
@@ -386,6 +428,7 @@ async function cell(name: string, options: { auth?: boolean; ready?: boolean; re
         } else {
           assert.match(meshes.out, /no meshes registered/); passed++;
           assert.match(spaces.out, /No spaces registered/); passed++;
+          if (!options.auth) await checkStoppedOpenDiagnosis(mesh, env, space, port);
           await checkStoppedRestartAdvice(mesh, env, port);
         }
         if (!options.auth) await checkStoppedPreview(mesh, env, space, port);

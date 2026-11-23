@@ -366,6 +366,15 @@ check("models help explains the registration requirement without offering --cred
   && /--space <s>/.test(modelsHelp.stdout) && /--server <url>/.test(modelsHelp.stdout)
   && !/--creds/.test(modelsHelp.stdout), shown(modelsHelp));
 
+const psHelp = run(["ps", "--help"]);
+check("ps help shows the supported target selectors without offering --creds",
+  psHelp.status === 0 && /--space <s>/.test(psHelp.stdout) && /--server <url>/.test(psHelp.stdout)
+  && !/--creds/.test(psHelp.stdout), shown(psHelp));
+const psCreds = run(["ps", "--plain", "--server", "nats://127.0.0.1:37943", "--creds", join(neutral, "not-created")]);
+check("ps refuses a raw credential file and points to the project folder or registered space",
+  psCreds.status === 2 && /Code:\s+UNSUPPORTED/.test(psCreds.stderr)
+  && psCreds.stderr.includes("run the command again without --creds: in the mesh's project folder, or with --space naming its registry entry"), shown(psCreds));
+
 // A subcommand's help gives its whole usage, name argument included, and only its own options.
 for (const [args, usage, foreign] of [
   [["help", "channel", "set"], "cotal channel set <name> ", /--purge|--follow/],
