@@ -26,7 +26,7 @@ import { CONTROL_DELIVERY, CONTROL_DELIVERY_ADMIN, FANOUT_DURABLE, INBOX_READER_
 import type { ControlReply, ControlRequest, CotalMessage, MessageMeta, Plane3Entry } from "./types.js";
 import { JetStreamApiCodes, type ConsumerConfig, type JetStreamManager, type JetStreamPublishOptions, type JsMsg } from "@nats-io/jetstream";
 import type { KV } from "@nats-io/kv";
-import { headers } from "@nats-io/transport-node";
+import { headers, type Subscription } from "@nats-io/transport-node";
 
 const PLANE3_FRAME_HEADER = "Cotal-Delivery-Frame";
 
@@ -616,19 +616,19 @@ export class EndpointDeliveryPlane {
     if (!sub) return;
     this.channelConfigSub = undefined;
     sub.unsubscribe();
-    const i = this.subs.indexOf(sub);
-    if (i >= 0) this.subs.splice(i, 1);
+    const i = this.delivery.subs.indexOf(sub);
+    if (i >= 0) this.delivery.subs.splice(i, 1);
   }
 
   private async armChannelConfig(): Promise<void> {
     this.dropChannelConfig();
-    const nc = this.nc;
+    const nc = this.conn.nc;
     if (!nc) throw new Error(this.notLiveMsg());
     const kv = await openChannelRegistry(nc, this.identity.space);
-    if (!this.plane3MayAct() || nc !== this.nc) return;
+    if (!this.plane3MayAct() || nc !== this.conn.nc) return;
     this.channelConfigSub = serveChannelConfig(nc, this.identity.space, kv,
-      () => this.plane3MayAct() && nc === this.nc && !this.stopped, (e) => this.emit("error", e));
-    this.subs.push(this.channelConfigSub);
+      () => this.plane3MayAct() && nc === this.conn.nc && !this.lifecycle.stopped, (e) => this.emit("error", e));
+    this.delivery.subs.push(this.channelConfigSub);
   }
 
   /** (Re)register the `ctl.delivery` control responder on the CURRENT connection. A reconnect drains the
