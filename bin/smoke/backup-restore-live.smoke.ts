@@ -344,7 +344,6 @@ async function scenario(mode: "open" | "auth"): Promise<void> {
     }
     must("ordinary same-principal resume", run("up", "--detach", "--server", server, "--space", space));
     assert.equal(existsSync(join(root, ".cotal", "maintenance", "v1", "journal.json")), false, "ordinary resume retires and consumes maintenance state");
-    must("send after backup", run("send", "-c", "preserved", "history-after-backup", "--space", space));
     must("preserve again for restore", run("down", "--preserve-state"));
 
     // A restore into the preserved store's own path moves it aside whole, so a file in it that no
@@ -385,6 +384,7 @@ async function scenario(mode: "open" | "auth"): Promise<void> {
       const legacyJournal = readMaintenanceJournal(root);
       assert.ok(legacyJournal?.state === "active");
       must("retire adapted v2 restore", run("backup", "cleanup-fallback", legacyJournal.restore.attemptId, "--discard-history", "--yes"));
+      must("send after legacy restore", run("send", "-c", "preserved", "history-after-backup", "--space", space));
       must("preserve after adapted v2 restore", run("down", "--preserve-state"));
     }
     const restored = run("up", "--restore", restoreArtifact, "--detach", "--server", server, "--space", space);
@@ -401,8 +401,8 @@ async function scenario(mode: "open" | "auth"): Promise<void> {
     assert.equal(active.state, "active");
     assert.equal(active.restore.selection, restoreArtifact === registryArtifact ? "registry" : "full", `${mode} restore journals its selection`);
     // Both artifacts predate the cut this restore replaced, which was preserved after the resume
-    // above. So each restore leaves something only in the store it set aside: the registry restore
-    // every other stream, and the full restore what that resume wrote.
+    // above. The registry restore leaves out the payload stream and the full restore leaves out
+    // the post sent after the legacy restore.
     assert.equal(active.launch?.previousCutNewer, true, `${mode} restore journals that the cut it replaced is newer than its artifact`);
     const leftOut = restoreArtifact === registryArtifact ? "chat and DM history and workflow runs" : "newer chat and DM history and workflow runs";
     // The receipt names the restore attempt and the cleanup that retires it, with --discard-history.
