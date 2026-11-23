@@ -514,14 +514,11 @@ export type ScatterReply = { ok: true; instances: ScatterInstanceReply[] } | { o
  *  the scatter's TWO connections cannot drift in their connect options: they differ in credential
  *  and in nothing else. The selected dialer matters because the raw node transport refuses a
  *  `wss://` mesh behind an HTTPS edge even when the other endpoint rails can reach it. */
-export async function withControlConnection<T>(server: string, auth: ControlAuth, fn: (nc: NatsConnection) => Promise<T>): Promise<T> {
-  const nc = await dialerFor(server)({
-    servers: server,
-    ...standaloneConnectOpts(auth.creds ? { creds: auth.creds, tls: auth.tls === true } : auth.bearer ? { bearer: auth.bearer, sentinelCreds: auth.sentinelCreds, tls: auth.tls === true } : { tls: auth.tls === true }),
-    maxReconnectAttempts: 0,
-  });
+export async function withControlConnection<T>(server: string, auth: ControlAuth, fn: (nc: NatsConnection, name: string) => Promise<T>): Promise<T> {
+  const connectOpts = standaloneConnectOpts(auth.creds ? { creds: auth.creds, tls: auth.tls === true } : auth.bearer ? { bearer: auth.bearer, sentinelCreds: auth.sentinelCreds, tls: auth.tls === true } : { tls: auth.tls === true });
+  const nc = await dialerFor(server)({ servers: server, ...connectOpts, maxReconnectAttempts: 0 });
   try {
-    return await fn(nc);
+    return await fn(nc, String(connectOpts.name));
   } finally {
     await drainAndClose(nc);
   }
@@ -967,10 +964,15 @@ export async function managerRailGone(space: string, server: string, auth: Contr
   if ("refusal" in who || signal?.aborted) return false;
   const aborted = new Promise<false>((resolve) => signal?.addEventListener("abort", () => resolve(false), { once: true }));
   try {
-    return await withControlConnection(server, auth, (nc) => Promise.race([
-      epProbeInstanceInterest(nc, space, BASELINE_LIFECYCLE_ENDPOINT, instanceId, who.caller, { deadlineMs: PROBE_DEADLINE_MS }).then((verdict) => verdict === "gone"),
-      aborted,
-    ]));
+    return await withControlConnection(server, auth, async (nc, name) => {
+      // A logged-in user's pinned view probes on the issued rail, as a manager call does; its
+      // generation is read back from this connection's accepted row.
+      const probe = async () => {
+        const caller = auth.bearer !== undefined && auth.managerInstanceId !== undefined ? await issuedUserCaller(nc, space, name, who.caller) : who.caller;
+        return (await epProbeInstanceInterest(nc, space, BASELINE_LIFECYCLE_ENDPOINT, instanceId, caller, { deadlineMs: PROBE_DEADLINE_MS })) === "gone";
+      };
+      return Promise.race([probe(), aborted]);
+    });
   } catch {
     return false;
   }
