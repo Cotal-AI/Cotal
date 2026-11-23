@@ -30,6 +30,7 @@ export interface OpenCodeMessageInfo {
   id: string;
   role: string;
   time?: { created?: number; completed?: number };
+  error?: unknown;
 }
 
 /** One record: a part, plus the message that owns it. The mapper needs both, because authorship and
@@ -176,9 +177,13 @@ export class OpenCodeSessionSource implements DurableSource<OpenCodeRecord> {
     const messages = await this.read0();
     const ordered: OpenCodeRecord[] = [];
     for (const m of [...messages].sort((a, b) => (a.info.id < b.info.id ? -1 : a.info.id > b.info.id ? 1 : 0))) {
-      for (const part of [...m.parts].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))) {
-        ordered.push({ part, message: m.info });
-      }
+      // A turn that failed before any output leaves its assistant message with an error and no
+      // parts (measured on 1.19.6). The message stands in as one record, so the turn opens a run
+      // that its `session.error` closes; without it the run never opens and the close finds none.
+      const parts = m.parts.length === 0 && m.info.role === "assistant" && m.info.error !== undefined
+        ? [{ id: m.info.id, messageID: m.info.id, type: "error" }]
+        : [...m.parts].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+      for (const part of parts) ordered.push({ part, message: m.info });
     }
     return ordered;
   }

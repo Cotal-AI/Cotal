@@ -25,6 +25,10 @@
  *     be wrong, because a user's Stop is not a failed turn. The abort phase is the positive control
  *     for that, and it is the reason this file drives two errors rather than one.
  *
+ * A turn that fails before any output leaves its assistant message with an `error` and no parts, as
+ * OpenCode 1.19.6 does when the provider refuses the connection. Turn 8 is that turn: it must still
+ * open a run, so its error has a run to close.
+ *
  * Run: pnpm smoke:opencode-run-error   (needs nats-server on PATH; starts its own broker)
  */
 import { strict as assert } from "node:assert";
@@ -346,6 +350,29 @@ try {
   check("early:the prompt goes through once every turn end has settled", (await Promise.race([typedEarly, sleep(2_000).then(() => "stuck" as const)])) === "returned");
   await sleep(2_500);
 
+  // ---- Turn 8: the provider refused before any output, so the assistant message holds the error
+  // and no part. Turn 9 after it is a plain turn, the anchor that bounds turn 8 in the stream.
+  const u8 = `msg_${A}_0016`;
+  const a8 = `msg_${A}_0017`;
+  content.set(A, [...(content.get(A) as unknown[]),
+    { info: { id: u8, sessionID: A, role: "user", time: { created: 80 } }, parts: [{ id: `${u8}_p0`, messageID: u8, sessionID: A, type: "text", text: "prompt", time: { start: 80, end: 80 } }] },
+    { info: { id: a8, sessionID: A, role: "assistant", time: { created: 81, completed: 89 },
+      error: { name: "APIError", data: { message: "Cannot connect to API: ECONNREFUSED", isRetryable: true } } }, parts: [] },
+  ]);
+  await busy(A);
+  await fire({
+    type: "session.error",
+    properties: { sessionID: A, error: { name: "APIError", data: { message: "Cannot connect to API: ECONNREFUSED", isRetryable: true } } },
+  });
+  await fire({ type: "session.idle", properties: { sessionID: A } });
+  await sleep(2_500);
+  content.set(A, [...(content.get(A) as unknown[]), ...turn(A, 9)]);
+  await part(A);
+  await sleep(2_000);
+  await busy(A);
+  await fire({ type: "session.idle", properties: { sessionID: A } });
+  await sleep(2_500);
+
   // ---- Read the whole stream back from the broker and grade it as an ORDER.
   const reader = new CotalEndpoint({
     space: SPACE, servers, card: { name: "Reader", kind: "agent", id: "reader" }, channels: [CHANNEL],
@@ -396,7 +423,11 @@ try {
   const afterUnsettledCloses = closesBetween(a5i, a6i);
   const a7i = idx((e) => e.text.includes("answer-7"));
   const twiceCloses = closesBetween(a6i, a7i);
-  const earlyCloses = closesBetween(a7i, -1);
+  const nextStart = (from: number): number => seen.findIndex((e, i) => i > from && e.type === "RUN_STARTED");
+  const earlyCloses = closesBetween(a7i, nextStart(a7i));
+  const a9i = idx((e) => e.text.includes("answer-9"));
+  const s8 = nextStart(a7i);
+  const emptyCloses = closesBetween(s8, nextStart(s8));
 
   check("fail:the API-error turn closed EXACTLY ONCE — `RUN_ERROR` closes a run, so nothing may follow it",
     failedTurnCloses.length === 1, failedTurnCloses);
@@ -423,8 +454,14 @@ try {
   check("early:the turn whose prompt arrived between its two ends closed exactly once, as the error",
     a7i >= 0 && earlyCloses.length === 1 && earlyCloses[0]?.type === "RUN_ERROR", { a7i, earlyCloses });
 
+  check("empty:the turn that failed before any output opened a run of its own, before the next turn's",
+    s8 >= 0 && a9i >= 0 && nextStart(s8) >= 0 && nextStart(s8) < a9i, { s8, next: nextStart(s8), a9i });
+  check("empty:and that run closed exactly once, as the error",
+    emptyCloses.length === 1 && emptyCloses[0]?.type === "RUN_ERROR", emptyCloses);
+  check("empty:the turn after it closed exactly once, as a finish", a9i >= 0 && closesBetween(a9i, -1).length === 1 && closesBetween(a9i, -1)[0]?.type === "RUN_FINISHED", closesBetween(a9i, -1));
+
   // ---- Cell count, because a harness that threw early would DELETE cells rather than fail them.
-  const EXPECTED = 28;
+  const EXPECTED = 31;
   check(`every cell ran - ${EXPECTED} expected, a cell that vanishes is invisible without this`,
     pass + fail === EXPECTED, `${pass + fail} cells reported`);
 
