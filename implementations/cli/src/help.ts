@@ -336,11 +336,12 @@ export function printHelpPath(cmd: Command, words: readonly string[], out: (line
     if (!sub.subcommands?.length) break;
   }
   if (cmd.name === "service" && selected?.name === "start" && words[1] !== undefined) {
-    const manager = words[1] === "manager";
+    const manager = words[1] === "manager", broker = words[1] === "broker";
     selected = {
       ...selected,
-      usage: manager ? selected.usage?.replace("|--new-instance]", "]") : selected.usage,
-      flagNames: selected.flagNames?.filter((flag) => (flag !== "no-open" || serviceStartAllowsNoOpen(words[1])) && (flag !== "new-instance" || !manager)),
+      usage: broker ? "cotal service start broker [<preset options>] [--instance <id>] [--dry-run]" : manager ? selected.usage?.replace("|--new-instance]", "]") : selected.usage,
+      ...(broker ? { examples: [{ command: "cotal service start broker --config <file> --binary <file> --server <url>", note: "start the broker in the background" }] } : {}),
+      flagNames: selected.flagNames?.filter((flag) => (flag !== "no-open" || serviceStartAllowsNoOpen(words[1])) && (flag !== "new-instance" || !(manager || broker)) && (flag !== "foreground" || !broker)),
     };
   }
   printCommandHelp(cmd, selected ? { ...selected, name: path.join(" ") } : undefined, out, width);
