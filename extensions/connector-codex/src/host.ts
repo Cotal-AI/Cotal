@@ -81,10 +81,11 @@ import { randomUUID } from "node:crypto";
 import type { PresenceCondition } from "@cotal-ai/core";
 import { AppServerDriver, type ThreadItem } from "./app-server.js";
 import { codexCommands } from "./commands.js";
-import { createCodexPrompts, followDriver } from "./prompts.js";
+import { createCodexPrompts, followDriver, type CodexPrompts } from "./prompts.js";
 import { createCodexMapper, type CodexMapper, type CodexRecord } from "./agui-map.js";
 import { waitForRollout } from "./agui-rollout.js";
 import { startCotalMcp, MCP_SERVER_NAME, MCP_TOKEN_ENV, type CotalMcpEndpoint } from "./mcp.js";
+import { configOverrides, mcpOverrides } from "./codex-config.js";
 import { launchTui } from "./tui.js";
 
 const ERROR_RETRY_INITIAL_MS = 1_000;
@@ -199,91 +200,6 @@ function prepareCodexHome(space: string, name: string): string {
   return agentHome;
 }
 
-/** The `-c key=value` override list for the codex child: the operator's launch options first
- *  (verbatim), then the selectors and autonomy defaults ONLY where the operator didn't set that
- *  key — one rail, so an explicit `--opt approval_policy=…` naturally wins. `asks` says Codex's
- *  approval requests can be answered: only a user-auth mesh serves the agent's prompt desk. */
-function configOverrides(model: string | undefined, variant: string | undefined, asks: boolean): [string, string][] {
-  const overrides: [string, string][] = [];
-  const raw = process.env.COTAL_CODEX_CONFIG?.trim();
-  if (raw) {
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(raw);
-    } catch {
-      throw new Error("COTAL_CODEX_CONFIG must be a JSON object of config-key → value");
-    }
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
-      throw new Error("COTAL_CODEX_CONFIG must be a JSON object of config-key → value");
-    for (const [k, v] of Object.entries(parsed)) overrides.push([k, String(v)]);
-  }
-  const has = (key: string): boolean => overrides.some(([k]) => k === key);
-  if (model && !has("model")) overrides.push(["model", `"${model}"`]);
-  if (variant && !has("model_reasoning_effort")) overrides.push(["model_reasoning_effort", `"${variant}"`]);
-  // Autonomy: without the prompt desk nobody can answer an approval request, so an interactive
-  // approval_policy cannot be HONORED — the driver would have to auto-answer, silently
-  // nullifying the operator's stated policy. Refuse anything but `never` there rather than pretend.
-  const approval = overrides.find(([k]) => k === "approval_policy");
-  if (approval && approval[1].replace(/"/g, "") !== "never" && !asks)
-    throw new Error(
-      `codex connector: approval_policy=${approval[1]} needs a space where people sign in — this host ` +
-        `answers Codex's approval requests through the agent endpoint, which only such a space serves; ` +
-        `only "never" (the default) is honest here. Tighten the sandbox (sandbox_mode) instead to ` +
-        `restrict what the agent may do.`,
-    );
-  if (!approval) overrides.push(["approval_policy", '"never"']);
-  // `never` means never ASK, not never allow: the agent runs its commands, and what bounds it is
-  // the sandbox below, not a prompt nobody would be there to answer.
-  const sandbox = overrides.find(([k]) => k === "sandbox_mode");
-  const sandboxMode = sandbox ? sandbox[1].replace(/"/g, "") : "workspace-write";
-  if (!sandbox) overrides.push(["sandbox_mode", '"workspace-write"']);
-  // ...and inside that sandbox, network ON. Codex defaults workspace-write to no network, which
-  // silently breaks most real work an agent is asked to do (installing a dependency, pushing a
-  // branch, calling an API) with a failure that reads as the task being impossible rather than
-  // the sandbox saying no. Filesystem containment is the part worth keeping — a peer's message is
-  // a REMOTE input that can make this agent run commands, so it should not be able to write
-  // outside its workspace.
-  //
-  // Scoped to the mode it actually describes rather than emitted always and assumed inert: under
-  // `read-only` or `danger-full-access` this key has nothing to say, and shipping it anyway would
-  // put a network permission in the argv of a launch the operator deliberately tightened — a claim
-  // about codex's precedence we would be making without proving it.
-  if (sandboxMode === "workspace-write" && !has("sandbox_workspace_write"))
-    overrides.push(["sandbox_workspace_write", "{network_access=true}"]);
-  // The connector OWNS the `mcp_servers.cotal.*` namespace — it is where this agent's own mesh
-  // voice is wired up, not a tunable. A later `-c` wins in codex, so an operator key here would
-  // be silently overridden; refuse instead, so a bad launch says so rather than half-applying.
-  // The whole `mcp_servers` namespace, not just our dotted keys. A launch option cannot even
-  // express a dotted key (the key grammar refuses `.`), so the reachable shape is a TOP-LEVEL
-  // `mcp_servers` inline table — which would merge against ours and leave last-`-c`-wins to sort
-  // out a half-applied result. Refuse the whole namespace instead, matching the loud refusal
-  // tool-sharing already gets.
-  const stolen = overrides.find(([k]) => k === "mcp_servers" || k.startsWith("mcp_servers."));
-  if (stolen)
-    throw new Error(
-      `codex connector: ${stolen[0]} is reserved — mcp_servers is how this agent reaches the mesh and ` +
-        `cannot be set through launch options. Tool-sharing (connectors.codex.mcpServers) is the ` +
-        `supported way to add servers, and is not implemented yet.`,
-    );
-  return overrides;
-}
-
-/** Point the child at the cotal_* tools this host is serving (mcp.ts). Appended LAST, and codex
- *  resolves a repeated key to the last `-c`, so this is authoritative over anything else. */
-function mcpOverrides(mcp: CotalMcpEndpoint): [string, string][] {
-  const p = `mcp_servers.${MCP_SERVER_NAME}`;
-  return [
-    [`${p}.url`, `"${mcp.url}"`],
-    // By NAME, never by value: a token on argv is world-readable in the process table.
-    [`${p}.bearer_token_env_var`, `"${MCP_TOKEN_ENV}"`],
-    // Pre-approve this server's tools. Codex otherwise raises an elicitation ("Allow the cotal
-    // MCP server to run tool X?") per call, which for a mesh-driven turn nobody is watching would
-    // hang the turn forever. These are the agent's own mesh voice — the same surface every other
-    // connector exposes ungated — so standing approval is the honest setting, not a loosening.
-    [`${p}.default_tools_approval_mode`, '"approve"'],
-  ];
-}
-
 /**
  * The rollout source, positioned where the BIND was taken rather than where the emitter's own
  * setup finished.
@@ -377,6 +293,34 @@ function commandTurns(agent: MeshAgent, drive: () => Promise<void>, flags: Comma
   };
 }
 
+/** The seat's app-server driver, with the prompt module that holds Codex's approval requests and
+ *  questions on the agent's prompt desk. */
+function createDriver(
+  agent: MeshAgent,
+  o: {
+    config: ReturnType<typeof configFromEnv>;
+    persona: string | undefined;
+    codexHome: string;
+    codexBin: string | undefined;
+    baseOverrides: [string, string][];
+    mcp: CotalMcpEndpoint;
+  },
+): { driver: AppServerDriver; prompts: CodexPrompts } {
+  const { config, persona, codexHome, codexBin, baseOverrides, mcp } = o;
+  const prompts = createCodexPrompts({ desk: () => agent.prompts, respond: (request, result) => driver.respond(request, result), warn: log });
+  const driver = new AppServerDriver({
+    hold: (request) => prompts.hold(request),
+    cwd: process.cwd(),
+    codexHome,
+    configOverrides: [...baseOverrides, ...mcpOverrides(mcp)],
+    developerInstructions: developerInstructions(config, persona),
+    extraEnv: { [MCP_TOKEN_ENV]: mcp.token },
+    bin: codexBin,
+    log,
+  });
+  return { driver, prompts };
+}
+
 export async function runCodexHost(): Promise<void> {
   const config = configFromEnv(); // throws without an identity — a host launch is always managed
   config.connector = "codex";
@@ -399,17 +343,7 @@ export async function runCodexHost(): Promise<void> {
   // The cotal_* tools must be LISTENING before the child spawns: the child's config names this
   // URL and codex dials it while starting the thread.
   const mcp = await startCotalMcp(agent, config, log, () => ready && !driver.stopped ? driver.thread : undefined);
-  const prompts = createCodexPrompts({ desk: () => agent.prompts, respond: (request, result) => driver.respond(request, result), warn: log });
-  const driver = new AppServerDriver({
-    hold: (request) => prompts.hold(request),
-    cwd: process.cwd(),
-    codexHome,
-    configOverrides: [...baseOverrides, ...mcpOverrides(mcp)],
-    developerInstructions: developerInstructions(config, persona),
-    extraEnv: { [MCP_TOKEN_ENV]: mcp.token },
-    bin: codexBin,
-    log,
-  });
+  const { driver, prompts } = createDriver(agent, { config, persona, codexHome, codexBin, baseOverrides, mcp });
 
   /** Publishes this thread's activity as AG-UI events on `events.<owner>.<actor>`.
    *
