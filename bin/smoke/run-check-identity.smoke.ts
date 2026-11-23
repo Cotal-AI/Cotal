@@ -76,7 +76,7 @@ try {
   }
   const unsupportedFile = await call("run", "resume", "run-example", "--file", "good.cotal.js", "--json");
   const fileRefusal = JSON.parse(unsupportedFile.text);
-  check("hosted resume --file returns a structured usage refusal without a mesh", unsupportedFile.code === 1 && fileRefusal.error.code === "USAGE_INVALID" && fileRefusal.error.remedy.includes("omit --file"), unsupportedFile.text);
+  check("hosted resume --file returns a structured usage refusal without a mesh", unsupportedFile.code === 1 && fileRefusal.error.code === "USAGE_INVALID" && fileRefusal.error.remedy.startsWith("remove only --file and its value from the original command"), unsupportedFile.text);
   const other = join(project, "other-workflows");
   for (const folder of [other, join(project, "selection")]) mkdirSync(folder, { mode: 0o700 });
   await succeed("space", "create", "workflow-target", "--root", other);
