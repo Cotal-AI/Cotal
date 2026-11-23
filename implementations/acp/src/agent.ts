@@ -56,6 +56,9 @@ export const SETTLE_MS = 2_000;
 /** How long a seat spawned for a prompt with images may take to serve its agent endpoint, which
  *  carries the images. */
 const SERVE_MS = 20_000;
+/** How long a prompt's answer waits for the seat's usage after its turn. A client such as T3 Code
+ *  files a turn's usage only when it arrives before the prompt answers; a later one still goes. */
+const USAGE_MS = 3_000;
 /** Frames from a seat no session holds are kept this long, in case a spawn reply names it next. */
 const UNCLAIMED_MS = 120_000;
 const UNCLAIMED_FRAMES = 500;
@@ -202,8 +205,9 @@ interface Bridge {
   readonly holder: (seat: SeatRef) => Session | undefined;
   readonly sessionOf: (id: string) => Session;
   readonly announce: (session: Session) => Promise<void>;
-  /** Send the seat's context usage, when its connector reports it. */
-  readonly reportUsage: (session: Session, m: Mesh) => void;
+  /** Send the seat's context usage, when its connector reports it. Resolves once it is sent, or
+   *  after {@link USAGE_MS} while it is still being read; never rejects. */
+  readonly reportUsage: (session: Session, m: Mesh) => Promise<void>;
   /** What the client said it can do when it initialized. */
   readonly client: { capabilities?: ClientCapabilities };
   /** Fails the running prompts and closes the space, once the client disconnected. */
@@ -326,12 +330,14 @@ function bridge(options: CotalAgentOptions): Bridge {
     await send(session, { sessionUpdate: "available_commands_update", availableCommands: [...COMMANDS.map((c) => ({ ...c })), ...theirs] });
   };
 
-  const reportUsage = (session: Session, m: Mesh): void => {
+  const reportUsage = async (session: Session, m: Mesh): Promise<void> => {
     const seat = session.seat;
     if (!seat) return;
-    void usageUpdate(m, seat)
+    const sent = usageUpdate(m, seat)
       .then((u) => (u && session.seat === seat ? send(session, u) : undefined))
       .catch((e: Error) => options.log(`session ${session.id}: ${seat.name}'s usage not read: ${e.message}`));
+    let timer: NodeJS.Timeout | undefined;
+    await Promise.race([sent, new Promise<void>((r) => { timer = setTimeout(r, USAGE_MS); })]).finally(() => clearTimeout(timer));
   };
 
   const close = async (): Promise<void> => {
@@ -568,8 +574,8 @@ function slashCommands(b: Bridge, offers: Offers, runTurn: ReturnType<typeof tur
       const seat = session.seat;
       b.options.log(`session ${session.id}: ${seat.name} runs its ${theirs.entry.target} ${theirs.entry.name}`);
       // A command that runs no turn, such as one that clears the session, ends its prompt soon.
-      return runTurn(session, m, "idle", () => queue(m, seat, theirs.entry, theirs.args), { startMs: settleMs * 2, quiet: true }).then((stop) => {
-        b.reportUsage(session, m);
+      return runTurn(session, m, "idle", () => queue(m, seat, theirs.entry, theirs.args), { startMs: settleMs * 2, quiet: true }).then(async (stop) => {
+        await b.reportUsage(session, m);
         return stop;
       }, async (e: Error) => {
         await say(e.message);
@@ -661,7 +667,7 @@ function openCommand(b: Bridge, offers: Offers) {
     bind(session, row);
     options.links.add(m.space, { thread: session.id, lifecycleUid: row.lifecycleUid });
     void b.announce(session).catch(() => {});
-    b.reportUsage(session, m);
+    void b.reportUsage(session, m);
     // A client joins consecutive message chunks into one message, so the line keeps clear of the replay.
     return `${replay.length > 0 ? "\n\n" : ""}This session now drives ${row.display ?? row.name} (${row.agent}${row.model ? ` ${row.model}` : ""}). A prompt here reaches it as your own words.`;
   };
@@ -722,7 +728,7 @@ function threadHandlers(b: Bridge, offers: Offers, runTurn: ReturnType<typeof tu
       const running = session.seat;
       if (running) {
         const stopReason = await runTurn(session, m, "idle", () => takeTurn(m, running, text, images));
-        reportUsage(session, m);
+        await reportUsage(session, m);
         return { stopReason };
       }
       if (session.offer.seatOnly) throw RequestError.invalidParams(undefined, `${session.id} opened without a grant that may spawn, so this thread cannot start another agent`);
@@ -763,7 +769,7 @@ function threadHandlers(b: Bridge, offers: Offers, runTurn: ReturnType<typeof tu
       });
       // The seat's own commands can be read once it runs.
       if (session.seat) void announce(session).catch(() => {});
-      reportUsage(session, m);
+      await reportUsage(session, m);
       return { stopReason };
     },
   };
@@ -810,7 +816,7 @@ function historyHandlers(b: Bridge, offers: Offers) {
       bind(session, row);
       setImmediate(() => {
         void announce(session).catch(() => {});
-        reportUsage(session, m);
+        void reportUsage(session, m);
       });
       return { configOptions: configOptions(session.offer, session.selection) };
     },
