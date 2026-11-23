@@ -16,10 +16,10 @@ import { CotalEndpoint, chatSubject, dialerFor, mintCreds, mintLifecycleUid, new
 import * as core from "@cotal-ai/core";
 import { NativeChatSession } from "@cotal-ai/workspace/chat";
 import { createSuite } from "@cotal-ai/smoke-kit";
-import { MeshAgent } from "../../../extensions/connector-core/src/agent.js";
-import type { AgentConfig } from "../../../extensions/connector-core/src/config.js";
-import { fmtFrom } from "../../../extensions/connector-core/src/framing.js";
-import { cotalToolSpecs } from "../../../extensions/connector-core/src/tool-specs.js";
+import { MeshAgent } from "../../../extensions/connector-core/dist/agent.js";
+import type { AgentConfig } from "../../../extensions/connector-core/dist/config.js";
+import { fmtFrom } from "../../../extensions/connector-core/dist/framing.js";
+import { cotalToolSpecs } from "../../../extensions/connector-core/dist/tool-specs.js";
 import { deriveOwnerForIdpSubject, grantActor, loadOwnerSecret, platformControlOwner, revokeActor, startAuthService, type AuthServiceHandle } from "../src/index.js";
 import { authorityWriterGrants, openAuthorityClient } from "../src/authority-client.js";
 import { startHostedAuthFixture, type HostedAuthAccount } from "./_hosted-auth-fixture.js";
