@@ -258,7 +258,9 @@ Finite JSON output is one document on stdout. Streaming commands and modes can u
 for newline-delimited JSON (NDJSON), with one record per line. See the stream formats for
 [`history --follow`](cli-messaging.mdx#history),
 [`channel members --follow`](cli-messaging.mdx#channel) and [`watch`](cli-observation.mdx#observer-stream).
-The envelope below applies to finite JSON output. `cotal version --json` writes:
+The envelope below applies to finite JSON output.
+
+`cotal version --json` writes:
 
 ```json
 {"schemaVersion":1,"command":"version","target":null,"outcome":"ok","completeness":"complete","result":{"version":"<version>","update":"update status unknown","reconciliation":{"kind":"none"},"extensions":[]},"warnings":[]}
