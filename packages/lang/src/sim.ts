@@ -34,6 +34,7 @@ import type {
 import { Cancelled, EffectError, askSchemaShape, conformsToAskSchema } from "./effects.js";
 import { parseDuration } from "./duration.js";
 import { stepKeyString } from "./keys.js";
+import { simScopeFaults } from "./sim-scope-faults.js";
 
 /** A scripted outcome: one value used for every occurrence, or one per occurrence in order. */
 export type Scripted<T> = T | readonly T[];
@@ -145,6 +146,7 @@ export class SimHandler implements EffectHandler {
 
   constructor(readonly script: SimScript = {}) {
     this.virtualNow = script.clock?.start ?? 0;
+    if (script.faults?.length) simScopeFaults.set(this, (ctx) => this.checkFault(ctx));
   }
 
   now(): number {

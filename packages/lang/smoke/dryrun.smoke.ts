@@ -125,6 +125,21 @@ const realMs = Date.now() - realStart;
   ok("and an unscripted effect still throws: that dry run did not complete", (gap as { code?: string })?.code === "L6001", String(gap).slice(0, 80));
 }
 
+{
+  const source = `
+try {
+  await race({ a: () => log("branch a"), b: () => log("branch b") }, { name: "first" });
+} catch (fault) {
+  log(fault.code, fault.kind, fault.message);
+}
+`;
+  const report = await dryRun(source, { faults: [{ at: "race:first#0", kind: "scripted", message: "race refused" }] });
+  ok("a short race key targets the race even when all branches are pure",
+    JSON.stringify(report.log.map((line) => line.values)) === '[["L4002","scripted","race refused"]]', report.log);
+  ok("a caught race fault is recorded on the race itself",
+    report.effects.length === 1 && report.effects[0]?.step === "/race:first#0" && report.effects[0].status === "failed", report.effects);
+}
+
 // ---- 4) the plan is the run: checked against a real execution, not against an expectation --------
 
 /**
