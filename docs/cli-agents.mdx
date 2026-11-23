@@ -515,7 +515,9 @@ completion does not offer it.
 `p` aliases `persona`; `persona rm` aliases `persona remove`. These commands manage the
 selected space's local `.cotal/agents` catalog without connecting, refreshing a remote catalog
 or seeding connectors. `--space` and `--server` select the same root used by launch. A prepared
-space has an offline catalog before it is started. Failed target resolution never falls back
+space has an offline catalog before it is started. If you name that space with `--space`, you can
+also pass a planned `--server` address while the project has no recorded stack or broker. The
+catalog read does not dial that address. Failed target resolution never falls back
 to the current directory: a `--server` that no registration names reads the project in this
 folder, under the space prepared there, as launch does, and outside one it refuses with `TARGET_NOT_FOUND` and writes nothing. With
 no space selected and no project here, the refusal says so. With `--on <manager>`, list, show and

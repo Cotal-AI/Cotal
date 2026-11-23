@@ -118,8 +118,17 @@ export async function spawnLaunchPreview(args: Pick<ParsedArgs, "positionals"> &
     }
   }
   let cwd: string;
-  try { cwd = realpathSync(values.cwd ? resolve(values.cwd) : process.cwd()); if (!statSync(cwd).isDirectory()) throw new Error(); }
-  catch { throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the direct launch's local working directory is unavailable; no directory was created"); }
+  let requestedCwd = values.cwd || ".";
+  try {
+    requestedCwd = resolve(requestedCwd);
+    cwd = realpathSync(requestedCwd);
+    if (!statSync(cwd).isDirectory()) throw new Error();
+  }
+  catch {
+    throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `the direct launch's local working directory ${JSON.stringify(requestedCwd)} is unavailable. No directory was created.`, {
+      target: { space, path: requestedCwd }, remedy: "pass an existing directory to --cwd, or omit --cwd to use the current directory",
+    });
+  }
   const harness = resolveAgentType({ flag: values.agent, pin: definition.agent, callerDefault: callerHarness(space) });
   try { checkHarness(harness); }
   catch (error) {
