@@ -240,20 +240,20 @@ and hash when it creates the fork.
 
 ## Agent endpoint [#agent-endpoint]
 
-A `MeshAgent` with a user-auth credential serves its own `agent` endpoint once it joined the mesh: the prompt desk and the agent's commands.
+A `MeshAgent` serves its own `agent` endpoint once it joined the mesh, on every mesh mode: the prompt desk and the agent's commands.
 `openAgentEndpoint(ep, { warn, dispatcher, onQueued })` is that one serve in the process, and a connector built on `MeshAgent` does not call it.
 It resolves once the broker accepted the subscription.
-It rejects on an open mesh, under a static credential, without a lifecycle UID, when the broker refuses the subscription, and when the connection's `max_payload` is under 524288 bytes.
+It rejects without a lifecycle UID, when the broker refuses the subscription, and when the connection's `max_payload` is under 524288 bytes.
+The broker refuses it for a credential minted before the serve rows existed. On a static space a renewal keeps that credential's rows, so the refusal says to respawn the agent.
 Then nothing is served: the harness's own dialogs answer every prompt, presence shows neither the `prompts` nor the `agentEndpoint` field, and a caller gets `unavailable`.
 The same checks run on every replaced connection, and a failure there closes the endpoint and warns.
 `MeshAgent` logs a refusal and runs on without the endpoint.
 
-An open or static mesh names no caller, so a `MeshAgent` there serves nothing and runs as before.
-Serving there is follow-up work.
+Who may call depends on the mesh ([SPEC 13.21](../SPEC.md#1321-principal-route)). On a user-auth space it is the owner's interactive session. On a static space it is the owner's `agent-caller` connection, which `openAgentCaller` in `@cotal-ai/workspace/view` opens from the space's signing key, and no agent credential calls. On an open mesh any client calls, with no check on who it is.
 
 ## Agent commands [#agent-commands]
 
-The agent owner's interactive session can list an agent's own harness commands and skills and queue one to run, with `commands` and `command` on the agent's endpoint.
+The agent's owner can list an agent's own harness commands and skills and queue one to run, with `commands` and `command` on the agent's endpoint.
 It cancels a queued command with `command-cancel` and reads how far a command got with `command-state`.
 It stops the agent's running turn with `interrupt`, so a command queued behind a turn that hangs can run.
 It gives the agent a turn on the owner's own words, images included, with `turn`, and reads what the harness reports of its context window and cost with `usage`.
@@ -299,7 +299,7 @@ The states, codes and outcomes are in [SPEC §13.22](../SPEC.md#1322-the-agent-e
 
 ## Agent name [#agent-name]
 
-The agent owner's interactive session renames an agent with `set-name` `{ name }` on the agent's endpoint, and gets `{ name }` back.
+The agent's owner renames an agent with `set-name` `{ name }` on the agent's endpoint, and gets `{ name }` back.
 No one else can call it: the broker refuses a sibling agent of the same owner, any other owner, and every grant.
 `MeshAgent` serves it with no connector code. It changes the card's display name and republishes presence at once, and every client in the space sees the new name.
 The principal does not change, so the agent's subjects, durables and grants stay as they are, and an `@mention` of the new name reaches it.
@@ -316,7 +316,7 @@ A manager keeps the last name a seat showed with the seat, apart from its alias.
 ## Prompt desk [#prompt-desk]
 
 The prompt desk is the `prompts` field of the agent endpoint, where an authorized session reads and answers the prompts the agent's harness raises.
-A connector built on `MeshAgent` reads it as `agent.prompts`. It is undefined until the broker accepted the serve, and on an open or static mesh, and then the adapter leaves each dialog to the harness.
+A connector built on `MeshAgent` reads it as `agent.prompts`. It is undefined until the broker accepted the serve, and when the serve was refused, and then the adapter leaves each dialog to the harness.
 The Claude Code, OpenCode, pi and Hermes connectors are the shipped adapters; see Claude Code's [tool permissions](claude-connector-reference.mdx#tool-permissions), OpenCode's [permissions and questions](opencode-connector-reference.mdx#prompts), pi's [tool permissions](pi-connector-reference.mdx#tool-permissions) and Hermes's [command approvals](hermes-connector-reference.mdx#command-approvals).
 
 The desk knows no harness. An adapter calls `open({ content, openMs, settleMs }, hooks)` for each native dialog it offers.

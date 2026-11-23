@@ -2,8 +2,9 @@
  * The principal route and the `agent` endpoint, broker-free (SPEC 13.21, 13.22): the subject
  * grammar, the parser branch and the sentinel; the `authorities` field of a cluster command and
  * its parse refusals (cell 26); the envelope agreement branch (cells 9 and 21); the serve-side
- * construction refusals (cell 23); the row builders; the two mint arms and every profile that
- * gets nothing; and the maximum-capability credential's size with the new rows.
+ * construction refusals (cell 23); the row builders; the callout and static mint arms, the
+ * `agent-caller` profile, a static renewal that keeps the rows its issuance had, and every profile
+ * that gets nothing; and the maximum-capability credential's size with the new rows.
  *
  * The cells that need a broker run in `pnpm smoke:principal-route:auth`.
  *
@@ -19,6 +20,7 @@ import {
   epPrincipalCallerReplyFilter, epPrincipalGrantRows, epPrincipalNoRespondersSubject, epPrincipalOwnerGrantRows,
   epPrincipalReplySubject, epPrincipalRequestSubject, epPrincipalServeFilter, epPrincipalServeGrantRows, epServeGrantRows,
   isPrincipalAuthority, mintLifecycleUid, parseClusterDocument, parseEndpointRequest, parseEpSubject, permissionsFor,
+  importNativeSubjectPermissions, issuedPermitsPattern, grantOverreach, mintAcceptedToken, mintGeneration, type IssuedCaller,
   principalRouteCommands, isAgentCommandName, EpEnvelopeError, ContractInvalidError, chatHistDurable,
   type EndpointRequest, type EpCaller, type EpCapability, type EpPrincipal, type ParsedEpPrincipalRequest, type PromptContent,
 } from "../src/index.js";
@@ -346,10 +348,61 @@ check("an interactive row's owner rows cover its own actor as a target, so the c
 check("a callout mint with no ledger kind (a chat session) gets none", prinRows(mint({ owner: "u_alice", actor: "chat" })).length === 0);
 throws("a static mint carries no ledger kind", () => mint({ owner: "u_alice", actor: "coder" }, { ledgerKind: "interactive" }, UID, null), "static mint");
 throws("an unknown ledger kind is refused", () => mint({ owner: "u_alice", actor: "coder" }, { ledgerKind: "admin" }, UID), "ledgerKind");
-check("a static agent mint gets none", prinRows(mint({ owner: "local", actor: "coder" }, {}, UID, null)).length === 0);
+
+// ── a static space: agents serve, only the person's agent-caller calls (SPEC 13.21) ──
+const localServe = epPrincipalServeGrantRows(SPACE, { owner: "local", actor: "coder", uid: UID });
+const staticAgent = mint({ owner: "local", actor: "coder" }, {}, UID, null);
+check("a static agent mint gets the serve rows and no caller row",
+  prinRows(staticAgent).sort().join("|") === [...localServe.pub, ...localServe.sub].sort().join("|"), prinRows(staticAgent));
+check("a static agent holding spawn, run and admin still gets no caller row: the rows follow the profile, never a capability",
+  prinRows(mint({ owner: "local", actor: "coder" }, { capabilities: ["spawn", "run", "admin"] }, UID, null)).sort().join("|") === [...localServe.pub, ...localServe.sub].sort().join("|"));
+const unserved = mint({ owner: "local", actor: "coder" }, { principalServe: false }, UID, null);
+const withoutPrin = (perms: Record<string, unknown>) => {
+  const p = perms as { pub: { allow: string[]; deny?: string[] }; sub: { allow: string[] } };
+  return { ...p, pub: { ...p.pub, allow: p.pub.allow.filter((r) => !r.includes(".ep.prin")) }, sub: { ...p.sub, allow: p.sub.allow.filter((r) => !r.includes(".ep.prin")) } };
+};
+check("principalServe: false mints the static agent ceiling without the serve rows, and nothing else changes",
+  prinRows(unserved).length === 0 && JSON.stringify(unserved) === JSON.stringify(withoutPrin(staticAgent)));
+throws("principalServe on a callout mint is refused: its rows come from the ledger kind", () => mint({ owner: "u_alice", actor: "coder" }, { ledgerKind: "managed-agent", principalServe: false }, UID), "principalServe");
+throws("principalServe on any other profile is refused", () => permissionsFor("observer", SPACE, { owner: "local", actor: "obs", connId: callout.connId }, { principalServe: true }), "principalServe");
+
+// A renewal keeps the rows the issuance recorded (SPEC 13.15): the Manager reads the evidence's subscribe ceiling.
+const nkeyActor = "UPARENTACTOR0000000000000000000000000000000000000000000";
+const issuedCaller = { owner: "local", actor: nkeyActor, uid: UID, generation: mintGeneration(Math.floor(Date.now() / 1000) + 3600) } as IssuedCaller;
+const acceptedToken = mintAcceptedToken();
+const evidenceOf = (opts: Record<string, unknown>) => importNativeSubjectPermissions(permissionsFor("agent", SPACE,
+  { owner: "local", actor: nkeyActor, connId: nkeyActor, lifecycleUid: UID }, { ...opts, lifecycleUid: UID, issued: { generation: issuedCaller.generation, acceptedToken } }));
+const issuedServeRow = epPrincipalServeGrantRows(SPACE, issuedCaller).sub[0]!;
+const renewalOf = (recorded: ReturnType<typeof evidenceOf>) => evidenceOf({ principalServe: issuedPermitsPattern(recorded.subscribe, issuedServeRow) });
+const preChange = evidenceOf({ principalServe: false });
+const current = evidenceOf({});
+check("an issuance made before the rows existed renews byte-identical, with no serve row",
+  JSON.stringify(renewalOf(preChange)) === JSON.stringify(preChange) && !issuedPermitsPattern(preChange.subscribe, issuedServeRow));
+check("...where a renewal that added the rows would differ from the recorded ceiling, which the issuer refuses as a renewal",
+  JSON.stringify(current) !== JSON.stringify(preChange));
+check("an issuance that has the rows renews byte-identical with them", JSON.stringify(renewalOf(current)) === JSON.stringify(current));
+check("the delegation bound is unchanged: the serve rows are in the empty projection it subtracts",
+  grantOverreach(SPACE, issuedCaller, current, { allowSubscribe: ["review"] }).length === 1
+  && grantOverreach(SPACE, issuedCaller, evidenceOf({ allowSubscribe: ["review"] }), { allowSubscribe: ["review"] }).length === 0);
+
+const ownerCaller = (pr: Record<string, unknown>) => permissionsFor("agent-caller", SPACE, { owner: "local", actor: "acp", connId: callout.connId, ...pr }, {}) as { pub: { allow: string[]; deny?: string[] }; sub: { allow: string[] } };
+const personCaller = ownerCaller({ lifecycleUid: CUID });
+const personOwn = epPrincipalOwnerGrantRows(SPACE, { owner: "local", actor: "acp", uid: CUID });
+check("an agent-caller holds the twelve owner rows over every agent under local, their reply read and its inbox, and nothing else",
+  personCaller.pub.allow.join("|") === personOwn.pub.join("|") && personCaller.sub.allow.join("|") === [`_INBOX_${callout.connId}.>`, ...personOwn.sub].join("|") && personCaller.pub.deny === undefined,
+  personCaller);
+check("an agent-caller holds no serve row", !personCaller.sub.allow.some((r) => r.startsWith(`${P}.ep.prin.`)) && !personCaller.pub.allow.some((r) => r.startsWith(`${P}.ep.prin-reply.`)));
+throws("the auth callout never mints an agent-caller", () => ownerCaller({ lifecycleUid: CUID, readerId: callout.readerId }), "static mint");
+throws("an agent-caller needs a lifecycle UID", () => ownerCaller({}), "lifecycleUid");
+throws("an agent-caller is never issued", () => permissionsFor("agent-caller", SPACE, { owner: "local", actor: "acp", connId: callout.connId, lifecycleUid: CUID },
+  { issued: { generation: issuedCaller.generation, acceptedToken: mintAcceptedToken() } }), "issued");
 const profiles: [string, () => Record<string, unknown>][] = [
   ["observer", () => permissionsFor("observer", SPACE, { owner: "u_alice", actor: "obs", connId: callout.connId, readerId: callout.readerId }, {})],
   ["admin", () => permissionsFor("admin", SPACE, { owner: "u_alice", actor: "console", connId: callout.connId, readerId: callout.readerId }, {})],
+  ["static observer", () => permissionsFor("observer", SPACE, { owner: "local", actor: "obs", connId: callout.connId }, {})],
+  ["static admin", () => permissionsFor("admin", SPACE, { owner: "local", actor: "console", connId: callout.connId }, {})],
+  ["control-caller-privileged", () => permissionsFor("control-caller-privileged", SPACE, { owner: "local", actor: "ctl", connId: callout.connId, lifecycleUid: CUID }, {})],
+  ["static manager-caller", () => permissionsFor("manager-caller", SPACE, { owner: "local", actor: "seat", connId: callout.connId, lifecycleUid: CUID }, { capabilities: ["spawn"], lifecycleUid: CUID, managerInstanceId: UID2 })],
   ["delivery", () => permissionsFor("delivery", SPACE, { owner: "local", actor: "delivery", connId: callout.connId }, {})],
   ["supervisor", () => permissionsFor("supervisor", SPACE, { owner: "local", actor: "sup", connId: callout.connId }, {})],
   ["operator", () => permissionsFor("operator", SPACE, { owner: "local", actor: "op", connId: callout.connId }, {})],

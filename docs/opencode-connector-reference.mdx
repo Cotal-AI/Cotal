@@ -196,8 +196,8 @@ instead: every tool asks except question, read, glob, grep, lsp, todowrite, task
 agent's own `cotal_*` tools, and reading an `.env` file other than `.env.example` asks. Such a
 launch refuses a `permission` launch option, which would override those rules. A persona whose
 `launchOptions` set an asking permission, such as `{permission: {bash: ask}}`, also makes OpenCode
-ask. On a signed-in space each ask then opens a prompt on the agent's `agent` endpoint, on 1.x and
-2.x, while OpenCode's own dialog stays open. The first reply wins.
+ask. Each ask then opens a prompt on the agent's `agent` endpoint, on 1.x and 2.x, while
+OpenCode's own dialog stays open. The first reply wins.
 
 - **A permission ask** offers Allow once, Allow always and Reject. Its subject is the tool call it
   gates, with the tool's name and input as the call started, so a client can show the command or

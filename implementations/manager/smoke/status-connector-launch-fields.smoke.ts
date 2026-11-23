@@ -36,7 +36,7 @@ async function inspect(installed: boolean): Promise<ManagerConnectorStatus[]> {
     () => undefined,
   );
   await inventory.inspectConnectorsAtBoot();
-  return servedConnectorStatuses(inventory.connectorStatuses, false);
+  return servedConnectorStatuses(inventory.connectorStatuses);
 }
 const facts = (rows: ManagerConnectorStatus[], agent: string) => {
   const r = rows.find((candidate) => candidate.agent === agent);

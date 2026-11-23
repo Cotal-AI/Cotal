@@ -286,7 +286,7 @@ export async function runCodexHost(): Promise<void> {
   const codexBin = process.env.COTAL_CODEX_BIN?.trim() || process.env.COTAL_CODEX_RESOLVED_BIN?.trim() || undefined;
   // Validate the operator's launch config BEFORE anything is listening, so a bad launch throws
   // with nothing left behind to reap.
-  const baseOverrides = configOverrides(model, variant, config.userAuth !== undefined, config.askPermissions === true);
+  const baseOverrides = configOverrides(model, variant, config.askPermissions === true);
   // The cotal_* tools must be LISTENING before the child spawns: the child's config names this
   // URL and codex dials it while starting the thread.
   const mcp = await startCotalMcp(agent, config, log, () => ready && !driver.stopped ? driver.thread : undefined);
