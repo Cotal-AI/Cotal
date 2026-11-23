@@ -1,10 +1,10 @@
 {
   "expected": {
-    "total": 1117,
+    "total": 1118,
     "honest-text": 71,
     "presence-only-glyph/count": 138,
     "command-ack": 13,
-    "non-render/control": 895
+    "non-render/control": 896
   },
   "classRationales": {
     "non-render/control": "This candidate handles presence state without making a human work-progress claim. Status tokens, routing, component inputs and presentation metadata are control data; exceptions that report a different kind of status carry an entry-specific reason."
@@ -5521,6 +5521,13 @@
       "anchor": "\"waiting\"",
       "class": "non-render/control",
       "rationale": "Space registration field: \"waiting\" is the color tone for a broker check skipped with --force, not any peer's presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/space.ts",
+      "kind": "derived-output",
+      "anchor": "`this folder has ${spaces.length} registered spaces: ${spaces.join(\", \")}`",
+      "class": "non-render/control",
+      "rationale": "Space show reports matching local registry entries, not peer presence or progress."
     },
     {
       "path": "implementations/cli/src/commands/space.ts",

@@ -1,4 +1,5 @@
 import { existsSync } from "node:fs";
+import { dirname } from "node:path";
 import type { CompletionResult, FlagSpec, FlagValues, ParsedArgs } from "@cotal-ai/core";
 import {
   CommandFailure,
@@ -21,7 +22,6 @@ import {
   listSpaceAccounts,
   loadMeshes,
   loadPreparedSpaces,
-  meshesForRoot,
   noteFolderSpace,
   noteFolderSpaceShown,
   plainFlag,
@@ -203,8 +203,9 @@ export async function space(args: ParsedArgs): Promise<void> {
 }
 
 function spaceShownAt(cwd: string): string | undefined {
-  if (!isGenuineSpace(cwd)) {
-    const matches = meshesForRoot(cwd);
+  const registeredRoots = loadMeshes().map((mesh) => ({ mesh, root: canonicalRoot(mesh.root) }));
+  for (let root = canonicalRoot(cwd); !isGenuineSpace(root); root = dirname(root)) {
+    const matches = registeredRoots.filter((entry) => entry.root === root).map((entry) => entry.mesh);
     if (matches.length > 1) {
       const spaces = matches.map((m) => m.space);
       throw new MeshTargetError("ambiguous-target", `this folder has ${spaces.length} registered spaces: ${spaces.join(", ")}`, {
@@ -212,6 +213,7 @@ function spaceShownAt(cwd: string): string | undefined {
       });
     }
     if (matches[0]) return matches[0].space;
+    if (dirname(root) === root) break;
   }
   return folderSpace(cwd, { refuseAmbiguous: true });
 }

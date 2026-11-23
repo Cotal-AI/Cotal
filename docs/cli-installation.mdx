@@ -1012,7 +1012,8 @@ With none of those it reads your defaults. `--user` reads your defaults alone.
 Both commands work without installing or refreshing connectors. Only `harness`
 and `persona` have per-space values. `set --space` takes a space registered or prepared on this
 machine. A valid name that does not match a space refuses with `TARGET_NOT_FOUND` (exit 2) and the
-known spaces. A name `space create` cannot use, such as one starting with `-`, refuses with
+known spaces. To prepare a new space from an occupied project, run `cotal space create <name> --root <dir>`
+with another folder. A name `space create` cannot use, such as one starting with `-`, refuses with
 `USAGE_INVALID` (exit 1) before any space lookup.
 A read and `unset --space` also take a space that still holds a saved value, so a value left for
 a space you removed can be read and removed, and refuse any other name the same way. A write that

@@ -204,7 +204,7 @@ function assertKnownSpace(space: string, prefs: Preferences, saved: boolean): vo
   if (findMesh(space) || findPreparedSpace(space) || (saved && holdsValue(space))) return;
   const known = [...new Set([...loadMeshes().map((mesh) => mesh.space), ...loadPreparedSpaces().map((prepared) => prepared.space), ...(saved ? Object.keys(prefs.spaces).filter(holdsValue) : [])])].sort();
   throw new CommandFailure("refused", "TARGET_NOT_FOUND", `no space named ${JSON.stringify(space)} is ${saved ? "registered, prepared or holding a saved value here" : "registered or prepared here"}${known.length ? `; known spaces: ${known.join(", ")}` : ""}`, {
-    remedy: `name a known space with --space, or prepare it first with \`cotal space create ${space}\` or register it with \`cotal space add ${space} --server <url>\``,
+    remedy: `name a known space with --space, or prepare it first with \`cotal space create ${space} --root <dir>\` or register it with \`cotal space add ${space} --server <url>\``,
   });
 }
 

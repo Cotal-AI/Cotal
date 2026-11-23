@@ -249,7 +249,7 @@ async function addFromServer(name: string | undefined, v: AddValues, prompt: boo
   const mode = take(checkMode(name, root, accounts, v.mode, false), target);
   const auth = take(checkTrust(mode, root, name), target);
   const replaced = replaceable(name, v.force === true, target, (existing) =>
-    brokerUrlKey(existing.server) === brokerUrlKey(server) && existing.root === root && existing.mode === mode && (existing.tlsRequired === true) === tlsRequired &&
+    brokerUrlKey(existing.server) === brokerUrlKey(server) && canonicalRoot(existing.root) === canonicalRoot(root) && existing.mode === mode && (existing.tlsRequired === true) === tlsRequired &&
     (existing.unencryptedOverlay === true) === Boolean(dial.residual));
   const verified = v.force !== true;
   if (verified) {
