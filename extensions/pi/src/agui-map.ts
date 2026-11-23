@@ -1,6 +1,7 @@
 import {
   runStarted, runFinished, runError, textMessageStart, textMessageContent, textMessageEnd,
-  toolCallStart, toolCallEnd, type RecordMapper, type AguiEvent,
+  reasoningMessageStart, reasoningMessageContent, reasoningMessageEnd,
+  toolCallStart, toolCallArgs, toolCallEnd, toolCallResult, toolResultMarker, type RecordMapper, type AguiEvent,
 } from "@cotal-ai/connector-core";
 
 export interface PiSessionEntry {
@@ -9,12 +10,22 @@ export interface PiSessionEntry {
   timestamp?: string;
   message?: {
     role?: string;
-    content?: Array<{ type?: string; text?: string; id?: string; name?: string }>;
+    content?: Array<{ type?: string; text?: string; id?: string; name?: string; arguments?: unknown; thinking?: string; redacted?: boolean }>;
     stopReason?: string;
     timestamp?: number;
     errorMessage?: string;
     toolCallId?: string;
+    isError?: boolean;
   };
+}
+
+/** A tool result's content is an array of blocks. Text alone is joined as Pi joins it for display;
+ *  any other block, such as an image, keeps the whole array JSON-encoded rather than dropped. */
+function resultContent(content: unknown): string {
+  const blocks = Array.isArray(content) ? (content as Array<{ type?: unknown; text?: unknown }>) : undefined;
+  return blocks?.every((block) => block?.type === "text" && typeof block.text === "string")
+    ? blocks.map((block) => block.text).join("\n")
+    : JSON.stringify(content ?? null);
 }
 
 /**
@@ -26,8 +37,9 @@ function stopped(message: NonNullable<PiSessionEntry["message"]>): boolean {
   return message.stopReason === "aborted" || (message.stopReason === "error" && message.errorMessage === "This operation was aborted");
 }
 
-/** Pi persists completed messages, not live deltas. User messages have no separable peer authorship. */
-export function createPiMapper(threadId: string, resumedRun?: string, resumedTools: readonly string[] = []): RecordMapper<PiSessionEntry> {
+/** Pi persists completed messages, not live deltas. User messages have no separable peer authorship.
+ *  `reasoning` emits `REASONING_*` for thinking blocks and is off by default. */
+export function createPiMapper(threadId: string, resumedRun?: string, resumedTools: readonly string[] = [], reasoning = false): RecordMapper<PiSessionEntry> {
   let open = resumedRun;
   const tools = new Set(resumedTools);
   return (entry) => {
@@ -38,7 +50,17 @@ export function createPiMapper(threadId: string, resumedRun?: string, resumedToo
       if (!open || !callId || !tools.delete(callId)) return null;
       const ts = entry.message.timestamp ?? Date.parse(entry.timestamp ?? "");
       if (!Number.isFinite(ts)) throw new Error("Pi AG-UI: tool result has no valid timestamp");
-      return { runId: open, events: [toolCallEnd({ toolCallId: callId, timestamp: ts })] };
+      // The result follows its call's end, and the marker beside it tells a public reader that the
+      // call finished and whether it failed, while the egress fence keeps the output on the rail.
+      const isError = entry.message.isError === true;
+      return {
+        runId: open,
+        events: [
+          toolCallEnd({ toolCallId: callId, timestamp: ts }),
+          toolCallResult({ messageId: `${callId}:result`, toolCallId: callId, content: resultContent(entry.message.content), timestamp: ts, cotal: { isError } }),
+          toolResultMarker({ toolCallId: callId, isError, timestamp: ts }),
+        ],
+      };
     }
     if (entry.type !== "message" || entry.message?.role !== "assistant") return null;
     if (!entry.id || !Array.isArray(entry.message.content))
@@ -57,10 +79,17 @@ export function createPiMapper(threadId: string, resumedRun?: string, resumedToo
         events.push(textMessageStart({ messageId, timestamp: ts }));
         events.push(textMessageContent({ messageId, delta: part.text, timestamp: ts }));
         events.push(textMessageEnd({ messageId, timestamp: ts }));
+      } else if (part.type === "thinking" && reasoning && part.thinking && !part.redacted) {
+        // A redacted block holds Pi's placeholder text, not the model's reasoning.
+        const messageId = `${entry.id}:thinking:${index}`;
+        events.push(reasoningMessageStart({ messageId, timestamp: ts }));
+        events.push(reasoningMessageContent({ messageId, delta: part.thinking, timestamp: ts }));
+        events.push(reasoningMessageEnd({ messageId, timestamp: ts }));
       } else if (part.type === "toolCall") {
         if (!part.id || !part.name) throw new Error(`Pi AG-UI: tool call in ${entry.id} lacks native id/name`);
         tools.add(part.id);
         events.push(toolCallStart({ toolCallId: part.id, toolCallName: part.name, timestamp: ts }));
+        events.push(toolCallArgs({ toolCallId: part.id, delta: JSON.stringify(part.arguments ?? null), timestamp: ts }));
       }
     }
     if (entry.message.stopReason === "error" || entry.message.stopReason === "aborted") {
