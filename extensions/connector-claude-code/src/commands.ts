@@ -4,13 +4,14 @@
  * (`command-feed.ts`) carries each request to it. The mod lists only what may run remotely, and
  * Claude's list does not say which entries are skills, so every entry is a `command`.
  */
-import { CommandRefused, type CommandDispatcher, type MeshAgent } from "@cotal-ai/connector-core";
+import { CommandRefused, type AgentTurn, type AgentUsage, type CommandDispatcher, type MeshAgent } from "@cotal-ai/connector-core";
 import type { CommandEntry } from "@cotal-ai/core";
 import type { CommandFeed } from "./command-feed.js";
 import type { ModAnswer } from "./command-frames.js";
+import { promptWithImages } from "./turn-images.js";
 
-/** How long Claude Code has to start a command, and the mod to stop a turn. A panel or dialog open
- *  at the seat holds a command's start until someone there closes it. */
+/** How long Claude Code has to start a command or take a prompt, and the mod to stop a turn. A panel
+ *  or dialog open at the seat holds a command's start until someone there closes it. */
 const BOUNDS = { runMs: 30_000, interruptMs: 10_000 };
 
 /** How long a started command's turn has to show in presence before the next command goes. The
@@ -28,6 +29,8 @@ interface ClaudeCommandsOptions {
    *  Code reports with no hook. Undefined when no hooks follow the session's turns. */
   interrupting(): (() => Promise<void>) | undefined;
   warn(msg: string): void;
+  /** The seat's image folder (turn-images.ts). Without one, a turn takes no images. */
+  imageDir?: string;
   bounds?: typeof BOUNDS;
 }
 
@@ -68,6 +71,22 @@ export function claudeCommands(o: ClaudeCommandsOptions): CommandDispatcher {
       const answer = expect(await within(served().request({ op: "run", command: name, args }), bounds.runMs, late), "run");
       if (answer.outcome === "started") return;
       throw new CommandRefused(answer.outcome === "not-found" ? "not-found" : "failed-precondition", answer.reason);
+    },
+    ...(o.imageDir !== undefined ? { images: true } : {}),
+    async turn({ text, images }: AgentTurn) {
+      const feed = served();
+      const late = `Claude Code did not take the prompt within ${bounds.runMs / 1000} s. A panel or dialog open at the seat holds it until someone there closes it, so it may still run`;
+      const prompt = images.length ? promptWithImages(o.imageDir!, text, images) : text;
+      const answer = expect(await within(feed.request({ op: "prompt", text: prompt }), bounds.runMs, late), "prompt");
+      if (answer.outcome === "refused") throw new CommandRefused("failed-precondition", answer.reason);
+    },
+    async usage(): Promise<AgentUsage> {
+      const late = `the command mod did not report usage within ${bounds.interruptMs / 1000} s`;
+      const { window, tokens, usd } = expect(await within(served().request({ op: "usage" }), bounds.interruptMs, late), "usage");
+      return {
+        ...(tokens !== undefined ? { context: { used: tokens, size: window } } : {}),
+        ...(usd !== undefined ? { cost: { amount: usd, currency: "USD" } } : {}),
+      };
     },
     async interrupt() {
       const feed = served();

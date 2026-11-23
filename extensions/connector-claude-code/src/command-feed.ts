@@ -11,7 +11,7 @@ import { createServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CONNECTOR_VERSION } from "@cotal-ai/connector-core/version";
-import { MAX_LINE_BYTES, parseModFrame, type CommandAsk, type CommandRequest, type ModAnswer, type ModHello } from "./command-frames.js";
+import { MAX_LINE_BYTES, MAX_REQUEST_BYTES, parseModFrame, type CommandAsk, type CommandRequest, type ModAnswer, type ModHello } from "./command-frames.js";
 
 /** The oldest Claude Code with the mod API the command mod uses. */
 const CLAUDE_FLOOR = [2, 1, 330] as const;
@@ -138,9 +138,12 @@ class CommandSocket implements CommandFeed {
     const reader = this.reader;
     if (reader.state !== "ready") return Promise.reject(new Error(this.unsupported()));
     const frame: CommandRequest = { id: requestId(), ...ask };
+    const line = JSON.stringify(frame);
+    // The reader drops a longer line, and its connection with it.
+    if (Buffer.byteLength(line, "utf8") > MAX_REQUEST_BYTES) return Promise.reject(new Error(`the ${ask.op} request is over ${MAX_REQUEST_BYTES} bytes`));
     return new Promise((resolve, reject) => {
       this.pending.set(frame.id, { op: ask.op, resolve, reject });
-      reader.socket.write(`${JSON.stringify(frame)}\n`);
+      reader.socket.write(`${line}\n`);
     });
   };
 

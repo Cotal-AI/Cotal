@@ -10,7 +10,7 @@
 import { createConnection, type Socket } from "node:net";
 import { CONNECTOR_VERSION } from "@cotal-ai/connector-core/version";
 import { commandSockets, WINDOWS_UNSUPPORTED } from "./command-feed.js";
-import { MAX_LINE_BYTES, parseModFrame } from "./command-frames.js";
+import { MAX_LINE_BYTES, MAX_REQUEST_BYTES, parseModFrame } from "./command-frames.js";
 
 /** How often to look for a server that opened its socket since. */
 const SCAN_MS = 1_000;
@@ -26,7 +26,7 @@ function gone(pid: number): boolean {
   }
 }
 
-/** Call `onLine` with each line `s` sends. A line over the frame limit ends the connection. */
+/** Call `onLine` with each line `s` sends. A line over the request limit ends the connection. */
 function lines(s: Socket, onLine: (line: string) => void): void {
   let buffer = "";
   s.setEncoding("utf8");
@@ -36,7 +36,7 @@ function lines(s: Socket, onLine: (line: string) => void): void {
       onLine(buffer.slice(0, i));
       buffer = buffer.slice(i + 1);
     }
-    if (buffer.length > MAX_LINE_BYTES) s.destroy();
+    if (Buffer.byteLength(buffer, "utf8") > MAX_REQUEST_BYTES) s.destroy();
   });
 }
 
