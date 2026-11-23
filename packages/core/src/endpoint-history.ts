@@ -44,6 +44,8 @@ type HistoryReader = {
   pool: HistoryReaderSlots;
   slot: number;
   name: string;
+  /** Keep the stream-wide CREATE subject when a plural batch is split into singletons. */
+  usePluralFilter?: boolean;
   /** False once the hold is given back, so it is given back once. */
   held: boolean;
   /** True once a delete under the name failed, so the name may still hold this read's reader and is
@@ -81,6 +83,10 @@ type HistoryReaderSlots = {
  *  A space with the 69 chat channels this was built for is still ONE read, so the round-trip claim
  *  in #1210 is unchanged at that size. */
 export const MULTI_FILTER_BATCH = 1_000;
+
+// NATS intersects multi-filter pulls by retokenizing each dotted prefix. Beyond its inline token
+// buffer, deep subjects also allocate on that hot path. Give them single-filter pulls instead.
+const MULTI_FILTER_TOKEN_BUDGET = 64;
 
 
 /** How many filter batches may be in flight at once. Bounded because the point of #1210 was to stop
@@ -305,9 +311,18 @@ export class EndpointHistory {
     // single-create path on ONE corpus: forcing a small batch makes a space that would otherwise be
     // one read take many, which is the only way to assert the two select the same messages.
     const size = Math.max(1, Math.trunc(opts?.batch ?? MULTI_FILTER_BATCH));
-    const batches: string[][] = [];
-    for (let i = 0; i < subjects.length; i += size)
-      batches.push(subjects.slice(i, i + size));
+    const batches: { subjects: string[]; usePluralFilter: boolean }[] = [];
+    for (let i = 0; i < subjects.length; i += size) {
+      const batch = subjects.slice(i, i + size);
+      const usePluralFilter = batch.length > 1;
+      const shallow: string[] = [];
+      for (const subject of batch) {
+        if (usePluralFilter && subject.split(".").length > MULTI_FILTER_TOKEN_BUDGET)
+          batches.push({ subjects: [subject], usePluralFilter });
+        else shallow.push(subject);
+      }
+      if (shallow.length) batches.push({ subjects: shallow, usePluralFilter });
+    }
     const pages: { seq: number; subject: string; msg: HistoryMessage }[][] = new Array(batches.length);
     let next = 0;
     const readBatch = async (): Promise<void> => {
@@ -315,7 +330,7 @@ export class EndpointHistory {
         const i = next++;
         if (i >= batches.length) return;
         pages[i] = await this.streamHistory(
-          chatStream(this.identity.space), batches[i], limit, undefined, opts?.signal,
+          chatStream(this.identity.space), batches[i].subjects, limit, undefined, opts?.signal, batches[i].usePluralFilter,
         );
       }
     };
@@ -437,6 +452,7 @@ export class EndpointHistory {
     limit: number,
     before?: number,
     signal?: AbortSignal,
+    usePluralFilter?: boolean,
   ): Promise<{ seq: number; subject: string; msg: HistoryMessage }[]> {
     if (!this.conn.nc) throw new Error(this.deps.notLiveMsg());
     signal?.throwIfAborted();
@@ -466,6 +482,7 @@ export class EndpointHistory {
     let reader: HistoryReader | undefined;
     try {
       reader = await this.acquireHistoryReader(nc, this.conn.jsm ?? (this.conn.jsm = await jetstreamManager(nc)), stream, signal);
+      reader.usePluralFilter = usePluralFilter;
       // THE EXACT CEILING, on the already-granted surface. A one-shot consumer with
       // `DeliverPolicy.Last` plus this subject's filter reports the newest MATCHING sequence, and its
       // `num_pending` of zero means the channel is genuinely empty. Using the STREAM's last sequence
@@ -639,8 +656,9 @@ export class EndpointHistory {
    *  the name was taken again since. The read moves to a free name, and the taken one stays out of use
    *  until such a consumer would have expired. */
   async openHistoryReader(reader: HistoryReader, config: Partial<ConsumerConfig>): Promise<Consumer> {
-    // A single filter must ride the filter-bearing API subject so scoped read grants apply.
-    if (config.filter_subjects?.length === 1) {
+    // A scoped read uses the filter-bearing API subject. A split plural batch keeps its original
+    // stream-wide CREATE grant, but NATS uses the single-filter pull path for a one-element list.
+    if (config.filter_subjects?.length === 1 && !reader.usePluralFilter) {
       const { filter_subjects, ...rest } = config;
       config = { ...rest, filter_subject: filter_subjects[0] };
     }
