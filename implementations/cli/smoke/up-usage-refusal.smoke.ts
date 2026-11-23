@@ -50,9 +50,10 @@
  *
  * Run: pnpm smoke:up-usage-refusal
  */
-import { spawn, spawnSync } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { execFile, spawn, spawnSync } from "node:child_process";
+import { generateKeyPairSync, randomUUID } from "node:crypto";
 import { once } from "node:events";
+import { createServer as createHttpServer } from "node:http";
 import { connect, createServer, type AddressInfo, type Socket } from "node:net";
 import { accessSync, chmodSync, constants, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -274,6 +275,50 @@ for (const exchange of [[], ["--exchange-public-port", "0"]]) {
       && serviceHostingRemedy(error.remedy) && (!exchange.length || error.remedy?.includes("Keep the broker and public exchange flags") === true)
       && JSON.stringify(readdirSync(join(prepared, ".cotal")).sort()) === JSON.stringify(before.sort()), shown(result));
 }
+const hostingTls = run(["up", ...serviceHostingFlags, "--server", "tls://127.0.0.1:1",
+  "--tls-cert", join(prepared, "cert.pem"), "--tls-key", join(prepared, "key.pem")], prepared);
+const hostingTlsError = hostingTls.envelope?.error;
+check("a prepared root refusing service hosting with TLS gives a legacy retry that keeps both",
+  hostingTls.status === 2 && hostingTls.envelope?.outcome === "refused" && hostingTlsError?.code === "UNSUPPORTED"
+    && hostingTlsError.message?.includes("--service-endpoints, --tls-cert, --tls-key and --server tls://") === true
+    && serviceHostingRemedy(hostingTlsError.remedy)
+    && hostingTlsError.remedy?.includes("`--tls-cert <cert.pem> --tls-key <key.pem>` and a `tls://` broker address") === true
+    && !existsSync(join(prepared, ".cotal", "stack-controller.json")), shown(hostingTls));
+async function checkManifestHosting(): Promise<void> {
+  const jwks = JSON.stringify({ keys: [generateKeyPairSync("ed25519").publicKey.export({ format: "jwk" })] });
+  let idpRequests = 0;
+  const idp = createHttpServer((req, res) => {
+    idpRequests++;
+    if (req.url !== "/auth/jwks") { res.writeHead(404).end(); return; }
+    res.writeHead(200, { "content-type": "application/json" }).end(jwks);
+  });
+  idp.listen(0, "127.0.0.1");
+  await once(idp, "listening");
+  try {
+    const port = (idp.address() as AddressInfo).port;
+    const hostingManifest = join(prepared, "hosting.yaml");
+    writeFileSync(hostingManifest, `apiVersion: cotal/v1\nkind: Mesh\nspace: upusage\nbroker:\n  auth: user\n  idp: http://127.0.0.1:${port}/auth\nchannels: {}\nagents: {}\n`);
+    // The IdP also holds the broker port so a failed refusal cannot launch anything.
+    const args = ["up", "-f", hostingManifest, "--user-auth", "--no-manager", "--server", `nats://127.0.0.1:${port}`];
+    const manifest = (...flags: string[]) => new Promise<{ status: number | string | null | undefined; stdout: string; stderr: string }>((resolve) => {
+      execFile(process.execPath, [BIN, ...args, ...flags], { cwd: prepared, env, timeout: 30_000 }, (error, stdout, stderr) =>
+        resolve({ status: error ? error.code : 0, stdout, stderr }));
+    });
+    const preview = await manifest("--dry-run");
+    check("the user-auth manifest can be previewed without service hosting", preview.status === 0 && preview.stdout.includes("Dry run") && idpRequests > 0, preview);
+    const before = readdirSync(join(prepared, ".cotal"), { recursive: true }).sort();
+    const requestsBefore = idpRequests;
+    for (const flags of [["--dry-run"], []]) {
+      const result = await manifest(...flags, "--service-endpoints");
+      check(`manifest ${flags.length ? "preview" : "apply"} refuses the unused hosting flag before preflight or writes`,
+        result.status === 1 && result.stdout === ""
+          && result.stderr.includes("--service-endpoints cannot be combined with --file/-f")
+          && serviceHostingRemedy(result.stderr) && idpRequests === requestsBefore
+          && JSON.stringify(readdirSync(join(prepared, ".cotal"), { recursive: true }).sort()) === JSON.stringify(before), result);
+    }
+  } finally { await new Promise<void>((resolve) => idp.close(() => resolve())); }
+}
+await checkManifestHosting();
 const named = run(["up", "--server", "nats://localhost:43131", "--json"], prepared);
 check("in a prepared folder a host name is the same USAGE_INVALID refusal, exit 1, naming 127.0.0.1", named.status === 1 && named.envelope?.error?.code === "USAGE_INVALID" && /names the host localhost/.test(named.envelope.error.message ?? "") && named.stdout.includes("--server nats://127.0.0.1:43131"), shown(named));
 check("it wrote no stack journal", !existsSync(join(prepared, ".cotal", "stack-controller.json")), readdirSync(join(prepared, ".cotal")));

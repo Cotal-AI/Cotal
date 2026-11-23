@@ -15,7 +15,7 @@ import { isIP } from "node:net";
 import { basename, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { JetStreamApiCodes, JetStreamApiError } from "@nats-io/jetstream";
-import { awaitDeadDeliveryLease, CONTRACT_ARTIFACT_MAX_BYTES, deliveryLeaseHolderFor, isJetStreamMissing, isReachable, LEASE_TTL_MS, MANAGER_START_PAYLOAD_FLOOR, mintCreds, newIdentity, openPrivateAppend, SERVICE_CALLER_PAYLOAD_FLOOR, type BrokerTransport, type ParsedArgs } from "@cotal-ai/core";
+import { awaitDeadDeliveryLease, CONTRACT_ARTIFACT_MAX_BYTES, deliveryLeaseHolderFor, isJetStreamMissing, isReachable, LEASE_TTL_MS, MANAGER_START_PAYLOAD_FLOOR, mintCreds, newIdentity, openPrivateAppend, type BrokerTransport, type ParsedArgs } from "@cotal-ai/core";
 import {
   CommandFailure,
   accountInventory,
@@ -75,6 +75,7 @@ import { listAdditiveTeamAttempts, retainedAdditiveTeamAttempts, type AdditiveTe
 import { freshTeamAttemptSettled, listFreshTeamAttempts, listFreshTeamSummaries } from "../lib/team-fresh.js";
 import { foreignLocalProcesses, newStackOperation, readStackJournal, removeStaleLocalRecords, runningStackRoles, serviceHeldRecords, settleRetainedStackStops, settleStackOperation, STACK_ADAPTER, STACK_DEFINITION, STACK_ROLES, stackDefinitionsAt, stackMaintenanceFence, stackNeverStarted, stackRecoveryHost, stackOperationUnsettled, stackRoleApplies, stackSettlementNotice, staleRecordWarning, withSettledMembers, writeStackJournal, type LocalRecord, type StackJournal, type StackJournalSnapshot, type StackMember, type StackMode, type StackRole, type StackSettlement } from "../lib/stack-journal.js";
 import { retryStackAddress } from "../lib/up-broker-address.js";
+import { legacyUserAuthRemedy } from "../lib/up-report.js";
 import { withManagerName } from "../lib/up-manager-name.js";
 import { NATS_DEFAULT_MAX_PAYLOAD, natsServerLabel, type NatsServer } from "../lib/nats-bin.js";
 import { sharedStoreAtStart, sharedStoreWarning, type StoreTenant } from "../lib/store-dir.js";
@@ -235,12 +236,12 @@ export interface StackUpResult {
   clearedRecords?: LocalRecord[];
 }
 
-const LEGACY_USER_AUTH_INPUTS: readonly string[] = ["exchange-public-port", "exchange-public-url", "exchange-trusted-proxy", "advertised-server", "agent-provisioning-url", "service-endpoints"];
+const PUBLIC_EXCHANGE_INPUTS: readonly string[] = ["exchange-public-port", "exchange-public-url", "exchange-trusted-proxy", "advertised-server", "agent-provisioning-url"];
 
 /** Inputs that name a legacy-only startup refuse on the controller route. They are not dropped. A
  *  recorded stack takes `rotate-sys` on a stopped start; a first start refuses it, because it mints
  *  the space's system account new. */
-const CONTROLLER_UNSUPPORTED = ["file", "dry-run", "restore", "restore-only", "accept-missing-source", "accept-stale-checkpoint", "rotate-sys", ...LEGACY_USER_AUTH_INPUTS, "tls-cert", "tls-key"] as const;
+const CONTROLLER_UNSUPPORTED = ["file", "dry-run", "restore", "restore-only", "accept-missing-source", "accept-stale-checkpoint", "rotate-sys", ...PUBLIC_EXCHANGE_INPUTS, "service-endpoints", "tls-cert", "tls-key"] as const;
 
 /** The inputs that ask for a TLS broker, which the controller stack does not serve: the certificate
  *  pair, and a `--server` that names a `tls://` address. */
@@ -261,16 +262,14 @@ const MANIFEST_ROUTE: readonly string[] = ["dry-run", ...TLS_INPUTS];
 function controllerUnsupported(root: string, options: readonly string[], prepared: boolean): CommandFailure {
   const flags = options.map((name) => `--${name}`);
   const named = flags.length === 1 ? flags[0]! : `${flags.slice(0, -1).join(", ")} and ${flags.at(-1)!}`;
-  const legacyUserAuth = options.every((name) => LEGACY_USER_AUTH_INPUTS.includes(name));
   const serviceEndpoints = options.includes("service-endpoints");
-  const legacyCommand = `cotal up --user-auth --idp <auth base URL>${serviceEndpoints ? ` --service-endpoints --max-payload ${SERVICE_CALLER_PAYLOAD_FLOOR}` : ""}`;
-  const legacyFlags = options.some((name) => name !== "service-endpoints") ? "broker and public exchange flags" : "other broker flags";
+  const legacyUserAuth = options.every((name) => PUBLIC_EXCHANGE_INPUTS.includes(name) || (serviceEndpoints && (name === "service-endpoints" || TLS_INPUTS.includes(name))));
   const manifest = prepared && options.every((name) => MANIFEST_ROUTE.includes(name));
   const rotation = prepared && options.includes("rotate-sys") ? "; a first start mints the space's $SYS creds, so there is nothing to rotate" : "";
   return new CommandFailure("refused", "UNSUPPORTED", `${prepared ? "this root is prepared for a controller-owned stack" : "this root's stack is owned by the service controller"}, which has no route for ${named}; nothing was started through the legacy launcher`, {
     target: { root, options },
     remedy: legacyUserAuth
-      ? `to ${serviceEndpoints ? "host service endpoints" : "serve a public exchange"}, run \`${legacyCommand}\` from a new, unprepared project folder without running \`cotal space create\` first. Keep the ${legacyFlags}, use \`--space <unused-name>\`, and omit \`--root\`, \`--json\` and \`--plain\``
+      ? legacyUserAuthRemedy({ serviceEndpoints, publicExchange: options.some((name) => PUBLIC_EXCHANGE_INPUTS.includes(name)), tls: options.some((name) => TLS_INPUTS.includes(name)) })
       : manifest && options.some((name) => TLS_INPUTS.includes(name))
       ? `run \`cotal up\` without ${named} to serve plaintext, or serve TLS from a manifest whose broker.servers names a tls:// address, with \`cotal up -f <cotal.yaml> --tls-cert <cert.pem> --tls-key <key.pem>\``
       : manifest ? `run \`cotal up\` without ${named}, or start the space from a manifest with \`cotal up -f <cotal.yaml>\`, which takes ${flags.length === 1 ? "it" : "them"}` : `run \`cotal up\` without ${named}${rotation}`,

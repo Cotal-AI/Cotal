@@ -78,12 +78,14 @@ startup receipt from a controller-owned stack, use `--json` or `--plain` without
 `--open` with `--service-endpoints` or any public exchange flag refuses `USAGE_INVALID` (exit 1)
 before startup. Remove those flags for an open space, or use them with `--user-auth` instead of `--open`.
 
-A freshly prepared or controller-owned root refuses `--service-endpoints` and the public exchange
-flags as `UNSUPPORTED`, exit 2. To use either feature, run `cotal up --user-auth` with the IdP,
-broker and applicable flags from a new project folder. Use an unused space name and do not run
-`cotal space create` first. For a public exchange, see the
-[public exchange flags](remote-supervision.mdx#split-host-bind). An existing legacy user-auth root
-can keep using these flags.
+Without `-f`, a freshly prepared or controller-owned root refuses `--service-endpoints` and the
+public exchange flags as `UNSUPPORTED`, exit 2. Manifest preview and startup (`up -f`) refuse
+`--service-endpoints` as `USAGE_INVALID`, exit 1. To use service endpoint hosting or a public
+exchange, run `cotal up --user-auth` with the IdP, broker and applicable flags from a new project
+folder. Use an unused space name and do not run `cotal space create` first. For a TLS broker,
+include its `tls://` address, certificate and key. For a public exchange, see the
+[public exchange flags](remote-supervision.mdx#split-host-bind). An existing legacy user-auth
+root can keep using these flags.
 
 If a separately started manager service blocks `up`, the refusal names the command to stop that
 instance. When you used `--root` from another project, the retry keeps the target root and space.

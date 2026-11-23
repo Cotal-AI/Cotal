@@ -49,6 +49,7 @@ import { serviceInstallIntents } from "../lib/service-install-intent.js";
 import { serviceUninstallIntents } from "../lib/service-uninstall-intent.js";
 import { serviceUnitActionStore } from "../lib/service-unit-action.js";
 import { assertStoreDirArgument, startupStoreProblem } from "../lib/store-dir.js";
+import { legacyUserAuthRemedy } from "../lib/up-report.js";
 import { parseMaxFileStore, parseAuthTimeout, parseMaxPayload, assertManagerPayload, parseAccountResolver, tlsAddress } from "./up-transport.js";
 import { WILDCARD_HOSTS } from "./up-host.js";
 
@@ -66,6 +67,10 @@ export function validateUpArguments(args: ParsedArgs): void {
   presentationOf(args.values);
   if (typeof args.values.file === "string" && !args.values.file.trim())
     throw new CommandFailure("refused", "USAGE_INVALID", "--file is empty, so it names no manifest; nothing was started or written", { remedy: "name a manifest with --file <cotal.yaml>, or omit --file to start the folder's stack" });
+  if (args.values.file !== undefined && args.values["service-endpoints"] === true)
+    throw new CommandFailure("refused", "USAGE_INVALID", "--service-endpoints cannot be combined with --file/-f: manifest startup does not host service endpoints; nothing was started or written", {
+      remedy: `drop --service-endpoints to use the manifest, or ${legacyUserAuthRemedy({ serviceEndpoints: true, tls: requestsTls(args.values) })}`,
+    });
   if (args.values.restore === "")
     throw new CommandFailure("refused", "USAGE_INVALID", "--restore is empty, so it names no backup folder; nothing was started or written", { remedy: "pass the backup folder as --restore <dir>, or omit --restore to start without restoring", selfContained: true });
   // A `.cotal` that is a link, or leads nowhere, is refused before anything reads through it.
