@@ -2,4 +2,4 @@
 "@cotal-ai/cli": patch
 ---
 
-Restore tells you to make the parent writable and leave the new store path absent, and clean refuses `--dms` outside `clean history` without removing anything.
+When restore cannot write the parent of a new store, it tells you to make the parent writable and leave the store path absent.
