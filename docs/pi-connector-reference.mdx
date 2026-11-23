@@ -202,6 +202,21 @@ peer-authored content from human-authored content. A reload keeps the same nativ
 and event frontier. A new, resumed or forked session gets its own thread and log on the same
 principal channel.
 
+## Tool permissions [#tool-permissions]
+
+Pi has no permission dialog of its own, so a seat runs every tool call unless it was launched
+with `askPermissions`. Then each call other than `read`, `grep`, `find`, `ls` and the seat's own
+`cotal_*` tools opens a prompt on the agent's [prompt desk](connector-runtime-reference.mdx#prompt-desk)
+before it runs, and Pi waits for the answer. The prompt shows the tool, its input and the seat's
+folder, and offers Allow and Deny. An input over the prompt size limit shows its size and offers
+only Deny. Allow runs the call. Deny blocks it, and the model gets the owner's note, or "The user
+denied this tool call.", as the call's result. Pi finishing the call confirms the answer.
+
+The desk is the one path. When it cannot take the prompt, because the agent endpoint does not
+serve it, it is full, or the prompt closes unanswered, the call is blocked with a reason that
+names the cause, and Pi's log records it. Stopping the turn withdraws the prompt and blocks the
+call. Pi's own UI is never asked.
+
 ## Launch restrictions
 
 - With no mesh identity the extension is inert, even if `COTAL_HOME` or `COTAL_DEFAULT_AGENT` exists.
