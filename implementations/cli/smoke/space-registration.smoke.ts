@@ -1283,6 +1283,34 @@ if (process.platform === "linux") {
     if (previous === undefined) clearCurrent(); else setCurrent(previous);
     rmSync(after, { recursive: true, force: true });
   }
+  // A prepared folder replaced by a regular file is not a project folder: `space show` and the
+  // listing name the file instead of recommending `up` there, and a command naming it refuses with
+  // the same guidance. The file and the registration stay untouched.
+  {
+    const before = join(home, "file-root-before");
+    mkdirSync(before);
+    check("control: create prepares the space whose folder a file will replace", (await json(["space", "create", "fileroot"], before)).status === 0);
+    renameSync(before, join(home, "file-root-saved"));
+    writeFileSync(before, "replacement file\n");
+    const show = await json(["space", "show", "fileroot"]);
+    check("space show of a prepared space whose root is a file reports it as one, with no start or select hint",
+      show.status === 0 && show.env?.result.kind === "prepared-space" && show.env.result.root === before && show.env.result.rootIsFile === true && show.env.result.rootMissing === false, shown(show));
+    const plain = await run(["space", "show", "fileroot", "--plain"], {}, home);
+    check("its plain report says the path is a file, not a project folder, and names restore or forget, not up",
+      plain.status === 0 && plain.stdout.includes(`prepared in ${before}, which is a file, not a project folder`) && plain.stdout.includes("cotal space forget fileroot") && !plain.stdout.includes("start it with") && !plain.stdout.includes("select it with"), shown(plain));
+    const list = await json(["space"]);
+    check("the listing marks the file root and names forget for it",
+      list.env?.result.prepared.some((p: { space: string; rootIsFile: boolean }) => p.space === "fileroot" && p.rootIsFile === true), list.env?.result.prepared);
+    const plainList = await run(["space", "--plain"], {}, home);
+    check("its plain listing marks the file root and names forget for it",
+      plainList.status === 0 && plainList.stdout.includes(`${before} (is a file, not a project folder)`) && plainList.stdout.includes("cotal space forget fileroot"), shown(plainList));
+    const who = await json(["who", "--space", "fileroot"]);
+    check("who naming it refuses TARGET_UNAVAILABLE naming the file, with the forget step and no up",
+      refused(who, 2, "TARGET_UNAVAILABLE") && (who.env?.error?.message ?? "").includes(`"fileroot" is prepared in ${before}, which is a file, not a project folder`) && (who.env?.error?.remedy ?? "").includes("cotal space forget fileroot") && !(who.env?.error?.remedy ?? "").includes("cotal up") && findPreparedSpace("fileroot")?.root === before && existsSync(before), shown(who));
+    check("control: forget clears the way", (await json(["space", "forget", "fileroot"])).status === 0);
+    rmSync(join(home, "file-root-saved"), { recursive: true, force: true });
+    rmSync(before, { force: true });
+  }
   check("create takes exactly one name", refused(await json(["space", "create"], spare), 1, "USAGE_INVALID") && refused(await json(["space", "create", "a", "b"], spare), 1, "USAGE_INVALID"));
   check("an add flag other than --root on create is USAGE_INVALID", refused(await json(["space", "create", "other", "--server", LIVE], spare), 1, "USAGE_INVALID"));
   for (const name of ["a b", "dot.name", "é"]) {
