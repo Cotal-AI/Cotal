@@ -38,9 +38,9 @@ export function releaseForegroundHold(root: string): void {
 }
 
 /** Release the hold before the immediate exit, which does not unwind the caller's finally. */
-export function hangupForegroundStack(root: string, space: string): never {
+export function hangupForegroundStack(root: string, space: string, stopFromOutside: string): never {
   const stop = stackRootGone(space, root)
-    ? `run ${codeSpan(`${displayCmd({ fromAnyFolder: true })} down --space ${shellWord(space)} --yes`)} from another folder to stop it.`
+    ? `run ${codeSpan(stopFromOutside)} from another folder to stop it.`
     : `${codeSpan(`cd ${shellWord(root)} && ${displayCmd()} down`)} stops it.`;
   process.stderr.write(`The terminal closed. This stack is still running; ${stop}\n`);
   process.exitCode = 129;

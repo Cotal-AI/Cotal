@@ -134,7 +134,7 @@ import { seedDir } from "../seed/paths.js";
 import { seedStoreMoved } from "../seed/reconcile.js";
 import { upSystemdSupervisionWarning } from "../lib/systemd-supervision.js";
 import { deliveryStoppedByDown, deliveryUp, ensureDelivery, stopDelivery } from "../lib/delivery-proc.js";
-import { displayCmd } from "../lib/self-exec.js";
+import { displayCmd, displaySelfCmd } from "../lib/self-exec.js";
 import { shellWord } from "../lib/endpoint-errors.js";
 import { clearManagerArtifacts, liveManagerWouldApplyMaxSessions, managerHasDeliveryMarker, managerRecordState, stopManager } from "../lib/manager-proc.js";
 import { loadManifest } from "../lib/manifest/index.js";
@@ -376,12 +376,14 @@ export { preparedUpRoot } from "./up-target.js";
  *  The hold exits 0 after a completed external stop or preserve, 5 after a broker crash, 129 after
  *  a hangup, 130 or 143 after a stop signal, whatever the start receipt set. */
 export async function holdForegroundStack(root: string, space: string, start?: () => Promise<void | StackJournal>, releaseRestoreNotice?: () => void): Promise<void> {
+  // A relative launcher or its symlink can disappear when the project moves.
+  const stopFromOutside = `${displaySelfCmd()} down --space ${shellWord(space)} --yes`;
   claimForegroundHold(root);
-  try { await holdStack(root, space, start, releaseRestoreNotice); }
+  try { await holdStack(root, space, stopFromOutside, start, releaseRestoreNotice); }
   finally { releaseForegroundHold(root); }
 }
 
-async function holdStack(root: string, space: string, start?: () => Promise<void | StackJournal>, releaseRestoreNotice?: () => void): Promise<void> {
+async function holdStack(root: string, space: string, stopFromOutside: string, start?: () => Promise<void | StackJournal>, releaseRestoreNotice?: () => void): Promise<void> {
   // The start's listeners go only once the hold's own are installed. Node runs a listener for a
   // signal when the loop next polls, and drops the signal if its last listener was removed first,
   // so a signal that lands in the start's last synchronous step would be lost in between.
@@ -402,7 +404,7 @@ async function holdStack(root: string, space: string, start?: () => Promise<void
     try { held = await start(); } catch (error) { failure = { error }; }
     releaseStart = () => { process.off("SIGINT", interrupt); process.off("SIGTERM", terminate); process.off("SIGHUP", hangup); };
     if (requested || failure) releaseStart();
-    if (requested === "SIGHUP") hangupForegroundStack(root, space);
+    if (requested === "SIGHUP") hangupForegroundStack(root, space, stopFromOutside);
     if (requested) await stopForegroundStack(root, requested, true, held?.space);
     if (failure) throw failure.error;
     if (requested) return;
@@ -429,7 +431,7 @@ async function holdStack(root: string, space: string, start?: () => Promise<void
     };
     const interrupt = () => stop("SIGINT");
     const terminate = () => stop("SIGTERM");
-    const hangup = () => { checkLifetime(); if (!stopping) hangupForegroundStack(root, space); };
+    const hangup = () => { checkLifetime(); if (!stopping) hangupForegroundStack(root, space, stopFromOutside); };
     process.on("SIGINT", interrupt); process.on("SIGTERM", terminate); process.on("SIGHUP", hangup);
     releaseStart();
     handOverStartupNotice();

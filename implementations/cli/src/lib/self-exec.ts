@@ -196,6 +196,23 @@ function durableCotalsOnPath(env: NodeJS.ProcessEnv): string[] {
     .flatMap((dir) => resolveOnPath(resolve(dir, "cotal"), env) ?? []);
 }
 
+/** The current CLI's command prefix, without asking another folder's PATH to select a launcher. */
+export function displaySelfCmd(): string {
+  if (seedWriterKind() !== "released") {
+    const argv = selfArgv();
+    return [...argv.slice(0, -1), entryScript()].map(shellWord).join(" ");
+  }
+  const entry = entryScript();
+  const command = [process.execPath, entry].map(shellWord).join(" ");
+  if (process.platform !== "win32" && process.env.COTAL_LAUNCHER === "1") {
+    const prefix = process.env.npm_config_prefix;
+    if (!prefix) throw new Error("the installer launcher did not provide its npm prefix");
+    // Match install.sh's pinned runtime and install destination without copying the whole PATH.
+    return `PATH=${shellWord(join(prefix, "nodebin"))}:"$PATH" npm_config_prefix=${shellWord(prefix)} COTAL_LAUNCHER=1 ${command}`;
+  }
+  return command;
+}
+
 /** The copy-paste command prefix for user-facing hints: prefer PATH, npx, or pnpm dlx, then the
  *  installed entry under this Node runtime. A dev clone uses pnpm unless the command must run
  *  from another folder. Re-execs use {@link selfArgv}. */
@@ -203,17 +220,7 @@ export function displayCmd({ fromAnyFolder = false } = {}): string {
   if (cotalOnPath()) return "cotal";
   if (isNpx()) return "npx cotal-ai";
   if (isPnpmDlx()) return "pnpm dlx cotal-ai";
-  if (runsCliEntry() && (fromAnyFolder || seedWriterKind() === "released")) {
-    if (seedWriterKind() !== "released") return selfArgv().map(shellWord).join(" ");
-    const command = [process.execPath, entryScript()].map(shellWord).join(" ");
-    if (process.platform !== "win32" && process.env.COTAL_LAUNCHER === "1") {
-      const prefix = process.env.npm_config_prefix;
-      if (!prefix) throw new Error("the installer launcher did not provide its npm prefix");
-      // Match install.sh's pinned runtime and install destination without copying the whole PATH.
-      return `PATH=${shellWord(join(prefix, "nodebin"))}:"$PATH" npm_config_prefix=${shellWord(prefix)} COTAL_LAUNCHER=1 ${command}`;
-    }
-    return command;
-  }
+  if (runsCliEntry() && (fromAnyFolder || seedWriterKind() === "released")) return displaySelfCmd();
   return "pnpm cotal";
 }
 

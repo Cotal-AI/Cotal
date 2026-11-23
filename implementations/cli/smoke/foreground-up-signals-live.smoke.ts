@@ -29,11 +29,12 @@ import { createConnection, createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { recordsBucket } from "@cotal-ai/core";
-import { canonicalLocalProcessPath, DELIVERY_PIDFILE, isCommandFailure, MANAGER_PIDFILE, MANAGER_SPARE_CAPABILITY, readManagerName, shellPath, spaceKey, verifyIdentityPin, type ProcessIdentityRecord } from "@cotal-ai/workspace";
+import { canonicalLocalProcessPath, codeSpan, DELIVERY_PIDFILE, isCommandFailure, MANAGER_PIDFILE, MANAGER_SPARE_CAPABILITY, readManagerName, shellPath, spaceKey, verifyIdentityPin, type ProcessIdentityRecord } from "@cotal-ai/workspace";
 import { finishOwnedChild, observeOwnedChild, ownedBirthLive as live, waitForOwnedChild } from "./_foreground-owned-child.js";
 import { foregroundCliProbe } from "./_foreground-cli-probe.js";
 import { observeServiceProcess, serviceInstances } from "../src/lib/service-instances.js";
 import { readStackJournal } from "../src/lib/stack-journal.js";
+import { shellWord } from "../src/lib/endpoint-errors.js";
 import { checkInheritedPipeCleanup } from "./_foreground-pipe-fixture.js";
 import { assertSmokeSandboxDown, emitSentinel, freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
 
@@ -902,13 +903,25 @@ async function checkMovedRootStop(moved: string, home: string, env: NodeJS.Proce
 
 async function movedRootHangupStop(home: string, env: NodeJS.ProcessEnv, space: string, log: string): Promise<void> {
   const args = ["down", "--space", space, "--yes"];
-  assert.ok(log.includes(` ${args.join(" ")}\` from another folder to stop it.`), log); passed++;
-  assert.doesNotMatch(log, /The terminal closed\. This stack is still running; `cd /); passed++;
+  const stop = [process.execPath, "--import", tsx, realpathSync(cliEntry), ...args].map(shellWord).join(" ");
+  assert.ok(log.includes(`The terminal closed. This stack is still running; run ${codeSpan(stop)} from another folder to stop it.`), log); passed++;
   const caller = recordSmokeSandbox({ root: home, cotalHome: env.COTAL_HOME!, xdgConfigHome: env.XDG_CONFIG_HOME! });
   assertSmokeSandboxDown(caller, args, { cwd: home, env });
   const down = await foregroundCliProbe(cliEntry, tsx, home, env, args, 120_000);
   assert.equal(down.code, 0, down.out + down.err); passed++;
   assert.match(down.out, /Stack stopped; its folder was gone/); passed++;
+}
+
+function movedRootLauncher(mesh: string, home: string, env: NodeJS.ProcessEnv): string[] {
+  const cli = [process.execPath, "--import", tsx, cliEntry].map(shellWord).join(" ");
+  for (const [root, command] of [[mesh, `exec ${cli} "$@"`], [home, "exit 65"]] as const) {
+    const tools = join(root, "tools");
+    mkdirSync(tools, { mode: 0o700 });
+    writeFileSync(join(tools, "cotal"), `#!/bin/sh\n${command}\n`, { mode: 0o700 });
+  }
+  env.PATH = `tools:${env.PATH ?? ""}`;
+  assert.equal(spawnSync("/bin/sh", ["-c", "exec cotal --version"], { cwd: home, env }).status, 65, "a bare command in the outside folder selects the decoy");
+  return ["/bin/sh", "-c", 'exec cotal "$@"', "cotal"];
 }
 
 async function movedRootSignalCell(signal: "SIGTERM" | "SIGHUP"): Promise<void> {
@@ -917,6 +930,7 @@ async function movedRootSignalCell(signal: "SIGTERM" | "SIGHUP"): Promise<void> 
   const home = join(root, "home"), space = `foreground-moved-root-${signal.toLowerCase()}`, port = await freePort();
   const env = { ...cleanEnv, HOME: home, COTAL_HOME: join(home, "machine"), XDG_CONFIG_HOME: join(home, "xdg"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" };
   for (const dir of [mesh, env.COTAL_HOME, env.XDG_CONFIG_HOME]) mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const [command, ...entry] = signal === "SIGHUP" ? movedRootLauncher(mesh, home, env) : [process.execPath, "--import", tsx, cliEntry];
   const sandbox = recordSmokeSandbox({ root: mesh, cotalHome: env.COTAL_HOME, xdgConfigHome: env.XDG_CONFIG_HOME });
   const created = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["space", "create", space, "--root", "."]);
   assert.equal(created.code, 0, created.out + created.err);
@@ -927,7 +941,7 @@ async function movedRootSignalCell(signal: "SIGTERM" | "SIGHUP"): Promise<void> 
   };
   const children: { child: ChildProcess; state: ReturnType<typeof observeOwnedChild> }[] = [];
   const start = async (...args: string[]) => {
-    const child = spawn(process.execPath, ["--import", tsx, cliEntry, "up", "--foreground", ...args], { cwd: mesh, env, detached: true, stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(command!, [...entry, "up", "--foreground", ...args], { cwd: mesh, env, detached: true, stdio: ["ignore", "pipe", "pipe"] });
     const state = observeOwnedChild(child);
     children.push({ child, state });
     let out = "", err = "";
