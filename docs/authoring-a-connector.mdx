@@ -82,6 +82,8 @@ Declare only the features your connector implements:
 - List external executables in `requires` so preflight can report a missing command before launch.
 - Implement `listModels` if the application provides a model catalog.
   If an installation cannot provide one, return a catalog with `models: []` and an `unavailable` reason.
+  The Manager passes the boot `resolvedBinaries` and the `spawn.env` names a launch would receive as `envAllow`.
+  A read that runs the application builds its environment from them as `buildLaunch` does, so it lists the models a seat reaches.
 - Use `setup` and `pluginRoot` for connector-owned installation support when needed.
   Use `launchHint` to describe what an operator sees after a direct foreground launch.
 - Set a positive safe-integer `readinessTimeoutMs` if bootstrap needs a different bound from the manager's default.
