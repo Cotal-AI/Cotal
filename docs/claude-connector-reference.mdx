@@ -772,8 +772,25 @@ When Claude refuses to stop such a tool, it still answers `interrupted`, and the
 `a tool is still running`. Claude fires no hook when a mod stops a turn, so the connector ends the
 turn itself: presence reads idle and the next queued command can start. The mod has 10 s to answer.
 
-While no mod serves the session, `commands` answers `supported: false`, and `command` and
-`interrupt` are `unimplemented` with the cause:
+`turn` hands the owner's words to the mod, which submits them with `$.prompt.submit` as the person's
+own, so the model reads them without a plugin frame. The transcript records them under the plugin's
+origin, and the event plane shows the turn as the person's. A turn starts like a queued command, and
+reads `started` once Claude took the prompt. A prompt Claude drops, such as one sent after a local
+Stop, ends `refused` with `failed-precondition` and Claude's reason.
+
+A plugin's prompt carries text only, and Claude expands no `@file` mention in it. So each image of a
+turn is written to its own owner-only file in a folder the launch made for the seat, and the prompt
+names it on a line of its own, `[Image 1: <path>]`. The model reads the file with its Read tool. The
+launch lets it read that folder without a permission prompt, and removes the folder once the seat
+ends. A plain Claude Code session that Cotal did not launch has no such folder, so it
+takes no images.
+
+`usage` reports what Claude Code's status line shows: the input tokens of the last response over the
+model's context window, and the session's cost in US dollars as `/cost` totals it. Before the first
+response it reports the cost alone.
+
+While no mod serves the session, `commands` answers `supported: false`, and `command`, `turn` and
+`interrupt` are `unimplemented` with the cause. `usage` answers `unavailable`:
 
 - Claude Code is older than 2.1.330.
 - The seat runs on Windows. A Windows pipe lives in a namespace every account on the machine

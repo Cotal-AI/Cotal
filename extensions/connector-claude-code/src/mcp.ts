@@ -44,6 +44,7 @@ import { readCliRecord } from "./cli-record.js";
 import { openWakeFeed } from "./wake-feed.js";
 import { openCommandFeed, type CommandFeed } from "./command-feed.js";
 import { claudeCommands, commandTurns } from "./commands.js";
+import { TURN_IMAGES_ENV } from "./turn-images.js";
 import { endHost, recordHost } from "./once-exit.js";
 
 /** What a plain session's local server tells the model ahead of the gateway's own steps. */
@@ -266,7 +267,7 @@ async function startSession(
   const agent: MeshAgent = new MeshAgent(config, env, {
     withholdProcessCwd: true,
     onceClaimBound: true,
-    commands: claudeCommands({ feed: () => commands, interrupting: () => claude.interrupting(agent), warn }),
+    commands: claudeCommands({ feed: () => commands, interrupting: () => claude.interrupting(agent), warn, imageDir: env[TURN_IMAGES_ENV] || undefined }),
   });
   const turns = commandTurns(agent);
   const plane = eventPlaneArmed(config, env) ? createClaudeEventPlane(agent, config, env) : undefined;

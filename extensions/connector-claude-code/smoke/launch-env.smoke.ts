@@ -18,11 +18,16 @@
  *
  * Run: pnpm smoke:claude-launch-env
  */
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { discardLaunchArtifacts, LAUNCH_MATERIAL_ENV, readLaunchMaterial } from "@cotal-ai/core";
 import { claudeConnector, CLAUDE_PROVIDER_KEYS } from "../src/extension.js";
+
+// Each launch makes its private directories under the temp dir, and nothing here starts a child to
+// remove them, so they go in a scratch temp dir this suite removes.
+const scratch = mkdtempSync(join(tmpdir(), "claude-launch-env-"));
+process.env.TMPDIR = scratch;
 
 let pass = 0;
 let fail = 0;
@@ -276,6 +281,19 @@ check(
   for (const spec of [asking, plain, foreground]) discardLaunchArtifacts(spec.artifacts ?? []);
 }
 
+// A turn's images go to a folder the launch makes for the seat: private, removed with the launch's
+// artifacts, and readable by the model without a permission prompt.
+if (process.platform !== "win32") {
+  const spec = claudeConnector.buildLaunch({ space: "smoke", name: "claude-10", events: false, cwd: managedCwd, askPermissions: true } as never);
+  const dir = spec.env!.COTAL_CLAUDE_TURN_IMAGES ?? "";
+  const rules = spec.args.flatMap((a, i) => (a === "--allowedTools" ? [spec.args[i + 1] ?? ""] : []));
+  check("the launch names a private image folder that is one of its artifacts",
+    dir !== "" && (statSync(dir).mode & 0o777) === 0o700 && (spec.artifacts ?? []).includes(dir), { dir, artifacts: spec.artifacts });
+  check("the model may read that folder without asking", rules.includes(`Read(/${dir}/**)`), rules);
+  discardLaunchArtifacts(spec.artifacts ?? []);
+  check("discarding the launch's artifacts removes the folder", !existsSync(dir));
+}
+
 // A step after the mint that throws (here the carried transcript is gone when it is placed) leaves
 // none of the launch's artifacts behind: not the control socket's directory, not the launch material.
 // The stand-in `claude` only reports a version, so this runs where a shell script can.
@@ -312,6 +330,7 @@ if (process.platform !== "win32") {
 }
 
 rmSync(managedRoot, { recursive: true, force: true });
+rmSync(scratch, { recursive: true, force: true });
 if (fail) {
   console.log(`SUITE COMPLETE: ${pass} passed, ${fail} failed`);
   process.exit(1);

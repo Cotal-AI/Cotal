@@ -9,6 +9,7 @@ import { HOST_EXE_ENV, resolveHostExe } from "./once-exit.js";
 import { HOOK_CONTEXT_CHARS } from "./hooks.js";
 import { launchFieldArgs } from "./launch-fields.js";
 import { CLAUDE_EFFORT_LEVELS, listClaudeModels } from "./models.js";
+import { imageFolder } from "./turn-images.js";
 import { CLAUDE_PROVIDER_KEYS } from "./provider-keys.js";
 
 export { CLAUDE_PROVIDER_KEYS };
@@ -253,6 +254,9 @@ export const claudeConnector: Connector = {
     // recorded so far instead of leaving it with no owner.
     try {
       env.COTAL_CONTROL_SOCKET = control.path;
+      const images = imageFolder(artifacts);
+      Object.assign(env, images.env);
+      args.push(...images.args);
       Object.assign(env, materialEnv({ creds: opts.creds, servers: opts.servers, control, eventsRequired: opts.eventsRequired, eventPayloads: opts.eventPayloads, askPermissions: opts.askPermissions, reasoningEvents: opts.reasoningEvents, userAuth: opts.userAuth }, artifacts));
       // Default (no shared servers): pass the config inline, unchanged. With shared servers, write it
       // to a file instead and pass the path. Either way the secret stays a `${VAR}` reference (Claude

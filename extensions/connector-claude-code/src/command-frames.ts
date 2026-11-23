@@ -11,7 +11,9 @@ export type RequestId = string;
 export type CommandAsk =
   | { op: "list" }
   | { op: "run"; command: string; args: string }
-  | { op: "interrupt" };
+  | { op: "interrupt" }
+  | { op: "prompt"; text: string }
+  | { op: "usage" };
 
 export type CommandRequest = CommandAsk & { id: RequestId };
 
@@ -26,12 +28,20 @@ export type ModAnswer =
   | { id: RequestId; op: "run"; outcome: "started" }
   | { id: RequestId; op: "run"; outcome: "refused" | "not-found"; reason: string }
   | { id: RequestId; op: "interrupt"; outcome: "interrupted" | "idle"; reason?: string }
+  | { id: RequestId; op: "prompt"; outcome: "submitted" }
+  | { id: RequestId; op: "prompt"; outcome: "refused"; reason: string }
+  /** Claude Code's own figures: the context window, the input tokens of the last response over it,
+   *  and the session's cost in US dollars. */
+  | { id: RequestId; op: "usage"; window: number; tokens?: number; usd?: number }
   | { id: RequestId; op: "error"; reason: string };
 
 export type ModFrame = ModHello | ModAnswer;
 
-/** The longest line either side reads, in UTF-8 bytes. A list answer is the largest frame. */
+/** The longest line the mod side sends, in UTF-8 bytes. A list answer is the largest frame. */
 export const MAX_LINE_BYTES = 1024 * 1024;
+/** The longest request line, in UTF-8 bytes. A prompt is the largest: up to 262144 characters of
+ *  turn text, each at most 6 bytes once JSON-escaped, and its image paths. */
+export const MAX_REQUEST_BYTES = 2 * 1024 * 1024;
 
 const ID = /^[a-z2-7]{26}$/;
 const VERSION = /^[0-9A-Za-z.+-]{1,64}$/;
@@ -62,6 +72,10 @@ function text(v: unknown, field: string, min: number, max: number): void {
   if (typeof v !== "string") refuse(`${field} is not a string`);
   const length = [...v].length;
   if (length < min || length > max) refuse(`${field} is not ${min} to ${max} characters`);
+}
+
+function count(v: unknown, field: string): void {
+  if (!Number.isSafeInteger(v) || (v as number) < 0) refuse(`${field} is not a whole number of tokens`);
 }
 
 function oneOf(v: unknown, allowed: readonly string[], field: string): void {
@@ -106,6 +120,22 @@ const FRAMES: Record<ModFrame["op"], (f: Fields) => void> = {
     matches(f.id, ID, "id");
     oneOf(f.outcome, ["interrupted", "idle"], "outcome");
     if (Object.hasOwn(f, "reason")) text(f.reason, "reason", 1, MAX_REASON);
+  },
+  prompt(f) {
+    if (f.outcome === "submitted") only(f, ["id", "op", "outcome"]);
+    else {
+      only(f, ["id", "op", "outcome", "reason"]);
+      oneOf(f.outcome, ["refused"], "outcome");
+      text(f.reason, "reason", 1, MAX_REASON);
+    }
+    matches(f.id, ID, "id");
+  },
+  usage(f) {
+    only(f, ["id", "op", "window", "tokens", "usd"]);
+    matches(f.id, ID, "id");
+    count(f.window, "window");
+    if (Object.hasOwn(f, "tokens")) count(f.tokens, "tokens");
+    if (Object.hasOwn(f, "usd") && !(typeof f.usd === "number" && Number.isFinite(f.usd) && f.usd >= 0)) refuse("usd is not a number of dollars");
   },
   error(f) {
     only(f, ["id", "op", "reason"]);
