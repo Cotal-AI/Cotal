@@ -662,8 +662,14 @@ function readMeshFile(file: string): MeshEntry | undefined {
   try {
     entry = JSON.parse(readFileSync(file, "utf8")) as MeshEntry;
   } catch (e) {
-    if ((e as NodeJS.ErrnoException).code === "ENOENT") return undefined;
-    if ((e as NodeJS.ErrnoException).code === "EISDIR") throw registryRecordDirectory(file, e);
+    const code = (e as NodeJS.ErrnoException).code;
+    if (code === "ENOENT") return undefined;
+    if (code === "EISDIR") throw registryRecordDirectory(file, e);
+    if (code === "EACCES" || code === "EPERM") {
+      const summary = `mesh registry file ${file} cannot be read by this account`;
+      const remedy = `restore read access to ${shellPath(file)}, then try again. The record is kept.`;
+      throw new MeshRegistryError(file, `${summary}. ${remedy}`, { cause: e, summary, remedy, refusal: "PERMISSION_DENIED" });
+    }
     // No fallback: the writer is tmp-file + atomic rename, so an unparseable .json here is a
     // damaged or foreign document, and skipping it would hide it from `meshes rm` too.
     throw new MeshRegistryError(file, `${file} does not parse as a mesh record (${e instanceof Error ? e.message : String(e)}) - restore it from backup or remove it`, { cause: e });

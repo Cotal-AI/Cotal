@@ -18,7 +18,8 @@ cotal console --plain            # the passive line stream with plain formatting
 cotal console                    # no --space on an open mesh → the admin overview first
 ```
 
-A real terminal opens the interactive console by default. Piped output, `--plain` and `--no-input` select the timestamped line stream.
+The interactive console requires a terminal on both stdin and stdout.
+Piping or redirecting either stream, or passing `--plain` or `--no-input`, selects the timestamped line stream.
 The line stream does not accept console commands.
 The stream contains presence changes and chat messages, without the console's signal tiles.
 Press Ctrl-C to stop the stream. The broker keeps running and the console reports no outage.
@@ -30,6 +31,7 @@ Press Ctrl-C to stop the stream. The broker keeps running and the console report
 In the interactive console on an open mesh, omit `--space` to open the admin overview.
 It lists spaces found through the server's `CHAT_*` streams and presence buckets, with agent, channel, and message counts.
 Select a space to open its console. Press `b` to return to the overview.
+Press `q` from the overview to return to the shell, even if you left a space while it was still connecting.
 Use `--space X` to skip the picker. An authenticated connection opens its selected space directly.
 This scopes the view; one broker can host several accounts and spaces.
 

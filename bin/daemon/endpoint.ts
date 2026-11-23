@@ -108,11 +108,15 @@ function linuxDaemonRuntime(env: NodeJS.ProcessEnv): string {
   const configured = env.XDG_RUNTIME_DIR;
   const runtime = configured || `/run/user/${euid()}`;
   try {
-    if (configured) statSync(runtime);
-    else checkDir(runtime);
+    if (configured) {
+      if (!statSync(runtime).isDirectory()) {
+        throw new EndpointRefusal("NO_RUNTIME_DIR", `XDG_RUNTIME_DIR points to ${runtime}, which is not a directory`);
+      }
+    } else checkDir(runtime);
   } catch (error) {
+    if (error instanceof EndpointRefusal) throw error;
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-      // Only diagnose absence here. The socket operations check their own paths.
+      // Leave other configured-path errors to the socket operations.
       if (configured) return runtime;
       throw error;
     }

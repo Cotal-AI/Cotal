@@ -436,7 +436,7 @@ async function rmMeshes(names: string[], v: Values): Promise<void> {
   let entries: MeshEntry[];
   try { entries = loadMeshes(); }
   catch (error) {
-    if (!isMeshRegistryError(error)) throw error;
+    if (!isMeshRegistryError(error) || error.refusal === "PERMISSION_DENIED") throw error;
     const own = names.find((name) => error.file === meshFile(name)
       || !/^space\.[0-9a-f]+$/.test(encodeURIComponent(name)) && error.file === join(meshesDir(), `${encodeURIComponent(name)}.json`));
     if (!own) throw error;
