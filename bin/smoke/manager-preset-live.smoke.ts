@@ -174,7 +174,12 @@ function cotal(args: string[], timeout = 120_000) {
 }
 const out = (r: ReturnType<typeof cotal>) => `${r.stdout ?? ""}${r.stderr ?? ""}`;
 function launchPreview(space: string): void {
-  const args = ["manager", "start", "--space", space, "--dry-run", "--json"];
+  for (const args of [["manager", "start", "--help"], ["help", "manager", "start"]]) {
+    const help = cotal(args);
+    check(`${args.join(" ")} lists the foreground and dry-run switches separately`, help.status === 0
+      && /\[--foreground\]\s+\[--dry-run\]/.test(help.stdout), out(help));
+  }
+  const args = ["manager", "start", "--space", space, "--foreground", "--dry-run", "--json"];
   const launch = join(root, "absent-launch.json");
   const spec = JSON.stringify({ apiVersion: "cotal-launch/v1", space, runId: "preview", agents: [] });
   const digest = createHash("sha256").update(spec).digest("hex");
