@@ -344,6 +344,7 @@ async function scenario(mode: "open" | "auth"): Promise<void> {
     }
     must("ordinary same-principal resume", run("up", "--detach", "--server", server, "--space", space));
     assert.equal(existsSync(join(root, ".cotal", "maintenance", "v1", "journal.json")), false, "ordinary resume retires and consumes maintenance state");
+    must("send after backup", run("send", "-c", "preserved", "history-after-backup", "--space", space));
     must("preserve again for restore", run("down", "--preserve-state"));
 
     // A restore into the preserved store's own path moves it aside whole, so a file in it that no
