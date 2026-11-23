@@ -39,7 +39,7 @@
  */
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -809,6 +809,22 @@ try {
       if (kind === "default" || kind === "managed") {
         const before = effects();
         const receiptBefore = readFileSync(receiptFile, "utf8"), sourceBefore = readFileSync(receipt.unitPath, "utf8");
+        if (kind === "default") {
+          const unitDir = dirname(receipt.unitPath), saved = join(dir, "saved-unit-directory");
+          const inspect = (code: string) => ["install", "uninstall"].every((verb) => {
+            const r = call(verb, home, ["--dry-run"]);
+            return r.status === 2 && r.doc.error?.code === code && r.out.includes("keep the install receipt") && !r.out.includes("is gone");
+          });
+          if (uid !== 0) {
+            chmodSync(unitDir, 0);
+            try { check("a directory the daemon cannot enter does not make its unit absent", inspect("PERMISSION_DENIED")); }
+            finally { chmodSync(unitDir, 0o700); }
+          }
+          renameSync(unitDir, saved);
+          writeFileSync(unitDir, "fixture", { flag: "wx", mode: 0o600 });
+          try { check("a non-directory in the recorded unit path does not prove absence", inspect("TARGET_UNAVAILABLE")); }
+          finally { rmSync(unitDir); renameSync(saved, unitDir); }
+        }
         const repeats = [call("install", home, ["--dry-run"]), call("install", home)];
         check(`N7 recorded ${kind} install succeeds without native effects or rewrites`, repeats.every((r) => r.status === 0 && r.doc.result?.alreadyInstalled === true) && effects() === before && readFileSync(receiptFile, "utf8") === receiptBefore && readFileSync(receipt.unitPath, "utf8") === sourceBefore, repeats);
         const again = call("install", home);
