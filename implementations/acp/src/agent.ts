@@ -836,8 +836,9 @@ function threadHandlers(b: Bridge, offers: Offers, runTurn: ReturnType<typeof tu
       // Images ride a turn, so a first prompt with images starts the seat with none and gives it the
       // prompt once it takes a turn.
       const stopReason = await runTurn(session, m, images.length ? "idle" : "run", async (signal) => {
-        // A thread left open past its manager's idle exit starts it again here.
-        await launchManagers(m, tell(session));
+        // A thread left open past its manager's idle exit starts it again here. One whose Machine names
+        // another computer starts none.
+        if (session.offer.managers.find((x) => x.instanceId === session.selection.machine)?.local) await launchManagers(m, tell(session));
         const spawning = m.spawn({
           name: session.name ?? session.id,
           agent: harness,

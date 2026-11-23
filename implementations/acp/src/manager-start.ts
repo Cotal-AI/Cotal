@@ -4,6 +4,7 @@
  */
 import { spawn } from "node:child_process";
 import { NoLaunchManager, type ManagerChoice, type Mesh } from "./mesh.js";
+import { defaultManager } from "./options.js";
 
 /** How long a manager the bridge starts waits with no agents before it stops itself. */
 const IDLE_EXIT_SECONDS = 600;
@@ -53,14 +54,18 @@ export async function startManager(space: string): Promise<string> {
   return startLine(space, stdout);
 }
 
-/** The managers a new agent may start on. When none may, this machine's manager is started and the
- *  list read again, and `onStart` gets the line the thread shows. */
-export async function launchManagers(m: Pick<Mesh, "managers" | "startManager">, onStart: (line: string) => void): Promise<ManagerChoice[]> {
-  try {
-    return await m.managers();
-  } catch (e) {
+/** The managers a new agent may start on. When none of them is this machine's, as when none may or
+ *  only another computer's is live, this machine's manager is started and the list read again, and
+ *  `onStart` gets the line the thread shows. Another computer is used only when the thread's Machine
+ *  option names it. Rejects when the start fails, or when the space still lists no manager here. */
+export async function launchManagers(m: Pick<Mesh, "space" | "managers" | "startManager">, onStart: (line: string) => void): Promise<ManagerChoice[]> {
+  const listed = await m.managers().catch((e: unknown) => {
     if (!(e instanceof NoLaunchManager)) throw e;
-    onStart(await m.startManager());
-    return m.managers();
-  }
+    return [];
+  });
+  if (defaultManager(listed)) return listed;
+  onStart(await m.startManager());
+  const after = await m.managers();
+  if (!defaultManager(after)) throw new NoLaunchManager(`Started this machine's manager for ${m.space}, but the space does not list it as running here yet. Open the thread again in a moment.`);
+  return after;
 }

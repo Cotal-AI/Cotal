@@ -19,7 +19,9 @@
  *  - `managerPlan` starts new threads where the auth service's own rule would, and reads agents from
  *    every live manager the person may use;
  *  - `runningManagers` offers the listed managers whose rail is not gone, and with none left rejects as
- *    a space with no manager does.
+ *    a space with no manager does;
+ *  - `launchManagers` starts this machine's manager when no listed one is, remote live included, and
+ *    fails the thread when the start fails or its manager is still not listed here.
  *
  * Run: pnpm --filter @cotal-ai/acp test   (needs `pnpm build` of core and workspace first)
  */
@@ -28,8 +30,9 @@ import type { SessionUpdate } from "@agentclientprotocol/sdk";
 import { FrameMapper } from "../src/frames.js";
 import { patchDiffs } from "../src/tools.js";
 import { answeredReads, frameOf, managerChoice, managerPlan, namesDeregister, runningManagers } from "../src/live-mesh.js";
+import { launchManagers } from "../src/manager-start.js";
 import { NoLaunchManager } from "../src/mesh.js";
-import type { AguiEventLike, SeatFrame } from "../src/mesh.js";
+import type { AguiEventLike, ManagerChoice, SeatFrame } from "../src/mesh.js";
 
 let pass = 0, fail = 0;
 const check = (n: string, c: boolean, x?: unknown): void => { if (c) { pass++; console.log(`  ✓ ${n}`); } else { fail++; console.log(`  ✗ FAIL: ${n}`, x ?? ""); } };
@@ -279,6 +282,32 @@ check("frameOf ignores a frame that another sender put on an agent's event chann
   check("on a signed-in space another owner's agent named after the manager does not describe it", d.live === false && d.local === false && d.host === undefined, d);
   const mine = managerChoice("a", roster, "here", "u_p");
   check("and the person's own manager row still does", mine.live === true && mine.host === "here" && mine.local === true, mine);
+}
+
+// Remote live, no local: only another computer's manager is live, so this machine's is started.
+{
+  const far: ManagerChoice = { instanceId: "far", host: "there", local: false, live: true };
+  const near: ManagerChoice = { instanceId: "near", host: "here", local: true, live: true };
+  const line = "Started this machine's manager for s. It stops itself after 10 minutes with no agents.";
+  const space = (after: ManagerChoice[], start = async () => line) => {
+    let listed = [far];
+    const counts = { starts: 0, reads: 0 };
+    return { counts, space: "s", managers: async () => (counts.reads++, listed), startManager: async () => { counts.starts++; const said = await start(); listed = after; return said; } };
+  };
+  const lines: string[] = [];
+  const s1 = space([near, far]);
+  const got = await launchManagers(s1, (l) => lines.push(l)).catch((e: Error) => e);
+  check("remote live, no local: this machine's manager is started and the list read again",
+    s1.counts.starts === 1 && s1.counts.reads === 2 && JSON.stringify(Array.isArray(got) ? got.map((m) => m.instanceId) : got) === JSON.stringify(["near", "far"]) && JSON.stringify(lines) === JSON.stringify([line]), { counts: s1.counts, got, lines });
+  const again = await launchManagers(s1, (l) => lines.push(l)).catch((e: Error) => e);
+  check("with this machine's manager listed, nothing starts and nothing is said", s1.counts.starts === 1 && Array.isArray(again) && again.length === 2 && lines.length === 1, { counts: s1.counts, again });
+  const s2 = space([far]);
+  const unlisted = await launchManagers(s2, () => {}).catch((e: Error) => e);
+  check("a start after which no manager here is listed fails the thread, saying so",
+    unlisted instanceof NoLaunchManager && unlisted.message === "Started this machine's manager for s, but the space does not list it as running here yet. Open the thread again in a moment.", unlisted);
+  const s3 = space([near, far], async () => { throw new NoLaunchManager("Could not start this machine's manager for s: boom"); });
+  const failed = await launchManagers(s3, () => {}).catch((e: Error) => e);
+  check("a failed start fails the thread with its reason", failed instanceof NoLaunchManager && failed.message === "Could not start this machine's manager for s: boom", failed);
 }
 
 // Which unanswered replies name the deregister command.
