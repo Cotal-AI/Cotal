@@ -21,7 +21,7 @@ import type { TeardownTarget, RetirementHold } from "./retirement.js";
 import type { EvictionResult } from "@cotal-ai/core";
 import { foreignEventChannels } from "./seat-launch.js";
 import type { ManagerConfig } from "./manager-config.js";
-import type { ManagerAuthState } from "./manager-auth-state.js";
+import type { ManagerStartState } from "./manager-start-state.js";
 
 
 /** One initial terminal entry plus three re-drives. The short first retry absorbs a one-shot
@@ -51,7 +51,6 @@ const DEPROVISION_TIMEOUT_MS = 15_000;
 
 /** Manager-owned authority, runtime and retirement operations for static lifecycle work. */
 export interface ManagedStaticLifecycleDeps {
-  instanceId: () => string;
   evictor: () => ((principal: string) => Promise<EvictionResult>) | undefined;
   resumeRequired: () => boolean;
   records: () => KV | undefined;
@@ -84,7 +83,6 @@ export interface ManagedStaticLifecycleDeps {
  *  field the Manager assigns later is current and a member a test replaces on the instance is the one that runs. */
 export function managedStaticLifecycleDeps(m: Manager): ManagedStaticLifecycleDeps {
   return {
-    instanceId: () => m["managerInstanceId"],
     evictor: () => m["staticLifecycleEvict"],
     resumeRequired: () => m["resumeRequired"],
     records: () => m["goalWriterComponent"].goalWriter?.ctx.kv,
@@ -148,7 +146,8 @@ export class ManagedStaticLifecycle {
   private staticReconcileSweepsInFlight = 0;
   private staticReconcileDrainWaiters: Array<() => void> = [];
   private staticReconcileStopping = false;
-  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: ManagedStaticLifecycleDeps, private readonly state: ManagerAuthState) {}
+  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: ManagedStaticLifecycleDeps, private readonly state: ManagerStartState) {}
+  private get managerInstanceId(): string { return this.state.managerInstanceId!; }
   private get auth() { return this.state.auth; }
   private get userMode() { return this.state.userMode; }
 
@@ -246,7 +245,7 @@ export class ManagedStaticLifecycle {
           t,
           {
             owner: DEV_OWNER, alias: a.name, actor: a.id, lifecycleUid: a.lifecycleUid, opId,
-            managerInstance: this.deps.instanceId(), managerProcessUid: this.config.managerLifecycleUid,
+            managerInstance: this.managerInstanceId, managerProcessUid: this.config.managerLifecycleUid,
           },
           { cleanup: reapThenCleanup, evict, log: (line) => console.error(`static retirement ${a.name}: ${line}`) },
         );
@@ -311,7 +310,7 @@ export class ManagedStaticLifecycle {
     }
     try {
       await this.deps.withLifecycleExecutor(pin, (t) =>
-        activateStaticLifecycle(t, { owner: DEV_OWNER, alias, actor: identity.id, lifecycleUid, managerInstance: this.config.managerLifecycleUid, ownerInstanceId: this.deps.instanceId() }),
+        activateStaticLifecycle(t, { owner: DEV_OWNER, alias, actor: identity.id, lifecycleUid, managerInstance: this.config.managerLifecycleUid, ownerInstanceId: this.managerInstanceId }),
       );
       const creds = await this.deps.withProvisioner((prov) =>
         provisionAgent(prov, this.auth!, identity, { subscribe: lists.subscribe, allowSubscribe: lists.allowSubscribe, allowPublish: lists.allowPublish, lifecycleUid, expiresAt: exp }),
@@ -328,7 +327,7 @@ export class ManagedStaticLifecycle {
         await casStaticSlot(t, { ...slot.row, phase: "active" }, slot.revision);
       });
       const { sealer, sealed } = sealChatAdmission({
-        space: this.config.space, managerInstanceId: this.deps.instanceId(), alias, actor: identity.id, lifecycleUid, expiresAt: exp * 1000, sealTo: input.sealTo, creds,
+        space: this.config.space, managerInstanceId: this.managerInstanceId, alias, actor: identity.id, lifecycleUid, expiresAt: exp * 1000, sealTo: input.sealTo, creds,
       });
       this.chatExpiry.arm(lifecycleUid);
       console.error(`chat session ${alias} admitted as ${identity.id} (uid ${lifecycleUid}), expires ${new Date(exp * 1000).toISOString()}`);
@@ -413,7 +412,7 @@ export class ManagedStaticLifecycle {
     } catch (e) {
       throw new EpEnvelopeError("unavailable", `the durable slot for "${s.alias}" could not be read: ${rejectionText(e)}`, undefined, "not-executed");
     }
-    const refused = chatRetireRefusal(slot?.row, s, this.deps.instanceId());
+    const refused = chatRetireRefusal(slot?.row, s, this.managerInstanceId);
     if (refused) throw new EpEnvelopeError(refused.code, refused.message, undefined, "not-executed");
     if (slot!.row.phase !== "retired") return "admitted";
     this.chatExpiry.forget(s.lifecycleUid);
@@ -438,7 +437,7 @@ export class ManagedStaticLifecycle {
   /** Whether `row` is a chat slot this process registered, at its exact alias, actor and UID,
    *  under this logical instance and this process's incarnation. */
   holdsLiveChatSlot(row: StaticManagedSlotRow): boolean {
-    return row.ownerInstanceId === this.deps.instanceId() && row.managerInstance === this.config.managerLifecycleUid && this.chatExpiry.holdsExact(row);
+    return row.ownerInstanceId === this.managerInstanceId && row.managerInstance === this.config.managerLifecycleUid && this.chatExpiry.holdsExact(row);
   }
 
   /** The stop's retirement of every chat session this process still tracks, through the same
@@ -682,10 +681,10 @@ export class ManagedStaticLifecycle {
       console.error(`✓ static reconcile recovered alias=${item.alias} phase=retired uid=${item.lifecycleUid} attempts=${item.attempts}/${item.maxAttempts}`);
       return;
     }
-    if (ownedBySibling(row, this.deps.instanceId())) {
+    if (ownedBySibling(row, this.managerInstanceId)) {
       item.disposition = "refused";
       item.remedy = "the owning manager must reconcile or an operator must perform an explicit CAS takeover";
-      item.lastError = `the durable slot belongs to manager instance ${row.ownerInstanceId}, not ${this.deps.instanceId()}`;
+      item.lastError = `the durable slot belongs to manager instance ${row.ownerInstanceId}, not ${this.managerInstanceId}`;
       console.error(`! static reconcile refused alias=${item.alias} phase=${item.phase} uid=${item.lifecycleUid}: ${item.lastError}`);
       return;
     }
@@ -854,7 +853,7 @@ export class ManagedStaticLifecycle {
         // hazard, now cross-instance). A legacy row (no owner recorded) predates multi-manager,
         // so this manager is its legitimate single-manager-past successor and reconciles it. An orphaned
         // sibling row is reclaimed only by an explicit operator CAS takeover, never here.
-        if (ownedBySibling(row, this.deps.instanceId())) {
+        if (ownedBySibling(row, this.managerInstanceId)) {
           preservedForeign++;
           continue;
         }

@@ -11,7 +11,7 @@ import { requireRuntimeReap } from "./runtime/index.js";
 import type { AgentHandle } from "./runtime/index.js";
 import type { ManagedAgent } from "./seat-types.js";
 import type { ManagerConfig } from "./manager-config.js";
-import type { ManagerAuthState } from "./manager-auth-state.js";
+import type { ManagerStartState } from "./manager-start-state.js";
 
 /** What {@link Preservation} reads from the Manager. Every entry is read at use, so a field the Manager
  *  assigns after construction is always current, and a Manager method a test replaces is the one that runs. */
@@ -23,7 +23,6 @@ export interface PreservationDeps {
   lifecycleInFlight: () => Manager["lifecycleInFlight"];
   maintenanceState: () => Manager["maintenanceState"];
   setMaintenanceState: (value: Manager["maintenanceState"]) => void;
-  managerInstanceId: () => Manager["managerInstanceId"];
   meshMode: () => Manager["meshMode"];
   preservationAttemptId: () => Manager["preservationAttemptId"];
   setPreservationAttemptId: (value: Manager["preservationAttemptId"]) => void;
@@ -65,7 +64,6 @@ export function preservationDeps(m: Manager): PreservationDeps {
     lifecycleInFlight: () => m["lifecycleInFlight"],
     maintenanceState: () => m["maintenanceState"],
     setMaintenanceState: (value) => { m["maintenanceState"] = value; },
-    managerInstanceId: () => m["managerInstanceId"],
     meshMode: () => m["meshMode"],
     preservationAttemptId: () => m["preservationAttemptId"],
     setPreservationAttemptId: (value) => { m["preservationAttemptId"] = value; },
@@ -99,7 +97,7 @@ export function preservationDeps(m: Manager): PreservationDeps {
 
 /** Preserving the manager for a restart: prepare, commit and abort, the cut that releases or tears down each seat, and adoption of released seats at the next start. */
 export class Preservation {
-  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: PreservationDeps, private readonly state: ManagerAuthState) {}
+  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: PreservationDeps, private readonly state: ManagerStartState) {}
 
   // The Manager members these bodies read, under their Manager names. Each reads through its dep at
   // use, so a field the Manager assigns later is current and a method a test replaces on the Manager
@@ -112,7 +110,7 @@ export class Preservation {
   private get lifecycleInFlight() { return this.deps.lifecycleInFlight(); }
   private get maintenanceState() { return this.deps.maintenanceState(); }
   private set maintenanceState(value: Manager["maintenanceState"]) { this.deps.setMaintenanceState(value); }
-  private get managerInstanceId() { return this.deps.managerInstanceId(); }
+  private get managerInstanceId() { return this.state.managerInstanceId!; }
   private get meshMode() { return this.deps.meshMode(); }
   private get preservationAttemptId() { return this.deps.preservationAttemptId(); }
   private set preservationAttemptId(value: Manager["preservationAttemptId"]) { this.deps.setPreservationAttemptId(value); }

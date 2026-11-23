@@ -7,7 +7,7 @@ import type { RetirementHold, TeardownTarget } from "./retirement.js";
 import type { AttachEndReason } from "./session/index.js";
 import type { Manager } from "./manager.js";
 import type { ManagerConfig } from "./manager-config.js";
-import type { ManagerAuthState } from "./manager-auth-state.js";
+import type { ManagerStartState } from "./manager-start-state.js";
 
 type FreeSlotStopCause = Extract<FreeSlotCause, { kind: string }>;
 /** Minimum slot lifetime for rate-flooring (P4c). A slot freed (by despawn OR natural exit/reap)
@@ -38,7 +38,6 @@ const FREE_SLOT_ATTACH_END: Record<Exclude<FreeSlotCause, FreeSlotStopCause>, At
 
 /** Current manager-owned lifecycle operations used while allocating and releasing names. */
 export interface NamesCapacityDeps {
-  managerInstanceId(): string;
   agents(): Iterable<ManagedAgent>;
   authEnabled(): boolean;
   maintenanceActive(): boolean;
@@ -65,7 +64,6 @@ export interface NamesCapacityDeps {
  *  field the Manager assigns later is current and a member a test replaces on the instance is the one that runs. */
 export function namesCapacityDeps(m: Manager): NamesCapacityDeps {
   return {
-    managerInstanceId: () => m["managerInstanceId"],
     agents: () => m["agents"].values(),
     authEnabled: () => m["auth"] !== undefined,
     maintenanceActive: () => m["maintenanceState"] === "active",
@@ -111,7 +109,8 @@ export class NamesCapacity {
    *  count-only, lazily-pruned recycle floor (P4c). Pruned + summed into the ceiling gate. */
   private cooling: number[] = [];
 
-  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: NamesCapacityDeps, private readonly state: ManagerAuthState) {}
+  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: NamesCapacityDeps, private readonly state: ManagerStartState) {}
+  private get managerInstanceId(): string { return this.state.managerInstanceId!; }
   private get userMode() { return this.state.userMode; }
 
   reserve(name: string, owner: string): void { this.reserved.set(name, owner); }
@@ -348,7 +347,7 @@ export class NamesCapacity {
     const seats = this.ownerSeats(owner);
     if (seats < cap) return undefined;
     return seatCapRefused(
-      `owner ${owner} holds ${seats} of the ${cap} seat${cap === 1 ? "" : "s"} manager ${this.deps.managerInstanceId()} admits per owner; ` +
+      `owner ${owner} holds ${seats} of the ${cap} seat${cap === 1 ? "" : "s"} manager ${this.managerInstanceId} admits per owner; ` +
         `stop one of that owner's seats, or ask the operator who runs this manager for a higher seat cap`,
       { owner, seats, cap },
     );

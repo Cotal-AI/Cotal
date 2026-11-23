@@ -9,7 +9,7 @@ import { Kvm } from "@nats-io/kv";
 import type { KV } from "@nats-io/kv";
 import type { NatsConnection } from "@nats-io/transport-node";
 import type { ManagerConfig } from "./manager-config.js";
-import type { ManagerAuthState } from "./manager-auth-state.js";
+import type { ManagerStartState } from "./manager-start-state.js";
 import type { ManagerParts } from "./manager-parts.js";
 import type { SpawnAcceptance } from "./seat-types.js";
 
@@ -17,7 +17,6 @@ import type { SpawnAcceptance } from "./seat-types.js";
  *  assigns after construction is always current, and a Manager method a test replaces is the one that runs. */
 export interface GoalWriterDeps {
   leaseStopping: () => Manager["leaseStopping"];
-  managerInstanceId: () => Manager["managerInstanceId"];
   turnRelay: () => Manager["turnRelay"];
   adoptTurnGoal: (...args: Parameters<Manager["adoptTurnGoal"]>) => ReturnType<Manager["adoptTurnGoal"]>;
   boundedReconnect: (...args: Parameters<Manager["boundedReconnect"]>) => ReturnType<Manager["boundedReconnect"]>;
@@ -34,7 +33,6 @@ export interface GoalWriterDeps {
 export function goalWriterDeps(m: Manager): GoalWriterDeps {
   return {
     leaseStopping: () => m["leaseStopping"],
-    managerInstanceId: () => m["managerInstanceId"],
     turnRelay: () => m["turnRelay"],
     adoptTurnGoal: (...args) => m["adoptTurnGoal"](...args),
     boundedReconnect: (...args) => m["boundedReconnect"](...args),
@@ -49,7 +47,7 @@ export function goalWriterDeps(m: Manager): GoalWriterDeps {
 
 /** The goal-writer's standing connection, its credential, and the goal index it reconciles at boot. */
 export class GoalWriter {
-  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: GoalWriterDeps, private readonly parts: Pick<ManagerParts, "servePlane">, private readonly state: ManagerAuthState) {}
+  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: GoalWriterDeps, private readonly parts: Pick<ManagerParts, "servePlane">, private readonly state: ManagerStartState) {}
 
   /** The spawn-as-action SELF-MEDIATED goal-writer connection + ActionContext — a
    *  standing connection DISJOINT from the serve credential, scoped to exactly this endpoint's
@@ -84,7 +82,7 @@ export class GoalWriter {
   // is the one that runs.
   private get auth() { return this.state.auth; }
   private get leaseStopping() { return this.deps.leaseStopping(); }
-  private get managerInstanceId() { return this.deps.managerInstanceId(); }
+  private get managerInstanceId() { return this.state.managerInstanceId!; }
   private get remoteAuthority() { return this.config.remoteAuthority; }
   private get turnRelay() { return this.deps.turnRelay(); }
   private adoptTurnGoal(...args: Parameters<Manager["adoptTurnGoal"]>): ReturnType<Manager["adoptTurnGoal"]> { return this.deps.adoptTurnGoal(...args); }

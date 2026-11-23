@@ -15,7 +15,7 @@ import { SeatStart } from "./seat-start.js";
 import type { SpawnHooks, StartAgentOpts } from "./seat-types.js";
 import { onceTurnNote, turnHoldToken } from "./turn-relay.js";
 import type { ManagerConfig } from "./manager-config.js";
-import type { ManagerAuthState } from "./manager-auth-state.js";
+import type { ManagerStartState } from "./manager-start-state.js";
 
 /** The goal index's bound on a relay note (core `GOAL_INDEX_NOTE_MAX`). A once task's note must
  *  fit it, and is refused at admission when it cannot. */
@@ -160,7 +160,6 @@ export function foreignEventChannels(channels: readonly string[], owner: string,
 export interface SeatLaunchDeps {
   installedExtensions: () => boolean;
   ep: () => CotalEndpoint;
-  managerInstanceId: () => string;
   runHosting: () => RunHosting | undefined;
   requiredRuntime: () => Runtime;
   meshMode: () => "open" | "static" | "user";
@@ -214,7 +213,6 @@ export function seatLaunchDeps(m: Manager): SeatLaunchDeps {
   return {
     installedExtensions: () => m["installedExtensions"],
     ep: () => m["ep"],
-    managerInstanceId: () => m["managerInstanceId"],
     runHosting: () => m["runHosting"],
     requiredRuntime: () => m["requiredRuntime"],
     meshMode: () => m["meshMode"],
@@ -270,7 +268,7 @@ export class SeatLaunch {
   /** The agent-start path. Shares this component's deps, and calls back into it for its leaf steps. */
   private readonly seatStart: SeatStart;
 
-  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: SeatLaunchDeps, private readonly parts: Pick<ManagerParts, "connectorInventory" | "servePlane">, private readonly state: ManagerAuthState) {
+  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: SeatLaunchDeps, private readonly parts: Pick<ManagerParts, "connectorInventory" | "servePlane">, private readonly state: ManagerStartState) {
     this.seatStart = new SeatStart(config, deps, parts, {
       checkSpawnCwd: (...args) => this.checkSpawnCwd(...args),
       harnessUnavailableError: (...args) => this.harnessUnavailableError(...args),
@@ -283,6 +281,7 @@ export class SeatLaunch {
       managedStaticInstanceReads: (...args) => this.managedStaticInstanceReads(...args),
     }, state);
   }
+  private get managerInstanceId(): string { return this.state.managerInstanceId!; }
   private get auth() { return this.state.auth; }
   private get userMode() { return this.state.userMode; }
 
@@ -477,7 +476,7 @@ export class SeatLaunch {
     } else {
       configPath = join(personaDir(this.config.workspaceRoot), `${ref}.md`);
       if (!existsSync(configPath))
-        return { error: `no persona "${ref}" in the catalog of manager ${this.deps.managerInstanceId()} on host ${hostname()}: ${configPath} not found; create it there` };
+        return { error: `no persona "${ref}" in the catalog of manager ${this.managerInstanceId} on host ${hostname()}: ${configPath} not found; create it there` };
     }
     // An inline snapshot belongs to its own seat's lifecycle, which removes it at retirement and
     // refuses a restart once it changed, so no other launch may read it. Compared after symlinks
@@ -651,9 +650,9 @@ export class SeatLaunch {
   /** Ordinary static control seats can read their holding instance. A run's recorded ceiling is
    *  authoritative, so its helpers receive no additional instance reads. */
   managedStaticInstanceReads(capabilities: readonly string[] | undefined): EpCapability[] {
-    if (this.deps.meshMode() !== "static" || !this.deps.managerInstanceId() || !capabilities?.some(c => c === "spawn" || c === "run" || c === "admin")) return [];
+    if (this.deps.meshMode() !== "static" || !this.managerInstanceId || !capabilities?.some(c => c === "spawn" || c === "run" || c === "admin")) return [];
     return ["describe", "inspect"].map(command => ({
-      endpoint: MANAGER_ENDPOINT, command, instanceId: this.deps.managerInstanceId(), instanceOnly: true,
+      endpoint: MANAGER_ENDPOINT, command, instanceId: this.managerInstanceId, instanceOnly: true,
     }));
   }
 

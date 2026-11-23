@@ -2,7 +2,7 @@ import { basename, join, resolve } from "node:path";
 import { CotalEndpoint, DEFAULT_SERVER, isReachable, realDirNoSymlink, subjectMatches, durableCovers, type ChannelDefaults, type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
 import { assertSingleSpaceBroker, recordOperationSpace, authDir, CommandFailure, oneLine, credentialRefusalMessage, brokerAddressForDisplay, canonicalRoot, codeSpan, connectOrThrow, findCotalRoot, findMesh, findPreparedSpace, preparedSpaceAt, jsonFlag, loadMeshes, localMeshesForRoot, nearbyMeshManifest, plainFlag, presentationOf, readMaintenanceJournal, shellPath, spaceFlag, userViewAuth, writeResult, type Report } from "@cotal-ai/workspace";
 import { shellWord } from "../lib/endpoint-errors.js";
-import { personaCatalog } from "../lib/persona-files.js";
+import { personaCatalog, type PersonaCatalog } from "../lib/persona-files.js";
 import { formatIssue, loadManifest, ManifestError, type PreparedManifest } from "../lib/manifest/index.js";
 import { UnusableFile } from "../lib/unusable-file.js";
 import { findLedgerByRun, listLedgerFiles, type MeshLedger } from "../lib/manifest/ledger.js";
@@ -126,9 +126,11 @@ function cardStepText(phase: string): string {
 
 /** Refuses a summary that reads cleanly but was recorded at another root, as one is after its folder
  *  was moved or copied. It reports only that root's earlier boot. */
-function assertSummaryNotElsewhere(root: string, deploymentId: string): void {
+function assertSummaryNotElsewhere({ root, space }: PersonaCatalog, deploymentId: string): void {
   const recordedRoot = freshTeamSummaryRecordedElsewhere(root, deploymentId);
-  if (recordedRoot) throw new CommandFailure("refused", "CONFLICT", `the fresh launch summary ${deploymentId} was recorded at ${recordedRoot}, not at this folder; the folder was moved or copied since, so it reports only that earlier boot`, { target: { root, recordedRoot, deploymentId }, remedy: "nothing in this folder depends on it; `cotal status` here shows this folder's own stack" });
+  if (!recordedRoot) return;
+  const atRoot = `cd ${shellPath(root)} && `;
+  throw new CommandFailure("refused", "CONFLICT", `the fresh launch summary ${deploymentId} was recorded at ${recordedRoot}, not at this folder; the folder was moved or copied since, so it reports only that earlier boot`, { target: { root, recordedRoot, deploymentId }, remedy: `nothing in this folder depends on it; inspect this project's stack with ${codeSpan(`${atRoot}cotal status --space=${shellWord(space)}`)}` });
 }
 
 function freshRecorded(summary: FreshTeamSummary) {
@@ -159,7 +161,7 @@ export async function team(args: ParsedArgs): Promise<void> {
     if (/^[a-f0-9]{16}$/.test(subject!)) {
       try { summary = findFreshTeamSummary(catalog.root, subject!); }
       catch {
-        assertSummaryNotElsewhere(catalog.root, subject!);
+        assertSummaryNotElsewhere(catalog, subject!);
         throw new CommandFailure("refused", "SCHEMA_INVALID", "the fresh launch summary for this full ID is unreadable; it was not treated as absent", { target: { space: catalog.space, deploymentId: subject } });
       }
       try { additiveAttempt = findAdditiveTeamAttempt(catalog.root, subject!); }
@@ -436,7 +438,7 @@ async function previewRemove(deploymentId: string, values: TeamValues): Promise<
   let summary: FreshTeamSummary | undefined;
   try { summary = findFreshTeamSummary(catalog.root, deploymentId); }
   catch {
-    assertSummaryNotElsewhere(catalog.root, deploymentId);
+    assertSummaryNotElsewhere(catalog, deploymentId);
     throw new CommandFailure("refused", "SCHEMA_INVALID", "the fresh launch summary for this ID is unreadable; it cannot be treated as absent or as an additive removal target", { target: { space: catalog.space, deploymentId } });
   }
   if (summary) {
