@@ -105,7 +105,6 @@ class FakeMesh implements Mesh {
   onInterrupt: (seat: SeatRef) => void = () => {};
   spawnDelay = 0;
   closed = false;
-  agentEndpoints = false;
   agentCalls: { seat: string; command: string; args: Record<string, unknown> }[] = [];
   /** What a seat's agent endpoint answers. A throw is its refusal. */
   onAgentCall: (seat: SeatRef, command: string, args: Record<string, unknown>) => unknown = () => { throw new AgentCallFailed("no agent endpoint here", "unavailable"); };
@@ -181,7 +180,7 @@ class FakeMesh implements Mesh {
     return this.onAgentCall(seat, command, args);
   }
   promptCounter(seat: SeatRef) { return this.counters.get(seat.actor); }
-  served(seat: SeatRef) { return this.agentEndpoints && this.counters.has(seat.actor) ? this.serves.get(seat.actor) ?? this.serving : undefined; }
+  served(seat: SeatRef) { return this.counters.has(seat.actor) ? this.serves.get(seat.actor) ?? this.serving : undefined; }
   async input(seat: SeatRef, text: string) {
     this.onInput(seat);
     if (this.inputDelay) await tick(this.inputDelay);
@@ -685,10 +684,7 @@ const refusedKind = (blocks: Parameters<typeof promptParts>[0]) => { try { promp
 check("an image of another type, an image without data, and audio are refused",
   refusedKind([{ type: "image", data: "PHN2Zz4=", mimeType: "image/svg+xml" }]) && refusedKind([{ type: "image", data: "", mimeType: "image/png" }]) && refusedKind([{ type: "audio", data: "AAAA", mimeType: "audio/wav" }]));
 const imaged = await errorOf(agent.request(methods.agent.session.prompt, { sessionId: (await agent.request(methods.agent.session.new, { cwd: dir, mcpServers: [] })).sessionId, prompt: [{ type: "image", data: "iVBORw0KGgo=", mimeType: "image/png" }] }));
-check("a first prompt with images on a space without the agent endpoint is refused, naming why", imaged?.code === -32602 && imaged.message?.includes("agent endpoint") === true, imaged);
-
-
-check("a space without the agent endpoint never calls it", mesh.agentCalls.length === 0, mesh.agentCalls);
+check("a first prompt with images to a seat that takes no turn fails, naming why", imaged?.message?.includes("does not take a turn on its agent endpoint, so it cannot take the prompt's images") === true, imaged);
 conn.close();
 await tick(20);
 check("closing the client closes the space", mesh.closed);
@@ -752,7 +748,6 @@ for (const others of [["m2"], ["m2", "m3"]]) {
 // The seat's agent endpoint: the prompts its harness opens and the commands it runs.
 {
   const space = new FakeMesh();
-  space.agentEndpoints = true;
   // The bridge reads the seat's presence at each choice, so the test changes it in place.
   const shown = { interrupt: true, turn: true, images: true, usage: true };
   space.serving = shown;
@@ -923,7 +918,6 @@ for (const others of [["m2"], ["m2", "m3"]]) {
 // A prompt whose read fails once, as when the transport drops, is read again and asked once.
 {
   const space = new FakeMesh();
-  space.agentEndpoints = true;
   const c = connect(async () => space);
   await c.init;
   const at = new Date().toISOString();
@@ -963,7 +957,6 @@ for (const others of [["m2"], ["m2", "m3"]]) {
 // prompt asks it, and that turn stays open until the client answers.
 {
   const space = new FakeMesh();
-  space.agentEndpoints = true;
   const c = connect(async () => space);
   await c.init;
   const at = new Date().toISOString();
@@ -1028,8 +1021,8 @@ for (const others of [["m2"], ["m2", "m3"]]) {
   check("the first prompt after /name spawns the seat under that name", space.spawned[0]?.name === "scout", space.spawned);
   check("and stores the thread's link to the seat's run", JSON.stringify(c.links.rows.at(-1)) === JSON.stringify({ space: "fake", thread: named.sessionId, lifecycleUid: "life-scout" }), c.links.rows);
   check("/name on a running seat changes the name it shows", (await say(named.sessionId, "/name Scout Two")).includes("now shows as Scout Two") && space.renamed.at(-1)?.name === "Scout Two", space.renamed);
-  space.renameRefusal = "renaming a running agent needs a space where people sign in";
-  check("a refused rename says why in the thread", (await say(named.sessionId, "/name other")).includes("Could not rename scout: renaming a running agent needs a space where people sign in"));
+  space.renameRefusal = "no responder for agent.set-name";
+  check("a refused rename says why in the thread", (await say(named.sessionId, "/name other")).includes("Could not rename scout: no responder for agent.set-name"));
   space.renameRefusal = undefined;
 
   const scout: SeatRow = { name: "scout", display: "Scout Two", owner: "local", actor: "actor-scout", lifecycleUid: "life-scout", managerInstanceId: "m1", agent: "claude", model: "haiku", cwd: dir, status: "running" };
@@ -1136,7 +1129,6 @@ for (const others of [["m2"], ["m2", "m3"]]) {
 // no fixed time). Each case runs on its own space, all at once.
 async function queuedSeat(): Promise<{ space: FakeMesh; c: ReturnType<typeof connect>; s: { sessionId: string }; seat: SeatRef; state: { now: unknown; gone?: boolean }; cancels: string[] }> {
   const space = new FakeMesh();
-  space.agentEndpoints = true;
   space.serving = { interrupt: true, turn: true, images: true, usage: false };
   const c = connect(async () => space);
   await c.init;
