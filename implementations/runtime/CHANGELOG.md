@@ -1,5 +1,25 @@
 # @cotal-ai/runtime
 
+## 0.175.3
+
+### Patch Changes
+
+- 806ac82: Reject an empty `--handler` for a workflow simulation as a usage error, and say how to name the results file or leave the option out.
+- 7b16e50: Reject a local workflow start that omits an admission option as a usage error before any broker contact, naming the missing option and how to supply it.
+- a943a0e: Keep validation problems visible when JSON output cannot be written, and retain workflow warnings when the simulation results script is refused.
+- a023cff: Waiting hosted workflows check for timer fires and settlements without replaying the journal on every empty poll.
+- a70411d: Refuse a simulation results file whose clock.start is past the safe-integer range, so a one-millisecond sleep is never reported as zero elapsed time; name the supported range and how to fix it.
+- 2017841: A simulation stopped by a missing scripted result now says to save the result in a results file and rerun with `--handler`, instead of only showing the result object.
+- 56ff44a: When a hosted workflow command finds no registered Manager, its recovery names the local stack's project folder or directs the operator to its host.
+- Updated dependencies [3e4e94e]
+- Updated dependencies [03b122e]
+- Updated dependencies [35e08ac]
+- Updated dependencies [1d07abd]
+- Updated dependencies [5406c82]
+  - @cotal-ai/workspace@0.175.3
+  - @cotal-ai/core@0.175.3
+  - @cotal-ai/lang@0.175.3
+
 ## 0.175.2
 
 ### Patch Changes

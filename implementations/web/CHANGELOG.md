@@ -1,5 +1,11 @@
 # @cotal-ai/web
 
+## 0.175.3
+
+### Patch Changes
+
+- 151c810: Fix the dashboard smoke test for unfiltered channel history so it checks the history handler instead of the GET-only guard. Dashboard behavior is unchanged.
+
 ## 0.175.2
 
 ### Patch Changes

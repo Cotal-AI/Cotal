@@ -1,5 +1,69 @@
 # cotal-ai
 
+## 0.175.3
+
+### Patch Changes
+
+- 450ccb6: Explain when retrying `cotal_spawn` would start a duplicate helper and point callers to `cotal_invoke` to inspect a helper whose model pin could not be audited.
+- dcb7b2b: Self-update uses a compatible installed Node.js to run npm when the Node.js running Cotal is too old for npm.
+- 03b122e: Show a usable `cotal auth mint` correction for channel names that start with a hyphen. The suggested `--allow-subscribe` or `--allow-publish` flag uses `=` so the channel is read as its value.
+- e580278: The models reference now distinguishes a named catalog read from an all-catalog read: naming the one unreadable catalog with `--harness` fails with exit 5, while an all-catalog read with unreadable rows stays partial with exit 4.
+- Updated dependencies [d3b463e]
+- Updated dependencies [c70e10c]
+- Updated dependencies [c051e2b]
+- Updated dependencies [3b83325]
+- Updated dependencies [4cb5d4c]
+- Updated dependencies [450ccb6]
+- Updated dependencies [b5b4a8e]
+- Updated dependencies [dcb7b2b]
+- Updated dependencies [3e4e94e]
+- Updated dependencies [f114800]
+- Updated dependencies [85fcd8f]
+- Updated dependencies [806ac82]
+- Updated dependencies [2f3f625]
+- Updated dependencies [b7c10da]
+- Updated dependencies [4fb0306]
+- Updated dependencies [3f82277]
+- Updated dependencies [4d95c41]
+- Updated dependencies [506fb9c]
+- Updated dependencies [403a331]
+- Updated dependencies [d370f3b]
+- Updated dependencies [6079050]
+- Updated dependencies [c74d5a9]
+- Updated dependencies [7b16e50]
+- Updated dependencies [03b122e]
+- Updated dependencies [48d042f]
+- Updated dependencies [a943a0e]
+- Updated dependencies [c52e2f2]
+- Updated dependencies [a8a1804]
+- Updated dependencies [a023cff]
+- Updated dependencies [35e08ac]
+- Updated dependencies [1d07abd]
+- Updated dependencies [ae1e371]
+- Updated dependencies [a70411d]
+- Updated dependencies [a885864]
+- Updated dependencies [bdfbf7c]
+- Updated dependencies [67d0971]
+- Updated dependencies [faed3de]
+- Updated dependencies [5406c82]
+- Updated dependencies [2017841]
+- Updated dependencies [4429734]
+- Updated dependencies [79a9546]
+- Updated dependencies [8d1cd63]
+- Updated dependencies [1b861dc]
+- Updated dependencies [0342cf6]
+- Updated dependencies [56ff44a]
+  - @cotal-ai/manager@0.175.3
+  - @cotal-ai/cli@0.175.3
+  - @cotal-ai/connector-core@0.175.3
+  - @cotal-ai/workspace@0.175.3
+  - @cotal-ai/runtime@0.175.3
+  - @cotal-ai/core@0.175.3
+  - @cotal-ai/auth@0.175.3
+  - @cotal-ai/delivery@0.175.3
+  - @cotal-ai/registry@0.175.3
+  - @cotal-ai/seat@0.175.3
+
 ## 0.175.2
 
 ### Patch Changes
