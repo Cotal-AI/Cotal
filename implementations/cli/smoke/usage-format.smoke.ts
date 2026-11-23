@@ -633,6 +633,15 @@ for (const [args, usage, foreign] of [
     rejectedNoOpen.status === 1 && /--no-open belongs to service start web/.test(rejectedNoOpen.stderr) && !/^  --no-open\b/m.test(rejectedNoOpen.stderr) &&
     webStart.status === 0 && /^  --no-open\b/m.test(webStart.stdout),
     { manager: shown(managerStart), refused: shown(rejectedNoOpen), web: shown(webStart) });
+  const brokerStart = run(["service", "start", "broker", "--help"]);
+  const brokerHelp = run(["help", "service", "start", "broker"]);
+  const brokerRefusal = run(["service", "start", "broker", "--no-open", "--dry-run"]);
+  check("broker start help shows broker options and omits the web-only --no-open option, including on refusal",
+    brokerStart.status === 0 && brokerHelp.status === 0 && brokerStart.stdout === brokerHelp.stdout &&
+    /^  --config <file>/m.test(brokerStart.stdout) && /^  --binary <file>/m.test(brokerStart.stdout) && !/^  --no-open\b/m.test(brokerStart.stdout) &&
+    brokerRefusal.status === 1 && /--no-open belongs to service start web/.test(brokerRefusal.stderr) &&
+    /^  --config <file>/m.test(brokerRefusal.stderr) && !/^  --no-open\b/m.test(brokerRefusal.stderr),
+    { start: shown(brokerStart), help: shown(brokerHelp), refused: shown(brokerRefusal) });
 
   for (const path of [["endpoint", "watch"], ["endpoint", "session"], ["endpoint", "work"], ["endpoint", "work", "lease"], ["endpoint", "work", "commit"]]) {
     const help = run([...path, "--help"]);
@@ -953,6 +962,10 @@ if (process.platform !== "win32") {
   const svcAddPresetBogusHelp = run(["service", "add", "x", "--preset", "bogus", "--help"]);
   const svcAddHelp = run(["service", "add", "--help"]);
   check("service add --help wins over missing or unknown --preset", svcAddPresetMissingHelp.status === 0 && svcAddPresetMissingHelp.stdout === svcAddHelp.stdout && svcAddPresetBogusHelp.status === 0 && svcAddPresetBogusHelp.stdout === svcAddHelp.stdout, { missing: shown(svcAddPresetMissingHelp), bogus: shown(svcAddPresetBogusHelp) });
+  const svcAddPresetMissing = run(["service", "add", "widget", "--preset"]);
+  check("service add with no preset value refuses with the scoped help and preset option",
+    svcAddPresetMissing.status === 1 && svcAddPresetMissing.stdout === "" && svcAddHelp.stdout.includes("--preset <name>")
+    && svcAddPresetMissing.stderr === `✗ --preset needs one declared preset name\n${svcAddHelp.stdout}`, shown(svcAddPresetMissing));
 
   for (const args of [
     ...["start", "show", "stop", "status", "logs", "remove"].map((mode) => ["service", mode, "myweb", "--preset", "web"]),

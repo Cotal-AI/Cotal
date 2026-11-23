@@ -1,5 +1,20 @@
 # @cotal-ai/delivery
 
+## 0.175.2
+
+### Patch Changes
+
+- b6f3750: The delivery daemon's broker reachability check, lease acquire and own-lease reader move into their own module, with no change in behaviour.
+- Updated dependencies [7ca1d02]
+- Updated dependencies [138db65]
+- Updated dependencies [5bf58dd]
+- Updated dependencies [d4ecdff]
+- Updated dependencies [c940ed9]
+- Updated dependencies [a2486a2]
+- Updated dependencies [beddddf]
+  - @cotal-ai/core@0.175.2
+  - @cotal-ai/workspace@0.175.2
+
 ## 0.175.1
 
 ### Patch Changes

@@ -67,7 +67,7 @@ import { instanceProjection, serviceInstances } from "../lib/service-instances.j
 import { readStackJournal, STACK_DEFINITION, stackStartedWithoutManager, unusableStackJournal } from "../lib/stack-journal.js";
 import { askManager } from "@cotal-ai/workspace/control";
 import { managerStopImpactFacts } from "./status-stop-impact.js";
-import { type Selected, UnregisteredRoot } from "./status-model.js";
+import { type Selected, type SelectedResult, type StatusResult, UnregisteredRoot } from "./status-model.js";
 
 /** The lease `holder` the delivery daemon THIS WORKSPACE launched would write, or `undefined` when it
  *  cannot be known (#1576, and the reason is #837).
@@ -666,7 +666,18 @@ async function brokerHealth(target: MeshTarget, store: StoreWriteObservation | u
   }
 }
 
-export async function printComponentHealth(selected: Selected, store: StoreWriteObservation | undefined, brokerUnreachable: boolean): Promise<void> {
+/** The listener can answer even when the original folder's health evidence is unavailable. */
+function movedStackComponentHealth(target: MeshTarget, meshes: StatusResult["meshes"]): [ComponentHealth, ComponentHealth, ComponentHealth] {
+  const reason = "stack health cannot be checked at the recorded project folder";
+  const refused = (name: string, facts: string[] = []): ComponentHealth => ({ name, verdict: "refused", facts: [...facts, reason] });
+  const address = brokerAddressForDisplay(target.server);
+  const reachable = meshes.items.some((mesh) => mesh.space === target.space && mesh.server === address && mesh.check === "reachable");
+  return [refused("manager"), refused("delivery"), refused("broker", [
+    ...(address === undefined ? [] : [`registered ${address}`]), ...(reachable ? ["reachable"] : []),
+  ])];
+}
+
+export async function printComponentHealth(selected: Selected, store: StoreWriteObservation | undefined, report: SelectedResult, meshes: StatusResult["meshes"]): Promise<void> {
   section("Component Health");
   if (!selected.ok) {
     const error = selected.error;
@@ -698,6 +709,12 @@ export async function printComponentHealth(selected: Selected, store: StoreWrite
   }
   const target = selected.target;
   const context: LocalProcessContext = { root: target.root, space: target.space, userAuth: target.mode === "user" };
+  if (target.mode === "auth" && (report.resolved ? report.connection === "root-gone" : report.code === "moved-folder") && target.source !== "flag-space-override") {
+    const [manager, delivery, broker] = movedStackComponentHealth(target, meshes);
+    for (const component of [manager, delivery, await webHealth(context), broker]) printComponent(component);
+    process.exitCode = COMPONENT_EXIT.refused;
+    return;
+  }
   // ONE credential read for the whole pass (user mode resolves the signed-in login once; the
   // static shape is just the target's own auth material), shared by the manager and delivery
   // probes so the two rows cannot disagree about whose credential they probed with.
@@ -705,7 +722,7 @@ export async function printComponentHealth(selected: Selected, store: StoreWrite
   const broker = await brokerHealth(target, store);
   const components = await Promise.all([
     managerHealth(target, context, credential, broker),
-    deliveryHealth(target, context, credential, brokerUnreachable && broker.verdict === "absent"),
+    deliveryHealth(target, context, credential, report.resolved && report.connection === "unreachable" && broker.verdict === "absent"),
     webHealth(context),
     broker,
   ]);
