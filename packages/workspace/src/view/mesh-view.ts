@@ -32,12 +32,14 @@ export interface FeedEntry {
   replyTo?: string;
   /** Lowercased peer names the sender called out, as the wire's `mentions` carries them. */
   mentions?: string[];
+  /** Exact principals from the wire's `mentionIds`. An empty list matches nobody. */
+  mentionIds?: string[];
   /** The sender's thread or conversation correlation id, as the wire's `contextId` carries it. */
   contextId?: string;
   text: string;
 }
 
-type ThreadFields = Pick<FeedEntry, "replyTo" | "mentions" | "contextId">;
+type ThreadFields = Pick<FeedEntry, "replyTo" | "mentions" | "mentionIds" | "contextId">;
 
 export interface StatusCounts {
   working: number;
@@ -142,11 +144,14 @@ function bodyText(msg: CotalMessage): string {
   return partsToText(msg.parts);
 }
 
-/** The wire's reply link, mentions and context id, each present only when the message carries it. */
+/** The wire's thread and mention fields. Preserve a present ID list even when it matches nobody. */
 function threadFields(msg: CotalMessage): ThreadFields {
+  const ids = msg.channel !== undefined ? msg.mentionIds : undefined;
+  const mentionIds = Array.isArray(ids) && ids.every((id) => typeof id === "string") ? [...ids] : [];
   return {
     ...(msg.replyTo !== undefined ? { replyTo: msg.replyTo } : {}),
     ...(msg.mentions?.length ? { mentions: [...msg.mentions] } : {}),
+    ...(ids !== undefined ? { mentionIds } : {}),
     ...(msg.contextId !== undefined ? { contextId: msg.contextId } : {}),
   };
 }

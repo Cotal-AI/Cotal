@@ -87,7 +87,7 @@ export interface Talk {
   slash(command: AppSlash): Promise<Outcome>
   /** The newest direct message or role task the session received. */
   latest(): SessionMessage | undefined
-  /** Whether a row's mentions name the human, under the open session's name or the next one's. */
+  /** Whether a row mentions a session on this space, by principal or by legacy name. */
   mentionsYou(e: FeedEntry): boolean
   /** Who the human is as a sender. Each session joins under its own principal, and earlier ones, the
    *  ones remembered from earlier runs included, stay in the conversation. The name is the open
@@ -181,6 +181,7 @@ export function openTalk(deps: {
   const missing = (why: string) => setUnread((was) => (was ? `${was}; ${why}` : why))
   const [read, setRead] = createSignal<ReadonlySet<string>>(new Set())
   const [readProblem, setReadProblem] = createSignal<string>()
+  const [mentionPrincipals, setMentionPrincipals] = createSignal<ReadonlySet<string>>(new Set())
   try {
     setRead(readMarks(target.space))
   } catch (e) {
@@ -203,6 +204,7 @@ export function openTalk(deps: {
     const { sessions, skipped } = rememberedChatSessions(target)
     if (skipped.length) missing(`${skipped.length} remembered session${skipped.length === 1 ? " was" : "s were"} skipped: ${oneLine(skipped[0]!.reason)} (${skipped[0]!.path})`)
     for (const s of sessions) opened.add(s.principal)
+    setMentionPrincipals(new Set(sessions.map((s) => s.principal)))
     if (sessions.length) void readEarlier(sessions)
   } catch (e) {
     missing(`The sessions the app opened here before were not read: ${refusal(e).message}`)
@@ -286,6 +288,7 @@ export function openTalk(deps: {
       if (shut) return void (await s.close())
       session = s
       opened.add(s.identity().principal)
+      setMentionPrincipals((ids) => new Set([...ids, s.identity().principal]))
       let unremembered: string | undefined
       try {
         rememberChatSession(target, s.identity())
@@ -340,6 +343,10 @@ export function openTalk(deps: {
     },
     latest: () => latestDirected(messages),
     mentionsYou: (e) => {
+      if (e.mentionIds !== undefined) {
+        const principals = mentionPrincipals()
+        return e.mentionIds.some((id) => principals.has(id))
+      }
       const n = current()
       return n !== undefined && mentionsName(e.mentions, n)
     },

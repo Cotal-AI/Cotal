@@ -89,7 +89,7 @@ function hard(condition: unknown, name: string): asserts condition {
 /** The count is a FLOOR. A derived tally proves the suite RAN its assertions, not that it still
  *  CONTAINS them: delete one and the tally quietly reads lower and the shard still passes. Raise it
  *  deliberately when you add a cell; a drop means one vanished. */
-const EXPECTED_CELLS = 56;
+const EXPECTED_CELLS = 60;
 
 if (process.platform === "win32") skipSuite("the Hermes connector is Unix-only");
 
@@ -152,6 +152,10 @@ assert.equal(columnZeroLines(subject.honest).length, 1, "an honest message is on
 assert.ok(subject.honest.startsWith("[dm from Ada / agent] "), `an honest message keeps its attribution: ${subject.honest}`);
 assert.ok(subject.honest.endsWith("just a normal message"), `an honest message keeps its body: ${subject.honest}`);
 assert.equal(control.honest, subject.honest, "the control and the subject agree on honest input, so they differ only on forgeries");
+assert.equal(subject.verified_address, "[dm from ben/reviewer] hello", "the injected prompt prefers the verified address over the claimed name and role");
+assert.equal(subjectChat.verified_address?.chat_name, "ben/reviewer", "the DM title uses the verified address");
+assert.equal(subjectChat.verified_address?.user_name, "ben/reviewer", "Hermes source attribution uses the verified address");
+assert.equal(subject.verified_principal, "[dm from u_foreign.reviewer] hello", "a verified principal is shown instead of a claimed name when the username is unavailable");
 
 // The body half. A separator a peer can write is a separator a peer can forge a message with.
 for (const key of ["body_newline", "body_cr", "body_u2028"] as const) {
