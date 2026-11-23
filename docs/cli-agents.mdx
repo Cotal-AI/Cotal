@@ -376,7 +376,8 @@ run `cotal spawn default --detach --name example`. For a persona file, run
 `cotal spawn --detach --file <persona-file>`. If the old command uses `--live-only`, `--expires-in`,
 `--expires-at`, or `--enrollment-file`, use `--foreground` instead of `--detach` to keep those
 options. They cannot be used with a manager launch. In the foreground, `--json` and `--plain`
-require `--dry-run`.
+require `--dry-run`. If the options are malformed or fail offline argument checks, `cotal start`
+gives guidance without printing a retry command. It does not check whether the target is running.
 
 
 ### Manager capacity

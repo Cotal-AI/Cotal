@@ -238,6 +238,7 @@ channels:
   const path = "./Owner's persona.md";
   const file = run(["start", `--config=${path}`, ...launch, "--prompt", "review the first draft"], offline, project);
   const command = (r: ReturnType<typeof run>) => r.stderr.split("\n").find(line => line.startsWith("  "))?.trim();
+  const retryPrefix = `${displayCmd({ fromAnyFolder: true })} spawn `;
   const migratedCatalog = command(catalog);
   const migratedFile = command(file);
   check("start refuses without the gate and prints the catalog retry",
@@ -251,7 +252,39 @@ channels:
     check(`start explains how to migrate --live-only with ${flags[0]} without printing an invalid command`,
       conflict.status === 1 && conflict.stdout === "" && !GATE.test(conflict.stderr) &&
       conflict.stderr.includes("--live-only belongs to direct foreground execution") &&
-      !command(conflict)?.includes(" spawn "), shown(conflict));
+      !command(conflict)?.startsWith(retryPrefix), shown(conflict));
+  }
+  for (const [target, problem] of [
+    [["--space="], "is empty; name one space"],
+    [["--server", "nats://127.0.0.1:4222/not-broker"], "must be a bare broker URL"],
+  ] as const) {
+    const flags = [...launch, "--foreground", "--live-only", ...target, "--dry-run", "--json"];
+    const spawn = run(["spawn", "default", ...flags], offline, project);
+    const error = spawn.stdout ? JSON.parse(spawn.stdout).error : undefined;
+    check(`spawn refuses invalid ${target[0]} before launch`,
+      spawn.status === 1 && error?.code === "USAGE_INVALID" && error.message.includes(problem), shown(spawn));
+    const removed = run(["start", "--config", "default", ...flags], offline, project);
+    check(`start explains invalid ${target[0]} without printing a retry`,
+      removed.status === 1 && removed.stdout === "" && !GATE.test(removed.stderr) &&
+      removed.stderr.includes(problem) && !command(removed)?.startsWith(retryPrefix), shown(removed));
+  }
+  for (const [flags, mode] of [
+    [["--live-only", "--name"], "--live-only belongs to direct foreground execution"],
+    [["--expires-in", "-5", "--dry-run"], "--expires-in belongs to direct foreground execution"],
+    [["--foreground", "--live-only=true"], "--live-only belongs to direct foreground execution"],
+    [["--foreground", "--name"], "Use `cotal spawn --foreground`"],
+  ] as const) {
+    const removed = run(["start", "--config", "default", ...flags], offline, project);
+    check(`malformed start arguments ${flags.join(" ")} keep foreground guidance without a retry`,
+      removed.status === 1 && removed.stdout === "" && !GATE.test(removed.stderr) &&
+      removed.stderr.includes(mode) && !removed.stderr.includes("cotal spawn --detach") &&
+      !command(removed)?.startsWith(retryPrefix), shown(removed));
+  }
+  for (const flags of [["--prompt=--live-only", "--name"], ["--prompt", "--live-only"], ["--", "--foreground"], ["--name", "--", "--foreground"]]) {
+    const removed = run(["start", "--config", "default", ...flags], offline, project);
+    check(`malformed start does not promote ${flags.join(" ")} to a launch mode`,
+      removed.status === 1 && removed.stdout === "" && !GATE.test(removed.stderr) &&
+      !/cotal spawn --(?:foreground|detach)/.test(removed.stderr) && !command(removed)?.startsWith(retryPrefix), shown(removed));
   }
   for (const flags of [["--expires-in", "60"], ["--expires-at", "4102444800"], ["--enrollment-file", "./enrollment", "--space", "migration-check"]]) {
     const removed = run(["start", "--config", "default", ...launch, ...flags], offline, project);
@@ -270,13 +303,12 @@ channels:
     const flags = [...launch, "--live-only", "--dry-run", "--json"];
     const removed = run(["start", "--config", config, ...flags], offline, project);
     const retry = command(removed);
-    const prefix = `${displayCmd({ fromAnyFolder: true })} spawn `;
-    const expected = `${prefix}${persona} ${flags.join(" ")}`;
+    const expected = `${retryPrefix}${persona} ${flags.join(" ")}`;
     check(`start explains --live-only and preserves it in the ${config} retry`,
       removed.status === 1 && removed.stdout === "" && !GATE.test(removed.stderr) &&
       removed.stderr.includes("--live-only belongs to direct foreground execution") && retry === expected, shown(removed));
     if (retry !== expected) continue;
-    const preview = run(["spawn", ...retry.slice(prefix.length).split(" ")], previewEnv, project);
+    const preview = run(["spawn", ...retry.slice(retryPrefix.length).split(" ")], previewEnv, project);
     const result = preview.stdout ? JSON.parse(preview.stdout).result : undefined;
     check(`the printed ${config} retry previews a direct launch without allocating or launching`,
       preview.status === 0 && result?.kind === "direct-launch-preview" && result.allocated === false &&

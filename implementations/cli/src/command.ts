@@ -21,7 +21,6 @@ import {
   hasMeshTargetFlags,
   inOperationSpace,
   isCommandFailure,
-  checkServer,
   isConnectRefusal,
   isMeshRegistryError,
   isSeededCommand,
@@ -80,6 +79,7 @@ import { GLOBAL_FLAG_WORDS, OUTPUT_FLAG_WORDS } from "./lib/leading-flags.js";
 import { takeManagedHandoffCustody } from "./managed-handoff.js";
 import { nearestWords, LEADING_FLAGS, unknownCommandMessage, unknownSubcommandMessage } from "./lib/nearest-word.js";
 import { UnusableFile } from "./lib/unusable-file.js";
+import { brokerFlagFailure, emptySpaceFlagFailure } from "./lib/target-flag-failure.js";
 import { armTelemetry, recordTelemetryError, recordTelemetryFailure } from "./telemetry.js";
 
 // The service surfaces, the manager choice and the gone-stack refusal are imported where a command
@@ -576,11 +576,8 @@ function parseOrExit(cmd: Command, rest: string[]): ParsedArgs {
   }
   const first = parsed.positionals[0];
   const canonical = canonicalSubcommand(cmd, parsed, json, plain);
-  // Target resolution reads an empty space as no space and falls back to the selected one, so a script
-  // whose variable is unset would act on whichever space is selected.
-  const spaceFlag = cmd.flags?.find((flag) => flag.name === "space");
-  if (spaceFlag && typeof parsed.values.space === "string" && !parsed.values.space.trim())
-    failureExit(cmd, new CommandFailure("refused", "USAGE_INVALID", `--space${spaceFlag.short ? `/-${spaceFlag.short}` : ""} is empty; name one space`, { remedy: "name the space; `cotal space` lists the spaces this machine knows" }), json, parsed.values.plain === true, undefined, rest, parsed);
+  const spaceFailure = emptySpaceFlagFailure(cmd, parsed.values.space);
+  if (spaceFailure) failureExit(cmd, spaceFailure, json, parsed.values.plain === true, undefined, rest, parsed);
   // An empty --store-dir reads as no value and opens the default store, and a ~ no shell expanded
   // names a folder called ~ in the working folder.
   const storeDir = parsed.values["store-dir"];
@@ -598,18 +595,8 @@ function parseOrExit(cmd: Command, rest: string[]): ParsedArgs {
   }
   // The TCP client drops URL components beyond host and port. Apply registration's syntax rule
   // before any command connects. A command's narrower rule, such as `up`'s, has run above.
-  if (cmd.flags?.some((flag) => flag.name === "server") && typeof canonical.values.server === "string") {
-    // Manifest up owns the single-listener refusal. Check each entry first so a credential or
-    // malformed entry is still refused before that command reads the manifest or starts anything.
-    const servers = cmd.name === "up" && typeof canonical.values.file === "string"
-      ? canonical.values.server.split(",").map(server => server.trim())
-      : [canonical.values.server];
-    for (const server of servers) {
-      const checked = checkServer(server, "--server");
-      if (!checked.ok)
-        failureExit(cmd, new CommandFailure("refused", "USAGE_INVALID", `${checked.message.replace(/^✗ /, "")}; the command did not run`, { remedy: checked.remedy, selfContained: true }), json, canonical.values.plain === true, undefined, rest, canonical);
-    }
-  }
+  const brokerFailure = brokerFlagFailure(cmd, canonical.values);
+  if (brokerFailure) failureExit(cmd, brokerFailure, json, canonical.values.plain === true, undefined, rest, canonical);
   return canonical;
 }
 
