@@ -28,7 +28,7 @@ import { createConnection, createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { recordsBucket } from "@cotal-ai/core";
-import { canonicalLocalProcessPath, DELIVERY_PIDFILE, isCommandFailure, MANAGER_PIDFILE, MANAGER_SPARE_CAPABILITY, readManagerName, shellPath, spaceKey, verifyIdentityPin, type ProcessIdentityRecord } from "@cotal-ai/workspace";
+import { canonicalLocalProcessPath, DELIVERY_PIDFILE, isCommandFailure, MANAGER_PIDFILE, MANAGER_SPARE_CAPABILITY, readManagerName, shellPath, spaceKey, userAuthStateDir, verifyIdentityPin, type ProcessIdentityRecord } from "@cotal-ai/workspace";
 import { finishOwnedChild, observeOwnedChild, ownedBirthLive as live, waitForOwnedChild } from "./_foreground-owned-child.js";
 import { foregroundCliProbe } from "./_foreground-cli-probe.js";
 import { observeServiceProcess, serviceInstances } from "../src/lib/service-instances.js";
@@ -1231,7 +1231,9 @@ async function userAuthRestartCell(): Promise<void> {
   await listening;
   try {
     const space = "restart-user-auth", port = await freePort(), server = `nats://127.0.0.1:${port}`;
+    const idpUrl = `http://127.0.0.1:${(idp.address() as AddressInfo).port}/auth`;
     const restart = ["--user-auth", "--space", space, "--server", server];
+    const foreground = ["--foreground", "--no-manager", ...restart];
     const bootAndStop = async (args: string[]) => {
       const child = spawn(process.execPath, ["--import", tsx, cliEntry, "up", ...args], { cwd: mesh, env, stdio: ["ignore", "pipe", "pipe"] });
       const state = observeOwnedChild(child);
@@ -1241,7 +1243,8 @@ async function userAuthRestartCell(): Promise<void> {
         await until(async () => {
           if (state.error) throw state.error;
           if (state.exited) throw new Error(output);
-          return output.includes("Press Ctrl-C to stop.") && await portOpen(port);
+          return output.includes("Press Ctrl-C to stop.") && output.includes(`✓ user-auth service up - sign in with: \`cotal login --idp ${idpUrl}\``) &&
+            !existsSync(join(mesh, ".cotal", "maintenance", "lock.json")) && await portOpen(port);
         }, 90_000, () => output);
       } finally {
         if (!state.exited) child.kill("SIGTERM");
@@ -1250,7 +1253,21 @@ async function userAuthRestartCell(): Promise<void> {
       assert.equal(state.code, 143, output);
       assert.equal(await portOpen(port), false, output);
     };
-    await bootAndStop(["--foreground", "--no-manager", ...restart, "--idp", `http://127.0.0.1:${(idp.address() as AddressInfo).port}/auth`]);
+    await bootAndStop([...foreground, "--idp", idpUrl]);
+    const pinPath = join(userAuthStateDir(mesh, space, { readOnly: true }), "idp.json");
+    const pin = readFileSync(pinPath);
+    const otherIdp = `http://127.0.0.1:${(idp.address() as AddressInfo).port}/different`;
+    const conflict = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["up", ...foreground, "--idp", otherIdp]);
+    const conflictText = (conflict.out + conflict.err).replace(/\s+/g, " ");
+    assert.equal(conflict.code, 2, conflictText);
+    assert.match(conflictText, /AUTH_PREFLIGHT_CONFLICT/);
+    assert.match(conflictText, /retry the same start without `--idp`/);
+    assert.match(conflictText, /keep `--user-auth` and the other startup options/);
+    assert.ok(!conflictText.includes(otherIdp) && !conflictText.includes("run bare `cotal up`"), conflictText);
+    assert.equal(await portOpen(port), false, conflictText);
+    assert.deepEqual(readFileSync(pinPath), pin);
+    await bootAndStop(foreground);
+    assert.deepEqual(readFileSync(pinPath), pin);
     for (const args of [["whoami"], ["send", "--server", server, "-c", "general", "test message"]]) {
       const r = await foregroundCliProbe(cliEntry, tsx, mesh, env, [...args, "--space", space, "--plain"]);
       const text = (r.out + r.err).replace(/\s+/g, " ");

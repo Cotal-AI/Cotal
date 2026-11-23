@@ -51,7 +51,7 @@ export async function preflightUserStack(root: string, space: string, idpUrl: st
   if (verdict.ok) return;
   const code = verdict.reason === "required" || verdict.reason === "invalid" ? "USAGE_INVALID" : verdict.reason === "conflict" ? "CONFLICT" : "DEPENDENCY_UNAVAILABLE";
   const remedy = verdict.reason === "required" ? "cotal up --user-auth --idp <auth base URL>"
-    : verdict.reason === "conflict" ? "run bare `cotal up` to keep the space's pinned IdP; re-pointing it is a deliberate migration"
+    : verdict.reason === "conflict" ? "if you passed `--idp`, retry the same start without `--idp` to use the pinned IdP. For a direct user-auth start, keep `--user-auth` and the other startup options. If the IdP comes from a manifest, make `broker.idp` match the pin. Changing the pin is a deliberate migration."
       : verdict.reason === "invalid" ? "pass an https IdP auth base URL, or http on a loopback IP, without credentials, a query or a fragment"
         : "check --idp <auth base URL>; it must serve <base>/jwks";
   const message = verdict.reason === "required" ? "a first user-auth stack needs the IdP it trusts; no stack was prepared"
