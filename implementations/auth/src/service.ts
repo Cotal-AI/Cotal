@@ -521,7 +521,7 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
   // A failed open closes the scanners deliberately, which must not fence like a mid-life death.
   unwind.push(async () => { closing = true; });
   opts.probePlaneDeath?.({ ledger: () => ledgerCand.close(), records: () => recordsCand.close() });
-  const assignUsername = await openUsernameAssignment(writer.nc, space, hold.guard, loadPinnedIdp(opts.dir)?.username);
+  const assignUsername = await openUsernameAssignment(writer.nc, space, hold.guard, log, loadPinnedIdp(opts.dir)?.username);
   const barrierReg = await openLifecycleRegistry(barrier.nc, space, scanner, recordsScanner);
   const evictPrincipal = opts.probeEvictor ?? makeDeliveryAdminEvictor({ onConnection, space, server, dataAccount, log });
   // The RETIREMENT deps (#29 piece 4): the barrier's injected mechanics, assembled from reviewed

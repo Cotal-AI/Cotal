@@ -25,6 +25,7 @@ export function usernameWriterGrants(space: string): string[] {
 function derivedUsername(owner: string, claims: UsernameClaims, emailLocalPart: boolean): string {
   const local = emailLocalPart ? claims.email?.match(/^([^@]+)@[^@]+$/)?.[1] : undefined;
   for (const claim of [claims.preferred_username, claims.name, local]) {
+    if (claim?.includes("@")) continue;
     const name = claim?.toLowerCase().replace(/[^a-z0-9_]+/g, "_").replace(/^_+|_+$/g, "").slice(0, USERNAME_MAX_LENGTH);
     if (name) return name;
   }
@@ -64,7 +65,7 @@ async function openRegistry(nc: NatsConnection, jsm: JetStreamManager, space: st
 
 type CreateKey = (key: string, value: string) => Promise<boolean>;
 
-async function reconcileReservations(kv: Awaited<ReturnType<typeof openRegistry>>, create: CreateKey, guard: ScanGuard) {
+async function reconcileReservations(kv: Awaited<ReturnType<typeof openRegistry>>, create: CreateKey, guard: ScanGuard, log: (line: string) => void) {
   await guard.assertHeld("before");
   const owners = new Map<string, string>();
   const reservations = new Map<string, string>();
@@ -75,8 +76,17 @@ async function reconcileReservations(kv: Awaited<ReturnType<typeof openRegistry>
     if (kind === "owner") owners.set(assertDerivedOwnerToken(key), assertValidUsername(entry.string()));
     else reservations.set(assertValidUsername(key), assertDerivedOwnerToken(entry.string()));
   }
-  for (const [owner, username] of owners)
-    if (reservations.get(username) !== owner) throw new Error("the username registry contains an inconsistent owner binding");
+  let inconsistent = false;
+  for (const [owner, username] of owners) {
+    if (reservations.get(username) === owner) continue;
+    inconsistent = true;
+    log(`orphan key owner.${owner}: username.${username} does not reserve it for this owner`);
+  }
+  for (const [username, owner] of reservations) {
+    if (owners.get(owner) !== username)
+      log(`orphan key username.${username}: owner.${owner} does not point back to it`);
+  }
+  if (inconsistent) throw new Error("the username registry contains an inconsistent owner binding");
   for (const [username, owner] of reservations) {
     if (owners.has(owner)) continue;
     await guard.assertHeld("before");
@@ -87,14 +97,14 @@ async function reconcileReservations(kv: Awaited<ReturnType<typeof openRegistry>
 }
 
 /** Both writes are create-only. A reader accepts only the reciprocal pair elected by the forward key. */
-export async function openUsernameAssignment(nc: NatsConnection, space: string, guard: ScanGuard, config?: UsernamePolicy): Promise<AssignUsername> {
+export async function openUsernameAssignment(nc: NatsConnection, space: string, guard: ScanGuard, log: (line: string) => void, config?: UsernamePolicy): Promise<AssignUsername> {
   const policy = parseUsernamePolicy(config);
   const bucket = usernameBucket(space);
   const jsm = await jetstreamManager(nc);
   const kv = await openRegistry(nc, jsm, space, bucket);
   const read = (key: string) => readKey(jsm, bucket, key);
   const create = (key: string, value: string) => createKey(jsm.jetstream(), `$KV.${bucket}.${key}`, value);
-  await reconcileReservations(kv, create, guard);
+  await reconcileReservations(kv, create, guard, (line) => log(`username registry ${bucket}: ${line}`));
   const owners = new Map<string, Promise<unknown>>();
   const assigned = async (owner: string, supplied?: string) => {
     const value = await read(`owner.${owner}`);
