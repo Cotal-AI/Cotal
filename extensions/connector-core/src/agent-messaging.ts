@@ -132,7 +132,7 @@ export class AgentMessaging {
     const q = this.asked.get(item.contextId);
     if (!q) return false;
     if (q.peerId === item.fromId) return true;
-    if (!this.config.userAuth) return !!q.role && q.role === item.fromRole;
+    if (!this.config.userAuth && !this.config.creds) return !!q.role && q.role === item.fromRole;
     if (!q.request || item.replyTo !== q.request.id) return false;
     const status = await this.ep.anycastStatus(q.request.seq, q.request.id).catch(() => undefined);
     return status?.state === "taken" && status.taker.id === item.fromId;
