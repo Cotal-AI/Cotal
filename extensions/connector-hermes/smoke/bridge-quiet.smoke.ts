@@ -18,7 +18,7 @@ class FakeAgent extends EventEmitter {
   attention = "open" as const;
   items: InboxItem[] = [
     { id: "quiet", recvKey: "quiet", ts: 1, fromId: "q", fromName: "Quiet", kind: "channel", channel: "quiet", mentionsMe: false, historical: false, text: "quiet body" },
-    { id: "dm", recvKey: "dm", ts: 2, fromId: "d", fromName: "Direct", kind: "dm", mentionsMe: false, historical: false, text: "dm body" },
+    { id: "dm", recvKey: "dm", ts: 2, fromId: "u_foreign.reviewer", fromName: "claimed name", verifiedFromLabel: "ben/reviewer", kind: "dm", mentionsMe: false, historical: false, text: "dm body" },
   ];
   pullOnly = new Set(["quiet"]);
 
@@ -143,6 +143,10 @@ try {
   const incoming = await waitFrame((frame) => frame.t === "incoming");
   assert.equal(subscriptions, 1, "authenticated gateway subscription marks readiness");
   assert.equal((incoming.msg as { id?: string }).id, "dm", "older quiet ambient must not block or join automatic Hermes delivery");
+  const attributed = incoming.msg as { fromId?: string; fromName?: string; verifiedFromLabel?: string };
+  assert.equal(attributed.verifiedFromLabel, "ben/reviewer", "the bridge carries the verified sender label separately");
+  assert.equal(attributed.fromId, "u_foreign.reviewer", "reply routing keeps the principal");
+  assert.equal(attributed.fromName, "claimed name", "the claimed display name stays a separate field");
 
   client.write(JSON.stringify({ t: "tool", id: "pull", name: "cotal_inbox", args: {} }) + "\n");
   const tool = await waitFrame((frame) => frame.t === "tool_result" && frame.id === "pull");

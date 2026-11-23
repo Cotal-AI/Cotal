@@ -103,7 +103,7 @@ export interface StackUpNative {
    *  `user` material; any other mode must return none. */
   prepareBroker(opts: { transport: BrokerTransport; server: string; space: string; open: boolean; userAuth?: { idpUrl?: string }; host?: string; wsPort?: number; storeDir?: string; existingStore?: ExistingStorePin; maxFileStore?: number; logFile?: string; logfileSizeLimit?: number; logfileMaxNum?: number; authTimeout?: number; maxPayload?: number; accountResolver?: "memory" | "full"; noManager?: boolean; channels?: string; seed?: unknown }): Promise<{ root: string; server: string; space: string; storeDir: string; transport: BrokerTransport; setup?: { mintProvisioner(): Promise<string>; wsPort: number; moveWebsocketPort(): Promise<number> }; user?: StackUserPrepared; confPath: string; bin: string; source: "path" | "bundled"; version: string | null; seedFile?: unknown; authTimeout?: number; maxPayload?: number; accountResolver?: "memory" | "full" }>;
   /** Recreation options are accepted only on a fresh broker before space services start. */
-  initializeStreams(server: string, space: string, setup: { mintProvisioner(): Promise<string> } | undefined, seedFile: unknown, recreateIssuedStores?: string, recreateMembershipStore?: boolean): Promise<void>;
+  initializeStreams(server: string, space: string, setup: { mintProvisioner(): Promise<string> } | undefined, seedFile: unknown, recreateIssuedStores?: string, recreateMembershipStore?: boolean, userAuth?: boolean): Promise<void>;
   /** On a broker the stack reuses, create the space's streams again when every one of them is gone,
    *  as after `cotal space delete`, and say whether it did. */
   recreateDeletedStreams(opts: { root: string; space: string; server: string; mode: StackMode; channels?: string; seed?: unknown }): Promise<boolean>;
@@ -1111,7 +1111,7 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
       // The broker's own stream and registry setup, on the native space path, after it serves.
       failedRole = "broker";
       failedStage = "broker-streams";
-      await native.initializeStreams(server, space, prepared.setup, prepared.seedFile, request.recreateIssuedStores, request.recreateMembershipStore);
+      await native.initializeStreams(server, space, prepared.setup, prepared.seedFile, request.recreateIssuedStores, request.recreateMembershipStore, mode === "user");
       failedStage = "broker-registration";
       // A user registration is recorded here, before its auth service exists, because the native
       // auth-service child resolves a registered user target. It carries only the prepared trust

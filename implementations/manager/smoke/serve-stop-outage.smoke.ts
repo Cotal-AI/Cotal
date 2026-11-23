@@ -69,18 +69,16 @@ function relay(targetPort: number, listenPort: number) {
 type Inside = {
   transportDown: WeakSet<NatsConnection>;
   stopServiceServe: () => Promise<void>;
-  stopGoalWriter: () => Promise<void>;
-  stopSessionPlane: () => Promise<void>;
-  servePlane: { sessionLedgerConn?: { nc: NatsConnection }; serviceServe?: { nc: NatsConnection }; };
-  goalWriterComponent: { goalWriter?: { nc: NatsConnection }; };
+  servePlane: { sessionLedgerConn?: { nc: NatsConnection }; serviceServe?: { nc: NatsConnection }; stopSessionPlane: () => Promise<void>; };
+  goalWriterComponent: { goalWriter?: { nc: NatsConnection }; stopGoalWriter: () => Promise<void>; };
 };
 type Step = { label: string; nc: NatsConnection; stop: () => Promise<void> };
 /** The three dedicated connections in the order `stop()` retires them, captured before any stop
  *  clears its holder. */
 const stepsOf = (inside: Inside): Step[] => [
   { label: "serve", nc: inside.servePlane.serviceServe!.nc, stop: () => inside.stopServiceServe() },
-  { label: "goal-writer", nc: inside.goalWriterComponent.goalWriter!.nc, stop: () => inside.stopGoalWriter() },
-  { label: "session-ledger", nc: inside.servePlane.sessionLedgerConn!.nc, stop: () => inside.stopSessionPlane() },
+  { label: "goal-writer", nc: inside.goalWriterComponent.goalWriter!.nc, stop: () => inside.goalWriterComponent.stopGoalWriter() },
+  { label: "session-ledger", nc: inside.servePlane.sessionLedgerConn!.nc, stop: () => inside.servePlane.stopSessionPlane() },
 ];
 
 const OUTAGE_MS = 8_000;

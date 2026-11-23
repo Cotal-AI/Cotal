@@ -86,6 +86,7 @@ interface FeedEntry {
 	events?: boolean;      // multicast row on an agent's structured-event channel
 	replyTo?: string;      // ID of the message this one answers
 	mentions?: string[];   // lowercased peer names called out by the sender
+	mentionIds?: string[]; // exact mention principals, including an empty list
 	contextId?: string;    // sender-chosen thread or conversation correlation ID
 	text: string;          // partsToText(msg.parts)
 }
@@ -107,7 +108,7 @@ The model applies these rules:
 
 - `deliveryOf(subject)` classifies chat, unicast, and anycast. Chat becomes `multicast` in `FeedEntry`. Control, presence, and trace frames return `null` and do not enter the feed.
 - Live multicast rows on structured-event channels carry `events: true`. Those channels do not appear in channel tabs or history prefill. Their live rows remain in the feed.
-- `replyTo`, `mentions`, and `contextId` are retained on live feed rows and channel history. Fields are absent when the sender did not set them. The wire has no separate DM conversation ID: DM pairs use sender and recipient principals, and `contextId` is optional sender-chosen correlation.
+- `replyTo`, `mentions`, `mentionIds`, and `contextId` are retained on live feed rows and channel history. The terminal app highlights by principal when `mentionIds` is present. An empty list matches nobody. When the list is absent, it highlights by name. The wire has no separate DM conversation ID: DM pairs use sender and recipient principals, and `contextId` is optional sender-chosen correlation.
 - Unicast messages with the same sender ID, plain text, and thread fields share a 400 ms window, measured from the first arrival. The row appears when that window closes. Its `id` comes from the first message, and its `ts` is the earliest timestamp. `toIds` and `toNames` preserve parallel target lists. Repeated targets contribute to `count`.
 - `entry` emits each live row after classification and coalescing. History prefill updates snapshots without emitting `entry`. The stream therefore does not print the initial backlog.
 - The roster sorts by status, in the order working, waiting, idle, and offline, then by name. `agents` and `endpoints` split that roster by card kind.
@@ -170,7 +171,7 @@ Offline agents are excluded because their heartbeat ages continue to grow after 
 Self-addressed messages do not form conversations. The model resolves names, roles, and statuses from the roster by ID.
 An absent peer has status `offline`. Message lists sort oldest first. Conversations and peers sort by their latest message, newest first.
 The log retains at most 1,000 raw DMs. Startup history merges with live DMs by sender ID, recipient ID, and timestamp.
-A chat-only observer leaves `dms` empty. The console topology uses endpoint IDs as keys and roster `name (role: role)` labels for display, so equal names do not merge nodes.
+A chat-only observer leaves `dms` empty. The console topology also uses endpoint IDs as keys and roster `name (role: role)` labels for display, so equal names do not merge nodes.
 
 ### Membership feed [#membership-feed]
 

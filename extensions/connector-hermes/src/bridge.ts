@@ -90,6 +90,7 @@ async function wireItem(agent: MeshAgent, i: InboxItem): Promise<Record<string, 
     fromId: i.fromId,
     fromName: i.fromName,
     fromRole: i.fromRole,
+    verifiedFromLabel: i.verifiedFromLabel,
     mentions: i.mentions,
     mentionsMe: i.mentionsMe,
     // Backfilled on join: the sidecar frames it as history, as connector-core's fmtItem does.

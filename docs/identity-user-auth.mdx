@@ -37,12 +37,16 @@ channels; scope `spawn,run,role:default`, so it may spawn, start workflow runs w
 three left off and no `--full` is refused.
 No ledger row, no access; there is no allow-by-default.
 
-On the first use of an authorized grant, the auth service assigns the owner a username from the
-first usable IdP claim: `preferred_username`, the local part of `email`, or `name`. The service
-normalizes it to at most 40 lowercase letters, digits and underscores, and adds a suffix if the
-name is taken. A username can start with a digit. If the service cannot assign a name, it refuses
-the exchange. Later sign-ins keep the same username. It is readable by every member and separate
-from the chat name, which you can change.
+The default username source uses the first usable verified claim, `preferred_username` or `name`,
+then generates a `user_<short>` name. The service skips name claims containing `@`. An operator
+must opt in before the service uses an email's local part before generation. It limits names to 40 lowercase letters,
+digits and underscores, and adds a suffix if a derived name is taken. A username can start with a
+digit. Existing owners get a username at their next authorized exchange. A space that uses a
+directory instead leaves owners unnamed until a trusted grant supplies a username.
+
+All members can read the registry in their space. A connection that holds an older credential
+needs a refresh to get the read grant. Reconnecting with the same credential does not add it.
+Removing a grant does not free its username. The username is separate from the chat name.
 
 `cotal login` also records a handle from what the IdP gives: its preferred user name, else the part
 of its email before the `@`, else its name, the first that is a valid chat name. A

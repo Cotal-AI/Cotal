@@ -1,0 +1,3 @@
+# A Claude seat's agent commands from the endpoint lane to the command socket: causes, every outcome, the start bound, the idle queue and the interrupt's turn end.
+# Mutation-proofed - extensions/connector-claude-code/smoke/mutations/command-dispatcher.json.
+smoke:claude-command-dispatcher

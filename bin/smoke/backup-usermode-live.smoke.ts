@@ -236,7 +236,7 @@ try {
   const seededTexts = textsOf(await chatHistory());
   check("the seeded message is on the wire before the cut", seededTexts.includes(SEEDED_TEXT), seededTexts);
   const beforeUsername = await observeUsername(OWNER, RETAINED_UID, retained);
-  check("the registry holds both directions before the cut", beforeUsername.username === "human" && beforeUsername.reverse === OWNER, beforeUsername);
+  check("the registry holds both directions before the cut", beforeUsername.username === "human_42" && beforeUsername.reverse === OWNER, beforeUsername);
 
   // ---------- C. the preserve cut ----------
   console.log("C) down --preserve-state");
