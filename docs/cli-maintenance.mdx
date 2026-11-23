@@ -247,9 +247,10 @@ required process/lifecycle correlation is absent. Generic process launch/stop st
 The `manager` service preset uses the `manager-service` adapter. It requires the selected registered
 `root` and an explicit installed `runtime`; an optional `server` can repeat the registered broker.
 The optional `console-port`, `console-host`, `ws-port` and `max-sessions` pass explicit native
-settings, and an optional `name` names the manager as `supervise --name` does. Omitting the host keeps the native loopback binding; port zero requests an allocated
-console port. A declared `launch` also requires `launch-sha256`. It names an existing private
-resolved launch spec, pins its full SHA-256 and must name this space. The child parses those
+settings, and an optional `name` names the manager as `supervise --name` does. Omitting the host
+keeps the native loopback binding. `--console-port` takes an integer from 0 through 65535, with 0
+requesting an allocated port. A declared `launch` also requires `launch-sha256`. It names an existing
+private resolved launch spec, pins its full SHA-256 and must name this space. The child parses those
 verified bytes before authority preparation and keeps that snapshot through startup. An optional
 `roster` names an existing [roster file](define-a-team.mdx#roster-files) by absolute path. Only its
 owner or root may write it or its directory. The child parses it before startup, and each launch

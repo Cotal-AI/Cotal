@@ -79,7 +79,9 @@ for (const [line, what] of [["echo 'x", "single quote that is never closed"], ["
 const guidedAuth = resolveServicePreset("auth-service");
 check("a guided integer answer rejects invalid JSON", presetOptionRefusal(guidedAuth, "port", "abc")?.includes("not valid JSON") === true);
 check("a guided integer answer rejects a fractional value", presetOptionRefusal(guidedAuth, "port", "1.25")?.includes("closed schema") === true);
-check("a guided port answer applies its schema bound", presetOptionRefusal(guidedAuth, "port", "65536")?.includes("closed schema") === true);
+const guidedPortError = presetOptionRefusal(guidedAuth, "port", "65536");
+check("a guided port answer names both schema bounds without printing the input",
+  guidedPortError?.includes("--port takes an integer from 0 through 65535") === true && !guidedPortError.includes("65536"), guidedPortError);
 check("a corrected guided port answer needs no other answers", presetOptionRefusal(guidedAuth, "port", "65535") === undefined);
 
 // ---- A preset's defaults are a closed declaration ----------------------------------------------
@@ -109,6 +111,8 @@ const adapter: LocalProcess = {
       root: { type: "string", description: "the root" },
       token: { type: "string", description: "a required option with no default" },
       count: { type: "integer", description: "a number with a default" },
+      ratio: { type: "number", minimum: 0, exclusiveMinimum: 0, maximum: 1, exclusiveMaximum: 2 },
+      ceiling: { type: "number", exclusiveMaximum: 0.5 },
       server: { type: "string", description: "the broker" },
       creds: { type: "string", description: "a file the space keeps" },
       logFile: { type: "string", description: "a camelCase option, taken as --log-file" },
@@ -121,6 +125,12 @@ const flags = servicePresetFlags(preset);
 const flag = (name: string) => flags.find((row) => row.name === name)?.description ?? "";
 check("help shows each defaulted option's default", flag("root").includes("(default: this space's root)") && flag("count").includes("(default: 3)") && flag("creds").includes("(default: this space's fixture.creds)"), flags);
 check("  and no default for an option that has none", !flag("token").includes("(default:"), flag("token"));
+check("help names the effective inclusive and exclusive numeric bounds, including one-sided bounds",
+  flag("ratio").includes("a number greater than 0 and at most 1") && flag("ceiling").includes("a number less than 0.5") && !flag("count").includes("takes"), flags);
+const ratioError = presetOptionRefusal(preset, "ratio", "-3.75");
+check("a numeric refusal gives the effective range even when a looser bound failed first",
+  ratioError?.includes("--ratio takes a number greater than 0 and at most 1") === true && !ratioError.includes("-3.75"), ratioError);
+check("a guided exclusive upper bound refuses the bound itself", presetOptionRefusal(preset, "ceiling", "0.5")?.includes("--ceiling takes a number less than 0.5") === true);
 check("a camelCase option takes its dashed flag, as `cotal up --log-file` spells it", flags.some((row) => row.name === "log-file") && !flags.some((row) => row.name === "logFile"), flags.map((row) => row.name));
 
 const SPACE = "servicecommands";
@@ -224,6 +234,8 @@ try {
   check("both manager preset help forms keep --runtime and omit the web-only option",
     managerPresetHelp.status === 0 && managerHelpCommand.status === 0 && managerPresetHelp.stdout === managerHelpCommand.stdout
     && /^  --runtime <string>/m.test(managerPresetHelp.stdout) && !noOpenOption.test(managerPresetHelp.stdout), out(managerPresetHelp));
+  check("manager shortcut and service preset help show the console port bounds and zero's meaning",
+    [startHelp, managerPresetHelp].every((run) => /^  --console-port <integer> +[^\n]*zero allocates a port \(takes an integer from 0 through 65535\)/m.test(run.stdout)), out(managerPresetHelp));
   check("the manager preset refuses --no-open without listing it in the usage help",
     managerStartRefusal.status === 1 && managerStartRefusal.stdout === "" && managerStartRefusal.stderr.includes("--no-open belongs to service start web")
     && managerStartRefusal.stderr.endsWith(managerPresetHelp.stdout) && !noOpenOption.test(managerStartRefusal.stderr), out(managerStartRefusal));
@@ -322,6 +334,20 @@ try {
     followed.status === 0 && serviceDefinitionStore(PREPARED).read("b0") !== undefined && serviceDefinitionStore(SPACE).read("b0") === undefined, out(followed));
 
   const managerArgs = ["manager", "start", "--space", PREPARED, "--dry-run", "--json"];
+  for (const port of ["0", "37122", "65535"]) {
+    const preview = cotal([...managerArgs, "--console-port", port]);
+    const { outcome, result } = JSON.parse(preview.stdout);
+    check(`manager start accepts console port ${port} in preview without saving, allocating or loading`,
+      preview.status === 0 && outcome === "ok" && result?.saved === false && result.allocated === false && result.providerCodeLoaded === false
+        && serviceDefinitionStore(PREPARED).read("manager") === undefined, out(preview));
+  }
+  const invalidPort = cotal([...managerArgs, "--console-port", "65536"]);
+  const { error: portError } = JSON.parse(invalidPort.stdout);
+  check("an out-of-range console port is refused with its accepted bounds and no input value or help referral",
+    invalidPort.status === 1 && invalidPort.stderr === "" && portError?.code === "SCHEMA_INVALID" && portError.remedy === undefined
+      && portError.message.includes("--console-port takes an integer from 0 through 65535") && !invalidPort.stdout.includes("65536")
+      && serviceDefinitionStore(PREPARED).read("manager") === undefined, out(invalidPort));
+
   const launchFile = join(prepared, ".cotal", "manager launch.json"), launchBytes = "{}\n";
   writeFileSync(launchFile, launchBytes, { mode: 0o600 });
   const digest = createHash("sha256").update(launchBytes).digest("hex");

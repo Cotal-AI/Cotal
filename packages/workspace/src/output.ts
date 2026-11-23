@@ -131,8 +131,7 @@ export class CommandFailure extends Error {
   readonly native?: NativeCause;
   readonly target: unknown;
   readonly changed?: readonly unknown[];
-  /** The message and remedy are the whole fix, as for a missing `--yes`, so a usage refusal prints
-   *  them without the command's help. */
+  /** The message and any remedy are the whole fix, so callers can omit generic help. */
   readonly selfContained?: true;
   /** The target key holding an ID the caller gave that names nothing here, such as a stop request ID
    *  no member retains. The report labels it `Given ID`; the envelope carries the target unchanged. */
