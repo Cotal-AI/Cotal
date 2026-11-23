@@ -78,6 +78,7 @@ import {
   SurfacedBatch,
 } from "./plugin-seams.js";
 import { pluginIo } from "./plugin-io.js";
+import { opencode1Asks } from "./prompt-asks.js";
 export {
   SESSION_RETIRED,
   SETTLE_ABANDONED,
@@ -127,6 +128,16 @@ export const cotal: Plugin = async () => {
 
   const agent = new MeshAgent(config);
   const { reapRetiredWal, opencodeApi, isMessageAbortedError, runErrorOf } = pluginIo({ agent, config, serverUrl, serverAuth });
+  // OpenCode answers a reply to an ask it does not hold with a 404.
+  const asks = opencode1Asks({
+    desk: () => agent.prompts,
+    warn: log,
+    session: () => sessionID,
+    send: (path, init) => opencodeApi(path, init).then(() => true, (e: { status?: number }) => {
+      if (e.status === 404) return false;
+      throw e;
+    }),
+  });
   // OpenCode lazily loads plugins while answering /provider. Awaiting that request in this
   // plugin's initializer would deadlock the server. Return hooks first, but do not join or
   // create a session until the server has answered. This is a managed serve process: on a
@@ -1095,6 +1106,7 @@ export const cotal: Plugin = async () => {
 
   const intake = {
     event: async ({ event }) => {
+      asks.event(event.type, event.properties as Record<string, unknown>);
       // The server emits `permission.asked` (the SDK's `permission.updated` type ships but never
       // fires — #11616), so match the real runtime name out of band. With permission:"allow" this
       // rarely triggers, but it keeps presence correct if the posture tightens.
@@ -1186,6 +1198,7 @@ export const cotal: Plugin = async () => {
           const idleSession = event.properties.sessionID;
           if (!ours(idleSession)) return;
           noteTurnEnd();
+          asks.turnEnded();
           // Order matters and is not stylistic: flush the turn's records FIRST, then close the run.
           // Both land on the holder's chain in the order they were enqueued, so closing first would
           // terminate a run the records that follow still belong to.
@@ -1222,6 +1235,7 @@ export const cotal: Plugin = async () => {
           // `busy` stays stuck and every later push is buffered behind a turn that already failed.
           if (event.properties.sessionID && !ours(event.properties.sessionID)) return;
           noteTurnEnd();
+          asks.turnEnded();
           if (!busy && !batch.open) return; // no turn to fail — stray error
           // WHICH `session.error`s ARE FAILED TURNS, decided here and stated rather than left to be
           // inferred, because that judgment is the whole of #596. Every error that reaches this line

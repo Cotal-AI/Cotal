@@ -45,6 +45,7 @@ import { buildCotalTools2 } from "./tools.js";
 import { ReplyCheck } from "./reply-check.js";
 import { RECONNECT_COMMAND } from "./reconnect-command.js";
 import { opencode2FailureCondition } from "./failure-condition.js";
+import { opencode2Asks, type Send } from "./prompt-asks.js";
 
 function log(msg: string): void {
   process.stderr.write(`[cotal-connector] ${msg}\n`);
@@ -271,6 +272,13 @@ async function setupSession(ctx: OpenCode2Context): Promise<() => Promise<void>>
     if (res.status === 204) return undefined as T;
     return (await res.json()) as T;
   }
+  /** OpenCode answers a reply to an ask it does not hold with a 404, or for a form already
+   *  answered with `FormAlreadySettledError`. */
+  const send: Send = (path, init) => opencodeApi(path, init).then(() => true, (e: unknown) => {
+    if (e instanceof OpenCodeHttpError && (e.status === 404 || e.tag === "FormAlreadySettledError")) return false;
+    throw e;
+  });
+  const asks = opencode2Asks({ desk: () => agent.prompts, warn: log, send, session: () => sessionID });
 
   /** A session's message list, newest first, 200 messages a page (measured: the server refuses
    *  more). A later page is named by its cursor alone, which carries the order. */
@@ -555,6 +563,7 @@ async function setupSession(ctx: OpenCode2Context): Promise<() => Promise<void>>
     ended = ev.durable;
     if (execution !== "running") return;
     execution = undefined;
+    asks.turnEnded();
     const carried = new Set(batch.keys);
     settle();
     replyCheck.ended(succeeded);
@@ -682,6 +691,7 @@ async function setupSession(ctx: OpenCode2Context): Promise<() => Promise<void>>
         // the change when the event arrives (measured), so each one is the wake to read it again.
         if (events?.path !== undefined && ev.durable?.aggregateID === events.path) events.flush(events.path);
         if (listsLoading.delete(ev.type) && listsLoading.size === 0) markListsLoaded();
+        asks.event(ev.type, data);
         switch (ev.type) {
           case "session.created": {
             // Adopt the first session id we see if none is set yet (mirrors `ours()` in plugin.ts);
