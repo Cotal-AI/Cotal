@@ -5,6 +5,7 @@
  * LIVE: a real nats-server, a real `space add` registration in mode `open`, and the real CLI
  * through the built binary. The broker only has to answer liveness; no manager ever runs, and
  * nothing is launched: the valid-pin preview still reports `allocated: false, launched: false`.
+ * The bundled reference and both preview routes distinguish persona source from launch placement.
  *
  * COTAL_HOME and the project root are sandboxed. Needs `nats-server` on PATH and a built tree.
  * Run: pnpm build, then pnpm smoke:spawn-preview-pin
@@ -33,7 +34,7 @@ const entry = join(import.meta.dirname, "../../../bin/dist/cotal.js");
 const children: ChildProcess[] = [];
 const pause = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
-type Envelope = { outcome?: string; result?: { requested?: { instanceId?: string | null }; allocated?: boolean; launched?: boolean }; error?: { code?: string; message?: string; remedy?: string } };
+type Envelope = { outcome?: string; result?: { kind?: string; persona?: { source?: string }; requested?: { instanceId?: string | null; source?: string }; allocated?: boolean; launched?: boolean }; error?: { code?: string; message?: string; remedy?: string } };
 
 const preview = (args: string[]): { status: number | null; envelope: Envelope } => {
   const run = spawnSync(process.execPath, [entry, ...args], { cwd: join(root, "project"), env, encoding: "utf8", timeout: 60_000 });
@@ -58,7 +59,11 @@ try {
   const added = spawnSync(process.execPath, [entry, "space", "add", "samplemesh", "--server", server, "--root", ".", "--mode", "open", "--force", "--plain"], { cwd: join(root, "project"), env, encoding: "utf8" });
   check.equal(added.status, 0, added.stdout + added.stderr);
 
-  const base = ["spawn", "--file", "./sample.md", "--detach", "--no-events", "--harness", "claude", "--name", "preview-check", "--space", "samplemesh", "--server", server, "--dry-run", "--json"];
+  const file = ["spawn", "--file", "./sample.md", "--no-events", "--harness", "claude", "--name", "preview-check", "--space", "samplemesh", "--server", server, "--dry-run", "--json"];
+  const base = [...file, "--detach"];
+  const docs = spawnSync(process.execPath, [entry, "docs", "cli-agent-views", "--plain"], { env, encoding: "utf8", timeout: 60_000 });
+  check.equal(docs.status, 0, docs.stderr);
+  check.match(docs.stdout, /`--file <persona-file>` selects the persona, not the launch route/);
 
   const bad = preview([...base, "--on", "not-a-pin"]);
   check.equal(bad.status, 1, JSON.stringify(bad.envelope));
@@ -84,6 +89,20 @@ try {
   check.equal(unpinned.status, 0, JSON.stringify(unpinned.envelope));
   check.equal(unpinned.envelope.outcome, "ok");
   check.equal(unpinned.envelope.result?.requested?.instanceId, null);
+
+  for (const [selectors, placement] of [
+    [[], "direct"], [["--foreground"], "direct"],
+    [["--detach"], "managed"], [["--on", pin], "managed"], [["--detach", "--on", pin], "managed"],
+  ] as const) {
+    const { status, envelope } = preview([...file, ...selectors]);
+    const result = envelope.result;
+    check.deepEqual([status, result?.kind, result?.persona?.source ?? result?.requested?.source, result?.allocated, result?.launched],
+      [0, `${placement}-launch-preview`, "file", false, false], selectors.join(" ") || "file only");
+    if (placement === "managed") {
+      const refused = preview([...file, ...selectors, "--foreground"]);
+      check.deepEqual([refused.status, refused.envelope.error?.code], [1, "USAGE_INVALID"], selectors.join(" "));
+    }
+  }
 
   await killAndAwaitExit(broker);
   releaseBroker();

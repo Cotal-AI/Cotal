@@ -1,0 +1,427 @@
+{
+  "suite": [
+    "extensions/connector-claude-code/smoke/command-mod.smoke.ts",
+    "extensions/connector-claude-code/mod-tests/commands.test.ts"
+  ],
+  "guard": "the command mod refuses what its policy refuses, maps Claude's rejections to outcomes, runs only exact listed names, and interrupts only the main-loop turn",
+  "command": "pnpm smoke:claude-command-mod",
+  "progressPattern": "^\\(pass\\) ",
+  "completionMarker": "COTAL_SMOKE_SENTINEL cells=",
+  "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-claude-code/smoke/mutations/command-mod.json",
+  "why": [
+    "Each policy row and each rejection mapping is one mutation, and each row has a cell of its own,",
+    "so removing a row reddens the cell that names it. A removed allow row refuses the command. A",
+    "removed refusal row still refuses it with the default reason, which the cell's exact reason catches.",
+    "The rest cover the exact-name rule, the main-loop turn, background-task cleanup and the reader."
+  ],
+  "mutations": [
+    {
+      "name": "drop the allow row for /context",
+      "file": "extensions/connector-claude-code/hooks/commands.js",
+      "find": "  context: ALLOW,\n",
+      "replace": "",
+      "expectRed": "allow row: /context runs",
+      "cell": "allow row: /context runs"
+    },
+    {
+      "name": "drop the allow row for /compact",
+      "file": "extensions/connector-claude-code/hooks/commands.js",
+      "find": "  compact: ALLOW,\n",
+      "replace": "",
+      "expectRed": "allow row: /compact runs",
+      "cell": "allow row: /compact runs"
+    },
+    {
+      "name": "drop the allow row for /init",
+      "file": "extensions/connector-claude-code/hooks/commands.js",
+      "find": "  init: ALLOW,\n",
+      "replace": "",
+      "expectRed": "allow row: /init runs",
+      "cell": "allow row: /init runs"
+    },
+    {
+      "name": "drop the allow row for /security-review",
+      "file": "extensions/connector-claude-code/hooks/commands.js",
+      "find": "  'security-review': ALLOW,\n",
+      "replace": "",
+      "expectRed": "allow row: /security-review runs",
+      "cell": "allow row: /security-review runs"
+    },
+    {
+      "name": "drop the allow row for /code-review",
+      "file": "extensions/connector-claude-code/hooks/commands.js",
+      "find": "  'code-review': ALLOW,\n",
+      "replace": "",
+      "expectRed": "allow row: /code-review runs",
+      "cell": "allow row: /code-review runs"
+    },
+    {
+      "name": "drop the allow row for /simplify",
+      "file": "extensions/connector-claude-code/hooks/commands.js",
+      "find": "  simplify: ALLOW,\n",
+      "replace": "",
+      "expectRed": "allow row: /simplify runs",
+      "cell": "allow row: /simplify runs"
+    },
+    {
+      "name": "drop the allow row for /verify",
+      "file": "extensions/connector-claude-code/hooks/commands.js",
+      "find": "  verify: ALLOW,\n",
+      "replace": "",
+      "expectRed": "allow row: /verify runs",
+      "cell": "allow row: /verify runs"
+    },
+    {
+      "name": "drop the panel row for /usage",
+      "file": "extensions/connector-claude-code/hooks/commands.js",
+      "find": "  usage: PANEL,\n",
+      "replace": "",
+      "expectRed": "refuse-panel row: /usage is refused unrun",
+      "cell": "refuse-panel row: /usage is refused unrun"
+    },
+    {
+      "name": "drop the panel row for /status",
+      "file": "extensions/connector-claude-code/hooks/commands.js",
+      "find": "  status: PANEL,\n",
+      "replace": "",
+      "expectRed": "refuse-panel row: /status is refused unrun",
+      "cell": "refuse-panel row: /status is refused unrun"
+    },
+    {
+      "name": "drop the panel row for /help",
+      "file": "extensions/connector-claude-code/hooks/commands.js",
+      "find": "  help: PANEL,\n",
+      "replace": "",
+      "expectRed": "refuse-panel row: /help is refused unrun",
+      "cell": "refuse-panel row: /help is refused unrun"
+    },
+    {
+      "name": "drop the panel row for /release-notes",
+      "file": "extensions/connector-claude-code/hooks/commands.js",
+      "find": "  'release-notes': PANEL,\n",
+      "replace": "",
+      "expectRed": "refuse-panel row: /release-notes is refused unrun",
+      "cell": "refuse-panel row: /release-notes is refused unrun"
+    },
+    {
+      "name": "drop the panel row for /diff",
+      "file": "extensions/connector-claude-code/hooks/commands.js",
+      "find": "  diff: PANEL,\n",
+      "replace": "",
+      "expectRed": "refuse-panel row: /diff is refused unrun",
+      "cell": "refuse-panel row: /diff is refused unrun"
+    },
+    {
+      "name": "drop the panel row for /resume",
+      "file": "extensions/connector-claude-code/hooks/commands.js",
+      "find": "  resume: PANEL,\n",
+      "replace": "",
+      "expectRed": "refuse-panel row: /resume is refused unrun",
+      "cell": "refuse-panel row: /resume is refused unrun"
+    },
+    {
+      "name": "drop the panel row for /rewind",
+      "file": "extensions/connector-claude-code/hooks/commands.js",
+      "find": "  rewind: PANEL,\n",
+      "replace": "",
+      "expectRed": "refuse-panel row: /rewind is refused unrun",
+      "cell": "refuse-panel row: /rewind is refused unrun"
+    },
+    {
+      "name": "drop the panel row for /hooks",
+      "file": "extensions/connector-claude-code/hooks/commands.js",
+      "find": "  hooks: PANEL,\n",
+      "replace": "",
+      "expectRed": "refuse-panel row: /hooks is refused unrun",
+      "cell": "refuse-panel row: /hooks is refused unrun"
+    },
+    {
+      "name": "drop the panel row for /tasks",
+      "file": "extensions/connector-claude-code/hooks/commands.js",
+      "find": "  tasks: PANEL,\n",
+      "replace": "",
+      "expectRed": "refuse-panel row: /tasks is refused unrun",
+      "cell": "refuse-panel row: /tasks is refused unrun"
+    },
+    {
+      "name": "drop the panel row for /mcp",
+      "file": "extensions/connector-claude-code/hooks/commands.js",
+      "find": "  mcp: PANEL,\n",
+      "replace": "",
+      "expectRed": "refuse-panel row: /mcp is refused unrun",
+      "cell": "refuse-panel row: /mcp is refused unrun"
+    },
+    {
+      "name": "drop the panel row for /plugin",
+      "file": "extensions/connector-claude-code/hooks/commands.js",
+      "find": "  plugin: PANEL,\n",
+      "replace": "",
+      "expectRed": "refuse-panel row: /plugin is refused unrun",
+      "cell": "refuse-panel row: /plugin is refused unrun"
+    },
+    {
+      "name": "drop the settings row for /model",
+      "file": "extensions/connector-claude-code/hooks/commands.js",
+      "find": "  model: SETTINGS,\n",
+      "replace": "",
+      "expectRed": "refuse-writes-settings row: /model is refused unrun",
+      "cell": "refuse-writes-settings row: /model is refused unrun"
+    },
+    {
+      "name": "drop the settings row for /config",
+      "file": "extensions/connector-claude-code/hooks/commands.js",
+      "find": "  config: SETTINGS,\n",
+      "replace": "",
+      "expectRed": "refuse-writes-settings row: /config is refused unrun",
+      "cell": "refuse-writes-settings row: /config is refused unrun"
+    },
+    {
+      "name": "drop the settings row for /effort",
+      "file": "extensions/connector-claude-code/hooks/commands.js",
+      "find": "  effort: SETTINGS,\n",
+      "replace": "",
+      "expectRed": "refuse-writes-settings row: /effort is refused unrun",
+      "cell": "refuse-writes-settings row: /effort is refused unrun"
+    },
+    {
+      "name": "drop the settings row for /theme",
+      "file": "extensions/connector-claude-code/hooks/commands.js",
+      "find": "  theme: SETTINGS,\n",
+      "replace": "",
+      "expectRed": "refuse-writes-settings row: /theme is refused unrun",
+      "cell": "refuse-writes-settings row: /theme is refused unrun"
+    },
+    {
+      "name": "drop the settings row for /fast",
+      "file": "extensions/connector-claude-code/hooks/commands.js",
+      "find": "  fast: SETTINGS,\n",
+      "replace": "",
+      "expectRed": "refuse-writes-settings row: /fast is refused unrun",
+      "cell": "refuse-writes-settings row: /fast is refused unrun"
+    },
+    {
+      "name": "drop the settings row for /autocompact",
+      "file": "extensions/connector-claude-code/hooks/commands.js",
+      "find": "  autocompact: SETTINGS,\n",
+      "replace": "",
+      "expectRed": "refuse-writes-settings row: /autocompact is refused unrun",
+      "cell": "refuse-writes-settings row: /autocompact is refused unrun"
+    },
+    {
+      "name": "drop the settings row for /output-style",
+      "file": "extensions/connector-claude-code/hooks/commands.js",
+      "find": "  'output-style': SETTINGS,\n",
+      "replace": "",
+      "expectRed": "refuse-writes-settings row: /output-style is refused unrun",
+      "cell": "refuse-writes-settings row: /output-style is refused unrun"
+    },
+    {
+      "name": "drop the settings row for /tui",
+      "file": "extensions/connector-claude-code/hooks/commands.js",
+      "find": "  tui: SETTINGS,\n",
+      "replace": "",
+      "expectRed": "refuse-writes-settings row: /tui is refused unrun",
+      "cell": "refuse-writes-settings row: /tui is refused unrun"
+    },
+    {
+      "name": "drop the settings row for /statusline",
+      "file": "extensions/connector-claude-code/hooks/commands.js",
+      "find": "  statusline: SETTINGS,\n",
+      "replace": "",
+      "expectRed": "refuse-writes-settings row: /statusline is refused unrun",
+      "cell": "refuse-writes-settings row: /statusline is refused unrun"
+    },
+    {
+      "name": "drop the settings row for /permissions",
+      "file": "extensions/connector-claude-code/hooks/commands.js",
+      "find": "  permissions: SETTINGS,\n",
+      "replace": "",
+      "expectRed": "refuse-writes-settings row: /permissions is refused unrun",
+      "cell": "refuse-writes-settings row: /permissions is refused unrun"
+    },
+    {
+      "name": "drop the settings row for /update-config",
+      "file": "extensions/connector-claude-code/hooks/commands.js",
+      "find": "  'update-config': SETTINGS,\n",
+      "replace": "",
+      "expectRed": "refuse-writes-settings row: /update-config is refused unrun",
+      "cell": "refuse-writes-settings row: /update-config is refused unrun"
+    },
+    {
+      "name": "drop the settings row for /fewer-permission-prompts",
+      "file": "extensions/connector-claude-code/hooks/commands.js",
+      "find": "  'fewer-permission-prompts': SETTINGS,\n",
+      "replace": "",
+      "expectRed": "refuse-writes-settings row: /fewer-permission-prompts is refused unrun",
+      "cell": "refuse-writes-settings row: /fewer-permission-prompts is refused unrun"
+    },
+    {
+      "name": "drop the rejection mapping for 'no command named'",
+      "file": "extensions/connector-claude-code/hooks/commands.js",
+      "find": "  ['run', 'no command named', (claude) => ({ outcome: 'not-found', reason: claude })],\n",
+      "replace": "",
+      "expectRed": "no command named: not-found with Claude's text",
+      "cell": "no command named: not-found with Claude's text"
+    },
+    {
+      "name": "drop the rejection mapping for 'the session was stopped and nobody has sent input since'",
+      "file": "extensions/connector-claude-code/hooks/commands.js",
+      "find": "  ['run', 'the session was stopped and nobody has sent input since', () => ({ outcome: 'refused', reason: 'waiting for local input' })],\n",
+      "replace": "",
+      "expectRed": "the session was stopped: refused, waiting for local input",
+      "cell": "the session was stopped: refused, waiting for local input"
+    },
+    {
+      "name": "drop the rejection mapping for 'was removed from the queue before it ran'",
+      "file": "extensions/connector-claude-code/hooks/commands.js",
+      "find": "  ['run', 'was removed from the queue before it ran', () => ({ outcome: 'refused', reason: 'dropped by a local Stop' })],\n",
+      "replace": "",
+      "expectRed": "removed from the queue: refused, dropped by a local Stop",
+      "cell": "removed from the queue: refused, dropped by a local Stop"
+    },
+    {
+      "name": "drop the rejection mapping for 'no turn is running'",
+      "file": "extensions/connector-claude-code/hooks/commands.js",
+      "find": "  ['interrupt', 'no turn is running', () => ({ outcome: 'idle' })],\n",
+      "replace": "",
+      "expectRed": "no turn is running: idle",
+      "cell": "no turn is running: idle"
+    },
+    {
+      "name": "refuse MCP prompts as if built in",
+      "file": "extensions/connector-claude-code/hooks/commands.js",
+      "find": "const OPEN_SOURCES = new Set(['user', 'plugin', 'mcp']);",
+      "replace": "const OPEN_SOURCES = new Set(['user', 'plugin']);",
+      "expectRed": "user, plugin and mcp commands run",
+      "cell": "user, plugin and mcp commands run"
+    },
+    {
+      "name": "run a name Claude does not list",
+      "file": "extensions/connector-claude-code/hooks/commands.js",
+      "find": "  if (!commands.some((entry) => entry.name === name)) return { op: 'run', outcome: 'not-found', reason: `no command named /${name} in this session` };\n",
+      "replace": "",
+      "expectRed": "an alias, a suffix or another case of a listed name is not found and not run",
+      "cell": "an alias, a suffix or another case of a listed name is not found and not run"
+    },
+    {
+      "name": "judge a name by its first entry only",
+      "file": "extensions/connector-claude-code/hooks/commands.js",
+      "find": "commands.filter((entry) => entry.name === name).map(verdict).find(Boolean)",
+      "replace": "verdict(commands.find((entry) => entry.name === name))",
+      "expectRed": "a name listed twice runs only when every entry allows it",
+      "cell": "a name listed twice runs only when every entry allows it"
+    },
+    {
+      "name": "list hidden entries",
+      "file": "extensions/connector-claude-code/hooks/commands.js",
+      "find": "!described.get(name)?.isHidden && ",
+      "replace": "",
+      "expectRed": "lists what a remote request may run, without hidden entries, with hints",
+      "cell": "lists what a remote request may run, without hidden entries, with hints"
+    },
+    {
+      "name": "take a subagent's turn as the main turn",
+      "file": "extensions/connector-claude-code/hooks/commands.js",
+      "find": "    if (e.agentId === undefined) turnId = e.turnId;",
+      "replace": "    turnId = e.turnId;",
+      "expectRed": "aborts the main-loop turn, not a subagent turn",
+      "cell": "aborts the main-loop turn, not a subagent turn"
+    },
+    {
+      "name": "keep the turn after it completed",
+      "file": "extensions/connector-claude-code/hooks/commands.js",
+      "find": "      if (e.turnId === turnId) turnId = undefined;\n",
+      "replace": "",
+      "expectRed": "idle once the main turn completed",
+      "cell": "idle once the main turn completed"
+    },
+    {
+      "name": "stop tools the abort did not background",
+      "file": "extensions/connector-claude-code/hooks/commands.js",
+      "find": "result?.backgroundedByTurnAbort === true && ",
+      "replace": "",
+      "expectRed": "stops each tool the abort moved to the background",
+      "cell": "stops each tool the abort moved to the background"
+    },
+    {
+      "name": "stop backgrounded tools of earlier turns too",
+      "file": "extensions/connector-claude-code/hooks/commands.js",
+      "find": "messages.slice(messages.findLastIndex(isPrompt) + 1)",
+      "replace": "messages",
+      "expectRed": "stops each tool the abort moved to the background",
+      "cell": "stops each tool the abort moved to the background"
+    },
+    {
+      "name": "ignore a refused TaskStop",
+      "file": "extensions/connector-claude-code/hooks/commands.js",
+      "find": "    if (stopped.deny !== undefined) refused = true;\n",
+      "replace": "",
+      "expectRed": "a refused TaskStop: interrupted, a tool is still running",
+      "cell": "a refused TaskStop: interrupted, a tool is still running"
+    },
+    {
+      "name": "start the reader without the Claude version",
+      "file": "extensions/connector-claude-code/hooks/commands.js",
+      "find": "'read', '--claude', version]",
+      "replace": "'read', version]",
+      "expectRed": "serves a managed seat",
+      "cell": "serves a managed seat"
+    },
+    {
+      "name": "start a reader in a -p run too",
+      "file": "extensions/connector-claude-code/hooks/commands.js",
+      "find": "on('session.start', { isInteractive: true },",
+      "replace": "on('session.start', { isInteractive: [true, false] },",
+      "expectRed": "a -p run starts no reader",
+      "cell": "a -p run starts no reader"
+    },
+    {
+      "name": "leave a failed reader's rejection unhandled",
+      "file": "extensions/connector-claude-code/hooks/commands.js",
+      "find": "    listen($).catch(() => {});\n",
+      "replace": "    void listen($);\n",
+      "expectRed": "the file ran to its end",
+      "cell": "the file ran to its end"
+    },
+    {
+      "name": "leave the command mod out of the hooks module",
+      "file": "extensions/connector-claude-code/hooks/index.js",
+      "find": "  registerCommands(on);\n",
+      "replace": "",
+      "expectRed": "serves a managed seat",
+      "cell": "serves a managed seat"
+    },
+    {
+      "name": "let the source decide before a refusing row",
+      "file": "extensions/connector-claude-code/hooks/commands.js",
+      "find": "  if (row && row !== ALLOW) return REFUSALS[row](name);\n",
+      "replace": "",
+      "expectRed": "a refusing row applies whatever source Claude gives the command",
+      "cell": "a refusing row applies whatever source Claude gives the command"
+    },
+    {
+      "name": "read the session without waiting for the aborted turn",
+      "file": "extensions/connector-claude-code/hooks/commands.js",
+      "find": "  if (!(await completed)) {\n",
+      "replace": "  if (!(await Promise.race([completed, true]))) {\n",
+      "expectRed": "stops each tool the abort moved to the background",
+      "cell": "stops each tool the abort moved to the background"
+    },
+    {
+      "name": "never hear the aborted turn complete",
+      "file": "extensions/connector-claude-code/hooks/commands.js",
+      "find": "      completions.get(e.turnId)?.();\n",
+      "replace": "",
+      "expectRed": "stops each tool the abort moved to the background",
+      "cell": "stops each tool the abort moved to the background"
+    },
+    {
+      "name": "say nothing when the aborted turn does not complete",
+      "file": "extensions/connector-claude-code/hooks/commands.js",
+      "find": "    return { op: 'interrupt', outcome: 'interrupted', reason };\n",
+      "replace": "    return { op: 'interrupt', outcome: 'interrupted' };\n",
+      "expectRed": "an aborted turn that does not complete: interrupted, its tools may still run",
+      "cell": "an aborted turn that does not complete: interrupted, its tools may still run"
+    }
+  ]
+}

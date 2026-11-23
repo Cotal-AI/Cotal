@@ -19,14 +19,15 @@ const FLOOR_TEXT = CLAUDE_FLOOR.join(".");
 
 const NO_READER =
   `the command mod is not running in this Claude Code session; it needs Claude Code ${FLOOR_TEXT} or later with mods on ` +
-  "(--bare, --safe-mode, disableAllHooks and an organization's allowManagedModsOnly turn mods off)";
+  "(--bare, --safe-mode, disableAllHooks, and an organization's allowManagedHooksOnly or allowManagedModsOnly turn mods off)";
 
-const WIN_PIPES = "\\\\.\\pipe\\";
-const WIN_PREFIX = "cotal-claude-cmd-";
+/** A Windows pipe lives in the machine-wide pipe namespace, where another account could create a
+ *  pipe under a session's name and pose as its server. */
+export const WINDOWS_UNSUPPORTED =
+  "agent commands do not run on Windows yet, because another account on this machine could pose as the session's command pipe";
 
-/** Where this user's command sockets live: a private directory, or Windows' pipe namespace. */
+/** Where this user's command sockets live: a private directory. */
 function commandDir(): string {
-  if (process.platform === "win32") return WIN_PIPES;
   const uid = process.getuid!();
   const dir = join(tmpdir(), `cotal-claude-cmd-${uid}`);
   mkdirSync(dir, { recursive: true, mode: 0o700 });
@@ -35,9 +36,7 @@ function commandDir(): string {
   return dir;
 }
 
-const entryName = (claudePid: number, serverPid: number) =>
-  process.platform === "win32" ? `${WIN_PREFIX}${claudePid}-${serverPid}` : `${claudePid}-${serverPid}.sock`;
-const ENTRY = process.platform === "win32" ? new RegExp(`^${WIN_PREFIX}(\\d+)-(\\d+)$`) : /^(\d+)-(\d+)\.sock$/;
+const ENTRY = /^(\d+)-(\d+)\.sock$/;
 
 function alive(pid: number): boolean {
   try {
@@ -50,8 +49,7 @@ function alive(pid: number): boolean {
 
 /** The command socket server `serverPid` opens for the Claude Code process `claudePid`. */
 export function commandSocketPath(claudePid: number, serverPid: number = process.pid): string {
-  const dir = commandDir();
-  return process.platform === "win32" ? `${dir}${entryName(claudePid, serverPid)}` : join(dir, entryName(claudePid, serverPid));
+  return join(commandDir(), `${claudePid}-${serverPid}.sock`);
 }
 
 /** The command sockets of the Claude Code process `claudePid` whose server is running. */
@@ -64,7 +62,6 @@ export function commandSockets(claudePid: number): string[] {
 
 /** Remove the sockets that servers which exited without closing left behind. */
 function removeDeadSockets(): void {
-  if (process.platform === "win32") return;
   const dir = commandDir();
   for (const name of readdirSync(dir)) {
     const server = ENTRY.exec(name)?.[2];
@@ -215,6 +212,9 @@ class CommandSocket implements CommandFeed {
 
 /** Serve this process's command socket for the Claude Code process `claudePid`. */
 export async function openCommandFeed(claudePid: number, opts: { warn(msg: string): void }): Promise<CommandFeed> {
+  if (process.platform === "win32") {
+    return { unsupported: () => WINDOWS_UNSUPPORTED, request: () => Promise.reject(new Error(WINDOWS_UNSUPPORTED)), close: () => {} };
+  }
   removeDeadSockets();
   const feed = new CommandSocket(opts.warn);
   const path = commandSocketPath(claudePid);
@@ -223,7 +223,7 @@ export async function openCommandFeed(claudePid: number, opts: { warn(msg: strin
     feed.server.listen(path, () => resolve());
   });
   try {
-    if (process.platform !== "win32") chmodSync(path, 0o600);
+    chmodSync(path, 0o600);
   } catch (e) {
     feed.close();
     throw e;

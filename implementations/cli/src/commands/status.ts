@@ -66,7 +66,7 @@ import { cliVersion, cliProvenance, readExtensionVersions } from "../lib/version
 import { agentSkillsSkew } from "../lib/agent-skills.js";
 import { managerHasDeliveryMarker } from "../lib/manager-proc.js";
 import { signedInSpace } from "../lib/conversation-identity.js";
-import { connectorHarnesses, connectorStatusRows, machineStatus, recordedWebUrl, webInstalled, type HarnessStatus } from "../lib/status.js";
+import { clientStatusRows, connectorHarnesses, connectorStatusRows, machineStatus, recordedWebUrl, webInstalled, type HarnessStatus } from "../lib/status.js";
 import { legacyManagerStopped, statusRuntimeSpace } from "./status-legacy.js";
 import { deliveryResponderState, deliveryRowSuffix, type DeliveryResponderState } from "../lib/delivery-responder.js";
 import { brokerStoreWrite, storeFull } from "../lib/broker-store-health.js";
@@ -469,6 +469,7 @@ async function readMachine(selected: Selected, gaps: Gaps, hints: string[]): Pro
   } else if (connectors) {
     const signedIn = selected.ok && selected.target.mode === "user" ? await signedInSpace(selected.target) : undefined;
     for (const r of await connectorStatusRows(connectors, signedIn)) integrations.push({ name: r.label, state: r.state, text: r.text });
+    for (const r of await clientStatusRows(signedIn)) integrations.push({ name: r.label, state: r.state, text: r.text, client: true });
   }
   let installed: boolean | null = null;
   let installedError: string | null = null;

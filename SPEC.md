@@ -6917,8 +6917,10 @@ interface CommandEntry {
 }
 ```
 
-`{ supported: false }` means the agent's connector runs no commands. `{ supported: true }` with an
-empty list means it runs commands and has none. A list carries at most 512 entries and nothing else
+`{ supported: false }` means the agent's connector runs no commands now. It can change within a
+lifecycle, such as when the harness extension that runs them starts or stops, so a reader asks again
+later. Meanwhile `command` and `interrupt` name the cause in their `unimplemented` message.
+`{ supported: true }` with an empty list means it runs commands and has none. A list carries at most 512 entries and nothing else
 the harness keeps about a command, such as a file path or a skill's body. The agent leaves out a
 command whose name `command` cannot carry and shortens a longer text, marking the cut. A failed or
 unanswered list is `unavailable`, `not-executed`, never an empty list. The agent waits at most 10 s
@@ -8126,6 +8128,7 @@ Normative revisions of this document, newest first. Dated snapshots per §11; th
 
 | Date | Revision |
 | --- | --- |
+| 2026-11-23 | **`commands` can answer `supported: false` for a while (§13.22), clarification.** `{ supported: false }` means the connector runs no commands now. It can change within a lifecycle, as for a Claude Code seat whose command mod is not running, so a reader asks again later. `command` and `interrupt` then answer `unimplemented`, `not-executed`, with the cause in the message. No subject, schema or digest changes. |
 | 2026-11-21 | **A person controls their own agents without `admin` (§9, §13.9, §13.21), additive.** A signed-in person could not type into or interrupt their own agents through the Manager unless their actor row held `admin`, and could read their agents' event channels only through a channel grant. Both are now keyed on the ledger row being `interactive`, as the principal route's `owner` rows are. The person's `manager-caller` view carries `inspect` and `ps`, and owner-mode `despawn`, `attach`, `input` and `interrupt`, on its instance whatever the row's scope, the target owner pinned to their own. Their `agent` credential subscribes `chat.<owner>.*.events.<owner>.*` and holds one create of its own `chathist_` reader with that filter. A `managed-agent` row gets none of these, so the Manager's `input` and `interrupt` stay out of every agent credential, and a person cannot hand them on. They ride the person's sign-in, so a process using that sign-in uses them. |
 | 2026-11-21 | **A Manager command that interrupts a seat's turn (§9), additive.** The Manager cluster advances to revision 53 with the targeted `interrupt` command. It writes the interrupt key the seat's connector declares into the seat's terminal and answers `{ name }`. It is granted as `input` is. A connector that declares no key, or a runtime that owns no terminal input, is refused with `unimplemented`, and nothing is written. |
 | 2026-11-21 | **The owner renames an agent (§5, §6, §13.21, §13.22, Appendix B), additive.** The `agent` cluster advances to revision 4 with `set-name`, capability `agent.profile.write`, `authorities: ["owner"]`, input `{ name }` of any string and output `{ name }`. It changes `card.name` and republishes presence at once; the principal, the lifecycle and every subject, durable and grant keyed by them stay. It refuses a name that fails the shared name rule as `bad-request` and the name of another live instance, compared lowercased, as `already-exists`, each `not-executed` with the new `ai.cotal.agent.name-refused` detail `{ reason }` of `name-invalid` or `name-taken`; the current name is `ok` and changes nothing; a stopping agent or a failed presence read is `unavailable`. `AgentCard.name` can now change within a lifecycle, and name uniqueness is advisory. `from.name` is the name at send time, so stored messages keep it. An interactive ledger row's mint adds the `owner` row for `set-name`; no `grant` row admits it. A launcher that starts the same lifecycle again SHOULD start it with the name its presence last showed. No subject changes. |

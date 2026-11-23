@@ -34,7 +34,7 @@ for (const method of ["dialServeConnection", "dialGoalWriter", "dialSessionLedge
       if (method === "dialGoalWriter") {
         const component = new GoalWriter({} as ConstructorParameters<typeof GoalWriter>[0], {
           auth: () => receiver.auth, remoteAuthority: () => receiver.remoteAuthority, dial: receiver.dial,
-        } as unknown as ConstructorParameters<typeof GoalWriter>[1]);
+        } as unknown as ConstructorParameters<typeof GoalWriter>[1], {} as ConstructorParameters<typeof GoalWriter>[2]);
         await component.dialGoalWriter(state as never);
       }
       else {

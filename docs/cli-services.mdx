@@ -112,7 +112,8 @@ would not mean here what it means in a terminal; for those, run a shell yourself
 `--exec "sh -c '<command line>'"`. A bare program name is looked up on `PATH` as `add` saves it, and
 a relative path is saved as the absolute path it names in `--cwd`, which defaults to the folder you
 run `add` in. An explicit empty or whitespace-only `--cwd` refuses `USAGE_INVALID` (exit 1)
-before a definition is saved. The service is ready once its process runs. `--file` keeps the full definition shape
+before a definition is saved. Omit `--cwd` to use the directory you run `add` in, or pass
+`--cwd <dir>` to use another directory. The service is ready once its process runs. `--file` keeps the full definition shape
 below, for readiness over HTTP, environment references or a credential file.
 
 The presets built into the CLI are `auth-service`, `broker`, `delivery`, `exec-endpoint`,
@@ -392,6 +393,9 @@ match the declared IP, port and transport. `add` refuses a `server` that is not 
 definition saved before that check refuses on start, before launch, naming its `server` option and
 how to add it again. This reports the child's client listener, not JetStream readiness, endpoint serving
 or a fresh trust check.
+
+A saved broker does not support `--foreground`. If a preview refuses it, remove `--foreground`
+and keep `--dry-run` and the rest of the command unchanged. The retry does not start the broker.
 
 Broker stop has a separate kernel-exit policy, with no invented endpoint principal or epoch.
 Known live or unresolved dependants refuse. After confirmation the controller rechecks the scope
