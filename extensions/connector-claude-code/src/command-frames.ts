@@ -17,6 +17,14 @@ export type CommandAsk =
 
 export type CommandRequest = CommandAsk & { id: RequestId };
 
+/** Asks the mod to relay the reply text the session streams, as `deltas` answers under this id. The
+ *  server sends it once to each reader it accepts, and only a seat that journals the text does. */
+export interface StreamRequest { id: RequestId; op: "stream" }
+
+/** Lines of reply text Claude Code showed, under the journal key the mod numbered them with
+ *  (`claude-stream.ts`). */
+export interface ModDelta { key: string; text: string }
+
 /** The first line of a reader connection. `mod` is the connector version the reader was built
  *  from; `claude` is the version of the Claude Code session it runs in. */
 export interface ModHello { op: "hello"; mod: string; claude: string }
@@ -33,6 +41,8 @@ export type ModAnswer =
   /** Claude Code's own figures: the context window, the input tokens of the last response over it,
    *  and the session's cost in US dollars. */
   | { id: RequestId; op: "usage"; window: number; tokens?: number; usd?: number }
+  /** Any number of these answer one {@link StreamRequest}. */
+  | { id: RequestId; op: "deltas"; deltas: ModDelta[] }
   | { id: RequestId; op: "error"; reason: string };
 
 export type ModFrame = ModHello | ModAnswer;
@@ -49,6 +59,9 @@ const NAME = /^\S{1,128}$/u;
 const MAX_COMMANDS = 2048;
 const MAX_TEXT = 4096;
 const MAX_REASON = 2000;
+/** `stream:<prompt id>:<n>`, as `claudeStreamKey` builds it. */
+const STREAM_KEY = /^stream:[0-9A-Za-z-]{1,64}:[1-9][0-9]{0,5}$/;
+const MAX_DELTAS = 256;
 
 type Fields = Record<string, unknown>;
 
@@ -136,6 +149,17 @@ const FRAMES: Record<ModFrame["op"], (f: Fields) => void> = {
     count(f.window, "window");
     if (Object.hasOwn(f, "tokens")) count(f.tokens, "tokens");
     if (Object.hasOwn(f, "usd") && !(typeof f.usd === "number" && Number.isFinite(f.usd) && f.usd >= 0)) refuse("usd is not a number of dollars");
+  },
+  deltas(f) {
+    only(f, ["id", "op", "deltas"]);
+    matches(f.id, ID, "id");
+    if (!Array.isArray(f.deltas) || f.deltas.length === 0 || f.deltas.length > MAX_DELTAS) refuse(`deltas is not 1 to ${MAX_DELTAS} entries`);
+    for (const d of f.deltas) {
+      if (!isFields(d)) refuse("a delta is not an object");
+      only(d, ["key", "text"]);
+      matches(d.key, STREAM_KEY, "key");
+      if (typeof d.text !== "string" || d.text === "") refuse("a delta's text is not a non-empty string");
+    }
   },
   error(f) {
     only(f, ["id", "op", "reason"]);

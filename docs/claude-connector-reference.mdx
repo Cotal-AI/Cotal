@@ -832,6 +832,18 @@ Its native lifecycle drives presence and recording for that session only; a suba
 conversation cannot end its main run. The event channel keeps the space's normal read permissions.
 A personal connection makes manager calls only with its own selected grant.
 
+A seat Cotal launched streams its reply text while its command mod runs. The mod reads the lines
+Claude Code shows as a reply streams, its `MessageDisplay` event, and relays them to the seat at
+most once every 250 ms. The seat writes them to the thread's delta journal, and a client sees the
+reply grow in whole lines. Claude Code's transcript records neither the id a streamed message
+carries nor its turn, only the prompt it belongs to. So the tie is order: the mod numbers a prompt's
+messages in the order they stream, and the connector numbers that prompt's saved text blocks the
+same way. The saved text is always the text of record. Lines that arrive after their message was
+saved publish nothing. A saved text that does not begin with what streamed under its number ends
+the streamed message, and the saved text is then published as a message of its own. A turn's end
+also ends a stream no saved text closed. A subagent's reply does not stream, and neither does a
+reply while no mod serves the session.
+
 If the event plane stops, the seat keeps running and its mesh connection, on every connector and
 on every space. The connector log records `AG-UI emitter stopped` with the reason and the delay
 before it re-establishes the plane: at once after a failure, then every second while the plane
