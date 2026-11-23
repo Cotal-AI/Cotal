@@ -829,7 +829,7 @@ export async function connectTargetOrThrow(target: MeshTarget, role: Profile, op
     // no stack journal. Run from it, the refusal is the one the command gives there with no --space (#7315).
     const elsewhere = recordsElsewhereError(findCotalRoot());
     if (elsewhere?.details.stackSpace === target.space && elsewhere.details.recordedRoot !== undefined && canonicalRoot(elsewhere.details.recordedRoot) === canonicalRoot(target.root))
-      throw workspaceRefusal({ kind: "target", error: elsewhere }, { code: targetErrorCode(elsewhere.code) });
+      throw workspaceRefusal({ kind: "target", error: elsewhere }, { cause: elsewhere, code: targetErrorCode(elsewhere.code) });
     // The folder is gone, deleted or moved somewhere this command cannot see, so no seed is missing (#7318).
     if (!existsSync(target.root)) {
       const parts = { message: `mesh "${target.space}" is registered for ${target.root}, which no longer exists`, remedy: `if that folder was moved or renamed, move it back to ${target.root} and run the command again; otherwise forget the space with \`cotal space forget ${target.space}\`` };

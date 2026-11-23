@@ -74,7 +74,7 @@ import { FlagValueRefusal } from "./lib/flag-value-refusal.js";
 import { workingFolderRemoved } from "./lib/paths.js";
 import { reportLostOutput, writeAllSync } from "./lib/stdout-owner.js";
 import { shellWord } from "./lib/endpoint-errors.js";
-import { displayRemedy } from "./lib/self-exec.js";
+import { displayRemedy, hasMovedStackRemedy } from "./lib/self-exec.js";
 import { GLOBAL_FLAG_WORDS, OUTPUT_FLAG_WORDS } from "./lib/leading-flags.js";
 import { takeManagedHandoffCustody } from "./managed-handoff.js";
 import { nearestWords, LEADING_FLAGS, unknownCommandMessage, unknownSubcommandMessage } from "./lib/nearest-word.js";
@@ -970,8 +970,10 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
     // not resolve or connect to is refused before any request, under the refusal's own code; a
     // failure it did not classify is unknown: it may have had effects that cannot be attributed.
     if (structured(cmd, mode)) {
-      const spaceRemedy = spaceChoiceRemedy(isConnectRefusal(e) ? e.cause : e, cmd.name, parsed, rest);
-      const renderRemedy = spaceRemedy !== undefined ? () => spaceRemedy : ["status", "ps", "space", "whoami"].includes(cmd.name) ? displayRemedy : undefined;
+      const targetError = isConnectRefusal(e) ? e.cause : e;
+      const spaceRemedy = spaceChoiceRemedy(targetError, cmd.name, parsed, rest);
+      const renderRemedy = spaceRemedy !== undefined ? () => spaceRemedy
+        : hasMovedStackRemedy(targetError) || ["status", "ps", "space", "whoami"].includes(cmd.name) ? displayRemedy : undefined;
       if (isConnectRefusal(e)) {
         const failure = e.failure(renderRemedy), cause = e.cause;
         if (isWorkspaceTargetError(cause) && cause.code === "not-started" && cause.details.stopped && !cause.details.unsettled && cause.details.root && cause.details.space) {
