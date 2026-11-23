@@ -264,6 +264,26 @@ turn, including ordinary channel traffic held in `dnd`. Quiet-channel traffic re
 through an explicit inbox pull. The connector log names a startup prompt waiting on in-flight
 steering and a turn deferred because native state changed during that wait.
 
+## Agent commands [#agent-commands]
+
+On a per-user mesh the host runs Jcode's native session operations as
+[agent commands](connector-runtime-reference.mdx#agent-commands), named as Jcode's own TUI names them:
+
+- `compact` asks Jcode to compact the conversation and takes no arguments. Jcode refuses when there
+  is too little to compact, and the command ends `refused` with Jcode's reason.
+- `rewind N` keeps the first N messages of the conversation. N is a whole number, 1 or more.
+- `rename <name>` names the session, and `rename --clear` restores its generated title.
+
+Each is one Harness request and starts no model turn. The host runs queued commands while no turn
+runs, before the next inbox turn. A call whose arguments Jcode cannot take ends `refused` with
+`failed-precondition` before Jcode sees it. `clear` is not offered: Jcode answers it with a session
+status the host reads as busy, so the seat would stop taking messages. Model and reasoning effort
+are set through [model selection](#model-selection), not as commands.
+
+`interrupt` sends Jcode's cancel for the running turn and answers `interrupted`, or `idle` when no
+turn runs. Jcode ends a cancelled turn as it ends
+one its user stopped, and the host closes that turn on its usual path.
+
 ## Model selection
 
 `--model` is passed to Jcode's session-level Harness API model selector. Jcode validates the model

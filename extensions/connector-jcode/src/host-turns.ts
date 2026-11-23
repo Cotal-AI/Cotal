@@ -133,6 +133,10 @@ export function createHostTurns(hostState: HostTurnState, deps: HostTurnDeps) {
     if (hostState.pendingKickoff !== undefined && hostState.steering)
       writeJcodeDiagnostic("[cotal-jcode] startup kickoff waiting for in-flight steering\n");
     await hostState.steerSettled;
+    // Queued agent-endpoint commands are session operations that start no turn. Each runs to its
+    // answer here, while `driving` keeps a turn out, before the inbox turn.
+    while (hostState.pendingKickoff === undefined && agent.queuedCommands > 0 && !hostState.stopping && !hostState.reconnecting)
+      await agent.dispatchNextCommand();
     // A role request is shown only once its take is recorded (SPEC §8.1). This turn carries every
     // unreserved automatic message, so it takes every held one here, before the session checks
     // below, which then cover this await too.
@@ -170,6 +174,8 @@ export function createHostTurns(hostState: HostTurnState, deps: HostTurnDeps) {
       const injection = formatInjection(inbox);
       if (!injection && !turnPeek && !mentionWake) {
         hostState.driving = false;
+        // A command queued while this drive held the session found it busy and waits for this.
+        if (agent.queuedCommands > 0) void drive();
         return;
       }
       if (injection) {
