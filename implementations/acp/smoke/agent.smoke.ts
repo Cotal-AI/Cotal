@@ -28,17 +28,21 @@
  *    replays what the space retains, and stores the thread's link; it refuses in a thread that
  *    already drives one, and names the choices when two seats match;
  *  - a linked thread is listed under its own id with the seat's shown name, and loads and deletes
- *    through its link.
+ *    through its link;
+ *  - where seats serve their `agent` endpoint, a prompt the harness opens is asked once as a
+ *    permission request, without options ACP cannot answer and only when its digest matches, and the
+ *    answer goes back with that digest; the seat's commands and skills are offered and run through
+ *    `command`, and a refused one is said in the thread. Where they do not, nothing calls it.
  *
  * Run: pnpm --filter @cotal-ai/acp test
  */
 import { mkdtempSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { client, methods, PROTOCOL_VERSION, type SessionNotification } from "@agentclientprotocol/sdk";
-import { assertValidOwnerToken } from "@cotal-ai/core";
+import { client, methods, PROTOCOL_VERSION, type RequestPermissionRequest, type RequestPermissionResponse, type SessionNotification } from "@agentclientprotocol/sdk";
+import { agentPromptDigest, assertValidOwnerToken, type AgentPrompt, type PromptContent, type PromptSummary } from "@cotal-ai/core";
 import { cotalAgent, defaultName, promptText, type HiddenSessions, type ThreadLink, type ThreadLinks } from "../src/agent.js";
-import { LaunchListsRefused, NoLaunchManager, SignInRequired, type AgentCatalog, type AguiEventLike, type ManagerChoice, type Mesh, type SeatFrame, type SeatRef, type SeatRow, type SpawnRequest } from "../src/mesh.js";
+import { AgentCallFailed, LaunchListsRefused, NoLaunchManager, SignInRequired, type AgentCatalog, type AguiEventLike, type ManagerChoice, type Mesh, type PromptCounter, type SeatFrame, type SeatRef, type SeatRow, type SpawnRequest } from "../src/mesh.js";
 
 let pass = 0, fail = 0;
 const check = (n: string, c: boolean, x?: unknown): void => { if (c) { pass++; console.log(`  ✓ ${n}`); } else { fail++; console.log(`  ✗ FAIL: ${n}`, x ?? ""); } };
@@ -85,13 +89,19 @@ class FakeMesh implements Mesh {
   onInterrupt: (seat: SeatRef) => void = () => {};
   spawnDelay = 0;
   closed = false;
+  agentEndpoints = false;
+  agentCalls: { seat: string; command: string; args: Record<string, unknown> }[] = [];
+  /** What a seat's agent endpoint answers. A throw is its refusal. */
+  onAgentCall: (seat: SeatRef, command: string, args: Record<string, unknown>) => unknown = () => { throw new AgentCallFailed("no agent endpoint here", "unavailable"); };
+  /** Prompt counters by actor, as presence carries them. */
+  counters = new Map<string, PromptCounter>();
   /** Frames a spawned seat publishes: `before` ahead of the spawn reply, `after` once it answered. */
   script: { before: AguiEventLike[][]; after: AguiEventLike[][] } = { before: [], after: [] };
   private listeners: ((f: SeatFrame) => void)[] = [];
   private seq = 0;
 
   emit(seat: SeatRef, events: AguiEventLike[], runId = "r1"): void {
-    const f: SeatFrame = { owner: seat.owner, actor: seat.actor, threadId: "t", runId, epoch: "e", seq: ++this.seq, events, ts: Date.now() };
+    const f: SeatFrame = { plane: "events", owner: seat.owner, actor: seat.actor, threadId: "t", runId, epoch: "e", seq: ++this.seq, events, ts: Date.now() };
     for (const l of this.listeners) l(f);
   }
   catalogsAsked: (string | undefined)[] = [];
@@ -145,6 +155,11 @@ class FakeMesh implements Mesh {
   spawnNameError(name: string) { return /^[a-z0-9_]+$/.test(name) ? undefined : `unsafe name ${JSON.stringify(name)}`; }
   async despawn(seat: SeatRef) { this.despawned.push(seat.name); }
   async interrupt(seat: SeatRef) { this.onInterrupt(seat); this.interrupted.push(seat.name); }
+  async agentCall(seat: SeatRef, command: string, args: Record<string, unknown>) {
+    this.agentCalls.push({ seat: seat.name, command, args });
+    return this.onAgentCall(seat, command, args);
+  }
+  promptCounter(seat: SeatRef) { return this.counters.get(seat.actor); }
   async input(seat: SeatRef, text: string) {
     this.onInput(seat);
     if (this.inputDelay) await tick(this.inputDelay);
@@ -173,15 +188,18 @@ class MemoryHidden implements HiddenSessions {
 
 function connect(open: () => Promise<Mesh>, terminal = true, canSignIn = async () => true) {
   const updates: SessionNotification[] = [];
+  const asked: RequestPermissionRequest[] = [];
+  const answers: { pick: (r: RequestPermissionRequest) => RequestPermissionResponse } = { pick: () => ({ outcome: { outcome: "cancelled" } }) };
   const hidden = new MemoryHidden();
   const links = new MemoryLinks();
   let n = 0;
   const app = cotalAgent({ mesh: open, hidden, links, log: () => {}, version: "0.0.0-smoke", newName: () => `acp-s${++n}`, waits: { startMs: 300, settleMs: 100 }, canSignIn });
   const conn = client({ name: "smoke" })
     .onNotification(methods.client.session.update, ({ params }) => void updates.push(params))
+    .onRequest(methods.client.session.requestPermission, async ({ params }) => { asked.push(params); return answers.pick(params); })
     .connect(app);
   const init = conn.agent.request(methods.agent.initialize, { protocolVersion: PROTOCOL_VERSION, clientCapabilities: terminal ? { auth: { terminal: true } } : {} });
-  return { agent: conn.agent, conn, updates, hidden, links, init };
+  return { agent: conn.agent, conn, updates, hidden, links, init, asked, answers };
 }
 const errorOf = async (p: Promise<unknown>): Promise<{ code?: number; message?: string } | undefined> => {
   try { await p; return undefined; } catch (e) { return e as { code?: number; message?: string }; }
@@ -352,7 +370,7 @@ check("deleting a session from an earlier process hides that seat's run", hidden
 // load
 const outside: SeatRow = { name: "outside", owner: "local", actor: "o1", lifecycleUid: "life-o", managerInstanceId: "m1", agent: "claude", model: "haiku", cwd: dir, status: "running" };
 mesh.rows = [outside, { name: "nope", owner: "local", actor: "n1", lifecycleUid: "life-n", agent: "hermes", status: "running" }];
-mesh.history.set("outside", [{ owner: "local", actor: "o1", threadId: "t", runId: "r0", epoch: "e", seq: 900, ts: 1, events: [{ type: "TEXT_MESSAGE_START", messageId: "h", role: "assistant" }, { type: "TEXT_MESSAGE_CONTENT", messageId: "h", delta: "earlier" }, { type: "TOOL_CALL_START", toolCallId: "old", toolCallName: "Bash" }] }]);
+mesh.history.set("outside", [{ plane: "events", owner: "local", actor: "o1", threadId: "t", runId: "r0", epoch: "e", seq: 900, ts: 1, events: [{ type: "TEXT_MESSAGE_START", messageId: "h", role: "assistant" }, { type: "TEXT_MESSAGE_CONTENT", messageId: "h", delta: "earlier" }, { type: "TOOL_CALL_START", toolCallId: "old", toolCallName: "Bash" }] }]);
 updates.length = 0;
 const loaded = await agent.request(methods.agent.session.load, { sessionId: "outside", cwd: dir, mcpServers: [] });
 const replay = updates.filter((u) => u.sessionId === "outside");
@@ -576,6 +594,8 @@ let threw = false;
 try { promptText([{ type: "image", data: "", mimeType: "image/png" }]); } catch { threw = true; }
 check("image content is refused", threw);
 
+
+check("a space without the agent endpoint never calls it", mesh.agentCalls.length === 0, mesh.agentCalls);
 conn.close();
 await tick(20);
 check("closing the client closes the space", mesh.closed);
@@ -596,6 +616,89 @@ check("a thread's agent name is a valid user-mode actor token", (() => { try { r
   away.script = { before: [[{ type: "RUN_STARTED", runId: "r1" }]], after: [[{ type: "RUN_FINISHED", runId: "r1" }]] };
   const first = s ? await within(c.agent.request(methods.agent.session.prompt, { sessionId: s.sessionId, prompt: [{ type: "text", text: "go" }] })) : undefined;
   check("its first prompt spawns pinned to that manager and answers", first?.stopReason === "end_turn" && away.spawned[0]?.managerInstanceId === "m2", { first, pins: away.spawned.map((r) => r.managerInstanceId) });
+  c.conn.close();
+}
+// The seat's agent endpoint: the prompts its harness opens and the commands it runs.
+{
+  const space = new FakeMesh();
+  space.agentEndpoints = true;
+  const c = connect(async () => space);
+  await c.init;
+  const at = new Date().toISOString();
+  const content: PromptContent = {
+    kind: "permission",
+    title: "Run ls\u202E?",
+    subject: { type: "tool", name: "Bash", input: { kind: "shown", value: { command: "ls" } } },
+    options: [
+      { id: "yes", label: "Yes", effect: "proceed" },
+      { id: "always", label: "Yes, always", effect: "proceed", persists: "this session" },
+      { id: "no", label: "No", effect: "refuse" },
+      { id: "why", label: "No, and tell it why", effect: "refuse", note: "required" },
+    ],
+    source: { harness: "claude", toolCallId: "tc1" },
+  };
+  const promptOf = (id: string, digest = agentPromptDigest(content)): AgentPrompt => ({ id, digest, openedAt: at, expiresAt: at, state: { kind: "open" }, content });
+  const summaryOf = (p: AgentPrompt): PromptSummary => ({ id: p.id, digest: p.digest, openedAt: at, expiresAt: at, state: p.state, kind: p.content.kind, title: p.content.title, contentBytes: 1 });
+  const prompts = new Map<string, AgentPrompt>([["p1", promptOf("p1")]]);
+  let seq = 1;
+  let commandState: unknown = { kind: "started" };
+  space.onAgentCall = (_seat, command, args) => {
+    switch (command) {
+      case "prompts": return { runtime: { id: "rt", startedAt: 1 }, seq, open: [...prompts.values()].map(summaryOf), closed: [] };
+      case "prompt": return { prompt: prompts.get(args.id as string) };
+      case "prompt-answer": return { state: { kind: "sent" } };
+      case "commands": return { supported: true, commands: [{ name: "review", target: "command", description: "Review the diff", inputHint: "what to review" }, { name: "humanizer", target: "skill" }, { name: "name", target: "command" }] };
+      case "command": return { id: "cmd1" };
+      case "command-state": return { state: commandState };
+    }
+    throw new AgentCallFailed(`unexpected ${command}`, "unimplemented");
+  };
+  const callsOf = (command: string) => space.agentCalls.filter((x) => x.command === command);
+  c.answers.pick = (r) => ({ outcome: { outcome: "selected", optionId: r.options.find((o) => o.kind === "allow_once")!.optionId } });
+  const s = await c.agent.request(methods.agent.session.new, { cwd: dir, mcpServers: [] });
+  space.script = { before: [[{ type: "RUN_STARTED", runId: "r1" }]], after: [] };
+  const first = within(c.agent.request(methods.agent.session.prompt, { sessionId: s.sessionId, prompt: [{ type: "text", text: "go" }] }));
+  await tick(50);
+  const seat: SeatRef = { name: "acp-s1", owner: "local", actor: "actor-acp-s1", lifecycleUid: "life-acp-s1" };
+  space.counters.set(seat.actor, { runtime: "rt", open: 1, seq });
+  await tick(700);
+  const asked = c.asked[0];
+  check("a prompt the seat opens is asked as a permission request", c.asked.length === 1 && asked?.sessionId === s.sessionId, c.asked);
+  check("its title names the seat, with invisible characters shown", asked?.toolCall.title === "acp-s1 asks: Run ls<U+202E>?", asked?.toolCall.title);
+  check("it is the tool call the prompt is about, with its kind and input", asked?.toolCall.toolCallId === "tc1" && asked.toolCall.kind === "execute" && (asked.toolCall.rawInput as { command?: string }).command === "ls", asked?.toolCall);
+  check("options that need a note are not offered, and the rest keep their kinds", JSON.stringify(asked?.options.map((o) => [o.optionId, o.kind])) === JSON.stringify([["yes", "allow_once"], ["always", "allow_always"], ["no", "reject_once"]]), asked?.options);
+  const answered = callsOf("prompt-answer");
+  check("the answer goes back with the digest the bridge checked", answered.length === 1 && answered[0]!.args.id === "p1" && answered[0]!.args.option === "yes" && answered[0]!.args.digest === agentPromptDigest(content), answered);
+  seq = 2;
+  space.counters.set(seat.actor, { runtime: "rt", open: 1, seq });
+  await tick(600);
+  check("a prompt is asked once, however often its list is read", c.asked.length === 1 && callsOf("prompts").length >= 2, { asked: c.asked.length, lists: callsOf("prompts").length });
+  prompts.set("p2", promptOf("p2", "sha256:00"));
+  seq = 3;
+  space.counters.set(seat.actor, { runtime: "rt", open: 2, seq });
+  await tick(600);
+  check("a prompt whose content does not match its digest is not asked", c.asked.length === 1 && callsOf("prompt").some((x) => x.args.id === "p2"), c.asked.length);
+  space.present.set(seat.actor, "idle");
+  space.emit(seat, [{ type: "RUN_FINISHED", runId: "r1" }]);
+  check("the turn still ends on its run", (await first)?.stopReason === "end_turn");
+  await tick(50);
+
+  const offered = c.updates.filter((u) => u.sessionId === s.sessionId && u.update.sessionUpdate === "available_commands_update").at(-1)?.update as { availableCommands: { name: string; description?: string; input?: { hint?: string } }[] } | undefined;
+  const names = offered?.availableCommands.map((x) => x.name) ?? [];
+  check("the seat's commands are offered once it runs, its skills with a leading $", names.includes("review") && names.includes("$humanizer"), names);
+  check("a seat command keeps its description and input hint", offered?.availableCommands.some((x) => x.name === "review" && x.description === "Review the diff" && x.input?.hint === "what to review") === true, offered);
+  check("a seat command named like a session command is not offered", names.filter((n) => n === "name").length === 1, names);
+  const run = (text: string) => within(c.agent.request(methods.agent.session.prompt, { sessionId: s.sessionId, prompt: [{ type: "text", text }] }));
+  const ran = await run("/review the last commit");
+  check("a seat command runs through command with its target, name and args", ran?.stopReason === "end_turn" && JSON.stringify(callsOf("command").at(-1)?.args) === JSON.stringify({ target: "command", name: "review", args: "the last commit" }), callsOf("command"));
+  check("and waits until the seat took it", callsOf("command-state").length >= 1);
+  await run("$humanizer");
+  check("a skill runs through command as a skill, with no args", JSON.stringify(callsOf("command").at(-1)?.args) === JSON.stringify({ target: "skill", name: "humanizer" }), callsOf("command"));
+  commandState = { kind: "refused", code: "failed-precondition", message: "a turn is running" };
+  c.updates.length = 0;
+  const refused = await run("/review");
+  const said = c.updates.filter((u) => u.sessionId === s.sessionId && u.update.sessionUpdate === "agent_message_chunk").map((u) => JSON.stringify(u.update)).join("");
+  check("a refused seat command is said in the thread and ends the prompt", refused?.stopReason === "end_turn" && said.includes("did not run /review: a turn is running"), said);
   c.conn.close();
 }
 // /name, /open and the thread links.
@@ -627,7 +730,7 @@ check("a thread's agent name is a valid user-mode actor token", (() => { try { r
   const helper: SeatRow = { name: "helper", display: "Helper Bee", owner: "local", actor: "actor-helper", lifecycleUid: "life-helper", managerInstanceId: "m1", agent: "pi", cwd: dir, status: "running" };
   space.rows = [scout, helper];
   space.present.set("actor-helper", "idle");
-  space.history.set("helper", [{ owner: "local", actor: "actor-helper", threadId: "t", runId: "h1", epoch: "e", seq: 1, ts: Date.now(), events: [{ type: "TEXT_MESSAGE_START", messageId: "hm", role: "assistant" }, { type: "TEXT_MESSAGE_CONTENT", messageId: "hm", delta: "earlier work" }, { type: "TEXT_MESSAGE_END", messageId: "hm" }] }]);
+  space.history.set("helper", [{ plane: "events", owner: "local", actor: "actor-helper", threadId: "t", runId: "h1", epoch: "e", seq: 1, ts: Date.now(), events: [{ type: "TEXT_MESSAGE_START", messageId: "hm", role: "assistant" }, { type: "TEXT_MESSAGE_CONTENT", messageId: "hm", delta: "earlier work" }, { type: "TEXT_MESSAGE_END", messageId: "hm" }] }]);
   const listed = await c.agent.request(methods.agent.session.list, {});
   const scoutListed = listed.sessions.find((x) => x.title?.startsWith("Scout Two"));
   check("a linked seat is listed under its thread's id, titled with the name it shows", scoutListed?.sessionId === named.sessionId, listed.sessions);
