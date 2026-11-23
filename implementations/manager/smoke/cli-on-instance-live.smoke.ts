@@ -258,6 +258,21 @@ try {
       census?.result?.managers.every((m) => m.reportedHost === hostname()) === true,
     { host: hostname(), out: unpinnedOut.slice(-400), managers: census?.result?.managers });
 
+  const directStatus = await cotal(["endpoint", "invoke", "manager", "status", "--space", space, "--json"], root1);
+  const deniedScatter = await cotal(["endpoint", "invoke", "ep:manager", "status", "--all", "--space", space, "--json"], root1);
+  const allowedScatter = await cotal(["endpoint", "invoke", "manager", "ps", "--all", "--space", space, "--json"], root1);
+  const direct = JSON.parse(directStatus.stdout);
+  const denied = JSON.parse(deniedScatter.stdout);
+  const allowed = JSON.parse(allowedScatter.stdout);
+  check("a direct status answers but a status scatter without its grant is refused before sending",
+    directStatus.status === 0 && [IID1, IID2].includes(direct.result?.responder?.instanceId) &&
+    deniedScatter.status === 2 && denied.outcome === "refused" && denied.error?.code === "PERMISSION_DENIED" &&
+    denied.error.message.includes("no class scatter grant for manager status") && denied.result === null,
+    { direct: directStatus.status, denied });
+  check("a granted class scatter still returns both attributed replies",
+    allowedScatter.status === 0 && allowed.result?.coverageComplete === true &&
+    JSON.stringify(allowed.result.replies.map((row: { instanceId: string }) => row.instanceId).sort()) === JSON.stringify([IID1, IID2].sort()), allowed);
+
   // An unpinned `models` goes to the one manager the class queue picks. It names the other as not
   // asked, and an empty catalog list says the answering manager has no application installed.
   check("rig: no connector is registered yet, so each manager lists no catalog", registry.all<Connector>("connector").length === 0, registry.all<Connector>("connector").map((c) => c.name));
@@ -479,6 +494,11 @@ try {
       { status: r.status, tail: out.slice(-400) });
     check(`...and ${site.what}'s headline names the instance, not an unreachable mesh`,
       !/no manager reachable/i.test(out), out.slice(-300));
+    if (site.what === "describe") {
+      check("a pinned describe names the unanswered instance and recommends the live inventory",
+        r.status === 2 && out.includes(`pinned instance ${absent} of manager did not answer its contract read`) &&
+        out.includes(`cotal endpoint list --live --space ${space}`) && !out.includes("start the service"), out);
+    }
     // The launch and attach blocks name the space as a field; only the refusal's heading names the mesh.
     if (site.what === "spawn --detach" || site.what === "attach")
       check(`...and ${site.what} names the mesh once, in the refusal's heading`,

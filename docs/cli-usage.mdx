@@ -370,7 +370,7 @@ answer at once, and Enter takes the selection.
 Without a terminal, or with `--no-input` or `--json`, `history clear`, `channel remove`,
 `persona remove` and `endpoint remove` refuse and print the command that confirms them with
 `--yes`. That command keeps the `--space`, `--server` and `--creds` you gave, so it acts on the
-same space.
+same space. For `channel remove` and `persona remove`, it also keeps `--json` when requested.
 
 A usage line breaks only between options, never between an option and its argument. A ` | ` stays
 on the line before it whenever it fits there. A compact `|`, such as the one in

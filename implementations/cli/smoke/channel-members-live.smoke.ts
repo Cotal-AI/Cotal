@@ -149,10 +149,12 @@ try {
   const corrected = cotal("channel", "members", "#-audit", "--space", SPACE, "--json");
   check("the corrected member read returns its census as JSON", corrected.status === 0 && Array.isArray(envelope(corrected.stdout)?.result?.members), corrected.out);
   const dashRemove = cotal("ch", "rm", "#-audit", "--json");
-  check("the removal confirmation prints a shell-safe operand",
-    dashRemove.status === 1 && envelope(dashRemove.stdout)?.error?.remedy === "confirm with `cotal channel remove '#-audit' --yes`", dashRemove.out);
-  const removed = cotal("channel", "remove", "#-audit", "--yes");
-  check("the suggested confirmation removes the same channel", removed.status === 0 && removed.out.includes("Channel removed"), removed.out);
+  const confirm = envelope(dashRemove.stdout)?.error?.remedy?.match(/^confirm with `cotal (.+)`$/)?.[1];
+  check("the removal confirmation prints a shell-safe operand and keeps --json",
+    dashRemove.status === 1 && confirm === "channel remove '#-audit' --yes --json", dashRemove.out);
+  const removed = confirm ? cotal(...confirm.split(" ").map((word) => word.replace(/^'|'$/g, ""))) : undefined;
+  check("the suggested confirmation removes the same channel with a JSON receipt",
+    removed?.status === 0 && JSON.parse(removed.stdout).result?.removed === true, removed?.out);
 
   const other = join(base, "other");
   mkdirSync(other, { mode: 0o700 });

@@ -516,6 +516,8 @@ Existing names are not silently overwritten.
 compares the held revision and content under the private writer lock before forgetting metadata.
 It never deregisters a native endpoint, stops a process, removes credential files or revokes grants.
 The confirmation command keeps `--json` or `--plain` if you passed it.
+If several spaces match, Next lists a retry for each space in the same output format without
+`--yes`. Choose a space before confirming removal.
 
 Protected no-follow/nonblocking file access supports POSIX hosts. Windows uses its access-list
 model for local records instead: a credential reference there must be a regular file, and its
@@ -536,6 +538,8 @@ existing native caller and digest-verified contracts. `ref:<name>` requires a sa
 `ep:<class>` bypasses local references. An unprefixed name checks the selected space's saved
 references first, then uses the native class only when no reference exists. An unreadable or
 invalid reference refuses instead of selecting another target.
+If several spaces match, `endpoint describe` names them and shows how to retry with `--space`.
+If the requested space is not registered, the refusal names it and points to `cotal space`.
 
 A selected reference is disclosed on stderr and in `result.resolution`, with its revision and
 resolved native class, instance and epoch. The CLI holds its cooperative writer lock and checks
@@ -551,9 +555,10 @@ Next says to start the service that serves the endpoint. When you set `--timeout
 names it, because a deadline that short can also end before a served endpoint answers, and its Next
 suggests rerunning the original command with a longer `--timeout` and all other arguments and
 flags unchanged. Nothing was invoked or issued.
-If a pinned instance does not answer an invocation's contract read, the refusal names that instance
-and says no invocation was sent. Check the full instance ID with `cotal endpoint list --live --space <space>`
-on the same broker. Use a longer `--timeout` only if you expect that instance to answer.
+If a pinned instance does not answer a contract read, the refusal names that instance.
+Check the full instance ID with `cotal endpoint list --live --space <space>` on the same broker.
+For invocation, the refusal also says no command was sent. Use a longer `--timeout` only if you
+expect that instance to answer.
 
 A reference's file credential uses the [paired native caller adapter](cli-auth.mdx#endpoint-caller-credentials).
 It must match the selected registered static root, space, endpoint and signed native scope. A
@@ -640,6 +645,9 @@ It freezes the expected live instance set, gathers attributed replies and reconc
 currency through the native SDK. It does not probe additional instance rails or retry a mutation.
 Instance pins, targeted commands, `--cast` and `--wait` cannot combine with a class scatter.
 The installed helper does not submit journaled commands through this route.
+On a static-auth space, a caller without the class scatter grant for the command gets
+`PERMISSION_DENIED` before the scatter is sent. Permission to call one instance does not grant
+permission to scatter to the class.
 
 Finite JSON retains the original request, each valid member result and the native missing, churn,
 unexpected, duplicate, late and invalid buckets. Invalid-reply diagnostic bodies are omitted.

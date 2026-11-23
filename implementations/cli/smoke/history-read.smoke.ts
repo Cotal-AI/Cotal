@@ -1059,10 +1059,10 @@ try {
       made.status === 0 && partial.status === 4 && partial.envelope?.outcome === "partial" && partial.envelope.error?.code === "OPERATION_PARTIAL"
         && /^The purge reported 0 messages removed, but channel metadata removal was not confirmed\./.test(partial.envelope.error.message) && cleaned.status === 0 && removedOf(cleaned) === true,
       { made: shown(made), partial: shown(partial), cleaned: shown(cleaned) });
-    // The command a missing --yes names keeps the --space and --server it was given (#7564).
+    // The confirmation keeps the requested target, purge scope and output format.
     const asked = await run(["channel", "remove", "general", "--purge", "--space", space, "--server", servers, "--json"]);
-    check("channel remove without --yes names a confirming command that keeps --space and --server",
-      asked.envelope?.error?.remedy === `confirm with \`cotal channel remove general --space ${space} --server ${servers} --purge --yes\``, shown(asked));
+    check("channel remove without --yes names a confirming command that keeps --space, --server, --purge and --json",
+      asked.envelope?.error?.remedy === `confirm with \`cotal channel remove general --space ${space} --server ${servers} --purge --yes --json\``, shown(asked));
   }
 
   // Channel policy labels describe each field's source, including explicit values equal to defaults.
