@@ -34,6 +34,11 @@
  *                                              (src/approvals.ts)
  *     {t:"approval_end", session, outcome}     adapter: the oldest approval waiting in <session>
  *                                              stopped waiting
+ *     {t:"clarify", id, session, question, choices, multiple, timeoutMs}
+ *                                              adapter: the model asks the owner a question
+ *                                              (src/clarify.ts)
+ *     {t:"clarify_end", id, resolved}          adapter: Hermes stopped waiting on question <id>,
+ *                                              with the answer sent (resolved) or without it
  *     {t:"delta", key, text}                   adapter: text a reply added under stream <key> while
  *                                              the model wrote it (plugin/cotal/streams.py)
  *     {t:"delta_end", key}                     adapter: stream <key> ended with no saved response
@@ -45,6 +50,7 @@
  *     {t:"interrupt"|"usage"|"commands", id}   a request the adapter answers (see ask)
  *     {t:"tool_result", id, ok, text?, isError?, error?}   reply to a {t:"tool"} request
  *     {t:"approval_answer", id, choice, reason?}   the owner's answer to approval <id>
+ *     {t:"clarify_answer", id, response}       the reply Hermes hands the model for question <id>
  *
  * Delivery is **serial + ack-on-surface**: the sidecar pushes the oldest buffered message, waits
  * for the adapter's `delivered`, then `drainInbox(1)` acks exactly that message before pushing the
@@ -141,8 +147,9 @@ export interface BridgeServer {
   /** An adapter is subscribed, the gateway has no Cotal message or turn in progress, and no turn
    *  waits for its answer. */
   idle(): boolean;
-  /** Send the owner's answer to an approval to the subscribed adapter. False when none is. */
-  answerApproval(answer: { id: string; choice: string; reason?: string }): boolean;
+  /** Send the owner's answer to an approval or a question to the subscribed adapter. False when
+   *  none is. */
+  answerPrompt(answer: { t: "approval_answer"; id: string; choice: string; reason?: string } | { t: "clarify_answer"; id: string; response: string }): boolean;
 }
 
 /** What the bridge tells its owner. */
@@ -153,6 +160,8 @@ interface BridgeEvents {
   onIdle?(): void;
   /** The subscribed adapter sent an `approval` or `approval_end` frame. */
   onApproval?(frame: Record<string, unknown>): void;
+  /** The subscribed adapter sent a `clarify` or `clarify_end` frame. */
+  onClarify?(frame: Record<string, unknown>): void;
   /** The subscribed adapter sent a `delta` frame (text set) or a `delta_end` frame (text absent). */
   onDelta?(key: string, text?: string): void;
 }
@@ -234,9 +243,10 @@ function readFrames(sock: Socket, digest: Buffer, onFrame: (frame: Record<string
   sock.on("close", () => clearTimeout(deadline));
 }
 
-/** Hand one of the subscribed adapter's approval or stream frames to its handler. */
+/** Hand one of the subscribed adapter's approval, question or stream frames to its handler. */
 function adapterEvent(frame: Record<string, unknown>, events: BridgeEvents): void {
   if (frame.t === "approval" || frame.t === "approval_end") events.onApproval?.(frame);
+  else if (frame.t === "clarify" || frame.t === "clarify_end") events.onClarify?.(frame);
   else if (typeof frame.key === "string" && frame.key) {
     if (frame.t === "delta_end") events.onDelta?.(frame.key);
     else if (typeof frame.text === "string") events.onDelta?.(frame.key, frame.text);
@@ -367,6 +377,8 @@ export function startBridgeServer(agent: MeshAgent, config: AgentConfig, socketP
         return;
       case "approval":
       case "approval_end":
+      case "clarify":
+      case "clarify_end":
       case "delta":
       case "delta_end":
         if (sock === adapter) adapterEvent(frame, events);
@@ -471,9 +483,9 @@ export function startBridgeServer(agent: MeshAgent, config: AgentConfig, socketP
     idle() {
       return adapter !== undefined && busy === 0 && desk.pending() === 0;
     },
-    answerApproval(answer) {
+    answerPrompt(answer) {
       if (!adapter) return false;
-      sendFrame(adapter, { t: "approval_answer", ...answer });
+      sendFrame(adapter, answer);
       return true;
     },
     close() {

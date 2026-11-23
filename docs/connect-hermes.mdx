@@ -205,6 +205,11 @@ A launch with `askPermissions` keeps Hermes's command approvals on.
 Each command Hermes stops for approval appears on the agent endpoint, and an [ACP client](acp-clients.mdx) thread shows it as a permission request.
 See [Command approvals](hermes-connector-reference.mdx#command-approvals) for the choices, the timeout and what Hermes does not ask about.
 
+## Answer questions [#answer-questions]
+
+A question the model asks with Hermes's clarify tool in the owner's chat appears on the agent endpoint, and an ACP thread shows it as a form.
+See [Clarify questions](hermes-connector-reference.mdx#clarify-questions).
+
 ## Turns from the owner [#owner-turns]
 
 On a per-user mesh, the seat's owner can give it turns in their own words, images included, run the gateway's slash commands and skill commands, stop its work in progress, and read how full its context window is, through its [agent endpoint](connector-runtime-reference.mdx#agent-commands).
