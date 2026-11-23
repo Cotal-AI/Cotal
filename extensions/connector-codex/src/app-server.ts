@@ -828,19 +828,21 @@ export class AppServerDriver extends EventEmitter {
     const approval = method === "execCommandApproval"
       || method === "applyPatchApproval"
       || method === "item/commandExecution/requestApproval"
-      || method === "item/fileChange/requestApproval";
+      || method === "item/fileChange/requestApproval"
+      || method === "item/permissions/requestApproval";
     this.emit("waiting", method, approval ? ({ code: "approval", source: method, since: Date.now() } satisfies PresenceCondition) : undefined);
     // A held request is answered later; its `serverRequest/resolved` ends the wait.
     if (this.opts.hold?.({ id, method, params, gen: this.generation })) return;
     // Anything not held is DECLINED with the method's own response shape: an unattended host must
     // never grant authority the policy didn't, and an unanswered request would hang the turn
-    // forever. Method-specific: a generic suffix match must not answer shapes it doesn't know
-    // (item/permissions/requestApproval wants {permissions, scope}, not a decision).
+    // forever. Method-specific: a generic suffix match must not answer shapes it doesn't know.
     if (method === "execCommandApproval" || method === "applyPatchApproval")
       this.writeLine({ jsonrpc: "2.0", id, result: { decision: "denied" } }); // legacy ReviewDecision
     else if (method === "item/commandExecution/requestApproval" || method === "item/fileChange/requestApproval")
       this.writeLine({ jsonrpc: "2.0", id, result: { decision: "decline" } }); // v2 decision enums
-    // Anything else (permissions requests, elicitations, attestation, user-input): decline cleanly.
+    else if (method === "item/permissions/requestApproval")
+      this.writeLine({ jsonrpc: "2.0", id, result: { permissions: {}, scope: "turn" } }); // grants nothing
+    // Anything else (elicitations, attestation, user-input): decline cleanly.
     else this.writeLine({ jsonrpc: "2.0", id, error: { code: -32601, message: "unsupported by the cotal host" } });
     // The wait ended with the reply. Without this the turn could end waiting→idle, which is not the
     // working→idle turn boundary, and the condition would outlive the turn (#3840).

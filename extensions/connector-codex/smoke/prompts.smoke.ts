@@ -4,8 +4,8 @@
  * App-server requests, in the shape codex 0.162 sends them, drive the shipped prompt module against
  * the shipped prompt desk. An answer is a `prompt-answer` call on the desk's own handler, and what the
  * module writes back is what the driver would send as the request's JSON-RPC result. Covered: the
- * command, stdin and file change approvals, a file change too large to show, the decisions a server
- * lists, questions as a form, a secret question, a request nobody resolves until the desk closes, a
+ * command, stdin and file change approvals, a file change too large to show, a permissions request,
+ * the decisions a server lists, questions as a form, a secret question, a request nobody resolves until the desk closes, a
  * request the app-server resolves first, an answer after the app-server is gone, no desk, and the
  * Connector's declaration.
  *
@@ -148,6 +148,43 @@ function hold(w: World, req: ServerRequest): string | undefined {
   check("a remote answer reaches Codex as its decision", isDeepStrictEqual(w.written.at(-1), { id: req.id, result: { decision: "cancel" } }), w.written);
 }
 
+// ---- a permissions request ----------------------------------------------------------------------
+{
+  const w = world();
+  // The shape codex 0.162 sends for its `request_permissions` tool: a plain path in both the legacy
+  // list and the entries, a glob in the entries alone.
+  const fileSystem = {
+    read: null, write: ["/w/out"],
+    entries: [{ access: "write", path: { type: "path", path: "/w/out" } }, { access: "write", path: { type: "glob_pattern", pattern: "/w/out/**" } }],
+  };
+  const ask = (itemId: string) => request("item/permissions/requestApproval", {
+    itemId, environmentId: "local", startedAtMs: 1, cwd: "/w", reason: "fetch a page", permissions: { network: { enabled: true }, fileSystem },
+  });
+  const req = ask("toolu_1");
+  const id = hold(w, req);
+  const c = id ? read(w, id).content : undefined;
+  check("a permissions request opens a permission prompt for request_permissions with what it asks for",
+    c?.kind === "permission" && c.title === "Give Codex more permissions?" && c.source?.toolCallId === "toolu_1" &&
+      isDeepStrictEqual(c.subject, { type: "tool", name: "request_permissions", input: { kind: "shown", value: { permissions: { network: { enabled: true }, fileSystem } } }, cwd: "/w" }), c);
+  check("it shows the reason and says what is asked", c?.body?.text === "fetch a page\n\nCodex asks for network access and write access to /w/out, /w/out/**.", c?.body);
+  check("it offers the turn, the session or nothing", isDeepStrictEqual(c?.options.map((o) => [o.id, o.effect]), [["accept", "proceed"], ["accept-for-session", "proceed"], ["decline", "refuse"]]), c?.options);
+  if (id) await answer(w, id, "accept");
+  check("allowing grants what it asked for, for the turn",
+    isDeepStrictEqual(w.written.at(-1), { id: req.id, result: { permissions: { network: { enabled: true }, fileSystem }, scope: "turn" } }), w.written);
+  const session = ask("toolu_2");
+  const sessionId = hold(w, session);
+  if (sessionId) await answer(w, sessionId, "accept-for-session");
+  check("allowing for the session grants it for the session", isDeepStrictEqual((w.written.at(-1)?.result as { scope?: string } | undefined)?.scope, "session"), w.written.at(-1));
+  const denied = ask("toolu_3");
+  const deniedId = hold(w, denied);
+  if (deniedId) await answer(w, deniedId, "decline");
+  check("a deny grants nothing", isDeepStrictEqual(w.written.at(-1), { id: denied.id, result: { permissions: {}, scope: "turn" } }), w.written.at(-1));
+  const left = ask("toolu_4");
+  hold(w, left);
+  w.desk.close();
+  check("one still waiting when the desk closes grants nothing", isDeepStrictEqual(w.written.at(-1), { id: left.id, result: { permissions: {}, scope: "turn" } }), w.written.at(-1));
+}
+
 // ---- questions ---------------------------------------------------------------------------------
 {
   const w = world();
@@ -185,7 +222,8 @@ function hold(w: World, req: ServerRequest): string | undefined {
   const w = world({ served: false });
   check("with no desk served, nothing is held", w.prompts.hold(request("item/commandExecution/requestApproval", { itemId: "c" })) === false);
   const v = world();
-  check("a request kind the module does not know is not held", v.prompts.hold(request("item/permissions/requestApproval", { itemId: "c" })) === false);
+  check("a request kind the module does not know is not held", v.prompts.hold(request("applyPatchApproval", { itemId: "c" })) === false);
+  check("a permissions request that asks for nothing is not held", v.prompts.hold(request("item/permissions/requestApproval", { itemId: "c", permissions: { network: null, fileSystem: null } })) === false);
   check("a request with no item is not held", v.prompts.hold(request("item/commandExecution/requestApproval", {})) === false);
 }
 

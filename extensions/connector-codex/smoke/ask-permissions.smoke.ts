@@ -4,7 +4,8 @@
  * The shipped override list and the shipped driver run against the scripted fake app-server. An
  * asking launch starts its thread in T3 Code's approval-required mode and leaves out the autonomy
  * defaults. It is refused when a launch option sets what it sets. A launch without it keeps the
- * defaults and starts its thread as before.
+ * defaults and starts its thread as before. A permissions request no prompt desk holds grants
+ * nothing.
  *
  * Run: pnpm smoke:codex-ask-permissions
  */
@@ -93,6 +94,24 @@ try {
     unasked !== undefined && !("approvalPolicy" in unasked) && !("sandbox" in unasked) && !("approvalsReviewer" in unasked),
     unasked,
   );
+  rmSync(LOG, { force: true });
+  const driver = new AppServerDriver({ cwd: dir, codexHome: dir, configOverrides: [], bin: BIN, log: () => {} });
+  const waits: { detail: string; code?: string }[] = [];
+  driver.on("waiting", (detail: string, condition?: { code: string }) => waits.push({ detail, code: condition?.code }));
+  let answer: unknown;
+  try {
+    await driver.start();
+    await driver.startTurn("PERMREQ probe");
+    for (let i = 0; i < 100 && answer === undefined; i++) {
+      await new Promise((r) => setTimeout(r, 50));
+      const entries = readFileSync(LOG, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l) as { ev: string; answer?: unknown });
+      answer = entries.find((e) => e.ev === "permissionsAnswer")?.answer;
+    }
+  } finally {
+    await driver.stop();
+  }
+  check("a permissions request no prompt desk holds grants nothing", JSON.stringify(answer) === JSON.stringify({ permissions: {}, scope: "turn" }), answer);
+  check("and it relays the approval condition while it waits", waits.some((w) => w.detail === "item/permissions/requestApproval" && w.code === "approval"), waits);
 } finally {
   rmSync(dir, { recursive: true, force: true });
 }

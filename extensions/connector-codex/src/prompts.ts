@@ -2,7 +2,9 @@
  * Codex's approval requests and questions on the agent's prompt desk (SPEC 13.22).
  *
  * When the thread's approval policy asks, the app-server sends this host a request before a command
- * runs or a file change applies; when the model calls `request_user_input`, it sends the questions.
+ * runs or a file change applies, and when the model calls `request_permissions` (a tool Codex gives
+ * it with `features.request_permissions_tool`) for more sandbox access than the thread has. When the
+ * model calls `request_user_input`, it sends the questions.
  * Each request opens a prompt that an authorized person or agent answers over the agent's `agent`
  * endpoint, and the answer goes back as the request's JSON-RPC result. A Codex TUI attached to the
  * thread shows the same request and may answer it first.
@@ -23,6 +25,7 @@ const SETTLE_MS = 15 * 60 * 1000;
 
 const COMMAND = "item/commandExecution/requestApproval";
 const FILE_CHANGE = "item/fileChange/requestApproval";
+const PERMISSIONS = "item/permissions/requestApproval";
 const QUESTIONS = "item/tool/requestUserInput";
 
 /** The decisions both v2 approval requests take, in the order Codex's own dialog offers them, each
@@ -33,6 +36,15 @@ const DECISIONS: readonly (PromptOption & { decision: string })[] = [
   { id: "decline", decision: "decline", label: "Deny", effect: "refuse" },
   { id: "cancel", decision: "cancel", label: "Deny and stop the turn", effect: "cancel" },
 ];
+/** The answers a permissions request takes. Its result can grant the permissions for the turn or for
+ *  the session, or grant nothing; it cannot stop the turn. */
+const GRANTS: readonly PromptOption[] = [
+  { id: "accept", label: "Allow for this turn", effect: "proceed" },
+  { id: "accept-for-session", label: "Allow for this session", effect: "proceed", persists: "Codex keeps these permissions until its session ends" },
+  { id: "decline", label: "Deny", effect: "refuse" },
+];
+/** A permissions result that grants nothing. */
+const NO_GRANT = { permissions: {}, scope: "turn" };
 const SUBMIT: PromptOption = { id: "submit", label: "Submit", effect: "proceed", form: "required" };
 const SKIP: PromptOption = { id: "decline", label: "Don't answer", effect: "refuse" };
 
@@ -71,20 +83,48 @@ function decisions(params: Record<string, unknown>): PromptOption[] {
 }
 
 /** An approval prompt whose subject is the tool call it gates. When the content would pass the
- *  desk's limit, the input is left out and only the decisions that refuse are offered: an input
+ *  desk's limit, the input is left out and only the options that refuse are offered: an input
  *  nobody can read may be refused remotely, never approved. Codex's own TUI can still approve it. */
-function approval(title: string, tool: string, input: Record<string, unknown>, params: Record<string, unknown>, notes: (string | undefined)[]): PromptContent {
+function approval(title: string, tool: string, input: Record<string, unknown>, params: Record<string, unknown>, notes: (string | undefined)[], options: readonly PromptOption[]): PromptContent {
   const cwd = asString(params.cwd);
   const make = (shown: boolean): PromptContent => ({
     kind: "permission",
     title,
     ...(body(notes) ? { body: body(notes) } : {}),
     subject: { type: "tool", name: tool, input: shown ? { kind: "shown", value: input } : { kind: "omitted", bytes: Buffer.byteLength(canonicalJson(input)) }, ...(cwd ? { cwd } : {}) },
-    options: shown ? decisions(params) : decisions(params).filter((o) => o.effect !== "proceed"),
+    options: shown ? [...options] : options.filter((o) => o.effect !== "proceed"),
     source: { harness: "codex", toolCallId: String(params.itemId) },
   });
   const full = make(true);
   return Buffer.byteLength(canonicalJson(full)) > AGENT_PROMPT_CONTENT_MAX_BYTES ? make(false) : full;
+}
+
+/** The permissions a request asks for, without the kinds it leaves null. */
+function requested(params: Record<string, unknown>): Record<string, unknown> {
+  const p = params.permissions;
+  if (typeof p !== "object" || p === null) return {};
+  return Object.fromEntries(Object.entries(p).filter(([, v]) => v !== null && v !== undefined));
+}
+
+/** The paths a file system request names for `access`, from its path lists and its entries. Codex
+ *  0.162 names a plain path in both, so each is listed once. */
+function paths(fs: Record<string, unknown>, access: "read" | "write"): string[] {
+  const listed = Array.isArray(fs[access]) ? fs[access].filter((x): x is string => typeof x === "string") : [];
+  const entries = Array.isArray(fs.entries) ? (fs.entries as { access?: unknown; path?: Record<string, unknown> }[]) : [];
+  const named = entries.filter((e) => e?.access === access).map((e) => String(e.path?.path ?? e.path?.pattern ?? (e.path?.value as { kind?: string } | undefined)?.kind ?? "?"));
+  return [...new Set([...listed, ...named])];
+}
+
+/** One line saying what a permissions request asks for. */
+function asked(permissions: Record<string, unknown>): string | undefined {
+  const parts: string[] = [];
+  if ((permissions.network as { enabled?: unknown } | undefined)?.enabled === true) parts.push("network access");
+  const fs = permissions.fileSystem as Record<string, unknown> | undefined;
+  for (const access of ["read", "write"] as const) {
+    const named = fs ? paths(fs, access) : [];
+    if (named.length > 0) parts.push(`${access} access to ${named.join(", ")}`);
+  }
+  return parts.length > 0 ? `Codex asks for ${parts.join(" and ")}.` : undefined;
 }
 
 interface Question {
@@ -134,12 +174,17 @@ function contentFor(request: ServerRequest, changes: ReadonlyMap<string, unknown
   if (method === COMMAND) {
     const command = asString(params.command);
     const stdin = params.kind === "writeStdin";
-    return approval(stdin ? "Send input to the running command?" : "Run this command?", stdin ? "write_stdin" : "exec_command", command ? { cmd: command } : {}, params, [asString(params.reason)]);
+    return approval(stdin ? "Send input to the running command?" : "Run this command?", stdin ? "write_stdin" : "exec_command", command ? { cmd: command } : {}, params, [asString(params.reason)], decisions(params));
   }
   if (method === FILE_CHANGE) {
     const root = asString(params.grantRoot);
     return approval("Apply these file changes?", "apply_patch", { changes: changes.get(params.itemId) ?? [] }, params,
-      [asString(params.reason), root ? `Codex also asks to write under ${root} for the rest of the session.` : undefined]);
+      [asString(params.reason), root ? `Codex also asks to write under ${root} for the rest of the session.` : undefined], decisions(params));
+  }
+  if (method === PERMISSIONS) {
+    const permissions = requested(params);
+    if (Object.keys(permissions).length === 0) return undefined;
+    return approval("Give Codex more permissions?", "request_permissions", { permissions }, params, [asString(params.reason), asked(permissions)], GRANTS);
   }
   if (method === QUESTIONS) {
     const qs = questions(params);
@@ -148,8 +193,12 @@ function contentFor(request: ServerRequest, changes: ReadonlyMap<string, unknown
   return undefined;
 }
 
-/** The JSON-RPC result that hands `verdict` to Codex. */
-function result(method: string, verdict: PromptVerdict): unknown {
+/** The JSON-RPC result that hands `verdict` to Codex. An allowed permissions request grants what it
+ *  asked for. */
+function result(request: ServerRequest, verdict: PromptVerdict): unknown {
+  const { method, params } = request;
+  if (method === PERMISSIONS)
+    return verdict.option === "decline" ? NO_GRANT : { permissions: requested(params), scope: verdict.option === "accept-for-session" ? "session" : "turn" };
   if (method !== QUESTIONS) return { decision: DECISIONS.find((o) => o.id === verdict.option)!.decision };
   if (verdict.option !== SUBMIT.id) return { answers: {} };
   const answers = Object.entries(verdict.values ?? {}).map(([id, v]) => [id, { answers: (Array.isArray(v) ? v : [v]).map(String) }]);
@@ -157,7 +206,7 @@ function result(method: string, verdict: PromptVerdict): unknown {
 }
 
 /** The answer a request gets when nobody answered it: Codex goes on without the action. */
-const declined = (method: string): unknown => (method === QUESTIONS ? { answers: {} } : { decision: "decline" });
+const declined = (method: string): unknown => (method === QUESTIONS ? { answers: {} } : method === PERMISSIONS ? NO_GRANT : { decision: "decline" });
 
 /**
  * The prompt module over `desk`, which reads the agent's desk when a request arrives: undefined while
@@ -184,7 +233,7 @@ export function createCodexPrompts(opts: {
         h.hold = desk.open({ content, openMs: OPEN_MS, settleMs: SETTLE_MS }, {
           deliver: (verdict): Promise<Delivery> => {
             if (!h.pending) return Promise.resolve({ kind: "gone" });
-            return Promise.resolve(opts.respond(request, result(request.method, verdict)) ? { kind: "delivered" } : { kind: "gone" });
+            return Promise.resolve(opts.respond(request, result(request, verdict)) ? { kind: "delivered" } : { kind: "gone" });
           },
           end: ({ attempted }) => {
             held.delete(request.id);
