@@ -1,5 +1,12 @@
 # @cotal-ai/workspace
 
+## 0.176.1
+
+### Patch Changes
+
+- fc7712c: When a moved stack still has an instance recorded on this machine, the adoption refusal directs the operator back to the existing stack without asking for a second adoption.
+- @cotal-ai/core@0.176.1
+
 ## 0.176.0
 
 ### Patch Changes
