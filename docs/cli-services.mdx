@@ -135,6 +135,8 @@ original command. Keep your supplied values, the selected `--space`, and flags s
 
 A preset's options describe the service and never choose its space. `add` saves into the space
 `--space` names, or else the selected space or the folder's, as other commands resolve it.
+In a script, `add` without a launch source refuses with `USAGE_INVALID` (exit 1). Its suggested
+`--exec` command keeps any explicit `--space`, `--json` or `--plain`.
 
 `add` checks the options against the preset's schema, and checks that each declared path exists
 with its required protection. The `auth-service` preset also requires a user-auth registration and
@@ -321,6 +323,8 @@ are not publisher signatures or a proof of every executable file. No remote sche
 `service show <name>` reads declared policy, not live state. Public reports omit argument bodies,
 adapter option values and credential contents. Missing launch paths do not prevent reading the
 saved declaration. Records live under the workstation store's case-safe per-space service path.
+If no definition has that name, `show` refuses with `TARGET_NOT_FOUND` (exit 2) and suggests
+`cotal service --space <space>` for the space it checked.
 
 `service remove <name> --yes` removes the unchanged definition and its stopped instances' records
 and sidecar receipts, and deletes each removed instance's log file and rotated `<log>.1` file.
