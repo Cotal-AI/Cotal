@@ -200,6 +200,9 @@ def register(ctx: Any) -> None:
     ctx.register_hook("pre_tool_call", hooks.pre_tool_call)
     ctx.register_hook("post_llm_call", hooks.post_llm_call)
     ctx.register_hook("on_session_end", hooks.on_session_end)
+    # Command approvals: presence, and the prompts of a seat launched with askPermissions (approvals.py).
+    ctx.register_hook("pre_approval_request", hooks.pre_approval_request)
+    ctx.register_hook("post_approval_response", hooks.post_approval_response)
     # The event journal (journal.py), written only when the launcher armed the seat's event plane.
     if os.environ.get("COTAL_HERMES_EVENTS"):
         ctx.register_hook("post_api_request", hooks.post_api_request)

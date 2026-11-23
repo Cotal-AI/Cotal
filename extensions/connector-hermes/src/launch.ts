@@ -104,6 +104,8 @@ const yamlStr = (s: string): string => `"${s.replace(/\\/g, "\\\\").replace(/"/g
  * Build the isolated Hermes profile (HERMES_HOME) so the operator's ~/.hermes is never touched.
  * Drops the cotal plugin into the profile's plugins dir, enables it + the cotal platform, and
  * turns approvals off (an autonomous spawned gateway has no human at the TUI to approve commands).
+ * A launch with `askPermissions` keeps them manual instead, and the plugin puts each one behind
+ * the agent's prompt desk (plugin/cotal/approvals.py).
  */
 export function setupProfile(
   home: string,
@@ -136,7 +138,7 @@ export function setupProfile(
     "    cotal:",
     "      enabled: true",
     "approvals:",
-    "  mode: off",
+    `  mode: ${opts.config.askPermissions ? "manual" : "off"}`,
   ];
   lines.push(`model: ${yamlStr(opts.model)}`);
   writeFileSync(join(home, "config.yaml"), lines.join("\n") + "\n");

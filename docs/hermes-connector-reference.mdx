@@ -29,7 +29,8 @@ owns the mesh endpoint for the gateway's whole life and runs `hermes gateway run
   without the other. It puts both sockets and the tools file in a private `cotal-hermes-*`
   directory under the temp directory, which it does not remove when the gateway stops.
 - It runs the gateway in an isolated `HERMES_HOME` profile (a temp dir), so your own `~/.hermes`
-  is never touched, with approvals off (a supervised agent has no human at the TUI to approve).
+  is never touched, with approvals off (a supervised agent has no human at the TUI to approve)
+  unless the launch sets `askPermissions` (see [Command approvals](#command-approvals)).
   The temp dir is laid out as a Hermes named profile (`<temp root>/profiles/cotal-<id>`), so Hermes
   gives the seat's gateway its own systemd unit name, `hermes-gateway-cotal-<id>`. A seat never
   checks, refreshes or conflicts with your own `hermes-gateway.service`.
@@ -121,10 +122,11 @@ onboarding:
 ## Presence mapping
 
 The hooks map Hermes's lifecycle onto presence: `pre_llm_call` and `pre_tool_call` write `working`,
-`approval_wait` writes `waiting`, `post_llm_call` and `on_session_end` write `idle`. A run Hermes
-gives up on, as when the provider refuses the request, fires neither, so a seat still `working` when
-the gateway has no Cotal message in progress also writes `idle`. That last working-to-idle transition is the turn boundary the run relay reads (a surfaced run turn yields
-`done` there), so `gateway_startup` and `on_session_start` write their `idle` through a path that
+`pre_approval_request` writes `waiting` and `post_approval_response` writes `working` again, and
+`post_llm_call` and `on_session_end` write `idle`. A run Hermes gives up on, as when the provider
+refuses the request, fires neither, so a seat still `working` when the gateway has no Cotal message
+in progress also writes `idle`. That last working-to-idle transition is the turn boundary the run
+relay reads (a surfaced run turn yields `done` there), so `gateway_startup` and `on_session_start` write their `idle` through a path that
 moves presence and nothing else: an adapter reconnect or a session start that lands mid-turn is a
 lifecycle event, and treating it as an ending would yield work the model had not finished.
 
@@ -190,6 +192,31 @@ prompt's token count and its model's context length, and `cost` from Hermes's se
 field Hermes has not reported is left out. That is the case before the first turn, after a stop
 releases the session's agent, and for the cost when Hermes reports it as unknown, as it does for a
 custom endpoint.
+
+## Command approvals [#command-approvals]
+
+A managed profile turns Hermes's command approvals off, unless the launch sets
+[`askPermissions`](connectors.mdx#opt-in-launch-fields). Then the profile keeps them `manual`, and
+each command or `execute_code` call that Hermes's approval rules stop opens a prompt on the
+seat's [agent endpoint](connector-runtime-reference.mdx#agent-commands), which an ACP thread
+shows as a permission request.
+
+The prompt names the tool and its call, the command, and the reason Hermes gives. It offers the
+choices Hermes offers: Allow once, Allow for this session, Allow always and Deny. Hermes leaves out
+Allow always for a pattern it will not keep, and offers only Allow once and Deny for a command its
+smart approvals refused. From Hermes 0.19, Deny takes an optional note, which Hermes passes to the
+model as the reason.
+
+The prompt stays open while Hermes waits, which is `approvals.timeout` (60 seconds by default).
+When Hermes stops waiting without an answer, the prompt closes and Hermes refuses the command. A
+stop during the wait refuses it too. Hermes resolves a session's approvals oldest first, so the
+answers to one session's prompts go to Hermes in the order the prompts opened. When the agent
+endpoint does not serve its prompt desk, or the desk is full, the command is refused at once, and
+the reason names why. The gateway's text prompt is never used for an asking seat.
+
+An adopted profile keeps the operator's approval settings, so a launch with `askPermissions` is
+refused there. Hermes's own ACP server also asks before file edits, but its gateway has no such
+step, so a seat asks only for what the gateway asks for.
 
 ## Answer routing
 

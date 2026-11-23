@@ -54,6 +54,10 @@ export const hermesConnector: Connector = {
   eventChannel,
   // The journal records the reasoning text a provider returns; a launch asks for it on the plane.
   supportsReasoningEvents: true,
+  // A launch with askPermissions keeps Hermes's command approvals on and serves each on the agent's
+  // prompt desk (src/approvals.ts).
+  supportsAskPermissions: true,
+  prompts: true,
   buildLaunch(opts: LaunchOpts): LaunchSpec {
     if (opts.continueSession) throw new Error("the Hermes connector does not support exact-session continuation");
     // Hermes is Unix-only: its sidecar bridge + hook relay use AF_UNIX `.sock` paths and a Python
@@ -97,6 +101,10 @@ export const hermesConnector: Connector = {
     // per-session; this one has no per-spawn meaning and would otherwise be unreachable, since a
     // seat cannot opt in to its own profile.
     const adoptHome = process.env.COTAL_HERMES_ADOPT_HOME?.trim();
+    // The operator's profile keeps its own approval settings, which may be off, and a launch does
+    // not edit them, so it could not promise to ask.
+    if (adoptHome && opts.askPermissions)
+      throw new Error("COTAL_HERMES_ADOPT_HOME runs the operator's own profile with its own approval settings, which this launch does not change, so askPermissions needs a managed profile");
     // Armed by default, `events: false` opts out. The event plane's write-ahead log lives under the
     // workspace root.
     if (launchArmsEvents(opts)) {
@@ -138,7 +146,7 @@ export const hermesConnector: Connector = {
       // The exit watcher owns the socket directory and the single carrier even on a forced stop.
       const control = controlEndpoint(opts.space, opts.name, artifacts);
       env.COTAL_CONTROL_SOCKET = control.path;
-      Object.assign(env, materialEnv({ creds: opts.creds, servers: opts.servers, control, eventsRequired: opts.eventsRequired, eventPayloads: opts.eventPayloads, reasoningEvents: opts.reasoningEvents, userAuth: opts.userAuth }, artifacts));
+      Object.assign(env, materialEnv({ creds: opts.creds, servers: opts.servers, control, eventsRequired: opts.eventsRequired, eventPayloads: opts.eventPayloads, askPermissions: opts.askPermissions, reasoningEvents: opts.reasoningEvents, userAuth: opts.userAuth }, artifacts));
       const seat = hermesSeatHome(opts.space, opts.name);
       if (!adoptHome && !opts.resume && !existsSync(join(seat.home, HERMES_FORK_RECORD))) {
         const root = mkdtempSync(join(tmpdir(), "cotal-hermes-"));

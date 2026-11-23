@@ -28,7 +28,7 @@ from gateway.platforms.base import (
 from gateway.config import Platform, PlatformConfig
 from gateway.session import build_session_key
 
-from . import hooks, journal, replies
+from . import approvals, hooks, journal, replies
 from .bridge_client import get_client
 from .commands import operator_commands
 from .resume import seed_chat
@@ -137,7 +137,7 @@ class CotalAdapter(BasePlatformAdapter):
             # reader, which is exactly the kind of pause an operator would report as the gateway
             # hanging on reconnect. `to_thread` keeps the loop free while the join runs.
             await asyncio.to_thread(self._client.reopen)
-        self._client.start(self._on_incoming, self._on_bridge_refused, self._on_turn, self._on_request)  # reader thread
+        self._client.start(self._on_incoming, self._on_bridge_refused, self._on_turn, self._on_request, approvals.answered)  # reader thread
 
         # THE BRIDGE MUST BE PROVED LIVE BEFORE THE PLATFORM IS CALLED CONNECTED.
         #
@@ -204,6 +204,22 @@ class CotalAdapter(BasePlatformAdapter):
             _target_for(chat_id), content, answered, self._answering.get(answered) if answered else None
         )
         return SendResult(success=True, message_id=uuid.uuid4().hex)
+
+    @classmethod
+    def supports_exec_approval_buttons(cls) -> bool:
+        """Hermes 0.21 calls ``send_exec_approval`` only for an adapter that says it renders approvals;
+        0.18 and 0.19 call it whenever the class defines it."""
+        return approvals.asks()
+
+    async def send_exec_approval(
+        self, chat_id: str, command: str, session_key: str, description: Optional[str] = None, metadata: Any = None, **flags: Any
+    ) -> SendResult:
+        """A command waits for approval: behind the agent's prompt desk for a seat launched with
+        ``askPermissions`` (approvals.py). Any other seat leaves it to the gateway's text prompt."""
+        if not approvals.asks():
+            return SendResult(success=False, error="this seat does not ask the agent's owner")
+        sent = approvals.request(self._client, command, session_key, description or "", flags)
+        return SendResult(success=True, message_id=uuid.uuid4().hex) if sent else SendResult(success=False, error="the sidecar is not connected")
 
     async def on_processing_start(self, event: MessageEvent) -> None:
         """The gateway began processing a message: a turn starts (journal.py)."""

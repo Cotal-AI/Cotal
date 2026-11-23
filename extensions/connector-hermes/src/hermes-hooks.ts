@@ -61,6 +61,9 @@ export const hermesHookHandle = async (agent: MeshAgent, ev: HookEvent): Promise
       case "approval_wait": // Hermes asked for command approval — blocked on a human/peer
         await agent.setStatus("waiting", typeof ev.detail === "string" ? ev.detail : pendingTool);
         return {};
+      case "approval_done": // the approval stopped waiting, and the tool goes on or is refused
+        await agent.setStatus("working", pendingTool);
+        return {};
       case "post_llm_call": // turn done
       case "on_session_end":
         await endTurn(agent);

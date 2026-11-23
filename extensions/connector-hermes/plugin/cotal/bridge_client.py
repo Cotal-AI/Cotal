@@ -48,6 +48,7 @@ class BridgeClient:
         self._on_incoming: Optional[Callable[[dict], None]] = None
         self._on_turn: Optional[Callable[[dict], None]] = None
         self._on_request: Optional[Callable[[dict], None]] = None
+        self._on_approval: Optional[Callable[[dict], None]] = None
         # How many Cotal messages and turns the gateway has in progress, as last reported, and
         # reported again on every (re)subscribe.
         self._busy = 0
@@ -68,11 +69,12 @@ class BridgeClient:
         on_refused: Optional[Callable[[str], None]] = None,
         on_turn: Optional[Callable[[dict], None]] = None,
         on_request: Optional[Callable[[dict], None]] = None,
+        on_approval: Optional[Callable[[dict], None]] = None,
     ) -> None:
         """Begin the reader thread. ``on_incoming`` is called (off-loop) for each mesh message,
         ``on_turn`` for each turn in the user's own words (``{t:"turn", id, text, images?}``),
         ``on_request`` for each ``interrupt``, ``usage`` or ``commands`` request (answered with
-        ``answer``), and
+        ``answer``), ``on_approval`` for each owner's answer to an approval (``approval_answer``), and
         ``on_refused`` (off-loop, once) if the reader stops because the socket's directory is not
         private to this user.
 
@@ -83,6 +85,7 @@ class BridgeClient:
         self._on_incoming = on_incoming
         self._on_turn = on_turn
         self._on_request = on_request
+        self._on_approval = on_approval
         self._on_refused = on_refused
         with self._lock:
             if self._reader is not None:
@@ -230,6 +233,10 @@ class BridgeClient:
                 cb(frame)
             else:
                 self.answer(str(frame.get("id") or ""), error="the cotal adapter is not started")
+        elif t == "approval_answer":
+            cb = self._on_approval
+            if cb:
+                cb(frame)
         elif t == "tool_result":
             entry = self._pending.get(frame.get("id"))
             if entry:
@@ -238,15 +245,17 @@ class BridgeClient:
 
     # ---- writes --------------------------------------------------------------
 
-    def _send(self, frame: dict) -> None:
+    def _send(self, frame: dict) -> bool:
         data = (json.dumps(frame) + "\n").encode()
         with self._lock:
             if self._sock is None:
-                return
+                return False
             try:
                 self._sock.sendall(data)
             except OSError:
                 self._sock = None
+                return False
+        return True
 
     def delivered(self, recv_key: str) -> None:
         """Ack a message on the stream — call only once it has been surfaced into a turn.
@@ -274,6 +283,15 @@ class BridgeClient:
     def answer(self, request_id: str, data: Optional[dict] = None, error: Optional[str] = None) -> None:
         """Answer the sidecar's request ``request_id`` with its data, or why it failed."""
         self._send({"t": "answer", "id": request_id, "ok": True, "data": data or {}} if error is None else {"t": "answer", "id": request_id, "ok": False, "error": error})
+
+    def approval(self, frame: dict) -> bool:
+        """Ask the sidecar to put one of Hermes's approvals behind the prompt desk (approvals.py).
+        False when no connection took the frame."""
+        return self._send(frame)
+
+    def approval_end(self, session_key: str, outcome: str) -> None:
+        """Report that the oldest approval waiting in ``session_key`` stopped waiting."""
+        self._send({"t": "approval_end", "session": session_key, "outcome": outcome})
 
     def reply(
         self, target: dict, text: str, reply_to: Optional[str] = None, context_id: Optional[str] = None
