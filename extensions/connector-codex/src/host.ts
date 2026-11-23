@@ -81,7 +81,7 @@ import { randomUUID } from "node:crypto";
 import type { PresenceCondition } from "@cotal-ai/core";
 import { AppServerDriver, type ThreadItem } from "./app-server.js";
 import { codexCommands } from "./commands.js";
-import { createCodexPrompts } from "./prompts.js";
+import { createCodexPrompts, followDriver } from "./prompts.js";
 import { createCodexMapper, type CodexMapper, type CodexRecord } from "./agui-map.js";
 import { waitForRollout } from "./agui-rollout.js";
 import { startCotalMcp, MCP_SERVER_NAME, MCP_TOKEN_ENV, type CotalMcpEndpoint } from "./mcp.js";
@@ -989,9 +989,7 @@ export async function runCodexHost(): Promise<void> {
   });
   // The request was declined in the same call; resume `working`, which also clears its condition.
   driver.on("answered", () => void safeStatus("working"));
-  driver.on("resolved", (id: number | string) => {
-    if (prompts.resolved(id)) void safeStatus("working");
-  });
+  followDriver(driver, prompts, () => void safeStatus("working"));
   driver.on("turnCompleted", ({ status, condition, owned }: { status: string; condition?: PresenceCondition; owned: boolean }) => {
     flushEvents();
     feed(`— turn ${status}`);
@@ -1000,7 +998,6 @@ export async function runCodexHost(): Promise<void> {
   });
   driver.on("itemStarted", (item: ThreadItem) => {
     agent.noteActivity();
-    prompts.itemStarted(item);
     if (item.type === "commandExecution" && typeof item.command === "string") {
       feed(`$ ${item.command}`);
       void safeStatus("working", item.command.slice(0, 120));
@@ -1011,7 +1008,6 @@ export async function runCodexHost(): Promise<void> {
   });
   driver.on("itemCompleted", (item: ThreadItem) => {
     agent.noteActivity();
-    prompts.itemCompleted(item);
     flushEvents();
     if (item.type === "agentMessage" && item.text?.trim()) feed(`● ${item.text.trim()}`);
   });
@@ -1099,7 +1095,6 @@ export async function runCodexHost(): Promise<void> {
   // new thread. Bounded — a crash LOOP is fatal, never an endless silent respawn.
   let restartAt: number[] = [];
   driver.on("closed", (code: number) => {
-    prompts.closed();
     // During a cooperative shutdown the child's death is EXPECTED — `shutdown()` killed it — and
     // that single promise owns the rest: offline presence, the clean mesh leave, then exit.
     // Exiting here instead would win the race against its own `driver.stop()` and terminate

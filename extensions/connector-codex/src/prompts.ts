@@ -14,7 +14,7 @@
  */
 import { AGENT_PROMPT_CONTENT_MAX_BYTES, canonicalJson, type PromptContent, type PromptOption } from "@cotal-ai/core";
 import type { Delivery, PromptDesk, PromptHold, PromptVerdict } from "@cotal-ai/connector-core";
-import type { ServerRequest, ThreadItem } from "./app-server.js";
+import type { AppServerDriver, ServerRequest, ThreadItem } from "./app-server.js";
 
 /** How long a prompt is offered: a prompt left on a Friday can still be answered on Monday. */
 const OPEN_MS = 7 * 24 * 60 * 60 * 1000;
@@ -215,4 +215,15 @@ export function createCodexPrompts(opts: {
       for (const h of [...held.values()]) settle(h);
     },
   };
+}
+
+/** Feeds `prompts` the driver's events. `resumed` runs when the app-server stopped waiting on a
+ *  request the module held. */
+export function followDriver(driver: AppServerDriver, prompts: CodexPrompts, resumed: () => void): void {
+  driver.on("resolved", (id: number | string) => {
+    if (prompts.resolved(id)) resumed();
+  });
+  driver.on("itemStarted", (item: ThreadItem) => prompts.itemStarted(item));
+  driver.on("itemCompleted", (item: ThreadItem) => prompts.itemCompleted(item));
+  driver.on("closed", () => prompts.closed());
 }
