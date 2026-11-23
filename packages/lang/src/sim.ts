@@ -320,10 +320,15 @@ export class SimHandler implements EffectHandler {
     return handle;
   }
 
-  async turn(_req: TurnRequest, ctx: EffectContext): Promise<TurnResultValue> {
+  async turn(req: TurnRequest, ctx: EffectContext): Promise<TurnResultValue> {
     const scripted = this.resolve("turns", this.script.turns, ctx);
     await ctx.bind({ simGoal: stepKeyString(ctx.key) });
-    await this.timedBy(this.script.clock?.turn, "5m", ctx);
+    const delayMs = parseDuration(this.script.clock?.turn ?? "5m");
+    const deadlineMs = req.deadline === undefined ? Infinity : parseDuration(req.deadline);
+    await this.timed(Math.min(delayMs, deadlineMs), ctx);
+    if (delayMs >= deadlineMs) {
+      throw new EffectError("L4003", "turn-deadline", `turn(${stepKeyString(ctx.key)}) deadline elapsed before a yield`);
+    }
     return { ...scripted, at: this.virtualNow };
   }
 
@@ -348,6 +353,8 @@ export class SimHandler implements EffectHandler {
       );
     }
     const attempts = req.attempts ?? 1;
+    const deadlineAt = req.deadline === undefined ? Infinity : this.virtualNow + parseDuration(req.deadline);
+    const delayMs = parseDuration(this.script.clock?.ask ?? "1m");
     let bound = false;
     for (let attempt = 1; ; attempt++) {
       const value = this.resolve("asks", this.script.asks, ctx);
@@ -355,7 +362,11 @@ export class SimHandler implements EffectHandler {
         await ctx.bind({ simGoal: stepKeyString(ctx.key) });
         bound = true;
       }
-      await this.timedBy(this.script.clock?.ask, "1m", ctx);
+      const remainingMs = Math.max(0, deadlineAt - this.virtualNow);
+      await this.timed(Math.min(delayMs, remainingMs), ctx);
+      if (delayMs >= remainingMs) {
+        throw new EffectError("L4006", "ask-deadline", `ask(${stepKeyString(ctx.key)}) produced no conforming record before its deadline`);
+      }
       if (conformsToAskSchema(value, shape)) return value;
       if (attempt >= attempts) {
         throw new EffectError(
