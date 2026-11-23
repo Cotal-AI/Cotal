@@ -2,4 +2,4 @@
 "@cotal-ai/cli": patch
 ---
 
-Reject an explicitly empty `cotal join --creds` path and show a usable replacement credential command for channel names that start with a dash.
+Show a usable replacement credential command in `cotal join` for channel names that start with a dash.

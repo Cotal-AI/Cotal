@@ -675,9 +675,7 @@ wins in every folder. An automatically adopted selection yields to the folder's 
 A space not registered here is refused before anything is dialed. The default address is never
 assumed for a credential.
 
-A `--creds` join needs a nonempty credential path, a provisioned inbox and a read grant for its
-landing channel. An empty path is refused with `USAGE_INVALID` before joining. Omit `--creds` to
-join without supplying a credential file. For `general`,
+A `--creds` join needs a provisioned inbox and a read grant for its landing channel. For `general`,
 the space's owner mints the credential with:
 
 ```bash
