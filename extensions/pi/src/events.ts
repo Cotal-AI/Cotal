@@ -14,7 +14,7 @@ interface PiStreamUpdate {
   type: string;
   contentIndex?: number;
   delta?: string;
-  partial?: { timestamp: number };
+  partial?: { timestamp: number; content?: ReadonlyArray<{ type?: string; redacted?: boolean }> };
 }
 
 /** What one adopted native session reads: Pi's file merged with the deltas its replies streamed. */
@@ -85,12 +85,14 @@ export class PiEvents {
     this.pending = step.catch((error: Error) => this.fail(error));
   }
 
-  /** A piece of the reply Pi is streaming. Thinking is journaled only when reasoning is published. */
+  /** A piece of the reply Pi is streaming. Thinking is journaled only when reasoning is published,
+   *  and never once its block is redacted: Pi then streams a placeholder, not the model's reasoning. */
   delta(update: PiStreamUpdate): void {
     if (this.closing || !this.deltas || update.partial === undefined || update.contentIndex === undefined || update.delta === undefined) return;
     const at = (kind: "text" | "thinking") => piStreamKey(update.partial!.timestamp, kind, update.contentIndex!);
     if (update.type === "text_delta") this.deltas.append({ key: at("text"), kind: "text", text: update.delta });
-    else if (update.type === "thinking_delta" && this.reasoning) this.deltas.append({ key: at("thinking"), kind: "reasoning", text: update.delta });
+    else if (update.type === "thinking_delta" && this.reasoning && !update.partial.content?.[update.contentIndex]?.redacted)
+      this.deltas.append({ key: at("thinking"), kind: "reasoning", text: update.delta });
   }
 
   /** Pi is about to save a message: its record carries the text not journaled yet. */
