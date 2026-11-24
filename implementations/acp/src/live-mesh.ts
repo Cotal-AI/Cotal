@@ -75,6 +75,12 @@ export function managerChoice(instanceId: string, roster: readonly Presence[], h
   return { instanceId, ...(seen ? { host: seen } : {}), local: seen === here, live: row !== undefined };
 }
 
+/** A signed-in person's listed manager as a choice. `seen` is what its rail reported, undefined when
+ *  the rail is gone. */
+export function listedChoice(instanceId: string, seen: { host?: string } | undefined, roster: readonly Presence[], here: string, owner: string): ManagerChoice | undefined {
+  return seen && managerChoice(instanceId, roster, here, owner);
+}
+
 /** After a connection error, how often and how many times the bridge asks whether its sign-in changed. */
 const SIGN_IN_CHECK_MS = 5_000;
 const SIGN_IN_CHECKS = 12;
@@ -346,7 +352,7 @@ export function runningManagers<T>(space: string, listed: readonly string[], che
 
 /** The reads a new thread's options come from, and the launch. */
 function launchCalls(c: Connected, p: Controls, defaultPersona: string | null | undefined): Pick<Mesh, "catalogs" | "managers" | "startManager" | "manager" | "personas" | "spawn"> {
-  const { target, started } = c;
+  const { target, started, observer } = c;
   const { client, resolve, ask, choice, yourManagers } = p;
   return {
     async catalogs(instanceId) {
@@ -376,7 +382,7 @@ function launchCalls(c: Connected, p: Controls, defaultPersona: string | null | 
       if (started) {
         const plan = await yourManagers();
         if (plan.why) throw new NoLaunchManager(plan.why);
-        const checked = await Promise.all(plan.launch.map(async (instanceId) => (await railCheck(p, instanceId)) && choice(instanceId)));
+        const checked = await Promise.all(plan.launch.map(async (instanceId) => listedChoice(instanceId, await railCheck(p, instanceId), observer.getRoster(), hostname(), started.owner)));
         return runningManagers(target.space, plan.launch, checked);
       }
       const t = await resolve("control-caller-privileged");
