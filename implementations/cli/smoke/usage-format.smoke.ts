@@ -998,6 +998,23 @@ check("config get with its key filled says to drop the unknown option, and dropp
   && configError.message === "Unknown option '--mystery-flag'" && configError.remedy === "drop the unknown option"
   && configRetry.status === 0 && JSON.parse(configRetry.stdout).result?.setting?.key === "harness",
   { refusal: shown(configUnknown), retry: shown(configRetry) });
+{
+  const flag = "--mystery-manifest";
+  writeFileSync(join(neutral, flag), "apiVersion: cotal/v1\nkind: Mesh\nspace: fixture\nchannels: {}\n");
+  for (const verb of ["check", "boot", "deploy"]) {
+    const words = ["team", verb, ...(verb === "check" ? [] : ["--dry-run"]), "--json"];
+    const filled = run([...words, `./${flag}`, flag]);
+    const empty = run([...words, flag]);
+    check(`team ${verb} only suggests a separator when its file is missing`,
+      filled.status === 1 && parsed(filled)?.error?.remedy === "drop the unknown option"
+      && empty.status === 1 && parsed(empty)?.error?.remedy?.includes("put -- before it") === true,
+      { filled: shown(filled), empty: shown(empty) });
+  }
+  for (const operand of [[`./${flag}`], ["--", flag]]) {
+    const retry = run(["team", "check", "--json", ...operand]);
+    check(`team check reads the manifest with ${operand.join(" ")}`, retry.status === 0 && JSON.parse(retry.stdout).result.space === "fixture", shown(retry));
+  }
+}
 const clearTypo = run(["history", "clear", "--folow"]);
 check("history clear does not suggest a flag only history reads take",
   usageShape(clearTypo, /Unknown option '--folow'/) && !/did you mean/.test(clearTypo.stderr), shown(clearTypo));
