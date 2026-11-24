@@ -525,6 +525,21 @@ try {
   check("the registered checkout still previews without a checkout hint",
     localPreview.status === 0 && !localPreview.out.includes(checkoutHint) && /New channel candidates:\s+1/.test(localPreview.stdout), localPreview.out);
   check("team deploy preview accepts an equivalent broker URL", answered(cotal(c, "team", "deploy", "audit.yaml", "--dry-run", "--json")));
+  manifest("host.yaml", OTHER, { "host-team": "    deliveryClass: live\n" }, { ...openOptions, open: true, head: "  host: 127.0.0.1\n" });
+  const hostPreview = envelope(cotal(c, "team", "deploy", "host.yaml", "--dry-run", "--json").stdout);
+  const hostNative = hostPreview?.result?.native as { channels?: { create?: unknown[] } } | undefined;
+  const hostWarning = hostPreview?.warnings?.find((warning) => warning.code === "MANIFEST_WARNING" && warning.message.includes("broker.host"));
+  check("team deploy --dry-run warns that broker.host makes apply refuse and lists no creation candidates",
+    hostPreview?.result?.kind === "additive-team-deploy-preview" && hostNative?.channels?.create?.length === 0 &&
+    hostWarning?.message.includes("Omit broker.host") === true, hostPreview?.warnings);
+  const hostText = cotal(c, "team", "deploy", "host.yaml", "--dry-run");
+  check("the text preview prints the broker.host warning on stderr",
+    hostText.status === 0 && hostText.stderr.includes("! Apply refuses: broker.host declares a broker bind"), hostText.stderr);
+  const hostApply = cotal(c, "team", "deploy", "host.yaml", "--json");
+  const hostRefusal = envelope(hostApply.stdout);
+  check("team deploy still refuses broker.host with UNSUPPORTED and creates no card",
+    hostApply.status === 2 && hostRefusal?.error?.code === "UNSUPPORTED" && hostRefusal.error.message?.includes("broker bind") === true &&
+    !Object.hasOwn((envelope(cotal(c, "channel", "show", "host-team", "--space", OTHER, "--json").stdout)?.result?.registry as { channels?: Record<string, unknown> } | undefined)?.channels ?? {}, "host-team"), hostApply.out);
   const chosen = cotal(b, "use", SPACE_B);
   const selection = envelope(cotal(c, "use", "--json").stdout)?.result;
   check("the saved selection differs from the deployment's space", chosen.status === 0 && selection?.current === SPACE_B && selection.folder === OTHER, selection);

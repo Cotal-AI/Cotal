@@ -58,7 +58,7 @@ import { delimiter, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { findCommand, findSubcommand, parseCommandArgs, registry, type Command, type ParsedArgs, type Subcommand } from "@cotal-ai/core";
 import { assertSmokeSandboxDown, createSuite, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
-import { displayWidth } from "@cotal-ai/workspace";
+import { displayWidth, endpointContractTemplate } from "@cotal-ai/workspace";
 import ts from "typescript";
 import { clean, nodePty } from "./_console-pty.js";
 
@@ -246,6 +246,17 @@ for (const typed of ["\u2014json", "\u2212\u2212json", "\u2013json"]) {
   const r = run(["status", typed]);
   check(`${typed} is refused as a typographic dash, naming --json`, usageShape(r, /starts with a typographic dash/) && /type the option with hyphens: --json/.test(r.stderr), shown(r));
 }
+for (const [sub, words] of [["root", ["root", "\u2013json"]], ["add", ["\u2212j", "add"]]] as const) {
+  const refused = run(["ext", ...words]);
+  check(`ext ${sub} does not suggest a listing flag`, usageShape(refused, /starts with a typographic dash/)
+    && refused.stderr.includes(`omit this option; \`cotal ext ${sub}\` does not take --json`)
+    && !refused.stderr.includes("type the option with hyphens"), shown(refused));
+}
+const listSpelling = run(["ext", "list", "\u2212j"]);
+const listFlag = /^  type the option with hyphens: (-j)$/m.exec(listSpelling.stderr)?.[1];
+const inventory = listFlag && run(["ext", "list", listFlag]);
+check("the suggested short listing flag returns the inventory", listSpelling.status === 1 && !!inventory
+  && inventory.status === 0 && Array.isArray(JSON.parse(inventory.stdout).result.items), { refused: shown(listSpelling), retry: inventory && shown(inventory) });
 const shortHelp = run(["send", "-c", "general", "\u2013h"]);
 check("a typographic short help flag is refused with -h", usageShape(shortHelp, /starts with a typographic dash/)
   && shortHelp.stderr.includes("type the option with hyphens: -h"), shown(shortHelp));
@@ -339,6 +350,75 @@ if (process.platform !== "win32") {
     && partialReceipt.error?.code === "OPERATION_PARTIAL" && JSON.stringify(partialReceipt.changed) === JSON.stringify([{ path: join(cwd, "partial-parent"), kind: "directory", complete: true }])
     && (statSync(join(cwd, "partial-parent")).mode & 0o777) === 0o700, shown(partial));
 
+  const directoryArgs = ["endpoint", "check", dir];
+  const directoryText = [run(directoryArgs, {}, cwd), run([...directoryArgs, "--plain"], {}, cwd)];
+  const directoryJson = run([...directoryArgs, "--json"], {}, cwd);
+  const refusal = parsed(directoryJson);
+  const quotedDir = join(cwd, dir).replace(/'/g, `'\\''`);
+  const message = `\`'${quotedDir}'\` is a directory. Pass an endpoint contract file.`;
+  const remedy = `cotal endpoint check '${quotedDir}/contract.json'`;
+  const retried = refusal?.error?.remedy === remedy ? runShell(remedy.slice("cotal ".length), {}, cwd) : undefined;
+  check("endpoint check names its scaffold directory and prints a working contract-file command in each format",
+    directoryJson.status === 1 && directoryJson.stderr === "" && refusal?.error?.code === "SCHEMA_INVALID"
+    && (refusal.target as { path?: string } | undefined)?.path === join(cwd, dir)
+    && refusal.error.message === message && refusal.error.remedy === remedy
+    && directoryText.every((r) => r.status === 1 && r.stdout === "" && r.stderr.includes(message)
+      && [remedy, `pnpm ${remedy}`].some((command) => r.stderr.includes(`Next\n  ${command}\n`)))
+    && retried?.status === 0 && retried.stderr === "" && retried.stdout.includes("Endpoint contract valid locally")
+    && files.every((path, index) => readFileSync(path).equals(original[index]!)),
+    { text: directoryText.map(shown), json: shown(directoryJson), retried: retried && shown(retried) });
+
+  const escaped = "notes \u2708\ufe0f";
+  const escapedPath = join(cwd, escaped);
+  const escapedInit = run(["endpoint", "init", "notes", "--dir", escaped, "--plain"], {}, cwd);
+  const escapedArgs = ["endpoint", "check", escaped];
+  const escapedText = [run(escapedArgs, {}, cwd), run([...escapedArgs, "--plain"], {}, cwd)];
+  const escapedJson = run([...escapedArgs, "--json"], {}, cwd);
+  const escapedRefusal = parsed(escapedJson);
+  const manual = "Use shell completion to enter the scaffold directory, then run `cotal endpoint check contract.json`.";
+  const recovery = /^  Use shell completion to enter the scaffold directory, then run `(?:pnpm )?cotal (endpoint check contract\.json)`\.$/m;
+  const exact = `cotal endpoint check '${escapedPath.replace(/'/g, `'\\''`)}/contract.json'`;
+  const exactRetry = escapedRefusal?.error?.remedy === exact ? runShell(exact.slice("cotal ".length), {}, cwd) : undefined;
+  const localRetry = run(["endpoint", "check", "contract.json"], {}, escapedPath);
+  check("endpoint authoring does not print a broken terminal command for a path that is escaped in display",
+    escapedInit.status === 0 && recovery.test(escapedInit.stdout) && !escapedInit.stdout.includes("\ufe0f")
+    && escapedText.every((r) => r.status === 1 && r.stdout === "" && r.stderr.includes("\\ufe0f") && !r.stderr.includes("\ufe0f")
+      && recovery.test(r.stderr) && !r.stderr.includes("/contract.json'"))
+    && localRetry.status === 0 && localRetry.stdout.includes("Endpoint contract valid locally"),
+    { init: shown(escapedInit), text: escapedText.map(shown), localRetry: shown(localRetry) });
+  check("endpoint check JSON retains a working command with the exact Unicode path",
+    escapedJson.status === 1 && escapedJson.stderr === "" && escapedRefusal?.error?.code === "SCHEMA_INVALID"
+    && (escapedRefusal.target as { path?: string } | undefined)?.path === escapedPath
+    && exactRetry?.status === 0 && exactRetry.stderr === "" && exactRetry.stdout.includes("Endpoint contract valid locally"),
+    { json: shown(escapedJson), exactRetry: exactRetry && shown(exactRetry) });
+
+  const backslashes = String.raw`review\\draft`;
+  const intended = run(["endpoint", "init", "intended", "--dir", backslashes, "--plain"], {}, cwd);
+  const neighbor = run(["endpoint", "init", "neighbor", "--dir", String.raw`review\draft`, "--plain"], {}, cwd);
+  const backslashCheck = run(["endpoint", "check", backslashes, "--plain"], {}, cwd);
+  const backslashJson = run(["endpoint", "check", backslashes, "--json"], {}, cwd);
+  const copied = recovery.exec(backslashCheck.stderr)?.[1];
+  const backslashRetry = copied && runShell(copied, {}, join(cwd, backslashes));
+  check("endpoint authoring offers a relative recovery that selects the intended backslash path",
+    intended.status === 0 && neighbor.status === 0 && recovery.test(intended.stdout)
+    && backslashCheck.status === 1 && backslashCheck.stderr.includes("SCHEMA_INVALID")
+    && backslashJson.status === 1 && parsed(backslashJson)?.error?.remedy === manual
+    && !!backslashRetry && backslashRetry.status === 0 && backslashRetry.stderr === ""
+    && backslashRetry.stdout.includes("com.example.intended") && !backslashRetry.stdout.includes("com.example.neighbor"),
+    { init: shown(intended), check: shown(backslashCheck), json: shown(backslashJson), retry: backslashRetry && shown(backslashRetry) });
+
+  const other = join(cwd, "other-contracts");
+  mkdirSync(other);
+  writeFileSync(join(other, "custom.json"), original[0]!);
+  symlinkSync(files[0]!, join(other, "contract.json"));
+  const unrelated = run(["endpoint", "check", other, "--json"], {}, cwd);
+  const unrelatedRefusal = parsed(unrelated);
+  check("endpoint check neither picks another JSON file nor suggests a symlink as the contract",
+    unrelated.status === 1 && unrelated.stderr === "" && unrelatedRefusal?.error?.code === "SCHEMA_INVALID"
+    && (unrelatedRefusal.target as { path?: string } | undefined)?.path === other
+    && unrelatedRefusal.error.message?.includes("is a directory. Pass an endpoint contract file.") === true
+    && unrelatedRefusal.error.remedy === "retry with the path to an existing endpoint contract file", shown(unrelated));
+
   const authoring = run(["endpoint", "init", "reviews"], {}, cwd);
   const wrong = "reviews/wrong.json";
   const path = join(cwd, wrong);
@@ -363,6 +443,23 @@ if (process.platform !== "win32") {
   check("endpoint check still suggests the separator when the contract operand is missing",
     unfilled.status === 1 && parsed(unfilled)?.error?.remedy?.includes("put -- before it") === true && afterSeparator.status === 0,
     { refusal: shown(unfilled), retry: shown(afterSeparator) });
+} else {
+  const dir = join(realpathSync(neutral), "reviewer's copy");
+  mkdirSync(dir);
+  writeFileSync(join(dir, "contract.json"), JSON.stringify(endpointContractTemplate("reviews")));
+  const args = ["endpoint", "check", dir];
+  const text = [run(args), run([...args, "--plain"])];
+  const json = run([...args, "--json"]);
+  const refusal = parsed(json);
+  const remedy = "Use shell completion to enter the scaffold directory, then run `cotal endpoint check contract.json`.";
+  const remedies = [remedy, remedy.replace("`cotal ", "`pnpm cotal ")];
+  const retry = run(["endpoint", "check", "contract.json", "--json"], {}, dir);
+  check("Windows endpoint check suggests the same relative recovery in every format",
+    json.status === 1 && json.stderr === "" && refusal?.error?.code === "SCHEMA_INVALID" && refusal.error.remedy === remedy
+    && (refusal.target as { path?: string } | undefined)?.path === dir
+    && text.every((r) => r.status === 1 && r.stdout === "" && remedies.some((msg) => r.stderr.includes(`Next\n  ${msg}\n`)))
+    && retry.status === 0 && retry.stderr === "" && JSON.parse(retry.stdout).result?.file === join(dir, "contract.json"),
+    { text: text.map(shown), json: shown(json), retry: shown(retry) });
 }
 
 const referenceProject = join(home, "endpoint-reference");

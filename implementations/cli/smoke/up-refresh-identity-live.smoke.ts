@@ -689,10 +689,11 @@ async function wildcardBindRefusals(): Promise<void> {
         const output = `${refused.stdout}${refused.stderr}`;
         const retry = /start this stack at another address with `(cotal up [^`]+)`/.exec(output)?.[1];
         const retryPort = Number(/--server nats:\/\/127\.0\.0\.1:(\d+)$/.exec(retry ?? "")?.[1]);
+        const legacyRetry = /start it at another address with `cotal up --host 0\.0\.0\.0 --server nats:\/\/127\.0\.0\.1:(\d+)`/.exec(output)?.[1];
         check("a non-dial-IP listener refuses a wildcard bind with CONFLICT and keeps the original options in the retry",
           refused.status === 2 && output.includes("CONFLICT") && output.includes(`0.0.0.0:${held}`) && (prepared
             ? !!retry?.includes("--foreground --open --no-manager --store-dir 'broker store' --host 0.0.0.0") && retryPort > 0 && retryPort !== held
-            : output.includes("up --host 0.0.0.0 --server nats://127.0.0.1:<port>")), output);
+            : Number(legacyRetry) > 0 && Number(legacyRetry) !== held && output.includes(`run \`cotal up --host 0.0.0.0 --server nats://127.0.0.1:${held}\` again`)), output);
         check("wildcard preflight writes no broker config or pidfile", !existsSync(join(fixture.root, ".cotal/auth/server.conf")) && !existsSync(join(fixture.root, ".cotal/nats.pid")));
         if (prepared) {
           fixture.server = `nats://127.0.0.1:${retryPort}`;

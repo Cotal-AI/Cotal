@@ -1,6 +1,6 @@
 import { existsSync, writeSync } from "node:fs";
 import { homedir } from "node:os";
-import { delimiter, isAbsolute, join, parse, resolve } from "node:path";
+import { isAbsolute, join, parse, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { commandDeclarationProblems, findCommand, findSubcommand, parseCommandArgs, type Command, type FlagSpec, type ParsedArgs, type Registry, type Subcommand } from "@cotal-ai/core";
 import {
@@ -73,10 +73,11 @@ import { chooseMeshTarget, spaceChoiceRemedy } from "./lib/choose-target.js";
 import { registryFailure } from "./lib/registry-errors.js";
 import { FlagValueRefusal } from "./lib/flag-value-refusal.js";
 import { workingFolderRemoved } from "./lib/paths.js";
+import { preserveUpdatePath } from "./lib/npm-invocation.js";
 import { reportLostOutput, writeAllSync } from "./lib/stdout-owner.js";
 import { shellWord } from "./lib/endpoint-errors.js";
 import { displayRemedy, hasMovedStackRemedy } from "./lib/self-exec.js";
-import { GLOBAL_FLAG_WORDS, OUTPUT_FLAG_WORDS } from "./lib/leading-flags.js";
+import { asksForHelp, GLOBAL_FLAG_WORDS, leadingInvocation, OUTPUT_FLAG_WORDS } from "./lib/leading-flags.js";
 import { takeManagedHandoffCustody } from "./managed-handoff.js";
 import { nearestWords, LEADING_FLAGS, unknownCommandMessage, unknownSubcommandMessage } from "./lib/nearest-word.js";
 import { UnusableFile } from "./lib/unusable-file.js";
@@ -87,13 +88,6 @@ import { armTelemetry, recordTelemetryError, recordTelemetryFailure } from "./te
 const serviceSurfaces = () => Promise.all([import("./lib/service-presets.js"), import("./commands/manager-service.js")]);
 const managerChoice = () => import("./lib/manager-choice.js");
 
-/** Whether `args` ask for help: `--help` or `-h` before any `--`, after which every word is text. */
-function asksForHelp(args: readonly string[]): boolean {
-  const end = args.indexOf("--");
-  const options = end === -1 ? args : args.slice(0, end);
-  return options.includes("--help") || options.includes("-h");
-}
-
 /** Whether a global flag ({@link GLOBAL_FLAG_WORDS}: `--no-color`, `--no-input`) is `word`, applying
  *  it when it is. */
 function takeGlobalFlag(word: string): boolean {
@@ -102,6 +96,19 @@ function takeGlobalFlag(word: string): boolean {
   else if (word === "--no-input") disableInput(true);
   else return false;
   return true;
+}
+
+/** Apply leading global flags and move command-owned output flags after the command word. */
+function prepareLeadingFlags(leading: readonly string[]) {
+  const output: string[] = [];
+  const leadingGlobals = new Set<string>();
+  let repeatedLeading: string | undefined;
+  for (const word of leading) {
+    if (OUTPUT_FLAG_WORDS.has(word)) output.push(word);
+    else if (leadingGlobals.has(word)) repeatedLeading ??= word;
+    else if (takeGlobalFlag(word)) leadingGlobals.add(word);
+  }
+  return { output, leadingGlobals, repeatedLeading };
 }
 
 /** Collect globals before `--`; the parser still needs their original positions. */
@@ -455,9 +462,8 @@ function typographicOption(word: string, names: ReadonlySet<string>, flags: read
   const option = `${long ? "--" : "-"}${name}`;
   const spelling = value === undefined ? option : `${option}=${value}`;
   const message = `${word} starts with a typographic dash, so it is not an option`;
-  if (value === undefined) return { message, spelling, remedy: `type the option with hyphens: ${option}` };
-  if (flag?.type !== "string") return { message, spelling };
-  return { message, spelling, remedy: `type the option with hyphens: --${flag.name}=${shellWord(value)}` };
+  const correction = value === undefined ? option : flag?.type === "string" ? `--${flag.name}=${shellWord(value)}` : undefined;
+  return { message, spelling, flagName: flag?.name, remedy: correction && `type the option with hyphens: ${correction}` };
 }
 
 function typographicOptions(cmd: Command, flagNames?: readonly string[]) {
@@ -497,6 +503,13 @@ function misspelledOption(cmd: Command, rest: readonly string[], flagNames: read
       return { message: `${word} gives -${short[1]} the value "=${value}"`, remedy: `write ${correction}` };
     }
     const typed = positionals.has(index) ? recognize(word) : undefined;
+    if (typed && cmd.name === "ext" && typed.flagName && typed.flagName !== "help") {
+      const first = metadataPositionals(cmd, rest, { optionSpelling: (arg) => recognize(arg)?.spelling }).positionals[0]?.value;
+      const sub = findSubcommand(cmd, first);
+      const accepted = sub ? sub.flagNames : cmd.flagNames;
+      if (accepted && !accepted.includes(typed.flagName))
+        return { message: typed.message, remedy: `omit this option; \`cotal ext${sub ? ` ${sub.name}` : ""}\` does not take --${typed.flagName}` };
+    }
     if (typed) return typed;
   }
   return undefined;
@@ -690,8 +703,7 @@ function refuseRemovedFolder(cmd: Command, parsed: ParsedArgs, rest: readonly st
     const root = removed ? undefined : findCotalRoot();
     if (typeof parsed.values.creds === "string" && !isAbsolute(parsed.values.creds) && !removed)
       parsed.values.creds = resolve(parsed.values.creds);
-    if (!removed && process.env.PATH !== undefined)
-      process.env.PATH = process.env.PATH.split(delimiter).map(dir => dir && !isAbsolute(dir) ? resolve(dir) : dir).join(delimiter);
+    if (!removed) preserveUpdatePath();
     process.chdir(root && existsSync(join(root, ".cotal")) ? root : parse(homedir()).root);
     return;
   }
@@ -775,26 +787,10 @@ async function serviceSurface(found: Command | undefined, words: string[], forRe
  */
 export async function runCli(registry: Registry, argv: string[], opts: RunCliOptions = {}): Promise<void> {
   const startedAt = Date.now();
-  // Global flags before the command word apply whatever the command is. The output flags are the
-  // command's own, so one written before the command word moves after it, and a `--` there ends
-  // the leading flags. A command that takes its words raw has no flags to read them as, so it
-  // refuses them there. The built-in surface decides that before any extension overlay is read.
-  const output: string[] = [];
-  const leadingGlobals = new Set<string>();
-  let repeatedLeading: string | undefined;
-  let lead = 0;
-  for (; lead < argv.length; lead++) {
-    const word = argv[lead]!;
-    if (OUTPUT_FLAG_WORDS.has(word)) output.push(word);
-    else if (leadingGlobals.has(word)) repeatedLeading ??= word;
-    else if (takeGlobalFlag(word)) leadingGlobals.add(word);
-    else break;
-  }
-  if (argv[lead] === "--") lead++;
-  const original = argv[lead];
-  const word = original === "--version" || original === "-V" ? "version"
-    : original === "--help" || original === "-h" ? "help" : original;
-  const words = [...output, ...argv.slice(lead + 1)];
+  const { leading, original, word, args } = leadingInvocation(argv);
+  const { output, leadingGlobals, repeatedLeading } = prepareLeadingFlags(leading);
+  const words = [...output, ...args];
+  const wantsHelp = asksForHelp(args);
   const builtin = findCommand(registry.all<Command>("command"), word);
   const globals = collectGlobalFlags(words, leadingGlobals);
   const ownWords = (cmd: Command | undefined): string[] => {
@@ -829,12 +825,12 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
   if (word === "-v") usageExit("-v is not the version flag - run `cotal version` or `cotal -V`");
   // The built-in check reports an unreadable inventory itself. Do not require that inventory to
   // construct its command surface, or recover an installation as a prelude to this read-only mode.
-  const updateCheck = builtin?.name === "update" && words.includes("--check") && !asksForHelp(words)
+  const updateCheck = builtin?.name === "update" && words.includes("--check") && !wantsHelp
     && parseOrExit(builtin, ownWords(builtin)).values.check === true;
   // Structured version reports inventory failures itself and needs no extension commands.
-  const versionJson = builtin?.name === "version" && !asksForHelp(words) && asksForJson(builtin, words);
+  const versionJson = builtin?.name === "version" && !wantsHelp && asksForJson(builtin, words);
   // The built-in updater repairs its connector paths before opening any promotion journal.
-  const selfUpdate = builtin?.name === "update" && words.includes("--self") && !asksForHelp(words)
+  const selfUpdate = builtin?.name === "update" && words.includes("--self") && !wantsHelp
     && parseOrExit(builtin, ownWords(builtin)).values.self === true;
   // The removed start command only gives migration advice and needs no extension inventory.
   let useExtensionOverlay = opts.extensions && !updateCheck && !selfUpdate && builtin?.name !== "start";
@@ -906,7 +902,6 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
   const repeated = duplicate(cmd);
   if (repeated) return repeatedGlobalFlag(repeated, cmd, rest, pendingWarnings);
   for (const warning of pendingWarnings) console.error(c.red(`! ${warning.message}`));
-  const wantsHelp = asksForHelp(rest);
   ({ cmd, rest } = await serviceSurface(cmd, rest));
   // The usage telemetry hook is armed as soon as the command is known, so a usage refusal below
   // counts too, and before anything runs, so the one-time notice precedes the command's output.

@@ -21,7 +21,7 @@
  */
 import { execFile, spawn as spawnProc, spawnSync, type ChildProcess } from "node:child_process";
 import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
@@ -539,6 +539,25 @@ try {
     ok("...and nothing launched", lastOpts === undefined, lastOpts?.name);
     const psRefused = await capture(() => run("ps", ["--space", SPACE]));
     ok("...and ps is still empty", NO_AGENTS.test(psRefused), psRefused);
+  }
+
+  if (process.platform !== "win32") {
+    for (const [path, target, selector] of [
+      [join(workspaceRoot, "broken.md"), "./missing-persona.md", ["--file", "./broken.md"]],
+      [join(workspaceRoot, ".cotal", "agents", "broken-catalog.md"), "../../missing-persona.md", ["broken-catalog"]],
+    ] as const) {
+      symlinkSync(target, path);
+      try {
+        const failure = await capture(() => run("spawn", [...selector, "--detach", "--no-events", "--agent", "e2e", "--space", SPACE]))
+          .then(() => undefined, (error: unknown) => isCommandFailure(error) ? error : undefined);
+        ok(`managed spawn identifies the dangling link selected by ${selector.join(" ")}`,
+          failure?.code === "LIFECYCLE_BLOCKED" && failure.native?.outcome === "not-executed" &&
+          failure.message.includes(path) && failure.message.includes(`symbolic link to a missing target: ${target}`) &&
+          failure.message.includes("Restore the link's target on the manager's host") &&
+          failure.message.includes("put a regular persona file in its place") &&
+          !failure.remedy?.includes("create that file") && lastOpts === undefined && readlinkSync(path) === target, failure);
+      } finally { rmSync(path); }
+    }
   }
 
   // I — an agent whose process exits at once is a launch the manager reports failed. The CLI says so

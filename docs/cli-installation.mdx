@@ -218,7 +218,8 @@ The app does not change a separately installed command line.
 Interactive commands print a one-line update notice on stderr from a daily cached registry check.
 The check runs daily with `npm view cotal-ai@latest` against your configured registry, and nothing else is sent.
 A command started during the few seconds an update replaces the installation can fail to load and should be run again.
-The check runs in the background. JSON, plain, CI and redirected output receive no notice.
+The check runs in the background. Help requests neither check the registry nor print an update notice.
+JSON, plain, CI and redirected output receive no notice.
 Version output reports the cached update state without waiting for the registry. If the recorded
 updater is still running, version output says to wait rather than asking you to restore the update.
 
@@ -228,8 +229,10 @@ disposable prefix. The dependency check, package installation and reconciliation
 npm caches that are removed afterwards. After a successful self-update on Linux or macOS, Cotal also
 removes earlier archive caches in its temporary location when it can verify that their owner and
 npm workers have exited. On Linux, the same cleanup removes earlier staged npm install caches
-after their recorded owner and npm process group have exited. Unrecorded caches and active work
-are left alone.
+after their recorded owner and npm process group have exited. A successful retry also reclaims
+private update scratch idle for more than an hour when it contains only the Node compile cache.
+On Linux, it also removes that scratch if the reconciliation cache holds only records that prove
+the updater and child process group have exited. Cotal keeps unrecorded reconciliation caches.
 An unwritable cache configured in `.npmrc` does not block the update. Cotal leaves that cache and
 its permissions unchanged and still applies your registry,
 authentication, proxy and TLS settings. An unavailable dependency stops the update before replacement.
@@ -326,7 +329,7 @@ folder was deleted before it ever started. Update keeps its saved selection and 
 Update runs from the surviving project root, or the filesystem root when no project is present.
 It runs npm for the installation and its extensions outside the project, so the project's package
 manager does not affect the update. Relative `PATH` entries are resolved from the folder where you
-ran `update`.
+ran `update`. On Linux and macOS, an empty entry also refers to that folder, just like `.`.
 Removing an unrelated working folder before or during update does not block it or its npm and
 reconciliation children. A relative `--creds` path keeps its meaning from the original folder.
 
@@ -505,7 +508,12 @@ keeps a single attempt. If npm reports a refused connection to the proxy set by 
 `HTTPS_PROXY`, manual `cotal update --self` fails and leaves the installation unchanged. Check those
 proxy settings and retry. Cotal neither prints the proxy URL nor bypasses it. An unavailable registry
 without a confirmed proxy refusal remains a no-op.
-If the latest-version check fails for a non-network reason, `cotal update --self` reports npm's
+If npm is in offline mode and the latest-version lookup misses Cotal's temporary cache,
+`cotal update --self` reports that the check was skipped and exits 0. The skipped check does not
+retry with network access or start a new install. Before the lookup, the updater can still recover an
+interrupted update or finish a pending extension promotion. It reports a completed promotion
+separately. Run the command with npm offline mode disabled to check for a newer release.
+For other non-network failures in the latest-version check, `cotal update --self` reports npm's
 first diagnostic line and exits with status 1.
 
 Missing release archives and missing target versions of installed first-party extensions share a

@@ -1,14 +1,14 @@
 import { realpathSync, statSync } from "node:fs";
 import { hostname } from "node:os";
 import { resolve } from "node:path";
-import { connectorServers, loadCotalConfig, parseAgentFileSource, parseShareSelection, spawnEnvAllow, spawnNameError, token, type AgentDef, type Connector, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
+import { connectorServers, loadCotalConfig, parseAgentFileSource, parseShareSelection, spawnEnvAllow, token, type AgentDef, type Connector, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
 import { CommandFailure, findMesh, isCommandFailure, recordOperationSpace, brokerAddressForDisplay, cachedPreferences, isWorkspaceTargetError, loadLaunchPersonaFile, personaDir, PersonaSourceError, presentationOf, pruneStaleMeshes, resolveAgentType, resolveMeshTarget, resolvePreference, resolveReadsLiveness, targetErrorCode, workspaceErrorParts, writeResult, type MeshTarget, type OutputWarning, type Report } from "@cotal-ai/workspace";
 import { mergeLaunchOptions, parseLaunchOptions } from "@cotal-ai/workspace";
 import { extensionNames, materializeExtension, preflightRuntime } from "../ext-loader.js";
 import { brokenPersonaLink, callerHarness, checkSpawnExpiryTarget, directPersonaPath, missingConnector, missingPersonaFailure, spawnPersona, spawnUsesManager, type PersonaSite } from "../lib/spawn-defaults.js";
 import { managerPin } from "../lib/manager-choice.js";
 import { unreadablePersona } from "../lib/persona-files.js";
-import { spawnRerun } from "./spawn-flags.js";
+import { refuseDirectSpawnName, spawnRerun } from "./spawn-flags.js";
 import { checkHarness, invalidEnvironmentValues } from "./config.js";
 import { DEFAULT_AGENT } from "../lib/default-persona.js";
 import { refuseUnmintableName } from "./spawn-managed-launch.js";
@@ -121,7 +121,7 @@ export async function spawnLaunchPreview(args: Pick<ParsedArgs, "positionals"> &
         target: { ...target, path }, remedy: "correct the link's target, or move the link aside and put a regular persona file in its place",
       });
     } else {
-      throw unreadablePersona(path, code, { ...target, path }) ?? new CommandFailure("refused", "PERMISSION_DENIED", `cannot read persona: ${path}`, { target: { ...target, path } });
+      throw unreadablePersona(path, code, { ...target, path }) ?? previewPersonaReadFailure(path, code, { ...target, path });
     }
   }
   let cwd: string;
@@ -143,8 +143,7 @@ export async function spawnLaunchPreview(args: Pick<ParsedArgs, "positionals"> &
     throw missingConnector(harness, { ...target, path });
   }
   const requestedName = values.name ?? definition.name;
-  const nameError = spawnNameError(requestedName, { userMode: targetMode === "user" });
-  if (nameError) throw new CommandFailure("refused", "USAGE_INVALID", nameError, { target: { ...target, path } });
+  refuseDirectSpawnName(requestedName, targetMode === "user", path, values, args.positionals, { ...target, path });
   let connectorArgumentsChecked = false;
   if (extensionNames("connector").includes(harness)) {
     let connector: Connector;
@@ -174,4 +173,9 @@ export async function spawnLaunchPreview(args: Pick<ParsedArgs, "positionals"> &
   writeResult(presentationOf(values), { command: "spawn", target, result, warnings }, (data): Report => ({ sections: [
     { title: "Direct launch preview", blocks: [{ kind: "fields", rows: [["Space", data.space], ["Execution host", data.executionHost], ["Persona file", data.persona.write === "shipped-default" ? `${data.persona.path} (the launch writes the shipped default persona here; the preview wrote nothing)` : data.persona.path], ["Source", sourceText(data.persona.source)], ["Requested name", data.requestedName], ["Harness", data.harness], ["Working directory", data.cwd], ["Role", data.role ?? "not declared"], ["Model", data.model ?? "application default; not checked"], ["Variant", data.variant ?? "not declared"], ["Connector arguments", connectorArgumentsChecked ? "checked" : "not checked"], ["Enrollment", "not read or redeemed"], ["Binary/login/authority checks", "not performed"]] }, { kind: "lines", lines: ["No broker connection, provisioning, identity allocation or launch occurred. Native foreground execution is not a detachable Cotal view."] }] },
   ] }));
+}
+
+function previewPersonaReadFailure(path: string, code: string | undefined, target: object): CommandFailure {
+  const broken = code === "ENOTDIR" ? brokenPersonaLink(path, target) : undefined;
+  return broken ?? new CommandFailure("refused", "PERMISSION_DENIED", `cannot read persona: ${path}`, { target });
 }

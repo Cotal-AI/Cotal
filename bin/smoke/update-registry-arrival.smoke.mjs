@@ -1,24 +1,64 @@
 import assert from 'node:assert/strict';
 import { createHash, randomBytes } from 'node:crypto';
 import { spawn, spawnSync } from 'node:child_process';
+import { once } from 'node:events';
 import { createServer } from 'node:http';
 import { connect } from 'node:net';
-import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
+import { chmodSync, cpSync, existsSync, lutimesSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { delimiter, dirname, join, resolve } from 'node:path';
+import { basename, delimiter, dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { emitSentinel } from './sentinel.mjs';
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 
+function reconciliationScratch(parent, worker) {
+  const old = new Date(Date.now() - 61 * 60_000);
+  const fixture = shape => {
+    const outer = mkdtempSync(join(parent, 'cotal-update-'));
+    const cache = join(outer, 'node-compile-cache');
+    const version = join(cache, 'v24');
+    const compiled = join(version, 'compiled');
+    mkdirSync(cache, { mode: 0o700 });
+    mkdirSync(version, { mode: 0o700 });
+    writeFileSync(compiled, 'cache');
+    if (shape === 'link') {
+      const link = join(outer, 'cotal-update-npm-linked');
+      symlinkSync(cache, link);
+      lutimesSync(link, old, old);
+    } else if (shape !== 'compile-only' && shape !== 'fresh-deep') {
+      const recorded = ['dead', 'live', 'pending', 'fresh-recorded'].includes(shape);
+      const npm = mkdtempSync(join(outer, recorded ? 'cotal-update-reconcile-' : 'cotal-update-npm-'));
+      if (recorded) {
+        writeFileSync(join(npm, '.owner'), '2147483647\nexpired\n', { mode: 0o600 });
+        if (shape !== 'pending') writeFileSync(join(npm, `.worker-${shape === 'live' ? worker : 2147483647}`), '', { mode: 0o600 });
+      }
+      if (shape === 'nonempty') writeFileSync(join(npm, '.keep'), 'other content');
+      if (shape === 'shared') chmodSync(npm, 0o750);
+      if (shape === 'mixed') writeFileSync(join(outer, 'keep'), 'other content');
+      if (shape !== 'recent') utimesSync(npm, old, old);
+    }
+    for (const path of [compiled, version, cache, outer]) utimesSync(path, old, old);
+    if (shape === 'fresh-deep' || shape === 'fresh-recorded') writeFileSync(compiled, 'recent in-place rewrite');
+    return outer;
+  };
+  const expired = ['compile-only', ...(worker ? ['dead'] : [])].map(fixture);
+  const retained = ['empty', 'fresh-deep', ...(process.getuid ? ['nonempty', 'shared', 'link', 'mixed', 'recent'] : []),
+    ...(worker ? ['pending', 'fresh-recorded'] : [])]
+    .map(fixture).map(path => [path, readdirSync(path, { recursive: true }).sort()]);
+  return { expired, retained, live: worker && fixture('live') };
+}
+
 /** Runs real npm and the built public entry against a registry with missing archives. */
 export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/dist/cotal.js'), parent = tmpdir() }) {
+  const reconcileOrphan = scenario === 'reconcile-orphan';
+  const reconcileInterrupted = reconcileOrphan || scenario === 'reconcile-killed';
   const stagingNetwork = ['staging-partial', 'staging-no-accept', 'staging-trickle', 'staging-auto'].includes(scenario);
   const noAccept = ['staging-no-accept', 'staging-auto'].includes(scenario);
   const stagingRefused = scenario === 'staging-refused';
   const repairSelection = scenario === 'selection-upgrade' || scenario === 'selection-rollback';
   const extensionMissing = scenario === 'extension-arrives' || scenario === 'extension-unavailable';
-  assert(repairSelection || stagingNetwork || stagingRefused || extensionMissing || ['arrives', 'unavailable', 'integrity', 'reset', 'cache', 'archive-interrupted', 'closure-killed', 'closure-nospace', 'orphan', 'pending', 'reconcile-killed', 'closed-scope', 'min-release-age', 'before', 'offline-metadata', 'offline-archive', 'offline-closure', 'offline-staging', 'staging-killed', 'concurrent', 'extension-peers', 'corepack'].includes(scenario));
+  assert(repairSelection || stagingNetwork || stagingRefused || extensionMissing || reconcileInterrupted || ['arrives', 'unavailable', 'integrity', 'reset', 'cache', 'archive-interrupted', 'closure-killed', 'closure-nospace', 'orphan', 'pending', 'closed-scope', 'min-release-age', 'before', 'offline-metadata', 'offline-archive', 'offline-closure', 'offline-staging', 'staging-killed', 'concurrent', 'extension-peers', 'corepack'].includes(scenario));
   const dateFiltered = scenario === 'min-release-age' || scenario === 'before';
   const closureKilled = scenario === 'closure-killed';
   const closureNoSpace = scenario === 'closure-nospace';
@@ -36,6 +76,7 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
   const prefix = join(root, 'prefix'), home = join(root, 'home');
   const marker = join(prefix, 'lib/node_modules/.cotal-update-child');
   const ready = join(root, 'reconcile.pid');
+  const releaseReconcile = join(root, 'reconcile-release');
   function readMarker() {
     try { return JSON.parse(readFileSync(marker, 'utf8')); }
     catch (error) { if (error.code !== 'ENOENT') throw error; }
@@ -50,7 +91,7 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
     const contention = scenario === 'concurrent'
       ? `if (process.argv.includes('update')) { const deadline = Date.now() + 30000; while (!existsSync(${JSON.stringify(join(root, 'waiter-observed'))})) { if (Date.now() >= deadline) throw new Error('competing updater did not reach the reservation'); Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20); } }\n`
       : '';
-    const hold = scenario === 'reconcile-killed' && version === target ? `if (process.argv[2] === 'update' && !existsSync(${JSON.stringify(ready)})) { writeFileSync(${JSON.stringify(ready)}, String(process.pid)); setTimeout(() => process.exit(99), 60000); }\n` : '';
+    const hold = reconcileInterrupted && version === target ? `if (process.argv[2] === 'update' && !existsSync(${JSON.stringify(ready)})) { writeFileSync(${JSON.stringify(ready)}, String(process.pid)); ${reconcileOrphan ? `const deadline = Date.now() + 60000; const timer = setInterval(() => { if (existsSync(${JSON.stringify(releaseReconcile)}) || Date.now() >= deadline) clearInterval(timer); }, 20);` : 'setTimeout(() => process.exit(99), 60000);'} }\n` : '';
     writeFileSync(join(root, 'payload/package/dist/cotal.js'), `#!/usr/bin/env node\nimport { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";\nimport { tmpdir } from "node:os";\nimport { join } from "node:path";\n${contention}${hold}const scratch = mkdtempSync(join(tmpdir(), "reconcile-child-"));\nrmSync(scratch, { recursive: true });\nconsole.log("fixture reconciled with writable temporary directory");\n`, { mode: 0o755 });
     if (staged) {
       const fail = scenario === 'selection-rollback' && version === target
@@ -90,7 +131,7 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
     join(root, 'config/cotal/extensions/extensions.json'),
     join(root, 'config/cotal/extensions/node_modules', extension, 'package.json')];
   const readInstallation = () => installedFiles.map(path => readFileSync(path, 'utf8'));
-  let blackhole, blockedPort, networkChild, networkStarted, trickle;
+  let blackhole, blockedPort, networkChild, networkStarted, trickle, cacheWorker;
   let stagingDenied = false;
   const backlog = [];
   const server = createServer((request, response) => {
@@ -476,16 +517,35 @@ export PATH="$NPM_SMOKE_REAL_PATH"
 exec npm "$@"
 `, { mode: 0o700 });
       env.NPM_SMOKE_REAL_PATH = originalPath;
-      env.PATH = `tools${delimiter}${originalPath}`;
+      const relativePath = `tools${delimiter}${originalPath}`;
+      env.PATH = relativePath;
       const blocked = await run('npm', ['view', 'cotal-ai@latest', 'version', '--json'], 60000);
       assert.equal(blocked.code, 1, blocked.output);
       assert.match(blocked.output, /This project is configured to use pnpm/);
       env.NPM_SMOKE_REFUSAL = '1';
-      const refused = await run(process.execPath, [entry, 'update', '--self'], 60000);
+      symlinkSync(join('tools', 'npm'), join(cwd, 'npm'));
+      const absent = join(tools, 'missing');
+      const paths = [relativePath, '.', ['', absent].join(delimiter),
+        [absent, '', absent].join(delimiter), [absent, ''].join(delimiter), ''];
+      const assertCallerNpm = async path => {
+        env.PATH = path;
+        const refused = await run(process.execPath, [entry, 'update', '--self'], 60000);
+        assert.equal(refused.code, 1, refused.output);
+        assert.match(refused.output, /cotal-ai version check failed: npm requires an authenticated registry session/, `PATH=${JSON.stringify(path)}: ${refused.output}`);
+        assert.doesNotMatch(refused.output, /second diagnostic line|registry cannot be reached/);
+      };
+      for (const path of paths) await assertCallerNpm(path);
+      const colonCaller = join(cwd, 'caller:colon'), splitCaller = join(cwd, 'caller');
+      mkdirSync(colonCaller);
+      mkdirSync(splitCaller);
+      writeFileSync(join(splitCaller, 'npm'), '#!/bin/sh\necho wrong npm >&2\nexit 1\n', { mode: 0o700 });
+      symlinkSync(join(tools, 'npm'), join(colonCaller, 'npm'));
+      symlinkSync(tools, join(colonCaller, 'tools'));
+      cwd = colonCaller;
+      for (const path of [`${delimiter}${originalPath}`, '', '.', 'tools']) await assertCallerNpm(path);
+      cwd = dirname(colonCaller);
+      env.PATH = relativePath;
       delete env.NPM_SMOKE_REFUSAL;
-      assert.equal(refused.code, 1, refused.output);
-      assert.match(refused.output, /cotal-ai version check failed: npm requires an authenticated registry session/);
-      assert.doesNotMatch(refused.output, /second diagnostic line|registry cannot be reached/);
       assert.equal(JSON.parse(readFileSync(join(packageRoot, 'package.json'), 'utf8')).version, previous);
     }
     if (closureNoSpace) {
@@ -657,7 +717,7 @@ exec npm "$@"
       // Do not await close: the detached npm child still owns the parent's output pipes.
       first.catch(() => {});
     }
-    if (scenario === 'pending' || scenario === 'reconcile-killed') {
+    if (scenario === 'pending' || reconcileInterrupted) {
       const pending = scenario === 'pending';
       const preload = join(root, 'pause.cjs');
       // Stop after spawn returned but before the parent could publish or authorize the child.
@@ -693,16 +753,61 @@ exec npm "$@"
         assert.equal(JSON.parse(readFileSync(join(packageRoot, 'package.json'), 'utf8')).version, previous, 'the unauthorized child did not replace npm packages');
       } else {
         assert.deepEqual(readFileSync(`/proc/${record.pid}/cmdline`, 'utf8').split('\0').filter(Boolean).slice(1), [join(packageRoot, 'dist/cotal.js'), 'update']);
-        process.kill(record.pid, 'SIGKILL');
-        const result = await first;
-        assert.equal(result.code, 1, result.output);
-        const evidence = JSON.parse(readFileSync(marker, 'utf8'));
-        assert.equal(evidence.phase, 'ambiguous');
-        assert.equal(evidence.custody?.pid, record.pid);
-        assert.throws(() => process.kill(record.pid, 0), { code: 'ESRCH' });
+        const [scratch] = readdirSync(env.TMPDIR).filter(name => /^cotal-update-[a-zA-Z0-9]{6}$/.test(name));
+        assert(scratch, 'the live updater has private scratch');
+        const [cache] = readdirSync(join(env.TMPDIR, scratch)).filter(name => name.startsWith('cotal-update-reconcile-'));
+        assert(cache, 'the reconciliation has a private cache');
+        const custody = join(env.TMPDIR, scratch, cache);
+        assert.match(readFileSync(join(custody, '.owner'), 'utf8'), new RegExp(`^${updater.pid}\\n[^\\n]+\\n$`));
+        assert(existsSync(join(custody, `.worker-${record.pid}`)), 'the running child has a published cache record');
+        if (reconcileOrphan) {
+          updater.kill('SIGKILL');
+          writeFileSync(releaseReconcile, 'finish');
+          assert.equal((await first).signal, 'SIGKILL');
+          assert.throws(() => process.kill(record.owner, 0), { code: 'ESRCH' });
+          const childExited = () => {
+            try { return /^[ZX] /.test(readFileSync(`/proc/${record.pid}/stat`, 'utf8').split(') ').at(-1)); }
+            catch (error) { if (error.code === 'ENOENT') return true; throw error; }
+          };
+          for (let deadline = Date.now() + 5000; !childExited() && Date.now() < deadline; )
+            await new Promise(done => setTimeout(done, 20));
+          assert(childExited(), 'the interrupted updater’s child exited');
+          const reconcileScratch = join(env.TMPDIR, scratch);
+          const compile = join(reconcileScratch, 'node-compile-cache');
+          mkdirSync(compile, { recursive: true });
+          const old = new Date(Date.now() - 61 * 60_000);
+          for (const name of readdirSync(compile, { recursive: true })) utimesSync(join(compile, name), old, old);
+          for (const path of [compile, custody, reconcileScratch]) utimesSync(path, old, old);
+          // A different installation may run collection while the original update journal remains.
+          const otherPrefix = join(root, 'other-prefix');
+          mkdirSync(otherPrefix, { mode: 0o700 });
+          env.npm_config_prefix = otherPrefix;
+          env.COTAL_HOME = join(root, 'other-cotal');
+          mkdirSync(env.COTAL_HOME, { mode: 0o700 });
+          env.npm_config_fetch_retries = '0';
+          disconnected = true;
+          const collected = await run(process.execPath, [entry, 'update', '--self'], 60000);
+          assert.equal(collected.code, 0, collected.output);
+          if (existsSync(reconcileScratch))
+            assert.fail(`interrupted reconciliation scratch remained: ${readdirSync(reconcileScratch, { recursive: true }).join(', ')}\n${collected.output}`);
+          return { scenario, code: collected.code, output: collected.output };
+        } else {
+          process.kill(record.pid, 'SIGKILL');
+          const result = await first;
+          assert.equal(result.code, 1, result.output);
+          const evidence = JSON.parse(readFileSync(marker, 'utf8'));
+          assert.equal(evidence.phase, 'ambiguous');
+          assert.equal(evidence.custody?.pid, record.pid);
+          assert.throws(() => process.kill(record.pid, 0), { code: 'ESRCH' });
+        }
       }
       assert.throws(() => process.kill(record.owner, 0), { code: 'ESRCH' });
     }
+    if (scenario === 'cache' && process.platform === 'linux') {
+      cacheWorker = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { detached: true, stdio: 'ignore' });
+      await once(cacheWorker, 'spawn');
+    }
+    const scratchFixtures = scenario === 'cache' ? reconciliationScratch(join(root, 'tmp'), cacheWorker?.pid) : undefined;
     const updates = await Promise.all(Array.from({ length: scenario === 'concurrent' ? 2 : 1 }, () => run(process.execPath, [entry, 'update', '--self'], 660000)));
     const update = updates[0];
     if (abandoned) await abandoned;
@@ -796,7 +901,7 @@ exec npm "$@"
       assert.doesNotMatch(update.output, /Waiting for cotal-ai|Keeping cotal-ai/);
     } else {
       assert.equal(update.code, 0, update.output);
-      if (!['reset', 'cache', 'archive-interrupted', 'orphan', 'pending', 'reconcile-killed'].includes(scenario)) assert.match(update.output, /Waiting for cotal-ai@99\.0\.0 release archives/);
+      if (!reconcileInterrupted && !['reset', 'cache', 'archive-interrupted', 'orphan', 'pending'].includes(scenario)) assert.match(update.output, /Waiting for cotal-ai@99\.0\.0 release archives/);
       if (scenario === 'cache') {
         assert.equal(selected, target, update.output);
         assert.match(update.output, /installed globally and reconciled/);
@@ -804,7 +909,22 @@ exec npm "$@"
         assert.equal(statSync(configuredCache).mode & 0o777, 0o500);
         assert.deepEqual(readdirSync(configuredCache), []);
         assert.equal(readFileSync(join(home, '.npmrc'), 'utf8'), `cache=${configuredCache}\n`);
-        assert.deepEqual(readdirSync(join(root, 'tmp')).filter(name => name.startsWith('cotal-')), [], 'all private update caches and closure staging are removed');
+        for (const path of scratchFixtures.expired)
+          assert(!existsSync(path), `successful self-update removes expired compile scratch: ${path}`);
+        if (scratchFixtures.live) assert(existsSync(scratchFixtures.live), 'a live reconciliation group retains its scratch');
+        assert.deepEqual(readdirSync(join(root, 'tmp')).filter(name => name.startsWith('cotal-')).sort(),
+          [...scratchFixtures.retained.map(([path]) => basename(path)), ...(scratchFixtures.live ? [basename(scratchFixtures.live)] : [])].sort(),
+          'ineligible scratch stays and new update scratch is removed');
+        for (const [path, contents] of scratchFixtures.retained)
+          assert.deepEqual(readdirSync(path, { recursive: true }).sort(), contents, `ineligible scratch is unchanged: ${path}`);
+        if (scratchFixtures.live) {
+          const exited = once(cacheWorker, 'exit');
+          cacheWorker.kill();
+          await exited;
+          const retry = await run(process.execPath, [entry, 'update', '--self'], 60000);
+          assert.equal(retry.code, 0, retry.output);
+          assert(!existsSync(scratchFixtures.live), 'the next successful self-update collects scratch after the worker exits');
+        }
         assert(requests.some(request => decodeURIComponent(request.path).startsWith(`/${extension}`)), 'the installed extension closure was downloaded');
       } else if (scenario === 'archive-interrupted') {
         assert.equal(selected, target, update.output);
@@ -813,7 +933,7 @@ exec npm "$@"
         assert(existsSync(unrecordedCache), 'retry does not infer custody from a directory name');
         assert(!existsSync(legacyScratch), 'retry removes compile-only scratch without custody files');
         for (const path of retainedScratch) assert(existsSync(path), `retry preserves ineligible scratch: ${path}`);
-      } else if (['orphan', 'pending', 'reconcile-killed'].includes(scenario)) {
+      } else if (reconcileInterrupted || ['orphan', 'pending'].includes(scenario)) {
         assert.equal(selected, target, update.output);
         assert.match(update.output, /installed globally and reconciled/);
         assert.equal(existsSync(join(prefix, 'lib/node_modules/.cotal-update-child')), false);
@@ -832,7 +952,7 @@ exec npm "$@"
         assert(elapsedMs >= 600000 && elapsedMs < 660000, `real wait bound: ${elapsedMs}`);
       }
     }
-    if (!['arrives', 'reset', 'cache', 'archive-interrupted', 'orphan', 'pending', 'reconcile-killed', 'staging-killed', 'concurrent', 'extension-peers', 'extension-arrives', 'corepack'].includes(scenario)) {
+    if (!reconcileInterrupted && !['arrives', 'reset', 'cache', 'archive-interrupted', 'orphan', 'pending', 'staging-killed', 'concurrent', 'extension-peers', 'extension-arrives', 'corepack'].includes(scenario)) {
       assert.equal(selected, previous);
       assert.deepEqual(readFileSync(join(packageRoot, 'dist/cotal.js')), before);
       assert.equal(readFileSync(join(packageRoot, 'preserve'), 'utf8'), 'unchanged');
@@ -866,6 +986,12 @@ exec npm "$@"
     return { scenario, code: update.code, ...(scenario === 'concurrent' ? { updates } : {}), elapsedMs, selected, missing, requests, output: update.output, ...(retry ? { retry } : {}) };
   } finally {
     clearInterval(trickle);
+    if (reconcileOrphan) writeFileSync(releaseReconcile, 'finish');
+    if (cacheWorker && cacheWorker.exitCode === null && cacheWorker.signalCode === null) {
+      const exited = once(cacheWorker, 'exit');
+      cacheWorker.kill();
+      await exited;
+    }
     for (const socket of backlog) socket.destroy();
     blackhole?.kill('SIGKILL');
     if (networkChild) { try { process.kill(-networkChild, 'SIGKILL'); } catch {} }
@@ -887,7 +1013,7 @@ if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.m
   try {
     canMount = process.platform === 'linux' && spawnSync('unshare', ['-Urm', 'mount', '-t', 'tmpfs', '-o', 'size=2m', 'tmpfs', mountPoint]).status === 0;
   } finally { rmSync(mountPoint, { recursive: true }); }
-  const selected = process.argv[2] ? [process.argv[2]] : ['arrives', 'unavailable', 'integrity', 'reset', 'cache', 'orphan', 'closed-scope', 'min-release-age', 'before', 'offline-metadata', 'offline-archive', 'offline-closure', 'offline-staging', 'concurrent', 'extension-peers', 'extension-arrives', ...(process.platform !== 'win32' ? ['corepack'] : []), ...(process.platform === 'linux' ? ['archive-interrupted', 'closure-killed', 'pending', 'reconcile-killed', 'staging-killed', 'staging-partial', 'staging-no-accept', 'staging-trickle', 'staging-auto', 'staging-refused', 'selection-upgrade', 'selection-rollback'] : []), ...(canMount ? ['closure-nospace'] : [])];
+  const selected = process.argv[2] ? [process.argv[2]] : ['arrives', 'unavailable', 'integrity', 'reset', 'cache', 'orphan', 'closed-scope', 'min-release-age', 'before', 'offline-metadata', 'offline-archive', 'offline-closure', 'offline-staging', 'concurrent', 'extension-peers', 'extension-arrives', ...(process.platform !== 'win32' ? ['corepack'] : []), ...(process.platform === 'linux' ? ['archive-interrupted', 'closure-killed', 'pending', 'reconcile-killed', 'reconcile-orphan', 'staging-killed', 'staging-partial', 'staging-no-accept', 'staging-trickle', 'staging-auto', 'staging-refused', 'selection-upgrade', 'selection-rollback'] : []), ...(canMount ? ['closure-nospace'] : [])];
   for (const scenario of selected) console.log(JSON.stringify(await registryArrivalCell({ scenario })));
   emitSentinel({ passed: selected.length, failed: 0 });
 }

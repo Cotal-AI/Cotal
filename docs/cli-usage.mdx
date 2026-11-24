@@ -199,6 +199,8 @@ value `=general`. An option such as `--help` or `-h` typed with a typographic da
 rather than read as a positional. Use `--` before the word to pass it as text. The correction keeps
 any attached value the option accepts, as in `--limit=10`. Before the command word the same holds
 for the leading flags, so `cotal ––json status` names `--json`.
+For extension commands, the correction depends on the subcommand. `ext list` accepts `--json`;
+`ext root` prints a path, so the refusal asks you to omit that option.
 `cotal ext seed` takes no operands. An invalid seed option or extra word shows seed help instead
 of suggesting `--` to pass an operand.
 

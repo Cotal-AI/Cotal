@@ -74,7 +74,7 @@ import { prepareKernelServiceStop, prepareProcessService, readOwnedLogTail, read
 import { listLedgerFiles } from "../lib/manifest/ledger.js";
 import { listAdditiveTeamAttempts, retainedAdditiveTeamAttempts, type AdditiveTeamAttempt } from "../lib/team-additive-attempt.js";
 import { freshTeamAttemptSettled, listFreshTeamAttempts, listFreshTeamSummaries } from "../lib/team-fresh.js";
-import { foreignLocalProcesses, newStackOperation, readStackJournal, removeStaleLocalRecords, runningStackRoles, serviceHeldRecords, settleRetainedStackStops, settleStackOperation, STACK_ADAPTER, STACK_DEFINITION, STACK_ROLES, stackDefinitionsAt, stackMaintenanceFence, stackNeverStarted, stackRecoveryHost, stackOperationUnsettled, stackRoleApplies, stackSettlementNotice, staleRecordWarning, withSettledMembers, writeStackJournal, type LocalRecord, type StackJournal, type StackJournalSnapshot, type StackMember, type StackMode, type StackRole, type StackSettlement } from "../lib/stack-journal.js";
+import { foreignLocalProcesses, legacyBrokerPidfileBlock, newStackOperation, readStackJournal, removeStaleLocalRecords, runningStackRoles, serviceHeldRecords, settleRetainedStackStops, settleStackOperation, STACK_ADAPTER, STACK_DEFINITION, STACK_ROLES, stackDefinitionsAt, stackMaintenanceFence, stackNeverStarted, stackRecoveryHost, stackOperationUnsettled, stackRoleApplies, stackSettlementNotice, staleRecordWarning, withSettledMembers, writeStackJournal, type LocalRecord, type StackJournal, type StackJournalSnapshot, type StackMember, type StackMode, type StackRole, type StackSettlement } from "../lib/stack-journal.js";
 import { retryStackAddress } from "../lib/up-broker-address.js";
 import { withManagerName } from "../lib/up-manager-name.js";
 import { NATS_DEFAULT_MAX_PAYLOAD, natsServerLabel, type NatsServer } from "../lib/nats-bin.js";
@@ -347,12 +347,12 @@ export function controllerStackApplies(root: string, space: string, values: Pars
   return true;
 }
 
-export function refuseForegroundStackHolder(root: string, space: string, holderPid: number): never {
+export function refuseForegroundStackHolder(root: string, space: string, holderPid: number, noManager: boolean): never {
   const home = readStackJournal(root)?.journal.recovery?.home;
   const cmd = home !== undefined && home !== resolve(homeCotalDir()) ? `COTAL_HOME=${shellWord(home)} ${displayCmd()}` : "cotal";
   throw new CommandFailure("refused", "CONFLICT", `a foreground \`cotal up\` in process ${holderPid} already holds this stack's lifetime; this terminal did not take it over and nothing was started`, {
     target: { root, space, holderPid },
-    remedy: `use the terminal that runs process ${holderPid}, where Ctrl-C stops the stack, or stop it with ${codeSpan(`${cmd} down --yes`)} from ${root} and run ${codeSpan(`${cmd} up --foreground`)} again`,
+    remedy: `use the terminal that runs process ${holderPid}, where Ctrl-C stops the stack, or stop it with ${codeSpan(`${cmd} down --yes`)} from ${root} and run ${codeSpan(`${cmd} up --foreground${noManager ? " --no-manager" : ""}`)} again`,
   });
 }
 
@@ -363,9 +363,10 @@ function stackPreflight({ root, space, noManager, invokedRoot, foreground, manif
   const maintenance: { fenced: boolean; admittedRestore?: string } = recorded ? stackMaintenanceFence(root, recorded) : { fenced: readMaintenanceJournal(root) !== undefined };
   if (maintenance.fenced) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "this root retains a maintenance or recovery attempt; the controller stack did not substitute an ordinary startup", { target: { root, space } });
   const legacy = foreignLocalProcesses(root, space);
+  const brokerPidfile = legacyBrokerPidfileBlock(root);
   // A service of this space started at this root, such as a `manager` preset, writes its own record
   // here. It is named with the stop `down` names for it; the stack still neither adopts nor replaces it.
-  const held = legacy.length && !existsSync(join(root, ".cotal", NATS_PIDFILE)) ? serviceHeldRecords(root, space) : [];
+  const held = legacy.length && !brokerPidfile ? serviceHeldRecords(root, space) : [];
   if (held.length && held.length === legacy.length) {
     const cmd = displayCmd();
     const retryRoot = invokedRoot !== undefined && invokedRoot !== root ? ` --root ${shellWord(root)}` : "";
@@ -376,7 +377,7 @@ function stackPreflight({ root, space, noManager, invokedRoot, foreground, manif
       remedy: `stop ${held.length === 1 ? "it" : "each"} with ${held.map((row) => codeSpan(`${cmd} svc stop ${row.definition} --instance ${row.instanceId} --space ${shellWord(space)} --yes`)).join(", ")}, then ${next}`,
     });
   }
-  if (legacy.length || existsSync(join(root, ".cotal", NATS_PIDFILE))) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "legacy pidfile-owned processes or records remain under this root; the controller stack neither adopts nor replaces them", { target: { root, space, processes: legacy } });
+  if (legacy.length || brokerPidfile) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", brokerPidfile?.message ?? "legacy pidfile-owned processes or records remain under this root; the controller stack neither adopts nor replaces them", { target: { root, space, processes: legacy }, remedy: brokerPidfile?.remedy });
   if (localMeshesForRoot(root).some((mesh) => mesh.space !== space)) throw new CommandFailure("refused", "CONFLICT", "another locally started space uses this root; a single-space controller stack cannot share its broker", { target: { root, space } });
   let ledgers, additive, boots, summaries;
   try { ledgers = listLedgerFiles(root, { requireReadable: true }); additive = listAdditiveTeamAttempts(root); boots = listFreshTeamAttempts(root); summaries = listFreshTeamSummaries(root); }
@@ -976,7 +977,7 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
     const recorded = recordedMembers.find((row) => row.role === role);
     return { role, definition: STACK_DEFINITION[role], instanceId: recorded?.instanceId ?? null, process: roles.includes(role) ? undefined : recorded?.process, state: roles.includes(role) ? "planned" : "not-attempted" };
   });
-  let journal: StackJournal = { schemaVersion: 1, kind: "cotal-stack-controller", root, space, server, mode, recovery: { home: resolve(homeCotalDir()), host: stackRecoveryHost() }, ...(recordedBroker ? { broker: recordedBroker } : {}), members, operation: newStackOperation("up"), updatedAt: new Date().toISOString() };
+  let journal: StackJournal = { schemaVersion: 1, kind: "cotal-stack-controller", root, space, server, mode, recovery: { home: resolve(homeCotalDir()), host: stackRecoveryHost() }, ...(recordedBroker ? { broker: recordedBroker } : {}), members, operation: { ...newStackOperation("up"), id: request.maintenanceLock.owner.id }, updatedAt: new Date().toISOString() };
   // The whole scoped plan is durable before the first effect. It is written only once the broker
   // address checks below pass, so a restart refused there keeps the proof that the stack stopped
   // cleanly. Until that first write, settle and mark adjust only the in-memory plan.

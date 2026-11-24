@@ -64,7 +64,7 @@ function assertIssuedBackupDirArgument(raw: string): void {
 
 /** Launch intent is checked by the kernel before seed or effect preparation. A recovery
  *  re-entry supplies its recorded mode explicitly rather than inheriting the new public default. */
-export function validateUpArguments(args: ParsedArgs): void {
+export function validateUpArguments(args: ParsedArgs, beforeRestore = false): void {
   const presentation = presentationOf(args.values);
   if (typeof args.values.file === "string" && !args.values.file.trim())
     throw new CommandFailure("refused", "USAGE_INVALID", "--file is empty, so it names no manifest; nothing was started or written", { remedy: "name a manifest with --file <cotal.yaml>, or omit --file to start the folder's stack" });
@@ -211,7 +211,7 @@ export function validateUpArguments(args: ParsedArgs): void {
       : `run \`cotal up\` from the project folder ${shellWord(control.project)}` });
     assertUpRootWritable(root);
     // A restore creates its own store. A manifest uses the explicit or default store, not a legacy one.
-    if (args.values.restore === undefined) assertUpStoreWritable(root, typeof args.values["store-dir"] === "string" ? args.values["store-dir"] : args.values.file === undefined ? undefined : join(root, ".cotal", "nats"));
+    if (args.values.restore === undefined) assertUpStoreWritable(root, typeof args.values["store-dir"] === "string" ? args.values["store-dir"] : args.values.file === undefined ? undefined : join(root, ".cotal", "nats"), beforeRestore);
   }
 }
 
@@ -233,8 +233,8 @@ function assertUpRootWritable(root: string): void {
 /** The broker exits when it cannot write its store, naming the cause only in its own log. The store
  *  a start here opens, as `--store-dir` names it, as the stack or legacy records name it, or `.cotal/nats`,
  *  is refused here, by name, when this account cannot write it. */
-function assertUpStoreWritable(root: string, storeDir: string | undefined): void {
-  const problem = startupStoreProblem(root, storeDir);
+function assertUpStoreWritable(root: string, storeDir: string | undefined, beforeRestore: boolean): void {
+  const problem = startupStoreProblem(root, storeDir, beforeRestore);
   if (problem) throw new CommandFailure("refused", "PERMISSION_DENIED", `${problem.message}; nothing was started or written`, { target: { root, path: problem.path }, remedy: problem.remedy });
 }
 
