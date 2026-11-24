@@ -65,7 +65,7 @@ export function chatArguments(args: ParsedArgs): ChatInput {
       values.kind === "agent" ? "--kind agent is refused because a chat session never presents as an agent" : "--kind accepts only endpoint",
       { remedy: "run `cotal chat` without --kind" });
   for (const [flag, reason] of NOT_YET)
-    if (values[flag] !== undefined) throw new CommandFailure("refused", "UNSUPPORTED", `--${flag} is not available for chat yet: ${reason}`, { remedy: `run \`cotal chat\` without --${flag}` });
+    if (values[flag] !== undefined) throw new CommandFailure("refused", "UNSUPPORTED", `--${flag} is not available for chat yet: ${reason}`, { remedy: `remove only ${codeSpan(`--${flag}`)} and its value, then rerun the original command` });
   const picked = selectFrontEnd({ stdio: values.stdio, plain: values.plain });
   if (!picked.ok) throw new CommandFailure("refused", "USAGE_INVALID", picked.message);
   return { ...(channel === undefined ? {} : { channel }), ...(values.name === undefined ? {} : { label: values.name }), frontEnd: picked.frontEnd };

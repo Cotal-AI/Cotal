@@ -8,7 +8,7 @@ import type { FreeSlotCause, Manager } from "./manager.js";
 import type { TeardownTarget } from "./retirement.js";
 import type { ManagedAgent } from "./seat-types.js";
 import type { ManagerConfig } from "./manager-config.js";
-import type { ManagerAuthState } from "./manager-auth-state.js";
+import type { ManagerStartState } from "./manager-start-state.js";
 import type { ManagerParts } from "./manager-parts.js";
 
 /** The stop family of {@link FreeSlotCause}: the causes a manager-initiated stop records. */
@@ -76,7 +76,6 @@ export interface SeatStopDeps {
   lifecycleInFlight: () => Manager["lifecycleInFlight"];
   setLifecycleInFlight: (value: Manager["lifecycleInFlight"]) => void;
   maintenanceState: () => Manager["maintenanceState"];
-  managerInstanceId: () => Manager["managerInstanceId"];
   retirement: () => Manager["retirement"];
   unverifiedStops: () => Manager["unverifiedStops"];
   setUnverifiedStops: (value: Manager["unverifiedStops"]) => void;
@@ -87,7 +86,6 @@ export interface SeatStopDeps {
   confirmRetirement: (...args: Parameters<Manager["confirmRetirement"]>) => ReturnType<Manager["confirmRetirement"]>;
   emitGoalProgress: (...args: Parameters<Manager["emitGoalProgress"]>) => ReturnType<Manager["emitGoalProgress"]>;
   executionRefusal: (...args: Parameters<Manager["executionRefusal"]>) => ReturnType<Manager["executionRefusal"]>;
-  expireGoalAcceptance: (...args: Parameters<Manager["expireGoalAcceptance"]>) => ReturnType<Manager["expireGoalAcceptance"]>;
   freeSlot: (...args: Parameters<Manager["freeSlot"]>) => ReturnType<Manager["freeSlot"]>;
   maintenanceError: (...args: Parameters<Manager["maintenanceError"]>) => ReturnType<Manager["maintenanceError"]>;
   managedPrincipal: (...args: Parameters<Manager["managedPrincipal"]>) => ReturnType<Manager["managedPrincipal"]>;
@@ -109,7 +107,6 @@ export function seatStopDeps(m: Manager): SeatStopDeps {
     lifecycleInFlight: () => m["lifecycleInFlight"],
     setLifecycleInFlight: (value) => { m["lifecycleInFlight"] = value; },
     maintenanceState: () => m["maintenanceState"],
-    managerInstanceId: () => m["managerInstanceId"],
     retirement: () => m["retirement"],
     unverifiedStops: () => m["unverifiedStops"],
     setUnverifiedStops: (value) => { m["unverifiedStops"] = value; },
@@ -120,7 +117,6 @@ export function seatStopDeps(m: Manager): SeatStopDeps {
     confirmRetirement: (...args) => m["confirmRetirement"](...args),
     emitGoalProgress: (...args) => m["emitGoalProgress"](...args),
     executionRefusal: (...args) => m["executionRefusal"](...args),
-    expireGoalAcceptance: (...args) => m["expireGoalAcceptance"](...args),
     freeSlot: (...args) => m["freeSlot"](...args),
     maintenanceError: (...args) => m["maintenanceError"](...args),
     managedPrincipal: (...args) => m["managedPrincipal"](...args),
@@ -135,7 +131,7 @@ export function seatStopDeps(m: Manager): SeatStopDeps {
 
 /** Stopping a seat, recording why it left, reaping its children, and the named despawn doors. */
 export class SeatStop {
-  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: SeatStopDeps, private readonly parts: Pick<ManagerParts, "goalWriter" | "servePlane">, private readonly state: ManagerAuthState) {}
+  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: SeatStopDeps, private readonly parts: Pick<ManagerParts, "goalWriter" | "servePlane" | "spawnGoal">, private readonly state: ManagerStartState) {}
 
   // The Manager members these bodies read, under their Manager names. Each reads through its dep at
   // use, so a field the Manager assigns later is current and a method a test replaces on the Manager
@@ -147,7 +143,7 @@ export class SeatStop {
   private get lifecycleInFlight() { return this.deps.lifecycleInFlight(); }
   private set lifecycleInFlight(value: Manager["lifecycleInFlight"]) { this.deps.setLifecycleInFlight(value); }
   private get maintenanceState() { return this.deps.maintenanceState(); }
-  private get managerInstanceId() { return this.deps.managerInstanceId(); }
+  private get managerInstanceId() { return this.state.managerInstanceId!; }
   private get remoteAuthority() { return this.config.remoteAuthority; }
   private get retirement() { return this.deps.retirement(); }
   private get unverifiedStops() { return this.deps.unverifiedStops(); }
@@ -159,7 +155,6 @@ export class SeatStop {
   private confirmRetirement(...args: Parameters<Manager["confirmRetirement"]>): ReturnType<Manager["confirmRetirement"]> { return this.deps.confirmRetirement(...args); }
   private emitGoalProgress(...args: Parameters<Manager["emitGoalProgress"]>): ReturnType<Manager["emitGoalProgress"]> { return this.deps.emitGoalProgress(...args); }
   private executionRefusal(...args: Parameters<Manager["executionRefusal"]>): ReturnType<Manager["executionRefusal"]> { return this.deps.executionRefusal(...args); }
-  private expireGoalAcceptance(...args: Parameters<Manager["expireGoalAcceptance"]>): ReturnType<Manager["expireGoalAcceptance"]> { return this.deps.expireGoalAcceptance(...args); }
   private freeSlot(...args: Parameters<Manager["freeSlot"]>): ReturnType<Manager["freeSlot"]> { return this.deps.freeSlot(...args); }
   private maintenanceError(...args: Parameters<Manager["maintenanceError"]>): ReturnType<Manager["maintenanceError"]> { return this.deps.maintenanceError(...args); }
   private managedPrincipal(...args: Parameters<Manager["managedPrincipal"]>): ReturnType<Manager["managedPrincipal"]> { return this.deps.managedPrincipal(...args); }
@@ -583,7 +578,7 @@ export class SeatStop {
       await this.assertGoalWriterEpochCurrent(epoch); // a superseded corpse never commits a cancel terminal either
       await transitionGoal(gw.ctx, ref, "cancelling", { fields: { cancelMode: mode } });
       const r = await commitGoalResult(gw.ctx, { ref, now: Date.now(), cause: "cancel", data: { cancelledBy: "despawn" }, committer: { instanceId: this.managerInstanceId, epoch } });
-      this.expireGoalAcceptance(ref);
+      this.parts.spawnGoal.expireGoalAcceptance(ref);
       this.emitGoalProgress(ref, epoch, { phase: "terminal", state: r.fact.state, ...(r.fact.data !== undefined ? { data: r.fact.data } : {}) });
       await clearGoalIndex(gw.ctx, ref); // terminal reached - the successor never reconciles it
     } catch {

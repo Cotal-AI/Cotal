@@ -5,7 +5,7 @@ import { launchAgentToStartOpts, launchSpecForRun, materializePersona, parseLaun
 import type { Manager } from "./manager.js";
 import type { SpawnHooks, StartAgentOpts } from "./seat-types.js";
 import type { ManagerConfig } from "./manager-config.js";
-import type { ManagerAuthState } from "./manager-auth-state.js";
+import type { ManagerStartState } from "./manager-start-state.js";
 
 /** A `once` spawn's task deadline when the caller names none: one hour from the spawn's accept. */
 const ONCE_DEFAULT_DEADLINE_MS = 60 * 60_000;
@@ -28,7 +28,7 @@ export function startDoorsDeps(m: Manager): StartDoorsDeps {
 
 /** The `start` and `launch` control doors: argument checks and the hand-off to `startAgent`. */
 export class StartDoors {
-  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: StartDoorsDeps, private readonly state: ManagerAuthState) {}
+  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: StartDoorsDeps, private readonly state: ManagerStartState) {}
 
   // The Manager members these bodies read, under their Manager names. Each reads through its dep at
   // use, so a field the Manager assigns later is current and a method a test replaces on the Manager

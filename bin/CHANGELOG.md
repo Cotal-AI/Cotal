@@ -1,5 +1,53 @@
 # cotal-ai
 
+## 0.176.3
+
+### Patch Changes
+
+- Updated dependencies [3cc24ee]
+- Updated dependencies [a461dd2]
+- Updated dependencies [542c965]
+- Updated dependencies [4d8b2e3]
+- Updated dependencies [9b757d5]
+- Updated dependencies [a99a26e]
+  - @cotal-ai/cli@0.176.3
+  - @cotal-ai/manager@0.176.3
+  - @cotal-ai/auth@0.176.3
+  - @cotal-ai/runtime@0.176.3
+  - @cotal-ai/connector-core@0.176.3
+  - @cotal-ai/delivery@0.176.3
+  - @cotal-ai/registry@0.176.3
+  - @cotal-ai/core@0.176.3
+  - @cotal-ai/seat@0.176.3
+  - @cotal-ai/workspace@0.176.3
+
+## 0.176.2
+
+### Patch Changes
+
+- 0187b5d: Document the watch credential selector, show structured formats in endpoint work help, keep the live contract shortcut on the same target, and explain why endpoint describe does not take `--live`.
+- 662b968: Fix the upgrade guide link in the workflow operations troubleshooting steps.
+- dcccbd9: Foreground spawn previews name unavailable working directories and explain how to retry, prepared persona catalogs work offline with a planned broker address, and manager start help explains when to select by name or by instance ID.
+- Updated dependencies [303aba0]
+- Updated dependencies [0187b5d]
+- Updated dependencies [bd5afe9]
+- Updated dependencies [c687d10]
+- Updated dependencies [662b968]
+- Updated dependencies [dcccbd9]
+- Updated dependencies [a51906d]
+- Updated dependencies [b32129d]
+- Updated dependencies [9dcb30d]
+  - @cotal-ai/cli@0.176.2
+  - @cotal-ai/connector-core@0.176.2
+  - @cotal-ai/manager@0.176.2
+  - @cotal-ai/auth@0.176.2
+  - @cotal-ai/delivery@0.176.2
+  - @cotal-ai/registry@0.176.2
+  - @cotal-ai/runtime@0.176.2
+  - @cotal-ai/core@0.176.2
+  - @cotal-ai/seat@0.176.2
+  - @cotal-ai/workspace@0.176.2
+
 ## 0.176.1
 
 ### Patch Changes

@@ -11,6 +11,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Box, Text, useInput, useStdout } from "ink";
 import type { Key as InkKey } from "ink";
+import { codeSpan, displayWidth } from "@cotal-ai/workspace";
 import { discloseChoice, endingNotice, parseRecipient, type AdmittedChatSession, type ChatWords, type Recipient, type SessionEvent } from "@cotal-ai/workspace/chat";
 import {
   addNotice,
@@ -29,7 +30,8 @@ import {
 } from "./view.js";
 import { closeSession, runPublish, runSlash } from "./controller.js";
 import { listChoices, refusedDm, type Choice } from "./picker.js";
-import { channelHistoryCommand } from "../lib/history-command.js";
+import { shellWord } from "../lib/endpoint-errors.js";
+import { displayCmd } from "../lib/self-exec.js";
 
 const TONE_COLOR: Record<Tone, string | undefined> = {
   ok: "green",
@@ -200,17 +202,23 @@ export function ChatView({ session, initialRecipient, notice, words, shiftEnterD
         { text: "number or #channel / @name / @owner.actor / role:<role> · Enter choose · Esc back", tone: "hint" } as Row,
       ]
     : composerRows(state, size.width, shiftEnterDistinct);
-  const bodyHeight = Math.max(1, size.height - header.length - composer.length - 2);
+  const available = Math.max(1, size.height - header.length - composer.length - 2);
   const transcript = transcriptRows(state, size.width);
+  const recipient = state.recipient;
+  const space = state.identity.space;
+  const scope = `--space${space.startsWith("-") ? "=" : " "}${shellWord(space)}`;
+  const history = transcript.length <= available || recipient?.kind === "role" ? undefined
+    : codeSpan(`${displayCmd()} history ${recipient?.kind === "channel" ? shellWord(`#${recipient.channel}`) : "--dms"} ${scope}`);
+  const hiddenLabel = (n: number) => `${n} earlier ${n === 1 ? "row" : "rows"} hidden`;
+  const splitHint = history !== undefined && displayWidth(`${hiddenLabel(transcript.length - available)}. See ${history}`) > size.width;
+  const hintRows = splitHint ? Math.ceil(displayWidth(history) / size.width) : 0;
+  const bodyHeight = Math.max(1, available - hintRows);
   const body = transcript.slice(-bodyHeight);
   const hidden = transcript.length - body.length;
-  const recipient = state.recipient;
-  const history = recipient?.kind === "channel" ? channelHistoryCommand(recipient.channel)
-    : recipient?.kind === "role" ? undefined : "cotal history --dms";
 
   return <Box flexDirection="column" width={size.width} height={size.height}>
     <RowsView rows={header} keyPrefix="h" />
-    <Text dimColor wrap="truncate-end">{hidden ? `${hidden} earlier ${hidden === 1 ? "row" : "rows"} hidden${history ? `. See \`${history}\`` : ""}` : "─".repeat(size.width)}</Text>
+    <Text dimColor wrap="wrap">{hidden ? `${hiddenLabel(hidden)}${history ? `. See${splitHint ? "\n" : " "}${history}` : ""}` : "─".repeat(size.width)}</Text>
     <Box flexDirection="column" height={bodyHeight}>
       {body.length ? <RowsView rows={body} keyPrefix="t" /> : <Text dimColor>No messages yet in this session.</Text>}
     </Box>

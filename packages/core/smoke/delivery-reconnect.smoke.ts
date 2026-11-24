@@ -14,11 +14,11 @@ import { spawn } from "node:child_process";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { connect } from "@nats-io/transport-node";
+import { connect, type NatsConnection } from "@nats-io/transport-node";
 import { Kvm } from "@nats-io/kv";
 import { CotalEndpoint, isReachable, createSpaceAuth, mintCreds, provisionAgent, mintLifecycleUid, serverConfig, newIdentity, setupSpaceStreams, principalKey, DEV_OWNER, membershipBucket, MEMBERSHIP_FEED_KEY, standaloneConnectOpts, dlvDurable, type MembershipChange } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, awaitBrokerReady, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const PORT = await pickFreePort();
 const MON = await pickFreePort();
@@ -32,6 +32,41 @@ const reconnected = (ep: CotalEndpoint): Promise<void> => new Promise((resolve) 
 });
 let pass = 0, fail = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => { if (cond) { pass++; console.log(`  ✓ ${name}`); } else { fail++; console.log(`  ✗ FAIL: ${name}`, extra ?? ""); } };
+
+async function checkStopWhileRedialing(dir: string, space: string): Promise<void> {
+  const port = await pickFreePort();
+  const servers = `nats://127.0.0.1:${port}`;
+  const broker = spawn("nats-server", ["-js", "-a", "127.0.0.1", "-p", String(port), "-sd", join(dir, "redial")], { stdio: "ignore" });
+  const release = teardownOnSignal(broker);
+  let nc: NatsConnection | undefined;
+  const ep = new CotalEndpoint({
+    space, servers, consume: false, watchPresence: false, registerPresence: false,
+    card: { name: "redial-observer", kind: "endpoint" }, onConnection: (connection) => { nc = connection; },
+  });
+  ep.on("error", () => {});
+  try {
+    // An open broker lets the watch attempt its consumer delete without a credential fence.
+    await awaitBrokerReady(() => isReachable(servers), { servers, attempts: 50, delayMs: 100 });
+    await setupSpaceStreams({ servers, space });
+    await ep.start();
+    await ep.watchMembership(() => {});
+    let disconnected = false;
+    ep.on("transport", (s) => { if (!s.connected) disconnected = true; });
+    await killAndAwaitExit(broker);
+    for (let i = 0; i < 40 && !disconnected; i++) await wait(50);
+    if (!disconnected || !nc || nc.isClosed()) throw new Error("fixture did not observe a disconnected, open transport");
+    const result = await Promise.race([
+      ep.stop().then(() => "stopped", (err: Error) => err.message),
+      wait(2000).then(() => "pending after 2 seconds"),
+    ]);
+    check("endpoint stops within two seconds with a membership watch while its transport redials", result === "stopped" && nc.isClosed(), result);
+  } finally {
+    await killAndAwaitExit(broker);
+    await nc?.close();
+    await ep.stop().catch(() => {});
+    release();
+  }
+}
 
 const space = `delivery-reconnect-${randomUUID().slice(0, 8)}`;
 const auth = await createSpaceAuth(space);
@@ -342,6 +377,8 @@ try {
   check("the not-ready warning names the durable, space, condition, and reconnect repair", notReadyWarning?.message.includes(durable) === true && notReadyWarning.message.includes(space) && notReadyWarning.message.includes("no ready delivery lease") && notReadyWarning.message.includes("reconnect against it"), notReadyWarning?.message);
   check("the warned not-ready bind delivers no message", notReadyLease.messages === 0, notReadyLease);
   await daemon.releaseDeliveryLease(0, notReadyRev);
+
+  await checkStopWhileRedialing(dir, space);
 
   console.log(`\nDELIVERY-RECONNECT SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);
   if (fail) process.exitCode = 1;

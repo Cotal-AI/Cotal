@@ -176,6 +176,11 @@ export function validateDownArguments(args: ParsedArgs): void {
         });
       }
     }
+    if (args.values["dry-run"] === true && (args.values.file !== undefined || args.values.run !== undefined)) {
+      throw new CommandFailure("refused", "UNSUPPORTED", "a legacy deployment preview does not support --json or --plain", {
+        remedy: `omit --${args.values.json ? "json" : "plain"} from the original command; keep --dry-run and the same deployment selection`, selfContained: true,
+      });
+    }
     const retry = bareStop(args.values) ? sameDown(args.values) : `${displayCmd()} down`;
     throw new CommandFailure("refused", "UNSUPPORTED", "--json and --plain apply only to a controller stack, a --dry-run preview, a stack that is already stopped or a folder whose records name another folder's space; a bare stop here prints its own lines, and nothing was stopped", { remedy: `run ${codeSpan(retry)} from this root without --json or --plain; \`${displayCmd()} down --dry-run --json\` reads this root's stack` });
   }
