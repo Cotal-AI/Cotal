@@ -336,6 +336,8 @@ If a persona link has no reachable target because a path component is missing or
 file where a folder is needed, the launch names the link and its target. Restore the target or
 move the link aside and put a regular persona file in its place. For a managed launch, make the
 repair on the manager's host.
+If the manager cannot access a persona because of permissions, the refusal names the path on the
+manager's host. Check that the manager's account can read the file and traverse its parent directories.
 When a managed launch is refused because the chosen
 manager's catalog has no such persona, the refusal names that manager, its host and the catalog file
 to create there. The next step gives the spawn again with `--on` for each of your other live managers
