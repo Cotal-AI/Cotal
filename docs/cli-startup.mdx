@@ -72,11 +72,12 @@ cotal up -f <cotal.yaml> [--dry-run] [--runtime <name>]
 `cotal up` boots a local nats-server with JetStream and, in auth mode (the default), JWT auth and
 per-agent ACLs. It runs in the background by default and records the mesh so `cotal spawn` from
 any directory can find it; `--detach` explicitly names the same mode. `--foreground` keeps the
-native stack in this terminal. Omit `--json` and `--plain` in foreground mode. For a finite
+native stack in this terminal. Omit `--json` and `--plain` when starting in foreground mode. For a finite
 startup receipt from a controller-owned stack, use `--json` or `--plain` without `--foreground`.
 For a manifest, use `cotal team boot <file> --foreground` in its prepared project. Add `--dry-run`
-to preview terminal custody without starting the stack. If the filename starts with `-`, the retry
-from `up` puts `./` before it, as in `cotal team boot ./-mesh.yaml --foreground --dry-run`.
+to preview terminal custody without starting the stack. The preview retry from `up` keeps `--json`
+or `--plain` when requested. If the filename starts with `-`, the retry puts `./` before it,
+as in `cotal team boot ./-mesh.yaml --foreground --dry-run --json`.
 
 `--open` with `--service-endpoints` or any public exchange flag refuses `USAGE_INVALID` (exit 1)
 before startup. Remove those flags for an open space, or use them with `--user-auth` instead of `--open`.
