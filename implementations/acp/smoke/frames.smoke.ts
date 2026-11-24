@@ -20,6 +20,8 @@
  *    every live manager the person may use;
  *  - `runningManagers` offers the listed managers whose rail is not gone, and with none left rejects as
  *    a space with no manager does;
+ *  - a signed-in person's listed manager with no row under their principal, as the space's own, is
+ *    described by the host its rail reports;
  *  - `launchManagers` starts this machine's manager when no listed one is, remote live included, and
  *    fails the thread when the start fails or its manager is still not listed here.
  *
@@ -29,7 +31,7 @@ import type { CotalMessage, Presence } from "@cotal-ai/core";
 import type { SessionUpdate } from "@agentclientprotocol/sdk";
 import { FrameMapper } from "../src/frames.js";
 import { patchDiffs } from "../src/tools.js";
-import { answeredReads, frameOf, managerChoice, managerPlan, namesDeregister, runningManagers } from "../src/live-mesh.js";
+import { answeredReads, frameOf, listedChoice, managerChoice, managerPlan, namesDeregister, runningManagers } from "../src/live-mesh.js";
 import { launchManagers } from "../src/manager-start.js";
 import { NoLaunchManager } from "../src/mesh.js";
 import type { AguiEventLike, ManagerChoice, SeatFrame } from "../src/mesh.js";
@@ -282,6 +284,26 @@ check("frameOf ignores a frame that another sender put on an agent's event chann
   check("on a signed-in space another owner's agent named after the manager does not describe it", d.live === false && d.local === false && d.host === undefined, d);
   const mine = managerChoice("a", roster, "here", "u_p");
   check("and the person's own manager row still does", mine.live === true && mine.host === "here" && mine.local === true, mine);
+}
+
+// A signed-in person's listed manager: the space's own shows a row only under its bare NKey id, so the
+// host its rail reports describes it.
+{
+  const nkey = "UCJ2KVYXP6NPUGAZ4ZQ3JVJ6WQ7K5QOFM4ZQXUMOBQ5RYRYTVLRDUJAN";
+  const spaceRow = ({ card: { id: nkey, name: "manager", meta: { host: "here" } }, status: "idle" }) as unknown as Presence;
+  const own = listedChoice("space", { host: "here" }, [spaceRow], "here", "u_p");
+  check("the space's own manager, whose rail reports this host, is live and local", own?.live === true && own.local === true && own.host === "here", own);
+  const far = listedChoice("space", { host: "there" }, [spaceRow], "here", "u_p");
+  check("and on another host's report it is live and not local", far?.live === true && far.local === false && far.host === "there", far);
+  const quiet = listedChoice("space", {}, [spaceRow], "here", "u_p");
+  check("a rail that reports no host leaves it neither live nor local", quiet?.live === false && quiet.local === false && quiet.host === undefined, quiet);
+  check("a gone rail offers nothing", listedChoice("space", undefined, [spaceRow], "here", "u_p") === undefined);
+  const mineRow = ({ card: { id: "u_p.manager_a", name: "manager_a", meta: { host: "here" } }, status: "idle" }) as unknown as Presence;
+  const mine = listedChoice("a", {}, [mineRow], "here", "u_p");
+  check("the person's own manager is described by its row", mine?.live === true && mine.local === true && mine.host === "here", mine);
+  let starts = 0;
+  const listed = await launchManagers({ space: "s", managers: async () => [own!], startManager: async () => (starts++, "started") }, () => {}).catch((e: Error) => e);
+  check("so a new thread there starts no second manager", starts === 0 && Array.isArray(listed) && listed.length === 1, { starts, listed });
 }
 
 // Remote live, no local: only another computer's manager is live, so this machine's is started.

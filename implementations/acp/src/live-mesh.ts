@@ -75,10 +75,17 @@ export function managerChoice(instanceId: string, roster: readonly Presence[], h
   return { instanceId, ...(seen ? { host: seen } : {}), local: seen === here, live: row !== undefined };
 }
 
+/** A manager whose rail is not gone as a choice, from the host it reported. */
+const railChoice = (instanceId: string, seen: { host?: string }, here: string): ManagerChoice =>
+  ({ instanceId, ...seen, local: seen.host === here, live: seen.host !== undefined });
+
 /** A signed-in person's listed manager as a choice. `seen` is what its rail reported, undefined when
- *  the rail is gone. */
+ *  the rail is gone. A manager with no current row under the person's principal, such as the space's
+ *  own, is described by its rail's report. */
 export function listedChoice(instanceId: string, seen: { host?: string } | undefined, roster: readonly Presence[], here: string, owner: string): ManagerChoice | undefined {
-  return seen && managerChoice(instanceId, roster, here, owner);
+  if (!seen) return undefined;
+  const row = managerChoice(instanceId, roster, here, owner);
+  return row.live ? row : railChoice(instanceId, seen, here);
 }
 
 /** After a connection error, how often and how many times the bridge asks whether its sign-in changed. */
@@ -393,7 +400,7 @@ function launchCalls(c: Connected, p: Controls, defaultPersona: string | null | 
       const here = hostname();
       const checked = await Promise.all(ids.map(async (instanceId): Promise<ManagerChoice | undefined> => {
         const seen = await railCheck(p, instanceId);
-        return seen && { instanceId, ...seen, local: seen.host === here, live: seen.host !== undefined };
+        return seen && railChoice(instanceId, seen, here);
       }));
       return runningManagers(t.space, ids, checked);
     },
