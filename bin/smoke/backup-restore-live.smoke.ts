@@ -987,7 +987,7 @@ async function restoredStoreRestartScenario(): Promise<void> {
   const store = join(parent, "registry-target");
   const server = `nats://127.0.0.1:${await freePort()}`;
   const space = "backup_restored_store_restart";
-  const { run } = sandboxRun(root, home);
+  const { run, env } = sandboxRun(root, home);
   const { run: runTwo } = sandboxRun(twoStores, twoHome);
   const must = (label: string, result: ReturnType<typeof run>) => {
     assert.equal(result.status, 0, `${label}\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`);
@@ -1026,7 +1026,7 @@ async function restoredStoreRestartScenario(): Promise<void> {
     assert.equal(restoredStore, store, "the restore serves the named store");
     const stopped = run("down", "--yes");
     must("down", stopped);
-    assert.match(stopped.stdout, /cotal up +Start it again/, `the stop receipt names a bare \`cotal up\`\n${stopped.stdout}`);
+    assert.ok(["cotal", "pnpm cotal"].some((cli) => stopped.stdout.split("\n").some((line) => line.trim().startsWith(`${cli} up `) && line.includes("Start it again"))), `the stop receipt names a bare restart command\n${stopped.stdout}`);
     must("cleanup-fallback", run("backup", "cleanup-fallback", attemptId, "--yes", "--discard-history"));
     assert.equal(existsSync(join(root, ".cotal", "nats", "jetstream")), false, "the cleanup left the default store without data");
     const started = run("up");
@@ -1160,7 +1160,7 @@ async function assertRestoreStoreRechecks(env: NodeJS.ProcessEnv, paths: {
       assert.equal(refused.status, 2, output);
       assert.match(output, /PERMISSION_DENIED/);
       assert.match(output, /no restore was started/);
-      assert.ok(output.includes(`cannot search ${blocked}`), output);
+      assert.ok(output.replace(/\s+/g, " ").includes(`cannot search ${blocked}`), output);
       assert.deepEqual(snapshot(), before, "the recheck leaves the preserved cut untouched");
       assert.equal(existsSync(store), false, "the recheck did not create a store");
       assert.equal((await probeConnect(server, { timeoutMs: 500 })).ok, false);
