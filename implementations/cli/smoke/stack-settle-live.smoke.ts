@@ -196,7 +196,7 @@ import { createServer } from "node:net";
 import { appendFileSync, chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, watch, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
-import { assertSmokeSandboxDown, createSuite, freePort, listenOn, recordSmokeSandbox, type SmokeSandboxAnchor } from "@cotal-ai/smoke-kit";
+import { assertSmokeSandboxDown, assertSmokeSandboxTargetDown, createSuite, freePort, listenOn, recordSmokeSandbox, type SmokeSandboxAnchor } from "@cotal-ai/smoke-kit";
 import { CotalEndpoint, deliveryLeaseHolderFor, idFromCreds, LEASE_TTL_MS, leaseKey, mintCreds, mintLifecycleUid, newIdentity, openDeliveryRegistry, type DeliveryLeaseInfo } from "@cotal-ai/core";
 import { connect, credsAuthenticator } from "@nats-io/transport-node";
 import { agentLifecycleSecretFilePaths, canonicalLocalProcessPath, codeSpan, shellPath, deliveryCredsKey, findMesh, getSpaceAuth, isCommandFailure, processStopped, resolveOnPath, workspaceSecretStore, MANAGER_DELIVERY_AWARE_MARKER, MANAGER_PIDFILE, MANAGER_SHUTDOWN_INTENT, readServiceStopRequest, spaceSegment, stopReservationPath, acquireMaintenanceLock, releaseMaintenanceLock } from "@cotal-ai/workspace";
@@ -234,7 +234,8 @@ type Envelope = { outcome: string; target?: Record<string, unknown>; result?: Re
 type Run = { status: number | null; signal: NodeJS.Signals | null; ms: number; stdout: string; stderr: string; env?: Envelope };
 const cliAs = (childEnv: NodeJS.ProcessEnv, cwd: string, ...args: string[]): Run => {
   const options = { cwd, env: childEnv, encoding: "utf8" as const, timeout: 180_000 };
-  assertSmokeSandboxDown(anchors.get(cwd), args, options);
+  if (args[0] === "down" && args[1] === "web") assertSmokeSandboxTargetDown(anchors.get(cwd), args, options);
+  else assertSmokeSandboxDown(anchors.get(cwd), args, options);
   const began = Date.now();
   const run = spawnSync(process.execPath, ["--import", TSX_IMPORT, CLI, ...args], options);
   let parsed: Envelope | undefined;
@@ -1252,8 +1253,9 @@ try {
         && memberPlan.env?.result?.kind === "service-operation-preview" && memberPlan.env.target?.space === space
         && memberPlan.env.target.name === "stack-broker" && setManager !== null && alive(setManager), shown(alias));
     for (const names of [["web"], ["nosuch"], ["manager", "nosuch"]]) {
-      const missing = cli(otherRoot, "down", ...names, "--space", space, "--dry-run", "--json");
+      const missing = cli(names[0] === "web" ? root : otherRoot, "down", ...names, "--space", space, "--dry-run", "--json");
       check(`missing ${names.join(" ")} preview stays a scoped inventory read`, missing.status === 2
+        && missing.env?.error?.code === "TARGET_NOT_FOUND" && missing.env.target?.space === space
         && missing.env?.error?.remedy === `list this space's saved definitions with \`cotal service --space ${space} --json\``, shown(missing));
     }
     const unknownOne = cli(otherRoot, "down", "nosuch", "--space", space, "--yes", "--json");
