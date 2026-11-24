@@ -555,7 +555,7 @@ records. If it refuses invalid arguments or setup fails before the snapshot, it 
 with the code and any remedy, then an `end` with `reason: "setup-failed"` and `lastAsOf: null`.
 Both records name the requested channel and the space when known, including the name retained by
 a directly started local space after it stops. If setup refuses a missing or blank `--space`
-value, `target.space` is `null`.
+value, `target.space` is `null`. A later `--space` cannot fill a missing value.
 
 A missing feed remains unknown rather than an empty confirmed census. Without `--follow`, a
 census with no member for a name that has no saved entry and no retained messages is refused with
@@ -835,6 +835,7 @@ without a snapshot. Invalid arguments include a missing `--limit` value, an inva
 and an empty `--space` value.
 Both targets include the requested `channel` (`null` if none) and `dms` flag, along with any known
 space or project root. If setup refuses a missing or blank `--space` value, `target.space` is `null`.
+A later `--space` cannot fill a missing value.
 An `end` record closes the stream. The exit code is the snapshot's, the failure's when setup or the
 credential ends the follow, or 130 or 143 when SIGINT or SIGTERM ends it.
 

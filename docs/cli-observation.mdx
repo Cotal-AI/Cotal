@@ -155,7 +155,7 @@ folder. The terminal gets the refusal's report, with the mesh it resolved and it
 `--json` gets that code, message and next step in the stream's `error` record, ahead of its `end`.
 Both records include `target.space` when a space resolved. `target.requestedSpace` holds the
 explicit `--space` value when it contains non-whitespace characters. It is `null` when the flag
-is omitted or its value is missing or blank.
+is omitted or its value is missing or blank. A later `--space` cannot fill a missing value.
 From the project folder of a stopped open space, `watch --space <name>` names the same restart step
 as bare `watch` when the name matches the last run.
 After a controller stack stops cleanly, the next step is `cotal up --no-manager` in its project

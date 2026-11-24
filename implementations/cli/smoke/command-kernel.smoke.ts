@@ -94,6 +94,10 @@ const noop = async (): Promise<void> => {};
       [["--space", "watch-test", "--view", "bad", "--json"], "watch-test", /^watch --view takes feed/],
       [["-j", "--space"], null, missingSpace, "write --space <s>"],
       [["--space", "--json"], null, missingSpace, "write --space <s>"],
+      [["-j", "--space", "--space", "other"], null, missingSpace, "write --space <s>"],
+      [["-js", "--space=other"], null, missingSpace, "write --space <s>"],
+      [["-j", "--space", "first", "--space"], null, missingSpace, "write --space <s>"],
+      [["-j", "--space", "watch-test", "--view"], "watch-test", /^--view needs a value$/, "write --view <view>"],
       [["-js"], null, missingSpace, "write --space <s>"],
       [["--json", "--space="], null, blankSpace],
       [["--json", "-s", "  "], null, blankSpace],
@@ -105,6 +109,7 @@ const noop = async (): Promise<void> => {};
       ["membership", ["channel", "members", "#review"], { space: null, channel: "review" }],
     ] as const) {
       checkStreamRefusal([...words, "-j", "--follow", "--space"], stream, target, missingSpace, "write --space <s>");
+      checkStreamRefusal([...words, "-j", "--follow", "--space", "--space", "other"], stream, target, missingSpace, "write --space <s>");
       checkStreamRefusal([...words, "-j", "--follow", "--space=  "], stream, target, blankSpace);
     }
 

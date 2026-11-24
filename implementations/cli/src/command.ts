@@ -424,6 +424,7 @@ function streamRefusalArgs(cmd: Command, words: readonly string[]): ParsedArgs |
   if (cmd.name !== "history" && cmd.name !== "channel" && cmd.name !== "watch") return undefined;
   const options = Object.fromEntries((cmd.flags ?? []).map(({ name, type, short }) => [name, { type, ...(short ? { short } : {}) }]));
   const args = [...words];
+  let missingSpace = false;
   for (;;) {
     const { values, positionals, tokens } = parseArgs({ args, options, strict: false, allowPositionals: true, tokens: true });
     // The loose parser consumes an option-looking word after a missing value. Leave that word
@@ -431,9 +432,14 @@ function streamRefusalArgs(cmd: Command, words: readonly string[]): ParsedArgs |
     const missing = tokens.find((token) => token.kind === "option" && token.inlineValue === false
       && token.value?.startsWith("-") && token.value !== "-"
       && !(args[token.index] === token.rawName && /^-\d/.test(token.value)));
-    // The caller already detected a valid JSON switch. Watch needs no separate stream selector.
-    if (!missing) return cmd.name === "watch" || (values.json === true && values.follow === true)
-      ? { values: values as ParsedArgs["values"], positionals, raw: words } : undefined;
+    if (missing?.kind !== "option") {
+      // A later --space cannot supply the value for the missing occurrence.
+      if (missingSpace) delete values.space;
+      // The caller already detected a valid JSON switch. Watch needs no separate stream selector.
+      return cmd.name === "watch" || (values.json === true && values.follow === true)
+        ? { values: values as ParsedArgs["values"], positionals, raw: words } : undefined;
+    }
+    if (missing.name === "space") missingSpace = true;
     args.splice(missing.index + 1, 0, "");
   }
 }
