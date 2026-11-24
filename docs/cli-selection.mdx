@@ -75,6 +75,9 @@ definition names that root but its stack journal and broker configuration are no
 The root row then says the folder was moved or deleted, even if the broker is reachable or has
 recreated empty directories at the old path. Its next step stops the stack with
 `cotal down --space <space> --yes` from any folder. See [the missing-folder stop](cli-shutdown.mdx#down).
+`rootGone` is also true when a file obstructs the root of a locally started space. The root row
+names the obstruction and the next step explains how to restore the project folder or forget its
+registration.
 A name that is not registered is refused with `TARGET_NOT_FOUND`, exit 2, and
 so is a bare `space show` outside a project with nothing selected. Each entry under `prepared` has `space`, `root`,
 `preparedAt`, `current`, `rootMissing`, `state` and `lastOperation`. `rootMissing` is true when no
