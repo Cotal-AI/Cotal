@@ -1,9 +1,10 @@
 import { writeSync } from "node:fs";
 import { chatWildcard, type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
-import { colorEnabled, CommandFailure, exitCode, inputDisabledByFlag, isCommandFailure, isConnectRefusal, jsonFlag, plainFlag, presentationOf, recordOperationSpace, streamRecord, writeStreamRecord, userViewAuth, targetFlags } from "@cotal-ai/workspace";
+import { colorEnabled, CommandFailure, exitCode, inputDisabledByFlag, isCommandFailure, isConnectRefusal, jsonFlag, plainFlag, presentationOf, recordOperationSpace, writeStreamRecord, userViewAuth, targetFlags } from "@cotal-ai/workspace";
 import { MeshView, openObserver } from "@cotal-ai/workspace/view";
 import { completingFlagValue } from "../lib/completion.js";
 import { connectOrThrow, userViewAuthOrExit } from "../lib/connect.js";
+import { watchSetupFailureRecords } from "../lib/stream-setup-failure.js";
 import { watchViews, type WatchFilter } from "../watch-data.js";
 export type { WatchFilter } from "../watch-data.js";
 
@@ -26,19 +27,6 @@ export function validateWatchArguments(args: ParsedArgs): void {
   presentationOf(args.values);
   const filter = args.values.view === "feed" ? "activity" : args.values.view ?? "activity";
   if (!watchViews.includes(filter as WatchFilter)) throw new CommandFailure("refused", "USAGE_INVALID", "watch --view takes feed, events, messages, roster, channels, waiting, dms or topology");
-}
-
-export function watchSetupFailureRecords(args: ParsedArgs, failure?: CommandFailure, space?: string) {
-  const requestedSpace = args.values.space;
-  const target = {
-    requestedSpace: typeof requestedSpace === "string" && requestedSpace.trim() ? requestedSpace : null,
-    ...(space === undefined ? {} : { space }),
-  };
-  const reason = failure ? { message: failure.message, ...(failure.remedy === undefined ? {} : { remedy: failure.remedy }) } : { message: "The observer could not establish its authorized view; this is not an empty successful snapshot." };
-  return [
-    streamRecord("watch", "error", target, { code: failure ? failure.code : "OPERATION_FAILED", ...reason }),
-    streamRecord("watch", "end", target, { reason: "setup-failed" }),
-  ];
 }
 
 /** An invisible observer. Leaving this view never sends a control or stop request. */

@@ -4,7 +4,7 @@ import { targetWords } from "../lib/confirmation-required.js";
 import { connectOrThrow, credentialEnded, userViewAuthOrExit } from "../lib/connect.js";
 import { onRerun } from "../lib/control.js";
 import { shellWord } from "../lib/endpoint-errors.js";
-import { membershipSetupFailureRecords } from "../lib/follow-setup-failure.js";
+import { membershipSetupFailureRecords } from "../lib/stream-setup-failure.js";
 import { registryFailure } from "../lib/registry-errors.js";
 import { recordTelemetryFailure } from "../telemetry.js";
 import { refuseUnknownChannel, type channelFlags } from "./channels.js";
