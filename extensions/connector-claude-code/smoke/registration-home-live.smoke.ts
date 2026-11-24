@@ -1,7 +1,7 @@
 /** Two Cotal homes must not replace one shared Claude profile's installed registrations. */
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -30,7 +30,7 @@ function env(profile: string, home: string): NodeJS.ProcessEnv {
   if (existsSync(join(template, "config", "cotal")) && !existsSync(join(xdg, "cotal")))
     cpSync(join(template, "config", "cotal"), join(xdg, "cotal"), { recursive: true, verbatimSymlinks: true });
   return {
-    ...clean, PATH: `${standins}:${process.env.PATH ?? ""}`, HOME: user, USERPROFILE: user, USER_HOME: user,
+    ...clean, PATH: `${standins}:${process.env.PATH ?? ""}`, HOME: user, USERPROFILE: user, USER_HOME: user, APPDATA: user,
     XDG_CONFIG_HOME: xdg, XDG_RUNTIME_DIR: join(user, "runtime"),
     XDG_DATA_HOME: join(user, "data"), XDG_CACHE_HOME: join(user, "cache"), COTAL_HOME: home, CODEX_HOME: join(user, "codex"),
     CLAUDE_CONFIG_DIR: config, CLAUDE_CODE_PLUGIN_CACHE_DIR: join(config, "plugins"),
@@ -76,6 +76,62 @@ function integration(machine: ReturnType<typeof statusMachine>, label: string) {
   assert.ok(row, `missing ${label} row`);
   return row;
 }
+
+function assertReadOnlyWake(): void {
+  const config = join(envA.CLAUDE_CONFIG_DIR!, ".claude.json");
+  const mode = statSync(config).mode & 0o777;
+  chmodSync(config, 0o444);
+  try {
+    const machine = statusMachine(envB, "project-b");
+    const warning = integration(machine, "Claude skills");
+    assert.deepEqual(integration(machine, "Claude wake channel"), { ...warning, name: "Claude wake channel" });
+    assert.doesNotMatch(warning.text, /writable|cotal update/);
+    assert.deepEqual(profileBytes(envA), original);
+    assert.equal(statSync(config).mode & 0o222, 0);
+  } finally {
+    chmodSync(config, mode);
+  }
+  console.log("PASS: foreign read-only wake config names the owner without asking for a permission change");
+}
+
+function assertDesktopStatus(): void {
+  const probe = join(root, "desktop-status.mjs");
+  // On Linux exercise the macOS config path with the real Claude profile, without starting Desktop.
+  writeFileSync(probe, `import { claudeSetupProvider } from ${JSON.stringify(new URL("../dist/index.js", import.meta.url).href)};
+if (process.platform === "linux") Object.defineProperty(process, "platform", { value: "darwin" });
+const rows = claudeSetupProvider.status({ version: "0.0.0", skillsRemedy: "", ...(process.argv[2] === "hosted" ? {
+  signedIn: { space: "hosted", hostedConnector: "https://example.test/mcp" },
+} : {}) });
+console.log(JSON.stringify(rows.find((row) => row.label === "Claude Desktop")));
+`);
+  const user = join(root, "user-desktop");
+  const dir = process.platform === "win32" ? join(user, "Claude") : join(user, "Library", "Application Support", "Claude");
+  const config = join(dir, "claude_desktop_config.json");
+  mkdirSync(dir, { recursive: true });
+  const row = (environment: NodeJS.ProcessEnv, scope = "local") => {
+    const result = run(process.execPath, [probe, scope], { ...environment, HOME: user, USERPROFILE: user, APPDATA: user });
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    return JSON.parse(result.stdout) as { state: string; text: string };
+  };
+  const warning = integration(statusMachine(envB, "project-b"), "Claude skills");
+  const checkBlocked = () => {
+    const desktop = row(envB);
+    assert.equal(desktop.state, "warn");
+    assert.equal(desktop.text, warning.text);
+    assert.doesNotMatch(desktop.text, /cotal setup|cotal update|writable/);
+  };
+  checkBlocked();
+  assert.ok(!existsSync(config));
+  assert.match(row(envA).text, /not added · run `cotal setup`/);
+  const bytes = JSON.stringify({ mcpServers: { "cotal-desktop": { command: process.execPath, args: [join(homeA, "claude-plugin", "cotal", "dist", "seat.cjs"), "--desktop"] } } });
+  writeFileSync(config, bytes);
+  checkBlocked();
+  assert.equal(row(envA).state, "ok");
+  assert.match(row(envB, "hosted").text, /add https:\/\/example\.test\/mcp under Settings/);
+  assert.equal(readFileSync(config, "utf8"), bytes);
+  console.log("PASS: Desktop status replaces refused local repairs and retains the hosted connector guidance");
+}
+
 function claude(environment: NodeJS.ProcessEnv, ...args: string[]): string {
   const result = run("claude", args, environment);
   assert.equal(result.status, 0, result.stderr);
@@ -205,6 +261,8 @@ function assertForeignStatus(): void {
   console.log("PASS: Claude and .agents status explain the blocked repairs and preserve drift reporting");
 }
 assertForeignStatus();
+if (process.platform !== "win32") assertReadOnlyWake();
+if (["linux", "darwin", "win32"].includes(process.platform)) assertDesktopStatus();
 assert.equal(integration(statusMachine(envA, "project-a"), "Claude skills").text, "current");
 
 const probe = join(root, "provider.mjs");

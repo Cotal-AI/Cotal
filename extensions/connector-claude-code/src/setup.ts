@@ -142,21 +142,23 @@ function registerUserServer(cotal: readonly string[], refreshing = false): strin
 /** Whether Claude Code's user config declares the `cotal` server the wake channel of a launched
  *  session binds to; a managed launch is refused without it. */
 function userServerRow(installed: boolean, problem: RegistrationProblem): ConnectorStatusRow {
+  const row = (state: ConnectorStatusRow["state"], text: string): ConnectorStatusRow => ({ label: "Claude wake channel", state, text });
   let declared: boolean;
   try {
     const entry = claudeUserMcpServers().cotal;
     declared = entry !== undefined;
     const path = claudeUserMcpPath();
     if (installed && userServerState(entry, userServerEntry([process.execPath])) !== "current" && isConfigProtected(path)) {
-      return { label: "Claude wake channel", state: "warn", text: protectedClaudeConfig(path, "The Claude Code user MCP entry cotal") };
+      if (problem) return row(problem.state, problem.text);
+      return row("warn", protectedClaudeConfig(path, "The Claude Code user MCP entry cotal"));
     }
   } catch (e) {
-    return { label: "Claude wake channel", state: "error", text: (e as Error).message };
+    return row("error", (e as Error).message);
   }
   return declared
-    ? { label: "Claude wake channel", state: "ok", text: "user MCP entry cotal registered" }
-    : { label: "Claude wake channel", state: "off", text: "user MCP entry `cotal` not registered" +
-      (problem ? "" : " · run `cotal setup` on a space host or `cotal daemon setup --space <space>` on a daemon-connected computer") };
+    ? row("ok", "user MCP entry cotal registered")
+    : row("off", "user MCP entry `cotal` not registered" +
+      (problem ? "" : " · run `cotal setup` on a space host or `cotal daemon setup --space <space>` on a daemon-connected computer"));
 }
 
 /** Desktop chat supplies no native session, so its local server cannot join a signed-in space. It
@@ -670,25 +672,26 @@ function pluginRow(entries: PluginEntry[] | undefined, { version }: ConnectorSta
 
 /** Cotal's entry in Claude Desktop's config, where Desktop is installed. It must run the server setup
  *  materialized, and for a signed-in selected space the row names the hosted connector instead. */
-function desktopRow(signedIn?: SignedInSpace): ConnectorStatusRow | undefined {
+function desktopRow(problem: RegistrationProblem, signedIn?: SignedInSpace): ConnectorStatusRow | undefined {
   const path = desktopConfigPath();
   if (!path || !existsSync(dirname(path))) return undefined;
   const row = (state: ConnectorStatusRow["state"], text: string): ConnectorStatusRow => ({ label: "Claude Desktop", state, text });
+  const blocked = problem && row(problem.state, problem.text);
   let entry: unknown;
   let clash = "";
   try {
     entry = readDesktopEntry(path);
     if (desktopNameClash(path)) clash = " A server named cotal in Claude Desktop's config uses the same name as the Claude Code plugin.";
-    if (entry !== undefined && !desktopEntryCurrent(path, desktopEntry([process.execPath])) && isConfigProtected(path))
-      return row("warn", protectedClaudeConfig(path, "The Claude Desktop MCP entry"));
+    if ((!signedIn || !blocked) && entry !== undefined && !desktopEntryCurrent(path, desktopEntry([process.execPath])) && isConfigProtected(path))
+      return blocked ?? row("warn", protectedClaudeConfig(path, "The Claude Desktop MCP entry"));
   } catch (e) {
-    return row("error", (e as Error).message);
+    return blocked ?? row("error", (e as Error).message);
   }
   if (signedIn) return entry === undefined ? row("off", hostedConnector(signedIn)) : row("warn", `added, but Desktop ${hostedConnector(signedIn)}${clash}`);
-  if (entry === undefined) return row(clash ? "warn" : "off", clash ? `not added.${clash}` : "not added · run `cotal setup`");
+  if (entry === undefined) return clash ? row("warn", `not added.${clash}`) : blocked ?? row("off", "not added · run `cotal setup`");
   const server = (entry as { args?: unknown }).args;
   const expected = join(marketplaceDir(), "cotal", "dist", "seat.cjs");
-  if (!Array.isArray(server) || server[0] !== expected || !existsSync(expected)) return row("warn", `stale · run \`cotal setup\`${clash}`);
+  if (!Array.isArray(server) || server[0] !== expected || !existsSync(expected)) return blocked ?? row("warn", `stale · run \`cotal setup\`${clash}`);
   return row(clash ? "warn" : "ok", `added${clash}`);
 }
 
@@ -869,7 +872,7 @@ export const claudeSetupProvider: ConnectorSetupProvider = {
   status(input) {
     const plugins = pluginList();
     const problem = plugins === undefined ? undefined : registrationProblem();
-    const app = desktopRow(input.signedIn);
+    const app = desktopRow(problem, input.signedIn);
     const installed = plugins?.some((entry) => entry.id === `cotal@${MARKETPLACE}`) ?? false;
     return [pluginRow(plugins, input, problem), userServerRow(installed, problem), ...(app ? [app] : []), skillsRow(plugins, input, problem)];
   },
