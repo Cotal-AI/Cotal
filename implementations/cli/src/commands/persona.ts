@@ -275,7 +275,7 @@ function receipt(presentation: Presentation, catalog: PersonaCatalog, name: stri
       ...(seededDefault ? [{ kind: "lines" as const, lines: ["This was the seeded default persona, which a bare `cotal spawn` launches. A local `cotal up` in this root, `cotal space create` or `cotal setup` writes a fresh copy."] }] : []),
     ] },
     { title: "Next", blocks: [{ kind: "commands", items: result.action === "removed" ? [
-      { command: "cotal p", description: "Browse the local catalog" },
+      { command: `cotal p${target}`, description: "Browse the local catalog" },
     ] : [
       { command: `cotal spawn${spawnWords}`, description: "Launch an agent from this persona" },
       { command: `cotal p show${word}`, description: "Read the saved definition" },

@@ -544,6 +544,15 @@ try {
     !existsSync(agentFilePath(CWD, "catalog-created")), plannedServer.stdout + (created?.stderr ?? ""));
   check("persona list's process command retains both explicit selectors",
     ["cotal", "pnpm cotal"].some(cli => plannedServer.stdout.includes(`${cli} ps --space offline-audit --server nats://127.0.0.1:1`)), plannedServer.stdout);
+  writeFileSync(agentFilePath(CWD, "catalog-created"), source);
+  const removal = native(["persona", "remove", "catalog-created", "--space", "offline-audit", "--server", "nats://127.0.0.1:1", "--yes", "--plain"], CWD);
+  const browse = removal.stdout.match(/(?:pnpm cotal|cotal) (p --space offline-audit --server nats:\/\/127\.0\.0\.1:1)\s+Browse the local catalog/)?.[1];
+  const browsed = browse ? native(browse.split(" "), CWD) : undefined;
+  check("persona removal's browse command lists the changed catalog and leaves the origin copy intact",
+    removal.status === 0 && browsed?.status === 0 && browsed.stdout.includes("Mesh: offline-audit") &&
+    browsed.stdout.includes(only) && !browsed.stdout.includes("catalog-created") &&
+    readFileSync(agentFilePath(CWD, "catalog-created"), "utf8") === source && !existsSync(agentFilePath(offlineRoot, "catalog-created")),
+    removal.stdout + removal.stderr + (browsed?.stdout ?? "") + (browsed?.stderr ?? ""));
   checkCreateInputGuidance((args, input) => native(args, MESH, childEnv, input), MESH);
   if (process.platform !== "win32") {
     const server = "nats://[::1]:43002";
