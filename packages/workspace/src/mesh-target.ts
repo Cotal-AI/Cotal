@@ -709,6 +709,23 @@ function stackRecord(root: string): { server?: string; stackSpace?: string; home
   }
 }
 
+/** The space of this project's live open broker at the requested address. */
+function runningOpenStackSpace(root: string, requestedServer: string): string | undefined {
+  if (!isGenuineSpace(root) || cotalDirLink(root) !== undefined) return undefined;
+  try {
+    const bytes = readLocalRecordSource(stackJournalPath(root), 64 * 1024, true);
+    if (bytes === undefined) return undefined;
+    const journal = decodeLocalJson(bytes) as { schemaVersion?: unknown; kind?: unknown; root?: unknown; mode?: unknown; server?: unknown; space?: unknown; members?: unknown } | null;
+    if (journal?.schemaVersion !== 1 || journal.kind !== "cotal-stack-controller" || journal.root !== canonicalRoot(root) || journal.mode !== "open" ||
+        typeof journal.server !== "string" || brokerUrlKey(journal.server) !== requestedServer || typeof journal.space !== "string" || !journal.space || !Array.isArray(journal.members)) return undefined;
+    const broker = (journal.members as ({ role?: unknown; state?: unknown; process?: Partial<ProcessIdentityRecord> } | null)[]).find((row) => row?.role === "broker");
+    const pin = broker?.process;
+    if ((broker?.state === "started" || broker?.state === "reused") && typeof pin?.pid === "number" && parsePid(String(pin.pid)) === pin.pid &&
+        typeof pin.token === "string" && assertRecordIdentity({ pid: pin.pid, token: pin.token }).kind === "match") return journal.space;
+  } catch { /* Unusable journal evidence cannot change a raw target. */ }
+  return undefined;
+}
+
 /** The `host:` and `port:` a rendered broker configuration names, as a broker URL. */
 function renderedServer(path: string): string | undefined {
   try {
@@ -1209,7 +1226,8 @@ export function resolveMeshTarget(cwd: string, flags: ResolveFlags = {}): MeshTa
         available: nearby.map((e) => `${e.space} (${brokerAddressForDisplay(e.server) ?? "an invalid broker address"})`),
       });
     }
-    return local;
+    const stackSpace = local.mode === "open" && local.space === DEFAULT_SPACE ? runningOpenStackSpace(local.root, requestedServer) : undefined;
+    return stackSpace === undefined ? local : { ...local, space: stackSpace };
   }
 
   const selection = readCurrentSelection();

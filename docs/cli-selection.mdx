@@ -621,6 +621,11 @@ and `cotal up`, and `status` names the same step. A selection does not change th
 that holds such a journal or configuration and no registration, as a moved project does, is refused
 the same way and never reaches the selected space.
 
+With `--server` and no `--space`, a matching registration takes precedence. If the project would
+otherwise use the default space `main`, it uses the space in its journal when the requested address
+matches the journal's open broker and the recorded process identity still matches. An unrelated
+raw address does not inherit the journal's space.
+
 When the journal names running members but this Cotal home has no instance records for them,
 commands report the missing records. They do not infer that the stack runs under another home.
 If the original home's records were removed, the project's `cotal down --dry-run` and
