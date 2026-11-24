@@ -165,6 +165,15 @@ export class NoLaunchManager extends Error {
   override readonly name = "NoLaunchManager";
 }
 
+/** No live manager is registered for the space, as once the last one stopped itself, so none runs
+ *  there to list the agents. */
+export class NoManagerRegistered extends Error {
+  override readonly name = "NoManagerRegistered";
+  constructor(readonly space: string) {
+    super(`No live manager is registered for ${space}`);
+  }
+}
+
 /** What a person on a space where people sign in can do about a registered manager that does not
  *  answer. Its registration stays listed until it is removed, as `cotal ps` says. */
 export function deregisterRemedy(space: string, instanceIds: readonly string[]): string {
@@ -203,7 +212,8 @@ export interface Mesh {
   personas(managerInstanceId?: string): Promise<PersonaRow[]>;
   /** Launch a seat and wait until the manager confirms it joined. */
   spawn(request: SpawnRequest): Promise<SeatRef>;
-  /** Every managed seat the caller can see. */
+  /** Every managed seat the caller can see. Rejects with {@link NoManagerRegistered} when no live
+   *  manager is registered for the space. */
   seats(): Promise<SeatList>;
   /** Stop one seat through the manager that holds it. */
   despawn(seat: SeatRef): Promise<void>;

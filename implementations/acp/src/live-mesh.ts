@@ -36,7 +36,7 @@ import { askManager, controlPs, liveManagerIds, managerCandidate, managerRailGon
 import { readManagedLaunch, requestManagedLaunch } from "@cotal-ai/workspace/launch";
 import { openAgentCaller, openObserver } from "@cotal-ai/workspace/view";
 import { startManager } from "./manager-start.js";
-import { AgentCallFailed, deregisterRemedy, LaunchListsRefused, NoLaunchManager, SignInRequired, type AgentCatalog, type AguiEventLike, type ChannelRow, type ManagerChoice, type Mesh, type PersonaRow, type RosterEntry, type SeatFrame, type SeatRef, type SeatRow, type SpawnRequest } from "./mesh.js";
+import { AgentCallFailed, deregisterRemedy, LaunchListsRefused, NoLaunchManager, NoManagerRegistered, SignInRequired, type AgentCatalog, type AguiEventLike, type ChannelRow, type ManagerChoice, type Mesh, type PersonaRow, type RosterEntry, type SeatFrame, type SeatRef, type SeatRow, type SpawnRequest } from "./mesh.js";
 
 const OBSERVER_NAME = "acp";
 /** A seat's retained event history is read up to this many frames. */
@@ -493,7 +493,7 @@ function seatCalls(options: LiveMeshOptions, c: Connected, p: Controls, agent: R
       const removable: string[] = [];
       if (!started) {
         const reply = await controlPs(client, ctx, { readOnly: true });
-        if (!reply.ok) throw new Error(reply.error);
+        if (!reply.ok) throw reply.noLiveManager ? new NoManagerRegistered(target.space) : new Error(reply.error);
         answered = reply.answered;
         // A registration whose host is gone never answers, so it is not one that may still hold the agent.
         for (const id of reply.gone) options.log(`manager ${id} is registered, but nothing is behind its rail; its host is gone and never deregistered`);
@@ -502,7 +502,7 @@ function seatCalls(options: LiveMeshOptions, c: Connected, p: Controls, agent: R
         // A user-auth bearer reads one manager per call, each pinned. A manager that does not answer
         // hides only its own agents, as `cotal ps` reports it.
         const plan = await yourManagers();
-        if (plan.read.length === 0) throw new Error(plan.why ?? "the space lists no live manager for you");
+        if (plan.read.length === 0) throw new NoManagerRegistered(target.space);
         const reads = await Promise.all(plan.read.map(async (instanceId) => {
           try {
             const reply = await ask("ps", undefined, instanceId);
