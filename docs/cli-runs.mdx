@@ -440,7 +440,7 @@ When the simulation returns a report, `cotal run simulate <file> --json` puts th
 | `result.agents` | Simulated `spawn` requests with `persona` and channel names in `joins`, plus `worktree`, `role` and `permits` if supplied. No agents were launched. |
 | `result.waits` | One entry per reached `waitUntil` that starts polling, with `step`, `name`, polling interval `every` and duration `deadline`. Channel `wait` calls appear in `result.effects`. |
 | `result.checkpoints` | One row per checkpoint request sent to the simulator, with `step`, `name`, `prompt` and any `timeout`, `onExpiry` and `to` from the request. An escalation adds a second row with the same step key and `onExpiry: "proceed"`. |
-| `result.unusedScript` | Keys from `turns`, `asks`, `checkpoints` and `events` that were never selected during result lookup, in `table.name` form (for example, `checkpoints.approve-plan`). A matching list counts as used even when empty or exhausted. A fault injected before lookup does not use the key. |
+| `result.unusedScript` | Keys from `turns`, `asks`, `checkpoints` and `events` that were never selected during result lookup, in `table.name` form (for example, `checkpoints.approve-plan`). A matching list counts as used even when empty or exhausted. A fault injected before lookup does not use the key. A fault that was never injected is listed as `faults.<at>` (for example, `faults./sleep:typo#0`); the simulation still completes, since the fault may target a branch this run did not take. |
 | `result.log` | `log(...)` calls in order, each with `scope` and `values`. In plain output these appear under `Log`. |
 
 In `result.failure`, `step` and `stepOutcome` describe the last failed entry in journal order with
