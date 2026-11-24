@@ -189,6 +189,7 @@ An answering daemon without an active automatic schedule is reported separately,
 paused by an unreadable update-attempt record with no next attempt. The preference stays saved;
 the command installs and starts nothing.
 `cotal update --notify off` silences notices independently, and `--notify on` enables them.
+Both preferences can be read or changed even if the extension manifest is corrupt.
 Both `--auto` and `--notify` refuse `--on`, even with an empty value, without changing preferences.
 If `update-settings.json` contains damaged JSON or invalid settings, these preference commands
 save its contents in a private `update-settings.json.corrupt.<id>` copy in the same folder,
@@ -850,7 +851,9 @@ prefix and `result.items` holds one row per installed extension with `pkg`, `ver
 `ext add` was given), `seeded` (`true` for an entry the built-in seed installed) and `provides` (the
 `kind:name` refs the table shows). An empty prefix is an empty list. `--plain` writes the same report
 without color. The other `ext` subcommands refuse `--json` and `--plain` with `USAGE_INVALID`.
-`ext root` stays a raw path for `$(cotal ext root)`.
+`ext root` stays a raw path for `$(cotal ext root)`, even if the manifest is corrupt.
+If the manifest is corrupt, `ext list --json` exits 1 with a `SCHEMA_INVALID` refusal and names
+`cotal ext seed --repair` in `error.remedy`. The listing leaves the damaged file unchanged.
 
 `ext list` checks package metadata without loading or repairing extensions. It keeps each recorded
 row and reports a missing package directory as not installed. A package with a missing or invalid

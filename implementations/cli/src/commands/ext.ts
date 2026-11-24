@@ -14,7 +14,7 @@ import { npmInvocation } from "../lib/npm-invocation.js";
 import { runSeed } from "../seed/reconcile.js";
 import { assertStageVerifier, stageExtensions } from "../lib/extension-stage.js";
 import { connectorConfigDir, extensionReinstallAdvice, isExtensionPathSpec as isPathSpec, resolveExtensionEntry } from "@cotal-ai/workspace";
-import { CorruptExtensionPackageError, inspectLock, extensionNpmMutationPath, oneLine, type OutputWarning } from "@cotal-ai/workspace";
+import { CorruptExtensionPackageError, CorruptExtensionsManifestError, inspectLock, extensionNpmMutationPath, oneLine, type OutputWarning } from "@cotal-ai/workspace";
 import { selfArgv } from "../lib/self-exec.js";
 import { spawnSync } from "node:child_process";
 import { isAuthenticSeedChild, markSeedChildLive, clearChildMarker } from "../seed/lock.js";
@@ -783,7 +783,13 @@ export interface ExtensionRow {
 
 /** Keep every recorded pin, and check its on-disk metadata without loading the extension. */
 function list(presentation: Presentation): void {
-  const entries = loadExtensionsManifest().extensions;
+  let entries: readonly InstalledExtension[];
+  try {
+    entries = loadExtensionsManifest().extensions;
+  } catch (error) {
+    if (presentation !== "json" || !(error instanceof CorruptExtensionsManifestError)) throw error;
+    throw new CommandFailure("refused", "SCHEMA_INVALID", error.diagnosis, { remedy: error.remedy, cause: error });
+  }
   const warnings = entries.flatMap((entry): OutputWarning[] => {
     const dir = extensionPackageDir(entry.pkg);
     const path = join(dir, "package.json");

@@ -859,8 +859,13 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
   // The built-in updater repairs its connector paths before opening any promotion journal.
   const selfUpdate = builtin?.name === "update" && words.includes("--self") && !wantsHelp
     && parseOrExit(builtin, ownWords(builtin)).values.self === true;
-  // The removed start command only gives migration advice and needs no extension inventory.
-  let useExtensionOverlay = opts.extensions && !updateCheck && !selfUpdate && builtin?.name !== "start";
+  const preference = builtin?.name === "update" && !wantsHelp && (words.includes("--auto") || words.includes("--notify"))
+    ? parseOrExit(builtin, ownWords(builtin)).values : undefined;
+  const extMode = builtin?.name === "ext" ? metadataPositionals(builtin, words).positionals[0]?.value : undefined;
+  // Root only resolves a path. The JSON list classifies inventory errors in its handler.
+  const extDiagnostics = builtin?.name === "ext" && !wantsHelp
+    && (extMode === "root" || ((extMode === undefined || extMode === "list") && asksForJson(builtin, words)));
+  let useExtensionOverlay = opts.extensions && !updateCheck && !selfUpdate && !preference?.auto && !preference?.notify && builtin?.name !== "start";
   function skipUnreadableConnectorOverlay(error: unknown): boolean {
     if (!(error instanceof UnreadableConnectorSelection) || !builtin || !["version", "status", "down"].includes(builtin.name)) return false;
     if (builtin.name === "down") {
@@ -900,7 +905,7 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
   const surface = (warnings?: OutputWarning[]): Command[] => {
     let commands: Command[];
     try {
-      commands = useExtensionOverlay && !versionJson && !configFolder ? overlayExtensions(registry, warnings && collisionWarning(warnings)) : registry.all<Command>("command");
+      commands = useExtensionOverlay && !versionJson && !extDiagnostics && !configFolder ? overlayExtensions(registry, warnings && collisionWarning(warnings)) : registry.all<Command>("command");
     } catch (e) {
       if (skipUnreadableConnectorOverlay(e)) commands = registry.all<Command>("command");
       else {
