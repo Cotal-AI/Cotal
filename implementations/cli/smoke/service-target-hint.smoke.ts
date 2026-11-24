@@ -22,6 +22,7 @@
  * `service logs` on a log this account cannot read is refused PERMISSION_DENIED with a chmod step,
  * and `--follow` ends with that refusal as its error record.
  * A saved service with no recorded instance instead points to a read-only status command.
+ * An explicit instance miss in `status` or `logs` identifies the target and points to inventory.
  *
  * Run: pnpm smoke:service-target-hint
  */
@@ -134,10 +135,20 @@ check("help service remove lists --instance <full-id> in its usage and options",
     check("running the printed step in another space's folder reports not started without allocating an instance",
       status?.status === 0 && /Recorded state:\s+not started/.test(status.stdout), status);
   }
-  const missingLog = run(["service", "logs", "tick", "--space", "sa", "--instance", "00000000-0000-4000-8000-000000000000", "--json"], b);
-  check("logs still refuses an explicitly named instance that does not belong to the service",
-    missingLog.status === 2 && missingLog.stdout.includes('"code":"TARGET_NOT_FOUND"') &&
-    missingLog.stdout.includes("the full instance ID does not belong") && !missingLog.stdout.includes('"remedy"'), shown(missingLog));
+  const instanceId = "00000000-0000-4000-8000-000000000000";
+  for (const verb of ["status", "logs"]) {
+    const args = ["service", verb, "tick", "--space", "sa", "--instance", instanceId];
+    const missing = run([...args, "--json"], b);
+    const receipt = JSON.parse(missing.stdout);
+    check(`${verb} --json refuses an unknown instance with its full target and scoped inventory command`,
+      missing.status === 2 && missing.stderr === "" && receipt.outcome === "refused" && receipt.error?.code === "TARGET_NOT_FOUND" &&
+      receipt.target?.space === "sa" && receipt.target.name === "tick" && receipt.target.instanceId === instanceId &&
+      receipt.error.remedy === "cotal service --space sa --json", shown(missing));
+    const plain = run([...args, "--plain"], b);
+    check(`${verb} --plain names the requested definition and instance and prints the Next command`,
+      plain.status === 2 && /Code:\s+TARGET_NOT_FOUND/.test(plain.stderr) && /Name:\s+tick/.test(plain.stderr) &&
+      new RegExp(`^\\s+Instance:\\s+${instanceId}$`, "m").test(plain.stderr) && /^Next\n\s+cotal service --space sa --json$/m.test(plain.stderr), shown(plain));
+  }
 
   const config = join(a, ".cotal", "broker.conf");
   writeFileSync(config, "", { mode: 0o600 });
