@@ -518,14 +518,14 @@ if (!brokerDisplayOnly) {
 // ── a folder this account cannot read is the one gap, named with its chmod ───────────────────────
 if (process.platform !== "win32" && process.getuid?.() !== 0) {
   const { home } = sandbox();
-  // No `.cotal` above it, so the folder is its own root, as a fresh project folder is.
   const outside = mkdtempSync(join(tmpdir(), "cotal-status-unreadable-"));
   roots.push(outside);
   const folder = join(outside, "project notes");
   mkdirSync(folder, { mode: 0o700 });
+  mkdirSync(join(folder, ".cotal"), { mode: 0o700 });
   const env = { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config"), COTAL_HOME: join(home, ".cotal-home"), COTAL_SKIP_CONNECTOR_SEED: "1" };
-  // The shell enters the folder before its mode drops, as it would for an operator already in it.
-  const r = spawnSync("/bin/sh", ["-c", 'cd "$0" && chmod 000 . && exec "$@"', folder, process.execPath, BIN, "status", "--json"], { env, encoding: "utf8", timeout: 120_000 });
+  // Keep search permission so root discovery sees this project's marker, but deny reads of the root.
+  const r = spawnSync("/bin/sh", ["-c", 'cd "$0" && chmod 100 . && exec "$@"', folder, process.execPath, BIN, "status", "--json"], { env, encoding: "utf8", timeout: 120_000 });
   chmodSync(folder, 0o700);
   const envelope = (r.stdout ?? "").startsWith("{") ? (JSON.parse(r.stdout) as Envelope) : undefined;
   const shownR = { status: r.status, stdout: (r.stdout ?? "").slice(0, 900), stderr: (r.stderr ?? "").slice(0, 600) };
