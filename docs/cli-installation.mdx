@@ -326,7 +326,7 @@ folder was deleted before it ever started. Update keeps its saved selection and 
 Update runs from the surviving project root, or the filesystem root when no project is present.
 It runs npm for the installation and its extensions outside the project, so the project's package
 manager does not affect the update. Relative `PATH` entries are resolved from the folder where you
-ran `update`.
+ran `update`. On Linux and macOS, an empty entry also refers to that folder, just like `.`.
 Removing an unrelated working folder before or during update does not block it or its npm and
 reconciliation children. A relative `--creds` path keeps its meaning from the original folder.
 

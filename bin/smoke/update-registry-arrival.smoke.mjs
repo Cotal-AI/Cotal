@@ -476,16 +476,35 @@ export PATH="$NPM_SMOKE_REAL_PATH"
 exec npm "$@"
 `, { mode: 0o700 });
       env.NPM_SMOKE_REAL_PATH = originalPath;
-      env.PATH = `tools${delimiter}${originalPath}`;
+      const relativePath = `tools${delimiter}${originalPath}`;
+      env.PATH = relativePath;
       const blocked = await run('npm', ['view', 'cotal-ai@latest', 'version', '--json'], 60000);
       assert.equal(blocked.code, 1, blocked.output);
       assert.match(blocked.output, /This project is configured to use pnpm/);
       env.NPM_SMOKE_REFUSAL = '1';
-      const refused = await run(process.execPath, [entry, 'update', '--self'], 60000);
+      symlinkSync(join('tools', 'npm'), join(cwd, 'npm'));
+      const absent = join(tools, 'missing');
+      const paths = [relativePath, '.', ['', absent].join(delimiter),
+        [absent, '', absent].join(delimiter), [absent, ''].join(delimiter), ''];
+      const assertCallerNpm = async path => {
+        env.PATH = path;
+        const refused = await run(process.execPath, [entry, 'update', '--self'], 60000);
+        assert.equal(refused.code, 1, refused.output);
+        assert.match(refused.output, /cotal-ai version check failed: npm requires an authenticated registry session/, `PATH=${JSON.stringify(path)}: ${refused.output}`);
+        assert.doesNotMatch(refused.output, /second diagnostic line|registry cannot be reached/);
+      };
+      for (const path of paths) await assertCallerNpm(path);
+      const colonCaller = join(cwd, 'caller:colon'), splitCaller = join(cwd, 'caller');
+      mkdirSync(colonCaller);
+      mkdirSync(splitCaller);
+      writeFileSync(join(splitCaller, 'npm'), '#!/bin/sh\necho wrong npm >&2\nexit 1\n', { mode: 0o700 });
+      symlinkSync(join(tools, 'npm'), join(colonCaller, 'npm'));
+      symlinkSync(tools, join(colonCaller, 'tools'));
+      cwd = colonCaller;
+      for (const path of [`${delimiter}${originalPath}`, '', '.', 'tools']) await assertCallerNpm(path);
+      cwd = dirname(colonCaller);
+      env.PATH = relativePath;
       delete env.NPM_SMOKE_REFUSAL;
-      assert.equal(refused.code, 1, refused.output);
-      assert.match(refused.output, /cotal-ai version check failed: npm requires an authenticated registry session/);
-      assert.doesNotMatch(refused.output, /second diagnostic line|registry cannot be reached/);
       assert.equal(JSON.parse(readFileSync(join(packageRoot, 'package.json'), 'utf8')).version, previous);
     }
     if (closureNoSpace) {
