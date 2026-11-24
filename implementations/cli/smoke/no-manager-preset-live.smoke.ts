@@ -160,6 +160,14 @@ try {
     retire.status === 2 && retire.env?.error?.code === "LIFECYCLE_BLOCKED" && retire.env.error.message.includes("agents from an earlier manager may still be running")
       && retire.env.error.remedy?.includes("131072 bytes") === true && retire.env.error.remedy.includes("263168 bytes") && !retire.env.error.remedy.includes("`cotal up`")
       && retirementPreview.status === 0 && retirementPreview.env?.outcome === "no-op" && retirementPreview.stdout.includes(retire.env.error.message), { apply: shown(retire), preview: shown(retirementPreview) });
+  const absent = cotal("down", "--abandon-stop", randomUUID(), "--yes", "--json");
+  const remedy = absent.env?.error?.remedy ?? "";
+  const restart = /To restart without a manager, run `cotal ([^`]+)`/.exec(remedy)?.[1];
+  check("no retained stop requires no action and distinguishes the two restart commands", absent.status === 2 && absent.env?.error?.code === "TARGET_NOT_FOUND" && remedy.includes("no further stop is needed") && restart === "up --no-manager" && remedy.includes("to restart with a manager, run `cotal up`") && running("stack-broker") === undefined, shown(absent));
+  if (restart === "up --no-manager") {
+    const retried = cotal(...restart.split(" "), "--json");
+    check("the broker-only restart after an absent stop starts no manager", retried.status === 0 && running("stack-broker") !== undefined && running("stack-manager") === undefined, shown(retried));
+  }
 } catch (error) {
   check("scenario completed", false, (error as Error).stack ?? String(error));
 } finally {
