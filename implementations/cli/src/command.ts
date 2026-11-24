@@ -432,7 +432,8 @@ function streamRefusalArgs(cmd: Command, words: readonly string[]): ParsedArgs |
     const missing = tokens.find((token) => token.kind === "option" && token.inlineValue === false
       && token.value?.startsWith("-") && token.value !== "-"
       && !(args[token.index] === token.rawName && /^-\d/.test(token.value)));
-    if (!missing) return values.json === true && (cmd.name === "watch" || values.follow === true)
+    // The caller already detected a valid JSON switch. Watch needs no separate stream selector.
+    if (!missing) return cmd.name === "watch" || (values.json === true && values.follow === true)
       ? { values: values as ParsedArgs["values"], positionals, raw: words } : undefined;
     args.splice(missing.index + 1, 0, "");
   }
