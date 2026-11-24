@@ -27,6 +27,7 @@ import { dirname, join } from "node:path";
 import { agentFilePath } from "@cotal-ai/core";
 import { createSuite } from "@cotal-ai/smoke-kit";
 import { recordMesh } from "@cotal-ai/workspace";
+import { execWords } from "../src/lib/exec-words.js";
 
 const BIN = join(import.meta.dirname, "..", "..", "..", "bin", "dist", "cotal.js");
 if (!existsSync(BIN)) {
@@ -37,7 +38,7 @@ if (!existsSync(BIN)) {
 interface Envelope {
   outcome: string;
   completeness?: string;
-  result?: { requestedName?: string; name?: string; path?: string; definition?: { name?: string }; source?: string };
+  result?: { requestedName?: string; name?: string; path?: string; definition?: { name?: string }; source?: string; kind?: string; allocated?: boolean; launched?: boolean };
   target: Record<string, unknown> | null;
   error?: { code: string; message?: string; remedy?: string };
 }
@@ -99,6 +100,47 @@ for (const args of [["reviewer", "Audit text"], ["--name", "reviewer", "--text=-
 
 const prepared = cotal("space", "create", "opsp", "--root", ".");
 check("fixture: the space is prepared and not started", prepared.status === 0, shown(prepared));
+
+{
+  const file = "./Owner's persona.md";
+  writeFileSync(join(root, file), "---\nname: example\nrole: reviewer\n---\n");
+  const options = ["--name", "example", "--live-only", "--dry-run", "--json"];
+  const retryFor = (r: ReturnType<typeof cotal>) => r.stderr.split("\n").find(line => line.startsWith("  "))?.trim();
+  for (const [config, target] of [["default", ["default", "--foreground"]], [file, ["--foreground", "--file", file]]] as const) {
+    const removed = cotal("start", "--config", config, ...options);
+    const command = retryFor(removed);
+    const words = command ? execWords(command) : [];
+    const tail = words.slice(words.indexOf("spawn"));
+    const expected = ["spawn", ...target, ...options];
+    const agrees = same(tail, expected);
+    check(`start with --live-only explains the manager conflict and prints a foreground retry for ${config}`,
+      removed.status === 1 && removed.stdout === "" && removed.stderr.includes("It cannot be used with a manager launch") && agrees, shown(removed));
+    const preview = agrees ? cotal(...tail) : undefined;
+    const result = preview?.envelope?.result;
+    check(`running that retry for ${config} previews without allocating or launching`,
+      preview?.status === 0 && preview.envelope?.outcome === "ok" && result?.kind === "direct-launch-preview" &&
+      result.allocated === false && result.launched === false, preview && shown(preview));
+  }
+  for (const extra of [["--detach", "--dry-run"], ["--on", "manager", "--dry-run"], ["--json"], ["--plain"]]) {
+    const removed = cotal("start", "--config", "default", "--live-only", ...extra);
+    const explanation = extra.includes("--dry-run") ? "It cannot be used with a manager launch" : "Use `--dry-run` with `--json` or `--plain`";
+    check(`start with --live-only ${extra.join(" ")} explains the conflict without printing a rejected retry`,
+      removed.status === 1 && removed.stderr.includes(explanation) && !retryFor(removed)?.includes(" spawn default "), shown(removed));
+  }
+  for (const [extra, explanation, correction] of [
+    [["--space="], "--space/-s is empty", "name the space"],
+    [["-m=example"], "-m=example gives -m the value", "write -m example or --model=example"],
+    [["--server=localhost"], "--server is not a valid URL", ""],
+    [["--name", ""], "--name cannot be empty", ""],
+    [["--subscribe", "#bad"], 'invalid channel "#bad"', "name the channel without its #, as bad"],
+  ] as const) {
+    const removed = cotal("start", "--config=default", "--live-only", "--dry-run", "--json", ...extra);
+    check(`start with --live-only and invalid ${extra[0]} reports the argument problem rather than a manager conflict`,
+      removed.status === 1 && removed.stdout === "" && removed.stderr.includes(explanation) && removed.stderr.includes(correction) &&
+      !removed.stderr.includes("It cannot be used with a manager launch") && !retryFor(removed)?.includes(" spawn default "), shown(removed));
+  }
+}
+
 const persona = agentFilePath(root, "rev");
 mkdirSync(dirname(persona), { recursive: true });
 writeFileSync(persona, "---\nname: rev\nrole: reviewer\n---\n");
@@ -110,17 +152,21 @@ check("its plain report begins with Mesh: <space> and ends with a Next", conflic
 // A persona that does not exist: show and remove name where to see the ones that do.
 for (const args of [["show", "nosuch"], ["remove", "nosuch", "--yes"]]) {
   const missing = cotal("persona", ...args, "--json");
-  check(`persona ${args[0]} of a missing persona is TARGET_NOT_FOUND with a remedy`, missing.status === 2 && missing.envelope?.error?.code === "TARGET_NOT_FOUND" && missing.envelope.error.remedy === "see the personas here with `cotal persona`", shown(missing));
+  check(`persona ${args[0]} of a missing persona is TARGET_NOT_FOUND with a remedy`, missing.status === 2 && missing.envelope?.error?.code === "TARGET_NOT_FOUND" && missing.envelope.error.remedy === "see the personas here with `cotal persona --json`", shown(missing));
 }
 const alternate = mkdtempSync(join(home, "alternate-"));
 const alternatePrepared = cotalAt(alternate, "space", "create", "alternate-catalog", "--root", ".");
 check("fixture: a second catalog is prepared", alternatePrepared.status === 0, shown(alternatePrepared));
-const alternateMiss = cotal("persona", "show", "nosuch", "--space", "alternate-catalog", "--json");
-const alternateList = alternateMiss.envelope?.error?.remedy?.match(/`([^`]+)`/)?.[1];
-check("persona show in a different catalog refuses and its recovery lists that catalog",
-  alternateMiss.status === 2 && alternateMiss.envelope?.error?.code === "TARGET_NOT_FOUND"
-    && alternateMiss.envelope.target?.space === "alternate-catalog" && alternateList === "cotal persona --space alternate-catalog"
-    && cotal(...alternateList.split(" ").slice(1), "--json").envelope?.target?.space === "alternate-catalog", shown(alternateMiss));
+for (const verb of ["show", "edit", "remove"]) {
+  const miss = cotal("persona", verb, "nosuch", "--space", "alternate-catalog", "--json");
+  const list = miss.envelope?.error?.remedy?.match(/`([^`]+)`/)?.[1];
+  check(`persona ${verb} suggests a JSON inventory of the requested catalog`, miss.status === 2
+    && miss.envelope?.error?.code === "TARGET_NOT_FOUND" && list === "cotal persona --space alternate-catalog --json"
+    && cotal(...list.split(" ").slice(1)).envelope?.target?.space === "alternate-catalog", shown(miss));
+}
+const legacyMiss = cotal("personas", "show", "nosuch", "--space", "alternate-catalog", "--creds", "unused.creds");
+check("legacy show names the selected catalog without an unused credential option", legacyMiss.status === 2
+  && legacyMiss.stderr.includes("see the personas here with `cotal persona --space alternate-catalog`"), shown(legacyMiss));
 // A complete file that names another persona: the refusal names the file's name and the create that keeps it.
 const otherFile = join(root, "bernie.md");
 writeFileSync(otherFile, "---\nname: bernie\nrole: reviewer\nsubscribe: []\n---\n");
@@ -172,8 +218,8 @@ for (const [argv, rerun] of [
   [["status", "default_agent", "--on", "bad"], "cotal status default_agent --on <instance>"],
   [["stop", "default_agent", "--force", "--space", "elsewhere", "--on", "bad"], "cotal stop default_agent --force --json --space elsewhere --on <instance>"],
   // #7644: ps and models keep the --space and filter they were given.
-  [["ps", "--space", "elsewhere", "--on", "bad"], "cotal ps --space elsewhere --on <instance>"],
-  [["ps", "--slots", "--server", "nats://127.0.0.1:39200", "--on", "bogus"], "cotal ps --slots --server nats://127.0.0.1:39200 --on <instance>"],
+  [["ps", "--space", "elsewhere", "--on", "bad"], "cotal ps --json --space elsewhere --on <instance>"],
+  [["ps", "--slots", "--server", "nats://127.0.0.1:39200", "--on", "bogus"], "cotal ps --slots --json --server nats://127.0.0.1:39200 --on <instance>"],
   [["models", "--harness", "claude", "--on", "bad"], "cotal models --harness claude --on <instance>"],
   [["spawn", "default", "-d", "--on", "bad"], "cotal spawn default -d --json --on <instance>"],
 ] as const) {
@@ -182,6 +228,13 @@ for (const [argv, rerun] of [
   check(`${argv.slice(0, -2).join(" ")} --on bad names ${rerun} and never --on twice`,
     pinned.status === 1 && pinned.envelope?.error?.code === "USAGE_INVALID" && (pinned.envelope.error.remedy ?? "").endsWith(`rerun it as \`${rerun}\``) && !said.includes("--on --on"), shown(pinned));
 }
+const emptyPsPin = cotal("ps", "--slots", "--space", "elsewhere", "--json", "--on=");
+const lookupHint = emptyPsPin.envelope?.error?.message ?? "";
+check("an empty slot pin names the JSON manager lookup and a separate JSON slot retry", emptyPsPin.status === 1
+  && lookupHint.includes("`cotal ps --json --space elsewhere`") && lookupHint.includes("`cotal ps --slots --json --space elsewhere --on <instance>`"), shown(emptyPsPin));
+const widePsPin = cotal("ps", "--wide", "--plain", "--on", "local.U123");
+check("a roster principal leaves the wide plain view on the pin retry", widePsPin.status === 1
+  && widePsPin.stderr.includes("cotal ps --wide --plain --on <instance>"), shown(widePsPin));
 const createPin = cotal("persona", "create", "h1", "--prompt", "keep this definition private", "--on", "bad", "--space", "opsp", "--json");
 check("persona create with a malformed pin tells JSON callers to replace only the original --on value",
   createPin.status === 1 && createPin.envelope?.error?.code === "USAGE_INVALID" &&
@@ -478,18 +531,20 @@ check("the opening Agent files example previews with Claude and validates its mo
 // The display name in a persona need not be a launch identity. Preview the effective value with
 // the same local rule as foreground launch, including the selected space's actor-token bound.
 writeFileSync(agentFilePath(root, "invalid-name"), "---\nname: bad name\n---\n");
-for (const args of [
-  ["invalid-name"],
-  ["invalid-name", "--server", "nats://127.0.0.1:34300"],
-  ["--file", "pv.md", "--name", "bad name"],
-]) {
+for (const [args, remedy] of [
+  [["invalid-name"], "retry with `cotal spawn invalid-name --name invalid-name --json --dry-run`"],
+  [["invalid-name", "--server", "nats://127.0.0.1:34300"], "retry with `cotal spawn invalid-name --server nats://127.0.0.1:34300 --name invalid-name --json --dry-run`"],
+  [["--file", "pv.md", "--name", "bad name"], undefined],
+] as const) {
   for (const format of [[], ["--plain"], ["--json"]]) {
     const invalid = cotal("spawn", ...args, "--dry-run", ...format);
     const message = 'unsafe name "bad name" (allowed: letters, digits, _ -)';
+    const jsonMessage = remedy === undefined ? message : `the persona's frontmatter name cannot be used for launch: ${message}`;
     check(`direct preview refuses the effective name from ${args.join(" ")} in ${format[0] ?? "text"}`,
       invalid.status === 1 && (format[0] === "--json"
         ? invalid.envelope?.outcome === "refused" && invalid.envelope.error?.code === "USAGE_INVALID"
-          && invalid.envelope.error.message === message && invalid.envelope.target?.space === "opsp" && invalid.stderr === ""
+          && invalid.envelope.error.message === jsonMessage && invalid.envelope.error.remedy === remedy
+          && invalid.envelope.target?.space === "opsp" && invalid.stderr === ""
         : invalid.stdout === "" && invalid.stderr.includes(message)), shown(invalid));
   }
 }
@@ -557,6 +612,18 @@ const combinedRuntime = cotal("spawn", "--foreground", "--runtime", "pty", "--js
 check("foreground spawn with -d already supplied tells the operator to omit --foreground for a managed launch",
   combinedRuntime.status === 1 && combinedRuntime.envelope?.error?.code === "USAGE_INVALID"
     && combinedRuntime.envelope.error.remedy?.endsWith("or omit --foreground to launch through a manager") === true, shown(combinedRuntime));
+for (const mode of [["--foreground"], []]) {
+  const args = ["--dry-run", "--json", ...mode, "--live-only"];
+  const denied = cotal("spawn", ...args, "--runtime", "pty");
+  check(`spawn ${mode[0] ?? "with default placement"} and --live-only only recommends omitting --runtime`,
+    denied.status === 1 && denied.envelope?.error?.code === "USAGE_INVALID"
+      && denied.envelope.error.remedy === "omit --runtime to launch in this terminal", shown(denied));
+  const retry = cotal("spawn", ...args);
+  const result = retry.envelope?.result;
+  check(`the ${mode[0] ? "explicit" : "default"} foreground retry preserves --live-only without allocating or launching`,
+    retry.status === 0 && retry.envelope?.outcome === "ok" && result?.kind === "direct-launch-preview"
+      && result.allocated === false && result.launched === false, shown(retry));
+}
 const noRuntime = previewRuntime();
 check("without --runtime the preview names none and checks none",
   noRuntime.r.status === 0 && noRuntime.p?.result?.requested?.runtime === null && noRuntime.p.result.runtimeCheck === null, shown(noRuntime.r));

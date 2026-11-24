@@ -76,13 +76,24 @@ function scriptOf(file: string | undefined): SimScript {
   if (duplicate.duplicate) throw new CommandFailure("refused", "SCHEMA_INVALID", `the simulation results script ${file} names ${JSON.stringify(duplicate.name)} twice in one object`, {
     target: { file }, remedy: "keep each key once. To give a step multiple sequential results, put them in an array under its key",
   });
-  if (!value || typeof value !== "object" || Array.isArray(value)) throw new CommandFailure("refused", "SCHEMA_INVALID", "the simulation results script must be an object");
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    const actual = value === null ? "null" : Array.isArray(value) ? "an array" : `a ${typeof value}`;
+    throw new CommandFailure("refused", "SCHEMA_INVALID", `the simulation results script ${file} must be a top-level JSON object, not ${actual}`, {
+      target: { file }, remedy: `save a JSON results object in ${file} and rerun the simulation. Use {} if no scripted results are needed`,
+    });
+  }
   const script = value as Record<string, unknown>;
   const fields = new Set(["turns", "asks", "checkpoints", "events", "clock", "faults"]);
   for (const [key, item] of Object.entries(script)) {
     if (!fields.has(key)) throw new CommandFailure("refused", "SCHEMA_INVALID", `unknown simulation script field '${key}'`);
-    if (key === "faults" ? !Array.isArray(item) : !item || typeof item !== "object" || Array.isArray(item))
-      throw new CommandFailure("refused", "SCHEMA_INVALID", `invalid simulation script field '${key}'`);
+    if (key === "faults" ? !Array.isArray(item) : !item || typeof item !== "object" || Array.isArray(item)) {
+      const shape = key === "faults" ? "an array of fault objects" : key === "clock" ? "an object of clock settings"
+        : `an object keyed by ${key === "checkpoints" ? "checkpoint" : "step"} name`;
+      const actual = item === null ? "null" : Array.isArray(item) ? "an array" : `a ${typeof item}`;
+      throw new CommandFailure("refused", "SCHEMA_INVALID", `${key} in the simulation results script ${file} must be ${shape}, not ${actual}`, {
+        target: { file }, remedy: `replace ${key} in ${file} with ${shape}, then rerun the simulation`,
+      });
+    }
   }
   const clock = script.clock as Record<string, unknown> | undefined;
   const start = clock?.start;
@@ -138,8 +149,13 @@ function scriptOf(file: string | undefined): SimScript {
   for (const [name, entry] of Object.entries((script.turns ?? {}) as Record<string, unknown>)) {
     for (const [index, result] of (Array.isArray(entry) ? entry : [entry]).entries()) {
       const path = `turns.${name}${Array.isArray(entry) ? `[${index}]` : ""}`;
-      const problem = turnResultProblem(result, path);
-      if (problem) throw new CommandFailure("refused", "SCHEMA_INVALID", `invalid scripted turn '${name}': ${problem}`, { target: { file } });
+      const problem = turnResultProblem(result);
+      if (problem) {
+        const field = problem.field === undefined ? path : `${path}.${problem.field}`;
+        throw new CommandFailure("refused", "SCHEMA_INVALID", `invalid scripted turn '${name}' in ${file}: ${field} ${problem.message}`, {
+          target: { file }, remedy: `correct ${field} in ${file}, then rerun the simulation`,
+        });
+      }
     }
   }
   return script as SimScript;
@@ -179,24 +195,24 @@ function checkpointResultProblem(result: unknown): { message: string; field?: "s
 
 /** Why a scripted turn result is not one `turn()` can return, or undefined. The simulator hands the
  *  entry to the program as it is, so invalid results are refused before simulation. */
-function turnResultProblem(result: unknown, path: string): string | undefined {
-  if (!result || typeof result !== "object" || Array.isArray(result)) return "a result must be an object";
+function turnResultProblem(result: unknown): { field?: string; message: string } | undefined {
+  if (!result || typeof result !== "object" || Array.isArray(result)) return { message: "must be an object" };
   const fields = result as Record<string, unknown>;
-  if (fields.status !== "done" && fields.status !== "blocked" && fields.status !== "handoff") return "status must be \"done\", \"blocked\" or \"handoff\"";
-  if ("at" in fields) return "at is stamped from virtual time and cannot be scripted";
+  if (fields.status !== "done" && fields.status !== "blocked" && fields.status !== "handoff") return { field: "status", message: 'must be "done", "blocked" or "handoff"' };
+  if ("at" in fields) return { field: "at", message: "is stamped from virtual time and cannot be scripted" };
   const known = new Set(["status", "to", "note"]);
   const unknown = Object.keys(fields).find((key) => !known.has(key));
-  if (unknown !== undefined) return `unknown field '${unknown}'`;
-  if (fields.status === "handoff" && fields.to === undefined) return `${path}.to is required when status is "handoff"`;
+  if (unknown !== undefined) return { field: unknown, message: "is not a supported field" };
+  if (fields.status === "handoff" && fields.to === undefined) return { field: "to", message: 'is required when status is "handoff"' };
   if (fields.to !== undefined) {
-    if (fields.status !== "handoff") return `${path}.to is only allowed when status is "handoff"`;
+    if (fields.status !== "handoff") return { field: "to", message: 'is only allowed when status is "handoff"' };
     const to = fields.to as Record<string, unknown> | null;
     if (!to || typeof to !== "object" || Array.isArray(to) || typeof to.agent !== "string" || !to.agent.length || typeof to.persona !== "string"
       || (to.kind !== undefined && to.kind !== "spawned" && to.kind !== "participant")
       || (to.worktree !== undefined && typeof to.worktree !== "string") || (to.role !== undefined && typeof to.role !== "string"))
-      return `${path}.to must be an agent handle with string agent and persona fields`;
+      return { field: "to", message: "must be an agent handle with string agent and persona fields" };
   }
-  if (fields.note !== undefined && typeof fields.note !== "string") return "note must be a string";
+  if (fields.note !== undefined && typeof fields.note !== "string") return { field: "note", message: "must be a string" };
   return undefined;
 }
 

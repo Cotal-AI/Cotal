@@ -73,7 +73,7 @@ import { knownStackRecoveryHost, readStackJournal } from "../lib/stack-journal.j
 import { warnForeignStoreEntries } from "../lib/store-dir.js";
 import { brokerAddressConflict } from "../lib/broker-service.js";
 import { pendingOrdinaryResumes } from "./up-pending.js";
-import { authTimeoutArgs, loadChannelsFile, commitTransportPolicy, assertServesDialHost } from "./up-transport.js";
+import { authTimeoutArgs, commitTransportPolicy, assertServesDialHost } from "./up-transport.js";
 import { postStart, recreateMemoryBuckets } from "./up-stores.js";
 import { type BrokerFacts, brokerVersion, writeOpenBrokerConf, authSetup } from "./up-broker-auth.js";
 import { folderSpace } from "./up-args.js";
@@ -360,7 +360,8 @@ export async function serveReadyListener(l: {
   try {
     if (l.resumeAttempt) {
       const ordinaryResume = pendingOrdinaryResumes.has(l.resumeAttempt);
-      await recreateMemoryBuckets(server, space, setup, ordinaryResume ? { convertMembership: l.recreateMembershipStore === true } : undefined);
+      await recreateMemoryBuckets(server, space, setup, ordinaryResume ? { convertMembership: l.recreateMembershipStore === true } : undefined,
+        ordinaryResume ? l.seedFile : undefined);
     } else {
       await postStart(server, space, setup, l.seedFile, l.recreateIssuedStores, l.recreateMembershipStore, true);
     }
@@ -474,10 +475,8 @@ export interface DetachOpts {
   recreateIssuedStores?: string;
   /** Explicitly replace the stopped space's legacy File membership feed during setup. */
   recreateMembershipStore?: boolean;
-  channels?: string;
   host?: string;
-  /** Channel-registry seed in memory (the `cotal up -f` manifest path), used instead of reading a
-   *  `--channels` file. Takes precedence over {@link channels}. */
+  /** Validated channel-registry seed from the startup file or manifest. */
   seed?: ChannelRegistryFile;
   /** PUBLIC-exchange daemon argv (`--exchange-public-port` et al), threaded verbatim to the
    *  auth-service daemon when THIS boot starts it. */
@@ -531,7 +530,6 @@ export async function prepareBrokerStart(opts: DetachOpts) {
     recheckExistingStore(opts.existingStore, { space, storeDir });
   } else mkdirSync(storeDir, { recursive: true, mode: 0o700 });
   await claimSpace(space, server, root);
-  const seedFile = opts.seed ?? loadChannelsFile(opts.channels);
   const host = opts.host ?? "127.0.0.1";
   // The transport arrives decided. The dial-host SAN is re-checked here because THIS is where the
   // effective server is finally known — a manifest may name a different host than the flags did, and
@@ -560,7 +558,7 @@ export async function prepareBrokerStart(opts: DetachOpts) {
     ...(opts.boundListener ? ["--name", opts.boundListener.serverName] : []),
   ];
   const { path: bin, source, version } = renderingBinary;
-  return { root, server, space, useAuth, storeDir, seedFile, host, transport, setup, maxPayload, confPath, args, bin, source, version };
+  return { root, server, space, useAuth, storeDir, host, transport, setup, maxPayload, confPath, args, bin, source, version };
 }
 
 /**
@@ -573,7 +571,7 @@ export async function startMeshDetached(
   // entirely cannot carry a mandatory decision.
   opts: DetachOpts,
 ): Promise<{ server: string; pid: number; executable: string; controlPlane: boolean; authService: boolean; deliveryResponderBound: boolean | null; delivery: boolean; deliveryLost?: string; manager: boolean }> {
-  const { server, space, useAuth, storeDir, seedFile, transport, setup: brokerSetup, maxPayload, args, bin, source, version } = await prepareBrokerStart(opts);
+  const { server, space, useAuth, storeDir, transport, setup: brokerSetup, maxPayload, args, bin, source, version } = await prepareBrokerStart(opts);
   await seedBeforeLaunch();
   const setup = brokerSetup && { ...brokerSetup, creds: await brokerSetup.mintProvisioner() };
   const logPath = cotalPath("nats.log");
@@ -587,7 +585,7 @@ export async function startMeshDetached(
 
   await awaitSpawnedListener({ child, executable: { path: bin, source, version }, server, space, creds: setup?.creds, tls: transport.kind === "tls-required", log: logPath, boundListener: opts.boundListener });
   const { authService, controlPlane } = await serveReadyListener({
-    child, server, space, storeDir, setup, seedFile, transport, maxPayload,
+    child, server, space, storeDir, setup, seedFile: opts.seed, transport, maxPayload,
     ...(opts.recreateIssuedStores !== undefined ? { recreateIssuedStores: opts.recreateIssuedStores } : {}),
     ...(opts.recreateMembershipStore ? { recreateMembershipStore: true } : {}),
     host: opts.host,
@@ -624,8 +622,10 @@ export async function startMeshDetached(
 /** Refuse a broker address another program holds without answering NATS, such as a web server, as
  *  the controller stack refuses it. nats-server would exit on its bind with only a log line, and the
  *  readiness probe would wait on that program instead. `command` is the start the remedy reruns. */
-export async function assertBrokerAddressFree(server: string, command: string, bindHost?: string): Promise<void> {
-  const conflict = await brokerAddressConflict(server, command, bindHost);
+export async function assertBrokerAddressFree(server: string, command: Parameters<typeof brokerAddressConflict>[1], bindHost?: string, waitForTimeWait = false): Promise<void> {
+  const conflict = await brokerAddressConflict(server, command, bindHost, waitForTimeWait ? (address, seconds) => {
+    process.stderr.write(`Waiting up to ${seconds} seconds for TIME-WAIT to clear on the broker address ${address}\n`);
+  } : undefined);
   if (!conflict) return;
   throw new CommandFailure("refused", "CONFLICT", `${conflict.message} (bind failed: address already in use); no broker was launched`, {
     target: { root: cotalRoot(), server, bindError: "EADDRINUSE" }, remedy: conflict.remedy,

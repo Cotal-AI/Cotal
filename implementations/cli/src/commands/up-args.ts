@@ -33,6 +33,7 @@ import { FlagValueRefusal } from "../lib/flag-value-refusal.js";
 import { resolveSpace } from "../lib/status.js";
 import { cotalRoot, homeHoldsStack, linkedCotalRefusal } from "../lib/paths.js";
 import { shellWord } from "../lib/endpoint-errors.js";
+import { displayCmd } from "../lib/self-exec.js";
 import { managerRecordState } from "../lib/manager-proc.js";
 import { listLedgerFiles } from "../lib/manifest/ledger.js";
 import { freshTeamAttemptSettled, listFreshTeamAttempts, listFreshTeamSummaries } from "../lib/team-fresh.js";
@@ -63,7 +64,7 @@ function assertIssuedBackupDirArgument(raw: string): void {
 
 /** Launch intent is checked by the kernel before seed or effect preparation. A recovery
  *  re-entry supplies its recorded mode explicitly rather than inheriting the new public default. */
-export function validateUpArguments(args: ParsedArgs): void {
+export function validateUpArguments(args: ParsedArgs, beforeRestore = false): void {
   const presentation = presentationOf(args.values);
   if (typeof args.values.file === "string" && !args.values.file.trim())
     throw new CommandFailure("refused", "USAGE_INVALID", "--file is empty, so it names no manifest; nothing was started or written", { remedy: "name a manifest with --file <cotal.yaml>, or omit --file to start the folder's stack" });
@@ -97,6 +98,11 @@ export function validateUpArguments(args: ParsedArgs): void {
     throw new CommandFailure("refused", "USAGE_INVALID", "--no-manager cannot be combined with --max-sessions because no manager starts", { remedy: "drop --max-sessions, or drop --no-manager to set the manager session ceiling" });
   if (args.values.foreground === true && args.values.detach === true) throw new CommandFailure("refused", "USAGE_INVALID", "choose --foreground or --detach, not both");
   // Only a manifest launch has a plan to print; without -f every route would start the stack.
+  if (args.values["dry-run"] === true && !args.values.file && args.values.foreground === true) {
+    const cli = presentation === "json" ? "cotal" : displayCmd();
+    const boot = `${cli} team boot cotal.yaml --foreground --dry-run${presentation === "rich" ? "" : ` --${presentation}`}`;
+    throw new CommandFailure("refused", "USAGE_INVALID", "up cannot preview a terminal-bound launch. Nothing was started or written.", { remedy: `preview the manifest with ${codeSpan(boot)}` });
+  }
   if (args.values["dry-run"] === true && !args.values.file)
     throw new CommandFailure("refused", "USAGE_INVALID", "--dry-run previews a manifest launch and needs -f <cotal.yaml>; nothing was started or written", { remedy: `pass -f <cotal.yaml>${presentation === "rich" ? "" : ` and omit --${presentation}`} to print that manifest's plan; \`cotal status\` shows what this folder records` });
   // The stack passes its space to its own children as `--space <name>`, which a leading - breaks.
@@ -120,7 +126,7 @@ export function validateUpArguments(args: ParsedArgs): void {
   if (!args.values.file && args.values["tls-cert"] !== undefined && typeof args.values.server === "string" && /^nats:\/\//i.test(args.values.server))
     throw new CommandFailure("refused", "USAGE_INVALID", "--tls-cert serves the broker over TLS, so --server must be a tls:// address; nothing was started or written", { remedy: `pass --server ${tlsAddress(args.values.server)}`, selfContained: true });
   if (typeof args.values.file === "string" && args.values.foreground === true) {
-    const boot = `cotal team boot ${shellWord(args.values.file)} --foreground`;
+    const boot = `${presentation === "json" ? "cotal" : displayCmd()} team boot ${shellWord((args.values.file.startsWith("-") ? "./" : "") + args.values.file)} --foreground`;
     const remedy = args.values["dry-run"] === true ? `preview with ${codeSpan(`${boot} --dry-run`)}`
       : `prepare the project if needed with \`cotal space create <space> --root .\`, then run ${codeSpan(boot)}`;
     throw new CommandFailure("refused", "UNSUPPORTED", "manifest boot has no native foreground custody path; a detached broker was not substituted for the requested terminal-bound lifetime", { remedy });
@@ -205,7 +211,7 @@ export function validateUpArguments(args: ParsedArgs): void {
       : `run \`cotal up\` from the project folder ${shellWord(control.project)}` });
     assertUpRootWritable(root);
     // A restore creates its own store. A manifest uses the explicit or default store, not a legacy one.
-    if (args.values.restore === undefined) assertUpStoreWritable(root, typeof args.values["store-dir"] === "string" ? args.values["store-dir"] : args.values.file === undefined ? undefined : join(root, ".cotal", "nats"));
+    if (args.values.restore === undefined) assertUpStoreWritable(root, typeof args.values["store-dir"] === "string" ? args.values["store-dir"] : args.values.file === undefined ? undefined : join(root, ".cotal", "nats"), beforeRestore);
   }
 }
 
@@ -218,7 +224,8 @@ function assertUpRootWritable(root: string): void {
   try { accessSync(path, constants.W_OK | constants.X_OK); }
   catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
-    if (code !== "EACCES" && code !== "EPERM" && code !== "EROFS") throw error;
+    if (code === "EROFS") throw new CommandFailure("refused", "PERMISSION_DENIED", `${path} is on a read-only file system (${code}); nothing was started or written`, { target: { root, path }, remedy: "retry with the project on a writable file system" });
+    if (code !== "EACCES" && code !== "EPERM") throw error;
     throw new CommandFailure("refused", "PERMISSION_DENIED", `${path} does not grant this account both write and search access (${code}); nothing was started or written`, { target: { root, path }, remedy: `make it writable and searchable by you, for example with chmod u+wx ${shellWord(path)}` });
   }
 }
@@ -226,8 +233,8 @@ function assertUpRootWritable(root: string): void {
 /** The broker exits when it cannot write its store, naming the cause only in its own log. The store
  *  a start here opens, as `--store-dir` names it, as the stack or legacy records name it, or `.cotal/nats`,
  *  is refused here, by name, when this account cannot write it. */
-function assertUpStoreWritable(root: string, storeDir: string | undefined): void {
-  const problem = startupStoreProblem(root, storeDir);
+function assertUpStoreWritable(root: string, storeDir: string | undefined, beforeRestore: boolean): void {
+  const problem = startupStoreProblem(root, storeDir, beforeRestore);
   if (problem) throw new CommandFailure("refused", "PERMISSION_DENIED", `${problem.message}; nothing was started or written`, { target: { root, path: problem.path }, remedy: problem.remedy });
 }
 
@@ -289,16 +296,17 @@ function upHostProblem(host: string | undefined, server: string | undefined): { 
       ? { problem: `--server ${server} names ${named}, and with no --host the broker binds 127.0.0.1, so it would not listen where its clients connect`, remedy: `pass --host ${named} to bind the broker there` }
       : undefined;
   }
-  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(host)) return { problem: `--host ${host} looks like a URL, and it takes a bind host only (an IP or hostname, no scheme)`, remedy: "pass the broker URL with --server instead" };
+  const remedy = "put the broker URL, including the intended port, in --server and the matching local IP address alone in --host";
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(host)) return { problem: `--host ${host} looks like a URL, and it takes a bind host only (an IP or hostname, no scheme)`, remedy };
   if (WILDCARD_HOSTS.has(host)) return undefined;
   const bare = host.startsWith("[") && host.endsWith("]") ? host.slice(1, -1) : host;
   if (isIP(bare) === 6) return { problem: IPV6_UNSERVED("--host"), remedy: "pass an IPv4 bind address, for example --host 127.0.0.1" };
   let url: URL | undefined;
   try { url = new URL(`nats://${host}:1`); } catch { url = undefined; }
   if (!url || url.port !== "1" || url.pathname || url.search || url.hash || url.username || url.password)
-    return { problem: `--host ${host} is not a valid bind host: an IP or hostname only, with no port; the port comes from --server (or its default)`, remedy: "pass the port in --server, for example --server nats://127.0.0.1:4222" };
+    return { problem: `--host ${host} is not a valid bind host: an IP or hostname only, with no port; the port comes from --server (or its default)`, remedy };
   if (server !== undefined && !bindReaches(host, server))
-    return { problem: `--host ${host} and --server ${server} name different addresses: the broker would bind ${host} but be probed at ${new URL(server).hostname}`, remedy: "pass one of them, or make both name the same address" };
+    return { problem: `--host ${host} and --server ${server} name different addresses: the broker would bind ${host} but be probed at ${new URL(server).hostname}`, remedy };
   return undefined;
 }
 

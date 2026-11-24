@@ -127,7 +127,7 @@ const composed: Command = { ...command, async run(args) {
   let hostedSpaces: string[] = [];
   let daemonObserved = false;
   let preparedRestart = false;
-  let currentPackages = false;
+  let packageCheck: "current" | "offline" | undefined;
   let retainedReconciliation = false;
   let askedToStop = false;
   let targetReceipt: ExecutionPreinstallReceipt | undefined;
@@ -338,9 +338,9 @@ const composed: Command = { ...command, async run(args) {
         : `\`cd ${shellPath(manager.root)} && cotal down --with-agents --yes --space ${shellPath(manager.space)} && cotal up --space ${shellPath(manager.space)}\``;
       console.log(`Manager ${manager.instanceId} keeps its agents on the previous version and takes the installed version at its next restart. When their work is finished, restart from its recorded folder: ${command}`);
     }
-  }, isCurrent() {
-    currentPackages = updateRuntime.isCurrent?.() === true;
-    return currentPackages;
+  }, onOfflineVersionCheckSkipped() { packageCheck = "offline"; }, isCurrent() {
+    packageCheck = updateRuntime.isCurrent?.() ? "current" : undefined;
+    return packageCheck === "current";
   }, async automaticUpdateAdvice() {
     const systemdAdvice = () => {
       const requirement = daemonServiceRequirement();
@@ -601,8 +601,8 @@ const composed: Command = { ...command, async run(args) {
   }
   if (logicalExecutionEntry() && !updateRuntime.checkout() && args.values.check !== true && !args.values.auto && !args.values.notify && !process.env.COTAL_UPDATE_PARENT) cleanupExecutionStore(executionInstallRoot());
   await update(args, runtime);
-  if (args.values.check === true || args.values.auto || args.values.notify || process.exitCode) return;
-  if (!currentPackages) await collectConnectorSets();
+  if (args.values.check === true || args.values.auto || args.values.notify || process.exitCode || packageCheck === "offline") return;
+  if (packageCheck !== "current") await collectConnectorSets();
   if (admission && recoveryAdmission?.execution && recoveryAdmission.phase !== "restoring" && process.env.COTAL_UPDATE_PARENT === String(process.ppid)) {
     try {
       const installed = executionInstallRoot();
@@ -624,7 +624,7 @@ const composed: Command = { ...command, async run(args) {
   }
   if (process.env.COTAL_AUTO_UPDATE === "1") return;
   // Current packages need no Manager census or restart. Keep the guarded start of a stopped native service.
-  if (currentPackages) {
+  if (packageCheck === "current") {
     const state = join(homeCotalDir(), "daemon");
     if (daemonObserved || !existsSync(unitReceiptFile({ state })) || await observeUpdateDaemon()) return;
   }

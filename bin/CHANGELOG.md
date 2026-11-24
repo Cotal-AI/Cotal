@@ -1,5 +1,148 @@
 # cotal-ai
 
+## 0.176.5
+
+### Patch Changes
+
+- d6ab4a9: Running `cotal` without a command shows the entry screen without checking npm for updates or writing the update cache.
+- 6228e12: Backup restore reports a usage error for a store path inside the backup folder and tells you to choose an absent path outside it.
+- 4aca5c3: When a restore refuses a symbolic link as its store directory, it tells you to choose an unused path under an existing writable directory.
+- 6dd2e41: Retry a partial manifest teardown by run ID without passing the manifest path.
+- 1380bb4: Report invalid preferences as an error and an end record in JSON watch, history follow, and channel membership follow streams.
+- Updated dependencies [e7e6da6]
+- Updated dependencies [8c884a8]
+- Updated dependencies [2ec6796]
+- Updated dependencies [0a40e6e]
+- Updated dependencies [a53b944]
+- Updated dependencies [57dd126]
+- Updated dependencies [e6810ad]
+- Updated dependencies [cfb3c96]
+- Updated dependencies [4361c47]
+- Updated dependencies [1afc00e]
+- Updated dependencies [55bcc18]
+- Updated dependencies [e9f798e]
+- Updated dependencies [e9ec688]
+- Updated dependencies [b13f6e9]
+- Updated dependencies [6228e12]
+- Updated dependencies [f4c3814]
+- Updated dependencies [426469e]
+- Updated dependencies [4aca5c3]
+- Updated dependencies [6dd2e41]
+- Updated dependencies [ee3c94b]
+- Updated dependencies [1380bb4]
+- Updated dependencies [8719090]
+- Updated dependencies [0fda34d]
+- Updated dependencies [08c34f8]
+  - @cotal-ai/cli@0.176.5
+  - @cotal-ai/workspace@0.176.5
+  - @cotal-ai/runtime@0.176.5
+  - @cotal-ai/auth@0.176.5
+  - @cotal-ai/delivery@0.176.5
+  - @cotal-ai/manager@0.176.5
+  - @cotal-ai/connector-core@0.176.5
+  - @cotal-ai/registry@0.176.5
+  - @cotal-ai/core@0.176.5
+  - @cotal-ai/seat@0.176.5
+
+## 0.176.4
+
+### Patch Changes
+
+- d482720: Broker URL errors tell you to remove the embedded user name and password without suggesting a credential file to commands that cannot use one for the connection.
+- 7a6895d: Use a matching endpoint import space from the file, explain how to proceed with relative `ZDOTDIR` or invalid simulation results, and document which JSON modes stream records.
+- 5e7f073: Reject a blank `daemon setup --wait` value before service setup instead of treating it as zero. The range error explains how to continue with or without a Manager. An explicit `--wait 0` still skips the wait.
+- 073a18b: Keep the selected daemon home in the status command printed after a foreground start finds its lock held or its socket occupied. Copying the command no longer checks the default daemon instead.
+- 3071548: Self-update on Linux and macOS can find npm through an empty PATH entry that points to the folder where you ran the command.
+- d08cfed: CLI help prints without checking npm for updates or writing update state, even in an interactive terminal.
+- e327c36: Startup and persona edits now distinguish a read-only file system from missing directory permissions. Persona commands explain how to recover a broken definition link and no longer suggest editing an unrecognized uppercase file extension after a case collision.
+- c6d6949: The CLI guides now show where to find prepared broker logs, how to remove a team in its deployment space, and when history limits require signing trust.
+- d8ce619: The migration execution smoke can install its historical CLI fixture again. The release-era npm cutoff applies only to the fixture install, so the smoke still exercises an ordinary update to the current release.
+- 48081c4: Persona creation and spawn suggest a channel spelling without leading `#` characters only when that spelling is valid. Persona creation also explains that the 1 MiB size limit includes frontmatter as well as instructions.
+- 0b62901: Show how to retry a launch with a valid persona name, identify broken persona links, and keep the selected catalog in persona list suggestions.
+- bf936fc: Report a blocked config folder in structured output, include the broker and manager in duplicate spawn attach commands, and correct the split upgrade guide's channel inventory command.
+- 488c225: When a file or a looping link occupies the persona catalog path, explain how to restore existing definitions or retry a create with its original source and target options.
+- c77c3eb: `cotal update --self` now skips the version check when npm is offline and the temporary cache has no registry metadata. It does not retry with network access and reports any extension promotion it recovered before the check.
+- d005be2: Team commands distinguish an unreadable manifest or a path through a non-directory from invalid manifest content. A missing persona diagnostic now suggests a catalog path only if it leads to a readable regular file.
+- Updated dependencies [3433dd4]
+- Updated dependencies [1632910]
+- Updated dependencies [b212d8a]
+- Updated dependencies [235ac9a]
+- Updated dependencies [d482720]
+- Updated dependencies [e0a0bb7]
+- Updated dependencies [a447639]
+- Updated dependencies [7a6895d]
+- Updated dependencies [99e0752]
+- Updated dependencies [9bceb76]
+- Updated dependencies [8176b19]
+- Updated dependencies [73f4306]
+- Updated dependencies [82b8ccd]
+- Updated dependencies [a2847f0]
+- Updated dependencies [3071548]
+- Updated dependencies [dd96500]
+- Updated dependencies [6f216a1]
+- Updated dependencies [7f64ed4]
+- Updated dependencies [2761590]
+- Updated dependencies [233ea4b]
+- Updated dependencies [d08cfed]
+- Updated dependencies [959cd61]
+- Updated dependencies [894c23b]
+- Updated dependencies [937d28e]
+- Updated dependencies [db93f37]
+- Updated dependencies [f80ee72]
+- Updated dependencies [32c02be]
+- Updated dependencies [e327c36]
+- Updated dependencies [c6d6949]
+- Updated dependencies [7fd5c5c]
+- Updated dependencies [3696130]
+- Updated dependencies [0f60f11]
+- Updated dependencies [d31ba81]
+- Updated dependencies [c4f04b3]
+- Updated dependencies [6831283]
+- Updated dependencies [6a3d511]
+- Updated dependencies [87465c9]
+- Updated dependencies [eaa5e0c]
+- Updated dependencies [48081c4]
+- Updated dependencies [0b62901]
+- Updated dependencies [b7e9657]
+- Updated dependencies [d5dff94]
+- Updated dependencies [5b2c6be]
+- Updated dependencies [36f5399]
+- Updated dependencies [c82c548]
+- Updated dependencies [bf936fc]
+- Updated dependencies [7ad34b1]
+- Updated dependencies [1463a46]
+- Updated dependencies [61ba7a6]
+- Updated dependencies [b7f1a99]
+- Updated dependencies [488c225]
+- Updated dependencies [9ab52ab]
+- Updated dependencies [ba0c256]
+- Updated dependencies [3aeffda]
+- Updated dependencies [133c786]
+- Updated dependencies [871ccaa]
+- Updated dependencies [8339e33]
+- Updated dependencies [d59c728]
+- Updated dependencies [bd04bfc]
+- Updated dependencies [c77c3eb]
+- Updated dependencies [8903038]
+- Updated dependencies [e3350b3]
+- Updated dependencies [4381467]
+- Updated dependencies [a92b251]
+- Updated dependencies [73caa74]
+- Updated dependencies [d005be2]
+- Updated dependencies [e73a285]
+- Updated dependencies [191b461]
+- Updated dependencies [0758948]
+  - @cotal-ai/cli@0.176.4
+  - @cotal-ai/workspace@0.176.4
+  - @cotal-ai/core@0.176.4
+  - @cotal-ai/runtime@0.176.4
+  - @cotal-ai/connector-core@0.176.4
+  - @cotal-ai/manager@0.176.4
+  - @cotal-ai/auth@0.176.4
+  - @cotal-ai/delivery@0.176.4
+  - @cotal-ai/registry@0.176.4
+  - @cotal-ai/seat@0.176.4
+
 ## 0.176.3
 
 ### Patch Changes

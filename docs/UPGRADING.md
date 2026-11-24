@@ -3426,7 +3426,8 @@ them before anything stops.
 - **The trust records and credential directory** under `.cotal/auth` on the manager host, including
   the per-space material directory. A re-mint would otherwise have to replace them.
 - **A copy of the channel registry**, so you can verify that it came back instead of assuming it
-  did. Save the output of `cotal channels list` before the upgrade, and compare it afterwards.
+  did. Save the output of `cotal channels list` before the upgrade. Compare the channel names and
+  settings afterwards, not the output formatting.
 - **The output of `cotal ps`**, so you know how many seats you expect to see afterwards and can tell
   a lost view from a lost agent.
 
@@ -3553,7 +3554,9 @@ cotal down manager                                      # broker + delivery rema
 #    `ps` is also the signature of the broker/manager mismatch described
 #    above. The two are indistinguishable here, so compare what the mesh
 #    itself should have carried across instead:
-cotal channels list # compare against channels.before: this SHOULD match now
+#    On 0.49.0, run `cotal channels list` instead. Compare the channel names
+#    and settings with channels.before, not the output formatting.
+cotal channel       # current CLI
 cotal ps            # expect it to be EMPTY here; ps.before is the target for
                     # step 5, not for this step
 

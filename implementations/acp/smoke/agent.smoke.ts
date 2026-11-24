@@ -336,6 +336,17 @@ check("deleting a session that never spawned hides nothing", hidden.ids.size ===
 // options
 const sid = created.sessionId;
 const set = (configId: string, value: string) => agent.request(methods.agent.session.setConfigOption, { sessionId: sid, configId, value });
+const harness = (o: readonly { id: string }[]) => o.find((x) => x.id === "agent") as unknown as { currentValue: string; options: { value: string }[] } | undefined;
+const modelOf = (o: readonly { id: string }[]) => (o.find((x) => x.id === "model") as unknown as { currentValue: string } | undefined)?.currentValue;
+check("the harness select lists the usable applications and starts at the model's", harness(created.configOptions ?? [])?.currentValue === "claude" && JSON.stringify(harness(created.configOptions ?? [])?.options.map((c) => c.value)) === JSON.stringify(["claude", "pi"]), created.configOptions);
+let hopts = (await set("agent", "pi")).configOptions;
+check("choosing another harness starts it on its own default model", modelOf(hopts) === "pi/default" && harness(hopts)?.currentValue === "pi", hopts);
+hopts = (await set("model", "claude/haiku")).configOptions;
+check("choosing a model moves the harness to its application", harness(hopts)?.currentValue === "claude", hopts);
+hopts = (await set("agent", "claude")).configOptions;
+check("choosing the harness the model already runs keeps the model", modelOf(hopts) === "claude/haiku", hopts);
+const noPlane = await errorOf(set("agent", "hermes"));
+check("a harness without an event plane is refused as invalid params", noPlane?.code === -32602 && noPlane.message?.includes("event plane") === true, noPlane);
 let opts = (await set("model", "claude/opus")).configOptions;
 check("a model with variants offers the variant option", opts.some((o) => o.id === "variant"), opts.map((o) => o.id));
 await set("variant", "high");
@@ -498,7 +509,7 @@ const narrowModel = narrow?.configOptions?.find((o) => o.id === "model") as { cu
 const narrowChoices = (narrowModel?.options ?? []).flatMap((g) => (g.options ?? []).map((c) => c.value));
 const runningModel = await errorOf(agent.request(methods.agent.session.setConfigOption, { sessionId: "outside", configId: "model", value: "claude/opus" }));
 check("choosing another model while its agent runs is refused without sending the person to /despawn", runningModel?.code === -32602 && String(runningModel.message).includes("options cannot change") && !String(runningModel.message).includes("/despawn"), runningModel);
-check("a seat whose launch lists are refused loads with only its own model and nothing to launch with", narrowModel?.currentValue === "claude/haiku" && JSON.stringify(narrowChoices) === JSON.stringify(["claude/haiku"]) && !narrow?.configOptions?.some((o) => o.id === "persona" || o.id === "channel"), narrowFailed ?? narrow?.configOptions);
+check("a seat whose launch lists are refused loads with only its own model and nothing to launch with", narrowModel?.currentValue === "claude/haiku" && JSON.stringify(narrowChoices) === JSON.stringify(["claude/haiku"]) && !narrow?.configOptions?.some((o) => o.id === "persona" || o.id === "channel" || o.id === "agent"), narrowFailed ?? narrow?.configOptions);
 mesh.present.set(outside.actor, "idle");
 mesh.onInput = (seat) => {
   mesh.present.set(seat.actor, "working");

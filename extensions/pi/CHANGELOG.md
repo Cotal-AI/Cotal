@@ -1,5 +1,15 @@
 # @cotal-ai/pi
 
+## 0.176.5
+
+No changes in this release.
+
+## 0.176.4
+
+### Patch Changes
+
+- 7375267: Pi can now spawn on a Cotal mesh while the standalone Cotal extension is installed. Cotal skips discovered copies of the released standalone bundle and keeps Pi's other extensions enabled. Spawning Pi requires the npm-installed host running on Node.
+
 ## 0.176.3
 
 No changes in this release.

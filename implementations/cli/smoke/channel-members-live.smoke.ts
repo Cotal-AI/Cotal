@@ -21,7 +21,7 @@
  * stack stops with `cotal down --yes`. Needs `nats-server` on PATH. Run: pnpm smoke:channel-members:live
  */
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { assertSmokeSandboxDown, awaitBrokerReady, createSuite, freePort, killAndAwaitExit, recordSmokeSandbox, SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
@@ -104,6 +104,12 @@ try {
   check("up starts the static-auth stack", stack.status === 0, stack.out.slice(-600));
   if (stack.status !== 0) throw new Error("the stack did not start; no later cell can run");
   check("#general is durable with replay disabled", cotal("channel", "set", "general", "--desc", "General talk", "--delivery", "durable", "--no-replay").status === 0);
+  const guide = readFileSync(join(WT, "docs", "UPGRADING.md"), "utf8");
+  const verification = guide.split("# 4. verify the mesh is whole again")[1]?.split("# 5. the step")[0];
+  const inventoryCommand = /^cotal ([^#\n]+)\s*# current CLI$/m.exec(verification ?? "")?.[1]?.trim();
+  const inventory = inventoryCommand === "channel" ? cotal(inventoryCommand) : undefined;
+  check("the current inventory command in the split upgrade guide reads the live channel settings",
+    inventory?.status === 0 && inventory.stdout.includes("general") && inventory.stdout.includes("General talk"), inventory?.out ?? verification);
   check("#archive has a retained message and no saved entry", cotal("send", "-c", "archive", "kept").status === 0);
   const anna = started("join", "--name", "anna", "--channel", "general");
   const bert = started("join", "--name", "bert", "--channel", "lounge");

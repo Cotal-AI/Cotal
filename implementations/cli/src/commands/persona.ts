@@ -3,10 +3,11 @@ import { readFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { buffer } from "node:stream/consumers";
 import * as prompts from "../lib/prompts.js";
-import { assertValidChannel, assertValidRole, oneLine, personaDir, resolveReadAcl, spawnNameError, type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
+import { parseChannelFlag } from "../lib/channel-flags.js";
+import { assertValidRole, oneLine, personaDir, resolveReadAcl, spawnNameError, type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
 import {
   ConfirmationRequired,
-  codeSpan, parseCommaList, CommandFailure, jsonFlag, plainFlag, presentationOf, spaceFlag, serverFlag,
+  codeSpan, CommandFailure, jsonFlag, plainFlag, presentationOf, spaceFlag, serverFlag,
   writeResult, type Presentation, type Report,
   personaDefinitionProblem, recordOperationSpace,
 } from "@cotal-ai/workspace";
@@ -67,10 +68,10 @@ export async function persona(args: ParsedArgs): Promise<void> {
   const target = targetWords(values);
   const { catalog, userMode } = personaCatalogContext(values);
   recordOperationSpace(catalog.space);
-  if (sub === undefined) return list(catalog, presentation);
+  if (sub === undefined) return list(catalog, presentation, target);
   const path = personaPath(catalog.root, name!, sub === "show" ? "show" : "write");
   if (sub === "show") {
-    const source = requirePersonaSource(path, target);
+    const source = requirePersonaSource(path, target, presentation);
     const definition = validatePersona(source.bytes, path);
     const word = personaNameWords(name!, target);
     const jsonWords = personaNameWords(name!, `${target} --json`);
@@ -108,7 +109,7 @@ export async function persona(args: ParsedArgs): Promise<void> {
     return receipt(presentation, catalog, name!, path, "created", target);
   }
   if (sub === "edit") {
-    const edit = await editPersona(path, name!, catalog, target, presentation === "json");
+    const edit = await editPersona(path, name!, catalog, target, presentation);
     if (edit.action === "saved") {
       const spawnWords = personaSpawnWords(name!, target, userMode, !!spawnNameError(edit.displayName, { userMode }));
       return receipt(presentation, catalog, name!, path, "saved", target, false, spawnWords);
@@ -116,12 +117,12 @@ export async function persona(args: ParsedArgs): Promise<void> {
     return editNotSaved(presentation, catalog, name!, path, edit);
   }
   if (sub === "remove") {
-    const expected = requirePersonaSource(path);
+    const expected = requirePersonaSource(path, target, presentation);
     // The seeded default is what a bare `cotal spawn` launches, so removing it says so.
     const seeded = name === "default";
     const question = seeded ? `Remove the seeded default persona '${name}' at ${path}? A bare \`cotal spawn\` launches it.` : `Remove '${name}' at ${path}?`;
     if (!values.yes) {
-      if (presentation === "json" || !canPrompt()) throw new ConfirmationRequired(yesRequired(`removing '${name}' at ${path}`, presentation === "json"), { remedy: `confirm with \`cotal persona remove${personaNameWords(name!, `${target} --yes${presentation === "json" ? " --json" : ""}`)}\`` });
+      if (presentation === "json" || !canPrompt()) throw new ConfirmationRequired(yesRequired(`removing '${name}' at ${path}`, presentation === "json"), { remedy: `confirm with \`cotal persona remove${personaNameWords(name!, `${target} --yes${presentation === "rich" ? "" : ` --${presentation}`}`)}\`` });
       let confirmed = false;
       if (presentation === "plain") {
         confirmed = (await prompts.askLine(`${question}\n1) Cancel\n2) Remove\nChoice [1]: `))?.trim() === "2";
@@ -146,6 +147,11 @@ async function readInput(path: string, flag: "file" | "from"): Promise<Buffer> {
     if (path !== "-" && (error as NodeJS.ErrnoException).code === "ENOENT") {
       throw new CommandFailure("refused", "TARGET_NOT_FOUND", `no persona input file at ${path}`, {
         remedy: `check the path or pipe the original input into the same command with --${flag} -`,
+      });
+    }
+    if (path !== "-" && (error as NodeJS.ErrnoException).code === "EISDIR") {
+      throw new CommandFailure("refused", "TARGET_NOT_FOUND", `persona input path is a directory: ${oneLine(path)}`, {
+        remedy: `pass the path to a ${flag === "file" ? "complete persona file" : "persona body file"} with --${flag}`,
       });
     }
     throw new CommandFailure("refused", "PERMISSION_DENIED", `cannot read persona input: ${path}`);
@@ -196,21 +202,13 @@ async function createSource(name: string, path: string, values: Values): Promise
     body = bytes.toString("utf8");
   }
   if (!body.trim()) throw usage("persona body is empty");
-  // Each entry passes the channel rules here, so a refusal names the flag and the entry rather than
-  // the private draft the flags are written to.
-  const channels = (flag: string, text: string | undefined) => parseCommaList(text)?.map(channel => {
-    try { return assertValidChannel(channel); }
-    catch (error) {
-      throw new CommandFailure("refused", "USAGE_INVALID", `${flag}: ${oneLine((error as Error).message)}`, channel.startsWith("#") ? { remedy: `name the channel without its #, as ${oneLine(channel.slice(1))}` } : {});
-    }
-  });
-  const subscribe = channels("--subscribe", values.subscribe), allowSubscribe = channels("--allow-subscribe", values["allow-subscribe"]);
+  const subscribe = parseChannelFlag("--subscribe", values.subscribe), allowSubscribe = parseChannelFlag("--allow-subscribe", values["allow-subscribe"]);
   try { resolveReadAcl(subscribe ?? [], allowSubscribe); }
   catch (error) { throw usage(`${(error as Error).message}; every --subscribe channel must be within --allow-subscribe`); }
-  return serializePersona({ name, persona: body, role: values.role, model: values.model, agent: values.harness, subscribe, allowSubscribe, allowPublish: channels("--allow-publish", values["allow-publish"]) });
+  return serializePersona({ name, persona: body, role: values.role, model: values.model, agent: values.harness, subscribe, allowSubscribe, allowPublish: parseChannelFlag("--allow-publish", values["allow-publish"]) });
 }
 
-function list(catalog: PersonaCatalog, presentation: Presentation): void {
+function list(catalog: PersonaCatalog, presentation: Presentation, target: string): void {
   let entries: ReturnType<typeof readPersonas>;
   try { entries = readPersonas(catalog.root); }
   catch (error) { throw catalogReadRefusal(personaDir(catalog.root), error); }
@@ -243,9 +241,9 @@ function list(catalog: PersonaCatalog, presentation: Presentation): void {
       { kind: "lines", lines: [{ text: "Definitions, not running agents. Editing a persona does not change a live session.", tone: "hint" }] },
     ] },
     { title: "Next", blocks: [{ kind: "commands", items: [
-      ...(result.items.length ? [{ command: "cotal p show <name>", description: "Read a definition" }] : []),
-      { command: "cotal p create <name> --file <persona.md>", description: "Create a local persona" },
-      { command: "cotal ps", description: "See running agents" },
+      ...(result.items.length ? [{ command: `cotal p show <name>${target}`, description: "Read a definition" }] : []),
+      { command: `cotal p create <name> --file <persona.md>${target}`, description: "Create a local persona" },
+      { command: `cotal ps${target}`, description: "See running agents" },
     ] }] },
   ] }));
 }
@@ -277,7 +275,7 @@ function receipt(presentation: Presentation, catalog: PersonaCatalog, name: stri
       ...(seededDefault ? [{ kind: "lines" as const, lines: ["This was the seeded default persona, which a bare `cotal spawn` launches. A local `cotal up` in this root, `cotal space create` or `cotal setup` writes a fresh copy."] }] : []),
     ] },
     { title: "Next", blocks: [{ kind: "commands", items: result.action === "removed" ? [
-      { command: "cotal p", description: "Browse the local catalog" },
+      { command: `cotal p${target}`, description: "Browse the local catalog" },
     ] : [
       { command: `cotal spawn${spawnWords}`, description: "Launch an agent from this persona" },
       { command: `cotal p show${word}`, description: "Read the saved definition" },

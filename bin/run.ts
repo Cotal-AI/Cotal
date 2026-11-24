@@ -66,22 +66,7 @@ const { commandWord, completeFileWrites, runCli, stdoutError } = await import("@
 const argv = process.argv.slice(2);
 const { readFileSync } = await import("node:fs");
 const currentVersion = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version as string;
-(await import("./update-notice.js")).installUpdateNotice(argv, currentVersion);
-const word = commandWord(argv);
-if (word !== undefined && registry.provides("command", word)) await registry.load("command", word);
-else await importing(...(Object.keys(surfaces) as Surface[]))();
-if (word === "update") await import("./daemon/update-entry.js");
-
-// A CLI must exit quietly when its stdout is closed early — piped to `head`, a pager that quits,
-// or a shell's process substitution (`source <(cotal completion script bash)`). Node otherwise turns the
-// closed-pipe write into a fatal unhandled 'error' event with a stack trace. Mirror SIGPIPE: exit
-// 0. A command that must close something first, such as a chat session, owns stdout's errors while
-// it runs, and this listener stands down for it. Registered before any command can write. A stdout
-// redirected to a file writes each chunk whole or fails into this listener, so a file-size limit or
-// a full disk cannot cut an export short and still exit 0.
-process.stdout.on("error", stdoutError);
-completeFileWrites();
-
+const { installUpdateNotice } = await import("./update-notice.js");
 // The four agent connectors (claude/opencode/hermes/pi) are NOT imported here: they are removable,
 // install-seeded `cotal ext` plugins loaded through the manifest, exactly like a third-party
 // connector (and like the `@cotal-ai/orca` runtime already is). `runCli` seeds them on first run and
@@ -95,5 +80,18 @@ completeFileWrites();
 // The bundled app uses only stock daemon operations, never operator extension discovery or seeding.
 const desktopBridge = argv.length === 2 && argv[0] === "daemon" && argv[1] === "desktop";
 // The bundled reference must open even when the extension inventory needs repair.
-const extensions = !desktopBridge && word !== "docs";
-await runCli(registry, argv, { extensions, startupNotice: { release: releaseStartupInterrupt, handOver: handOverStartupInterrupt } });
+await runCli(registry, argv, {
+  extensions: !desktopBridge && commandWord(argv) !== "docs",
+  async prepare(word, help) {
+    // Keep the recovery message available even when a command surface cannot load.
+    if (word !== undefined && !help) installUpdateNotice(argv, currentVersion);
+    if (word !== undefined && registry.provides("command", word)) await registry.load("command", word);
+    else await importing(...(Object.keys(surfaces) as Surface[]))();
+    if (word === "update") await import("./daemon/update-entry.js");
+
+    // Handle a closed pipe or a failed file write before any command emits output.
+    process.stdout.on("error", stdoutError);
+    completeFileWrites();
+  },
+  startupNotice: { release: releaseStartupInterrupt, handOver: handOverStartupInterrupt },
+});
