@@ -74,6 +74,11 @@ export function managerChoice(instanceId: string, roster: readonly Presence[], h
   return { instanceId, ...(seen ? { host: seen } : {}), local: seen === here, live: row !== undefined };
 }
 
+/** The managers a signed-in person's new thread may start on, as choices. */
+export function managerChoices(launch: readonly string[], roster: readonly Presence[], here: string, owner: string): ManagerChoice[] {
+  return launch.map((instanceId) => managerChoice(instanceId, roster, here, owner));
+}
+
 /** After a connection error, how often and how many times the bridge asks whether its sign-in changed. */
 const SIGN_IN_CHECK_MS = 5_000;
 const SIGN_IN_CHECKS = 12;
@@ -316,7 +321,7 @@ type Controls = ReturnType<typeof controls>;
 
 /** The reads a new thread's options come from, and the launch. */
 function launchCalls(c: Connected, p: Controls, defaultPersona: string | null | undefined): Pick<Mesh, "catalogs" | "managers" | "manager" | "personas" | "spawn"> {
-  const { target, started } = c;
+  const { target, started, observer } = c;
   const { client, resolve, ask, choice, yourManagers } = p;
   return {
     async catalogs(instanceId) {
@@ -346,7 +351,7 @@ function launchCalls(c: Connected, p: Controls, defaultPersona: string | null | 
       if (started) {
         const plan = await yourManagers();
         if (plan.why) throw new NoLaunchManager(plan.why);
-        return plan.launch.map((instanceId) => choice(instanceId));
+        return managerChoices(plan.launch, observer.getRoster(), hostname(), started.owner);
       }
       const t = await resolve("control-caller-privileged");
       const ids = await liveManagerIds(t.space, t.server, t.auth).catch((e: unknown) => {
