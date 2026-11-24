@@ -837,6 +837,23 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
         r.status === 2 && r.stderr.includes(code) && r.stderr.includes(`the temporary directory ${dir} `) && r.stderr.includes("Next") && readdirSync(unwritable).length === 0, shown(r));
     }
     chmodSync(unwritable, 0o700);
+    // EROFS comes from the mount, independent of the fixture directory's permission bits.
+    const hook = join(scratch, "readonly.cjs");
+    writeFileSync(hook, `const fs = require('node:fs'), path = require('node:path');
+const deny = () => { throw Object.assign(new Error('read-only file system'), { code: 'EROFS' }); };
+const access = fs.accessSync, temp = fs.mkdtempSync;
+fs.accessSync = (p, mode) => p === path.join(process.cwd(), process.env.READONLY_ENTRY) && (mode & fs.constants.W_OK) ? deny() : access(p, mode);
+fs.mkdtempSync = (p, ...args) => p === path.join(process.env.TMPDIR, 'cotal-persona-') && process.env.READONLY_ENTRY === 'draft' ? deny() : temp(p, ...args);
+require('node:module').syncBuiltinESMExports();`);
+    for (const [entry, args, remedy] of [
+      [".cotal", ["up", "--server", "nats://127.0.0.1:1"], "retry with the project on a writable file system"],
+      [".cotal/agents", ["persona", "edit", "x"], "retry with the catalog on a writable file system"],
+      ["draft", ["persona", "edit", "x"], "set TMPDIR to a writable folder you own, then retry"],
+    ] as const) {
+      const r = cotal([...args, "--json"], persona, { ...editor, TMPDIR: scratch, READONLY_ENTRY: entry, NODE_OPTIONS: `--require=${JSON.stringify(hook)}` });
+      const error = envelopes(r)[0]?.error;
+      check(`read-only ${entry} gives a filesystem remedy`, r.status === 2 && error?.code === "PERMISSION_DENIED" && error.message?.includes("EROFS") && error.remedy === remedy, shown(r));
+    }
     // `up` writes under .cotal first, so one this account cannot write is refused before anything is
     // started or written, naming it and the chmod.
     let dotCotal = "";
@@ -1020,7 +1037,7 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
       }, noSeed);
       check(`${command} show names a missing link target and suggests restoring it or replacing the link`,
         r.status === 2 && r.stderr.includes("PERMISSION_DENIED") && r.stderr.includes(`is a link to ${absentTarget}, but its target is missing`)
-        && r.stderr.includes("Restore the target if you still need it, or move the broken link aside and put a regular persona file in its place")
+        && r.stderr.includes("Move the link aside and put a regular persona file in its place. To use the original definition, restore the target first and copy that file into the catalog.")
         && !r.stderr.includes("with a copy") && !existsSync(link) && readlinkSync(link) === absentTarget, shown(r));
     }
     const folderLink = cotal(["persona", "show", "linked"], (home) => {

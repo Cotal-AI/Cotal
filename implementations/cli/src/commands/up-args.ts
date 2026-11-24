@@ -224,7 +224,8 @@ function assertUpRootWritable(root: string): void {
   try { accessSync(path, constants.W_OK | constants.X_OK); }
   catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
-    if (code !== "EACCES" && code !== "EPERM" && code !== "EROFS") throw error;
+    if (code === "EROFS") throw new CommandFailure("refused", "PERMISSION_DENIED", `${path} is on a read-only file system (${code}); nothing was started or written`, { target: { root, path }, remedy: "retry with the project on a writable file system" });
+    if (code !== "EACCES" && code !== "EPERM") throw error;
     throw new CommandFailure("refused", "PERMISSION_DENIED", `${path} does not grant this account both write and search access (${code}); nothing was started or written`, { target: { root, path }, remedy: `make it writable and searchable by you, for example with chmod u+wx ${shellWord(path)}` });
   }
 }
