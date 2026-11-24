@@ -526,7 +526,7 @@ try {
   discardLaunchArtifacts(spec.artifacts); discardLaunchArtifacts(foreground.artifacts); discardLaunchArtifacts(onceSpec.artifacts);
   console.log("PASS managed launch configuration and foreground preservation");
   await cell("every Claude launch declares its input screen as ready", () => {
-    assert.deepEqual(spec.confirmReady, ["(shift+tab to cycle)", "? for shortcuts"]);
+    assert.deepEqual(spec.confirmReady, ["(shift+tab to cycle)", "? for shortcuts", "manual mode on"]);
     assert.deepEqual(foreground.confirmReady, spec.confirmReady, "a launch with no workspace also ends its watch on the input screen");
   });
   await cell("every Claude launch declares the first-run screens Cotal never answers", () => {
