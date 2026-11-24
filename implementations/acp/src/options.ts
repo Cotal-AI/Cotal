@@ -197,7 +197,8 @@ function modelGroups(offer: Offer, selection: Selection): { group: string; name:
     // A seat-only thread offers the model its agent runs, and the default only when it names none.
     const choices = [
       ...(offer.seatOnly && c.models.length > 0 ? [] : [{ value: `${c.agent}/${DEFAULT_MODEL}`, name: `${c.agent}: default` }]),
-      ...c.models.map((m) => ({ value: `${c.agent}/${m.id}`, name: `${c.agent}: ${m.name ?? m.id}` })),
+      // A model whose id is the default's would repeat its value, which already means the application's default.
+      ...c.models.filter((m) => m.id !== DEFAULT_MODEL).map((m) => ({ value: `${c.agent}/${m.id}`, name: `${c.agent}: ${m.name ?? m.id}` })),
     ];
     // The current value is always a choice, a custom id included.
     if (parseModel(selection.model).agent === c.agent && !choices.some((o) => o.value === selection.model))

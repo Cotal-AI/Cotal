@@ -19,7 +19,9 @@
  *  - `managerPlan` starts new threads where the auth service's own rule would, and reads agents from
  *    every live manager the person may use;
  *  - `managerChoices` describes a listed manager with no row under the person's principal, as the
- *    space's own, by the host it reports, so a new thread there defaults to it on this host.
+ *    space's own, by the host it reports, so a new thread there defaults to it on this host;
+ *  - the model select and model state list `<agent>/default` once when the catalog names a model
+ *    `default`.
  *
  * Run: pnpm --filter @cotal-ai/acp test   (needs `pnpm build` of core and workspace first)
  */
@@ -28,7 +30,7 @@ import type { SessionUpdate } from "@agentclientprotocol/sdk";
 import { FrameMapper } from "../src/frames.js";
 import { patchDiffs } from "../src/tools.js";
 import { answeredReads, frameOf, managerChoice, managerChoices, managerPlan, namesDeregister } from "../src/live-mesh.js";
-import { defaultManager } from "../src/options.js";
+import { configOptions, defaultManager, initialSelection, modelState, type Offer } from "../src/options.js";
 import type { AguiEventLike, SeatFrame } from "../src/mesh.js";
 
 let pass = 0, fail = 0;
@@ -291,6 +293,19 @@ check("frameOf ignores a frame that another sender put on an agent's event chann
   asked.length = 0;
   const [mine] = await managerChoices(["a"], [mineRow], "here", "u_p", reported);
   check("the person's own manager is described by its live row and is not asked", mine?.live === true && mine.local === true && asked.length === 0, { mine, asked });
+}
+
+// An application whose catalog has a model with the id `default`, as a Hermes endpoint can: the value
+// `<agent>/default` already means the application's own default, so it is one choice.
+{
+  const offer: Offer = { personas: [], channels: [], managers: [], catalogs: [{ agent: "hermes", available: true, eventPlane: true,
+    models: [{ id: "a", variants: ["high"] }, { id: "default", name: "default", variants: ["high"] }] }] };
+  const selection = initialSelection(offer);
+  const select = configOptions(offer, selection).find((o) => o.id === "model") as unknown as { options: { options: { value: string }[] }[] };
+  const values = select.options.flatMap((g) => g.options.map((o) => o.value));
+  check("a catalog model named default does not list <agent>/default twice", values.filter((v) => v === "hermes/default").length === 1, values);
+  const listed = modelState(offer, selection).availableModels.map((m) => m.modelId);
+  check("nor does the session's model state", listed.filter((v) => v === "hermes/default").length === 1, listed);
 }
 
 // Which unanswered replies name the deregister command.
