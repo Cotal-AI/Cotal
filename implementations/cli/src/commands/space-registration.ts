@@ -298,7 +298,7 @@ export async function addFromBundle(name: string | undefined, v: AddValues, prom
       throw usage("--from is not a URL");
     }
     if (disco.protocol !== "https:") throw usage("--from must be an https:// URL: the discovery document carries the trust pins, and a plaintext fetch lets the network choose them");
-    if (!prompt) throw usage("--from needs a terminal to show and confirm the fetched pins", "in a script, export the bundle where the space runs and pass it with --file");
+    if (!prompt) throw usage("--from needs interactive prompts, which --json disables; no discovery document was fetched", "to review the pins, retry in a terminal with prompts enabled and without --json; for scripted or JSON output, replace --from <url> with --file <bundle.json> exported where the space runs");
     const io = clackIO();
     if ((await io.confirm({ message: `Fetch trust pins from ${disco}?`, initialValue: false })) !== true) return undefined;
     let res: Response;
