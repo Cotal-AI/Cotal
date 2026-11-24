@@ -241,6 +241,8 @@ or deleted. On a retained stack, a clean broker exit after `down` makes `up` exi
 If a controller stack's broker crashes, foreground `up` reports the exit and exits 5. It keeps
 the stack records and releases the foreground hold. Run the repair command printed by `up` to
 restart the same stack. For a broker-only stack, that command includes `--no-manager`.
+Moving the project folder leaves the stack running. If the broker then crashes, foreground `up`
+still exits 5 and tells you to move the project back to its recorded path before running the repair command.
 On a controller stack, Ctrl-C or `SIGTERM` in that terminal runs the same guarded stop as bare
 `cotal down` and exits 130 or 143. If the project folder is moved or deleted, the foreground stop
 uses the same recorded process checks as `cotal down --space <space> --yes` from another folder.
