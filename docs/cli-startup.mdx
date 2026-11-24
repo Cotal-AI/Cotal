@@ -164,7 +164,9 @@ provide. A manager that stops on such a gate says this in its log, including tha
 `cotal manager reconcile` refuses the gate. Keep that store intact; upgrading alone does not recover that state.
 `--no-manager` is the broker-only mode: it boots
 the broker (and the delivery daemon in auth mode) and starts no manager, so there is no manager
-pidfile to leave stale. Authenticated starts and refreshes warn that no local process re-signs the
+pidfile to leave stale. If the requested broker settings conflict with the recorded ones, the retry
+keeps `--no-manager`, including when restarting to apply new log settings.
+Authenticated starts and refreshes warn that no local process re-signs the
 daemon credentials and list their stored expiry times. A manager must renew the same secret store;
 the daemon only adopts re-signed credentials. `cotal doctor auth` inspects their local health.
 A refresh under the flag of a mesh whose manager is live refuses rather
