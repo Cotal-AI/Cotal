@@ -146,7 +146,9 @@ stays fail-loud on collision. When another program holds the port on an unprepar
 the refusal keeps the launch options in both retries. Use the suggested alternate port, or free
 the original port and retry at the original address. An address registered for another folder's space refuses `CONFLICT`,
 exit 2, unless this `up` takes that space's name over. The refusal names the space and folder;
-registration alone does not say whether the broker is running. `up -f` checks the manifest's
+registration alone does not say whether the broker is running. If a stopped space reserves the
+address on a prepared project's first `up`, the refusal suggests a checked alternate address and
+keeps the other options in the retry command. `up -f` checks the manifest's
 `broker.servers` or the explicit `--server` against the same registrations. To preview at another
 address, change `--server` and repeat the same `--dry-run`. The other registration stays in place. A second stack started on a held address answers for both registrations, which
 leaves the other space's `down` and its reads reaching this one. When the named space runs from another folder on this machine,
