@@ -114,7 +114,8 @@ is running on its manager and host and waiting for you at Claude's session picke
 attaches to the agent at once, `-d` included; otherwise it prints the attach command. When the
 readiness window passes and the manager reports the agent's process still running, the CLI says
 the agent has not joined the mesh yet, attaches when the spawn was not detached, and otherwise
-prints the attach command. Both exit 0, and `--json` reports them as `managed-launch-running` with
+prints the attach command. The command names the space and manager and keeps `--server` when you
+pass it to `spawn`. Both exit 0, and `--json` reports them as `managed-launch-running` with
 `waitingFor` naming the screen or null. The outcome stays unknown when the manager cannot say
 whether the process runs.
 
