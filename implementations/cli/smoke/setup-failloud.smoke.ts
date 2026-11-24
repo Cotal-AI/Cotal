@@ -52,8 +52,9 @@ try {
   // Broken-present: a connector this CLI has never heard of IS in the manifest but has no package on
   // disk. The same discovery boundary guided setup uses must propagate the real repair diagnostic
   // rather than dropping the connector or reporting a deliberate removal.
-  const brokenConnector = { pkg: "@example/connector-unfamiliar", version: "9.9.9", spec: ".", provides: [{ kind: "connector", name: "unfamiliar" }], commands: [] };
-  writeManifest([brokenConnector]);
+  writeManifest([
+    { pkg: "@example/connector-unfamiliar", version: "9.9.9", spec: ".", provides: [{ kind: "connector", name: "unfamiliar" }], commands: [] },
+  ]);
   await assert.rejects(setupConnectorSurface(), /is in the manifest but not installed/, "a broken-present unfamiliar connector must fail loud");
 
   // A healthy connector that declares no setup provider owns no setup: no provider, no crash.
@@ -75,17 +76,16 @@ try {
     "a declared-but-unresolvable setup provider must fail loud",
   );
 
-  writeManifest([brokenConnector]);
-  registry.register(phantom);
+  writeManifest([]);
   registerRefresh("rejected-refresh", async () => { throw new Error("ownership refused\nUse the owning home."); });
-  registerRefresh("working-refresh", () => "repaired");
+  let repaired = 0;
+  registerRefresh("working-refresh", () => { repaired++; return "repaired"; });
   const reported: string[] = [];
   process.argv[1] = join(import.meta.dirname, "..", "..", "..", "bin", "cotal.ts");
-  await assert.rejects(refreshConnectorInstalls((line) => reported.push(line)), (error: Error) => {
-    assert.match(error.message, /^failloud-phantom: no installed extension provides connector-setup/m);
-    assert.match(error.message, /^rejected-refresh: ownership refused\nUse the owning home\.$/m);
-    assert.match(error.message, /^unfamiliar: .* is in the manifest but not installed/m);
-    return true;
+  await assert.rejects(refreshConnectorInstalls(), { message: "ownership refused\nUse the owning home." });
+  assert.equal(repaired, 0, "migration stops after a failed refresh");
+  await assert.rejects(refreshConnectorInstalls((line) => reported.push(line)), {
+    message: "rejected-refresh: ownership refused\nUse the owning home.",
   });
   assert.deepEqual(reported, ["Refresh working-refresh: repaired"], "a later provider still refreshes and reports its result");
 

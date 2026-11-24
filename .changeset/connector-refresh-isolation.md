@@ -2,4 +2,4 @@
 "@cotal-ai/cli": patch
 ---
 
-Cotal update refreshes other connectors even when one fails. It reports the completed refreshes and the failed connectors separately, and still exits nonzero if reconciliation is incomplete.
+`cotal update` repairs a moved Codex marketplace even when another Cotal home owns the Claude marketplace, and reports the repair separately from the Claude ownership refusal.

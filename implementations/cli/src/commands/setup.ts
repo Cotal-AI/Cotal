@@ -1156,15 +1156,11 @@ export async function setupConnectorCandidates(
 /** Materialize every connector advertised by the registry or installed manifest. Exported so the
  *  fail-loud smoke reaches the same discovery boundary as guided setup. */
 export async function setupConnectorSurface(): Promise<Connector[]> {
-  return Promise.all(setupConnectorNames().map((name) =>
-    materializeExtension<Connector>({ kind: "connector", name })
-  ));
-}
-
-function setupConnectorNames(): string[] {
   const names = new Set(registry.all<Connector>("connector").map((connector) => connector.name));
   for (const name of manifestExtensionNames("connector")) names.add(name);
-  return [...names].sort();
+  return Promise.all([...names].sort().map((name) =>
+    materializeExtension<Connector>({ kind: "connector", name })
+  ));
 }
 
 /** Resolve a connector's declared setup provider from the CONNECTOR the surface produced, never
@@ -1256,28 +1252,33 @@ async function reconcileOtherConnectorSkills(
   }
 }
 
-/** Report each completed refresh and throw after the pass if any connector could not refresh. */
-export async function refreshConnectorInstalls(report: (line: string) => void): Promise<void> {
+/** Explicit update reports completed refreshes and throws after the pass. Migration stops at the first failure. */
+export async function refreshConnectorInstalls(report?: (line: string) => void): Promise<string[]> {
+  const lines: string[] = [];
   const failures: string[] = [];
-  for (const name of setupConnectorNames()) {
-    let line: string;
+  for (const connector of await setupConnectorSurface()) {
+    // Refresh owns installed state even when a harness executable disappeared. Its provider must
+    // distinguish an absent integration from one it cannot update; availability must not hide it.
+    const refresh = (await connectorSetupProvider(connector))?.refresh;
+    if (!refresh) continue;
+    const input = { cotal: selfArgv(), skills: connectorSkillsInput() };
+    const started = Date.now();
+    console.error(`Refreshing ${refresh.title}`);
+    let detail: string;
     try {
-      const connector = await materializeExtension<Connector>({ kind: "connector", name });
-      // Refresh owns installed state even when a harness executable disappeared. Its provider must
-      // distinguish an absent integration from one it cannot update; availability must not hide it.
-      const refresh = (await connectorSetupProvider(connector))?.refresh;
-      if (!refresh) continue;
-      const started = Date.now();
-      console.error(`Refreshing ${refresh.title}`);
-      line = `${refresh.title}: ${await refresh.run({ cotal: selfArgv(), skills: connectorSkillsInput() })}`;
-      console.error(`✓ integration ${name} refreshed (${((Date.now() - started) / 1000).toFixed(1)} s)`);
+      detail = await refresh.run(input);
     } catch (error) {
-      failures.push(`${name}: ${error instanceof Error ? error.message : String(error)}`);
+      if (!report) throw error;
+      failures.push(`${connector.name}: ${error instanceof Error ? error.message : String(error)}`);
       continue;
     }
-    report(line);
+    console.error(`✓ integration ${connector.name} refreshed (${((Date.now() - started) / 1000).toFixed(1)} s)`);
+    const line = `${refresh.title}: ${detail}`;
+    if (report) report(line);
+    else lines.push(line);
   }
   if (failures.length > 0) throw new Error(failures.join("\n"));
+  return lines;
 }
 
 /**

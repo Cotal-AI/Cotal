@@ -225,7 +225,7 @@ export const updateRuntime: UpdateRuntime = {
     } catch { return false; }
   },
   preflightReplacement: async () => { assertReadableSeedState(); },
-  refreshConnectors: refreshConnectorInstalls,
+  refreshConnectors: async (report) => { await refreshConnectorInstalls(report); },
   refreshClients: refreshClientInstalls,
   reconcile: async () => {
     await runSeed({ verify: true });
