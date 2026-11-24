@@ -285,13 +285,24 @@ const editorScript = (file: string, body: string) => { const path = join(home, f
 const saved = readFileSync(persona, "utf8");
 for (const [label, editor, status, says] of [
   ["a draft the rules refuse", editorScript("ed-acl", 'printf -- "---\\nname: rev\\nsubscribe: [ops]\\nallowSubscribe: [general]\\n---\\nx\\n" > "$1"'), 1, 'subscribe "ops" is not within allowSubscribe [general] - not saved'],
-  ["an editor that exits 3", editorScript("ed-exit", 'printf -- "---\\nname: rev\\nrole: changed\\n---\\nx\\n" > "$1"; exit 3'), 0, "Edit cancelled: the editor exited with status 3."],
+  ...[3, 126, 127].map(code => [
+    `an editor that exits ${code}`, editorScript(`ed-exit-${code}`, `printf '\\nUnsaved instructions.\\n' >> "$1" || exit 4; exit ${code}`),
+    0, `Edit cancelled: the editor exited with status ${code}.`,
+  ] as const),
 ] as const) {
   const edit = outcome(spawnSync(process.execPath, [BIN, "persona", "edit", "rev", "--plain"], { cwd: root, env: { ...env, EDITOR: editor, TMPDIR: drafts }, encoding: "utf8", timeout: 120_000 }));
   const kept = readdirSync(drafts).map((dir) => join(drafts, dir, "rev.md")).filter((path) => existsSync(path));
   check(`persona edit with ${label} keeps the draft, names it and leaves the catalog file unchanged`,
-    edit.status === status && (edit.stderr + edit.stdout).includes(says) && kept.length === 1 && (edit.stderr + edit.stdout).includes(kept[0]!) && readFileSync(persona, "utf8") === saved, { ...shown(edit), kept });
+    edit.status === status && (edit.stderr + edit.stdout).includes(says) && kept.length === 1 && (edit.stderr + edit.stdout).includes(kept[0]!) &&
+      readFileSync(kept[0]!, "utf8") !== saved && readFileSync(persona, "utf8") === saved, { ...shown(edit), kept });
   for (const dir of readdirSync(drafts)) rmSync(join(drafts, dir), { recursive: true });
+}
+if (process.platform !== "win32") {
+  const editor = join(home, "missing-editor");
+  const edit = outcome(spawnSync(process.execPath, [BIN, "persona", "edit", "rev", "--plain"], { cwd: root, env: { ...env, EDITOR: editor, TMPDIR: drafts }, encoding: "utf8", timeout: 120_000 }));
+  check("persona edit with a missing editor refuses without keeping a draft or changing the catalog file",
+    edit.status === 2 && edit.stderr.includes("DEPENDENCY_UNAVAILABLE") && edit.stderr.includes(`the editor ${JSON.stringify(editor)} was not found - not saved`) &&
+      readdirSync(drafts).length === 0 && readFileSync(persona, "utf8") === saved, shown(edit));
 }
 // A save refused because the catalog became unwritable while the editor was open keeps the edited
 // draft and names it beside the chmod that fixes the catalog. Root writes through any mode.

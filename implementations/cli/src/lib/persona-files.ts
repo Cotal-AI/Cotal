@@ -308,8 +308,7 @@ interface EditorExit { status: number | null; signal: NodeJS.Signals | null; err
 /** Run the editor on the draft and wait for it to exit. A SIGINT, SIGTERM or SIGHUP the CLI receives
  *  meanwhile is passed to the editor, so the editor does not outlive the CLI. Under `--json` stdout
  *  carries only the final JSON envelope, so the editor's output goes to stderr. */
-function runEditor(editor: string, draft: string, json = false): Promise<EditorExit> {
-  const program = editorProgram(editor);
+function runEditor(editor: string, program: string | undefined, draft: string, json: boolean): Promise<EditorExit> {
   const quoted = process.platform === "win32" ? `"${draft.replaceAll('"', '""')}"` : `'${draft.replaceAll("'", "'\\''")}'`;
   let received: InterruptSignal | undefined;
   // The editor starts running as soon as it is spawned, so the CLI holds the signals first.
@@ -348,19 +347,19 @@ export async function editPersona(path: string, name: string, catalog: PersonaCa
   let keep = false;
   const edit = await withDraft(name, async (draft): Promise<PersonaEdit | { action: "interrupted"; signal: InterruptSignal; draft?: string }> => {
     writeSecretFile(draft, source.bytes);
-    const result = await runEditor(editor, draft, presentation === "json");
+    const program = editorProgram(editor);
+    const result = await runEditor(editor, program, draft, presentation === "json");
     // SIGTERM or SIGHUP stops the edit. Ctrl-C reaches the editor too, and stops the edit only when
     // it ends the editor, since an editor such as vim takes Ctrl-C as a key.
     if (result.received && (result.received !== "SIGINT" || result.signal)) {
       keep = readPersonaSource(draft)?.bytes.equals(source.bytes) === false;
       return { action: "interrupted", signal: result.received, ...(keep ? { draft } : {}) };
     }
-    // A POSIX shell exits 127 when it finds no such command and 126 when it cannot run it: the editor
-    // is missing, as it is when none is set, and nothing was edited. A program that cannot be run is
-    // refused the same way.
+    // A POSIX shell uses 127 for a missing command and 126 for one it cannot run.
+    // A directly launched editor can return either status to cancel the edit.
     if (result.error?.code === "EACCES")
       throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `the editor ${JSON.stringify(editor)} could not be run - not saved`, { remedy: `make ${editor} executable, or set VISUAL or EDITOR to an installed editor` });
-    if (process.platform !== "win32" && !result.error && (result.status === 127 || result.status === 126))
+    if (process.platform !== "win32" && !program && (result.status === 127 || result.status === 126))
       throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `the editor ${JSON.stringify(editor)} ${result.status === 127 ? "was not found" : "could not be run"} - not saved`, {
         remedy: "set VISUAL or EDITOR to an installed editor, or run `cotal config set editor vim`; a value that is not the path of an existing file runs as a shell command, so quote a path that holds spaces",
       });
