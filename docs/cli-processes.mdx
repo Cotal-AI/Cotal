@@ -684,6 +684,7 @@ runs its Manager. For these local spaces, `daemon setup` and `daemon connect-che
 Daemon setup reports this before it checks for an installed daemon service, including when a
 foreground daemon is running. It does not turn the space on or record a hosted Manager refusal.
 `--no-manager` and `--wait` require `--space`; `--wait` also requires `--no-manager`.
+Pass a whole number of seconds from 0 to 86400. Use `--wait 0` to skip the wait. A blank value is invalid.
 Space-specific daemon commands require an explicit `--space <s>` even when `cotal use`
 has selected a space. `daemon status` can omit it to read the daemon and all hosted Managers.
 If supplied, the name must be 1 to 64 characters using ASCII letters, digits, underscores or
