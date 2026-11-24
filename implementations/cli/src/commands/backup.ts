@@ -1,8 +1,8 @@
 import { hostname } from "node:os";
 import { drainAndClose } from "@cotal-ai/core";
 import { randomUUID } from "node:crypto";
-import { dirname, isAbsolute, join, relative, resolve } from "node:path";
-import { accessSync, constants, existsSync, lstatSync, realpathSync } from "node:fs";
+import { basename, dirname, isAbsolute, join, parse, relative, resolve, sep } from "node:path";
+import { accessSync, constants, existsSync, lstatSync, readlinkSync, realpathSync } from "node:fs";
 import type { ConsumerInfo } from "@nats-io/jetstream";
 import type { NatsConnection } from "@nats-io/transport-node";
 import {
@@ -367,27 +367,49 @@ export function chunkQueue(): {
   };
 }
 
+/** Locate a missing folder for diagnosis without losing the targets of dangling links. */
+function missingBackupFolderLocation(folder: string): string {
+  const parts = (path: string) => path.split(sep === "\\" ? /[\\/]+/ : /\/+/).filter(Boolean).reverse();
+  const { root } = parse(folder);
+  const pending = parts(folder.slice(root.length));
+  let current = realpathSync.native(root);
+  let links = 0;
+  while (pending.length) {
+    const part = pending.pop()!;
+    if (part === ".") continue;
+    if (part === "..") { current = dirname(current); continue; }
+    const next = join(current, part);
+    const entry = lstatSync(next, { throwIfNoEntry: false });
+    if (!entry?.isSymbolicLink()) {
+      current = entry ? realpathSync.native(next) : next;
+      continue;
+    }
+    if (++links > 40) throw Object.assign(new Error(`too many symbolic links in ${folder}`), { code: "ELOOP" });
+    const target = readlinkSync(next);
+    const targetRoot = parse(target).root;
+    if (isAbsolute(target)) current = realpathSync.native(resolve(parse(current).root, targetRoot));
+    // A link in the target may change what a following '..' refers to.
+    for (const part of parts(target.slice(targetRoot.length))) pending.push(part);
+  }
+  return current;
+}
+
 function resolveBackupDestination(path: string, attempts: string): string {
   const folder = dirname(path);
-  let ancestor = folder;
-  let realAncestor: string;
-  for (;;) {
-    try {
-      realAncestor = realpathSync.native(ancestor);
-      break;
-    } catch (error) {
-      const parent = dirname(ancestor);
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT" || parent === ancestor) throw error;
-      ancestor = parent;
-    }
+  let parent: string;
+  let missing = false;
+  try { parent = realpathSync.native(folder); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    missing = true;
+    parent = missingBackupFolderLocation(folder);
   }
-  const artifact = join(realAncestor, relative(ancestor, path));
+  const artifact = join(parent, basename(path));
   if (overlaps(artifact, attempts))
     throw new CommandFailure("refused", "USAGE_INVALID", `the backup destination ${path} is inside the maintenance attempt directory ${attempts}; no backup was written`, {
       target: { directory: path, attempts }, remedy: `name a destination outside ${attempts}`, selfContained: true,
     });
-  // An absent parent has a location for diagnosis, but cannot hold a backup.
-  if (ancestor === folder) return artifact;
+  if (!missing) return artifact;
   throw new CommandFailure("refused", "TARGET_NOT_FOUND", `there is no folder ${folder} to create the backup in; nothing was written`, {
     target: { directory: path, folder, missing: "folder" }, remedy: "create that folder first; backup create makes only the artifact's own folder",
   });

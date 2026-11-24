@@ -177,10 +177,12 @@ function assertBackupOutsideAttempts(root: string, run: (...args: string[]) => S
   assert.doesNotMatch(refused.stderr, /LIFECYCLE_BLOCKED|before recovery|create that folder|Native detail:|^Usage/m);
   assert.ok(!existsSync(attempts), "the refusal did not create the attempts directory");
 
-  mkdirSync(attempts, { mode: 0o700 });
-  symlinkSync(attempts, join(root, "attempts-link"), "junction");
-  for (const path of ["forbidden", join("missing", "nested", "forbidden")]) {
-    const destination = join(root, "attempts-link", path);
+  const link = (target: string, name: string) => symlinkSync(
+    process.platform === "win32" ? join(root, target) : target, join(root, name),
+    process.platform === "win32" ? "junction" : "dir",
+  );
+  const assertLinkedRefusal = (...path: string[]) => {
+    const destination = join(root, ...path);
     const linked = run("backup", "create", destination, "--json");
     assert.equal(linked.status, 1, `${linked.stdout}${linked.stderr}`);
     const envelope = JSON.parse(linked.stdout);
@@ -191,6 +193,20 @@ function assertBackupOutsideAttempts(root: string, run: (...args: string[]) => S
     assert.equal(envelope.target.attempts, attempts);
     assert.ok(!Object.hasOwn(envelope.target, "attemptId"));
     assert.equal(envelope.error.remedy, `name a destination outside ${attempts}`);
+  };
+  link(join(".cotal", "maintenance", "attempts"), "attempts-link");
+  link(join("attempts-link", "unmade"), "chained-link");
+  assertLinkedRefusal("attempts-link", "forbidden");
+  assertLinkedRefusal("chained-link", "missing", "forbidden");
+  assert.ok(!existsSync(attempts), "dangling links did not cause the attempts directory to be created");
+
+  mkdirSync(attempts, { mode: 0o700 });
+  assertLinkedRefusal("attempts-link", "forbidden");
+  assertLinkedRefusal("attempts-link", "missing", "nested", "forbidden");
+  assertLinkedRefusal("chained-link", "forbidden");
+  if (process.platform !== "win32") {
+    link("attempts-link/../attempts/unmade", "physical-parent-link");
+    assertLinkedRefusal("physical-parent-link", "forbidden");
   }
   assert.equal(readFileSync(journal, "utf8"), before, "invalid destinations leave the ready journal unchanged");
   assert.deepEqual(readdirSync(attempts), [], "invalid destinations leave no artifact or attempt");
