@@ -571,6 +571,9 @@ runs in part, so every command there targets it, as with nothing selected, and t
 `Mesh:` heading says the selection applies outside the folder. `cotal status` there reports it as
 `Half started` or `Half stopped` with its Next, which for that `up` is `cotal down --yes` and then
 `cotal up --root <root>`.
+If you started the broker with `--root` from another folder, the interrupt notice and the next
+startup refusal give a stop command that changes to the broker's project first. Once it stops,
+repeat your original startup command from the folder where you ran it.
 Inside a project whose root
 has several running spaces, none of them the selection, the command targets the selection. Before it
 acts, it warns on stderr and in its JSON `warnings` with `SELECTION_NOT_FOLDER_SPACE`, naming those
