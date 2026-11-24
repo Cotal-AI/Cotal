@@ -1054,7 +1054,8 @@ Only an automatically adopted selection yields to a running space registered for
 With no space running here it is the selected space, or the only running one. Outside a project,
 with no saved selection, an offline registration does not take the place of your defaults.
 You can still read that space's saved values with `--space <name>`. `--user` reads your defaults alone.
-If `config get` already has a key, remove an unknown option rather than moving it after `--`.
+If `config get` or `config unset` already has a key, or `config set` has both a key and a value,
+remove an unknown option rather than moving it after `--`.
 
 `set` and `unset` change your defaults, or your values for one space with `--space`.
 Both commands work without installing or refreshing connectors. Only `harness`
