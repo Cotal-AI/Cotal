@@ -532,6 +532,21 @@ try {
       openResult.result.createdChannels.some((card) => card.name === "audit-team" && Number.isInteger(card.revision)), openApplied.out);
   const openId = openResult?.result?.deploymentId;
   if (typeof openId !== "string" || !/^[a-f0-9]{16}$/.test(openId)) throw new Error("the open deployment did not return a full ID");
+  manifest("host.yaml", OTHER, { "host-team": "    deliveryClass: live\n" }, { ...openOptions, open: true, head: "  host: 127.0.0.1\n" });
+  const hostPreview = envelope(cotal(c, "team", "deploy", "host.yaml", "--dry-run", "--json").stdout);
+  const hostNative = hostPreview?.result?.native as { channels?: { create?: unknown[] } } | undefined;
+  const hostWarning = hostPreview?.warnings?.find((warning) => warning.code === "MANIFEST_WARNING" && warning.message.includes("broker.host"));
+  check("team deploy --dry-run warns that broker.host makes apply refuse and lists no creation candidates",
+    hostPreview?.result?.kind === "additive-team-deploy-preview" && hostNative?.channels?.create?.length === 0 &&
+    hostWarning?.message.includes("Omit broker.host") === true, hostPreview?.warnings);
+  const hostText = cotal(c, "team", "deploy", "host.yaml", "--dry-run");
+  check("the text preview prints the broker.host warning on stderr",
+    hostText.status === 0 && hostText.stderr.includes("! Apply refuses: broker.host declares a broker bind"), hostText.stderr);
+  const hostApply = cotal(c, "team", "deploy", "host.yaml", "--json");
+  const hostRefusal = envelope(hostApply.stdout);
+  check("team deploy still refuses broker.host with UNSUPPORTED and creates no card",
+    hostApply.status === 2 && hostRefusal?.error?.code === "UNSUPPORTED" && hostRefusal.error.message?.includes("broker bind") === true &&
+    !Object.hasOwn((envelope(cotal(c, "channel", "show", "host-team", "--space", OTHER, "--json").stdout)?.result?.registry as { channels?: Record<string, unknown> } | undefined)?.channels ?? {}, "host-team"), hostApply.out);
   manifest("audit.yaml", OTHER, { "audit-team": "    deliveryClass: live\n" }, { ...openOptions, open: true });
   const bootWhileRetained = cotal(c, "team", "boot", "audit.yaml", "--dry-run", "--json");
   check("fresh boot preview warns about the unremoved deployment",

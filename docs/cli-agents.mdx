@@ -557,7 +557,9 @@ not `review.md` in the project root.
 If a catalog name starts with `-`, put options before `--` and the name after it, as in `cotal persona show --json -- -reviewer`.
 Local create and show reports use that form in their follow-up commands and keep explicit `--space` and `--server` selectors.
 The local list keeps those selectors in its suggested show, create and process commands.
-If `persona show` cannot find the name, its suggested list command keeps those selectors too.
+When local `show`, `edit` or `remove` cannot find the name, the suggested list command keeps
+those selectors and the requested `--json` or `--plain` format. The legacy `personas` commands
+also keep the selected catalog in that lookup.
 Local creation uses the catalog name as the default agent name. Choose a name that starts with a
 letter, digit or `_`. A leading hyphen is refused with `USAGE_INVALID` before anything is written.
 Creation accepts one of `--file/-f` (a complete [agent file](agent-files.mdx)), `--prompt`, or
@@ -634,7 +636,8 @@ If the temporary directory is on a read-only file system, choose a writable temp
 If the catalog itself is on a read-only file system, it must be writable before saving. A
 successful editor exit and valid definition are required before saving. A draft that fails
 validation is refused with `SCHEMA_INVALID` and the reason, keeping the draft and naming its path,
-so the edit is not lost. The retry command keeps any explicit `--space` or `--server` flags.
+so the edit is not lost. The retry command keeps any explicit `--space` or `--server` flags
+and the requested `--json` or `--plain` output.
 An editor that exits non-zero, as vim's `:cq` does, cancels the edit: it
 exits 0 with a `USER_CANCELLED` warning, saves nothing, and keeps and names a draft it changed. An
 editor ended by a signal fails with `OPERATION_FAILED` and keeps the draft. A SIGINT, SIGTERM or
