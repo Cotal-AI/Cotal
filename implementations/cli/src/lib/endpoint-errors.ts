@@ -32,6 +32,10 @@ export function endpointFailure(error: unknown, target: Record<string, unknown>,
 /** `value` as one POSIX shell word, quoted when a shell would split or expand it. */
 export const shellWord = (value: string): string => /^[A-Za-z0-9_./:+-]+$/.test(value) ? value : `'${value.replace(/'/g, `'\\''`)}'`;
 
+/** `flag value` pasted as one shell word, attached `flag=value` when a bare `value` would read as
+ *  another option: `--allow-subscribe -x` refuses its own suggestion, so it prints `--allow-subscribe=-x`. */
+export const grantOption = (flag: string, value: string): string => `${flag}${value.startsWith("-") ? "=" : " "}${shellWord(value)}`;
+
 export function verifyPinnedEndpoint(space: string, server: string | undefined): string {
   const inventory = `cotal endpoint list --live --space ${shellWord(space)}`;
   if (server === undefined) return `verify the full instance ID with ${codeSpan(inventory)}`;
