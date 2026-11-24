@@ -28,6 +28,7 @@ import { createServer as createHttpServer } from "node:http";
 import { createConnection, createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { recordsBucket } from "@cotal-ai/core";
 import { canonicalLocalProcessPath, DELIVERY_PIDFILE, isCommandFailure, MANAGER_PIDFILE, MANAGER_SPARE_CAPABILITY, readManagerName, shellPath, spaceKey, verifyIdentityPin, type ProcessIdentityRecord } from "@cotal-ai/workspace";
 import { finishOwnedChild, observeOwnedChild, ownedBirthLive as live, waitForOwnedChild } from "./_foreground-owned-child.js";
@@ -935,7 +936,7 @@ async function movedRootSignalCell(mode: "sigterm" | "relative-path" | "absolute
   const name = `controller-moved-root-${mode}`;
   const root = join(base, name), mesh = join(root, "project"), moved = `${mesh} moved`, outside = join(root, "outside");
   const home = join(root, "home"), space = "foreground-moved-root-signal", port = await freePort();
-  const env = { ...cleanEnv, PATH: process.env.PATH, HOME: home, COTAL_HOME: join(home, "machine"), XDG_CONFIG_HOME: join(home, "xdg"), XDG_RUNTIME_DIR: join(home, "runtime"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" };
+  const env = { ...cleanEnv, PATH: process.env.PATH, HOME: home, COTAL_HOME: join(home, "owner's machine"), XDG_CONFIG_HOME: join(home, "xdg"), XDG_RUNTIME_DIR: join(home, "runtime"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" };
   mkdirSync(env.XDG_RUNTIME_DIR, { recursive: true, mode: 0o700 });
   const sandbox = recordSmokeSandbox({ root: mesh, cotalHome: env.COTAL_HOME, xdgConfigHome: env.XDG_CONFIG_HOME });
   const created = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["space", "create", space, "--root", "."]);
@@ -984,10 +985,15 @@ async function movedRootSignalCell(mode: "sigterm" | "relative-path" | "absolute
       assert.ok(pins.every(live) && await portOpen(port), "the hangup left every stack member running"); passed++;
       const args = ["down", "--space", space, "--yes"];
       assert.ok(command, stopOutput);
-      assert.equal(command, [...cli, ...args].map(shellWord).join(" "), stopOutput); passed++;
+      const loaderPath = realpathSync(fileURLToPath(tsx));
+      const loader = mode === "relative-path" ? loaderPath : pathToFileURL(loaderPath).href;
+      const launcher = [realpathSync(process.execPath), "--import", loader, realpathSync(cliEntry), ...args];
+      assert.equal(command, `COTAL_HOME=${shellWord(env.COTAL_HOME)} ${launcher.map(shellWord).join(" ")}`, stopOutput); passed++;
       const outsideSandbox = recordSmokeSandbox({ root: outside, cotalHome: env.COTAL_HOME, xdgConfigHome: env.XDG_CONFIG_HOME });
+      const shellEnv: NodeJS.ProcessEnv = { ...env };
+      delete shellEnv.COTAL_HOME;
       assertSmokeSandboxDown(outsideSandbox, args, { cwd: outside, env });
-      const stopped = spawnSync("/bin/sh", ["-c", command], { cwd: outside, env, encoding: "utf8", timeout: 120_000 });
+      const stopped = spawnSync("/bin/sh", ["-c", command], { cwd: outside, env: shellEnv, encoding: "utf8", timeout: 120_000 });
       assert.equal(stopped.status, 0, stopped.error?.message ?? stopped.stdout + stopped.stderr); passed++;
       stopOutput = stopped.stdout;
     }
@@ -1013,7 +1019,9 @@ function projectHangupPath(mesh: string, root: string, mode: "relative-path" | "
   for (const dir of [tools, other]) mkdirSync(dir, { mode: 0o700 });
   const entryLink = join(tools, "entry.ts");
   symlinkSync(cliEntry, entryLink);
-  writeFileSync(join(tools, "cotal"), `#!/bin/sh\nexec ${[process.execPath, "--import", tsx, entryLink].map(shellWord).join(" ")} "$@"\n`, { mode: 0o700 });
+  const loader = mode === "relative-path" ? join(tools, "local tsx.mjs") : tsx;
+  if (mode === "relative-path") symlinkSync(fileURLToPath(tsx), loader);
+  writeFileSync(join(tools, "cotal"), `#!/bin/sh\nexec ${[process.execPath, "--import", loader, entryLink].map(shellWord).join(" ")} "$@"\n`, { mode: 0o700 });
   writeFileSync(join(other, "cotal"), "#!/bin/sh\necho 'wrong cotal' >&2\nexit 99\n", { mode: 0o700 });
   const inherited = (path ?? "").split(":").filter((dir) => dir.startsWith("/"));
   return [mode === "absolute-path" ? tools : "tools", other, ...inherited].join(":");

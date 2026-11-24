@@ -2,4 +2,4 @@
 "@cotal-ai/cli": patch
 ---
 
-When a foreground stack's project folder has moved or disappeared, the terminal hangup notice explains how to stop it from another folder. The command uses an absolute launcher when the running installation is outside the project.
+When a foreground stack's project folder has moved or disappeared, the terminal hangup notice prints a stop command for another folder and includes any non-default `COTAL_HOME`.

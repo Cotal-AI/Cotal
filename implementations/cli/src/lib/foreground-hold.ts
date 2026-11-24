@@ -3,8 +3,9 @@
  *  is gone, such as a holder that was killed, and leaves one that still runs or cannot be read. */
 import { readFileSync, realpathSync, unlinkSync } from "node:fs";
 import { isAbsolute, join, relative, sep } from "node:path";
+import { pathToFileURL } from "node:url";
 import { writeSecretFileAtomic } from "@cotal-ai/core";
-import { assertRecordIdentity, codeSpan, exitCode, findMesh, formatRecord, identityRecord, parseRecord, renderReport, shellPath } from "@cotal-ai/workspace";
+import { assertRecordIdentity, codeSpan, exitCode, findMesh, formatRecord, homeCotalDir, identityRecord, parseRecord, renderReport, shellPath, userCotalDir } from "@cotal-ai/workspace";
 import { entryScript } from "../seed/paths.js";
 import { shellWord } from "./endpoint-errors.js";
 import { displayCmd, selfArgv } from "./self-exec.js";
@@ -38,27 +39,61 @@ export function releaseForegroundHold(root: string): void {
   } catch { /* nothing recorded */ }
 }
 
-/** Capture the physical entry before its launcher can move with the project. */
+/** Resolve file-based preloads from the launching folder, while their original paths still exist. */
+function foregroundStopLoaders(flags: string[], inside: (path: string) => boolean): string[] | undefined {
+  const loaders: string[] = [];
+  for (let i = 0; i < flags.length; i++) {
+    const arg = flags[i]!;
+    const match = /^(--import|--require|-r|--(?:experimental-)?loader)(?:=(.*))?$/.exec(arg);
+    if (!match) { loaders.push(arg); continue; }
+    const specifier = match[2] ?? flags[++i];
+    if (!specifier) return undefined;
+    if (specifier.startsWith("data:") || specifier.startsWith("node:")) {
+      loaders.push(match[1]!, specifier);
+      continue;
+    }
+    const url = specifier.startsWith("file:") ? new URL(specifier) : undefined;
+    if (!url && !isAbsolute(specifier) && !/^\.\.?[/\\]/.test(specifier)) return undefined;
+    const path = realpathSync(url ?? specifier);
+    if (inside(path)) return undefined;
+    if (url) {
+      const physical = pathToFileURL(path);
+      physical.search = url.search;
+      physical.hash = url.hash;
+      loaders.push(match[1]!, physical.href);
+    } else {
+      loaders.push(match[1]!, path);
+    }
+  }
+  return loaders;
+}
+
+/** Capture the physical entry and loader before their paths can move with the project. */
 export function foregroundStopLauncher(root: string): string | undefined {
-  const argv = selfArgv();
-  const project = realpathSync(root), node = realpathSync(process.execPath), entry = entryScript();
-  const inside = (path: string) => {
-    const rel = relative(project, path);
-    return !isAbsolute(rel) && rel !== ".." && !rel.startsWith(`..${sep}`);
-  };
-  if (inside(node) || inside(entry)) return undefined;
-  const loaders = entry.endsWith(".ts") ? argv.slice(1, -1) : [];
-  return [node, ...loaders, entry].map(shellWord).join(" ");
+  try {
+    const argv = selfArgv();
+    const project = realpathSync(root), node = realpathSync(process.execPath), entry = entryScript();
+    const inside = (path: string) => {
+      const rel = relative(project, path);
+      return !isAbsolute(rel) && rel !== ".." && !rel.startsWith(`..${sep}`);
+    };
+    if (inside(node) || inside(entry)) return undefined;
+    const loaders = entry.endsWith(".ts") ? foregroundStopLoaders(argv.slice(1, -1), inside) : [];
+    return loaders && [node, ...loaders, entry].map(shellWord).join(" ");
+  } catch { return undefined; }
 }
 
 /** A hangup leaves the stack running. Release the hold before exiting without unwinding finally. */
 export function hangupForegroundStack(root: string, space: string, outsideCmd: string | undefined): never {
   const stop = `down --space ${shellWord(space)} --yes`;
+  const home = homeCotalDir();
+  const prefix = home === userCotalDir() ? "" : `COTAL_HOME=${shellWord(home)} `;
+  const command = codeSpan(`${prefix}${outsideCmd ?? "cotal"} ${stop}`);
   const remedy = !stackRootGone(space, root)
     ? `${codeSpan(`cd ${shellWord(root)} && ${displayCmd()} down`)} stops it`
     : outsideCmd !== undefined
-      ? `run ${codeSpan(`${outsideCmd} ${stop}`)} from another folder to stop it`
-      : `use a Cotal installation outside the project to run ${codeSpan(`cotal ${stop}`)} from another folder to stop it`;
+      ? `run ${command} from another folder to stop it`
+      : `use a Cotal installation outside the project to run ${command} from another folder to stop it`;
   process.stderr.write(`The terminal closed. This stack is still running; ${remedy}.\n`);
   process.exitCode = 129;
   releaseForegroundHold(root);
