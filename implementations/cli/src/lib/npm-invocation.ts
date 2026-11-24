@@ -126,7 +126,10 @@ export function npmInvocation(env: NodeJS.ProcessEnv, args: string[]) {
     const probeEnv = { ...env };
     delete probeEnv.NODE_OPTIONS;
     const project = npmProjectDirectory.getStore();
-    if (inheritedNode && isAbsolute(inheritedNode) && directories.includes(dirname(inheritedNode)) &&
+    // A POSIX directory with a colon travels in the absolute hint, not PATH.
+    const inheritedBin = inheritedNode ? dirname(inheritedNode) : "";
+    if (inheritedNode && isAbsolute(inheritedNode) &&
+        (directories.includes(inheritedBin) || (!windows && inheritedBin.includes(delimiter))) &&
         resolveOnPath(inheritedNode, env) === inheritedNode) {
       const node = compatibleNode(inheritedNode, cwd, cwd, probeEnv, engine.range);
       if (node === inheritedNode) return { file: node, args: [engine.entry, ...args], env: withNode(node, true), cwd, node };

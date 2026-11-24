@@ -372,10 +372,7 @@ console.log(JSON.stringify(${JSON.stringify(version)}));
         node: realpathSync(projectNode), cwd: parse(root).root, pathHead: dirname(realpathSync(projectNode)),
       }], "npm uses the project-selected executable and its bin directory outside the project");
 
-      const namedNode = join(root, "node executable", `node-${process.versions.node}`);
-      mkdirSync(dirname(namedNode));
-      renameSync(projectNode, namedNode);
-      symlinkSync(namedNode, projectNode);
+      rmSync(projectNode);
       writeFileSync(dispatcher, `#!/bin/sh\nif [ -f .tool-versions ]; then exec "${projectNode}" "$@"; fi\nexec "${alternate}.gone" "$@"\n`);
       const original = process.version;
       Object.defineProperty(process, "version", { value: incompatibleVersion });
@@ -383,12 +380,21 @@ console.log(JSON.stringify(${JSON.stringify(version)}));
         const file = join(onlyNode, exe), args = [entry, "update", "--check"], env = cliEnv([shimDir]);
         const release = claimGlobalNpmUpdateLock(root);
         try {
-          for (const launch of [() => runGlobalProcess(root, "reconcile", file, args, env), () => runProcess(file, args, env)]) {
-            const child = await npmProjectDirectory.run(project, () => launch());
-            assert.equal(child.status, 0, child.stdout + child.stderr);
-            assert.deepEqual(recordedLaunches().at(-1), {
-              node: realpathSync(namedNode), cwd: parse(root).root, pathHead: dirname(realpathSync(namedNode)),
-            }, "the child keeps the symlinked runtime when its shim would choose another Node");
+          for (const binName of ["node executable", "node:executable"]) {
+            const namedNode = join(root, binName, `node-${process.versions.node}`);
+            mkdirSync(dirname(namedNode));
+            copyFileSync(process.execPath, namedNode);
+            symlinkSync(namedNode, projectNode);
+            const resolved = realpathSync(namedNode);
+            const pathHead = binName.includes(delimiter) ? onlyNode : dirname(resolved);
+            for (const launch of [() => runGlobalProcess(root, "reconcile", file, args, env), () => runProcess(file, args, env)]) {
+              const child = await npmProjectDirectory.run(project, launch);
+              assert.equal(child.status, 0, child.stdout + child.stderr);
+              assert.deepEqual(recordedLaunches().at(-1), {
+                node: resolved, cwd: parse(root).root, pathHead,
+              }, `the child keeps the symlinked runtime from ${binName} without splitting its directory on PATH`);
+            }
+            rmSync(projectNode);
           }
         } finally { release(); }
       } finally { Object.defineProperty(process, "version", { value: original }); }
