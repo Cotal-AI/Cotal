@@ -741,7 +741,8 @@ try {
   for (const mode of ["--open", "--user-auth"]) {
     for (const members of [[], ["--no-manager"]]) {
       const mismatch = run(["up", mode, ...members, "--json"], journalRoot);
-      const keep = ["cotal up", ...members].join(" "), separate = ["cotal up", mode, ...members].join(" ");
+      const keep = ["cotal up", ...members].join(" ");
+      const separate = ["cotal up", mode, ...(mode === "--user-auth" ? ["--idp <auth base URL>"] : []), ...members].join(" ");
       const remedy = mismatch.envelope?.error?.remedy ?? "";
       check(`a pinned-mode refusal with ${[mode, ...members].join(" ")} keeps the requested members in both retries`,
         mismatch.status === 2 && mismatch.envelope?.error?.code === "CONFLICT" && remedy.includes(`\`${keep}\` to keep static auth`)
