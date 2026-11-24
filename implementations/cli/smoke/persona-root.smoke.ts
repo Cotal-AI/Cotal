@@ -904,6 +904,8 @@ try {
     const json = native(next[2]!.split(" ").slice(1));
     check("the printed JSON command returns the correct persona", json.status === 0 &&
       JSON.parse(json.stdout).result?.definition?.name === "reviewer", json.stdout + json.stderr);
+    const plain = native(["persona", "remove", "--plain", "--no-input", "--", "-reviewer"]);
+    check("persona remove keeps plain output before the end of options in its confirmation", plain.status === 1 && plain.stderr.includes("`cotal persona remove --yes --plain -- -reviewer`") && existsSync(path), plain.stderr);
     const refused = native(["persona", "remove", "--json", "--", "-reviewer"]);
     const remove: string | undefined = JSON.parse(refused.stdout).error?.remedy?.match(/`([^`]+)`/)?.[1];
     check("persona remove prints a JSON confirmation for a hyphen-leading catalog name",

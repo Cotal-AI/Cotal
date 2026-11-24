@@ -567,8 +567,10 @@ back to the selection.
 A `--server` URL with a user name or password in it, such as `nats://<user>:<password>@<host>:<port>`,
 is refused with `USAGE_INVALID`, exit 1, by every command that takes `--server`, before anything is
 read, written or dialed. The refusal does not repeat the value. The NATS client uses only the host
-and port of that URL, so the command would otherwise connect with the credential it resolves. Pass
-that credential with `--creds`, a login or the space's own trust instead. `up` refuses such a URL
+and port of that URL. Remove the user name and password, keeping the same broker address. For an
+authenticated space, use its login or trust, or a credential file on commands that accept one for
+connections. `space add` does not take `--creds`. `whoami --creds` inspects the file on its own;
+leave out `--creds` to inspect the identity for a broker address. `up` refuses such a URL
 with its own message. The manager reads `COTAL_SERVER` when `--server` is unset, and refuses a
 `COTAL_SERVER` with a user name or password the same way, naming `COTAL_SERVER`. `space add` and
 `meshes add` refuse such a server in a connection bundle, and the `meshes add` prompt refuses one

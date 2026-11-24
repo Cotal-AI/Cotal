@@ -426,7 +426,7 @@ async function setupCommand(args: ParsedArgs): Promise<void> {
   if (args.values.cloud && values.idp !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", "--cloud and --idp cannot be combined");
   if (values["client-id"] !== undefined && !values["client-id"].trim()) throw new CommandFailure("refused", "USAGE_INVALID", "--client-id cannot be empty");
   const waitSeconds = values.wait === undefined ? 900 : Number(values.wait);
-  if (!Number.isInteger(waitSeconds) || waitSeconds < 0 || waitSeconds > 86400) throw new CommandFailure("refused", "USAGE_INVALID", "--wait takes whole seconds from 0 to 86400");
+  if (values.wait?.trim() === "" || !Number.isInteger(waitSeconds) || waitSeconds < 0 || waitSeconds > 86400) throw new CommandFailure("refused", "USAGE_INVALID", "--wait takes whole seconds from 0 to 86400", { remedy: "omit --wait to set up a Manager, or use --no-manager with --wait <seconds> to wait for machine approval" });
   if (values.wait !== undefined && values["no-manager"] !== true) throw new CommandFailure("refused", "USAGE_INVALID", "--wait requires --no-manager; Manager setup never waits for machine approval");
   if (values["daemon-home"] === undefined || isAbsolute(values["daemon-home"])) {
     const requirement = daemonServiceRequirement(values["daemon-home"]);

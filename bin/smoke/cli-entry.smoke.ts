@@ -539,7 +539,7 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
   for (const argv of [["send", "-c", "general", "x", "--server", "nats://u:pw0rdX@127.0.0.1:1"], ["history", "general", "--server", "u:pw0rdX@127.0.0.1:1"], ["whoami", "--server", "nats://127.0.0.1:1,tls://u:pw0rdX@127.0.0.1:2"], ["space", "add", "x", "--server", "nats://u:pw0rdX@127.0.0.1:1", "--yes"]]) {
     const r = cotal(argv, undefined, noSeed);
     refused(`cotal ${argv.slice(0, 2).join(" ")} refuses a --server with a user and password, never repeating it`, r, new RegExp(`^✗ ${userinfo}$`, "m"));
-    check(`cotal ${argv.slice(0, 2).join(" ")} prints no part of that --server`, !`${r.stdout}${r.stderr}`.includes("pw0rdX") && !r.stderr.includes("127.0.0.1"), shown(r));
+    check(`${argv[0]} suggests removing URL credentials without exposing the address or prescribing a credential file`, r.stderr.includes("name the broker URL without user:password@ and retry") && !r.stderr.includes("--creds") && !`${r.stdout}${r.stderr}`.includes("pw0rdX") && !r.stderr.includes("127.0.0.1"), shown(r));
   }
   const userinfoJson = cotal(["send", "-c", "general", "x", "--server", "nats://u:pw0rdX@127.0.0.1:1", "--json"], undefined, noSeed);
   check("a --server with a user and password under --json is one USAGE_INVALID envelope without the value",
