@@ -1,5 +1,13 @@
 # @cotal-ai/workspace
 
+## 0.176.5
+
+### Patch Changes
+
+- 8c884a8: Keep your requested startup options in foreground and busy-port retries, and report a verified startup in progress instead of telling you to stop it.
+- e9f798e: When `cotal update --self` skips its version check because npm is in offline mode, report that it restored owner write permission on the Cotal connector configuration and that no installed packages were replaced. A retry that changes no permissions prints no notice.
+- @cotal-ai/core@0.176.5
+
 ## 0.176.4
 
 ### Patch Changes
