@@ -268,10 +268,17 @@ function resolveSelection(saved: string, set: string, mismatch: string): { root:
 function selectedRoot(saved: string, set: string, mismatch: string, prepare?: (path: string) => void): string {
   const { root, expected } = resolveSelection(saved, set, mismatch);
   const moved = root !== saved;
-  prepare?.(expected);
-  ownedDirectory(set);
-  try { ownedDirectory(root); }
-  catch (cause) {
+  try {
+    if (moved) {
+      prepare?.(set);
+      ownedDirectory(set);
+      if (lstatSync(root, { throwIfNoEntry: false })?.isSymbolicLink())
+        throw selectionMismatch(saved, expected, mismatch, "the moved connector root is a symbolic link");
+    }
+    prepare?.(expected);
+    if (!moved) ownedDirectory(set);
+    ownedDirectory(root);
+  } catch (cause) {
     if (moved && (cause as NodeJS.ErrnoException).code === "ENOENT")
       throw selectionMismatch(saved, expected, mismatch, cause);
     throw cause;
@@ -279,6 +286,7 @@ function selectedRoot(saved: string, set: string, mismatch: string, prepare?: (p
   for (const name of ["seed", "extensions"]) {
     const path = join(root, name), stat = lstatSync(path, { throwIfNoEntry: false });
     if (!stat && moved) throw selectionMismatch(saved, expected, mismatch, `the moved ${name} directory is missing`);
+    if (moved && stat?.isSymbolicLink()) throw selectionMismatch(saved, expected, mismatch, `the moved ${name} directory is a symbolic link`);
     if (stat && !stat.isDirectory()) throw new Error(`retained connector state is not a real directory: ${path}`);
   }
   if (moved && !lstatSync(join(root, "extensions", "extensions.json"), { throwIfNoEntry: false })?.isFile())

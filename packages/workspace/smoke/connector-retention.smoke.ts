@@ -194,6 +194,11 @@ renameSync(lineage,lineage+'.saved');
 assert.throws(()=>connectorConfigDir(),error=>error.message.includes('not private') && !error.message.includes(selected),'never read selection.json through a linked version directory');
 renameSync(lineage+'.saved',lineage);
 rmSync(versionDir);
+const lineageBefore=readFileSync(lineage);
+assert.throws(()=>connectorConfigDir(),explainsMove('ENOENT'),'a missing version directory identifies both roots through lineage');
+assert.throws(()=>prepareConnectorConfigForUpdate(),explainsMove('ENOENT'),'preflight does not recreate the missing version directory');
+assert(!fs.existsSync(versionDir));
+assert.deepEqual(readFileSync(lineage),lineageBefore);
 renameSync(versionDir+'.saved',versionDir);
 mkdirSync(join(from,'cotal'),{recursive:true,mode:0o700});
 assert.throws(()=>connectorConfigDir(),explainsMove('differs'),'a separate existing config is not a move');
@@ -211,15 +216,19 @@ renameSync(selection,selection+'.saved');
 assert.throws(()=>connectorConfigDir(),explainsMove('ENOENT'),'a missing root named only by lineage identifies both roots');
 renameSync(selection+'.saved',selection);
 symlinkSync(moved+'.saved',moved);
-assert.throws(()=>connectorConfigDir(),/private/,'the moved root must be a real directory');
+assert.throws(()=>connectorConfigDir(),explainsMove('connector root is a symbolic link'));
+assert.throws(()=>prepareConnectorConfigForUpdate(),explainsMove('connector root is a symbolic link'));
 rmSync(moved);
 renameSync(moved+'.saved',moved);
-const seed=join(moved,'seed');
-renameSync(seed,seed+'.saved');
-symlinkSync(seed+'.missing',seed);
-assert.throws(()=>connectorConfigDir(),/retained connector state is not a real directory/);
-rmSync(seed);
-renameSync(seed+'.saved',seed);
+for (const name of ['seed','extensions']) {
+  const path=join(moved,name);
+  renameSync(path,path+'.saved');
+  symlinkSync(path+'.saved',path);
+  assert.throws(()=>connectorConfigDir(),explainsMove(name+' directory is a symbolic link'));
+  assert.throws(()=>prepareConnectorConfigForUpdate(),explainsMove(name+' directory is a symbolic link'));
+  rmSync(path);
+  renameSync(path+'.saved',path);
+}
 renameSync(to,from);
 process.env.XDG_CONFIG_HOME=from;
 ` : ""}

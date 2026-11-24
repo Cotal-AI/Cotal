@@ -289,9 +289,9 @@ installed CLI at the same path can use the moved connector set. The former confi
 must be absent, and the private connector set must still be at the same relative path under the
 new configuration folder, including its seed directory and extensions manifest. Update `HOME`,
 `COTAL_HOME`, and `XDG_CONFIG_HOME` as needed before running Cotal again.
-If Cotal cannot verify the move, restore access to the original location, then return the intact
-configuration there or restore it from a backup. Set `XDG_CONFIG_HOME` to the parent of that `cotal`
-folder before retrying.
+If Cotal finds the previous selection but cannot verify the move, it names the recorded and expected
+connector paths. Restore access to the original location, then return the intact configuration there
+or restore it from a backup. Set `XDG_CONFIG_HOME` to the parent of that `cotal` folder before retrying.
 Keep the selection records with the connector set.
 When a newer release is available, self-update sets aside an unreadable connector selection and
 reports the saved path. It uses a connector set named by a readable record, or prepares a separate
