@@ -6,7 +6,12 @@ log({
   argv: process.argv.slice(2),
   seatIdentity: "COTAL_SPACE" in process.env || "COTAL_NAME" in process.env,
   providerKey: "ANTHROPIC_API_KEY" in process.env,
+  cwd: process.cwd(),
 });
+if (process.argv.includes("--version")) {
+  process.stdout.write(`${process.env.FAKE_PI_VERSION ?? "1.5.2"}\n`);
+  process.exit(0);
+}
 const mode = process.env.FAKE_PI_MODE;
 if (mode === "exit") process.exit(3);
 if (process.env.FAKE_PI_STUBBORN === "1") {
