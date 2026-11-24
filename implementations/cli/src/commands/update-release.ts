@@ -4,8 +4,9 @@ import { tmpdir } from "node:os";
 import { isIP, SocketAddress } from "node:net";
 import { join } from "node:path";
 import { oneLine, processStartToken, recordUpdateDeferral } from "@cotal-ai/workspace";
+import { displayRemedy } from "../lib/self-exec.js";
 import { c } from "../ui.js";
-import { type CommandResult, RegistryUnavailable, parseNpmVersion, failure, message } from "./update-process.js";
+import { type CommandResult, RegistryUnavailable, StagingTimeout, parseNpmVersion, failure, message } from "./update-process.js";
 import type { UpdateRuntime } from "./update.js";
 
 export const MISSING_NPM_REMEDY = "Install npm or add it to this command's PATH, then retry.";
@@ -39,7 +40,7 @@ function npmOfflineCacheMiss(result: CommandResult): boolean {
   catch { return false; }
 }
 
-export async function handleLatestVersionFailure(latest: LatestVersionFailure, current: string, rt: UpdateRuntime, unavailable: string, promotionRecovered: boolean): Promise<number> {
+export async function handleLatestVersionFailure(latest: LatestVersionFailure, current: string, rt: UpdateRuntime, unavailable: string, promotionRecovered: boolean, permissionsRestored = false): Promise<number> {
   if (latest.missingNpm) {
     if (rt.env.COTAL_AUTO_UPDATE === "1") recordUpdateDeferral(current, "waiting for npm availability", true);
     rt.err(c.red(`✗ cotal-ai version check failed: ${latest.error}. ${MISSING_NPM_REMEDY}`));
@@ -49,6 +50,7 @@ export async function handleLatestVersionFailure(latest: LatestVersionFailure, c
     if (rt.env.COTAL_AUTO_UPDATE === "1") recordUpdateDeferral(current, "waiting for npm offline mode to be disabled", true);
     rt.onOfflineVersionCheckSkipped?.();
     if (promotionRecovered) rt.out("Completed an interrupted extension promotion.");
+    if (permissionsRestored) rt.out("Restored owner write permission on the Cotal connector configuration; no installed packages were replaced.");
     rt.out(`${latest.error}. The latest-version check was skipped.`);
     return 0;
   }
@@ -195,8 +197,24 @@ const NETWORK_ERROR_CODE = /^(?:ENETUNREACH|EHOSTUNREACH|ENETDOWN|EHOSTDOWN|ECON
 
 export function registryNetworkFailure(error: unknown): boolean {
   if (error instanceof RegistryUnavailable) return true;
-  const code = /(?:^|\n|^target staging failed: )npm (?:error|ERR!) code ([A-Z_]+)(?:\s|$)/.exec(message(error))?.[1];
+  const detail = error instanceof StagingTimeout ? error.npmOutput : message(error);
+  const code = /(?:^|\n|^target staging failed: )npm (?:error|ERR!) code ([A-Z_]+)(?:\s|$)/.exec(detail)?.[1];
   return code !== undefined && NETWORK_ERROR_CODE.test(code);
+}
+
+export function offlineUpdateMessage(repaired: boolean): string {
+  return repaired ? "The registry cannot be reached; no installed packages were replaced." : "The registry cannot be reached; nothing was changed.";
+}
+
+export function deferStagingFailure(error: unknown, version: string, rt: UpdateRuntime, repaired: boolean): boolean {
+  if ((error instanceof RegistryUnavailable || error instanceof StagingTimeout || message(error).startsWith("target staging failed: ")) && registryNetworkFailure(error)) {
+    recordUpdateDeferral(version, "waiting for registry access", true);
+    rt.out(offlineUpdateMessage(repaired));
+  } else if (error instanceof StagingTimeout) {
+    recordUpdateDeferral(version, error.message, true);
+    rt.out(displayRemedy(`${error.message}. The previous version remains installed. Run \`cotal update --self\` again.`));
+  } else return false;
+  return true;
 }
 
 export function releaseReadError(result: CommandResult, detail: string, { installedSpecs, metadataSpec }: { installedSpecs?: readonly string[]; metadataSpec?: string } = {}): Error {

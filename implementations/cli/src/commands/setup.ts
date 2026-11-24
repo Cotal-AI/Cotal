@@ -1252,21 +1252,32 @@ async function reconcileOtherConnectorSkills(
   }
 }
 
-/** Run every present connector's refresh, so what an earlier setup installed in its harness moves to
- *  this release. Returns one line per connector that declares one; a refresh that fails throws. */
-export async function refreshConnectorInstalls(): Promise<string[]> {
+/** Explicit update reports completed refreshes and throws after the pass. Migration stops at the first failure. */
+export async function refreshConnectorInstalls(report?: (line: string) => void): Promise<string[]> {
   const lines: string[] = [];
+  const failures: string[] = [];
   for (const connector of await setupConnectorSurface()) {
     // Refresh owns installed state even when a harness executable disappeared. Its provider must
     // distinguish an absent integration from one it cannot update; availability must not hide it.
     const refresh = (await connectorSetupProvider(connector))?.refresh;
-    if (refresh) {
-      const started = Date.now();
-      console.error(`Refreshing ${refresh.title}`);
-      lines.push(`${refresh.title}: ${await refresh.run({ cotal: selfArgv(), skills: connectorSkillsInput() })}`);
-      console.error(`✓ integration ${connector.name} refreshed (${((Date.now() - started) / 1000).toFixed(1)} s)`);
+    if (!refresh) continue;
+    const input = { cotal: selfArgv(), skills: connectorSkillsInput() };
+    const started = Date.now();
+    console.error(`Refreshing ${refresh.title}`);
+    let detail: string;
+    try {
+      detail = await refresh.run(input);
+    } catch (error) {
+      if (!report) throw error;
+      failures.push(`${connector.name}: ${error instanceof Error ? error.message : String(error)}`);
+      continue;
     }
+    console.error(`✓ integration ${connector.name} refreshed (${((Date.now() - started) / 1000).toFixed(1)} s)`);
+    const line = `${refresh.title}: ${detail}`;
+    if (report) report(line);
+    else lines.push(line);
   }
+  if (failures.length > 0) throw new Error(failures.join("\n"));
   return lines;
 }
 

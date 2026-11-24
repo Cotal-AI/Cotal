@@ -15,7 +15,7 @@ import { abandonableSignalStop, abandonRetainedNativeStop, abandonRetainedSignal
 import { stackRunsRecord, type StackRuns } from "./stack-runs.js";
 import { shellWord } from "./endpoint-errors.js";
 import { readStoreIdentity, type StoreIdentity } from "./store-identity.js";
-import { readMaintenanceLockHolder } from "@cotal-ai/workspace";
+import { assertRecordIdentity, localProcessOwnerStatus, readMaintenanceLockHolder } from "@cotal-ai/workspace";
 import { displayCmd, displayRemedy } from "./self-exec.js";
 
 export const STACK_ROLES = ["broker", "auth", "delivery", "manager"] as const;
@@ -708,6 +708,16 @@ function attemptedRoles(journal: StackJournal): StackRole[] {
   return STACK_ROLES.filter((role) => stackRoleApplies(journal.mode, role) && journal.members.some((row) => row.role === role && row.state !== "not-attempted"));
 }
 
+/** A planned or applying start belongs to this lock owner only when the operation ID and the
+ *  local process birth both match. A later operation or a reused PID is not this startup. */
+export function stackUpInProgress(journal: StackJournal): boolean {
+  const { kind, phase, id } = journal.operation;
+  if (kind !== "up" || phase !== "planned" && phase !== "applying") return false;
+  const holder = readMaintenanceLockHolder(journal.root);
+  return holder?.owner.id === id && holder.process !== undefined && localProcessOwnerStatus(holder.owner) === "alive"
+    && assertRecordIdentity(holder.process).kind === "match";
+}
+
 /** An earlier `up` that ended with no recorded outcome before every member it planned started, or
  *  a `down` that ended so before every member stopped, with the members on each side as their
  *  processes show. A member with no instance record counts as stopped, and `noManager` says the up
@@ -750,6 +760,14 @@ export function newStackOperation(kind: "up" | "down", withAgents = false): Stac
  *  records it, so the stack runs no manager by choice. */
 export function stackStartedWithoutManager(journal: StackJournal): boolean {
   return journal.operation.kind === "up" && journal.operation.phase === "completed" && journal.members.some((row) => row.role === "manager" && row.state === "not-attempted");
+}
+
+/** Whether the stack was last started without a manager, as `up --no-manager` records it, whether it
+ *  still runs or a completed `down` stopped it since. That down plans no stop for a manager it has no
+ *  instance of, so the manager stays `not-attempted`. */
+export function stackRecordedWithoutManager(journal: StackJournal): boolean {
+  if (stackStartedWithoutManager(journal)) return true;
+  return journal.operation.kind === "down" && journal.operation.phase === "completed" && journal.members.some((row) => row.role === "manager" && row.state === "not-attempted");
 }
 
 /** Whether the stack's last `up` ended with no recorded outcome and planned no manager, as

@@ -72,7 +72,14 @@ let up = false;
 try {
   for (const verb of ["check", "migrate"]) for (const flags of [["--adopt", "h1"], ["--release", "h1"], ["--discard-approvals"]]) {
     const out = await call("run", verb, "run-missing", "good.cotal.js", ...flags);
-    check(`${verb} ${flags[0]} refuses before a mesh exists`, out.code === 1 && out.text.includes(`${flags[0]} decides what a commit does`) && !out.text.includes("no mesh"), out.text);
+    check(`${verb} ${flags[0]} refuses before a mesh exists`, out.code === 1 && out.text.includes(`${flags[0]} decides what a commit does`)
+      && out.text.includes(`run the check without ${flags[0]}`) && !out.text.includes("no mesh"), out.text);
+  }
+  for (const verb of ["check", "migrate"]) for (const flag of ["--adopt", "--release"]) for (const after of [[], ["--local"], ["--"]]) {
+    const out = await call("run", verb, "run-missing", "good.cotal.js", flag, ...after);
+    check(`${verb} ${[flag, ...after].join(" ")} tells the user to remove the flag`, out.code === 1
+      && out.text.includes(`does not take ${flag}`) && out.text.includes(`run the check without ${flag}`)
+      && !out.text.includes(`write ${flag}`) && !out.text.includes("no mesh"), out.text);
   }
   const unsupportedFile = await call("run", "resume", "run-example", "--file", "good.cotal.js", "--json");
   const fileRefusal = JSON.parse(unsupportedFile.text);

@@ -141,7 +141,9 @@ with `CONFLICT` and asks for `--space`. With no
 reserved by another registered space, including one whose broker is stopped. It saves the chosen
 address. A later `cotal up` of
 the same space from the same folder starts from the URL that mesh recorded; an explicit `--server`
-stays fail-loud on collision. An address registered for another folder's space refuses `CONFLICT`,
+stays fail-loud on collision. When another program holds the port on an unprepared first start,
+the refusal keeps the launch options in both retries. Use the suggested alternate port, or free
+the original port and retry at the original address. An address registered for another folder's space refuses `CONFLICT`,
 exit 2, unless this `up` takes that space's name over. The refusal names the space and folder;
 registration alone does not say whether the broker is running. `up -f` checks the manifest's
 `broker.servers` or the explicit `--server` against the same registrations. To preview at another
@@ -239,6 +241,8 @@ or deleted. On a retained stack, a clean broker exit after `down` makes `up` exi
 If a controller stack's broker crashes, foreground `up` reports the exit and exits 5. It keeps
 the stack records and releases the foreground hold. Run the repair command printed by `up` to
 restart the same stack. For a broker-only stack, that command includes `--no-manager`.
+Moving the project folder leaves the stack running. If the broker then crashes, foreground `up`
+still exits 5 and tells you to move the project back to its recorded path before running the repair command.
 On a controller stack, Ctrl-C or `SIGTERM` in that terminal runs the same guarded stop as bare
 `cotal down` and exits 130 or 143. If the project folder is moved or deleted, the foreground stop
 uses the same recorded process checks as `cotal down --space <space> --yes` from another folder.
@@ -253,8 +257,9 @@ command there. A hangup while the stack is still
 starting lets the start settle, prints the stop command and exits 129, and leaves what the start left.
 While a foreground `up` holds the stack, it records its process in `.cotal/stack-foreground.hold`,
 and a second foreground `up` on that stack refuses `CONFLICT`, exit 2, names that process, and
-starts nothing. If the journal records a different launching `COTAL_HOME`, the suggested stop and
-retry commands set it explicitly. Run them from the stack's folder. The holding process removes
+starts nothing. The suggested restart keeps `--no-manager` when you requested it. If the journal
+records a different launching `COTAL_HOME`, the suggested stop and retry commands set it explicitly.
+Run them from the stack's folder. The holding process removes
 that record as it exits, a hangup included. A holder that was killed leaves it, and the next
 `cotal down` removes it once that process is gone. A
 foreground `up` on a stack that is already running without such a holder, because a background `up`
@@ -442,7 +447,8 @@ controller. It records its mode, definitions and full instance IDs in the privat
 `--user-auth` that names another mode refuses `CONFLICT`, exit 2, whether the stack runs or not.
 `reset store`, `reset space`, `clean all` and `space forget` all keep the journal, so none of them
 changes the mode. To run another mode, run `cotal space create <space>` in another folder, then
-`cotal up --open` or `cotal up --user-auth` there. If you requested `--no-manager`, both suggested
+`cotal up --open` or `cotal up --user-auth --idp <auth base URL>` there.
+If you requested `--no-manager`, both suggested
 starts keep it so the retry does not add a Manager.
 Static-auth startup prepares trust and configuration, starts
 the broker, initializes native streams, then starts delivery and the optional manager. Open startup
@@ -765,9 +771,10 @@ port. A stack that ran keeps its recorded
 address. On Linux, when nothing listens there and a connection's local end holds the port, the
 refusal says so in place of another process. Only a connection on the bind host's own address or a
 wildcard counts, so one elsewhere on the machine that shares the port number changes nothing. If
-only closed connections in TIME-WAIT hold a controller stack's recorded address, `up` retries the
-bind for up to 65 seconds and starts the broker as soon as it can bind. If that wait expires, or the
-address is not recorded by the controller, `up` refuses and names the step to take.
+only closed connections in TIME-WAIT hold a controller stack's recorded address or the address
+for a legacy foreground start, `up` retries the same bind for up to 65 seconds and starts the broker
+as soon as it can bind. If the wait expires, `up` refuses and names the step to take. Other starts
+refuse without waiting.
 When no member started, the refusal says the stack
 started no member. A text `up` prints one `Starting <definition>` line
 on stderr before each member it starts, with the readiness timeout it waits for. A started stack's

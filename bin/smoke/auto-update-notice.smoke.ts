@@ -65,16 +65,20 @@ assert.match(run(["update", "--auto", "off"]), /Automatic updates: off/);
 assert.match(run(["update", "--auto"]), /Automatic updates: off/);
 if (process.platform === "win32") assert.doesNotMatch(run(["update", "--auto"]), /Automatic installation is unavailable on Windows/);
 assert.match(run(["--version"], true), /Cotal update available: .* -> 99\.0\.0/);
-for (const args of [["--no-color", "--help"], ["-h"], ["help"], ["--no-color", "help", "docs"], ["docs", "--help"], ["--", "service", "status", "-h"]]) {
-  assert.doesNotMatch(run(args, true), /Cotal update available:/, args.join(" "));
+for (const args of [[], ["--no-color"], ["--no-color", "--help"], ["-h"], ["help"], ["--no-color", "help", "docs"], ["docs", "--help"], ["--", "service", "status", "-h"]]) {
+  assert.doesNotMatch(run(args, true), /Cotal update available:/, args.join(" ") || "bare entry");
 }
 const literal = run(["--no-color", "docs", "--", "--help"], true, {}, 1);
 assert.match(literal, /no docs page "--help"/);
 assert.match(literal, /Cotal update available: .* -> 99\.0\.0/);
 const coldHome = join(root, "cold-home");
 assert.match(run(["--no-color", "--help"], true, { COTAL_HOME: coldHome }), /cotal - lateral agent coordination over NATS/);
+const bareHome = join(root, "bare-home");
+mkdirSync(bareHome, { mode: 0o700 });
+assert.match(run([], true, { COTAL_HOME: bareHome }), /Start here/);
 await delay(1500);
 assert.equal(existsSync(coldHome), false, "interactive help must not create update state");
+assert.equal(existsSync(join(bareHome, "update-check.json")), false, "the interactive entry screen must not create an update cache");
 assert.doesNotMatch(run(["--version"]), /Cotal update available:/);
 assert.doesNotMatch(run(["version", "--json"], true), /Cotal update available:/);
 assert.doesNotMatch(run(["config", "--plain"], true), /Cotal update available:/);

@@ -2,6 +2,7 @@ import { strict as assert } from "node:assert";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
+import { defaultStartToken } from "../src/pid.js";
 import {
   acquireMaintenanceLock,
   assessRestoreClaim,
@@ -376,10 +377,20 @@ if (process.platform !== "win32") {
   const holder = readMaintenanceLockHolder(p.root);
   check("the refused writer can read the holder's process, start and operation",
     holder?.owner.pid === process.pid && holder.owner.startedAt === first.owner.startedAt && holder.operation === "backup create");
+  const token = defaultStartToken(process.pid);
+  check("the lock pins the calling process independently of its operation label", token === undefined ? holder?.process === undefined : holder?.process?.pid === process.pid && holder.process.token === token);
   releaseMaintenanceLock(first);
   check("no holder is read once the lock is released", readMaintenanceLockHolder(p.root) === undefined);
 
+  const unlabelled = acquireMaintenanceLock(p.root);
+  const unlabelledHolder = readMaintenanceLockHolder(p.root);
+  check("a lock without an operation label also pins the calling process",
+    unlabelledHolder?.owner.pid === process.pid && unlabelledHolder.operation === undefined && unlabelledHolder.process?.token === token);
+  releaseMaintenanceLock(unlabelled);
+
   const stale = acquireMaintenanceLock(p.root, { owner: owner("stale") });
+  const staleHolder = readMaintenanceLockHolder(p.root);
+  check("a supplied owner is not attributed to the calling process", staleHolder?.owner.id === stale.owner.id && staleHolder.process === undefined);
   expectCode("unknown stale owner fails closed", "lock-owner-ambiguous", () =>
     acquireMaintenanceLock(p.root, { ownerStatus: () => "unknown" }));
   const recovered = acquireMaintenanceLock(p.root, { ownerStatus: () => "dead" });
