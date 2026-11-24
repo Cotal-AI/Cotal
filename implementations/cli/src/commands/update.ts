@@ -11,7 +11,6 @@ import {
   renderReport,
   writeResult,
   type OutputWarning,
-  oneLine,
   claimUpdateClosureAccess,
   updateClosureOwner,
   homeCotalDir,
@@ -79,14 +78,14 @@ import {
 } from "./update-process.js";
 import {
   latestVersion,
-  npmProxyRefused,
+  handleLatestVersionFailure,
+  MISSING_NPM_REMEDY,
   checkReleaseArchives,
   ReleaseNotAvailable,
   ReleaseDateExcluded,
   DependencyCheckInterrupted,
   DependencyCheckNoSpace,
   registryNetworkFailure,
-  releaseReadError,
   waitForReleasePreflight,
 } from "./update-release.js";
 import { refusal, reportRunningManagers } from "./update-continuity.js";
@@ -114,7 +113,6 @@ export const updateFlags: readonly FlagSpec[] = [
   onFlag,
 ];
 
-const MISSING_NPM_REMEDY = "Install npm or add it to this command's PATH, then retry.";
 
 export interface ExecutionReplacement {
   readonly entry: string;
@@ -203,6 +201,8 @@ export interface UpdateRuntime {
   err(message: string): void;
   stdout(message: string): void;
   stderr(message: string): void;
+  /** The offline latest-version check selected no release, so there is nothing to activate. */
+  onOfflineVersionCheckSkipped?(): void;
   /** Set when a manual version-changing update has already waited for the installed generation. */
   generationWaited?: boolean;
 }
@@ -348,6 +348,7 @@ async function updateInstallation(args: ParsedArgs, rt: UpdateRuntime): Promise<
   }
   let connectorSelection: UnreadableConnectorSelection | undefined;
   let preflightChanged = false;
+  let promotionRecovered = false;
   if (args.values.self === true) {
     try { preflightChanged = rt.preflightExecution?.() === true; }
     catch (error) {
@@ -359,7 +360,7 @@ async function updateInstallation(args: ParsedArgs, rt: UpdateRuntime): Promise<
       });
     }
     try {
-      prepareUpdateConnectorConfig(Boolean(rt.prepareExecution), () => { preflightChanged = true; });
+      promotionRecovered = prepareUpdateConnectorConfig(Boolean(rt.prepareExecution), () => { preflightChanged = true; });
     } catch (error) {
       if (error instanceof UnreadableConnectorSelection) connectorSelection = error;
       else {
@@ -405,7 +406,7 @@ async function updateInstallation(args: ParsedArgs, rt: UpdateRuntime): Promise<
       rt.out(c.green(`✓ removed group and other write from ${repaired} ${repaired === 1 ? "entry" : "entries"} in Cotal's ${what} at ${root}`));
     }
   }
-  const code = await executeUpdate(Boolean(args.values.self), rt, args.values, restored ? undefined : connectorSelection, preflightChanged);
+  const code = await executeUpdate(Boolean(args.values.self), rt, args.values, restored ? undefined : connectorSelection, preflightChanged, promotionRecovered);
   if (code !== 0) process.exitCode = code;
   else if (args.values.self !== true && childBinding(rt).kind !== "bound") {
     clearUpdateRecovery();
@@ -578,7 +579,7 @@ function checkUpdate(args: ParsedArgs, rt: UpdateRuntime): void {
 }
 
 /** Injectable command body: production keeps one process seam; the smoke covers every decision branch. */
-export async function executeUpdate(self: boolean, rt: UpdateRuntime = updateRuntime, target: Record<string, unknown> = {}, unreadableSelection?: UnreadableConnectorSelection, preflightChanged = false): Promise<number> {
+export async function executeUpdate(self: boolean, rt: UpdateRuntime = updateRuntime, target: Record<string, unknown> = {}, unreadableSelection?: UnreadableConnectorSelection, preflightChanged = false, promotionRecovered = false): Promise<number> {
   const current = rt.version();
   const child = childBinding(rt);
   if (child.kind === "invalid") {
@@ -621,24 +622,7 @@ export async function executeUpdate(self: boolean, rt: UpdateRuntime = updateRun
 
   if (self) {
     const latest = latestVersion(rt);
-    if (!latest.ok) {
-      if (latest.missingNpm) {
-        if (rt.env.COTAL_AUTO_UPDATE === "1") recordUpdateDeferral(current, "waiting for npm availability", true);
-        rt.err(c.red(`✗ cotal-ai version check failed: ${latest.error}. ${MISSING_NPM_REMEDY}`));
-        return 1;
-      }
-      if (!latest.npmResult || !(releaseReadError(latest.npmResult, "cotal-ai version check failed") instanceof RegistryUnavailable)) {
-        rt.err(c.red(`✗ cotal-ai version check failed: ${oneLine(latest.error.split(/\r?\n/, 1)[0]!)}`));
-        return 1;
-      }
-      if (rt.env.COTAL_AUTO_UPDATE === "1") recordUpdateDeferral(current, "waiting for registry availability", true);
-      else if (await npmProxyRefused(latest.npmResult, rt.env)) {
-        rt.err("The npm proxy refused the connection (ECONNREFUSED). The update did not start. Check HTTP_PROXY and HTTPS_PROXY, then retry.");
-        return 1;
-      }
-      rt.out(offlineUpdateMessage(preflightChanged));
-      return 0;
-    }
+    if (!latest.ok) return await handleLatestVersionFailure(latest, current, rt, offlineUpdateMessage(preflightChanged), promotionRecovered);
     const upgrading = compareSemver(latest.version, current) > 0;
     if (rt.env.COTAL_AUTO_UPDATE === "1") {
       // The live npm lookup can select a different version from the one the daemon held.
