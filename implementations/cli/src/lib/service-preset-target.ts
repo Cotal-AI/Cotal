@@ -7,7 +7,7 @@ import { targetWords } from "./confirmation-required.js";
 import { serviceDefinitionStore, validateServiceDefinition, type ServiceDefinitionSnapshot } from "./service-definitions.js";
 import { observeServiceProcess, serviceInstances } from "./service-instances.js";
 import { resolveServiceAdapter } from "./service-adapters.js";
-import { assertManagerStartOptions, findServicePreset, presetRequiredInputs, presetStartFlags, servicePresetDefinition } from "./service-presets.js";
+import { assertManagerStartOptions, checkManagerStartRoster, findServicePreset, presetRequiredInputs, presetStartFlags, servicePresetDefinition } from "./service-presets.js";
 import { selfArgv } from "./self-exec.js";
 import { pruneEmptyServiceSpace, removableServiceInstances, removeServiceLogs, removeStoppedInstanceRecords } from "./service-process.js";
 import { addedDefinitionStep, STACK_ADAPTER, STACK_DEFINITION } from "./stack-journal.js";
@@ -178,7 +178,10 @@ export function resolvePresetService(space: string, root: string, requested: str
   }
   if (values["dry-run"]) return { requested, name: requested, preset: preset.name, saved: null };
   const definition: ServiceDefinitionInput = { ...servicePresetDefinition(preset, space, values, root, "start"), root };
-  if (definition.launch.type === "adapter" && definition.launch.adapter === STACK_ADAPTER.manager) assertManagerStartOptions(space, definition.launch.options);
+  if (definition.launch.type === "adapter" && definition.launch.adapter === STACK_ADAPTER.manager) {
+    assertManagerStartOptions(space, definition.launch.options);
+    checkManagerStartRoster(definition.launch.options.roster, { space, name: requested }, false);
+  }
   store.commit(requested, undefined, validateServiceDefinition(definition, space));
   return { requested, name: requested, preset: preset.name, saved: { kind: "created", options } };
 }
@@ -233,6 +236,7 @@ function redefine(space: string, root: string, preset: ServicePreset, row: Servi
     }
   }
   if (values["dry-run"]) return { requested, name: row.name, preset: preset.name, saved: null };
+  if (launch.adapter === STACK_ADAPTER.manager) checkManagerStartRoster(merged.roster, { space, name: row.name }, false);
   const store = serviceDefinitionStore(space, addedDefinitionStep);
   let retired: string[] = [];
   store.commit(row.name, row, undefined, () => { retired = removeStoppedInstanceRecords(space, row.name); });

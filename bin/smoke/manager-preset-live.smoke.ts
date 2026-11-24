@@ -222,6 +222,23 @@ function launchPreview(space: string): void {
     && receipt.error?.code === "TARGET_NOT_FOUND" && receipt.error.message.includes("no manager has been started"), out(status));
 }
 const ptyEnv = Object.fromEntries(Object.entries(env).filter((entry): entry is [string, string] => entry[1] !== undefined));
+function malformedRosterStart(space: string): void {
+  const start = ["manager", "start", "--foreground", "--space", space, "--runtime", "pty", "--roster", misspelt];
+  const untouched = () => !serviceDefinitionStore(space).read("manager") && !serviceInstances(space, "manager").length;
+  const preview = cotal([...start, "--dry-run", "--json"]);
+  const { result, warnings } = JSON.parse(preview.stdout);
+  check("a malformed roster preview reports the invalid key and no planned save, without writing or allocating",
+    preview.status === 0 && result?.definitionWouldBeSaved === false && result.allocated === false
+      && warnings?.some((warning: { code: string; message: string }) => warning.code === "SCHEMA_INVALID" && warning.message.includes("share_tools is not a roster key"))
+      && untouched(), out(preview));
+  const attempt = cotal(start);
+  check("a malformed roster start fails before saving a definition or launching the native child",
+    attempt.status === 5 && out(attempt).includes("share_tools is not a roster key")
+      && !out(attempt).includes("Foreground service lifetime") && untouched(), out(attempt));
+  const show = cotal(["service", "show", "manager", "--space", space, "--json"]);
+  check("service show still finds no definition after the malformed start", show.status === 2 && JSON.parse(show.stdout).error?.code === "TARGET_NOT_FOUND", out(show));
+}
+
 const started: ChildProcess[] = [];
 let stackUp = false;
 /** An unreadable instance record a cell plants; teardown removes it so the final down can run. */
@@ -235,6 +252,7 @@ try {
     stackUp = up.status === 0;
     check("a broker-only open stack starts", stackUp, out(up));
     launchPreview(SPACE);
+    malformedRosterStart(SPACE);
     const manager = ["manager", "start", "--space", SPACE, "--json"];
     const stopManager = ["manager", "stop", "--space", SPACE, "--yes", "--with-agents"];
     const launch = join(root, "absent-launch.json");
@@ -247,6 +265,12 @@ try {
       const definition = () => serviceDefinitionStore(SPACE).read("manager");
       const instances = () => serviceInstances(SPACE, "manager");
       const before = definition(), stoppedBefore = instances();
+      const malformed = cotal([...manager, "--roster", misspelt]);
+      check("a malformed roster override preserves the saved definition and stopped instance",
+        malformed.status === 5 && JSON.parse(malformed.stdout).error?.message.includes("share_tools is not a roster key")
+          && before !== undefined && stoppedBefore.length === 1
+          && JSON.stringify(definition()?.record) === JSON.stringify(before.record)
+          && JSON.stringify(instances().map((row) => row.record)) === JSON.stringify(stoppedBefore.map((row) => row.record)), out(malformed));
       const wrong = cotal([...manager, "--launch", launch, "--launch-sha256", "0".repeat(64)]);
       const { error } = JSON.parse(wrong.stdout);
       check("a mismatched digest refuses without replacing the definition or stopped instance",
