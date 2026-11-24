@@ -211,7 +211,7 @@ setCurrent("keep");
   check("--mode with another value is USAGE_INVALID", refused(await json(["space", "add", "x", "--server", LIVE, "--mode", "token", "--root", root]), 1, "USAGE_INVALID"));
   check("an add flag on another form is USAGE_INVALID", refused(await json(["space", "--server", LIVE]), 1, "USAGE_INVALID") && refused(await json(["space", "forget", "keep", "--force"]), 1, "USAGE_INVALID"));
   const fromScript = await json(["space", "add", "--from", "https://hosted.test"]);
-  check("--from without a terminal is USAGE_INVALID and names --file", refused(fromScript, 1, "USAGE_INVALID") && /--file/.test(fromScript.env?.error?.remedy ?? ""), shown(fromScript));
+  check("discovery with JSON explains why it cannot prompt and how to keep JSON output", refused(fromScript, 1, "USAGE_INVALID") && fromScript.env?.error?.message.includes("--json disables") && fromScript.env.error.remedy.includes("without --json") && fromScript.env.error.remedy.includes("replace --from <url> with --file <bundle.json>"), shown(fromScript));
   check("--from over http is USAGE_INVALID", refused(await json(["space", "add", "--from", "http://hosted.test"]), 1, "USAGE_INVALID"));
   // A name that starts with - reads as an option, so use, --space and the stack's own children could not take it.
   const dashed = await json(["space", "add", "--server", LIVE, "--root", root, "--force", "--", "-x"]);
@@ -344,7 +344,7 @@ setCurrent("keep");
   const plaintext = await json(["space", "add", "far", "--server", "nats://broker.example.com:4222", "--root", root]);
   check("a hostname with no TLS is UNSUPPORTED: credentials would cross the network unprotected", refused(plaintext, 2, "UNSUPPORTED"), shown(plaintext));
   const noRoot = await json(["space", "add", "r2", "--server", LIVE, "--root", join(home, "missing")]);
-  check("a --root that is not a directory is USAGE_INVALID", refused(noRoot, 1, "USAGE_INVALID"), shown(noRoot));
+  check("an invalid --root names the directory requirement for an open space", refused(noRoot, 1, "USAGE_INVALID") && noRoot.env?.error?.message.includes("pass an existing folder; for an open space it may be empty"), shown(noRoot));
   const fromHome = await json(["space", "add", "r3", "--server", LIVE]);
   check("with no --root, the home folder is no project: USAGE_INVALID naming --root", refused(fromHome, 1, "USAGE_INVALID") && /--root <dir> is required/.test(fromHome.env?.error?.message ?? ""), shown(fromHome));
   const fromHomeText = await run(["space", "add", "r3", "--server", LIVE, "--mode", "open"]);

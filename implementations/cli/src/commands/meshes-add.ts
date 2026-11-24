@@ -142,7 +142,7 @@ export function checkRoot(flag: string | undefined, cwd: string): Check<string> 
     const dir = resolve(flag);
     return isDir(dir)
       ? good(dir)
-      : bad(`✗ --root ${dir} is not a directory - it must be the folder holding this mesh's .cotal/auth and .cotal/agents`, "USAGE_INVALID");
+      : bad(`✗ --root ${dir} is not a directory - pass an existing folder; for an open space it may be empty`, "USAGE_INVALID");
   }
   const root = findCotalRoot(cwd);
   if (!isDir(join(root, ".cotal")) || canonicalRoot(join(root, ".cotal")) === canonicalRoot(homeCotalDir()))
