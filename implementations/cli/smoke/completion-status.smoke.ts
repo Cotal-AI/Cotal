@@ -488,7 +488,8 @@ if (process.platform !== "win32" && process.getuid?.() !== 0) {
     chmodSync(rc, 0o400);
     const readOnly = s.run(["completion", "install", "zsh"]);
     const chmod = `chmod u+w ${rc}`;
-    check("read-only startup reports partial installation and tells the user to restore permission and retry", readOnly.status === 4 && /OPERATION_PARTIAL/.test(readOnly.stderr) && readOnly.stderr.includes(`restore owner write permission with \`${chmod}\`, then run \`cotal completion install zsh\` again without editing the startup file`) && (statSync(rc).mode & 0o777) === 0o400 && readFileSync(rc, "utf8") === "# mine\n", shown(readOnly));
+    const cliWords = ["cotal", "pnpm cotal"];
+    check("read-only startup reports partial installation and tells the user to restore permission and retry", readOnly.status === 4 && /OPERATION_PARTIAL/.test(readOnly.stderr) && cliWords.some((cli) => readOnly.stderr.includes(`restore owner write permission with \`${chmod}\`, then run \`${cli} completion install zsh\` again without editing the startup file`)) && (statSync(rc).mode & 0o777) === 0o400 && readFileSync(rc, "utf8") === "# mine\n", shown(readOnly));
     chmodSync(rc, 0o600);
     const record = `${stub}.ownership.json`;
     check("the partial report lists both files written and does not list the startup file", existsSync(stub) && existsSync(record) && readOnly.stderr.includes(`Confirmed changes\n  ${stub}\n  ${record}\n\n`), shown(readOnly));
@@ -502,7 +503,7 @@ if (process.platform !== "win32" && process.getuid?.() !== 0) {
         lockedOut.stderr.includes("PERMISSION_DENIED") && (statSync(rc).mode & 0o777) === 0o400 && readFileSync(rc, "utf8") === wired &&
         existsSync(stub) && existsSync(record), { install: shown(installed), uninstall: shown(lockedOut) });
     check("uninstall tells the user to restore write permission and retry without editing the block",
-      lockedOut.stderr.includes(`restore owner write permission with \`${chmod}\`, then run \`cotal completion uninstall zsh\` again without editing the startup block`), shown(lockedOut));
+      cliWords.some((cli) => lockedOut.stderr.includes(`restore owner write permission with \`${chmod}\`, then run \`${cli} completion uninstall zsh\` again without editing the startup block`)), shown(lockedOut));
     chmodSync(rc, 0o600);
     const retried = s.run(["completion", "uninstall", "zsh", "--plain"]);
     check("uninstall succeeds after restoring owner write permission without editing the block",
@@ -512,7 +513,7 @@ if (process.platform !== "win32" && process.getuid?.() !== 0) {
     chmodSync(rc, 0o600);
     appendFileSync(rc, `source '${stub}'\n`);
     const customStatus = s.run(["completion", "--plain"]);
-    check("status shows a custom startup reference without offering a managed refresh", customStatus.status === 0 && customStatus.stdout.includes("startup reference found") && customStatus.stdout.includes("cotal completion script zsh") && !customStatus.stdout.includes("cotal completion install zsh"), shown(customStatus));
+    check("status shows a custom startup reference without offering a managed refresh", customStatus.status === 0 && customStatus.stdout.includes("startup reference found") && cliWords.some((cli) => customStatus.stdout.includes(`${cli} completion script zsh`)) && !cliWords.some((cli) => customStatus.stdout.includes(`${cli} completion install zsh`)), shown(customStatus));
   }
 }
 

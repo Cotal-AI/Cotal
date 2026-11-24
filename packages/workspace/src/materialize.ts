@@ -98,11 +98,6 @@ function exportedEntry(meta: InstalledExtensionPackage): string | undefined {
   return typeof meta.exports === "string" ? meta.exports : undefined;
 }
 
-/** Select the package-relative entry. */
-export function extensionEntry(meta: InstalledExtensionPackage): string {
-  return exportedEntry(meta) ?? meta.main ?? "index.js";
-}
-
 /**
  * Resolve the entry for both on-disk checks and import. Node allows `main` to omit the file
  * extension. Directory entries use their own main or index file. Keep the declared path when
@@ -112,7 +107,8 @@ export function resolveExtensionEntry(dir: string, meta: InstalledExtensionPacka
   const exported = exportedEntry(meta);
   const path = join(dir, exported ?? meta.main ?? "index.js");
   const entry = statSync(path, { throwIfNoEntry: false });
-  if (entry ? !entry.isDirectory() : exported !== undefined || meta.main === undefined) return path;
+  if (entry && !entry.isDirectory()) return path;
+  if (!entry && (exported !== undefined || meta.main === undefined)) return path;
   try {
     return createRequire(join(dir, "package.json")).resolve(path);
   } catch {
