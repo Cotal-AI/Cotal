@@ -26,8 +26,7 @@ export async function backupRestore(args: ParsedArgs): Promise<void> {
   } catch (error) {
     if (isCommandFailure(error)) throw error;
     const message = (error as Error).message;
-    // Every other native restore guard throws a plain error. Its message is the operator's evidence,
-    // kept verbatim; whether the attempt advanced is the journal's to say, so it is read and named.
+    // Keep an unclassified error's message and read the journal to name any recorded attempt.
     const root = cotalRoot();
     const held = heldRestoreAttempt(root);
     throw new CommandFailure("unknown", "OPERATION_UNKNOWN", message, {
