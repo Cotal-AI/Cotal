@@ -163,6 +163,36 @@ function assertValidManifest(directory: string, space: string, selection: SpaceB
   return manifest;
 }
 
+function assertBackupOutsideAttempts(root: string, run: (...args: string[]) => SpawnSyncReturns<string>): void {
+  const metadata = join(root, ".cotal", "maintenance");
+  const journal = join(metadata, "v1", "journal.json");
+  const attempts = join(metadata, "attempts");
+  const before = readFileSync(journal, "utf8");
+  mkdirSync(attempts, { recursive: true, mode: 0o700 });
+  const refused = run("backup", "create", join(".cotal", "maintenance", "attempts", "forbidden"), "--plain");
+  assert.equal(refused.status, 1, `${refused.stdout}${refused.stderr}`);
+  assert.match(refused.stderr, /Code:\s+USAGE_INVALID/);
+  assert.ok(refused.stderr.includes(`is inside the maintenance attempt directory ${attempts}`), refused.stderr);
+  assert.ok(refused.stderr.includes(`name a destination outside ${attempts}`), refused.stderr);
+  assert.doesNotMatch(refused.stderr, /LIFECYCLE_BLOCKED|before recovery|Native detail:|^Usage/m);
+
+  symlinkSync(attempts, join(root, "attempts-link"), "junction");
+  const destination = join(root, "attempts-link", "forbidden");
+  const linked = run("backup", "create", destination, "--json");
+  assert.equal(linked.status, 1, `${linked.stdout}${linked.stderr}`);
+  const envelope = JSON.parse(linked.stdout);
+  assert.equal(envelope.command, "backup create");
+  assert.equal(envelope.outcome, "refused");
+  assert.equal(envelope.error.code, "USAGE_INVALID");
+  assert.equal(envelope.target.directory, destination);
+  assert.equal(envelope.target.attempts, attempts);
+  assert.ok(!Object.hasOwn(envelope.target, "attemptId"));
+  assert.equal(envelope.error.remedy, `name a destination outside ${attempts}`);
+  assert.equal(readFileSync(journal, "utf8"), before, "invalid destinations leave the ready journal unchanged");
+  assert.deepEqual(readdirSync(attempts), [], "invalid destinations leave no artifact or attempt");
+  assert.ok(!existsSync(join(metadata, "lock.json")), "no maintenance lock remains");
+}
+
 /** One preserved open-mode cut, faulted at each backup stage in turn: the destination never
  *  survives unpublished, the attempt leaves nothing behind, and the SAME path retries clean. */
 async function backupStageFaultScenario(): Promise<void> {
@@ -192,6 +222,7 @@ async function backupStageFaultScenario(): Promise<void> {
     must("seed registry", run("channel", "set", "preserved", "--desc", "survives every fault", "--space", space));
     must("preserve cut", run("down", "--preserve-state"));
     assert.equal(journalState(root), "ready");
+    assertBackupOutsideAttempts(root, run);
     const sourceBefore = lstatSync(sourcePath, { bigint: true });
 
     if (process.getuid && process.getuid() !== 0) {
