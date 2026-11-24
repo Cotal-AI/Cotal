@@ -82,7 +82,7 @@ import { askSpawnPlace } from "../lib/manager-choice.js";
 import { canPrompt } from "./meshes-wizard.js";
 import { listDeclaredChannels, listDeclaredRoles, listPersonaNames } from "../lib/personas.js";
 import { personaCatalog, unreadablePersona } from "../lib/persona-files.js";
-import { brokenDefaultPersona, callerHarness, checkSpawnExpiryTarget, directPersonaPath, missingConnector, missingPersona, spawnPersona, spawnUsesManager } from "../lib/spawn-defaults.js";
+import { brokenPersonaLink, callerHarness, checkSpawnExpiryTarget, directPersonaPath, missingConnector, missingPersona, missingPersonaFailure, spawnPersona, spawnUsesManager } from "../lib/spawn-defaults.js";
 import { writeDefaultPersonaForLaunch } from "../lib/default-persona.js";
 import { spawnLaunchPreview } from "./spawn-preview.js";
 import { protectedCredentialReference, readLocalRecordSource } from "../lib/protected-records.js";
@@ -226,7 +226,12 @@ export function validateSpawnArguments(args: ParsedArgs) {
   }
   if ((values.restarts === undefined) !== (values["restart-window"] === undefined)) throw new CommandFailure("refused", "USAGE_INVALID", "--restarts and --restart-window must be supplied together");
   if (values.restarts !== undefined) {
-    if (direct) throw new CommandFailure("refused", "USAGE_INVALID", "restart supervision belongs to a managed launch, not a spawn in this terminal", { remedy: "add -d, or --on <instance>, to launch it through a manager" });
+    if (direct) {
+      const foreground = "omit --restarts and --restart-window to launch in this terminal";
+      const managed = values.foreground ? "replace --foreground with -d" : "add -d";
+      const directOnly = internal || values["enrollment-file"] !== undefined || values["live-only"] || values["expires-in"] !== undefined || values["expires-at"] !== undefined;
+      throw new CommandFailure("refused", "USAGE_INVALID", "restart supervision belongs to a managed launch, not a spawn in this terminal", { remedy: directOnly ? foreground : `${managed} to keep restart supervision, or ${foreground}` });
+    }
     for (const field of ["restarts", "restart-window"] as const) if (!/^[1-9][0-9]*$/.test(values[field]!) || !Number.isSafeInteger(Number(values[field])))
       throw new CommandFailure("refused", "USAGE_INVALID", `--${field} must be a positive safe integer`);
   }
@@ -548,14 +553,13 @@ export async function spawn(args: ParsedArgs): Promise<void> {
       if (handoffText !== undefined) {
         stderrLine("✗ ", `cannot load the managed handoff persona: ${(e as Error).message}`, c.red);
       } else if (code === "ENOENT") {
-        const missing = missingPersona(target, ref, personaFrom, path);
-        throw new CommandFailure("refused", "TARGET_NOT_FOUND", missing.message, { target: { space, path }, remedy: missing.remedy });
+        throw missingPersonaFailure(target, ref, personaFrom, path);
       } else if (code === "ELOOP") {
         throw new CommandFailure("refused", "SCHEMA_INVALID", `the persona path contains a symbolic-link loop: ${path}`, {
           target: { space, path }, remedy: "correct the link's target, or move the link aside and put a regular persona file in its place",
         });
       } else {
-        const unreadable = unreadablePersona(path, code, space);
+        const unreadable = unreadablePersona(path, code, { space, path });
         if (unreadable) throw unreadable;
         stderrLine("✗ ", `${(e as Error).message}`, c.red);
       }
@@ -572,7 +576,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     try { def = loadLaunchPersonaFile(path); }
     catch (retryError) {
       if (written !== undefined || (retryError as NodeJS.ErrnoException).code !== "ENOENT") throw retryError;
-      throw brokenDefaultPersona(path, { space, path }) ?? retryError;
+      throw brokenPersonaLink(path, { space, path }, true) ?? retryError;
     }
   }
 

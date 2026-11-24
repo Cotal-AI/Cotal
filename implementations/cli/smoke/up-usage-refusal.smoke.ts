@@ -66,7 +66,7 @@ if (!existsSync(BIN)) {
   process.exit(1);
 }
 
-interface Envelope { outcome?: string; target?: { root?: string; space?: string; heldBy?: string }; error?: { code?: string; message?: string; remedy?: string } }
+interface Envelope { outcome?: string; target?: { root?: string; space?: string; heldBy?: string }; error?: { code?: string; message?: string; remedy?: string }; result?: { lifetimeRequest?: string } }
 const { readStackJournal, writeStackJournal } = await import("../src/lib/stack-journal.js");
 
 const { check, finish } = createSuite();
@@ -134,6 +134,19 @@ for (const { args, message } of cases) {
     check(`missing-manifest advice with ${flags[0] ?? "default output"} leads to a read-only plan`,
       refused.status === 1 && remedy.includes("pass -f <cotal.yaml>") && (flags.length > 0 || !remedy.includes("and omit --"))
         && preview.status === 0 && preview.stdout.includes("flagauditopen") && readdirSync(folder).length === 0, shown(preview));
+
+    const foreground = run(["up", "--foreground", "--dry-run", ...flags], manifests);
+    const advice = foreground.envelope?.error?.remedy ?? foreground.stderr;
+    const command = `team boot cotal.yaml --foreground --dry-run${flags.length ? ` ${flags[0]}` : ""}`;
+    check(`foreground dry-run with ${flags[0] ?? "default output"} points directly to team boot`,
+      foreground.status === 1 && (flags[0] !== "--json" || foreground.envelope?.error?.code === "USAGE_INVALID")
+        && (flags[0] === "--json" ? ["cotal"] : ["cotal", "pnpm cotal"]).some((cli) => advice.includes(`\`${cli} ${command}\``))
+        && !advice.includes("pass -f <cotal.yaml>") && !existsSync(join(manifests, ".cotal")), shown(foreground));
+    const foregroundPreview = run(command.split(" "), manifests);
+    check(`the foreground retry with ${flags[0] ?? "default output"} previews terminal custody without writes`,
+      foregroundPreview.status === 0 && (foregroundPreview.envelope?.result?.lifetimeRequest === "terminal-bound"
+        || /Lifetime request:\s+terminal-bound/.test(foregroundPreview.stdout))
+        && !existsSync(join(manifests, ".cotal")), shown(foregroundPreview));
   }
   for (const { label, args, json, help, message, remedy } of [
     { label: "-f --dry-run --max-file-store", args: ["-f", authManifest, "--dry-run", "--max-file-store", "1073741824"], json: true, help: false,
@@ -717,6 +730,16 @@ try {
     members: (["broker", "auth", "delivery", "manager"] as const).map((role) => role === "auth" ? { role, definition: `stack-${role}`, instanceId: null, state: "not-attempted" as const } : { role, definition: `stack-${role}`, instanceId: randomUUID(), state: "stopped" as const }),
     operation: { id: randomUUID(), kind: "down", phase: "completed", recordedAt: now, withAgents: false }, updatedAt: now,
   });
+  for (const mode of ["--open", "--user-auth"]) {
+    for (const members of [[], ["--no-manager"]]) {
+      const mismatch = run(["up", mode, ...members, "--json"], journalRoot);
+      const keep = ["cotal up", ...members].join(" "), separate = ["cotal up", mode, ...members].join(" ");
+      const remedy = mismatch.envelope?.error?.remedy ?? "";
+      check(`a pinned-mode refusal with ${[mode, ...members].join(" ")} keeps the requested members in both retries`,
+        mismatch.status === 2 && mismatch.envelope?.error?.code === "CONFLICT" && remedy.includes(`\`${keep}\` to keep static auth`)
+          && remedy.includes(`then \`${separate}\``) && !started(journalRoot), shown(mismatch));
+    }
+  }
   writeFileSync(join(journalRoot, "cotal.yaml"), `apiVersion: cotal/v1\nkind: Mesh\nspace: upusagejournal\nbroker:\n  servers: nats://127.0.0.1:${held}\nchannels:\n  general:\n    subscribe: []\n`);
   for (const args of [["up", "-f", "cotal.yaml"], ["up", "-f", "cotal.yaml", "--dry-run"]]) {
     const beside = run(args, journalRoot);
@@ -747,6 +770,12 @@ try {
   const requested = `nats://127.0.0.1:${await freePort()}`;
   const inUse = run(["up", "--server", requested], legacy);
   const otherNameHere = run(["up", "--space", "separate", "--server", requested], legacy);
+  for (const flags of [["--root", legacy], ["--json"], ["--plain"]]) {
+    const r = run(["up", "--space", "separate", "--server", requested, ...flags], legacy);
+    const remedy = r.envelope?.error?.remedy ?? r.stderr;
+    check(`a second space with ${flags[0]} needs a separate prepared root and keeps the startup options`,
+      r.status === 2 && remedy.includes("`cotal space create --root <new-folder> -- separate`") && remedy.includes("--root set to that folder and the other options unchanged"), shown(r));
+  }
   // A regression that took the name over started a stack, which is stopped before the cell fails.
   if (started(legacy)) { sandbox(legacy); run(["down", "--yes"], legacy); }
   removeMesh("main");

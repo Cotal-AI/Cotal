@@ -75,8 +75,7 @@ export async function persona(args: ParsedArgs): Promise<void> {
     const word = personaNameWords(name!, target);
     const jsonWords = personaNameWords(name!, `${target} --json`);
     const nameProblem = spawnNameError(definition.name, { userMode });
-    const launchName = spawnNameError(name!, { userMode }) ? "persona_agent" : name!;
-    const spawnWords = nameProblem ? personaNameWords(name!, `${target} --name ${launchName}`) : word;
+    const spawnWords = personaSpawnWords(name!, target, userMode, !!nameProblem);
     const warnings = nameProblem ? [{ code: "USAGE_INVALID", target: { name, path }, message: `the frontmatter name cannot be used to launch this persona: ${nameProblem}. Set a valid name in the file or use --name.` }] : [];
     writeResult(presentation, { command: "persona", target: catalog, result: { kind: "persona", name, path, definition, source: source.bytes.toString("utf8") }, warnings }, result => ({ sections: [
       { title: `Persona · ${result.name}`, blocks: [{ kind: "fields", rows: [
@@ -110,7 +109,10 @@ export async function persona(args: ParsedArgs): Promise<void> {
   }
   if (sub === "edit") {
     const edit = await editPersona(path, name!, catalog, target, presentation === "json");
-    if (edit.action === "saved") return receipt(presentation, catalog, name!, path, "saved", target);
+    if (edit.action === "saved") {
+      const spawnWords = personaSpawnWords(name!, target, userMode, !!spawnNameError(edit.displayName, { userMode }));
+      return receipt(presentation, catalog, name!, path, "saved", target, false, spawnWords);
+    }
     return editNotSaved(presentation, catalog, name!, path, edit);
   }
   if (sub === "remove") {
@@ -260,7 +262,13 @@ function editNotSaved(presentation: Presentation, catalog: PersonaCatalog, name:
     : [`${name} is unchanged, so nothing was saved.`] }] }] }));
 }
 
-function receipt(presentation: Presentation, catalog: PersonaCatalog, name: string, path: string, action: string, target: string, seededDefault = false): void {
+function personaSpawnWords(name: string, target: string, userMode: boolean, needsOverride: boolean): string {
+  if (!needsOverride) return personaNameWords(name, target);
+  const launchName = spawnNameError(name, { userMode }) ? "persona_agent" : name;
+  return personaNameWords(name, `${target} --name ${launchName}`);
+}
+
+function receipt(presentation: Presentation, catalog: PersonaCatalog, name: string, path: string, action: string, target: string, seededDefault = false, spawnWords = personaNameWords(name, target)): void {
   const word = personaNameWords(name, target);
   writeResult(presentation, { command: "persona", target: catalog, result: { kind: "persona-written", action, name, path, ...(seededDefault ? { seededDefault } : {}) } }, result => ({ sections: [
     { title: result.action === "removed" ? "Persona removed" : result.action === "created" ? "Persona created" : "Persona saved", blocks: [
@@ -271,7 +279,7 @@ function receipt(presentation: Presentation, catalog: PersonaCatalog, name: stri
     { title: "Next", blocks: [{ kind: "commands", items: result.action === "removed" ? [
       { command: "cotal p", description: "Browse the local catalog" },
     ] : [
-      { command: `cotal spawn${word}`, description: "Launch an agent from this persona" },
+      { command: `cotal spawn${spawnWords}`, description: "Launch an agent from this persona" },
       { command: `cotal p show${word}`, description: "Read the saved definition" },
     ] }] },
   ] } satisfies Report));

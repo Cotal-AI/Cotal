@@ -225,6 +225,7 @@ export class MeshView extends EventEmitter {
   private readonly tapSubject?: string;
   private readonly chatOnly: boolean;
   private timers: ReturnType<typeof setInterval>[] = [];
+  private stopped = false;
 
   private readonly onRoster = (r: Presence[]) => this.setRoster(r);
   private readonly onPresence = (ev: unknown) => this.emit("presence", ev);
@@ -272,6 +273,7 @@ export class MeshView extends EventEmitter {
   }
 
   async start(): Promise<void> {
+    if (this.stopped) return;
     // The error listener MUST be attached before start() — async faults surface as events.
     this.ep.on("error", this.onError);
     this.ep.on("warning", this.onWarning);
@@ -281,6 +283,8 @@ export class MeshView extends EventEmitter {
     this.ep.on("presence", this.onPresence);
     this.ep.on("presence-view", this.onPresenceView);
     await this.ep.start();
+    // A cancelled endpoint start can resolve after stop has cleared the view's timers.
+    if (this.stopped) return;
     this.bound = true;
     this.setRoster(this.ep.getRoster());
     this.ep.tap(
@@ -298,6 +302,7 @@ export class MeshView extends EventEmitter {
   }
 
   async stop(): Promise<void> {
+    this.stopped = true;
     for (const t of this.timers) clearInterval(t);
     this.timers = [];
     for (const b of this.pending.values()) clearTimeout(b.timer); // bursts hold live timers

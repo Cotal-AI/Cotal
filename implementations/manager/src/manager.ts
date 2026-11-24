@@ -6,7 +6,7 @@ import { join, resolve } from "node:path";
 import { CotalEndpoint, accountFromCreds, DEFAULT_SERVER, DEV_OWNER, injectedSecretStoreIdentity, type DeprovisionResourceAccounting, type IssuedBinding, type IssuedStore, mintLifecycleUid, parsePrincipalKey, principalKey, probeConnect, resolveAuthProvider } from "@cotal-ai/core";
 import { retainConnectorSeat } from "@cotal-ai/workspace";
 import { agentSecretKeyForFile, DEFAULT_SEAT_CAP, findCotalRoot, loadManagerInstanceIdentity, manifestExtensionNames, materializeFromManifest, runtimeInstallHint, spaceKey, userAuthStateDir, workspaceSecretStore, type ManagerInstanceIdentity, type SeatCap } from "@cotal-ai/workspace";
-import type { EpCapability, PersonaEndpoint, RunAdmission, Connector, ControlReply, DelegatedGrant, EpCaller, LaunchSpec, Presence, RuntimeProvider, RuntimeReference, SecretStore, SpaceAuth, StartupOutcome } from "@cotal-ai/core";
+import type { PersonaEndpoint, RunAdmission, Connector, ControlReply, EpCaller, LaunchSpec, Presence, RuntimeProvider, RuntimeReference, SecretStore, SpaceAuth, StartupOutcome } from "@cotal-ai/core";
 import {
   createRuntime,
   isCustodialRuntime,
@@ -41,6 +41,7 @@ import { StartDoors, startDoorsDeps } from "./start-doors.js";
 import { HarnessResolution, harnessResolutionDeps } from "./harness-resolution.js";
 import { ConnectorInventory } from "./connector-inventory.js";
 import type { ManagerParts } from "./manager-parts.js";
+import type { ManagerStartState } from "./manager-start-state.js";
 import { Preservation, preservationDeps } from "./preservation.js";
 import { PreservedResume, preservedResumeDeps } from "./preserved-resume.js";
 export { PASTE_END, PASTE_START, RUNTIME_NO_TERMINAL_DETAIL } from "./terminal-input.js";
@@ -566,13 +567,6 @@ export class Manager {
   /** Lifecycle UIDs already handed to `Runtime.spawnDelegated`: a lifecycle is handed off at most
    *  once, so a lost create acknowledgement can never become a second create. */
   protected readonly delegatedLaunched = new Set<string>();
-  /** The persisted LOGICAL instance id (SPEC 13.6 item 7): STABLE across restart, so a
-   *  restart re-registers the SAME id with an ADVANCED epoch through the §13.1 gate (the successor
-   *  fences the predecessor's epoch — the (i) fence bites on a real restart). It is the registration
-   *  instanceId, the served-status id, the goal spec's executor.instanceId, the epe route, and the
-   *  resolveExecutorEpoch key — DISTINCT from {@link ManagerConfig.managerLifecycleUid} (per-process: the presence
-   *  node uid + the managerInstance audit coordinate every static activation records). Set in start(). */
-  protected managerInstanceId!: string;
   /** The persisted serve nkey identity: reusing the SAME principal across restart keeps
    *  {@link provisionEndpointGateOpen} idempotent (no core barrier change) and gives verified
    *  eviction a stable target (the predecessor's connections under this principal). Set in start(). */
@@ -581,7 +575,7 @@ export class Manager {
    *  adopts it instead of reading the same record again. */
   protected admittedLocalIdentity?: ManagerInstanceIdentity;
   /** #1577: dedicated connections (serve, goal-writer, session-ledger) whose transport is down while
-   *  the client reconnects them, tracked by {@link trackTransport}. Such a connection is open
+   *  the client reconnects them, tracked by {@link BrokerTransport.trackTransport}. Such a connection is open
    *  (`isClosed()` is false under unbounded reconnects) yet the broker holds none of its rails, so
    *  the liveness responder must not grade the serve connection `bound`, and a stop closes rather
    *  than drains it ({@link retireConnection}). Keyed by the connection, so a re-dial that swaps in a
@@ -637,14 +631,24 @@ export class Manager {
   private readonly retirementQueue: Array<() => void> = [];
   protected readonly attach: AttachEndpoint;
   protected ep!: CotalEndpoint;
-  /** Space trust material when the mesh runs in auth mode (`.cotal/auth` present);
-   *  the manager mints per-agent creds from it at spawn. Undefined when the mesh is open. */
-  protected auth?: SpaceAuth;
-  /** True on a USER-AUTH space (the on-disk marker; cross-checked against the registry at start).
-   *  Gates the whole spawn path: user mode grants ledger actors + bearer plumbing, never static mints. */
-  protected userMode = false;
-  protected readonly namesCapacity = new NamesCapacity(this.config, namesCapacityDeps(this));
-  private readonly servePlane = new ServePlane(this.config, servePlaneDeps(this), this.parts);
+  /** Written by ManagerBoot.start; declared ahead of the parts so each one built below receives it. */
+  private readonly startState: ManagerStartState = { userMode: false };
+  /** {@link ManagerStartState.auth}. */
+  protected get auth(): SpaceAuth | undefined { return this.startState.auth; }
+  protected set auth(value: SpaceAuth | undefined) { this.startState.auth = value; }
+  /** {@link ManagerStartState.userMode}. */
+  protected get userMode(): boolean { return this.startState.userMode; }
+  protected set userMode(value: boolean) { this.startState.userMode = value; }
+  /** The persisted LOGICAL instance id (SPEC 13.6 item 7): STABLE across restart, so a
+   *  restart re-registers the SAME id with an ADVANCED epoch through the §13.1 gate (the successor
+   *  fences the predecessor's epoch — the (i) fence bites on a real restart). It is the registration
+   *  instanceId, the served-status id, the goal spec's executor.instanceId, the epe route, and the
+   *  resolveExecutorEpoch key — DISTINCT from {@link ManagerConfig.managerLifecycleUid} (per-process: the presence
+   *  node uid + the managerInstance audit coordinate every static activation records). Set in start(); undefined before. */
+  protected get managerInstanceId(): string { return this.startState.managerInstanceId!; }
+  protected set managerInstanceId(value: string) { this.startState.managerInstanceId = value; }
+  protected readonly namesCapacity = new NamesCapacity(this.config, namesCapacityDeps(this), this.startState, this.parts);
+  private readonly servePlane = new ServePlane(this.config, servePlaneDeps(this), this.parts, this.startState);
 
   protected resolveServeTarget(t: { owner: string; actor: string }): { lifecycleUid: string; mappingRevision: number } | undefined {
           if (this.config.remoteAuthority) {
@@ -663,8 +667,8 @@ export class Manager {
           return undefined;
 
   }
-  protected readonly retirement = new Retirement(this.config, retirementDeps(this));
-  private readonly lease = new LeaseKeeper(this.config, leaseKeeperDeps(this));
+  protected readonly retirement = new Retirement(this.config, retirementDeps(this), this.startState);
+  private readonly lease = new LeaseKeeper(this.config, leaseKeeperDeps(this), this.startState);
   /** Set at the top of `stop()`. `renewLease` returns at once once this is set, and its `gone` arm
    *  does not re-acquire: a manager that is stopping never puts its own key back. It also closes the
    *  lifecycle fence ({@link beginLifecycle}), so no spawn can launch a seat the stop never sees. */
@@ -689,9 +693,9 @@ export class Manager {
   /** {@link BrokerTransport.dialRemoteStanding}. */
   protected dialRemoteStanding(...args: Parameters<BrokerTransport["dialRemoteStanding"]>): ReturnType<BrokerTransport["dialRemoteStanding"]> { return this.brokerTransportComponent.dialRemoteStanding(...args); }
 
-  protected readonly seatCustody = new SeatCustody(this.config, seatCustodyDeps(this));
+  protected readonly seatCustody = new SeatCustody(this.config, seatCustodyDeps(this), this.startState);
 
-  protected readonly sessionRecovery = new SessionRecovery(this.config, sessionRecoveryDeps(this));
+  protected readonly sessionRecovery = new SessionRecovery(this.config, sessionRecoveryDeps(this), this.startState, this.parts);
 
   get staticReconcileLastSweepResources(): {
     slots: {
@@ -718,37 +722,37 @@ export class Manager {
     deprovision?: DeprovisionResourceAccounting;
   } | undefined) { this.staticLifecycle.setResources(value); }
 
-  protected readonly staticLifecycle = new ManagedStaticLifecycle(this.config, managedStaticLifecycleDeps(this));
+  protected readonly staticLifecycle = new ManagedStaticLifecycle(this.config, managedStaticLifecycleDeps(this), this.startState, this.parts);
 
   /** User-mode provisioning owns no manager state: each dependency reads through at its use. */
-  protected readonly userProvision = new UserProvision(this.config, userProvisionDeps(this));
+  protected readonly userProvision = new UserProvision(this.config, userProvisionDeps(this), this.startState);
 
   /** Seat stop, exit, recursive reap and named despawn. Every dependency reads through at its use. */
-  private readonly seatStopComponent = new SeatStop(this.config, seatStopDeps(this), this.parts);
+  private readonly seatStopComponent = new SeatStop(this.config, seatStopDeps(this), this.parts, this.startState);
 
   /** The typed command table and its admission. Every dependency reads through at its use. */
-  private readonly commandDispatch = new CommandDispatch(this.config, commandDispatchDeps(this), this.parts);
+  private readonly commandDispatch = new CommandDispatch(this.config, commandDispatchDeps(this), this.parts, this.startState);
 
   /** The spawn and launch goal path. Every dependency reads through at its use. */
-  private readonly spawnGoalComponent = new SpawnGoal(this.config, spawnGoalDeps(this), this.parts);
+  private readonly spawnGoalComponent = new SpawnGoal(this.config, spawnGoalDeps(this), this.parts, this.startState);
 
   /** The persona catalog doors. Every dependency reads through at its use. */
-  private readonly personaCatalogComponent = new PersonaCatalog(this.config, personaCatalogDeps(this));
+  private readonly personaCatalogComponent = new PersonaCatalog(this.config, personaCatalogDeps(this), this.startState, this.parts);
 
   /** Seat terminal input and attach sessions. Every dependency reads through at its use. */
-  private readonly terminalInputComponent = new TerminalInput(this.config, terminalInputDeps(this), this.parts);
+  private readonly terminalInputComponent = new TerminalInput(this.config, terminalInputDeps(this), this.parts, this.startState);
 
   /** Status, seat list and model catalog reads. Every dependency reads through at its use. */
-  private readonly statusAndModelsComponent = new StatusAndModels(this.config, statusAndModelsDeps(this), this.parts);
+  private readonly statusAndModelsComponent = new StatusAndModels(this.config, statusAndModelsDeps(this), this.parts, this.startState);
 
   /** The launch readiness race and exit watch. Every dependency reads through at its use. */
   private readonly readinessWaitComponent = new ReadinessWait(this.config, readinessWaitDeps(this));
 
   /** Broker dials and scoped executor connections. Every dependency reads through at its use. */
-  private readonly brokerTransportComponent = new BrokerTransport(this.config, brokerTransportDeps(this), this.parts);
+  private readonly brokerTransportComponent = new BrokerTransport(this.config, brokerTransportDeps(this), this.parts, this.startState);
 
   /** The start and launch control doors. Every dependency reads through at its use. */
-  private readonly startDoorsComponent = new StartDoors(this.config, startDoorsDeps(this));
+  private readonly startDoorsComponent = new StartDoors(this.config, startDoorsDeps(this), this.startState);
 
   /** Connector and harness resolution for a launch. Every dependency reads through at its use. */
   private readonly harnessResolutionComponent = new HarnessResolution(this.config, harnessResolutionDeps(this), this.parts);
@@ -758,22 +762,22 @@ export class Manager {
 
 
   /** Manager preservation and released-seat adoption. Every dependency reads through at its use. */
-  private readonly preservationComponent = new Preservation(this.config, preservationDeps(this));
+  private readonly preservationComponent = new Preservation(this.config, preservationDeps(this), this.startState, this.parts);
 
   /** Preserved-manager resume and its control doors. Every dependency reads through at its use. */
-  private readonly preservedResumeComponent = new PreservedResume(this.config, preservedResumeDeps(this), this.parts);
+  private readonly preservedResumeComponent = new PreservedResume(this.config, preservedResumeDeps(this), this.parts, this.startState);
 
   /** The goal-writer connection and the goal index it reconciles. Every dependency reads through at its use. */
-  private readonly goalWriterComponent = new GoalWriter(this.config, goalWriterDeps(this), this.parts);
+  private readonly goalWriterComponent = new GoalWriter(this.config, goalWriterDeps(this), this.parts, this.startState);
 
   /** Renewal of the manager's standing credentials. Every dependency reads through at its use. */
-  private readonly credentialRenewal = new CredentialRenewal(this.config, credentialRenewalDeps(this), this.parts);
+  private readonly credentialRenewal = new CredentialRenewal(this.config, credentialRenewalDeps(this), this.parts, this.startState);
 
   /** The launch pipeline's leaf steps. Every dependency reads through at its use. */
-  private readonly seatLaunch = new SeatLaunch(this.config, seatLaunchDeps(this), this.parts);
+  private readonly seatLaunch = new SeatLaunch(this.config, seatLaunchDeps(this), this.parts, this.startState);
 
   /** Manager boot: execution admission, connect, registration and lease. Every dependency reads through at its use. */
-  private readonly bootComponent = new ManagerBoot(this.config, bootDeps(this), this.parts);
+  private readonly bootComponent = new ManagerBoot(this.config, bootDeps(this), this.parts, this.startState);
 
   constructor(opts: ManagerOptions) {
     const config: Mutable<ManagerConfig> = this.config;
@@ -868,13 +872,19 @@ export class Manager {
       (resumeOperation) => this.beginLifecycle(resumeOperation),
     );
     Object.assign(this.parts, {
+      brokerTransport: this.brokerTransportComponent,
       connectorInventory: this.connectorInventory,
       credentialRenewal: this.credentialRenewal,
+      goalWriter: this.goalWriterComponent,
       harnessResolution: this.harnessResolutionComponent,
       lease: this.lease,
-      goalWriter: this.goalWriterComponent,
+      namesCapacity: this.namesCapacity,
+      personaCatalog: this.personaCatalogComponent,
+      preservation: this.preservationComponent,
       seatLaunch: this.seatLaunch,
+      seatStop: this.seatStopComponent,
       servePlane: this.servePlane,
+      spawnGoal: this.spawnGoalComponent,
     } satisfies ManagerParts);
   }
 
@@ -1080,12 +1090,8 @@ export class Manager {
   static readonly DELIVERY_SHARD = 0;
   /** {@link CredentialRenewal.absentByLeaseRow}. */
   absentByLeaseRow(...args: Parameters<CredentialRenewal["absentByLeaseRow"]>): ReturnType<CredentialRenewal["absentByLeaseRow"]> { return this.credentialRenewal.absentByLeaseRow(...args); }
-  /** {@link CredentialRenewal.keepDaemonRenewalLease}. */
-  protected keepDaemonRenewalLease(...args: Parameters<CredentialRenewal["keepDaemonRenewalLease"]>): ReturnType<CredentialRenewal["keepDaemonRenewalLease"]> { return this.credentialRenewal.keepDaemonRenewalLease(...args); }
   /** {@link CredentialRenewal.claimDaemonRenewalOwnership}. */
   protected claimDaemonRenewalOwnership(...args: Parameters<CredentialRenewal["claimDaemonRenewalOwnership"]>): ReturnType<CredentialRenewal["claimDaemonRenewalOwnership"]> { return this.credentialRenewal.claimDaemonRenewalOwnership(...args); }
-  /** {@link CredentialRenewal.scheduleServeRenewal}. */
-  protected scheduleServeRenewal(...args: Parameters<CredentialRenewal["scheduleServeRenewal"]>): ReturnType<CredentialRenewal["scheduleServeRenewal"]> { return this.credentialRenewal.scheduleServeRenewal(...args); }
 
   /** {@link CredentialRenewal.boundedReconnect}. */
   protected boundedReconnect(...args: Parameters<CredentialRenewal["boundedReconnect"]>): ReturnType<CredentialRenewal["boundedReconnect"]> { return this.credentialRenewal.boundedReconnect(...args); }
@@ -1156,8 +1162,6 @@ export class Manager {
 
   protected fileDigest(path: string): string { return fileDigest(path); }
 
-  /** {@link Preservation.fileDigestOrEmpty}. */
-  protected fileDigestOrEmpty(...args: Parameters<Preservation["fileDigestOrEmpty"]>): ReturnType<Preservation["fileDigestOrEmpty"]> { return this.preservationComponent.fileDigestOrEmpty(...args); }
 
   /** {@link PreservedResume.resumeEntry}. */
   protected resumeEntry(...args: Parameters<PreservedResume["resumeEntry"]>): ReturnType<PreservedResume["resumeEntry"]> { return this.preservedResumeComponent.resumeEntry(...args); }
@@ -1171,8 +1175,6 @@ export class Manager {
   /** {@link Preservation.isProcessBoundSeat}. */
   protected isProcessBoundSeat(...args: Parameters<Preservation["isProcessBoundSeat"]>): ReturnType<Preservation["isProcessBoundSeat"]> { return this.preservationComponent.isProcessBoundSeat(...args); }
 
-  /** {@link Preservation.adoptReleasedSeats}. */
-  protected adoptReleasedSeats(...args: Parameters<Preservation["adoptReleasedSeats"]>): ReturnType<Preservation["adoptReleasedSeats"]> { return this.preservationComponent.adoptReleasedSeats(...args); }
 
 
   private async stopRetainedAgentsOnExit(): Promise<void> {
@@ -1182,7 +1184,7 @@ export class Manager {
     await Promise.all(managed.map(async (a) => {
       try {
         // No cut holds a delegated seat (runPreparation refuses one), so stopping it is its retirement.
-        if (a.handedOff) await this.deprovision(this.teardownTarget(a));
+        if (a.handedOff) await this.deprovision(this.seatStopComponent.teardownTarget(a));
         else a.handle.stop({ graceful: false });
       } catch (e) {
         failures.push(`${a.name}: stop failed: ${rejectionText(e)}`);
@@ -1361,11 +1363,7 @@ export class Manager {
   /** {@link BrokerTransport.retireConnection}. */
   protected retireConnection(...args: Parameters<BrokerTransport["retireConnection"]>): ReturnType<BrokerTransport["retireConnection"]> { return this.brokerTransportComponent.retireConnection(...args); }
 
-  /** {@link BrokerTransport.discardServeCandidate}. */
-  protected discardServeCandidate(...args: Parameters<BrokerTransport["discardServeCandidate"]>): ReturnType<BrokerTransport["discardServeCandidate"]> { return this.brokerTransportComponent.discardServeCandidate(...args); }
 
-  /** {@link BrokerTransport.trackTransport}. */
-  protected trackTransport(...args: Parameters<BrokerTransport["trackTransport"]>): ReturnType<BrokerTransport["trackTransport"]> { return this.brokerTransportComponent.trackTransport(...args); }
 
   /** {@link PreservedResume.opFinalizeResume}. */
   protected opFinalizeResume(...args: Parameters<PreservedResume["opFinalizeResume"]>): ReturnType<PreservedResume["opFinalizeResume"]> { return this.preservedResumeComponent.opFinalizeResume(...args); }
@@ -1616,8 +1614,6 @@ export class Manager {
   /** {@link SeatStop.stopWindowsSeat}. */
   protected stopWindowsSeat(...args: Parameters<SeatStop["stopWindowsSeat"]>): ReturnType<SeatStop["stopWindowsSeat"]> { return this.seatStopComponent.stopWindowsSeat(...args); }
 
-  /** {@link SeatStop.trackStoppedHandle}. */
-  protected trackStoppedHandle(...args: Parameters<SeatStop["trackStoppedHandle"]>): ReturnType<SeatStop["trackStoppedHandle"]> { return this.seatStopComponent.trackStoppedHandle(...args); }
 
   protected provisionUserAgent(name: string, opts: ProvisionUserAgentOpts): Promise<ProvisionedUserAgent | UserAgentRefusal> { return this.userProvision.provisionUserAgent(name, opts); }
 
@@ -1636,15 +1632,11 @@ export class Manager {
   /** {@link SeatStop.logSeatMeshTransitions}. */
   protected logSeatMeshTransitions(...args: Parameters<SeatStop["logSeatMeshTransitions"]>): ReturnType<SeatStop["logSeatMeshTransitions"]> { return this.seatStopComponent.logSeatMeshTransitions(...args); }
 
-  /** {@link SeatStop.isOwnPresence}. */
-  protected isOwnPresence(a: ManagedAgent, p: Presence | undefined): p is Presence { return this.seatStopComponent.isOwnPresence(a, p); }
   protected freeSlot(a: ManagedAgent, floor: boolean, cause: FreeSlotCause, acceptedBeforeFence = false): void { this.namesCapacity.freeSlot(a, floor, cause, acceptedBeforeFence); }
 
   /** {@link SeatStop.dropInlineSnapshot}. */
   protected dropInlineSnapshot(...args: Parameters<SeatStop["dropInlineSnapshot"]>): ReturnType<SeatStop["dropInlineSnapshot"]> { return this.seatStopComponent.dropInlineSnapshot(...args); }
 
-  /** {@link SeatStop.teardownTarget}. */
-  protected teardownTarget(...args: Parameters<SeatStop["teardownTarget"]>): ReturnType<SeatStop["teardownTarget"]> { return this.seatStopComponent.teardownTarget(...args); }
   protected deprovision(a: TeardownTarget): Promise<void> { return this.retirement.deprovision(a); }
 
   /** Run one retirement in a {@link RETIREMENT_CONCURRENCY} slot, oldest first: a seat's deprovision, a
@@ -1752,21 +1744,14 @@ export class Manager {
 
   /** {@link StartDoors.opStart}. */
   protected opStart(...args: Parameters<StartDoors["opStart"]>): ReturnType<StartDoors["opStart"]> { return this.startDoorsComponent.opStart(...args); }
-  protected listSpawnDirectory(args: Record<string, unknown>): ReturnType<SeatLaunch["listSpawnDirectory"]> { return this.seatLaunch.listSpawnDirectory(args); }
-  /** {@link SeatLaunch.resolveSpawnCwd}. */
-  protected resolveSpawnCwd(value: unknown): { cwd: string; host: string } { return this.seatLaunch.resolveSpawnCwd(value); }
 
   /** {@link HarnessResolution.resolveConnector}. */
   protected resolveConnector(...args: Parameters<HarnessResolution["resolveConnector"]>): ReturnType<HarnessResolution["resolveConnector"]> { return this.harnessResolutionComponent.resolveConnector(...args); }
-  /** {@link SeatLaunch.connectorNames}. */
-  protected connectorNames(): string[] { return this.seatLaunch.connectorNames(); }
 
   /** {@link SeatLaunch.classSpawnEnabled}. */
   protected classSpawnEnabled(): boolean { return this.seatLaunch.classSpawnEnabled(); }
   protected omitClassCommands(): readonly string[] | undefined { return this.seatLaunch.omitClassCommands(); }
 
-  /** {@link HarnessResolution.launchHarness}. */
-  protected launchHarness(...args: Parameters<HarnessResolution["launchHarness"]>): ReturnType<HarnessResolution["launchHarness"]> { return this.harnessResolutionComponent.launchHarness(...args); }
 
   /** {@link HarnessResolution.hostLaunchFields}. */
   protected hostLaunchFields(...args: Parameters<HarnessResolution["hostLaunchFields"]>): ReturnType<HarnessResolution["hostLaunchFields"]> { return this.harnessResolutionComponent.hostLaunchFields(...args); }
@@ -1810,10 +1795,6 @@ export class Manager {
   protected spawnRun(caller: EpCaller | undefined, runId: string | undefined): Promise<SpawnRun | undefined> { return this.seatLaunch.spawnRun(caller, runId); }
   /** {@link SeatLaunch.staticSpawnBound}. */
   protected staticSpawnBound(caller: EpCaller | undefined, run: Extract<SpawnRun, { admission: RunAdmission }> | undefined): Promise<StaticSpawnBound> { return this.seatLaunch.staticSpawnBound(caller, run); }
-  /** {@link SeatLaunch.spawnBoundRefusal}. */
-  protected spawnBoundRefusal(bound: StaticSpawnBound, grant: DelegatedGrant, armsEvents: boolean, door: "spawn" | "define-persona" = "spawn"): string | undefined { return this.seatLaunch.spawnBoundRefusal(bound, grant, armsEvents, door); }
-  /** {@link SeatLaunch.managedStaticInstanceReads}. */
-  protected managedStaticInstanceReads(capabilities: readonly string[] | undefined): EpCapability[] { return this.seatLaunch.managedStaticInstanceReads(capabilities); }
 
   /** {@link PreservedResume.resumePreserved}. */
   resumePreserved(...args: Parameters<PreservedResume["resumePreserved"]>): ReturnType<PreservedResume["resumePreserved"]> { return this.preservedResumeComponent.resumePreserved(...args); }
@@ -1844,13 +1825,9 @@ export class Manager {
   /** {@link ReadinessWait.watchExit}. */
   protected watchExit(...args: Parameters<ReadinessWait["watchExit"]>): ReturnType<ReadinessWait["watchExit"]> { return this.readinessWaitComponent.watchExit(...args); }
   protected occupancy(): Occupancy { return this.namesCapacity.occupancy(); }
-  protected occupancyText(o: Occupancy): string { return this.namesCapacity.occupancyText(o); }
-  protected capacityRefusal(o: Occupancy): string { return this.namesCapacity.capacityRefusal(o); }
 
   /** The owner a launch belongs to: {@link NamesCapacity.launchOwner}. */
   protected launchOwner(opts: Pick<StartAgentOpts, "owner">, spawner?: string): string { return this.namesCapacity.launchOwner(opts, spawner); }
-  /** The per-owner ceiling at accept: {@link NamesCapacity.seatCapRefusal}. */
-  protected seatCapRefusal(owner: string): EpEnvelopeError | undefined { return this.namesCapacity.seatCapRefusal(owner); }
 
   /** {@link SeatStop.opStop}. */
   // @ts-expect-error TS6133: retained fixtures call this private adapter through structural views.
@@ -1871,8 +1848,6 @@ export class Manager {
   /** {@link BrokerTransport.withIssuer}. */
   protected withIssuer<T>(fn: (i: { store: IssuedStore; accepted: KV }) => Promise<T>): Promise<T> { return this.brokerTransportComponent.withIssuer(fn); }
 
-  /** {@link BrokerTransport.issuanceSeam}. */
-  protected issuanceSeam(...args: Parameters<BrokerTransport["issuanceSeam"]>): ReturnType<BrokerTransport["issuanceSeam"]> { return this.brokerTransportComponent.issuanceSeam(...args); }
 
   /** {@link BrokerTransport.withEndpointServeExecutor}. */
   protected withEndpointServeExecutor<T>(fn: (kvs: { recordsKv: KV; authKv: KV; nc: NatsConnection }) => Promise<T>): Promise<T> { return this.brokerTransportComponent.withEndpointServeExecutor(fn); }
@@ -1905,11 +1880,8 @@ export class Manager {
   /** {@link GoalWriter.mintAndStageGoalWriter}. */
   protected mintAndStageGoalWriter(...args: Parameters<GoalWriter["mintAndStageGoalWriter"]>): ReturnType<GoalWriter["mintAndStageGoalWriter"]> { return this.goalWriterComponent.mintAndStageGoalWriter(...args); }
 
-  /** {@link GoalWriter.startGoalWriter}. */
-  protected startGoalWriter(...args: Parameters<GoalWriter["startGoalWriter"]>): ReturnType<GoalWriter["startGoalWriter"]> { return this.goalWriterComponent.startGoalWriter(...args); }
 
   protected mintAndStageSessionLedger(authKv: KV): Promise<string> { return this.servePlane.mintAndStageSessionLedger(authKv); }
-  protected startSessionPlane(): Promise<void> { return this.servePlane.startSessionPlane(); }
 
   /** {@link GoalWriter.reconcileGoalIndex}. */
   protected reconcileGoalIndex(...args: Parameters<GoalWriter["reconcileGoalIndex"]>): ReturnType<GoalWriter["reconcileGoalIndex"]> { return this.goalWriterComponent.reconcileGoalIndex(...args); }
@@ -1928,8 +1900,6 @@ export class Manager {
 
 
 
-  /** {@link SpawnGoal.expireGoalAcceptance}. */
-  protected expireGoalAcceptance(...args: Parameters<SpawnGoal["expireGoalAcceptance"]>): ReturnType<SpawnGoal["expireGoalAcceptance"]> { return this.spawnGoalComponent.expireGoalAcceptance(...args); }
 
   // ---- the turn relay (§8 durable actions) ------------------------------------------------------
   //
@@ -2058,7 +2028,7 @@ export class Manager {
     this.reapChildrenOf(this.managedPrincipal(a));
     const cause = { kind: "stopped-once", reason } as const;
     this.stopHandle(a, true, cause);
-    this.trackStoppedHandle(a, false, cause);
+    this.seatStopComponent.trackStoppedHandle(a, false, cause);
     void this.seatStopComponent.cancelAgentGoal(a.name, "graceful");
   }
 
@@ -2066,7 +2036,7 @@ export class Manager {
    *  latch is set before anything awaits, then the exit tracking. Both are synchronous. */
   protected stopAndTrack(a: ManagedAgent, cause: FreeSlotCause): void {
     this.stopHandle(a, false, cause);
-    this.trackStoppedHandle(a, true, cause);
+    this.seatStopComponent.trackStoppedHandle(a, true, cause);
   }
 
   /** End a once seat before its task is served: let go of the spawn goal, record why it stopped if
@@ -2206,8 +2176,6 @@ export class Manager {
   /** {@link BrokerTransport.withProvisioner}. */
   protected withProvisioner<T>(fn: (prov: CotalEndpoint) => Promise<T>): Promise<T> { return this.brokerTransportComponent.withProvisioner(fn); }
 
-  /** {@link BrokerTransport.withTransferReader}. */
-  protected withTransferReader<T>(fn: (nc: NatsConnection) => Promise<T>): Promise<T> { return this.brokerTransportComponent.withTransferReader(fn); }
 
   /** {@link SeatStop.opPurge}. */
   protected opPurge(...args: Parameters<SeatStop["opPurge"]>): ReturnType<SeatStop["opPurge"]> { return this.seatStopComponent.opPurge(...args); }
@@ -2219,17 +2187,11 @@ export class Manager {
   /** {@link PersonaCatalog.opRemovePersona}. */
   protected opRemovePersona(...args: Parameters<PersonaCatalog["opRemovePersona"]>): ReturnType<PersonaCatalog["opRemovePersona"]> { return this.personaCatalogComponent.opRemovePersona(...args); }
 
-  /** {@link PersonaCatalog.personaOwner}. */
-  protected personaOwner(...args: Parameters<PersonaCatalog["personaOwner"]>): ReturnType<PersonaCatalog["personaOwner"]> { return this.personaCatalogComponent.personaOwner(...args); }
 
   /** {@link PersonaCatalog.canReadPersona}. */
   protected canReadPersona(...args: Parameters<PersonaCatalog["canReadPersona"]>): ReturnType<PersonaCatalog["canReadPersona"]> { return this.personaCatalogComponent.canReadPersona(...args); }
 
-  /** {@link PersonaCatalog.opListPersonas}. */
-  protected opListPersonas(...args: Parameters<PersonaCatalog["opListPersonas"]>): ReturnType<PersonaCatalog["opListPersonas"]> { return this.personaCatalogComponent.opListPersonas(...args); }
 
-  /** {@link PersonaCatalog.opShowPersona}. */
-  protected opShowPersona(...args: Parameters<PersonaCatalog["opShowPersona"]>): ReturnType<PersonaCatalog["opShowPersona"]> { return this.personaCatalogComponent.opShowPersona(...args); }
 
   /** {@link TerminalInput.inputAuthorized}. */
   protected inputAuthorized(...args: Parameters<TerminalInput["inputAuthorized"]>): ReturnType<TerminalInput["inputAuthorized"]> { return this.terminalInputComponent.inputAuthorized(...args); }

@@ -1,5 +1,40 @@
 # @cotal-ai/cli
 
+## 0.176.3
+
+### Patch Changes
+
+- 3cc24ee: Clear the selected space even when a registration is unreadable, and use your defaults when the only candidate for an unqualified `cotal config` read is offline.
+- a461dd2: When a status component check requests both JSON and plain output, suggest the component check without either flag and keep the selected target.
+- 542c965: When a team summary was recorded in another project, its status hint now inspects the folder and space holding the copy.
+- 9b757d5: Spawn and its preview explain how to recover from unreadable persona files and dangling links, and persona edit suggests a valid launch name when the saved display name cannot be used.
+- a99a26e: Keep `--json` in the retry suggested when `cotal send` is missing a message body, so the retry returns a JSON storage receipt.
+- @cotal-ai/core@0.176.3
+  - @cotal-ai/workspace@0.176.3
+
+## 0.176.2
+
+### Patch Changes
+
+- 303aba0: Keep the inspected space and any explicit broker and credential options in the channel inventory's suggested commands.
+- 0187b5d: Document the watch credential selector, show structured formats in endpoint work help, keep the live contract shortcut on the same target, and explain why endpoint describe does not take `--live`.
+- c687d10: Name the mismatched space in structured shutdown refusals and print usable shared-broker recovery commands for retained space names that start with a dash.
+- dcccbd9: Foreground spawn previews name unavailable working directories and explain how to retry, prepared persona catalogs work offline with a planned broker address, and manager start help explains when to select by name or by instance ID.
+- b32129d: When a project already hosts another space, explain how to prepare a separate folder and keep the requested startup options if the caller selected a root or requested JSON or plain output.
+- 9dcb30d: Accept empty defaults in channel-only team deployments and show which project root to use when deploying from another checkout.
+- @cotal-ai/core@0.176.2
+  - @cotal-ai/workspace@0.176.2
+
+## 0.176.1
+
+### Patch Changes
+
+- fc7712c: When a moved stack still has an instance recorded on this machine, the adoption refusal directs the operator back to the existing stack without asking for a second adoption.
+- 509deb5: When a manual registration conflicts with a prepared space, name its recorded project in the startup command and explain how to recover if that project has moved.
+- Updated dependencies [fc7712c]
+  - @cotal-ai/workspace@0.176.1
+  - @cotal-ai/core@0.176.1
+
 ## 0.176.0
 
 ### Minor Changes

@@ -5,6 +5,7 @@ import { launchAgentToStartOpts, launchSpecForRun, materializePersona, parseLaun
 import type { Manager } from "./manager.js";
 import type { SpawnHooks, StartAgentOpts } from "./seat-types.js";
 import type { ManagerConfig } from "./manager-config.js";
+import type { ManagerStartState } from "./manager-start-state.js";
 
 /** A `once` spawn's task deadline when the caller names none: one hour from the spawn's accept. */
 const ONCE_DEFAULT_DEADLINE_MS = 60 * 60_000;
@@ -12,7 +13,6 @@ const ONCE_DEFAULT_DEADLINE_MS = 60 * 60_000;
 /** What {@link StartDoors} reads from the Manager. Every entry is read at use, so a field the Manager
  *  assigns after construction is always current, and a Manager method a test replaces is the one that runs. */
 export interface StartDoorsDeps {
-  userMode: () => Manager["userMode"];
   executionRefusal: (...args: Parameters<Manager["executionRefusal"]>) => ReturnType<Manager["executionRefusal"]>;
   startAgent: (...args: Parameters<Manager["startAgent"]>) => ReturnType<Manager["startAgent"]>;
 }
@@ -21,7 +21,6 @@ export interface StartDoorsDeps {
  *  field the Manager assigns later is current and a member a test replaces on the instance is the one that runs. */
 export function startDoorsDeps(m: Manager): StartDoorsDeps {
   return {
-    userMode: () => m["userMode"],
     executionRefusal: (...args) => m["executionRefusal"](...args),
     startAgent: (...args) => m["startAgent"](...args),
   };
@@ -29,13 +28,13 @@ export function startDoorsDeps(m: Manager): StartDoorsDeps {
 
 /** The `start` and `launch` control doors: argument checks and the hand-off to `startAgent`. */
 export class StartDoors {
-  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: StartDoorsDeps) {}
+  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: StartDoorsDeps, private readonly state: ManagerStartState) {}
 
   // The Manager members these bodies read, under their Manager names. Each reads through its dep at
   // use, so a field the Manager assigns later is current and a method a test replaces on the Manager
   // is the one that runs.
   private get remoteAuthority() { return this.config.remoteAuthority; }
-  private get userMode() { return this.deps.userMode(); }
+  private get userMode() { return this.state.userMode; }
   private executionRefusal(...args: Parameters<Manager["executionRefusal"]>): ReturnType<Manager["executionRefusal"]> { return this.deps.executionRefusal(...args); }
   private startAgent(...args: Parameters<Manager["startAgent"]>): ReturnType<Manager["startAgent"]> { return this.deps.startAgent(...args); }
 

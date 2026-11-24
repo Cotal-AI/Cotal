@@ -152,6 +152,11 @@ try {
     const up = cotal(["up", "--detach", "--open", "--no-manager", "--space", SPACE, "--server", SERVER]);
     stackUp = up.status === 0;
     check("a broker-only open stack starts", stackUp, out(up));
+    const brokerOnlyStatus = cotal(["manager", "status", "--space", SPACE, "--json"]);
+    const brokerOnlyError = JSON.parse(brokerOnlyStatus.stdout).error;
+    check("manager status suggests a manager-only start when the broker is running",
+      brokerOnlyStatus.status === 2 && brokerOnlyError?.code === "TARGET_NOT_FOUND"
+      && brokerOnlyError.remedy === `start it with \`cotal manager start --space ${SPACE}\``, out(brokerOnlyStatus));
 
     // ---- Every built-in preset is listed before it is added ------------------------------------
     const before = inventory();
@@ -381,9 +386,9 @@ try {
       refusedInstall.outcome === "refused" && refusedInstall.error?.code === "UNSUPPORTED" && refusedInstall.error.remedy === refusedStop.error?.remedy, refusedInstall);
     for (const name of ["nats", "broker", "stack-broker"]) {
       const brokerSet = envelope(upCotal(["down", name, "delivery", "--dry-run", "--json"])) as LogsEnvelope & { error?: { code?: string; message?: string; remedy?: string } };
-      check(`cotal down ${name} delivery refuses the whole set and names the bare down that stops the broker`,
+      check(`cotal down ${name} delivery refuses the whole set and names a preview in its project`,
         brokerSet.outcome === "refused" && brokerSet.error?.code === "TARGET_NOT_FOUND" && brokerSet.error.message === `${name} matches no service a set of names can stop in space ${UP_SPACE}; no service was stopped`
-          && brokerSet.error.remedy === "a set of names never stops the broker; a bare `cotal down` stops it with the whole stack", brokerSet);
+          && brokerSet.error.remedy === `a set of names never stops the broker; to preview stopping the whole stack, run \`cotal down --dry-run --space=${UP_SPACE} --json\` in ${realpathSync(upProject)}`, brokerSet);
     }
 
     // A follow is a read-only view: it writes one JSON record per line and ends when down stops the manager.
@@ -449,7 +454,12 @@ try {
     const neverStarted = cotal(["manager", "status", "--space", PRESET_SPACE, "--json"]);
     const neverStartedError = JSON.parse(neverStarted.stdout).error;
     check("manager status still distinguishes a space with no manager history", neverStarted.status === 2
-      && neverStartedError?.code === "TARGET_NOT_FOUND" && neverStartedError.message.includes("no manager has been started"), out(neverStarted));
+      && neverStartedError?.code === "TARGET_NOT_FOUND" && neverStartedError.message.includes("no manager has been started")
+      && neverStartedError.remedy === `start it with \`cotal up\` in ${realpathSync(presetRoot)}`, out(neverStarted));
+    const neverStartedPlain = cotal(["manager", "status", "--space", PRESET_SPACE, "--plain"]);
+    check("plain manager status also names the stack start in the prepared project",
+      neverStartedPlain.status === 2 && ["cotal", "pnpm cotal"].some((cli) =>
+        out(neverStartedPlain).includes(`start it with \`${cli} up\` in ${realpathSync(presetRoot)}`)), out(neverStartedPlain));
     const custom = cotal(["service", "add", "stack-broker", "--exec", "/bin/sleep 600", "--space", PRESET_SPACE]);
     check("a never-started space accepts a process service named stack-broker", custom.status === 0, out(custom));
     const foregroundStart = ["service", "start", "stack-broker", "--space", PRESET_SPACE, "--foreground", "--json"];
@@ -496,6 +506,10 @@ try {
     check("the controller control starts its broker and manager", controllerUp.status === 0, out(controllerUp));
     const controllerDown = controller(["down", "--yes"]);
     check("the controller control stops its whole stack", controllerDown.status === 0, out(controllerDown));
+    const brokerLog = controller(["service", "logs", "stack-broker", "--space", controllerSpace, "--tail", "5"]);
+    check("the prepared stack's broker shutdown log is available through service logs",
+      brokerLog.status === 0 && brokerLog.stdout.includes("Initiating JetStream Shutdown") &&
+      brokerLog.stdout.includes("Server Exiting") && !existsSync(join(controllerRoot, ".cotal", "nats.log")), out(brokerLog));
     const controllerList = controller(["service", "--space", controllerSpace, "--json"]);
     const controllerRows = (JSON.parse(controllerList.stdout) as { result: { services: Row[] } }).result.services;
     check("a stopped controller member's Next remains cotal up", row(controllerRows, "stack-broker")?.next === "cotal up", controllerRows);
@@ -529,13 +543,25 @@ try {
       && beforeIdentity.observedProcess === "gone" && typeof beforeIdentity.revision === "string"
       && JSON.stringify(beforeIdentity) === JSON.stringify(afterIdentity), { beforeIdentity, afterIdentity });
     const brokerOnly = controller(["up", "--root", controllerRoot, "--space", controllerSpace, "--no-manager"]);
-    const addStandalone = controller(["service", "add", "manager", "--preset", "manager", "--space", controllerSpace, "--console-port", consolePort]);
+    const addStandalone = controller(["service", "add", "manager", "--preset", "manager", "--space", controllerSpace, "--console-port", consolePort, "--name", "standalone"]);
     const startStandalone = controller(["service", "start", "manager", "--space", controllerSpace, "--json"]);
     const standalone = JSON.parse(startStandalone.stdout).result;
     check("the broker-only route starts a separately configured manager",
       brokerOnly.status === 0 && addStandalone.status === 0 && startStandalone.status === 0
       && standalone?.definition === "manager" && standalone.observedProcess === "running",
       { brokerOnly: out(brokerOnly), add: out(addStandalone), start: out(startStandalone) });
+    const startHelp = controller(["manager", "start", "--help"]);
+    const helpText = out(startHelp).replace(/\s+/g, " ");
+    check("manager start help limits name selection to user-auth spaces and points open and static spaces to cotal ps",
+      startHelp.status === 0 && helpText.includes("--name <name> select by name with --on only on user-auth spaces") &&
+      helpText.includes("--name <string> manager name for presence and, on user-auth spaces only, --on. On open and static spaces, use the instance ID from `cotal ps`"), out(startHelp));
+    const listed = controller(["ps", "--space", controllerSpace, "--plain"]);
+    const managerId = listed.stdout.match(/^\s*instance:\s+([a-z0-9]{26,32})\b/m)?.[1];
+    const byName = controller(["ps", "--space", controllerSpace, "--on", "standalone", "--plain"]);
+    const byId = managerId ? controller(["ps", "--space", controllerSpace, "--on", managerId, "--plain"]) : undefined;
+    check("on the open space, the printed instance ID works and the manager name does not",
+      listed.status === 0 && byName.status === 1 && out(byName).includes("USAGE_INVALID") && byId?.status === 0,
+      { listed: out(listed), byName: out(byName), byId: byId && out(byId) });
     const stopStandalone = controller(["manager", "stop", "--space", controllerSpace, "--yes", "--json"]);
     check("the standalone manager stops before the stack starts its own",
       stopStandalone.status === 0 && JSON.parse(stopStandalone.stdout).outcome === "ok", out(stopStandalone));
