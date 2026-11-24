@@ -230,7 +230,8 @@ prompt behaves as it does without a terminal, `web` prints its link without open
 the command word on every command, and after it on every command except one that takes its words
 raw. A global flag just after an option that needs a value leaves that value missing. After `--`
 global flags are ordinary words. Each is given once, as any flag is, before or after the command
-word. No command may declare a flag with either name. The output
+word. Neither flag takes a value. If you attach one, the refusal tells you to omit the flag or pass
+it without a value. No command may declare a flag with either name. The output
 flags `--json` (`-j`) and `--plain` may also come before the command word, as in
 `cotal --json status`; they are read as the command's own flags, so a command without that output
 refuses them as it does after the command word. A command that takes its words raw, such as the
