@@ -217,7 +217,7 @@ const configDir = join(home, "xdg");
 for (const key of Object.keys(process.env)) if (key.startsWith("COTAL_")) delete process.env[key];
 // Set before the stores are imported; they read COTAL_HOME on each call.
 process.env.COTAL_HOME = home;
-const env = { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: configDir, COTAL_SKIP_CONNECTOR_SEED: "1" };
+const env = { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: configDir, COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1" };
 const { observeServiceProcess, serviceInstances, serviceInstanceStore } = await import("../src/lib/service-instances.js");
 const { readStackJournal } = await import("../src/lib/stack-journal.js");
 const { serviceDefinitionStore } = await import("../src/lib/service-definitions.js");
