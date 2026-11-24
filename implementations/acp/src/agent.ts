@@ -31,7 +31,7 @@ import { agent, methods, PROTOCOL_VERSION, RequestError, type AgentApp, type Age
 import { TERMINAL_AUTH } from "./auth-method.js";
 import { FrameMapper, type RunSignal } from "./frames.js";
 import { answer, permissionRequest, plainOptions, PromptFollower } from "./prompts.js";
-import { deregisterRemedy, LaunchListsRefused, NoLaunchManager, SignInRequired, type ManagerChoice, type Mesh, type SeatFrame, type SeatList, type SeatRef, type SeatRow } from "./mesh.js";
+import { deregisterRemedy, LaunchListsRefused, NoLaunchManager, NoManagerRegistered, SignInRequired, type ManagerChoice, type Mesh, type SeatFrame, type SeatList, type SeatRef, type SeatRow } from "./mesh.js";
 import { launchManagers } from "./manager-start.js";
 import { awaitTaken, promptParts, takeTurn, usageUpdate } from "./turns.js";
 import { applyOption, configOptions, cutShort, modelState, DEFAULT_PERSONA, DEFAULT_VARIANT, defaultManager, initialSelection, NO_CHANNEL, noMachine, parseModel, reconcile, refusal, type Offer, type Selection } from "./options.js";
@@ -197,6 +197,19 @@ function notListed(m: Mesh, name: string, listed: SeatList): RequestError {
   const { silent, removable = [] } = listed;
   if (silent.length === 0) return RequestError.resourceNotFound(name);
   return RequestError.internalError(undefined, `${name} was not listed, and ${silent.length === 1 ? "manager" : "managers"} ${silent.join(", ")} did not answer, so it may run there. Try again once ${silent.length === 1 ? "it answers" : "they answer"}.${removable.length ? ` ${deregisterRemedy(m.space, removable)}` : ""}`);
+}
+
+/** The space's agents, for a list or a load. With no live manager registered none runs there, so the
+ *  reply says so in place of a list, names the thread a load asked for, and says that a new thread
+ *  starts this machine's manager. Neither starts one: a list is passive. */
+async function listedSeats(m: Mesh, thread?: string): Promise<SeatList> {
+  try {
+    return await m.seats();
+  } catch (e) {
+    if (!(e instanceof NoManagerRegistered)) throw e;
+    const why = thread === undefined ? `${e.message}, so no thread is listed.` : `${thread} is not listed, because no live manager is registered for ${e.space}.`;
+    throw new RequestError(-32603, `${why} A new thread starts this machine's manager.`);
+  }
 }
 
 function canonical(path: string): string {
@@ -883,7 +896,7 @@ function historyHandlers(b: Bridge, offers: Offers) {
       const want = params.cwd ? canonical(params.cwd) : undefined;
       const hidden = options.hidden.read();
       const { byRun } = linksIn(options.links, m.space);
-      const rows = (await m.seats()).rows.filter((row) => !hidden.has(row.lifecycleUid) && (want === undefined || (row.cwd !== undefined && canonical(row.cwd) === want)));
+      const rows = (await listedSeats(m)).rows.filter((row) => !hidden.has(row.lifecycleUid) && (want === undefined || (row.cwd !== undefined && canonical(row.cwd) === want)));
       return {
         sessions: rows.map((row) => ({
           sessionId: byRun.get(row.lifecycleUid) ?? row.name,
@@ -895,7 +908,7 @@ function historyHandlers(b: Bridge, offers: Offers) {
     },
     load: async (params: LoadSessionRequest, client: AgentContext) => {
       const m = await mesh();
-      const listed = await m.seats();
+      const listed = await listedSeats(m, params.sessionId);
       const matches = threadRows(options.links, m, listed, params.sessionId);
       if (matches.length === 0) throw notListed(m, params.sessionId, listed);
       if (matches.length > 1) throw RequestError.invalidParams(undefined, `${matches.length} seats are named ${params.sessionId}; stop all but one`);

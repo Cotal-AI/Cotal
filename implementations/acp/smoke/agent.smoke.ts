@@ -23,6 +23,7 @@
  *    launch lists the caller may not read loads with only its own model and cannot start another
  *    after `/despawn`; a seat no manager listed while one did not answer is not called missing,
  *    and deleting it fails;
+ *  - with no manager registered, list and load say so, start none, and list nothing in its place;
  *  - with only another computer's manager live, a new session starts this machine's manager and
  *    defaults to it, and uses the other computer only when Machine names it; a failed start, or one
  *    whose manager is still not listed here, fails the session;
@@ -59,7 +60,7 @@ import { cotalAgent, defaultName, type HiddenSessions, type ThreadLink, type Thr
 import { MAX_CHOICES } from "../src/options.js";
 import { promptParts } from "../src/turns.js";
 import { startFailure, startLine } from "../src/manager-start.js";
-import { AgentCallFailed, LaunchListsRefused, NoLaunchManager, SignInRequired, type AgentCatalog, type AgentEndpointServes, type AguiEventLike, type ManagerChoice, type Mesh, type PromptCounter, type SeatFrame, type SeatRef, type SeatRow, type SpawnRequest } from "../src/mesh.js";
+import { AgentCallFailed, LaunchListsRefused, NoLaunchManager, NoManagerRegistered, SignInRequired, type AgentCatalog, type AgentEndpointServes, type AguiEventLike, type ManagerChoice, type Mesh, type PromptCounter, type SeatFrame, type SeatRef, type SeatRow, type SpawnRequest } from "../src/mesh.js";
 
 let pass = 0, fail = 0;
 const check = (n: string, c: boolean, x?: unknown): void => { if (c) { pass++; console.log(`  ✓ ${n}`); } else { fail++; console.log(`  ✗ FAIL: ${n}`, x ?? ""); } };
@@ -345,6 +346,22 @@ const errorOf = async (p: Promise<unknown>): Promise<{ code?: number; message?: 
   const failed = await errorOf(c.agent.request(methods.agent.session.new, { cwd: dir, mcpServers: [] }));
   check("a failed start fails the new thread with the start's reason", failed?.code === -32603 && failed.message === "Could not start this machine's manager for fake: the manager did not start: boom", failed);
   check("and nothing is read or started after it", space.starts === 3 && space.managersRead === reads + 1, { starts: space.starts, reads: space.managersRead - reads });
+  c.conn.close();
+}
+// With no manager registered, as once the last one stopped itself, list and load say so. Neither starts
+// a manager, and the list is not answered empty in place of the refusal.
+{
+  const space = new FakeMesh();
+  space.seats = async () => { throw new NoManagerRegistered("fake"); };
+  const c = connect(async () => space);
+  await c.init;
+  const listed = await errorOf(c.agent.request(methods.agent.session.list, { cwd: dir }));
+  check("with no manager registered, session/list refuses, saying so and that a new thread starts this machine's manager",
+    listed?.code === -32603 && listed.message === "No live manager is registered for fake, so no thread is listed. A new thread starts this machine's manager.", listed);
+  const loaded = await errorOf(c.agent.request(methods.agent.session.load, { sessionId: "kept", cwd: dir, mcpServers: [] }));
+  check("and session/load refuses the same way, naming the thread",
+    loaded?.code === -32603 && loaded.message === "kept is not listed, because no live manager is registered for fake. A new thread starts this machine's manager.", loaded);
+  check("neither starts a manager", space.starts === 0, space.starts);
   c.conn.close();
 }
 {
