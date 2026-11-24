@@ -9,7 +9,7 @@ import {
 } from "@cotal-ai/core";
 import {
   cachedPreferences, codeSpan, CommandFailure, ConfirmationRequired, cotalDirLink, explicitNoInputFlag, findCotalRoot, isCommandFailure, isGenuineSpace, isWorkspaceTargetError, legacyStackOtherHome, loadMeshes, meshesForRoot, movedProject,
-  localWriteFailure, personaDefinitionProblem, preparedNeverStarted, preparedSpaceAt, resolveMeshTarget, resolvePreference, retainedLegacyBroker, retainedOpenSpace, stackJournalPath, targetErrorCode, workspaceErrorParts,
+  localWriteFailure, personaDefinitionProblem, preparedNeverStarted, preparedSpaceAt, resolveMeshTarget, resolvePreference, retainedLegacyBroker, retainedOpenSpace, stackJournalPath, targetErrorCode, workspaceErrorParts, type Presentation,
 } from "@cotal-ai/workspace";
 import { DEFAULT_AGENT_NAME } from "./default-persona.js";
 import { shellWord } from "./endpoint-errors.js";
@@ -146,9 +146,12 @@ export function readPersonaSource(path: string): PersonaSource | undefined {
   }
 }
 
-export function requirePersonaSource(path: string, target = ""): PersonaSource {
+export function requirePersonaSource(path: string, target = "", presentation: Presentation = "rich"): PersonaSource {
   const source = readPersonaSource(path);
-  if (!source) throw new CommandFailure("refused", "TARGET_NOT_FOUND", `no persona at ${path}`, { remedy: `see the personas here with ${codeSpan(`cotal persona${target}`)}` });
+  if (!source) {
+    const output = presentation === "rich" ? "" : ` --${presentation}`;
+    throw new CommandFailure("refused", "TARGET_NOT_FOUND", `no persona at ${path}`, { remedy: `see the personas here with ${codeSpan(`cotal persona${target}${output}`)}` });
+  }
   return source;
 }
 
@@ -332,10 +335,10 @@ export type PersonaEdit = { action: "saved"; displayName: string } | { action: "
 /** Never expose the catalog file to an editor. Validate successful draft bytes, then compare under lock.
  *  An interrupt that stops the edit saves nothing, removes an unchanged draft, names a changed one, and
  *  exits with the signal's code. */
-export async function editPersona(path: string, name: string, catalog: PersonaCatalog, target: string, json = false): Promise<PersonaEdit> {
+export async function editPersona(path: string, name: string, catalog: PersonaCatalog, target: string, presentation: Presentation = "rich"): Promise<PersonaEdit> {
   if (explicitNoInputFlag())
     throw new ConfirmationRequired("persona edit opens an editor, and --no-input forbids one", { remedy: "edit interactively without --no-input" });
-  const source = requirePersonaSource(path);
+  const source = requirePersonaSource(path, target, presentation);
   assertCatalogWritable(dirname(path));
   const editor = resolvePreference("editor", { preferences: cachedPreferences(), space: catalog.space }).value;
   if (!editor) throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "no editor is set", { remedy: "set VISUAL or EDITOR, or run `cotal config set editor vim`" });
@@ -344,7 +347,7 @@ export async function editPersona(path: string, name: string, catalog: PersonaCa
   let keep = false;
   const edit = await withDraft(name, async (draft): Promise<PersonaEdit | { action: "interrupted"; signal: InterruptSignal; draft?: string }> => {
     writeSecretFile(draft, source.bytes);
-    const result = await runEditor(editor, draft, json);
+    const result = await runEditor(editor, draft, presentation === "json");
     // SIGTERM or SIGHUP stops the edit. Ctrl-C reaches the editor too, and stops the edit only when
     // it ends the editor, since an editor such as vim takes Ctrl-C as a key.
     if (result.received && (result.received !== "SIGINT" || result.signal)) {

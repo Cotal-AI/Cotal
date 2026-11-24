@@ -152,17 +152,21 @@ check("its plain report begins with Mesh: <space> and ends with a Next", conflic
 // A persona that does not exist: show and remove name where to see the ones that do.
 for (const args of [["show", "nosuch"], ["remove", "nosuch", "--yes"]]) {
   const missing = cotal("persona", ...args, "--json");
-  check(`persona ${args[0]} of a missing persona is TARGET_NOT_FOUND with a remedy`, missing.status === 2 && missing.envelope?.error?.code === "TARGET_NOT_FOUND" && missing.envelope.error.remedy === "see the personas here with `cotal persona`", shown(missing));
+  check(`persona ${args[0]} of a missing persona is TARGET_NOT_FOUND with a remedy`, missing.status === 2 && missing.envelope?.error?.code === "TARGET_NOT_FOUND" && missing.envelope.error.remedy === "see the personas here with `cotal persona --json`", shown(missing));
 }
 const alternate = mkdtempSync(join(home, "alternate-"));
 const alternatePrepared = cotalAt(alternate, "space", "create", "alternate-catalog", "--root", ".");
 check("fixture: a second catalog is prepared", alternatePrepared.status === 0, shown(alternatePrepared));
-const alternateMiss = cotal("persona", "show", "nosuch", "--space", "alternate-catalog", "--json");
-const alternateList = alternateMiss.envelope?.error?.remedy?.match(/`([^`]+)`/)?.[1];
-check("persona show in a different catalog refuses and its recovery lists that catalog",
-  alternateMiss.status === 2 && alternateMiss.envelope?.error?.code === "TARGET_NOT_FOUND"
-    && alternateMiss.envelope.target?.space === "alternate-catalog" && alternateList === "cotal persona --space alternate-catalog"
-    && cotal(...alternateList.split(" ").slice(1), "--json").envelope?.target?.space === "alternate-catalog", shown(alternateMiss));
+for (const verb of ["show", "edit", "remove"]) {
+  const miss = cotal("persona", verb, "nosuch", "--space", "alternate-catalog", "--json");
+  const list = miss.envelope?.error?.remedy?.match(/`([^`]+)`/)?.[1];
+  check(`persona ${verb} suggests a JSON inventory of the requested catalog`, miss.status === 2
+    && miss.envelope?.error?.code === "TARGET_NOT_FOUND" && list === "cotal persona --space alternate-catalog --json"
+    && cotal(...list.split(" ").slice(1)).envelope?.target?.space === "alternate-catalog", shown(miss));
+}
+const legacyMiss = cotal("personas", "show", "nosuch", "--space", "alternate-catalog", "--creds", "unused.creds");
+check("legacy show names the selected catalog without an unused credential option", legacyMiss.status === 2
+  && legacyMiss.stderr.includes("see the personas here with `cotal persona --space alternate-catalog`"), shown(legacyMiss));
 // A complete file that names another persona: the refusal names the file's name and the create that keeps it.
 const otherFile = join(root, "bernie.md");
 writeFileSync(otherFile, "---\nname: bernie\nrole: reviewer\nsubscribe: []\n---\n");
