@@ -356,8 +356,11 @@ ln -sf ${shellPath(broker.path)} "$0"
 exec "$0" "$@"
 `, { mode: 0o700 });
   const child = spawn(process.execPath, ["--import", TSX_IMPORT, CLI, "up", "--foreground", "--open", "--no-manager", "--server", `nats://127.0.0.1:${port}`], {
-    cwd: root, env: { ...env, PATH: `${bin}${delimiter}${process.env.PATH ?? ""}` }, stdio: "ignore",
+    cwd: root, env: { ...env, PATH: `${bin}${delimiter}${process.env.PATH ?? ""}` }, stdio: ["ignore", "pipe", "pipe"],
   });
+  let out = "", err = "";
+  child.stdout!.setEncoding("utf8").on("data", (chunk: string) => { out += chunk; });
+  child.stderr!.setEncoding("utf8").on("data", (chunk: string) => { err += chunk; });
   try {
     if (!await until(() => existsSync(probed), 20_000)) throw new Error("the foreground start did not reach its broker version probe");
     const before = readFileSync(journalPath, "utf8");
@@ -367,10 +370,11 @@ exec "$0" "$@"
       refused.env.error.remedy === "wait for startup to finish, then retry `cotal down --yes`" &&
       readFileSync(journalPath, "utf8") === before && serviceInstances(space, "stack-broker").length === 0, shown(refused));
     writeFileSync(resume, "");
-    const started = await until(() => readStackJournal(root)?.journal.operation.phase === "completed", 30_000);
+    const started = await until(() => out.includes("Controller stack started") || child.exitCode !== null, 30_000);
+    if (!started || !out.includes("Controller stack started")) throw new Error(`the foreground start did not report completion: ${out}\n${err}`);
     track(space);
     const stopped = cli(root, "down", "--yes", "--json");
-    check("the same down stops the stack after foreground startup completes", started && stopped.status === 0 && gone(space, "stack-broker"), shown(stopped));
+    check("the same down stops the stack after foreground startup completes", stopped.status === 0 && gone(space, "stack-broker"), shown(stopped));
   } finally {
     writeFileSync(resume, "");
     if (child.exitCode === null && child.signalCode === null) {
