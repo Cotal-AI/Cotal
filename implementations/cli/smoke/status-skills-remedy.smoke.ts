@@ -140,6 +140,21 @@ try {
     assert.match(skillRow(compact.stdout, "Agent skills"), /1\/1 out of date [·-] cotal setup --skills/);
   }
 
+  const cotalHome = join(first.home, ".cotal");
+  mkdirSync(cotalHome, { recursive: true });
+  const manifest = join(cotalHome, "agent-skills.json");
+  const corrupt = "{ not json";
+  writeFileSync(manifest, corrupt);
+  for (const flags of [[], ["--plain"]]) {
+    const compact = await run(["status", ...flags], first.env, first.cwd);
+    assert.equal(compact.code, 4, `corrupt manifest makes status partial: ${compact.stderr}`);
+    const row = skillRow(compact.stdout, "Agent skills");
+    assert.ok(row.includes(`Corrupt Cotal skills manifest at ${manifest} (invalid JSON)`));
+    assert.doesNotMatch(compact.stdout, /`cotal setup`/, "the report must not suggest full setup");
+    assert.match(row, /Restore a valid manifest, then run `cotal setup --skills`/);
+    assert.equal(readFileSync(manifest, "utf8"), corrupt, "status preserves the unreadable manifest");
+  }
+
   const refused = await run(["setup", "--skills", "--full"], first.env, first.cwd);
   assert.notEqual(refused.code, 0, "setup --skills --full is refused");
   assert.match(refused.stderr, /--skills cannot be combined with --full or --demo/, "refusal names the --skills combination fence");

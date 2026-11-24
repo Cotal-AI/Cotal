@@ -1139,7 +1139,9 @@ their versions, this folder's `.cotal/`, the recorded meshes, the selected mesh 
 delivery responder, its channels and membership feed), then the hints. It lists no roster; `cotal ps`
 lists managed seats. Stale Claude skills and out-of-date `.agents` skills recommend
 `cotal setup --skills`. The compact report shows out-of-date `.agents` skills even when no agent
-application is set up. `status` takes `--space` / `--server` to pick the mesh to inspect. It starts nothing.
+application is set up. If the skills ownership manifest is corrupt, restore a valid manifest at the
+reported path before running `cotal setup --skills`. `status` takes `--space` / `--server` to pick the
+mesh to inspect. It starts nothing.
 
 When `status` would suggest restarting the selected stopped local stack,
 `status` checks the recorded root's default `.cotal/channels.json` with the same validation as `up`.
