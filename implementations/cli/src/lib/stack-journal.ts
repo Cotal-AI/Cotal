@@ -762,6 +762,14 @@ export function stackStartedWithoutManager(journal: StackJournal): boolean {
   return journal.operation.kind === "up" && journal.operation.phase === "completed" && journal.members.some((row) => row.role === "manager" && row.state === "not-attempted");
 }
 
+/** Whether the stack was last started without a manager, as `up --no-manager` records it, whether it
+ *  still runs or a completed `down` stopped it since. That down plans no stop for a manager it has no
+ *  instance of, so the manager stays `not-attempted`. */
+export function stackRecordedWithoutManager(journal: StackJournal): boolean {
+  if (stackStartedWithoutManager(journal)) return true;
+  return journal.operation.kind === "down" && journal.operation.phase === "completed" && journal.members.some((row) => row.role === "manager" && row.state === "not-attempted");
+}
+
 /** Whether the stack's last `up` ended with no recorded outcome and planned no manager, as
  *  `up --no-manager` does. */
 export function interruptedUpLeftManagerOut(journal: StackJournal): boolean {
