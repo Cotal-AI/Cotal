@@ -907,9 +907,11 @@ selected by it. A controller stack that a completed `down` stopped has no regist
 prepared record and stack journal at the same root name its broker address, store and mode, and a
 reset keeps both, so a later `up` starts it again in the same mode. No reset changes a stack's mode;
 [up](cli-startup.mdx#up) names the way to run another one. After `reset space` of a user-auth space, that
-`up` needs `--user-auth --idp <auth base URL>`, as described below. A stack none of whose members ever started has
-no store to reset, so both refuse `TARGET_NOT_FOUND` and name `cotal up`. So does a prepared space
-no stack has run for, which also names `cotal space forget`. A stack whose last
+`up` needs `--user-auth --idp <auth base URL>`, as described below. Both routes refuse `TARGET_NOT_FOUND`
+and name `cotal up` for a stack that never started and has no adopted store. A prepared space
+no stack has run for also names `cotal space forget`. An adopted stack with a recorded store that
+has never started at its new root refuses `LIFECYCLE_BLOCKED`. From that root, run `cotal up --no-manager`
+and then `cotal down --yes` before retrying the preview. A stack whose last
 operation is not a completed `down` refuses `LIFECYCLE_BLOCKED` and names `cotal down --yes`. Each
 refusal names one reason and the command that clears it. A space that may still run names
 `cotal down --dry-run` to review the stop and `cotal down --yes` to confirm it, both from its root,
