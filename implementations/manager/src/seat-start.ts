@@ -106,9 +106,8 @@ export class SeatStart {
   private onceRefusal(...args: Parameters<SeatLaunch["onceRefusal"]>): ReturnType<SeatLaunch["onceRefusal"]> { return this.launch.onceRefusal(...args); }
 
   /** Why this manager cannot hand a seat a first command, or undefined when it can. The agent runs it
-   *  on its `agent` endpoint, which only a user-auth mesh serves, as its first turn. */
+   *  on its `agent` endpoint, which it serves on every mesh mode, as its first turn. */
   private firstCommandRefusal(runtime: Runtime, launch: { prompt?: string; once: boolean }): string | undefined {
-    if (!this.userMode) return "a first command runs on the agent endpoint, which only a user-auth mesh serves (firstCommand)";
     if (runtime.spawnDelegated) return `runtime "${runtime.kind}" starts seats outside this host and carries no first command (firstCommand)`;
     if (launch.prompt !== undefined) return "a spawn's first turn is its prompt or its first command, not both (prompt, firstCommand)";
     if (launch.once) return "a once seat's first turn is its task, so it takes no first command (once, firstCommand)";

@@ -268,7 +268,7 @@ async function startSession(
   const plane = eventPlaneArmed(config, env) ? createClaudeEventPlane(agent, config, env) : undefined;
   events = plane?.events;
   // Claude's tool permissions, answerable on the agent's own `agent` endpoint while Claude's dialog
-  // stays open. The desk exists once the agent serves that endpoint, which only a user-auth mesh does.
+  // stays open. The desk exists once the agent serves that endpoint.
   const prompts = createClaudePrompts({ desk: () => agent.prompts, warn });
   const hooks = launchedSessionHooks(prompts, claude, warn);
 
