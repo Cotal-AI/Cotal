@@ -331,7 +331,7 @@ function checkConfigScope(live: string): void {
     selected.status === 0 && recovery(selected.stdout) && selection.env?.result?.preparedState === "stopped" && selection.env.result.preparedRoot === project &&
       show.status === 0 && recovery(show.stdout) && detail.env?.result?.rootGone === true &&
       who.status === 2 && who.env?.error?.code === "TARGET_UNAVAILABLE" && recovery(`${who.env.error.message} ${who.env.error.remedy}`) &&
-      recovery(status.stdout) && !status.stderr.includes("ENOTDIR"), [selected, selection, show, detail, who, status].map(shown));
+      status.status === 4 && recovery(status.stdout) && !status.stderr.includes("/.cotal/nats.pid"), [selected, selection, show, detail, who, status].map(shown));
   const forgot = json(["space", "forget", space]);
   check("forget removes the stopped registration but leaves the file untouched", forgot.status === 0 && findMesh(space) === undefined &&
     readFileSync(project, "utf8") === "replacement file\n", shown(forgot));
