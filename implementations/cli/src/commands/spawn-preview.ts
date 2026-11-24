@@ -8,7 +8,7 @@ import { extensionNames, materializeExtension, preflightRuntime } from "../ext-l
 import { brokenPersonaLink, callerHarness, checkSpawnExpiryTarget, directPersonaPath, missingConnector, missingPersonaFailure, spawnPersona, spawnUsesManager, type PersonaSite } from "../lib/spawn-defaults.js";
 import { managerPin } from "../lib/manager-choice.js";
 import { unreadablePersona } from "../lib/persona-files.js";
-import { refuseDirectSpawnName, spawnRerun } from "./spawn-flags.js";
+import { refuseDirectSpawnName, spawnRerun, unsupportedVariantRemedy } from "./spawn-flags.js";
 import { checkHarness, invalidEnvironmentValues } from "./config.js";
 import { DEFAULT_AGENT } from "../lib/default-persona.js";
 import { refuseUnmintableName } from "./spawn-managed-launch.js";
@@ -144,6 +144,7 @@ export async function spawnLaunchPreview(args: Pick<ParsedArgs, "positionals"> &
   }
   const requestedName = values.name ?? definition.name;
   refuseDirectSpawnName(requestedName, targetMode === "user", path, values, args.positionals, { ...target, path });
+  const variant = values.variant ?? definition.variant;
   let connectorArgumentsChecked = false;
   if (extensionNames("connector").includes(harness)) {
     let connector: Connector;
@@ -156,7 +157,7 @@ export async function spawnLaunchPreview(args: Pick<ParsedArgs, "positionals"> &
         connector.buildLaunch({
           validateOnly: true, space, name: requestedName, role: values.role ?? definition.role,
           configPath: personaWrite === "none" && !blockedDefault ? path : undefined,
-          model: values.model ?? definition.model, variant: values.variant ?? definition.variant,
+          model: values.model ?? definition.model, variant,
           launchOptions: mergeLaunchOptions(definition.launchOptions, parseLaunchOptions(values.opt)),
           prompt: values.prompt, resume: values.resume, events: values.events || (!values["no-events"] && !!connector.eventChannel),
           mcpServers: connectorServers(config, harness, shareTools), mcpServersExclusive: shareTools !== undefined,
@@ -164,11 +165,14 @@ export async function spawnLaunchPreview(args: Pick<ParsedArgs, "positionals"> &
         });
         connectorArgumentsChecked = true;
       } catch (error) {
-        throw new CommandFailure("refused", "USAGE_INVALID", error instanceof Error ? error.message : String(error), { target: { ...target, path } });
+        const message = error instanceof Error ? error.message : String(error);
+        const remedy = variant && !connector.supportsModelVariant && /(?:does not support model variants \(variant\)|model variants are not supported|model variants \(variant\) are not implemented)$/.test(message)
+          ? unsupportedVariantRemedy(values.variant, definition.variant, path) : undefined;
+        throw new CommandFailure("refused", "USAGE_INVALID", message, { target: { ...target, path }, remedy });
       }
     }
   }
-  const result = { kind: "direct-launch-preview", dryRun: true, space, executionHost: hostname(), persona: { path, source: requested.source, write: personaWrite as "none" | "shipped-default" }, requestedName, harness, cwd, role: values.role ?? definition.role ?? null, model: values.model ?? definition.model ?? null, variant: values.variant ?? definition.variant ?? null, promptProvided: values.prompt !== undefined, enrollment: "not-read-or-redeemed", connectorAvailability: "not-checked", connectorArgumentValidation: connectorArgumentsChecked ? "checked" : "not-checked", authorization: "not-checked", allocated: false, launched: false };
+  const result = { kind: "direct-launch-preview", dryRun: true, space, executionHost: hostname(), persona: { path, source: requested.source, write: personaWrite as "none" | "shipped-default" }, requestedName, harness, cwd, role: values.role ?? definition.role ?? null, model: values.model ?? definition.model ?? null, variant: variant ?? null, promptProvided: values.prompt !== undefined, enrollment: "not-read-or-redeemed", connectorAvailability: "not-checked", connectorArgumentValidation: connectorArgumentsChecked ? "checked" : "not-checked", authorization: "not-checked", allocated: false, launched: false };
   const warnings = blockedDefault ? [{ code: blockedDefault.code, target: blockedDefault.target, message: `${blockedDefault.message}. To launch, ${blockedDefault.remedy}.` }] : [];
   writeResult(presentationOf(values), { command: "spawn", target, result, warnings }, (data): Report => ({ sections: [
     { title: "Direct launch preview", blocks: [{ kind: "fields", rows: [["Space", data.space], ["Execution host", data.executionHost], ["Persona file", data.persona.write === "shipped-default" ? `${data.persona.path} (the launch writes the shipped default persona here; the preview wrote nothing)` : data.persona.path], ["Source", sourceText(data.persona.source)], ["Requested name", data.requestedName], ["Harness", data.harness], ["Working directory", data.cwd], ["Role", data.role ?? "not declared"], ["Model", data.model ?? "application default; not checked"], ["Variant", data.variant ?? "not declared"], ["Connector arguments", connectorArgumentsChecked ? "checked" : "not checked"], ["Enrollment", "not read or redeemed"], ["Binary/login/authority checks", "not performed"]] }, { kind: "lines", lines: ["No broker connection, provisioning, identity allocation or launch occurred. Native foreground execution is not a detachable Cotal view."] }] },

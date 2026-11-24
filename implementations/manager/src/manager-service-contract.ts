@@ -26,7 +26,7 @@
  * Capability labels (describe/grant vocabulary, one per tier class):
  *   manager.vitals read host CPU, memory and filesystem capacity on this exact Manager
  *   manager.read     status / ps / inspect / models / list-personas / show-persona
- *   manager.spawn    spawn / resolve-cwd / resolve-agent   (privileged-grade creation)
+ *   manager.spawn    spawn / resolve-cwd / resolve-agent / list-dir / harness-commands   (privileged-grade creation)
  *   manager.lifecycle despawn / attach / input             (owner-mode terminal/interactive)
  *   manager.self     stop                                  (self-mode halt; baseline)
  *   manager.persona  definePersona / removePersona         (privileged-grade; ownership-checked)
@@ -38,6 +38,8 @@
 import type { BrowserContractSource } from "@cotal-ai/core/browser-validators-build";
 import type { ManagerVitals } from "./vitals.js";
 import {
+  AGENT_COMMAND_ENTRY_SCHEMA,
+  AGENT_COMMAND_LIST_MAX,
   buildClusterArtifacts,
   buildClusterDocument,
   serviceContractTable,
@@ -443,6 +445,28 @@ const RESOLVE_AGENT_INPUT_SCHEMA = {
 const RESOLVE_AGENT_OUTPUT_SCHEMA = {
   type: "object", additionalProperties: false, required: ["agent"],
   properties: { agent: { type: "string" } },
+} as const;
+
+/** `harness-commands`: the commands and skills a harness would offer a seat started in `cwd` on this
+ *  manager's host, read before any seat exists. `supported: false` says why it offers none. */
+const HARNESS_COMMANDS_INPUT_SCHEMA = {
+  type: "object", additionalProperties: false, required: ["agent", "cwd"],
+  properties: { agent: { type: "string", minLength: 1 }, cwd: { type: "string", minLength: 1 } },
+} as const;
+const HARNESS_COMMANDS_OUTPUT_SCHEMA = {
+  oneOf: [
+    {
+      type: "object", additionalProperties: false, required: ["agent", "cwd", "supported", "commands"],
+      properties: {
+        agent: { type: "string" }, cwd: { type: "string" }, supported: { const: true },
+        commands: { type: "array", maxItems: AGENT_COMMAND_LIST_MAX, items: AGENT_COMMAND_ENTRY_SCHEMA },
+      },
+    },
+    {
+      type: "object", additionalProperties: false, required: ["agent", "cwd", "supported", "reason"],
+      properties: { agent: { type: "string" }, cwd: { type: "string" }, supported: { const: false }, reason: { type: "string", minLength: 1 } },
+    },
+  ],
 } as const;
 
 // Attach returns the holder-bound §13.6 session GRANT, never a 127.0.0.1 ws:// URL. The
@@ -1072,6 +1096,7 @@ const ROWS: CommandRow[] = [
   { name: "list-dir", capability: "manager.spawn", input: LIST_DIR_INPUT_SCHEMA, output: LIST_DIR_OUTPUT_SCHEMA, targeted: false, handler: "listDir" },
   { name: "resolve-cwd", capability: "manager.spawn", input: RESOLVE_CWD_INPUT_SCHEMA, output: RESOLVE_CWD_OUTPUT_SCHEMA, targeted: false, handler: "resolveCwd" },
   { name: "resolve-agent", capability: "manager.spawn", input: RESOLVE_AGENT_INPUT_SCHEMA, output: RESOLVE_AGENT_OUTPUT_SCHEMA, targeted: false, handler: "resolveAgent" },
+  { name: "harness-commands", capability: "manager.spawn", input: HARNESS_COMMANDS_INPUT_SCHEMA, output: HARNESS_COMMANDS_OUTPUT_SCHEMA, targeted: false, handler: "harnessCommands" },
   { name: "spawn", capability: "manager.spawn", input: SPAWN_INPUT_SCHEMA, output: SPAWN_OUTPUT_SCHEMA, targeted: false, handler: "spawn" },
   // `owner` = the caller's own domain (the spawn capability's standing mint); `any` = the operator
   // instrument's cross-agent reach (rev 3): the any-mode subject row
@@ -1322,11 +1347,15 @@ export const MANAGER_STATUS_CONTRACT: { input: CompiledContract; output: Compile
  *  53 = the targeted `interrupt` command, which writes the seat's connector-declared interrupt key
  *  into its terminal. A new served command is what a revision is for.
  *
- *  54 = `spawn` takes the opt-in `askPermissions` and `reasoningEvents`, and every `status.connectors`
+ *  54 = `harness-commands` lists what a harness would offer a seat in a directory before launch,
+ *  `spawn` input takes `firstCommand`, and its acceptance names `firstCommand.id`. A new served
+ *  command cannot fold into 53.
+ *
+ *  55 = `spawn` takes the opt-in `askPermissions` and `reasoningEvents`, and every `status.connectors`
  *  row requires both as booleans, the connector's declarations. The spawn input and status output
- *  schemas are closed, so a revision-53 contract rejects either. */
+ *  schemas are closed, so a revision-54 contract rejects either. */
 export function managerClusterDocument(): ClusterDocument {
-  return buildClusterDocument(MANAGER_CLUSTER_URN, 54, ROWS);
+  return buildClusterDocument(MANAGER_CLUSTER_URN, 55, ROWS);
 }
 
 /** Revision, count, and names from the shipped cluster document. Reached smokes derive surface pins from this. */
@@ -1384,6 +1413,7 @@ interface ManagerServiceHandlers {
   inspect(ctx: EpServeContext): unknown | Promise<unknown>;
   slots(ctx: EpServeContext): unknown | Promise<unknown>;
   models(ctx: EpServeContext): unknown | Promise<unknown>;
+  harnessCommands(ctx: EpServeContext): unknown | Promise<unknown>;
   listDir(ctx: EpServeContext): unknown | Promise<unknown>;
   resolveCwd(ctx: EpServeContext): unknown | Promise<unknown>;
   resolveAgent(ctx: EpServeContext): unknown | Promise<unknown>;

@@ -1,5 +1,38 @@
 # cotal-ai
 
+## 0.176.6
+
+### Patch Changes
+
+- 699a957: Tell users to remove `--adopt` or `--release` from `cotal run check` instead of asking for a handle.
+- d91500c: Report a full disk, quota or file-size limit when startup or shutdown cannot write the initial maintenance lock. The command names the file and how to retry instead of reporting an unknown outcome.
+- Updated dependencies [664698a]
+- Updated dependencies [6765f7f]
+- Updated dependencies [699a957]
+- Updated dependencies [63458fc]
+- Updated dependencies [447b4a4]
+- Updated dependencies [4275980]
+- Updated dependencies [f363540]
+- Updated dependencies [16df2b0]
+- Updated dependencies [2df52e0]
+- Updated dependencies [b448684]
+- Updated dependencies [ea08bc8]
+- Updated dependencies [2ee0a1b]
+- Updated dependencies [5aacef7]
+- Updated dependencies [d91500c]
+- Updated dependencies [43931d7]
+- Updated dependencies [8304bd2]
+  - @cotal-ai/cli@0.176.6
+  - @cotal-ai/workspace@0.176.6
+  - @cotal-ai/runtime@0.176.6
+  - @cotal-ai/auth@0.176.6
+  - @cotal-ai/delivery@0.176.6
+  - @cotal-ai/manager@0.176.6
+  - @cotal-ai/connector-core@0.176.6
+  - @cotal-ai/registry@0.176.6
+  - @cotal-ai/core@0.176.6
+  - @cotal-ai/seat@0.176.6
+
 ## 0.176.5
 
 ### Patch Changes

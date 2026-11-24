@@ -1,5 +1,5 @@
 import { connectorServers, registry, spawnEnvAllow } from "@cotal-ai/core";
-import type { Connector, CotalConfig, LaunchOpts } from "@cotal-ai/core";
+import type { CommandInput, Connector, CotalConfig, LaunchOpts } from "@cotal-ai/core";
 import { connectorInstallHint, manifestExtensionNames, materializeFromManifest, resolveOnPath } from "@cotal-ai/workspace";
 import type { Manager } from "./manager.js";
 import type { ManagerParts } from "./manager-parts.js";
@@ -108,7 +108,7 @@ export class HarnessResolution {
    *  a seat's launch is built, so a rule changed here holds on both paths. */
   capabilityRefusal(
     connector: Connector,
-    launch: { variant?: string; prompt?: string; exact: boolean; askPermissions?: boolean; reasoningEvents?: boolean; events: boolean },
+    launch: { variant?: string; prompt?: string; firstCommand?: CommandInput; exact: boolean; askPermissions?: boolean; reasoningEvents?: boolean; events: boolean },
   ): string | undefined {
     if (launch.variant && !connector.supportsModelVariant)
       return `${connector.name} connector does not support model variants (variant)`;
@@ -120,6 +120,8 @@ export class HarnessResolution {
       return `${connector.name} connector does not support reasoning events (reasoningEvents)`;
     if (launch.reasoningEvents && !launch.events)
       return "reasoningEvents needs the event plane, and this launch has none (events: false)";
+    if (launch.firstCommand && !connector.commands?.targets.includes(launch.firstCommand.target))
+      return `${connector.name} seats run no ${launch.firstCommand.target}s, so a spawn cannot name one as their first command (firstCommand)`;
     if (launch.exact && (!connector.supportsSessionReopen || !connector.supportsSessionContinuation))
       return `${connector.name} connector does not support exact session continuity (continuity: exact)`;
     return undefined;

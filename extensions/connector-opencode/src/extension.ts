@@ -2,8 +2,9 @@ import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
 import { registry, type Connector, type LaunchOpts, type LaunchSpec, type ModelCatalog, type ModelCatalogOpts, type ModelInfo } from "@cotal-ai/core";
-import { aclEnv, nameEnv, connectorLaunchOptions, eventChannel, launchArmsEvents, launchEnv, controlEndpoint, materialEnv, MODEL_PROVIDER_KEYS } from "@cotal-ai/connector-core";
+import { aclEnv, nameEnv, connectorLaunchOptions, eventChannel, firstCommandEnv, launchArmsEvents, launchEnv, controlEndpoint, materialEnv, MODEL_PROVIDER_KEYS } from "@cotal-ai/connector-core";
 import { listOpenCode2Models } from "./catalog2.js";
+import { openCodeCommandCatalog } from "./command-catalog.js";
 import { opencodeLine } from "./opencode-line.js";
 import { RECONNECT_COMMAND } from "./reconnect-command.js";
 import { OPENCODE_READINESS_TIMEOUT_MS } from "./startup.js";
@@ -165,6 +166,8 @@ export const opencodeConnector: Connector = {
   // Both plugins wake the session for a run turn and hand a once task over at most once.
   supportsTurnRelay: true,
   listModels: listOpenCodeModels,
+  // OpenCode 2.x seats run both (command-routes.ts); a 1.x install lists `supported: false`.
+  commands: { targets: ["command", "skill"], list: (o) => openCodeCommandCatalog(o, launchEnv({ providerKeys: MODEL_PROVIDER_KEYS, envAllow: o.envAllow })) },
   // DECLARING THIS IS WHAT MAKES `--events` REACHABLE. Both the CLI and the manager refuse an armed
   // launch whose connector does not implement it, before anything is provisioned, rather than mint a
   // grant nothing will ever publish to. A connector that emits and does not say so here is refused
@@ -332,6 +335,7 @@ export const opencodeConnector: Connector = {
     // nor a reference to it. The shim itself keeps the reference, because the server it starts is
     // the reader; it runs no tools of its own.
     Object.assign(env, materialEnv({ creds: opts.creds, servers: opts.servers, control, eventsRequired: opts.eventsRequired, eventPayloads: opts.eventPayloads, reasoningEvents: opts.reasoningEvents, userAuth: opts.userAuth }, artifacts));
+    Object.assign(env, firstCommandEnv(opts.firstCommand, artifacts));
 
     // Run the shim (node dist/serve.js): `opencode serve` + an attached foreground TUI.
     return {

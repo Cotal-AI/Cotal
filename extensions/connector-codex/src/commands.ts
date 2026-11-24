@@ -8,6 +8,7 @@
 import { CommandRefused, type CommandDispatcher } from "@cotal-ai/connector-core";
 import type { CommandEntry } from "@cotal-ai/core";
 import { AppServerRpcError, type AppServerDriver, type CodexSkill } from "./app-server.js";
+import { codexSkillEntries, enabledSkills } from "./skills.js";
 
 type ThreadHost = Pick<AppServerDriver, "listSkills" | "startSkillTurn" | "startTurn" | "interruptTurn" | "contextUsage">;
 
@@ -24,17 +25,11 @@ async function started(start: () => Promise<void>): Promise<void> {
 
 /** `host` is read at each call, because the driver is built after the agent that owns the dispatcher. */
 export function codexCommands(host: () => ThreadHost): CommandDispatcher {
-  /** The enabled skills by name. Codex lists a repo skill before a user or system skill of the same
-   *  name, so the first entry of a name is the one listed and run. */
-  async function skills(): Promise<Map<string, CodexSkill>> {
-    const byName = new Map<string, CodexSkill>();
-    for (const skill of await host().listSkills()) if (skill.enabled && !byName.has(skill.name)) byName.set(skill.name, skill);
-    return byName;
-  }
+  const skills = async (): Promise<Map<string, CodexSkill>> => enabledSkills(await host().listSkills());
   return {
     targets: new Set(["skill"]),
     async list(): Promise<CommandEntry[]> {
-      return [...(await skills()).values()].map((s) => ({ name: s.name, target: "skill", description: s.description }));
+      return codexSkillEntries(await host().listSkills());
     },
     async dispatch({ name, args }) {
       let skill: CodexSkill | undefined;

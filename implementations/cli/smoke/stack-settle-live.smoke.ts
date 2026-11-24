@@ -196,7 +196,7 @@ import { createServer } from "node:net";
 import { appendFileSync, chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, watch, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
-import { assertSmokeSandboxDown, createSuite, freePort, listenOn, recordSmokeSandbox, type SmokeSandboxAnchor } from "@cotal-ai/smoke-kit";
+import { assertSmokeSandboxDown, assertSmokeSandboxTargetDown, createSuite, freePort, listenOn, recordSmokeSandbox, type SmokeSandboxAnchor } from "@cotal-ai/smoke-kit";
 import { CotalEndpoint, deliveryLeaseHolderFor, idFromCreds, LEASE_TTL_MS, leaseKey, mintCreds, mintLifecycleUid, newIdentity, openDeliveryRegistry, type DeliveryLeaseInfo } from "@cotal-ai/core";
 import { connect, credsAuthenticator } from "@nats-io/transport-node";
 import { agentLifecycleSecretFilePaths, canonicalLocalProcessPath, codeSpan, shellPath, deliveryCredsKey, findMesh, getSpaceAuth, isCommandFailure, processStopped, resolveOnPath, workspaceSecretStore, MANAGER_DELIVERY_AWARE_MARKER, MANAGER_PIDFILE, MANAGER_SHUTDOWN_INTENT, readServiceStopRequest, spaceSegment, stopReservationPath, acquireMaintenanceLock, releaseMaintenanceLock } from "@cotal-ai/workspace";
@@ -235,7 +235,8 @@ type Envelope = { outcome: string; target?: Record<string, unknown>; result?: Re
 type Run = { status: number | null; signal: NodeJS.Signals | null; ms: number; stdout: string; stderr: string; env?: Envelope };
 const cliAs = (childEnv: NodeJS.ProcessEnv, cwd: string, ...args: string[]): Run => {
   const options = { cwd, env: childEnv, encoding: "utf8" as const, timeout: 180_000 };
-  assertSmokeSandboxDown(anchors.get(cwd), args, options);
+  if (args[0] === "down" && args[1] === "web") assertSmokeSandboxTargetDown(anchors.get(cwd), args, options);
+  else assertSmokeSandboxDown(anchors.get(cwd), args, options);
   const began = Date.now();
   const run = spawnSync(process.execPath, ["--import", TSX_IMPORT, CLI, ...args], options);
   let parsed: Envelope | undefined;
@@ -724,6 +725,7 @@ try {
 
     const occupant = createServer();
     await listenOn(occupant, movedPort);
+    let foregroundRetry: string | undefined;
     try {
       const status = cli(second, "status", "--space", other, "--json");
       const history = cli(second, "history", "--space", other, "general", "--json");
@@ -733,6 +735,15 @@ try {
       check("status names the stopped stack's occupied address and how to free it", status.status === 0 && selected?.message?.includes(`another process holds that address 127.0.0.1:${movedPort}`) === true && hints?.includes(remedy) === true && !hints.some((hint) => hint.startsWith("start it again with")), shown(status));
       check("history refuses the stopped stack and names the same address and remedy", history.status === 2 && history.env?.error?.code === "TARGET_UNAVAILABLE" && history.env.error.message.includes(`another process holds that address 127.0.0.1:${movedPort}`) && history.env.error.remedy === remedy, shown(history));
       const retry = cli(second, "up", "--no-manager", "--json");
+      check("an occupied broker-only background restart keeps --no-manager in its retry",
+        retry.status === 2 && retry.env?.error?.remedy === remedy.replace(` in ${realpathSync(second)};`, ` from ${realpathSync(second)};`), shown(retry));
+      const journalBefore = readStackJournal(second)?.sha256;
+      const foreground = cli(second, "up", "--foreground", "--no-manager");
+      const output = foreground.stdout + foreground.stderr;
+      foregroundRetry = /then run `([^`]+)` from .*; this stack keeps its recorded address/.exec(output)?.[1];
+      check("an occupied foreground broker-only restart keeps both flags without changing the journal",
+        foreground.status === 2 && foregroundRetry === `${launcher} up --foreground --no-manager`
+        && journalBefore !== undefined && readStackJournal(second)?.sha256 === journalBefore, { status: foreground.status, output });
       const after = cli(second, "status", "--space", other, "--json");
       const afterSelected = after.env?.result?.selected as { message?: string } | undefined;
       const afterHints = after.env?.result?.hints as string[] | undefined;
@@ -747,6 +758,21 @@ try {
     }
     const free = cli(second, "history", "--space", other, "general", "--json");
     check("history goes back to ordinary stopped-stack guidance when the address is clear", free.status === 2 && free.env?.error?.remedy?.startsWith("start it again with `cotal up --no-manager` in ") === true, shown(free));
+    if (launcher !== undefined && foregroundRetry === `${launcher} up --foreground --no-manager`) {
+      const started = cliAsync(second, ...execWords(foregroundRetry.slice(launcher.length + 1)));
+      const ready = await until(() => {
+        const journal = readStackJournal(second)?.journal;
+        return journal?.operation.kind === "up" && journal.operation.phase === "completed";
+      }, 30_000);
+      track(other);
+      check("the printed foreground retry starts only the broker at its recorded address", ready
+        && readStackJournal(second)?.journal.server === `nats://127.0.0.1:${movedPort}`
+        && runningPidOf(other, "stack-broker") !== null && runningPidOf(other, "stack-manager") === null);
+      const stopped = cli(second, "down", "--yes", "--json");
+      const released = await started;
+      check("down stops the retried stack and releases the foreground terminal", stopped.status === 0
+        && released.status === 0 && released.stderr.includes("Foreground stack released"), { stopped: shown(stopped), released: shown(released) });
+    }
     // Once it ran, it keeps that address, so a broker another space started there must stop first.
     const third = "takenport";
     const taker = prepare(third);
@@ -1301,8 +1327,9 @@ try {
         && memberPlan.env?.result?.kind === "service-operation-preview" && memberPlan.env.target?.space === space
         && memberPlan.env.target.name === "stack-broker" && setManager !== null && alive(setManager), shown(alias));
     for (const names of [["web"], ["nosuch"], ["manager", "nosuch"]]) {
-      const missing = cli(otherRoot, "down", ...names, "--space", space, "--dry-run", "--json");
+      const missing = cli(names[0] === "web" ? root : otherRoot, "down", ...names, "--space", space, "--dry-run", "--json");
       check(`missing ${names.join(" ")} preview stays a scoped inventory read`, missing.status === 2
+        && missing.env?.error?.code === "TARGET_NOT_FOUND" && missing.env.target?.space === space
         && missing.env?.error?.remedy === `list this space's saved definitions with \`cotal service --space ${space} --json\``, shown(missing));
     }
     const unknownOne = cli(otherRoot, "down", "nosuch", "--space", space, "--yes", "--json");
