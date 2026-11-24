@@ -11,7 +11,11 @@ import { canPrompt } from "./meshes-wizard.js";
 import { targetWords } from "../lib/confirmation-required.js";
 import { commitEndpointReference, importEndpointReference, listEndpointReferences, readEndpointReference, referenceName, validateEndpointReference, type EndpointReference, type ReferenceSnapshot } from "../lib/endpoint-references.js";
 
-export const endpointFlags = [...invokeFlags,
+export const endpointFlags = [...invokeFlags.map((flag) => flag.name === "space"
+  ? { ...flag, description: "select the space, including for saved references without a broker" }
+  : flag.name === "server" || flag.name === "creds"
+    ? { ...flag, description: `For inventory, requires --live. ${flag.description}` }
+    : flag),
   { name: "since", type: "string", value: "<native-sequence>", description: "watch: native sequence coordinate; declaration adapter remains required" },
   { name: "lease", type: "string", value: "<private-file>", description: "work commit: original native lease tuple reference; no file is opened on an unsupported route" },
   { name: "result", type: "string", value: "<JSON>", description: "work commit: result JSON; its body is not echoed on refusal" },
@@ -43,7 +47,13 @@ export function validateEndpointReferenceArguments(args: ParsedArgs): void {
     return;
   }
   if (args.values.live !== undefined && mode !== "list") throw new CommandFailure("refused", "USAGE_INVALID", "--live belongs to the endpoint inventory");
-  if ([...(mode === "list" && args.values.live ? [] : ["server", "creds"]), "on", "args", "name", "self", "admin", "timeout", "refresh", "wait", "cast", "all", "handle"].some((flag) => args.values[flag] !== undefined)) throw new CommandFailure("refused", "USAGE_INVALID", "local endpoint reference operations accept no broker, caller or invocation flags");
+  const brokerFlags = ["server", "creds"].filter((flag) => args.values[flag] !== undefined);
+  if (["on", "args", "name", "self", "admin", "timeout", "refresh", "wait", "cast", "all", "handle"].some((flag) => args.values[flag] !== undefined) || (mode !== "list" && brokerFlags.length))
+    throw new CommandFailure("refused", "USAGE_INVALID", "local endpoint reference operations accept no broker, caller or invocation flags");
+  if (mode === "list" && !args.values.live && brokerFlags.length) {
+    const flags = brokerFlags.map((flag) => `--${flag}`).join(" and ");
+    throw new CommandFailure("refused", "USAGE_INVALID", `endpoint inventory accepts ${flags} only with --live`, { remedy: `add --live to read native registrations, or omit ${flags} to list saved references` });
+  }
   if (!["list", "show", "add", "remove"].includes(mode) || extra.length || (mode === "list" ? name !== undefined : mode !== "add" && name === undefined)) throw new CommandFailure("refused", "USAGE_INVALID", "use endpoint, endpoint show <name>, endpoint add [name] [--file <reference.json>], or endpoint remove <name>");
   if (name !== undefined) referenceName(name);
   if (args.values.file !== undefined && mode !== "add") throw new CommandFailure("refused", "USAGE_INVALID", "--file belongs to endpoint add");
