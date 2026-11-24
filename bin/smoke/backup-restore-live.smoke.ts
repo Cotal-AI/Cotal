@@ -1000,6 +1000,7 @@ async function restoredStoreRestartScenario(): Promise<void> {
       const alias = join(root, "alias");
       symlinkSync(relative(root, parent), alias);
       await assertRestoreStorePreflight(run, { root, artifact, store, blocked, server, aliasedStore: join(alias, basename(store)) });
+      await assertRestoreStoreRechecks(env, { root, artifact, store, blocked, server });
       const journal = join(root, ".cotal", "maintenance", "v1", "journal.json");
       const ready = readFileSync(journal, "utf8");
       chmodSync(parent, 0o500);
@@ -1102,6 +1103,67 @@ async function assertRestoreStorePreflight(run: ReturnType<typeof sandboxRun>["r
   assert.equal(JSON.parse(accessibleLink.stdout).target.linkTarget, dirname(store));
   assert.deepEqual(snapshot(), before);
   assert.equal(existsSync(store), false, "the blocked restore did not create a store");
+}
+
+async function assertRestoreStoreRechecks(env: NodeJS.ProcessEnv, paths: {
+  root: string; artifact: string; store: string; blocked: string; server: string;
+}): Promise<void> {
+  const { root, artifact, store, blocked, server } = paths;
+  const maintenance = join(root, ".cotal", "maintenance");
+  const snapshot = () => [
+    readFileSync(join(maintenance, "v1", "journal.json")),
+    readFileSync(join(maintenance, "v1", "resume.json")),
+    readdirSync(maintenance, { recursive: true }).sort(),
+  ];
+  const before = snapshot();
+  const hook = join(root, "change-store-search.cjs");
+  // Change the mode immediately before the actual syscall so this does not depend on race timing.
+  writeFileSync(hook, `
+    const fs = require("node:fs");
+    const { statSync, lstatSync } = fs, realpath = fs.realpathSync.native;
+    const store = ${JSON.stringify(store)}, parent = ${JSON.stringify(dirname(store))};
+    const step = process.env.RESTORE_STORE_CHECK;
+    let checkedTarget = false;
+    const deny = () => {
+      fs.chmodSync(${JSON.stringify(blocked)}, 0o600);
+      console.error("changed search access at " + step);
+    };
+    fs.statSync = (path, options) => {
+      if (step === "parent-stat" && path === parent && options?.throwIfNoEntry === false) deny();
+      if (step === "launch-stat" && path === ${JSON.stringify(join(store, "jetstream"))}) deny();
+      return statSync(path, options);
+    };
+    fs.lstatSync = (path, options) => {
+      if (path === store && options?.throwIfNoEntry === false) {
+        if (step === "target-lstat") deny();
+        checkedTarget = true;
+      }
+      return lstatSync(path, options);
+    };
+    fs.realpathSync.native = (path, options) => {
+      if (step === "parent-realpath" && checkedTarget && path === parent) deny();
+      return realpath(path, options);
+    };
+    require("node:module").syncBuiltinESMExports();
+  `);
+  try {
+    for (const step of ["parent-stat", "target-lstat", "parent-realpath", "launch-stat"]) {
+      const args = step === "launch-stat" ? ["up", "--restore", artifact, "--detach"] : ["backup", "restore", artifact, "--plain"];
+      const refused = spawnSync(process.execPath, ["--require", hook, "--import", import.meta.resolve("tsx"), cliPath, ...args, "--store-dir", store], {
+        cwd: root, env: { ...env, RESTORE_STORE_CHECK: step }, encoding: "utf8", timeout: 30_000,
+      });
+      chmodSync(blocked, 0o700);
+      const output = `${refused.stdout}\n${refused.stderr}`;
+      assert.ok(output.includes(`changed search access at ${step}`), output);
+      assert.equal(refused.status, 2, output);
+      assert.match(output, /PERMISSION_DENIED/);
+      assert.match(output, /no restore was started/);
+      assert.ok(output.includes(`cannot search ${blocked}`), output);
+      assert.deepEqual(snapshot(), before, "the recheck leaves the preserved cut untouched");
+      assert.equal(existsSync(store), false, "the recheck did not create a store");
+      assert.equal((await probeConnect(server, { timeoutMs: 500 })).ok, false);
+    }
+  } finally { chmodSync(blocked, 0o700); rmSync(hook); }
 }
 
 async function preservationCommitCrashScenario(): Promise<void> {

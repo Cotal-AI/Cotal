@@ -579,7 +579,7 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
     const validateLaunch = async (launch: ReturnType<typeof restoreLaunch>["launch"], controller: boolean) => {
       if (controller) return;
       const next = nextArgs(launch);
-      validateUpArguments(next);
+      validateUpArguments(next, true);
       const wantUser = launch.mode === "user";
       publicExchangeArgs(values, wantUser);
       serviceEndpointsArgs(values, wantUser);

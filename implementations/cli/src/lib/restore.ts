@@ -77,7 +77,7 @@ import { noticeOnInterrupt } from "./interrupt-notice.js";
 import { displayCmd } from "./self-exec.js";
 import { assertEndpointUnreachable } from "./endpoint-cut.js";
 import { acquireStackOperationLock } from "./stack-journal.js";
-import { foreignEntriesRefusal, missingRestoreStoreParent, oldStoreForeignEntries } from "./store-dir.js";
+import { checkStorePath, foreignEntriesRefusal, missingRestoreStoreParent, oldStoreForeignEntries } from "./store-dir.js";
 import { admitAndRestoreSeatCheckpoints } from "./seat-resume.js";
 import { assertControllerRestorable, reconfigureControllerBroker, rollbackRestoreWithBroker } from "./controller-restore.js";
 import { assertControllerCoupling, newControllerAttemptLaunch } from "./controller-resume.js";
@@ -359,8 +359,8 @@ function assertNewStorePath(target: string, source: string): void {
     throw new CommandFailure("refused", "USAGE_INVALID", `the --store-dir path ${target} already exists, and a restore creates its store directory itself; nothing was restored`, { target: { storeDir: target }, remedy });
 }
 
-function assertRestoreTargetPath(source: string, artifact: string, attempts: string, target: string): void {
-  const canonicalTarget = canonicalFuturePath(target);
+function assertRestoreTargetPath(source: string, artifact: string, attempts: string, target: string, explicit: boolean): void {
+  const canonicalTarget = explicit ? checkStorePath(target, "restore", () => canonicalFuturePath(target)) : canonicalFuturePath(target);
   if (canonicalTarget !== source && (contains(source, canonicalTarget) || contains(canonicalTarget, source)))
     throw new Error("restore target must not overlap the preserved source store");
   if (contains(attempts, canonicalTarget) || contains(canonicalTarget, attempts))
@@ -735,8 +735,9 @@ export async function prepareRestore(root: string, flags: RestoreFlags, validate
     targetPath = launch.targetPath;
     if (rebuild && targetPath !== journal.source.path)
       throw new CommandFailure("refused", "USAGE_INVALID", `a restore over a missing preserved store rebuilds it at its recorded path ${journal.source.path}, and --store-dir names another; the restore did not start`, { target: { root, space: journal.space, recordedStore: journal.source.path }, remedy: "omit --store-dir, or pass the recorded path" });
-    if (flags["store-dir"] !== undefined) assertNewStorePath(targetPath, journal.source.path);
-    assertRestoreTargetPath(journal.source.path, artifactPath, join(root, ".cotal", "maintenance", "attempts"), targetPath);
+    const explicitStore = flags["store-dir"] !== undefined;
+    if (explicitStore) checkStorePath(targetPath, "restore", () => assertNewStorePath(launch.targetPath, journal.source.path));
+    assertRestoreTargetPath(journal.source.path, artifactPath, join(root, ".cotal", "maintenance", "attempts"), targetPath, explicitStore);
     // A restore into the preserved store's own path moves that store aside whole, so a file in it that
     // no Cotal store writes would move with it; it is refused before anything moves. A store restored
     // elsewhere stays where it is, and its cleanup refuses instead.

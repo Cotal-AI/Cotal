@@ -157,7 +157,12 @@ function statIfPresent(path: string, stat: (path: string) => Stats = statSync): 
  *  the broker config records the path as given, and a reset removes only a real directory. */
 export function assertStoreDirArgument(value: string, root: string, purpose: "start" | "restore" = "start"): void {
   const path = resolve(value);
-  try { checkStoreDirPath(path, root, purpose); }
+  checkStorePath(path, purpose, () => checkStoreDirPath(path, root, purpose));
+}
+
+/** Classify filesystem errors from a destination check that runs before startup or restore. */
+export function checkStorePath<T>(path: string, purpose: "start" | "restore", check: () => T): T {
+  try { return check(); }
   catch (error) {
     if (!(error instanceof Error)) throw error;
     const { code, errno, syscall } = error as NodeJS.ErrnoException;
@@ -317,8 +322,11 @@ export function storeWriteProblem(storeDir: string): { path: string; message: st
 }
 
 /** Check the store a restart opens, with an explicit path taking precedence over its records. */
-export function startupStoreProblem(root: string, storeDir?: string): ReturnType<typeof storeWriteProblem> {
-  if (storeDir !== undefined) return storeWriteProblem(resolve(storeDir));
+export function startupStoreProblem(root: string, storeDir?: string, beforeRestore = false): ReturnType<typeof storeWriteProblem> {
+  if (storeDir !== undefined) {
+    const path = resolve(storeDir);
+    return beforeRestore ? checkStorePath(path, "restore", () => storeWriteProblem(path)) : storeWriteProblem(path);
+  }
   const defaultStore = join(root, ".cotal", "nats");
   let recorded: string | undefined;
   try { recorded = readStackJournal(root)?.journal.broker?.storeDir; } catch { recorded = undefined; }
