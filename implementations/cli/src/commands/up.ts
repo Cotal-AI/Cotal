@@ -114,7 +114,6 @@ import {
   controllerStackApplies,
   requestedStackMode, refuseForegroundStackHolder,
   stackUp,
-  stackUpForegroundNotice,
   stackUpInterrupted,
 } from "./stack-up.js";
 import { exitInterrupted, handOverStartupNotice, noticeOnInterrupt, releaseStartupNotice } from "../lib/interrupt-notice.js";
@@ -122,8 +121,7 @@ import { claimForegroundHold, foregroundHolder, foregroundStackEnd, releaseForeg
 import { settleInterruptedLaunches } from "../lib/service-process.js";
 import { assertUserStackTransport, preflightUserStack } from "./stack-user-auth.js";
 import { stopForegroundStack } from "./stack-down.js";
-import { acquireStackOperationLock, admittedStackRestore, readStackJournal, STACK_DEFINITION, STACK_ROLES, type StackJournal } from "../lib/stack-journal.js";
-import { observeServiceProcess, serviceInstances } from "../lib/service-instances.js";
+import { acquireStackOperationLock, admittedStackRestore, readStackJournal, type StackJournal } from "../lib/stack-journal.js";
 import { warnForeignStoreEntries } from "../lib/store-dir.js";
 import { extensionNames, preflightRuntime } from "../ext-loader.js";
 import { completingFlagValue } from "../lib/completion.js";
@@ -1113,12 +1111,9 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
     recordOperationSpace(stackSpace);
     const stackMode = requestedStackMode(values);
     const presentation = presentationOf(values);
-    // A foreground up holds a stack only one terminal holds. Over a stack that already runs without
-    // one, it takes that stack's lifetime over and says so before it blocks.
     const holder = values.foreground ? foregroundHolder(meshRoot) : undefined;
     if (holder !== undefined)
       refuseForegroundStackHolder(meshRoot, stackSpace, holder);
-    const takeover = values.foreground === true && STACK_ROLES.some((role) => serviceInstances(stackSpace, STACK_DEFINITION[role]).some((row) => observeServiceProcess(row.record.value) === "running"));
     // A signal ends a detached start where it is, after it records a launch it had not yet pinned to
     // its child, and the notice names what it left running. It is installed before the lock, so no
     // moment of the start exits without it.
@@ -1134,7 +1129,6 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
       const prepare = async () => {
         try {
           const stackServer = values.server ?? readStackJournal(meshRoot)?.journal.server ?? localMeshesForRoot(meshRoot).find((m) => m.space === stackSpace)?.server ?? await unrecordedStackServer(meshRoot, stackSpace, values.host);
-          if (values.foreground && presentation !== "json") stackUpForegroundNotice(presentation, stackSpace, takeover);
           return await stackUp({ maintenanceLock: stackLock, root: meshRoot, space: stackSpace, server: stackServer, transport, runtime: values.runtime ?? "pty", noManager, managerSeatCap, ...(stackMode ? { mode: stackMode } : {}), ...(values.idp ? { idp: values.idp } : {}), ...(values.host ? { host: values.host } : {}), ...(values["store-dir"] ? { storeDir: values["store-dir"] } : {}), ...(values["rotate-sys"] ? { rotateSys: true } : {}), ...(values["recreate-membership-store"] ? { recreateMembershipStore: true } : {}), ...(values["recreate-issued-stores"] !== undefined ? { recreateIssuedStores: resolve(values["recreate-issued-stores"]) } : {}), ...(maxFileStore !== undefined ? { maxFileStore } : {}), ...(logFile !== undefined ? { logFile } : {}), ...(logfileSizeLimit !== undefined ? { logfileSizeLimit } : {}), ...(logfileMaxNum !== undefined ? { logfileMaxNum } : {}), ...(authTimeout !== undefined ? { authTimeout } : {}), ...(maxPayload !== undefined ? { maxPayload } : {}), ...(accountResolver !== undefined ? { accountResolver } : {}), ...(maxSessions !== undefined ? { maxSessions } : {}), ...(values.channels ? { channels: values.channels } : {}), ...(values.__invokedRoot ? { invokedRoot: values.__invokedRoot } : {}), foreground: values.foreground === true, presentation,
             managerName, retryAtAnotherAddress: (host) => retryStackAddress(args.raw, invokedFrom, stackServer, host),
           }, native);

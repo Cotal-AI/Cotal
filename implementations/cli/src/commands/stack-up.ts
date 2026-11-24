@@ -572,7 +572,10 @@ export async function stackUp(request: StackUpRequest, native: StackUpNative): P
     ] }] : [];
     return { ...view, sections: [...view.sections, ...rotated, ...(admittedRestore ? [{ title: "Retained restore journal", blocks: [{ kind: "lines" as const, lines: [`Active restore ${admittedRestore} stays in this root's maintenance journal. It was read and not changed.`] }] }] : []), ...saved, ...kept, ...next] };
   });
-  return { journal, writeReceipt };
+  return { journal, writeReceipt: () => {
+    if (request.foreground && request.presentation !== "json") stackUpForegroundNotice(request.presentation, space, allReused);
+    writeReceipt();
+  } };
 }
 
 /** The refusal of an up whose running broker disabled JetStream after a store write failure: no
