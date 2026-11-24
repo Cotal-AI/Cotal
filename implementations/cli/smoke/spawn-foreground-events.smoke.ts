@@ -200,7 +200,9 @@ const openRun = (extra: string[]): Promise<{ opts?: LaunchOpts; exited?: number;
 
 async function checkPersonaRefusals() {
   const binary = fileURLToPath(new URL("../../../bin/dist/cotal.js", import.meta.url));
-  const env = { ...process.env, NO_COLOR: "1", COTAL_SKIP_CONNECTOR_SEED: "1" };
+  const env: NodeJS.ProcessEnv = { ...process.env, NO_COLOR: "1" };
+  for (const key of Object.keys(env)) if (key.startsWith("COTAL_")) delete env[key];
+  Object.assign(env, { COTAL_HOME: home, COTAL_NO_PROMPT: "1", COTAL_SKIP_CONNECTOR_SEED: "1" });
   const invoke = (args: string[]) => spawnSync(process.execPath, [binary, "spawn", ...args], {
     cwd: caller, env, encoding: "utf8", timeout: 30_000,
   });
