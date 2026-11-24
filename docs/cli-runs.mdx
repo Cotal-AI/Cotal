@@ -232,7 +232,9 @@ migration is not reachable yet, and the report says so. A run ID with no record 
 `TARGET_NOT_FOUND`, exit 2, as `run show` refuses it. Its next step is `run list --local` on the same
 space, broker, credential and endpoint. The list reads the records without a manager.
 `check` refuses `--adopt`, `--release` and `--discard-approvals` as `USAGE_INVALID` (exit 1)
-before mesh preparation or connection, since they decide what a commit does and the check files nothing. `--timeout` sets the default
+before mesh preparation or connection, since they decide what a commit does and the check files nothing.
+If you pass `--adopt` or `--release` without a handle, the refusal tells you to remove the flag.
+`--timeout` sets the default
 limit of a checkpoint, `ask` or turn that sets none of its own (default 1h). A checkpoint that
 expires under `onExpiry: "fail"` says in its L4007 whether the deadline came from its own `timeout`
 or from this default. It takes a duration
