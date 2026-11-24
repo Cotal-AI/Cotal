@@ -11,6 +11,9 @@
  *  - Zed: a custom agent per space, written into a settings file with comments and trailing commas
  *    that keeps them; a hand-added agent without a `type` is adopted and keeps the keys Zed wrote; a
  *    settings file reached through a symbolic link stays linked.
+ *  - The command survives an upgrade: under the get.cotal.ai launcher it names the launcher's Node
+ *    link rather than the version folder Node runs from, and it names the install's own entry rather
+ *    than the generation this process loaded; status counts a link to this Node as this Node.
  *  - Thread links read back per space in the order they were stored, and a broken line is refused.
  *  - The launcher finds `cotal` on PATH or in `~/.local/bin`, runs `cotal acp <args>` and passes its
  *    exit status on; with no Cotal, or a Cotal without its ACP extension, it serves a stub agent that
@@ -39,6 +42,7 @@ const { t3Provider, t3SettingsPath, t3InstanceId } = await import("../src/setup/
 const { zedProvider, zedSettingsPath } = await import("../src/setup/zed.js");
 const { threadStore } = await import("../src/cli.js");
 const { findCotal, serveStub } = await import("../src/launcher.js");
+const { acpCommand, staleCommand } = await import("../src/setup/command.js");
 
 // A Node and an entry that exist, as the CLI's own argv names them.
 const node = process.execPath;
@@ -266,6 +270,40 @@ if (process.platform !== "win32") {
   const e = await conn.agent.request(methods.agent.session.new, { cwd: home, mcpServers: [] }).then(() => undefined, (err: { code?: number }) => err);
   check("its session/new fails with -32000", e?.code === -32000, e);
   conn.close();
+}
+
+// ── Paths that survive an upgrade ────────────────────────────────────────────────────────────────
+{
+  const root = join(home, "launcher-root");
+  mkdirSync(join(root, "nodebin"), { recursive: true });
+  const link = join(root, "nodebin", "node");
+  symlinkSync(node, link);
+  process.env.COTAL_LAUNCHER = "1";
+  process.env.npm_config_prefix = root;
+  check("under the get.cotal.ai launcher the command is its Node link, not the folder Node runs from", acpCommand(cotal, "demo").command === link, acpCommand(cotal, "demo"));
+  check("status counts the launcher's Node link as this Cotal's Node", staleCommand(link, [entry, "acp", "--space", "demo"], node) === undefined, staleCommand(link, [entry, "acp", "--space", "demo"], node));
+  rmSync(link);
+  symlinkSync("/bin/sh", link);
+  check("a launcher link to another Node is not used", acpCommand(cotal, "demo").command === node, acpCommand(cotal, "demo"));
+  delete process.env.COTAL_LAUNCHER;
+  delete process.env.npm_config_prefix;
+  check("without the launcher the command is this Cotal's Node", acpCommand(cotal, "demo").command === node);
+
+  // An install whose entry is loaded from a generation, as `cotal update` leaves it.
+  const lib = join(home, "lib");
+  const pkg = JSON.stringify({ name: "cotal-ai", bin: { cotal: "./dist/cotal.js" } });
+  const logical = join(lib, "node_modules", "cotal-ai", "dist", "cotal.js");
+  const loaded = join(lib, ".cotal-generations", "0123456789abcdef0123456789abcdef", "cotal-ai", "dist", "cotal.js");
+  for (const file of [logical, loaded]) {
+    mkdirSync(join(file, ".."), { recursive: true });
+    writeFileSync(file, "");
+    writeFileSync(join(file, "..", "..", "package.json"), pkg);
+  }
+  const identity = Symbol.for("cotal.execution.identity");
+  Reflect.set(globalThis, identity, Object.freeze({ logicalEntry: logical, loadedEntry: loaded }));
+  check("the command runs the install's own entry, not the generation this process loaded", acpCommand([node, loaded], "demo").args[0] === logical, acpCommand([node, loaded], "demo"));
+  check("an entry that is not the loaded generation is kept", acpCommand(cotal, "demo").args[0] === entry, acpCommand(cotal, "demo"));
+  Reflect.deleteProperty(globalThis, identity);
 }
 
 rmSync(home, { recursive: true, force: true });
