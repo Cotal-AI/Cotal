@@ -107,7 +107,7 @@ export interface StackUpNative {
   initializeStreams(server: string, space: string, setup: { mintProvisioner(): Promise<string> } | undefined, seedFile: ChannelRegistryFile | undefined, recreateIssuedStores?: string, recreateMembershipStore?: boolean): Promise<void>;
   /** On a broker the stack reuses, create the space's streams again when every one of them is gone,
    *  as after `cotal space delete`, and say whether it did. */
-  recreateDeletedStreams(opts: { root: string; space: string; server: string; mode: StackMode; seed?: ChannelRegistryFile }): Promise<boolean>;
+  recreateDeletedStreams(opts: { root: string; space: string; server: string; mode: StackMode; readSeed: () => ChannelRegistryFile | undefined }): Promise<boolean>;
   recordMesh(entry: { space: string; server: string; root: string; mode: StackMode; tlsRequired: boolean; storeDir: string; userAuth?: UserAuthInfo; maxSessions?: number; attachHost?: string; maxFileStore?: number }): void;
   /** Record the transport, and the auth callout timeout, payload limit and account resolver the
    *  prepared configuration rendered. */
@@ -846,7 +846,6 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
   const mode: StackMode = previous?.journal.mode ?? request.mode ?? unstarted?.mode ?? (savedConfig === join(root, ".cotal", "server-open.conf") ? "open" : "auth");
   if (mode === "open" && holdsBrokerAccount(root))
     throw new CommandFailure("refused", "CONFLICT", "this root holds a broker account; an open stack does not bypass its recorded authorization", { target: { root, space } });
-  const seed = request.manifest?.seed ?? loadChannelsFile(root, request.channels, mode === "open");
   if (mode === "user") assertUserStackTransport(previous?.journal.server ?? request.server, request.transport.kind === "tls-required");
   else if (request.idp !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", "--idp belongs to a user-auth stack; nothing was prepared", { target: { root, space } });
   const brokerIsRunning = () => serviceInstances(space, STACK_DEFINITION.broker).some((row) => observeServiceProcess(row.record.value) === "running");
@@ -957,6 +956,10 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
     const brokerRows = serviceInstances(space, STACK_DEFINITION.broker);
     if (request.idp !== undefined || !(brokerRows.length === 1 && observeServiceProcess(brokerRows[0]!.record.value) === "running")) await preflightUserStack(root, space, request.idp);
   }
+  const brokerRows = serviceInstances(space, STACK_DEFINITION.broker);
+  const brokerRunning = brokerRows.length === 1 && observeServiceProcess(brokerRows[0]!.record.value) === "running";
+  const readSeed = () => request.manifest?.seed ?? loadChannelsFile(root, request.channels, mode === "open");
+  const seed = brokerRunning ? undefined : readSeed();
   // A record under the root whose process is gone, or whose pid now runs another start than its pin
   // records, fronts nothing, as after a reboot. It is removed before any member starts, as a complete
   // `down` removes it, because a process this up starts can take its pid and make it read as live.
@@ -1027,8 +1030,6 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
   try {
     // Broker. Trust and configuration are prepared only when this broker is not already serving
     // under its own recorded instance, never as an adapter planning step.
-    const brokerRows = serviceInstances(space, STACK_DEFINITION.broker);
-    const brokerRunning = brokerRows.length === 1 && observeServiceProcess(brokerRows[0]!.record.value) === "running";
     brokerReused = brokerRunning;
     if (!brokerRunning && await isReachable(server, { timeoutMs: 1500 })) {
       // Name the space this machine registered at the address. A first start can take another
@@ -1131,7 +1132,7 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
       // route. When every one is gone they are created again here, as a broker start would, and a
       // partial loss is left alone.
       failedRole = "broker";
-      streamsRecreated = await native.recreateDeletedStreams({ root, space, server, mode, seed });
+      streamsRecreated = await native.recreateDeletedStreams({ root, space, server, mode, readSeed });
       failedRole = undefined;
     }
     // Auth service, user stacks only. Its native preparation came from this broker preparation, so

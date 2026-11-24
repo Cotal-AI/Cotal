@@ -2,7 +2,8 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { readFileSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { assertValidChannel, isConcreteChannel, utf16Problem, validateChannelConfig, validateChannelDefaults, type ChannelConfig, type ChannelDefaults, type ChannelRegistryFile } from "@cotal-ai/core";
-import { CommandFailure, isCommandFailure } from "@cotal-ai/workspace";
+import { CommandFailure, isCommandFailure, retainedLegacyBroker } from "@cotal-ai/workspace";
+import { readStackJournal } from "./stack-journal.js";
 
 /** The channels files one `up` has read, by path. It reads its seed when it checks the flags, when it
  *  prepares the broker and when it seeds the registry, and `--channels` may name a pipe or a FIFO,
@@ -41,7 +42,15 @@ export function loadChannelsFile(root: string, explicit: string | undefined, ope
 
 /** The failure that prevents a bare `up` from using this root's default channel seed. */
 export function channelSeedRestartBlock(root: string): CommandFailure | undefined {
-  try { readDefaultChannelsFile(root); }
+  let open = false;
+  try {
+    const mode = readStackJournal(root)?.journal.mode;
+    open = mode === undefined ? retainedLegacyBroker(root)?.open === true : mode === "open";
+  } catch (error) {
+    // The journal's own checks diagnose a bad record. It does not establish open mode.
+    if (!isCommandFailure(error)) throw error;
+  }
+  try { loadChannelsFile(root, undefined, open); }
   catch (error) {
     if (isCommandFailure(error)) return error;
     throw error;

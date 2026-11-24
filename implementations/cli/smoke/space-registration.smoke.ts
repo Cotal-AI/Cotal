@@ -1615,6 +1615,15 @@ if (process.platform === "linux") {
     bare.status === 0 && bare.env?.outcome === "no-op" && bare.env.result.space === "demo" && bare.env.result.server === server && findMesh("demo")?.root === fresh, shown(bare));
   check("...and its JSON says the selection still names the space and this up did not change it",
     bare.env?.result.selection?.current === "demo" && bare.env.result.selection.changed === false, bare.env?.result.selection);
+  const durableOps = '{"channels":{"ops":{"deliveryClass":"durable","replay":false}}}';
+  writeFileSync(defaultSeed, durableOps);
+  const seedRefresh = await json(["up", "--no-manager"], fresh);
+  const refreshedOps = await run(["channel", "show", "ops", "--plain"], {}, fresh);
+  check("a healthy open controller refresh keeps the registry live despite a durable default file",
+    seedRefresh.status === 0 && seedRefresh.env?.outcome === "no-op" && refreshedOps.status === 0 &&
+      /Delivery:\s+live/.test(refreshedOps.stdout) && !/Metadata:\s+configured/.test(refreshedOps.stdout),
+    { up: shown(seedRefresh), channel: shown(refreshedOps) });
+  unlinkSync(defaultSeed);
   // The receipt's Next runs as printed: down stops only the stack of the folder it runs in.
   check("up in its root offers unqualified up and down using the same launcher in its Next",
     ["cotal", "pnpm cotal"].some((launcher) =>
@@ -1682,8 +1691,12 @@ if (process.platform === "linux") {
   check("history at a different address still refers to that address, not the stopped stack",
     refused(stoppedHistoryOverride, 2, "TARGET_UNAVAILABLE") && stoppedHistoryOverride.env?.error.message === `can't reach a broker at ${DEAD}` &&
     stoppedHistoryOverride.env.error.remedy === "check that address and that a broker runs there", shown(stoppedHistoryOverride));
-  const seedRemedy = `fix or remove ${defaultSeed}`;
-  for (const [seed, problem] of [["{\n", "is not valid JSON"], ['{"defaults":{"replay":"yes"}}', 'is invalid: "defaults" replay']] as const) {
+  const fixSeed = `fix or remove ${defaultSeed}`;
+  for (const [seed, problem, exit, seedRemedy] of [
+    ["{\n", "is not valid JSON", 1, fixSeed],
+    ['{"defaults":{"replay":"yes"}}', 'is invalid: "defaults" replay', 1, fixSeed],
+    [durableOps, 'requests durable delivery for channel "ops"', 2, 'set deliveryClass to "live" in those entries, or use an authenticated space for durable delivery'],
+  ] as const) {
     writeFileSync(defaultSeed, seed);
     const badUp = await json(["up", "--no-manager"], fresh);
     const status = await json(["status", "--space", "demo"], fresh);
@@ -1691,7 +1704,7 @@ if (process.platform === "linux") {
     const ps = await json(["ps", "--space", "demo"], elsewhere);
     const diagnosis = `the channels file ${defaultSeed} ${problem}`;
     check(`up, status and ps agree on the stopped stack's seed ${problem}`,
-      badUp.status === 1 && badUp.env?.error?.message?.includes(diagnosis) && badUp.env.error.remedy === seedRemedy &&
+      badUp.status === exit && badUp.env?.error?.message?.includes(diagnosis) && badUp.env.error.remedy === seedRemedy &&
         status.status === 0 && status.env?.result?.selected?.code === "not-started" && status.env.result.selected.message.includes("is stopped") && status.env.result.selected.channelSeedBlocksRestart === true &&
         status.env.result.hints.some((hint: string) => hint.includes(diagnosis) && hint.includes(seedRemedy)) &&
         statusText.stdout.includes(seedRemedy) && !statusText.stdout.includes(`start it again with \`${launcher} up`) && !/^ +(?:pnpm )?cotal up(?:\s|$)/m.test(statusText.stdout) &&
