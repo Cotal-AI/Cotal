@@ -740,6 +740,42 @@ try {
       copied.status === 0 && existsSync(imported) && readFileSync(imported).equals(importBytes), copied.stdout + copied.stderr);
   }
 
+  {
+    // The file's own name already occupies the catalog, so the own-name retry the
+    // mismatch refusal would print is a command the catalog refuses. The refusal must
+    // omit it and point at a separate copy instead, leaving the original intact.
+    const occupied = "---\nname: occupied_retry\nagent: claude\n---\nFixture.\n";
+    const occupiedPath = agentFilePath(ALPHA, "occupied_retry");
+    writeFileSync(occupiedPath, occupied);
+    const clash = native(["persona", "create", "fresh_retry", "--file", occupiedPath, "--space", "alpha", "--plain"], scratch);
+    check("a mismatched import with an occupied own name omits the conflicting create retry",
+      clash.status === 1 && clash.stderr.includes("SCHEMA_INVALID") &&
+      !clash.stderr.includes("cotal persona create occupied_retry") &&
+      clash.stderr.includes("change its name to 'fresh_retry' in a separate copy of the input file and retry with that copy") &&
+      readFileSync(occupiedPath, "utf8") === occupied, clash.stderr);
+    const copy = join(scratch, "fresh_retry.md");
+    writeFileSync(copy, occupied.replace("name: occupied_retry", "name: fresh_retry"));
+    const copied = native(["persona", "create", "fresh_retry", "--file", copy, "--space", "alpha", "--plain"], scratch);
+    check("the advised separate copy imports under the requested name and leaves the original intact",
+      copied.status === 0 && readFileSync(agentFilePath(ALPHA, "fresh_retry"), "utf8") === readFileSync(copy, "utf8") &&
+      readFileSync(occupiedPath, "utf8") === occupied, copied.stdout + copied.stderr);
+    // A twin that differs only in case refuses the suggested create too, so it is omitted as well.
+    const twinPath = join(ALPHA, ".cotal", "agents", "CaseTwin.md");
+    writeFileSync(twinPath, "---\nname: casetwin\n---\nFixture.\n");
+    const twinClash = native(["persona", "create", "fresh_twin", "--file", twinPath, "--space", "alpha", "--plain"], scratch);
+    check("a mismatched import with a case-only twin omits the conflicting create retry",
+      twinClash.status === 1 && twinClash.stderr.includes("SCHEMA_INVALID") &&
+      !twinClash.stderr.includes("cotal persona create casetwin"), twinClash.stderr);
+    // Piped input has no file to copy, so the occupied remedy keeps only the corrected pipe.
+    const pipedOccupied = Buffer.from("---\nname: occupied_retry\n---\nInstructions from standard input.\n");
+    const stdinClash = native(["persona", "create", "fresh_stdin", "--file", "-", "--space", "alpha", "--json"], scratch, childEnv, pipedOccupied);
+    const stdinFailure = JSON.parse(stdinClash.stdout).error;
+    check("the stdin mismatch remedy drops the occupied retry and keeps the corrected pipe",
+      stdinClash.status === 1 && stdinFailure?.code === "SCHEMA_INVALID" &&
+      !stdinFailure?.remedy.includes("pipe the original definition into") &&
+      stdinFailure?.remedy === "set its name to 'fresh_stdin' and pipe the corrected definition into the original command", stdinClash.stdout);
+  }
+
   const decoyFile = agentFilePath(ALPHA, "encoded");
   const decoy = "---\nname: encoded\n---\nAlpha instructions.\n";
   writeFileSync(decoyFile, decoy);

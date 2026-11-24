@@ -198,6 +198,22 @@ function caseTwin(path: string): string | undefined {
   return readdirSync(dirname(path)).find(entry => entry !== file && entry.toLowerCase() === file.toLowerCase());
 }
 
+/** Whether the `persona create` a mismatch refusal suggests for the name at `path` would itself
+ *  be refused: an entry already occupies the name, a non-regular entry sits at its path, or a
+ *  twin differs only in case. A missing catalog folder is free: the create would make it. */
+export function personaCreateOccupied(path: string): boolean {
+  try {
+    if (readPersonaSource(path) !== undefined) return true;
+  } catch {
+    return true;
+  }
+  try {
+    return caseTwin(path) !== undefined;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code !== "ENOENT";
+  }
+}
+
 /** Shared by canonical and legacy CLI writes only. Manager and external writers do not take this lock.
  *  A new persona whose name differs from an existing one only in case is refused. */
 export function commitPersona(path: string, expected: PersonaSource | undefined, bytes: Buffer | undefined, target = ""): void {
