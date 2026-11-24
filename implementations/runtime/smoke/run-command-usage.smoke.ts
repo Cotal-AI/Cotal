@@ -631,6 +631,33 @@ if (process.platform !== "win32") {
     const corrected = run("simulate", turnProgram, "--handler", turnHandler, "--plain");
     c("correcting the named file lets the same command complete both turns", corrected.status === 0 &&
       /Program outcome:\s+completed/.test(corrected.stdout) && corrected.stdout.includes("/turn:review#1"), corrected);
+
+    const checkpointProgram = "checkpoint.cotal.js", badTable = "bad-table.json";
+    writeFileSync(join(dir, checkpointProgram), 'const approval = await checkpoint("approve", "Proceed with review?", { timeout: "10m" });\nif (approval.status === "resolved" && approval.value === true) {\n  await sleep("1ms", { name: "approved" });\n}\n');
+    writeFileSync(join(dir, badTable), '{"checkpoints":[]}');
+    const table = run("simulate", checkpointProgram, "--handler", badTable, "--json");
+    const tableError = JSON.parse(table.stdout);
+    c("a malformed checkpoint table names the file, required shape and correction",
+      table.status === 1 && table.stderr === "" && tableError.target?.file === badTable && tableError.error?.code === "SCHEMA_INVALID"
+      && tableError.error?.message === `checkpoints in the simulation results script ${badTable} must be an object keyed by checkpoint name, not an array`
+      && tableError.error?.remedy === `replace checkpoints in ${badTable} with an object keyed by checkpoint name, then rerun the simulation`, table);
+    writeFileSync(join(dir, badTable), '{"checkpoints":{"approve":{"status":"resolved","value":true}}}');
+    const validTable = run("simulate", checkpointProgram, "--handler", badTable, "--json");
+    const accepted = JSON.parse(validTable.stdout);
+    c("a corrected checkpoint table lets the same simulation reach the approved step", validTable.status === 0
+      && accepted.result?.outcome === "completed" && accepted.result.effects[1]?.step === "/sleep:approved#0", validTable);
+
+    const parallelProgram = "parallel.cotal.js", parallelHandler = "parallel-fault.json";
+    writeFileSync(join(dir, parallelProgram), 'await parallel({ first: () => sleep("1s"), second: () => sleep("2s") }, { name: "batch" });\n');
+    const step = "/parallel:batch#0";
+    writeFileSync(join(dir, parallelHandler), JSON.stringify({ faults: [{ at: step, kind: "error", code: "L4002", message: "simulated batch failure" }] }));
+    const parallel = run("simulate", parallelProgram, "--handler", parallelHandler, "--json");
+    const report = JSON.parse(parallel.stdout);
+    c("a fault at the parallel step completes the simulation with a failed program and no branch effects",
+      parallel.status === 0 && parallel.stderr === "" && report.outcome === "ok" && report.result?.outcome === "failed"
+      && report.result.failure?.step === step && report.result.failure.code === "L4002" && report.result.failure.title === "simulated batch failure"
+      && report.result.elapsedMs === 0 && report.result.effects.length === 1 && report.result.effects[0]?.status === "failed", parallel);
+
     for (const handler of [undefined, "timer's $results file.json"]) {
       if (handler !== undefined) writeFileSync(join(dir, handler), "{}");
       const missing = run("simulate", program, ...(handler === undefined ? [] : ["--handler", handler]));
