@@ -35,8 +35,8 @@ refuses `TARGET_NOT_FOUND` there and names the `stack-` member to use, and a nam
 names `cotal service --space <space>` to list the saved definitions in the space the stop targeted.
 This refusal stops no service, even when several names are given. A set never stops the broker, so
 `nats`, `broker` and `stack-broker` each refuse the whole set `TARGET_NOT_FOUND` before any member
-resolves, with the same message for each name. The next step is a bare `cotal down`, which stops
-the broker with the whole stack. A saved service of your own named `nats` or `broker` is that
+resolves. To inspect a stop of the whole stack, run the suggested preview in the project folder it
+names. The preview keeps the selected space and stops nothing. A saved service of your own named `nats` or `broker` is that
 service. A set that names another saved service running a broker refuses `UNSUPPORTED` and names
 that service's own stop. A stop of `stack-broker` refuses
 `LIFECYCLE_BLOCKED` while a legacy daemon record under the root may front a process, or another
