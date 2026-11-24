@@ -26,9 +26,9 @@ async function loadTui() {
 }
 
 /**
- * `cotal console` opens the Ink TUI on a terminal by default. Piped output, `--plain` and
- * `--no-input` use the passive line stream. On an open mesh, the TUI opens the space picker unless
- * `--space` selects a space. Renders over a read-only observer whose lifecycle `useMesh` owns.
+ * `cotal console` opens the Ink TUI when stdin and stdout are terminals. Non-terminal streams,
+ * `--plain` and `--no-input` use the passive line stream. On an open mesh, the TUI opens the
+ * space picker unless `--space` selects a space. The `useMesh` hook owns the read-only observer.
  */
 export async function console_(args: ParsedArgs): Promise<void> {
   const values = args.values as { space?: string; server?: string; plain?: boolean; creds?: string };
@@ -51,7 +51,7 @@ export async function console_(args: ParsedArgs): Promise<void> {
     }
   })();
   // The line stream cannot host the overview picker, so use the resolved mesh's space.
-  if (values.plain || inputDisabledByFlag() || process.stdout.isTTY !== true) {
+  if (values.plain || inputDisabledByFlag() || process.stdin.isTTY !== true || process.stdout.isTTY !== true) {
     const s = space ?? resolvedSpace;
     await runLog(openObserver({ space: s, server, auth: observerAuth, name: operator, operator: true }), s, creds || user ? chatWildcard(s) : undefined, values.plain === true, conn);
     return;

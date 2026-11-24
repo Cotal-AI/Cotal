@@ -1,5 +1,34 @@
 # @cotal-ai/workspace
 
+## 0.176.3
+
+### Patch Changes
+
+- @cotal-ai/core@0.176.3
+
+## 0.176.2
+
+### Patch Changes
+
+- @cotal-ai/core@0.176.2
+
+## 0.176.1
+
+### Patch Changes
+
+- fc7712c: When a moved stack still has an instance recorded on this machine, the adoption refusal directs the operator back to the existing stack without asking for a second adoption.
+- @cotal-ai/core@0.176.1
+
+## 0.176.0
+
+### Patch Changes
+
+- 56b6dc1: Overlapping CLI commands now report an installation at most once per UTC day. Each command still reports its own outcome.
+- 5c49fdd: Keep space registrations that cannot be read, show the correct broker-only restart command, and omit the unsupported `--new-instance` flag from manager preset start help.
+- Updated dependencies [e9bcb31]
+- Updated dependencies [089f68d]
+  - @cotal-ai/core@0.176.0
+
 ## 0.175.3
 
 ### Patch Changes

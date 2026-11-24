@@ -262,8 +262,8 @@
     {
       "name": "a seat-only thread offers the default model too",
       "file": "implementations/acp/src/options.ts",
-      "find": "...(offer.seatOnly && c.models.length > 0 ? [] : [{ value: `${c.agent}/${DEFAULT_MODEL}`, name: `${c.agent} default` }]),",
-      "replace": "{ value: `${c.agent}/${DEFAULT_MODEL}`, name: `${c.agent} default` },",
+      "find": "...(offer.seatOnly && c.models.length > 0 ? [] : [{ value: `${c.agent}/${DEFAULT_MODEL}`, name: `${c.agent}: default` }]),",
+      "replace": "{ value: `${c.agent}/${DEFAULT_MODEL}`, name: `${c.agent}: default` },",
       "expectRed": "a seat whose launch lists are refused loads with only its own model and nothing to launch with"
     },
     {

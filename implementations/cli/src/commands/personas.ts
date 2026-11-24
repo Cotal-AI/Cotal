@@ -168,7 +168,7 @@ async function list(verbose: boolean, running: boolean, values: ConnectValues): 
       continue;
     }
     const d = e.def!;
-    const live = present ? (present.has(e.name) ? c.green("● running") : c.dim("○ not running")) : undefined;
+    const live = present ? (present.has(d.name) ? c.green("● running") : c.dim("○ not running")) : undefined;
     const meta = [d.role && c.cyan(oneLine(d.role)), d.model && c.dim(`model=${oneLine(d.model)}`), d.owner && c.dim(`owner=${oneLine(d.owner)}`), live]
       .filter(Boolean)
       .join("  ");

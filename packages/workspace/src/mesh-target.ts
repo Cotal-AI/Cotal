@@ -656,7 +656,7 @@ export function stackAdoptionBlock(root: string, recordedRoot: string, space: st
   if (existsSync(stackJournalPath(recordedRoot))) return { kind: "copy", message: `${recordedRoot} still holds the stack journal of "${space}", so this folder is a copy of a stack that runs from there`, remedy: `use the stack from ${recordedRoot}, which holds it` };
   const instances = new ProtectedRecordStore("services", space, (value) => value, "instances");
   const known = journalInstanceIds(members).find((id) => instances.read(id) !== undefined);
-  if (known) return { kind: "known", message: `this machine records instance ${known} of the stack that ${recordedRoot} recorded, so that stack is this machine's own`, remedy: movedRootRemedy(recordedRoot) };
+  if (known) return { kind: "known", message: `this machine records instance ${known} of the stack that ${recordedRoot} recorded, so that stack is this machine's own`, remedy: movedRootRemedy(recordedRoot, "use the stack there without adopting it") };
   const registered = findMesh(space), recorded = registered?.root ?? findPreparedSpace(space)?.root;
   if (recorded !== undefined) return { kind: "recorded", message: `"${space}" is ${registered ? "registered" : "prepared"} on this machine at ${recorded}`, remedy: `forget it with ${codeSpan(`cotal space forget ${shellPath(space)}`)}, then run ${codeSpan(`cotal space create ${shellPath(space)} --adopt --root ${shellPath(root)}`)}` };
   return undefined;

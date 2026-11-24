@@ -197,17 +197,20 @@ const cmd = (name: string): Command => {
 };
 /** Run a REAL CLI command exactly as the dispatcher would: kernel-parsed argv → run(). */
 const run = (name: string, argv: string[]) => cmd(name).run(parseCommandArgs(cmd(name), argv));
-/** Capture what a run writes on stdout (ps prints a report, or one envelope under --json). */
-async function capture(fn: () => Promise<void>): Promise<string> {
+/** Capture stdout and optionally collect progress written through console.error. */
+async function capture(fn: () => Promise<void>, onError?: (line: string) => void): Promise<string> {
   let out = "";
   const real = console.log;
+  const realError = console.error;
   const write = process.stdout.write;
   console.log = (...a: unknown[]) => void (out += a.join(" ") + "\n");
+  if (onError) console.error = (...a: unknown[]) => onError(a.join(" "));
   process.stdout.write = ((chunk: string) => ((out += chunk), true)) as typeof process.stdout.write;
   try {
     await fn();
   } finally {
     console.log = real;
+    console.error = realError;
     process.stdout.write = write;
   }
   return out;
@@ -773,8 +776,12 @@ try {
       }
     };
     try {
-      const reportJson = await capture(() => run("spawn", ["poet", "--detach", "--no-events", "--agent", "e2e", "--space", SPACE, "--name", "oldpane0", "--on", on3, "--json"]));
-      ok("the stand-in reports no terminal answer, so the CLI reads null", (JSON.parse(reportJson) as { result: { streamsTerminal: unknown } }).result.streamsTerminal === null, reportJson);
+      const progress: string[] = [];
+      const reportJson = await capture(() => run("spawn", ["poet", "--detach", "--no-events", "--agent", "e2e", "--space", SPACE, "--name", "oldpane0", "--on", on3, "--json"]), (line) => progress.push(line));
+      const { result } = JSON.parse(reportJson) as { result: { streamsTerminal: unknown; readiness: string } };
+      ok("the stand-in reports no terminal answer, so the CLI reads null", result.streamsTerminal === null, reportJson);
+      ok("a detached spawn reports waiting on stderr without promising a time limit",
+        result.readiness === "joined" && plain(progress.join(" ")).replace(/\s+/g, " ").includes("waiting for the manager: it answers when it refuses the launch, or when the agent joins or exits …"), progress);
 
       // Its refusal carries the marker: the seat's runtime streams no terminal.
       process.exitCode = undefined;

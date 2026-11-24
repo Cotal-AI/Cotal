@@ -6,7 +6,7 @@ import { shellWord } from "./endpoint-errors.js";
 import { serviceDefinitionStore, validateServiceDefinition, type ServiceDefinitionSnapshot } from "./service-definitions.js";
 import { observeServiceProcess, serviceInstances } from "./service-instances.js";
 import { resolveServiceAdapter } from "./service-adapters.js";
-import { assertManagerStartOptions, findServicePreset, presetStartFlags, servicePresetDefinition } from "./service-presets.js";
+import { assertManagerStartOptions, findServicePreset, presetRequiredInputs, presetStartFlags, servicePresetDefinition } from "./service-presets.js";
 import { selfArgv } from "./self-exec.js";
 import { pruneEmptyServiceSpace, removableServiceInstances, removeServiceLogs, removeStoppedInstanceRecords } from "./service-process.js";
 import { addedDefinitionStep, STACK_ADAPTER, STACK_DEFINITION } from "./stack-journal.js";
@@ -115,7 +115,7 @@ export function presetDefinition(space: string, root: string, preset: ServicePre
  *  read of `manager` or `stack-manager` reaches that manager, or the log it left once it stopped.
  *  An unpinned manager status can also read the stopped manager's retained records.
  *  Undefined when the name is no preset. */
-export function resolvePresetService(space: string, root: string, requested: string, mode: string, values: ParsedArgs["values"]): PresetServiceTarget | undefined {
+export function resolvePresetService(space: string, root: string, requested: string, mode: string, values: ParsedArgs["values"], prepared = false): PresetServiceTarget | undefined {
   const store = serviceDefinitionStore(space, addedDefinitionStep);
   const exact = store.read(requested);
   const preset = findServicePreset(requested);
@@ -154,10 +154,17 @@ export function resolvePresetService(space: string, root: string, requested: str
       return { requested, name: requested, preset: preset.name, saved: null, stopped: { pid: record?.pid ?? null, label: record?.label ?? preset.name } };
   }
   if (mode === "install") throw adapterInstallRefusal(space, requested, preset.adapter, {}, requested === "manager" ? "manager" : undefined, { space, name: requested });
-  if (mode !== "start") throw new CommandFailure("refused", "TARGET_NOT_FOUND", `no ${requested} has been started in space ${oneLine(space)}; nothing was ${mode === "status" || mode === "logs" ? "read" : "changed"}`, {
-    target: { space, name: requested },
-    remedy: requested === "manager" ? `start it with ${codeSpan(`cotal manager start --space${space.startsWith("-") ? "=" : " "}${shellWord(space)}`)}` : `start it with \`cotal service start ${requested}\``,
-  });
+  if (mode !== "start") {
+    const onSpace = ` --space${space.startsWith("-") ? "=" : " "}${shellWord(space)}`;
+    const start = requested === "manager" ? `cotal manager start${onSpace}` : requested === "broker"
+      ? [`cotal service start ${requested}`, ...presetRequiredInputs(preset, space, root)].join(" ") + (values.space === undefined ? "" : onSpace)
+      : `cotal service start ${requested}`;
+    throw new CommandFailure("refused", "TARGET_NOT_FOUND", `no ${requested} has been started in space ${oneLine(space)}; nothing was ${mode === "status" || mode === "logs" ? "read" : "changed"}`, {
+      target: { space, name: requested },
+      remedy: requested === "manager" && mode === "status" && prepared
+        ? `start it with \`cotal up\` in ${oneLine(root)}` : `start it with ${codeSpan(start)}`,
+    });
+  }
   if (values["dry-run"]) return { requested, name: requested, preset: preset.name, saved: null };
   const definition: ServiceDefinitionInput = { ...servicePresetDefinition(preset, space, values, root, "start"), root };
   if (definition.launch.type === "adapter" && definition.launch.adapter === STACK_ADAPTER.manager) assertManagerStartOptions(space, definition.launch.options);
@@ -207,7 +214,11 @@ function redefine(space: string, root: string, preset: ServicePreset, row: Servi
       if (!/^[0-9a-f]{64}$/.test(digest)) throw new CommandFailure("refused", "USAGE_INVALID", "an owned manager launch requires an absolute private spec and its full SHA-256");
       protectedCredentialReference(path);
       const bytes = readLocalRecordSource(path, 256 * 1024, true);
-      if (!bytes || createHash("sha256").update(bytes).digest("hex") !== digest) throw new CommandFailure("refused", "CONFLICT", "the owned manager launch spec is absent or changed from its declared digest; no agent launch was selected", { target: { space, name: row.name }, selfContained: true });
+      if (!bytes || createHash("sha256").update(bytes).digest("hex") !== digest) throw new CommandFailure("refused", "CONFLICT", "the owned manager launch spec is absent or changed from its declared digest; no agent launch was selected", {
+        target: { space, name: row.name },
+        remedy: "To keep the saved launch settings, rerun the same command and omit both `--launch` and `--launch-sha256`. To apply the override, verify the launch file and rerun with its matching SHA-256 in `--launch-sha256`.",
+        selfContained: true,
+      });
     }
   }
   if (values["dry-run"]) return { requested, name: row.name, preset: preset.name, saved: null };
