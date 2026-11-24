@@ -23,7 +23,7 @@ const counted = countedAssert(nodeAssert);
 const assert: typeof nodeAssert = counted.assert;
 const cells = counted.cells;
 
-function checkUnreadableArtifactFile(directory: string, file: string): void {
+function checkUnreadableArtifactFile(directory: string, file: string, stagingParent: string): void {
   const path = join(directory, file);
   const before = readFileSync(path);
   chmodSync(path, 0o200);
@@ -39,11 +39,32 @@ function checkUnreadableArtifactFile(directory: string, file: string): void {
       assert.match(error.remedy ?? "", /restore read access.*or use a readable copy/);
       return true;
     }, `verify refuses unreadable ${file} as a permission denial`);
+    assert.throws(() => stageArtifact(directory, stagingParent), (error: unknown) =>
+      error instanceof ArtifactFileFault && error.file === file && error.fault === "unreadable",
+    `staging reports the same unreadable file as verify`);
+    assert.deepEqual(readdirSync(stagingParent), [], "denied source read leaves no partial stage");
   } finally {
     chmodSync(path, 0o600);
   }
   assert.equal(inspectBackupArtifact(directory, true).integrity, "matched-declared-sizes-and-sha256");
   assert.deepEqual(readFileSync(path), before);
+}
+
+async function checkUnreadableRestore(root: string, directory: string, file: string): Promise<void> {
+  const path = join(directory, file);
+  const journal = join(root, ".cotal", "maintenance", "v1", "journal.json");
+  const before = readFileSync(journal);
+  chmodSync(path, 0o200);
+  try {
+    await assert.rejects(prepareRestore(root, { restore: directory }), {
+      outcome: "refused", code: "PERMISSION_DENIED", target: { root, directory, file, fault: "unreadable" },
+      message: `this account cannot read backup artifact file ${file}; nothing was restored`,
+    });
+    assert.deepEqual(readFileSync(journal), before, "a denied restore leaves the cut unchanged");
+    assert.deepEqual(readdirSync(join(root, ".cotal", "maintenance", "attempts")), [], "a denied restore leaves no partial stage");
+  } finally {
+    chmodSync(path, 0o600);
+  }
 }
 
 function checkLinkedInterruptedBackup(root: string): void {
@@ -134,12 +155,11 @@ try {
   }
   assert.throws(() => createArtifactWriter(destination), /already exists/);
   const originalManifest = readFileSync(join(destination, "manifest.json"), "utf8");
-  if (process.geteuid && process.geteuid() !== 0) {
-    for (const file of [snapshot.path, checkpoints.path]) checkUnreadableArtifactFile(realpathSync(destination), file);
-  }
-
   const stagingParent = join(root, "staging");
   mkdirSync(stagingParent, { mode: 0o700 });
+  if (process.geteuid && process.geteuid() !== 0) {
+    for (const file of [snapshot.path, checkpoints.path]) checkUnreadableArtifactFile(realpathSync(destination), file, stagingParent);
+  }
   const staged = stageArtifact(destination, stagingParent);
   assert.deepEqual(readFileSync(join(staged.directory, "stream-a.snap")), Buffer.from([1, 2, 3]));
   staged.cleanup();
@@ -582,6 +602,8 @@ try {
             && / or resume with bare .*up`; once the root holds no maintenance state and its mesh is stopped, run .*clean (store|all) --force` again$/.test(error.remedy ?? ""),
         `clean ${target} on a preserved cut names the step status shows for it`);
       assert.ok(existsSync(cleanStore) && readMaintenanceJournal(cleanRoot)?.state === "ready", "the refused clean removed nothing and kept the cut");
+      if (process.geteuid && process.geteuid() !== 0)
+        await checkUnreadableRestore(realpathSync(cleanRoot), realpathSync(destination), snapshot.path);
       checkLinkedInterruptedBackup(cleanRoot);
     } finally { process.chdir(previousCwd); }
   }

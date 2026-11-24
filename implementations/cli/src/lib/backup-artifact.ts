@@ -97,17 +97,16 @@ function safeFileName(name: string): void {
   if (!isSafeFileName(name)) throw new ArtifactFileFault(null, "invalid-name");
 }
 
-export type ArtifactFault = "missing" | "undeclared" | "mismatch" | "not-regular" | "invalid-name" | "manifest-not-regular" | "manifest-too-large" | "manifest-invalid";
+export type ArtifactFault = "missing" | "undeclared" | "mismatch" | "not-regular" | "unreadable" | "invalid-name" | "manifest-not-regular" | "manifest-too-large" | "manifest-invalid";
 
-/** One artifact file at fault: missing, undeclared, not a regular file, not the declared size and
- *  SHA-256, a declared name that is not a plain name in the folder, or a manifest that is not a
- *  regular file, too large or not valid. `file` is null for a name that is not a valid artifact file
- *  name, so it is never printed, and `reason` never carries a manifest value. */
+/** A fault in an artifact file or its declaration. `file` is null for an invalid name so the
+ *  name is never printed, and `reason` never carries an unvalidated manifest value. */
 export class ArtifactFileFault extends Error {
   constructor(readonly file: string | null, readonly fault: ArtifactFault, reason?: string) {
     super(fault === "missing" ? `backup artifact is missing its declared file ${file}`
       : fault === "undeclared" ? `backup artifact contains an undeclared file ${file ?? "with an invalid name"}`
       : fault === "not-regular" ? `backup artifact file ${file} is not a regular file, such as a symbolic link, FIFO or device; it was not read`
+      : fault === "unreadable" ? `this account cannot read backup artifact file ${file}`
       : fault === "invalid-name" ? "backup manifest declares a file name that is not a plain name in the artifact folder, such as a path with ../ or an absolute path; the name was not printed"
       : fault === "manifest-not-regular" ? "backup artifact manifest.json is not a regular file, such as a symbolic link; it was not read"
       : fault === "manifest-too-large" ? `backup artifact manifest.json is larger than its ${MAX_MANIFEST_BYTES / 1024 / 1024} MiB limit; it was not read`
@@ -115,6 +114,21 @@ export class ArtifactFileFault extends Error {
       : `backup artifact file ${file} does not match its declared size and SHA-256`);
     this.name = "ArtifactFileFault";
   }
+}
+
+class ArtifactReadDenied extends ArtifactFileFault {
+  constructor(file: string, readonly code: "EACCES" | "EPERM") {
+    super(file, "unreadable");
+  }
+}
+
+export function artifactReadRefusal(error: ArtifactFileFault, directory: string, restoreRoot?: string): CommandFailure | undefined {
+  if (!(error instanceof ArtifactReadDenied)) return undefined;
+  return new CommandFailure("refused", "PERMISSION_DENIED", restoreRoot === undefined ? error.message : `${error.message}; nothing was restored`, {
+    target: { directory, file: error.file, fault: error.fault, ...(restoreRoot === undefined ? {} : { root: restoreRoot }) },
+    native: { code: error.code },
+    remedy: `restore read access to that file and retry ${restoreRoot === undefined ? "verification" : "the restore"}, or use a readable copy of the backup`,
+  });
 }
 
 /** A manifest whose content is not a valid inventory. `reason` names no manifest value beyond a
@@ -379,16 +393,16 @@ export function isTrustBound(selection: string, mode: string): boolean {
 /** The receipt line for a trust-bound artifact. */
 export const TRUST_BOUND_TEXT = "only a root that still holds the trust state it was taken under, not another machine or a fresh root";
 
-function verifyArtifactFile(directory: string, file: BackupFileRecord): void {
+function copyArtifactFile(directory: string, file: BackupFileRecord, destination?: string): void {
+  const source = join(directory, file.path);
   try {
-    copyPinnedFile(join(directory, file.path), undefined, file);
+    copyPinnedFile(source, destination, file);
   } catch (error) {
-    const { code, syscall } = error as NodeJS.ErrnoException;
-    if (syscall !== "open" || (code !== "EACCES" && code !== "EPERM")) throw error;
-    throw new CommandFailure("refused", "PERMISSION_DENIED", `this account cannot read backup artifact file ${file.path}`, {
-      target: { directory, file: file.path, fault: "unreadable" }, native: { code },
-      remedy: "restore read access to that file and retry verification, or use a readable copy of the backup",
-    });
+    const { code, syscall, path } = error as NodeJS.ErrnoException;
+    // A denied staging write is not a fault in the artifact.
+    if (syscall === "open" && path === source && (code === "EACCES" || code === "EPERM"))
+      throw new ArtifactReadDenied(file.path, code);
+    throw error;
   }
 }
 
@@ -404,7 +418,7 @@ export function inspectBackupArtifact(artifact: string, verify: boolean) {
   if (!bytes) throw new Error("backup manifest is absent");
   const manifest = parseManifest(path, bytes);
   validateArtifactInventory(artifact, manifest);
-  if (verify) for (const file of manifest.files) verifyArtifactFile(artifact, file);
+  if (verify) for (const file of manifest.files) copyArtifactFile(artifact, file);
   const after = lstatSync(artifact, { bigint: true });
   const current = readLocalRecordSource(path, MAX_MANIFEST_BYTES, false);
   if (before.dev !== after.dev || before.ino !== after.ino || !current?.equals(bytes)) throw new Error("backup artifact changed during inspection");
@@ -449,7 +463,7 @@ export function stageArtifact(artifactPath: string, parent: string): StagedArtif
   const identityStat = lstatSync(directory, { bigint: true });
   const identity = { dev: identityStat.dev, ino: identityStat.ino };
   try {
-    for (const file of manifest.files) copyPinnedFile(join(artifact, file.path), join(directory, file.path), file);
+    for (const file of manifest.files) copyArtifactFile(artifact, file, join(directory, file.path));
     assertArtifactProtected(artifact, manifest);
     writeFileSync(join(directory, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`, { flag: "wx", mode: 0o600 });
     fsyncDirectory(directory);
