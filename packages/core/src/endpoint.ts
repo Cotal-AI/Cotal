@@ -1278,6 +1278,13 @@ export class CotalEndpoint extends EventEmitter {
     return this.presence.setCardCwd(cwd);
   }
 
+  /** Set one key of the card's advisory `meta`, or remove it with `undefined`, then republish
+   *  presence. A call before the first connect shows on the first presence record; the same value
+   *  changes nothing. Throws on an empty key. */
+  async setCardMeta(key: string, value: string | undefined): Promise<void> {
+    return this.presence.setCardMeta(key, value);
+  }
+
   /** Change the card's display name and republish presence at once (SPEC §6). The principal stays
    *  as it is, and every later message carries the new `from.name`. Throws on a name
    *  {@link assertValidName} refuses; the same name changes nothing. */

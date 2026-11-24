@@ -371,6 +371,21 @@ export class EndpointPresence {
     await this.publishPresence();
   }
 
+  /** Set one key of the card's advisory `meta` to `value`, or remove it with `undefined`, then
+   *  republish presence. Like {@link setCardModel}, the card changes before the write, so a call
+   *  made before the first connect shows on the first presence record. The same value changes
+   *  nothing. Throws on an empty key, before anything changes. */
+  async setCardMeta(key: string, value: string | undefined): Promise<void> {
+    if (!key) throw new TypeError("setCardMeta: the key must be a non-empty string");
+    const meta = this.identity.card.meta ?? {};
+    if (value === undefined ? !Object.hasOwn(meta, key) : meta[key] === value) return;
+    const next: Record<string, unknown> = { ...meta };
+    if (value === undefined) delete next[key];
+    else next[key] = value;
+    this.identity.card.meta = Object.keys(next).length ? next : undefined;
+    await this.publishPresence();
+  }
+
   /** Change the card's display name and republish presence at once (SPEC §6). The principal, and so
    *  `card.id`, stays as it is. Throws on a name {@link assertValidName} refuses, before anything
    *  changes. The same name changes nothing. Every later message carries the new `from.name`. */

@@ -25,6 +25,10 @@ export interface LaunchOpts {
    *  `name`. The connector forwards it (`COTAL_DISPLAY_NAME`) and keeps `name` as the launch name,
    *  which in user mode is also the actor. */
   displayName?: string;
+  /** The seat names itself from the first message it receives (SPEC 13.22): its launch
+   *  {@link prompt}, else its first live direct message or mention. The connector forwards it
+   *  (`COTAL_AUTO_NAME`). A seat started with a {@link displayName} keeps that name instead. */
+  autoName?: boolean;
   role?: string;
   /** Stable agent id (the nkey public key). When set, the launched session adopts it
    *  as its `card.id` instead of generating a random one — so the id the launcher
