@@ -369,6 +369,22 @@ if (process.platform !== "win32") {
     && exactRetry?.status === 0 && exactRetry.stderr === "" && exactRetry.stdout.includes("Endpoint contract valid locally"),
     { json: shown(escapedJson), exactRetry: exactRetry && shown(exactRetry) });
 
+  const backslashes = String.raw`review\\draft`;
+  const intended = run(["endpoint", "init", "intended", "--dir", backslashes, "--plain"], {}, cwd);
+  const neighbor = run(["endpoint", "init", "neighbor", "--dir", String.raw`review\draft`, "--plain"], {}, cwd);
+  const backslashCheck = run(["endpoint", "check", backslashes, "--plain"], {}, cwd);
+  const backslashJson = run(["endpoint", "check", backslashes, "--json"], {}, cwd);
+  const recovery = /^  Use shell completion to enter the scaffold directory, then run `(?:pnpm )?cotal (endpoint check contract\.json)`\.$/m;
+  const copied = recovery.exec(backslashCheck.stderr)?.[1];
+  const backslashRetry = copied && runShell(copied, {}, join(cwd, backslashes));
+  check("endpoint authoring offers a relative recovery that selects the intended backslash path",
+    intended.status === 0 && neighbor.status === 0 && recovery.test(intended.stdout)
+    && backslashCheck.status === 1 && backslashCheck.stderr.includes("SCHEMA_INVALID")
+    && backslashJson.status === 1 && parsed(backslashJson)?.error?.remedy === manual
+    && !!backslashRetry && backslashRetry.status === 0 && backslashRetry.stderr === ""
+    && backslashRetry.stdout.includes("com.example.intended") && !backslashRetry.stdout.includes("com.example.neighbor"),
+    { init: shown(intended), check: shown(backslashCheck), json: shown(backslashJson), retry: backslashRetry && shown(backslashRetry) });
+
   const other = join(cwd, "other-contracts");
   mkdirSync(other);
   writeFileSync(join(other, "custom.json"), original[0]!);

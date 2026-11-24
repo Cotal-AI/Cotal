@@ -66,11 +66,12 @@ function createDirectories(destination: string, changed: ScaffoldChange[]): void
     parent = path;
   }
 }
-/** A POSIX check command only when its path can be passed and displayed unchanged. */
+/** A check command only when its path can be passed and displayed unchanged. */
 export function scaffoldCheckCommand(directory: string, presentation: Presentation = "plain"): string | undefined {
   if (process.platform === "win32") return undefined;
   const file = join(directory, CONTRACT_FILE);
-  if (AUTHORING_CONTROLS.test(file) || (presentation !== "json" && oneLine(file) !== file)) return undefined;
+  // Fish and POSIX shells interpret backslashes differently inside single quotes.
+  if (file.includes("\\") || AUTHORING_CONTROLS.test(file) || (presentation !== "json" && oneLine(file) !== file)) return undefined;
   return `cotal endpoint check ${shellWord(file)}`;
 }
 
