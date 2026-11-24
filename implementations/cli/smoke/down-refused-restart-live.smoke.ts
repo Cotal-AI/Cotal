@@ -19,7 +19,7 @@
  */
 import { spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
-import { mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import net from "node:net";
 import { join, resolve as resolvePath } from "node:path";
 import { makeScratch, assertScratchHeld } from "../../../bin/smoke/_scratch.js";
@@ -115,6 +115,34 @@ function journalOperation(): { kind: string; phase: string } {
   return journal.operation;
 }
 
+async function checkLegacyBrokerPidfile(port: number): Promise<void> {
+  const path = join(realpathSync(root), ".cotal", "nats.pid");
+  const unrelated = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+  const closed = new Promise<void>((resolve) => unrelated.once("close", () => resolve()));
+  try {
+    await once(unrelated, "spawn");
+    writeFileSync(path, `${unrelated.pid}\n`, { flag: "wx" });
+    try {
+      const status = await run(["status", "--plain"]);
+      const ps = await run(["ps", "--plain"]);
+      const up = await run(["up", "--plain"]);
+      const diagnosis = `the legacy broker PID file ${path} blocks controller startup; it records PID ${unrelated.pid}`;
+      const remedy = up.out.split("\nNext\n")[1]?.trim();
+      ok("status, ps and up agree on the legacy broker PID file that blocks restart",
+        status.status === 0 && ps.status === 2 && up.status === 2 && ps.out.includes("TARGET_UNAVAILABLE") && up.out.includes("LIFECYCLE_BLOCKED")
+        && remedy !== undefined && remedy.includes(`check the executable and command line of PID ${unrelated.pid}`)
+        && remedy.includes("Only if you verify that the file does not belong to a running broker, set it aside outside .cotal")
+        && [status, ps, up].every(({ out }) => out.includes(diagnosis) && out.includes(remedy) && !out.includes("start it again with")
+          && (process.platform !== "linux" || out.includes("current executable is not nats-server"))), { status, ps, up });
+      ok("the broker stays stopped and the unrelated process and PID file are left alone",
+        !(await serving(port)) && unrelated.kill(0) && readFileSync(path, "utf8") === `${unrelated.pid}\n`);
+    } finally { rmSync(path); }
+  } finally {
+    unrelated.kill();
+    await closed;
+  }
+}
+
 async function checkContractShortcut(space: string, server: string): Promise<void> {
   const offline = mkdtempSync(join(scratch, "offline-"));
   const offlineServer = `nats://127.0.0.1:${await freePort()}`;
@@ -187,6 +215,7 @@ try {
   ok("foreground launcher exits after the stop", fg.cp.exitCode === 0, `exit ${fg.cp.exitCode}: ${fg.out().slice(-500)}`);
   ok("loopback listener closes after the stop", await waitServing(port, false));
   ok("the completed stop is on record", (() => { const op = journalOperation(); return op.kind === "down" && op.phase === "completed"; })(), JSON.stringify(journalOperation()));
+  await checkLegacyBrokerPidfile(port);
 
   const inventory = ["endpoint", "list", "--live", "--space", space];
   const partial = await run([...inventory, "--json"], caller);

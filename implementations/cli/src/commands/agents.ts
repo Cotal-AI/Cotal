@@ -45,7 +45,7 @@ import { attachSeat as attachSeatWith, detachKey, type AttachTarget, type Attach
 import { completingFlagValue } from "../lib/completion.js";
 import { displayCmd } from "../lib/self-exec.js";
 import { shellWord } from "../lib/endpoint-errors.js";
-import { runningStackManagerPid, stackManagerAbsent, stackManagerStarting, unusableStackJournal } from "../lib/stack-journal.js";
+import { legacyBrokerPidfileBlock, runningStackManagerPid, stackManagerAbsent, stackManagerStarting, unusableStackJournal } from "../lib/stack-journal.js";
 import { connectorHarnesses } from "../lib/status.js";
 import { channelSeedRestartBlock } from "../lib/channel-seed.js";
 import { legacyRestartAddressProblem } from "../lib/broker-service.js";
@@ -666,7 +666,7 @@ export async function ps(args: ParsedArgs): Promise<void> {
       const block = channelSeedRestartBlock(parts.restartRoot) ?? (isWorkspaceTargetError(cause) && cause.details.lastRun
         ? await legacyRestartAddressProblem(cause.details.server, `${displayCmd()} up`)
         : isWorkspaceTargetError(e) && e.details.stopped && e.details.space !== undefined
-          ? await (await import("./stack-up.js")).stackStartAddressProblem(parts.restartRoot, e.details.space, v.server)
+          ? legacyBrokerPidfileBlock(parts.restartRoot) ?? await (await import("./stack-up.js")).stackStartAddressProblem(parts.restartRoot, e.details.space, v.server)
           : undefined);
       const first = isWorkspaceTargetError(cause) && cause.details.space !== undefined && cause.details.stopped === undefined;
       if (block) throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `${parts.message}. ${first ? "First start" : "Restart"} blocked: ${block.message}`, {

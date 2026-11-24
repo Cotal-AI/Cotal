@@ -798,6 +798,8 @@ After a completed stop, Next names `cotal up --no-manager` instead if the stop r
 or the broker's payload limit is too low to start one.
 If the recorded broker address is occupied after a completed stop, `status` and `history` name the
 address and explain how to free it before restarting. The stack keeps its address.
+If a legacy `.cotal/nats.pid` file blocks a controller restart, `status` and `ps` name the file
+and give the same verification step as [startup](cli-startup.mdx#controller-recovery).
 A space that never started still reads as prepared but not started. If its default `.cotal/channels.json`
 blocks the first start, `status` and `ps` name the file and the repair. If a refused first start
 recorded a broker address and the address is still in use, `status` names how to free it or start
