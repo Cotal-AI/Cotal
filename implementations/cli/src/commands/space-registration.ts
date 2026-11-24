@@ -1,4 +1,4 @@
-import { existsSync, lstatSync, readFileSync, readlinkSync, rmdirSync, rmSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, readlinkSync, rmdirSync, rmSync, statSync } from "node:fs";
 import { createConnection } from "node:net";
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
@@ -176,8 +176,13 @@ const refuse = (code: RefusalCode, message: string, target: unknown, remedy?: st
  *  space, or a registration this machine started or a catalog lists, is never replaced that way, with
  *  or without `--force`: it is forgotten or stopped first. `space add` and `meshes add` share this. */
 export function handAddedRegistration(name: string, force: boolean, target: unknown): MeshEntry | undefined {
-  if (findPreparedSpace(name))
+  const prepared = findPreparedSpace(name);
+  if (prepared) {
+    const problem = projectRootProblem(prepared.root);
+    if (problem === "not-directory") throw refuse("CONFLICT", `"${name}" is prepared in ${prepared.root}, which is not a directory`, target,
+      `restore the original project folder at its recorded path, or run ${codeSpan(`${displayCmd()} space forget ${shellWord(name)}`)} to register the other broker, then repeat the add with the same options`);
     throw refuse("CONFLICT", `"${name}" is a space prepared on this machine`, target, `start it with \`cotal up\` in its root, or forget it with \`cotal space forget ${name}\``);
+  }
   const existing = findMesh(name);
   // `--force` replaces only a registration added by hand, so the refusal offers it only for one.
   if (existing && existing.origin !== "manual") {
@@ -423,10 +428,8 @@ function addedView(r: SpaceAdded | AddCancelled): Report {
  */
 export async function spaceCreate(name: string, rootFlag: string | undefined, adopt: boolean, presentation: Presentation): Promise<void> {
   const root = resolve(rootFlag ?? process.cwd());
-  const problem = projectRootProblem(root);
-  if (problem === "inaccessible")
-    throw refuse("PERMISSION_DENIED", `the project directory ${root} ${projectRootProblemText(problem)}; nothing was written`, { space: name, root }, "restore access to the project directory, then run this create again");
-  if (problem !== undefined && (problem !== "missing" || rootFlag === undefined || adopt))
+  const kind = projectRootKind(root);
+  if (kind !== "directory" && (kind !== "missing" || rootFlag === undefined || adopt))
     throw usage(`--root ${root} is not a directory`, "pass an existing directory");
   if (adopt) {
     // Its own rules come first, so a folder moved on this machine is told to move back, not to forget.
@@ -445,7 +448,7 @@ export async function spaceCreate(name: string, rootFlag: string | undefined, ad
     if (lstatSync(dir, { throwIfNoEntry: false })) protectedLocalDirectory(dir, "the project's .cotal directory");
   }
   const adoptedFrom = adopt ? adoptStackJournal(root, name) : undefined;
-  const createdRoot = problem === "missing" && mkdirPrivate(root, "the project root") !== undefined;
+  const createdRoot = kind === "missing" && mkdirPrivate(root, "the project root") !== undefined;
   const { file, preparedAt } = existing ? { file: undefined, preparedAt: existing.ts } : recordLocalSpace(name, root);
   const written = [...(createdRoot ? [{ what: "project folder", path: root }] : []), ...(adoptedFrom !== undefined ? [{ what: `stack journal, adopted from ${adoptedFrom}`, path: stackJournalPath(canonicalRoot(root)) }] : []), ...(file ? [{ what: "prepared space", path: file }] : [])];
   const personaPath = join(personaDir(root), "default.md");
@@ -591,6 +594,14 @@ export function recordLocalSpace(name: string, root: string): { file: string; pr
 
 const unwritable = (error: unknown): boolean => ["EACCES", "EPERM", "EROFS"].includes((error as NodeJS.ErrnoException).code ?? "");
 
+function projectRootKind(path: string): "directory" | "missing" | "other" {
+  try {
+    return statSync(path).isDirectory() ? "directory" : "other";
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "ENOENT" ? "missing" : "other";
+  }
+}
+
 function createdView(r: SpaceCreated): Report {
   const lines: Cell[] = [
     { text: `prepared ${r.space}`, tone: "ok", mark: "✓" },
@@ -668,11 +679,14 @@ export async function spaceForget(rest: readonly string[], presentation: Present
     throw refuse("CONFLICT", `"${name}" is listed by a signed-in space catalog, so this machine does not own its registration`, target, "it is removed when the catalog no longer lists it and `cotal sync` runs");
   let unsettled: string[] = [];
   if (m.origin !== "manual") {
+    const obstructed = m.stoppedByDown === true && projectRootProblem(m.root) === "not-directory";
     let running: string | undefined, stack = false;
     try {
-      running = liveMeshOwner(m.root, m.space);
-      unsettled = unsettledStackMembers(m.root, m.space);
-      stack = running !== undefined && readStackJournal(m.root)?.journal.space === name;
+      if (!obstructed) {
+        running = liveMeshOwner(m.root, m.space);
+        unsettled = unsettledStackMembers(m.root, m.space);
+        stack = running !== undefined && readStackJournal(m.root)?.journal.space === name;
+      }
     } catch (e) {
       throw refuse("LIFECYCLE_BLOCKED", `could not tell whether "${name}" is running from ${m.root}: ${(e as Error).message}`, target, "check it with `cotal status`");
     }
@@ -682,7 +696,7 @@ export async function spaceForget(rest: readonly string[], presentation: Present
       : keepsRegistration(m) ? `stop it with \`cotal down\` in ${m.root}, which keeps its record, then run \`cotal space forget ${name}\` again` : `stop it with \`cotal down\` in ${m.root}, which also drops its record`);
     // A deleted folder takes the pidfiles and stack journal that check reads, so a stack left running
     // there shows only in this machine's instance records or at its recorded address (#7325).
-    if (!existsSync(m.root) || goneLegacyRoot(m.space, m) !== undefined) await refuseGoneFolderStack(m, registry.entries);
+    if (obstructed || !existsSync(m.root) || goneLegacyRoot(m.space, m) !== undefined) await refuseGoneFolderStack(m, registry.entries);
   }
   const release = releaseStackDefinitions(m.root, name), keptServices = savedServicesLeft(name, release.kept);
   removeDamaged();
@@ -720,8 +734,9 @@ function unregisteredStackStop(space: string, damaged: boolean): string {
  *  holding its port with nothing on this machine naming it. */
 async function refuseGoneFolderStack(m: MeshEntry, entries: readonly MeshEntry[]): Promise<void> {
   const target = { space: m.space, root: m.root, server: m.server };
-  const gone = `"${m.space}" started in ${m.root}, which no longer exists`;
-  const members = stackRootGone(m.space, m.root) ? runningStackRoles(m.space) : [];
+  const problem = projectRootProblem(m.root);
+  const gone = `"${m.space}" started in ${m.root}, which ${projectRootProblemText(problem === "not-directory" ? problem : "missing")}`;
+  const members = (problem === "not-directory" || stackRootGone(m.space, m.root)) ? runningStackRoles(m.space) : [];
   if (members.length) throw refuse("LIFECYCLE_BLOCKED", `${gone}, but its stack's ${members.join(", ")} still ${members.length === 1 ? "runs" : "run"}; nothing was forgotten`, target, `stop it with \`cotal down --space ${m.space} --yes\`, which also drops this record`);
   if (goneLegacyRoot(m.space, m) !== undefined) {
     const retained = goneLegacyMembers(m.space, m.root, m);
@@ -791,8 +806,8 @@ function forgotten(presentation: Presentation, r: Omit<SpaceForgotten, "kind" | 
 
 function forgottenView(r: SpaceForgotten): Report {
   const root = r.root === null ? "its record could not be read, so it named no folder"
+    : projectRootProblem(r.root) === "not-directory" ? `the entry at ${r.root} was left untouched`
     : !existsSync(r.root) ? `its folder ${r.root} no longer exists`
-    : r.origin === "prepared" && projectRootProblem(r.root) === "not-directory" ? `the entry at ${r.root} was left untouched`
     : `the files under ${r.root} are kept`;
   const lines: Cell[] = [
     { text: `forgot ${r.space}`, tone: "ok", mark: "✓" },

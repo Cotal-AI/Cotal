@@ -1,4 +1,3 @@
-import { existsSync } from "node:fs";
 import type { CompletionResult, FlagSpec, FlagValues, ParsedArgs } from "@cotal-ai/core";
 import { boundedValue, canonicalRoot, clearCurrent, codeSpan, CommandFailure, cotalDirLink, findCotalRoot, findMesh, findPreparedSpace, folderSpace, folderSpaceHeld, getCurrent, isMeshRegistryError, readCurrentSelection, jsonFlag, loadMeshes, loadPreparedSpaces, plainFlag, preparedLifecycle, preparedRootRemedy, presentationOf, projectRootDisplaced, projectRootProblem, projectRootProblemText, readCurrent, setCurrent, shellPath, SHOWN_VALUE_MAX, stackElsewhereRemedy, writeResult, type Cell, type MeshEntry, type OutputWarning, type PreparedSpace, type ProjectRootProblem, type Report } from "@cotal-ai/workspace";
 import { registryFailure } from "../lib/registry-errors.js";
@@ -113,7 +112,7 @@ function selectionView(s: Selection, project: string, moved: ReturnType<typeof j
     : { text: `selected ${s.current}${s.previous ? ` (was ${s.previous})` : ""}`, tone: "ok", mark: "✓" };
   const lines: Cell[] = [head];
   if (s.server) lines.push({ text: `  ${s.server}`, tone: "hint" });
-  const problem = s.currentRecorded ? (s.preparedRoot && !existsSync(s.preparedRoot) ? "missing" : undefined) : preparedProblem;
+  const problem = s.currentRecorded && s.preparedRoot ? projectRootProblem(s.preparedRoot) : preparedProblem;
   if (moved) {
     if (problem === "not-directory") lines.push(`  ${moved.recordedRoot} ${projectRootProblemText(problem)}`);
     if (s.lastOperation) lines.push({ text: `  ${s.preparedState === "stopped" ? "stopped; its last operation" : "its last operation"}, ${s.lastOperation}`, tone: "waiting" });

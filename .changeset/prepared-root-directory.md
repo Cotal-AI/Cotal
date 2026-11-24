@@ -3,4 +3,4 @@
 "@cotal-ai/workspace": patch
 ---
 
-Cotal reports when a prepared space's project path is occupied by a file and shows how to recover. Inspection leaves the file and preparation untouched. Cotal can release dormant stack definitions when forgetting the stale preparation and points to adoption when the moved project still holds its stack journal.
+Cotal identifies files blocking local space roots and explains how to restore the project or clear its stale registration without touching the file.

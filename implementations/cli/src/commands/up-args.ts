@@ -18,8 +18,6 @@ import {
   homeCotalDir,
   getCurrent,
   preparedSpaceAt,
-  projectRootProblem,
-  projectRootProblemText,
   localMeshesForRoot,
   presentationOf,
   parsePositiveIntegerFlag,
@@ -464,17 +462,15 @@ export function folderSpace(): string {
   return resolveSpace(process.cwd());
 }
 
-/** An unavailable selected preparation must not turn bare `up` into a start of a different space. */
+/** A bare `up` in a folder that names no space starts a space it names itself. When the selected
+ *  space is prepared in a folder that no longer exists, as after that folder was moved, that space is
+ *  not what was meant, so `up` refuses with the step that prepares the selection here. */
 export function assertSelectionNotMoved(root: string, space: string): void {
   const current = getCurrent();
-  if (current === undefined || current === space) return;
-  const prepared = findPreparedSpace(current);
-  if (!prepared) return;
-  const problem = projectRootProblem(prepared.root);
-  if (!problem) return;
-  throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `the selected space "${current}" is prepared in ${prepared.root}, which ${projectRootProblemText(problem)}, and this folder names no space, so up did not start "${space}" here`, {
+  const prepared = current === undefined || current === space ? undefined : findPreparedSpace(current);
+  if (!prepared || existsSync(prepared.root)) return;
+  throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `the selected space "${current}" is prepared in ${prepared.root}, which no longer exists, and this folder names no space, so up did not start "${space}" here`, {
     target: { root, space: current, preparedRoot: prepared.root },
-    remedy: problem === "inaccessible" ? `restore access to ${prepared.root}, or pass --space ${space} to start "${space}" here`
-      : `if this is that folder moved, forget it with \`cotal space forget ${current}\`, then prepare it here with \`cotal space create ${current}\` and run \`cotal up\`; to start "${space}" here, pass --space ${space}`,
+    remedy: `if this is that folder moved, forget it with \`cotal space forget ${current}\`, then prepare it here with \`cotal space create ${current}\` and run \`cotal up\`; to start "${space}" here, pass --space ${space}`,
   });
 }

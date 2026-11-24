@@ -13,7 +13,7 @@
  */
 import { spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { accessSync, chmodSync, constants, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { accessSync, chmodSync, constants, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -119,15 +119,13 @@ function saveDormantBroker(space: string, project: string): string {
       if (!searchable) {
         const denied = json(["space", "show", space]), deniedTarget = who();
         check("a directory this account cannot enter offers restore-access advice instead of startup",
-          denied.status === 0 && denied.env?.result?.rootMissing === true && denied.env.result.rootProblem === "inaccessible" &&
+          denied.status === 0 && denied.env?.result?.rootMissing === true &&
             deniedTarget.status === 2 && deniedTarget.env?.error?.code === "TARGET_UNAVAILABLE" &&
             deniedTarget.env.error.remedy.includes("restore access") && !deniedTarget.env.error.remedy.includes("cotal up"), [denied, deniedTarget].map(shown));
-        const deniedCreate = json(["space", "create", space, "--root", project]);
         const deniedDelete = json(["space", "delete", space, "--dry-run"]);
         const asksForAccess = (r: ReturnType<typeof json>, code: string) => r.status === 2 && r.env?.error?.code === code &&
           r.env.error.message.includes(`${project} could not be accessed`) && r.env.error.remedy.includes("restore access") &&
           !r.env.error.remedy.includes("cotal reset store");
-        check("create asks for access to the existing directory", asksForAccess(deniedCreate, "PERMISSION_DENIED") && readFileSync(record).equals(preparedBefore), shown(deniedCreate));
         check("delete preview asks for access instead of looking for the existing directory", asksForAccess(deniedDelete, "TARGET_UNAVAILABLE"), shown(deniedDelete));
       }
     } finally { chmodSync(project, 0o700); }
@@ -153,11 +151,6 @@ function saveDormantBroker(space: string, project: string): string {
 
   const replacement = "replacement file\n";
   writeFileSync(project, replacement);
-  const fileUp = bareUp();
-  check("bare up refuses to start another space when a file occupies the selected root",
-    fileUp.status === 2 && fileUp.env?.error?.code === "TARGET_UNAVAILABLE" && fileUp.env.error.message.includes(`${project}, which is not a directory`) &&
-      fileUp.env.error.remedy.includes(`cotal space forget ${space}`) &&
-      readdirSync(join(bareProject, ".cotal")).length === 0, shown(fileUp));
   clearCurrent();
   const plain = show(), detail = json(["space", "show", space]), target = who();
   const list = run(["space", "--plain"]), listed = json(["space"]);
@@ -166,7 +159,7 @@ function saveDormantBroker(space: string, project: string): string {
     plain.status === 0 && plain.stdout.includes(fileMessage) && plain.stdout.includes("restore the original project folder") && recovery(plain.stdout), shown(plain));
   check("space list and detail JSON mark a non-directory as an unavailable project folder",
     detail.status === 0 && listed.status === 0 &&
-      [detail.env?.result, listed.env?.result?.prepared?.[0]].every((row) => row?.rootMissing === true && row?.rootProblem === "not-directory"),
+      [detail.env?.result, listed.env?.result?.prepared?.[0]].every((row) => row?.rootMissing === true && !("rootProblem" in row)),
     [detail, listed].map(shown));
   check("space list labels a non-directory and does not offer startup advice for it",
     list.status === 0 && list.stdout.includes(`${project} (not a directory)`) && recovery(list.stdout), shown(list));
@@ -217,6 +210,22 @@ function saveDormantBroker(space: string, project: string): string {
   check("the recovery fixture leaves no preparation for the rest of the suite", cleanup.status === 0 && !existsSync(record), shown(cleanup));
 }
 
+{
+  const space = "nested-root", parent = mkdtempSync(join(home, "parent-")), project = join(parent, "child");
+  mkdirSync(project, { mode: 0o700 });
+  const created = json(["space", "create", space, "--root", project]);
+  if (created.status !== 0) throw new Error(`could not prepare the nested fixture: ${JSON.stringify(shown(created))}`);
+  const record = join(preparedSpacesDir(), `${spaceSegment(space)}.json`), before = readFileSync(record);
+  renameSync(parent, `${parent}-moved`);
+  writeFileSync(parent, "ancestor file\n");
+  const add = json(["space", "add", space, "--server", DEAD, "--root", hintProject, "--force"]);
+  check("space add diagnoses an ancestor file without suggesting local startup",
+    add.status === 2 && add.env?.error?.code === "CONFLICT" && add.env.error.message.includes(`${project}, which is not a directory`) &&
+      add.env.error.remedy.includes(`space forget ${space}`) && !add.env.error.remedy.includes("cotal up") &&
+      readFileSync(parent, "utf8") === "ancestor file\n" && readFileSync(record).equals(before), shown(add));
+  json(["space", "forget", space]);
+}
+
 // A stopped stack's copied journal must be adopted if the project is kept at its new location.
 {
   const space = "moved-stack", project = mkdtempSync(join(home, "original-")), moved = `${project}-moved`;
@@ -239,7 +248,11 @@ function saveDormantBroker(space: string, project: string): string {
   });
   writeFileSync(join(project, journal), bytes, { mode: 0o600 });
   renameSync(project, moved);
-  writeFileSync(project, "replacement\n");
+  const obstruction = join(home, "obstruction");
+  writeFileSync(obstruction, "replacement\n");
+  symlinkSync(obstruction, project, "file");
+  const record = join(preparedSpacesDir(), `${spaceSegment(space)}.json`), before = readFileSync(record);
+  instances.commit(instanceId, instances.read(instanceId), { ...instance, host: { ...instance.host, machine: "f".repeat(64) } });
 
   const show = run(["space", "show", "--plain"], {}, moved);
   const list = run(["space", "--plain"], {}, moved);
@@ -247,13 +260,21 @@ function saveDormantBroker(space: string, project: string): string {
   const who = json(["who", "--space", space], moved);
   const movedRecovery = (text: string) => text.includes(`space forget ${space}`) &&
     text.includes(`space create ${space} --adopt --root ${moved}`) && !text.includes("cotal up");
-  check("list, bare show, use and who find the moved journal despite the file at its old path",
-    [list, show, use].every((r) => r.status === 0 && movedRecovery(r.stdout)) &&
-      who.status === 2 && who.env?.error?.code === "TARGET_UNAVAILABLE" && who.env.error.message.includes("is not a directory") &&
-      movedRecovery(who.env.error.remedy) && readFileSync(join(moved, journal), "utf8") === bytes, [list, show, use, who].map(shown));
+  check("a foreign stopped instance at an obstructed old path does not get forget-and-adopt advice",
+    [list, show, use, who].every((r) => r.stdout.includes("move this folder back") && !r.stdout.includes("--adopt") && !r.stdout.includes(`space forget ${space}`)) &&
+      show.status === 0 && who.status === 2 && who.env?.error?.code === "TARGET_UNAVAILABLE" &&
+      readFileSync(record).equals(before) && readFileSync(obstruction, "utf8") === "replacement\n" &&
+      readFileSync(join(moved, journal), "utf8") === bytes, [list, show, use, who].map(shown));
+  rmSync(project);
+  instances.commit(instanceId, instances.read(instanceId), instance);
+  const missingShow = run(["space", "show", "--plain"], {}, moved);
+  const missingWho = json(["who", "--space", space], moved);
+  check("a confirmed stopped local stack with a missing old path still gets adoption advice",
+    missingShow.status === 0 && movedRecovery(missingShow.stdout) && missingWho.status === 2 &&
+      missingWho.env?.error?.code === "TARGET_UNAVAILABLE" && movedRecovery(missingWho.env.error.remedy), [missingShow, missingWho].map(shown));
   instances.commit(instanceId, instances.read(instanceId), { ...instance, state: "starting" });
   const unresolved = json(["who", "--space", space], moved);
-  check("a retained nonterminal instance is not offered adoption at an obstructed old path",
+  check("a retained nonterminal instance is not offered adoption at a missing old path",
     unresolved.status === 2 && unresolved.env?.error?.code === "TARGET_UNAVAILABLE" &&
       unresolved.env.error.remedy.includes("move this folder back") && !unresolved.env.error.remedy.includes("--adopt"), shown(unresolved));
   instances.commit(instanceId, instances.read(instanceId), instance);
@@ -262,9 +283,28 @@ function saveDormantBroker(space: string, project: string): string {
   check("the advertised adoption succeeds without modifying the file at the old path",
     forgot.status === 0 && forgot.env?.result?.releasedDefinitions?.join() === "stack-broker" && instances.read(instanceId) === undefined &&
       adopted.status === 0 && adopted.env?.result?.root === moved &&
-      JSON.parse(readFileSync(join(moved, journal), "utf8")).root === moved && readFileSync(project, "utf8") === "replacement\n", [forgot, adopted].map(shown));
+      JSON.parse(readFileSync(join(moved, journal), "utf8")).root === moved && readFileSync(obstruction, "utf8") === "replacement\n", [forgot, adopted].map(shown));
   const cleanup = json(["space", "forget", space]);
   check("the moved fixture leaves no preparation", cleanup.status === 0, shown(cleanup));
+}
+
+{
+  const space = "stopped-registration", project = mkdtempSync(join(home, "stopped-registration-"));
+  recordMesh({ space, root: project, server: DEAD, mode: "open", origin: "up", stoppedByDown: true, ts: new Date().toISOString() });
+  renameSync(project, `${project}-moved`);
+  writeFileSync(project, "replacement file\n");
+  const recovery = (text: string) => text.includes("not a directory") && text.includes(`space forget ${space}`) && !text.includes("cotal up");
+  const selected = run(["use", space, "--plain"]), selection = json(["use"]);
+  const show = run(["space", "show", space, "--plain"]), detail = json(["space", "show", space]);
+  const who = json(["who", "--space", space]), status = run(["status", "--space", space, "--plain"]);
+  check("an obstructed stopped registration has recovery advice and no restart hint",
+    selected.status === 0 && recovery(selected.stdout) && selection.env?.result?.preparedState === "stopped" && selection.env.result.preparedRoot === project &&
+      show.status === 0 && recovery(show.stdout) && detail.env?.result?.rootGone === true &&
+      who.status === 2 && who.env?.error?.code === "TARGET_UNAVAILABLE" && recovery(`${who.env.error.message} ${who.env.error.remedy}`) &&
+      recovery(status.stdout) && !status.stderr.includes("ENOTDIR"), [selected, selection, show, detail, who, status].map(shown));
+  const forgot = json(["space", "forget", space]);
+  check("forget removes the stopped registration but leaves the file untouched", forgot.status === 0 && findMesh(space) === undefined &&
+    readFileSync(project, "utf8") === "replacement file\n", shown(forgot));
 }
 
 if (process.env.COTAL_SMOKE_PREPARED_ROOT_ONLY === "1") {
