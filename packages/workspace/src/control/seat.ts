@@ -1,6 +1,7 @@
 import { remoteManagerActors, type Presence } from "@cotal-ai/core";
 import { isConnectRefusal, type ConnectFlags } from "../connect.js";
 import { resolveControlTarget } from "../control-target.js";
+import { MANAGER_MACHINE_ID } from "../machine-identity.js";
 import { DEFAULT_MANAGER_NAME } from "../manager-name.js";
 import { CommandFailure, isCommandFailure } from "../output.js";
 import { askManager, scatterManager, readFailure, type ControlClient, type ManagerPin, type ManagerReply, type ScatterInstanceReply } from "./manager.js";
@@ -41,6 +42,13 @@ export function managerLabel(p: Presence): string {
 }
 
 const presenceHost = (p: Presence): string | null => typeof p.card.meta?.host === "string" && p.card.meta.host ? p.card.meta.host : null;
+
+/** The machine a manager's presence names (`card.meta.machine`, its `managerMachineId`), or
+ *  undefined when it names none or one that is not well formed. */
+export const presenceMachine = (p: Presence): string | undefined => {
+  const machine = p.card.meta?.machine;
+  return typeof machine === "string" && MANAGER_MACHINE_ID.test(machine) ? machine : undefined;
+};
 
 /** The runtime a manager reports, read from its `supervisor (<runtime>)` activity. */
 const presenceRuntime = (p: Presence): string | null => /^supervisor \((.+)\)$/.exec(p.activity ?? "")?.[1] ?? null;

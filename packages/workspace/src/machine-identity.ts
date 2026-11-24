@@ -4,6 +4,7 @@
  * (GetSystemIdForPublisher). The ID names the machine to anyone who reads it, so a caller publishes
  * only a hash of it.
  */
+import { createHmac } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { darwinProcessBinding } from "./darwin-process.js";
 import { win32ProcessBinding } from "./win32-process.js";
@@ -37,4 +38,21 @@ export function osMachineId(): OsMachineId {
     return { platform: "linux", bytes: Buffer.from(machine.toLowerCase()) };
   }
   throw new Error(`${process.platform} has no machine identity that Cotal reads`);
+}
+
+/** A well-formed {@link managerMachineId}. */
+export const MANAGER_MACHINE_ID = /^[0-9a-f]{64}$/;
+
+let managerMachine: string | undefined;
+
+/** This machine as a manager publishes it in `status` and presence (`machine`), and as a caller on
+ *  this machine recognises its own managers: HMAC-SHA256 keyed by the OS machine ID over
+ *  `cotal manager host`, in hex. A host name can change while a manager runs, as macOS renames a
+ *  machine when its network changes; this does not. Throws as {@link osMachineId} does, and on
+ *  Windows when none of the three modules derived the system ID. */
+export function managerMachineId(): string {
+  if (managerMachine) return managerMachine;
+  const id = osMachineId();
+  if (id.platform === "win32" && !id.source) throw new Error("Windows has no TPM, UEFI or registry module to derive this machine's system ID from");
+  return managerMachine = createHmac("sha256", id.bytes).update("cotal manager host").digest("hex");
 }

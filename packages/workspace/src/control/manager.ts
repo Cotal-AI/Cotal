@@ -49,6 +49,7 @@ import { jetstreamManager } from "@nats-io/jetstream";
 import { readBrokerPolicy } from "../broker-policy.js";
 import { c } from "../colors.js";
 import { shellPath } from "../local-record-source.js";
+import { MANAGER_MACHINE_ID } from "../machine-identity.js";
 import { controlCaller, type ControlAuth } from "../control-target.js";
 import { staleStoreHint } from "../maintenance.js";
 import { brokerUrlKey, findMesh } from "../mesh-registry.js";
@@ -911,23 +912,27 @@ export async function refuseWithoutLiveManager(space: string, server: string, au
   }
 }
 
-/** The host one manager instance reports in its own `status`, the name `cotal ps` prints as its
- *  reported host, or undefined when it does not answer or names no well-formed host. Presence
- *  carries no instance id off a user-auth mesh, so this read is where a pinned manager's host comes
- *  from there. The view is the caller's own and is not kept.
+/** The host and the machine one manager instance reports in its own `status`: the name `cotal ps`
+ *  prints as its reported host, and its `managerMachineId`. Each is absent when the manager does
+ *  not answer or names none that is well formed. Presence carries no instance id off a user-auth
+ *  mesh, so this read is where a pinned manager's host comes from there. The view is the caller's
+ *  own and is not kept.
  *
  *  It takes the ordinary control deadline, NOT {@link REPORTED_HOST_BUDGET_MS}. That budget belongs
  *  to the census above, where a host name is display metadata and a slow instance is listed without
  *  one. Here the answer decides whether a launch stops to ask the operator a question, so a read
  *  that gives up early does not lose a column, it asks about a manager that is on this host.
  *  Measured: under heavy load the 2s budget expired and the question came back. */
-export async function reportedManagerHost(client: ControlClient, space: string, server: string, auth: ControlAuth, instanceId: string): Promise<string | undefined> {
+export async function reportedManagerHost(client: ControlClient, space: string, server: string, auth: ControlAuth, instanceId: string): Promise<{ host?: string; machine?: string }> {
   let reply: ManagerReply;
   try {
     reply = await askManager(client, space, server, "managerStatus", undefined, auth, "owner", undefined, { instanceId });
-  } catch { return undefined; }
-  const host = reply.ok ? (reply.data as { host?: unknown } | undefined)?.host : undefined;
-  return typeof host === "string" && HOST_NAME.test(host) ? host : undefined;
+  } catch { return {}; }
+  const { host, machine } = (reply.ok ? reply.data as { host?: unknown; machine?: unknown } | undefined : undefined) ?? {};
+  return {
+    ...(typeof host === "string" && HOST_NAME.test(host) ? { host } : {}),
+    ...(typeof machine === "string" && MANAGER_MACHINE_ID.test(machine) ? { machine } : {}),
+  };
 }
 
 /** A pinned instance the space's registry does not list has nothing behind it to answer, so the

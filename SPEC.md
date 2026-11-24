@@ -396,7 +396,7 @@ Presence is a per-space directory keyed by instance id. NATS binding: JetStream 
 | `description` | string | MAY | one-line summary |
 | `tags` | string[] | MAY | capability tags |
 | `skills` | `AgentSkill[]` | MAY | `{ id, name, description? }` |
-| `meta` | object | MAY | free-form advisory metadata. Reserved flat string keys are `connector` (host harness name), `model` (pinned model), `provider` (effective provider serving the model, connector-reported), `host` (self-reported machine), `cwd`, `repo`, `branch`, `head`, `sessionKind`, `sessionId`, and `terminal` (`stream` or `none`, whether a terminal attaches to the seats this manager starts). `ai.cotal.manager.instance` is the reference connector's holding-manager routing hint, never authority. All are advisory only |
+| `meta` | object | MAY | free-form advisory metadata. Reserved flat string keys are `connector` (host harness name), `model` (pinned model), `provider` (effective provider serving the model, connector-reported), `host` (self-reported machine name), `machine` (a manager's machine id, as §13.9's Manager status metadata defines it), `cwd`, `repo`, `branch`, `head`, `sessionKind`, `sessionId`, and `terminal` (`stream` or `none`, whether a terminal attaches to the seats this manager starts). `ai.cotal.manager.instance` is the reference connector's holding-manager routing hint, never authority. All are advisory only |
 | `protocolVersion` | string | MUST from v0.4 | wire version spoken (§11); `"0.4"` for this revision. Advertisement is the marker at the v0.4 reachability boundary (§13.11): a participant that omits it is pre-0.4 (omission means the pre-0.4 line, where the field was optional) and MUST NOT be addressed on the `ep` rails. A change signal, not negotiation |
 
 An instance MUST refresh its own presence entry on the heartbeat interval, default 2000 ms.
@@ -1084,7 +1084,7 @@ path. Broken and non-directory symlinks MUST be omitted. Roots MUST list existin
 Windows (a root whose inspection fails MUST be omitted), `/` and `/Volumes` on macOS, and `/` on other hosts. Invalid or inaccessible directories
 MUST refuse with `failed-precondition`. Delegated execution MUST refuse before any filesystem
 lookup with the same execution-mode refusal as `resolve-cwd`; NONE MUST refuse with `unimplemented`.
-The Manager cluster revision is 54. The closed `spawn` input accepts optional boolean
+The Manager cluster revision is 55. The closed `spawn` input accepts optional boolean
 `eventPayloads`; revision 48 rejects this field. Revision 50 required `permissionRequests` on every
 `status.connectors` row. Revision 51 removes that field, and its closed status schema rejects a row
 that carries it. Revision 52 requires `prompts` on every `status.connectors` row (§13.7), and the
@@ -1097,6 +1097,8 @@ no terminal input.
 Revision 54 adds the optional booleans `askPermissions` and `reasoningEvents` to the closed `spawn`
 input and requires both on every `status.connectors` row (§13.7). The closed schemas of revision 53
 reject either.
+Revision 55 adds the optional `machine` to the closed `status` output (§13.9, Manager status
+metadata). The closed status schema of revision 54 rejects it.
 
 On such a runtime, a caller-supplied persona `config` override MUST be refused before resolving,
 checking or reading its host path. Every path shape MUST receive `failed-precondition` and the
@@ -4949,11 +4951,21 @@ human or platform-control registration. Tests MUST attempt raw broker writes and
 scans with every guest credential, not merely pass them through trusted-path parsers.
 
 **Manager status metadata.** The Manager `status` contract permits optional string fields
-`host` and `version`. The stock Manager emits its answering process's host name and its own
-running `@cotal-ai/manager` package version, captured at module load. These fields are advisory
-only and MUST NOT grant authority, select a route or determine placement. Callers MUST use
-verified responder attribution for instance identity and accept payloads that omit either field
-without inferring a value from the broker, browser, presence or service registry.
+`host`, `machine` and `version`. The stock Manager emits its answering process's host name, its
+machine id, and its own running `@cotal-ai/manager` package version, captured at module load.
+The machine id is HMAC-SHA256 keyed by the host's OS machine identity (`/etc/machine-id` on Linux,
+the hardware UUID on macOS, and on Windows the system ID Windows derives for the publisher) over
+the ASCII string `cotal manager host`, written as 64 lowercase hex digits. A Manager MUST NOT
+publish the OS identity itself, and omits `machine` when it cannot read that identity. Its
+presence card carries the same value as `meta.machine` (§6). These fields are advisory only and
+MUST NOT grant authority, select a route or determine placement. One use is allowed: a caller on
+the same machine MAY compare `machine` with the value it derives itself to recognise a Manager
+that runs there, for example to offer it as a default or to decide whether to start one. The
+caller still names the instance it calls. It MUST NOT use `host` for this, because a host name
+can change while a Manager runs, and it MUST treat a Manager that names no `machine` as running
+elsewhere. Callers MUST use verified responder attribution for instance identity and accept
+payloads that omit any of these fields without inferring a value from the broker, browser,
+presence or service registry.
 
 **Platform readiness read.** A platform composition learns whether its assigned control manager
 instance is serving through the auth context's readiness read. The trusted auth process answers over
@@ -8193,6 +8205,7 @@ Normative revisions of this document, newest first. Dated snapshots per §11; th
 
 | Date | Revision |
 | --- | --- |
+| 2026-11-24 | **Managers name their machine (§6, §9, §13.9), additive.** The Manager cluster advances to revision 55. Its `status` output gains the optional `machine`, and its presence card's `meta` carries the same value: HMAC-SHA256 keyed by the host's OS machine identity over `cotal manager host`, never the identity itself. A caller on the same machine recognises its own Managers by it, because a host name can change while a Manager runs. The closed status schema of revision 54 rejects the field, so Managers and their callers update together. No subject changes. |
 | 2026-11-23 | **Agents serve the `agent` endpoint on static spaces and open meshes (§13.7, §13.15, §13.21, §13.22, Appendix B), additive.** An agent served its `agent` endpoint only under a user-auth credential, so on a static space or an open mesh nobody could answer its prompts, run its commands, give it a turn, stop its turn or rename it. A static `agent` mint now carries the serve rows and no caller row, whatever its capabilities. The new static `agent-caller` profile holds its inbox, the `owner` row for each command the cluster admits with `owner` over the agents under its own owner, and their reply read, and nothing else. It needs a lifecycle UID, and the auth callout never mints it. A renewal keeps the serve rows its first issuance recorded, so a static agent issued before this change renews byte-identical and serves once it is respawned. On an open mesh every agent serves, and any client calls it with a self-asserted caller, outside the security claims. The Manager's `status.connectors[].prompts` is the connector's declaration on every mesh mode; the Manager cluster revision and its schemas are unchanged. No subject changes. |
 | 2026-11-23 | **Presence says which `agent` endpoint commands a process serves now (§6, §13.22), additive.** Presence gains `agentEndpoint: { interrupt, turn, images, usage }`, four required booleans, under the same gate as `prompts`. The process derives it from what its connector runs at the moment and writes presence when it changes, so a caller can pick the endpoint or another path before it sends anything. A reader drops a record whose `agentEndpoint` is not that shape. While `commands` answers `{ supported: false }`, `turn` now answers `unimplemented` with the cause, as `command` and `interrupt` do, and `usage` answers `{ supported: false }`. `spec/cotal.schema.json` gains `PresenceAgentEndpoint`. No subject, cluster or digest changes. |
 | 2026-11-23 | **Opt-in launch fields for permission prompts and reasoning (§9, §13.7), additive.** The Manager cluster advances to revision 54. Its `spawn` input takes the optional booleans `askPermissions`, which launches the harness asking before it uses a tool so its prompts reach the `agent` endpoint, and `reasoningEvents`, which publishes the model's reasoning on the event plane. Both default off. The manager refuses a field the connector does not declare before any provisioning, refuses `reasoningEvents` without the event plane, and keeps an accepted field with the seat across restarts. Every `status.connectors` row requires both as the connector's declarations, read as false when an installed extension's cache lacks them. No subject changes. |

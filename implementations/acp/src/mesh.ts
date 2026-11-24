@@ -55,8 +55,9 @@ export interface ChannelRow {
 /** A manager the bridge can spawn through. */
 export interface ManagerChoice {
   readonly instanceId: string;
+  /** The host name it reported, shown and never compared. */
   readonly host?: string;
-  /** The manager runs on the host this process runs on. */
+  /** The manager names this machine's id (`managerMachineId`), so it runs on this process's machine. */
   readonly local: boolean;
   /** The manager's presence is current, or, with no presence row to read, it answered for its host.
    *  A registration whose computer is gone can stay listed. */

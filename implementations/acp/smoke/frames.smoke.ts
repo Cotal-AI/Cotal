@@ -21,7 +21,9 @@
  *  - `runningManagers` offers the listed managers whose rail is not gone, and with none left rejects as
  *    a space with no manager does;
  *  - a signed-in person's listed manager with no row under their principal, as the space's own, is
- *    described by the host its rail reports;
+ *    described by what its rail reports;
+ *  - a manager is local only by the machine id it names: this machine's manager under a host name it
+ *    no longer has is local and starts no second one, and another machine's under this host name is not;
  *  - `launchManagers` starts this machine's manager when no listed one is, remote live included, and
  *    fails the thread when the start fails or its manager is still not listed here.
  *
@@ -269,41 +271,75 @@ check("frameOf ignores a frame that another sender put on an agent's event chann
     thrown instanceof NoLaunchManager && thrown.message === "No manager for s is running: the broker reports nothing on the rail of a, b.", thrown);
 }
 
-// A manager as a choice: only a current presence row describes it.
+// A manager as a choice: only a current presence row describes it, and only the machine it names
+// makes it local. HERE stands for this machine's id, THERE for another computer's.
+const HERE = "1".repeat(64), THERE = "2".repeat(64);
 {
-  const row = (id: string, host: string, status: string) => ({ card: { id: `u_p.manager_${id}`, name: id, meta: { host } }, status }) as unknown as Presence;
-  const roster = [row("a", "here", "idle"), row("b", "there", "offline")];
-  const a = managerChoice("a", roster, "here");
-  check("a manager with a current row is live, takes its host, and is local on that host", a.live === true && a.host === "here" && a.local === true, a);
-  const b = managerChoice("b", roster, "there");
+  const row = (id: string, host: string, status: string, machine?: string) => ({ card: { id: `u_p.manager_${id}`, name: id, meta: { host, ...(machine ? { machine } : {}) } }, status }) as unknown as Presence;
+  const roster = [row("a", "here", "idle", HERE), row("b", "there", "offline", THERE), row("e", "here", "idle")];
+  const a = managerChoice("a", roster, HERE);
+  check("a manager with a current row is live, takes its host, and is local when it names this machine", a.live === true && a.host === "here" && a.local === true, a);
+  const b = managerChoice("b", roster, THERE);
   check("an offline row makes a manager neither live nor local, and names no host", b.live === false && b.local === false && b.host === undefined, b);
-  const c = managerChoice("c", roster, "here");
+  const c = managerChoice("c", roster, HERE);
   check("a manager with no row is not live", c.live === false && c.local === false && c.host === undefined, c);
-  const theirs = [({ card: { id: "u_other.manager_d", name: "manager_d", meta: { host: "here" } }, status: "idle" }) as unknown as Presence];
-  const d = managerChoice("d", theirs, "here", "u_p");
+  const e = managerChoice("e", roster, HERE);
+  check("a row that names no machine is not local, whatever its host", e.live === true && e.local === false && e.host === "here", e);
+  const theirs = [({ card: { id: "u_other.manager_d", name: "manager_d", meta: { host: "here", machine: HERE } }, status: "idle" }) as unknown as Presence];
+  const d = managerChoice("d", theirs, HERE, "u_p");
   check("on a signed-in space another owner's agent named after the manager does not describe it", d.live === false && d.local === false && d.host === undefined, d);
-  const mine = managerChoice("a", roster, "here", "u_p");
+  const mine = managerChoice("a", roster, HERE, "u_p");
   check("and the person's own manager row still does", mine.live === true && mine.host === "here" && mine.local === true, mine);
 }
 
-// A signed-in person's listed manager: the space's own shows a row only under its bare NKey id, so the
-// host its rail reports describes it.
+// A signed-in person's listed manager: the space's own shows a row only under its bare NKey id, so
+// what its rail reports describes it.
 {
   const nkey = "UCJ2KVYXP6NPUGAZ4ZQ3JVJ6WQ7K5QOFM4ZQXUMOBQ5RYRYTVLRDUJAN";
-  const spaceRow = ({ card: { id: nkey, name: "manager", meta: { host: "here" } }, status: "idle" }) as unknown as Presence;
-  const own = listedChoice("space", { host: "here" }, [spaceRow], "here", "u_p");
-  check("the space's own manager, whose rail reports this host, is live and local", own?.live === true && own.local === true && own.host === "here", own);
-  const far = listedChoice("space", { host: "there" }, [spaceRow], "here", "u_p");
-  check("and on another host's report it is live and not local", far?.live === true && far.local === false && far.host === "there", far);
-  const quiet = listedChoice("space", {}, [spaceRow], "here", "u_p");
+  const spaceRow = ({ card: { id: nkey, name: "manager", meta: { host: "here", machine: HERE } }, status: "idle" }) as unknown as Presence;
+  const own = listedChoice("space", { host: "here", machine: HERE }, [spaceRow], HERE, "u_p");
+  check("the space's own manager, whose rail reports this machine, is live and local", own?.live === true && own.local === true && own.host === "here", own);
+  const far = listedChoice("space", { host: "there", machine: THERE }, [spaceRow], HERE, "u_p");
+  check("and on another machine's report it is live and not local", far?.live === true && far.local === false && far.host === "there", far);
+  const nameless = listedChoice("space", { host: "here" }, [spaceRow], HERE, "u_p");
+  check("a report that names no machine is not local, whatever its host", nameless?.live === true && nameless.local === false, nameless);
+  const quiet = listedChoice("space", {}, [spaceRow], HERE, "u_p");
   check("a rail that reports no host leaves it neither live nor local", quiet?.live === false && quiet.local === false && quiet.host === undefined, quiet);
-  check("a gone rail offers nothing", listedChoice("space", undefined, [spaceRow], "here", "u_p") === undefined);
-  const mineRow = ({ card: { id: "u_p.manager_a", name: "manager_a", meta: { host: "here" } }, status: "idle" }) as unknown as Presence;
-  const mine = listedChoice("a", {}, [mineRow], "here", "u_p");
+  check("a gone rail offers nothing", listedChoice("space", undefined, [spaceRow], HERE, "u_p") === undefined);
+  const mineRow = ({ card: { id: "u_p.manager_a", name: "manager_a", meta: { host: "here", machine: HERE } }, status: "idle" }) as unknown as Presence;
+  const mine = listedChoice("a", {}, [mineRow], HERE, "u_p");
   check("the person's own manager is described by its row", mine?.live === true && mine.local === true && mine.host === "here", mine);
   let starts = 0;
   const listed = await launchManagers({ space: "s", managers: async () => [own!], startManager: async () => (starts++, "started") }, () => {}).catch((e: Error) => e);
   check("so a new thread there starts no second manager", starts === 0 && Array.isArray(listed) && listed.length === 1, { starts, listed });
+}
+
+// This machine's manager after the machine's host name changed, as macOS renames a machine when its
+// network changes: its presence keeps the name it started with, and its status reports the new one.
+// Both name the same machine.
+{
+  const card = { id: "u_p.manager_mac", name: "manager_mac", meta: { host: "mac-home", machine: HERE } };
+  const roster = [({ card, status: "idle" }) as unknown as Presence];
+  const held = managerChoice("mac", roster, HERE, "u_p");
+  check("same machine, different host name: its row reads local", held.live === true && held.local === true, held);
+  const listed = listedChoice("mac", { host: "mac-cafe", machine: HERE }, roster, HERE, "u_p");
+  check("and as a listed manager it reads local", listed?.live === true && listed.local === true, listed);
+  let starts = 0;
+  const got = await launchManagers({ space: "s", managers: async () => [listed!], startManager: async () => (starts++, "started") }, () => {}).catch((e: Error) => e);
+  check("so a new thread starts no second manager", starts === 0 && Array.isArray(got), { starts, got: got instanceof Error ? got.message : got });
+}
+
+// The mirror: another machine's manager that shows this machine's host name is not local.
+{
+  const card = { id: "u_p.manager_twin", name: "manager_twin", meta: { host: "mac-cafe", machine: THERE } };
+  const roster = [({ card, status: "idle" }) as unknown as Presence];
+  const held = managerChoice("twin", roster, HERE, "u_p");
+  check("same host name, other machine: its row does not read local", held.live === true && held.local === false && held.host === "mac-cafe", held);
+  const listed = listedChoice("twin", { host: "mac-cafe", machine: THERE }, [], HERE, "u_p");
+  check("nor does its rail's report", listed?.live === true && listed.local === false, listed);
+  let starts = 0;
+  const got = await launchManagers({ space: "s", managers: async () => [listed!], startManager: async () => (starts++, "started") }, () => {}).catch((e: Error) => e);
+  check("so a new thread starts this machine's manager", starts === 1, { starts, got: got instanceof Error ? got.message : got });
 }
 
 // Remote live, no local: only another computer's manager is live, so this machine's is started.

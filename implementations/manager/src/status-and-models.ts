@@ -1,6 +1,6 @@
 import { EpEnvelopeError, loadCotalConfig, rejectionText, resolveAuthProvider, spawnEnvAllow } from "@cotal-ai/core";
 import type { Connector, ConnectorModelCatalog, ControlReply, EpCaller } from "@cotal-ai/core";
-import { agentAuthState, agentLifecycleSecretFilePaths, userAuthStateDir } from "@cotal-ai/workspace";
+import { agentAuthState, agentLifecycleSecretFilePaths, managerMachineId, userAuthStateDir } from "@cotal-ai/workspace";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { hostname } from "node:os";
@@ -13,6 +13,21 @@ import type { ManagerStartState } from "./manager-start-state.js";
 
 // Capture the loaded package version before an installation can replace its files.
 export const MANAGER_VERSION = (JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string }).version;
+
+let machineRead: { machine?: string } | undefined;
+
+/** This machine as status and presence name it (`machine`), or undefined when its OS identity
+ *  cannot be read, as in a container without `/etc/machine-id`. Read once and said once. */
+export function hostMachine(): string | undefined {
+  if (!machineRead) {
+    try { machineRead = { machine: managerMachineId() }; }
+    catch (e) {
+      machineRead = {};
+      console.error(`! manager: this machine's identity could not be read, so status and presence name no machine: ${(e as Error).message}`);
+    }
+  }
+  return machineRead.machine;
+}
 
 /** Sentinel owner-filter value that matches NO agent's `userOwner` (owner tokens never contain a
  *  dash) — what {@link Manager.psOwnerFilter} returns for an unparseable caller so a malformed
@@ -199,10 +214,12 @@ export class StatusAndModels {
    *  learn how many seats other owners hold on it. */
   managerStatusData(ownerFilter: string | undefined, setupClaude = false): ManagerStatus {
     this.parts.connectorInventory.refreshUnavailableConnectors(undefined, setupClaude);
+    const machine = hostMachine();
     return {
       instanceId: this.managerInstanceId,
       lifecycleUid: this.config.managerLifecycleUid,
       host: hostname(),
+      ...(machine ? { machine } : {}),
       version: MANAGER_VERSION,
       execution: this.config.execution,
       runtime: this.runtimeKind,

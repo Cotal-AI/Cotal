@@ -17,7 +17,7 @@ import { MANAGER_STATUS_CONTRACT, managerShippedSurface, type ManagerConnectorSt
 
 const { check, finish } = createSuite();
 
-check("the launch fields advance the Manager cluster to revision 54", managerShippedSurface().revision === 54);
+check("the Manager cluster keeps the launch fields at revision 55", managerShippedSurface().revision === 55);
 
 const base = {
   instanceId: "a".repeat(26), execution: "runtime", runtime: "pty", custody: "legacy", runHosting: false,
