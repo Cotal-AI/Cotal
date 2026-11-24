@@ -143,7 +143,7 @@
     },
     {
       "name": "a help flag after -- still asks for help",
-      "file": "implementations/cli/src/command.ts",
+      "file": "implementations/cli/src/lib/leading-flags.ts",
       "find": "  const options = end === -1 ? args : args.slice(0, end);\n",
       "replace": "  const options = args;\n",
       "expectRed": "-h after -- is a word, not a help request",

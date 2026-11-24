@@ -1,7 +1,7 @@
 import { accessSync, constants, existsSync, lstatSync, realpathSync, statSync } from "node:fs";
 import { homedir, hostname } from "node:os";
 import { isAbsolute, join, sep } from "node:path";
-import { agentFilePath, assertLifecycleToken, assertValidChannel, DEFAULT_SERVER, digestIdToken, EpEnvelopeError, eventChannel, eventChannelPrincipal, grantOverreach, grantParts, isIssuedCaller, issuedSpawnerStanding, MAX_SCHEDULE_MS, parsePersonaEndpoints, personaDir, principalKey, registry, rejectionText, renderOnceTask, resolveReadAcl, runDriverCaller, shownSpawner, withIssuerSession, type AgentDef, type Connector, type ControlReply, type CotalEndpoint, type DelegatedGrant, type EpCaller, type EpCapability, type GrantOverreach, type InlinePersona, type IssuedStore, type IssuedSubjectPermissions, type LifecycleStateTransport, type RunAdmission, type RunRevocation } from "@cotal-ai/core";
+import { agentFilePath, assertLifecycleToken, assertValidChannel, DEFAULT_SERVER, digestIdToken, EpEnvelopeError, eventChannel, eventChannelPrincipal, grantOverreach, grantParts, isIssuedCaller, issuedSpawnerStanding, MAX_SCHEDULE_MS, parsePersonaEndpoints, personaDir, personaLinkTarget, principalKey, registry, rejectionText, renderOnceTask, resolveReadAcl, runDriverCaller, shownSpawner, withIssuerSession, type AgentDef, type Connector, type ControlReply, type CotalEndpoint, type DelegatedGrant, type EpCaller, type EpCapability, type GrantOverreach, type InlinePersona, type IssuedStore, type IssuedSubjectPermissions, type LifecycleStateTransport, type RunAdmission, type RunRevocation } from "@cotal-ai/core";
 import { loadLaunchPersonaFile, manifestExtensionNames, PersonaSourceError, resolveAgentType } from "@cotal-ai/workspace";
 import type { KV } from "@nats-io/kv";
 import { inlinePersonaDir } from "./launch.js";
@@ -461,14 +461,15 @@ export class SeatLaunch {
     // This runs BEFORE the spawn path resolves its connector: the file's `agent:` pin participates in
     // the harness choice (flag > file > COTAL_DEFAULT_AGENT > default, #869), which is impossible if
     // the connector is materialized first.
-    let configPath: string;
-    if (opts.config) {
-      configPath = agentFilePath(this.config.workspaceRoot, opts.config);
-      if (!existsSync(configPath)) return { error: `agent file not found: ${configPath}` };
-    } else {
-      configPath = join(personaDir(this.config.workspaceRoot), `${ref}.md`);
-      if (!existsSync(configPath))
-        return { error: `no persona "${ref}" in the catalog of manager ${this.managerInstanceId} on host ${hostname()}: ${configPath} not found; create it there` };
+    const configPath = opts.config ? agentFilePath(this.config.workspaceRoot, opts.config) : join(personaDir(this.config.workspaceRoot), `${ref}.md`);
+    try { statSync(configPath); }
+    catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      const link = code === "ENOENT" || code === "ENOTDIR" ? personaLinkTarget(configPath) : undefined;
+      if (link !== undefined)
+        return { error: `the persona at ${configPath} is a symbolic link to a missing target: ${link}. Restore the link's target on the manager's host, or move the link aside and put a regular persona file in its place.` };
+      return { error: opts.config ? `agent file not found: ${configPath}`
+        : `no persona "${ref}" in the catalog of manager ${this.managerInstanceId} on host ${hostname()}: ${configPath} not found; create it there` };
     }
     // An inline snapshot belongs to its own seat's lifecycle, which removes it at retirement and
     // refuses a restart once it changed, so no other launch may read it. Compared after symlinks

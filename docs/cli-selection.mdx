@@ -33,7 +33,8 @@ cotal use [<space> | --clear] [--json|--plain]
 `space` lists the spaces this machine can reach: each one's broker state, server, mode, origin
 (`started here`, `registered` or `discovered`) and root, with the selected one marked. Inside a
 project whose root has one running registered space other than the automatically adopted selection,
-that space is marked as this folder's, since a command without `--space` targets it there. It probes
+that space is marked as this folder's, since a command without `--space` targets it there. An offline
+registration at the same root stays listed but does not prevent that marker. The listing probes
 each broker that this machine started or that was registered by hand, and reports one that does not
 answer as `unreachable` when the connection fails, or `not answering` when it times out.
 A stopped local listener is reported as `broker process is stopped`. Its registration stays.
@@ -46,12 +47,12 @@ With no name it is about this folder: the space it has registered, else the one 
 stopped, else the selected one. `space show` also finds a registration at the nearest enclosing
 root without a `.cotal` folder. If that root has several registrations, `space show` refuses with
 `TARGET_AMBIGUOUS`, exit 2, and gives a `cotal space show <name>` command for each instead of using
-the selection. This does not change what other commands target. If `cotal use`
-explicitly selected a different space, `space show` says that commands such as `cotal who` still
-target the selection here. Pass `--space <name>` to target the folder's space instead. Neither
-`space` nor `space show` writes anything. Both refuse an invalid registry record with
-`SCHEMA_INVALID`, exit 1, and name its file. If this account lacks read access to a registration,
-they refuse with `PERMISSION_DENIED`, exit 2, and tell you to restore read access.
+the selection. The retries keep `--json` or `--plain` when requested. This does not change what
+other commands target. If `cotal use` explicitly selected a different space, `space show` says
+that commands such as `cotal who` still target the selection here. Pass `--space <name>` to target
+the folder's space instead. Neither `space` nor `space show` writes anything. Both refuse an invalid
+registry record with `SCHEMA_INVALID`, exit 1, and name its file. If this account lacks read access
+to a registration, they refuse with `PERMISSION_DENIED`, exit 2, and tell you to restore read access.
 If bare `space show` needs the saved selection and its file is empty or unreadable, it refuses with
 `SCHEMA_INVALID`, exit 1, like bare `cotal use`. Clear the selection with `cotal use --clear` or
 select a known space again. The inventory still lists spaces and warns with `MESH_REGISTRY_UNREADABLE`.
@@ -90,38 +91,44 @@ Forget releases the stopped stack definitions and leaves the project data in pla
 When no matching journal is found, the listing marks the missing folder `(no longer exists)` and
 names forget and plain create instead.
 
-`space add` registers a space that runs elsewhere, so `--space` and `use` can reach it. A name
-`space create` refuses, such as one that starts with `-` or holds a `*`, given or named by a bundle,
+`space add` registers a space that runs elsewhere, so `--space` and `use` can reach it. If you omit
+the name from a registration using `--server`, insert it after `add` and keep the rest of the command.
+A name `space create` refuses, such as one that starts with `-` or holds a `*`, given or named by a bundle,
 refuses with `USAGE_INVALID`, exit 1, before anything is written. With
 `--server`, the trust comes from `--root`'s `.cotal/auth`, and the mode is `auth` when that folder
 holds the space's trust, `open` otherwise. `--root` defaults to this project. Outside one it is
 required, and the inventory includes it in the registration command and explains what folder to pass.
 Leaving it out is a one-line `USAGE_INVALID` refusal. An open space keeps no credentials there, so
-any existing folder will do. An auth space needs the folder whose `.cotal/auth` holds its trust.
+its folder must exist but can be empty. An auth space needs the folder whose `.cotal/auth` holds its trust.
 With `--file`, a user-auth connection bundle exported
 where the space runs supplies the login pins and the server, unless `--server` names another
-address for that broker; `--from` fetches the space's discovery
-document instead, after you agree to the fetch, and needs a terminal. Before anything is written,
+address for that broker. `--from` fetches the space's discovery document only after you agree in an
+interactive terminal. It refuses before fetching if stdin or stdout is not a terminal, or if
+`--json`, `--no-input`, or `COTAL_NO_PROMPT=1` disables prompts. Use `--file <bundle.json>` instead
+of `--from <url>` in scripts or to keep JSON output. Before anything is written,
 `space add` checks that the address may carry credentials, that the trust composes, that the
 broker enforces the mode, and that the credentials open the space; a user-auth space's exchange
 must answer as the issuer it pins. An open broker answers for any name, so an open space must also
 be one the broker serves, as its streams show. A name it does not serve is refused with
-`TARGET_NOT_FOUND`, exit 2, naming the spaces it does serve. On a terminal it then shows what it will trust and asks; `--yes`
-skips that question, but not the confirmation of fetched pins. It never changes the selection.
+`TARGET_NOT_FOUND`, exit 2, naming the spaces it does serve. When run in a terminal, it shows what
+it will trust and asks before writing a registration. `--yes` skips that question, but not the
+confirmation of fetched pins. It never changes the selection.
 
 A refusal writes nothing and carries its code: `USAGE_INVALID` or `SCHEMA_INVALID` (exit 1) for
 input, and `CONFLICT`, `TARGET_UNAVAILABLE`, `TARGET_NOT_FOUND`, `DEPENDENCY_UNAVAILABLE`,
-`UNSUPPORTED`, `AUTH_REQUIRED` or `PERMISSION_DENIED` (exit 2) for what the checks found. A name that is already
-registered is a `CONFLICT` unless it is an unchecked registration being verified in place or a
-registration added by hand being replaced with `--force`. A broker that does not answer is a
+`UNSUPPORTED`, `AUTH_REQUIRED` or `PERMISSION_DENIED` (exit 2) for what the checks found. A name
+that is already registered is a `CONFLICT` unless `--server` checks a matching manual registration
+in place or `--force` replaces a manual registration. A broker that does not answer is a
 `TARGET_UNAVAILABLE`. For a new registration, its remedy offers `--force`.
-A broker that requires auth, with a `--root` that holds another space's trust, is a
-`DEPENDENCY_UNAVAILABLE` that names the space the folder holds.
+When adding a broker that requires auth, a `--root` that holds another space's trust gives
+`DEPENDENCY_UNAVAILABLE` and names the space the folder holds.
 When no broker answers at `--server`, or at a bundle's server, the `TARGET_UNAVAILABLE` refusal says
 whether its host name resolves and whether anything took a connection at its port. When a broker
 answers there under another scheme, such as `nats://` for a `tls://` address, the remedy names that
 address, and says when it has no TLS. A port that takes no connection gets the port check as its
-remedy. For `--server`, the `--force` route follows either one.
+remedy. For a new `--server` registration, the `--force` route follows either one. If a recheck
+finds a different transport on the recorded port, restore the listener with its recorded transport
+and rerun the same check. Changing the URL would conflict with the existing registration.
 `--force` replaces a registration added by hand, never one this machine started or a catalog lists,
 and adds a `--server` space without checking its broker, which suits a
 space that is down right now; a user-auth space is always checked. Such a registration records that
@@ -131,9 +138,15 @@ If its broker does not answer, `space show` tells you to wait and check again. O
 answers, `space show` prints a `space add` command without `--force` that checks the recorded broker,
 root, mode and transport settings in place. A trailing slash on a NATS URL or another path to the
 same root directory does not prevent this check. The command quotes the root when the shell would otherwise split
-or expand it. A failed check keeps the unchecked record and the selection.
-Declining the question is a `no-op` with a `USER_CANCELLED` warning. `--json` gives the registration under `space`, in the
-shape `space show` gives, with `verified` and `replaced`.
+or expand it. With the same broker, root, mode and transport policy, repeating `space add --server`
+without `--force` checks the broker again. If the record was already checked and the check passes,
+the command reports that the space is already registered and exits 0 without rewriting it. A failed
+check keeps the record and the selection. If the broker for an open registration now requires auth,
+restore the open broker at that address and rerun the same check. If the broker no longer serves the
+space, start or restore the space on that broker, then retry the check without `--force`.
+Declining the question is a `no-op` with a `USER_CANCELLED` warning. `--json` gives the registration
+under `space`, in the shape `space show` gives, with `verified` and `replaced`. A successful recheck
+of an already checked registration reports `outcome: "no-op"`, `verified: true` and `replaced: false`.
 
 
 ### Connection bundle export
@@ -281,7 +294,8 @@ writes nothing: the registration, the selection and the root's files stay. A spa
 deleted while it ran also refuses with `LIFECYCLE_BLOCKED` and keeps its record. A controller stack
 whose instance records show a member still running names `cotal down --space <space> --yes`. Any
 other such space refuses while something still listens at its recorded broker address that no other
-registration names, and names the process listening there to stop. If only the registration is
+registration names. The address alone cannot identify the process. Leave an unrelated listener running.
+Retry when the address is free or after restoring the original project folder. If only the registration is
 missing, forget still refuses while a stack member runs. When the journal and running broker let
 `down` rebuild the registration, the refusal names `cotal down --yes` in the stack's root. If the
 folder is gone, it names `cotal down --space <space> --yes` instead. If no stop can be determined
@@ -474,7 +488,8 @@ the space instead, run `cotal down --yes` in its root, then `space forget`. On a
 `cotal down`, then `cotal up` to start it again with empty streams.
 
 `use <space>` selects the space commands target when none is named, in every
-project folder. It changes only the selection:
+project folder. For a retained name beginning with `-`, `space show` puts `--` before the name in
+its selection hint, as in `cotal use -- -old`. The command changes only the selection:
 it starts nothing and does not check the broker, so a stopped or prepared space can be selected and
 the command that targets it reports that. Selecting the explicit selection again is a `no-op`; selecting an adopted selection promotes it to explicit. A name that is not
 registered or prepared is refused with `TARGET_NOT_FOUND`, exit 2, naming the known spaces, and the
@@ -526,7 +541,9 @@ by the first `up`, registration or sign-in, or when nothing is selected.
 A folder's space captures the commands run there only while it runs. Inside a project whose root has
 one registered space other than the selection, and whose broker answers, the command targets that
 space, as it does with nothing selected, and the note under its `Mesh:` heading, a refusal's
-included, says the selection applies outside the folder. A space `cotal space create` prepared there
+included, says the selection applies outside the folder. If the selection was adopted automatically,
+offline registrations do not prevent the folder's only running space from taking precedence.
+A space `cotal space create` prepared there
 and no `cotal up` started, and one whose stack there is stopped, is the target of the commands about
 the folder itself only: `cotal up`, `cotal down`, `cotal space show` and the folder part of
 `cotal status`. `cotal auth revoke-credential` also targets the stopped one, because that space's
@@ -564,8 +581,10 @@ back to the selection.
 A `--server` URL with a user name or password in it, such as `nats://<user>:<password>@<host>:<port>`,
 is refused with `USAGE_INVALID`, exit 1, by every command that takes `--server`, before anything is
 read, written or dialed. The refusal does not repeat the value. The NATS client uses only the host
-and port of that URL, so the command would otherwise connect with the credential it resolves. Pass
-that credential with `--creds`, a login or the space's own trust instead. `up` refuses such a URL
+and port of that URL. Remove the user name and password, keeping the same broker address. For an
+authenticated space, use its login or trust, or a credential file on commands that accept one for
+connections. `space add` does not take `--creds`. `whoami --creds` inspects the file on its own;
+leave out `--creds` to inspect the identity for a broker address. `up` refuses such a URL
 with its own message. The manager reads `COTAL_SERVER` when `--server` is unset, and refuses a
 `COTAL_SERVER` with a user name or password the same way, naming `COTAL_SERVER`. `space add` and
 `meshes add` refuse such a server in a connection bundle, and the `meshes add` prompt refuses one
@@ -795,6 +814,8 @@ After a completed stop, Next names `cotal up --no-manager` instead if the stop r
 or the broker's payload limit is too low to start one.
 If the recorded broker address is occupied after a completed stop, `status` and `history` name the
 address and explain how to free it before restarting. The stack keeps its address.
+If a legacy `.cotal/nats.pid` file blocks a controller restart, `status` and `ps` name the file
+and give the same verification step as [startup](cli-startup.mdx#controller-recovery).
 A space that never started still reads as prepared but not started. If its default `.cotal/channels.json`
 blocks the first start, `status` and `ps` name the file and the repair. If a refused first start
 recorded a broker address and the address is still in use, `status` names how to free it or start
@@ -809,7 +830,8 @@ Instances are listed by definition name, then instance ID, in the text and in
 `result.services.instances`, so their order holds from one start to the next.
 Full instance IDs and execution hosts stay visible. Process observations and historical readiness
 are separate columns; neither a saved serving state nor a supervisor receipt becomes a fresh
-endpoint response or OS unit-state check. Legacy PID-file rows are labeled separately. On a root
+endpoint response or OS unit-state check. On Linux, an exited process is gone even while its parent
+has yet to reap it. Legacy PID-file rows are labeled separately. On a root
 whose controller stack serves the selected space, its members are the `stack-` rows here, the
 legacy rows and the stored-state hint are omitted from the text report. When the stack does not
 answer or a member's
@@ -837,8 +859,11 @@ folder note that names `cotal status`. A stack there whose
 last `up` or `down` has no recorded outcome and that is not blocked settles when it starts, so Next
 names the `cotal up` that starts it there.
 `--json` carries the same as `folder.stackBlock`. A manager stop is decided by the manager's own
-receipts, which only `up` and `down` read, so `status` does not name it. An `up` or `down` that was
-interrupted before it recorded an outcome, and left some members running and others stopped, is
+receipts, which only `up` and `down` read, so `status` does not name it. When `status` verifies
+that a controller startup still holds the root's maintenance lock, it reports `Startup in progress`.
+Wait for startup to finish, then run the status command shown under Next.
+An `up` or `down` that was interrupted before it recorded an outcome and left some members running
+and others stopped is
 named under the selected space as `Half started` or `Half stopped`, with the members on each side.
 Next then offers the command that finishes it first: `cotal up --root <root>` for an `up`, with
 the root shell-quoted when needed and `--no-manager` kept when it was chosen, or
@@ -1376,6 +1401,9 @@ That exit replaces the report's own, so a partial report followed by a clean pas
   A cleanly stopped controller target reports `absent` and exits `1` without dialing another space.
   If its store is not writable or its broker address is occupied, the target row names what to fix
   before restarting.
+  Inside a renamed open project without a saved selection, the check reports `target refused` when
+  the journal matches the local registration and the recorded project folder is gone. It keeps the
+  move-back guidance and reports `reachable` if the broker answers.
   For open and static-auth plaintext NATS targets with no absent local process, the probe also checks JetStream and the
   recorded authentication requirement. An unauthenticated substitute for a static-auth broker
   is not reported as serving. When the address and process identity match this space's running

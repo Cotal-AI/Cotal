@@ -270,11 +270,13 @@ With `-d --json`, an invalid agent name or a local resume that needs `--on` prod
 `spawn` refuses `--allow-stale` with "manifest deployment options belong to `cotal team deploy <file>`, not spawn".
 `--runtime` is a per-seat choice on a managed launch. Omitted, the seat uses the runtime that manager
 was started with. To run in this terminal, omit `--runtime`. Omit `--json` or `--plain` too, unless
-you are previewing. To keep `--runtime`, replace `--foreground` with `-d`, or use `--on <instance>`
-without `--foreground` to attach. For a structured launch receipt with a manager pin, use both `-d`
-and `--on <instance>`. `auto` names a manager's own runtime, so it is refused for one seat. Any other
-runtime has to be installed and reachable on the host the manager runs on, and the CLI can check
-that only when that host is this machine. When the launch can reach only this root's own manager,
+you are previewing. To keep `--live-only`, omit `--runtime` and stay in this terminal. To keep
+`--runtime`, remove `--live-only` so the launch does not skip the durable backstop. Replace
+`--foreground` with `-d`, or use `--on <instance>` without `--foreground` to attach. For a
+structured launch receipt with a manager pin, use both `-d` and `--on <instance>`. `auto` names a
+manager's own runtime, so it is refused for one seat. Any other runtime has to be installed and
+reachable on the host the manager runs on, and the CLI can check that only when that host is this
+machine. When the launch can reach only this root's own manager,
 because `--on` names it or it is the only manager running, the CLI resolves the runtime through the
 installed-extension lookup `up --runtime` uses. An unknown, uninstalled or unreachable runtime is
 then refused `DEPENDENCY_UNAVAILABLE`, exit 2, before the launch is sent, and for a known runtime
@@ -332,18 +334,24 @@ missing target, the preview warns that the launch cannot write the default and e
 launch refuses with `TARGET_NOT_FOUND` (exit 2). Restore the target or move the link aside before
 retrying. Neither command replaces the link. A direct preview refuses other missing
 personas with `TARGET_NOT_FOUND` (exit 2).
+If a persona link has no reachable target because a path component is missing or is a regular
+file where a folder is needed, the launch names the link and its target. Restore the target or
+move the link aside and put a regular persona file in its place. For a managed launch, make the
+repair on the manager's host.
 When a managed launch is refused because the chosen
 manager's catalog has no such persona, the refusal names that manager, its host and the catalog file
 to create there. The next step gives the spawn again with `--on` for each of your other live managers
 whose catalog lists it. If the default is missing and no other manager has it, the next step gives a complete
 `cotal persona create default` command to run in the displayed project on the manager's host. Run the
 spawn again after creating the persona. You do not need to restart the manager. The launch flags
-override the file. On a user-auth mesh the
+override the file. If a launch in this terminal refuses the frontmatter name, its retry uses
+`--name` and keeps the other launch options. It does not change the persona file. On a user-auth mesh the
 effective name is also the agent's actor token, so it must match the token grammar (no `-`) and stay
 within 64 characters; the spawn is refused with that explanation before any request is sent. A spawn runs the agent attached
 to your terminal; `--detach` and `--on` hand the launch to a manager. If a detached launch finds the
 agent already running on a known manager, it starts nothing and shows an attach command for that
-space and manager. Every mode gets the durable
+space and manager. The attach command keeps an explicit `--server` address, so it also works
+from a CLI home where the open mesh is not registered. Every mode gets the durable
 backstop on a mesh that runs the delivery daemon; `--live-only` skips it for a spawn in this
 terminal (messages posted while it is disconnected are then not replayed). A foreground exit retires
 the agent's creds and broker footprint, like a manager despawn. On a static-auth mesh its creds file
@@ -383,8 +391,12 @@ A field you leave unset is not sent, so it never causes that refusal.
 
 `cotal start` refuses without installing connectors. To migrate `cotal start --config default --name example`,
 run `cotal spawn default --detach --name example`. For a persona file, run
-`cotal spawn --detach --file <persona-file>` and keep the other launch options.
+`cotal spawn --detach --file <persona-file>`.
 
+If your old command used `--live-only`, use `--foreground` in place of `--detach` and keep
+`--live-only`, for example `cotal spawn default --foreground --name example --live-only`.
+Manager launches (`--detach` or `--on`) do not accept `--live-only`. With a foreground spawn,
+`--json` and `--plain` are available only with `--dry-run`.
 
 ### Manager capacity
 
@@ -516,8 +528,10 @@ cotal persona show <name> [--json|--plain]
 cotal persona create <name> --file <persona.md>
 cotal persona create <name> --prompt <text> --subscribe <a,b> [--allow-subscribe <a,b>] [--allow-publish <a,b>]
 cotal persona edit <name> [--json|--plain]
-cotal persona remove <name> --yes
+cotal persona remove <name> --yes [--json|--plain]
 ```
+
+If removal cannot prompt, the suggested confirmation keeps your target and output format.
 
 `cotal personas` is the earlier parser for the same catalog and is a legacy command. It still
 runs, and `cotal help personas` still prints its help, but `cotal help` no longer lists it and
@@ -546,7 +560,10 @@ Quote a name with spaces: `cotal persona show 'a b'` reads `.cotal/agents/a b.md
 not `review.md` in the project root.
 If a catalog name starts with `-`, put options before `--` and the name after it, as in `cotal persona show --json -- -reviewer`.
 Local create and show reports use that form in their follow-up commands and keep explicit `--space` and `--server` selectors.
-If `persona show` cannot find the name, its suggested list command keeps those selectors too.
+The local list keeps those selectors in its suggested show, create and process commands.
+When local `show`, `edit` or `remove` cannot find the name, the suggested list command keeps
+those selectors and the requested `--json` or `--plain` format. The legacy `personas` commands
+also keep the selected catalog in that lookup.
 Local creation uses the catalog name as the default agent name. Choose a name that starts with a
 letter, digit or `_`. A leading hyphen is refused with `USAGE_INVALID` before anything is written.
 Creation accepts one of `--file/-f` (a complete [agent file](agent-files.mdx)), `--prompt`, or
@@ -554,6 +571,8 @@ Creation accepts one of `--file/-f` (a complete [agent file](agent-files.mdx)), 
 paths refuse with `USAGE_INVALID`, exit 1, before reading files or resolving the catalog.
 An absent local input file refuses with `TARGET_NOT_FOUND`, exit 2. Check the path or pipe the input
 with `--file -` for a complete definition or `--from -` for the body.
+A directory passed to either flag also refuses with `TARGET_NOT_FOUND`, exit 2, and names the directory.
+Pass the path to a complete persona file with `--file` or to a body file with `--from`.
 With `--from -`, local creation waits for the pipe to close before saving the body.
 Body files and standard input from `--from` must be valid UTF-8. Invalid input is refused with
 `SCHEMA_INVALID` before any persona is written. Convert the input to UTF-8 and retry.
@@ -582,20 +601,23 @@ token of letters, digits, `_` and `-` is refused, `USAGE_INVALID` from `--role` 
 from a file's `role`. Each entry of `--subscribe`, `--allow-subscribe` and
 `--allow-publish` must be a valid channel name, written without `#`, and each `--subscribe` channel
 must be within `--allow-subscribe` when it is given, or creation refuses with `USAGE_INVALID`,
-naming the flag and the entry. `--harness` must name a harness this machine knows, as
+naming the flag and the entry. For a channel starting with `#`, create and spawn suggest the
+spelling without leading `#` characters only if it is a valid channel. `--harness` must name a harness this machine knows, as
 `config set harness` requires, or creation refuses with `USAGE_INVALID` and writes nothing.
-Create and edit refuse a definition over 1 MiB with `SCHEMA_INVALID`, the bound a create on a
-manager applies to its input, and an edit keeps that draft and names it.
+Create and edit refuse a complete definition over 1 MiB with `SCHEMA_INVALID`. The limit includes
+frontmatter, even when `--from` supplies only the instructions. An edit keeps the oversized draft
+and names it. Creation on a manager applies the same byte limit to its input.
 Creation refuses an existing definition with `CONFLICT`. The suggested edit and removal commands
 keep any explicit `--space` or `--server` flags. A name that differs from an existing one only in
 case also refuses with `CONFLICT`, since a case-insensitive file system holds the two as one file.
-The suggested edit keeps the explicit target flags in this case too.
+The suggested edit keeps the explicit target flags in this case too. If only the filename extension
+has different casing, such as `.MD`, choose another name. Catalog commands use lowercase `.md`.
 Mutation receipts contain names and paths, not bodies.
 A persona file that is a symbolic link is listed with a `PERMISSION_DENIED` warning that names the
 file it links to. `spawn` can read that file, but `persona show`, `edit` and `remove` refuse the link
 with `PERMISSION_DENIED`. If the target is a readable regular file, the refusal suggests copying it
-in place of the link. If the target is missing, restore it if you still need it, or move the broken
-link aside and put a regular persona file in its place.
+in place of the link. If the target is missing, move the link aside and put a regular persona file
+in its place. To use the original definition, restore the target and use a copy of it.
 If `.cotal/agents` is a file or a link that loops, catalog operations refuse it with `CONFLICT`.
 Move it aside. To read or edit existing definitions, restore their folder at `.cotal/agents`.
 To create a persona, retry the original create command with its source and target options.
@@ -615,10 +637,13 @@ Any other value runs as a shell command. With no editor set, or one that cannot 
 editing refuses with `DEPENDENCY_UNAVAILABLE` (exit 2)
 and names the setting to fix. The draft's private folder is made in the temporary directory
 (`TMPDIR`). One this account cannot write refuses with `PERMISSION_DENIED`, and one that is missing
-or not a directory with `TARGET_UNAVAILABLE`, both exit 2 and naming it before anything is made. A
+or not a directory with `TARGET_UNAVAILABLE`, both exit 2 and naming it before anything is made.
+If the temporary directory is on a read-only file system, choose a writable temporary folder.
+If the catalog itself is on a read-only file system, it must be writable before saving. A
 successful editor exit and valid definition are required before saving. A draft that fails
 validation is refused with `SCHEMA_INVALID` and the reason, keeping the draft and naming its path,
-so the edit is not lost. The retry command keeps any explicit `--space` or `--server` flags.
+so the edit is not lost. The retry command keeps any explicit `--space` or `--server` flags
+and the requested `--json` or `--plain` output.
 An editor that exits non-zero, as vim's `:cq` does, cancels the edit: it
 exits 0 with a `USER_CANCELLED` warning, saves nothing, and keeps and names a draft it changed. An
 editor ended by a signal fails with `OPERATION_FAILED` and keeps the draft. A SIGINT, SIGTERM or
@@ -660,6 +685,8 @@ Removing the seeded `default` persona says so in the question and the receipt, s
 `cotal spawn` launches it, and names what writes a fresh copy: a local `cotal up` in its root,
 `cotal space create` or `cotal setup`.
 Plain confirmation uses numbered choices. Scripts and JSON removal require `--yes/-y`.
+The browse command in a successful removal receipt keeps any explicit `--space` and `--server`
+selectors so it lists the catalog that changed.
 
 The legacy `personas` parser remains available during migration: `list [-v] [--running]`,
 `show`, `edit`, `new` and `rm --force`. Each named operation takes one persona name; `list` takes none.
@@ -688,7 +715,10 @@ when its output is piped or redirected, so
 name no persona can have with the codes `persona show` uses. Only its explicit `--running` overlay
 connects to the mesh.
 That overlay checks the mesh even if the local catalog is empty and refuses if the mesh cannot be reached.
-It heads the list with the mesh it read and marks each persona `running` or `not running`.
+It heads the list with the mesh it read and marks each persona `running` when a live presence entry
+matches the file's `name:` field, or `not running` when none matches. The list shows the catalog
+filename as the selector. The match does not verify which persona a session loaded or track a session
+launched under a different display name.
 
 
 ### Personas on an exact manager [#personas-on-an-exact-manager]

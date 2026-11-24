@@ -220,6 +220,14 @@ export function observeServiceProcess(value: ServiceInstance): ServiceProcessSta
   if (current.platform === "win32") return observeCustodiedProcess(value);
   if (current.boot !== value.host.boot) return "previous-boot";
   if (!value.process) return value.state === "failed" || value.state === "stopped" ? "gone" : "unresolved-launch";
+  if (process.platform === "linux") {
+    try {
+      const stat = readFileSync(`/proc/${value.process.pid}/stat`, "utf8");
+      const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
+      // Match the recorded start time in the same read that shows the process has exited.
+      if (fields[19] === value.process.token && /^[ZXx]$/.test(fields[0] ?? "")) return "gone";
+    } catch { /* Keep the identity verdict when procfs cannot be read. */ }
+  }
   const observed = assertRecordIdentity(value.process);
   return observed.kind === "match" ? "running" : observed.kind === "gone" ? "gone" : observed.kind === "mismatch" ? "foreign-pid" : "unreadable";
 }

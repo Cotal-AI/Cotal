@@ -1069,7 +1069,7 @@
   "cli:spawn--space": "current:spawn",
   "cli:spawn--subscribe": "current:spawn --subscribe",
   "cli:spawn--variant": "current:spawn --variant",
-  "cli:start": "internal:removed-command notice pointing to spawn --detach",
+  "cli:start": "internal:removed-command notice pointing to spawn",
   "cli:status": "current:status",
   "cli:status--all": "current:status --all",
   "cli:status--components": "pending:service",

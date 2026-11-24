@@ -1,6 +1,6 @@
 import { resolve } from "node:path";
 import { credsClaims, dlvStream, dmStream, principalKey, resolveAuthProvider, spacePrefix, type FlagSpec, type FlagValues, type ParsedArgs, type UserAuthStatus } from "@cotal-ai/core";
-import { authDir, brokerAddressForDisplay, brokerUrlKey, recordOperationSpace, CLI_USER_ACTOR, CommandFailure, findMesh, hasUserAuthState, isMeshRegistryError, isWorkspaceTargetError, jsonFlag, loadSpaceAuth, MeshTargetError, plainFlag, presentationOf, readCredsFile, recordedRevocation, resolveMeshTarget, serverFlag, spaceFlag, spaceInCreds, userAuthStateDir, workspaceSecretStore, writeResult, type Cell, type OutputWarning, type Presentation, type Report, type Section } from "@cotal-ai/workspace";
+import { authDir, brokerAddressForDisplay, brokerUrlKey, recordOperationSpace, CLI_USER_ACTOR, CommandFailure, findMesh, hasUserAuthState, isMeshRegistryError, isWorkspaceTargetError, jsonFlag, loadSpaceAuth, MeshTargetError, plainFlag, presentationOf, readCredsFile, recordedRevocation, resolveMeshTarget, serverFlag, spaceFlag, spaceInCreds, userAuthStateDir, workspaceErrorParts, workspaceSecretStore, writeResult, type Cell, type OutputWarning, type Presentation, type Report, type Section } from "@cotal-ai/workspace";
 import { registryFailure } from "../lib/registry-errors.js";
 import { shellWord } from "../lib/endpoint-errors.js";
 import { displayRemedy } from "../lib/self-exec.js";
@@ -91,9 +91,12 @@ export async function whoami(args: ParsedArgs): Promise<void> {
   try { t = resolveMeshTarget(process.cwd(), { server: v.server, space: v.space }); }
   catch (error) {
     if (isMeshRegistryError(error)) throw registryFailure(error);
-    const prepared = isWorkspaceTargetError(error) && error.code === "not-started" && v.server === undefined && !error.details.rootMissing ? error.details : undefined;
-    if (prepared?.space === undefined || prepared.root === undefined || hasUserAuthState(prepared.root, prepared.space, { readOnly: true })) throw error;
-    return writePrepared(presentation, prepared.space, prepared.root);
+    if (!isWorkspaceTargetError(error) || error.code !== "not-started" || v.server !== undefined) throw error;
+    const { space, root, rootMissing, stopped, unsettled } = error.details;
+    if (space === undefined || root === undefined || rootMissing || hasUserAuthState(root, space, { readOnly: true })) throw error;
+    const hint = stopped || unsettled ? workspaceErrorParts({ kind: "target", error }) : undefined;
+    return writePrepared(presentation, space, root, hint?.remedy ? `${hint.message} - ${hint.remedy}` : hint?.message,
+      stopped !== undefined && unsettled === undefined);
   }
   // A folder whose records name no space is refused by the resolver, so it is never reported as the
   // held default.
@@ -280,9 +283,9 @@ function credentialView(r: WhoamiCredentialResult): Report {
   return { sections: [{ title: "Credential", blocks: [{ kind: "fields", rows }, { kind: "lines", lines: [hint] }] }] };
 }
 
-/** A prepared space no `up` has started has no broker and no mode yet, so whoami reports the identity
- *  its folder's trust gives it: the space signer when the root holds it, else none. */
-function writePrepared(presentation: Presentation, space: string, root: string): void {
+/** Without a running registration, report the identity this folder's trust gives it: the space
+ *  signer when the root holds it, else none. */
+function writePrepared(presentation: Presentation, space: string, root: string, hint = `this space is prepared and not started; start it with \`cotal up\` in ${root}`, stopped = false): void {
   recordOperationSpace(space);
   let signer: boolean;
   try { signer = loadSpaceAuth(authDir(root), space) !== undefined; }
@@ -291,7 +294,7 @@ function writePrepared(presentation: Presentation, space: string, root: string):
   const result: WhoamiResult = signer
     ? { ...base, identity: { kind: "space-signer", ...none }, read: "all", post: "all", dms: true, capabilities: "all" }
     : { ...base, identity: { kind: "no-credential", ...none }, read: [], post: [], dms: false, capabilities: [] };
-  writeResult(presentation, { command: "whoami", target: { space, root }, result }, (r) => whoamiView(r, root));
+  writeResult(presentation, { command: "whoami", target: { space, root }, result }, (r) => whoamiView(r, hint, stopped));
 }
 
 const grantText = (g: Grant | null, empty: string): Cell =>
@@ -305,11 +308,11 @@ const KIND_TEXT: Record<WhoamiResult["identity"]["kind"], string> = {
   unknown: "unknown: this address is not registered here, and whoami does not contact the broker",
 };
 
-function whoamiView(r: WhoamiResult, preparedRoot?: string): Report {
+function whoamiView(r: WhoamiResult, startupHint?: string, stopped = false): Report {
   const id = r.identity;
   const rows: (readonly [string, Cell])[] = [
     ["space", { text: r.space, tone: "selected" }],
-    ["server", r.server ?? { text: "not started", tone: "waiting" }],
+    ["server", r.server ?? { text: stopped ? "stopped" : "not started", tone: "waiting" }],
     ["identity", id.kind === "user" && !id.subject ? "not signed in" : r.modeChecked === false ? { text: `${KIND_TEXT[id.kind]}, if the broker is ${r.mode} as registered; that was not checked`, tone: "waiting" } : KIND_TEXT[id.kind]],
   ];
   if (id.kind === "user") {
@@ -320,7 +323,7 @@ function whoamiView(r: WhoamiResult, preparedRoot?: string): Report {
   const hints: Cell[] = [];
   if (id.kind === "user" && !id.subject) hints.push({ text: "sign in with `cotal login`", tone: "hint" });
   else if (id.grant === "not-granted") hints.push({ text: "the space's operator grants this identity with `cotal actor grant cli`", tone: "hint" });
-  if (preparedRoot !== undefined) hints.push({ text: `${displayRemedy("this space is prepared and not started; start it with `cotal up`")} in ${preparedRoot}`, tone: "hint" });
+  if (startupHint !== undefined) hints.push({ text: displayRemedy(startupHint), tone: "hint" });
   else if (id.kind === "no-credential") hints.push({ text: "commands against this space need `--creds <file>`", tone: "hint" });
   const identity: Section = { title: "Identity and access", blocks: [{ kind: "fields", rows }, ...(hints.length ? [{ kind: "lines" as const, lines: hints }] : [])] };
   return { sections: [identity] };

@@ -203,6 +203,10 @@ const gate = (positionals: string[], values: Record<string, string | boolean> = 
   }
   const local = gate(["journal"], { local: true, space: "beta", endpoint: "worker", limit: "5", plain: true });
   c("the local lookup retains its endpoint and leaves the journal limit for the read", isCommandFailure(local) && local.remedy === "`cotal run --local --space beta --endpoint worker --plain` lists the runs; run `cotal run journal <run-id> --local --space beta --endpoint worker --limit 5 --plain`", local);
+  const resume = gate(["resume"], { local: true, space: "beta", server: "wss://broker.example/ws?token=private", file: "workflow.cotal.js", timeout: "5m" });
+  c("the local resume remedy names the local list without repeating a private broker URL",
+    usageRefusal(resume, "run resume takes one identifier") && isCommandFailure(resume)
+      && resume.remedy === "run `cotal run list --local` with the original target options. Then add a run ID after `run resume` in the original command", resume);
   const hidden = gate(["show"], { space: "beta", server: "wss://example.invalid/socket?test=private" });
   c("a broker address that cannot be displayed is not copied or replaced by an unscoped lookup", isCommandFailure(hidden) && hidden.remedy?.includes("same broker") === true && !hidden.remedy.includes("private") && !hidden.remedy.includes("`cotal run`"), hidden);
   const unknown = gate(["show", "RUN-0123"]);
@@ -350,6 +354,27 @@ const VERBS = ["start", "resume", "ps", "journal", "answer", "amend", "revoke", 
     output.result.outcome === "completed" && output.result.unusedScript.length === 0, output);
 }
 
+// A fault keyed by a step's old name is never injected. The run still completes, since the fault
+// could target a branch this run did not take, and the report names the fault as unused.
+{
+  const dir = mkdtempSync(join(tmpdir(), "run-simulate-fault-"));
+  const program = join(dir, "timer.cotal.js"), handler = join(dir, "unknown-fault.json");
+  const chunks: string[] = [];
+  const write = process.stdout.write;
+  try {
+    writeFileSync(program, 'await sleep("1s", { name: "timer" })\n');
+    writeFileSync(handler, JSON.stringify({ faults: [{ at: "/sleep:typo#0", kind: "error", code: "L4002", message: "intended timer failure" }] }));
+    process.stdout.write = ((chunk: string | Uint8Array) => { chunks.push(String(chunk)); return true; }) as typeof process.stdout.write;
+    await runWorkflow({ values: { handler, json: true }, positionals: ["simulate", program], raw: [] });
+  } finally {
+    process.stdout.write = write;
+    rmSync(dir, { recursive: true, force: true });
+  }
+  const output = JSON.parse(chunks.join(""));
+  c("a fault whose step was never reached leaves the run completed and is listed as unused",
+    output.result.outcome === "completed" && JSON.stringify(output.result.unusedScript) === JSON.stringify(["faults./sleep:typo#0"]), output);
+}
+
 // A scripted checkpoint result is read by the simulator only for an `expired` status, so a
 // malformed one would simulate as an answer. The results file is refused before the simulation,
 // and a simulation that stops names why.
@@ -381,10 +406,10 @@ const VERBS = ["start", "resume", "ps", "journal", "answer", "amend", "revoke", 
   // when unused. A valid handoff still delivers the handle.
   const fertig = await simulate({ checkpoints: { go: { status: "resolved", value: true } }, turns: { build: { status: "fertig" } } });
   c("a scripted turn status other than done, blocked or handoff is refused SCHEMA_INVALID, exit 1",
-    scriptRefusal(fertig, `invalid scripted turn 'build': status must be "done", "blocked" or "handoff"`), fertig);
+    scriptRefusal(fertig, `invalid scripted turn 'build' in ${handler}: turns.build.status must be "done", "blocked" or "handoff"`), fertig);
   const turnAt = await simulate({ checkpoints: { go: { status: "resolved", value: true } }, turns: { build: [{ status: "done" }, { status: "done", at: 5 }] } });
   c("a scripted turn at, in any entry of a list, is refused, since the simulator stamps it from virtual time",
-    scriptRefusal(turnAt, "invalid scripted turn 'build': at is stamped from virtual time"), turnAt);
+    scriptRefusal(turnAt, `invalid scripted turn 'build' in ${handler}: turns.build[1].at is stamped from virtual time`), turnAt);
   for (const [build, path] of [
     [{ status: "handoff" }, "turns.build.to"],
     [[{ status: "done" }, { status: "handoff" }], "turns.build[1].to"],
@@ -616,6 +641,66 @@ if (process.platform !== "win32") {
     Object.assign(env, { HOME: dir, COTAL_HOME: dir, XDG_CONFIG_HOME: join(dir, "config"), COTAL_TELEMETRY: "off", NO_COLOR: "1" });
     const options = { cwd: dir, env, encoding: "utf8", timeout: 30_000 } as const;
     const run = (...args: string[]) => spawnSync(cli[0]!, [...cli.slice(1), "run", ...args], options);
+    const turnProgram = "turn.cotal.js", turnHandler = "malformed.json";
+    writeFileSync(join(dir, turnProgram), 'const r = await spawn("reviewer");\nawait turn(r, { name: "review" });\nawait turn(r, { name: "review" });\n');
+    writeFileSync(join(dir, turnHandler), '{"turns":{"review":[{"status":"handoff","to":"reviewer"}]}}');
+    const plain = run("simulate", turnProgram, "--handler", turnHandler, "--plain");
+    const json = run("simulate", turnProgram, "--handler", turnHandler, "--json");
+    const refusal = JSON.parse(json.stdout);
+    const remedy = `correct turns.review[0].to in ${turnHandler}, then rerun the simulation`;
+    c("a malformed scripted handoff names the file and exact destination in plain output and JSON",
+      plain.status === 1 && plain.stderr.includes(`in ${turnHandler}: turns.review[0].to must be an agent handle`) &&
+      plain.stderr.includes(`\nNext\n  ${remedy}`) && json.status === 1 && refusal.target?.file === turnHandler &&
+      refusal.error?.code === "SCHEMA_INVALID" && refusal.error?.remedy === remedy, { plain, json });
+    writeFileSync(join(dir, turnHandler), '{"turns":{"review":{"status":"done"}}}');
+    const corrected = run("simulate", turnProgram, "--handler", turnHandler, "--plain");
+    c("correcting the named file lets the same command complete both turns", corrected.status === 0 &&
+      /Program outcome:\s+completed/.test(corrected.stdout) && corrected.stdout.includes("/turn:review#1"), corrected);
+
+    const checkpointProgram = "checkpoint.cotal.js", badTable = "bad-table.json";
+    writeFileSync(join(dir, checkpointProgram), 'const approval = await checkpoint("approve", "Proceed with review?", { timeout: "10m" });\nif (approval.status === "resolved" && approval.value === true) {\n  await sleep("1ms", { name: "approved" });\n}\n');
+    writeFileSync(join(dir, badTable), '{"checkpoints":[]}');
+    const table = run("simulate", checkpointProgram, "--handler", badTable, "--json");
+    const tableError = JSON.parse(table.stdout);
+    c("a malformed checkpoint table names the file, required shape and correction",
+      table.status === 1 && table.stderr === "" && tableError.target?.file === badTable && tableError.error?.code === "SCHEMA_INVALID"
+      && tableError.error?.message === `checkpoints in the simulation results script ${badTable} must be an object keyed by checkpoint name, not an array`
+      && tableError.error?.remedy === `replace checkpoints in ${badTable} with an object keyed by checkpoint name, then rerun the simulation`, table);
+    writeFileSync(join(dir, badTable), '{"checkpoints":{"approve":{"status":"resolved","value":true}}}');
+    const validTable = run("simulate", checkpointProgram, "--handler", badTable, "--json");
+    const accepted = JSON.parse(validTable.stdout);
+    c("a corrected checkpoint table lets the same simulation reach the approved step", validTable.status === 0
+      && accepted.result?.outcome === "completed" && accepted.result.effects[1]?.step === "/sleep:approved#0", validTable);
+
+    const timerProgram = "timer.cotal.js", listHandler = "list.json";
+    writeFileSync(join(dir, timerProgram), 'await sleep("1s", { name: "timer" });\n');
+    writeFileSync(join(dir, listHandler), "[]");
+    const arrayJson = run("simulate", timerProgram, "--handler", listHandler, "--json");
+    const arrayPlain = run("simulate", timerProgram, "--handler", listHandler, "--plain");
+    const arrayError = JSON.parse(arrayJson.stdout);
+    const arrayMessage = `the simulation results script ${listHandler} must be a top-level JSON object, not an array`;
+    const arrayRemedy = `save a JSON results object in ${listHandler} and rerun the simulation. Use {} if no scripted results are needed`;
+    c("a top-level array names the results file, actual shape and fix in JSON and plain output",
+      arrayJson.status === 1 && arrayJson.stderr === "" && arrayError.outcome === "refused" && arrayError.target?.file === listHandler
+      && arrayError.error?.code === "SCHEMA_INVALID" && arrayError.error?.message === arrayMessage && arrayError.error?.remedy === arrayRemedy
+      && arrayPlain.status === 1 && arrayPlain.stdout === "" && arrayPlain.stderr.includes(arrayMessage)
+      && arrayPlain.stderr.includes(`\nNext\n  ${arrayRemedy}`), { arrayJson, arrayPlain });
+    writeFileSync(join(dir, listHandler), "{}");
+    const validObject = run("simulate", timerProgram, "--handler", listHandler, "--json");
+    c("an empty object lets the same timer simulation complete", validObject.status === 0
+      && validObject.stderr === "" && JSON.parse(validObject.stdout).result?.outcome === "completed", validObject);
+
+    const parallelProgram = "parallel.cotal.js", parallelHandler = "parallel-fault.json";
+    writeFileSync(join(dir, parallelProgram), 'await parallel({ first: () => sleep("1s"), second: () => sleep("2s") }, { name: "batch" });\n');
+    const step = "/parallel:batch#0";
+    writeFileSync(join(dir, parallelHandler), JSON.stringify({ faults: [{ at: step, kind: "error", code: "L4002", message: "simulated batch failure" }] }));
+    const parallel = run("simulate", parallelProgram, "--handler", parallelHandler, "--json");
+    const report = JSON.parse(parallel.stdout);
+    c("a fault at the parallel step completes the simulation with a failed program and no branch effects",
+      parallel.status === 0 && parallel.stderr === "" && report.outcome === "ok" && report.result?.outcome === "failed"
+      && report.result.failure?.step === step && report.result.failure.code === "L4002" && report.result.failure.title === "simulated batch failure"
+      && report.result.elapsedMs === 0 && report.result.effects.length === 1 && report.result.effects[0]?.status === "failed", parallel);
+
     for (const handler of [undefined, "timer's $results file.json"]) {
       if (handler !== undefined) writeFileSync(join(dir, handler), "{}");
       const missing = run("simulate", program, ...(handler === undefined ? [] : ["--handler", handler]));
@@ -915,7 +1000,10 @@ if (process.platform !== "win32") {
     && !(gate(["show", "run-0"], { limit: "1000" }) instanceof Error), ok50);
   for (const limit of ["0", "1001", "x"])
     c(`run show --limit ${limit} is refused`, usageRefusal(gate(["show", "run-0"], { limit }), "--limit must be between 1 and 1000"), limit);
-  c("run journal --limit with --json is refused", usageRefusal(gate(["journal", "run-0"], { limit: "5", json: true }), "--json returns the whole journal"));
+  for (const ids of [["run-0"], [], ["bad/id"], ["one", "two"]]) {
+    const got = gate(["journal", ...ids], { limit: "5", json: true });
+    c("run journal resolves --limit with --json before suggesting an ID retry", isCommandFailure(got) && usageRefusal(got, "--json returns the whole journal") && got.remedy === "omit --json for a limited text view, or omit --limit for the full JSON journal", got);
+  }
   const cursor = gate(["show", "run-0"], { cursor: "AAAAAAAA", limit: "1" });
   c("run show refuses an inventory cursor even with a journal limit", isCommandFailure(cursor) && cursor.code === "USAGE_INVALID" && cursor.remedy?.includes("remove --cursor") === true, cursor);
   c("run ps --limit without --page is still refused", usageRefusal(gate(["ps"], { limit: "5" }), "diagnostic paging requires run --page"));

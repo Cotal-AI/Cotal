@@ -96,7 +96,7 @@ import { c, hang, stderrLine } from "../ui.js";
 import { admitAndRestoreSeatCheckpoints } from "../lib/seat-resume.js";
 import { NATS_DEFAULT_MAX_PAYLOAD, natsServerLabel, resolveNatsServer, unreadVersion } from "../lib/nats-bin.js";
 import { cotalPath, cotalRoot } from "../lib/paths.js";
-import { channelsReads, readChannelsFile } from "../lib/channel-seed.js";
+import { channelsReads, loadChannelsFile, readChannelsFile, readDefaultChannelsFile } from "../lib/channel-seed.js";
 import { controllerManifestRemedy, detachedNext, renderDetachedSummary } from "../lib/up-report.js";
 import { seedBeforeLaunch, seedMoveNote } from "../seed/launch.js";
 import { seedDir } from "../seed/paths.js";
@@ -114,16 +114,14 @@ import {
   controllerStackApplies,
   requestedStackMode, refuseForegroundStackHolder,
   stackUp,
-  stackUpForegroundNotice,
   stackUpInterrupted,
 } from "./stack-up.js";
 import { exitInterrupted, handOverStartupNotice, noticeOnInterrupt, releaseStartupNotice } from "../lib/interrupt-notice.js";
-import { claimForegroundHold, foregroundHolder, foregroundStackEnd, releaseForegroundHold } from "../lib/foreground-hold.js";
+import { claimForegroundHold, foregroundHolder, foregroundStackEnd, foregroundStopLauncher, hangupForegroundStack, releaseForegroundHold } from "../lib/foreground-hold.js";
 import { settleInterruptedLaunches } from "../lib/service-process.js";
 import { assertUserStackTransport, preflightUserStack } from "./stack-user-auth.js";
 import { stopForegroundStack } from "./stack-down.js";
-import { acquireStackOperationLock, admittedStackRestore, readStackJournal, STACK_DEFINITION, STACK_ROLES, type StackJournal } from "../lib/stack-journal.js";
-import { observeServiceProcess, serviceInstances } from "../lib/service-instances.js";
+import { acquireStackOperationLock, admittedStackRestore, readStackJournal, type StackJournal } from "../lib/stack-journal.js";
 import { warnForeignStoreEntries } from "../lib/store-dir.js";
 import { extensionNames, preflightRuntime } from "../ext-loader.js";
 import { completingFlagValue } from "../lib/completion.js";
@@ -148,7 +146,7 @@ import {
 } from "../lib/restore.js";
 import { attemptProcessesGone } from "../lib/isolated-broker.js";
 import { assertEndpointUnreachable } from "../lib/endpoint-cut.js";
-import { freshStackServer, retryStackAddress, serverWithFreePort } from "../lib/up-broker-address.js";
+import { freshStackServer, legacyUpRetry, retryStackAddress, serverWithFreePort } from "../lib/up-broker-address.js";
 import { pendingRestores, type PendingOrdinaryResume, pendingOrdinaryResumes } from "./up-pending.js";
 import {
   parseMaxFileStore,
@@ -157,7 +155,6 @@ import {
   assertManagerPayload,
   parseAccountResolver,
   authTimeoutArgs,
-  loadChannelsFile,
   refuseRunningElsewhere,
   refuseRecordsElsewhere,
   resolveTransport,
@@ -333,17 +330,6 @@ export function upComplete(argv: string[]): CompletionResult {
 
 export { preparedUpRoot } from "./up-target.js";
 
-/** A hangup, such as a closed terminal, is not a stop. The stack keeps running and the notice names
- *  the command that stops it. Release this process's hold before the immediate exit, which does not
- *  unwind the surrounding finally, so a later foreground `up` can take the running stack over. */
-function hangupForegroundStack(root: string): never {
-  const stop = `${displayCmd()} down`;
-  process.stderr.write(`The terminal closed. This stack is still running; ${codeSpan(`cd ${shellWord(root)} && ${stop}`)} stops it.\n`);
-  process.exitCode = 129;
-  releaseForegroundHold(root);
-  process.exit(129);
-}
-
 /** Foreground controller stack: the terminal holds the stack's lifetime until SIGINT or SIGTERM,
  *  which runs the same guarded whole-stack stop as bare `down`. A hangup leaves the stack running and
  *  exits 129, naming `cotal down`. `start`, when given, is the startup this terminal already holds: a
@@ -351,13 +337,14 @@ function hangupForegroundStack(root: string): never {
  *  the start left. A failed start still runs the stop, and its failure is thrown once the stop returns.
  *  The hold exits 0 after a completed external stop or preserve, 5 after a broker crash, 129 after
  *  a hangup, 130 or 143 after a stop signal, whatever the start receipt set. */
-export async function holdForegroundStack(root: string, start?: () => Promise<void | StackJournal>, releaseRestoreNotice?: () => void): Promise<void> {
+export async function holdForegroundStack(root: string, space: string, start?: () => Promise<void | StackJournal>, releaseRestoreNotice?: () => void): Promise<void> {
   claimForegroundHold(root);
-  try { await holdStack(root, start, releaseRestoreNotice); }
+  try { await holdStack(root, space, start, releaseRestoreNotice); }
   finally { releaseForegroundHold(root); }
 }
 
-async function holdStack(root: string, start?: () => Promise<void | StackJournal>, releaseRestoreNotice?: () => void): Promise<void> {
+async function holdStack(root: string, space: string, start?: () => Promise<void | StackJournal>, releaseRestoreNotice?: () => void): Promise<void> {
+  const outsideCmd = foregroundStopLauncher(root);
   // The start's listeners go only once the hold's own are installed. Node runs a listener for a
   // signal when the loop next polls, and drops the signal if its last listener was removed first,
   // so a signal that lands in the start's last synchronous step would be lost in between.
@@ -378,7 +365,7 @@ async function holdStack(root: string, start?: () => Promise<void | StackJournal
     try { held = await start(); } catch (error) { failure = { error }; }
     releaseStart = () => { process.off("SIGINT", interrupt); process.off("SIGTERM", terminate); process.off("SIGHUP", hangup); };
     if (requested || failure) releaseStart();
-    if (requested === "SIGHUP") hangupForegroundStack(root);
+    if (requested === "SIGHUP") hangupForegroundStack(root, space, outsideCmd);
     if (requested) await stopForegroundStack(root, requested, true, held?.space);
     if (failure) throw failure.error;
     if (requested) return;
@@ -405,7 +392,7 @@ async function holdStack(root: string, start?: () => Promise<void | StackJournal
     };
     const interrupt = () => stop("SIGINT");
     const terminate = () => stop("SIGTERM");
-    const hangup = () => { checkLifetime(); if (!stopping) hangupForegroundStack(root); };
+    const hangup = () => { checkLifetime(); if (!stopping) hangupForegroundStack(root, space, outsideCmd); };
     process.on("SIGINT", interrupt); process.on("SIGTERM", terminate); process.on("SIGHUP", hangup);
     releaseStart();
     handOverStartupNotice();
@@ -579,7 +566,7 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
     const validateLaunch = async (launch: ReturnType<typeof restoreLaunch>["launch"], controller: boolean) => {
       if (controller) return;
       const next = nextArgs(launch);
-      validateUpArguments(next);
+      validateUpArguments(next, true);
       const wantUser = launch.mode === "user";
       publicExchangeArgs(values, wantUser);
       serviceEndpointsArgs(values, wantUser);
@@ -588,7 +575,7 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
       assertTlsIntentServed(launch.server, transport, "--server");
       assertTlsAddressServed(launch.server, transport, root);
       assertServesDialHost(transport, new URL(launch.server).hostname);
-      loadChannelsFile();
+      readDefaultChannelsFile(root);
       if (wantUser && values.idp !== undefined) await preflightUserStack(root, launch.space, values.idp);
       try { await preflightRuntime(launch.runtime); }
       catch (error) { throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "the requested runtime did not pass preflight; nothing was restored", { target: { root, space: launch.space, runtime: launch.runtime }, remedy: error instanceof Error ? error.message : "inspect the selected runtime provider" }); }
@@ -614,7 +601,7 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
         let foreground: boolean;
         try { foreground = await resumeControllerStack(lock, prepared.root, values, restoreSink); }
         finally { releaseMaintenanceLock(lock); }
-        if (foreground) await holdForegroundStack(prepared.root, undefined, prepared.releaseInterruptNotice);
+        if (foreground) await holdForegroundStack(prepared.root, prepared.space, undefined, prepared.releaseInterruptNotice);
         return;
       }
       if (restoreSink) restoreSinks.set(prepared.attemptId, restoreSink);
@@ -720,7 +707,7 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
           // Released here, once, so the foreground hold below does not keep the maintenance lock.
           handedOff = true;
           releaseMaintenanceLock(lock);
-          if (foreground) await holdForegroundStack(root);
+          if (foreground) await holdForegroundStack(root, journal.space);
           return;
         }
       } else if (journal && (journal.state === "commit-intent" || journal.state === "manager-committed" || journal.state === "degraded")) {
@@ -1090,7 +1077,7 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
   if (ownerHome !== undefined) throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "this folder's running stack belongs to another Cotal home; nothing was started", { target: { root: meshRoot, home: ownerHome }, remedy: stackHomeRemedy(ownerHome) });
   // A bare start seeds the root's default channels file, so one it would refuse is named here,
   // before anything starts; an explicit --channels file was checked with the other flags.
-  if (!values.file && !values.restore && values.channels === undefined) loadChannelsFile();
+  if (!values.file && !values.restore && values.channels === undefined) readDefaultChannelsFile(meshRoot);
   const transport = resolveTransport(values, undefined, meshRoot, {
     persist: false,
     quiet: true,
@@ -1113,12 +1100,9 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
     recordOperationSpace(stackSpace);
     const stackMode = requestedStackMode(values);
     const presentation = presentationOf(values);
-    // A foreground up holds a stack only one terminal holds. Over a stack that already runs without
-    // one, it takes that stack's lifetime over and says so before it blocks.
     const holder = values.foreground ? foregroundHolder(meshRoot) : undefined;
     if (holder !== undefined)
-      refuseForegroundStackHolder(meshRoot, stackSpace, holder);
-    const takeover = values.foreground === true && STACK_ROLES.some((role) => serviceInstances(stackSpace, STACK_DEFINITION[role]).some((row) => observeServiceProcess(row.record.value) === "running"));
+      refuseForegroundStackHolder(meshRoot, stackSpace, holder, noManager);
     // A signal ends a detached start where it is, after it records a launch it had not yet pinned to
     // its child, and the notice names what it left running. It is installed before the lock, so no
     // moment of the start exits without it.
@@ -1129,19 +1113,18 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
       return `${failure.message} ${failure.remedy}`;
     });
     try {
-      const stackLock = acquireStackOperationLock(meshRoot, values.foreground ? "foreground up" : undefined);
+      const stackLock = acquireStackOperationLock(meshRoot, values.foreground ? "foreground up" : "up");
       const native = controllerStackNative();
       const prepare = async () => {
         try {
           const stackServer = values.server ?? readStackJournal(meshRoot)?.journal.server ?? localMeshesForRoot(meshRoot).find((m) => m.space === stackSpace)?.server ?? await unrecordedStackServer(meshRoot, stackSpace, values.host);
-          if (values.foreground && presentation !== "json") stackUpForegroundNotice(presentation, stackSpace, takeover);
           return await stackUp({ maintenanceLock: stackLock, root: meshRoot, space: stackSpace, server: stackServer, transport, runtime: values.runtime ?? "pty", noManager, managerSeatCap, ...(stackMode ? { mode: stackMode } : {}), ...(values.idp ? { idp: values.idp } : {}), ...(values.host ? { host: values.host } : {}), ...(values["store-dir"] ? { storeDir: values["store-dir"] } : {}), ...(values["rotate-sys"] ? { rotateSys: true } : {}), ...(values["recreate-membership-store"] ? { recreateMembershipStore: true } : {}), ...(values["recreate-issued-stores"] !== undefined ? { recreateIssuedStores: resolve(values["recreate-issued-stores"]) } : {}), ...(maxFileStore !== undefined ? { maxFileStore } : {}), ...(logFile !== undefined ? { logFile } : {}), ...(logfileSizeLimit !== undefined ? { logfileSizeLimit } : {}), ...(logfileMaxNum !== undefined ? { logfileMaxNum } : {}), ...(authTimeout !== undefined ? { authTimeout } : {}), ...(maxPayload !== undefined ? { maxPayload } : {}), ...(accountResolver !== undefined ? { accountResolver } : {}), ...(maxSessions !== undefined ? { maxSessions } : {}), ...(values.channels ? { channels: values.channels } : {}), ...(values.__invokedRoot ? { invokedRoot: values.__invokedRoot } : {}), foreground: values.foreground === true, presentation,
             managerName, retryAtAnotherAddress: (host) => retryStackAddress(args.raw, invokedFrom, stackServer, host),
           }, native);
         } finally { releaseMaintenanceLock(stackLock); }
       };
       const start = async () => { const { journal, writeReceipt } = await prepare(); writeReceipt(); return journal; };
-      if (values.foreground) await holdForegroundStack(meshRoot, start);
+      if (values.foreground) await holdForegroundStack(meshRoot, stackSpace, start);
       else await start();
     } finally { release?.(); }
     return;
@@ -1413,7 +1396,7 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
       // The recovered attempt's exact bound listener is alive: prove it over the wire and adopt it
       // instead of spawning a competitor over the same store.
       await proveOrdinaryResumeListener(ordinaryAttempt);
-      await adoptProvenListener(ordinaryAttempt, ordinaryAttempt.storeDir, "adopted resume listener", startupLock);
+      await adoptProvenListener(ordinaryAttempt, ordinaryAttempt.storeDir, "adopted resume listener", startupLock, values.channels);
       return;
     }
     if (ordinaryAttempt?.journalState === "resume-committed")
@@ -1808,7 +1791,7 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
     }
     refuseRegisteredAddress(server, space, `start this one at another address with \`cotal up --server nats://${host}:<port>\``);
   }
-  await assertBrokerAddressFree(server, `${displayCmd()} up${values.host === undefined ? "" : ` --host ${shellWord(host)}`}`, host);
+  await assertBrokerAddressFree(server, legacyUpRetry(args.raw), host, values.foreground === true && !resumeAttempt);
   // A repair keeps its own store rules above, and a resume or restore names its store.
   if (!resumeAttempt && !repairing) {
     if (values["store-dir"] === undefined) values["store-dir"] = reopenLastStore(cotalPath("nats"));
@@ -1828,6 +1811,7 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
     onSpawn: (pid: number, startedAt: string) => bindSpawnedOrdinaryResumeListener(ordinaryAttempt, pid, startedAt, startupLock),
     verify: async () => { await verifySpawnedOrdinaryListener(ordinaryAttempt); },
   } : undefined;
+  const seedFile = loadChannelsFile(cotalRoot(), values.channels, !resumeAttempt && values.open === true);
   if (values.detach) {
     // A `backup restore` owns its own receipt: the native launcher's progress lines stay off stdout.
     // The receipt names its space before the launch prints anything, as every report does. A start that
@@ -1856,7 +1840,7 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
       ...(values["recreate-issued-stores"] !== undefined ? { recreateIssuedStores: resolve(values["recreate-issued-stores"]) } : {}),
       ...(values["recreate-membership-store"] ? { recreateMembershipStore: true } : {}),
       publicExchange,
-      channels: values.channels,
+      seed: !resumeAttempt || values.channels ? seedFile : undefined,
       // The RAW flag, not the loopback-defaulted `host` above: `startMeshDetached` applies the same
       // default itself, and what it records must distinguish "the operator asked for this address"
       // from "nobody asked", or every mesh would persist an exposure decision it never made.
@@ -1930,7 +1914,6 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
   // later protection check walks as an ancestor.
   mkdirSync(storeDir, { recursive: true, mode: 0o700 });
   await claimSpace(space, server, cotalRoot());
-  const seedFile = loadChannelsFile(values.channels);
   // Decided above the branch; the dial host is only settled here (a port collision may have moved
   // the server, and the hostname is what the certificate has to match).
   assertServesDialHost(transport, new URL(server).hostname);
@@ -2126,7 +2109,7 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
       })();
     };
     const { authService, controlPlane } = await serveReadyListener({
-      child, server, space, storeDir, setup, seedFile, transport, maxPayload: brokerMaxPayload,
+      child, server, space, storeDir, setup, seedFile: !resumeAttempt || values.channels ? seedFile : undefined, transport, maxPayload: brokerMaxPayload,
       ...(values["recreate-issued-stores"] !== undefined ? { recreateIssuedStores: resolve(values["recreate-issued-stores"]) } : {}),
       ...(values["recreate-membership-store"] ? { recreateMembershipStore: true } : {}),
       host: values.host,

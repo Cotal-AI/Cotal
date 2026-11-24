@@ -500,7 +500,7 @@ const baseCommands: Command[] = [
     subcommands: [
       { name: "show", flagNames: ["space", "json", "plain"], outputs: ["json", "plain"], summary: "read one fresh boot summary or additive ownership ledger, not live state", examples: [{ command: "cotal team show <deployment-id>", note: "read one recorded deployment" }], usage: "cotal team show <deployment-id>", reads: true, prepareMeshTarget: false },
       { name: "check", flagNames: ["space", "graph", "json", "plain"], outputs: ["json", "plain"], summary: "resolve a manifest and referenced personas offline; --space must match the manifest", examples: [{ command: "cotal team check <file>", note: "check a manifest and its personas offline" }, { command: "cotal team check <file> --graph", note: "also show who can read and post where" }], usage: "cotal team check <file> [--space <name>] [--graph]", reads: true, prepareMeshTarget: false },
-      { name: "boot", flagNames: ["space", "foreground", "dry-run", "json", "plain"], outputs: ["json", "plain"], summary: "boot a fresh controller-owned stack; --foreground holds its terminal lifetime", examples: [{ command: "cotal team boot <file> --dry-run", note: "preview booting a new space from a manifest" }, { command: "cotal team boot <file>", note: "boot it in the background" }], usage: "cotal team boot <file> [--dry-run | --foreground]", prepareMeshTarget: false },
+      { name: "boot", flagNames: ["space", "foreground", "dry-run", "json", "plain"], outputs: ["json", "plain"], summary: "Boot a fresh controller-owned stack. A foreground preview accepts --json or --plain. A foreground apply accepts neither.", examples: [{ command: "cotal team boot <file> --dry-run", note: "preview booting a new space from a manifest" }, { command: "cotal team boot <file> --foreground --dry-run --json", note: "preview a terminal-bound boot as JSON" }, { command: "cotal team boot <file>", note: "boot it in the background" }], usage: "cotal team boot <file> [--dry-run] [--foreground]", prepareMeshTarget: false },
       { name: "deploy", flagNames: ["space", "runtime", "allow-stale", "dry-run", "json", "plain"], outputs: ["json", "plain"], summary: "add all-new live channels and static/open teams through one native manager", examples: [{ command: "cotal team deploy <file> --dry-run", note: "preview what a deploy would add" }, { command: "cotal team deploy <file>", note: "add its new channels and agents" }], usage: "cotal team deploy <file> [--dry-run]", prepareMeshTarget: false },
       { name: "remove", flagNames: ["space", "dry-run", "yes", "json", "plain"], outputs: ["json", "plain"], summary: "retire a recorded static agent-only team; --dry-run reads native impact", examples: [{ command: "cotal team remove <deployment-id> --dry-run", note: "preview retiring a deployed team" }, { command: "cotal team remove <deployment-id>", note: "retire it after you confirm" }], usage: "cotal team remove <deployment-id> [--dry-run] [--yes]", prepareMeshTarget: false },
       { name: "list", flagNames: ["space", "json", "plain"], outputs: ["json", "plain"], hidden: true, summary: "read available local fresh and additive deployment records", reads: true, prepareMeshTarget: false },
@@ -657,7 +657,7 @@ const baseCommands: Command[] = [
     hidden: true,
     rawArgs: true,
     positionals: "…",
-    summary: "(removed) launch through a manager with `cotal spawn --detach`",
+    summary: "(removed) launch with `cotal spawn`",
     validate: refuseRemovedStart,
     run: async (args) => refuseRemovedStart(args),
   },
@@ -777,7 +777,7 @@ const baseCommands: Command[] = [
     positionals: "[show|add|remove|describe|invoke|watch|session|work|init|check|deregister] [target] [command-or-instance]",
     summary: "save references, author contracts offline, and inspect or invoke native endpoints",
     examples: [{ command: "cotal endpoint", note: "list the saved endpoint references" }, { command: "cotal endpoint describe <target>", note: "read an endpoint's commands" }, { command: "cotal endpoint invoke <target> <command>", note: "call one of its commands" }],
-    usage: "cotal endpoint [show | add | remove | describe | invoke | watch | session | work | init | check | deregister] [target] [command-or-instance] [options]",
+    usage: "cotal endpoint [--space <s>] [--json|--plain]\ncotal endpoint --live [--space <s>] [--server <url>] [--creds <path>] [--json|--plain]\ncotal endpoint <command> [target] [command-or-instance] [options]",
     flagNames: ["space", "live", "server", "creds", "json", "plain"],
     flags: endpointFlags, outputs: ["json", "ndjson", "plain"], reads: true, prepareMeshTarget: false,
     subcommands: ([

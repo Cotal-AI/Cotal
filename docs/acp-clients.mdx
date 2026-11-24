@@ -41,9 +41,11 @@ It finds T3 Code from a `t3` command or its `~/.t3` folder (`T3CODE_HOME` when s
 Run setup once for each space you want in the client.
 
 Each entry runs this computer's `cotal acp --space <name>` by absolute path, because an app started from the desktop often does not see the folders your shell adds to `PATH`.
+The paths are ones that survive an upgrade: under the get.cotal.ai launcher the entry runs the launcher's own Node link, not the folder of one Node version such as Homebrew's `Cellar/node/<version>`, and it runs the install's entry, not one update's copy.
 When `COTAL_HOME` or `XDG_CONFIG_HOME` is set, the entry passes it on.
 A new entry is named `Cotal (<name>)`.
 An entry that already runs `cotal acp` for the space, such as one you added by hand, is updated in place.
+In T3 Code, setup uses a different provider ID if another provider already has the ID Cotal would use.
 Setup keeps your other settings, and in Zed it keeps your comments.
 Before it changes a settings file, it copies it next to the original as `settings.json.cotal-backup-<time>`.
 Both apps load the change without a restart.
@@ -128,6 +130,7 @@ A new thread offers these options next to the model list. They apply when the fi
 | Option | What it sets |
 | --- | --- |
 | Model | The application and model, as `<application>/<model>`. Each name starts with its application, so the list picks the application in clients that do not show groups, such as T3 Code. `<application>/default` leaves the model to the application. A model id the list does not show is passed to the manager as given. |
+| Harness | The application the agent runs, when more than one can. Choosing a model moves it to that model's application, and choosing another harness starts that application on its default model. |
 | Reasoning | The model's variant. Offered while any listed model has variants; for a model without them it holds only the model default. |
 | Persona | A persona from the manager's catalog. A catalog of 64 or more personas offers a short list: the default, the current choice, and up to 16 personas you own. `/persona` picks any other. |
 | Channel | One channel the new agent joins. A space with 64 or more channels offers a short list: no channel, the current choice, and up to 16 channels, those the space describes first, each group with the most retained messages first. `/join` picks any other. |

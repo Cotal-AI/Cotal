@@ -279,8 +279,9 @@ and remove its copy under the same locks only when the maintenance journal close
 not when forward migration commits. An unreferenced failed-attempt copy must be inventoried on
 the next run and removed only after proving no journal references it. That coordinator cleanup,
 full host capture and public activation are not implemented by these primitives. Other platforms
-refuse. `pnpm smoke:migration-execution:live` needs npm access, installs a published fixture in a
-private prefix, drives its ordinary updater, and retains its fixture and private command logs.
+refuse. `pnpm smoke:migration-execution:live` needs npm access. It installs a published fixture in
+a private prefix using a release-era npm cutoff, drives its ordinary updater against the current
+registry, and retains its fixture and private command logs.
 
 ### Composition APIs
 

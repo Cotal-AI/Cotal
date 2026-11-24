@@ -1,7 +1,7 @@
 import { createConnection } from "node:net";
 import { existsSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
-import { CONTRACT_ARTIFACT_MAX_BYTES, MANAGER_START_PAYLOAD_FLOOR, isReachable, DEFAULT_SERVER, validateTlsMaterial, type BrokerTransport, type ChannelRegistryFile } from "@cotal-ai/core";
+import { CONTRACT_ARTIFACT_MAX_BYTES, MANAGER_START_PAYLOAD_FLOOR, isReachable, DEFAULT_SERVER, validateTlsMaterial, type BrokerTransport } from "@cotal-ai/core";
 import {
   CommandFailure,
   brokerAddressForDisplay,
@@ -17,7 +17,6 @@ import {
 } from "@cotal-ai/workspace";
 import { c, hang, stderrLine } from "../ui.js";
 import { cotalPath, cotalRoot } from "../lib/paths.js";
-import { readChannelsFile, readDefaultChannelsFile } from "../lib/channel-seed.js";
 import { readStackJournal } from "../lib/stack-journal.js";
 import { lastServedStore, lastServedStores, missingStoreWarning, servedStore, sharedStoreAtStart, sharedStoreWarning } from "../lib/store-dir.js";
 
@@ -61,14 +60,6 @@ export function parseAccountResolver(raw: string | undefined): "memory" | "full"
  *  only from the value the broker configuration rendered, so the two never differ. */
 export function authTimeoutArgs(seconds: number | undefined): string[] {
   return seconds === undefined ? [] : ["--auth-timeout", String(seconds)];
-}
-
-/** Load the declarative channels-config file to seed the registry. An explicit `--channels`
- *  path that's missing is a hard error; the default `.cotal/channels.json` is optional (absent
- *  ⇒ nothing to seed). */
-export function loadChannelsFile(explicit?: string): ChannelRegistryFile | undefined {
-  if (explicit) return readChannelsFile(resolve(explicit));
-  return readDefaultChannelsFile(cotalRoot());
 }
 
 /** Refuse `up --space` of a space this machine started from another folder while its broker answers,
