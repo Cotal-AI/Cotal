@@ -28,8 +28,8 @@
 import { strict as assert } from "node:assert";
 import { spawnSync, type SpawnSyncReturns } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import type { CommandFailure } from "@cotal-ai/workspace";
 import { makeScratch } from "../../../bin/smoke/_scratch.js";
 
@@ -785,6 +785,27 @@ try {
   check("repiping a renamed copy saves those bytes without touching the occupied persona",
     pipedCopy.status === 0 && readFileSync(agentFilePath(ALPHA, "stdin-copy")).equals(stdinCopy) &&
     readFileSync(originalImport).equals(originalBytes), pipedCopy.stdout + pipedCopy.stderr);
+
+  function checkUnlistableImport() {
+    if (process.platform === "win32" || process.getuid?.() === 0) return;
+    const dir = join(realpathSync(ALPHA), ".cotal", "agents");
+    const mode = statSync(dir).mode & 0o7777;
+    chmodSync(dir, 0o300);
+    try {
+      for (const name of ["unlisted", "default_agent"]) {
+        const input = Buffer.from(`---\nname: ${name}\n---\nAn external definition.\n`);
+        const result = native(["persona", "create", "unlisted-copy", "--file", "-", "--space", "alpha", "--json"], CWD, childEnv, input);
+        const { error } = JSON.parse(result.stdout);
+        check(`an unlistable catalog keeps the ${name} mismatch and gives only catalog repair advice`,
+          result.status === 1 && error?.code === "SCHEMA_INVALID" &&
+          error.message === `persona name must match the catalog name 'unlisted-copy'; standard input names '${name}'` &&
+          error.remedy === `could not check which persona names are free: cannot read persona catalog: ${dir}. To check again, make it readable by you with \`chmod u+rx ${dir}\`` &&
+          !existsSync(agentFilePath(ALPHA, "unlisted-copy")) && (statSync(dir).mode & 0o7777) === 0o300, result.stdout);
+      }
+    } finally { chmodSync(dir, mode); }
+  }
+  checkUnlistableImport();
+
   if (!existsSync(agentFilePath(ALPHA, "EXISTING-IMPORT"))) {
     const targetCollision = native(["persona", "create", "EXISTING-IMPORT", "--file", copyInput, "--space", "alpha", "--json"], CWD);
     const failure = JSON.parse(targetCollision.stdout).error;
@@ -912,6 +933,13 @@ try {
         error.remedy === "restore the link's target or move the broken link aside", modern.stdout + modern.stderr);
       check("legacy listing refuses the same link without suggesting creation", legacy.status === 2 && !legacy.stdout.includes("create one") &&
         legacy.stderr.includes(dir) && legacy.stderr.includes("missing-catalog") && legacy.stderr.includes(error.remedy), legacy.stdout + legacy.stderr);
+      const mismatch = native(["persona", "create", "broken-copy", "--file", copyInput, "--space", "alpha", "--plain"], CWD);
+      const report = mismatch.stderr.replace(/\s+/g, " ");
+      check("a dangling catalog link keeps the import mismatch and gives only link repair advice",
+        mismatch.status === 1 && report.includes("SCHEMA_INVALID") && report.includes("catalog name 'broken-copy'") &&
+        report.includes("names 'import-copy'") && report.includes("could not check which persona names are free") &&
+        report.includes("restore the link's target or move the broken link aside") && !report.includes("cotal persona create") &&
+        readlinkSync(dir) === "missing-catalog" && !existsSync(join(dirname(dir), "missing-catalog")), mismatch.stderr);
       unlinkSync(dir);
       symlinkSync(moved, dir);
       const linked = native(["persona", "--space", "alpha", "--json"]);

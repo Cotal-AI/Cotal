@@ -7,7 +7,7 @@ import { parseChannelFlag } from "../lib/channel-flags.js";
 import { assertValidRole, oneLine, personaDir, resolveReadAcl, spawnNameError, type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
 import {
   ConfirmationRequired,
-  codeSpan, CommandFailure, jsonFlag, plainFlag, presentationOf, spaceFlag, serverFlag,
+  codeSpan, CommandFailure, isCommandFailure, jsonFlag, plainFlag, presentationOf, spaceFlag, serverFlag,
   writeResult, type Presentation, type Report,
   personaDefinitionProblem, recordOperationSpace,
 } from "@cotal-ai/workspace";
@@ -160,22 +160,30 @@ async function readInput(path: string, flag: "file" | "from"): Promise<Buffer> {
 
 async function createFileSource(name: string, root: string, file: string, target: string): Promise<Buffer> {
   const bytes = await readInput(file, "file");
-  const stdin = file === "-";
-  const source = stdin ? "standard input" : file;
+  const source = file === "-" ? "standard input" : file;
   const def = validatePersona(bytes, source);
   if (def.name === name) return bytes;
-  const occupied = readPersonaOccupancy(root);
+  const remedy = importMismatchRemedy(name, def.name, root, file, target);
+  throw new CommandFailure("refused", "SCHEMA_INVALID", `persona name must match the catalog name '${name}'; ${source} names '${def.name}'`, { remedy });
+}
+
+function importMismatchRemedy(name: string, inputName: string, root: string, file: string, target: string): string {
+  let occupied: ReturnType<typeof readPersonaOccupancy>;
+  try { occupied = readPersonaOccupancy(root); }
+  catch (error) {
+    if (!isCommandFailure(error)) throw error;
+    const repair = error.remedy ? `. To check again, ${error.remedy}` : ". Check catalog access before retrying";
+    return `could not check which persona names are free: ${error.message}${repair}`;
+  }
+  const stdin = file === "-";
   const replacement = occupied(name) ? "an unused catalog name" : `'${name}'`;
   const rename = stdin
     ? `set its frontmatter name to ${replacement} and pipe the corrected definition into a create command for that name`
     : `copy the definition to a separate input file, set its frontmatter name to ${replacement}, and retry with that file and name`;
-  let remedy = rename;
-  if (!spawnNameError(def.name, { userMode: false }) && !reservedPersonaName(def.name) && !occupied(def.name)) {
-    const inputFlag = ` --file${!stdin && file.startsWith("-") ? "=" : " "}${shellWord(file)}`;
-    const retry = codeSpan(`cotal persona create${personaNameWords(def.name, inputFlag + target)}`);
-    remedy = stdin ? `pipe the original definition into ${retry} again, or ${rename}` : `create it under its own name with ${retry}, or ${rename}`;
-  }
-  throw new CommandFailure("refused", "SCHEMA_INVALID", `persona name must match the catalog name '${name}'; ${source} names '${def.name}'`, { remedy });
+  if (spawnNameError(inputName, { userMode: false }) || reservedPersonaName(inputName) || occupied(inputName)) return rename;
+  const inputFlag = ` --file${!stdin && file.startsWith("-") ? "=" : " "}${shellWord(file)}`;
+  const retry = codeSpan(`cotal persona create${personaNameWords(inputName, inputFlag + target)}`);
+  return stdin ? `pipe the original definition into ${retry} again, or ${rename}` : `create it under its own name with ${retry}, or ${rename}`;
 }
 
 async function createSource(name: string, root: string, values: Values): Promise<Buffer> {
