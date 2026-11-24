@@ -85,7 +85,15 @@ function scriptOf(file: string | undefined): SimScript {
   const script = value as Record<string, unknown>;
   const fields = new Set(["turns", "asks", "checkpoints", "events", "clock", "faults"]);
   for (const [key, item] of Object.entries(script)) {
-    if (!fields.has(key)) throw new CommandFailure("refused", "SCHEMA_INVALID", `unknown simulation script field '${key}'`);
+    if (!fields.has(key)) {
+      const plural = `${key}s`;
+      const name = JSON.stringify(key);
+      throw new CommandFailure("refused", "SCHEMA_INVALID", `unknown simulation script field ${name} in ${file}`, {
+        target: { file }, remedy: fields.has(plural)
+          ? `replace ${name} with "${plural}" in ${file}, then rerun the simulation`
+          : `remove ${name} from ${file} or use a supported top-level key: ${[...fields].join(", ")}`,
+      });
+    }
     if (key === "faults" ? !Array.isArray(item) : !item || typeof item !== "object" || Array.isArray(item)) {
       const shape = key === "faults" ? "an array of fault objects" : key === "clock" ? "an object of clock settings"
         : `an object keyed by ${key === "checkpoints" ? "checkpoint" : "step"} name`;
