@@ -110,7 +110,7 @@ export function validateUpArguments(args: ParsedArgs): void {
   if (named && !named.ok) throw new CommandFailure("refused", "USAGE_INVALID", `${named.message.replace(/^✗ /, "")}; nothing was started or written`, { remedy: named.remedy });
   // A manifest boot checks its own `--server` override against `broker.servers`.
   const serverProblem = args.values.server !== undefined && !args.values.file ? upServerProblem(String(args.values.server)) : undefined;
-  if (serverProblem) throw new FlagValueRefusal(`${serverProblem}; nothing was started or written`, `pass the IP address the local broker listens on, for example ${serverExample(String(args.values.server))}`);
+  if (serverProblem) throw new FlagValueRefusal(`${serverProblem}; nothing was started or written`, `pass the IP address the local broker listens on, for example ${serverExample(String(args.values.server), args.values.host as string | undefined)}`);
   // A --host that is no bind host, or a bind that does not serve --server's address, refuses here,
   // before the controller stack writes its journal or trust.
   const hostProblem = !args.values.file ? upHostProblem(args.values.host as string | undefined, args.values.server as string | undefined) : undefined;
@@ -258,14 +258,14 @@ function upServerProblem(server: string): string | undefined {
   return undefined;
 }
 
-/** The `--server` a refusal gives as its example: 127.0.0.1 on the port the user passed, or a
- *  placeholder when the value names none. */
-function serverExample(server: string): string {
+/** Keep a concrete IPv4 bind in the example. A wildcard listener is reachable on loopback. */
+function serverExample(server: string, host: string | undefined): string {
+  const address = host && isIP(host) === 4 && !WILDCARD_HOSTS.has(host) ? host : "127.0.0.1";
   let port: string | undefined;
   try { port = new URL(server).port || undefined; } catch { port = undefined; }
   port ??= /:(\d{1,5})\/?$/.exec(server)?.[1];
   const valid = port !== undefined && Number(port) >= 1 && Number(port) <= 65535;
-  return `--server ${/^tls:/i.test(server) ? "tls" : "nats"}://127.0.0.1:${valid ? Number(port) : "<port>"}`;
+  return `--server ${/^tls:/i.test(server) ? "tls" : "nats"}://${address}:${valid ? Number(port) : "<port>"}`;
 }
 
 /** The refusal of a manifest start whose effective `--server` or `broker.servers` lists more than
