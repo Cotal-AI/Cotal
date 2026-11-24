@@ -52,6 +52,7 @@ import {
   userViewAuth,
   recordOperationWarning,
   restoreLeftOut,
+  restoreReplacedDifferentStore,
   NATS_PIDFILE,
   type ControlAuth,
 } from "@cotal-ai/workspace";
@@ -114,7 +115,7 @@ export function printRestoreReceipt(restored: PreparedRestore, invokedRoot?: str
   for (const line of leftOutNotes(restored.attemptId, restored.selection, restoreOnlyCopy(restored.root, restored.attemptId), cleanupRoot, cmd)) console.log(c.yellow(line));
   const journal = readMaintenanceJournal(restored.root);
   if (journal && "restore" in journal && journal.restore.attemptId === restored.attemptId)
-    console.log(c.dim(`next: ${restoreNextStep(journal.state, restored.attemptId, restoreLeftOut(journal), cleanupRoot, cmd)}`));
+    console.log(c.dim(`next: ${restoreNextStep(journal.state, restored.attemptId, restoreLeftOut(journal), cleanupRoot, cmd, restoreReplacedDifferentStore(journal))}`));
 }
 
 /** The address of a prepared stack that neither a journal nor a registration records, as after a

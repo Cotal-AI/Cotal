@@ -955,6 +955,11 @@ export function restoreReplacedNewerCut(record: LeftOutRecord): boolean {
   return record.launch?.previousCutNewer === true;
 }
 
+/** Whether the full backup came from a different store generation than the retained fallback. */
+export function restoreReplacedDifferentStore(record: LeftOutRecord): boolean {
+  return record.launch?.differentStoreGeneration === true;
+}
+
 /** The other JetStream accounts whose streams a restore left in the store it set aside, such as an
  *  open mesh's account beside a static space's after both ran in one folder. A backup holds one
  *  account, so that store holds their only copy. The restore's launch records them. When it has no
@@ -977,6 +982,7 @@ export function restoreOtherAccounts(record: LeftOutRecord): string[] {
  *  stream, and a full restore whose launch names no workflow journal, of a user-mode artifact or one
  *  made before full backups held runs, left out the workflow runs. A full restore that replaced a
  *  newer cut ({@link restoreReplacedNewerCut}) also left out what was written after its artifact.
+ *  A backup from a different store generation cannot establish which of the fallback's data it holds.
  *  Any restore left out the streams of the other accounts in that store ({@link restoreOtherAccounts}).
  *  Undefined when it left out nothing. */
 export function restoreLeftOut(record: LeftOutRecord): string | undefined {
@@ -984,7 +990,7 @@ export function restoreLeftOut(record: LeftOutRecord): string | undefined {
   const theirs = accounts.length ? `streams of ${accounts.length === 1 ? "account" : "accounts"} ${accounts.join(", ")}` : undefined;
   const restored = record.launch?.restoredStreams;
   const runs = Array.isArray(restored) && restored.includes(wfjStreamName(record.space));
-  const own = record.restore.selection === "registry" ? "chat and DM history and workflow runs"
+  const own = record.restore.selection === "registry" || restoreReplacedDifferentStore(record) ? "chat and DM history and workflow runs"
     : restoreReplacedNewerCut(record) ? (runs ? "newer chat and DM history and workflow runs" : "workflow runs and newer chat and DM history")
     : runs ? undefined : "workflow runs";
   return own && theirs ? `${own} and the ${theirs}` : own ?? theirs;
@@ -1018,7 +1024,7 @@ export function restoreLeftOutReason(record: LeftOutRecord): string | undefined 
   if (!leftOut) return undefined;
   const accounts = restoreOtherAccounts(record).length ? ["held only one of the accounts in the store it replaced"] : [];
   if (record.restore.selection === "registry") return `this restore was registry-only${accounts.length ? ` and its artifact ${accounts[0]}` : ""}`;
-  const why = [...(restoreReplacedNewerCut(record) ? ["was made before the state it replaced was preserved"] : []), ...(leftOut.startsWith("workflow runs") ? ["held no workflow runs"] : []), ...accounts];
+  const why = [...(restoreReplacedDifferentStore(record) ? ["came from a different store generation"] : restoreReplacedNewerCut(record) ? ["was made before the state it replaced was preserved"] : []), ...(leftOut.startsWith("workflow runs") ? ["held no workflow runs"] : []), ...accounts];
   return `this restore's artifact ${why.join(" and ")}`;
 }
 
@@ -1053,7 +1059,7 @@ export function cleanupRestoreFallback(lock: MaintenanceLock, attemptId: string,
   // A cleanup already under way had this consent when it started.
   const leftOut = restoreLeftOut(record);
   if (!record.restore.cleanup && leftOut && !options.discardHistory)
-    maintenanceError("cleanup-forbidden", `the restore's old source holds the only copy of the ${leftOut} it left out`, {
+    maintenanceError("cleanup-forbidden", `the restore's old source ${restoreReplacedDifferentStore(record) ? "may hold" : "holds"} the only copy of the ${leftOut} it left out`, {
       root: lock.root, attemptId, paths: [previous.identity.path],
       recourse: [{ action: "cleanup", description: "Keep the old source, or repeat the cleanup with explicit consent to discard that history.", paths: [previous.identity.path] }],
     });

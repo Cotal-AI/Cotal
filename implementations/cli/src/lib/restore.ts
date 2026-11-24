@@ -40,6 +40,7 @@ import {
   readMaintenanceJournal,
   restoreLeftOut,
   restoreOtherAccounts,
+  restoreReplacedDifferentStore,
   restoreReplacedNewerCut,
   restoreRolledBackRuns,
   storeAccounts,
@@ -495,11 +496,11 @@ const OLDER_FORMAT_NO_RUNS = "This backup was made before full backups held work
  *  degraded attempt goes forward through bare `up`, which continues it. `leftOut` is what the restore
  *  left only in its previous store ({@link restoreLeftOut}). `cleanupRoot` is the project to enter
  *  when an active restore was started from another root. */
-export function restoreNextStep(state: string, attemptId: string, leftOut?: string, cleanupRoot?: string, cmd = "cotal"): string {
+export function restoreNextStep(state: string, attemptId: string, leftOut?: string, cleanupRoot?: string, cmd = "cotal", differentStore = false): string {
   if (state === "restore-ready") return `roll the pre-commit attempt back with ${codeSpan(`${cmd} backup recover ${attemptId} --yes`)}; preview it first with --dry-run`;
   if (state === "active") {
     const cleanup = codeSpan(`${cleanupRoot ? `cd ${shellPath(cleanupRoot)} && ` : ""}${cmd} backup cleanup-fallback ${attemptId} --yes${leftOut ? " --discard-history" : ""}`);
-    if (leftOut) return `the restore completed: ${cleanup} retires its journal and deletes the previous store, the only copy of the ${leftOut} it left out; preview it first with --dry-run`;
+    if (leftOut) return `the restore completed: ${cleanup} retires its journal and deletes the previous store, ${differentStore ? `which may hold ${leftOut} absent from the backup` : `the only copy of the ${leftOut} it left out`}; preview it first with --dry-run`;
     return `the restore completed: retire its journal with ${cleanup}; preview it first with --dry-run`;
   }
   return `recover forward with bare ${codeSpan(`${cmd} up`)} from this root, which continues attempt ${attemptId}; fallback cleanup follows once it is active`;
@@ -530,7 +531,7 @@ export function maintenanceNextStep(root: string, journal: NonNullable<ReturnTyp
     const source = preservedSourceState(root, journal.source);
     return { attemptId, next: readyNextStep(journal.source, source), ...(source.state === "missing" ? { sourceMissing: true } : {}) };
   }
-  const next = "restore" in journal ? restoreNextStep(journal.state, attemptId, restoreLeftOut(journal))
+  const next = "restore" in journal ? restoreNextStep(journal.state, attemptId, restoreLeftOut(journal), undefined, undefined, restoreReplacedDifferentStore(journal))
     : journal.state === "claimed" ? claimedNextStep(root, journal.claim) : null;
   return { attemptId, next };
 }
@@ -556,12 +557,12 @@ export function heldClaim(root: string, attemptId: string, claim: { readonly dea
  *  includes what was written after its artifact ({@link restoreReplacedNewerCut}) or another
  *  account's streams ({@link restoreOtherAccounts}), and that store, as the root's journal records
  *  them. Undefined when it left nothing out or the journal no longer names the attempt. */
-export function restoreOnlyCopy(root: string, attemptId: string): { leftOut: string; newer: boolean; otherAccounts: string[]; rolledBack: ReturnType<typeof restoreRolledBackRuns>; previousStore?: string } | undefined {
+export function restoreOnlyCopy(root: string, attemptId: string): { leftOut: string; newer: boolean; differentStore: boolean; otherAccounts: string[]; rolledBack: ReturnType<typeof restoreRolledBackRuns>; previousStore?: string } | undefined {
   try {
     const journal = readMaintenanceJournal(root);
     if (!journal || !("restore" in journal) || journal.restore.attemptId !== attemptId) return undefined;
     const leftOut = restoreLeftOut(journal);
-    return leftOut ? { leftOut, newer: restoreReplacedNewerCut(journal), otherAccounts: restoreOtherAccounts(journal), rolledBack: restoreRolledBackRuns(journal), ...(journal.restore.previousSource ? { previousStore: journal.restore.previousSource.identity.path } : {}) } : undefined;
+    return leftOut ? { leftOut, newer: restoreReplacedNewerCut(journal), differentStore: restoreReplacedDifferentStore(journal), otherAccounts: restoreOtherAccounts(journal), rolledBack: restoreRolledBackRuns(journal), ...(journal.restore.previousSource ? { previousStore: journal.restore.previousSource.identity.path } : {}) } : undefined;
   } catch { return undefined; }
 }
 
@@ -590,9 +591,9 @@ export function leftOutNotes(attemptId: string, selection: string, onlyCopy: Ret
   if (!onlyCopy) return [];
   const accounts = onlyCopy.otherAccounts;
   const cleanup = codeSpan(`${cleanupRoot ? `cd ${shellPath(cleanupRoot)} && ` : ""}${cmd} backup cleanup-fallback ${attemptId}`);
-  const kept = onlyCopy.previousStore ? `The previous store at ${onlyCopy.previousStore} holds the only copy of ${selection === "registry" && !accounts.length ? "them" : `the ${onlyCopy.leftOut}`}. ${cleanup} deletes it only with --discard-history.` : undefined;
+  const kept = onlyCopy.previousStore ? `The previous store at ${onlyCopy.previousStore} ${onlyCopy.differentStore ? "may hold" : "holds"} the only copy of ${selection === "registry" && !accounts.length ? "them" : `the ${onlyCopy.leftOut}`}. ${cleanup} deletes it only with --discard-history.` : undefined;
   const other = accounts.length ? [`The store this restore replaced also held streams of ${accounts.length === 1 ? "account" : "accounts"} ${accounts.join(", ")}, which this backup does not hold, so they are not restored.`] : [];
-  if (selection !== "registry") return [...(onlyCopy.newer ? ["This backup was made before the state it replaced was preserved, so the chat and DM history and workflow runs written after it are not restored.", ...rolledBackNotes(onlyCopy.rolledBack)] : []), ...other, ...(kept ? [kept] : [])];
+  if (selection !== "registry") return [...(onlyCopy.differentStore ? ["This backup came from a different store generation. It may not contain the previous store's chat and DM history and workflow runs."] : onlyCopy.newer ? ["This backup was made before the state it replaced was preserved, so the chat and DM history and workflow runs written after it are not restored.", ...rolledBackNotes(onlyCopy.rolledBack)] : []), ...other, ...(kept ? [kept] : [])];
   return ["A registry-only restore brings back channel settings only, so chat and DM history and workflow runs start empty.", ...other, kept ?? "No previous store was retained."];
 }
 
@@ -913,10 +914,10 @@ export async function prepareRestore(root: string, flags: RestoreFlags, validate
     releaseMaintenanceLock(lock);
     lock = undefined as never;
     await restoreAndValidate(broker, journal.space, artifact, sanitized!.path, "target", onlyRegistry, checkpoints, true);
-    // A cut preserved after this artifact was made holds history the artifact lacks, and the store
-    // this restore sets aside keeps its only copy. The runs it rolled back are named from the step
-    // journals of both stores: the restored one here, the set-aside one from a private clone.
+    // An older backup already needs discard consent. A newer backup from a different store
+    // generation cannot establish that it contains the fallback's history either.
     const previousCutNewer = sourceExists && Date.parse(journal.cut.intentAt) > Date.parse(artifact.manifest.createdAt);
+    const differentStore = sourceExists && !previousCutNewer && journal.source.generation !== artifact.manifest.source.generation;
     const restoredRuns = previousCutNewer && wanted.includes(wfjStreamName(journal.space)) ? await readRunJournals(broker, journal.space) : undefined;
     for (const record of artifact.manifest.streams)
       if (wanted.includes(record.stream)) await applyRecordedAge(broker, journal.space, record);
@@ -961,6 +962,7 @@ export async function prepareRestore(root: string, flags: RestoreFlags, validate
       restoredStreams: [...wanted],
       acceptMissingSource: Boolean(flags["accept-missing-source"]),
       ...(previousCutNewer ? { previousCutNewer: true } : {}),
+      ...(differentStore && !onlyRegistry ? { differentStoreGeneration: true } : {}),
       ...(otherAccounts.length ? { otherAccounts } : {}),
       ...(rolledBack?.runs.length ? { rolledBackRuns: rolledBack.runs as unknown as JsonValue, ...(rolledBack.more ? { rolledBackRunsMore: rolledBack.more } : {}) } : {}),
       serverName,
