@@ -33,8 +33,9 @@ if (!["linux", "darwin"].includes(process.platform)) {
     const xdg = join(scratch, "blocked-config"), blocked = join(xdg, "cotal");
     mkdirSync(xdg);
     writeFileSync(blocked, "not a config directory\n");
+    const cleanEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_")));
     const withBlockedConfig = (command: string) => spawnSync(process.execPath, [join(installed, "dist/cotal.js"), command, "--json"], {
-      env: { ...process.env, HOME: scratch, COTAL_HOME: join(scratch, "home"), XDG_CONFIG_HOME: xdg }, cwd: scratch, encoding: "utf8", timeout: 15_000,
+      env: { ...cleanEnv, HOME: scratch, COTAL_HOME: join(scratch, "home"), XDG_CONFIG_HOME: xdg }, cwd: scratch, encoding: "utf8", timeout: 15_000,
     });
     const blockedVersion = withBlockedConfig("version");
     assert.equal(blockedVersion.status, 4, blockedVersion.stdout + blockedVersion.stderr);

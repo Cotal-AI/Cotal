@@ -392,8 +392,9 @@ try {
   writeFileSync(join(workspaceRoot, file), "---\nname: bard\n---\nYou write verse.\n");
   const pin = String(jsonRow?.instanceId);
   const portFlags = ["--space", SPACE, "--server", SERVER];
+  const outsideEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_")));
   const fromOutside = (args: string[]) => new Promise<{ status: number | string | null; stdout: string; stderr: string }>((resolve) => execFile(process.execPath, [join(import.meta.dirname, "..", "dist", "cotal.js"), ...args], {
-    cwd: outside, env: { ...process.env, HOME: outside, COTAL_HOME: join(outside, "home"), XDG_CONFIG_HOME: join(outside, "xdg"), COTAL_SKIP_CONNECTOR_SEED: "1" }, encoding: "utf8", timeout: 60_000,
+    cwd: outside, env: { ...outsideEnv, HOME: outside, COTAL_HOME: join(outside, "home"), XDG_CONFIG_HOME: join(outside, "xdg"), COTAL_SKIP_CONNECTOR_SEED: "1" }, encoding: "utf8", timeout: 60_000,
   }, (error, stdout, stderr) => resolve({ status: error ? error.code ?? null : 0, stdout, stderr })));
   const remotePs = async () => {
     const row = await fromOutside(["ps", ...portFlags, "--on", pin, "--json"]);
