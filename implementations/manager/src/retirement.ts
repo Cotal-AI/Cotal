@@ -15,7 +15,7 @@ import type { Manager } from "./manager.js";
 import { DEPROVISION_TIMEOUT_MS } from "./seat-stop.js";
 import { withTimeout } from "./manager-timeout.js";
 import type { ManagerConfig } from "./manager-config.js";
-import type { ManagerAuthState } from "./manager-auth-state.js";
+import type { ManagerStartState } from "./manager-start-state.js";
 
 /** What the teardown chain (trackDeprovision → deprovision → driveDeprovision →
  *  driveStaticRetirement) needs to tear one incarnation down. Each hop passes the value on as a
@@ -57,7 +57,6 @@ export interface RetirementHold {
  * maintenance ownership to its manager. */
 export interface RetirementDeps {
   serveIdentity(): Identity | undefined;
-  instanceId(): string;
   serveEpoch(): number | undefined;
   dial(opts: Parameters<ReturnType<typeof dialerFor>>[0]): Promise<NatsConnection>;
   withRetirementSlot<T>(run: () => Promise<T>): Promise<T>;
@@ -76,7 +75,6 @@ export interface RetirementDeps {
 export function retirementDeps(m: Manager): RetirementDeps {
   return {
     serveIdentity: () => m["managerServeIdentity"],
-    instanceId: () => m["managerInstanceId"],
     serveEpoch: () => m["servePlane"].serviceServe?.grant.epoch,
     dial: (opts) => m["dial"](opts),
     withRetirementSlot: (run) => m["withRetirementSlot"](run),
@@ -129,13 +127,13 @@ export class Retirement {
    *  gets its own flight; a fresh trigger after settle re-drives only if the hold still stands. */
   private deprovisioningFlight = new Map<string, Promise<void>>();
 
-  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: RetirementDeps, private readonly state: ManagerAuthState) {}
+  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: RetirementDeps, private readonly state: ManagerStartState) {}
 
   private get auth() { return this.state.auth; }
   private get remoteAuthority() { return this.config.remoteAuthority; }
   private get userMode() { return this.state.userMode; }
   private get managerServeIdentity() { return this.deps.serveIdentity(); }
-  private get managerInstanceId() { return this.deps.instanceId(); }
+  private get managerInstanceId() { return this.state.managerInstanceId!; }
   private dial(opts: Parameters<ReturnType<typeof dialerFor>>[0]) { return this.deps.dial(opts); }
   private withRetirementSlot<T>(run: () => Promise<T>) { return this.deps.withRetirementSlot(run); }
   private driveStaticRetirement(a: TeardownTarget) { return this.deps.driveStaticRetirement(a); }

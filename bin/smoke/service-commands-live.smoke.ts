@@ -152,6 +152,11 @@ try {
     const up = cotal(["up", "--detach", "--open", "--no-manager", "--space", SPACE, "--server", SERVER]);
     stackUp = up.status === 0;
     check("a broker-only open stack starts", stackUp, out(up));
+    const brokerOnlyStatus = cotal(["manager", "status", "--space", SPACE, "--json"]);
+    const brokerOnlyError = JSON.parse(brokerOnlyStatus.stdout).error;
+    check("manager status suggests a manager-only start when the broker is running",
+      brokerOnlyStatus.status === 2 && brokerOnlyError?.code === "TARGET_NOT_FOUND"
+      && brokerOnlyError.remedy === `start it with \`cotal manager start --space ${SPACE}\``, out(brokerOnlyStatus));
 
     // ---- Every built-in preset is listed before it is added ------------------------------------
     const before = inventory();
@@ -457,7 +462,12 @@ try {
     const neverStarted = cotal(["manager", "status", "--space", PRESET_SPACE, "--json"]);
     const neverStartedError = JSON.parse(neverStarted.stdout).error;
     check("manager status still distinguishes a space with no manager history", neverStarted.status === 2
-      && neverStartedError?.code === "TARGET_NOT_FOUND" && neverStartedError.message.includes("no manager has been started"), out(neverStarted));
+      && neverStartedError?.code === "TARGET_NOT_FOUND" && neverStartedError.message.includes("no manager has been started")
+      && neverStartedError.remedy === `start it with \`cotal up\` in ${realpathSync(presetRoot)}`, out(neverStarted));
+    const neverStartedPlain = cotal(["manager", "status", "--space", PRESET_SPACE, "--plain"]);
+    check("plain manager status also names the stack start in the prepared project",
+      neverStartedPlain.status === 2 && ["cotal", "pnpm cotal"].some((cli) =>
+        out(neverStartedPlain).includes(`start it with \`${cli} up\` in ${realpathSync(presetRoot)}`)), out(neverStartedPlain));
     const custom = cotal(["service", "add", "stack-broker", "--exec", "/bin/sleep 600", "--space", PRESET_SPACE]);
     check("a never-started space accepts a process service named stack-broker", custom.status === 0, out(custom));
     const foregroundStart = ["service", "start", "stack-broker", "--space", PRESET_SPACE, "--foreground", "--json"];
@@ -504,6 +514,10 @@ try {
     check("the controller control starts its broker and manager", controllerUp.status === 0, out(controllerUp));
     const controllerDown = controller(["down", "--yes"]);
     check("the controller control stops its whole stack", controllerDown.status === 0, out(controllerDown));
+    const brokerLog = controller(["service", "logs", "stack-broker", "--space", controllerSpace, "--tail", "5"]);
+    check("the prepared stack's broker shutdown log is available through service logs",
+      brokerLog.status === 0 && brokerLog.stdout.includes("Initiating JetStream Shutdown") &&
+      brokerLog.stdout.includes("Server Exiting") && !existsSync(join(controllerRoot, ".cotal", "nats.log")), out(brokerLog));
     const controllerList = controller(["service", "--space", controllerSpace, "--json"]);
     const controllerRows = (JSON.parse(controllerList.stdout) as { result: { services: Row[] } }).result.services;
     check("a stopped controller member's Next remains cotal up", row(controllerRows, "stack-broker")?.next === "cotal up", controllerRows);

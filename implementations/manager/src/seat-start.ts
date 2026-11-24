@@ -20,7 +20,7 @@ import { activateStaticLifecycle, casStaticSlot, readStaticSlot } from "./static
 import type { TranscriptClaim } from "./transcript-receive.js";
 import type { ProvisionedUserAgent } from "./user-provision.js";
 import type { ManagerConfig } from "./manager-config.js";
-import type { ManagerAuthState } from "./manager-auth-state.js";
+import type { ManagerStartState } from "./manager-start-state.js";
 
 class LegacyEventCountPermissionError extends Error {}
 
@@ -53,7 +53,7 @@ export interface SeatStartLaunch {
 
 /** The agent-start path: admission, grant, launch, readiness and the rollback of a failed start. */
 export class SeatStart {
-  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: SeatLaunchDeps, private readonly parts: Pick<ManagerParts, "connectorInventory">, private readonly launch: SeatStartLaunch, private readonly state: ManagerAuthState) {}
+  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: SeatLaunchDeps, private readonly parts: Pick<ManagerParts, "brokerTransport" | "connectorInventory" | "harnessResolution" | "namesCapacity" | "personaCatalog">, private readonly launch: SeatStartLaunch, private readonly state: ManagerStartState) {}
 
   // The Manager members startActive reads, under their Manager names. Each reads through its dep
   // at use, so a field the Manager assigns later is current and a method a test replaces on the
@@ -69,16 +69,13 @@ export class SeatStart {
   private eventsRefusal(...args: Parameters<Manager["eventsRefusal"]>): ReturnType<Manager["eventsRefusal"]> { return this.deps.eventsRefusal(...args); }
   private fileDigest(...args: Parameters<Manager["fileDigest"]>): ReturnType<Manager["fileDigest"]> { return this.deps.fileDigest(...args); }
   private hostLaunchFields(...args: Parameters<Manager["hostLaunchFields"]>): ReturnType<Manager["hostLaunchFields"]> { return this.deps.hostLaunchFields(...args); }
-  private issuanceSeam(...args: Parameters<Manager["issuanceSeam"]>): ReturnType<Manager["issuanceSeam"]> { return this.deps.issuanceSeam(...args); }
-  private launchHarness(...args: Parameters<Manager["launchHarness"]>): ReturnType<Manager["launchHarness"]> { return this.deps.launchHarness(...args); }
   private launchOwner(...args: Parameters<Manager["launchOwner"]>): ReturnType<Manager["launchOwner"]> { return this.deps.launchOwner(...args); }
   private get leaseStopping() { return this.deps.leaseStopping(); }
   private loadSeatRuntime(...args: Parameters<Manager["loadSeatRuntime"]>): ReturnType<Manager["loadSeatRuntime"]> { return this.deps.loadSeatRuntime(...args); }
-  private get managerInstanceId() { return this.deps.managerInstanceId(); }
+  private get managerInstanceId() { return this.state.managerInstanceId!; }
   private get meshMode() { return this.deps.meshMode(); }
   private get namesCapacity() { return this.deps.namesCapacity(); }
   private openOnceDelivery(...args: Parameters<Manager["openOnceDelivery"]>): ReturnType<Manager["openOnceDelivery"]> { return this.deps.openOnceDelivery(...args); }
-  private personaOwner(...args: Parameters<Manager["personaOwner"]>): ReturnType<Manager["personaOwner"]> { return this.deps.personaOwner(...args); }
   private place(...args: Parameters<Manager["place"]>): ReturnType<Manager["place"]> { return this.deps.place(...args); }
   private provisionUserAgent(...args: Parameters<Manager["provisionUserAgent"]>): ReturnType<Manager["provisionUserAgent"]> { return this.deps.provisionUserAgent(...args); }
   private readerRemedy(...args: Parameters<Manager["readerRemedy"]>): ReturnType<Manager["readerRemedy"]> { return this.deps.readerRemedy(...args); }
@@ -87,7 +84,6 @@ export class SeatStart {
   private get retirement() { return this.deps.retirement(); }
   private get runHosting() { return this.deps.runHosting(); }
   private runtimeFor(...args: Parameters<Manager["runtimeFor"]>): ReturnType<Manager["runtimeFor"]> { return this.deps.runtimeFor(...args); }
-  private seatCapRefusal(...args: Parameters<Manager["seatCapRefusal"]>): ReturnType<Manager["seatCapRefusal"]> { return this.deps.seatCapRefusal(...args); }
   private get seatCustody() { return this.deps.seatCustody(); }
   private get sessionRecovery() { return this.deps.sessionRecovery(); }
   private shredUserSecrets(...args: Parameters<Manager["shredUserSecrets"]>): ReturnType<Manager["shredUserSecrets"]> { return this.deps.shredUserSecrets(...args); }
@@ -189,7 +185,7 @@ export class SeatStart {
     // Harness preflight before reserving a slot or minting — a missing `claude`/`opencode` binary
     // fails here with a clear name, not obscurely at process spawn. No fallback. All synchronous, so
     // the reserve gate stays atomic. (The connector itself was resolved up top, before the capacity gate.)
-    const harness = this.launchHarness(connector);
+    const harness = this.parts.harnessResolution.launchHarness(connector);
     if ("refusal" in harness) return { ok: false, error: this.harnessUnavailableError(harness.refusal, opts.route ?? "inst") };
     // Resume is a connector capability: reject an unsupported resume HERE, before the reserve/mint, so
     // it can never provision creds + durables and then throw at buildLaunch (mint-then-orphan). Same
@@ -407,7 +403,7 @@ export class SeatStart {
     const catalogCopy: AgentDef | undefined = inline?.save
       ? {
           name: ref,
-          owner: savedBy !== undefined ? this.personaOwner(principalKey(savedBy.owner, savedBy.actor).key) : spawner === undefined ? undefined : this.personaOwner(spawner),
+          owner: savedBy !== undefined ? this.parts.personaCatalog.personaOwner(principalKey(savedBy.owner, savedBy.actor).key) : spawner === undefined ? undefined : this.parts.personaCatalog.personaOwner(spawner),
           role,
           model,
           variant,
@@ -595,7 +591,7 @@ export class SeatStart {
     // before any of the others reserved, and they all pass. Nothing between here and the reserve
     // awaits. It refuses BEFORE `onEffect`, so the launch states `not-executed` and leaves no
     // name, no mint and no footprint behind.
-    const overCap = this.seatCapRefusal(owner);
+    const overCap = this.parts.namesCapacity.seatCapRefusal(owner);
     if (overCap) return { ok: false, code: overCap.code, error: overCap.message, ...(overCap.details ? { details: overCap.details } : {}) };
     // Set once the agent's footprint (durables + creds, or the user-mode grant + secret files)
     // exists; cleared when a live slot takes ownership. If it survives to `finally`, the spawn threw
@@ -812,7 +808,7 @@ export class SeatStart {
               lifecycleUid,
               expiresAt: exp,
               issued,
-              issuance: this.issuanceSeam(i, "issue", issuedAgent, exp),
+              issuance: this.parts.brokerTransport.issuanceSeam(i, "issue", issuedAgent, exp),
             }),
           ),
         );

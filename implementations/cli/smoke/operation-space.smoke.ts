@@ -280,6 +280,32 @@ check("spawn --dry-run of a missing name is TARGET_NOT_FOUND, naming the catalog
 const noFile = cotal("spawn", "--file", "missing.md", "--dry-run", "--json");
 check("spawn --dry-run of a missing --file names the file it checked",
   noFile.status === 2 && noFile.envelope?.error?.code === "TARGET_NOT_FOUND" && noFile.envelope.error.message === `no persona "missing.md": ${join(root, "missing.md")} was not found`, shown(noFile));
+if (process.platform !== "win32") {
+  const link = agentFilePath(root, "broken-probe");
+  symlinkSync("absent-probe.md", link);
+  for (const flags of [["--dry-run", "--plain"], ["--server", "nats://127.0.0.1:34300"]]) {
+    const refused = cotal("spawn", "broken-probe", ...flags);
+    check(`spawn ${flags[0]} diagnoses a dangling persona link`, refused.status === 2 &&
+      /Code:\s+TARGET_NOT_FOUND/.test(refused.stderr) && refused.stderr.includes(`${link} is a symbolic link to a missing target: absent-probe.md`) &&
+      refused.stderr.includes("restore the link's target, or move the link aside and put a regular persona file in its place"), shown(refused));
+  }
+  writeFileSync(agentFilePath(root, "absent-probe"), "---\nname: broken-probe\n---\n");
+  const restored = cotal("spawn", "broken-probe", "--dry-run", "--json");
+  check("spawn preview follows the same link when its target is restored",
+    restored.status === 0 && restored.envelope?.result?.requestedName === "broken-probe", shown(restored));
+}
+if (process.getuid && process.getuid() !== 0) {
+  const unreadable = join(root, "unreadable persona.md");
+  writeFileSync(unreadable, "---\nname: reader\n---\n", { mode: 0o000 });
+  const refused = cotal("spawn", "--file", unreadable, "--dry-run", "--json");
+  const remedy = refused.envelope?.error?.remedy;
+  check("spawn preview quotes the chmod remedy for an owned file without changing its mode",
+    refused.status === 2 && refused.envelope?.error?.code === "PERMISSION_DENIED" && refused.envelope.target?.path === unreadable &&
+    remedy === `run \`chmod u+r '${unreadable}'\`, then retry` && (statSync(unreadable).mode & 0o777) === 0, shown(refused));
+  chmodSync(unreadable, 0o400);
+  const retried = cotal("spawn", "--file", unreadable, "--dry-run", "--json");
+  check("the spawn preview succeeds once owner read permission is restored", retried.status === 0, shown(retried));
+}
 const prefix = join(env.XDG_CONFIG_HOME, "cotal", "extensions");
 mkdirSync(join(prefix, "node_modules", "@cotal-ai"), { recursive: true });
 const previewExtensions = ["connector-claude-code", "connector-opencode"].map((pkg) => {
@@ -289,6 +315,23 @@ const previewExtensions = ["connector-claude-code", "connector-opencode"].map((p
   return { pkg: `@cotal-ai/${pkg}`, version: JSON.parse(readFileSync(join(source, "package.json"), "utf8")).version, commands: [], provides: [{ kind: "connector", name }], connectors: [{ name, requires: [name], eventPlane: true, setup: null }] };
 });
 writeFileSync(join(prefix, "extensions.json"), JSON.stringify({ extensions: previewExtensions }));
+if (process.platform !== "win32") {
+  const path = agentFilePath(alternate, "edit-receipt");
+  const edited = '---\nname: "Review Bot"\nagent: claude\n---\n';
+  const editor = join(home, "rename-editor");
+  writeFileSync(path, "---\nname: edit-receipt\nagent: claude\n---\n");
+  writeFileSync(editor, `#!/bin/sh\ncat > "$1" <<'EOF'\n${edited}EOF\n`, { mode: 0o700 });
+  const saved = outcome(spawnSync(process.execPath, [BIN, "persona", "edit", "edit-receipt", "--space", "alternate-catalog", "--plain"],
+    { cwd: root, env: { ...env, VISUAL: editor }, encoding: "utf8", timeout: 120_000 }));
+  const launch = /^\s+(?:pnpm )?cotal (spawn .+?) {2,}Launch an agent from this persona\s*$/m.exec(saved.stdout)?.[1];
+  check("persona edit saves a distinct display name and prints a launch with a valid override and the same space",
+    saved.status === 0 && readFileSync(path, "utf8") === edited &&
+    launch === "spawn edit-receipt --space alternate-catalog --name edit-receipt", shown(saved));
+  const preview = launch && cotal(...launch.split(" "), "--dry-run", "--json");
+  check("the launch arguments in the edit receipt preview the saved persona in the selected space",
+    !!preview && preview.status === 0 && preview.envelope?.target?.space === "alternate-catalog" &&
+    preview.envelope.result?.requestedName === "edit-receipt", preview && shown(preview));
+}
 const noDefault = cotal("spawn", "--dry-run", "--plain");
 check("spawn --dry-run with no default persona previews the shipped default without writing it",
   noDefault.status === 0 && noDefault.stdout.includes("the launch writes the shipped default persona here; the preview wrote nothing") && !existsSync(agentFilePath(root, "default")), shown(noDefault));

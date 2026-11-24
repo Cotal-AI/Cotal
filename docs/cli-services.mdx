@@ -397,8 +397,13 @@ definition saved before that check refuses on start, before launch, naming its `
 how to add it again. This reports the child's client listener, not JetStream readiness, endpoint serving
 or a fresh trust check.
 
-A saved broker does not support `--foreground`. If a preview refuses it, remove `--foreground`
-and keep `--dry-run` and the rest of the command unchanged. The retry does not start the broker.
+Before the first start, `service status broker` and `service logs broker` name the required
+`--config <file>` and `--binary <file>` in their suggested start command. They also include
+`--server <url>` if the space has no registered broker address.
+
+The broker preset does not support `--foreground`. Its start help shows a background start.
+If a preview refuses `--foreground`, remove it and keep `--dry-run` and the rest of the command
+unchanged. The retry does not start the broker.
 
 Broker stop has a separate kernel-exit policy, with no invented endpoint principal or epoch.
 Known live or unresolved dependants refuse. After confirmation the controller rechecks the scope
