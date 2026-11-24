@@ -55,6 +55,27 @@ try {
   assert.match(dryRun.out, /not a stop plan/); passed++;
   assert.equal(await portOpen(port), true, "the dry run leaves the running broker alone"); passed++;
 
+  const wrongSpace = "other-legacy-space";
+  const message = `--space "${wrongSpace}" does not match the space "${space}" recorded in this folder; nothing was stopped`;
+  const remedy = `locate the project root for space "${wrongSpace}" before retrying`;
+  for (const format of ["--json", "--plain", "default"]) {
+    const args = ["down", "--space", wrongSpace, ...(format === "default" ? [] : [format])];
+    assertSmokeSandboxDown(sandbox, args, { cwd: mesh, env });
+    const wrong = logs[`wrong-space-${format}`] = await foregroundCliProbe(cliEntry, tsx, mesh, env, args);
+    assert.equal(wrong.code, 2, wrong.out + wrong.err);
+    if (format === "--json") {
+      assert.equal(wrong.err, "");
+      const report = JSON.parse(wrong.out);
+      assert.equal(report.outcome, "refused");
+      assert.deepEqual(report.error, { code: "UNSUPPORTED", message, remedy });
+    } else {
+      assert.equal(wrong.out, "");
+      assert.match(wrong.err, /Code:\s+UNSUPPORTED\n/);
+      assert.ok(wrong.err.includes(`  ${message}\n`) && wrong.err.includes(`Next\n  ${remedy}\n`), wrong.err);
+    }
+    assert.equal(await portOpen(port), true, `the ${format} refusal leaves the running broker alone`); passed++;
+  }
+
   logs.foreground = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["up", "--foreground", ...stack]);
   assert.notEqual(logs.foreground.code, 0, `foreground up over a running stack must not succeed: ${logs.foreground.out}`); passed++;
   assert.match(logs.foreground.err, /already running .* can't keep it in this terminal/, "the refusal names the running stack"); passed++;
