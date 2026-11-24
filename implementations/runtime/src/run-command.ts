@@ -1178,6 +1178,10 @@ export function workflowArguments(args: ParsedArgs): { values: RunValues; verb: 
   const verb = ({ list: "ps", show: "journal", check: "migrate" } as Record<string, string>)[raw] ?? raw;
   // A refusal that names its own fix prints that fix and no help; any other prints the help.
   const usage = (message: string, remedy?: string): never => { throw new CommandFailure("refused", "USAGE_INVALID", message, remedy === undefined ? {} : { remedy, selfContained: true }); };
+  if (verb === "journal" && values.limit !== undefined) {
+    if (!/^[1-9][0-9]*$/.test(values.limit) || Number(values.limit) > 1000) usage(`run ${raw}: --limit must be between 1 and 1000`);
+    if (values.json) usage(`run ${raw}: --limit bounds the text view, and --json returns the whole journal`, "omit --json for a limited text view, or omit --limit for the full JSON journal");
+  }
   if (verb === "journal" && (first === undefined || second !== undefined)) usage(`run ${raw} takes one identifier`, journalIdRemedy(raw, values));
   if (extra.length || !["start", "resume", "ps", "journal", "answer", "amend", "revoke", "migrate", "validate", "plan", "simulate", "turns", "yield"].includes(verb)) usage("choose a declared run command; run it bare to list workflows");
   // A run id is an id token, so a malformed one is refused here, before any contact, rather than
@@ -1237,10 +1241,6 @@ export function workflowArguments(args: ParsedArgs): { values: RunValues; verb: 
   if (verb === "journal") {
     const paging = [values.page !== undefined ? "--page" : undefined, values.cursor !== undefined ? "--cursor" : undefined].filter(Boolean).join(" and ");
     if (paging) usage(`run ${raw}: diagnostic inventory options are not available here`, `remove ${paging} to read the journal, or use \`cotal run --page --on <instance>\` for diagnostic inventory`);
-    if (values.limit !== undefined) {
-      if (!/^[1-9][0-9]*$/.test(values.limit) || Number(values.limit) > 1000) usage(`run ${raw}: --limit must be between 1 and 1000`);
-      if (values.json) usage(`run ${raw}: --limit bounds the text view, and --json returns the whole journal`);
-    }
   } else if (values.page !== undefined || values.limit !== undefined || values.cursor !== undefined) {
     if (verb !== "ps" || values.local === true || values.page !== true || values.on === undefined)
       usage("diagnostic paging requires run --page --on <instance> without --local");
