@@ -1,7 +1,7 @@
 import { join } from "node:path";
 import { jetstreamManager, type MsgRequest } from "@nats-io/jetstream";
 import {
-  GOVERN_HEAD, RECORD_KINDS, isStreamNotFound, parseRecordKey, parseRunJournalRecord,
+  CHANNEL_DEFAULTS_KEY, GOVERN_HEAD, RECORD_KINDS, channelBucket, isStreamNotFound, parseRecordKey, parseRunJournalRecord,
   recordsBucket, recordsKvStreamName, spacePrefix, validateBackupStreamState,
   validateCanonicalBackupStreamConfig, validateSpaceBackupInventory, wfjStreamName, type SpaceAuth,
 } from "@cotal-ai/core";
@@ -69,10 +69,35 @@ export function rolledBackRuns(previous: ReadonlyMap<string, RunJournalView>, re
   return { runs: all.slice(0, MAX_LISTED_RUNS), more: Math.max(0, all.length - MAX_LISTED_RUNS) };
 }
 
-async function previousHistoryIsEmpty(broker: IsolatedBroker, space: string): Promise<boolean> {
+/** Read the stored value and headers without interpreting or rewriting the registry entry. */
+export async function readRegistryDefault(broker: IsolatedBroker, space: string): Promise<string | undefined> {
+  try {
+    const login = await broker.addLogin({ profile: "restore", scope: { operation: "registry" } });
+    const nc = await connectIsolatedBroker(broker, login);
+    try {
+      const bucket = channelBucket(space);
+      const subject = `$KV.${bucket}.${CHANNEL_DEFAULTS_KEY}`;
+      const reply = (await nc.request(`$JS.API.STREAM.MSG.GET.KV_${bucket}`, JSON.stringify({ last_by_subj: subject }), { timeout: 2_000 })).json() as {
+        error?: unknown;
+        message?: { subject?: unknown; data?: unknown; hdrs?: unknown };
+      };
+      const message = reply.message;
+      if (reply.error || message?.subject !== subject || typeof message.data !== "string" ||
+          (message.hdrs !== undefined && typeof message.hdrs !== "string")) return undefined;
+      return JSON.stringify([message.data, message.hdrs ?? ""]);
+    } finally {
+      await nc.close();
+    }
+  } catch {
+    return undefined;
+  }
+}
+
+async function previousStoreHasNoUniqueState(broker: IsolatedBroker, space: string, restoredDefault: string | undefined): Promise<boolean> {
   try {
     const login = await broker.addLogin({ profile: "backup", scope: { operation: "inspect", selection: "full" } });
     const nc = await connectIsolatedBroker(broker, login);
+    let compareDefault = false;
     try {
       const jsm = await jetstreamManager(nc, { checkAPI: false });
       const names: string[] = [];
@@ -81,20 +106,34 @@ async function previousHistoryIsEmpty(broker: IsolatedBroker, space: string): Pr
       const inventory = validateSpaceBackupInventory(space, names, { atRest: true });
       const records = recordsKvStreamName(space);
       for (const { name, class: kind } of inventory.backedUp) {
-        if (kind !== "messages" && kind !== "workflow") continue;
         const info = await jsm.streams.info(name, name === records ? { subjects_filter: ">" } : undefined);
         validateCanonicalBackupStreamConfig(space, name, info.config as unknown as Record<string, unknown>);
         const state = validateBackupStreamState(info.state as unknown as Record<string, unknown>);
         if (state.lost !== undefined) return false;
-        if (state.last_seq === 0) continue;
-        // A clone can expire messages at startup. Zero current messages with an advanced sequence
-        // does not prove the original was empty. The records KV also holds manager registrations.
-        if (name !== records || !hasOnlyManagerRegistration(state, space)) return false;
+        switch (kind) {
+          case "registry":
+            if (state.last_seq === 0) break;
+            // A fresh space writes one default. Prove the target holds it rather than comparing
+            // counts, which can match for two unrelated stores with different settings.
+            if (state.messages !== 1 || state.last_seq !== 1 || restoredDefault === undefined) return false;
+            compareDefault = true;
+            break;
+          case "authorization":
+            if (state.last_seq !== 0) return false;
+            break;
+          case "messages":
+          case "workflow":
+            // Zero messages with an advanced sequence does not rule out expiry on the clone.
+            if (state.last_seq !== 0 && (name !== records || !hasOnlyManagerRegistration(state, space))) return false;
+            break;
+          default:
+            return false;
+        }
       }
-      return true;
     } finally {
       await nc.close();
     }
+    return !compareDefault || (await readRegistryDefault(broker, space)) === restoredDefault;
   } catch {
     // An unsuccessful inspection cannot authorize deletion.
     return false;
@@ -111,7 +150,7 @@ function hasOnlyManagerRegistration(state: ReturnType<typeof validateBackupStrea
     });
 }
 
-/** Read the set-aside history and journals from one private clone. A broker start can expire
+/** Read the set-aside state and journals from one private clone. A broker start can expire
  *  messages, so it must never open the preserved store itself. */
 export async function inspectPreviousStore(options: {
   root: string;
@@ -120,9 +159,10 @@ export async function inspectPreviousStore(options: {
   space: string;
   mode: MaintenanceAuthMode;
   auth?: SpaceAuth;
+  restoredDefault: string | undefined;
   deadline: Date;
   record: (input: { owners?: readonly ProcessOwner[]; ownedPaths?: readonly AttemptOwnedPath[] }) => void;
-}): Promise<{ historyEmpty: boolean; runs: Map<string, RunJournalView> }> {
+}): Promise<{ noUniqueState: boolean; runs: Map<string, RunJournalView> }> {
   options.record({ ownedPaths: [{ label: "clone", path: join(ensurePrivateAttemptsDir(options.root).path, `${options.attemptId}-clone`) }] });
   const clone = createAttemptClone(options.root, options.previousStore, options.attemptId);
   options.record({ ownedPaths: [{ label: "clone", path: clone.path, dev: clone.identity.dev.toString(), ino: clone.identity.ino.toString() }] });
@@ -141,7 +181,7 @@ export async function inspectPreviousStore(options: {
     });
     options.record({ owners: [broker.brokerOwner, broker.watchdogOwner], ownedPaths: broker.runFiles.map((file) => ({ label: "config" as const, ...file })) });
     const runs = await readRunJournals(broker, options.space);
-    return { historyEmpty: runs.size === 0 && await previousHistoryIsEmpty(broker, options.space), runs };
+    return { noUniqueState: runs.size === 0 && await previousStoreHasNoUniqueState(broker, options.space, options.restoredDefault), runs };
   } finally {
     if (broker) await broker.stop();
     clone.cleanup();

@@ -1274,12 +1274,12 @@ if (process.platform !== "win32") {
   // A full restore that replaced a cut preserved after its artifact was made left out what was
   // written since.
   const newer = { ...active, launch: { restoredStreams: [wfjStreamName("space-cleanup-runs")], previousCutNewer: true } };
-  check("a full restore that replaced a newer cut left out the newer history and runs", restoreLeftOut(newer) === "newer chat and DM history and workflow runs");
+  check("a full restore that replaced a newer cut left out newer state", restoreLeftOut(newer) === "newer space state");
   const newerEmpty = { ...newer, launch: { ...newer.launch, previousCutNewer: false } };
   check("verified empty newer history needs no consent", restoreLeftOut(newerEmpty) === undefined);
   check("empty newer history does not waive consent for a different account", restoreLeftOut({ ...newerEmpty, launch: { ...newerEmpty.launch, otherAccounts: ["$G"] } }) === "streams of account $G");
   check("its reason names the older artifact", restoreLeftOutReason(newer) === "this restore's artifact was made before the state it replaced was preserved");
-  check("with no workflow journal it also left out every run", restoreLeftOut({ ...active, launch: { previousCutNewer: true } }) === "workflow runs and newer chat and DM history"
+  check("with no workflow journal it also left out every run", restoreLeftOut({ ...active, launch: { previousCutNewer: true } }) === "workflow runs and newer space state"
     && restoreLeftOutReason({ ...active, launch: { previousCutNewer: true } }) === "this restore's artifact was made before the state it replaced was preserved and held no workflow runs");
   expectCode("its old source is not deleted without discardHistory", "cleanup-forbidden", () => cleanupRestoreFallback(p.lock, "restore-runs"));
   check("the refused cleanup keeps the old source and the active journal", exists(fallback) && readMaintenanceJournal(p.root)?.state === "active");

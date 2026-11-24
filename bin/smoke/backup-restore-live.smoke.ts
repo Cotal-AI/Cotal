@@ -447,7 +447,7 @@ async function scenario(mode: "open" | "auth"): Promise<void> {
     // above. The registry restore leaves out the payload stream and the full restore leaves out
     // the post sent after the legacy restore.
     assert.equal(active.launch?.previousCutNewer, true, `${mode} restore journals that the cut it replaced is newer than its artifact`);
-    const leftOut = restoreArtifact === registryArtifact ? "chat and DM history and workflow runs" : "newer chat and DM history and workflow runs";
+    const leftOut = restoreArtifact === registryArtifact ? "chat and DM history and workflow runs" : "newer space state";
     // The receipt names the restore attempt and the cleanup that retires it, with --discard-history.
     assert.ok(restored.stdout.includes(`✓ restored the backup ${restoreArtifact === registryArtifact ? "registry" : "in full"} as restore attempt ${active.restore.attemptId}`), `${mode} up --restore names its attempt\n${restored.stdout}`);
     const cleanupNext = restored.stdout.split("\n").find((line) => line.startsWith("next: ")) ?? "";
@@ -460,7 +460,7 @@ async function scenario(mode: "open" | "auth"): Promise<void> {
     } else {
       assert.doesNotMatch(restored.stdout, /history start empty/);
       const previous = active.restore.previousSource?.identity.path;
-      assert.ok(previous && restored.stdout.includes("This backup was made before the state it replaced was preserved, so the chat and DM history and workflow runs written after it are not restored.") && restored.stdout.includes(`The previous store at ${previous} holds the only copy of the ${leftOut}.`), `${mode} full restore of an older artifact names the newer history it left out\n${restored.stdout}`);
+      assert.ok(previous && restored.stdout.includes("Later changes to channel settings, access grants, membership, message history, and workflow runs are not restored.") && restored.stdout.includes(`The previous store at ${previous} holds the only copy of the ${leftOut}.`), `${mode} full restore of an older artifact names the newer state it left out\n${restored.stdout}`);
     }
     // `up -f` boots a fresh mesh, so it refuses while the restore is active and names the way out.
     const manifest = join(root, "cotal.yaml");
@@ -1448,7 +1448,7 @@ async function emptyNewerCutScenario(): Promise<void> {
     assert.ok(Date.parse(cut.cut.intentAt) > Date.parse(manifest.createdAt), "the empty cut is newer than its artifact");
 
     const restored = must("backup", "restore", artifact, "--store-dir", target, "--plain");
-    assert.match(restored.stdout, /The previous store had no message history or workflow runs for the restored space\./);
+    assert.match(restored.stdout, /The previous store held no additional backed-up state for the restored space\./);
     assert.doesNotMatch(restored.stdout + restored.stderr, /only copy|--discard-history/);
     const active = readMaintenanceJournal(root);
     assert.ok(active?.state === "active");
@@ -1460,7 +1460,26 @@ async function emptyNewerCutScenario(): Promise<void> {
     must(...cleanup, "--yes");
     assert.ok(!existsSync(cut.source.path) && existsSync(target), "cleanup removes only the fallback");
     assert.equal(readMaintenanceJournal(root), undefined, "cleanup retires the restore journal");
+    must("channel", "set", "fallback-only", "--desc", "setting created after backup", "--space", space);
+    assert.match(must("channel", "--space", space).stdout, /#fallback-only/);
     must("down", "--preserve-state", "--yes");
+
+    const settingsCut = readMaintenanceJournal(root);
+    assert.ok(settingsCut?.state === "ready");
+    const settingsTarget = join(root, "restored-without-new-settings");
+    const older = must("backup", "restore", artifact, "--store-dir", settingsTarget, "--plain");
+    assert.match(older.stdout + older.stderr, /--discard-history/);
+    assert.doesNotMatch(must("channel", "--space", space).stdout, /#fallback-only/);
+    const settingsRestore = readMaintenanceJournal(root);
+    assert.ok(settingsRestore?.state === "active");
+    assert.equal(settingsRestore.launch.previousCutNewer, true);
+    const settingsCleanup = ["backup", "cleanup-fallback", settingsRestore.restore.attemptId];
+    assert.match(must(...settingsCleanup, "--dry-run", "--json").stdout, /HISTORY_ONLY_IN_PREVIOUS_STORE/);
+    const refused = run(...settingsCleanup, "--yes", "--plain");
+    assert.equal(refused.status, 1, refused.stdout + refused.stderr);
+    assert.match(refused.stderr, /USAGE_INVALID/);
+    assert.ok(existsSync(settingsCut.source.path) && existsSync(settingsTarget), "the refusal keeps both stores");
+    assert.deepEqual(readMaintenanceJournal(root), settingsRestore, "the refusal keeps the active journal");
   } finally {
     run("down", "--yes");
     rmSync(root, { recursive: true, force: true });

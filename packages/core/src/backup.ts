@@ -558,7 +558,8 @@ export type RestorePermissionScope =
   | { operation: "upload"; stream: string; deliverSubject: string }
   | { operation: "validate"; stream: string }
   | { operation: "checkpoint"; checkpoint: PersistentConsumerCheckpoint }
-  | { operation: "journal" };
+  | { operation: "journal" }
+  | { operation: "registry" };
 
 /** The publish grant that ACKs one stream's snapshot chunks and nothing else. The broker sends each
  * ACKable chunk with a reply under `$JS.SNAPSHOT.ACK.<stream>.<nuid>`, to which current servers
@@ -633,6 +634,10 @@ export function restoreProfilePermissions(
   if (scope.operation === "journal") {
     const stream = assertBackupStream(space, wfjStreamName(space));
     return { pub: { allow: [`$JS.API.STREAM.INFO.${stream}`, `$JS.API.STREAM.MSG.GET.${stream}`] }, sub: { allow: [inbox] } };
+  }
+  if (scope.operation === "registry") {
+    const [stream] = spaceBackupInventory(space).registry;
+    return { pub: { allow: [`$JS.API.STREAM.MSG.GET.${stream}`] }, sub: { allow: [inbox] } };
   }
   if (scope.operation !== "initiate" && scope.operation !== "upload" && scope.operation !== "validate")
     throw new Error(`unsupported restore operation ${(scope as { operation?: unknown }).operation}`);

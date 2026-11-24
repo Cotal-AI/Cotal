@@ -72,7 +72,7 @@ import {
 import { ArtifactFileFault, artifactReadRefusal, artifactStreams, BACKUP_MANIFEST_FORMAT_V1, inspectBackupArtifact, missingBackupPath, missingBackupPathText, notAnArtifactRefusal, readStagedCheckpoints, stageArtifact, type BackupManifest, type StagedArtifact } from "./backup-artifact.js";
 import { authorityFingerprint } from "./maintenance-files.js";
 import { attemptProcessesGone, ensurePrivateAttemptsDir, startIsolatedBroker, sweepAttemptResidue, type IsolatedBroker } from "./isolated-broker.js";
-import { inspectPreviousStore, readRunJournals, rolledBackRuns } from "./rolled-back-runs.js";
+import { inspectPreviousStore, readRegistryDefault, readRunJournals, rolledBackRuns } from "./rolled-back-runs.js";
 import { noticeOnInterrupt } from "./interrupt-notice.js";
 import { displayCmd } from "./self-exec.js";
 import { assertEndpointUnreachable } from "./endpoint-cut.js";
@@ -571,7 +571,7 @@ export function restoreHistory(root: string, attemptId: string): { onlyCopy?: Re
     if (!journal || !("restore" in journal) || journal.restore.attemptId !== attemptId) return {};
     const leftOut = restoreLeftOut(journal);
     const onlyCopy = leftOut ? { leftOut, newer: restoreReplacedNewerCut(journal), otherAccounts: restoreOtherAccounts(journal), rolledBack: restoreRolledBackRuns(journal), ...(journal.restore.previousSource ? { previousStore: journal.restore.previousSource.identity.path } : {}) } : undefined;
-    const emptyNote = "launch" in journal && journal.launch.previousCutNewer === false ? "The previous store had no message history or workflow runs for the restored space." : undefined;
+    const emptyNote = "launch" in journal && journal.launch.previousCutNewer === false ? "The previous store held no additional backed-up state for the restored space." : undefined;
     return { onlyCopy, emptyNote };
   } catch { return {}; }
 }
@@ -603,7 +603,7 @@ export function leftOutNotes(attemptId: string, selection: string, onlyCopy: Res
   const cleanup = codeSpan(`${cleanupRoot ? `cd ${shellPath(cleanupRoot)} && ` : ""}${cmd} backup cleanup-fallback ${attemptId}`);
   const kept = onlyCopy.previousStore ? `The previous store at ${onlyCopy.previousStore} holds the only copy of ${selection === "registry" && !accounts.length ? "them" : `the ${onlyCopy.leftOut}`}. ${cleanup} deletes it only with --discard-history.` : undefined;
   const other = accounts.length ? [`The store this restore replaced also held streams of ${accounts.length === 1 ? "account" : "accounts"} ${accounts.join(", ")}, which this backup does not hold, so they are not restored.`] : [];
-  if (selection !== "registry") return [...(onlyCopy.newer ? ["This backup was made before the state it replaced was preserved, so the chat and DM history and workflow runs written after it are not restored.", ...rolledBackNotes(onlyCopy.rolledBack)] : []), ...other, ...(kept ? [kept] : [])];
+  if (selection !== "registry") return [...(onlyCopy.newer ? ["This backup was made before the state it replaced was preserved. Later changes to channel settings, access grants, membership, message history, and workflow runs are not restored.", ...rolledBackNotes(onlyCopy.rolledBack)] : []), ...other, ...(kept ? [kept] : [])];
   return ["A registry-only restore brings back channel settings only, so chat and DM history and workflow runs start empty.", ...other, kept ?? "No previous store was retained."];
 }
 
@@ -924,17 +924,18 @@ export async function prepareRestore(root: string, flags: RestoreFlags, validate
     releaseMaintenanceLock(lock);
     lock = undefined as never;
     await restoreAndValidate(broker, journal.space, artifact, sanitized!.path, "target", onlyRegistry, checkpoints, true);
-    // A newer cut can hold history the artifact lacks. Inspect the set-aside store on a private
+    // A newer cut can hold state the artifact lacks. Inspect the set-aside store on a private
     // clone before waiving consent, and use both brokers' journals to name rolled-back runs.
     const previousCutNewer = sourceExists && Date.parse(journal.cut.intentAt) > Date.parse(artifact.manifest.createdAt);
     const restoredRuns = previousCutNewer && wanted.includes(wfjStreamName(journal.space)) ? await readRunJournals(broker, journal.space) : undefined;
     for (const record of artifact.manifest.streams)
       if (wanted.includes(record.stream)) await applyRecordedAge(broker, journal.space, record);
+    const restoredDefault = restoredRuns ? await readRegistryDefault(broker, journal.space) : undefined;
     await broker.stop();
     broker = undefined;
     const previousStore = restoredRuns ? (readMaintenanceJournal(root) as RestoreReadyRecord | undefined)?.restore.previousSource?.identity.path : undefined;
     const previous = previousStore
-      ? await inspectPreviousStore({ root, previousStore, attemptId, space: journal.space, mode: journal.mode, auth, deadline, record: recordResources })
+      ? await inspectPreviousStore({ root, previousStore, attemptId, space: journal.space, mode: journal.mode, auth, restoredDefault, deadline, record: recordResources })
       : undefined;
     const rolledBack = previous && restoredRuns ? rolledBackRuns(previous.runs, restoredRuns) : undefined;
 
@@ -971,8 +972,8 @@ export async function prepareRestore(root: string, flags: RestoreFlags, validate
       restoreOnly: flags["restore-only"] ?? artifact.manifest.selection,
       restoredStreams: [...wanted],
       acceptMissingSource: Boolean(flags["accept-missing-source"]),
-      // On a newer cut, only an affirmative empty-store proof clears the history warning.
-      ...(previousCutNewer ? { previousCutNewer: previous?.historyEmpty !== true } : {}),
+      // On a newer cut, only a proof that no backed-up state is unique to it clears the warning.
+      ...(previousCutNewer ? { previousCutNewer: previous?.noUniqueState !== true } : {}),
       ...(otherAccounts.length ? { otherAccounts } : {}),
       ...(rolledBack?.runs.length ? { rolledBackRuns: rolledBack.runs as unknown as JsonValue, ...(rolledBack.more ? { rolledBackRunsMore: rolledBack.more } : {}) } : {}),
       serverName,

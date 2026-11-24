@@ -949,7 +949,7 @@ export function rollbackRestore(lock: MaintenanceLock, options: RollbackRestoreO
 
 type LeftOutRecord = { readonly space: string; readonly mode: MaintenanceAuthMode; readonly restore: Pick<RestoreContext, "selection" | "previousSource">; readonly launch?: { readonly [key: string]: JsonValue } };
 
-/** Whether a restore replaced a newer cut and did not prove its message history and runs empty. */
+/** Whether a restore replaced a newer cut and did not rule out additional backed-up state. */
 export function restoreReplacedNewerCut(record: LeftOutRecord): boolean {
   return record.launch?.previousCutNewer === true;
 }
@@ -984,7 +984,7 @@ export function restoreLeftOut(record: LeftOutRecord): string | undefined {
   const restored = record.launch?.restoredStreams;
   const runs = Array.isArray(restored) && restored.includes(wfjStreamName(record.space));
   const own = record.restore.selection === "registry" ? "chat and DM history and workflow runs"
-    : restoreReplacedNewerCut(record) ? (runs ? "newer chat and DM history and workflow runs" : "workflow runs and newer chat and DM history")
+    : restoreReplacedNewerCut(record) ? (runs ? "newer space state" : "workflow runs and newer space state")
     : runs ? undefined : "workflow runs";
   return own && theirs ? `${own} and the ${theirs}` : own ?? theirs;
 }
