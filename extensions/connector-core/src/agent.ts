@@ -1,5 +1,6 @@
 import { EventEmitter } from "node:events";
 import {
+  AGENT_NAMING_META_KEY,
   resolvePeer as resolvePeerInRoster,
   peerLabel,
   CotalEndpoint,
@@ -33,6 +34,8 @@ import { checkEventStartup, EventStateConflictError } from "./event-startup.js";
 import { claimOnceHandoff } from "./once.js";
 import { AgentManagerCalls, invokeUserManager } from "./manager-call.js";
 import { openAgentEndpoint, type AgentEndpoint } from "./agent-endpoint.js";
+import { createNameLane, type NameLane } from "./agent-name.js";
+import { AutoNaming } from "./agent-naming.js";
 import type { CommandDispatch } from "./agent-commands.js";
 import type { PromptDesk } from "./prompt-desk.js";
 import { AgentInbox, deliveryNoticeOf, type InboxItem, type InboxSnapshot, type InboxScope, type ExactDrainResult, type RecallMark } from "./agent-inbox.js";
@@ -139,6 +142,10 @@ export class MeshAgent extends EventEmitter {
     { fromId: string; contextId?: string; text?: string; pending?: boolean }
   >();
   private _stopping = false;
+  /** The one queue every change of this agent's name runs through: `set-name` and its own naming. */
+  private readonly names: NameLane;
+  /** Naming from the first message, while the seat's launch asked for it and its connector can. */
+  private readonly naming?: AutoNaming;
 
   /** An explicit env scopes launch metadata and bearer subprocesses. Omitted preserves process inheritance. */
   constructor(config: AgentConfig, env?: NodeJS.ProcessEnv, options: MeshAgentOptions = {}) {
@@ -212,9 +219,21 @@ export class MeshAgent extends EventEmitter {
         actor: config.userAuth?.actor,
         // Display-only discovery metadata so observers can show which harness an agent runs on
         // and (when pinned) which model. Each is omitted when unset rather than faked.
-        meta: buildMeta(config, !options.withholdProcessCwd, options.eventsArmed),
+        meta: buildMeta(config, !options.withholdProcessCwd, options.eventsArmed, config.autoName === true && options.naming !== undefined),
       },
     });
+    this.names = createNameLane(this.ep, (msg) => this.log(msg), () => this.naming?.end());
+    if (config.autoName && options.naming)
+      this.naming = new AutoNaming({
+        events: this,
+        lane: this.names,
+        request: options.naming.request,
+        clearPending: () => this.inOrder(() => this.ep.setCardMeta(AGENT_NAMING_META_KEY, undefined)),
+        connected: (ms) => this.waitUntilConnected(ms),
+        log: (msg) => this.log(msg),
+      });
+    else if (config.autoName)
+      this.log(`COTAL_AUTO_NAME is set, but ${config.connector ? `the ${config.connector}` : "this"} connector cannot ask its model for a name, so the seat keeps its launch name`);
     this.ep.on("message", (m: CotalMessage, d: Delivery, meta?: MessageMeta) => {
       const notice = meta?.kind === "dm" ? deliveryNoticeOf(m) : undefined;
       if (notice !== undefined) void this.inboxState.ingestNotice(m, d, meta!, notice);
@@ -435,6 +454,8 @@ export class MeshAgent extends EventEmitter {
   /** Begin connecting with background retry. Resolves after the first completed mesh join. */
   start(retryMs = 3000): Promise<void> {
     if (this._stopping) throw new Error("cannot start a stopped mesh session");
+    const launchPrompt = this.options.naming?.launchPrompt;
+    if (launchPrompt?.trim()) this.naming?.observe(launchPrompt);
     if (!this.consumerClaim && this.config.lifecycleUid) {
       const { owner, actor } = this.ep.principal;
       this.consumerClaim = acquireLocalConsumer(this.config.servers, this.config.space, owner, actor, this.config.lifecycleUid);
@@ -513,6 +534,7 @@ export class MeshAgent extends EventEmitter {
     try {
       const served = await openAgentEndpoint(this.ep, {
         warn: (msg) => this.log(msg),
+        names: this.names,
         dispatcher: this.options.commands,
         onQueued: () => this.emit("command"),
       });
@@ -550,6 +572,8 @@ export class MeshAgent extends EventEmitter {
   }
 
   private async stopOnce(): Promise<void> {
+    // Before stopping refuses presence writes, so the departure record carries no naming key.
+    this.naming?.end();
     this._stopping = true;
     this.emit("stopping");
     this.inboxState.stop();
