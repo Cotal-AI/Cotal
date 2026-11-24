@@ -60,7 +60,7 @@ function processCell(p: ProcessRow): Cell {
 }
 
 function skillsCell(s: StatusResult["machine"]["skills"]): Cell {
-  const remedy = `${displayCmd()} setup --skills`;
+  const remedy = s.repairBlockedBy ? `repair blocked by ${s.repairBlockedBy}` : `${displayCmd()} setup --skills`;
   if (s.state === "unreadable") return cell(`bundle error: ${s.error}`, "failed");
   if (s.state === "current") return cell(`current (${s.total})`, "ok");
   if (s.state === "not-installed") return cell(`not installed · ${remedy}`, "hint");
@@ -269,7 +269,9 @@ function machineOverview(r: StatusResult, wide: boolean, interactive: boolean, s
   const ownedBySetUp = (label: string) => setUp.some((name) => label.toLowerCase().includes(name.toLowerCase()));
   const rows: [string, Cell][] = wide
     ? m.integrations.map((item) => [item.name, stateCell(item.text, tones[item.state])])
-    : m.integrations.filter((item) => item.client ? item.state === "warn" || item.state === "error" : item.state !== "ok" && ownedBySetUp(item.name)).map((item) => [item.name, stateCell(item.text, tones[item.state])]);
+    : m.integrations.filter((item) => item.name === m.skills.repairBlockedBy ||
+      (item.client ? item.state === "warn" || item.state === "error" : item.state !== "ok" && ownedBySetUp(item.name)))
+      .map((item) => [item.name, stateCell(item.text, tones[item.state])]);
   rows.unshift(["Agent applications", applicationsCell(m, interactive)]);
   if (wide)
     for (const connector of m.connectors ?? []) {

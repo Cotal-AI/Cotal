@@ -58,12 +58,22 @@ function setup(environment: NodeJS.ProcessEnv, project: string, space: string, t
   writeFileSync(join(root, `${project}-${space}.json`), result.stdout);
   return result;
 }
-function skillsStatus(environment: NodeJS.ProcessEnv, project: string): { name: string; state: string; text: string } {
-  const result = run(process.execPath, [cli, "status", "--json"], environment, join(root, project));
+function statusText(environment: NodeJS.ProcessEnv, project: string, ...flags: string[]): string {
+  const result = run(process.execPath, [cli, "status", ...flags], environment, join(root, project));
   assert.equal(result.status, 0, result.stdout + result.stderr);
-  const rows = JSON.parse(result.stdout).result.machine.integrations as { name: string; state: string; text: string }[];
-  const row = rows.find(({ name }) => name === "Claude skills");
-  assert.ok(row, result.stdout);
+  return result.stdout;
+}
+
+function statusMachine(environment: NodeJS.ProcessEnv, project: string) {
+  return JSON.parse(statusText(environment, project, "--json")).result.machine as {
+    integrations: { name: string; state: string; text: string }[];
+    skills: { state: string; repairBlockedBy?: string };
+  };
+}
+
+function integration(machine: ReturnType<typeof statusMachine>, label: string) {
+  const row = machine.integrations.find(({ name }) => name === label);
+  assert.ok(row, `missing ${label} row`);
   return row;
 }
 function claude(environment: NodeJS.ProcessEnv, ...args: string[]): string {
@@ -109,6 +119,11 @@ function assertIndependentCodexRepair(): void {
   assert.equal(broken.status, 1, broken.stdout + broken.stderr);
   assert.match(broken.stderr, /marketplace root does not contain a supported manifest/);
   assert.ok(broken.stderr.includes(join(from, "codex-plugin")), broken.stderr);
+  const machine = statusMachine(moved, "codex-project");
+  const wake = integration(machine, "Claude wake channel");
+  assert.equal(wake.state, "off");
+  assert.match(wake.text, /not registered/);
+  assert.doesNotMatch(wake.text, /cotal (?:daemon )?setup/);
 
   const update = run(process.execPath, [cli, "update"], moved, project);
   assert.equal(update.status, 1, update.stdout + update.stderr);
@@ -151,7 +166,7 @@ const original = profileBytes(envA);
 console.log("PASS: same-home setup is idempotent");
 
 const foreign = setup(envB, "project-b", "triage-b");
-assert.notEqual(foreign.status, 0, "setup must refuse another Cotal home's registrations");
+assert.equal(foreign.status, 4, foreign.stdout + foreign.stderr);
 assert.ok((foreign.stdout + foreign.stderr).includes(homeA), foreign.stdout + foreign.stderr);
 assert.match(foreign.stdout + foreign.stderr, /separate CLAUDE_CONFIG_DIR/);
 assert.deepEqual(profileBytes(envA), original);
@@ -159,17 +174,38 @@ resolved(envA, homeA);
 assert.ok(!existsSync(join(homeB, "claude-plugin", "cotal")), "refuse before materializing the competing plugin");
 console.log("PASS: shipped setup refuses home B, names home A, and preserves both registrations");
 
-const foreignSkills = run(process.execPath, [cli, "setup", "--skills"], envB, join(root, "project-b"));
-assert.equal(foreignSkills.status, 3, foreignSkills.stdout + foreignSkills.stderr);
-const warning = skillsStatus(envB, "project-b");
-assert.equal(warning.state, "warn");
-assert.ok(warning.text.startsWith(`Claude marketplace cotal-mesh belongs to Cotal home ${homeA}, not ${homeB}.`), warning.text);
-assert.match(warning.text, /Use that COTAL_HOME or a separate CLAUDE_CONFIG_DIR and plugin cache/);
-assert.doesNotMatch(warning.text, /≠|setup --skills/);
-assert.ok(foreignSkills.stderr.includes(warning.text), foreignSkills.stderr);
-assert.deepEqual(profileBytes(envA), original);
-assert.equal(skillsStatus(envA, "project-a").text, "current");
-console.log("PASS: skills status explains the shared profile without recommending a refused action");
+function assertForeignStatus(): void {
+  const user = join(root, "user-foreign");
+  mkdirSync(user);
+  const isolated = { ...envB, HOME: user, USERPROFILE: user, USER_HOME: user };
+  const skill = join(user, ".agents", "skills", "team-topology", "SKILL.md");
+  const refused = run(process.execPath, [cli, "setup", "--skills"], isolated, join(root, "project-b"));
+  assert.equal(refused.status, 3, refused.stdout + refused.stderr);
+  assert.ok(!existsSync(skill), "the refusal comes before the .agents install");
+  const machine = statusMachine(isolated, "project-b");
+  const warning = integration(machine, "Claude skills");
+  assert.equal(warning.state, "warn");
+  assert.ok(warning.text.startsWith(`Claude marketplace cotal-mesh belongs to Cotal home ${homeA}, not ${homeB}.`), warning.text);
+  assert.match(warning.text, /Use that COTAL_HOME or a separate CLAUDE_CONFIG_DIR and plugin cache/);
+  assert.doesNotMatch(warning.text, /≠|setup --skills/);
+  assert.ok(refused.stderr.includes(warning.text), refused.stderr);
+  assert.deepEqual(integration(machine, "Claude plugin"), { ...warning, name: "Claude plugin" });
+  assert.equal(machine.skills.state, "not-installed");
+  assert.equal(machine.skills.repairBlockedBy, "Claude skills");
+  const compact = statusText(isolated, "project-b");
+  assert.match(compact, /Agent skills:.*not installed · repair blocked by Claude skills/);
+  assert.doesNotMatch(compact, /setup --skills|Claude plugin:.*run `cotal setup`/);
+
+  mkdirSync(join(user, ".agents", "skills", "team-topology"), { recursive: true });
+  writeFileSync(skill, "an edited copy of team-topology\n");
+  const verbose = statusText(isolated, "project-b", "--verbose");
+  assert.match(verbose, /Skills \(\.agents\):.*1\/1 out of date · repair blocked by Claude skills/);
+  assert.doesNotMatch(verbose, /setup --skills/);
+  assert.deepEqual(profileBytes(envA), original);
+  console.log("PASS: Claude and .agents status explain the blocked repairs and preserve drift reporting");
+}
+assertForeignStatus();
+assert.equal(integration(statusMachine(envA, "project-a"), "Claude skills").text, "current");
 
 const probe = join(root, "provider.mjs");
 writeFileSync(probe, `import { claudeSetupProvider as p } from ${JSON.stringify(new URL("../dist/index.js", import.meta.url).href)};
@@ -188,7 +224,9 @@ const separate = env("separate", homeB);
 const independent = setup(separate, "project-independent", "triage-independent");
 assert.equal(independent.status, 0, independent.stdout + independent.stderr);
 resolved(separate, homeB);
-assert.equal(skillsStatus(separate, "project-independent").text, "current");
+const independentMachine = statusMachine(separate, "project-independent");
+assert.equal(integration(independentMachine, "Claude skills").text, "current");
+assert.equal(independentMachine.skills.repairBlockedBy, undefined);
 assert.deepEqual(profileBytes(envA), original);
 const again = setup(envA, "project-a", "triage-a");
 assert.equal(again.status, 0, again.stdout + again.stderr);
@@ -199,7 +237,7 @@ const mcpOnly = readFileSync(join(envA.CLAUDE_CONFIG_DIR!, ".claude.json"), "utf
 const noMarketplace = setup(envB, "project-b", "triage-b");
 assert.notEqual(noMarketplace.status, 0);
 assert.match(noMarketplace.stdout + noMarketplace.stderr, /Claude user MCP entry cotal belongs to Cotal home/);
-const mcpWarning = skillsStatus(envB, "project-b");
+const mcpWarning = integration(statusMachine(envB, "project-b"), "Claude skills");
 assert.equal(mcpWarning.state, "warn");
 assert.ok(mcpWarning.text.startsWith(`Claude user MCP entry cotal belongs to Cotal home ${homeA}, not ${homeB}.`), mcpWarning.text);
 assert.equal(readFileSync(join(envA.CLAUDE_CONFIG_DIR!, ".claude.json"), "utf8"), mcpOnly);

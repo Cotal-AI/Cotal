@@ -1135,9 +1135,9 @@ folder in `selected.recordedRoot`. `status` is a read-only report in this order:
 their versions, this folder's `.cotal/`, the recorded meshes, the selected mesh (its connection, the
 delivery responder, its channels and membership feed), then the hints. It lists no roster; `cotal ps`
 lists managed seats. Stale Claude skills and out-of-date `.agents` skills recommend
-`cotal setup --skills`. If Claude's profile is registered to another Cotal home, the Claude skills
-row names that home and explains how to use a separate profile. `status` takes `--space` / `--server`
-to pick the mesh to inspect; it starts nothing.
+`cotal setup --skills` when the repair is available. If another Cotal home owns the Claude profile,
+status names that home and shows skills drift without suggesting the blocked repair. `status` takes
+`--space` / `--server` to pick the mesh to inspect; it starts nothing.
 
 When `status` would suggest restarting the selected stopped local stack,
 `status` checks the recorded root's default `.cotal/channels.json` with the same validation as `up`.

@@ -85,6 +85,8 @@ export interface ConnectorStatusRow {
   readonly label: string;
   readonly state: "ok" | "warn" | "error" | "off";
   readonly text: string;
+  /** This condition prevents the shared skills repair command from completing. */
+  readonly blocksSkillsRepair?: true;
 }
 
 /** Optional setup surface declared by a connector through {@link Connector.setup}. A missing or

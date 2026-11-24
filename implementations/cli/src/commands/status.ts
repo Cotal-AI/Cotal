@@ -456,6 +456,7 @@ async function readMachine(selected: Selected, gaps: Gaps, hints: string[]): Pro
   }
   let connectors: HarnessStatus[] | null = null;
   const integrations: StatusResult["machine"]["integrations"] = [];
+  const skills = readSkills(gaps);
   try {
     connectors = connectorHarnesses();
   } catch (e) {
@@ -469,7 +470,10 @@ async function readMachine(selected: Selected, gaps: Gaps, hints: string[]): Pro
     hints.push("run `cotal status` again when that command finishes");
   } else if (connectors) {
     const signedIn = selected.ok && selected.target.mode === "user" ? await signedInSpace(selected.target) : undefined;
-    for (const r of await connectorStatusRows(connectors, signedIn)) integrations.push({ name: r.label, state: r.state, text: r.text });
+    for (const r of await connectorStatusRows(connectors, signedIn)) {
+      integrations.push({ name: r.label, state: r.state, text: r.text });
+      if (r.blocksSkillsRepair) skills.repairBlockedBy ??= r.label;
+    }
     for (const r of await clientStatusRows(signedIn)) integrations.push({ name: r.label, state: r.state, text: r.text, client: true });
   }
   let installed: boolean | null = null;
@@ -501,7 +505,7 @@ async function readMachine(selected: Selected, gaps: Gaps, hints: string[]): Pro
     integrations,
     defaults,
     connectors: connectors?.map((h) => ({ name: h.name, requires: [...h.requires], missing: h.missing })) ?? null,
-    skills: readSkills(gaps),
+    skills,
     web: { installed, installedError, url, urlError },
   };
 }

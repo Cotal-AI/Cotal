@@ -113,7 +113,15 @@ export interface StatusResult {
     connectors: { name: string; requires: string[]; missing: string[] }[] | null;
     /** For a resolved space, the bare direct launch's persona and effective harness, including its pin. */
     defaults: { harness: string | null; persona: string | null } | null;
-    skills: { state: "current" | "not-installed" | "behind" | "unreadable"; total: number; behind: number; retired: number; error: string | null };
+    skills: {
+      state: "current" | "not-installed" | "behind" | "unreadable";
+      total: number;
+      behind: number;
+      retired: number;
+      error: string | null;
+      /** The integration row that explains why the shared repair cannot complete. */
+      repairBlockedBy?: string;
+    };
     web: { installed: boolean | null; installedError: string | null; url: string | null; urlError: string | null };
   };
   extensions: { root: string; items: { package: string; label: string; version: string }[] | null };
