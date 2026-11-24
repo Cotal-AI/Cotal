@@ -150,8 +150,7 @@ export class CorruptExtensionsManifestError extends Error {
  *  can hold none (every command that would use that folder is refused, naming it). A CORRUPT or
  *  unreachable file is a loud error (never treat installed extensions as absent — commands would
  *  silently vanish from help). */
-export function loadExtensionsManifest(): ExtensionsManifest {
-  const p = extensionsManifestPath();
+export function loadExtensionsManifest(p = extensionsManifestPath()): ExtensionsManifest {
   let parsed: unknown;
   try {
     if (!statSync(p).isFile()) throw new Error("not a regular file");

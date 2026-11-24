@@ -737,13 +737,21 @@ if (process.platform !== "win32") {
   const seed = run(["ext", "seed"], env);
   check("`ext seed` is refused the same way before it reads the seed state",
     seed.status === 1 && seed.stderr.includes(`the Cotal config folder ${folder} is a file`) && !/ENOTDIR/.test(seed.stderr), shown(seed));
-  for (const args of [["help"], [], ["config", "--help"], ["version"], ["docs"]]) {
+  for (const args of [["help"], [], ["config", "--help"], ["docs"]]) {
     const r = run(args, env);
     check(`\`cotal ${args.join(" ")}\` still runs`, r.status === 0 && r.stdout !== "" && !/ENOTDIR|corrupt extensions manifest/.test(r.stderr), shown(r));
   }
   const version = run(["version", "--json"], env);
-  check("`version --json` is complete with no installed extensions, since that folder can hold none",
-    version.status === 0 && version.envelope?.outcome === "ok" && version.envelope.completeness === "complete" && JSON.stringify(version.envelope.result?.extensions) === "[]", shown(version));
+  check("`version --json` keeps the CLI version and reports the blocked inventory as partial",
+    version.status === 4 && version.stderr === "" && version.envelope?.completeness === "partial"
+    && typeof version.envelope.result?.version === "string" && version.envelope.warnings[0]?.code === "EXTENSIONS_UNREADABLE"
+    && version.envelope.warnings[0].message.includes(folder) && version.envelope.error?.remedy?.includes(`move ${folder} aside`) === true, shown(version));
+  for (const word of ["version", "--version", "-V"]) {
+    const text = run([word], env);
+    check(`${word} names the same config blocker and repair step`, text.status === 4
+      && text.stdout === `cotal-ai ${version.envelope?.result?.version}\n` && text.stderr.includes(`move ${folder} aside`)
+      && !/ext seed --repair|ENOTDIR/.test(text.stderr), shown(text));
+  }
   check("and the file is left as it was", readFileSync(folder, "utf8") === "a file\n");
   const r = run(["config", "--json"], { XDG_CONFIG_HOME: folder });
   check("a config home that is itself a file names that file",

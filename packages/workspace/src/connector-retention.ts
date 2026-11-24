@@ -387,10 +387,19 @@ function currentConfig(id: { entry: string; version: string; path: string }, pre
   return selected ? root : undefined;
 }
 
+export const EXTENSION_PROMOTION_JOURNAL = ".extensions-promotion.json";
+
 /** Read selected, update snapshot, predecessor or legacy state, then the fresh installation's future root. */
 export function connectorConfigDir(): string {
   const id = identity();
-  return id ? currentConfig(id) ?? updateSnapshot(id) ?? previousConfig(id) ?? (["extensions", "seed"].some(name => existsSync(join(globalConfigDir(), name))) ? globalConfigDir() : join(id.path, "cotal")) : globalConfigDir();
+  if (!id) return globalConfigDir();
+  const selected = currentConfig(id) ?? updateSnapshot(id) ?? previousConfig(id);
+  if (selected) return selected;
+  const legacy = globalConfigDir();
+  // A journal still identifies the legacy prefix while neither version is at its live path.
+  const hasLegacyState = ["extensions", "seed"].some(name => existsSync(join(legacy, name))) ||
+    lstatSync(join(legacy, EXTENSION_PROMOTION_JOURNAL), { throwIfNoEntry: false }) !== undefined;
+  return hasLegacyState ? legacy : join(id.path, "cotal");
 }
 
 /**

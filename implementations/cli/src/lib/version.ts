@@ -1,6 +1,6 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
-import { cachedUpdateSummary, CorruptExtensionsManifestError, extensionProvides, globalConfigDirProblem, loadExtensionsManifest, logicalExecutionEntry, UnreadableConnectorSelection, writeResult } from "@cotal-ai/workspace";
+import { cachedUpdateSummary, CorruptExtensionsManifestError, EXTENSION_PROMOTION_JOURNAL, extensionProvides, extensionsManifestPath, globalConfigDirProblem, loadExtensionsManifest, logicalExecutionEntry, UnreadableConnectorSelection, writeResult } from "@cotal-ai/workspace";
 import { cliPackageRoot, cliVersion, installedCliVersion } from "../seed/paths.js";
 import { isNpx } from "./self-exec.js";
 import { manifestRepair, readUpdatePending } from "./update-pending.js";
@@ -53,9 +53,9 @@ export function extensionVersions(): ExtensionVersion[] {
 }
 
 /** Read the pinned versions without loading or reconciling any extension. */
-export function readExtensionVersions(): { versions: ExtensionVersion[]; unreadable?: string; unreadableSelection?: true; diagnosis?: string } {
+export function readExtensionVersions(path?: string): { versions: ExtensionVersion[]; unreadable?: string; unreadableSelection?: true; diagnosis?: string } {
   try {
-    const versions = loadExtensionsManifest().extensions.map((entry, index) => {
+    const versions = loadExtensionsManifest(path).extensions.map((entry, index) => {
       if (!entry || typeof entry.pkg !== "string" || !entry.pkg || typeof entry.version !== "string" || !entry.version || !Array.isArray(entry.commands)) {
         throw new Error(`invalid extension inventory entry at index ${index}`);
       }
@@ -86,9 +86,9 @@ function versionLines(current: string, update: string, instruction: string | und
   return lines;
 }
 
-function versionMetadata() {
+function versionMetadata(inventory?: readonly ExtensionVersion[] | null) {
   const current = cliVersion();
-  return { current, update: cachedUpdateSummary(current), pending: readUpdatePending(current) };
+  return { current, update: cachedUpdateSummary(current), pending: readUpdatePending(current, inventory) };
 }
 
 /** Print a bare version listing for consumers that supply their own inventory. */
@@ -97,26 +97,63 @@ export function printVersion(exts = extensionVersions()): void {
   console.log(versionLines(current, update, pending.kind === "none" ? undefined : pending.instruction, exts).join("\n"));
 }
 
+interface VersionInventoryProblem {
+  readonly source: "config" | "selection" | "promotion" | "manifest";
+  readonly error: string;
+  readonly diagnosis?: string;
+  readonly instruction?: string;
+  readonly unreadableSelection?: true;
+}
+
+function versionInventory(): { versions: ExtensionVersion[]; problem?: VersionInventoryProblem } {
+  const config = globalConfigDirProblem();
+  if (config) return { versions: [], problem: { source: "config", error: config.message, instruction: config.remedy } };
+  let manifest: string;
+  try { manifest = extensionsManifestPath(); }
+  catch (error) {
+    return { versions: [], problem: { source: "selection", error: error instanceof Error ? error.message : String(error),
+      ...(error instanceof UnreadableConnectorSelection ? { unreadableSelection: true, instruction: "Run `cotal ext seed --repair` to repair the connectors." } : {}) } };
+  }
+  const prefix = dirname(manifest);
+  const journal = join(dirname(prefix), EXTENSION_PROMOTION_JOURNAL);
+  const prefixIdentity = () => {
+    const stat = lstatSync(prefix, { throwIfNoEntry: false, bigint: true });
+    return stat && `${stat.dev}:${stat.ino}`;
+  };
+  const promotion = () => lstatSync(journal, { throwIfNoEntry: false });
+  try {
+    const before = prefixIdentity();
+    const inventory = promotion() ? undefined : readExtensionVersions(manifest);
+    if (!inventory || promotion() || before !== prefixIdentity()) {
+      return { versions: [], problem: { source: "promotion", error: `extension promotion is unfinished or changed during the inventory read (${journal})`,
+        instruction: "Run `cotal ext list` with the installation that owns this inventory to check whether recovery can finish." } };
+    }
+    const { versions, unreadable, diagnosis } = inventory;
+    return unreadable === undefined ? { versions } : { versions, problem: { source: "manifest", error: unreadable, diagnosis, instruction: manifestRepair } };
+  } catch (error) {
+    return { versions: [], problem: { source: "promotion", error: `extension promotion state at ${journal} could not be checked: ${error instanceof Error ? error.message : String(error)}` } };
+  }
+}
+
 /** Report the running version even when the extension inventory cannot be read. */
 export function reportVersion(format: "plain" | "json"): void {
-  const { versions, unreadable, unreadableSelection, diagnosis } = readExtensionVersions();
-  const config = unreadable === undefined ? undefined : globalConfigDirProblem();
-  const { current, update, pending } = versionMetadata();
-  const reconciliation = config && pending.kind === "unreadable" && pending.source === "manifest"
-    ? { ...pending, error: config.message, instruction: config.remedy } : pending;
+  const { versions, problem } = versionInventory();
+  const { current, update, pending } = versionMetadata(problem ? null : versions);
+  const reconciliation = problem && pending.kind === "none"
+    ? { kind: "unreadable" as const, source: problem.source, error: problem.error, ...(problem.instruction && { instruction: problem.instruction }) } : pending;
   // The updater's text probe must succeed with an unrecognized connector selection.
-  const detail = format === "plain" ? diagnosis ?? unreadable : unreadable;
-  const reason = format === "plain" && unreadableSelection ? undefined : config?.message ?? detail;
-  const remedy = config?.remedy ?? manifestRepair;
-  const instruction = reconciliation.kind === "none" ? undefined : reconciliation.instruction;
+  const partial = problem && !(format === "plain" && problem.unreadableSelection) ? problem : undefined;
+  const instruction = pending.kind !== "none" ? pending.instruction : partial ? undefined : problem?.instruction;
+  const subject = partial?.source === "manifest" ? "the extensions manifest" : "the extension inventory";
+  const detail = format === "plain" ? partial?.diagnosis ?? partial?.error : partial?.error;
   writeResult(format, {
     command: "version",
     target: null,
     result: { version: current, update, reconciliation, extensions: versions.map((e) => ({ package: e.pkg, version: e.version })) },
-    ...(reason === undefined ? {} : {
+    ...(partial ? {
       completeness: "partial",
-      warnings: [{ code: "EXTENSIONS_UNREADABLE", target: null, message: `the extensions manifest could not be read: ${reason}` }],
-      partial: { message: "the installed extensions could not be listed", remedy },
-    }),
-  }, () => ({ sections: [{ blocks: [{ kind: "lines", lines: versionLines(current, update, reason !== undefined && instruction === remedy ? undefined : instruction, versions) }] }] }));
+      warnings: [{ code: "EXTENSIONS_UNREADABLE", target: null, message: `${subject} could not be read: ${detail}` }],
+      partial: { message: "the installed extensions could not be listed", remedy: partial.instruction },
+    } : {}),
+  }, () => ({ sections: [{ blocks: [{ kind: "lines", lines: versionLines(current, update, instruction, versions) }] }] }));
 }

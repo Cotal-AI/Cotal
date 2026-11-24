@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { connectorConfigDir, canRecoverConnectorConfig, claimUpdateClosureAccess, inspectLock, processStartToken, protectedLocalDirectory, assertProtectedFileAccess, readLocalRecordSource } from "@cotal-ai/workspace";
+import { connectorConfigDir, canRecoverConnectorConfig, claimUpdateClosureAccess, inspectLock, processStartToken, protectedLocalDirectory, assertProtectedFileAccess, readLocalRecordSource, EXTENSION_PROMOTION_JOURNAL } from "@cotal-ai/workspace";
 import { claimExtensionMutation } from "./ext-mutation.js";
 import { repairInstallModes } from "./install-umask.js";
 
@@ -13,7 +13,7 @@ interface Promotion {
   readonly stageIdentity: { readonly dev: string; readonly ino: string; readonly birth: number };
   readonly oldIdentity?: { readonly dev: string; readonly ino: string; readonly birth: number };
 }
-const journalPath = (): string => join(connectorConfigDir(), ".extensions-promotion.json");
+const journalPath = (): string => join(connectorConfigDir(), EXTENSION_PROMOTION_JOURNAL);
 function save(record: Promotion): void {
   const path = journalPath(), temp = `${path}.${randomBytes(6).toString("hex")}.tmp`;
   writeFileSync(temp, JSON.stringify(record), { flag: "wx", mode: 0o600 });

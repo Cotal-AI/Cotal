@@ -1,6 +1,7 @@
 ---
 "cotal-ai": patch
 "@cotal-ai/cli": patch
+"@cotal-ai/workspace": patch
 ---
 
-The version command and its aliases still print the running CLI version when the extension manifest is unreadable. Text output reports the inventory problem and repair step on stderr, and exits 4 as JSON output does.
+The version command and its aliases still print the running CLI version when the extension inventory cannot be read. Text and JSON report corrupt manifests, blocked config paths and unfinished promotions as partial without changing extension state.

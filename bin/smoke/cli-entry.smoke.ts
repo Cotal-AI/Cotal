@@ -474,6 +474,13 @@ const envelopes = (r: Run) => {
   check("version --json still lists a valid installed pin", installed.status === 0 && installed.stderr === ""
     && installedReport?.completeness === "complete" && installedReport.result?.extensions[0]?.package === pin.pkg
     && installedReport.result.extensions[0].version === pin.version, shown(installed));
+  const journal = join(cfg, "cotal", ".extensions-promotion.json");
+  writeFileSync(journal, "not a journal\n", { mode: 0o600 });
+  partialVersion("version --json does not trust live pins under a broken promotion journal", ["version", "--json"], /extension promotion.*\.extensions-promotion\.json/);
+  const promotion = versionRun(["--version"]);
+  check("the fast version flag names the unfinished promotion without trusting pins or changing the journal", promotion.status === 4
+    && promotion.stdout === damagedText.stdout && promotion.stderr.includes(journal) && readFileSync(journal, "utf8") === "not a journal\n", shown(promotion));
+  rmSync(journal);
   rmSync(manifest);
   if (process.platform !== "win32") {
     symlinkSync("missing.json", manifest);
