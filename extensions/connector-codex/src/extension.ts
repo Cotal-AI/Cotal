@@ -9,11 +9,15 @@
  * and without one it prints an activity feed. Self-registers on import; the manager resolves it
  * by agent type "codex".
  */
-import { spawn } from "node:child_process";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
-import { resolve } from "node:path";
-import { registry, type Connector, type LaunchOpts, type LaunchSpec, type ModelCatalog, type ModelCatalogOpts, type ModelInfo } from "@cotal-ai/core";
-import { aclEnv, nameEnv, connectorLaunchOptions, controlEndpoint, eventChannel, launchArmsEvents, launchEnv, materialEnv } from "@cotal-ai/connector-core";
+import { join, resolve } from "node:path";
+import { registry, type CommandCatalog, type CommandListOpts, type Connector, type LaunchOpts, type LaunchSpec, type ModelCatalog, type ModelCatalogOpts, type ModelInfo } from "@cotal-ai/core";
+import { aclEnv, nameEnv, connectorLaunchOptions, controlEndpoint, eventChannel, firstCommandEnv, launchArmsEvents, launchEnv, materialEnv } from "@cotal-ai/connector-core";
+import { askAppServer } from "./app-server-once.js";
+import type { CodexSkill } from "./app-server.js";
+import { codexSkillEntries } from "./skills.js";
 
 /** The bundled host loop (self-contained — core + connector-core inlined, see package.json's
  *  bundle script) run with this same node; from SOURCE (dev), the `.ts` entry through tsx. */
@@ -42,80 +46,49 @@ interface CodexModelEntry {
   supportedReasoningEfforts?: { reasoningEffort?: string; description?: string }[];
 }
 
+/** The file a launch runs: the operator pin, then the path boot resolved, then the bare name. The
+ *  pin is read here because discoveryEnv strips every COTAL_* key, which is what keeps a catalog
+ *  probe from looking like a managed seat. A later PATH change cannot pick a different file. */
+function codexBin(resolved: Readonly<Record<string, string>> | undefined): string {
+  return process.env.COTAL_CODEX_BIN?.trim() || resolved?.codex || "codex";
+}
+
 /** Query the model catalog over a short-lived `codex app-server` (`model/list` — there is no
  *  `codex models` subcommand). Times out rather than hanging the manager's selector UI. */
 async function listCodexModels(opts: ModelCatalogOpts = {}): Promise<ModelCatalog> {
-  // The file a launch runs: the operator pin, then the path boot resolved, then the bare name. The
-  // pin is read here because discoveryEnv strips every COTAL_* key, which is what keeps a catalog
-  // probe from looking like a managed seat. A later PATH change cannot pick a different file.
-  const bin = process.env.COTAL_CODEX_BIN?.trim() || opts.resolvedBinaries?.codex || "codex";
-  const child = spawn(bin, ["app-server"], { env: discoveryEnv(), stdio: ["pipe", "pipe", "ignore"] });
+  const bin = codexBin(opts.resolvedBinaries);
+  const result = ((await askAppServer({ bin, env: discoveryEnv(), method: "model/list", params: {}, boundMs: 10_000 })) ?? {}) as { data?: CodexModelEntry[] };
+  const models: ModelInfo[] = (result.data ?? [])
+    .filter((m) => !m.hidden && (m.model || m.id))
+    .map((m) => ({
+      id: m.model ?? m.id!,
+      provider: "openai",
+      ...(m.displayName ? { name: m.displayName } : {}),
+      ...(m.supportedReasoningEfforts?.length
+        ? {
+            variants: m.supportedReasoningEfforts
+              .filter((e) => typeof e.reasoningEffort === "string")
+              .map((e) => ({ name: e.reasoningEffort!, ...(e.description ? { options: { description: e.description } } : {}) })),
+          }
+        : {}),
+    }));
+  return { source: "codex app-server model/list", models };
+}
+
+/** The skills a seat started in `cwd` would run, from `skills/list` on a short-lived app-server
+ *  there, in the environment a seat's host gets. A seat's Codex runs under a per-agent CODEX_HOME
+ *  that loads none of the operator's config, so this one runs under an empty private home too.
+ *  Listing needs no login. */
+async function codexSkillCatalog(opts: CommandListOpts): Promise<CommandCatalog> {
+  const home = mkdtempSync(join(tmpdir(), "cotal-codex-skills-"));
   try {
-    const result = await new Promise<{ data?: CodexModelEntry[] }>((resolvePromise, reject) => {
-      const timer = setTimeout(() => reject(new Error("codex app-server model/list timed out (10s)")), 10_000);
-      let buf = "";
-      child.stdout!.setEncoding("utf8");
-      child.stdout!.on("data", (d: string) => {
-        buf += d;
-        let nl: number;
-        while ((nl = buf.indexOf("\n")) >= 0) {
-          const line = buf.slice(0, nl).trim();
-          buf = buf.slice(nl + 1);
-          if (!line) continue;
-          let msg: { id?: number; result?: unknown; error?: { message?: string } };
-          try {
-            msg = JSON.parse(line);
-          } catch {
-            continue;
-          }
-          if (msg.id === 1) {
-            child.stdin!.write(JSON.stringify({ jsonrpc: "2.0", id: 2, method: "model/list", params: {} }) + "\n");
-          } else if (msg.id === 2) {
-            clearTimeout(timer);
-            if (msg.error) reject(new Error(msg.error.message ?? "model/list failed"));
-            else resolvePromise((msg.result ?? {}) as { data?: CodexModelEntry[] });
-          }
-        }
-      });
-      child.on("error", (e) => {
-        clearTimeout(timer);
-        reject(e);
-      });
-      // `close`, not `exit`: `exit` can fire while stdout still holds the model/list response,
-      // so a child that answers and exits at once raced its own reply (#3749). `close` follows
-      // the end of stdout, after every `data` event has been handled.
-      child.on("close", (code) => {
-        clearTimeout(timer);
-        reject(new Error(`codex app-server exited (${code}) before model/list answered`));
-      });
-      // A write to a pipe the child already closed fails on stdin, which the ChildProcess does not
-      // forward; without this listener that `error` is uncaught and takes the manager down.
-      child.stdin!.on("error", (e) => {
-        clearTimeout(timer);
-        reject(new Error(`codex app-server stdin failed before model/list answered (${e.message})`));
-      });
-      child.stdin!.write(
-        JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { clientInfo: { name: "cotal", title: "Cotal", version: "0.0.0" } } }) + "\n",
-      );
-      child.stdin!.write(JSON.stringify({ jsonrpc: "2.0", method: "initialized" }) + "\n");
-    });
-    const models: ModelInfo[] = (result.data ?? [])
-      .filter((m) => !m.hidden && (m.model || m.id))
-      .map((m) => ({
-        id: m.model ?? m.id!,
-        provider: "openai",
-        ...(m.displayName ? { name: m.displayName } : {}),
-        ...(m.supportedReasoningEfforts?.length
-          ? {
-              variants: m.supportedReasoningEfforts
-                .filter((e) => typeof e.reasoningEffort === "string")
-                .map((e) => ({ name: e.reasoningEffort!, ...(e.description ? { options: { description: e.description } } : {}) })),
-            }
-          : {}),
-      }));
-    return { source: "codex app-server model/list", models };
+    const params = { cwds: [opts.cwd], forceReload: true };
+    const env = { ...launchEnv({ providerKeys: CODEX_ENV_KEYS, envAllow: opts.envAllow }), CODEX_HOME: home };
+    const r = (await askAppServer({ bin: codexBin(opts.resolvedBinaries), env, cwd: opts.cwd, method: "skills/list", params, boundMs: 10_000 })) as { data?: { skills?: CodexSkill[] }[] } | undefined;
+    if (!Array.isArray(r?.data)) throw new Error("skills/list answered with no data list");
+    return { supported: true, commands: codexSkillEntries(r.data.flatMap((entry) => entry.skills ?? [])) };
   } finally {
-    child.kill("SIGKILL");
+    rmSync(home, { recursive: true, force: true });
   }
 }
 
@@ -134,6 +107,7 @@ export const codexConnector: Connector = {
   // someone staring at a blank terminal is that the pause is the mesh, and the UI is coming.
   launchHint: "joining the mesh, then Codex opens",
   listModels: listCodexModels,
+  commands: { targets: ["skill"], list: codexSkillCatalog },
 
   // The AG-UI event plane's subject, declared so the manager mints a grant for exactly the
   // channel this seat will publish to.
@@ -285,6 +259,7 @@ export const codexConnector: Connector = {
     // after every refusal above, and its directory is a launch artifact the launcher removes once the
     // child has exited (core launch-artifacts).
     Object.assign(env, materialEnv({ creds: opts.creds, servers: opts.servers, control, eventsRequired: opts.eventsRequired, eventPayloads: opts.eventPayloads, userAuth: opts.userAuth }, artifacts));
+    Object.assign(env, firstCommandEnv(opts.firstCommand, artifacts));
 
     return { command: HOST_COMMAND, args: [HOST_ENTRY], env, control, ...(artifacts.length > 0 ? { artifacts } : {}) };
   },

@@ -19,7 +19,7 @@ import { MANAGER_STATUS_CONTRACT, managerShippedSurface, type ManagerConnectorSt
 const { check, finish } = createSuite();
 
 const shipped = managerShippedSurface();
-check("the Manager contract retains the prompts fact after the interrupt command advances it", shipped.revision === 53, shipped);
+check("the Manager contract retains the prompts fact after harness-commands advances it", shipped.revision === 54, shipped);
 
 const base = {
   instanceId: "a".repeat(26), execution: "runtime", runtime: "pty", custody: "legacy", runHosting: false,

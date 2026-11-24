@@ -1032,7 +1032,7 @@ credential diverge (§2): the principal keys subjects/durables/presence; the con
 
 | Profile | Application publish | Read surface | Notes |
 | --- | --- | --- | --- |
-| `agent` | own `chat.<owner>.<actor>.<ch>` for each `allowPublish` channel (post ACL, default-deny), `inst.*.*.<owner>.<actor>`, `svc.*.<owner>.<actor>`; endpoint request forms per minted capability (`ep.one`/`ep.all`/`ep.inst` with the capability's authz-mode/target pattern, caller triple `<owner>.<actor>.<uid>` pinned; `describe` by default; `epj` submissions for journaled capabilities; §13.9); own presence key | own `_INBOX_<connId>.>` + own endpoint reply rail (`ep.reply.*.*.*.<owner>.<actor>.<uid>.*`, exact arity); channel live tail via native `sub.allow` subscriptions to `chat.*.*.<channel>` per `allowSubscribe` (wildcards preserved); `STREAM.INFO` (stream-level state only, no body read) on `CHAT` and the world-readable KVs, plus `TASK` when the credential carries a `role`; presence and channel-registry KV watches, including create/info of their client-managed ordered consumers on those two streams only, and no `CONSUMER.DELETE` on either; CHAT history via single-filter `chathist_<owner>-<actor>-<uid>` creates, one per `allowSubscribe` channel (ACL-bounded); a credential minted from an interactive ledger row also subscribes `chat.<owner>.*.events.<owner>.*` and holds one `chathist_` create with that filter (§13.21); own lifecycle-scoped `dm_…`/`svc_…` bind-only; durable backstop via own bind-only lifecycle-scoped `dlv_…` DELIVER consumer, **no** grant on the mixed pre-auth fan-out stream; granted record-key/event-topic read subtrees per capability | read bounded by `allowSubscribe`; no watch-consumer delete: the broker removes a watch's ordered consumer at its inactive threshold, and a client treats a refused delete of its own watch consumer as that outcome (Appendix B); durable copies re-authorized (current ACL + membership + lifecycle) by the trusted reader before the `dlv` handoff; no Direct Get; DM/TASK/DLV create denied. The `manager-caller` view narrows this endpoint control set to `ep.inst.manager.<managerInstanceId>.<command>` only, plus the exact instance `describe`, contract reads, own reply/progress rows, and own inbox. It carries no agent messaging, delivery, class, or scatter rows. When the actor holds `spawn`, the view also carries `status`, `models`, `resolve-cwd`, `list-dir` and `ps` on that instance. The first four are the reads a launch there needs. `ps` lists the caller's own agents, because the manager bounds it to the caller's owner unless the caller holds `admin`. When the actor holds `admin`, the view also carries the operator instrument set on that instance, which includes these reads and `slots`. No other scope adds any of them, and no view gains `slots` from `spawn`. A view minted from an interactive ledger row carries `inspect` and `ps` on that instance whatever its scope, and owner-mode `despawn`, `attach`, `input` and `interrupt`, the target owner pinned to the caller's own (§13.21). |
+| `agent` | own `chat.<owner>.<actor>.<ch>` for each `allowPublish` channel (post ACL, default-deny), `inst.*.*.<owner>.<actor>`, `svc.*.<owner>.<actor>`; endpoint request forms per minted capability (`ep.one`/`ep.all`/`ep.inst` with the capability's authz-mode/target pattern, caller triple `<owner>.<actor>.<uid>` pinned; `describe` by default; `epj` submissions for journaled capabilities; §13.9); own presence key | own `_INBOX_<connId>.>` + own endpoint reply rail (`ep.reply.*.*.*.<owner>.<actor>.<uid>.*`, exact arity); channel live tail via native `sub.allow` subscriptions to `chat.*.*.<channel>` per `allowSubscribe` (wildcards preserved); `STREAM.INFO` (stream-level state only, no body read) on `CHAT` and the world-readable KVs, plus `TASK` when the credential carries a `role`; presence and channel-registry KV watches, including create/info of their client-managed ordered consumers on those two streams only, and no `CONSUMER.DELETE` on either; CHAT history via single-filter `chathist_<owner>-<actor>-<uid>` creates, one per `allowSubscribe` channel (ACL-bounded); a credential minted from an interactive ledger row also subscribes `chat.<owner>.*.events.<owner>.*` and holds one `chathist_` create with that filter (§13.21); own lifecycle-scoped `dm_…`/`svc_…` bind-only; durable backstop via own bind-only lifecycle-scoped `dlv_…` DELIVER consumer, **no** grant on the mixed pre-auth fan-out stream; granted record-key/event-topic read subtrees per capability | read bounded by `allowSubscribe`; no watch-consumer delete: the broker removes a watch's ordered consumer at its inactive threshold, and a client treats a refused delete of its own watch consumer as that outcome (Appendix B); durable copies re-authorized (current ACL + membership + lifecycle) by the trusted reader before the `dlv` handoff; no Direct Get; DM/TASK/DLV create denied. The `manager-caller` view narrows this endpoint control set to `ep.inst.manager.<managerInstanceId>.<command>` only, plus the exact instance `describe`, contract reads, own reply/progress rows, and own inbox. It carries no agent messaging, delivery, class, or scatter rows. When the actor holds `spawn`, the view also carries `status`, `models`, `resolve-cwd`, `list-dir`, `harness-commands` and `ps` on that instance. The first five are the reads a launch there needs. `ps` lists the caller's own agents, because the manager bounds it to the caller's owner unless the caller holds `admin`. When the actor holds `admin`, the view also carries the operator instrument set on that instance, which includes these reads and `slots`. No other scope adds any of them, and no view gains `slots` from `spawn`. A view minted from an interactive ledger row carries `inspect` and `ps` on that instance whatever its scope, and owner-mode `despawn`, `attach`, `input` and `interrupt`, the target owner pinned to the caller's own (§13.21). |
 | `observer` | none | chat, CHAT history, presence, channel registry | DMs invisible |
 | `admin` | none | whole space live tap plus DM history | plaintext god-view, opt-in |
 | `transfer-writer` | one carried transcript's chunk and meta subjects in one manager instance's transfer bucket (§8) | a last-message Direct Get on those two subjects | one-shot per CLI call, minted after the transcript is hashed; no consumer and no other object |
@@ -1081,7 +1081,7 @@ path. Broken and non-directory symlinks MUST be omitted. Roots MUST list existin
 Windows (a root whose inspection fails MUST be omitted), `/` and `/Volumes` on macOS, and `/` on other hosts. Invalid or inaccessible directories
 MUST refuse with `failed-precondition`. Delegated execution MUST refuse before any filesystem
 lookup with the same execution-mode refusal as `resolve-cwd`; NONE MUST refuse with `unimplemented`.
-The Manager cluster revision is 53. The closed `spawn` input accepts optional boolean
+The Manager cluster revision is 54. The closed `spawn` input accepts optional boolean
 `eventPayloads`; revision 48 rejects this field. Revision 50 required `permissionRequests` on every
 `status.connectors` row. Revision 51 removes that field, and its closed status schema rejects a row
 that carries it. Revision 52 requires `prompts` on every `status.connectors` row (§13.7), and the
@@ -1091,6 +1091,8 @@ interrupt key the seat's connector declares into the seat's terminal, and answer
 granted as `input` is: to operator credentials, and in owner mode to a person's own manager-caller
 view (§13.21). It refuses with `unimplemented` when the connector declares no key or the runtime owns
 no terminal input.
+Revision 54 adds the `harness-commands` launch read, the `spawn` input field `firstCommand` and the
+acceptance field `firstCommand.id`. They are defined with the agent's commands (§13.22).
 
 On such a runtime, a caller-supplied persona `config` override MUST be refused before resolving,
 checking or reading its host path. Every path shape MUST receive `failed-precondition` and the
@@ -7002,6 +7004,53 @@ The bounds:
   ids are never reused.
 - A process that exits takes its queue with it.
 
+**Before launch.** A launcher lists what a new agent will run, and starts the agent with one of those
+entries as its first turn, through the Manager that launches it. Both are part of the Manager
+contract, revision 54 (§13.6).
+
+The Manager command `harness-commands` is an untargeted ephemeral `manager.spawn` launch read. It
+MUST be minted where `list-dir` is, and MUST NOT be added to standing agent spawn or workflow
+placement grants. Its closed input is `{ agent: string, cwd: string }`: the harness, as `spawn`'s
+`agent` names it, and an absolute directory on the Manager's host, which it resolves as
+`resolve-cwd` does. Its closed output is one of:
+
+```ts
+{ agent: string; cwd: string; supported: true; commands: CommandEntry[] }  // at most 512 entries
+{ agent: string; cwd: string; supported: false; reason: string }
+```
+
+`cwd` is the canonical directory. `commands` holds what the harness lists for that directory, under
+the names a seat's `command` takes, cut and filtered as a `commands` reply is. A seat can list more
+once it runs, such as prompts its MCP servers add. `supported: false` means that harness's seats run
+no commands on this install, and `reason` says why. The Manager asks the harness, and starts no seat,
+joins no mesh and keeps nothing. A harness that loads a directory's configuration or code when it
+starts does so when asked, as it would for a spawn there, so the read needs the authority a spawn
+needs. A harness that runs commands and did not list them is `unavailable`, `not-executed`, never an
+empty list. An unknown harness is `not-found`, and a harness the Manager cannot start is
+`failed-precondition`. A relative or missing `cwd`, delegated execution and NONE refuse as for
+`list-dir`. A caller waits at least 30 s.
+
+The closed `spawn` input takes `firstCommand: { target, name, args? }`, the `command` input. The
+acceptance then carries `firstCommand: { id }`. The id is derived from the spawn's goal id, so a
+retried spawn names the same one. The new agent queues the command under that id before any other
+command, and starts it as its first turn once its harness runs commands. Nothing sends it to the
+model as text, and no supervised restart, continued session or resume runs it again. A reader
+follows it with `command-state` as it follows any command.
+
+| Case | Result |
+| --- | --- |
+| The harness's seats run no commands of that `target` | `spawn` refused, `failed-precondition`, `not-executed` |
+| The mesh is not user-auth, so no agent endpoint serves | `spawn` refused, `failed-precondition`, `not-executed` |
+| The Manager's runtime starts seats outside its host | `spawn` refused, `failed-precondition`, `not-executed` |
+| The spawn also names `prompt` or `once` | `spawn` refused, `failed-precondition`, `not-executed` |
+| The harness runs no commands within 60 s of the agent serving its endpoint | `refused`, `failed-precondition`, naming the harness's cause |
+| The harness has no entry by that name, such as one removed since it was listed | `refused`, `not-found` |
+| The harness refuses it, or fails | as for any command |
+| A caller cancels it before the agent takes it | `cancelled` |
+
+While the agent waits for its harness to run commands, the first command reads `queued`. An agent
+that never serves its endpoint never runs it, and `command-state` then gets no answer.
+
 **Reader rules.**
 
 - A reader MUST drop a value that does not match the closed schemas, and a prompt with two options
@@ -8101,6 +8150,7 @@ Normative revisions of this document, newest first. Dated snapshots per §11; th
 
 | Date | Revision |
 | --- | --- |
+| 2026-11-24 | **A launcher lists a harness's commands before launch and starts an agent with one (§13.6, §13.22, Appendix B), additive.** The Manager cluster advances to revision 54. The `harness-commands` launch read answers `{ agent, cwd, supported: true, commands }` with the entries a harness lists for a directory on the Manager's host, under the names a seat's `command` takes, or `{ supported: false, reason }` for a harness whose seats run no commands. It starts no seat, is granted where `list-dir` is, and a failed lookup is `unavailable`, never an empty list. `spawn` takes `firstCommand: { target, name, args? }`, and its acceptance names `firstCommand.id`, derived from the goal id. The agent queues the command under that id before any other and runs it as its first turn once its harness runs commands. A spawn whose harness runs no commands of that target, whose mesh is not user-auth, whose runtime starts seats elsewhere, or that also names `prompt` or `once` is refused before anything is provisioned. A harness that runs no commands within 60 s ends the command `refused` with its cause. Earlier commands, schemas and digests are unchanged. |
 | 2026-11-23 | **`commands` can answer `supported: false` for a while (§13.22), clarification.** `{ supported: false }` means the connector runs no commands now. It can change within a lifecycle, as for a Claude Code seat whose command mod is not running, so a reader asks again later. `command` and `interrupt` then answer `unimplemented`, `not-executed`, with the cause in the message. No subject, schema or digest changes. |
 | 2026-11-21 | **A person controls their own agents without `admin` (§9, §13.9, §13.21), additive.** A signed-in person could not type into or interrupt their own agents through the Manager unless their actor row held `admin`, and could read their agents' event channels only through a channel grant. Both are now keyed on the ledger row being `interactive`, as the principal route's `owner` rows are. The person's `manager-caller` view carries `inspect` and `ps`, and owner-mode `despawn`, `attach`, `input` and `interrupt`, on its instance whatever the row's scope, the target owner pinned to their own. Their `agent` credential subscribes `chat.<owner>.*.events.<owner>.*` and holds one create of its own `chathist_` reader with that filter. A `managed-agent` row gets none of these, so the Manager's `input` and `interrupt` stay out of every agent credential, and a person cannot hand them on. They ride the person's sign-in, so a process using that sign-in uses them. |
 | 2026-11-21 | **A Manager command that interrupts a seat's turn (§9), additive.** The Manager cluster advances to revision 53 with the targeted `interrupt` command. It writes the interrupt key the seat's connector declares into the seat's terminal and answers `{ name }`. It is granted as `input` is. A connector that declares no key, or a runtime that owns no terminal input, is refused with `unimplemented`, and nothing is written. |
