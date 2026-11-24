@@ -361,9 +361,10 @@ connector installed in its harness to this release (the `cotal` plugin copy Clau
 load, and its Claude Desktop entry), then checks other `@cotal-ai/*` operator extensions against
 npm's own record in the extensions prefix. One recorded at the binary's exact version with the spec
 `update` installs (`<package>@<version>`) is kept when the prefix lock records it at that version
-and every package the lock records is on disk at its recorded version. Any other is reinstalled at
-the binary's exact version, after a line that says why. A built-in or extension that passes is
-reported as verified. The extension check reads versions, not file contents. `cotal ext seed --force`
+and every package the lock records is on disk at its recorded version. The extension's entry file
+must also be present. The extension check does not compare file contents. If any check fails, Cotal
+reports why and reinstalls the extension at the binary's exact version. A built-in or extension
+that passes is reported as verified. `cotal ext seed --force`
 remains the unconditional reinstall of the built-ins, and `cotal ext add <package>` of one extension.
 Each reinstall runs in an isolated child, so one failure cannot poison later replays. It then
 checks npm; after successful reconciliation, a newer binary is an informational notice with
@@ -376,6 +377,8 @@ recovery guidance instead of suggesting another update that would meet the same 
 When `update --self` finds no newer release and verifies the installed package closure is current,
 it reports that no connector reconciliation ran and skips the running Manager continuity check.
 An unreadable Manager from another installation does not block this result.
+If a first-party operator extension is missing its entry file, `cotal update --self` runs
+reconciliation to restore it even when the CLI is already current.
 
 If update cannot read a prepared space record, it names the file and reports that continuity was
 not checked for that record. It keeps the record and tells you how to restore read access. This

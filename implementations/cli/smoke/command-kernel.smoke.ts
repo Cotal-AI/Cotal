@@ -1114,6 +1114,7 @@ async function completionOut(positionals: string[]): Promise<string> {
       packages: { "": { name: "cotal-extensions", dependencies: { [pkg]: `^${version}` } }, [`node_modules/${pkg}`]: meta },
     }));
     writeFileSync(join(installedDir, "package.json"), JSON.stringify({ ...meta, version: onDisk }));
+    writeFileSync(join(installedDir, "index.js"), "");
   };
   const run = async (entry: InstalledExtension) => {
     const r = updateRuntime({ extensions: [entry], verifyExtension: verifyCurrentExtension });
@@ -1135,6 +1136,7 @@ async function completionOut(positionals: string[]): Promise<string> {
       ["recorded at an older version", () => prefixAt("0.13.0"), installed(pkg, "0.13.0", `${pkg}@0.13.0`), "recorded at 0.13.0, not 0.13.1"],
       ["installed at an older version than recorded", () => prefixAt("0.13.1", "0.13.0"), installed(pkg, "0.13.1", `${pkg}@0.13.1`), `node_modules/${pkg} is 0.13.0 on disk and 0.13.1 in the prefix lock`],
       ["missing its package tree", () => { prefixAt("0.13.1"); rmSync(installedDir, { recursive: true }); }, installed(pkg, "0.13.1", `${pkg}@0.13.1`), `node_modules/${pkg} is recorded in the prefix lock but not installed`],
+      ["missing its entry file", () => { prefixAt("0.13.1"); rmSync(join(installedDir, "index.js")); }, installed(pkg, "0.13.1", `${pkg}@0.13.1`), "entry file is missing"],
     ] as const) {
       setup();
       const stale = await run(entry);
