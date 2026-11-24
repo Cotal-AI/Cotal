@@ -93,6 +93,9 @@ names `cotal down --yes` to stop the stack without retiring agents. The preview 
 reserve or signal a process, and the receipt is not an authorized stop plan. A fresh `team show`
 summary points to this read-only command from the recorded root.
 
+If `down` finds a foreground controller startup still in progress before its first instance
+records are ready, it names the active startup. Wait for it to finish, then retry `cotal down --yes`.
+
 On a root with a controller journal, bare `down` reads only its recorded full instance IDs. On an
 interactive terminal it shows the member set and the live manager's native agent impact and asks to
 confirm, then stops manager, delivery and broker in that order. `--yes` acknowledges that scope in

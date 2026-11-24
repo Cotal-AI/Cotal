@@ -287,7 +287,7 @@ const MODE_NAME: Record<StackMode, string> = { auth: "static auth", open: "open"
  *  Nothing converts a root's mode: `reset`, `clean` and `space forget` keep the stack journal that
  *  records it. So the step keeps that mode, or starts the requested one in another folder. */
 function pinnedModeRemedy(recorded: StackMode, requested: StackMode, noManager: boolean): string {
-  const flag = requested === "open" ? " --open" : requested === "user" ? " --user-auth" : "";
+  const flag = requested === "open" ? " --open" : requested === "user" ? " --user-auth --idp <auth base URL>" : "";
   const members = noManager ? " --no-manager" : "";
   return `run \`cotal up${members}\` to keep ${MODE_NAME[recorded]} here, or for ${MODE_NAME[requested]} run \`cotal space create <space>\`, then \`cotal up${flag}${members}\`, in another folder`;
 }
