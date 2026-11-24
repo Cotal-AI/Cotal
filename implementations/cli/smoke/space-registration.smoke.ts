@@ -628,8 +628,8 @@ setCurrent("keep");
   const orphan = await json(["space", "forget", "orphan"]);
   check("a space whose folder is gone while its broker address still listens is LIFECYCLE_BLOCKED, and its record stays",
     refused(orphan, 2, "LIFECYCLE_BLOCKED") && (orphan.env?.error?.message ?? "").includes(`"orphan" started in ${orphanRoot}, which no longer exists, but something still listens at ${orphanServer}`) && findMesh("orphan") !== undefined, shown(orphan));
-  check("...and the remedy names the listener to stop, then forget again",
-    orphan.env?.error?.remedy === `stop the process listening on ${new URL(orphanServer).host}, then run \`cotal space forget orphan\` again`, orphan.env?.error);
+  check("...and the remedy leaves an unrelated listener running and names the folder to restore",
+    orphan.env?.error?.remedy === `identify the listener at ${new URL(orphanServer).host}. If it belongs to this space, have its owner stop the stack; otherwise leave it running. Retry \`cotal space forget orphan\` when the address is free or after you restore the original project folder to ${orphanRoot}`, orphan.env?.error);
   // A listener at an address another registration names is that space's broker.
   recordMesh({ space: "sharedgone", server: LIVE, root: join(home, "deleted-shared"), mode: "open", origin: "up", ts: new Date(0).toISOString() });
   const shared = await json(["space", "forget", "sharedgone"]);

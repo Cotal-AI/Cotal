@@ -745,7 +745,7 @@ async function refuseGoneFolderStack(m: MeshEntry, entries: readonly MeshEntry[]
   // A damaged record names no server, so only the usable records can name this broker address.
   if (entries.some((other) => other.space !== m.space && other.server === m.server)) return;
   const address = await listenerAt(m.server);
-  if (address) throw refuse("LIFECYCLE_BLOCKED", `${gone}, but something still listens at ${m.server}, its recorded broker address, so the broker it started may still run; nothing was forgotten`, target, `stop the process listening on ${address}, then run \`cotal space forget ${m.space}\` again`);
+  if (address) throw refuse("LIFECYCLE_BLOCKED", `${gone}, but something still listens at ${m.server}, its recorded broker address, so the broker it started may still run; nothing was forgotten`, target, `identify the listener at ${address}. If it belongs to this space, have its owner stop the stack; otherwise leave it running. Retry \`cotal space forget ${m.space}\` when the address is free or after you restore the original project folder to ${m.root}`);
 }
 
 /** The `host:port` of a broker address when something accepts a TCP connection there within half a
