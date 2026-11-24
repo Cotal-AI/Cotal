@@ -240,6 +240,10 @@ console.log(JSON.stringify(${JSON.stringify(version)}));
         node: realpathSync(projectNode), cwd: parse(root).root, pathHead: dirname(realpathSync(projectNode)),
       }], "npm uses the project-selected executable and its bin directory outside the project");
 
+      const namedNode = join(root, "node executable", `node-${process.versions.node}`);
+      mkdirSync(dirname(namedNode));
+      renameSync(projectNode, namedNode);
+      symlinkSync(namedNode, projectNode);
       writeFileSync(dispatcher, `#!/bin/sh\nif [ -f .tool-versions ]; then exec "${projectNode}" "$@"; fi\nexec "${alternate}.gone" "$@"\n`);
       const original = process.version;
       Object.defineProperty(process, "version", { value: incompatibleVersion });
@@ -250,7 +254,9 @@ console.log(JSON.stringify(${JSON.stringify(version)}));
           for (const launch of [() => runGlobalProcess(root, "reconcile", file, args, env), () => runProcess(file, args, env)]) {
             const child = await npmProjectDirectory.run(project, () => launch());
             assert.equal(child.status, 0, child.stdout + child.stderr);
-            assert.equal(recordedLaunches().at(-1)!.node, realpathSync(projectNode), "the child keeps the selected runtime when its shim would choose another Node");
+            assert.deepEqual(recordedLaunches().at(-1), {
+              node: realpathSync(namedNode), cwd: parse(root).root, pathHead: dirname(realpathSync(namedNode)),
+            }, "the child keeps the symlinked runtime when its shim would choose another Node");
           }
         } finally { release(); }
       } finally { Object.defineProperty(process, "version", { value: original }); }

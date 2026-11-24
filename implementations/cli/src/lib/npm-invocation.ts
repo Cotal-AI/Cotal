@@ -103,7 +103,7 @@ export function npmInvocation(env: NodeJS.ProcessEnv, args: string[]) {
     delete probeEnv.NODE_OPTIONS;
     const project = npmProjectDirectory.getStore() ?? cwd;
     if (inheritedNode && isAbsolute(inheritedNode) && directories.includes(dirname(inheritedNode)) &&
-        resolveOnPath("node", { ...env, [pathKey]: dirname(inheritedNode) }) === inheritedNode) {
+        resolveOnPath(inheritedNode, env) === inheritedNode) {
       const node = compatibleNode(inheritedNode, cwd, cwd, probeEnv, engine.range);
       if (node === inheritedNode) return { file: node, args: [engine.entry, ...args], env: withNode(node), cwd, node };
     }
