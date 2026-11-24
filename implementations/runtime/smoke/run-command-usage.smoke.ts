@@ -203,10 +203,15 @@ const gate = (positionals: string[], values: Record<string, string | boolean> = 
   }
   const local = gate(["journal"], { local: true, space: "beta", endpoint: "worker", limit: "5", plain: true });
   c("the local lookup retains its endpoint and leaves the journal limit for the read", isCommandFailure(local) && local.remedy === "`cotal run --local --space beta --endpoint worker --plain` lists the runs; run `cotal run journal <run-id> --local --space beta --endpoint worker --limit 5 --plain`", local);
-  const resume = gate(["resume"], { local: true, space: "beta", server: "wss://broker.example/ws?token=private", file: "workflow.cotal.js", timeout: "5m" });
-  c("the local resume remedy names the local list without repeating a private broker URL",
-    usageRefusal(resume, "run resume takes one identifier") && isCommandFailure(resume)
-      && resume.remedy === "run `cotal run list --local` with the original target options. Then add a run ID after `run resume` in the original command", resume);
+  for (const [ids, message, correction] of [
+    [[], "run resume takes one identifier", "Then add a run ID after `run resume` in the original command"],
+    [["bad/id"], idFormat, "Then replace only the run ID in the original command"],
+  ] as const) {
+    const resume = gate(["resume", ...ids], { local: true, space: "beta", server: "wss://broker.example/ws?token=private", file: "workflow.cotal.js", timeout: "5m" });
+    c("the local resume remedy names the local list without repeating a private broker URL",
+      usageRefusal(resume, message) && isCommandFailure(resume)
+        && resume.remedy === `run \`cotal run list --local\` with the original target options. ${correction}`, resume);
+  }
   const hidden = gate(["show"], { space: "beta", server: "wss://example.invalid/socket?test=private" });
   c("a broker address that cannot be displayed is not copied or replaced by an unscoped lookup", isCommandFailure(hidden) && hidden.remedy?.includes("same broker") === true && !hidden.remedy.includes("private") && !hidden.remedy.includes("`cotal run`"), hidden);
   const unknown = gate(["show", "RUN-0123"]);

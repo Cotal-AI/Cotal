@@ -245,8 +245,9 @@ them, and nothing is sent. On a user-auth mesh where you run more than one
 live manager, an unpinned hosted verb is refused and `--on` picks one. `--local` takes no `--on`. `--local` drives in this process instead, over one
 connection per invocation under the run's own credential minted from the project folder's trust
 material, and is the path on a bare broker with no manager or for a run with no recorded program
-(`cotal run resume <runId> --local --file <program>`). If a local resume is missing the run ID, use
-`cotal run list --local` with the same target options, then add the ID to the original command.
+(`cotal run resume <runId> --local --file <program>`). If a local resume has a missing or malformed
+run ID, use `cotal run list --local` with the same target options. Then add or replace only the run
+ID in the original command.
 `answer --local` and `amend --local` take
 `--by <who>` and print the same receipt as the hosted path, and `start --local` requires
 `--admit-read` and `--admit-publish` (comma-separated
