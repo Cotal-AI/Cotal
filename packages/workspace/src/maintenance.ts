@@ -218,6 +218,7 @@ export {
   type RollbackRestoreOptions,
   assertRestoreClaimRollbackable,
   rollbackRestore,
+  restoreReplacedDifferentStore,
   restoreReplacedNewerCut,
   restoreOtherAccounts,
   restoreLeftOut,

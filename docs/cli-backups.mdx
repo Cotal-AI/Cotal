@@ -191,10 +191,13 @@ so its cleanup removes nothing and only retires the journal. A later `down --pre
 starts a new backup cycle. A registry restore leaves every other stream out, chat and DM history
 and workflow runs included. A full restore of an artifact with no workflow runs leaves the runs out,
 and a full restore of an artifact made before the state it replaced was preserved leaves out what
-was written after the artifact. A backup holds one account, so any restore also leaves out the
+was written after the artifact. A full backup from a different store generation may omit chat and
+DM history or workflow runs from the previous store even if the backup is newer. A backup holds
+one account, so any restore also leaves out the
 streams of another account in the store it replaced, such as an open mesh's account beside a static
-space's after both ran in one folder. In each case its old store holds the only copy of them. Its `--dry-run` warns with
-`HISTORY_ONLY_IN_PREVIOUS_STORE` and names what it left out, with those accounts in `otherAccounts`, and the cleanup refuses
+space's after both ran in one folder. In each case its old store holds or may hold data the restore
+left out. Its `--dry-run` warns with `HISTORY_ONLY_IN_PREVIOUS_STORE` and names the data at risk,
+with those accounts in `otherAccounts`. The cleanup refuses
 `USAGE_INVALID` (exit 1) and deletes nothing unless `--discard-history` is given.
 That refusal names the flag and does not print the command help.
 Both review full paths and default to Cancel. Scripts need `--yes`; `--dry-run` reads the plan
@@ -241,11 +244,15 @@ an artifact made before the state it replaced was preserved, such as a backup ta
 `cotal up` and `down --preserve-state`, leaves out the chat and DM history and workflow runs written
 after the artifact. Its receipt says so with a `NEWER_HISTORY_NOT_RESTORED` warning that names the
 store it set aside, which holds their only copy, and its next step includes `--discard-history` too.
+A full backup that is as recent as the preserved cut or newer, but comes from a different store
+generation, gets a `HISTORY_NOT_RESTORED` warning. It names the previous store, which may hold
+history or runs the backup lacks. Its next step also includes `--discard-history`. The date of
+the backup does not prove it contains another store's history.
 When the store a restore replaced also held another account's streams, the receipt says they are not
 restored and names the accounts in `otherAccounts`. That is an `OTHER_ACCOUNTS_NOT_RESTORED` warning,
 or the warning above when the restore also left out history or workflow runs, and its next step
-includes `--discard-history` as well. `previousStore` names the store a restore set aside whenever
-that store holds the only copy of something the restore left out, and is null otherwise. A restore
+includes `--discard-history` as well. `previousStore` names the store a restore set aside when that
+store holds or may hold data the restore left out, and is null otherwise. A restore
 made by an earlier release recorded no other accounts. For it, `status`, the cleanup preview and
 the cleanup read them from the store it set aside while that store is still the one the restore
 recorded, and name only the accounts the restore's auth mode rules out: every account but `$G` after

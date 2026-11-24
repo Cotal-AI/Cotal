@@ -1529,6 +1529,64 @@ async function otherAccountScenario(): Promise<void> {
   }
 }
 
+async function independentNewerBackupScenario(): Promise<void> {
+  const fixture = realpathSync.native(mkdtempSync(join(tmpdir(), "cotal-backup-independent-")));
+  const recipientRoot = join(fixture, "recipient"), donorRoot = join(fixture, "donor");
+  const alternate = join(fixture, "alternate"), artifact = join(fixture, "backup");
+  mkdirSync(recipientRoot);
+  mkdirSync(donorRoot);
+  const recipient = sandboxRun(recipientRoot, join(fixture, "recipient-home")).run;
+  const donor = sandboxRun(donorRoot, join(fixture, "donor-home")).run;
+  const space = "backup_independent", channel = "recipient-only", message = "keep this recipient-only post";
+  const must = (result: ReturnType<typeof recipient>) => {
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    return result.stdout;
+  };
+  try {
+    must(recipient("up", "--detach", "--open", "--server", `nats://127.0.0.1:${await freePort()}`, "--space", space));
+    must(recipient("send", "-c", channel, message));
+    assert.ok(must(recipient("history", channel, "--limit", "10", "--plain")).includes(message));
+    must(recipient("down", "--preserve-state", "--yes"));
+    const cut = readMaintenanceJournal(recipientRoot);
+    assert.equal(cut?.state, "ready");
+    must(donor("up", "--detach", "--open", "--server", `nats://127.0.0.1:${await freePort()}`, "--space", space));
+    must(donor("send", "-c", "general", "post from the independent donor"));
+    must(donor("down", "--preserve-state", "--yes"));
+    must(donor("backup", "create", artifact));
+    const manifest = JSON.parse(readFileSync(join(artifact, "manifest.json"), "utf8")) as BackupManifest;
+    assert.ok(Date.parse(manifest.createdAt) > Date.parse(cut.cut.intentAt));
+    assert.notEqual(manifest.source.generation, cut.source.generation);
+
+    const receipt = JSON.parse(must(recipient("backup", "restore", artifact, "--store-dir", alternate, "--json")));
+    const previous = join(recipientRoot, ".cotal", "nats"), attempt = receipt.result.attemptId;
+    assert.equal(receipt.result.previousStore, previous);
+    assert.ok(receipt.warnings.some((warning: { code: string; message: string }) =>
+      warning.code === "HISTORY_NOT_RESTORED" && warning.message.includes("different store generation")));
+    assert.match(must(recipient("history", channel, "--limit", "10", "--plain")), /^0 messages:/m);
+    const previousMessages = join(previous, "jetstream", "$G", "streams", `CHAT_${space}`, "msgs");
+    const postRemains = () => readdirSync(previousMessages).some((file) => readFileSync(join(previousMessages, file)).includes(message));
+    assert.ok(postRemains(), "the recipient's post is in the fallback before cleanup");
+
+    const preview = JSON.parse(must(recipient("backup", "cleanup-fallback", attempt, "--dry-run", "--json")));
+    assert.ok(preview.warnings.some((warning: { code: string; target: { previousStore: string } }) =>
+      warning.code === "HISTORY_ONLY_IN_PREVIOUS_STORE" && warning.target.previousStore === previous));
+    const refused = recipient("backup", "cleanup-fallback", attempt, "--yes", "--json");
+    assert.equal(refused.status, 1, refused.stdout);
+    assert.equal(JSON.parse(refused.stdout).error.code, "USAGE_INVALID");
+    assert.ok(postRemains(), "cleanup without discard consent keeps the recipient's post");
+    assert.equal(readMaintenanceJournal(recipientRoot)?.state, "active");
+
+    const cleaned = JSON.parse(must(recipient("backup", "cleanup-fallback", attempt, "--yes", "--discard-history", "--json")));
+    assert.equal(cleaned.result.historyDiscarded, true);
+    assert.equal(existsSync(previous), false);
+    assert.ok(existsSync(join(alternate, "jetstream")), "cleanup keeps the restored store");
+  } finally {
+    recipient("down", "--yes");
+    donor("down", "--yes");
+    rmSync(fixture, { recursive: true, force: true });
+  }
+}
+
 /** A store moved behind a link, `.cotal/nats` -> another disk, and an artifact written through a
  *  linked folder. The cut records the store by its real path, so a default restore is a same-path
  *  restore there, not an alternate target equal to the source, and verify reads the linked artifact
@@ -1602,6 +1660,7 @@ function preparedBackupGuidance(): void {
 }
 
 preparedBackupGuidance();
+await independentNewerBackupScenario();
 await missingPidfileListenerScenario();
 await undisplayableBackupRetryScenario();
 await linkedStoreScenario();

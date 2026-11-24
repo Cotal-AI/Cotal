@@ -6,7 +6,7 @@ import {
   CommandFailure, acquireMaintenanceLock, assertSingleSpaceBroker, assessMaintenanceClaim, assessRestoreClaim, authDir,
   cleanupRestoreFallback, isCommandFailure, isMaintenanceError, oneLine, presentationOf,
   readMaintenanceJournal, recoverStaleMaintenanceClaim, releaseMaintenanceLock, writeResult, type Report,
-  restoreLeftOut, restoreLeftOutReason, restoreOtherAccounts, restoreRolledBackRuns,
+  restoreLeftOut, restoreLeftOutReason, restoreOtherAccounts, restoreReplacedDifferentStore, restoreRolledBackRuns,
 } from "@cotal-ai/workspace";
 import { rollbackRestoreWithBroker } from "../lib/controller-restore.js";
 import { heldClaim, restoreNextStep, rolledBackNotes } from "../lib/restore.js";
@@ -39,7 +39,8 @@ export async function backupMaintenance(args: ParsedArgs): Promise<void> {
   // previous store holds their only copy: the preview warns, and the delete needs --discard-history.
   const leftOut = mode === "cleanup-fallback" ? restoreLeftOut(snapshot) : undefined;
   const onlyCopy = leftOut ? restore.previousSource?.identity.path : undefined;
-  const onlyCopyText = `${restoreLeftOutReason(snapshot)}, so the previous store at ${onlyCopy} holds the only copy of the ${leftOut} it left out`;
+  const differentStore = restoreReplacedDifferentStore(snapshot);
+  const onlyCopyText = `${restoreLeftOutReason(snapshot)}, so the previous store at ${onlyCopy} ${differentStore ? "may hold" : "holds"} the only copy of the ${leftOut} it left out`;
   // A restore over a newer cut also names each run it rolled back and the steps open again.
   const rolledBack = onlyCopy ? restoreRolledBackRuns(snapshot) : { runs: [], more: 0 };
   const otherAccounts = onlyCopy ? restoreOtherAccounts(snapshot) : [];

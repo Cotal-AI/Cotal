@@ -79,7 +79,7 @@ export async function backupRestore(args: ParsedArgs): Promise<void> {
     completeness: data.seatResume === "requested" ? "partial" : "complete",
     warnings: [
       ...(data.seatResume === "requested" ? [{ code: "AGENT_READINESS_NOT_CHECKED", target: { space: result.space }, message: "Retained seats were offered to the manager's resume; whether each one joined is not checked." }] : []),
-      ...(leftOutLines.length ? [{ code: registryOnly ? "HISTORY_NOT_RESTORED" : onlyCopy?.newer ? "NEWER_HISTORY_NOT_RESTORED" : onlyCopy?.leftOut.startsWith("workflow runs") ? "RUNS_NOT_RESTORED" : "OTHER_ACCOUNTS_NOT_RESTORED", target: { space: result.space, ...(previousStore ? { previousStore } : {}), ...(onlyCopy?.otherAccounts.length ? { otherAccounts: onlyCopy.otherAccounts } : {}), ...(onlyCopy?.rolledBack.runs.length ? { rolledBackRuns: onlyCopy.rolledBack.runs } : {}) }, message: leftOutLines.join(" ") }] : []),
+      ...(leftOutLines.length ? [{ code: registryOnly || onlyCopy?.differentStore ? "HISTORY_NOT_RESTORED" : onlyCopy?.newer ? "NEWER_HISTORY_NOT_RESTORED" : onlyCopy?.leftOut.startsWith("workflow runs") ? "RUNS_NOT_RESTORED" : "OTHER_ACCOUNTS_NOT_RESTORED", target: { space: result.space, ...(previousStore ? { previousStore } : {}), ...(onlyCopy?.otherAccounts.length ? { otherAccounts: onlyCopy.otherAccounts } : {}), ...(onlyCopy?.rolledBack.runs.length ? { rolledBackRuns: onlyCopy.rolledBack.runs } : {}) }, message: leftOutLines.join(" ") }] : []),
     ],
   }, (row): Report => ({ sections: [
     { title: "Backup restored", blocks: [
@@ -89,7 +89,7 @@ export async function backupRestore(args: ParsedArgs): Promise<void> {
     ] },
     { title: "Next", blocks: [{ kind: "commands", items: [
       { command: `cotal status --space ${row.space}`, description: "Check the restored stack" },
-      { command: `cotal backup cleanup-fallback ${row.attemptId}`, description: row.previousStore && onlyCopy ? `Retire the restore journal; the previous store holds the only copy of the ${onlyCopy.leftOut} this restore left out, so deleting it needs --discard-history` : "Retire the restore journal and any unchanged retained old store, after review" },
+      { command: `cotal backup cleanup-fallback ${row.attemptId}`, description: row.previousStore && onlyCopy ? `Retire the restore journal; the previous store ${onlyCopy.differentStore ? "may hold" : "holds"} the only copy of the ${onlyCopy.leftOut} this restore left out, so deleting it needs --discard-history` : "Retire the restore journal and any unchanged retained old store, after review" },
     ] }] },
   ] }));
 }
