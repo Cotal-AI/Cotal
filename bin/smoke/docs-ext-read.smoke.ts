@@ -32,7 +32,7 @@ type Envelope = {
   target: unknown;
   result: Record<string, unknown> | null;
   warnings: { code: string; target: { pkg?: string } | null; message: string }[];
-  error?: { code: string; message: string };
+  error?: { code: string; message: string; remedy?: string };
 };
 function run(args: string[], extraEnv: Record<string, string> = {}) {
   const r = spawnSync(process.execPath, [BIN, ...args], {
@@ -278,8 +278,11 @@ for (const [args, why] of [
   check("plain docs opens with a damaged extension inventory",
     plain.status === 0 && plain.stderr === "" && plain.stdout.startsWith(`bundled v${VERSION}\n\n# CLI usage\n`), shown(plain));
   const list = run(["ext", "list", "--json"], env);
-  check("the extension listing still reports the damage, and docs leaves the manifest unchanged",
-    list.status === 1 && list.stdout === "" && list.stderr.includes('no "extensions" array') &&
+  check("the JSON extension listing reports the damage and leaves the manifest unchanged",
+    list.status === 1 && list.stderr === "" && list.envelope?.command === "ext" &&
+    list.envelope.outcome === "refused" && list.envelope.result === null &&
+    list.envelope.error?.code === "SCHEMA_INVALID" && list.envelope.error.message.includes('no "extensions" array') &&
+    list.envelope.error.remedy?.includes("cotal ext seed --repair") === true &&
     readFileSync(manifest, "utf8") === "{}\n", shown(list));
 
   const journal = join(config, "cotal", ".extensions-promotion.json");
