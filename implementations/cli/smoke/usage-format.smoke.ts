@@ -351,7 +351,8 @@ if (process.platform !== "win32") {
     directoryJson.status === 1 && directoryJson.stderr === "" && refusal?.error?.code === "SCHEMA_INVALID"
     && (refusal.target as { path?: string } | undefined)?.path === join(cwd, dir)
     && refusal.error.message === message && refusal.error.remedy === remedy
-    && directoryText.every((r) => r.status === 1 && r.stdout === "" && r.stderr.includes(message) && r.stderr.includes(`Next\n  ${remedy}\n`))
+    && directoryText.every((r) => r.status === 1 && r.stdout === "" && r.stderr.includes(message)
+      && [remedy, `pnpm ${remedy}`].some((command) => r.stderr.includes(`Next\n  ${command}\n`)))
     && retried?.status === 0 && retried.stderr === "" && retried.stdout.includes("Endpoint contract valid locally")
     && files.every((path, index) => readFileSync(path).equals(original[index]!)),
     { text: directoryText.map(shown), json: shown(directoryJson), retried: retried && shown(retried) });
@@ -364,13 +365,14 @@ if (process.platform !== "win32") {
   const escapedJson = run([...escapedArgs, "--json"], {}, cwd);
   const escapedRefusal = parsed(escapedJson);
   const manual = "Use shell completion to enter the scaffold directory, then run `cotal endpoint check contract.json`.";
+  const recovery = /^  Use shell completion to enter the scaffold directory, then run `(?:pnpm )?cotal (endpoint check contract\.json)`\.$/m;
   const exact = `cotal endpoint check '${escapedPath.replace(/'/g, `'\\''`)}/contract.json'`;
   const exactRetry = escapedRefusal?.error?.remedy === exact ? runShell(exact.slice("cotal ".length), {}, cwd) : undefined;
   const localRetry = run(["endpoint", "check", "contract.json"], {}, escapedPath);
   check("endpoint authoring does not print a broken terminal command for a path that is escaped in display",
-    escapedInit.status === 0 && escapedInit.stdout.includes(`Next\n  ${manual}\n`) && !escapedInit.stdout.includes("\ufe0f")
+    escapedInit.status === 0 && recovery.test(escapedInit.stdout) && !escapedInit.stdout.includes("\ufe0f")
     && escapedText.every((r) => r.status === 1 && r.stdout === "" && r.stderr.includes("\\ufe0f") && !r.stderr.includes("\ufe0f")
-      && r.stderr.includes(`Next\n  ${manual}\n`) && !r.stderr.includes("/contract.json'"))
+      && recovery.test(r.stderr) && !r.stderr.includes("/contract.json'"))
     && localRetry.status === 0 && localRetry.stdout.includes("Endpoint contract valid locally"),
     { init: shown(escapedInit), text: escapedText.map(shown), localRetry: shown(localRetry) });
   check("endpoint check JSON retains a working command with the exact Unicode path",
@@ -384,7 +386,6 @@ if (process.platform !== "win32") {
   const neighbor = run(["endpoint", "init", "neighbor", "--dir", String.raw`review\draft`, "--plain"], {}, cwd);
   const backslashCheck = run(["endpoint", "check", backslashes, "--plain"], {}, cwd);
   const backslashJson = run(["endpoint", "check", backslashes, "--json"], {}, cwd);
-  const recovery = /^  Use shell completion to enter the scaffold directory, then run `(?:pnpm )?cotal (endpoint check contract\.json)`\.$/m;
   const copied = recovery.exec(backslashCheck.stderr)?.[1];
   const backslashRetry = copied && runShell(copied, {}, join(cwd, backslashes));
   check("endpoint authoring offers a relative recovery that selects the intended backslash path",
@@ -428,11 +429,12 @@ if (process.platform !== "win32") {
   const json = run([...args, "--json"]);
   const refusal = parsed(json);
   const remedy = "Use shell completion to enter the scaffold directory, then run `cotal endpoint check contract.json`.";
+  const remedies = [remedy, remedy.replace("`cotal ", "`pnpm cotal ")];
   const retry = run(["endpoint", "check", "contract.json", "--json"], {}, dir);
   check("Windows endpoint check suggests the same relative recovery in every format",
     json.status === 1 && json.stderr === "" && refusal?.error?.code === "SCHEMA_INVALID" && refusal.error.remedy === remedy
     && (refusal.target as { path?: string } | undefined)?.path === dir
-    && text.every((r) => r.status === 1 && r.stdout === "" && r.stderr.includes(`Next\n  ${remedy}\n`))
+    && text.every((r) => r.status === 1 && r.stdout === "" && remedies.some((msg) => r.stderr.includes(`Next\n  ${msg}\n`)))
     && retry.status === 0 && retry.stderr === "" && JSON.parse(retry.stdout).result?.file === join(dir, "contract.json"),
     { text: text.map(shown), json: shown(json), retry: shown(retry) });
 }
