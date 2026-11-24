@@ -637,6 +637,11 @@ route described below. Recovery re-entry keeps its recorded mode.
 
 ### Controller recovery
 
+A legacy `.cotal/nats.pid` file blocks `cotal up` on a controller stack. The refusal names the
+file and its PID when it can read one. Check that PID's executable and command line. Set the
+file aside outside `.cotal` only after verifying it does not belong to a running broker, then
+repeat your startup command. Do not signal the process based on this file.
+
 A broker configuration write that runs out of space or exceeds a file-size limit reports
 `OPERATION_FAILED`, exit 5, with the configuration path and filesystem error code. No member was
 started by that preparation. Correct the write failure and run `cotal up` again. The failed write
