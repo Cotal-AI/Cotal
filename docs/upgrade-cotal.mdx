@@ -15,8 +15,8 @@ A computer that has never had `~/.config/cotal` needs one manual `npm install -g
 If the registry lists a new release before its archives or version metadata are available,
 `cotal update --self` shows its progress and waits up to ten minutes. If they are still unavailable,
 it keeps the installed version and exits successfully. If the registry returns HTTP 404 for a scoped
-first-party package's metadata, the command exits with status 1 without waiting. Check
-`@cotal-ai:registry` in `.npmrc`. Invalid release metadata and failed integrity checks also refuse the update.
+first-party package during the initial metadata checks, the command exits with status 1 without waiting.
+Check `@cotal-ai:registry` in `.npmrc`. Invalid release metadata and failed integrity checks also refuse the update.
 
 If another updater owns the same npm global installation, `cotal update --self` keeps waiting
 while that process is alive and renews its reservation. When the reservation is released, the

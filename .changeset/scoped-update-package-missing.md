@@ -2,4 +2,4 @@
 "@cotal-ai/cli": patch
 ---
 
-Self-update now fails promptly when npm cannot find a first-party package at the configured scoped registry. It keeps the installed version and registry settings unchanged and still waits for a newly published version to propagate.
+Self-update fails promptly when the initial metadata check cannot find a scoped first-party package, without changing the installation or registry settings.
