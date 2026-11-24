@@ -26,8 +26,8 @@ import {
   materialEnv,
 } from "@cotal-ai/connector-core";
 
-const STANDALONE = fileURLToPath(
-  import.meta.url.includes("/dist/") ? new URL("./standalone.js", import.meta.url) : new URL("../dist/standalone.js", import.meta.url),
+const SPAWN_ENTRY = fileURLToPath(
+  import.meta.url.includes("/dist/") ? new URL("./spawn-entry.js", import.meta.url) : new URL("../dist/spawn-entry.js", import.meta.url),
 );
 
 export const PI_PROVIDER_KEYS = [
@@ -180,7 +180,7 @@ export const piConnector: Connector = {
     if (opts.acceptedToken) env.COTAL_ACCEPTED_TOKEN = opts.acceptedToken;
     if (opts.configPath) env.COTAL_AGENT_FILE = opts.configPath;
 
-    const args = ["--extension", STANDALONE];
+    const args = ["--extension", SPAWN_ENTRY];
     // Operator resume is a FORK, matching LaunchOpts.resume's contract: Pi creates a new session and
     // leaves the source transcript untouched. Crash recovery is the opposite operation: reopen the
     // exact already-meshed session rather than forking it again. A fresh managed seat gets an exact
