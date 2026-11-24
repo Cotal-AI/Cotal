@@ -990,12 +990,13 @@ try {
     const records = join(home, "services", Buffer.from(space).toString("hex"));
     for (const row of serviceInstances(space, "stack-broker")) rmSync(join(records, "instances", `${Buffer.from(row.record.value.instanceId).toString("hex")}.json`));
     rmSync(join(records, "definitions", `${Buffer.from("stack-broker").toString("hex")}.json`));
-    const refused = cli(root, "up", "--no-manager", "--json");
-    check("with no saved broker definition either, bare up refuses USAGE_INVALID, exit 1, and asks for --server",
-      refused.status === 1 && refused.env?.error?.code === "USAGE_INVALID" && refused.env.error.remedy === "run `cotal up --server <url>` with the address it ran at" && !existsSync(journalPath), shown(refused));
-    const named = cli(root, "up", "--server", server, "--no-manager", "--json");
+    const startup = ["up", "--no-manager", "--json"];
+    const refused = cli(root, ...startup);
+    check("without a saved broker definition, up asks to add the original address to the same command",
+      refused.status === 1 && refused.env?.error?.code === "USAGE_INVALID" && refused.env.error.remedy === "repeat the same startup command, adding `--server <url>` with the address it ran at" && !existsSync(journalPath), shown(refused));
+    const named = cli(root, ...startup, "--server", server);
     track(space);
-    check("up --server with that address starts it", named.status === 0, shown(named));
+    check("the retry starts the broker at its original address without a manager", named.status === 0 && findMesh(space)?.server === server && runningPidOf(space, "stack-broker") !== null && gone(space, "stack-manager"), shown(named));
     check("down --yes stops it", cli(root, "down", "--yes", "--json").status === 0);
   }
 

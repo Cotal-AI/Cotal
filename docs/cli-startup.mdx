@@ -575,7 +575,8 @@ conflicting `--server` or `--open` refuses before effects. With no journal and n
 after a damaged journal was removed, `up` starts at the address the saved `stack-broker` definition
 names and warns `STACK_ADDRESS_RECOVERED`. It also keeps the open mode and JetStream store path
 from the broker configuration that definition names. With no definition either, a root that holds the space's
-trust or a store from an earlier start refuses `USAGE_INVALID`, exit 1, and asks for `--server`.
+trust or a store from an earlier start refuses `USAGE_INVALID`, exit 1. Repeat the same startup command
+with `--server` set to the original address. Keep `--no-manager` for a broker-only start.
 Only a fresh prepared root starts at the default address. A journal whose stack never launched a
 member pins neither, as when its first `up` was refused because another broker answers at the
 address or another program holds it. The next `up` plans it as a first start, with that address or
