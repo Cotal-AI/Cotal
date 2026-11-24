@@ -249,7 +249,7 @@ for (const typed of ["\u2014json", "\u2212\u2212json", "\u2013json"]) {
 for (const [sub, words] of [["root", ["root", "\u2013json"]], ["add", ["\u2212j", "add"]]] as const) {
   const refused = run(["ext", ...words]);
   check(`ext ${sub} does not suggest a listing flag`, usageShape(refused, /starts with a typographic dash/)
-    && refused.stderr.includes(`omit this option; cotal ext ${sub} does not take --json`)
+    && refused.stderr.includes(`omit this option; \`cotal ext ${sub}\` does not take --json`)
     && !refused.stderr.includes("type the option with hyphens"), shown(refused));
 }
 const listSpelling = run(["ext", "list", "\u2212j"]);

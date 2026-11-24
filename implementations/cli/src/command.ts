@@ -508,7 +508,7 @@ function misspelledOption(cmd: Command, rest: readonly string[], flagNames: read
       const sub = findSubcommand(cmd, first);
       const accepted = sub ? sub.flagNames : cmd.flagNames;
       if (accepted && !accepted.includes(typed.flagName))
-        return { message: typed.message, remedy: `omit this option; cotal ext${sub ? ` ${sub.name}` : ""} does not take --${typed.flagName}` };
+        return { message: typed.message, remedy: `omit this option; \`cotal ext${sub ? ` ${sub.name}` : ""}\` does not take --${typed.flagName}` };
     }
     if (typed) return typed;
   }
