@@ -2038,9 +2038,13 @@ try {
   // 13. An up interrupted before it registers the space leaves its broker running unregistered.
   {
     const space = "stranded";
-    const root = prepare(space);
-    const port = await freePort();
-    const child = spawn(process.execPath, ["--import", TSX_IMPORT, CLI, "up", "--server", `nats://127.0.0.1:${port}`, "--json"], { cwd: root, env, stdio: ["ignore", "ignore", "pipe"] });
+    const root = prepare(space), caller = mkdtempSync(join(projects, "caller-"));
+    const launcher = mkdtempSync(join(home, "launcher-"));
+    writeFileSync(join(launcher, "cotal"), `#!/bin/sh\nexec ${shellPath(process.execPath)} --import ${shellPath(TSX_IMPORT)} ${shellPath(CLI)} "$@"\n`, { mode: 0o700 });
+    const childEnv = { ...env, PATH: `${launcher}${delimiter}${process.env.PATH ?? ""}` };
+    const port = await freePort(), args = ["up", "--root", `../${space}`, "--space", space, "--server", `nats://127.0.0.1:${port}`, "--json"];
+    const stop = codeSpan(`cd ${shellPath(root)} && cotal down --yes`);
+    const child = spawn(process.execPath, ["--import", TSX_IMPORT, CLI, ...args], { cwd: caller, env: childEnv, stdio: ["ignore", "ignore", "pipe"] });
     let upErr = "";
     child.stderr!.on("data", (chunk: Buffer) => { upErr += chunk.toString(); });
     // Freeze the broker once its process is pinned, so the up is provably waiting on it when it dies.
@@ -2051,15 +2055,18 @@ try {
     check("the up still waits on broker readiness when it is interrupted", pinned && child.exitCode === null, { pinned, exitCode: child.exitCode });
     child.kill("SIGINT");
     await exited(child);
-    check("the interrupted up exits 130 naming its unregistered broker's pid, cotal down --yes and then cotal up", child.exitCode === 130 && upErr.includes(`its broker keeps running as pid ${broker}. Run \`cotal down --yes\`, then \`cotal up\`.`), { exitCode: child.exitCode, stderr: upErr.slice(-400) });
+    check("the interrupted up from another folder exits 130 and scopes its stop to the owning project", child.exitCode === 130 && upErr.includes(`its broker keeps running as pid ${broker}`) && upErr.includes(stop), { exitCode: child.exitCode, stderr: upErr.slice(-400) });
     if (broker !== null) process.kill(broker, "SIGCONT");
     check("the killed up left its broker running and the space unregistered", broker !== null && alive(broker) && findMesh(space) === undefined, { broker, registered: findMesh(space) !== undefined });
     const blocked = cli(root, "up", "--json");
     check("the next up refuses LIFECYCLE_BLOCKED naming the broker's pid and down --yes, and starts nothing",
       blocked.status === 2 && blocked.env?.error?.code === "LIFECYCLE_BLOCKED" && Boolean(blocked.env.error.message.includes(`pid ${broker}`)) && Boolean(blocked.env.error.remedy?.includes("cotal down --yes")) && pidOf(space, "stack-delivery") === null && broker !== null && alive(broker), shown(blocked));
+    const retry = cliAs(childEnv, caller, ...args);
+    check("the same retry from the invoking folder names the same project-scoped stop", retry.status === 2 && retry.env?.error?.code === "LIFECYCLE_BLOCKED" && retry.env.error.remedy?.includes(stop) === true, shown(retry));
     const stopped = cli(root, "down", "--yes", "--json");
     check("down --yes stops that broker", stopped.status === 0 && await until(() => broker === null || !alive(broker), 10_000), shown(stopped));
-    const started = cli(root, "up", "--json");
+    const started = cliAs(childEnv, caller, ...args);
+    check("restarting from the invoking folder leaves it untouched", readdirSync(caller).length === 0);
     track(space);
     check("up then starts the whole stack", started.status === 0 && pidOf(space, "stack-manager") !== null, shown(started));
     // A frozen manager holds the down in its impact read, which holds the root's maintenance lock.
