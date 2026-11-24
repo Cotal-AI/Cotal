@@ -18,6 +18,7 @@
  *
  * Run: pnpm --filter @cotal-ai/acp test
  */
+import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -189,8 +190,9 @@ if (process.platform !== "win32") {
   const bin = join(home, "bin");
   mkdirSync(bin);
   const log = join(home, "cotal-args");
+  const pathLog = join(home, "cotal-path");
   const fakeCotal = (dir: string, withAcp: boolean) => {
-    writeFileSync(join(dir, "cotal"), `#!/bin/sh\nif [ "$1 $2" = "acp --help" ]; then exit ${withAcp ? 0 : 1}; fi\necho "$@" > "${log}"\nexit 7\n`);
+    writeFileSync(join(dir, "cotal"), `#!/bin/sh\nif [ "$1 $2" = "acp --help" ]; then exit ${withAcp ? 0 : 1}; fi\necho "$@" > "${log}"\nprintf '%s' "$PATH" > "${pathLog}"\nexit 7\n`);
     chmodSync(join(dir, "cotal"), 0o755);
   };
   check("with no cotal anywhere the launcher finds none", findCotal({ PATH: bin }, "linux", home) === undefined);
@@ -201,13 +203,12 @@ if (process.platform !== "win32") {
   check("a cotal on PATH comes first", findCotal({ PATH: bin }, "linux", home) === join(bin, "cotal"));
 
   const launcher = join(import.meta.dirname, "..", "src", "cotal-acp.ts");
-  const tsx = join(import.meta.dirname, "..", "..", "..", "node_modules", ".bin", "tsx");
+  const tsx = import.meta.resolve("tsx");
   /** Run the launcher, writing each of `requests` once the reply before it arrived, then closing stdin. */
   const run = (path: string, args: string[], requests: object[] = []): Promise<{ code: number | null; stdout: string }> => new Promise((resolve) => {
-    // The child gets no COTAL_ variable, since the session running the smoke may hold a live credential,
-    // and no npm global prefix, so a Cotal installed on this machine stays out of reach.
+    // Keep live Cotal credentials out and use Node by absolute path so command discovery sees only fixtures.
     const ambient = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_")));
-    const child = spawn(tsx, [launcher, ...args], { env: { ...ambient, HOME: home, PATH: `${path}:${join(process.execPath, "..")}`, npm_config_global_prefix: "" }, stdio: ["pipe", "pipe", "ignore"] });
+    const child = spawn(node, ["--import", tsx, launcher, ...args], { env: { ...ambient, HOME: home, PATH: path, npm_config_global_prefix: "" }, stdio: ["pipe", "pipe", "ignore"] });
     let stdout = "";
     let sent = 0;
     const next = () => (sent < requests.length ? child.stdin.write(`${JSON.stringify(requests[sent++])}\n`) : child.stdin.end());
@@ -220,6 +221,7 @@ if (process.platform !== "win32") {
   });
   const ran = await run(bin, ["--space", "demo"]);
   check("the launcher runs `cotal acp <args>` and passes its exit status on", ran.code === 7 && readFileSync(log, "utf8").trim() === "acp --space demo", { ran, args: existsSync(log) ? readFileSync(log, "utf8") : null });
+  assert.equal(readFileSync(pathLog, "utf8"), bin, "launcher PATH must contain only the fixture directory");
 
   fakeCotal(bin, false);
   rmSync(join(home, ".local", "bin", "cotal"));
