@@ -477,7 +477,8 @@ the space instead, run `cotal down --yes` in its root, then `space forget`. On a
 `cotal down`, then `cotal up` to start it again with empty streams.
 
 `use <space>` selects the space commands target when none is named, in every
-project folder. It changes only the selection:
+project folder. For a retained name beginning with `-`, `space show` puts `--` before the name in
+its selection hint, as in `cotal use -- -old`. The command changes only the selection:
 it starts nothing and does not check the broker, so a stopped or prepared space can be selected and
 the command that targets it reports that. Selecting the explicit selection again is a `no-op`; selecting an adopted selection promotes it to explicit. A name that is not
 registered or prepared is refused with `TARGET_NOT_FOUND`, exit 2, naming the known spaces, and the

@@ -97,6 +97,7 @@ A label takes letters, digits and `_`, since `-` separates the parts of a princi
 takes letters, digits, `_` and `-`. A label or role with any other character, or an empty one,
 refuses `USAGE_INVALID` without the command's help. The refusal names the character, the value and
 the characters allowed, and its Next names the value with each such character replaced by `_`.
+If the corrected role begins with `-`, the refusal gives it as one option word, such as `--role=-review_`.
 
 `agent` is the default profile. Its channel ACLs and role come from the selected root's
 `<name>.md` persona file, when present. It does not fall back to `default.md` for a different name.

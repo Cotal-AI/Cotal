@@ -126,7 +126,7 @@ export function validateUpArguments(args: ParsedArgs): void {
   if (!args.values.file && args.values["tls-cert"] !== undefined && typeof args.values.server === "string" && /^nats:\/\//i.test(args.values.server))
     throw new CommandFailure("refused", "USAGE_INVALID", "--tls-cert serves the broker over TLS, so --server must be a tls:// address; nothing was started or written", { remedy: `pass --server ${tlsAddress(args.values.server)}`, selfContained: true });
   if (typeof args.values.file === "string" && args.values.foreground === true) {
-    const boot = `cotal team boot ${shellWord(args.values.file)} --foreground`;
+    const boot = `${presentation === "json" ? "cotal" : displayCmd()} team boot ${shellWord((args.values.file.startsWith("-") ? "./" : "") + args.values.file)} --foreground`;
     const remedy = args.values["dry-run"] === true ? `preview with ${codeSpan(`${boot} --dry-run`)}`
       : `prepare the project if needed with \`cotal space create <space> --root .\`, then run ${codeSpan(boot)}`;
     throw new CommandFailure("refused", "UNSUPPORTED", "manifest boot has no native foreground custody path; a detached broker was not substituted for the requested terminal-bound lifetime", { remedy });

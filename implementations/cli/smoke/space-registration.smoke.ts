@@ -1369,7 +1369,7 @@ if (process.platform === "linux") {
   recordMesh({ space: "a*b", server: DEAD, root: home, mode: "open", origin: "manual", ts: new Date().toISOString() });
   const odd = await run(["space", "show", "a*b"]);
   check("space show of a registration an earlier release made under such a name still heads it Mesh: <name>", odd.status === 0 && odd.stdout.startsWith("Mesh: a*b"), shown(odd));
-  check("space show quotes a legacy name that a shell could expand", odd.stdout.includes("`cotal use 'a*b'`"), shown(odd));
+  check("space show quotes a legacy name that a shell could expand", odd.stdout.includes(`\`${launcher} use 'a*b'\``), shown(odd));
   removeMesh("a*b");
   // A space name holds at most 64 characters, so its hex fits every local file name that carries it.
   const longName = "y".repeat(65), longest = "y".repeat(64);
@@ -2254,6 +2254,23 @@ if (process.platform !== "win32") {
     inventory.stderr.includes(`${file} is a file, not a folder`) && !!pasted && pasted.status === 0 && !existsSync(file) &&
     existsSync(`${file}.old`) && readFileSync(`${file}.old`, "utf8") === "not a folder" && recovered.status === 0,
     { inventory: shown(inventory), move: pasted ? shown(pasted) : move, recovered: shown(recovered) });
+}
+
+// A selection hint must accept the exact name of a retained offline registration.
+{
+  const space = "-old";
+  const env = { COTAL_HOME: join(home, "legacy-selection-home") };
+  const root = join(home, "legacy-selection-root");
+  mkdirSync(root);
+  mkdirSync(join(env.COTAL_HOME, "meshes"), { recursive: true });
+  writeFileSync(join(env.COTAL_HOME, "meshes", `${space}.json`), JSON.stringify({ space, root, server: DEAD, mode: "open", origin: "manual", ts: new Date().toISOString() }));
+  const show = await run(["space", "show", "--", space], env);
+  const command = /select it with `(?:pnpm )?cotal ([^`]+)`/.exec(show.stdout)?.[1];
+  const selected = command && await run(command.split(" "), env);
+  const current = await run(["use", "--json"], env);
+  check("following the space show hint selects an offline historical space with a leading dash",
+    show.status === 0 && !!selected && selected.status === 0 && current.status === 0 && JSON.parse(current.stdout).result.current === space,
+    { show: shown(show), selected: selected && shown(selected), current: shown(current) });
 }
 
 // An open space registered by an earlier release must still start under its exact old name.
