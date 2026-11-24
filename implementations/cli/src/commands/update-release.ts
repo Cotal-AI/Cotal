@@ -213,11 +213,13 @@ export class DependencyCheckInterrupted extends Error {}
 export class DependencyCheckNoSpace extends Error {}
 
 const NETWORK_ERROR_CODE = /^(?:ENETUNREACH|EHOSTUNREACH|ENETDOWN|EHOSTDOWN|ECONNRESET|ECONNREFUSED|ECONNABORTED|ETIMEDOUT|EIDLETIMEOUT|ESOCKETTIMEDOUT|EAI_AGAIN|ENOTFOUND)$/;
+const NPM_ERROR_CODE = /(?:^|\n|^target staging failed: )npm (?:error|ERR!) code ([A-Z_]+)(?:\s|$)/;
+const NPM_FETCH_TIMEOUT = /^npm (?:error|ERR!) network timeout at: https?:\/\/\S+[ \t]*\r?$/m;
 
 export function registryNetworkFailure(error: unknown): boolean {
   if (error instanceof RegistryUnavailable) return true;
   const detail = error instanceof StagingTimeout ? error.npmOutput : message(error);
-  const code = /(?:^|\n|^target staging failed: )npm (?:error|ERR!) code ([A-Z_]+)(?:\s|$)/.exec(detail)?.[1];
+  const code = NPM_ERROR_CODE.exec(detail)?.[1];
   return code !== undefined && NETWORK_ERROR_CODE.test(code);
 }
 
@@ -226,7 +228,13 @@ export function offlineUpdateMessage(repaired: boolean): string {
 }
 
 export function deferStagingFailure(error: unknown, version: string, rt: UpdateRuntime, repaired: boolean): boolean {
-  if ((error instanceof RegistryUnavailable || error instanceof StagingTimeout || message(error).startsWith("target staging failed: ")) && registryNetworkFailure(error)) {
+  const detail = message(error);
+  const stagingFailed = detail.startsWith("target staging failed: ");
+  if (stagingFailed && NPM_ERROR_CODE.exec(detail)?.[1] === "FETCH_ERROR" && NPM_FETCH_TIMEOUT.test(detail)) {
+    const reason = "Registry fetch timed out during package staging";
+    recordUpdateDeferral(version, reason, true);
+    rt.out(displayRemedy(`${reason}. The previous version remains installed. Run \`cotal update --self\` again when the registry responds.`));
+  } else if ((error instanceof RegistryUnavailable || error instanceof StagingTimeout || stagingFailed) && registryNetworkFailure(error)) {
     recordUpdateDeferral(version, "waiting for registry access", true);
     rt.out(offlineUpdateMessage(repaired));
   } else if (error instanceof StagingTimeout) {
