@@ -478,18 +478,20 @@ check("the opening Agent files example previews with Claude and validates its mo
 // The display name in a persona need not be a launch identity. Preview the effective value with
 // the same local rule as foreground launch, including the selected space's actor-token bound.
 writeFileSync(agentFilePath(root, "invalid-name"), "---\nname: bad name\n---\n");
-for (const args of [
-  ["invalid-name"],
-  ["invalid-name", "--server", "nats://127.0.0.1:34300"],
-  ["--file", "pv.md", "--name", "bad name"],
-]) {
+for (const [args, remedy] of [
+  [["invalid-name"], "retry with `cotal spawn invalid-name --name invalid-name --json --dry-run`"],
+  [["invalid-name", "--server", "nats://127.0.0.1:34300"], "retry with `cotal spawn invalid-name --server nats://127.0.0.1:34300 --name invalid-name --json --dry-run`"],
+  [["--file", "pv.md", "--name", "bad name"], undefined],
+] as const) {
   for (const format of [[], ["--plain"], ["--json"]]) {
     const invalid = cotal("spawn", ...args, "--dry-run", ...format);
     const message = 'unsafe name "bad name" (allowed: letters, digits, _ -)';
+    const jsonMessage = remedy === undefined ? message : `the persona's frontmatter name cannot be used for launch: ${message}`;
     check(`direct preview refuses the effective name from ${args.join(" ")} in ${format[0] ?? "text"}`,
       invalid.status === 1 && (format[0] === "--json"
         ? invalid.envelope?.outcome === "refused" && invalid.envelope.error?.code === "USAGE_INVALID"
-          && invalid.envelope.error.message === message && invalid.envelope.target?.space === "opsp" && invalid.stderr === ""
+          && invalid.envelope.error.message === jsonMessage && invalid.envelope.error.remedy === remedy
+          && invalid.envelope.target?.space === "opsp" && invalid.stderr === ""
         : invalid.stdout === "" && invalid.stderr.includes(message)), shown(invalid));
   }
 }
