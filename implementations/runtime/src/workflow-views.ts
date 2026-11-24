@@ -34,7 +34,7 @@ export function printRunList(space: string | undefined, items: readonly RunListR
     ] },
     { title: "Next", blocks: [{ kind: "commands", items: open
       ? [{ command: "cotal r simulate <file>", description: "Test a workflow offline" }]
-      : [{ command: `cotal r show <run-id>${managerPin(values)}`, description: "Read state, open requests and journal steps" }, { command: `cotal r start <file>${managerPin(values)}`, description: "Start a new workflow on the selected manager" }] }] },
+      : [{ command: `cotal r show <run-id>${managerPin(values)}${runRoute(values)}`, description: "Read state, open requests and journal steps" }, { command: `cotal r start <file>${managerPin(values)}`, description: "Start a new workflow on the selected manager" }] }] },
   ] }));
 }
 

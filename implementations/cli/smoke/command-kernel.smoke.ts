@@ -885,6 +885,7 @@ async function completionOut(positionals: string[]): Promise<string> {
 {
   const cmd = registry.resolve<Command>("command", "up")!;
   const missingRoot = join(tmpdir(), "cotal-up-address-no-project", `${process.pid}-${Date.now()}`);
+  const pair = "put the broker URL, including the intended port, in --server and the matching local IP address alone in --host";
   const refused: [string[], RegExp, string?][] = [
     [["--server", "nats://127.0.0.1"], /^--server names no port/],
     // The example keeps the scheme and port the person chose, and never the host or a credential.
@@ -894,10 +895,10 @@ async function completionOut(positionals: string[]): Promise<string> {
     [["--server", "nats://localhost:4222"], /^--server names the host localhost/, "pass the IP address the local broker listens on, for example --server nats://127.0.0.1:4222"],
     [["--host", "::1"], /^--host names an IPv6 address/],
     [["--host", "[::1]"], /^--host names an IPv6 address/],
-    [["--host", "nats://127.0.0.1"], /^--host nats:\/\/127\.0\.0\.1 looks like a URL/],
-    [["--host", "127.0.0.1:4222"], /^--host 127\.0\.0\.1:4222 is not a valid bind host/],
-    [["--host", "localhost:4222"], /^--host localhost:4222 is not a valid bind host/],
-    [["--server", "nats://127.0.0.1:4222", "--host", "127.0.0.2"], /^--host 127\.0\.0\.2 and --server nats:\/\/127\.0\.0\.1:4222 name different addresses/],
+    [["--host", "nats://127.0.0.2:29888"], /^--host nats:\/\/127\.0\.0\.2:29888 looks like a URL/, pair],
+    [["--host", "127.0.0.2:29888"], /^--host 127\.0\.0\.2:29888 is not a valid bind host/, pair],
+    [["--host", "localhost:4222"], /^--host localhost:4222 is not a valid bind host/, pair],
+    [["--server", "nats://127.0.0.2:29888", "--host", "127.0.0.3"], /^--host 127\.0\.0\.3 and --server nats:\/\/127\.0\.0\.2:29888 name different addresses/, pair],
     [["--server", "nats://127.0.0.2:4222"], /^--server nats:\/\/127\.0\.0\.2:4222 names 127\.0\.0\.2, and with no --host the broker binds 127\.0\.0\.1/, "pass --host 127.0.0.2 to bind the broker there"],
   ];
   for (const [flags, said, remedy] of refused) {
@@ -2438,7 +2439,16 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
   assert.match(json?.message ?? "", /a spawn in this terminal takes no structured receipt/, "because a spawn in this terminal writes no receipt");
   assert.match(json?.remedy ?? "", /add -d/, "and the Next adds -d");
   assert.equal(refusal({ json: true, detach: true }), undefined, "with -d, --json is a manager's receipt");
-  assert.match(refusal({ restarts: "2", "restart-window": "1000" })?.remedy ?? "", /add -d, or --on/, "--restarts without a manager names -d or --on");
+  const spawnCommand = findCommand(registry.all<Command>("command"), "spawn")!;
+  const restart = ["--restarts", "2", "--restart-window", "1000"];
+  for (const [placement, change] of [[[], "add -d"], [["--foreground"], "replace --foreground with -d"]] as const) {
+    const preview = ["--dry-run", "--json"];
+    const denied = refusal(parseCommandArgs(spawnCommand, [...placement, ...restart, ...preview]).values);
+    assert.equal(denied?.code, "USAGE_INVALID");
+    assert.equal(denied.remedy, `${change} to keep restart supervision, or omit --restarts and --restart-window to launch in this terminal`);
+    assert.doesNotThrow(() => validateSpawnArguments(parseCommandArgs(spawnCommand, ["-d", ...restart, ...preview])), "the managed retry keeps both restart flags");
+    assert.doesNotThrow(() => validateSpawnArguments(parseCommandArgs(spawnCommand, [...placement, ...preview])), "the direct retry omits both restart flags");
+  }
   assert.match(refusal({ on: "a".repeat(30) })?.message ?? "", /attaching to a manager's launch needs usable input and output terminals/, "--on without -d attaches, which needs terminals");
 }
 

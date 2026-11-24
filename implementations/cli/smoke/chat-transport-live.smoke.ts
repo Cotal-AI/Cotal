@@ -20,6 +20,8 @@ for (const name of ["home", "cotal", "config", "runtime"]) mkdirSync(join(root, 
 const port = await freePort();
 const server = `nats://127.0.0.1:${port}`;
 const space = "chat-transport";
+const run = (args: string[], input = "", cwd = root) =>
+  spawnSync(process.execPath, [cli, ...args], { cwd, env, encoding: "utf8", input, timeout: 30_000 });
 const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 async function until(test: () => boolean, timeout = 15_000): Promise<void> {
   const start = performance.now();
@@ -106,6 +108,36 @@ async function checkSizeRefusal(chat: ReturnType<typeof open>): Promise<void> {
   check("only the valid posts appear in channel history", JSON.stringify(texts) === JSON.stringify(["before", "after"]), texts ?? history.stderr);
 }
 
+function checkPlainDraftBoundary(): void {
+  const text = "x".repeat(65_524) + "END-OF-DRAFT";
+  const split = text.slice(0, 30_000) + "\n" + text.slice(30_001);
+  for (const [channel, draft, rejected] of [["exact", text, false], ["split", split, false], ["overflow", split, true]] as const) {
+    const input = `:multi\n${draft}${rejected ? "\nnot retained" : ""}\n.\ny\n/quit\n`;
+    const chat = run(["chat", channel, "--plain", "--space", space, "--name", "boundary-writer"], input);
+    check(`${channel}: plain chat confirms the draft and reports a dropped line only when it exceeds the limit`,
+      chat.status === 0 && chat.stdout.includes(`send to #${channel}?`) && chat.stdout.includes("line not added") === rejected,
+      chat.stdout.slice(0, 1_000) + chat.stderr);
+    const history = run(["history", channel, "--json", "--space", space]);
+    const items = history.status === 0 ? JSON.parse(history.stdout).result.items as { text: string }[] : [];
+    check(`${channel}: history retains the exact draft`, items.length === 1 && items[0]?.text === draft, history.stderr);
+  }
+}
+
+function checkUnsupportedRetry(): void {
+  const cwd = join(root, "offline");
+  mkdirSync(cwd, { recursive: true });
+  const prepared = run(["space", "create", "audit-offline", "--plain"], "", cwd);
+  if (prepared.status !== 0) throw new Error(prepared.stderr);
+  const args = ["chat", "general", "--space", "audit-offline", "--plain"];
+  const refused = run([...args, "--role", "reviewer"], "", cwd);
+  check("unsupported role tells a piped user to remove only the role and its value",
+    refused.status === 2 && refused.stderr.includes("UNSUPPORTED") &&
+      refused.stderr.includes("remove only `--role` and its value, then rerun the original command"), refused.stderr);
+  const retry = run(args, "", cwd);
+  check("the retry keeps the front end and reaches the selected offline space",
+    retry.status === 2 && retry.stderr.includes("TARGET_UNAVAILABLE") && retry.stderr.includes('"audit-offline" is prepared but not started'), retry.stderr);
+}
+
 function checkPlainHistory(): void {
   const result = spawnSync(process.execPath, [cli, "chat", "--plain", "--space", space, "--name", "history-reader"], {
     cwd: root, env, encoding: "utf8", timeout: 30_000, input: "/history\n:to #general\n/history 1\n/quit\n",
@@ -124,6 +156,8 @@ try {
   const added = spawnSync(process.execPath, [cli, "meshes", "add", space, "--server", server, "--mode", "open", "--root", root], { cwd: root, env, encoding: "utf8", timeout: 30_000 });
   writeFileSync(join(root, "meshes-add.log"), added.stdout + added.stderr);
   if (added.status !== 0) throw new Error(`mesh registration failed: ${added.status}`);
+  checkUnsupportedRetry();
+  checkPlainDraftBoundary();
   const chat = open("outage-check");
   const peer = open("peer-listener");
   const initial = await chat.request("connection");

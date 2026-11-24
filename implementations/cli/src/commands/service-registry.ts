@@ -4,12 +4,12 @@ import { parseCommandArgs, registry, type Command, type CompletionResult, type F
 import { codeSpan, ConfirmationRequired, CommandFailure, recordOperationSpace, isCommandFailure, hasUserAuthState, jsonFlag, loadMeshes, localProcessPath, localProcessVisible, oneLine, parsePid, plainFlag, presentationOf, probeLiveness, readPidfile, spaceFlag, writeResult, type LocalProcess, type LocalProcessContext, type Report, type ServiceDefinitionInput, type ServicePreset } from "@cotal-ai/workspace";
 import { canPrompt } from "./meshes-wizard.js";
 import { serviceConfirmCommand, targetWords } from "../lib/confirmation-required.js";
-import { assertManagerStartOptions, describeDefault, findServicePreset, presetFlagName, presetMissingOptions, presetOptionRefusal, presetStartFlags, presetUnfilledDefaults, resolveServicePreset, servicePresetDefinition, servicePresetFlags, servicePresets } from "../lib/service-presets.js";
+import { assertManagerStartOptions, describeDefault, findServicePreset, presetFlagName, presetOptionRefusal, presetRequiredInputs, presetStartFlags, presetUnfilledDefaults, resolveServicePreset, servicePresetDefinition, servicePresetFlags, servicePresets } from "../lib/service-presets.js";
 import { shellWord } from "../lib/endpoint-errors.js";
 import { forgetRefusedPresetService, presetDefinition, presetDefinitions, recordedPresetProcess, resolvePresetService, type PresetServiceTarget } from "../lib/service-preset-target.js";
 import { execWords } from "../lib/exec-words.js";
 import { resolveServiceAdapter } from "../lib/service-adapters.js";
-import { personaCatalog } from "../lib/persona-files.js";
+import { personaCatalog, personaCatalogContext } from "../lib/persona-files.js";
 import { definitionRootMatch, execServiceDefinition, importServiceDefinition, serviceDefinitionProjection, serviceDefinitionStore, validateServiceDefinition, type ServiceDefinitionSnapshot } from "../lib/service-definitions.js";
 import { serviceAction } from "./service-actions.js";
 import { followRecordedLog } from "./service-log-follow.js";
@@ -60,7 +60,7 @@ export function validateServiceArguments(args: ParsedArgs): void {
   if (args.values.yes !== undefined && !["remove", "stop", "restart", "uninstall"].includes(mode)) throw new CommandFailure("refused", "USAGE_INVALID", "--yes belongs to service stop, restart, remove or uninstall");
   if (args.values.instance !== undefined) { if (!["start", "stop", "restart", "status", "logs", "install", "uninstall", "remove"].includes(mode)) throw new CommandFailure("refused", "USAGE_INVALID", "--instance belongs to a service instance operation or remove"); serviceInstanceId(String(args.values.instance)); }
   if (args.values["new-instance"] && (mode !== "start" || args.values.instance !== undefined)) throw new CommandFailure("refused", "USAGE_INVALID", "--new-instance belongs to start and cannot be combined with --instance");
-  if (args.values["no-open"] !== undefined && (mode !== "start" || !serviceStartAllowsNoOpen(name))) throw new CommandFailure("refused", "USAGE_INVALID", "--no-open belongs to service start web");
+  if (args.values["no-open"] !== undefined && mode !== "start") throw new CommandFailure("refused", "USAGE_INVALID", "--no-open belongs to service start web");
   if (args.values.foreground && (mode !== "start" || args.values.json && !args.values["dry-run"])) throw new CommandFailure("refused", "USAGE_INVALID", "--foreground belongs to start and cannot produce a JSON receipt stream");
   if (args.values["with-agents"] !== undefined && !["stop", "restart"].includes(mode)) throw new CommandFailure("refused", "USAGE_INVALID", "--with-agents belongs to service stop or restart with a declared native policy");
   if (args.values["dry-run"] && !["start", "stop", "restart", "install", "uninstall"].includes(mode)) throw new CommandFailure("refused", "USAGE_INVALID", "--dry-run belongs to service start, stop, restart, install or uninstall");
@@ -109,12 +109,14 @@ export async function service(args: ParsedArgs, commandName = "service"): Promis
   const presentation = presentationOf(args.values);
   // Only --space selects the space: a preset's own options, such as the broker's --server and --root,
   // describe the service and never the target.
-  const catalog = personaCatalog({ space: args.values.space as string | undefined });
+  const { catalog, prepared } = personaCatalogContext({ space: args.values.space as string | undefined });
   const { space, root } = catalog;
   recordOperationSpace(space);
   const store = serviceDefinitionStore(space, addedDefinitionStep);
   const [mode = "list", suppliedName] = args.positionals;
   const target = { space, executionHost: "this-machine" };
+  if (mode === "start" && args.values["no-open"] !== undefined && !serviceStartAllowsNoOpen(suppliedName!, store.read(suppliedName!)?.record.value.launch))
+    throw new CommandFailure("refused", "USAGE_INVALID", "--no-open belongs to service start web or a saved dashboard service");
   if (["start", "stop", "restart", "status", "logs", "install", "uninstall"].includes(mode)) {
     // A user-auth space's manager is read as your signed-in, granted login, so a start or restart
     // without one is refused here, before a definition is saved, a manager stopped or a child launched.
@@ -124,7 +126,7 @@ export async function service(args: ParsedArgs, commandName = "service"): Promis
       const running = mode === "restart" && manager !== undefined && recordedPresetProcess(space, root, manager) !== undefined;
       await assertManagerLogin(root, space, commandName === "manager" ? `\`cotal manager ${mode}\`` : `\`cotal service ${mode} ${suppliedName}\``, running ? "the running manager was left running" : undefined);
     }
-    const resolved = resolvePresetService(space, root, suppliedName!, mode, args.values);
+    const resolved = resolvePresetService(space, root, suppliedName!, mode, args.values, prepared);
     if (resolved?.recorded) return mode === "logs" && resolved.preset === "manager" ? recordedManagerLogs(resolved.requested, { ...resolved.recorded, state: "running" }, space, root, args.values, presentation, commandName) : recordedPresetProcessReport(resolved, resolved.recorded, space, mode, presentation, commandName);
     if (resolved?.stopped) return mode === "status"
       ? stoppedManagerStatus(resolved, resolved.stopped, space, root, presentation, commandName)
@@ -367,8 +369,7 @@ function serviceRows(space: string, root: string, catalog: readonly ServicePrese
     const recorded = recordedPresetProcess(space, root, preset);
     let needs: string[] = [], several = false;
     try {
-      const flags = servicePresetFlags(preset), missing = new Set(presetMissingOptions(preset, {}));
-      needs = [...flags.filter((flag) => missing.has(flag.name)).map((flag) => `--${flag.name}${flag.value ? ` ${flag.value}` : ""}`), ...presetUnfilledDefaults(preset, space, root, {}).map((row) => `--${row.name} ${row.value}`)];
+      needs = presetRequiredInputs(preset, space, root);
       several = resolveServiceAdapter(preset.adapter, {}, false).declaration.capabilities.multiInstance;
     } catch { needs = ["its options"]; }
     // A preset that runs many instances is added under a name of your own; any other starts by its name.
@@ -450,7 +451,9 @@ function previewPresetStart(resolved: PresetServiceTarget, space: string, root: 
   if (launch.adapter === STACK_ADAPTER.manager) {
     assertManagerStartOptions(space, launch.options);
     const host = launch.options["console-host"];
-    if (typeof host === "string" && /[\u0000- \u007f]/u.test(host)) throw new CommandFailure("refused", "USAGE_INVALID", "the declared console host contains whitespace or controls; no native child was launched", { target, selfContained: true });
+    if (typeof host === "string" && /[\u0000- \u007f]/u.test(host)) throw new CommandFailure("refused", "USAGE_INVALID", "--console-host contains whitespace or controls; no native child was launched", {
+      target, selfContained: true, remedy: "replace the invalid host with `--console-host 127.0.0.1`, keeping the other flags unchanged",
+    });
   }
   writeResult(presentation, { command: commandName, target, result: { kind: "service-operation-preview", operation: "start", dryRun: true, definitionWouldBeSaved: true, preset: resolved.preset, adapter: launch.adapter, optionNames: Object.keys(launch.options).sort(), saved: false, allocated: false, providerCodeLoaded: false } }, (): Report => ({ sections: [{ title: "Service operation preview", blocks: [
     { kind: "fields", rows: [["Action", "start"], ["Service", resolved.name], ["Space", space], ["Definition", `would be saved from the ${resolved.preset} preset`], ["Options", Object.keys(launch.options).sort().map((name) => `--${name}`).join(", ") || "none"]] },

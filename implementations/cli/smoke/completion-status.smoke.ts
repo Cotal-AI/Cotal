@@ -487,26 +487,33 @@ if (process.platform !== "win32" && process.getuid?.() !== 0) {
     check("install refuses an rc it cannot read, exit 2, with nothing written", unreadable.status === 2 && /could not be opened safely/.test(unreadable.stderr) && !existsSync(stub), shown(unreadable));
     chmodSync(rc, 0o400);
     const readOnly = s.run(["completion", "install", "zsh"]);
+    const chmod = `chmod u+w ${rc}`;
+    const cliWords = ["cotal", "pnpm cotal"];
+    check("read-only startup reports partial installation and tells the user to restore permission and retry", readOnly.status === 4 && /OPERATION_PARTIAL/.test(readOnly.stderr) && cliWords.some((cli) => readOnly.stderr.includes(`restore owner write permission with \`${chmod}\`, then run \`${cli} completion install zsh\` again without editing the startup file`)) && (statSync(rc).mode & 0o777) === 0o400 && readFileSync(rc, "utf8") === "# mine\n", shown(readOnly));
     chmodSync(rc, 0o600);
-    // The line is the one the owned block would hold, single-quoted as the shell needs.
-    check("an rc it can read but not extend reports partial installation, exit 4, naming the line to add", readOnly.status === 4 && /OPERATION_PARTIAL/.test(readOnly.stderr) && /wrote .*completion\.zsh but could not add its line/.test(readOnly.stderr) && readOnly.stderr.includes(`source '${stub}'`) && readFileSync(rc, "utf8") === "# mine\n", shown(readOnly));
     const record = `${stub}.ownership.json`;
     check("the partial report lists both files written and does not list the startup file", existsSync(stub) && existsSync(record) && readOnly.stderr.includes(`Confirmed changes\n  ${stub}\n  ${record}\n\n`), shown(readOnly));
     const installed = s.run(["completion", "install", "zsh"]);
     const wired = readFileSync(rc, "utf8");
+    check("retry after restoring write permission adds the managed startup block", installed.status === 0 && wired.startsWith("# mine\n") && wired.includes(`# >>> cotal completion >>>\nsource '${stub}'\n# <<< cotal completion <<<`), shown(installed));
     chmodSync(rc, 0o400);
     const lockedOut = s.run(["completion", "uninstall", "zsh", "--plain"]);
     check("uninstall refuses a read-only rc and keeps its mode, startup block, stub and record",
       installed.status === 0 && lockedOut.status === 2 && lockedOut.stderr.includes(`${rc} is read-only, so its completion block was not removed`) &&
         lockedOut.stderr.includes("PERMISSION_DENIED") && (statSync(rc).mode & 0o777) === 0o400 && readFileSync(rc, "utf8") === wired &&
         existsSync(stub) && existsSync(record), { install: shown(installed), uninstall: shown(lockedOut) });
-    const chmod = `chmod u+w ${rc}`;
     check("uninstall tells the user to restore write permission and retry without editing the block",
-      lockedOut.stderr.includes(`restore owner write permission with \`${chmod}\`, then run \`cotal completion uninstall zsh\` again without editing the startup block`), shown(lockedOut));
+      cliWords.some((cli) => lockedOut.stderr.includes(`restore owner write permission with \`${chmod}\`, then run \`${cli} completion uninstall zsh\` again without editing the startup block`)), shown(lockedOut));
     chmodSync(rc, 0o600);
     const retried = s.run(["completion", "uninstall", "zsh", "--plain"]);
     check("uninstall succeeds after restoring owner write permission without editing the block",
       retried.status === 0 && !existsSync(stub) && !existsSync(record) && readFileSync(rc, "utf8") === "# mine\n", shown(retried));
+    chmodSync(rc, 0o400);
+    s.run(["completion", "install", "zsh"]);
+    chmodSync(rc, 0o600);
+    appendFileSync(rc, `source '${stub}'\n`);
+    const customStatus = s.run(["completion", "--plain"]);
+    check("status shows a custom startup reference without offering a managed refresh", customStatus.status === 0 && customStatus.stdout.includes("startup reference found") && cliWords.some((cli) => customStatus.stdout.includes(`${cli} completion script zsh`)) && !cliWords.some((cli) => customStatus.stdout.includes(`${cli} completion install zsh`)), shown(customStatus));
   }
 }
 
@@ -576,11 +583,28 @@ if (process.platform !== "win32" && process.getuid?.() !== 0) {
   const s = sandbox("/bin/zsh");
   const zdot = join(s.home, "zdot");
   mkdirSync(zdot);
+  const relative = { ZDOTDIR: "zdot" };
+  const offersZshWrite = (output: string) => /cotal completion (?:install|uninstall) zsh/.test(output);
+  const fresh = s.run(["completion", "--plain"], relative);
+  const next = fresh.stdout.split("\nNext\n")[1] ?? "";
+  check("relative ZDOTDIR keeps zsh status available and points to an absolute path or the script",
+    fresh.status === 0 && next.includes("relative ZDOTDIR makes the startup target depend on the shell's working directory") &&
+      next.includes("use an absolute ZDOTDIR") && next.includes("cotal completion script zsh") && !offersZshWrite(next), shown(fresh));
   s.run(["completion", "install", "zsh"], { ZDOTDIR: zdot });
   const zsh = s.shellOf(s.json({ ZDOTDIR: "zdot" }).env, "zsh");
   // Compared by realpath: the working directory a child reports can be the resolved form of tmpdir().
   const wiredIn = typeof zsh?.wiredIn === "string" ? zsh.wiredIn : "";
   check("the status reads a relative ZDOTDIR from its working directory and names the absolute file", isAbsolute(wiredIn) && existsSync(wiredIn) && realpathSync(wiredIn) === join(realpathSync(zdot), ".zshrc"), zsh);
+  const installed = s.run(["completion", "--plain"], relative);
+  check("relative ZDOTDIR also suppresses managed removal of an installed integration", installed.status === 0 && !offersZshWrite(installed.stdout), shown(installed));
+  const stub = join(s.xdg, "cotal", "completion.zsh");
+  const original = readFileSync(stub);
+  appendFileSync(stub, "\n# local edit\n");
+  const modified = s.run(["completion", "--plain"], { ...relative, SHELL: "/bin/bash" });
+  check("a modified zsh integration offers manual setup instead of a forced install, even when bash is selected",
+    modified.status === 0 && !offersZshWrite(modified.stdout) && modified.stdout.includes("cotal completion script zsh") &&
+      modified.stdout.includes("cotal completion install bash"), shown(modified));
+  writeFileSync(stub, original);
 
   // Without that ZDOTDIR, the record names the startup file it was wired into and the ZDOTDIR to use.
   const record = join(s.xdg, "cotal", "completion.zsh.ownership.json");

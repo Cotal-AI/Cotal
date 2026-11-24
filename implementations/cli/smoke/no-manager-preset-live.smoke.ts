@@ -73,6 +73,17 @@ try {
   const refusedCap = conflictingStore("2");
   check("a conflicting store refuses without saving the requested seat cap",
     refusedCap.status === 2 && refusedCap.env?.error?.code === "CONFLICT" && refusedCap.env.error.message.includes("recorded broker inputs") && cap() === undefined, { refused: shown(refusedCap), seatCap: cap() });
+  for (const flags of [[], ["--no-manager"]]) {
+    const conflict = cotal("up", ...flags, "--max-file-store", "536870912", "--log-file", join(root, "broker.log"), "--json");
+    const restart = ["up", ...flags], step = codeSpan(`cotal ${restart.join(" ")}`), remedy = conflict.env?.error?.remedy ?? "";
+    check(`broker input conflict with ${step} keeps the same startup in both suggestions`,
+      conflict.status === 2 && conflict.env?.error?.code === "CONFLICT" && remedy.includes(`${step} from ${root}`)
+        && remedy.includes(`then ${step} with the requested log flags`), shown(conflict));
+    if (flags.length && remedy.includes(`${step} from ${root}`)) {
+      const retried = cotal(...restart, "--json");
+      check("keeping the recorded inputs leaves the broker running without a manager", retried.status === 0 && running("stack-broker") !== undefined && running("stack-manager") === undefined, shown(retried));
+    }
+  }
   const added = cotal("service", "add", "mgr", "--preset", "manager", "--root", root, "--runtime", "pty", "--space", space);
   const started = cotal("service", "start", "mgr", "--space", space);
   const mgr = running("mgr");
@@ -149,6 +160,14 @@ try {
     retire.status === 2 && retire.env?.error?.code === "LIFECYCLE_BLOCKED" && retire.env.error.message.includes("agents from an earlier manager may still be running")
       && retire.env.error.remedy?.includes("131072 bytes") === true && retire.env.error.remedy.includes("263168 bytes") && !retire.env.error.remedy.includes("`cotal up`")
       && retirementPreview.status === 0 && retirementPreview.env?.outcome === "no-op" && retirementPreview.stdout.includes(retire.env.error.message), { apply: shown(retire), preview: shown(retirementPreview) });
+  const absent = cotal("down", "--abandon-stop", randomUUID(), "--yes", "--json");
+  const remedy = absent.env?.error?.remedy ?? "";
+  const restart = /To restart without a manager, run `cotal ([^`]+)`/.exec(remedy)?.[1];
+  check("no retained stop requires no action and distinguishes the two restart commands", absent.status === 2 && absent.env?.error?.code === "TARGET_NOT_FOUND" && remedy.includes("no further stop is needed") && restart === "up --no-manager" && remedy.includes("to restart with a manager, run `cotal up`") && running("stack-broker") === undefined, shown(absent));
+  if (restart === "up --no-manager") {
+    const retried = cotal(...restart.split(" "), "--json");
+    check("the broker-only restart after an absent stop starts no manager", retried.status === 0 && running("stack-broker") !== undefined && running("stack-manager") === undefined, shown(retried));
+  }
 } catch (error) {
   check("scenario completed", false, (error as Error).stack ?? String(error));
 } finally {

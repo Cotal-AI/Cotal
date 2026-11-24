@@ -218,7 +218,8 @@ The app does not change a separately installed command line.
 Interactive commands print a one-line update notice on stderr from a daily cached registry check.
 The check runs daily with `npm view cotal-ai@latest` against your configured registry, and nothing else is sent.
 A command started during the few seconds an update replaces the installation can fail to load and should be run again.
-The check runs in the background. JSON, plain, CI and redirected output receive no notice.
+The check runs in the background. Help requests neither check the registry nor print an update notice.
+JSON, plain, CI and redirected output receive no notice.
 Version output reports the cached update state without waiting for the registry. If the recorded
 updater is still running, version output says to wait rather than asking you to restore the update.
 
@@ -228,8 +229,10 @@ disposable prefix. The dependency check, package installation and reconciliation
 npm caches that are removed afterwards. After a successful self-update on Linux or macOS, Cotal also
 removes earlier archive caches in its temporary location when it can verify that their owner and
 npm workers have exited. On Linux, the same cleanup removes earlier staged npm install caches
-after their recorded owner and npm process group have exited. Unrecorded caches and active work
-are left alone.
+after their recorded owner and npm process group have exited. A successful retry also reclaims
+private update scratch idle for more than an hour when it contains only the Node compile cache.
+On Linux, it also removes that scratch if the reconciliation cache holds only records that prove
+the updater and child process group have exited. Cotal keeps unrecorded reconciliation caches.
 An unwritable cache configured in `.npmrc` does not block the update. Cotal leaves that cache and
 its permissions unchanged and still applies your registry,
 authentication, proxy and TLS settings. An unavailable dependency stops the update before replacement.
@@ -284,6 +287,15 @@ leaves the installation unchanged without failing `update --self`.
 On Linux and macOS, an installed self-update restores owner write access to its own connector
 directories before staging a release. If it cannot make those directories writable, it names the
 directory to fix and stops before staging.
+If you move your home or configuration directory while Cotal and its updates are stopped, an
+installed CLI at the same path can use the moved connector set. The former configuration folder
+must be absent, and the private connector set must still be at the same relative path under the
+new configuration folder, including its seed directory and extensions manifest. Update `HOME`,
+`COTAL_HOME`, and `XDG_CONFIG_HOME` as needed before running Cotal again.
+If Cotal finds the previous selection but cannot verify the move, it names the recorded and expected
+connector paths. Restore access to the original location, then return the intact configuration there
+or restore it from a backup. Set `XDG_CONFIG_HOME` to the parent of that `cotal` folder before retrying.
+Keep the selection records with the connector set.
 When a newer release is available, self-update sets aside an unreadable connector selection and
 reports the saved path. It uses a connector set named by a readable record, or prepares a separate
 set if neither record is readable. A later rollback keeps the saved record and restores the
@@ -317,7 +329,7 @@ folder was deleted before it ever started. Update keeps its saved selection and 
 Update runs from the surviving project root, or the filesystem root when no project is present.
 It runs npm for the installation and its extensions outside the project, so the project's package
 manager does not affect the update. Relative `PATH` entries are resolved from the folder where you
-ran `update`.
+ran `update`. On Linux and macOS, an empty entry also refers to that folder, just like `.`.
 Removing an unrelated working folder before or during update does not block it or its npm and
 reconciliation children. A relative `--creds` path keeps its meaning from the original folder.
 
@@ -496,7 +508,12 @@ keeps a single attempt. If npm reports a refused connection to the proxy set by 
 `HTTPS_PROXY`, manual `cotal update --self` fails and leaves the installation unchanged. Check those
 proxy settings and retry. Cotal neither prints the proxy URL nor bypasses it. An unavailable registry
 without a confirmed proxy refusal remains a no-op.
-If the latest-version check fails for a non-network reason, `cotal update --self` reports npm's
+If npm is in offline mode and the latest-version lookup misses Cotal's temporary cache,
+`cotal update --self` reports that the check was skipped and exits 0. The skipped check does not
+retry with network access or start a new install. Before the lookup, the updater can still recover an
+interrupted update or finish a pending extension promotion. It reports a completed promotion
+separately. Run the command with npm offline mode disabled to check for a newer release.
+For other non-network failures in the latest-version check, `cotal update --self` reports npm's
 first diagnostic line and exits with status 1.
 
 Missing release archives and missing target versions of installed first-party extensions share a
@@ -587,14 +604,16 @@ Third-party extensions are listed with their installed version and recorded spec
 auto-updated in v1. Floating third-party updates require `@cotal-ai/*` peer-range validation and are
 a future follow-up. When `update --self` cannot reach the registry before selecting a release,
 it exits 0 without reconciling packages, inspecting Manager custody or creating an update recovery
-record. If self-update already restored write access to an installation directory, it reports that
-no installed packages were replaced. Losing registry connectivity during release checks,
-extension-dependency checks or target staging also exits 0 before replacement.
+record. If self-update already repaired installation permissions or changed connector state during
+preflight, it reports that no installed packages were replaced.
+Losing registry connectivity during release checks, extension-dependency checks or target staging
+also exits 0 before replacement.
 On Linux and macOS, the updater stops a staging install that stops making progress or reaches
 its five-minute limit. It removes the disposable staging copy and leaves the running installation
 and local spaces unchanged. Automatic updates defer the attempt without counting it as a failure.
 A failed first-party scoped metadata read still names the `@cotal-ai:registry` setting and exits 1.
-Authentication, permission, integrity and target pre-install refusals still exit nonzero.
+Authentication, permission, integrity and target pre-install refusals still exit nonzero. A staging
+refusal leaves installed packages in place. Preflight may already have changed connector state.
 Retry `cotal update --self` when connectivity returns. The version read has no retries and a
 15-second network timeout. Unknown availability is not a claim that the installed version is current. A failed connector/extension install, npm metadata check after reconciliation, or requested global
 install is reported and makes the command exit nonzero. Independent extension attempts continue so
@@ -766,6 +785,7 @@ leave the extension inventory unchanged.
 Give `add` a package name or a local package path such as `./example-extension`.
 A package can declare its entry through a root `exports` entry such as
 `"exports": { ".": { "import": "./greet.mjs" } }` without also declaring `main`.
+An npm `main` such as `"./greet"` can resolve to `greet.js` without naming the suffix.
 Give `remove` the package name as listed by `cotal ext list`, without a version.
 For a scoped package such as `@acme/_helper`, include the scope and the leading underscore.
 If the package is already absent, `remove` reports that nothing was removed and exits 0.
@@ -1080,8 +1100,9 @@ group and the folder has no extended ACL, the same rule as every other protected
 under it are not opened, and one that does not exist is reported missing,
 so a report with nothing installed stays complete, exit 0. Next offers that `chmod` first, offers
 `install` and `uninstall` only when nothing stops them, and offers `uninstall` only when something is
-installed. A relative `ZDOTDIR`
-is resolved from the current directory for this report, as zsh resolves it.
+installed. A relative `ZDOTDIR` is resolved from the current directory for this report, as zsh
+resolves it. Next explains the constraint and offers the zsh script for manual setup instead of
+suggesting a managed zsh install or uninstall with a relative `ZDOTDIR`.
 
 With `--json`, `result.shell` is the shell `$SHELL` names when Cotal completes it, else null.
 `result.shells` holds one item per shell:
@@ -1181,7 +1202,9 @@ the linked startup file. If either exists, `uninstall` refuses the linked startu
 `completion` warns that it is a symlink and does not read it. Completion never replaces a startup
 file its owner made read-only. `install` can still write its stub and ownership record. When it
 writes either file without adding the startup line, it reports `OPERATION_PARTIAL`, exit 4, and
-names the line to add yourself.
+tells you to restore owner write permission and rerun `cotal completion install` without editing
+the startup file. A source line you add yourself is custom wiring, and managed installation does
+not adopt it. Bare `completion` does not offer a managed refresh when that wiring blocks it.
 `uninstall` refuses to remove a block from it, exit 2, and changes nothing. Restore owner write
 permission and retry without editing the startup block. On Windows, PowerShell script generation
 works but automatic profile editing remains unsupported: the guarded POSIX file writer cannot

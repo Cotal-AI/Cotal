@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { cpSync, existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -30,6 +30,31 @@ if (!["linux", "darwin"].includes(process.platform)) {
     assert.equal(JSON.parse(docs.stdout).command, "docs");
     const originalManifest = readFileSync(join(installed, "package.json"), "utf8");
     const originalVersion = JSON.parse(originalManifest).version as string;
+    const xdg = join(scratch, "blocked-config"), blocked = join(xdg, "cotal");
+    mkdirSync(xdg);
+    writeFileSync(blocked, "not a config directory\n");
+    const cleanEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_")));
+    const withBlockedConfig = (command: string) => spawnSync(process.execPath, [join(installed, "dist/cotal.js"), command, "--json"], {
+      env: { ...cleanEnv, HOME: scratch, COTAL_HOME: join(scratch, "home"), XDG_CONFIG_HOME: xdg }, cwd: scratch, encoding: "utf8", timeout: 15_000,
+    });
+    const blockedVersion = withBlockedConfig("version");
+    assert.equal(blockedVersion.status, 4, blockedVersion.stdout + blockedVersion.stderr);
+    assert.equal(blockedVersion.stderr, "");
+    const receipt = JSON.parse(blockedVersion.stdout);
+    assert.equal(receipt.result.version, originalVersion);
+    assert.equal(receipt.outcome, "partial");
+    assert.equal(receipt.warnings[0].code, "EXTENSIONS_UNREADABLE");
+    assert.ok(receipt.warnings[0].message.includes(blocked) && receipt.error.remedy.includes(`move ${blocked} aside`));
+    assert.doesNotMatch(blockedVersion.stdout, /ENOTDIR|\.retired-cotal|ext seed --repair/);
+    const blockedWatch = withBlockedConfig("watch");
+    assert.equal(blockedWatch.status, 1, blockedWatch.stdout + blockedWatch.stderr);
+    assert.equal(blockedWatch.stderr, "");
+    const stream = blockedWatch.stdout.trim().split("\n").map((line) => JSON.parse(line));
+    assert.deepEqual(stream.map((entry) => [entry.stream, entry.type]), [["watch", "error"], ["watch", "end"]]);
+    assert.equal(stream[0].data.code, "SCHEMA_INVALID");
+    assert.ok(stream[0].data.message.includes(blocked) && stream[0].data.remedy.includes(`move ${blocked} aside`));
+    assert.equal(stream[1].data.reason, "setup-failed");
+    assert.equal(readFileSync(blocked, "utf8"), "not a config directory\n");
     writeExecutionDescriptor(installed, descriptor);
     writeFileSync(join(installed, "package.json"), JSON.stringify({ ...JSON.parse(originalManifest), version: "99.0.0" }));
     const publishing = spawnSync(process.execPath, [join(installed, "dist/cotal.js"), "--version"], { env: process.env, cwd: scratch, encoding: "utf8", timeout: 15_000 });

@@ -87,8 +87,7 @@ import { assertSmokeSandboxDown, createSuite, freePort, recordSmokeSandbox, type
 import { clean, cotalPty, wait } from "./_console-pty.js";
 
 const WT = resolve(import.meta.dirname, "..", "..", "..");
-const CLI = join(WT, "bin", "cotal.ts");
-const TSX_IMPORT = import.meta.resolve("tsx");
+const CLI = join(WT, "bin", "dist", "cotal.js");
 const home = mkdtempSync(join(tmpdir(), "cotal-space-teardown-"));
 const configDir = join(home, "xdg");
 // The CLI children must not inherit a managed session's mesh identity from whatever runs this
@@ -117,7 +116,7 @@ const cli = (cwd: string, ...args: string[]): Run => {
   // Room for a history that holds messages near the broker's payload limit.
   const options = { cwd, env, encoding: "utf8" as const, timeout: 180_000, maxBuffer: 64 * 1024 * 1024 };
   assertSmokeSandboxDown(anchors.get(cwd), args, options);
-  const run = spawnSync(process.execPath, ["--import", TSX_IMPORT, CLI, ...args], options);
+  const run = spawnSync(process.execPath, [CLI, ...args], options);
   let parsed: Envelope | undefined;
   try { parsed = JSON.parse(run.stdout) as Envelope; } catch { parsed = undefined; }
   return { status: run.status, stdout: run.stdout, stderr: run.stderr, env: parsed };
@@ -219,6 +218,10 @@ try {
     const storeLive = cli(root, "reset", "store", space, "--dry-run", "--json");
     check("reset store --dry-run on a live stack exits 0 with a refused verdict", storeLive.status === 0 && storeLive.env?.result?.applyVerdict?.offered === false && storeLive.env.result.applyVerdict.code === "LIFECYCLE_BLOCKED", shown(storeLive));
     check("that verdict names how to review and confirm the stop, then retry the store preview", storeLive.env?.result?.applyVerdict?.remedy === `${stopReview}, then run \`cotal reset store ${space} --dry-run\``, storeLive.env?.result?.applyVerdict);
+    const storeLiveText = cli(root, "reset", "store", space, "--dry-run", "--plain");
+    check("a live store preview without a recorded run list suggests the live inventory, not a start",
+      storeLiveText.status === 0 && storeLiveText.stdout.includes("would refuse (LIFECYCLE_BLOCKED)") && storeLiveText.stdout.includes("No run list was recorded") &&
+      storeLiveText.stdout.includes(`If a manager is available, list live runs with \`cotal run --space ${space}\``) && !storeLiveText.stdout.includes("`cotal up`"), shown(storeLiveText));
     const spaceLive = cli(root, "reset", "space", space, "--dry-run", "--json");
     check("reset space --dry-run refuses and names how to review and confirm the stop, then retry the space preview", spaceLive.status === 2 && spaceLive.env?.error?.code === "LIFECYCLE_BLOCKED" && spaceLive.env.error.remedy === `${stopReview}, then run \`cotal reset space ${space} --dry-run\``, shown(spaceLive));
     // The delivery daemon's own pidfile names the process its stack member runs, so it is listed once.
@@ -247,6 +250,9 @@ try {
     // This stack runs with --no-manager, so its down recorded why it could not read the runs.
     const contents = storeStopped.env?.result?.storeContents as { removed?: string[]; listed?: boolean; runsAtLastDown?: { read?: boolean; reason?: string } | null } | undefined;
     check("reset store --dry-run after down offers the apply, names the workflow runs it removes and says why the down listed none", storeStopped.status === 0 && storeStopped.env?.result?.applyVerdict?.offered === true && contents?.removed?.includes("workflow runs and their journals") === true && contents.listed === false && contents.runsAtLastDown?.read === false && contents.runsAtLastDown.reason === "the stack's manager was not running", shown(storeStopped));
+    const storeStoppedText = cli(root, "reset", "store", space, "--dry-run", "--plain");
+    check("a stopped store preview still says how to start and inspect an unread run list",
+      storeStoppedText.status === 0 && storeStoppedText.stdout.includes("could not read the runs") && storeStoppedText.stdout.includes("run `cotal up` and `cotal run`"), shown(storeStoppedText));
     const storeApplied = cli(root, "reset", "store", space, "--yes", "--json");
     check("reset store --yes removes the stopped store and names the workflow runs that went with it", storeApplied.status === 0 && storeApplied.env?.result?.selectedBy === "stopped-stack" && Array.isArray(storeApplied.env.result.removedPaths) && (storeApplied.env.result.removedPaths as unknown[]).length > 0 && (storeApplied.env.result.removedContents as string[] | undefined)?.includes("workflow runs and their journals") === true, shown(storeApplied));
     // The reset leaves the store as a fresh up prepares it, so nothing reports it lost.
@@ -652,7 +658,7 @@ try {
     const elsewhereEnv = { ...env, COTAL_HOME: join(elsewhere, "home"), XDG_CONFIG_HOME: join(elsewhere, "xdg") };
     for (const dir of ["home", "xdg", "proj"]) mkdirSync(join(elsewhere, dir), { mode: 0o700 });
     const other = (...args: string[]) => {
-      const run = spawnSync(process.execPath, ["--import", TSX_IMPORT, CLI, ...args], { cwd: join(elsewhere, "proj"), env: elsewhereEnv, encoding: "utf8", timeout: 180_000 });
+      const run = spawnSync(process.execPath, [CLI, ...args], { cwd: join(elsewhere, "proj"), env: elsewhereEnv, encoding: "utf8", timeout: 180_000 });
       let parsed: Envelope | undefined;
       try { parsed = JSON.parse(run.stdout) as Envelope; } catch { parsed = undefined; }
       return { status: run.status, stdout: run.stdout, stderr: run.stderr, env: parsed } satisfies Run;

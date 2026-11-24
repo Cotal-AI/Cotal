@@ -17,6 +17,11 @@ import { ownedBySibling } from "./static-lifecycle.js";
 import type { ManagerConfig } from "./manager-config.js";
 import type { ManagerStartState } from "./manager-start-state.js";
 
+/** Scope written by local user-mode provisioning from the persona capabilities. */
+export function localUserAgentScope(capabilities: readonly string[] = []): string[] {
+  return capabilities.filter((c) => c === "spawn" || c === "run" || c === "admin" || /^role:[A-Za-z0-9_-]+$/.test(c));
+}
+
 /** How often a resumed seat whose readiness was uncertain is checked for a join its predecessor's
  *  presence row hides (see {@link Manager.watchResumeAdoption}). The wait has no end of its own, so
  *  it asks less often than the readiness fence's 50 ms poll. */
@@ -792,9 +797,14 @@ export class PreservedResume {
       // never left to broker-fail after the child is already running (SPEC §13.1).
       if (adopted.lifecycleUid !== entry.identity.lifecycleUid)
         throw new Error(`retained user authority for ${entry.identity.owner}.${entry.identity.actor} is incarnation ${adopted.lifecycleUid}, not the inventory's ${entry.identity.lifecycleUid}; a resume binds the exact recovered uid before any spawn (SPEC 13.1)`);
+      const capabilities = entry.launch.capabilities;
+      // Local inventories carry persona capabilities, while the local ledger records only the
+      // scope derived from them. Hosted authorities can grant the full capability list.
+      const scopeMatches = sameStrings(adopted.scope, capabilities) ||
+        (!this.remoteAuthority && sameStrings(adopted.scope, localUserAgentScope(capabilities)));
       if (!sameStrings(adopted.allowSubscribe, entry.launch.allowSubscribe) ||
           !sameStrings(adopted.allowPublish, entry.launch.allowPublish) ||
-          !sameStrings(adopted.scope, entry.launch.capabilities) ||
+          !scopeMatches ||
           adopted.role !== entry.role || adopted.parent !== entry.authorityParent)
         throw new Error(`retained user authority for ${entry.identity.owner}.${entry.identity.actor} no longer matches the inventory`);
       return {

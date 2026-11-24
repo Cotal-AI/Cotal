@@ -5,7 +5,7 @@
  *  - T3 Code: an instance per space runs this Cotal's Node and entry with `acp --space`; a hand-added
  *    instance for the space is adopted, keeping its id, name, enablement and other keys; every other
  *    setting stays byte for byte; the old file is backed up beside it; a rerun writes nothing; a file
- *    that does not parse and an id held by another provider are refused; the Cotal locations the shell
+ *    that does not parse is refused; setup leaves unrelated providers in place; the Cotal locations the shell
  *    set travel in the instance's environment; a long space name still makes a valid id; refresh
  *    points every Cotal instance at the running Cotal; status names a command that is gone.
  *  - Zed: a custom agent per space, written into a settings file with comments and trailing commas
@@ -107,8 +107,24 @@ check("refresh points every Cotal instance at the running Cotal, keeping each sp
 rmSync(moved[1]!);
 const stale = t3Provider.status!({ version: "0", skillsRemedy: "" });
 check("T3 status warns when an instance's entry is gone, and says to run cotal update", stale[0]?.state === "warn" && stale[0].text.includes(`${moved[1]} is gone`) && stale[0].text.includes("cotal update"), stale);
-writeFileSync(t3, `{"providerInstances": {"cotal-other": {"driver": "codex"}}}`);
-check("an id another provider holds is refused, naming it", throws(() => t3Run("other"))?.includes("already has a provider cotal-other") === true);
+const unrelated = Object.fromEntries(([
+  ["existing-provider", "another-agent", ["acp", "--space", "acp-audit"]],
+  ["cotal-acp-audit", node, [join(home, "another-agent.js"), "acp", "--space=acp-audit"]],
+  ["cotal-acp-audit-2", "another-agent", [entry, "acp", "--space", "acp-audit"]],
+] satisfies [string, string, string[]][]).map(([id, commandPath, commandArgs]) => [id, {
+  driver: "acpRegistry", displayName: "Existing provider", enabled: true, config: { source: "local", commandPath, commandArgs },
+}]));
+writeFileSync(t3, JSON.stringify({ providerInstances: unrelated }));
+check("T3 status ignores other launchers with ACP space arguments", t3Provider.status!({ version: "0", skillsRemedy: "" })[0]?.state === "off");
+const auditSetup = t3Run("acp-audit");
+const audit = readFileSync(t3, "utf8");
+const auditInstances = (JSON.parse(audit) as typeof after).providerInstances;
+check("setup preserves unrelated ACP providers and adds Cotal under a free id",
+  auditSetup.includes("provider cotal-acp-audit-3 for acp-audit added") &&
+  Object.entries(unrelated).every(([id, provider]) => JSON.stringify(auditInstances[id]) === JSON.stringify(provider)) &&
+  auditInstances["cotal-acp-audit-3"]?.displayName === "Cotal (acp-audit)", auditInstances);
+check("rerunning setup uses the newly added provider", t3Run("acp-audit").includes("provider cotal-acp-audit-3 for acp-audit is current") && readFileSync(t3, "utf8") === audit);
+check("refresh does not rewrite unrelated ACP providers", t3Provider.refresh!.run({ cotal }) === "providers for acp-audit are current" && readFileSync(t3, "utf8") === audit);
 writeFileSync(t3, "{ not json");
 check("a file that does not parse is refused and left as it was", throws(() => t3Run("demo"))?.includes("is not valid T3 Code settings") === true && readFileSync(t3, "utf8") === "{ not json");
 const long = "s".repeat(64);
@@ -173,8 +189,9 @@ if (process.platform !== "win32") {
   const bin = join(home, "bin");
   mkdirSync(bin);
   const log = join(home, "cotal-args");
+  const pathLog = join(home, "cotal-path");
   const fakeCotal = (dir: string, withAcp: boolean) => {
-    writeFileSync(join(dir, "cotal"), `#!/bin/sh\nif [ "$1 $2" = "acp --help" ]; then exit ${withAcp ? 0 : 1}; fi\necho "$@" > "${log}"\nexit 7\n`);
+    writeFileSync(join(dir, "cotal"), `#!/bin/sh\nif [ "$1 $2" = "acp --help" ]; then exit ${withAcp ? 0 : 1}; fi\necho "$@" > "${log}"\nprintf '%s' "$PATH" > "${pathLog}"\nexit 7\n`);
     chmodSync(join(dir, "cotal"), 0o755);
   };
   check("with no cotal anywhere the launcher finds none", findCotal({ PATH: bin }, "linux", home) === undefined);
@@ -185,13 +202,12 @@ if (process.platform !== "win32") {
   check("a cotal on PATH comes first", findCotal({ PATH: bin }, "linux", home) === join(bin, "cotal"));
 
   const launcher = join(import.meta.dirname, "..", "src", "cotal-acp.ts");
-  const tsx = join(import.meta.dirname, "..", "..", "..", "node_modules", ".bin", "tsx");
+  const tsx = import.meta.resolve("tsx");
   /** Run the launcher, writing each of `requests` once the reply before it arrived, then closing stdin. */
   const run = (path: string, args: string[], requests: object[] = []): Promise<{ code: number | null; stdout: string }> => new Promise((resolve) => {
-    // The child gets no COTAL_ variable, since the session running the smoke may hold a live credential,
-    // and no npm global prefix, so a Cotal installed on this machine stays out of reach.
+    // Keep live Cotal credentials out and use Node by absolute path so command discovery sees only fixtures.
     const ambient = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_")));
-    const child = spawn(tsx, [launcher, ...args], { env: { ...ambient, HOME: home, PATH: `${path}:${join(process.execPath, "..")}`, npm_config_global_prefix: "" }, stdio: ["pipe", "pipe", "ignore"] });
+    const child = spawn(node, ["--import", tsx, launcher, ...args], { env: { ...ambient, HOME: home, PATH: path, npm_config_global_prefix: "" }, stdio: ["pipe", "pipe", "ignore"] });
     let stdout = "";
     let sent = 0;
     const next = () => (sent < requests.length ? child.stdin.write(`${JSON.stringify(requests[sent++])}\n`) : child.stdin.end());
@@ -204,6 +220,8 @@ if (process.platform !== "win32") {
   });
   const ran = await run(bin, ["--space", "demo"]);
   check("the launcher runs `cotal acp <args>` and passes its exit status on", ran.code === 7 && readFileSync(log, "utf8").trim() === "acp --space demo", { ran, args: existsSync(log) ? readFileSync(log, "utf8") : null });
+  const launcherPath = existsSync(pathLog) ? readFileSync(pathLog, "utf8") : null;
+  check("the launcher PATH contains only the fixture directory", launcherPath === bin, { expected: bin, actual: launcherPath });
 
   fakeCotal(bin, false);
   rmSync(join(home, ".local", "bin", "cotal"));

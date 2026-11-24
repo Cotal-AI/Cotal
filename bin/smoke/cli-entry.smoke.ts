@@ -397,15 +397,16 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
   }
 }
 
+const envelopes = (r: Run) => {
+  try {
+    return r.stdout.split("\n").filter(Boolean).map((line) => JSON.parse(line) as Record<string, any>);
+  } catch {
+    return [];
+  }
+};
+
 // ── Structured output: one envelope on stdout, the usage refusal included ────────────────────────
 {
-  const envelopes = (r: Run) => {
-    try {
-      return r.stdout.split("\n").filter(Boolean).map((line) => JSON.parse(line) as Record<string, any>);
-    } catch {
-      return [];
-    }
-  };
   const text = cotal(["version"]);
   const json = cotal(["version", "--json"]);
   local("version --json writes nothing", json);
@@ -539,7 +540,7 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
   for (const argv of [["send", "-c", "general", "x", "--server", "nats://u:pw0rdX@127.0.0.1:1"], ["history", "general", "--server", "u:pw0rdX@127.0.0.1:1"], ["whoami", "--server", "nats://127.0.0.1:1,tls://u:pw0rdX@127.0.0.1:2"], ["space", "add", "x", "--server", "nats://u:pw0rdX@127.0.0.1:1", "--yes"]]) {
     const r = cotal(argv, undefined, noSeed);
     refused(`cotal ${argv.slice(0, 2).join(" ")} refuses a --server with a user and password, never repeating it`, r, new RegExp(`^✗ ${userinfo}$`, "m"));
-    check(`cotal ${argv.slice(0, 2).join(" ")} prints no part of that --server`, !`${r.stdout}${r.stderr}`.includes("pw0rdX") && !r.stderr.includes("127.0.0.1"), shown(r));
+    check(`${argv[0]} suggests removing URL credentials without exposing the address or prescribing a credential file`, r.stderr.includes("name the broker URL without user:password@ and retry") && !r.stderr.includes("--creds") && !`${r.stdout}${r.stderr}`.includes("pw0rdX") && !r.stderr.includes("127.0.0.1"), shown(r));
   }
   const userinfoJson = cotal(["send", "-c", "general", "x", "--server", "nats://u:pw0rdX@127.0.0.1:1", "--json"], undefined, noSeed);
   check("a --server with a user and password under --json is one USAGE_INVALID envelope without the value",
@@ -837,6 +838,23 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
         r.status === 2 && r.stderr.includes(code) && r.stderr.includes(`the temporary directory ${dir} `) && r.stderr.includes("Next") && readdirSync(unwritable).length === 0, shown(r));
     }
     chmodSync(unwritable, 0o700);
+    // EROFS comes from the mount, independent of the fixture directory's permission bits.
+    const hook = join(scratch, "readonly.cjs");
+    writeFileSync(hook, `const fs = require('node:fs'), path = require('node:path');
+const deny = () => { throw Object.assign(new Error('read-only file system'), { code: 'EROFS' }); };
+const access = fs.accessSync, temp = fs.mkdtempSync;
+fs.accessSync = (p, mode) => p === path.join(process.cwd(), process.env.READONLY_ENTRY) && (mode & fs.constants.W_OK) ? deny() : access(p, mode);
+fs.mkdtempSync = (p, ...args) => p === path.join(process.env.TMPDIR, 'cotal-persona-') && process.env.READONLY_ENTRY === 'draft' ? deny() : temp(p, ...args);
+require('node:module').syncBuiltinESMExports();`);
+    for (const [entry, args, remedy] of [
+      [".cotal", ["up", "--server", "nats://127.0.0.1:1"], "retry with the project on a writable file system"],
+      [".cotal/agents", ["persona", "edit", "x"], "retry with the catalog on a writable file system"],
+      ["draft", ["persona", "edit", "x"], "set TMPDIR to a writable folder you own, then retry"],
+    ] as const) {
+      const r = cotal([...args, "--json"], persona, { ...editor, TMPDIR: scratch, READONLY_ENTRY: entry, NODE_OPTIONS: `--require=${JSON.stringify(hook)}` });
+      const error = envelopes(r)[0]?.error;
+      check(`read-only ${entry} gives a filesystem remedy`, r.status === 2 && error?.code === "PERMISSION_DENIED" && error.message?.includes("EROFS") && error.remedy === remedy, shown(r));
+    }
     // `up` writes under .cotal first, so one this account cannot write is refused before anything is
     // started or written, naming it and the chmod.
     let dotCotal = "";
@@ -1020,7 +1038,7 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
       }, noSeed);
       check(`${command} show names a missing link target and suggests restoring it or replacing the link`,
         r.status === 2 && r.stderr.includes("PERMISSION_DENIED") && r.stderr.includes(`is a link to ${absentTarget}, but its target is missing`)
-        && r.stderr.includes("Restore the target if you still need it, or move the broken link aside and put a regular persona file in its place")
+        && r.stderr.includes("Move the link aside and put a regular persona file in its place. To use the original definition, restore the target first and copy that file into the catalog.")
         && !r.stderr.includes("with a copy") && !existsSync(link) && readlinkSync(link) === absentTarget, shown(r));
     }
     const folderLink = cotal(["persona", "show", "linked"], (home) => {
@@ -1041,9 +1059,11 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
     };
     for (const argv of [["persona", "--json"], ["personas", "list"], ["persona", "show", "x"], ["persona", "create", "y", "--prompt", "Y.", "--subscribe", ""]]) {
       const r = cotal(argv, broken, noSeed);
-      const said = r.stdout + r.stderr;
-      check(`${argv.slice(0, 2).join(" ")} refuses a .cotal/agents that is ${shape} with CONFLICT, naming it`,
-        r.status === 2 && said.includes("CONFLICT") && said.includes(`.cotal/agents ${what}, so it holds no personas`) && said.includes("out of the way") && !said.includes("no personas in"), shown(r));
+      const said = (r.stdout + r.stderr).replace(/\s+/g, " ");
+      check(`${argv.slice(0, 2).join(" ")} refuses a .cotal/agents that is ${shape} and explains how to recover the catalog`,
+        r.status === 2 && said.includes("CONFLICT") && said.includes(`.cotal/agents ${what}, so it holds no personas`)
+        && said.includes("restore their catalog folder there") && said.includes("retry the original create command with its source and target options")
+        && !said.includes("cotal persona create <name>") && !said.includes("no personas in"), shown(r));
     }
   }
   // A definition over 1 MiB is refused by create and edit with one refusal, and nothing is saved.
@@ -1057,7 +1077,7 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
     const over = /the persona definition is \d+ bytes, over the 1 MiB limit, so it was not saved/;
     let agents = "";
     const created = cotal(["persona", "create", "big", "--from", body, "--subscribe", ""], (home) => { persona(home); agents = join(home, "..", ".cotal", "agents"); }, noSeed);
-    check("persona create refuses a definition over 1 MiB and writes nothing", created.status === 1 && over.test(created.stderr) && created.stderr.includes("SCHEMA_INVALID") && readdirSync(agents).join() === "x.md", shown(created));
+    check("persona create counts the frontmatter in the 1 MiB limit and writes nothing", created.status === 1 && over.test(created.stderr) && created.stderr.includes("SCHEMA_INVALID") && created.stderr.includes("including frontmatter, to 1048576 bytes or less") && readdirSync(agents).join() === "x.md", shown(created));
     let file = "";
     const edited = cotal(["persona", "edit", "x"], (home) => { persona(home); file = join(home, "..", ".cotal", "agents", "x.md"); }, { ...noSeed, VISUAL: grow, EDITOR: grow, TMPDIR: big });
     const kept = /your edit is kept in (\S+\.md);/.exec(edited.stderr)?.[1];
@@ -1084,6 +1104,13 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
     check(`persona create ${flag} ${value} is USAGE_INVALID, naming the flag and the entry`,
       r.status === 1 && r.stdout.includes('"code":"USAGE_INVALID"') && r.stdout.includes(`${flag}: invalid channel \\"${value}\\"`) && !r.stdout.includes("cotal-persona-") &&
         (value !== "#general" || r.stdout.includes("name the channel without its #, as general")), shown(r));
+  }
+  for (const args of [["persona", "create", "q", "--prompt", "body"], ["spawn", "--dry-run"]]) {
+    for (const value of ["##general", "#", "#two words"]) {
+      const r = cotal([...args, "--subscribe", value, "--json"], persona, noSeed);
+      const error = envelopes(r)[0]?.error;
+      check(`${args[0]} offers a spelling only for a valid channel`, r.status === 1 && error?.code === "USAGE_INVALID" && error.remedy === (value === "##general" ? "name the channel without its #, as general" : "provide a valid channel name or pattern without a leading #"), shown(r));
+    }
   }
   const outside = cotal(["persona", "create", "q", "--prompt", "body", "--subscribe", "general", "--allow-subscribe", "ops", "--json"], persona, noSeed);
   check("persona create with --subscribe outside --allow-subscribe is USAGE_INVALID, naming both flags",
@@ -1159,6 +1186,20 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
   const uncataloged = cotal(["team", "check", "m.yaml"], bare(false), noSeed);
   check("with no catalog persona of that name it says only that persona takes a path",
     uncataloged.status === 1 && uncataloged.stderr.includes("`persona` takes a path to a persona file, relative to the manifest (at agents.rev)") && !uncataloged.stderr.includes("catalog persona"), shown(uncataloged));
+  const directory = cotal(["team", "check", "m.yaml"], home => {
+    bare(false)(home);
+    mkdirSync(join(home, "..", ".cotal", "agents", "p20.md"), { recursive: true });
+  }, noSeed);
+  check("a directory named like a persona is not suggested as its file", directory.status === 1 && directory.stderr.includes("`persona` takes a path") && !directory.stderr.includes("catalog persona"), shown(directory));
+  const blocked = cotal(["team", "check", "m.yaml/child.yaml", "--json"], files(cases[0]![1]), noSeed);
+  check("a manifest path through a file is not a schema error", blocked.status === 2 && envelopes(blocked)[0]?.error?.code === "TARGET_NOT_FOUND" && blocked.stdout.includes("not a directory"), shown(blocked));
+  if (process.platform !== "win32" && process.getuid?.() !== 0) {
+    const unreadable = cotal(["team", "check", "m.yaml", "--json"], home => {
+      files(`${head}channels: {}\n`)(home);
+      chmodSync(join(home, "..", "m.yaml"), 0o000);
+    }, noSeed);
+    check("an unreadable manifest names the access failure before parsing", unreadable.status === 2 && envelopes(unreadable)[0]?.error?.code === "PERMISSION_DENIED" && unreadable.stdout.includes("read the file and enter its parent folders"), shown(unreadable));
+  }
   const missing = cotal(["team", "check", "nosuch.yaml"], files(cases[0]![1]), noSeed);
   check("team check of a manifest that does not exist names it as not found",
     missing.status === 2 && missing.stderr.includes("TARGET_NOT_FOUND") && /the team manifest \S*nosuch\.yaml was not found/.test(missing.stderr), shown(missing));

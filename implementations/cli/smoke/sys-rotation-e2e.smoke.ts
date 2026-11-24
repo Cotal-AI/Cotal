@@ -339,8 +339,20 @@ try {
   const list2 = cotal(["channel", "--space", SPACE, "--server", SERVERS]);
   check("durable registry state written before the rotation reads back byte-for-byte after it", list2.out.includes(CH) && list2.out.includes(NONCE), list2.out.slice(-400));
 
-  const down3 = await settleThenDown();
-  check("`cotal down` tears the rotated mesh down cleanly", down3.code === 0, down3.out.slice(-400));
+  const startup = readFileSync(join(repoRoot, "docs", "cli-startup.mdx"), "utf8");
+  const backupAdvice = /\*\*It invalidates earlier full backups\.\*\*[^\n]*(?:\n {2}[^\n]*)*/.exec(startup)?.[0] ?? "";
+  const backupCommand = /`cotal (backup create \.\/space-backup)`/.exec(backupAdvice)?.[1];
+  check("the startup reference links to the offline backup sequence and names its create command",
+    backupAdvice.includes("(backup-a-mesh.mdx)") && backupCommand !== undefined, backupAdvice);
+  const down3 = cotal(["down", "--preserve-state"]);
+  check("`cotal down --preserve-state` stops and preserves the rotated mesh", down3.code === 0, down3.out.slice(-400));
+  if (down3.code === 0 && backupCommand !== undefined) {
+    const backup = cotal(backupCommand.split(" "));
+    const manifestPath = join(root, "space-backup", "manifest.json");
+    const manifest = existsSync(manifestPath) ? JSON.parse(readFileSync(manifestPath, "utf8")) : undefined;
+    check("the startup reference's command makes a full backup of the preserved rotated mesh",
+      backup.code === 0 && manifest?.selection === "full" && manifest.space === SPACE, backup.out.slice(-800));
+  }
 
   // ── 6) the controller stack's route ────────────────────────────────────────────────────────────
   console.log("\n6) a controller stack rotates through its own stopped `up`");

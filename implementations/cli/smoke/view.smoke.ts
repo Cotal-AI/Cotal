@@ -126,7 +126,7 @@ check("signals.waiting surfaces the blocked agent", s.signals.waiting.length ===
 const watchRoster = renderReport(watchReport(s, "roster"), "plain", 200).split("\n");
 check("the watch roster names a working agent's progress as unknown", watchRoster.some((line) => /\balice\b.*working - progress unknown/.test(line)) && !watchRoster.some((line) => /\bbob\b.*progress unknown/.test(line)));
 check("the watch roster includes endpoint kind and identity alongside agents", watchRoster.some((line) => /console.*endpoint.*ID_CON/.test(line)) && watchRoster.some((line) => /alice.*agent.*ID_ALICE/.test(line)));
-  const blankSender = feedLine({ id: "blank", ts: 1_700_000_000_000, from: { id: "local.blank", name: " \n" }, delivery: "multicast", channel: "general", text: "hello" });
+  const blankSender = feedLine({ id: "blank", ts: 1_700_000_000_000, from: { id: "local.blank", name: " \n" }, delivery: "multicast", channel: "general", text: "hello" }, space);
   check("a blank sender name is replaced by the id", blankSender.includes("local.blank") && !blankSender.includes("\\u000a"));
   const blankRoster = watchReport({
     ...s,
@@ -178,18 +178,19 @@ check("the waiting view keeps the agent-only signal scope", waitingReport.includ
   const cut = observedText(long);
   const lost = long.length - WATCH_TEXT_LIMIT;
   const marker = (line: string) => line.match(/ \[(\d+) text code units not shown(.*)\]$/);
-  const whole = marker(feedLine(post));
-  const row = marker(feedLine({ ...post, text: cut.text, omittedCodeUnits: cut.omittedCodeUnits }));
-  const dm = marker(feedLine({ ...post, delivery: "unicast", channel: undefined, toIds: [ids.bob], text: cut.text, omittedCodeUnits: cut.omittedCodeUnits }));
+  const whole = marker(feedLine(post, space));
+  const row = marker(feedLine({ ...post, text: cut.text, omittedCodeUnits: cut.omittedCodeUnits }, space));
+  const dm = marker(feedLine({ ...post, delivery: "unicast", channel: undefined, toIds: [ids.bob], text: cut.text, omittedCodeUnits: cut.omittedCodeUnits }, space));
+  const carries = (target: string) => `; \`cotal history ${target} --json --space ${space}\` carries the whole text`;
   check("a watch line cut at the row bound names the code units not shown and the history read that carries the whole text",
-    whole?.[1] === String(lost) && whole[2] === "; `cotal history '#general' --json` carries the whole text" && !feedLine(post).includes("END-MARK"));
-  check("a stream row already cut keeps the count it lost", row?.[1] === String(lost) && row[2] === "; `cotal history '#general' --json` carries the whole text");
+    whole?.[1] === String(lost) && whole[2] === carries("'#general'") && !feedLine(post, space).includes("END-MARK"));
+  check("a stream row already cut keeps the count it lost", row?.[1] === String(lost) && row[2] === carries("'#general'"));
   for (const channel of ["clear", "limit"]) {
-    const hint = marker(feedLine({ ...post, channel }));
-    check(`a cut #${channel} post names a channel read, not a history verb`, hint?.[2] === `; \`cotal history '#${channel}' --json\` carries the whole text`);
+    const hint = marker(feedLine({ ...post, channel }, space));
+    check(`a cut #${channel} post names a channel read, not a history verb`, hint?.[2] === carries(`'#${channel}'`));
   }
-  check("a cut direct message points at cotal history --dms --json", dm?.[1] === String(lost) && dm[2] === "; `cotal history --dms --json` carries the whole text");
-  check("control: a message within the bound has no marker", marker(feedLine({ ...post, text: "short" })) === null);
+  check("a cut direct message points at a scoped JSON DM history read", dm?.[1] === String(lost) && dm[2] === carries("--dms"));
+  check("control: a message within the bound has no marker", marker(feedLine({ ...post, text: "short" }, space)) === null);
 }
 
 const aliceDm = s.signals.dms.find((p) => p.name === "alice");

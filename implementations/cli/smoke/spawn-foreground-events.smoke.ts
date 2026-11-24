@@ -198,9 +198,62 @@ async function run(argv: string[]): Promise<{ opts?: LaunchOpts; exited?: number
 const openRun = (extra: string[]): Promise<{ opts?: LaunchOpts; exited?: number; stderr: string }> =>
   run(["spawn", "--foreground", "--file", persona, "--server", server, "--space", "fgevents", ...extra]);
 
+async function checkPersonaRefusals() {
+  const binary = fileURLToPath(new URL("../../../bin/dist/cotal.js", import.meta.url));
+  const env: NodeJS.ProcessEnv = { ...process.env, NO_COLOR: "1" };
+  for (const key of Object.keys(env)) if (key.startsWith("COTAL_")) delete env[key];
+  Object.assign(env, { COTAL_HOME: home, COTAL_NO_PROMPT: "1", COTAL_SKIP_CONNECTOR_SEED: "1" });
+  const invoke = (args: string[]) => spawnSync(process.execPath, [binary, "spawn", ...args], {
+    cwd: caller, env, encoding: "utf8", timeout: 30_000,
+  });
+  const selectors = ["--server", server, "--space", "fgevents"];
+  const path = join(root, ".cotal", "agents", "edit-control.md");
+  const source = '---\nname: "Review Bot"\nagent: opencode\n---\n';
+  writeFileSync(path, source);
+  for (const mode of [[], ["--dry-run", "--plain"]]) {
+    const refused = invoke(["edit-control", "--no-events", ...selectors, ...mode]);
+    const retry = refused.stderr.match(/`((?:cotal|pnpm cotal) spawn [^`]+)`/)?.[1];
+    check(`a bad frontmatter name gives a ${mode.length ? "preview" : "direct launch"} retry with the same flags`,
+      refused.status === 1 && refused.stderr.includes("the persona's frontmatter name cannot be used for launch") &&
+      !!retry && retry.includes("spawn edit-control") && retry.includes(`--server ${server}`) &&
+      retry.includes("--space fgevents") && retry.includes("--no-events") && retry.includes("--name edit-control") &&
+      (mode.length ? retry.includes("--dry-run") && retry.includes("--plain") : !retry.includes("--dry-run")), refused.stderr);
+    if (mode.length && retry) {
+      const preview = invoke(retry.split(" spawn ")[1]!.split(" "));
+      check("the suggested preview succeeds without rewriting the persona",
+        preview.status === 0 && /Requested name:\s+edit-control/.test(preview.stdout) && readFileSync(path, "utf8") === source,
+        preview.stdout + preview.stderr);
+    }
+  }
+  const launched = await run(["spawn", "edit-control", "--space", "fgevents", "--harness", "fg-probe-live", "--name", "edit-control"]);
+  check("the name override launches from the unchanged persona", launched.opts?.name === "edit-control" && readFileSync(path, "utf8") === source, launched.stderr);
+  const explicit = invoke(["edit-control", "--dry-run", "--plain", "--name", "Invalid Name", ...selectors]);
+  check("a bad explicit name is not blamed on the persona", explicit.status === 1 && explicit.stderr.includes('unsafe name "Invalid Name"') &&
+    !explicit.stderr.includes("frontmatter name"), explicit.stderr);
+  if (process.platform === "win32") return;
+  const blocked = join(root, "parent-file");
+  const link = join(root, ".cotal", "agents", "notdir-link.md");
+  const target = "../../parent-file/child.md";
+  writeFileSync(blocked, "not a directory");
+  symlinkSync(target, link);
+  for (const mode of [[], ["--dry-run", "--plain"]]) {
+    const refused = invoke(["notdir-link", ...selectors, ...mode]);
+    check(`foreground ${mode.length ? "preview" : "launch"} identifies a symlink whose target crosses a file`,
+      refused.status === (mode.length ? 2 : 1) && refused.stderr.includes(link) && refused.stderr.includes(target) &&
+      refused.stderr.includes("is a symbolic link to a missing target") && refused.stderr.includes("put a regular persona file in its place") &&
+      !refused.stderr.includes("PERMISSION_DENIED") && readlinkSync(link) === target, refused.stderr);
+  }
+  rmSync(blocked);
+  mkdirSync(blocked);
+  writeFileSync(join(blocked, "child.md"), "---\nname: notdir-link\nagent: opencode\n---\n");
+  const repaired = invoke(["notdir-link", "--dry-run", "--plain", ...selectors]);
+  check("foreground preview follows the symlink once its target is restored", repaired.status === 0 && repaired.stdout.includes(link), repaired.stderr);
+}
+
 console.log("cotal spawn (foreground): the launch bag an armed session needs");
 
 try {
+  await checkPersonaRefusals();
   {
     const previous = process.cwd();
     const previousDefault = process.env.COTAL_DEFAULT_PERSONA;
@@ -464,7 +517,7 @@ try {
   rmSync(store, { recursive: true, force: true });
 }
 
-const EXPECTED = process.platform === "win32" ? 36 : 40;
+const EXPECTED = process.platform === "win32" ? 41 : 48;
 check(`every cell ran - ${EXPECTED} expected`, pass + fail === EXPECTED, `${pass + fail} cells reported`);
 console.log(`SUITE COMPLETE: ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

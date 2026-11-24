@@ -113,7 +113,7 @@ process.on("exit", () => {
 });
 
 // Asynchronous, so the stand-in exchange in this process can answer while the binary runs.
-const runEnv = { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config"), COTAL_HOME: process.env.COTAL_HOME!, COTAL_SKIP_CONNECTOR_SEED: "1" };
+const runEnv = { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config"), COTAL_HOME: process.env.COTAL_HOME!, COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1" };
 const launcher = resolveOnPath("cotal", runEnv) ? "cotal" : "pnpm cotal";
 const run = (args: string[], extraEnv: Record<string, string> = {}, cwd = home) =>
   new Promise<{ status: number | null; stdout: string; stderr: string }>((done) => {
@@ -191,7 +191,14 @@ setCurrent("keep");
 // ── Usage refusals, before anything is read or dialed ─────────────────────────────────────────────────
 {
   const before = registryFiles();
-  check("add with no name and no bundle is USAGE_INVALID, exit 1", refused(await json(["space", "add", "--server", LIVE]), 1, "USAGE_INVALID"));
+  const options = ["--server", LIVE, "--root", root, "--mode", "open"];
+  const missingName = await json(["space", "add", ...options], userRoot);
+  check("a missing name asks to insert it into the same registration command", refused(missingName, 1, "USAGE_INVALID") && missingName.env?.error?.remedy === "repeat the same command with the space name after `add`", shown(missingName));
+  const missingBoth = await json(["space", "add", "--root", root]);
+  check("without a name or server the remedy asks for both", refused(missingBoth, 1, "USAGE_INVALID") && missingBoth.env?.error?.remedy?.includes("--server <url>"), shown(missingBoth));
+  const retry = await run(["space", "add", "open1", ...options, "--json"], { COTAL_HOME: join(home, "name-retry-home") }, userRoot);
+  const registered = JSON.parse(retry.stdout).result;
+  check("inserting the name returns a verified JSON registration for the requested root and broker", retry.status === 0 && registered?.verified === true && registered.space?.root === root && registered.space?.server === LIVE, shown(retry));
   const noServer = await json(["space", "add", "x", "--root", root]);
   check("add with no --server is USAGE_INVALID with an example remedy", refused(noServer, 1, "USAGE_INVALID") && /--server nats:\/\//.test(noServer.env?.error?.remedy ?? ""), shown(noServer));
   check("--file with --from is USAGE_INVALID", refused(await json(["space", "add", "--file", file, "--from", "https://x.test", "--root", userRoot]), 1, "USAGE_INVALID"));
@@ -204,7 +211,7 @@ setCurrent("keep");
   check("--mode with another value is USAGE_INVALID", refused(await json(["space", "add", "x", "--server", LIVE, "--mode", "token", "--root", root]), 1, "USAGE_INVALID"));
   check("an add flag on another form is USAGE_INVALID", refused(await json(["space", "--server", LIVE]), 1, "USAGE_INVALID") && refused(await json(["space", "forget", "keep", "--force"]), 1, "USAGE_INVALID"));
   const fromScript = await json(["space", "add", "--from", "https://hosted.test"]);
-  check("--from without a terminal is USAGE_INVALID and names --file", refused(fromScript, 1, "USAGE_INVALID") && /--file/.test(fromScript.env?.error?.remedy ?? ""), shown(fromScript));
+  check("discovery with JSON explains why it cannot prompt and how to keep JSON output", refused(fromScript, 1, "USAGE_INVALID") && fromScript.env?.error?.message.includes("--json disables") && fromScript.env.error.remedy.includes("without --json") && fromScript.env.error.remedy.includes("replace --from <url> with --file <bundle.json>"), shown(fromScript));
   check("--from over http is USAGE_INVALID", refused(await json(["space", "add", "--from", "http://hosted.test"]), 1, "USAGE_INVALID"));
   // A name that starts with - reads as an option, so use, --space and the stack's own children could not take it.
   const dashed = await json(["space", "add", "--server", LIVE, "--root", root, "--force", "--", "-x"]);
@@ -244,8 +251,10 @@ setCurrent("keep");
   const sent = await json(["send", "--space", "open1", "-c", "general", "x"]);
   check("control: send to an answering registered broker stores the message", sent.status === 0 && sent.env?.outcome === "ok" && sent.env.result?.stored === true, shown(sent));
 
-  const again = await json(["space", "add", "open1", "--server", LIVE, "--root", root]);
-  check("adding a registered name is CONFLICT, exit 2, naming forget and --force", refused(again, 2, "CONFLICT") && /space forget open1/.test(again.env?.error?.remedy ?? "") && /--force/.test(again.env?.error?.remedy ?? ""), shown(again));
+  const conflictingServer = await json(["space", "add", "open1", "--server", DEAD, "--root", root]);
+  check("adding a registered name at a different broker is CONFLICT, exit 2, naming forget and --force",
+    refused(conflictingServer, 2, "CONFLICT") && /space forget open1/.test(conflictingServer.env?.error?.remedy ?? "") &&
+    /--force/.test(conflictingServer.env?.error?.remedy ?? "") && findMesh("open1")?.server === LIVE, shown(conflictingServer));
   const replaced = await json(["space", "add", "open1", "--server", DEAD, "--root", root, "--force"]);
   check("--force replaces a registration added by hand, unchecked", replaced.status === 0 && replaced.env?.result.replaced === true && replaced.env.result.verified === false && replaced.env.result.space.check === "not-checked" && findMesh("open1")?.server === DEAD, shown(replaced));
 
@@ -337,7 +346,7 @@ setCurrent("keep");
   const plaintext = await json(["space", "add", "far", "--server", "nats://broker.example.com:4222", "--root", root]);
   check("a hostname with no TLS is UNSUPPORTED: credentials would cross the network unprotected", refused(plaintext, 2, "UNSUPPORTED"), shown(plaintext));
   const noRoot = await json(["space", "add", "r2", "--server", LIVE, "--root", join(home, "missing")]);
-  check("a --root that is not a directory is USAGE_INVALID", refused(noRoot, 1, "USAGE_INVALID"), shown(noRoot));
+  check("an invalid --root names the directory requirement for an open space", refused(noRoot, 1, "USAGE_INVALID") && noRoot.env?.error?.message.includes("pass an existing folder; for an open space it may be empty"), shown(noRoot));
   const fromHome = await json(["space", "add", "r3", "--server", LIVE]);
   check("with no --root, the home folder is no project: USAGE_INVALID naming --root", refused(fromHome, 1, "USAGE_INVALID") && /--root <dir> is required/.test(fromHome.env?.error?.message ?? ""), shown(fromHome));
   const fromHomeText = await run(["space", "add", "r3", "--server", LIVE, "--mode", "open"]);
@@ -408,11 +417,29 @@ setCurrent("keep");
     addedAtEmptyRoot.status === 0 && checkedAtEmptyRoot.status === 0 && checkedAtEmptyRoot.env?.result.replaced === true &&
       checkedAtEmptyRoot.env.result.verified === true && findMesh("open4")?.unchecked !== true && getCurrent() === "open4", shown(checkedAtEmptyRoot));
   const addedThroughLink = await json(["space", "add", "open4", "--server", LIVE, "--root", linkedRoot, "--mode", "open", "--force"]);
-  const checkedThroughRealPath = await json(["space", "add", "open4", "--server", LIVE, "--root", emptyRoot, "--mode", "open"]);
+  const realRegistration = ["space", "add", "open4", "--server", LIVE, "--root", emptyRoot, "--mode", "open"];
+  const checkedThroughRealPath = await json(realRegistration);
   check("the physical root verifies an unchecked registration made through a link and preserves the selection",
     addedThroughLink.status === 0 && addedThroughLink.env?.result.space.root === linkedRoot &&
       checkedThroughRealPath.status === 0 && checkedThroughRealPath.env?.result.replaced === true && checkedThroughRealPath.env.result.verified === true &&
       findMesh("open4")?.unchecked !== true && getCurrent() === "open4", shown(checkedThroughRealPath));
+
+  const beforeRepeat = registryFiles();
+  const repeated = await run([...realRegistration, "--plain"]);
+  check("repeating a checked registration reports it already exists and verifies the broker",
+    repeated.status === 0 && repeated.stdout.includes("open4 is already registered") &&
+    repeated.stdout.includes("checked: broker answered and serves this space"), shown(repeated));
+  const sameThroughLink = ["space", "add", "open4", "--server", `${LIVE}/`, "--root", linkedRoot, "--mode", "open"];
+  const repeatedJson = await json(sameThroughLink);
+  const changedTls = await json([...sameThroughLink, "--tls"]);
+  const changedRoot = await json(["space", "add", "open4", "--server", LIVE, "--root", root, "--mode", "open"]);
+  check("equivalent broker and root spellings recheck as a no-op and report the existing registration",
+    repeatedJson.status === 0 && repeatedJson.env?.outcome === "no-op" && repeatedJson.env.result.verified === true &&
+    repeatedJson.env.result.replaced === false && repeatedJson.env.result.space.recordedAt === checkedThroughRealPath.env?.result.space.recordedAt &&
+    repeatedJson.env.result.space.server === LIVE && repeatedJson.env.result.space.root === emptyRoot, shown(repeatedJson));
+  check("a checked registration still refuses a different root or TLS requirement and keeps its record and selection",
+    refused(changedTls, 2, "CONFLICT") && refused(changedRoot, 2, "CONFLICT") &&
+    JSON.stringify(registryFiles()) === JSON.stringify(beforeRepeat) && getCurrent() === "open4", { tls: shown(changedTls), root: shown(changedRoot) });
   clearCurrent();
   const fromEmptyRoot = await run(["space", "show", "--plain"], {}, emptyRoot);
   check("bare show uses the empty registered folder with no selection",
@@ -435,11 +462,18 @@ setCurrent("keep");
 
   const secondAtEmptyRoot = await json(["space", "add", "open5", "--server", LIVE, "--root", emptyRoot, "--mode", "open", "--force"]);
   const ambiguous = await json(["space", "show"], leaf);
-  const named = await json(["space", "show", "open4"], leaf);
+  const ambiguousPlain = await run(["space", "show", "--plain"], {}, leaf);
   check("bare show refuses two registrations at the enclosing root and names both explicit choices",
-    secondAtEmptyRoot.status === 0 && refused(ambiguous, 2, "TARGET_AMBIGUOUS") &&
-      ["open4", "open5"].every((name) => ambiguous.env?.error?.remedy.includes(` space show ${name}\``)) &&
-      named.status === 0 && named.env?.result.space === "open4" && getCurrent() === "keep", shown(ambiguous));
+    secondAtEmptyRoot.status === 0 && refused(ambiguous, 2, "TARGET_AMBIGUOUS") && ambiguousPlain.status === 2 && getCurrent() === "keep", shown(ambiguous));
+  for (const [format, refusal] of [["--json", ambiguous.env?.error?.remedy], ["--plain", ambiguousPlain.stderr]] as const) {
+    const choices = [...String(refusal).matchAll(/ (space show (open[45]) (--json|--plain))`/g)];
+    check(`both retry commands keep ${format}`, choices.map((choice) => `${choice[2]} ${choice[3]}`).join(", ") === `open4 ${format}, open5 ${format}`, refusal);
+    for (const [, args, name] of choices) {
+      const retry = await run(args!.split(" "), {}, leaf);
+      check(`following the ${format} retry reports ${name}`, retry.status === 0 && (format === "--json"
+        ? JSON.parse(retry.stdout).result.space === name : retry.stdout.includes(`Mesh: ${name}`)), shown(retry));
+    }
+  }
   const secondAtNestedRoot = await json(["space", "add", "open5", "--server", LIVE, "--root", nested, "--mode", "open", "--force"]);
   const nearest = await json(["space", "show"], leaf);
   check("bare show uses the nearer registered root when both ancestors have registrations",
@@ -461,6 +495,25 @@ setCurrent("keep");
       detail.status === 0 && verified?.status === 0 && checked.status === 0 && checked.env?.result.modeChecked === true && checked.env?.result.root === spacedRoot && checked.env?.result.current === true,
       { detail: shown(detail), shell: verified && shown(verified), checked: shown(checked) });
     setCurrent("keep");
+  }
+
+  // Withdraw the checked space from the smoke broker while keeping the other spaces available.
+  const { chatStream, dialerFor, presenceBucket, setupSpaceStreams } = await import("@cotal-ai/core");
+  const { jetstreamManager } = await import("@nats-io/jetstream");
+  const nc = await dialerFor(LIVE)({ servers: LIVE });
+  try {
+    const { streams } = await jetstreamManager(nc);
+    await streams.delete(chatStream("open4"));
+    await streams.delete(`KV_${presenceBucket("open4")}`);
+    const beforeMissing = registryFiles();
+    const missing = await json(realRegistration);
+    check("a checked recheck on a broker that no longer serves the space keeps the record and gives a safe remedy",
+      refused(missing, 2, "TARGET_NOT_FOUND") && missing.env?.error?.message.includes('it serves "open1", "open3", "open5"') &&
+      missing.env?.error?.remedy === 'start or restore "open4" on that broker, then retry' &&
+      JSON.stringify(registryFiles()) === JSON.stringify(beforeMissing) && getCurrent() === "keep", shown(missing));
+  } finally {
+    await nc.close();
+    await setupSpaceStreams({ servers: LIVE, space: "open4" });
   }
 }
 
@@ -621,8 +674,8 @@ setCurrent("keep");
   const orphan = await json(["space", "forget", "orphan"]);
   check("a space whose folder is gone while its broker address still listens is LIFECYCLE_BLOCKED, and its record stays",
     refused(orphan, 2, "LIFECYCLE_BLOCKED") && (orphan.env?.error?.message ?? "").includes(`"orphan" started in ${orphanRoot}, which no longer exists, but something still listens at ${orphanServer}`) && findMesh("orphan") !== undefined, shown(orphan));
-  check("...and the remedy names the listener to stop, then forget again",
-    orphan.env?.error?.remedy === `stop the process listening on ${new URL(orphanServer).host}, then run \`cotal space forget orphan\` again`, orphan.env?.error);
+  check("...and the remedy leaves an unrelated listener running and names the folder to restore",
+    orphan.env?.error?.remedy === `identify the listener at ${new URL(orphanServer).host}. If it belongs to this space, have its owner stop the stack; otherwise leave it running. Retry \`cotal space forget orphan\` when the address is free or after you restore the original project folder to ${orphanRoot}`, orphan.env?.error);
   // A listener at an address another registration names is that space's broker.
   recordMesh({ space: "sharedgone", server: LIVE, root: join(home, "deleted-shared"), mode: "open", origin: "up", ts: new Date(0).toISOString() });
   const shared = await json(["space", "forget", "sharedgone"]);
@@ -1014,12 +1067,31 @@ if (process.platform === "linux") {
   assertSmokeSandboxDown(sandbox, ["down", "--yes"], { cwd: first, env: runEnv });
   await run(["down", "--yes"], {}, first);
   const secondSandbox = recordSmokeSandbox({ root: second, cotalHome: process.env.COTAL_HOME!, xdgConfigHome: runEnv.XDG_CONFIG_HOME });
-  const kept = await run(["up", "--detach", "--open", "--no-manager", "--server", server], {}, second);
+  const kept = await run(["up", "--detach", "--open", "--no-manager", "--server", server, "--max-payload", "131072"], {}, second);
   check("with another space selected, up keeps it and says it stays selected outside this folder",
     kept.status === 0 && getCurrent() === "selfirst" && kept.stdout.includes(`"selsecond" up; "selfirst" stays automatically selected outside this folder`) && !kept.stdout.includes(`selected "selsecond"`), shown(kept));
+  const added = await json(["space", "add", "seloffline", "--force", "--server", DEAD, "--root", second], second);
+  const who = await json(["who"], second);
+  const show = await json(["space", "show"], second);
+  check("the only running registration in this folder takes precedence over an adopted selection",
+    added.status === 0 && who.status === 0 && who.env?.target?.space === "selsecond" &&
+      readCurrentSelection()?.source === "adopted" && getCurrent() === "selfirst" && findMesh("seloffline")?.server === DEAD, shown(who));
+  check("space show still refuses to choose among the folder's registrations", refused(show, 2, "TARGET_AMBIGUOUS"), shown(show));
+  check("forget the offline registration", (await json(["space", "forget", "seloffline"], second)).status === 0);
   assertSmokeSandboxDown(secondSandbox, ["down", "--yes"], { cwd: second, env: runEnv });
   const stopped = await run(["down", "--yes"], {}, second);
   check("and down stops it", stopped.status === 0, shown(stopped));
+  const identity = await run(["whoami", "--space", "selsecond", "--plain"], {}, second);
+  const restart = /start it again with `(?:pnpm )?cotal (up --no-manager)`/.exec(identity.stdout);
+  check("whoami names the stopped space and tells how to restart the broker without a Manager",
+    identity.status === 0 && /^  server: +stopped$/m.test(identity.stdout) && identity.stdout.includes('"selsecond" is stopped') &&
+      restart !== null && identity.stdout.includes(`in ${second}`), shown(identity));
+  if (restart?.[1]) {
+    const restarted = await json(restart[1].split(" "), second);
+    check("the printed restart works with the saved payload below the Manager minimum", restarted.status === 0, shown(restarted));
+    assertSmokeSandboxDown(secondSandbox, ["down", "--yes"], { cwd: second, env: runEnv });
+    check("down stops the restarted broker", (await json(["down", "--yes"], second)).status === 0);
+  }
   if (selected === undefined) clearCurrent(); else setCurrent(selected);
 } else console.log("  - up selection cells skipped: a controller stack needs Linux machine and boot identity");
 
@@ -1336,7 +1408,7 @@ if (process.platform === "linux") {
   recordMesh({ space: "a*b", server: DEAD, root: home, mode: "open", origin: "manual", ts: new Date().toISOString() });
   const odd = await run(["space", "show", "a*b"]);
   check("space show of a registration an earlier release made under such a name still heads it Mesh: <name>", odd.status === 0 && odd.stdout.startsWith("Mesh: a*b"), shown(odd));
-  check("space show quotes a legacy name that a shell could expand", odd.stdout.includes("`cotal use 'a*b'`"), shown(odd));
+  check("space show quotes a legacy name that a shell could expand", odd.stdout.includes(`\`${launcher} use 'a*b'\``), shown(odd));
   removeMesh("a*b");
   // A space name holds at most 64 characters, so its hex fits every local file name that carries it.
   const longName = "y".repeat(65), longest = "y".repeat(64);
@@ -1497,6 +1569,13 @@ if (process.platform === "linux") {
       refused(badSeed, 1, "SCHEMA_INVALID") && (badSeed.env?.error?.message ?? "").includes(seedPath) && (badSeed.env?.error?.message ?? "").includes(named) &&
         cotalFiles() === beforeRuntime.files && JSON.stringify(registryFiles()) === JSON.stringify(beforeRuntime.registry), shown(badSeed));
   }
+  const durableSeed = join(fresh, "durable-channels.json");
+  writeFileSync(durableSeed, '{"channels":{"wire.seeded":{"deliveryClass":"durable","replay":false}}}');
+  const durableChannel = await json(["up", "--open", "--no-manager", "--channels", durableSeed, "--server", LIVE], fresh);
+  check("open up refuses an explicit durable channel before writing or starting a stack",
+    refused(durableChannel, 2, "UNSUPPORTED") && durableChannel.env?.error?.message?.includes(durableSeed) && durableChannel.env?.error?.message?.includes('channel "wire.seeded"') &&
+      durableChannel.env?.error?.remedy?.includes('"live"') && durableChannel.env?.error?.remedy?.includes("authenticated space") &&
+      cotalFiles() === beforeRuntime.files && JSON.stringify(registryFiles()) === JSON.stringify(beforeRuntime.registry), shown(durableChannel));
   // The `✗` line quotes the parser's excerpt of a file that is not JSON with its control characters
   // escaped, so an escape sequence in a cloned file never reaches the terminal.
   const escSeed = join(fresh, "esc-channels.json");
@@ -1516,6 +1595,11 @@ if (process.platform === "linux") {
   // The default file is read once the root is settled, so it refuses after the stack lock's layout
   // exists and before a store, a broker or a registration.
   const defaultSeed = join(fresh, ".cotal", "channels.json");
+  writeFileSync(defaultSeed, '{"defaults":{"deliveryClass":"durable"},"channels":{"ops":{"deliveryClass":"live"}}}');
+  const durableDefault = await json(["up", "--open", "--no-manager", "--server", LIVE], fresh);
+  check("open up refuses a durable seed default even when every named channel is live",
+    refused(durableDefault, 2, "UNSUPPORTED") && durableDefault.env?.error?.message?.includes(defaultSeed) && durableDefault.env?.error?.message?.includes("defaults.deliveryClass") &&
+      !existsSync(join(fresh, ".cotal", "nats")) && JSON.stringify(registryFiles()) === JSON.stringify(beforeRuntime.registry), shown(durableDefault));
   writeFileSync(defaultSeed, '{"chanels":{}}');
   const badDefault = await json(["up", "--open", "--server", server], fresh);
   check("an invalid default .cotal/channels.json refuses the same way, with a remedy to fix or remove it, before a store or a registration",
@@ -1544,7 +1628,7 @@ if (process.platform === "linux") {
   // Its seed comes through a FIFO written once, which a second open would wait on forever.
   const seedFifo = join(home, "channels-seed.fifo");
   spawnSync("mkfifo", ["-m", "600", seedFifo]);
-  const feeder = spawn("sh", ["-c", 'printf %s "$1" > "$2"', "sh", '{"channels":{"news":{"description":"Neuigkeiten"}}}', seedFifo], { stdio: "ignore" });
+  const feeder = spawn("sh", ["-c", 'printf %s "$1" > "$2"', "sh", '{"channels":{"news":{"description":"Neuigkeiten","deliveryClass":"live"}}}', seedFifo], { stdio: "ignore" });
   const coRooted = await json(["space", "add", "co-rooted-remote", "--server", DEAD, "--root", fresh, "--mode", "open", "--force"], fresh);
   check("a manual connection can register at the prepared root", coRooted.status === 0 && findMesh("co-rooted-remote")?.root === fresh, shown(coRooted));
   const up = await run(["up", "--detach", "--open", "--no-manager", "--server", server], {}, fresh);
@@ -1563,7 +1647,10 @@ if (process.platform === "linux") {
   feeder.kill();
   unlinkSync(seedFifo);
   const seeded = await run(["channel", "--space", "demo", "--plain"], {}, fresh);
-  check("it reads a --channels FIFO written once a single time and seeds the channel from it", fifoUp.status === 0 && seeded.status === 0 && seeded.stdout.includes("Neuigkeiten"), { up: shown(fifoUp), seeded: shown(seeded) });
+  const seededLive = await json(["channel", "show", "news", "--space", "demo"], fresh);
+  check("it reads a --channels FIFO once and seeds the live channel from it",
+    fifoUp.status === 0 && seeded.status === 0 && seeded.stdout.includes("Neuigkeiten") && seededLive.env?.result?.registry?.channels?.news?.deliveryClass === "live",
+    { up: shown(fifoUp), seeded: shown(seeded), live: shown(seededLive) });
   check("the selection still names it", getCurrent() === "demo", getCurrent());
   check("a default channels file that begins with a UTF-8 byte-order mark seeds its channels",
     bomSeeded.status === 0 && JSON.stringify(bomSeeded.env?.result ?? null).includes("saved with a BOM"), shown(bomSeeded));
@@ -1600,6 +1687,15 @@ if (process.platform === "linux") {
     bare.status === 0 && bare.env?.outcome === "no-op" && bare.env.result.space === "demo" && bare.env.result.server === server && findMesh("demo")?.root === fresh, shown(bare));
   check("...and its JSON says the selection still names the space and this up did not change it",
     bare.env?.result.selection?.current === "demo" && bare.env.result.selection.changed === false, bare.env?.result.selection);
+  const durableOps = '{"channels":{"ops":{"deliveryClass":"durable","replay":false}}}';
+  writeFileSync(defaultSeed, durableOps);
+  const seedRefresh = await json(["up", "--no-manager"], fresh);
+  const refreshedOps = await run(["channel", "show", "ops", "--plain"], {}, fresh);
+  check("a healthy open controller refresh keeps the registry live despite a durable default file",
+    seedRefresh.status === 0 && seedRefresh.env?.outcome === "no-op" && refreshedOps.status === 0 &&
+      /Delivery:\s+live/.test(refreshedOps.stdout) && !/Metadata:\s+configured/.test(refreshedOps.stdout),
+    { up: shown(seedRefresh), channel: shown(refreshedOps) });
+  unlinkSync(defaultSeed);
   // The receipt's Next runs as printed: down stops only the stack of the folder it runs in.
   check("up in its root offers unqualified up and down using the same launcher in its Next",
     ["cotal", "pnpm cotal"].some((launcher) =>
@@ -1667,8 +1763,12 @@ if (process.platform === "linux") {
   check("history at a different address still refers to that address, not the stopped stack",
     refused(stoppedHistoryOverride, 2, "TARGET_UNAVAILABLE") && stoppedHistoryOverride.env?.error.message === `can't reach a broker at ${DEAD}` &&
     stoppedHistoryOverride.env.error.remedy === "check that address and that a broker runs there", shown(stoppedHistoryOverride));
-  const seedRemedy = `fix or remove ${defaultSeed}`;
-  for (const [seed, problem] of [["{\n", "is not valid JSON"], ['{"defaults":{"replay":"yes"}}', 'is invalid: "defaults" replay']] as const) {
+  const fixSeed = `fix or remove ${defaultSeed}`;
+  for (const [seed, problem, exit, seedRemedy] of [
+    ["{\n", "is not valid JSON", 1, fixSeed],
+    ['{"defaults":{"replay":"yes"}}', 'is invalid: "defaults" replay', 1, fixSeed],
+    [durableOps, 'requests durable delivery for channel "ops"', 2, 'set deliveryClass to "live" in those entries, or use an authenticated space for durable delivery'],
+  ] as const) {
     writeFileSync(defaultSeed, seed);
     const badUp = await json(["up", "--no-manager"], fresh);
     const status = await json(["status", "--space", "demo"], fresh);
@@ -1676,7 +1776,7 @@ if (process.platform === "linux") {
     const ps = await json(["ps", "--space", "demo"], elsewhere);
     const diagnosis = `the channels file ${defaultSeed} ${problem}`;
     check(`up, status and ps agree on the stopped stack's seed ${problem}`,
-      badUp.status === 1 && badUp.env?.error?.message?.includes(diagnosis) && badUp.env.error.remedy === seedRemedy &&
+      badUp.status === exit && badUp.env?.error?.message?.includes(diagnosis) && badUp.env.error.remedy === seedRemedy &&
         status.status === 0 && status.env?.result?.selected?.code === "not-started" && status.env.result.selected.message.includes("is stopped") && status.env.result.selected.channelSeedBlocksRestart === true &&
         status.env.result.hints.some((hint: string) => hint.includes(diagnosis) && hint.includes(seedRemedy)) &&
         statusText.stdout.includes(seedRemedy) && !statusText.stdout.includes(`start it again with \`${launcher} up`) && !/^ +(?:pnpm )?cotal up(?:\s|$)/m.test(statusText.stdout) &&
@@ -1719,10 +1819,10 @@ if (process.platform === "linux") {
   } finally { await new Promise<void>((done) => occupier.close(() => done())); }
   // Omit --server to use the recorded address and reach the recorded-input comparison.
   const bound = await json(["up", "--detach", "--no-manager", "--host", "127.0.0.2"], fresh);
-  check("up --host naming a different bind is CONFLICT, exit 2, naming both hosts and bare cotal up, and prepares nothing",
+  check("up --host naming a different bind is CONFLICT, exit 2, naming both hosts and the broker-only cotal up, and prepares nothing",
     refused(bound, 2, "CONFLICT") && (bound.env?.error?.message ?? "").includes("--host 127.0.0.2 (recorded: 127.0.0.1)") &&
       (bound.env?.error?.message ?? "").includes("nothing was prepared") &&
-      (bound.env?.error?.remedy ?? "").includes(`run bare \`cotal up\` from ${recordedRoot}`), shown(bound));
+      (bound.env?.error?.remedy ?? "").includes(`run \`cotal up --no-manager\` from ${recordedRoot}`), shown(bound));
   check("none of these refusals changed the stack journal", readFileSync(stackJournalPath(fresh), "utf8") === journalBefore);
   const brokerBefore = readStackJournal(fresh)?.journal.broker;
   const sameBind = await json(["up", "--no-manager", "--server", server, "--host", "127.0.0.1"], fresh);
@@ -2221,6 +2321,23 @@ if (process.platform !== "win32") {
     inventory.stderr.includes(`${file} is a file, not a folder`) && !!pasted && pasted.status === 0 && !existsSync(file) &&
     existsSync(`${file}.old`) && readFileSync(`${file}.old`, "utf8") === "not a folder" && recovered.status === 0,
     { inventory: shown(inventory), move: pasted ? shown(pasted) : move, recovered: shown(recovered) });
+}
+
+// A selection hint must accept the exact name of a retained offline registration.
+{
+  const space = "-old";
+  const env = { COTAL_HOME: join(home, "legacy-selection-home") };
+  const root = join(home, "legacy-selection-root");
+  mkdirSync(root);
+  mkdirSync(join(env.COTAL_HOME, "meshes"), { recursive: true });
+  writeFileSync(join(env.COTAL_HOME, "meshes", `${space}.json`), JSON.stringify({ space, root, server: DEAD, mode: "open", origin: "manual", ts: new Date().toISOString() }));
+  const show = await run(["space", "show", "--", space], env);
+  const command = /select it with `(?:pnpm )?cotal ([^`]+)`/.exec(show.stdout)?.[1];
+  const selected = command && await run(command.split(" "), env);
+  const current = await run(["use", "--json"], env);
+  check("following the space show hint selects an offline historical space with a leading dash",
+    show.status === 0 && !!selected && selected.status === 0 && current.status === 0 && JSON.parse(current.stdout).result.current === space,
+    { show: shown(show), selected: selected && shown(selected), current: shown(current) });
 }
 
 // An open space registered by an earlier release must still start under its exact old name.
