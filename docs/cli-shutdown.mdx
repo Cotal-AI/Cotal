@@ -33,6 +33,7 @@ same way, so `cotal down manager delivery` stops `stack-manager` and `stack-deli
 member of the target carries its own `requested`. A name that is no preset, such as `nats`,
 refuses `TARGET_NOT_FOUND` there and names the `stack-` member to use, and a name with no member
 names `cotal service --space <space>` to list the saved definitions in the space the stop targeted.
+On a dry run, the suggested member command keeps the preview, instance and output options. If no member is available, the lookup lists the selected space's definitions in the requested format.
 This refusal stops no service, even when several names are given. A set never stops the broker, so
 `nats`, `broker` and `stack-broker` each refuse the whole set `TARGET_NOT_FOUND` before any member
 resolves. To inspect a stop of the whole stack, run the suggested preview in the project folder it

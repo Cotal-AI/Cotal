@@ -10,7 +10,7 @@ import { canPrompt } from "./meshes-wizard.js";
 import { shellWord } from "../lib/endpoint-errors.js";
 import { yesRequired } from "../lib/confirmation-required.js";
 import { nativeImpactView, unsavedServiceStep } from "./service-actions.js";
-import { resolvePresetService, type PresetServiceTarget } from "../lib/service-preset-target.js";
+import { resolvePresetService, stopPreviewStep, type PresetServiceTarget } from "../lib/service-preset-target.js";
 import { announcePresetTarget, recordedProcessRefusal } from "./service-registry.js";
 
 type Hold = ReturnType<ReturnType<typeof serviceDefinitionStore>["pin"]>;
@@ -46,11 +46,11 @@ function brokerMember(space: string, root: string, name: string, values: ParsedA
 
 /** Why the set refuses a name that reaches no saved definition, with the step a single named `down`
  *  names. */
-function unmatchedMember(space: string, name: string): CommandFailure {
+function unmatchedMember(space: string, name: string, values: ParsedArgs["values"]): CommandFailure {
   const stackName = stackMemberFor(space, name);
   return new CommandFailure("refused", "TARGET_NOT_FOUND", `${oneLine(name)} matches no saved definition or preset in space ${oneLine(space)}; no service was stopped`, {
     target: { space, name },
-    remedy: stackName ? `this space's controller stack names it ${stackName}; name ${stackName} instead, or run bare \`cotal down\` to stop the whole stack` : unsavedServiceStep(name, "stop", space),
+    remedy: values["dry-run"] ? stopPreviewStep(space, values) : stackName ? `this space's controller stack names it ${stackName}; name ${stackName} instead, or run bare \`cotal down\` to stop the whole stack` : unsavedServiceStep(name, "stop", space),
   });
 }
 
@@ -106,7 +106,7 @@ export async function stopNamedServiceSet(args: ParsedArgs): Promise<void> {
     const resolved = resolvePresetService(space, root, requested, "stop", args.values);
     if (resolved?.recorded) throw recordedProcessRefusal(requested, resolved.recorded, space, "down");
     const name = resolved?.name ?? requested, definition = store.read(name);
-    if (!definition) throw unmatchedMember(space, name);
+    if (!definition) throw unmatchedMember(space, name, args.values);
     const same = members.find((member) => member.definition.name === name);
     if (same) throw new CommandFailure("refused", "USAGE_INVALID", `${oneLine(same.requested)} and ${oneLine(requested)} both name ${oneLine(name)}; name each service once, and no service was stopped`, { target: { space, name } });
     if (resolved) presetTargets.push(resolved);
