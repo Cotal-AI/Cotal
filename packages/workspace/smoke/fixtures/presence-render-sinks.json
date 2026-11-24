@@ -1,10 +1,10 @@
 {
   "expected": {
-    "total": 1139,
+    "total": 1142,
     "honest-text": 71,
     "presence-only-glyph/count": 138,
     "command-ack": 13,
-    "non-render/control": 917
+    "non-render/control": 920
   },
   "classRationales": {
     "non-render/control": "This candidate handles presence state without making a human work-progress claim. Status tokens, routing, component inputs and presentation metadata are control data; exceptions that report a different kind of status carry an entry-specific reason."
@@ -82,6 +82,27 @@
       "kind": "status-token",
       "anchor": "\"offline\"",
       "class": "non-render/control"
+    },
+    {
+      "path": "extensions/connector-core/src/agent-naming.ts",
+      "kind": "status-token",
+      "anchor": "ingState =\n  | { phase: \"waiting\" }\n  | { phase: \"naming\"",
+      "class": "non-render/control",
+      "rationale": "Naming state machine: \"waiting\" is the phase before an agent's first message names it, not a peer's presence status, and it is never rendered."
+    },
+    {
+      "path": "extensions/connector-core/src/agent-naming.ts",
+      "kind": "status-token",
+      "anchor": " NamingState = { phase: \"waiting\" };\n  private readonly o",
+      "class": "non-render/control",
+      "rationale": "Naming state machine: \"waiting\" is the phase before an agent's first message names it, not a peer's presence status, and it is never rendered."
+    },
+    {
+      "path": "extensions/connector-core/src/agent-naming.ts",
+      "kind": "status-token",
+      "anchor": "f (this.state.phase !== \"waiting\") return;\n    const ms =",
+      "class": "non-render/control",
+      "rationale": "Naming state machine: \"waiting\" is the phase before an agent's first message names it, not a peer's presence status, and it is never rendered."
     },
     {
       "path": "extensions/connector-core/src/agent.ts",
