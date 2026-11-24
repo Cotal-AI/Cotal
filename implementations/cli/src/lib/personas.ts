@@ -47,7 +47,7 @@ export function catalogFolderProblem(dir: string): CommandFailure | undefined {
     what = "a link that loops back on itself";
   }
   return new CommandFailure("refused", "CONFLICT", `${dir} is ${what}, so it holds no personas`, {
-    remedy: `move ${dir} out of the way; \`cotal persona create <name>\` then makes the folder`,
+    remedy: `move ${dir} out of the way. To use existing definitions, restore their catalog folder there. To create a persona, retry the original create command with its source and target options`,
   });
 }
 

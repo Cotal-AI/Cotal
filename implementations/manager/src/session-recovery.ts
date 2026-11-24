@@ -12,6 +12,8 @@ import { controlSession } from "./control-session.js";
 import { RESTART_WORK_EXIT_MS, withTimeout } from "./manager-timeout.js";
 import type { Manager } from "./manager.js";
 import type { ManagerConfig } from "./manager-config.js";
+import type { ManagerParts } from "./manager-parts.js";
+import type { ManagerStartState } from "./manager-start-state.js";
 
 const SESSION_RESTART_LIMIT = 3;
 const SESSION_RESTART_WINDOW_MS = 120_000;
@@ -21,7 +23,6 @@ type Readiness = { ok: true; operator?: string } | { ok: false; uncertain?: bool
 /** Lifecycle and runtime operations used to prove and recover one managed host session. */
 export interface SessionRecoveryDeps {
   executionRefusal: () => string;
-  instanceId: () => string;
   endpoint: () => CotalEndpoint;
   beginLifecycle: () => (() => void) | undefined;
   freeSlot: (agent: ManagedAgent, floor: boolean, cause: FreeSlotCause) => void;
@@ -41,7 +42,6 @@ export interface SessionRecoveryDeps {
   watchExit: (agent: ManagedAgent) => void;
   tail: (session: AttachSession) => Promise<string>;
   stopHandle: (agent: ManagedAgent, graceful: boolean, cause: FreeSlotCause) => void;
-  trackStoppedHandle: (agent: ManagedAgent, floor: boolean, cause: FreeSlotCause) => void;
 }
 
 /** Builds the {@link SessionRecoveryDeps} for a Manager. It reads Manager members by name at each use, so a
@@ -49,7 +49,6 @@ export interface SessionRecoveryDeps {
 export function sessionRecoveryDeps(m: Manager): SessionRecoveryDeps {
   return {
     executionRefusal: () => m["executionRefusal"](),
-    instanceId: () => m["managerInstanceId"],
     endpoint: () => m["ep"],
     beginLifecycle: () => m["beginLifecycle"](),
     freeSlot: (agent, floor, cause) => m["freeSlot"](agent, floor, cause),
@@ -69,13 +68,13 @@ export function sessionRecoveryDeps(m: Manager): SessionRecoveryDeps {
     watchExit: (agent) => m["watchExit"](agent),
     tail: (session) => m["tail"](session),
     stopHandle: (agent, graceful, cause) => m["stopHandle"](agent, graceful, cause),
-    trackStoppedHandle: (agent, floor, cause) => m["trackStoppedHandle"](agent, floor, cause),
   };
 }
 
 /** Session-state proof, transcript provenance, continuity assignments and bounded crash recovery. */
 export class SessionRecovery {
-  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: SessionRecoveryDeps) {}
+  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: SessionRecoveryDeps, private readonly state: ManagerStartState, private readonly parts: Pick<ManagerParts, "seatStop">) {}
+  private get managerInstanceId(): string { return this.state.managerInstanceId!; }
 
   readSessionStatePath(path: string):
     | { sessionId: string; status: "running" | "quit" }
@@ -181,7 +180,7 @@ export class SessionRecovery {
     if (refused === undefined || a.terminalizing || a.handle.status() === "exited") return;
     console.error(`! ${refused}; stopping it`);
     this.deps.stopHandle(a, false, "carried-fork-refused");
-    this.deps.trackStoppedHandle(a, true, "carried-fork-refused");
+    this.parts.seatStop.trackStoppedHandle(a, true, "carried-fork-refused");
   }
 
   readManagedSession(a: ManagedAgent): string {
@@ -320,7 +319,7 @@ export class SessionRecovery {
         const named = { ...restart.opts, displayName: a.displayName, resume: undefined, reopenSession: undefined, prompt: undefined };
         const opts: LaunchOpts = continueSession !== undefined ? { ...named, continueSession } : named;
         const spec = connector.buildLaunch(opts);
-        spec.env = { ...spec.env, COTAL_MANAGER_INSTANCE: this.deps.instanceId() };
+        spec.env = { ...spec.env, COTAL_MANAGER_INSTANCE: this.managerInstanceId };
         const wanted = this.deps.managedPrincipal(a);
         const joinedAfter = this.deps.endpoint().getRoster()
           .filter((p) => p.card.id === wanted && p.lifecycleUid === a.lifecycleUid)

@@ -35,10 +35,12 @@ export function validateEndpointReference(input: unknown, space: string, checkCr
 
 export const endpointReferenceStore = (space: string) => new ProtectedRecordStore("endpoints", space, (value, checkReferences) => validateEndpointReference(value, space, checkReferences));
 
-export function importEndpointReference(path: string, space: string): EndpointReference {
+export function importEndpointReference(path: string, space: string | ((pinnedSpace: unknown) => string)): EndpointReference {
   const bytes = readLocalRecordSource(path);
   if (!bytes) throw new CommandFailure("refused", "TARGET_NOT_FOUND", "the reference input file was not found", { target: { path } });
-  return validateEndpointReference(decodeLocalJson(bytes), space);
+  const value = decodeLocalJson(bytes);
+  const pinnedSpace = value !== null && typeof value === "object" && Object.hasOwn(value, "space") ? (value as Record<string, unknown>).space : undefined;
+  return validateEndpointReference(value, typeof space === "string" ? space : space(pinnedSpace));
 }
 
 export function readEndpointReference(space: string, name: string): ReferenceSnapshot | undefined { return endpointReferenceStore(space).read(name); }

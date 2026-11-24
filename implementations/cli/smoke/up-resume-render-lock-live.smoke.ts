@@ -40,7 +40,7 @@
  */
 import { spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join, resolve as resolvePath } from "node:path";
 import { dialerFor, drainAndClose, isReachable, membershipStoreDefinition, mintCreds, newIdentity, standaloneConnectOpts } from "@cotal-ai/core";
 import { assertSmokeSandboxDown, awaitBrokerReady, freePort, killAndAwaitExit, recordSmokeSandbox, SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
@@ -287,7 +287,9 @@ try {
   ok("the failed resume leaves its broker offline and the cut retryable",
     !await isReachable(server) && !existsSync(join(root, ".cotal", "nats.pid")) && journalState() === "resume-degraded", journalState());
 
-  const foreground = run(["up", "--recreate-membership-store"]);
+  const seed = join(root, "resume-channels.json");
+  writeFileSync(seed, JSON.stringify({ channels: { "resume-seeded": { description: "Only supplied during resume", deliveryClass: "live", replay: false }, railprobe: { instructions: "Patched during resume" } } }));
+  const foreground = run(["up", "--recreate-membership-store", "--channels", seed]);
   // A foreground `up` never exits once it serves, so its resume is done when the journal is consumed.
   // A resume that skipped the bucket ends `resume-degraded` and exits instead.
   for (let i = 0; i < 1200 && foreground.exitCode === null && journalState() !== "none"; i++) await sleep(200);
@@ -302,6 +304,12 @@ try {
   const history = run(["history", "railprobe", "--json"]);
   await within(once(history, "exit"), 30_000);
   ok("the retained message survives conversion", history.exitCode === 0 && logOf(history).includes("legacy-retained"), logOf(history));
+  const seeded = run(["channel", "show", "resume-seeded", "--plain"]);
+  await within(once(seeded, "exit"), 30_000);
+  ok("the explicit seed adds its configured channel during the resume", seeded.exitCode === 0 && /Replay:\s+off/.test(logOf(seeded)) && /Delivery:\s+live/.test(logOf(seeded)) && logOf(seeded).includes("Only supplied during resume"), logOf(seeded));
+  const patched = run(["channel", "show", "railprobe", "--plain"]);
+  await within(once(patched, "exit"), 30_000);
+  ok("the explicit seed patches an existing channel without replacing omitted fields", patched.exitCode === 0 && /Description:\s+rails/.test(logOf(patched)) && logOf(patched).includes("Patched during resume"), logOf(patched));
   const down = run(["down", "--yes"]);
   await within(once(down, "exit"), 60_000);
   ok("down stops the resumed stack", down.exitCode === 0 && !await isReachable(server), logOf(down));

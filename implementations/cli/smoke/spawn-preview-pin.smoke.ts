@@ -37,7 +37,7 @@ const pause = (ms: number): Promise<void> => new Promise((resolve) => setTimeout
 type Envelope = {
   outcome?: string;
   target?: { space?: string; path?: string };
-  result?: { kind?: string; persona?: { source?: string }; requested?: { instanceId?: string | null; source?: string }; cwd?: string; allocated?: boolean; launched?: boolean };
+  result?: { kind?: string; persona?: { source?: string }; requested?: { instanceId?: string | null; source?: string; restarts?: number; restartWindowMs?: number }; cwd?: string; allocated?: boolean; launched?: boolean };
   error?: { code?: string; message?: string; remedy?: string };
 };
 
@@ -77,7 +77,13 @@ try {
   check.equal(bad.envelope.error?.code, "USAGE_INVALID");
   check.match(bad.envelope.error?.message ?? "", /instanceId "not-a-pin" is not a valid lifecycle token/);
   check.match(bad.envelope.error?.message ?? "", /A manager's name or host is taken only on a user-auth mesh/);
-  check.match(bad.envelope.error?.remedy ?? "", /cotal ps prints each manager's instance id/);
+  const roster = `\`cotal ps --space samplemesh --server ${server}\``;
+  check.ok(bad.envelope.error?.remedy?.includes(`${roster} prints each manager's instance id`));
+  for (const pin of ["", "local.sample", "not-a-pin"]) {
+    const read = preview(["ps", "--space", "samplemesh", "--server", server, "--on", pin, "--json"]);
+    check.equal(read.status, 1);
+    check.ok(read.envelope.error?.message?.includes(roster));
+  }
 
   const empty = preview([...base, "--on", ""]);
   check.equal(empty.status, 1, JSON.stringify(empty.envelope));
@@ -95,6 +101,25 @@ try {
   check.equal(unpinned.status, 0, JSON.stringify(unpinned.envelope));
   check.equal(unpinned.envelope.outcome, "ok");
   check.equal(unpinned.envelope.result?.requested?.instanceId, null);
+
+  const restart = ["--restarts", "1", "--restart-window", "60000"];
+  for (const [flags, advice] of [
+    [[], /^add -d to keep restart supervision/],
+    [["--foreground"], /^replace --foreground with -d to keep restart supervision/],
+    [["--foreground", "--live-only"], /^omit --restarts and --restart-window to launch in this terminal$/],
+  ] as const) {
+    const refused = preview([...file, ...flags, ...restart]);
+    check.deepEqual([refused.status, refused.envelope.error?.code], [1, "USAGE_INVALID"]);
+    check.match(refused.envelope.error?.remedy ?? "", advice);
+    check.match(refused.envelope.error?.remedy ?? "", /omit --restarts and --restart-window/);
+  }
+  const supervised = preview([...file, "-d", ...restart]);
+  const requested = supervised.envelope.result?.requested;
+  check.deepEqual([supervised.status, requested?.restarts, requested?.restartWindowMs,
+    supervised.envelope.result?.allocated, supervised.envelope.result?.launched], [0, 1, 60000, false, false]);
+  const foreground = preview([...file, "--foreground"]);
+  check.deepEqual([foreground.status, foreground.envelope.result?.kind,
+    foreground.envelope.result?.allocated, foreground.envelope.result?.launched], [0, "direct-launch-preview", false, false]);
 
   for (const [selectors, placement] of [
     [[], "direct"], [["--foreground"], "direct"],
