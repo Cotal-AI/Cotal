@@ -433,7 +433,8 @@ const VERBS = ["start", "resume", "ps", "journal", "answer", "amend", "revoke", 
   }
   for (const text of ['{"clock":{"start":"1000"}}', '{"clock":{"start":null}}', '{"clock":{"start":1e999}}']) {
     const invalid = await simulateText(text);
-    c(`an invalid clock start is refused (${text})`, scriptRefusal(invalid, "clock.start must be a finite number in milliseconds"), invalid);
+    c(`an invalid clock start is refused (${text})`,
+      scriptRefusal(invalid, `clock.start in the simulation results script ${handler} must be a finite number in milliseconds`), invalid);
   }
   // A start past the safe-integer range cannot step by whole milliseconds: 9007199254740992
   // plus a 1ms sleep rounds back to the start, so the simulation would report elapsedMs 0.
@@ -689,6 +690,29 @@ if (process.platform !== "win32") {
     const validObject = run("simulate", timerProgram, "--handler", listHandler, "--json");
     c("an empty object lets the same timer simulation complete", validObject.status === 0
       && validObject.stderr === "" && JSON.parse(validObject.stdout).result?.outcome === "completed", validObject);
+
+    for (const [field, file, invalid, valid, requirement, remedy] of [
+      ["start", "bad start.json", "0", 0, "a finite number in milliseconds",
+        "set clock.start in ./bad start.json to a JSON integer such as 0 (without quotes), then rerun the simulation"],
+      ["wait", "bad clock.json", "one minute", "5m", 'a duration string such as "5m"',
+        'replace clock.wait in ./bad clock.json with a quoted duration such as "5m", then rerun the simulation'],
+    ] as const) {
+      const handler = `./${file}`;
+      writeFileSync(join(dir, file), JSON.stringify({ clock: { [field]: invalid } }));
+      const plain = run("simulate", timerProgram, "--handler", handler, "--plain");
+      const json = run("simulate", timerProgram, "--handler", handler, "--json");
+      const refusal = JSON.parse(json.stdout);
+      const message = `clock.${field} in the simulation results script ${handler} must be ${requirement}`;
+      c(`invalid clock.${field} names the results file and correction in plain output and JSON`,
+        plain.status === 1 && plain.stdout === "" && plain.stderr.includes(message) && plain.stderr.includes(`\nNext\n  ${remedy}`)
+        && json.status === 1 && json.stderr === "" && refusal.outcome === "refused" && refusal.target?.file === handler
+        && refusal.error?.code === "SCHEMA_INVALID" && refusal.error?.message === message && refusal.error?.remedy === remedy, { plain, json });
+      writeFileSync(join(dir, file), JSON.stringify({ clock: { [field]: valid } }));
+      const corrected = run("simulate", timerProgram, "--handler", handler, "--json");
+      const report = JSON.parse(corrected.stdout);
+      c(`correcting clock.${field} lets the same simulation complete`, corrected.status === 0
+        && corrected.stderr === "" && report.result?.outcome === "completed" && report.result.elapsedMs === 1000, corrected);
+    }
 
     const parallelProgram = "parallel.cotal.js", parallelHandler = "parallel-fault.json";
     writeFileSync(join(dir, parallelProgram), 'await parallel({ first: () => sleep("1s"), second: () => sleep("2s") }, { name: "batch" });\n');

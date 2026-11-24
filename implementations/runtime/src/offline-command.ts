@@ -98,7 +98,9 @@ function scriptOf(file: string | undefined): SimScript {
   const clock = script.clock as Record<string, unknown> | undefined;
   const start = clock?.start;
   if (start !== undefined && (typeof start !== "number" || !Number.isFinite(start)))
-    throw new CommandFailure("refused", "SCHEMA_INVALID", "clock.start must be a finite number in milliseconds", { target: { file } });
+    throw new CommandFailure("refused", "SCHEMA_INVALID", `clock.start in the simulation results script ${file} must be a finite number in milliseconds`, {
+      target: { file }, remedy: `set clock.start in ${file} to a JSON integer such as 0 (without quotes), then rerun the simulation`,
+    });
   // A start the clock cannot step from by whole milliseconds reports a successful simulation
   // with the delay lost: 9007199254740992 + 1ms rounds back to the start, so elapsedMs is 0.
   // Refuse it before simulation, naming the supported range.
@@ -124,7 +126,9 @@ function scriptOf(file: string | undefined): SimScript {
     } catch (error) {
       if (!(error instanceof DurationError)) throw error;
     }
-    throw new CommandFailure("refused", "SCHEMA_INVALID", `clock.${key} in the simulation results script ${file} must be a duration string such as "5m"`, { target: { file } });
+    throw new CommandFailure("refused", "SCHEMA_INVALID", `clock.${key} in the simulation results script ${file} must be a duration string such as "5m"`, {
+      target: { file }, remedy: `replace clock.${key} in ${file} with a quoted duration such as "5m", then rerun the simulation`,
+    });
   }
   for (const [index, fault] of ((script.faults ?? []) as unknown[]).entries()) {
     const problem = faultProblem(fault);
