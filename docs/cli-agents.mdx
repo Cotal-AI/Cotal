@@ -258,6 +258,8 @@ whether it came from `--harness`, the persona or a preference. Harness names are
 If the installed connector supports direct preview validation, it checks resume, prompt, variant and
 native options without creating launch files or checking its binary or login. Otherwise the preview
 reports connector arguments as not checked.
+When the connector does not support variants, a direct preview or launch that refuses the variant
+names what to remove: the `--variant` option, the `variant:` field in the persona file, or both.
 A managed preview warns about an unknown local harness and reports `not-checked`, since the
 selected manager checks its own connectors at launch. On an open or static space, a managed
 preview refuses a `--on` value that cannot be a manager instance id with `USAGE_INVALID`

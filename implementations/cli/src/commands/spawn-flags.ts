@@ -78,3 +78,8 @@ export function refuseDirectSpawnName(name: string, userMode: boolean, path: str
     : `retry with ${codeSpan(spawnCommand({ ...values, name: override }, positionals, `${values.json ? "cotal" : displayCmd()} spawn`))}`;
   throw new CommandFailure("refused", "USAGE_INVALID", `the persona's frontmatter name cannot be used for launch: ${problem}`, { target, remedy, selfContained: true });
 }
+
+export function unsupportedVariantRemedy(flag: string | undefined, field: string | undefined, path: string): string {
+  const removeField = `remove the \`variant:\` field from ${JSON.stringify(path)}`;
+  return flag === undefined ? removeField : field ? `omit \`--variant\` and ${removeField}` : "omit `--variant`";
+}
