@@ -1,8 +1,8 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { rmSync } from "node:fs";
+import { realpathSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   mkSecretDir,
   loadAgentFile,
@@ -26,9 +26,9 @@ import {
   materialEnv,
 } from "@cotal-ai/connector-core";
 
-const SPAWN_ENTRY = fileURLToPath(
-  import.meta.url.includes("/dist/") ? new URL("./spawn-entry.js", import.meta.url) : new URL("../dist/spawn-entry.js", import.meta.url),
-);
+const DIST = new URL(import.meta.url.includes("/dist/") ? "./" : "../dist/", import.meta.url);
+const SPAWN_ENTRY = fileURLToPath(new URL("./spawn-entry.js", DIST));
+const DISCOVERY_ENTRY = fileURLToPath(new URL("./spawn-discovery.js", DIST));
 
 export const PI_PROVIDER_KEYS = [
   "ANTHROPIC_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY",
@@ -214,6 +214,12 @@ export const piConnector: Connector = {
     // directory is an artifact, so a failed persona write below removes it too. The control endpoint
     // is minted here, after every refusal, because minting makes its socket directory.
     if (opts.validateOnly) return { command: "", args: [] };
+    const nodeOptionsKey = process.platform === "win32"
+      ? Object.keys(env).find((key) => key.toUpperCase() === "NODE_OPTIONS") ?? "NODE_OPTIONS"
+      : "NODE_OPTIONS";
+    const nodeOptions = env[nodeOptionsKey];
+    const preload = `--import=${pathToFileURL(realpathSync(DISCOVERY_ENTRY)).href}`;
+    env[nodeOptionsKey] = nodeOptions ? `${preload} ${nodeOptions}` : preload;
     if (stateRoot) mkSecretDir(stateRoot);
     if (sessionStatePath) rmSync(sessionStatePath, { force: true });
     const control = controlEndpoint(opts.space, opts.name, artifacts);

@@ -48,8 +48,8 @@ cotal spawn --harness pi
 A bare spawn runs pi in this terminal.
 Add `--detach` to launch through a manager and return after readiness.
 `--on <instance>` selects a manager and attaches when its runtime streams a terminal.
-Cotal spawn uses its bundled Cotal extension even when you have a standalone copy installed.
-Pi still discovers your other extensions as usual.
+Cotal spawn uses its bundled Cotal extension and skips discovered copies of the standalone bundle.
+Pi still discovers your other extensions and reads the launch environment during startup.
 
 To use a persona file on the execution host, add `--file <persona-file>`.
 `--model <model>` overrides that file's `model:` field.

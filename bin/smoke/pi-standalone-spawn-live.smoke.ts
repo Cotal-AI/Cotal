@@ -14,10 +14,17 @@ const XDG_CONFIG_HOME = join(scratch, "config");
 const XDG_RUNTIME_DIR = join(scratch, "runtime");
 const COTAL_HOME = join(scratch, "cotal");
 const extensionDir = join(HOME, ".pi", "agent", "extensions");
-for (const dir of [join(cwd, ".cotal"), HOME, XDG_CONFIG_HOME, XDG_RUNTIME_DIR, COTAL_HOME, extensionDir]) {
+const projectExtensions = join(cwd, ".pi", "extensions");
+for (const dir of [join(cwd, ".cotal"), join(cwd, ".git"), HOME, XDG_CONFIG_HOME, XDG_RUNTIME_DIR, COTAL_HOME, extensionDir, projectExtensions]) {
   mkdirSync(dir, { recursive: true, mode: 0o700 });
 }
-writeFileSync(join(extensionDir, "..", "settings.json"), '{"defaultProjectTrust":"never"}\n');
+writeFileSync(join(extensionDir, "..", "settings.json"), '{"defaultProjectTrust":"always"}');
+writeFileSync(join(extensionDir, "..", "models.json"), JSON.stringify({
+  providers: { smoke: {
+    baseUrl: "http://127.0.0.1:1", api: "openai-completions", apiKey: "${COTAL_NAME}",
+    models: [{ id: "identity-backed-model" }],
+  } },
+}));
 writeFileSync(join(cwd, ".cotal", "config.json"), '{"spawn":{"env":["PI_OFFLINE"]}}\n');
 const pi = join(repoRoot, "extensions", "pi");
 const cli = join(repoRoot, "bin", "dist", "cotal.js");
@@ -44,14 +51,28 @@ function requireCotal(...args: string[]): string {
 }
 
 const marker = join(scratch, "unrelated.log");
+const projectMarker = join(scratch, "project-extension.log");
+writeFileSync(join(projectExtensions, "cotal.js"), `
+import { appendFileSync } from "node:fs";
+export default function (pi) {
+  pi.on("session_start", ({ reason }) => appendFileSync(${JSON.stringify(projectMarker)}, reason + "\\n"));
+}
+`);
 writeFileSync(join(extensionDir, "unrelated.js"), `
 import { appendFileSync } from "node:fs";
 import { basename } from "node:path";
 export default function (pi) {
-  pi.on("session_start", ({ reason }) => {
+  const nameAtLoad = process.env.COTAL_NAME;
+  const agentFileAtLoad = process.env.COTAL_AGENT_FILE;
+  let nameAtTrust;
+  pi.on("project_trust", () => { nameAtTrust = process.env.COTAL_NAME; });
+  pi.on("session_start", ({ reason }, ctx) => {
     const owners = pi.getAllTools().filter(({ name }) => name === "cotal_orientation")
       .map(({ sourceInfo }) => basename(sourceInfo.path));
-    appendFileSync(${JSON.stringify(marker)}, [reason, process.env.COTAL_NAME, Boolean(process.env.COTAL_AGENT_FILE), ...owners].join(" ") + "\\n");
+    appendFileSync(${JSON.stringify(marker)}, JSON.stringify({
+      reason, nameAtLoad, nameAtTrust, sameAgentFile: Boolean(agentFileAtLoad) && agentFileAtLoad === process.env.COTAL_AGENT_FILE,
+      nameAtStart: process.env.COTAL_NAME, model: ctx.model?.id, owners, preloadInEnv: Boolean(process.env.NODE_OPTIONS),
+    }) + "\\n");
   });
 }
 `);
@@ -102,8 +123,11 @@ async function checkSpawn(name: string, label: string, reload = false) {
   check(`${label}: joins without duplicate tools and exits normally`, report.exitCode === 0 &&
     !!report.idle && !/Failed to load extension|conflicts with/.test(report.output), report);
   check(`${label}: goes offline on Ctrl-D`, after.split("\n").some((line) => line.includes(`${name}/default`) && /\boffline\b/.test(line)), after);
-  const expected = (reload ? ["startup", "reload"] : ["startup"]).map((reason) => `${reason} ${name} true spawn-entry.js`);
-  check(`${label}: unrelated extension sees the restored identity and one tool from the bundled entry`,
+  const expected = (reload ? ["startup", "reload"] : ["startup"]).map((reason) => JSON.stringify({
+    reason, nameAtLoad: name, nameAtTrust: reason === "startup" ? name : undefined, sameAgentFile: true,
+    nameAtStart: name, model: "identity-backed-model", owners: ["spawn-entry.js"], preloadInEnv: false,
+  }));
+  check(`${label}: startup model interpolation and unrelated factories see the launch identity`,
     JSON.stringify(report.sessions) === JSON.stringify(expected), report.sessions);
 }
 
@@ -119,10 +143,15 @@ assert.equal(started.status, 0, started.output);
 try {
   await checkSpawn("pi-control", "without a standalone copy");
   const source = process.env.COTAL_SMOKE_PI_COPY ?? join(pi, "dist", "standalone.js");
-  const copy = join(extensionDir, "cotal.js");
-  copyFileSync(source, copy);
-  await checkSpawn("pi-copy", "with a standalone copy", true);
-  check("the installed standalone copy was left intact", existsSync(copy) && readFileSync(copy).equals(readFileSync(source)));
+  const copies = [
+    { path: join(extensionDir, "cotal.js"), source },
+    { path: join(projectExtensions, "renamed-mesh.js"), source: join(pi, "dist", "standalone.js") },
+  ];
+  for (const copy of copies) copyFileSync(copy.source, copy.path);
+  await checkSpawn("pi-copy", "with user and project standalone copies", true);
+  check("the installed standalone copies were left intact", copies.every(({ path, source }) => existsSync(path) && readFileSync(path).equals(readFileSync(source))));
+  check("trusted project discovery keeps unrelated extensions named cotal.js", existsSync(projectMarker) &&
+    readFileSync(projectMarker, "utf8") === "startup\nstartup\nreload\n");
 } finally {
   const down = cotal("down", "--yes");
   check("down stops the owned broker", down.status === 0, down.output);
