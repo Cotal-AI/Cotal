@@ -117,7 +117,7 @@ import {
   stackUpInterrupted,
 } from "./stack-up.js";
 import { exitInterrupted, handOverStartupNotice, noticeOnInterrupt, releaseStartupNotice } from "../lib/interrupt-notice.js";
-import { claimForegroundHold, foregroundHolder, foregroundStackEnd, releaseForegroundHold } from "../lib/foreground-hold.js";
+import { claimForegroundHold, foregroundHolder, foregroundStackEnd, foregroundStopLauncher, hangupForegroundStack, releaseForegroundHold } from "../lib/foreground-hold.js";
 import { settleInterruptedLaunches } from "../lib/service-process.js";
 import { assertUserStackTransport, preflightUserStack } from "./stack-user-auth.js";
 import { stopForegroundStack } from "./stack-down.js";
@@ -330,17 +330,6 @@ export function upComplete(argv: string[]): CompletionResult {
 
 export { preparedUpRoot } from "./up-target.js";
 
-/** A hangup, such as a closed terminal, is not a stop. The stack keeps running and the notice names
- *  the command that stops it. Release this process's hold before the immediate exit, which does not
- *  unwind the surrounding finally, so a later foreground `up` can take the running stack over. */
-function hangupForegroundStack(root: string): never {
-  const stop = `${displayCmd()} down`;
-  process.stderr.write(`The terminal closed. This stack is still running; ${codeSpan(`cd ${shellWord(root)} && ${stop}`)} stops it.\n`);
-  process.exitCode = 129;
-  releaseForegroundHold(root);
-  process.exit(129);
-}
-
 /** Foreground controller stack: the terminal holds the stack's lifetime until SIGINT or SIGTERM,
  *  which runs the same guarded whole-stack stop as bare `down`. A hangup leaves the stack running and
  *  exits 129, naming `cotal down`. `start`, when given, is the startup this terminal already holds: a
@@ -348,13 +337,14 @@ function hangupForegroundStack(root: string): never {
  *  the start left. A failed start still runs the stop, and its failure is thrown once the stop returns.
  *  The hold exits 0 after a completed external stop or preserve, 5 after a broker crash, 129 after
  *  a hangup, 130 or 143 after a stop signal, whatever the start receipt set. */
-export async function holdForegroundStack(root: string, start?: () => Promise<void | StackJournal>, releaseRestoreNotice?: () => void): Promise<void> {
+export async function holdForegroundStack(root: string, space: string, start?: () => Promise<void | StackJournal>, releaseRestoreNotice?: () => void): Promise<void> {
   claimForegroundHold(root);
-  try { await holdStack(root, start, releaseRestoreNotice); }
+  try { await holdStack(root, space, start, releaseRestoreNotice); }
   finally { releaseForegroundHold(root); }
 }
 
-async function holdStack(root: string, start?: () => Promise<void | StackJournal>, releaseRestoreNotice?: () => void): Promise<void> {
+async function holdStack(root: string, space: string, start?: () => Promise<void | StackJournal>, releaseRestoreNotice?: () => void): Promise<void> {
+  const outsideCmd = foregroundStopLauncher(root);
   // The start's listeners go only once the hold's own are installed. Node runs a listener for a
   // signal when the loop next polls, and drops the signal if its last listener was removed first,
   // so a signal that lands in the start's last synchronous step would be lost in between.
@@ -375,7 +365,7 @@ async function holdStack(root: string, start?: () => Promise<void | StackJournal
     try { held = await start(); } catch (error) { failure = { error }; }
     releaseStart = () => { process.off("SIGINT", interrupt); process.off("SIGTERM", terminate); process.off("SIGHUP", hangup); };
     if (requested || failure) releaseStart();
-    if (requested === "SIGHUP") hangupForegroundStack(root);
+    if (requested === "SIGHUP") hangupForegroundStack(root, space, outsideCmd);
     if (requested) await stopForegroundStack(root, requested, true, held?.space);
     if (failure) throw failure.error;
     if (requested) return;
@@ -402,7 +392,7 @@ async function holdStack(root: string, start?: () => Promise<void | StackJournal
     };
     const interrupt = () => stop("SIGINT");
     const terminate = () => stop("SIGTERM");
-    const hangup = () => { checkLifetime(); if (!stopping) hangupForegroundStack(root); };
+    const hangup = () => { checkLifetime(); if (!stopping) hangupForegroundStack(root, space, outsideCmd); };
     process.on("SIGINT", interrupt); process.on("SIGTERM", terminate); process.on("SIGHUP", hangup);
     releaseStart();
     handOverStartupNotice();
@@ -611,7 +601,7 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
         let foreground: boolean;
         try { foreground = await resumeControllerStack(lock, prepared.root, values, restoreSink); }
         finally { releaseMaintenanceLock(lock); }
-        if (foreground) await holdForegroundStack(prepared.root, undefined, prepared.releaseInterruptNotice);
+        if (foreground) await holdForegroundStack(prepared.root, prepared.space, undefined, prepared.releaseInterruptNotice);
         return;
       }
       if (restoreSink) restoreSinks.set(prepared.attemptId, restoreSink);
@@ -717,7 +707,7 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
           // Released here, once, so the foreground hold below does not keep the maintenance lock.
           handedOff = true;
           releaseMaintenanceLock(lock);
-          if (foreground) await holdForegroundStack(root);
+          if (foreground) await holdForegroundStack(root, journal.space);
           return;
         }
       } else if (journal && (journal.state === "commit-intent" || journal.state === "manager-committed" || journal.state === "degraded")) {
@@ -1134,7 +1124,7 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
         } finally { releaseMaintenanceLock(stackLock); }
       };
       const start = async () => { const { journal, writeReceipt } = await prepare(); writeReceipt(); return journal; };
-      if (values.foreground) await holdForegroundStack(meshRoot, start);
+      if (values.foreground) await holdForegroundStack(meshRoot, stackSpace, start);
       else await start();
     } finally { release?.(); }
     return;
