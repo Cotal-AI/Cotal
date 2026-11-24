@@ -651,6 +651,24 @@ if (process.platform !== "win32") {
     c("a corrected checkpoint table lets the same simulation reach the approved step", validTable.status === 0
       && accepted.result?.outcome === "completed" && accepted.result.effects[1]?.step === "/sleep:approved#0", validTable);
 
+    const timerProgram = "timer.cotal.js", listHandler = "list.json";
+    writeFileSync(join(dir, timerProgram), 'await sleep("1s", { name: "timer" });\n');
+    writeFileSync(join(dir, listHandler), "[]");
+    const arrayJson = run("simulate", timerProgram, "--handler", listHandler, "--json");
+    const arrayPlain = run("simulate", timerProgram, "--handler", listHandler, "--plain");
+    const arrayError = JSON.parse(arrayJson.stdout);
+    const arrayMessage = `the simulation results script ${listHandler} must be a top-level JSON object, not an array`;
+    const arrayRemedy = `save a JSON results object in ${listHandler} and rerun the simulation. Use {} if no scripted results are needed`;
+    c("a top-level array names the results file, actual shape and fix in JSON and plain output",
+      arrayJson.status === 1 && arrayJson.stderr === "" && arrayError.outcome === "refused" && arrayError.target?.file === listHandler
+      && arrayError.error?.code === "SCHEMA_INVALID" && arrayError.error?.message === arrayMessage && arrayError.error?.remedy === arrayRemedy
+      && arrayPlain.status === 1 && arrayPlain.stdout === "" && arrayPlain.stderr.includes(arrayMessage)
+      && arrayPlain.stderr.includes(`\nNext\n  ${arrayRemedy}`), { arrayJson, arrayPlain });
+    writeFileSync(join(dir, listHandler), "{}");
+    const validObject = run("simulate", timerProgram, "--handler", listHandler, "--json");
+    c("an empty object lets the same timer simulation complete", validObject.status === 0
+      && validObject.stderr === "" && JSON.parse(validObject.stdout).result?.outcome === "completed", validObject);
+
     const parallelProgram = "parallel.cotal.js", parallelHandler = "parallel-fault.json";
     writeFileSync(join(dir, parallelProgram), 'await parallel({ first: () => sleep("1s"), second: () => sleep("2s") }, { name: "batch" });\n');
     const step = "/parallel:batch#0";
