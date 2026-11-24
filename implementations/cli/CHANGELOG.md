@@ -1,5 +1,107 @@
 # @cotal-ai/cli
 
+## 0.176.3
+
+### Patch Changes
+
+- 3cc24ee: Clear the selected space even when a registration is unreadable, and use your defaults when the only candidate for an unqualified `cotal config` read is offline.
+- a461dd2: When a status component check requests both JSON and plain output, suggest the component check without either flag and keep the selected target.
+- 542c965: When a team summary was recorded in another project, its status hint now inspects the folder and space holding the copy.
+- 9b757d5: Spawn and its preview explain how to recover from unreadable persona files and dangling links, and persona edit suggests a valid launch name when the saved display name cannot be used.
+- a99a26e: Keep `--json` in the retry suggested when `cotal send` is missing a message body, so the retry returns a JSON storage receipt.
+- @cotal-ai/core@0.176.3
+  - @cotal-ai/workspace@0.176.3
+
+## 0.176.2
+
+### Patch Changes
+
+- 303aba0: Keep the inspected space and any explicit broker and credential options in the channel inventory's suggested commands.
+- 0187b5d: Document the watch credential selector, show structured formats in endpoint work help, keep the live contract shortcut on the same target, and explain why endpoint describe does not take `--live`.
+- c687d10: Name the mismatched space in structured shutdown refusals and print usable shared-broker recovery commands for retained space names that start with a dash.
+- dcccbd9: Foreground spawn previews name unavailable working directories and explain how to retry, prepared persona catalogs work offline with a planned broker address, and manager start help explains when to select by name or by instance ID.
+- b32129d: When a project already hosts another space, explain how to prepare a separate folder and keep the requested startup options if the caller selected a root or requested JSON or plain output.
+- 9dcb30d: Accept empty defaults in channel-only team deployments and show which project root to use when deploying from another checkout.
+- @cotal-ai/core@0.176.2
+  - @cotal-ai/workspace@0.176.2
+
+## 0.176.1
+
+### Patch Changes
+
+- fc7712c: When a moved stack still has an instance recorded on this machine, the adoption refusal directs the operator back to the existing stack without asking for a second adoption.
+- 509deb5: When a manual registration conflicts with a prepared space, name its recorded project in the startup command and explain how to recover if that project has moved.
+- Updated dependencies [fc7712c]
+  - @cotal-ai/workspace@0.176.1
+  - @cotal-ai/core@0.176.1
+
+## 0.176.0
+
+### Minor Changes
+
+- e9bcb31: `cotal setup` now adds Cotal to T3 Code and Zed when it finds them, so a thread in either app can start and drive Cotal agents without editing their settings by hand. Setup installs `@cotal-ai/acp` and adds one entry per space that runs this computer's `cotal acp --space <space>` by absolute path. It updates an entry you added by hand in place instead of adding a second one, keeps your other settings and Zed's comments, and backs up each file before it changes it. `cotal update` points the entries at the Cotal it installed, and `cotal status` shows an entry whose command is gone. The ACP bridge gains `/name`, which names a thread's agent before it starts or renames a running one on a space where people sign in, and `/open`, which drives an agent that is already running from a new thread. A thread reopens on the agent it spawned or opened. `npx @cotal-ai/acp` starts the Cotal installed on this computer, and when there is none or it lacks the ACP extension, it offers a terminal sign-in that installs what is missing. Core adds the `client-setup` extension kind (`ClientSetupProvider`) and passes the space to a setup action.
+
+### Patch Changes
+
+- a1432f6: Show store and channel seed repairs before recommending a local stack restart, and preserve broker reachability in component status for moved projects.
+- 9f6623a: Plain chat points to `:to` for channel history, `pending` lists its broker and credential options, and service and manager help show that `--foreground` and `--dry-run` can be used together.
+- 34819f8: See when chat history does not fit in the terminal and when `/join` targets a channel you are already on.
+- 2e7626c: Give `cotal doctor auth` and `cotal status --components` recovery steps that match the project records, broker store permissions, and address availability they find.
+- 660f6bc: An unknown channel now points to the list in the right space, and CLI refusals identify missing option values and mistyped short flags more clearly.
+- c510d29: Endpoint commands now name unanswered instance pins, explain missing scatter grants, and show how to select a space for describe or remove.
+- 9f3f3c9: Clarify which workflow commands accept credentials, when preference layers omit fields, how `team check --space` works, and the dashboard's history limit.
+- 111824d: When a registry returns npm E404 for a first-party package during self-update, show the package, error code and registry in both the wait and final messages.
+- c96bbb9: Explain how to recover when `clean` encounters an unsearchable store path or dangling store link, and when `reset` encounters a ready preserved legacy store.
+- 4efcb59: Keep JSON on suggested send retries, report project file conflicts in the requested JSON stream, and include the folder's space when clearing a selection.
+- e6a8f62: Get actionable retry advice when `config get` already has a key, `stop` lacks an agent name and has an invalid manager ID, or `backup create` receives an unsupported option.
+- 96dcb15: Move the up command's resume and restore-listener activation out of `up.ts` into an internal `up-resume.ts`. `up.ts` keeps every export it had, so the module surface is unchanged.
+- bc03c8b: `cotal completion uninstall` leaves symlinked profiles alone when no stub or ownership record exists and tells you how to retry when a read-only profile blocks removal.
+- 821207c: Start the Manager, delivery, auth and service-unit child processes without loading the rest of the command line again.
+- 56b6dc1: Overlapping CLI commands now report an installation at most once per UTC day. Each command still reports its own outcome.
+- be29f08: When a mistyped option has one matching boolean switch and that switch is already set, the CLI tells you to drop the typo instead of suggesting the switch a second time.
+- f58f315: Team deploy previews flag invalid channel fields and recognize unchanged cards, and team boot previews stop warning about deployments with a complete removal receipt.
+- a04a6e6: Stop the foreground stack on SIGTERM even if its project folder was moved or deleted.
+- 6b44b81: When a manifest start needs its own project folder under the machine home, the recovery advice keeps the manifest and its launch options instead of suggesting a bare start.
+- 7640299: When an interrupted start leaves an unregistered broker running, the retry advice keeps the requested broker address and broker-only choice.
+- d473913: Keep the requested broker address and output format in startup recovery advice when the project folder cannot supply a valid space name.
+- 5c49fdd: Keep space registrations that cannot be read, show the correct broker-only restart command, and omit the unsupported `--new-instance` flag from manager preset start help.
+- 578e339: After stopping a legacy open broker whose saved payload limit is too low for a manager, recommend `cotal up --no-manager` to restart it at the same limit.
+- 089f68d: Foreground spawn and persona show explain how to recover from unreadable persona files, persona show suggests a valid name override when needed, and the local catalog flags blank filenames as invalid selectors.
+- d1779ab: Resume team boots with equivalent broker URLs, show the supported foreground manifest command, and reject plaintext public exchange URLs before startup.
+- 44f7180: Name extra manager arguments, keep JSON in manager stop confirmations, and show how to review and confirm shutdown before retrying a reset.
+- bb563e1: When a startup preview is missing its manifest, the CLI also tells you to omit the requested JSON or plain output flag so the next attempt can print the plan.
+- c982413: Self-update can use a compatible Node.js when Corepack supplies npm or Volta supplies Node.js.
+- 88b2111: Plain chat refuses oversized single-line messages before asking to send them. The refusal leaves any kept draft unchanged.
+- eb442eb: Keep `--json` in channel, service, and persona removal confirmations and in the suggested preview and confirmation for a store reset.
+- f00167b: Keep recovery commands pointed at the requested space when the attach picker is empty or a persona is not found.
+- 57f9039: Keep the requested output format in space reset and deletion confirmation commands and in channel membership spelling corrections.
+- 22d1200: A preserve-state stop that cannot acquire the maintenance lock now reports a blocked operation and how to retry, rather than an unknown outcome. It does not stop the running stack.
+- badd54b: Report how to fix a daemon runtime path that points to a file or a directory that blocks a demo persona.
+- 7fea7ce: Report missing watch option values in the JSON stream, accept leading underscores in extension scopes on removal, and recommend `--project` when setup cannot write to the selected folder.
+- 3c1e3b0: Quote the service record directory in permission repair commands printed by `up` and `down`, so the repair works when the directory name contains spaces.
+- 36617af: Find registered spaces from subdirectories, verify unchecked registrations through equivalent paths, and show how to prepare a new space in another folder.
+- 1baede5: When restore cannot write the parent of a new store, it tells you to make the parent writable and leave the store path absent.
+- c384d97: When another project already runs the space named by this folder, the startup advice directs a separate space to a new project folder instead of retrying in a root that already belongs to a space.
+- f84695a: When startup cannot access its service records, the printed repair now restores directory search permission as well as write permission.
+- 49f3375: Service commands explain how to retry a blank working directory or remove `--foreground` from a broker start preview without starting it.
+- 7266240: Make workflow simulations reject late turn yields and enforce one shared deadline across ask retries.
+- 3fd4e25: Find missing saved endpoint references in the space you queried, and inspect team deployments using the space from the deployment receipt.
+- 1563b0b: Preview detached launches in stopped open spaces, recommend `-d` for pinned launches with structured output, and report unregistered manager pins in named agent status without waiting for a reply.
+- f700d39: Spawn previews warn when a broken default persona link blocks the launch, and foreground spawn explains how to fix the link without replacing it.
+- 769237d: Clarify that `spawn --file` reads the persona locally unless `--detach` or `--on` sends the launch to a manager.
+- 08acc02: Foreground spawn previews explain how to fix looping persona links, and detached spawn reports that it is waiting without promising a time limit.
+- 40f56e3: Show a usable replacement credential command in `cotal join` for channel names that start with a dash.
+- efbc107: Keep the saved manager and stopped instance when a launch digest override does not match, and reject malformed console hosts in fresh manager start previews.
+- a334492: Find the correct Codex model ID format, the roster command for a missing pending recipient, and the alternate directory option for an existing endpoint scaffold.
+- 985813a: Use the booted space in the launch-summary command printed by `cotal team boot`.
+- efe525c: Report permission denials when `cotal attach` cannot access the selected manager, and bound the live attach smoke test without changing who may attach.
+- Updated dependencies [e9bcb31]
+- Updated dependencies [56b6dc1]
+- Updated dependencies [5c49fdd]
+- Updated dependencies [089f68d]
+  - @cotal-ai/core@0.176.0
+  - @cotal-ai/workspace@0.176.0
+
 ## 0.175.3
 
 ### Patch Changes

@@ -576,11 +576,28 @@ if (process.platform !== "win32" && process.getuid?.() !== 0) {
   const s = sandbox("/bin/zsh");
   const zdot = join(s.home, "zdot");
   mkdirSync(zdot);
+  const relative = { ZDOTDIR: "zdot" };
+  const offersZshWrite = (output: string) => /cotal completion (?:install|uninstall) zsh/.test(output);
+  const fresh = s.run(["completion", "--plain"], relative);
+  const next = fresh.stdout.split("\nNext\n")[1] ?? "";
+  check("relative ZDOTDIR keeps zsh status available and points to an absolute path or the script",
+    fresh.status === 0 && next.includes("relative ZDOTDIR makes the startup target depend on the shell's working directory") &&
+      next.includes("use an absolute ZDOTDIR") && next.includes("cotal completion script zsh") && !offersZshWrite(next), shown(fresh));
   s.run(["completion", "install", "zsh"], { ZDOTDIR: zdot });
   const zsh = s.shellOf(s.json({ ZDOTDIR: "zdot" }).env, "zsh");
   // Compared by realpath: the working directory a child reports can be the resolved form of tmpdir().
   const wiredIn = typeof zsh?.wiredIn === "string" ? zsh.wiredIn : "";
   check("the status reads a relative ZDOTDIR from its working directory and names the absolute file", isAbsolute(wiredIn) && existsSync(wiredIn) && realpathSync(wiredIn) === join(realpathSync(zdot), ".zshrc"), zsh);
+  const installed = s.run(["completion", "--plain"], relative);
+  check("relative ZDOTDIR also suppresses managed removal of an installed integration", installed.status === 0 && !offersZshWrite(installed.stdout), shown(installed));
+  const stub = join(s.xdg, "cotal", "completion.zsh");
+  const original = readFileSync(stub);
+  appendFileSync(stub, "\n# local edit\n");
+  const modified = s.run(["completion", "--plain"], { ...relative, SHELL: "/bin/bash" });
+  check("a modified zsh integration offers manual setup instead of a forced install, even when bash is selected",
+    modified.status === 0 && !offersZshWrite(modified.stdout) && modified.stdout.includes("cotal completion script zsh") &&
+      modified.stdout.includes("cotal completion install bash"), shown(modified));
+  writeFileSync(stub, original);
 
   // Without that ZDOTDIR, the record names the startup file it was wired into and the ZDOTDIR to use.
   const record = join(s.xdg, "cotal", "completion.zsh.ownership.json");

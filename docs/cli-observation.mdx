@@ -21,8 +21,9 @@ cotal console [--plain] [--space <s>]
 | `--space <s>` / `--server <url>` / `--creds <path>` | resolved mesh | Space to watch |
 | `--plain` | off | Line stream instead of the TUI |
 
-A live protocol view for a space: a lazygit-style TUI, or a plain line stream on `--plain`. The
-line stream is also what a pipe gets. On `--plain`, and under a locale that is not UTF-8, it writes
+A live protocol view for a space. The TUI requires both stdin and stdout to be terminals.
+The line stream runs when either stream is not a terminal or when you pass `--plain` or `--no-input`.
+On `--plain`, and under a locale that is not UTF-8, it writes
 no status marks and its punctuation in ASCII. The line stream reports a lost connection in one line
 while it re-establishes it. A credential that can no longer connect ends it with the refusal a
 one-shot command with that credential gets, as [`history --follow`](cli-messaging.mdx#history) does. Ctrl-C or
@@ -125,6 +126,12 @@ It uses the existing observer view authority; a user-auth space requires the cor
 admin view grant. It does not register a participant, bind an inbox or expose local process
 controls. Leaving with `q`, Esc or Ctrl-C stops only this observer.
 
+| Flag | What it selects |
+|---|---|
+| `--space <s>` | The target space. Defaults to the resolved mesh. |
+| `--server <url>` | The broker URL. Overrides the address in the space registry. |
+| `--creds <path>` | The observer credential file for an off-registry broker. See the [observer credential restrictions](watch-a-mesh.mdx#what-each-surface-can-see). |
+
 Use `--view events` or `--view messages` to select a feed, or press `f` to change it in the
 terminal. Arrow keys scroll; `g` returns to the latest observations. The feed retains at most
 300 entries. A reported turn ending is not task completion. An interrupted feed keeps its
@@ -134,9 +141,10 @@ comes back, after a broker restart too, the feed resumes and reports the transit
 `--plain` or a noninteractive invocation uses the attributed line stream. Interactive filters
 are not supported by that stream. A line carries at most 16,384 code units of a message's text, the
 observer stream's row bound. A longer message is cut there, and its line ends with the count not
-shown and the read that carries the whole text: `cotal history '#<channel>' --json`, or
-`cotal history --dms --json` for a direct message. A text or plain `history` row cuts a long message
-again. Authenticated observer views keep direct messages out of
+shown and the read that carries the whole text: `cotal history '#<channel>' --json --space <s>`, or
+`cotal history --dms --json --space <s>` for a direct message. Keep `--space` set to the space
+watch is observing, even if another space is selected. A text or plain `history` row cuts a long
+message again. Authenticated observer views keep direct messages out of
 the channel tap. Opening this view never launches, stops or attaches an agent. If the reader
 of the stream closes it, as `| head` does, the observer stops at its next line, so on a quiet mesh it
 runs until a message arrives or Ctrl-C ends it with exit 130.

@@ -88,6 +88,12 @@ type PresenceStatus = import("@cotal-ai/core").PresenceStatus;
 type PsRow = { name: string; id: string; mesh: PresenceStatus | "absent"; pid?: number; authHealth?: "auth-renewal-failed" | "auth-unknown" | "auth-stale" };
 const psList = (m: object, ownerFilter?: string): PsRow[] =>
   (m as unknown as { list: (o?: string) => PsRow[] }).list(ownerFilter);
+type ResumeAgent = import("../../manager/dist/index.js").ManagerResumeAgent;
+const retainedSeat = (m: object) => m as {
+  agents: Map<string, unknown>;
+  resumeEntryOf: (seat: unknown) => ResumeAgent;
+  validateRetainedAuthority: (entry: ResumeAgent) => Promise<unknown>;
+};
 const { tmpdir } = await import("node:os");
 const { join } = await import("node:path");
 
@@ -560,6 +566,22 @@ try {
     alphaEnv.includes("COTAL_EVENTS=1") && alphaEnv.includes("COTAL_EVENTS_REQUIRED=1"), alphaEnv.filter((v) => v.startsWith("COTAL_EVENTS")));
   check("required policy adds the child's own event channel to its managed grant",
     alphaRow.allowPublish?.includes(alphaEvent) === true, alphaRow.allowPublish);
+  writeFileSync(join(root, ".cotal", "agents", "retained_scope.md"),
+    "---\nname: retained_scope\ncapabilities: [spawn, custom]\n---\nRetained scope fixture.\n");
+  const retainedSpawn = await manager.startAgent({ name: "retained_scope", agent: "e2e", owner: OWNER });
+  const heldSeat = retainedSeat(manager);
+  const seat = heldSeat.agents.get("retained_scope");
+  if (!retainedSpawn.ok || !seat) throw new Error(`retained scope fixture did not start: ${retainedSpawn.error}`);
+  const inventory = heldSeat.resumeEntryOf(seat);
+  const scopeRow = JSON.parse(readFileSync(rowFile("managed", OWNER, "retained_scope"), "utf8")) as { scope: string[] };
+  check("local user-mode provisioning records the granted scope and retains the persona capabilities",
+    scopeRow.scope.join(",") === "spawn" && inventory.launch.capabilities?.join(",") === "spawn,custom");
+  const validate = (entry: ResumeAgent) => heldSeat.validateRetainedAuthority(entry).then(() => undefined, (error: Error) => error.message);
+  const retainedError = await validate(inventory);
+  check("the local retained authority accepts the same effective scope", retainedError === undefined, retainedError);
+  const changedScope = await validate({ ...inventory, launch: { ...inventory.launch, capabilities: ["run", "custom"] } });
+  check("the local retained authority refuses a genuinely different inventory scope",
+    /no longer matches the inventory/.test(changedScope ?? ""), changedScope);
   const optedOutRequired = await manager.startAgent({ name: "beta", agent: "e2e", owner: OWNER, events: false });
   check("required user-auth policy refuses events false by space name before provisioning",
     optedOutRequired.ok === false && (optedOutRequired.error ?? "").includes(SPACE) && /--no-events/.test(optedOutRequired.error ?? "") && !existsSync(rowFile("managed", OWNER, "beta")), optedOutRequired);
@@ -2061,7 +2083,7 @@ try {
   // These combined expectations still require an actual integrated run.
   // 148 -> 151: D2's spawn and admin views also read ps.
   // Eight hosted-enrollment checks include uncommitted attempts, changed authority and refused replay.
-  const EXPECTED = endpointCliFocus ? 72 : 161;
+  const EXPECTED = endpointCliFocus ? 75 : 164;
   check(`every cell ran - ${EXPECTED} expected`, cells === EXPECTED + 1, `${cells} cells reported`);
 
   console.log(`\n${endpointCliFocus ? "USER-ENDPOINT CLI SMOKE" : "USER-SPAWN SMOKE"} ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);

@@ -301,6 +301,7 @@ function updateRuntime(opts: {
     version: () => opts.version ?? "0.13.1",
     reconcile: async () => void events.push("reconcile"),
     refreshConnectors: async () => (events.push("refresh-connectors"), []),
+    refreshClients: async () => (events.push("refresh-clients"), []),
     automaticUpdateAdvice: async () => undefined,
     reportRunningManager: async () => {
       events.push("report-running-manager");
@@ -1081,6 +1082,14 @@ async function completionOut(positionals: string[]): Promise<string> {
     events.indexOf("reconcile") < events.indexOf("refresh-connectors"),
     "update refreshes what connectors installed in their harnesses, after the connectors themselves",
   );
+  assert.ok(
+    events.findIndex((event) => event.startsWith("spawn:")) < events.indexOf("refresh-clients"),
+    "update refreshes client entries after the operator extensions that provide them are replayed",
+  );
+  assert.ok(
+    events.indexOf("release-mutation") < events.indexOf("refresh-clients"),
+    "update releases its extension pass before loading client providers, which take that lock",
+  );
 }
 
 // --- a first-party extension npm's prefix record proves current is verified, not reinstalled -------
@@ -1512,6 +1521,11 @@ async function completionOut(positionals: string[]): Promise<string> {
   stopped.rt.reconcile = async () => { throw new Error("seed interrupted"); };
   assert.equal(await executeUpdate(false, stopped.rt), 1);
   assert.ok(!stopped.events.some((event) => event.startsWith("spawn:")), "seed failure blocks later prefix mutation");
+  assert.ok(!stopped.events.includes("refresh-clients"), "a failed update leaves the client entries alone");
+
+  const clientFails = updateRuntime({ extensions: [installed("@cotal-ai/orca")] });
+  clientFails.rt.refreshClients = async () => { throw new Error("T3 Code settings are not valid JSON"); };
+  assert.equal(await executeUpdate(false, clientFails.rt), 1, "a client entry Cotal cannot update fails the command");
 }
 
 // --- one mutation claim linearizes the whole operator pass through the default npm check ----------
@@ -2424,7 +2438,16 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
   assert.match(json?.message ?? "", /a spawn in this terminal takes no structured receipt/, "because a spawn in this terminal writes no receipt");
   assert.match(json?.remedy ?? "", /add -d/, "and the Next adds -d");
   assert.equal(refusal({ json: true, detach: true }), undefined, "with -d, --json is a manager's receipt");
-  assert.match(refusal({ restarts: "2", "restart-window": "1000" })?.remedy ?? "", /add -d, or --on/, "--restarts without a manager names -d or --on");
+  const spawnCommand = findCommand(registry.all<Command>("command"), "spawn")!;
+  const restart = ["--restarts", "2", "--restart-window", "1000"];
+  for (const [placement, change] of [[[], "add -d"], [["--foreground"], "replace --foreground with -d"]] as const) {
+    const preview = ["--dry-run", "--json"];
+    const denied = refusal(parseCommandArgs(spawnCommand, [...placement, ...restart, ...preview]).values);
+    assert.equal(denied?.code, "USAGE_INVALID");
+    assert.equal(denied.remedy, `${change} to keep restart supervision, or omit --restarts and --restart-window to launch in this terminal`);
+    assert.doesNotThrow(() => validateSpawnArguments(parseCommandArgs(spawnCommand, ["-d", ...restart, ...preview])), "the managed retry keeps both restart flags");
+    assert.doesNotThrow(() => validateSpawnArguments(parseCommandArgs(spawnCommand, [...placement, ...preview])), "the direct retry omits both restart flags");
+  }
   assert.match(refusal({ on: "a".repeat(30) })?.message ?? "", /attaching to a manager's launch needs usable input and output terminals/, "--on without -d attaches, which needs terminals");
 }
 

@@ -50,16 +50,16 @@ const historyLines = (state: ChatState) => (h: HistoryPage): string[] => [
  * the returned state; drained inbox items stay unacknowledged until then.
  * Read `state` when the result settles, so intervening input and deliveries are preserved.
  */
-export async function runSlash(session: AdmittedChatSession, state: () => ChatState, command: SlashCommand): Promise<{ state: ChatState; ack: readonly string[] }> {
+export async function runSlash(session: AdmittedChatSession, state: () => ChatState, command: SlashCommand, view: "terminal" | "plain" = "terminal"): Promise<{ state: ChatState; ack: readonly string[] }> {
   try {
-    return await runSlashUnguarded(session, state, command);
+    return await runSlashUnguarded(session, state, command, view);
   } catch (e) {
     // An adapter must classify; a throw means the command may or may not have taken effect.
     return { state: applySlashResult(state(), command, { outcome: "unknown", message: (e as Error).message }, () => []), ack: [] };
   }
 }
 
-async function runSlashUnguarded(session: AdmittedChatSession, state: () => ChatState, command: SlashCommand): Promise<{ state: ChatState; ack: readonly string[] }> {
+async function runSlashUnguarded(session: AdmittedChatSession, state: () => ChatState, command: SlashCommand, view: "terminal" | "plain"): Promise<{ state: ChatState; ack: readonly string[] }> {
   const done = (s: ChatState): { state: ChatState; ack: readonly string[] } => ({ state: s, ack: [] });
   const fold = <T>(r: Result<T>, describe: (v: T) => readonly string[]) => done(applySlashResult(state(), command, r, describe));
   const none = (): readonly string[] => [];
@@ -84,7 +84,10 @@ async function runSlashUnguarded(session: AdmittedChatSession, state: () => Chat
       return fold(await session.channelInfo(command.channel), infoLines);
     case "history": {
       const r = state().recipient;
-      if (r?.kind !== "channel") return done(applySlashResult(state(), command, { outcome: "refused", code: "USAGE_INVALID", message: "choose a channel recipient first (Tab), then /history" }, none));
+      if (r?.kind !== "channel") return done(applySlashResult(state(), command, {
+        outcome: "refused", code: "USAGE_INVALID",
+        message: view === "plain" ? "enter :to #<channel>, then retry /history" : "choose a channel recipient first (Tab), then /history",
+      }, none));
       return fold(await session.history(r.channel, command.limit), (v) => historyLines(state())(v));
     }
     case "inbox": {

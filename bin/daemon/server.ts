@@ -17,10 +17,10 @@
  */
 import { chmodSync, closeSync, linkSync, unlinkSync, lstatSync } from "node:fs";
 import { randomBytes } from "node:crypto";
-import { join } from "node:path";
+import { basename, dirname, isAbsolute, join } from "node:path";
 import { createServer, type Server, type Socket } from "node:net";
 import { localPeerCredentials, listenPipe, windowsUserSid, type PipeListener, type PipePeer, type PipeRefused } from "@cotal-ai/seat";
-import { DAEMON_PROTOCOL_VERSION, MAX_LINE_BYTES, EndpointRefusal, adoptPipe, assertSocketPathFits, assertSupportedPlatform, checkSocket, defaultPeerUid, ensureDir, ensureStateDir, type DaemonPaths, type PeerUid } from "./endpoint.js";
+import { DAEMON_PROTOCOL_VERSION, MAX_LINE_BYTES, EndpointRefusal, adoptPipe, assertSocketPathFits, assertSupportedPlatform, checkDir, checkSocket, defaultPeerUid, ensureDir, ensureStateDir, type DaemonPaths, type PeerUid } from "./endpoint.js";
 import { claimSocketPath, generationOf, holdLifetime, processBirth, type HeldLifetime } from "./lifetime.js";
 import { encode, parseRequest, type ConnectCheckResult, type DaemonResponse, type DaemonStatus, type HostedManager, type LogoutChange, type RegisterResult, type ServiceConnectionResult } from "./protocol.js";
 import { createLoginCoordinator, type LoginCoordinator } from "./login.js";
@@ -672,6 +672,28 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
     async prepareGenerationRestart() { await resumed; await managers.prepareGenerationRestart(daemonRestartOwner); notifyStatusWatchers(); }, abortGenerationRestart: () => managers.abortGenerationRestart(daemonRestartOwner).finally(() => notifyStatusWatchers()) };
 }
 
+/** Recover a predecessor's socket before a different Linux runtime replaces its record. */
+async function recoverPreviousRuntime(paths: DaemonPaths, uid: number, previous: HeldLifetime["previous"]): Promise<void> {
+  const socket = previous?.socket;
+  if (process.platform !== "linux" || !socket || socket.path === paths.socket || !isAbsolute(socket.path)) return;
+  const dir = dirname(socket.path);
+  const parent = dirname(dir);
+  if (basename(socket.path) !== basename(paths.socket) || basename(dir) !== basename(paths.dir!)
+    || (paths.parent !== undefined && basename(parent) !== basename(paths.parent))) return;
+  try {
+    const runtime = lstatSync(paths.parent === undefined ? parent : dirname(parent));
+    if (!runtime.isDirectory() || runtime.uid !== uid || (runtime.mode & 0o022) !== 0) return;
+    if (paths.parent !== undefined) checkDir(parent, uid);
+    checkDir(dir, uid);
+    checkSocket(socket.path, uid);
+    if (await claimSocketPath(socket.path, socket) !== "recover") return;
+    const current = lstatSync(socket.path);
+    if (current.isSocket() && current.uid === uid && current.dev === socket.dev && current.ino === socket.ino) unlinkSync(socket.path);
+  } catch {
+    // The old runtime may be gone or inaccessible. It cannot block serving in the selected runtime.
+  }
+}
+
 /** Linux and macOS: publish the unix socket, and on close remove it only if it is still ours. */
 async function publishSocket(paths: DaemonPaths, uid: number, lock: HeldLifetime, counters: ServerCounters, log: (line: string) => void, accept: (sock: Socket) => void): Promise<Endpoint> {
   const server = createServer({ allowHalfOpen: false, pauseOnConnect: true }, accept);
@@ -685,6 +707,7 @@ async function publishSocket(paths: DaemonPaths, uid: number, lock: HeldLifetime
     throw error;
   }
   if (claim === "recover") unlinkSync(paths.socket);
+  await recoverPreviousRuntime(paths, uid, lock.previous);
   lock.discardPrevious();
   if (claim === "recover") {
     counters.socketsRecovered++;

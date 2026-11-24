@@ -552,12 +552,14 @@ if (process.platform !== "win32" && process.getuid?.() !== 0) {
   const prepared = run(["space", "create", "component-target", "--root", root]);
   const alternate = run(["space", "create", "component-other", "--root", other]);
   const selected = run(["use", "component-other"]);
-  const refused = run(["status", "--components", "--space", "component-target", "--json"], {}, root);
-  const retry = /`[^`]*?\b(status --components[^`]*)`/.exec(refused.envelope?.error?.remedy ?? "")?.[1];
-  const retried = retry ? run(retry.split(" "), {}, root) : undefined;
-  check("the component retry diagnoses the requested project while another space is selected",
-    [prepared, alternate, selected].every((r) => r.status === 0) && refused.status === 1 && retry === "status --components --space component-target"
-      && retried?.status === 1 && retried.stdout.startsWith("Mesh: component-target\n") && retried.stdout.includes("Component Health"), { refused, retried });
+  for (const flags of [["--json"], ["--json", "--plain"]]) {
+    const refused = run(["status", "--components", "--space", "component-target", ...flags], {}, root);
+    const retry = /`[^`]*?\b(status --components[^`]*)`/.exec(refused.envelope?.error?.remedy ?? "")?.[1];
+    const retried = retry ? run(retry.split(" "), {}, root) : undefined;
+    check(`the component retry for ${flags.join(" ")} diagnoses the requested project while another space is selected`,
+      [prepared, alternate, selected].every((r) => r.status === 0) && refused.status === 1 && retry === "status --components --space component-target"
+        && retried?.status === 1 && retried.stdout.startsWith("Mesh: component-target\n") && retried.stdout.includes("Component Health"), { refused, retried });
+  }
   for (const args of [["myagent", "--json", "--plain"], ["myagent", "--wide", "--json"], ["myagent", "--verbose", "--json"], ["myagent", "-v", "--json"]]) {
     const r = run(["status", ...args]);
     check(`status ${args.join(" ")} is refused as USAGE_INVALID before any target lookup, exit 1`, r.status === 1 && r.envelope?.error?.code === "USAGE_INVALID", shown(r));
