@@ -119,26 +119,33 @@ export function npmInvocation(env: NodeJS.ProcessEnv, args: string[]) {
   } else file = resolveOnPath("npm", windows ? env : lookup);
   if (!file) return { file: "npm", args, env, cwd };
   const engine = npmEngine(file);
-  const withNode = (node: string) => dirname(node).includes(delimiter) ? env
+  const withNode = (node: string, preserveLiteral = literal !== undefined) => preserveLiteral && dirname(node).includes(delimiter) ? env
     : { ...env, [pathKey]: `${dirname(node)}${delimiter}${path}` };
   if (engine && !satisfies(process.version, engine.range)) {
     const current = realpathSync(process.execPath);
-    const seen = new Set<string>();
     const probeEnv = { ...env };
     delete probeEnv.NODE_OPTIONS;
-    const project = npmProjectDirectory.getStore() ?? cwd;
+    const project = npmProjectDirectory.getStore();
     if (inheritedNode && isAbsolute(inheritedNode) && directories.includes(dirname(inheritedNode)) &&
         resolveOnPath(inheritedNode, env) === inheritedNode) {
       const node = compatibleNode(inheritedNode, cwd, cwd, probeEnv, engine.range);
-      if (node === inheritedNode) return { file: node, args: [engine.entry, ...args], env: withNode(node), cwd, node };
+      if (node === inheritedNode) return { file: node, args: [engine.entry, ...args], env: withNode(node, true), cwd, node };
     }
+    const seen = new Set<string>();
+    const candidates: string[] = [];
     for (const candidate of [recordedNode(), ...[dirname(file), ...directories].map(dir => inDirectory(dir, "node"))]) {
       if (!candidate || seen.has(candidate)) continue;
       seen.add(candidate);
       try { if (realpathSync(candidate) === current) continue; } catch { continue; }
-      const node = compatibleNode(candidate, project, cwd, probeEnv, engine.range)
-        ?? (project !== cwd ? compatibleNode(candidate, cwd, cwd, probeEnv, engine.range) : undefined);
-      if (node) return { file: node, args: [engine.entry, ...args], env: withNode(node), cwd, node };
+      candidates.push(candidate);
+      const node = project === undefined ? undefined : compatibleNode(candidate, project, cwd, probeEnv, engine.range);
+      if (node) return { file: node, args: [engine.entry, ...args], env: withNode(node, true), cwd, node };
+    }
+    for (const candidate of candidates) {
+      // Keep the shim's invocation name and environment for npm if isolated version lookup succeeds.
+      const version = spawnSync(candidate, ["--version"], { cwd, env: probeEnv, encoding: "utf8", timeout: 1000, killSignal: "SIGKILL", windowsHide: true });
+      if (version.status === 0 && satisfies(version.stdout.trim(), engine.range))
+        return { file: candidate, args: [engine.entry, ...args], env: withNode(candidate), cwd };
     }
   }
   if (windows) return { file: "npm", args, env, cwd };

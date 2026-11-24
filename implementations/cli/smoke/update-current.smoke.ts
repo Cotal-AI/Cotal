@@ -128,6 +128,26 @@ const { registryArrivalCell } = await import("../../../bin/smoke/update-registry
 const cacheUpdate = await registryArrivalCell({ scenario: "cache" });
 assert.equal(cacheUpdate.code, 0, "real CLI and npm update succeed with a user-owned cache that is not writable");
 
+function assertSlowProbeFallback(root: string, dispatcher: string, executable: string, path: string,
+  check: () => { status: number | null; stdout: string; stderr: string }, launchedNode: () => string): void {
+  const probeLog = join(root, "slow-probe");
+  writeFileSync(dispatcher, `#!/bin/sh
+if [ "$1" = -p ]; then exec /bin/sleep 3; fi
+case "$1" in
+  --version) printf '%s\\n' "$PWD" >> "${probeLog}" ;;
+  *) printf '%s\\n' "$PWD" "$PATH" >> "${probeLog}" ;;
+esac
+exec "${executable}" "$@"
+`);
+  const result = check();
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /Registry latest:\s+\d/);
+  const isolated = parse(root).root;
+  assert.deepEqual(readFileSync(probeLog, "utf8").trim().split("\n"), [isolated, isolated, path],
+    "the fallback probes and runs npm through the shim with its original PATH precedence");
+  assert.equal(realpathSync(launchedNode()), realpathSync(executable), "the slow probe keeps the compatible npm runtime");
+}
+
 async function npmNodeEngine(): Promise<void> {
   const root = mkdtempSync(join(tmpdir(), "cotal-npm-node-"));
   try {
@@ -223,6 +243,9 @@ console.log(JSON.stringify(${JSON.stringify(version)}));
       assert.equal(viaShim.status, 0, viaShim.stdout + viaShim.stderr);
       assert.match(viaShim.stdout, /Registry latest:/);
       assert.equal(realpathSync(recordedLaunches().at(-1)!.node), realpathSync(`${alternate}.gone`), "npm uses the Node selected by the name-sensitive shim");
+
+      assertSlowProbeFallback(root, dispatcher, `${alternate}.gone`, [shimDir, onlyNode, npmBin, shimDir].join(delimiter),
+        () => run("--check", [shimDir]), () => recordedLaunches().at(-1)!.node);
 
       const projectNode = join(root, "project runtime", "bin", "node");
       mkdirSync(dirname(projectNode), { recursive: true });
