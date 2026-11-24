@@ -246,6 +246,17 @@ for (const typed of ["\u2014json", "\u2212\u2212json", "\u2013json"]) {
   const r = run(["status", typed]);
   check(`${typed} is refused as a typographic dash, naming --json`, usageShape(r, /starts with a typographic dash/) && /type the option with hyphens: --json/.test(r.stderr), shown(r));
 }
+for (const [sub, words] of [["root", ["root", "\u2013json"]], ["add", ["\u2212j", "add"]]] as const) {
+  const refused = run(["ext", ...words]);
+  check(`ext ${sub} does not suggest a listing flag`, usageShape(refused, /starts with a typographic dash/)
+    && refused.stderr.includes(`omit this option; \`cotal ext ${sub}\` does not take --json`)
+    && !refused.stderr.includes("type the option with hyphens"), shown(refused));
+}
+const listSpelling = run(["ext", "list", "\u2212j"]);
+const listFlag = /^  type the option with hyphens: (-j)$/m.exec(listSpelling.stderr)?.[1];
+const inventory = listFlag && run(["ext", "list", listFlag]);
+check("the suggested short listing flag returns the inventory", listSpelling.status === 1 && !!inventory
+  && inventory.status === 0 && Array.isArray(JSON.parse(inventory.stdout).result.items), { refused: shown(listSpelling), retry: inventory && shown(inventory) });
 const shortHelp = run(["send", "-c", "general", "\u2013h"]);
 check("a typographic short help flag is refused with -h", usageShape(shortHelp, /starts with a typographic dash/)
   && shortHelp.stderr.includes("type the option with hyphens: -h"), shown(shortHelp));
