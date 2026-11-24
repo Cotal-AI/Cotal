@@ -3,6 +3,8 @@ import type { McpServerSpec } from "./connector-config.js";
 import type { StartupBlocker, StartupReply } from "./startup-confirm.js";
 import type { ControlEndpoint } from "./control-exchange.js";
 import type { PersonaEndpoint } from "./persona-endpoints.js";
+import type { CommandTarget } from "./agent-endpoint.js";
+import type { CommandCatalog, FirstCommand } from "./agent-command-list.js";
 
 /** User-mode launch identity shared by the manager, connector and launch-material carrier. The
  *  sentinel is a file path, and the bearer command is argv. The material reader checks its rebuilt
@@ -102,6 +104,10 @@ export interface LaunchOpts {
    *  {@link Connector.supportsPrompt}, so a prompt on a connector that cannot deliver one is
    *  refused before any provisioning. */
   prompt?: string;
+  /** A harness command or skill the agent runs as its first turn, through its `agent` endpoint's
+   *  command lane under `id` (SPEC 13.22). The connector hands it to the seat with
+   *  `firstCommandEnv`. Only set when {@link Connector.commands} declares its target. */
+  firstCommand?: FirstCommand;
   /** This seat is started for one `once` task, which the manager relays to it as a turn. A
    *  connector that launches processes outside the seat's own process records them from launch on,
    *  so {@link Connector.retireAfterExit} can prove them gone. */
@@ -278,6 +284,27 @@ export interface ModelCatalogOpts {
   resolvedBinaries?: Readonly<Record<string, string>>;
 }
 
+/** What a seat on a connector runs on its `agent` endpoint (SPEC 13.22), and how the manager lists
+ *  it before any seat exists. */
+export interface ConnectorCommands {
+  /** What a seat's `command` takes. A first command with any other target is refused at spawn. */
+  readonly targets: readonly CommandTarget[];
+  /** What a seat started in `cwd` would list, read from the harness the seat would run, so the names
+   *  are the ones its `command` takes. Starts no seat, joins no mesh and keeps nothing. Resolves
+   *  `supported: false` when this install runs no commands; rejects when the harness did not answer. */
+  list(opts: CommandListOpts): Promise<CommandCatalog>;
+}
+
+export interface CommandListOpts {
+  /** The canonical directory the seat would start in. */
+  cwd: string;
+  /** As {@link ModelCatalogOpts.resolvedBinaries}. */
+  resolvedBinaries?: Readonly<Record<string, string>>;
+  /** The operator's spawn env allowlist, as {@link LaunchOpts.envAllow}, so the harness reads the
+   *  configuration a seat's would. */
+  envAllow?: readonly string[];
+}
+
 /** Manager-facing wrapper for one connector's catalog lookup. */
 export interface ConnectorModelCatalog extends ModelCatalog {
   agent: string;
@@ -304,6 +331,9 @@ export interface Connector extends Extension {
   /** Optional model catalog hook. The manager calls this for selector UIs; launch remains authority-free
    *  and still accepts any string the operator supplies. */
   listModels?(opts?: ModelCatalogOpts): ModelCatalog | Promise<ModelCatalog>;
+  /** The harness commands and skills its seats run. Absent: they run none, and the manager answers
+   *  `supported: false` before launch. */
+  readonly commands?: ConnectorCommands;
   /** The channel this connector publishes an agent's AG-UI event plane to (see
    *  {@link LaunchOpts.events}). OPTIONAL: only connectors that actually emit implement it, and
    *  asking for `events` from one that does not FAILS LOUD in the manager rather than minting a

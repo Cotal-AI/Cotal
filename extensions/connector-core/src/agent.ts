@@ -36,6 +36,7 @@ import { AgentManagerCalls, invokeUserManager } from "./manager-call.js";
 import { openAgentEndpoint, type AgentEndpoint } from "./agent-endpoint.js";
 import { createNameLane, type NameLane } from "./agent-name.js";
 import { AutoNaming } from "./agent-naming.js";
+import { takeFirstCommand } from "./first-command.js";
 import type { CommandDispatch } from "./agent-commands.js";
 import type { PromptDesk } from "./prompt-desk.js";
 import { AgentInbox, deliveryNoticeOf, type InboxItem, type InboxSnapshot, type InboxScope, type ExactDrainResult, type RecallMark } from "./agent-inbox.js";
@@ -538,6 +539,7 @@ export class MeshAgent extends EventEmitter {
         names: this.names,
         dispatcher: this.options.commands,
         onQueued: () => this.emit("command"),
+        first: takeFirstCommand(),
       });
       if (this._stopping) return void served.close();
       this.agentEndpoint = served;

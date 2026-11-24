@@ -401,6 +401,8 @@ const TARGET = { enum: ["command", "skill"] };
 const ENTRY = closed(["name", "target"], {
   name: COMMAND_NAME, target: TARGET, description: text(AGENT_COMMAND_DESCRIPTION_MAX), inputHint: text(AGENT_COMMAND_INPUT_HINT_MAX),
 });
+/** One listed command or skill, as `commands` and the manager's `harness-commands` list it. */
+export const AGENT_COMMAND_ENTRY_SCHEMA = deepFreeze(ENTRY);
 
 export const AGENT_COMMANDS_INPUT_SCHEMA = deepFreeze(closed([], {}));
 export const AGENT_COMMANDS_OUTPUT_SCHEMA = deepFreeze({

@@ -52,10 +52,10 @@ export function piRunsCommands(version: string): boolean {
 /** pi's commands as `command` names them. Extension commands and prompt templates are commands, and
  *  skills are skills. pi runs an extension command before a template of the same name, and lists
  *  extension commands first, so the first entry of a name is the one that runs. */
-function listed(host: PiCommandHost): Listed[] {
+function listed(infos: readonly PiCommandInfo[]): Listed[] {
   const out: Listed[] = [];
   const seen = new Set<string>();
-  for (const info of host.getCommands()) {
+  for (const info of infos) {
     const target: CommandTarget = info.source === "skill" ? "skill" : "command";
     if (target === "skill" && !info.name.startsWith("skill:"))
       throw new Error(`pi listed the skill "${info.name}" without its "skill:" prefix`);
@@ -65,6 +65,11 @@ function listed(host: PiCommandHost): Listed[] {
     out.push({ name, target, invoke: info.name, source: info.source, ...(info.description ? { description: info.description } : {}) });
   }
   return out;
+}
+
+/** pi's commands as a seat lists them. */
+export function piCommandEntries(infos: readonly PiCommandInfo[]): CommandEntry[] {
+  return listed(infos).map(({ name, target, description }) => ({ name, target, ...(description ? { description } : {}) }));
 }
 
 /** Lists and runs pi's own commands, prompt templates and skills through pi's command path
@@ -78,12 +83,12 @@ export function piCommandDispatcher(host: () => PiCommandHost | undefined, turns
   return {
     targets: new Set<CommandTarget>(["command", "skill"]),
     async list() {
-      return listed(current()).map(({ name, target, description }) => ({ name, target, ...(description ? { description } : {}) }));
+      return piCommandEntries(current().getCommands());
     },
     async dispatch(command: AgentCommand) {
       const h = current();
       // pi sends an unknown `/name` to its model as text, so only a name pi lists now is sent.
-      const entry = listed(h).find((e) => e.target === command.target && e.name === command.name);
+      const entry = listed(h.getCommands()).find((e) => e.target === command.target && e.name === command.name);
       if (!entry) throw new CommandRefused("not-found", `pi has no ${command.target} named "${command.name}"`);
       const text = command.args ? `/${entry.invoke} ${command.args}` : `/${entry.invoke}`;
       // pi runs an extension command's handler before sendUserMessage returns, and the handler

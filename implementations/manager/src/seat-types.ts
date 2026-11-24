@@ -1,4 +1,4 @@
-import type { ControlEndpoint, EpErrorCode, GoalRef, Identity, InlinePersona, IssuedBinding, LaunchOpts, MeshLaunchAgent, PersonaEndpoint } from "@cotal-ai/core";
+import type { ControlEndpoint, EpErrorCode, FirstCommand, GoalRef, Identity, InlinePersona, IssuedBinding, LaunchOpts, MeshLaunchAgent, PersonaEndpoint } from "@cotal-ai/core";
 import type { AgentHandle } from "./runtime/index.js";
 import type { ContinuityAssignment } from "./launch.js";
 import type { FreeSlotCause, ForkProvenance, ManagerResumeAgent } from "./manager.js";
@@ -60,6 +60,10 @@ export interface StartAgentOpts {
    *  the connector. Imperative launches only — a manifest launch carries its own `resolved.prompt`
    *  and rejects this flag alongside it (one source, no merge). */
   prompt?: string;
+  /** A harness command or skill the seat runs as its first turn, under the id the spawn's acceptance
+   *  names (SPEC 13.22). Imperative launches only, and never recorded on the launch, so no restart
+   *  runs it again. */
+  firstCommand?: FirstCommand;
   /** The seat names itself from its first message (`LaunchOpts.autoName`). Imperative launches only,
    *  and only on this host: a delegated runtime refuses it. A relaunch never passes it again. */
   autoName?: boolean;
@@ -307,5 +311,7 @@ export interface SpawnAcceptance {
   /** The connector-selected readiness budget persisted on this goal. A synchronous follower must
    *  outlive it; otherwise it can time out while the manager is still legitimately waiting. */
   readinessDeadlineMs: number;
+  /** The id the seat's first command is queued under, when the spawn named one. */
+  firstCommand?: { id: string };
   executor: { lifecycleUid: string; epoch: number };
 }

@@ -317,7 +317,7 @@ export class SessionRecovery {
         const continueSession = connector.supportsSessionContinuation ? this.readManagedSession(a) : undefined;
         // The seat starts again under the name it last showed, which `set-name` or its own naming may
         // have changed since launch. A seat names itself at its first launch only.
-        const named = { ...restart.opts, displayName: a.displayName, resume: undefined, reopenSession: undefined, prompt: undefined, autoName: undefined };
+        const named = { ...restart.opts, displayName: a.displayName, resume: undefined, reopenSession: undefined, prompt: undefined, firstCommand: undefined, autoName: undefined };
         const opts: LaunchOpts = continueSession !== undefined ? { ...named, continueSession } : named;
         const spec = connector.buildLaunch(opts);
         spec.env = { ...spec.env, COTAL_MANAGER_INSTANCE: this.managerInstanceId };
