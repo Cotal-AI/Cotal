@@ -245,7 +245,10 @@ function checkStoreDirPath(path: string, root: string, purpose: "start" | "resto
       const code = (error as NodeJS.ErrnoException).code;
       if (code !== "ENOENT" && code !== "ENOTDIR") throw error;
     }
-    throw new CommandFailure("refused", "USAGE_INVALID", `the --store-dir path ${path} is a link to ${real ?? `${readlinkSync(path)}, which does not exist`}; nothing was started or written`, { target: { storeDir: path, ...(real ? { linkTarget: real } : {}) }, remedy: real ? `name the directory itself with --store-dir ${shellPath(real)}` : "name a real directory with --store-dir" });
+    const remedy = purpose === "restore"
+      ? "name a real path for `--store-dir` that does not exist yet, inside an existing writable directory; the restore creates it"
+      : real ? `name the directory itself with --store-dir ${shellPath(real)}` : "name a real directory with --store-dir";
+    throw new CommandFailure("refused", "USAGE_INVALID", `the --store-dir path ${path} is a link to ${real ?? `${readlinkSync(path)}, which does not exist`}; nothing was started or written`, { target: { storeDir: path, ...(real ? { linkTarget: real } : {}) }, remedy });
   }
   let existing = path, stat = statIfPresent(existing);
   while (!stat) {

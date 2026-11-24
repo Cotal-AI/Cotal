@@ -84,7 +84,7 @@ await runCli(registry, argv, {
   extensions: !desktopBridge && commandWord(argv) !== "docs",
   async prepare(word, help) {
     // Keep the recovery message available even when a command surface cannot load.
-    if (!help) installUpdateNotice(argv, currentVersion);
+    if (word !== undefined && !help) installUpdateNotice(argv, currentVersion);
     if (word !== undefined && registry.provides("command", word)) await registry.load("command", word);
     else await importing(...(Object.keys(surfaces) as Surface[]))();
     if (word === "update") await import("./daemon/update-entry.js");

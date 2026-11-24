@@ -1,5 +1,49 @@
 # cotal-ai
 
+## 0.176.5
+
+### Patch Changes
+
+- d6ab4a9: Running `cotal` without a command shows the entry screen without checking npm for updates or writing the update cache.
+- 6228e12: Backup restore reports a usage error for a store path inside the backup folder and tells you to choose an absent path outside it.
+- 4aca5c3: When a restore refuses a symbolic link as its store directory, it tells you to choose an unused path under an existing writable directory.
+- 6dd2e41: Retry a partial manifest teardown by run ID without passing the manifest path.
+- 1380bb4: Report invalid preferences as an error and an end record in JSON watch, history follow, and channel membership follow streams.
+- Updated dependencies [e7e6da6]
+- Updated dependencies [8c884a8]
+- Updated dependencies [2ec6796]
+- Updated dependencies [0a40e6e]
+- Updated dependencies [a53b944]
+- Updated dependencies [57dd126]
+- Updated dependencies [e6810ad]
+- Updated dependencies [cfb3c96]
+- Updated dependencies [4361c47]
+- Updated dependencies [1afc00e]
+- Updated dependencies [55bcc18]
+- Updated dependencies [e9f798e]
+- Updated dependencies [e9ec688]
+- Updated dependencies [b13f6e9]
+- Updated dependencies [6228e12]
+- Updated dependencies [f4c3814]
+- Updated dependencies [426469e]
+- Updated dependencies [4aca5c3]
+- Updated dependencies [6dd2e41]
+- Updated dependencies [ee3c94b]
+- Updated dependencies [1380bb4]
+- Updated dependencies [8719090]
+- Updated dependencies [0fda34d]
+- Updated dependencies [08c34f8]
+  - @cotal-ai/cli@0.176.5
+  - @cotal-ai/workspace@0.176.5
+  - @cotal-ai/runtime@0.176.5
+  - @cotal-ai/auth@0.176.5
+  - @cotal-ai/delivery@0.176.5
+  - @cotal-ai/manager@0.176.5
+  - @cotal-ai/connector-core@0.176.5
+  - @cotal-ai/registry@0.176.5
+  - @cotal-ai/core@0.176.5
+  - @cotal-ai/seat@0.176.5
+
 ## 0.176.4
 
 ### Patch Changes

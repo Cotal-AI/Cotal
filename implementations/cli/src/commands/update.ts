@@ -64,7 +64,6 @@ import { refreshOwnedCompletions } from "../lib/completion-install.js";
 import { onFlag } from "../lib/control.js";
 import {
   type CommandResult,
-  RegistryUnavailable,
   STRICT_SEMVER,
   installedUpdatePrefix,
   verifyGlobalEntry,
@@ -86,6 +85,8 @@ import {
   DependencyCheckInterrupted,
   DependencyCheckNoSpace,
   registryNetworkFailure,
+  deferStagingFailure,
+  offlineUpdateMessage,
   waitForReleasePreflight,
 } from "./update-release.js";
 import { refusal, reportRunningManagers } from "./update-continuity.js";
@@ -153,8 +154,8 @@ export interface UpdateRuntime {
   adoptUpdateChild?(): Promise<boolean | void>;
   /** The native updater can survive its daemon's restart and verify automatic activation. */
   automaticGenerationWait?: boolean;
-  /** Bring what connectors installed in their harnesses to this release; one line per connector. */
-  refreshConnectors(): Promise<readonly string[]>;
+  /** Bring what connectors installed in their harnesses to this release; report each completed refresh. */
+  refreshConnectors(report: (line: string) => void): Promise<void>;
   /** Bring the entries client setup wrote in ACP clients to this release, once the operator
    *  extensions that provide them are current; one line per client. */
   refreshClients(): Promise<readonly string[]>;
@@ -225,7 +226,7 @@ export const updateRuntime: UpdateRuntime = {
     } catch { return false; }
   },
   preflightReplacement: async () => { assertReadableSeedState(); },
-  refreshConnectors: refreshConnectorInstalls,
+  refreshConnectors: async (report) => { await refreshConnectorInstalls(report); },
   refreshClients: refreshClientInstalls,
   reconcile: async () => {
     await runSeed({ verify: true });
@@ -348,6 +349,7 @@ async function updateInstallation(args: ParsedArgs, rt: UpdateRuntime): Promise<
   }
   let connectorSelection: UnreadableConnectorSelection | undefined;
   let preflightChanged = false;
+  let permissionsRestored = false;
   let promotionRecovered = false;
   if (args.values.self === true) {
     try { preflightChanged = rt.preflightExecution?.() === true; }
@@ -360,7 +362,7 @@ async function updateInstallation(args: ParsedArgs, rt: UpdateRuntime): Promise<
       });
     }
     try {
-      promotionRecovered = prepareUpdateConnectorConfig(Boolean(rt.prepareExecution), () => { preflightChanged = true; });
+      promotionRecovered = prepareUpdateConnectorConfig(Boolean(rt.prepareExecution), () => { preflightChanged = true; }, () => { permissionsRestored = true; });
     } catch (error) {
       if (error instanceof UnreadableConnectorSelection) connectorSelection = error;
       else {
@@ -406,7 +408,7 @@ async function updateInstallation(args: ParsedArgs, rt: UpdateRuntime): Promise<
       rt.out(c.green(`✓ removed group and other write from ${repaired} ${repaired === 1 ? "entry" : "entries"} in Cotal's ${what} at ${root}`));
     }
   }
-  const code = await executeUpdate(Boolean(args.values.self), rt, args.values, restored ? undefined : connectorSelection, preflightChanged, promotionRecovered);
+  const code = await executeUpdate(Boolean(args.values.self), rt, args.values, restored ? undefined : connectorSelection, preflightChanged, promotionRecovered, permissionsRestored);
   if (code !== 0) process.exitCode = code;
   else if (args.values.self !== true && childBinding(rt).kind !== "bound") {
     clearUpdateRecovery();
@@ -579,7 +581,7 @@ function checkUpdate(args: ParsedArgs, rt: UpdateRuntime): void {
 }
 
 /** Injectable command body: production keeps one process seam; the smoke covers every decision branch. */
-export async function executeUpdate(self: boolean, rt: UpdateRuntime = updateRuntime, target: Record<string, unknown> = {}, unreadableSelection?: UnreadableConnectorSelection, preflightChanged = false, promotionRecovered = false): Promise<number> {
+export async function executeUpdate(self: boolean, rt: UpdateRuntime = updateRuntime, target: Record<string, unknown> = {}, unreadableSelection?: UnreadableConnectorSelection, preflightChanged = false, promotionRecovered = false, permissionsRestored = false): Promise<number> {
   const current = rt.version();
   const child = childBinding(rt);
   if (child.kind === "invalid") {
@@ -622,7 +624,7 @@ export async function executeUpdate(self: boolean, rt: UpdateRuntime = updateRun
 
   if (self) {
     const latest = latestVersion(rt);
-    if (!latest.ok) return await handleLatestVersionFailure(latest, current, rt, offlineUpdateMessage(preflightChanged), promotionRecovered);
+    if (!latest.ok) return await handleLatestVersionFailure(latest, current, rt, offlineUpdateMessage(preflightChanged), promotionRecovered, permissionsRestored);
     const upgrading = compareSemver(latest.version, current) > 0;
     if (rt.env.COTAL_AUTO_UPDATE === "1") {
       // The live npm lookup can select a different version from the one the daemon held.
@@ -737,7 +739,7 @@ async function reconcileCurrent(
   try {
     rt.out("Refreshing connector integrations");
     const refreshStarted = Date.now();
-    for (const line of await rt.refreshConnectors()) rt.out(c.green(`✓ ${line}`));
+    await rt.refreshConnectors((line) => rt.out(c.green(`✓ ${line}`)));
     rt.out(`✓ connector integrations refreshed (${((Date.now() - refreshStarted) / 1000).toFixed(1)} s)`);
   } catch (e) {
     rt.err(c.red(`✗ connector installs: ${message(e)}`));
@@ -858,10 +860,6 @@ export function verifyCurrentExtension(entry: InstalledExtension, generation: st
   for (const link of bindExtensionPeers([entry.pkg], entry.pkg))
     provenance.wrote(`${link.peer} link (${link.owner} → this CLI's copy)`, link.destination);
   return undefined;
-}
-
-function offlineUpdateMessage(repaired: boolean): string {
-  return repaired ? "The registry cannot be reached; no installed packages were replaced." : "The registry cannot be reached; nothing was changed.";
 }
 
 function preflightDetail(error: unknown): string {
@@ -1017,11 +1015,7 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
     } catch (error) {
       try { execution?.discard?.(); } catch { /* an unpublished copy left behind selects nothing */ }
       releaseGlobal();
-      if (!execution && (error instanceof RegistryUnavailable || message(error).startsWith("target staging failed: ") && registryNetworkFailure(error))) {
-        recordUpdateDeferral(targetVersion, "waiting for registry access", true);
-        rt.out(offlineUpdateMessage(preflightChanged || repairedSelection));
-        return 0;
-      }
+      if (!execution && deferStagingFailure(error, targetVersion, rt, preflightChanged || repairedSelection)) return 0;
       recordUpdateDeferral(targetVersion, `staged pre-install check refused: ${preflightDetail(error)}`);
       rt.err(`staged pre-install check refused: ${message(error)}; no installed packages were replaced`);
       return 1;

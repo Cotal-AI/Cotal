@@ -622,8 +622,10 @@ export async function startMeshDetached(
 /** Refuse a broker address another program holds without answering NATS, such as a web server, as
  *  the controller stack refuses it. nats-server would exit on its bind with only a log line, and the
  *  readiness probe would wait on that program instead. `command` is the start the remedy reruns. */
-export async function assertBrokerAddressFree(server: string, command: string, bindHost?: string): Promise<void> {
-  const conflict = await brokerAddressConflict(server, command, bindHost);
+export async function assertBrokerAddressFree(server: string, command: Parameters<typeof brokerAddressConflict>[1], bindHost?: string, waitForTimeWait = false): Promise<void> {
+  const conflict = await brokerAddressConflict(server, command, bindHost, waitForTimeWait ? (address, seconds) => {
+    process.stderr.write(`Waiting up to ${seconds} seconds for TIME-WAIT to clear on the broker address ${address}\n`);
+  } : undefined);
   if (!conflict) return;
   throw new CommandFailure("refused", "CONFLICT", `${conflict.message} (bind failed: address already in use); no broker was launched`, {
     target: { root: cotalRoot(), server, bindError: "EADDRINUSE" }, remedy: conflict.remedy,

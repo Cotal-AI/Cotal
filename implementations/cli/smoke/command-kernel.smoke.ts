@@ -15,6 +15,7 @@ import { commandUsage, findCommand, parseCommandArgs, registry, type Command } f
 import type { InstalledExtension } from "@cotal-ai/workspace";
 import "../src/index.js"; // self-register the CLI commands (for the completion check)
 import { complete } from "../src/commands/completion.js";
+import { scaffoldCheckCommand } from "../src/commands/endpoint-authoring.js";
 import { EXT_UPDATE_PARENT_ENV, ext } from "../src/commands/ext.js";
 import { hostPackageDir, isCommandFailure, MeshTargetError, seededCommandsMismatch, telemetrySettingsPath, writeUpdateRecovery, readUpdateRecovery, clearUpdateRecovery } from "@cotal-ai/workspace";
 import { executeUpdate, installedUpdatePrefix, parseNpmVersion, printLegacyReport, reportRunningManagers, update, validateUpdateArguments, verifyCurrentExtension, verifyGlobalEntry, type UpdateRuntime } from "../src/commands/update.js";
@@ -300,7 +301,7 @@ function updateRuntime(opts: {
     nodePath: "/node",
     version: () => opts.version ?? "0.13.1",
     reconcile: async () => void events.push("reconcile"),
-    refreshConnectors: async () => (events.push("refresh-connectors"), []),
+    refreshConnectors: async () => void events.push("refresh-connectors"),
     refreshClients: async () => (events.push("refresh-clients"), []),
     automaticUpdateAdvice: async () => undefined,
     reportRunningManager: async () => {
@@ -834,10 +835,9 @@ async function completionOut(positionals: string[]): Promise<string> {
 }
 
 // --- endpoint init's Next is the check command for the contract it created ------------------------
-{
-  const { scaffoldCheckCommand } = await import("../src/commands/endpoint-authoring.js");
-  assert.equal(scaffoldCheckCommand("/run/ep/reviews"), "cotal ep check /run/ep/reviews/contract.json", "the scaffold's Next names its own contract, not a placeholder");
-  assert.equal(scaffoldCheckCommand("/run/it's here"), "cotal ep check '/run/it'\\''s here/contract.json'", "a scaffold path a shell would split is quoted");
+if (process.platform !== "win32") {
+  assert.equal(scaffoldCheckCommand("/run/ep/reviews"), "cotal endpoint check /run/ep/reviews/contract.json", "the scaffold's Next names its own contract, not a placeholder");
+  assert.equal(scaffoldCheckCommand("/run/it's here"), "cotal endpoint check '/run/it'\\''s here/contract.json'", "a scaffold path a shell would split is quoted");
   const { runCli } = await import("../src/command.js");
   const priorXdg = process.env.XDG_CONFIG_HOME;
   const scaffold = realpathSync(mkdtempSync(join(tmpdir(), "cotal-ep-init-")));
@@ -852,12 +852,15 @@ async function completionOut(positionals: string[]): Promise<string> {
     } finally {
       process.stdout.write = real;
     }
-    assert.ok(out.includes(scaffoldCheckCommand(dir)), "endpoint init's Next is the check command for the contract it created");
+    const expected = scaffoldCheckCommand(dir);
+    assert.ok(expected && [expected, `pnpm ${expected}`].some((command) => out.includes(command)), "endpoint init's Next is the check command for the contract it created");
   } finally {
     if (priorXdg === undefined) delete process.env.XDG_CONFIG_HOME;
     else process.env.XDG_CONFIG_HOME = priorXdg;
     rmSync(scaffold, { recursive: true, force: true });
   }
+} else {
+  assert.equal(scaffoldCheckCommand("C:\\work\\reviewer's copy"), undefined, "Windows does not get a POSIX-quoted scaffold command");
 }
 
 // --- up rejects pure flag conflicts before even checking a supplied project root ----------------
@@ -1114,6 +1117,7 @@ async function completionOut(positionals: string[]): Promise<string> {
       packages: { "": { name: "cotal-extensions", dependencies: { [pkg]: `^${version}` } }, [`node_modules/${pkg}`]: meta },
     }));
     writeFileSync(join(installedDir, "package.json"), JSON.stringify({ ...meta, version: onDisk }));
+    writeFileSync(join(installedDir, "index.js"), "");
   };
   const run = async (entry: InstalledExtension) => {
     const r = updateRuntime({ extensions: [entry], verifyExtension: verifyCurrentExtension });
@@ -1135,6 +1139,7 @@ async function completionOut(positionals: string[]): Promise<string> {
       ["recorded at an older version", () => prefixAt("0.13.0"), installed(pkg, "0.13.0", `${pkg}@0.13.0`), "recorded at 0.13.0, not 0.13.1"],
       ["installed at an older version than recorded", () => prefixAt("0.13.1", "0.13.0"), installed(pkg, "0.13.1", `${pkg}@0.13.1`), `node_modules/${pkg} is 0.13.0 on disk and 0.13.1 in the prefix lock`],
       ["missing its package tree", () => { prefixAt("0.13.1"); rmSync(installedDir, { recursive: true }); }, installed(pkg, "0.13.1", `${pkg}@0.13.1`), `node_modules/${pkg} is recorded in the prefix lock but not installed`],
+      ["missing its entry file", () => { prefixAt("0.13.1"); rmSync(join(installedDir, "index.js")); }, installed(pkg, "0.13.1", `${pkg}@0.13.1`), "entry file is missing"],
     ] as const) {
       setup();
       const stale = await run(entry);
@@ -1153,10 +1158,15 @@ async function completionOut(positionals: string[]): Promise<string> {
 // --- a connector refresh that fails fails the update ----------------------------------------------
 {
   const failing = updateRuntime({});
-  failing.rt = { ...failing.rt, refreshConnectors: async () => { throw new Error("plugin update failed (cotal, /p)"); } };
+  failing.rt.refreshConnectors = async (report) => {
+    report("Independent plugin: repaired");
+    throw new Error("plugin update failed (cotal, /p)");
+  };
   const code = await executeUpdate(false, failing.rt);
   assert.equal(code, 1, "a stale harness copy is not reported as a finished update");
+  assert.ok(failing.events.some((event) => event.includes("✓ Independent plugin: repaired")));
   assert.ok(failing.events.some((event) => event.includes("✗ connector installs: plugin update failed (cotal, /p)")));
+  assert.ok(!failing.events.some((event) => event.includes("✓ connector integrations refreshed")));
 }
 
 // --- a running legacy manager is reported, then blocks an update before replay --------------------

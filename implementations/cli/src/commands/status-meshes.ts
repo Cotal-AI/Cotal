@@ -208,7 +208,7 @@ function unusableServiceInstances(space: string): CommandFailure | undefined {
   catch (error) { return isCommandFailure(error) && error.code === "SCHEMA_INVALID" ? error : undefined; }
 }
 
-export async function readSelected(selected: Selected, responder: { state: DeliveryResponderState; leased: boolean }, folder: StatusResult["folder"], gaps: Gaps, hints: string[], preflight: SelectedPreflight, all: boolean): Promise<SelectedResult> {
+export async function readSelected(selected: Selected, responder: { state: DeliveryResponderState; leased: boolean }, folder: StatusResult["folder"], gaps: Gaps, hints: string[], preflight: SelectedPreflight, all: boolean, stackStarting: boolean): Promise<SelectedResult> {
   const cmd = displayCmd();
   if (!selected.ok) {
     const e = selected.error;
@@ -255,6 +255,10 @@ export async function readSelected(selected: Selected, responder: { state: Deliv
       ...(e.code === "not-started" && d.space !== undefined && d.root !== undefined && !d.rootMissing ? { space: d.space, root: d.root } : {}),
       ...(elsewhere !== undefined ? { space: targetErrorSpace(d)!, recordedRoot: d.recordedRoot! } : {}),
     };
+    if (stackStarting && servedStack(folder, result)) {
+      result.message = `"${result.space}" is prepared and its stack is starting`;
+      return result;
+    }
     // An unwritable store blocks a restart from this root.
     const store = e.code === "not-started" && d.root !== undefined && !d.rootMissing ? rootStoreProblem(d.root) : undefined;
     const writeProblem = e.code === "not-started" && preparedNeverStarted(d) ? preparedRootWriteProblem(d.root) : undefined;

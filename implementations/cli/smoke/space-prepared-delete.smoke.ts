@@ -210,6 +210,27 @@ check("bare doctor auth --fix there still refuses AUTH_REQUIRED, exit 2, naming 
     repaired.status === 2 && repaired.envelope?.error?.remedy === DOCTOR_HERE, shown(repaired));
 }
 
+if (typeof process.getuid === "function" && process.getuid() !== 0) {
+  const store = join(realpathSync(root), ".cotal", "nats");
+  mkdirSync(store, { mode: 0o500 });
+  try {
+    const diagnosis = run(["doctor", "auth", "--plain"]);
+    const fix = run(["doctor", "auth", "--fix", "--space", "b4b", "--json"]);
+    const repair = `chmod -R u+w ${store}`;
+    const diagnosisText = diagnosis.stdout + diagnosis.stderr;
+    check("bare doctor auth stays partial and names the store repair before the first start",
+      diagnosis.status === 4 && diagnosisText.includes(`the broker store ${store} is not writable`) &&
+      ["cotal", "pnpm cotal"].some((launcher) => diagnosisText.includes(`${repair}, then start it with \`${launcher} up\``)), shown(diagnosis));
+    check("doctor auth --fix keeps AUTH_REQUIRED, names the store repair, and leaves its mode unchanged",
+      fix.status === 2 && fix.envelope?.error?.code === "AUTH_REQUIRED" &&
+      fix.envelope.error.remedy?.includes(`${repair}, then start it with \`cotal up\``) === true &&
+      (statSync(store).mode & 0o777) === 0o500, shown(fix));
+  } finally {
+    chmodSync(store, 0o700);
+    rmSync(store, { recursive: true });
+  }
+}
+
 // From another folder the step names the prepared root with --root, quoted so a shell reads it back
 // as that folder.
 const special = join(home, "it's $HOME d");
