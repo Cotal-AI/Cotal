@@ -4113,9 +4113,9 @@
     {
       "path": "implementations/cli/src/commands/whoami.ts",
       "kind": "status-token",
-      "anchor": "t: \"not started\", tone: \"waiting\" }],\n    [\"identity\", id",
+      "anchor": " : \"not started\", tone: \"waiting\" }],\n    [\"identity\", id",
       "class": "non-render/control",
-      "rationale": "Whoami server field: \"waiting\" is the color tone for a space not started, not any peer's presence."
+      "rationale": "Whoami server field: \"waiting\" is the color tone for a stopped or not-yet-started space, not any peer's presence."
     },
     {
       "path": "implementations/cli/src/commands/whoami.ts",
