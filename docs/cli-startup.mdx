@@ -164,7 +164,9 @@ provide. A manager that stops on such a gate says this in its log, including tha
 `cotal manager reconcile` refuses the gate. Keep that store intact; upgrading alone does not recover that state.
 `--no-manager` is the broker-only mode: it boots
 the broker (and the delivery daemon in auth mode) and starts no manager, so there is no manager
-pidfile to leave stale. Authenticated starts and refreshes warn that no local process re-signs the
+pidfile to leave stale. If the requested broker settings conflict with the recorded ones, the retry
+keeps `--no-manager`, including when restarting to apply new log settings.
+Authenticated starts and refreshes warn that no local process re-signs the
 daemon credentials and list their stored expiry times. A manager must renew the same secret store;
 the daemon only adopts re-signed credentials. `cotal doctor auth` inspects their local health.
 A refresh under the flag of a mesh whose manager is live refuses rather
@@ -426,7 +428,8 @@ controller. It records its mode, definitions and full instance IDs in the privat
 `--user-auth` that names another mode refuses `CONFLICT`, exit 2, whether the stack runs or not.
 `reset store`, `reset space`, `clean all` and `space forget` all keep the journal, so none of them
 changes the mode. To run another mode, run `cotal space create <space>` in another folder, then
-`cotal up --open` or `cotal up --user-auth` there.
+`cotal up --open` or `cotal up --user-auth` there. If you requested `--no-manager`, both suggested
+starts keep it so the retry does not add a Manager.
 Static-auth startup prepares trust and configuration, starts
 the broker, initializes native streams, then starts delivery and the optional manager. Open startup
 prepares an unauthenticated broker and streams, then the optional manager; it creates no delivery
@@ -982,8 +985,12 @@ Two things to know before you run it:
   `server.conf` on some other port writes none of them and will not be seen. Do not run one.
 - **It invalidates earlier full backups.** A full artifact binds to the trust chain it was taken
   against, and that commitment covers the operator JWT and the system account. Every full backup
-  taken before a rotation refuses to restore afterwards, so take a fresh `cotal backup` once the
-  rotated mesh is up. `cotal up --restore` names this case when the data account still matches.
+  taken before a rotation refuses to restore afterwards. `cotal up --restore` names this case when
+  the data account still matches. If your stack supports preservation, wait for the rotated mesh
+  to boot successfully. When ready to stop it, follow the
+  [preserve-and-backup sequence](backup-a-mesh.mdx).
+  From the stopped, preserved project root, run `cotal backup create ./space-backup` to take a
+  fresh full backup. Keep the stack stopped until the backup completes.
 
 The commit is not atomic (a trust-record write plus two credential writes), so an interrupted
 rotation leaves the record ahead of the creds. That split is detected rather than silent: every

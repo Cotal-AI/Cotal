@@ -449,7 +449,9 @@ function previewPresetStart(resolved: PresetServiceTarget, space: string, root: 
   if (launch.adapter === STACK_ADAPTER.manager) {
     assertManagerStartOptions(space, launch.options);
     const host = launch.options["console-host"];
-    if (typeof host === "string" && /[\u0000- \u007f]/u.test(host)) throw new CommandFailure("refused", "USAGE_INVALID", "the declared console host contains whitespace or controls; no native child was launched", { target, selfContained: true });
+    if (typeof host === "string" && /[\u0000- \u007f]/u.test(host)) throw new CommandFailure("refused", "USAGE_INVALID", "--console-host contains whitespace or controls; no native child was launched", {
+      target, selfContained: true, remedy: "replace the invalid host with `--console-host 127.0.0.1`, keeping the other flags unchanged",
+    });
   }
   writeResult(presentation, { command: commandName, target, result: { kind: "service-operation-preview", operation: "start", dryRun: true, definitionWouldBeSaved: true, preset: resolved.preset, adapter: launch.adapter, optionNames: Object.keys(launch.options).sort(), saved: false, allocated: false, providerCodeLoaded: false } }, (): Report => ({ sections: [{ title: "Service operation preview", blocks: [
     { kind: "fields", rows: [["Action", "start"], ["Service", resolved.name], ["Space", space], ["Definition", `would be saved from the ${resolved.preset} preset`], ["Options", Object.keys(launch.options).sort().map((name) => `--${name}`).join(", ") || "none"]] },
