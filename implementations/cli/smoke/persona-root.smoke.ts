@@ -740,20 +740,34 @@ try {
   }
 
   const spacedSource = "sample card.md";
-  const importBytes = Buffer.from("---\nname: sample\nsubscribe: []\n---\nReview a sample.\n");
-  writeFileSync(join(scratch, spacedSource), importBytes);
-  const mismatch = native(["persona", "create", "other", "--file", spacedSource, "--space", "alpha", "--plain"], scratch);
-  const retry = mismatch.stderr.match(/create it under its own name with `([^`]+)`/)?.[1];
-  check("a mismatched import quotes the original filename and preserves the catalog selector",
-    mismatch.status === 1 && mismatch.stderr.includes("SCHEMA_INVALID") &&
-      retry === "cotal persona create sample --file 'sample card.md' --space alpha" && !existsSync(agentFilePath(ALPHA, "other")), mismatch.stderr);
-  if (process.platform !== "win32" && retry === "cotal persona create sample --file 'sample card.md' --space alpha") {
-    const copied = spawnSync("sh", ["-c", `cotal() { "$NODE" "$CLI" "$@"; }; ${retry}`], {
-      cwd: scratch, env: { ...childEnv, NODE: process.execPath, CLI: binary }, encoding: "utf8", timeout: 30_000,
-    });
-    const imported = agentFilePath(ALPHA, "sample");
-    check("the retry works as printed and imports the original bytes into alpha",
-      copied.status === 0 && existsSync(imported) && readFileSync(imported).equals(importBytes), copied.stdout + copied.stderr);
+  for (const format of ["plain", "json"]) {
+    const name = `sample-${format}`;
+    const importBytes = Buffer.from(`---\nname: ${name}\nsubscribe: []\n---\nReview a sample.\n`);
+    writeFileSync(join(scratch, spacedSource), importBytes);
+    const mismatch = native(["persona", "create", "other", "--file", spacedSource, "--space", "alpha", `--${format}`], scratch);
+    const failure = format === "json" ? JSON.parse(mismatch.stdout).error : undefined;
+    const schemaInvalid = format === "json" ? failure?.code === "SCHEMA_INVALID" : mismatch.stderr.includes("SCHEMA_INVALID");
+    const remedy = format === "json" ? failure?.remedy : mismatch.stderr;
+    const retry = remedy?.match(/create it under its own name with `([^`]+)`/)?.[1];
+    const launchers = format === "json" ? ["cotal"] : ["cotal", "pnpm cotal"];
+    check(`a mismatched import quotes the filename and keeps --space and --${format}`,
+      mismatch.status === 1 && schemaInvalid &&
+        launchers.some(cli => retry === `${cli} persona create ${name} --file 'sample card.md' --space alpha --${format}`) &&
+        !existsSync(agentFilePath(ALPHA, "other")), mismatch.stdout + mismatch.stderr);
+    if (process.platform !== "win32") {
+      const copied = spawnSync("sh", ["-c", `cotal() { "$NODE" "$CLI" "$@"; }; pnpm() { "$@"; }; ${retry}`], {
+        cwd: scratch, env: { ...childEnv, NODE: process.execPath, CLI: binary }, encoding: "utf8", timeout: 30_000,
+      });
+      const imported = agentFilePath(ALPHA, name);
+      check(`the --${format} retry imports the original bytes into alpha`,
+        copied.status === 0 && existsSync(imported) && readFileSync(imported).equals(importBytes), copied.stdout + copied.stderr);
+      if (format === "json") {
+        const receipt = JSON.parse(copied.stdout);
+        check("the printed JSON retry returns a persona-written document for alpha",
+          receipt.outcome === "ok" && receipt.target?.space === "alpha" && receipt.result?.kind === "persona-written" &&
+            receipt.result?.name === name, copied.stdout + copied.stderr);
+      }
+    }
   }
 
   const decoyFile = agentFilePath(ALPHA, "encoded");
@@ -821,10 +835,11 @@ try {
   const stdinRetry = stdinFailure?.remedy.match(/pipe the original definition into `([^`]+)` again/)?.[1];
   check("the stdin name-mismatch remedy says to pipe the original bytes into the same catalog",
     stdinMismatch.status === 1 && stdinFailure?.code === "SCHEMA_INVALID" &&
-    stdinRetry === "cotal persona create piped-card --file - --space alpha" && !existsSync(agentFilePath(ALPHA, "other-stdin")), stdinMismatch.stdout);
+    stdinRetry === "cotal persona create piped-card --file - --space alpha --json" && !existsSync(agentFilePath(ALPHA, "other-stdin")), stdinMismatch.stdout);
   const pipedRetry = native(stdinRetry.split(" ").slice(1), scratch, childEnv, piped);
   check("the corrected command saves the original stdin definition to alpha",
-    pipedRetry.status === 0 && readFileSync(agentFilePath(ALPHA, "piped-card")).equals(piped), pipedRetry.stdout + pipedRetry.stderr);
+    pipedRetry.status === 0 && JSON.parse(pipedRetry.stdout).result?.kind === "persona-written" &&
+      readFileSync(agentFilePath(ALPHA, "piped-card")).equals(piped), pipedRetry.stdout + pipedRetry.stderr);
 
   for (const [field, value, expected] of [
     ["model", "42", '"model" must be a string; got number'],
