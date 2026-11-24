@@ -388,7 +388,7 @@ console.log(JSON.stringify(${JSON.stringify(version)}));
             const resolved = realpathSync(namedNode);
             const pathHead = binName.includes(delimiter) ? onlyNode : dirname(resolved);
             for (const launch of [() => runGlobalProcess(root, "reconcile", file, args, env), () => runProcess(file, args, env)]) {
-              const child = await npmProjectDirectory.run(project, launch);
+              const child = await npmProjectDirectory.run(project, () => launch());
               assert.equal(child.status, 0, child.stdout + child.stderr);
               assert.deepEqual(recordedLaunches().at(-1), {
                 node: resolved, cwd: parse(root).root, pathHead,
