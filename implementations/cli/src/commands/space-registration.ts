@@ -238,7 +238,7 @@ export async function spaceAdd(rest: readonly string[], v: AddValues, presentati
 export type Added = { readonly result: SpaceAdded; readonly warnings: OutputWarning[] } | undefined;
 
 async function addFromServer(name: string | undefined, v: AddValues, prompt: boolean): Promise<Added> {
-  if (name === undefined) throw usage("name the space to add", "cotal space add <name> --server <url>");
+  if (name === undefined) throw usage("name the space to add", `repeat the same command with the space name after \`add\`${v.server === undefined ? " and its broker address in --server <url>" : ""}`);
   const target = { space: name };
   if (v.server === undefined) throw usage("--server <url> is required: a space that runs elsewhere has no address to infer", "pass its broker URL, for example --server nats://100.90.12.34:4222");
   const server = take(checkServer(v.server, "--server"), target);
