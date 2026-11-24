@@ -554,8 +554,8 @@ checkouts still install a separate global copy; Windows keeps npm's configured g
 From 0.167.1, self-update restores owner write permission on user-owned package, `dist`,
 `node_modules` and `lib` directories before checking release archives. It leaves file modes and
 other accounts' directories unchanged. If write access still fails, it names the user-owned
-directory to repair without recommending sudo. An unwritable `node_modules` directory is checked
-before downloading archives or reserving the update lock.
+directory to repair without recommending sudo. Self-update repairs an owned read-only `node_modules`
+directory before taking the lock to remove abandoned installation staging.
 If an installation owned by another account is not writable, the update refuses before replacing it.
 For a root-owned npm installation, have an administrator follow the printed npm install command.
 The command uses `sudo` if it is on PATH, otherwise `doas` if it is on PATH. If neither is
