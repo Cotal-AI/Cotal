@@ -30,7 +30,7 @@ if (!existsSync(BIN)) {
   process.exit(1);
 }
 
-interface Envelope { outcome?: string; target?: { root?: string; space?: string | null }; result?: { space?: string | null; credentialScope?: string; repair?: { attempted?: boolean } }; warnings?: { code: string }[]; error?: { code?: string; message?: string; remedy?: string } }
+interface Envelope { command?: string; outcome?: string; target?: { root?: string; space?: string | null }; result?: { space?: string | null; credentialScope?: string; repair?: { attempted?: boolean } }; warnings?: { code: string }[]; error?: { code?: string; message?: string; remedy?: string } }
 
 const { check, finish } = createSuite();
 const home = mkdtempSync(join(tmpdir(), "cotal-prepared-delete-"));
@@ -129,8 +129,13 @@ const DOCTOR_HERE = '"b4b" is prepared but not started; start it with `cotal up`
 const cotalBefore = readdirSync(join(root, ".cotal")).sort();
 const doctorJson = run(["doctor", "auth", "--space", "b4b", "--json"]);
 check("doctor auth --space in a prepared space's root still refuses AUTH_REQUIRED, exit 2, with that root as its target",
-  doctorJson.status === 2 && doctorJson.envelope?.error?.code === "AUTH_REQUIRED" && doctorJson.envelope.target?.root === realpathSync(root) && doctorJson.envelope.target?.space === "b4b", shown(doctorJson));
+  doctorJson.status === 2 && doctorJson.stderr === "" && doctorJson.envelope?.command === "doctor auth" && doctorJson.envelope.outcome === "refused"
+    && doctorJson.envelope.error?.code === "AUTH_REQUIRED" && doctorJson.envelope.target?.root === realpathSync(root) && doctorJson.envelope.target?.space === "b4b", shown(doctorJson));
 check("its step is to start the space, then run the same command again", doctorJson.envelope?.error?.remedy === DOCTOR_HERE, doctorJson.envelope?.error);
+const doctorEmptySpace = run(["doctor", "auth", "--space=", "--json"]);
+check("doctor auth with an empty --space names the subcommand in its USAGE_INVALID refusal",
+  doctorEmptySpace.status === 1 && doctorEmptySpace.stderr === "" && doctorEmptySpace.envelope?.command === "doctor auth"
+    && doctorEmptySpace.envelope.outcome === "refused" && doctorEmptySpace.envelope.error?.code === "USAGE_INVALID", shown(doctorEmptySpace));
 const doctorPlain = run(["doctor", "auth", "--space", "b4b"]);
 const plainText = doctorPlain.stdout + doctorPlain.stderr;
 check("the plain refusal prints that step under Next", doctorPlain.status === 2 && plainText.includes(`Next\n  ${DOCTOR_HERE}\n`) && !plainText.includes("in that space's root folder"), shown(doctorPlain));
@@ -164,7 +169,7 @@ const BARE_HERE = '"b4b" is prepared but not started; start it with `cotal up`, 
 }
 const bareJson = run(["doctor", "auth", "--json"]);
 check("bare doctor auth in a prepared space's root stays partial, exit 4, with no space or credential scope established",
-  bareJson.status === 4 && bareJson.envelope?.outcome === "partial" && bareJson.envelope.error?.code === "OPERATION_PARTIAL" && bareJson.envelope.target?.root === realpathSync(root)
+  bareJson.status === 4 && bareJson.envelope?.command === "doctor auth" && bareJson.envelope.outcome === "partial" && bareJson.envelope.error?.code === "OPERATION_PARTIAL" && bareJson.envelope.target?.root === realpathSync(root)
     && bareJson.envelope.result?.space === null && bareJson.envelope.result?.credentialScope === "not-established", shown(bareJson));
 check("its step is to start the space this root prepared, then run the same command again", bareJson.envelope?.error?.remedy === BARE_HERE, bareJson.envelope?.error);
 const barePlain = run(["doctor", "auth"]);
