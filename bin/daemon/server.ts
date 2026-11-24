@@ -28,8 +28,7 @@ import { connectCheck } from "./connect.js";
 import { createServiceConnections } from "./service.js";
 import { findMesh, homeCotalDir, isCommandFailure, isMeshRegistryError, meshFile, readMeshRegistry, readUpdateSettings, setUpdateSetting } from "@cotal-ai/workspace";
 import { NON_USER_AUTH_MESSAGE, NON_USER_AUTH_REMEDY } from "./guidance.js";
-import { desktopSpaces } from "./desktop-state.js";
-import { spacesReplyLines } from "./spaces-reply.js";
+import { replyDesktopSpaces } from "./desktop-state.js";
 import { idpTimeoutMs, signOutIdpSession, withIdpSessionDir } from "@cotal-ai/auth";
 import { createHostedManagers, HostedManagerRefusal } from "./manager.js";
 import { createAccountReconciler } from "./account-reconcile.js";
@@ -388,25 +387,7 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
         return;
       }
       if (req.op === "spaces") {
-        replyTask(desktopSpaces(machineHome, req.refresh === true).then(async (result) => {
-          const reply = { v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: true, result } as const;
-          if (!req.stream) {
-            counters.spacesAnswered++;
-            return write(reply);
-          }
-          const lines = spacesReplyLines(result, data => ({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: true, ...data }));
-          if (!lines) {
-            counters.requestsRefused++;
-            return write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: false, error: { code: "SPACES_UNAVAILABLE", message: "the space list exceeds the reply size limit; run cotal sync to inspect catalog conflicts" } });
-          }
-          counters.spacesAnswered++;
-          for (const line of lines) await write(line);
-        }, (error: unknown) => {
-          counters.requestsRefused++;
-          if (isCommandFailure(error) && error.code === "DEPENDENCY_UNAVAILABLE")
-            return write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: false, error: { code: error.code, message: error.message, remedy: error.remedy } });
-          return write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: false, error: { code: "SPACES_UNAVAILABLE", message: "the daemon could not read its spaces" } });
-        }));
+        replyTask(replyDesktopSpaces(machineHome, req, counters, write));
         return;
       }
       if (req.op === "space-intent") {
