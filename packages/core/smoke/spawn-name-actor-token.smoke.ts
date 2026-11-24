@@ -244,8 +244,9 @@ check("instrument control: the CLI's spawn source was located",
   { len: CLI_RAW.length, launchLen: CLI_LAUNCH_RAW.length });
 const CLI_AST = ts.createSourceFile("spawn.ts", CLI_RAW, ts.ScriptTarget.Latest);
 const CLI_LAUNCH_AST = ts.createSourceFile("spawn-managed-launch.ts", CLI_LAUNCH_RAW, ts.ScriptTarget.Latest);
+const CLI_FLAGS_AST = ts.createSourceFile("spawn-flags.ts", readFileSync(join(CLI_DIR, "spawn-flags.ts"), "utf8"), ts.ScriptTarget.Latest);
 // Parsed, so only a real value import binding the export to its own name counts, wherever it sits in the list.
-const CORE_IMPORTS = CLI_LAUNCH_AST.statements
+const importsCoreNameRule = (source: ts.SourceFile): boolean => source.statements
   .filter(ts.isImportDeclaration)
   .filter((d) => ts.isStringLiteral(d.moduleSpecifier) && d.moduleSpecifier.text === "@cotal-ai/core" && !d.importClause?.isTypeOnly)
   .flatMap((d) => {
@@ -253,20 +254,27 @@ const CORE_IMPORTS = CLI_LAUNCH_AST.statements
     return named && ts.isNamedImports(named) ? named.elements : [];
   })
   .filter((e) => !e.isTypeOnly && (e.propertyName ?? e.name).text === e.name.text)
-  .map((e) => e.name.text);
-check("the CLI calls the shared name door (import present)",
-  CORE_IMPORTS.includes("spawnNameError"));
-const DOOR_CALLS: ts.CallExpression[] = [];
-const collectDoorCalls = (node: ts.Node): void => {
-  if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === "refuseUnmintableName")
-    DOOR_CALLS.push(node);
-  ts.forEachChild(node, collectDoorCalls);
-};
-collectDoorCalls(CLI_AST);
-collectDoorCalls(CLI_LAUNCH_AST);
+  .some((e) => e.name.text === "spawnNameError");
+function callsNamed(node: ts.Node, name: string): ts.CallExpression[] {
+  const calls: ts.CallExpression[] = [];
+  const visit = (child: ts.Node): void => {
+    if (ts.isCallExpression(child) && ts.isIdentifier(child.expression) && child.expression.text === name) calls.push(child);
+    ts.forEachChild(child, visit);
+  };
+  visit(node);
+  return calls;
+}
+check("both CLI name wrappers call the shared core predicate",
+  ([[CLI_LAUNCH_AST, "refuseUnmintableName"], [CLI_FLAGS_AST, "refuseDirectSpawnName"]] as const).every(([source, name]) => {
+    const wrapper = source.statements.find((s) => ts.isFunctionDeclaration(s) && s.name?.text === name);
+    return importsCoreNameRule(source) && wrapper !== undefined && callsNamed(wrapper, "spawnNameError").length > 0;
+  }));
+const detachedCalls = callsNamed(CLI_LAUNCH_AST, "refuseUnmintableName");
+const foregroundCalls = callsNamed(CLI_AST, "refuseDirectSpawnName");
+const DOOR_CALLS = [...detachedCalls, ...foregroundCalls];
 check("the CLI calls the shared name door (call sites: detached + foreground)",
-  DOOR_CALLS.length === 2,
-  { sites: DOOR_CALLS.length });
+  detachedCalls.length === 1 && foregroundCalls.length === 1,
+  { detached: detachedCalls.length, foreground: foregroundCalls.length });
 // Parentheses change no behaviour, so they must not change the verdict.
 const unparen = (node: ts.Expression): ts.Expression =>
   ts.isParenthesizedExpression(node) ? unparen(node.expression) : node;

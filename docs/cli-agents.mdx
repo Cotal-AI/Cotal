@@ -332,13 +332,18 @@ missing target, the preview warns that the launch cannot write the default and e
 launch refuses with `TARGET_NOT_FOUND` (exit 2). Restore the target or move the link aside before
 retrying. Neither command replaces the link. A direct preview refuses other missing
 personas with `TARGET_NOT_FOUND` (exit 2).
+If a persona link has no reachable target because a path component is missing or is a regular
+file where a folder is needed, the launch names the link and its target. Restore the target or
+move the link aside and put a regular persona file in its place. For a managed launch, make the
+repair on the manager's host.
 When a managed launch is refused because the chosen
 manager's catalog has no such persona, the refusal names that manager, its host and the catalog file
 to create there. The next step gives the spawn again with `--on` for each of your other live managers
 whose catalog lists it. If the default is missing and no other manager has it, the next step gives a complete
 `cotal persona create default` command to run in the displayed project on the manager's host. Run the
 spawn again after creating the persona. You do not need to restart the manager. The launch flags
-override the file. On a user-auth mesh the
+override the file. If a launch in this terminal refuses the frontmatter name, its retry uses
+`--name` and keeps the other launch options. It does not change the persona file. On a user-auth mesh the
 effective name is also the agent's actor token, so it must match the token grammar (no `-`) and stay
 within 64 characters; the spawn is refused with that explanation before any request is sent. A spawn runs the agent attached
 to your terminal; `--detach` and `--on` hand the launch to a manager. If a detached launch finds the
@@ -551,6 +556,7 @@ Quote a name with spaces: `cotal persona show 'a b'` reads `.cotal/agents/a b.md
 not `review.md` in the project root.
 If a catalog name starts with `-`, put options before `--` and the name after it, as in `cotal persona show --json -- -reviewer`.
 Local create and show reports use that form in their follow-up commands and keep explicit `--space` and `--server` selectors.
+The local list keeps those selectors in its suggested show, create and process commands.
 If `persona show` cannot find the name, its suggested list command keeps those selectors too.
 Local creation uses the catalog name as the default agent name. Choose a name that starts with a
 letter, digit or `_`. A leading hyphen is refused with `USAGE_INVALID` before anything is written.
