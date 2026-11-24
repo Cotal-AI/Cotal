@@ -882,12 +882,12 @@ async function controllerSighupCell(): Promise<void> {
   }
 }
 
-async function checkRecordedAddressWait(mesh: string, env: NodeJS.ProcessEnv, port: number): Promise<void> {
+async function checkAddressWait(mesh: string, env: NodeJS.ProcessEnv, port: number, args: string[]): Promise<void> {
   const listener = createServer((socket) => socket.resetAndDestroy());
   listener.listen(port, "127.0.0.1");
   await once(listener, "listening");
   try {
-    const refusal = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["up", "--foreground", "--no-manager"], 15_000);
+    const refusal = await foregroundCliProbe(cliEntry, tsx, mesh, env, args, 15_000);
     assert.ok(refusal.code === 2 && refusal.err.includes("address already in use"), refusal.out + refusal.err);
     assert.doesNotMatch(refusal.err, /Waiting .* for TIME-WAIT to clear/); passed++;
   } finally { await new Promise<void>((done) => listener.close(() => done())); }
@@ -1065,7 +1065,7 @@ async function controllerHoldCell(kind: "takeover" | "other-home" | "broker-cras
       assert.equal(down.code, 0, down.out + down.err);
       await until(() => holder.state.closed, 10_000, () => holder.io.err);
       assert.equal(holder.state.code, 0, holder.io.err);
-      await checkRecordedAddressWait(mesh, env, port);
+      await checkAddressWait(mesh, env, port, ["up", "--foreground", "--no-manager"]);
       taker = foreground(["--no-manager"]);
       await until(() => {
         if (taker!.state.exited) throw new Error(taker!.io.out + taker!.io.err);
@@ -1187,29 +1187,56 @@ async function openBrokerOnlyRestartCell(): Promise<void> {
   const env = { ...cleanEnv, HOME: home, COTAL_HOME: join(home, "machine"), XDG_CONFIG_HOME: join(home, "xdg"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" };
   const sandbox = recordSmokeSandbox({ root: mesh, cotalHome: env.COTAL_HOME, xdgConfigHome: env.XDG_CONFIG_HOME });
   const space = "open-restart", port = await freePort();
-  const child = spawn(process.execPath, ["--import", tsx, cliEntry, "up", "--foreground", "--open", "--no-manager", "--max-payload", "262144", "--space", space, "--server", `nats://127.0.0.1:${port}`], { cwd: mesh, env, stdio: ["ignore", "pipe", "pipe"] });
-  const state = observeOwnedChild(child);
+  const server = `nats://127.0.0.1:${port}`;
+  const upArgs = ["up", "--foreground", "--open", "--no-manager", "--max-payload", "262144", "--space", space, "--server", server];
   let output = "";
-  for (const stream of [child.stdout, child.stderr]) stream.on("data", (chunk: Buffer) => { output += chunk.toString(); });
+  const foreground = () => {
+    output = "";
+    const child = spawn(process.execPath, ["--import", tsx, cliEntry, ...upArgs], { cwd: mesh, env, stdio: ["ignore", "pipe", "pipe"] });
+    for (const stream of [child.stdout, child.stderr]) stream.on("data", (chunk: Buffer) => { output += chunk.toString(); });
+    return { child, state: observeOwnedChild(child) };
+  };
+  let run = foreground();
+  const untilRunning = (timeout: number) => until(async () => {
+    const { state } = run;
+    if (state.error) throw state.error;
+    if (state.exited) throw new Error(output);
+    return output.includes("Press Ctrl-C to stop.") && await portOpen(port);
+  }, timeout, () => output);
   const downArgs = ["down", "--yes"];
-  const config = join(mesh, ".cotal", "server-open.conf");
-  try {
-    await until(async () => {
-      if (state.error) throw state.error;
-      if (state.exited) throw new Error(output);
-      return output.includes("Press Ctrl-C to stop.") && await portOpen(port);
-    }, 30_000, () => output);
+  const stop = async () => {
     assertSmokeSandboxDown(sandbox, downArgs, { cwd: mesh, env });
     const down = await foregroundCliProbe(cliEntry, tsx, mesh, env, downArgs);
     assert.equal(down.code, 0, down.out + down.err);
-    await waitForOwnedChild(() => state.closed, 15_000, output);
-    assert.equal(state.code, 0, output);
+    await waitForOwnedChild(() => run.state.closed, 15_000, output);
+    assert.equal(run.state.code, 0, output);
     assert.equal(await portOpen(port), false);
+    return down;
+  };
+  const config = join(mesh, ".cotal", "server-open.conf");
+  try {
+    await untilRunning(30_000);
+    const down = await stop();
     const restart = /^\s*(?:pnpm )?cotal (up.*?)\s+Start it again$/m.exec(down.out)?.[1];
     assert.equal(restart, "up --no-manager", down.out);
     const bare = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["up"]);
     assert.equal(bare.code, 1, bare.out + bare.err);
     assert.match(bare.err, /--max-payload 262144 is below 263168 bytes/);
+    if (process.platform === "linux") {
+      await checkAddressWait(mesh, env, port, upArgs);
+      run = foreground();
+      const notice = `Waiting up to 65 seconds for TIME-WAIT to clear on the broker address 127.0.0.1:${port}`;
+      await until(() => {
+        if (run.state.exited) throw new Error(output);
+        return output.includes(notice);
+      }, 15_000, () => output);
+      await untilRunning(85_000);
+      assert.equal(output.split(notice).length, 2, output); passed++;
+      const who = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["who", "--space", space, "--server", server]);
+      assert.equal(who.code, 0, who.out + who.err); passed++;
+      await stop();
+      console.log("PASS foreground-up-signals legacy foreground restart waits for TIME-WAIT and reuses the broker address");
+    }
     const started = await foregroundCliProbe(cliEntry, tsx, mesh, env, restart.split(" "));
     assert.equal(started.code, 0, started.out + started.err);
     assert.match(started.out, new RegExp(`^Mesh: ${space}$`, "m"));
@@ -1219,8 +1246,8 @@ async function openBrokerOnlyRestartCell(): Promise<void> {
     passed++;
     console.log("PASS foreground-up-signals legacy open stop restarts broker-only at its saved payload limit");
   } finally {
-    if (!state.exited) child.kill("SIGTERM");
-    await waitForOwnedChild(() => state.closed, 30_000, output);
+    if (!run.state.exited) run.child.kill("SIGTERM");
+    await waitForOwnedChild(() => run.state.closed, 30_000, output);
     assertSmokeSandboxDown(sandbox, downArgs, { cwd: mesh, env });
     if (await portOpen(port)) await foregroundCliProbe(cliEntry, tsx, mesh, env, downArgs);
     assert.equal(await portOpen(port), false, "the owned broker stopped");
