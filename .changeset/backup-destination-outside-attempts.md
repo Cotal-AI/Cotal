@@ -2,4 +2,4 @@
 "@cotal-ai/cli": patch
 ---
 
-When a backup destination is inside the maintenance attempt directory, ask for a destination outside it without suggesting recovery of the preserved cut.
+`backup create` asks for a destination outside the maintenance attempts directory, even if the destination's parent is missing.

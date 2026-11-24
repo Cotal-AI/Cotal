@@ -148,13 +148,23 @@ function assertAttemptDestinationRefusal(root: string, run: (...args: string[]) 
   const attempts = join(maintenance, "attempts");
   const journal = join(maintenance, "v1", "journal.json");
   const before = readFileSync(journal);
-  mkdirSync(attempts, { recursive: true, mode: 0o700 });
-  const linked = join(root, "attempts-link");
-  symlinkSync(attempts, linked, "junction");
   const reason = `is inside the maintenance attempt directory ${attempts}`;
   const remedy = `name a destination outside ${attempts}`;
   const direct = join(attempts, "archive");
-  const alias = join(linked, "archive");
+  assert.equal(existsSync(attempts), false, "a fresh cut has not created the attempts directory");
+  const first = run("backup", "create", direct, "--plain");
+  assert.equal(first.status, 1, first.stderr);
+  assert.ok(first.stderr.includes(reason) && first.stderr.includes(remedy), first.stderr);
+  assert.equal(existsSync(attempts), false, "the refusal does not create the attempts directory");
+  mkdirSync(attempts, { mode: 0o700 });
+  const linked = join(root, "attempts-link");
+  const chained = join(root, "attempts-chain");
+  symlinkSync(attempts, linked, "junction");
+  symlinkSync(linked, chained, "junction");
+  const alias = join(chained, "missing", "archive");
+  const nested = run("backup", "create", join(attempts, "missing", "archive"), "--plain");
+  assert.equal(nested.status, 1, nested.stderr);
+  assert.ok(nested.stderr.includes(reason) && nested.stderr.includes(remedy), nested.stderr);
   for (const flags of [[], ["--plain"]]) {
     const result = run("backup", "create", direct, ...flags);
     assert.equal(result.status, 1, result.stderr);

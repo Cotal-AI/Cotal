@@ -372,6 +372,21 @@ function canonicalFuturePath(path: string): string {
   return join(realpathSync.native(dirname(absolute)), basename(absolute));
 }
 
+function canonicalMissingDestination(destination: string): string | undefined {
+  let ancestor = dirname(destination);
+  while (!lstatSync(ancestor, { throwIfNoEntry: false })) {
+    const parent = dirname(ancestor);
+    if (parent === ancestor) return undefined;
+    ancestor = parent;
+  }
+  try { return join(realpathSync.native(ancestor), relative(ancestor, destination)); }
+  catch (error) {
+    // A dangling link is not evidence of where a future folder would resolve.
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw error;
+  }
+}
+
 function contains(parent: string, child: string): boolean {
   const path = relative(parent, child);
   return path === "" || (path !== ".." && !path.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`) && !isAbsolute(path));
@@ -390,9 +405,15 @@ function assertDestinationOutsideAttempts(destination: string, artifact: string,
 }
 
 function assertBackupDestination(root: string, journal: NonNullable<ReturnType<typeof readMaintenanceJournal>>, destination: string): void {
-  const artifact = canonicalFuturePath(destination);
   const physicalRoot = realpathSync.native(root);
   const attempts = join(physicalRoot, ".cotal", "maintenance", "attempts");
+  if (missingBackupPath(destination) === "folder") {
+    const artifact = canonicalMissingDestination(destination);
+    if (artifact !== undefined) assertDestinationOutsideAttempts(destination, artifact, attempts);
+    const folder = dirname(destination);
+    throw new CommandFailure("refused", "TARGET_NOT_FOUND", `there is no folder ${folder} to create the backup in; nothing was written`, { target: { directory: destination, folder, missing: "folder" }, remedy: "create that folder first; backup create makes only the artifact's own folder" });
+  }
+  const artifact = canonicalFuturePath(destination);
   const preserved = journal.state === "ready" || journal.state === "claimed" ? journal.source.path : undefined;
   if (preserved && overlaps(artifact, preserved))
     throw new CommandFailure("refused", "USAGE_INVALID", `the backup destination ${destination} is inside the preserved store ${preserved} it would copy; nothing was written`, { target: { directory: destination, store: preserved }, remedy: `name a destination outside ${preserved}`, selfContained: true });
@@ -619,8 +640,6 @@ async function createBackup(args: ParsedArgs, observed: BackupObservation): Prom
     const partial = journal.state === "claimed" && journal.claim.ownedPaths?.some((owned) => owned.label === "destination" && owned.path === destinationPath) ? journal.claim.attemptId : undefined;
     throw new CommandFailure("refused", "CONFLICT", partial ? `the backup destination ${destinationPath} is the partial artifact of interrupted backup attempt ${partial}; backup create writes only a new directory` : "the backup destination already exists; backup create writes only a new directory", { target: { directory: destinationPath }, remedy: partial ? `remove it with \`cotal backup recover ${partial} --yes\`, then run this create again` : "name a directory that does not exist yet" });
   }
-  if (missingBackupPath(destinationPath) === "folder")
-    throw new CommandFailure("refused", "TARGET_NOT_FOUND", `there is no folder ${dirname(destinationPath)} to create the backup in; nothing was written`, { target: { directory: destinationPath, folder: dirname(destinationPath), missing: "folder" }, remedy: "create that folder first; backup create makes only the artifact's own folder" });
   // Refuse invalid destinations before taking the lock or recovering a prior claim.
   assertBackupDestination(root, journal, destinationPath);
   try { accessSync(folder, constants.W_OK | constants.X_OK); }
