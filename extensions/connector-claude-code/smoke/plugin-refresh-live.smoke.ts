@@ -102,6 +102,7 @@ try {
     assert.equal(sha(join(FOLDER, "dist", "mcp.cjs")), sha(join(PACKAGE, "dist", "mcp.cjs")));
     assert.equal(sha(join(FOLDER, "dist", "hook.cjs")), sha(join(PACKAGE, "dist", "hook.cjs")));
     assert.equal(sha(join(FOLDER, "dist", "monitor.cjs")), sha(join(PACKAGE, "dist", "monitor.cjs")));
+    assert.equal(sha(join(FOLDER, "dist", "command-reader.cjs")), sha(join(PACKAGE, "dist", "command-reader.cjs")));
     assert.deepEqual(folderCli(), cli("one"));
   });
   ok("Claude Code starts that copy's server in place, and it answers", () => {

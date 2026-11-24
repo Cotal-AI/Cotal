@@ -20,7 +20,7 @@
  *
  * Run: pnpm smoke:runtime-run-command   (needs nats-server on PATH; part of smoke:ci)
  */
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -907,12 +907,23 @@ const takeoverRun = startedId()!;
 
   // A run ID nothing records is refused as `run show` refuses it: by code, with the list as Next.
   const unrecorded = "run-0123456789abcdef0123456789abcdef";
-  const unknownCheck = await wf(["check", unrecorded], { file: CHECKPOINT }).then(() => undefined, (e: Error) => e);
-  c("a check of a run ID nothing records is refused TARGET_NOT_FOUND, exit 2, with the run list as its Next",
+  const endpoint = "check-only";
+  const unknownCheck = await wf(["check", unrecorded], { file: CHECKPOINT, endpoint }).then(() => undefined, (e: Error) => e);
+  const remedy = isCommandFailure(unknownCheck) ? unknownCheck.remedy : undefined;
+  const next = `cotal run list --local --space ${SPACE} --server '${servers}' --endpoint ${endpoint}`;
+  const command = /`([^`]+)`/.exec(remedy ?? "")?.[1];
+  const [, alias, ...args] = command === next
+    ? execFileSync("bash", ["-c", `printf '%s\\0' ${command}`], { encoding: "utf8" }).split("\0").slice(0, -1)
+    : [];
+  const run = alias && findCommand(registry.all<Command>("command"), alias);
+  reset();
+  const listed = run && await runWorkflow(parseCommandArgs(run, args)).then(() => true, () => false);
+  c("a missing run check refuses with exit 2 and its remedy lists the same endpoint without a manager",
     isCommandFailure(unknownCheck) && unknownCheck.code === "TARGET_NOT_FOUND" && exitCode(unknownCheck.outcome, unknownCheck.code) === 2
-      && unknownCheck.message === `run ${unrecorded}: no record on endpoint ${EP}; a run that was never started cannot be checked`
-      && unknownCheck.remedy === "list the recorded runs with `cotal run`",
-    unknownCheck instanceof Error ? unknownCheck.message : unknownCheck);
+      && unknownCheck.message === `run ${unrecorded}: no record on endpoint ${endpoint}; a run that was never started cannot be checked`
+      && remedy === `list the recorded runs with \`${next}\``
+      && listed === true && (process.exitCode ?? 0) === 0 && captured().includes("No workflow runs in this authorized record view."),
+    { error: unknownCheck, remedy, out: captured() });
   } finally { process.exit = origExit; }
 }
 

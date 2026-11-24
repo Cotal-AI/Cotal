@@ -240,6 +240,13 @@ try {
   check("with no limit flag, --json without --yes reads the four streams' limits", read.status === 0 && read.envelope?.outcome === "ok" && read.envelope.result?.kind === "history-limits" && (["chat", "inbox", "dlv", "dm"] as const).every((s) => sameView(rowOf(read.envelope, s)?.holds, expected[s])), shown(read));
   const readPlain = await run(["history", "limit", "--plain", "--space", space]);
   check("...and the report names each with no age or no count in words", readPlain.status === 0 && readPlain.stdout.includes("Channel posts") && readPlain.stdout.includes("no age limit, 1000 per sender") && readPlain.stdout.includes("no age limit, 1000 per agent") && readPlain.stdout.includes("no age limit, no count limit"), shown(readPlain));
+  const inboxOnly = await run(["history", "limit", "--inbox-per-agent", "5000", "--yes", "--json", "--space", noAgeSpace], roots.open);
+  const openRead = await run(["history", "limit", "--json", "--space", noAgeSpace], roots.open);
+  check("an open root without signing trust can set and read the inbox count without changing other limits",
+    inboxOnly.status === 0 && inboxOnly.envelope?.result?.changed === true && openRead.status === 0 &&
+    (["inbox", "dlv"] as const).every((s) => sameView(rowOf(openRead.envelope, s)?.holds, { maxAgeMs: 0, perSubject: 5000 })) &&
+    (["chat", "dm"] as const).every((s) => sameView(rowOf(openRead.envelope, s)?.holds, expected[s])),
+    { update: shown(inboxOnly), read: shown(openRead) });
   // An observer on the open broker sees every STREAM.UPDATE request the command sends.
   const updates: string[] = [];
   const watch = onc.subscribe("$JS.API.STREAM.UPDATE.>", { callback: (_e, m) => { updates.push(m.subject); } });

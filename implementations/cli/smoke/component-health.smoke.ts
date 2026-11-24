@@ -26,7 +26,7 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { chmodSync, existsSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { createConnection } from "node:net";
+import { createConnection, createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { jetstreamManager } from "@nats-io/jetstream";
@@ -118,6 +118,11 @@ async function checkOpenRestartAdvice(space: string, server: string, health: str
   const port = Number(new URL(server).port);
   renameSync(openRoot, moved);
   try {
+    const implicit = cliIn(moved, ["status", "--components"]);
+    const implicitRows = implicit.stdout.split("Component Health")[1] ?? "";
+    check("implicit component status preserves the reachable listener and move-back guidance for an open project",
+      implicit.status === 3 && /target\s+refused/.test(implicitRows) && implicitRows.includes(`registered ${server} · reachable · stack health cannot be checked at the recorded project folder`)
+      && implicitRows.includes(`move this folder back to ${openRoot}`), `${implicit.stdout}${implicit.stderr}`);
     const status = cliIn(moved, ["status", "--components", "--space", space]);
     const rows = status.stdout.split("Component Health")[1] ?? "";
     check("moving an open project preserves listener reachability without grading the broker absent",
@@ -153,6 +158,30 @@ function cli(...args: string[]) {
 function cliIn(cwd: string, args: string[], timeout = 30_000, childEnv = env) {
   assertSmokeSandboxDown(sandboxes.get(cwd), args, { cwd, env: childEnv });
   return spawnSync(TSX, [CLI, ...args], { cwd, env: childEnv, encoding: "utf8", timeout });
+}
+
+async function checkStoppedRestartBlockers(cwd: string, server: string): Promise<void> {
+  const inspect = (remedy: string) => {
+    const report = cliIn(cwd, ["status", "--components"]);
+    const [main = "", health = ""] = report.stdout.split("\nComponent Health\n");
+    check(`component health preserves absence and names the prerequisite: ${remedy}`,
+      report.status === 1 && main.includes(remedy) && /target\s+absent · not-started/.test(health) &&
+      health.includes(remedy) && !health.includes("start it again with"), report.stdout + report.stderr);
+  };
+  const store = join(cwd, ".cotal", "nats");
+  if (process.getuid?.() !== 0) {
+    chmodSync(store, 0o500);
+    try { inspect(`chmod -R u+w ${store}`); }
+    finally { chmodSync(store, 0o700); }
+  }
+  const { hostname, port } = new URL(server);
+  const listener = createServer((socket) => socket.destroy());
+  await new Promise<void>((resolve, reject) => {
+    listener.once("error", reject);
+    listener.listen(Number(port), hostname, resolve);
+  });
+  try { inspect(`stop the process listening on ${hostname}:${port}`); }
+  finally { await new Promise<void>((resolve) => listener.close(() => resolve())); }
 }
 
 async function cliAsync(args: string[], childEnv = env): Promise<{ status: number | null; stdout: string; stderr: string }> {
@@ -899,6 +928,7 @@ try {
   const stoppedController = cliIn(controllerRoot, ["status", "--components"]);
   check("a cleanly stopped controller target is absent (1), not refused",
     stoppedController.status === 1 && /target\s+absent.*not-started/.test(stoppedController.stdout), `${stoppedController.stdout}${stoppedController.stderr}`);
+  await checkStoppedRestartBlockers(controllerRoot, controllerServer);
   const selectedStopped = cliIn(webRoot, ["status", "--components"]);
   const selectedHealth = selectedStopped.stdout.split("Component Health")[1] ?? "";
   check("component health preserves the header's stopped selection instead of probing the folder's space",

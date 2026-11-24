@@ -46,6 +46,8 @@ application, runtimes, project folder and space.
 It shows the answers before it writes: Save writes them, Change asks every question again with the
 answers kept, and Cancel saves nothing.
 An empty `--project` is refused before setup writes anything. Use `--project .` for the current folder.
+If a directory occupies a demo persona's filename, setup refuses `CONFLICT` before saving the space
+or personas. Move the named directory aside and run the same setup again.
 
 Choose Cloud to set up a space of your Cotal Cloud account. When no Cloud space is registered on
 this machine, setup signs you in first: it prints the approval link and code, opens your browser,
@@ -151,6 +153,12 @@ result `partial`. A script sets up only the runtimes `--runtime` names; an unkno
 written. Setup never removes a runtime you leave out; `cotal ext remove` does. `result.runtimes`
 lists each one with its package, its host tool and whether setup found it set up, added it or left it
 out.
+
+When T3 Code or Zed is on this computer, setup installs `@cotal-ai/acp` as `cotal ext add` does, at
+this cotal's version, and adds the space to each client it finds (see
+[Use an ACP client](acp-clients.mdx#add-to-a-client)). A client settings file setup cannot change
+leaves the rest saved and the result `partial`. `cotal update` points those entries at the Cotal it
+installed, and `cotal status` shows one whose command is gone.
 
 A rerun with the same answers changes nothing and is a `no-op`; a space already prepared, started or
 registered at that root is reported, not refused. A space name or root another space holds is
@@ -493,7 +501,10 @@ first diagnostic line and exits with status 1.
 
 Missing release archives and missing target versions of installed first-party extensions share a
 ten-minute wait. If CLI release archives are still missing, Cotal keeps the installed version and
-exits successfully. If an installed extension's target version is still missing, Cotal names it,
+exits successfully. If npm returns `E404` for a first-party package's release metadata, the wait
+and final message name the package, npm error code and registry origin when npm reports it.
+Check `@cotal-ai:registry` in `.npmrc` if the registry does not serve the package.
+If an installed extension's target version is still missing, Cotal names it,
 leaves the installation unchanged and exits with status 1. Invalid metadata, integrity failures
 and scoped registry access errors refuse before global installation or connector reconciliation.
 Since 0.167.1, registry access refusals report npm's error
@@ -688,6 +699,8 @@ reading; `--allow-publish` is optional when the session will not post. A credent
 permission joins read-only, and the prompt says so instead of inviting broadcasts. Attempting to
 post confirms that nothing was sent and names the mint with `--allow-publish` for that channel.
 Reading, roster commands and DMs remain available. Use the intended channel in both commands.
+For a channel that starts with `-`, attach the values with `=`, as in `--allow-subscribe=-general`
+when minting and `--channel=-general` when joining.
 A subscription pattern such as `team.>` can be the landing channel when the read grant covers it.
 The session can follow the pattern, but broadcasts from the join prompt require a concrete landing channel.
 If the file is missing or incomplete, `join` refuses it before connecting. Check the path for a
@@ -1005,8 +1018,9 @@ value for the space, your own value, or the default) and the values it outranks.
 key. A read looks through `--space`, else the space a launch here uses, the space `spawn` resolves
 from this folder. An explicit `cotal use` selection wins even in a running space's project folder.
 Only an automatically adopted selection yields to a running space registered for this folder.
-With no space running here it is the selected space, or the only running one.
-With none of those it reads your defaults. `--user` reads your defaults alone.
+With no space running here it is the selected space, or the only running one. Outside a project,
+with no saved selection, an offline registration does not take the place of your defaults.
+You can still read that space's saved values with `--space <name>`. `--user` reads your defaults alone.
 If `config get` already has a key, remove an unknown option rather than moving it after `--`.
 
 `set` and `unset` change your defaults, or your values for one space with `--space`.
@@ -1034,9 +1048,11 @@ refused with `CONFLICT`. A preferences folder you cannot write is refused with `
 with the `chmod` that fixes it, and a linked `preferences.json`, which `config set` never replaces
 (see [Preferences](config.mdx#preferences)).
 
-`result.settings` (or `result.setting` for `get`) holds each key's `value`, its `winner`
-(`{source, name, value}`, where `source` is `environment`, `space`, `user` or `default`) and the
-`shadowed` layers below it. A write's result has the `previous` and new `value`, the file's new
+`result.settings` (or `result.setting` for `get`) holds each key's `value`, its `winner` and the
+`shadowed` layers below it. `winner` is `null` when no preference layer applies. Each winning or
+shadowed layer has `source` and `value`. The `name` property identifies the environment variable
+for an `environment` source or the space for a `space` source. `user` and `default` layers omit it.
+A write's result has the `previous` and new `value`, the file's new
 `revision`, and `effective`, the key as a command there now resolves it. When the effective value
 is unavailable, `effective` is `null` and `completeness` is `partial`.
 
@@ -1064,8 +1080,9 @@ group and the folder has no extended ACL, the same rule as every other protected
 under it are not opened, and one that does not exist is reported missing,
 so a report with nothing installed stays complete, exit 0. Next offers that `chmod` first, offers
 `install` and `uninstall` only when nothing stops them, and offers `uninstall` only when something is
-installed. A relative `ZDOTDIR`
-is resolved from the current directory for this report, as zsh resolves it.
+installed. A relative `ZDOTDIR` is resolved from the current directory for this report, as zsh
+resolves it. Next explains the constraint and offers the zsh script for manual setup instead of
+suggesting a managed zsh install or uninstall with a relative `ZDOTDIR`.
 
 With `--json`, `result.shell` is the shell `$SHELL` names when Cotal completes it, else null.
 `result.shells` holds one item per shell:

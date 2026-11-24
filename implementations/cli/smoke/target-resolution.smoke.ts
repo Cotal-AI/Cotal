@@ -159,6 +159,39 @@ const QUESTION = "Which one?";
       const added = run(["endpoint", "add", "probe", "--space", space, "--file", join(home, `${space}-ref.json`), "--plain"], root);
       check(`saving probe in ${space} succeeds`, added.status === 0, shown(added));
     }
+    for (const format of ["--plain", "--json"]) {
+      const missing = run(["endpoint", "show", "prob", "--space", "beta", format], root);
+      const receipt = envelope(missing);
+      const guidance = receipt?.error?.remedy ?? missing.stderr.split("\nNext\n")[1] ?? "";
+      const command = /`([^`]+)`/.exec(guidance)?.[1];
+      check(`missing endpoint show ${format} offers the exact inventory command for beta`, missing.status === 2 &&
+        (format === "--json" ? receipt?.error?.code === "TARGET_NOT_FOUND" && receipt.target?.space === "beta" && receipt.target?.name === "prob"
+          : /Code:\s+TARGET_NOT_FOUND/.test(missing.stderr)) && command === `cotal endpoint --space beta ${format}`, shown(missing));
+      if (command === `cotal endpoint --space beta ${format}`) {
+        const inventory = run(command.split(" ").slice(1), root);
+        check(`the suggested ${format} inventory finds beta's saved reference without live reads`, inventory.status === 0 &&
+          inventory.stdout.includes("example.beta") && !inventory.stdout.includes("example.gamma") && inventory.stdout.includes("not-checked"), shown(inventory));
+      }
+    }
+    const betaRef = join(home, "beta-ref.json");
+    const alphaRef = join(home, "alpha-ref.json");
+    writeFileSync(alphaRef, JSON.stringify({ schemaVersion: 1, space: "alpha", endpoint: "example.alpha" }));
+    const imported = run(["endpoint", "add", "from-file", "--file", betaRef, "--plain"], root);
+    const saved = run(["endpoint", "show", "from-file", "--space", "beta", "--json"], root);
+    check("an ambiguous folder imports into the matching space pinned by the file without selecting it",
+      imported.status === 0 && imported.stdout.startsWith("Mesh: beta\n") && envelope(saved)?.result?.reference?.endpoint === "example.beta" && getCurrent() === undefined, shown(imported));
+    const unrelated = run(["endpoint", "add", "elsewhere", "--file", alphaRef, "--json"], root);
+    check("an import cannot choose a registration outside the ambiguous candidates",
+      unrelated.status === 2 && envelope(unrelated)?.error?.code === "TARGET_AMBIGUOUS" &&
+        run(["endpoint", "show", "elsewhere", "--space", "alpha", "--json"], root).status === 2, shown(unrelated));
+    const explicit = run(["endpoint", "add", "wrong-space", "--file", betaRef, "--space", "gamma", "--json"], root);
+    setCurrent("gamma");
+    try {
+      const selected = run(["endpoint", "add", "wrong-selection", "--file", betaRef, "--json"], work);
+      check("an import still refuses to override an explicit or resolved selection",
+        explicit.status === 1 && envelope(explicit)?.error?.code === "SCHEMA_INVALID" &&
+        selected.status === 1 && envelope(selected)?.error?.code === "SCHEMA_INVALID", { explicit: shown(explicit), selected: shown(selected) });
+    } finally { clearCurrent(); }
     for (const flags of [["--plain"], ["--json"]]) {
       const show = run(["endpoint", "show", "probe", ...flags], root);
       const error = envelope(show)?.error;

@@ -212,8 +212,9 @@ for (const [name, signal, code, format, noManager] of [
     assertSmokeSandboxDown(sandbox, args, options);
     return spawnSync(process.execPath, ["--import", loader, entry, ...args], options);
   };
-  const port = await freePort();
-  const start = ["up", "--server", `nats://127.0.0.1:${port}`, "--space", `legacy-interrupt-${process.pid}`, "--open", "--no-manager"];
+  const port = await freePort(), space = `legacy-interrupt-${process.pid}`;
+  const startAt = (port: number) => ["up", "--server", `nats://127.0.0.1:${port}`, "--space", space, "--open", "--no-manager"];
+  const start = startAt(port);
   const pidPath = join(root, ".cotal", "nats.pid");
   let orphan: number | undefined;
   try {
@@ -251,12 +252,13 @@ for (const [name, signal, code, format, noManager] of [
     const orphanPid = Number(readPidfile(pidPath));
     orphan = orphanPid;
     const refusal = /the broker this folder started for "legacy-interrupt-\d+" still runs at nats:\/\/127\.0\.0\.1:\d+ \(pid (\d+)\)/;
-    for (const [label, args] of [["same flags", start], ["no --server", start.filter((arg, i) => arg !== "--server" && start[i - 1] !== "--server")]] as const) {
+    const nextPort = await freePort(), retry = startAt(nextPort);
+    for (const [label, args] of [["same flags", start], ["no --server", start.filter((arg, i) => arg !== "--server" && start[i - 1] !== "--server")], ["a different --server", retry]] as const) {
       const again = cli(...args);
       check(`legacy interrupt: up with ${label} refuses beside the broker it left`, () => {
         assert.equal(again.status, 2, again.stderr);
         assert.equal(Number(refusal.exec(again.stderr)?.[1]), orphanPid);
-        assert.match(again.stderr, /stop it with `cotal down`, then run `cotal up` again/);
+        assert.match(again.stderr, /stop it with `cotal down`, then repeat your startup command with the same options from this folder/);
         assert.equal(readPidfile(pidPath), String(orphanPid), "no other broker was recorded");
       });
     }
@@ -266,10 +268,15 @@ for (const [name, signal, code, format, noManager] of [
       assert.equal(existsSync(pidPath), false);
       assert.throws(() => process.kill(orphanPid, 0));
     });
-    check("legacy interrupt: the next start and stop succeed", () => {
-      assert.equal(cli(...start).status, 0);
-      assert.equal(cli("down", "--yes").status, 0);
+    const restarted = cli(...retry);
+    const oldListening = await listening(port), newListening = await listening(nextPort);
+    check("legacy interrupt: repeating the refused command serves the requested port without a manager", () => {
+      assert.equal(restarted.status, 0, restarted.stderr);
+      assert.equal(oldListening, false);
+      assert.equal(newListening, true);
+      assert.equal(existsSync(canonicalLocalProcessPath(MANAGER_PIDFILE, { root, space })), false);
     });
+    check("legacy interrupt: down stops the retried stack", () => assert.equal(cli("down", "--yes").status, 0));
   } finally {
     if (readPidfile(pidPath)) cli("down", "--yes");
     // A stop that failed must not leave the broker this cell's interrupted start spawned. Its record

@@ -27,8 +27,10 @@ cotal run check <runId> (<program> | --file <program>) [--local] [--endpoint <ep
 `ps` (or `list`), `journal` and `migrate` still work as compatibility aliases of bare `run`, `show`
 and `check`.
 
-Every verb also takes `--space <s>`, `--server <url>` and `--creds <path>` to pick the mesh and the
-credential. A hosted verb refuses a raw `--creds` file `UNSUPPORTED`, exit 2, because the file
+Operator run commands use `--space <s>` and `--server <url>` to pick the mesh and
+`--creds <path>` to select a credential where supported. Offline commands take no mesh or caller
+selection. The seat-only `turns` and `yield` forms do not take `--creds`.
+A hosted verb refuses a raw `--creds` file `UNSUPPORTED`, exit 2, because the file
 carries no endpoint-caller triple for the manager call and that route cannot mint one. Its next step
 is to run the verb again without `--creds`, in the mesh's project folder or with `--space`, where
 the CLI mints the one-shot caller itself.
@@ -49,7 +51,9 @@ in the run ID the command named or the manager returned, only when it matches th
 run-token shape. Keep the pin on later status, answer and resume calls.
 
 A run ID that is not 1 to 64 letters, digits, `_` or `-` is refused as `USAGE_INVALID`, exit 1,
-on every verb that takes one, before anything is contacted.
+on every verb that takes one, before anything is contacted. When `run show` needs a valid ID,
+its list and journal commands keep the space, broker, manager or local endpoint you requested.
+A journal row limit applies only to the journal read.
 A hosted verb the manager refuses reports the outcome and code as other commands do, and with
 `--json` as one refusal envelope on stdout. A refusal the manager makes before acting is refused: a
 denied credential or a step in the wrong state exits 2, and a program that does not validate is
@@ -224,7 +228,9 @@ migration is admissible, every orphaned step with its verdict and code, and exit
 and non-zero on not. An edited program that does not validate is refused before the replay, with
 each problem's code, position, cause and fix. It writes nothing: the commit that would file the
 migration is not reachable yet, and the report says so. A run ID with no record on the endpoint is refused
-`TARGET_NOT_FOUND`, exit 2, as `run show` refuses it. `check` refuses `--adopt`, `--release` and `--discard-approvals` as `USAGE_INVALID` (exit 1)
+`TARGET_NOT_FOUND`, exit 2, as `run show` refuses it. Its next step is `run list --local` on the same
+space, broker, credential and endpoint. The list reads the records without a manager.
+`check` refuses `--adopt`, `--release` and `--discard-approvals` as `USAGE_INVALID` (exit 1)
 before mesh preparation or connection, since they decide what a commit does and the check files nothing. `--timeout` sets the default
 limit of a checkpoint, `ask` or turn that sets none of its own (default 1h). A checkpoint that
 expires under `onExpiry: "fail"` says in its L4007 whether the deadline came from its own `timeout`
@@ -341,8 +347,8 @@ time, so you cannot script it. A scripted turn result needs a `status` of `done`
 handle such as `{ "agent": "sim.reviewer", "persona": "reviewer" }` instead of an agent name.
 Invalid turn results are refused before simulation with `SCHEMA_INVALID`. This includes an invalid
 status, a non-string note, an unknown field, a scripted `at`, and a missing, malformed or
-unexpected destination. A destination refusal names the `to` field, including the array index
-for a list entry.
+unexpected destination. The refusal names the results file and the field or result to correct
+before rerunning. For a list entry the path includes the array index.
 
 A missing script entry or an exhausted list raises L6001. If it goes uncaught, the error names the
 table and step, suggests what to add, and prints a retry command with shell-quoted paths where needed.
@@ -445,8 +451,8 @@ Inside a manager-launched static or open seat, `run turns` reads that seat's ass
 `run yield <turn-id> --status <done|blocked|handoff>` reports an outcome. Handoff also requires
 `--to <agent>`; `--note <text>` carries context. If the turn ID is missing, the refusal points to
 `cotal run turns` and shows the status and handoff flags. The native launcher supplies the caller context.
-These forms verify the seat's own credential and manager, never substitute an operator caller,
-and refuse user-auth self impersonation. They skip operator catalog and installation repair.
+These forms use the launcher's seat identity and manager and reject `--creds` with `USAGE_INVALID`
+(exit 1). They refuse user-auth self impersonation and skip operator catalog and installation repair.
 Yielding one turn does not complete the entire workflow.
 
 

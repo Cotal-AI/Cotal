@@ -235,7 +235,7 @@ export async function launchManagedPersona(
   // The report that answers names the mesh in its heading, so this block names it once, in a field.
   const toStdout = !observer && presentationOf(values) !== "json";
   (toStdout ? console.log : console.error)(renderReport({ sections: [{ title: "Managed launch", blocks: [{ kind: "fields", rows: [["Space", t.space], ["Manager selector", on ?? t.auth.managerInstanceId ?? "native class selection"], ["Persona", ref], ["File source", managerConfigRef ? `${managerConfigRef} · manager execution host` : "selected manager's persona catalog"], ["File transfer", "none"]] }, { kind: "lines", lines: [{ text: "The accepting manager validates its own visible file before allocation. No local file is uploaded, and a pin never selects a replacement manager.", tone: "hint" }] }] }] }, presentationOf(values) === "plain" ? "plain" : "rich", toStdout ? process.stdout : process.stderr));
-  for (const line of wrapWords("waiting for the manager: it answers when it refuses the launch, or when the agent joins or exits (at most about 30s) …", terminalWidth(process.stderr))) console.error(c.dim(line));
+  for (const line of wrapWords("waiting for the manager: it answers when it refuses the launch, or when the agent joins or exits …", terminalWidth(process.stderr))) console.error(c.dim(line));
   const start = () => requestManagedLaunch({
     persona: ref,
     identity: values.name,

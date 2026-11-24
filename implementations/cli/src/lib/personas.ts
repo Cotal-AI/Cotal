@@ -47,7 +47,7 @@ export function catalogFolderProblem(dir: string): CommandFailure | undefined {
     what = "a link that loops back on itself";
   }
   return new CommandFailure("refused", "CONFLICT", `${dir} is ${what}, so it holds no personas`, {
-    remedy: `move ${dir} out of the way; \`cotal persona create <name>\` then makes the folder`,
+    remedy: `move ${dir} out of the way. To use existing definitions, restore their catalog folder there. To create a persona, retry the original create command with its source and target options`,
   });
 }
 
@@ -88,11 +88,15 @@ export function readPersonas(root: string): PersonaEntry[] {
   return readPersonaCatalog(root);
 }
 
+export function hasBlankPersonaSelector(entry: Pick<PersonaEntry, "name">): boolean {
+  return !entry.name.trim();
+}
+
 /** Just the persona names: the completion source for `cotal spawn`, `persona show` and `personas
  *  show/rm`. Only an absent folder is an empty catalog. One that cannot be read throws an error that
  *  names it, so the completion offers nothing and COTAL_COMPLETE_DEBUG says why. */
 export function listPersonaNames(root: string): string[] {
-  return completionPersonas(root).map((p) => p.name);
+  return completionPersonas(root).filter((p) => !hasBlankPersonaSelector(p)).map((p) => p.name);
 }
 
 /** {@link readPersonas} for a completion: a catalog folder that cannot be read throws an error that

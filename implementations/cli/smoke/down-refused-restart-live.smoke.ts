@@ -115,6 +115,24 @@ function journalOperation(): { kind: string; phase: string } {
   return journal.operation;
 }
 
+async function checkContractShortcut(space: string, server: string): Promise<void> {
+  const offline = mkdtempSync(join(scratch, "offline-"));
+  const offlineServer = `nats://127.0.0.1:${await freePort()}`;
+  const added = await run(["space", "add", "shortcut-other", "--server", offlineServer, "--root", ".", "--mode", "open", "--force", "--plain"], offline);
+  ok("a second space is registered for the contract shortcut check", added.status === 0, added.out);
+  const selected = await run(["use", "shortcut-other", "--plain"], caller);
+  ok("the caller selects the other space", selected.status === 0, selected.out);
+  const listed = await run(["endpoints", "--space", space, "--server", server, "--plain"], caller);
+  const shortcut = /^  (cotal endpoint describe .*?) {2,}Resolve a native endpoint/m.exec(listed.stdout)?.[1];
+  ok("live presence prints a contract shortcut with the same space and broker",
+    listed.status === 0 && shortcut === `cotal endpoint describe <endpoint> --plain --space ${space} --server ${server}`, listed.out);
+  const contract = await run(shortcut!.replace("<endpoint>", "manager").split(" ").slice(1), caller);
+  ok("following the shortcut reads the original space's verified contract",
+    contract.status === 0 && contract.stdout.startsWith(`Mesh: ${space}\n`) && contract.stdout.includes("Verified endpoint contract"), contract.out);
+  const restored = await run(["use", space, "--plain"], caller);
+  ok("the lifecycle checks keep the original space selected", restored.status === 0, restored.out);
+}
+
 let listener: net.Server | undefined;
 try {
   assertScratchHeld(root, "down refused-restart fixture");
@@ -144,6 +162,7 @@ try {
   const fg = runForeground(["up", "--foreground", "--server", server]);
   ok("foreground stack starts and reports readiness",
     await waitFor(fg.out, "Controller stack started", 120_000) && await waitServing(port, true), fg.out().slice(-800));
+  await checkContractShortcut(space, server);
 
   const described = await run(["endpoint", "describe", "manager", "--space", space, "--json"]);
   const instance = JSON.parse(described.stdout).result?.responder.instanceId;
@@ -185,13 +204,17 @@ try {
     inventoryText.status === 4 && inventoryText.stdout.includes("retained") && inventoryText.stdout.includes(stoppedMessage) &&
     inventoryText.stdout.split("\nNext\n")[1]?.trim() === restart, inventoryText.out);
   const clear = await run(["ps", "--plain", "--space", space], caller);
+  // The command word depends on whether the host has a `cotal` launcher on PATH; the restart folder does not.
+  const offersRestart = (out: string): boolean =>
+    ["cotal", "pnpm cotal"].some((cli) => out.includes(`start it again with \`${cli} up\` in ${realpathSync(root)}`));
   ok("ps offers the normal restart while the saved address is free",
-    clear.status === 2 && /Code:\s+TARGET_UNAVAILABLE/.test(clear.out) && clear.out.includes(restart), clear.out);
+    clear.status === 2 && /Code:\s+TARGET_UNAVAILABLE/.test(clear.out) && offersRestart(clear.out), clear.out);
 
   listener = net.createServer((socket) => socket.destroy());
   await new Promise<void>((resolve, reject) => { listener!.once("error", reject); listener!.listen(port, "127.0.0.1", () => resolve()); });
   ok("a non-NATS listener holds the old address", await serving(port));
-  const remedy = `stop the process listening on 127.0.0.1:${port}, then run \`cotal up\` in ${realpathSync(root)}; this stack keeps its recorded address`;
+  const namesRemedy = (out: string): boolean => ["cotal", "pnpm cotal"].some((cli) =>
+    out.includes(`stop the process listening on 127.0.0.1:${port}, then run \`${cli} up\` in ${realpathSync(root)}; this stack keeps its recorded address`));
   for (const [label, flags, cwd] of [
     ["from the stopped project", [], root],
     ["with the saved broker", ["--space", space, "--server", server], caller],
@@ -199,7 +222,7 @@ try {
     const ps = await run(["ps", "--plain", ...flags], cwd);
     ok(`ps ${label} names the occupied address and how to restart`,
       ps.status === 2 && /Code:\s+TARGET_UNAVAILABLE/.test(ps.out) && ps.out.includes(`another process holds that address 127.0.0.1:${port}`)
-      && ps.out.includes(remedy) && !ps.out.includes(restart), ps.out);
+      && namesRemedy(ps.out) && !offersRestart(ps.out), ps.out);
   }
 
   const first = await run(["down", "--dry-run"]);
