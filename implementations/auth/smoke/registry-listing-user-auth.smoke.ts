@@ -264,8 +264,9 @@ async function checkDmResolution(left: MeshAgent, right: MeshAgent, caller: Mesh
   const send = (to: string, text: string) => tool.run(caller, caller.config, { to, text });
   const exact = `${otherOwner}.unobserved_dm_target`;
   const direct = await send(exact, "exact principal without presence");
-  suite.check("an unobserved exact principal reports storage without claiming it messaged the sender", !direct.isError &&
-    direct.text.includes(`for ${exact}`) && direct.text.includes("stored at sequence") && !direct.text.includes("messaged you"), direct);
+  suite.check("a signed-in mesh stores an unobserved exact principal without claiming a recipient or delivery", !direct.isError &&
+    direct.text.includes(`for ${exact}`) && /stored at sequence [1-9]\d*/.test(direct.text) &&
+    direct.text.includes("Storage does not confirm a recipient or delivery.") && !direct.text.includes("messaged you"), direct);
 
   const roster = await left.readRoster();
   assert.ok(roster.roster.some((p) => p.card.id === right.ep.card.id) && roster.roster.some((p) => p.card.id === caller.ep.card.id));
@@ -756,10 +757,14 @@ async function directoryCases(): Promise<void> {
     handle = await bootWithDiagnostics(directory, restartLog);
     suite.check("service restart completes both directions without a sign-in for the affected owner",
       await readUsername(nc, directory.space, pending) === "interrupted" && await readUsernameOwner(nc, directory.space, "interrupted") === pending);
-    await assert.rejects(() => readUsernameOwner(nc, directory.space, "unused_alias"),
-      (error: unknown) => error instanceof UsernameRegistryReadError && error.code === "unavailable");
-    suite.check("startup leaves a second reservation unused and lookup distinguishes it from a missing key",
+    suite.check("an unused reservation returns not-found, like a missing key, without changing the owner's binding",
+      await readUsernameOwner(nc, directory.space, "unused_alias") === undefined &&
       await readUsernameOwner(nc, directory.space, "missing_alias") === undefined && await readUsername(nc, directory.space, owner) === supplied);
+    const target = "unused_alias/lister";
+    const refusal = await core.resolvePeerAddress([], target, { authority: { mode: "user", owner, actor: blank.actor, space: directory.space, nc } })
+      .catch((error: unknown) => error);
+    suite.check("a qualified DM address for an unused reservation returns TARGET_NOT_FOUND", refusal instanceof core.PeerAddressError &&
+      refusal.code === "TARGET_NOT_FOUND" && refusal.target === target, refusal);
     suite.check("startup reports both repaired and unused orphan keys with their named owners",
       [["interrupted", pending], ["unused_alias", owner]].every(([name, reservedFor]) =>
         restartLog.some((line) => line.includes(`orphan key username.${name}: owner.${reservedFor}`))), restartLog);
@@ -768,6 +773,11 @@ async function directoryCases(): Promise<void> {
     suite.check("an unused reservation still cannot be assigned to another owner", !reserved.res.ok && /already reserved/.test(reserved.body.error ?? ""));
     suite.check("platform owner lookup has no binding on either username source",
       await readUsername(nc, directory.space, platform) === undefined && await readUsername(nc, a.space, platform) === undefined);
+    await jetstream(writer.nc).publish(`$KV.${usernameBucket(directory.space)}.owner.${rival}`, new TextEncoder().encode(supplied),
+      { expect: { lastSubjectSequence: 0 } });
+    await assert.rejects(() => readUsername(nc, directory.space, rival),
+      (error: unknown) => error instanceof UsernameRegistryReadError && error.code === "unavailable");
+    suite.check("a forward binding whose reservation names a different owner remains unavailable", true);
   } finally { await writer.close(); }
 }
 

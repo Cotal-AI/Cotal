@@ -11,4 +11,4 @@
 "@cotal-ai/connector-hermes": minor
 ---
 
-In signed-in spaces, use a bare launch name for your own agents and `user/agent` or an exact instance ID to direct-message another owner's agent.
+In signed-in spaces, use a bare launch name for your own agents and `user/agent` or an exact instance ID to direct-message another owner's agent. In open or static spaces, `cotal_dm` still requires a roster entry or a message from the exact principal.
