@@ -90,6 +90,27 @@ try {
   assert.equal(direct.status, 0, direct.stdout + direct.stderr);
   assert.equal(direct.stdout.trim(), "The registry cannot be reached; nothing was changed.");
   assert.doesNotMatch(direct.stderr, /proxy refused/i);
+
+  const userConfig = join(proxyHome, "user.npmrc");
+  const contents = `https-proxy=${proxy.HTTPS_PROXY}\n`;
+  writeFileSync(userConfig, contents);
+  const configured = update({});
+  assert.equal(configured.status, 0, configured.stdout + configured.stderr);
+  assert.match(configured.stdout, /npm proxy refused the connection \(ECONNREFUSED\).*`https-proxy` in your npm configuration/);
+  assert.doesNotMatch(configured.stdout + configured.stderr, /example-user|example-password|127\.0\.0\.1/);
+  assert.equal(readFileSync(userConfig, "utf8"), contents);
+
+  const overridden = update({ npm_config_https_proxy: `http://127.0.0.1:${registryPort}` });
+  assert.equal(overridden.status, 0, overridden.stdout + overridden.stderr);
+  assert.equal(overridden.stdout.trim(), "The registry cannot be reached; nothing was changed.");
+  const bypassed = update({ NO_PROXY: "127.0.0.1" });
+  assert.equal(bypassed.status, 0, bypassed.stdout + bypassed.stderr);
+  assert.equal(bypassed.stdout.trim(), "The registry cannot be reached; nothing was changed.");
+
+  writeFileSync(userConfig, `proxy=${proxy.HTTPS_PROXY}\n`);
+  const fallback = update({});
+  assert.equal(fallback.status, 0, fallback.stdout + fallback.stderr);
+  assert.match(fallback.stdout, /npm proxy refused the connection \(ECONNREFUSED\).*`proxy` in your npm configuration/);
 } finally { rmSync(proxyHome, { recursive: true, force: true }); }
 const { seedInstallationCurrent } = await import("../src/seed/reconcile.js");
 assert.equal(seedInstallationCurrent(), false, "an unseeded checkout is not proven current");

@@ -505,9 +505,11 @@ of its first-party runtime dependency closure through npm, using a temporary cac
 scripts. Each registry request has a 15-second timeout. Package installs and archive checks retry
 transient network failures twice, waiting one second and then two seconds. The latest-version read
 keeps a single attempt. If npm reports a refused connection to the proxy set by `HTTP_PROXY` or
-`HTTPS_PROXY`, manual `cotal update --self` fails and leaves the installation unchanged. Check those
-proxy settings and retry. Cotal neither prints the proxy URL nor bypasses it. An unavailable registry
-without a confirmed proxy refusal remains a no-op.
+`HTTPS_PROXY`, manual `cotal update --self` fails and leaves installed packages unchanged. Check those
+proxy settings and retry. For a refused proxy set in npm configuration, the command names the
+`https-proxy` or `proxy` setting to check and exits 0 without replacing installed packages. Cotal
+neither prints the proxy URL nor bypasses it. An unavailable registry without a confirmed proxy
+refusal remains a no-op.
 If npm is in offline mode and the latest-version lookup misses Cotal's temporary cache,
 `cotal update --self` reports that the check was skipped and exits 0. The skipped check does not
 retry with network access or start a new install. Before the lookup, the updater can still recover an
