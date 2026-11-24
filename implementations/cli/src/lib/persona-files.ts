@@ -342,7 +342,8 @@ export async function editPersona(path: string, name: string, catalog: PersonaCa
   assertCatalogWritable(dirname(path));
   const editor = resolvePreference("editor", { preferences: cachedPreferences(), space: catalog.space }).value;
   if (!editor) throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "no editor is set", { remedy: "set VISUAL or EDITOR, or run `cotal config set editor vim`" });
-  const retry = `cotal persona edit${personaNameWords(name, target)}`;
+  const output = presentation === "rich" ? "" : ` --${presentation}`;
+  const retry = `cotal persona edit${personaNameWords(name, target + output)}`;
   // A draft the editor may have changed and that was not saved is kept, and the failure names it.
   let keep = false;
   const edit = await withDraft(name, async (draft): Promise<PersonaEdit | { action: "interrupted"; signal: InterruptSignal; draft?: string }> => {

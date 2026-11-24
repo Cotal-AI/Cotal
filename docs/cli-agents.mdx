@@ -636,7 +636,8 @@ If the temporary directory is on a read-only file system, choose a writable temp
 If the catalog itself is on a read-only file system, it must be writable before saving. A
 successful editor exit and valid definition are required before saving. A draft that fails
 validation is refused with `SCHEMA_INVALID` and the reason, keeping the draft and naming its path,
-so the edit is not lost. The retry command keeps any explicit `--space` or `--server` flags.
+so the edit is not lost. The retry command keeps any explicit `--space` or `--server` flags
+and the requested `--json` or `--plain` output.
 An editor that exits non-zero, as vim's `:cq` does, cancels the edit: it
 exits 0 with a `USER_CANCELLED` warning, saves nothing, and keeps and names a draft it changed. An
 editor ended by a signal fails with `OPERATION_FAILED` and keeps the draft. A SIGINT, SIGTERM or
