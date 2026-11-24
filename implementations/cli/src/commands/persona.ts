@@ -149,6 +149,11 @@ async function readInput(path: string, flag: "file" | "from"): Promise<Buffer> {
         remedy: `check the path or pipe the original input into the same command with --${flag} -`,
       });
     }
+    if (path !== "-" && (error as NodeJS.ErrnoException).code === "EISDIR") {
+      throw new CommandFailure("refused", "TARGET_NOT_FOUND", `persona input path is a directory: ${oneLine(path)}`, {
+        remedy: `pass the path to a ${flag === "file" ? "complete persona file" : "persona body file"} with --${flag}`,
+      });
+    }
     throw new CommandFailure("refused", "PERMISSION_DENIED", `cannot read persona input: ${path}`);
   }
 }
