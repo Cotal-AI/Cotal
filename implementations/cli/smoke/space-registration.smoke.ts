@@ -1084,12 +1084,22 @@ if (process.platform === "linux") {
   const kept = await run(["up", "--detach", "--open", "--no-manager", "--server", server, "--max-payload", "131072"], {}, second);
   check("with another space selected, up keeps it and says it stays selected outside this folder",
     kept.status === 0 && getCurrent() === "selfirst" && kept.stdout.includes(`"selsecond" up; "selfirst" stays automatically selected outside this folder`) && !kept.stdout.includes(`selected "selsecond"`), shown(kept));
+  const before = await json(["space"], second);
+  check("space inventory marks the running folder target without changing the selection",
+    before.status === 0 && before.env?.result.current === "selfirst" && before.env.result.folder === "selsecond", shown(before));
   const added = await json(["space", "add", "seloffline", "--force", "--server", DEAD, "--root", second], second);
   const who = await json(["who"], second);
   const show = await json(["space", "show"], second);
+  const inventory = await json(["space"], second);
+  const status = await json(["status"], second);
   check("the only running registration in this folder takes precedence over an adopted selection",
     added.status === 0 && who.status === 0 && who.env?.target?.space === "selsecond" &&
       readCurrentSelection()?.source === "adopted" && getCurrent() === "selfirst" && findMesh("seloffline")?.server === DEAD, shown(who));
+  check("space inventory marks the roster target and still lists the offline registration",
+    inventory.status === 0 && inventory.env?.result.current === "selfirst" && inventory.env.result.folder === who.env?.target?.space &&
+      inventory.env.result.items.some((row: { space: string; check: string }) => row.space === "seloffline" && row.check === "unreachable"), shown(inventory));
+  check("status inventory also marks the roster target while keeping the saved selection",
+    status.status === 0 && status.env?.result.meshes.current === "selfirst" && status.env.result.meshes.folder === who.env?.target?.space, shown(status));
   check("space show still refuses to choose among the folder's registrations", refused(show, 2, "TARGET_AMBIGUOUS"), shown(show));
   check("forget the offline registration", (await json(["space", "forget", "seloffline"], second)).status === 0);
   assertSmokeSandboxDown(secondSandbox, ["down", "--yes"], { cwd: second, env: runEnv });
