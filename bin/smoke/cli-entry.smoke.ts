@@ -1186,6 +1186,20 @@ require('node:module').syncBuiltinESMExports();`);
   const uncataloged = cotal(["team", "check", "m.yaml"], bare(false), noSeed);
   check("with no catalog persona of that name it says only that persona takes a path",
     uncataloged.status === 1 && uncataloged.stderr.includes("`persona` takes a path to a persona file, relative to the manifest (at agents.rev)") && !uncataloged.stderr.includes("catalog persona"), shown(uncataloged));
+  const directory = cotal(["team", "check", "m.yaml"], home => {
+    bare(false)(home);
+    mkdirSync(join(home, "..", ".cotal", "agents", "p20.md"), { recursive: true });
+  }, noSeed);
+  check("a directory named like a persona is not suggested as its file", directory.status === 1 && directory.stderr.includes("`persona` takes a path") && !directory.stderr.includes("catalog persona"), shown(directory));
+  const blocked = cotal(["team", "check", "m.yaml/child.yaml", "--json"], files(cases[0]![1]), noSeed);
+  check("a manifest path through a file is not a schema error", blocked.status === 2 && envelopes(blocked)[0]?.error?.code === "TARGET_NOT_FOUND" && blocked.stdout.includes("not a directory"), shown(blocked));
+  if (process.platform !== "win32" && process.getuid?.() !== 0) {
+    const unreadable = cotal(["team", "check", "m.yaml", "--json"], home => {
+      files(`${head}channels: {}\n`)(home);
+      chmodSync(join(home, "..", "m.yaml"), 0o000);
+    }, noSeed);
+    check("an unreadable manifest names the access failure before parsing", unreadable.status === 2 && envelopes(unreadable)[0]?.error?.code === "PERMISSION_DENIED" && unreadable.stdout.includes("read the file and enter its parent folders"), shown(unreadable));
+  }
   const missing = cotal(["team", "check", "nosuch.yaml"], files(cases[0]![1]), noSeed);
   check("team check of a manifest that does not exist names it as not found",
     missing.status === 2 && missing.stderr.includes("TARGET_NOT_FOUND") && /the team manifest \S*nosuch\.yaml was not found/.test(missing.stderr), shown(missing));
