@@ -76,7 +76,7 @@ import { workingFolderRemoved } from "./lib/paths.js";
 import { reportLostOutput, writeAllSync } from "./lib/stdout-owner.js";
 import { shellWord } from "./lib/endpoint-errors.js";
 import { displayRemedy, hasMovedStackRemedy } from "./lib/self-exec.js";
-import { GLOBAL_FLAG_WORDS, OUTPUT_FLAG_WORDS } from "./lib/leading-flags.js";
+import { asksForHelp, GLOBAL_FLAG_WORDS, leadingInvocation, OUTPUT_FLAG_WORDS } from "./lib/leading-flags.js";
 import { takeManagedHandoffCustody } from "./managed-handoff.js";
 import { nearestWords, LEADING_FLAGS, unknownCommandMessage, unknownSubcommandMessage } from "./lib/nearest-word.js";
 import { UnusableFile } from "./lib/unusable-file.js";
@@ -86,13 +86,6 @@ import { armTelemetry, recordTelemetryError, recordTelemetryFailure } from "./te
 // or a failure needs them, so a process that runs one daemon command never loads them.
 const serviceSurfaces = () => Promise.all([import("./lib/service-presets.js"), import("./commands/manager-service.js")]);
 const managerChoice = () => import("./lib/manager-choice.js");
-
-/** Whether `args` ask for help: `--help` or `-h` before any `--`, after which every word is text. */
-function asksForHelp(args: readonly string[]): boolean {
-  const end = args.indexOf("--");
-  const options = end === -1 ? args : args.slice(0, end);
-  return options.includes("--help") || options.includes("-h");
-}
 
 /** Whether a global flag ({@link GLOBAL_FLAG_WORDS}: `--no-color`, `--no-input`) is `word`, applying
  *  it when it is. */
@@ -105,23 +98,16 @@ function takeGlobalFlag(word: string): boolean {
 }
 
 /** Apply leading global flags and move command-owned output flags after the command word. */
-function leadingInvocation(argv: readonly string[]) {
+function prepareLeadingFlags(leading: readonly string[]) {
   const output: string[] = [];
   const leadingGlobals = new Set<string>();
   let repeatedLeading: string | undefined;
-  let lead = 0;
-  for (; lead < argv.length; lead++) {
-    const word = argv[lead]!;
+  for (const word of leading) {
     if (OUTPUT_FLAG_WORDS.has(word)) output.push(word);
     else if (leadingGlobals.has(word)) repeatedLeading ??= word;
     else if (takeGlobalFlag(word)) leadingGlobals.add(word);
-    else break;
   }
-  if (argv[lead] === "--") lead++;
-  const original = argv[lead];
-  const word = original === "--version" || original === "-V" ? "version"
-    : original === "--help" || original === "-h" ? "help" : original;
-  return { output, leadingGlobals, repeatedLeading, original, word, words: [...output, ...argv.slice(lead + 1)] };
+  return { output, leadingGlobals, repeatedLeading };
 }
 
 /** Collect globals before `--`; the parser still needs their original positions. */
@@ -407,8 +393,6 @@ export interface RunCliOptions {
    *  specs. OFF by default — library composition roots keep the explicit-import model; only the
    *  published binary opts in. */
   extensions?: boolean;
-  /** Schedule the published binary's update notice after help has been ruled out. @internal */
-  onNonHelpInvocation?: () => void;
   /** The published entry's notice for an interrupt before the command begins. It is released as the
    *  command's work begins, or kept for a command that declares `keepsStartupNotice`, whose own
    *  notice takes it over. */
@@ -760,9 +744,10 @@ async function serviceSurface(found: Command | undefined, words: string[], forRe
  */
 export async function runCli(registry: Registry, argv: string[], opts: RunCliOptions = {}): Promise<void> {
   const startedAt = Date.now();
-  const { output, leadingGlobals, repeatedLeading, original, word, words } = leadingInvocation(argv);
-  const wantsHelp = asksForHelp(words);
-  if (word !== "help" && !wantsHelp) opts.onNonHelpInvocation?.();
+  const { leading, original, word, args } = leadingInvocation(argv);
+  const { output, leadingGlobals, repeatedLeading } = prepareLeadingFlags(leading);
+  const words = [...output, ...args];
+  const wantsHelp = asksForHelp(args);
   const builtin = findCommand(registry.all<Command>("command"), word);
   const globals = collectGlobalFlags(words, leadingGlobals);
   const ownWords = (cmd: Command | undefined): string[] => {
