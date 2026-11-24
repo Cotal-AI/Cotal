@@ -478,8 +478,9 @@ runs. If the recorded folder no longer exists,
 the step says so and names moving it back if it was renamed or `cotal space forget <space>` to
 remove its local record. For a space `cotal space create` prepared
 and no `cotal up` started, the step is to start it with `cotal up` first, then run the same command
-again. If the project's default `.cotal/channels.json` blocks that first start, the step names the
-file and what to fix before running `cotal up`. From another folder, that `cotal up` names the
+again. If the default broker store is unwritable or `.cotal/channels.json` blocks that first
+start, the step names the path and what to fix before running `cotal up`. `doctor auth` does not
+change the store's permissions. From another folder, that `cotal up` names the
 space's root with `--root`, quoted for a shell.
 
 

@@ -183,8 +183,9 @@ still checks and uses the whole value. A usage error is found before any effect,
 connectors or writes configuration. Help, version and completion never do either.
 A word that starts with `-` reads as an option. A message or name that starts with one goes after
 `--`. The refusal can suggest `--` when an operand is still available and there is no spelling
-suggestion. Once `endpoint check` has its contract file or `endpoint work lease` has its target and
-pool, the refusal tells you to drop an unknown option instead.
+suggestion. Once `space add` has its name, `endpoint check` has its contract file, or
+`endpoint work lease` has its target and pool, the refusal tells you to drop an unknown option instead.
+The same applies to `team check`, `team boot` and `team deploy` once you have supplied the manifest file.
 When the refusal suggests an option spelling, replace the mistyped option and keep its value,
 as in `cotal docs --search <query>`. If the suggested switch is already set and cannot be repeated,
 the refusal tells you to drop the unknown option instead.
@@ -199,6 +200,8 @@ value `=general`. An option such as `--help` or `-h` typed with a typographic da
 rather than read as a positional. Use `--` before the word to pass it as text. The correction keeps
 any attached value the option accepts, as in `--limit=10`. Before the command word the same holds
 for the leading flags, so `cotal ––json status` names `--json`.
+For extension commands, the correction depends on the subcommand. `ext list` accepts `--json`;
+`ext root` prints a path, so the refusal asks you to omit that option.
 `cotal ext seed` takes no operands. An invalid seed option or extra word shows seed help instead
 of suggesting `--` to pass an operand.
 
@@ -227,7 +230,8 @@ prompt behaves as it does without a terminal, `web` prints its link without open
 the command word on every command, and after it on every command except one that takes its words
 raw. A global flag just after an option that needs a value leaves that value missing. After `--`
 global flags are ordinary words. Each is given once, as any flag is, before or after the command
-word. No command may declare a flag with either name. The output
+word. Neither flag takes a value. If you attach one, the refusal tells you to omit the flag or pass
+it without a value. No command may declare a flag with either name. The output
 flags `--json` (`-j`) and `--plain` may also come before the command word, as in
 `cotal --json status`; they are read as the command's own flags, so a command without that output
 refuses them as it does after the command word. A command that takes its words raw, such as the
@@ -443,6 +447,9 @@ the default persona failed, including creation of its `agents` directory, it rep
 `OPERATION_PARTIAL`, exit 4, names what was saved and
 warns that the persona file may be incomplete. After fixing the write problem, check the persona
 file and run the same `space create` again to finish preparing the space.
+If `up` or `down` cannot write the initial maintenance lock because of a storage limit,
+no stack member is started or stopped by that attempt. When no lock needs cleanup, the
+command exits 5 and names the lock file and the storage limit. Correct the limit and retry.
 On POSIX, a native quota error is reported as `EDQUOT` even when Node does not name it.
 Directory creation preserves that native cause without treating a missing parent or a dangling
 symlink as a quota failure.

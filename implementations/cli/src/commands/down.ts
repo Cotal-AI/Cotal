@@ -101,15 +101,24 @@ function namedStopArguments(args: ParsedArgs): ParsedArgs {
   return { ...args, positionals: ["stop", args.positionals[0]!] };
 }
 
-function refusePreparedSpaceMismatch({ space, ...flags }: ParsedArgs["values"]): void {
+function refuseLegacySpaceMismatch({ space, ...flags }: ParsedArgs["values"]): void {
   if (typeof space !== "string" || !bareStop(flags) || flags["with-agents"] !== undefined) return;
-  let prepared: string | undefined, project: string | undefined;
+  let current: string | undefined, project: string | undefined;
+  let source = "prepared";
   try {
-    prepared = preparedSpaceAt(canonicalRoot(cotalRoot()))?.space;
-    if (prepared !== undefined && prepared !== space) project = findPreparedSpace(space)?.root;
+    const root = canonicalRoot(cotalRoot());
+    current = preparedSpaceAt(root)?.space;
+    if (current === undefined && flags["dry-run"] !== true) {
+      const local = localMeshesForRoot(root), sole = local[0];
+      if (local.length === 1 && sole?.origin === "up" && !sole.stoppedByDown) {
+        current = sole.space;
+        source = "recorded";
+      }
+    }
+    if (current !== undefined && current !== space) project = findPreparedSpace(space)?.root;
   } catch { /* A project lookup is only for the diagnostic. */ }
-  if (prepared !== undefined && prepared !== space) {
-    throw new CommandFailure("refused", "UNSUPPORTED", `--space ${JSON.stringify(space)} does not match the space ${JSON.stringify(prepared)} prepared in this folder; nothing was stopped`, {
+  if (current !== undefined && current !== space) {
+    throw new CommandFailure("refused", "UNSUPPORTED", `--space ${JSON.stringify(space)} does not match the space ${JSON.stringify(current)} ${source} in this folder; nothing was stopped`, {
       remedy: project === undefined ? `locate the project root for space ${JSON.stringify(space)} before retrying` : `retry from the project root for space ${JSON.stringify(space)} at ${oneLine(project)}`,
     });
   }
@@ -177,7 +186,7 @@ export function validateDownArguments(args: ParsedArgs): void {
         remedy: `run ${codeSpan(retry)} from this root`,
       });
     }
-    refusePreparedSpaceMismatch(args.values);
+    refuseLegacySpaceMismatch(args.values);
     if (args.values["dry-run"] === true && (args.values.file !== undefined || args.values.run !== undefined)) {
       throw new CommandFailure("refused", "UNSUPPORTED", "a legacy deployment preview does not support --json or --plain", {
         remedy: `omit --${args.values.json ? "json" : "plain"} from the original command; keep --dry-run and the same deployment selection`, selfContained: true,
@@ -644,7 +653,7 @@ async function downCommand(args: ParsedArgs): Promise<void> {
     return;
   }
   if (values.space) {
-    refusePreparedSpaceMismatch(args.values);
+    refuseLegacySpaceMismatch(args.values);
     refuseSpaceElsewhere(cotalRoot(), values.space, args.values);
     throw new CommandFailure("refused", "USAGE_INVALID", "a bare stop takes no --space: `cotal down` stops the stack recorded at this folder's root", {
       target: { root: cotalRoot(), space: values.space },

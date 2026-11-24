@@ -1,10 +1,10 @@
 {
   "expected": {
-    "total": 1142,
+    "total": 1143,
     "honest-text": 71,
     "presence-only-glyph/count": 138,
     "command-ack": 13,
-    "non-render/control": 920
+    "non-render/control": 921
   },
   "classRationales": {
     "non-render/control": "This candidate handles presence state without making a human work-progress claim. Status tokens, routing, component inputs and presentation metadata are control data; exceptions that report a different kind of status carry an entry-specific reason."
@@ -5808,6 +5808,13 @@
       "anchor": "`HTTP ${status}`",
       "class": "non-render/control",
       "rationale": "HTTP response plumbing: the dashboard readiness probe's status code in a component fact; no agent presence is rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/status-render.ts",
+      "kind": "status-token",
+      "anchor": "(\"Startup in progress\", \"waiting\")] }];\n  const blocks: S",
+      "class": "non-render/control",
+      "rationale": "Status folder line: \"waiting\" selects the display tone for a verified controller startup; it is not displayed as a peer presence or work-progress claim."
     },
     {
       "path": "implementations/cli/src/commands/status-render.ts",
