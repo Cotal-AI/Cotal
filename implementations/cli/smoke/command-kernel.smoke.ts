@@ -1661,13 +1661,17 @@ async function completionOut(positionals: string[]): Promise<string> {
   const version = "0.13.2", npmrc = join(root, "mirror.npmrc");
   const requests: string[] = [];
   let publishedVersion = version;
+  let discoverCore = false;
   const mirror = createServer((request, response) => {
     const path = decodeURIComponent(request.url ?? "");
     requests.push(path);
     response.setHeader("content-type", "application/json");
-    if (path !== "/@cotal-ai/cli") return response.writeHead(404).end('{"error":"Not found"}');
-    response.end(JSON.stringify({ name: "@cotal-ai/cli", "dist-tags": { latest: publishedVersion }, versions: {
-      [publishedVersion]: { name: "@cotal-ai/cli", version: publishedVersion, dist: { tarball: "https://registry.invalid/cli.tgz", integrity: "sha512-fixture" } },
+    if (path === "/@cotal-ai/core") return response.writeHead(404).end('{"error":"Not found"}');
+    const name = path.slice(1);
+    const available = name === "@cotal-ai/cli" ? publishedVersion : version;
+    const dependencies = discoverCore && name === "@cotal-ai/workspace" ? { "@cotal-ai/core": version } : undefined;
+    response.end(JSON.stringify({ name, "dist-tags": { latest: available }, versions: {
+      [available]: { name, version: available, dependencies, dist: { tarball: "https://registry.invalid/package.tgz", integrity: "sha512-fixture" } },
     } }));
   });
   try {
@@ -1677,17 +1681,22 @@ async function completionOut(positionals: string[]): Promise<string> {
     const origin = `http://127.0.0.1:${address.port}`;
     const config = `@cotal-ai:registry=${origin}/\n`;
     writeFileSync(npmrc, config);
-    for (publishedVersion of [version, "0.13.1"]) {
+    for (const scenario of ["isolated", "same-batch", "later-batch", "discovered"] as const) {
+      publishedVersion = scenario === "isolated" ? version : "0.13.1";
+      discoverCore = scenario === "discovered";
+      const rootNames = scenario === "later-batch" || discoverCore
+        ? ["@cotal-ai/cli", "@cotal-ai/lang", "@cotal-ai/workspace"] : ["@cotal-ai/cli"];
+      const dependencies = Object.fromEntries([...rootNames, ...(discoverCore ? [] : ["@cotal-ai/core"])].map(name => [name, version]));
       requests.length = 0;
       const fixture = updateRuntime({
         npm: args => ({ status: 0, stdout: args[0] === "view" ? JSON.stringify(version) : "/global/node_modules" }),
-        releaseNpm: () => ({ status: 0, stdout: JSON.stringify({ name: "cotal-ai", version, dependencies: { "@cotal-ai/cli": version, "@cotal-ai/core": version }, dist: { tarball: "https://registry.invalid/root.tgz", integrity: "sha512-fixture" } }) }),
+        releaseNpm: () => ({ status: 0, stdout: JSON.stringify({ name: "cotal-ai", version, dependencies, dist: { tarball: "https://registry.invalid/root.tgz", integrity: "sha512-fixture" } }) }),
       });
       fixture.rt.npmAsync = (args, cache) => args[1].startsWith("@cotal-ai/")
         ? runNpmAsync([...args, "--userconfig", npmrc], cache) : Promise.resolve(fixture.rt.npm(args));
       fixture.rt.sleep = async () => assert.fail("a package-level 404 must not wait for publication");
       assert.equal(await executeUpdate(true, fixture.rt), 1);
-      assert.deepEqual(requests.sort(), ["/@cotal-ai/cli", "/@cotal-ai/core"]);
+      assert.deepEqual(requests.sort(), [...rootNames, "@cotal-ai/core"].map(name => `/${name}`).sort(), scenario);
       const diagnostic = `@cotal-ai/core@${version} was not found (npm E404 from ${origin}). Check @cotal-ai:registry in .npmrc`;
       const errors = fixture.events.filter(event => event.startsWith("err:")).join("\n");
       assert.ok(errors.includes(`update preflight failed: ${diagnostic}. No global install was attempted.`), errors);

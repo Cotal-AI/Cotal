@@ -94,13 +94,13 @@ export async function checkReleaseArchives(version: string, rt: UpdateRuntime): 
       if (!start) throw new Error("cannot identify the archive cache owner");
       writeFileSync(join(cache, ".owner"), `${process.pid}\n${start}\n`, { mode: 0o600, flag: "wx" });
     }
+    // A missing version cannot hide a definitive failure in another known package.
+    let lag: ReleaseNotAvailable | undefined;
     for (let offset = 0; offset < names.length;) {
       const batch = names.slice(offset, offset + 3);
-      // Settle every read before validating or removing its shared private cache. A definitive
-      // failure takes precedence over publication lag, with discovery order within each kind.
+      // Settle every read before validating in discovery order or removing the shared cache.
       const manifests = await Promise.allSettled(batch.map(name => rt.npmAsync(["view", `${name}@${version}`, "--json", ...options], cache)));
       offset += batch.length;
-      let lag: ReleaseNotAvailable | undefined;
       for (const [index, name] of batch.entries()) {
         const spec = `${name}@${version}`;
         const result = manifests[index]!;
@@ -136,8 +136,8 @@ export async function checkReleaseArchives(version: string, rt: UpdateRuntime): 
           }
         }
       }
-      if (lag) throw lag;
     }
+    if (lag) throw lag;
     // npm verifies each archive's integrity and applies registry, scoped auth and proxy/TLS policy.
     // Its cache add accepts multiple specs. Bound each group rather than starting npm per archive.
     for (let offset = 0; offset < names.length; offset += 6) {
