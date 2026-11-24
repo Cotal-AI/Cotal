@@ -78,6 +78,43 @@ function machineStatus(environment: NodeJS.ProcessEnv, project: string) {
 function skillsStatus(environment: NodeJS.ProcessEnv, project: string) {
   return machineStatus(environment, project).integrations.find((entry) => entry.name === "Claude skills");
 }
+function assertIndependentOwnershipRead(fresh: NodeJS.ProcessEnv, guidance: string): void {
+  const shim = join(root, "claude-query-shim");
+  mkdirSync(shim);
+  const native = run("/bin/sh", ["-c", "command -v claude"], fresh);
+  assert.equal(native.status, 0, native.stderr);
+  writeFileSync(join(shim, "claude"), `#!/bin/sh
+if [ "$*" = "$TEST_CLAUDE_FAIL" ]; then
+  echo 'private Claude query failure' >&2
+  exit 47
+fi
+exec "$TEST_CLAUDE_NATIVE" "$@"
+`, { mode: 0o700 });
+  const intercepted = { ...fresh, PATH: `${shim}:${fresh.PATH}`, TEST_CLAUDE_NATIVE: native.stdout.trim() };
+  const inventoryFailed = { ...intercepted, TEST_CLAUDE_FAIL: "plugin list --json" };
+  const status = machineStatus(inventoryFailed, "project-b");
+  assert.deepEqual(status.integrations.find((entry) => entry.name === "Claude plugin"),
+    { name: "Claude plugin", state: "off", text: "unknown" });
+  assert.deepEqual(status.integrations.find((entry) => entry.name === "Claude skills"),
+    { name: "Claude skills", state: "warn", text: guidance });
+  assert.equal(status.skills.setupBlocked, guidance);
+  const plain = run(process.execPath, [cli, "status"], inventoryFailed, join(root, "project-b"));
+  assert.equal(plain.status, 0, plain.stdout + plain.stderr);
+  assert.doesNotMatch(plain.stdout, /setup --skills/);
+  const refused = run(process.execPath, [cli, "setup", "--skills"], inventoryFailed, join(root, "project-b"));
+  assert.equal(refused.status, 3, refused.stdout + refused.stderr);
+  assert.ok(refused.stderr.includes(guidance), refused.stderr);
+
+  const marketplaceFailed = { ...intercepted, TEST_CLAUDE_FAIL: "plugin marketplace list --json" };
+  assert.equal(machineStatus(marketplaceFailed, "project-b").skills.setupBlocked,
+    "plugin marketplace list failed:\nprivate Claude query failure");
+  const unavailable = { ...intercepted, TEST_CLAUDE_FAIL: "--version" };
+  const absent = machineStatus(unavailable, "project-b");
+  assert.deepEqual(absent.integrations.find((entry) => entry.name === "Claude skills"),
+    { name: "Claude skills", state: "off", text: "unknown" });
+  assert.equal(absent.skills.setupBlocked, undefined);
+  console.log("PASS: ownership survives an inventory failure, and unavailable Claude does not block skills setup");
+}
 function resolved(environment: NodeJS.ProcessEnv, home: string): void {
   const entries = JSON.parse(claude(environment, "plugin", "list", "--json")) as Array<{ id: string; readFromFolder?: string }>;
   for (const name of ["cotal", "cotal-skills"])
@@ -176,6 +213,7 @@ function assertForeignSkillsStatus(): NodeJS.ProcessEnv {
   const split = { ...fresh, CLAUDE_CONFIG_DIR: env("split-config", homeB).CLAUDE_CONFIG_DIR };
   assert.deepEqual(machineStatus(split, "project-b").integrations.find((entry) => entry.name === "Claude wake channel"),
     { name: "Claude wake channel", state: "warn", text: guidance });
+  assertIndependentOwnershipRead(fresh, guidance);
   assert.deepEqual(profileBytes(envA), original);
   assert.ok(!existsSync(join(fresh.HOME!, ".agents", "skills")));
   assert.ok(!existsSync(join(homeB, "claude-plugin", "cotal-skills")));

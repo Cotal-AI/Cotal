@@ -169,7 +169,8 @@ An application whose host tool is not on PATH leaves the rest saved and the resu
 `cotal status` recommends `cotal setup --skills` for stale Claude skills and out-of-date
 `.agents` skills when skills setup can proceed. If another Cotal home owns the Claude registration,
 status names that home and explains how to use it or a separate Claude profile. The conflict also
-blocks skills setup for `.agents`, which runs after the connector skills installers. See
+blocks skills setup for `.agents`, which runs after the connector skills installers. Status can
+report the ownership conflict even if it cannot list installed Claude plugins. See
 [Getting started](getting-started.mdx) and, for maintainers, [setup internals](setup-internals.md).
 
 

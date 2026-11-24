@@ -251,12 +251,12 @@ function pluginCacheDir(): string {
 }
 
 /** Report the same ownership conflict for status and for writes to the shared profile. */
-function registrationHomeConflict(): string | undefined {
+function registrationHomeConflict(claude = claudeCommand()): string | undefined {
   const canonical = (path: string) => existsSync(path) ? realpathSync(path) : resolve(path);
   const current = cotalHome();
   const conflict = (home: string, registration: string) => canonical(home) === canonical(current) ? undefined
     : `${registration} belongs to Cotal home ${home}, not ${current}. Use that COTAL_HOME or a separate CLAUDE_CONFIG_DIR and plugin cache for this home.`;
-  const result = command("plugin", "marketplace", "list", "--json");
+  const result = runClaude(claude, process.cwd(), ["plugin", "marketplace", "list", "--json"]);
   if (result.status !== 0) throw new Error(`plugin marketplace list failed:\n${result.output}`);
   const entries: unknown = JSON.parse(result.output);
   if (!Array.isArray(entries)) throw new Error("Claude's marketplace list has an unsupported shape");
@@ -358,10 +358,14 @@ function command(...args: string[]): { status: number | null; output: string } {
   return commandIn(process.cwd(), ...args);
 }
 
+function commandIn(cwd: string, ...args: string[]): { status: number | null; output: string } {
+  return runClaude(claudeCommand(), cwd, args);
+}
+
 /** A spawn error (output past the limit, a directory that cannot be entered) is a failure whatever the
  *  exit status says, and its message is the output. */
-function commandIn(cwd: string, ...args: string[]): { status: number | null; output: string } {
-  const result = spawnSync(claudeCommand(), args, { cwd, encoding: "utf8", maxBuffer: CLAUDE_OUTPUT_LIMIT, timeout: 120_000, killSignal: "SIGKILL" });
+function runClaude(claude: string, cwd: string, args: string[]): { status: number | null; output: string } {
+  const result = spawnSync(claude, args, { cwd, encoding: "utf8", maxBuffer: CLAUDE_OUTPUT_LIMIT, timeout: 120_000, killSignal: "SIGKILL" });
   if (result.error) return { status: null, output: result.error.message };
   return { status: result.status, output: `${result.stdout ?? ""}${result.stderr ?? ""}`.trim() };
 }
@@ -612,9 +616,9 @@ function promoteLocalOnly(on: PluginEntry[], version: string): number | undefine
 
 /** The installed Claude Code plugins, or undefined when Claude cannot be launched or queried (both of
  *  which status renders as "unknown" rather than "absent"). ONE spawn serves both rows. */
-function pluginList(): PluginEntry[] | undefined {
+function pluginList(claude: string): PluginEntry[] | undefined {
   try {
-    const result = command("plugin", "list", "--json");
+    const result = runClaude(claude, process.cwd(), ["plugin", "list", "--json"]);
     if (result.status !== 0) return undefined;
     const parsed: unknown = JSON.parse(result.output || "[]");
     return Array.isArray(parsed) ? (parsed as PluginEntry[]) : undefined;
@@ -623,13 +627,20 @@ function pluginList(): PluginEntry[] | undefined {
   }
 }
 
-function registrationBlock(): RegistrationBlock | undefined {
+function registrationBlock(claude: string): RegistrationBlock | undefined {
   try {
-    const text = registrationHomeConflict();
+    const text = registrationHomeConflict(claude);
     if (text) return { state: "warn", text };
   } catch (error) {
     return { state: "error", text: (error as Error).message };
   }
+}
+
+function readPluginStatus(): { plugins: PluginEntry[] | undefined; block: RegistrationBlock | undefined } {
+  let claude: string;
+  try { claude = claudeCommand(); }
+  catch { return { plugins: undefined, block: undefined }; }
+  return { plugins: pluginList(claude), block: registrationBlock(claude) };
 }
 
 function skillsRow(entries: PluginEntry[] | undefined, { version, skillsRemedy }: ConnectorStatusInput, block: RegistrationBlock | undefined): ConnectorStatusRow {
@@ -641,8 +652,8 @@ function skillsRow(entries: PluginEntry[] | undefined, { version, skillsRemedy }
   const errors = (match.errors ?? match.error) as unknown;
   if (Array.isArray(errors) ? errors.length > 0 : Boolean(errors)) return row("error", `load error · ${skillsRemedy}`);
   if (resolvedPluginCurrent(match, version, "cotal-skills")) return row("ok", "current");
-  const mismatch = typeof match.version === "string" && match.version !== version ? `v${match.version} ≠ v${version} · ` : "";
-  return row("warn", `${mismatch}stale · ${skillsRemedy}`);
+  if (match.version === version) return row("warn", `stale · ${skillsRemedy}`);
+  return row("warn", `${typeof match.version === "string" ? `v${match.version} ≠ v${version} · ` : ""}stale · ${skillsRemedy}`);
 }
 
 /** The `cotal` plugin against the installed payload Claude resolves, including older cached installs. */
@@ -872,8 +883,7 @@ export const claudeSetupProvider: ConnectorSetupProvider = {
     },
   },
   status(input) {
-    const plugins = pluginList();
-    const block = plugins === undefined ? undefined : registrationBlock();
+    const { plugins, block } = readPluginStatus();
     const app = desktopRow(input.signedIn);
     return [
       pluginRow(plugins, input, block),
