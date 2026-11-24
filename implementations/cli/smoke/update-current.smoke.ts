@@ -1,7 +1,7 @@
 import "./update-isolation.js";
 import strictAssert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, renameSync, rmdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, renameSync, rmdirSync, rmSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
 import { createServer as createRegistry } from "node:http";
 import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -147,7 +147,7 @@ const { registryArrivalCell } = await import("../../../bin/smoke/update-registry
 const cacheUpdate = await registryArrivalCell({ scenario: "cache" });
 assert.equal(cacheUpdate.code, 0, "real CLI and npm update succeed with a user-owned cache that is not writable");
 
-async function repairRuntimeEntry(): Promise<void> {
+async function repairRuntimeEntry(damage: "missing" | "empty"): Promise<void> {
   const home = mkdtempSync(join(tmpdir(), "cotal-update-runtime-"));
   const repo = join(import.meta.dirname, "../../..");
   const pkg = "@cotal-ai/tmux";
@@ -203,22 +203,26 @@ async function repairRuntimeEntry(): Promise<void> {
     const root = await cli("ext", "root");
     assert.equal(root.status, 0, root.output);
     const entry = join(root.stdout.trim(), "node_modules", pkg, "dist/index.js");
-    renameSync(entry, join(home, "tmux-index.saved"));
+    const original = readFileSync(entry);
+    assert.ok(original.length > 0);
+    if (damage === "missing") renameSync(entry, join(home, "tmux-index.saved"));
+    else truncateSync(entry, 0);
     const broken = await cli("runtimes", "--plain");
     assert.equal(broken.status, 4, broken.output);
     assert.match(broken.output, /tmux\s+installed - load failed/);
     refuseArchive = true;
     env.npm_config_cache = join(home, "empty-cache");
     const refused = await cli("update", "--self");
-    assert.equal(refused.status, 1, refused.output);
+    assert.equal(refused.status, 1, `${damage} entry: ${refused.output}`);
     assert.match(refused.output, /extension set npm install failed/);
     assert.doesNotMatch(refused.output, /installed package closure is current/);
-    assert.equal(existsSync(entry), false, "failed repair leaves the live extension unchanged");
+    if (damage === "missing") assert.equal(existsSync(entry), false, "failed repair leaves the entry missing");
+    else assert.equal(readFileSync(entry).length, 0, "failed repair leaves the entry empty");
     refuseArchive = false;
     const repaired = await cli("update", "--self");
     assert.equal(repaired.status, 0, repaired.output);
     assert.doesNotMatch(repaired.output, /installed package closure is current/);
-    assert.deepEqual(readFileSync(entry), readFileSync(join(home, "tmux-index.saved")));
+    assert.deepEqual(readFileSync(entry), original);
     const runtimes = await cli("runtimes", "--plain");
     assert.equal(runtimes.status, 0, runtimes.output);
     assert.doesNotMatch(runtimes.output, /tmux\s+installed - load failed/);
@@ -231,7 +235,8 @@ async function repairRuntimeEntry(): Promise<void> {
   }
 }
 
-await repairRuntimeEntry();
+await repairRuntimeEntry("missing");
+await repairRuntimeEntry("empty");
 
 function npmNodeEngine(): void {
   const root = mkdtempSync(join(tmpdir(), "cotal-npm-node-"));

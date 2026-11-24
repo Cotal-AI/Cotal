@@ -383,8 +383,9 @@ owned by another Cotal home stays unchanged, while an independent Codex marketpl
 When `update --self` finds no newer release and verifies the installed package closure is current,
 it reports that no connector reconciliation ran and skips the running Manager continuity check.
 An unreadable Manager from another installation does not block this result.
-If a first-party operator extension is missing its entry file, `cotal update --self` runs
-reconciliation to restore it even when the CLI is already current.
+If a first-party operator extension's entry file is missing or empty, `cotal update --self`
+reinstalls the extension even when the CLI is already current. If the reinstall fails, the
+command reports the failure instead of declaring the installation current.
 
 If update cannot read a prepared space record, it names the file and reports that continuity was
 not checked for that record. It keeps the record and tells you how to restore read access. This
