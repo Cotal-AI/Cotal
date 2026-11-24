@@ -295,6 +295,22 @@ Messages the agent sends afterwards carry the new `from.name`, and stored histor
 `agent.displayName` reads the current name, and `config.name` stays the launch name.
 A manager keeps the last name a seat showed with the seat, apart from its alias. When it starts the seat again, after a crash or a preserved resume, it passes the name as `COTAL_DISPLAY_NAME`, so the seat comes back under the same alias and actor and shows its last name.
 
+### Naming from the first message [#naming-from-the-first-message]
+
+A seat launched with `COTAL_AUTO_NAME=1` (the Manager `spawn` field `autoName`) names itself from the first message it gets: its launch prompt, else its first live direct message or `@mention`.
+The connector passes `MeshAgent` a `nameFromMessage` hook, which makes one request to the session's own model outside its conversation, with no tools.
+The request asks for a short name for the message and caps the message at 8,000 characters.
+`MeshAgent` cleans the reply and applies it through the same queue as `set-name`, so an owner's rename is never overwritten.
+From launch until naming settles, the card carries `meta["ai.cotal.naming"] = "pending"`.
+The key goes when naming settles: a name, a failed or empty reply, 60 seconds, an owner rename, or the seat stopping.
+A failed naming keeps the launch name.
+A connector with no hook never shows the key and logs that the seat keeps its launch name.
+
+The Claude Code connector runs one `claude -p` with no tools, no MCP server, hooks off and no saved session.
+The Codex connector runs one ephemeral `codex exec` on the seat's own Codex home, at low reasoning, under a read-only sandbox.
+The OpenCode 2.x connector runs `generate` on a child session of the seat's session, then deletes the child session.
+The Hermes, Jcode, pi and OpenCode 1.x connectors have no hook yet.
+
 ## Prompt desk [#prompt-desk]
 
 The prompt desk is the `prompts` field of the agent endpoint, where an authorized session reads and answers the prompts the agent's harness raises.

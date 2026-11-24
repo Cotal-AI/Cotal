@@ -395,7 +395,7 @@ Presence is a per-space directory keyed by instance id. NATS binding: JetStream 
 | `description` | string | MAY | one-line summary |
 | `tags` | string[] | MAY | capability tags |
 | `skills` | `AgentSkill[]` | MAY | `{ id, name, description? }` |
-| `meta` | object | MAY | free-form advisory metadata. Reserved flat string keys are `connector` (host harness name), `model` (pinned model), `provider` (effective provider serving the model, connector-reported), `host` (self-reported machine), `cwd`, `repo`, `branch`, `head`, `sessionKind`, `sessionId`, and `terminal` (`stream` or `none`, whether a terminal attaches to the seats this manager starts). `ai.cotal.manager.instance` is the reference connector's holding-manager routing hint, never authority. All are advisory only |
+| `meta` | object | MAY | free-form advisory metadata. Reserved flat string keys are `connector` (host harness name), `model` (pinned model), `provider` (effective provider serving the model, connector-reported), `host` (self-reported machine), `cwd`, `repo`, `branch`, `head`, `sessionKind`, `sessionId`, and `terminal` (`stream` or `none`, whether a terminal attaches to the seats this manager starts). `ai.cotal.manager.instance` is the reference connector's holding-manager routing hint, never authority. `ai.cotal.naming` is `pending` while the agent's naming from its first message is outstanding (§13.22) and absent otherwise. All are advisory only |
 | `protocolVersion` | string | MUST from v0.4 | wire version spoken (§11); `"0.4"` for this revision. Advertisement is the marker at the v0.4 reachability boundary (§13.11): a participant that omits it is pre-0.4 (omission means the pre-0.4 line, where the field was optional) and MUST NOT be addressed on the `ep` rails. A change signal, not negotiation |
 
 An instance MUST refresh its own presence entry on the heartbeat interval, default 2000 ms.
@@ -1081,7 +1081,7 @@ path. Broken and non-directory symlinks MUST be omitted. Roots MUST list existin
 Windows (a root whose inspection fails MUST be omitted), `/` and `/Volumes` on macOS, and `/` on other hosts. Invalid or inaccessible directories
 MUST refuse with `failed-precondition`. Delegated execution MUST refuse before any filesystem
 lookup with the same execution-mode refusal as `resolve-cwd`; NONE MUST refuse with `unimplemented`.
-The Manager cluster revision is 53. The closed `spawn` input accepts optional boolean
+The Manager cluster revision is 54. The closed `spawn` input accepts optional boolean
 `eventPayloads`; revision 48 rejects this field. Revision 50 required `permissionRequests` on every
 `status.connectors` row. Revision 51 removes that field, and its closed status schema rejects a row
 that carries it. Revision 52 requires `prompts` on every `status.connectors` row (§13.7), and the
@@ -1091,6 +1091,11 @@ interrupt key the seat's connector declares into the seat's terminal, and answer
 granted as `input` is: to operator credentials, and in owner mode to a person's own manager-caller
 view (§13.21). It refuses with `unimplemented` when the connector declares no key or the runtime owns
 no terminal input.
+Revision 54 adds optional boolean `autoName` to the closed `spawn` input, and revision 53 rejects
+it. `true` launches the seat to name itself from its first message (§13.22, names from the first
+message). A Manager MUST refuse it on a `once` spawn, and on a runtime that delegates seats outside
+its host, before any enrollment. A Manager MUST NOT pass it again when it starts the same lifecycle
+again.
 
 On such a runtime, a caller-supplied persona `config` override MUST be refused before resolving,
 checking or reading its host path. Every path shape MUST receive `failed-precondition` and the
@@ -6984,6 +6989,23 @@ the name they were sent under (§5). A launcher that starts the same lifecycle a
 crash or a preserved resume, keeps it under the same principal and SHOULD start it with the name its
 presence last showed.
 
+**Names from the first message.** A launcher MAY ask a new agent to name itself from the first
+message it receives (the Manager `spawn` field `autoName`, §9). The agent's own connector then
+makes one request to the agent's own model, outside the agent's conversation and with no tools: a
+fixed instruction to name the message and not answer it, and the message itself, cut to 8000
+characters. The message is the launch prompt when there is one, else the first live direct message
+or `@mention` addressed to the agent; history read at join and a delivery daemon's notice are not
+messages to it. The agent takes the first line of the reply, without a label, quotes, emphasis or a
+trailing period, with `/` and `\` as spaces, cut at a word boundary to 40 characters, and applies it
+as `set-name` would, in the same one-at-a-time order, so the name rule and the live-name check hold.
+From launch until naming settles, the card carries `meta["ai.cotal.naming"] = "pending"`; the agent
+removes the key when naming settles, whether it took a name, its model failed or answered with no
+usable name, 60 s passed, the owner renamed it, or the agent stopped. A failed naming keeps the
+launch name: the agent tries no other model and no substitute name. An owner `set-name` before naming settles ends naming,
+and the owner's name stands. A connector that cannot make the request never shows the key, and an
+agent started with the name its presence last showed does not name itself. A client MAY wait for the
+key to clear before it offers `set-name`. The key is advisory, like all card metadata.
+
 **Interrupt.** `interrupt` stops the turn the agent is running, whatever started it, as the
 harness's own stop does at the agent's terminal. The reply comes once the harness answered. The
 connector then ends that turn as it ends one its user stopped, and the agent takes its next queued
@@ -8101,6 +8123,7 @@ Normative revisions of this document, newest first. Dated snapshots per §11; th
 
 | Date | Revision |
 | --- | --- |
+| 2026-11-24 | **An agent names itself from its first message (§6, §9, §13.22), additive.** The Manager cluster advances to revision 54: the closed `spawn` input takes optional boolean `autoName`, which revision 53 rejects. A Manager refuses it on a `once` spawn and on a runtime that delegates seats outside its host, and never passes it again on a relaunch. The seat's connector makes one tool-less request to the seat's own model, outside its conversation, about the launch prompt or else the first live direct message or mention, and applies the cleaned reply as `set-name` would. The card carries `meta["ai.cotal.naming"] = "pending"` from launch until naming settles, and the key goes when it settles, named or not. An owner `set-name` before then ends naming. A connector that cannot make the request never shows the key. No subject changes. |
 | 2026-11-23 | **`commands` can answer `supported: false` for a while (§13.22), clarification.** `{ supported: false }` means the connector runs no commands now. It can change within a lifecycle, as for a Claude Code seat whose command mod is not running, so a reader asks again later. `command` and `interrupt` then answer `unimplemented`, `not-executed`, with the cause in the message. No subject, schema or digest changes. |
 | 2026-11-21 | **A person controls their own agents without `admin` (§9, §13.9, §13.21), additive.** A signed-in person could not type into or interrupt their own agents through the Manager unless their actor row held `admin`, and could read their agents' event channels only through a channel grant. Both are now keyed on the ledger row being `interactive`, as the principal route's `owner` rows are. The person's `manager-caller` view carries `inspect` and `ps`, and owner-mode `despawn`, `attach`, `input` and `interrupt`, on its instance whatever the row's scope, the target owner pinned to their own. Their `agent` credential subscribes `chat.<owner>.*.events.<owner>.*` and holds one create of its own `chathist_` reader with that filter. A `managed-agent` row gets none of these, so the Manager's `input` and `interrupt` stay out of every agent credential, and a person cannot hand them on. They ride the person's sign-in, so a process using that sign-in uses them. |
 | 2026-11-21 | **A Manager command that interrupts a seat's turn (§9), additive.** The Manager cluster advances to revision 53 with the targeted `interrupt` command. It writes the interrupt key the seat's connector declares into the seat's terminal and answers `{ name }`. It is granted as `input` is. A connector that declares no key, or a runtime that owns no terminal input, is refused with `unimplemented`, and nothing is written. |
