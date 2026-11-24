@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { accessSync, constants, existsSync, lstatSync, readFileSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { hostname } from "node:os";
-import { assertRecordIdentity, CommandFailure, darwinProcessBinding, MAX_IDLE_EXIT_SECONDS, readServiceIdleExit, isCustodyPipe, win32ProcessBinding, homeCotalDir, identityRecord, localRecordAccess, oneLine, protectedLocalDirectory, serviceAdapterKernelStopResult, serviceAdapterReadiness, serviceAdapterStopResult, type ServiceAdapterKernelStopResult, type ServiceAdapterStopResult, serviceOperationId, spaceFromSegment, type ServiceAdapterReadiness, type ProcessIdentityRecord, spaceKey } from "@cotal-ai/workspace";
+import { assertRecordIdentity, CommandFailure, darwinProcessBinding, osMachineId, type OsMachineId, SYSTEM_ID_SOURCES, type Win32SystemIdSource, MAX_IDLE_EXIT_SECONDS, readServiceIdleExit, isCustodyPipe, win32ProcessBinding, homeCotalDir, identityRecord, localRecordAccess, oneLine, protectedLocalDirectory, serviceAdapterKernelStopResult, serviceAdapterReadiness, serviceAdapterStopResult, type ServiceAdapterKernelStopResult, type ServiceAdapterStopResult, serviceOperationId, spaceFromSegment, type ServiceAdapterReadiness, type ProcessIdentityRecord, spaceKey } from "@cotal-ai/workspace";
 import { serviceSupervisorProjection } from "./service-supervision.js";
 import type { ServiceAdapterPin } from "./service-adapters.js";
 import { localRecordObject, localRecordText, ProtectedRecordStore, type LocalRecordSnapshot } from "./protected-records.js";
@@ -14,9 +14,6 @@ import { localRecordObject, localRecordText, ProtectedRecordStore, type LocalRec
 export type ServiceHost = { machine: string; name: string } & (
   | { boot: string; uid: number; platform?: never; sid?: never; machineSource?: never }
   | { platform: "win32"; machineSource: Win32SystemIdSource; sid: string; boot?: never; uid?: never });
-/** The modules Windows derives a system ID from (SystemIdentificationSource 1, 2 and 3). */
-export type Win32SystemIdSource = "tpm" | "uefi" | "registry";
-const SYSTEM_ID_SOURCES: readonly Win32SystemIdSource[] = ["tpm", "uefi", "registry"];
 /** Windows only: the custodian that holds this incarnation's job, the pipe it answers on, and the
  *  name of the protected file beside this record that holds its capability. Never the capability. */
 export interface ServiceCustody { custodian: ProcessIdentityRecord; pipe: string; capability: string }
@@ -93,31 +90,31 @@ export function processServiceHost(): ServiceHost {
   if (host) return host;
   if (process.platform === "win32") {
     const native = win32ProcessBinding();
-    let system: { id: string; source: number }, sid: string;
+    let system: OsMachineId, sid: string;
     try {
-      system = native.systemId();
+      system = osMachineId();
       sid = native.userSid();
-      if (!/^(?:[0-9a-f]{2}){1,256}$/.test(system.id) || !Number.isInteger(system.source) || !SID.test(sid)) throw new Error();
+      if (!SID.test(sid)) throw new Error();
     } catch { throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "the host's stable machine identity or account SID could not be established; no process-service effect was attempted"); }
-    const machineSource = SYSTEM_ID_SOURCES[system.source - 1];
+    const machineSource = system.platform === "win32" ? system.source : undefined;
     if (!machineSource) throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "Windows has no TPM, UEFI or registry module to derive this machine's system ID from; no process-service effect was attempted");
-    return host = { platform: "win32", machine: createHash("sha256").update(Buffer.from(system.id, "hex")).digest("hex"), machineSource, sid, name: hostname() };
+    return host = { platform: "win32", machine: createHash("sha256").update(system.bytes).digest("hex"), machineSource, sid, name: hostname() };
   }
   if ((process.platform !== "linux" && process.platform !== "darwin") || process.getuid === undefined) throw new CommandFailure("refused", "UNSUPPORTED", "this process-service driver currently requires Linux, macOS or Windows machine identity; another platform is not silently treated as one of them");
   const native = process.platform === "darwin" ? darwinProcessBinding() : undefined;
-  let machine: string, boot: string;
+  let machine: OsMachineId, boot: string;
   try {
+    machine = osMachineId();
     if (native) {
-      ({ machine, boot } = native.hostIdentity());
-      if (!UUID.test(machine) || !UUID.test(boot)) throw new Error();
+      boot = native.hostIdentity().boot;
+      if (!UUID.test(boot)) throw new Error();
       boot = boot.toLowerCase();
     } else {
-      machine = readFileSync("/etc/machine-id", "utf8").trim();
       boot = readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
-      if (!/^[0-9a-f]{32}$/i.test(machine) || !/^[0-9a-f-]{36}$/i.test(boot)) throw new Error();
+      if (!/^[0-9a-f-]{36}$/i.test(boot)) throw new Error();
     }
   } catch { throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "the host's stable machine/boot identity could not be established; no process-service effect was attempted"); }
-  return host = { machine: createHash("sha256").update(machine.toLowerCase()).digest("hex"), boot, name: hostname(), uid: process.getuid() };
+  return host = { machine: createHash("sha256").update(machine.bytes).digest("hex"), boot, name: hostname(), uid: process.getuid() };
 }
 
 export function requireProcessIdentity(pid: number): ProcessIdentityRecord {
