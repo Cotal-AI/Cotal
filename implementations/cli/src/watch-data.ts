@@ -1,5 +1,6 @@
 import { oneLine, type Report } from "@cotal-ai/workspace";
 import type { FeedEntry, MeshSnapshot } from "@cotal-ai/workspace/view";
+import { shellWord } from "./lib/endpoint-errors.js";
 import { channelHistoryCommand } from "./lib/history-command.js";
 
 export const watchViews = ["activity", "events", "messages", "roster", "channels", "waiting", "dms", "topology"] as const;
@@ -39,16 +40,17 @@ export function scriptLine(ts: number | string, sender: string, destination: str
 
 /** The `cotal history` read whose JSON document carries a cut message's whole text. A text or plain
  *  history row cuts again, so the line names the read that does not. */
-export function wholeTextRead(entry: { channel?: string; events?: boolean; delivery?: string }): string {
-  if (entry.channel && !entry.events) return `\`${channelHistoryCommand(entry.channel)} --json\``;
-  if (entry.delivery === "unicast") return "`cotal history --dms --json`";
+export function wholeTextRead(entry: { channel?: string; events?: boolean; delivery?: string }, space: string): string {
+  const scope = `--json --space ${shellWord(space)}`;
+  if (entry.channel && !entry.events) return `\`${channelHistoryCommand(entry.channel)} ${scope}\``;
+  if (entry.delivery === "unicast") return `\`cotal history --dms ${scope}\``;
   return "";
 }
 
 /** One feed entry as a line. Text past {@link WATCH_TEXT_LIMIT} is cut, and the line says how much
  *  was not shown and which `cotal history` read carries the whole text. A stream row whose text was already
  *  cut carries that count as `omittedCodeUnits`. */
-export function feedLine(entry: FeedEntry & { omittedCodeUnits?: number }): string {
+export function feedLine(entry: FeedEntry & { omittedCodeUnits?: number }, space: string): string {
   const time = feedTime(entry.ts);
   const sender = shown(entry.from.name, entry.from.id);
   const destination = entry.channel ? `#${entry.channel}` : entry.toService ? `role ${entry.toService}` : `DM to ${entry.toIds?.join(", ") || "not attributed"}`;
@@ -60,7 +62,7 @@ export function feedLine(entry: FeedEntry & { omittedCodeUnits?: number }): stri
     } catch { /* A non-JSON event remains attributed text. */ }
   }
   const notShown = body.omittedCodeUnits + (entry.omittedCodeUnits ?? 0);
-  const whole = wholeTextRead(entry);
+  const whole = wholeTextRead(entry, space);
   return scriptLine(entry.ts, sender, destination, `${body.text}${notShown ? ` [${notShown} text code units not shown${whole ? `; ${whole} carries the whole text` : ""}]` : ""}`);
 }
 
@@ -89,7 +91,7 @@ export function watchReport(snapshot: MeshSnapshot, filter: WatchFilter): Report
     ] }] };
   }
   return { sections: [{ title: filter === "dms" ? "Authorized direct-message observations" : `Observed ${filter}`, blocks: [
-    { kind: "lines", lines: snapshot.feed.filter((entry) => matchesWatchFilter(entry, filter)).map(feedLine) },
+    { kind: "lines", lines: snapshot.feed.filter((entry) => matchesWatchFilter(entry, filter)).map((entry) => feedLine(entry, snapshot.status.space)) },
     { kind: "lines", lines: [{ text: hint, tone: "hint" }] },
   ] }] };
 }

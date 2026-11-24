@@ -375,8 +375,15 @@ async function revoke(values: RunValues, runId: string | undefined): Promise<voi
     const kv = await new Kvm(nc).open(admissionBucket(conn.space));
     // The marker sits beside the run's admission. With no admission there is no run here to revoke,
     // so refuse before anything is written.
-    if (await kv.get(admissionKey(endpoint, runId)) === null)
-      throw new CommandFailure("refused", "TARGET_NOT_FOUND", `run ${runId} has no admission on endpoint ${endpoint}, so there is nothing to revoke; nothing was written`, { target: { space: conn.space, endpoint, run: runId }, remedy: "list the recorded runs with `cotal run`" });
+    if (await kv.get(admissionKey(endpoint, runId)) === null) {
+      const selectors = retryFlag("space", conn.space) + (["server", "creds", "endpoint"] as const).map((flag) => retryFlag(flag, values[flag])).join("");
+      const privateServer = values.server !== undefined && brokerAddressForDisplay(values.server) !== oneLine(values.server);
+      throw new CommandFailure("refused", "TARGET_NOT_FOUND", `run ${runId} has no admission on endpoint ${endpoint}, so there is nothing to revoke; nothing was written`, {
+        target: { space: conn.space, endpoint, run: runId },
+        remedy: privateServer ? "change the original subcommand to `list` and remove the run ID, `--by` and `--reason` with their values"
+          : `list the recorded runs with ${codeSpan(`cotal run list --local${selectors}`)}`,
+      });
+    }
     await revokeRunAdmission(kv, endpoint, { version: 1, runId, reason: values.reason, by: values.by, revokedAt: Date.now() });
     const view = await readRunAdmission(await jetstreamManager(nc), conn.space, endpoint, runId);
     console.log(`run ${runId} on ${endpoint}: revoked by ${view.revoked!.by} (${view.revoked!.reason}); its hosts refuse the next channel effect, and it is not resumed or taken back`);
@@ -626,8 +633,15 @@ async function migrate(values: RunValues, planes: Planes, runId: string | undefi
   const endpoint = values.endpoint ?? "manager";
   const record = await readRunRecord(planes.kv, endpoint, runId);
   // A run ID nothing records is refused as `run show` refuses it; the check writes nothing either way.
-  if (record === undefined)
-    throw new CommandFailure("refused", "TARGET_NOT_FOUND", `run ${runId}: no record on endpoint ${endpoint}; a run that was never started cannot be checked`, { target: { space: planes.space, endpoint, run: runId }, remedy: "list the recorded runs with `cotal run`" });
+  if (record === undefined) {
+    const selectors = retryFlag("space", planes.space) + (["server", "creds", "endpoint"] as const).map((flag) => retryFlag(flag, values[flag])).join("");
+    const privateServer = values.server !== undefined && brokerAddressForDisplay(values.server) !== oneLine(values.server);
+    throw new CommandFailure("refused", "TARGET_NOT_FOUND", `run ${runId}: no record on endpoint ${endpoint}; a run that was never started cannot be checked`, {
+      target: { space: planes.space, endpoint, run: runId },
+      remedy: privateServer ? "change the original subcommand to `list`, remove the run ID and program file (including `--file` if used), and add `--local` if missing"
+        : `list the recorded runs with ${codeSpan(`cotal run list --local${selectors}`)}`,
+    });
+  }
   const recorded = await readRunProgram(planes.kv, endpoint, runId);
   const replay = await replayRunJournal(planes.js, planes.jsm, planes.space, runId, takeoverId);
   const source = sourceOf(values.file);
@@ -1148,6 +1162,14 @@ function checkAnswerValue(text: string, usage: (message: string) => never): void
   }
 }
 
+function journalIdRemedy(verb: string, values: RunValues): string {
+  if (values.server !== undefined && brokerAddressForDisplay(values.server) !== values.server)
+    return "list the runs with the same broker and target options, then give the original command one ID from that list";
+  const target = (values.local ? " --local" : "") + (["space", "server", "creds", "endpoint", "on"] as const).map((flag) => retryFlag(flag, values[flag])).join("");
+  const output = values.json ? " --json" : values.plain ? " --plain" : "";
+  return `${codeSpan(`cotal run${target}${output}`)} lists the runs; run ${codeSpan(`cotal run ${verb} <run-id>${target}${retryFlag("limit", values.limit)}${output}`)}`;
+}
+
 /** Public workflow grammar, before catalog preparation or native requests. */
 export function workflowArguments(args: ParsedArgs): { values: RunValues; verb: string; a?: string; b?: string } {
   const values = { ...args.values } as RunValues;
@@ -1156,11 +1178,20 @@ export function workflowArguments(args: ParsedArgs): { values: RunValues; verb: 
   const verb = ({ list: "ps", show: "journal", check: "migrate" } as Record<string, string>)[raw] ?? raw;
   // A refusal that names its own fix prints that fix and no help; any other prints the help.
   const usage = (message: string, remedy?: string): never => { throw new CommandFailure("refused", "USAGE_INVALID", message, remedy === undefined ? {} : { remedy, selfContained: true }); };
+  if (verb === "journal" && values.limit !== undefined) {
+    if (!/^[1-9][0-9]*$/.test(values.limit) || Number(values.limit) > 1000) usage(`run ${raw}: --limit must be between 1 and 1000`);
+    if (values.json) usage(`run ${raw}: --limit bounds the text view, and --json returns the whole journal`, "omit --json for a limited text view, or omit --limit for the full JSON journal");
+  }
+  if (verb === "journal" && (first === undefined || second !== undefined)) usage(`run ${raw} takes one identifier`, journalIdRemedy(raw, values));
   if (extra.length || !["start", "resume", "ps", "journal", "answer", "amend", "revoke", "migrate", "validate", "plan", "simulate", "turns", "yield"].includes(verb)) usage("choose a declared run command; run it bare to list workflows");
   // A run id is an id token, so a malformed one is refused here, before any contact, rather than
   // by whichever plane reads it first.
   if (["journal", "resume", "revoke", "answer", "amend", "migrate"].includes(verb) && first !== undefined) {
-    try { assertIdToken(first, "run id"); } catch { usage(`run ${raw}: ${JSON.stringify(boundedValue(first, SHOWN_VALUE_MAX))} is not a run id, which is 1 to 64 letters, digits, "_" or "-"; \`cotal run\` lists them`); }
+    try { assertIdToken(first, "run id"); } catch {
+      const message = `run ${raw}: ${JSON.stringify(boundedValue(first, SHOWN_VALUE_MAX))} is not a run id, which is 1 to 64 letters, digits, "_" or "-"`;
+      if (verb === "journal") usage(message, journalIdRemedy(raw, values));
+      usage(`${message}; \`cotal run\` lists them`);
+    }
   }
   let a: string | undefined = first;
   let b: string | undefined = second;
@@ -1184,6 +1215,12 @@ export function workflowArguments(args: ParsedArgs): { values: RunValues; verb: 
     if (!first || !second) usage(`run ${verb} requires a run id and step key`);
   } else if (verb === "revoke" && first === undefined) {
     usage("run revoke takes one identifier", "add a run ID after `run revoke` in the original command. A revoke requires `--local --by <actor> --reason <text>`");
+  } else if (verb === "resume" && !first && values.local === true) {
+    const target = (["space", "server", "creds", "endpoint"] as const).map((flag) => retryFlag(flag, values[flag])).join("");
+    const list = values.server !== undefined && brokerAddressForDisplay(values.server) !== values.server
+      ? "run `cotal run list --local` with the original target options"
+      : `list the recorded runs with ${codeSpan(`cotal run list --local${target}`)}`;
+    usage("run resume takes one identifier", `${list}. Then add a run ID after \`run resume\` in the original command`);
   } else if (!first || second !== undefined) usage(`run ${raw} takes one identifier`, verb === "yield" ? "`cotal run turns` lists your turns. Run `cotal run yield <turn-id> --status <done|blocked|handoff>`. For a handoff, add `--to <agent>`." : `\`cotal run\` lists the runs; run \`cotal run ${raw} <run-id>\``);
   const scopes: Record<string, readonly string[]> = {
     timeout: ["start", "resume"], by: ["answer", "amend", "revoke"], reason: ["revoke"], value: ["answer", "amend"], artifact: ["answer", "amend"],
@@ -1210,10 +1247,6 @@ export function workflowArguments(args: ParsedArgs): { values: RunValues; verb: 
   if (verb === "journal") {
     const paging = [values.page !== undefined ? "--page" : undefined, values.cursor !== undefined ? "--cursor" : undefined].filter(Boolean).join(" and ");
     if (paging) usage(`run ${raw}: diagnostic inventory options are not available here`, `remove ${paging} to read the journal, or use \`cotal run --page --on <instance>\` for diagnostic inventory`);
-    if (values.limit !== undefined) {
-      if (!/^[1-9][0-9]*$/.test(values.limit) || Number(values.limit) > 1000) usage(`run ${raw}: --limit must be between 1 and 1000`);
-      if (values.json) usage(`run ${raw}: --limit bounds the text view, and --json returns the whole journal`);
-    }
   } else if (values.page !== undefined || values.limit !== undefined || values.cursor !== undefined) {
     if (verb !== "ps" || values.local === true || values.page !== true || values.on === undefined)
       usage("diagnostic paging requires run --page --on <instance> without --local");

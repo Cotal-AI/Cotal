@@ -44,15 +44,15 @@ export const onRetry = (retry: ManagerRetry): string | undefined =>
  *  a dropped pin is a silent fallback, so neither branch gets to see it. A roster principal id
  *  (`local.…`) is refused here too, naming the identifier `--on` wants (#423). Any other value is an
  *  instance id, name or host, which {@link managerPin} resolves to an instance id before use. */
-export function onInstance(on: string | undefined, verb: ManagerRetry): string | undefined {
+export function onInstance(on: string | undefined, verb: ManagerRetry, roster = "`cotal ps`"): string | undefined {
   if (on === undefined) return undefined;
   const command = onRetry(verb);
   const example = command === undefined ? "" : `: ${command}`;
   const remedy = typeof verb === "object" && "remedy" in verb ? verb.remedy : undefined;
   if (on === "")
-    throw new CommandFailure("refused", "USAGE_INVALID", `--on requires a manager instance id (the whole id, as \`cotal ps\` prints it), or on a user-auth mesh a manager's name or host${example}. An empty value is refused, not dropped`, { selfContained: true, remedy });
+    throw new CommandFailure("refused", "USAGE_INVALID", `--on requires a manager instance id (the whole id, as ${roster} prints it), or on a user-auth mesh a manager's name or host${example}. An empty value is refused, not dropped`, { selfContained: true, remedy });
   if (on.startsWith("local."))
-    throw new CommandFailure("refused", "USAGE_INVALID", `"${on}" is a principal id. --on wants the manager INSTANCE id as \`cotal ps\` prints it (the \`instance\` it lists for a manager that answered, or the \`manager <id>\` header when several did), not the roster's principal id (\`local.U…\`, as \`cotal endpoints\` shows it)${example}`, { selfContained: true, remedy });
+    throw new CommandFailure("refused", "USAGE_INVALID", `"${on}" is a principal id. --on wants the manager INSTANCE id as ${roster} prints it (the \`instance\` it lists for a manager that answered, or the \`manager <id>\` header when several did), not the roster's principal id (\`local.U…\`, as \`cotal endpoints\` shows it)${example}`, { selfContained: true, remedy });
   return on;
 }
 
@@ -70,8 +70,8 @@ export function onRerun(verb: string, values: { space?: unknown; server?: unknow
 /** {@link onInstance} for an `--on` that takes only an instance id: an endpoint's instance, or a
  *  step that runs before the mesh can be read. The value is shape-checked against core's
  *  lifecycle-token grammar, so a malformed id is refused naming the identifier `--on` wants. */
-export function onInstanceId(on: string | undefined, verb: ManagerRetry): string | undefined {
-  const value = onInstance(on, verb);
+export function onInstanceId(on: string | undefined, verb: ManagerRetry, roster = "`cotal ps`"): string | undefined {
+  const value = onInstance(on, verb, roster);
   if (value === undefined) return undefined;
   try {
     assertLifecycleToken(value, "instanceId");
@@ -79,7 +79,7 @@ export function onInstanceId(on: string | undefined, verb: ManagerRetry): string
     const command = onRetry(verb);
     const example = command === undefined ? "" : `: ${command}`;
     const remedy = typeof verb === "object" && "remedy" in verb ? verb.remedy : undefined;
-    throw new CommandFailure("refused", "USAGE_INVALID", `${(e as Error).message}. --on wants the INSTANCE id as \`cotal ps\` prints it (the \`instance\` it lists for a manager that answered, or the \`manager <id>\` header when several did)${example}`, { selfContained: true, remedy });
+    throw new CommandFailure("refused", "USAGE_INVALID", `${(e as Error).message}. --on wants the INSTANCE id as ${roster} prints it (the \`instance\` it lists for a manager that answered, or the \`manager <id>\` header when several did)${example}`, { selfContained: true, remedy });
   }
   return value;
 }

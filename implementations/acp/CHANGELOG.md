@@ -1,5 +1,45 @@
 # @cotal-ai/acp
 
+## 0.176.6
+
+### Patch Changes
+
+- 665c8df: The T3 Code and Zed entries that `cotal setup` writes keep working after Node or Cotal is upgraded.
+  Under the get.cotal.ai launcher, an entry now runs the launcher's Node link instead of the folder of one Node version, such as Homebrew's `Cellar/node/<version>`, which Homebrew removes when Node upgrades. It also runs the install's own entry instead of the copy one update loaded. Status counts a link to the running Node as current.
+
+## 0.176.5
+
+### Patch Changes
+
+- afccf80: A Cotal thread in T3 Code and other ACP clients now has a Harness option for picking which application the agent runs.
+  The option lists the applications that can run a thread, such as claude, codex, jcode and pi. Choosing another harness starts it on that application's default model, and choosing a model moves the harness to that model's application, so the two always agree. The model list stays complete, because T3 Code checks a thread's saved model against it before it applies the other options. A thread that only drives an agent it loaded does not offer it.
+
+## 0.176.4
+
+### Patch Changes
+
+- 234a808: T3 Code users can now see which application each model runs on and pick it from the model list.
+  Each model choice's name now starts with its application, such as `claude: Claude Opus 4.5` or `jcode: default`. T3 Code flattens the grouped model list and drops the group names, so the application was not shown anywhere, and the model choice is the only place a thread picks it. Clients that show groups keep them.
+- eeacc43: Cotal setup adds a separate T3 Code provider without changing unrelated ACP providers, even when they use the same space arguments or already hold Cotal's preferred provider ID.
+
+## 0.176.3
+
+No changes in this release.
+
+## 0.176.2
+
+No changes in this release.
+
+## 0.176.1
+
+No changes in this release.
+
+## 0.176.0
+
+### Minor Changes
+
+- e9bcb31: `cotal setup` now adds Cotal to T3 Code and Zed when it finds them, so a thread in either app can start and drive Cotal agents without editing their settings by hand. Setup installs `@cotal-ai/acp` and adds one entry per space that runs this computer's `cotal acp --space <space>` by absolute path. It updates an entry you added by hand in place instead of adding a second one, keeps your other settings and Zed's comments, and backs up each file before it changes it. `cotal update` points the entries at the Cotal it installed, and `cotal status` shows an entry whose command is gone. The ACP bridge gains `/name`, which names a thread's agent before it starts or renames a running one on a space where people sign in, and `/open`, which drives an agent that is already running from a new thread. A thread reopens on the agent it spawned or opened. `npx @cotal-ai/acp` starts the Cotal installed on this computer, and when there is none or it lacks the ACP extension, it offers a terminal sign-in that installs what is missing. Core adds the `client-setup` extension kind (`ClientSetupProvider`) and passes the space to a setup action.
+
 ## 0.175.3
 
 No changes in this release.

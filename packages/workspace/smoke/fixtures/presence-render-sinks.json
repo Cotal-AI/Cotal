@@ -1,10 +1,10 @@
 {
   "expected": {
-    "total": 1118,
+    "total": 1140,
     "honest-text": 71,
     "presence-only-glyph/count": 138,
     "command-ack": 13,
-    "non-render/control": 896
+    "non-render/control": 918
   },
   "classRationales": {
     "non-render/control": "This candidate handles presence state without making a human work-progress claim. Status tokens, routing, component inputs and presentation metadata are control data; exceptions that report a different kind of status carry an entry-specific reason."
@@ -3791,7 +3791,7 @@
       "rationale": "Persona editor failure: the editor process's exit status or interruption in a not-saved message; process state, not agent presence."
     },
     {
-      "path": "implementations/cli/src/commands/up.ts",
+      "path": "implementations/cli/src/commands/up-resume.ts",
       "kind": "derived-output",
       "anchor": "`restore attempt ${attempt} active listener ownership is ${status}; refusing ordinary startup`",
       "class": "non-render/control",
@@ -4113,9 +4113,9 @@
     {
       "path": "implementations/cli/src/commands/whoami.ts",
       "kind": "status-token",
-      "anchor": "t: \"not started\", tone: \"waiting\" }],\n    [\"identity\", id",
+      "anchor": " : \"not started\", tone: \"waiting\" }],\n    [\"identity\", id",
       "class": "non-render/control",
-      "rationale": "Whoami server field: \"waiting\" is the color tone for a space not started, not any peer's presence."
+      "rationale": "Whoami server field: \"waiting\" is the color tone for a stopped or not-yet-started space, not any peer's presence."
     },
     {
       "path": "implementations/cli/src/commands/whoami.ts",
@@ -4510,7 +4510,7 @@
     {
       "path": "implementations/cli/src/chat/plain.ts",
       "kind": "status-token",
-      "anchor": "tate = addNotice(state, \"waiting\", `draft is at its ${MAX",
+      "anchor": "tate = addNotice(state, \"waiting\", `line not added: it wo",
       "class": "non-render/control",
       "rationale": "Plain chat draft-limit notice: \"waiting\" is the color tone; the text is about the local draft, not a peer's presence."
     },
@@ -5791,6 +5791,13 @@
     {
       "path": "implementations/cli/src/commands/status-render.ts",
       "kind": "status-token",
+      "anchor": "(\"Startup in progress\", \"waiting\")] }];\n  const blocks: S",
+      "class": "non-render/control",
+      "rationale": "Status folder line: \"waiting\" selects the display tone for a verified controller startup; it is not displayed as a peer presence or work-progress claim."
+    },
+    {
+      "path": "implementations/cli/src/commands/status-render.ts",
+      "kind": "status-token",
       "anchor": "er.stackBlock.reason}`, \"waiting\")] });\n  const part = fo",
       "class": "non-render/control",
       "rationale": "Status folder line: \"waiting\" is the color tone for a blocked stack, not any peer's presence."
@@ -6671,13 +6678,6 @@
       "rationale": "Stack journal refusal remedy: names the service stop commands for the running members; a local stack record, not presence."
     },
     {
-      "path": "implementations/cli/src/lib/stack-journal.ts",
-      "kind": "derived-output",
-      "anchor": "`read \"${mesh.space}\" with \\`cotal space show ${mesh.space}\\`, stop it in its own folder, then take it off this address with \\`cotal space forget ${mesh.space} --plain\\``",
-      "class": "non-render/control",
-      "rationale": "Stack journal refusal remedy: names the space show and space forget commands for each registration that shares the broker address; local registry rows, not presence."
-    },
-    {
       "path": "implementations/cli/src/lib/stack-runs.ts",
       "kind": "status-token",
       "anchor": "\"waiting\"",
@@ -6750,9 +6750,37 @@
     {
       "path": "packages/workspace/src/control/seat.ts",
       "kind": "status-token",
-      "anchor": "\"offline\"",
+      "anchor": "visor}` && p.status !== \"offline\")));\n  return { managers",
       "class": "non-render/control",
       "rationale": "Manager choice: skips an offline supervisor presence when reading a manager's host; the status is a filter predicate, not rendered."
+    },
+    {
+      "path": "packages/workspace/src/control/seat.ts",
+      "kind": "status-token",
+      "anchor": "eer) => peer.status !== \"offline\");\n      const address =",
+      "class": "non-render/control",
+      "rationale": "Seat resolution excludes offline peers from live name lookup before deciding whether to offer a foreground remedy."
+    },
+    {
+      "path": "packages/workspace/src/control/seat.ts",
+      "kind": "status-token",
+      "anchor": "ome((p) => p.status !== \"offline\" && p.card.kind === \"end",
+      "class": "non-render/control",
+      "rationale": "The seat ownership check uses live manager presence to qualify the census result, without rendering the status."
+    },
+    {
+      "path": "packages/workspace/src/control/seat.ts",
+      "kind": "derived-output",
+      "anchor": "resolvePeer(live, address)",
+      "class": "non-render/control",
+      "rationale": "The filtered roster is used to resolve the requested peer, not to render its status."
+    },
+    {
+      "path": "packages/workspace/src/control/seat.ts",
+      "kind": "derived-output",
+      "anchor": "hasNoSeatOwner(census, roster, peer)",
+      "class": "non-render/control",
+      "rationale": "The ownership predicate determines whether foreground recovery advice applies without printing presence status."
     },
     {
       "path": "implementations/cli/src/commands/spawn-managed-launch.ts",
@@ -7925,6 +7953,132 @@
       "anchor": "`npm terminated by ${closed.signal}`",
       "class": "non-render/control",
       "rationale": "This command diagnostic reports operational state and recovery, not peer work progress."
+    },
+    {
+      "path": "implementations/cli/src/commands/down-preserve.ts",
+      "kind": "derived-output",
+      "anchor": "of wedging.\n            abortMaintenanceCut(lock);\n            clearPrese",
+      "class": "non-render/control",
+      "rationale": "Preserve control flow: aborts the maintenance cut through the maintenance lock handle; a local lock, not presence, and no rendering."
+    },
+    {
+      "path": "implementations/cli/src/commands/down-preserve.ts",
+      "kind": "derived-output",
+      "anchor": "eCut(lock);\n            clearPreservationPrepareIntent(lock);\n            throw new ",
+      "class": "non-render/control",
+      "rationale": "Preserve control flow: clears the prepare intent through the maintenance lock handle; a local lock, not presence, and no rendering."
+    },
+    {
+      "path": "implementations/cli/src/commands/down-preserve.ts",
+      "kind": "derived-output",
+      "anchor": "}\n          }\n          recordPreservationManagerCommit(lock, { operation: \"commitPreservation\", attemptId, state: \"preserved\" });\n          clearPreserv",
+      "class": "non-render/control",
+      "rationale": "Preserve control flow: records the Manager commit through the maintenance lock handle; a local lock, not presence, and no rendering."
+    },
+    {
+      "path": "implementations/cli/src/commands/down-preserve.ts",
+      "kind": "derived-output",
+      "anchor": "reserved\" });\n          clearPreservationCommitIntent(lock);\n          clearPreserv",
+      "class": "non-render/control",
+      "rationale": "Preserve control flow: clears the commit intent through the maintenance lock handle; a local lock, not presence, and no rendering."
+    },
+    {
+      "path": "implementations/cli/src/commands/down-preserve.ts",
+      "kind": "derived-output",
+      "anchor": "Intent(lock);\n          clearPreservationPrepareIntent(lock);\n          managerCommi",
+      "class": "non-render/control",
+      "rationale": "Preserve control flow: clears the prepare intent through the maintenance lock handle; a local lock, not presence, and no rendering."
+    },
+    {
+      "path": "implementations/cli/src/commands/down-preserve.ts",
+      "kind": "derived-output",
+      "anchor": "writeMaintenanceResumeDocument(lock, {\n            version: MAINTENANCE_RESUME_DOCUMENT_VERSION,\n            inventory: replan.inventory as JsonValue,\n            launch: { attemptId, space: mesh.space, server: mesh.server, storeDir, ...cap, mode: mesh.mode },\n          })",
+      "class": "non-render/control",
+      "rationale": "Preserve control flow: writes the resume document through the maintenance lock handle; the inventory is stored, not rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/down-preserve.ts",
+      "kind": "derived-output",
+      "anchor": " manager */ }\n          abortMaintenanceCut(lock);\n          clearPreserv",
+      "class": "non-render/control",
+      "rationale": "Preserve control flow: aborts the maintenance cut through the maintenance lock handle; a local lock, not presence, and no rendering."
+    },
+    {
+      "path": "implementations/cli/src/commands/down-preserve.ts",
+      "kind": "derived-output",
+      "anchor": "nceCut(lock);\n          clearPreservationPrepareIntent(lock);\n          throw new Er",
+      "class": "non-render/control",
+      "rationale": "Preserve control flow: clears the prepare intent through the maintenance lock handle; a local lock, not presence, and no rendering."
+    },
+    {
+      "path": "implementations/cli/src/commands/down-preserve.ts",
+      "kind": "derived-output",
+      "anchor": "writePreservationPrepareIntent(lock, {\n          attemptId, space: mesh.space, mode: mesh.mode, server: mesh.server, storeDir,\n        })",
+      "class": "non-render/control",
+      "rationale": "Preserve control flow: writes the prepare intent through the maintenance lock handle; a registration record is stored, not rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/down-preserve.ts",
+      "kind": "derived-output",
+      "anchor": "he manager */ }\n        clearPreservationPrepareIntent(lock);\n        // The deliver",
+      "class": "non-render/control",
+      "rationale": "Preserve control flow: clears the prepare intent through the maintenance lock handle; a local lock, not presence, and no rendering."
+    },
+    {
+      "path": "implementations/cli/src/commands/down-preserve.ts",
+      "kind": "derived-output",
+      "anchor": "writeMaintenanceResumeDocument(lock, {\n        version: MAINTENANCE_RESUME_DOCUMENT_VERSION,\n        inventory: plan.inventory as JsonValue,\n        launch: {\n          attemptId,\n          space: mesh.space,\n          server: mesh.server,\n          storeDir,\n          ...cap,\n          mode: mesh.mode,\n        },\n      })",
+      "class": "non-render/control",
+      "rationale": "Preserve control flow: writes the resume document through the maintenance lock handle; the inventory is stored, not rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/down-preserve.ts",
+      "kind": "derived-output",
+      "anchor": "beginMaintenanceCut(lock, {\n        attemptId,\n        space: mesh.space,\n        mode: mesh.mode,\n        sourcePath: storeDir,\n        resume,\n        launch: { server: mesh.server, storeDir, ...cap },\n      })",
+      "class": "non-render/control",
+      "rationale": "Preserve control flow: begins the maintenance cut through the maintenance lock handle; a registration record is stored, not rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/down-preserve.ts",
+      "kind": "derived-output",
+      "anchor": ".cap },\n      });\n      clearPreservationPrepareIntent(lock);\n    }\n\n    // Stop the",
+      "class": "non-render/control",
+      "rationale": "Preserve control flow: clears the prepare intent through the maintenance lock handle; a local lock, not presence, and no rendering."
+    },
+    {
+      "path": "implementations/cli/src/commands/down-preserve.ts",
+      "kind": "derived-output",
+      "anchor": "writePreservationCommitIntent(lock, { attemptId })",
+      "class": "non-render/control",
+      "rationale": "Preserve control flow: writes the commit intent through the maintenance lock handle; a local lock, not presence, and no rendering."
+    },
+    {
+      "path": "implementations/cli/src/commands/down-preserve.ts",
+      "kind": "derived-output",
+      "anchor": "process.exit(92);\n      recordPreservationManagerCommit(lock, { operation: \"commitPreservation\", attemptId, state: \"preserved\" });\n      clearPreservatio",
+      "class": "non-render/control",
+      "rationale": "Preserve control flow: records the Manager commit through the maintenance lock handle; a local lock, not presence, and no rendering."
+    },
+    {
+      "path": "implementations/cli/src/commands/down-preserve.ts",
+      "kind": "derived-output",
+      "anchor": ": \"preserved\" });\n      clearPreservationCommitIntent(lock);\n      if (process.env.",
+      "class": "non-render/control",
+      "rationale": "Preserve control flow: clears the commit intent through the maintenance lock handle; a local lock, not presence, and no rendering."
+    },
+    {
+      "path": "implementations/cli/src/commands/down-preserve.ts",
+      "kind": "derived-output",
+      "anchor": "completeMaintenanceCut(lock, {\n      attemptId,\n      observedAt: new Date().toISOString(),\n      managerCommit: { operation: \"commitPreservation\", attemptId, state: \"preserved\" },\n      stopped: { manager: true, broker: true, localProcesses: true },\n      listener: { endpoint: mesh.server, unreachable: true },\n    })",
+      "class": "non-render/control",
+      "rationale": "Preserve control flow: completes the maintenance cut through the maintenance lock handle; a local lock, not presence, and no rendering."
+    },
+    {
+      "path": "implementations/cli/src/commands/down-preserve.ts",
+      "kind": "derived-output",
+      "anchor": "releaseMaintenanceLock(lock)",
+      "class": "non-render/control",
+      "rationale": "Preserve control flow: releases the maintenance lock; a local lock, not presence, and no rendering."
     }
   ]
 }

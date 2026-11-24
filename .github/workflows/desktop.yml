@@ -81,7 +81,8 @@ jobs:
           - os: windows-2022
             bundles: nsis,msi
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+    # A tag's macOS build waits for Apple's notary service inside the build step, which can take well over an hour.
+    timeout-minutes: ${{ startsWith(matrix.os, 'macos') && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && 180 || 60 }}
     steps:
       # A version tag builds, signs and notarizes the tagged commit with the signing credentials in
       # this job, so the tag must point at a commit that is already on main. Checked before anything
@@ -171,7 +172,38 @@ jobs:
           if-no-files-found: error
           retention-days: 7
       - run: pnpm --filter cotal-ai seeded-connectors
+      # Notarization refuses unsigned nested code, and Tauri does not sign Mach-O files under Resources, so a
+      # release build signs the runtime's own before prepare:runtime hashes them. This keychain exists only for
+      # that step; Tauri imports the certificate again for the bundle.
+      - name: Import the macOS signing certificate for the runtime
+        if: runner.os == 'macOS' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: |
+          set -euo pipefail
+          if [ -z "$APPLE_CERTIFICATE" ]; then echo 'No macOS signing certificate: the runtime stays unsigned.'; exit 0; fi
+          keychain="$RUNNER_TEMP/cotal-runtime-signing.keychain-db"
+          password=$(openssl rand -hex 24)
+          security create-keychain -p "$password" "$keychain"
+          security set-keychain-settings -lut 3600 "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+          # shellcheck disable=SC2046 # the existing search list is one keychain path per word
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          printf '%s' "$APPLE_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/cotal-runtime-signing.p12"
+          security import "$RUNNER_TEMP/cotal-runtime-signing.p12" -k "$keychain" -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          rm -f "$RUNNER_TEMP/cotal-runtime-signing.p12"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$password" "$keychain" > /dev/null
+          echo "COTAL_RUNTIME_SIGNING_KEYCHAIN=$keychain" >> "$GITHUB_ENV"
+          echo "COTAL_RUNTIME_SIGNING_IDENTITY=$APPLE_SIGNING_IDENTITY" >> "$GITHUB_ENV"
       - run: pnpm --dir desktop prepare:runtime
+      - name: Remove the runtime signing keychain
+        if: always() && runner.os == 'macOS'
+        shell: bash
+        run: |
+          if [ -n "${COTAL_RUNTIME_SIGNING_KEYCHAIN:-}" ] && [ -e "$COTAL_RUNTIME_SIGNING_KEYCHAIN" ]; then security delete-keychain "$COTAL_RUNTIME_SIGNING_KEYCHAIN"; fi
       - run: pnpm --dir desktop check:runtime
       - name: Compile configured and no-key updater branches
         if: inputs.updater_compile && runner.os != 'Linux'
@@ -253,17 +285,17 @@ jobs:
           APPLE_CERTIFICATE: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && secrets.APPLE_CERTIFICATE || '' }}
           APPLE_CERTIFICATE_PASSWORD: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && secrets.APPLE_CERTIFICATE_PASSWORD || '' }}
           APPLE_SIGNING_IDENTITY: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && secrets.APPLE_SIGNING_IDENTITY || '' }}
-          APPLE_ID: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && secrets.APPLE_ID || '' }}
-          APPLE_PASSWORD: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && secrets.APPLE_PASSWORD || '' }}
-          APPLE_TEAM_ID: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && secrets.APPLE_TEAM_ID || '' }}
-          APPLE_API_ISSUER: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && secrets.APPLE_API_ISSUER || '' }}
-          APPLE_API_KEY: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && secrets.APPLE_API_KEY || '' }}
         run: |
           $ErrorActionPreference = 'Stop'
           if ($env:SIGNED_BUILD -ne 'true') {
             Get-ChildItem Env:APPLE_* | Remove-Item
             Write-Output 'Building unsigned validation packages.'
-          } else { Write-Output 'Building signed release packages.' }
+          } else {
+            # Tauri uses the Apple ID login whenever APPLE_ID, APPLE_PASSWORD and APPLE_TEAM_ID exist, even
+            # empty, so the unused notarization set must be absent, not blank.
+            Get-ChildItem Env:APPLE_* | Where-Object { -not $_.Value } | Remove-Item
+            Write-Output 'Building signed release packages.'
+          }
           $args = @('--dir', 'desktop', 'exec', 'tauri', 'build', '--bundles', '${{ matrix.bundles }}')
           if ($env:WINDOWS_SIGNING_CONFIG) { $args += @('--config', $env:WINDOWS_SIGNING_CONFIG) }
           if ($env:RUNNER_OS -eq 'macOS' -and $env:SIGNED_BUILD -ne 'true') {
@@ -277,6 +309,41 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Desktop build failed.' }
           & pnpm --dir desktop check:size
           if ($LASTEXITCODE -ne 0) { throw 'Desktop bundle size budget exceeded.' }
+      # The only notarization: Tauri gets no notarization login, so it signs the app and the disk image and
+      # skips submitting. Gatekeeper assesses a downloaded disk image on open and rejects a signed, unnotarized
+      # one; the notary service checks everything nested in the image, the app included, so one submission and
+      # the image's stapled ticket cover both, with one wait for Apple instead of two.
+      - name: Notarize and staple the macOS disk image
+        if: runner.os == 'macOS' && steps.signing.outputs.signed == 'true'
+        shell: bash
+        env:
+          APPLE_ID: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && secrets.APPLE_ID || '' }}
+          APPLE_PASSWORD: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && secrets.APPLE_PASSWORD || '' }}
+          APPLE_TEAM_ID: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && secrets.APPLE_TEAM_ID || '' }}
+          APPLE_API_ISSUER: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && secrets.APPLE_API_ISSUER || '' }}
+          APPLE_API_KEY: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && secrets.APPLE_API_KEY || '' }}
+        run: |
+          set -euo pipefail
+          dmgs=()
+          while IFS= read -r found; do dmgs+=("$found"); done < <(find desktop/src-tauri/target/release/bundle/dmg -maxdepth 1 -name '*.dmg')
+          [ "${#dmgs[@]}" -eq 1 ] || { echo "expected one disk image, found ${#dmgs[@]}"; exit 1; }
+          dmg=${dmgs[0]}
+          if [ -n "$APPLE_API_KEY" ]; then auth=(--key "$APPLE_API_KEY_PATH" --key-id "$APPLE_API_KEY" --issuer "$APPLE_API_ISSUER")
+          else auth=(--apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" --team-id "$APPLE_TEAM_ID"); fi
+          result="$RUNNER_TEMP/dmg-notarization.json"
+          # A rejected submission can exit nonzero; the status check below handles every outcome and prints the log.
+          xcrun notarytool submit "$dmg" "${auth[@]}" --wait --output-format json > "$result" || true
+          cat "$result"
+          id=$(node -e "process.stdout.write(JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8')).id ?? '')" "$result")
+          status=$(node -e "process.stdout.write(JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8')).status ?? '')" "$result")
+          if [ "$status" != 'Accepted' ]; then
+            [ -n "$id" ] && xcrun notarytool log "$id" "${auth[@]}"
+            echo "disk image notarization ended with status '${status:-none}'"; exit 1
+          fi
+          xcrun stapler staple "$dmg"
+          xcrun stapler validate "$dmg"
+          spctl -a -vv -t open --context context:primary-signature "$dmg" 2>&1 | tee "$RUNNER_TEMP/dmg-spctl.txt"
+          grep -q 'source=Notarized Developer ID' "$RUNNER_TEMP/dmg-spctl.txt"
       - name: Verify compiled updater release inputs
         run: node desktop/scripts/check-updater-release.mjs
       - name: Verify the macOS bundle signature seals the whole app
@@ -440,27 +507,54 @@ jobs:
             ${{ runner.temp }}/win-updater-result/
           if-no-files-found: error
           retention-days: 7
+  # Each platform's installers attach as soon as its build stages them, so a slow macOS notarization
+  # never holds back Windows and Linux. When every build has ended, any platform without installers fails
+  # this job by name.
   release:
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-    needs: native-build
     runs-on: ubuntu-24.04
+    timeout-minutes: 240
     permissions:
+      actions: read
       contents: write
     steps:
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          pattern: desktop-release-*
-          path: installers
-      - name: Attach installers to the version release
+      - name: Attach each platform's installers as soon as they are staged
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
           TAG: ${{ github.ref_name }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
         run: |
           set -euo pipefail
+          expected=(desktop-release-Linux-X64 desktop-release-Windows-X64 desktop-release-macOS-X64 desktop-release-macOS-ARM64)
           if ! gh release view "$TAG" > /dev/null 2>&1; then
-            gh release create "$TAG" --verify-tag --draft --title "$TAG" --notes 'Desktop installer validation packages. Check each platform signature before distribution.'
+            gh release create "$TAG" --verify-tag --draft --title "$TAG" --notes 'Desktop installer validation packages. Check each platform signature before distribution.' \
+              || gh release view "$TAG" > /dev/null
           fi
-          mapfile -d '' packages < <(find installers -type f -print0)
-          test "${#packages[@]}" -gt 0
-          gh release upload "$TAG" "${packages[@]}"
+          attached=" "
+          final=false
+          while :; do
+            # Read the jobs before the artifacts: a build that has ended has already staged what it will stage.
+            running=$(gh api "repos/$GH_REPO/actions/runs/$RUN_ID/attempts/$RUN_ATTEMPT/jobs" --paginate \
+              -q '.jobs[] | select((.name | startswith("native-build")) and .status != "completed") | .name' | wc -l)
+            [ "$running" -eq 0 ] && final=true
+            for name in "${expected[@]}"; do
+              [[ "$attached" == *" $name "* ]] && continue
+              id=$(gh api "repos/$GH_REPO/actions/runs/$RUN_ID/artifacts?name=$name" -q '[.artifacts[] | select(.expired | not)] | max_by(.created_at) | .id // empty')
+              [ -n "$id" ] || continue
+              rm -rf "installers/$name" && mkdir -p "installers/$name"
+              curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -o "installers/$name.zip" "https://api.github.com/repos/$GH_REPO/actions/artifacts/$id/zip"
+              unzip -q "installers/$name.zip" -d "installers/$name"
+              mapfile -d '' packages < <(find "installers/$name" -type f -print0)
+              test "${#packages[@]}" -gt 0
+              gh release upload "$TAG" --clobber "${packages[@]}"
+              attached+="$name "
+              echo "Attached ${#packages[@]} installers from $name."
+            done
+            missing=()
+            for name in "${expected[@]}"; do [[ "$attached" == *" $name "* ]] || missing+=("$name"); done
+            [ "${#missing[@]}" -eq 0 ] && { echo "All ${#expected[@]} platforms attached."; exit 0; }
+            $final && { echo "::error::Builds ended without installers for: ${missing[*]}"; exit 1; }
+            sleep 30
+          done

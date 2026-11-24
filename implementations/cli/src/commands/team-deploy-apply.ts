@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { mintCreds, newIdentity } from "@cotal-ai/core";
-import { acquireMaintenanceLock, recordOperationSpace, brokerAddressForDisplay, canonicalRoot, CommandFailure, connectOrThrow, findMesh, findPreparedSpace, presentationOf, readMaintenanceJournal, releaseMaintenanceLock, serviceMetadataDigest, userViewAuth, writeResult, type Report, resolveControlTarget } from "@cotal-ai/workspace";
+import { acquireMaintenanceLock, recordOperationSpace, brokerAddressForDisplay, canonicalRoot, CommandFailure, connectOrThrow, findMesh, findPreparedSpace, presentationOf, readMaintenanceJournal, releaseMaintenanceLock, serviceMetadataDigest, shellPath, userViewAuth, writeResult, type Report, resolveControlTarget } from "@cotal-ai/workspace";
 import { buildLaunchSpec, cardOf, genRunId } from "../lib/manifest/apply.js";
 import { verifyOriginalIncarnations } from "../lib/team-retained.js";
 import { hashManifestSource, listLedgerFiles } from "../lib/manifest/ledger.js";
@@ -29,10 +29,17 @@ export async function applyChannelOnlyTeam(file: string, values: TeamValues): Pr
   if (prepared.agents.length || manifest.runtime !== undefined || values.runtime !== undefined || values["allow-stale"] !== undefined)
     throw new CommandFailure("refused", "UNSUPPORTED", "this channel-only route accepts no agent or runtime phase; no channel card was created in place of that request", { target: { space, requestedAgents: prepared.agents.length } });
   if (!manifest.channels.length) throw new CommandFailure("refused", "USAGE_INVALID", "this channel-only additive route needs at least one declared channel; no empty deployment was recorded", { target: { space } });
-  if (manifest.defaults !== undefined || manifest.broker?.host !== undefined || manifest.channels.some((channel) => channel.subscribe.length || channel.allowSubscribe.length || channel.allowPublish.length))
+  if (Object.keys(manifest.defaults ?? {}).length || manifest.broker?.host !== undefined || manifest.channels.some((channel) => channel.subscribe.length || channel.allowSubscribe.length || channel.allowPublish.length))
     throw new CommandFailure("refused", "UNSUPPORTED", "this channel-only route cannot apply a broker bind, space defaults or agent access edges; none was silently dropped", { target: { space } });
   const registered = findMesh(space), preparedSpace = findPreparedSpace(space), root = canonicalRoot(cotalRoot());
-  if (!registered || canonicalRoot(registered.root) !== root || preparedSpace && canonicalRoot(preparedSpace.root) !== root)
+  const registeredRoot = registered && canonicalRoot(registered.root), preparedRoot = preparedSpace && canonicalRoot(preparedSpace.root);
+  if (registeredRoot && registeredRoot !== root && (preparedRoot === undefined || preparedRoot === registeredRoot)) {
+    const format = presentationOf(values), spaceFlag = values.space === undefined ? "" : ` --space ${shellWord(values.space)}`;
+    const atRoot = `cd ${shellPath(registeredRoot)} && `;
+    const remedy = `${atRoot}cotal team deploy ${shellPath(path)}${spaceFlag}${format === "rich" ? "" : ` --${format}`}`;
+    throw new CommandFailure("refused", "CONFLICT", `apply this deployment from the registered project root ${registeredRoot}`, { target: { root, space }, remedy, remedyIsCommand: true });
+  }
+  if (!registered || registeredRoot !== root || preparedRoot !== undefined && preparedRoot !== root)
     throw (!registered ? stoppedTeamDeploy(preparedSpace, root) : undefined) ?? new CommandFailure("refused", "CONFLICT", "additive creation needs an existing registered mesh in this checkout; no foreign root was adopted", { target: { root, space } });
   if (registered.server.includes(","))
     throw new CommandFailure("refused", "UNSUPPORTED", "channel-only additive creation needs one registered broker address; a server list cannot pin one native target", { target: { root, space } });
@@ -178,7 +185,7 @@ export async function applyChannelOnlyTeam(file: string, values: TeamValues): Pr
   }
   writeResult(presentationOf(values), { command: "team deploy", target: { root, space, deploymentId: attempt!.deploymentId }, result: { kind: "additive-channel-only", deploymentId: attempt!.deploymentId, root, space, server: brokerAddressForDisplay(registered.server) ?? "not displayable", createdChannels: created, requestedAgents: [], returnedReceipt: true, currentCardState: "not-checked", removalAuthority: "not-established" }, warnings: [{ code: "CURRENT_CHANNEL_STATE_UNCHECKED", target: { space, deploymentId: attempt!.deploymentId }, message: "The returned revisions are historical; current cards and readers were not re-read." }, ...(writerCloseUnconfirmed ? [{ code: "WRITER_CLOSE_UNCONFIRMED", target: { space, deploymentId: attempt!.deploymentId }, message: "The create receipts were confirmed, but closing the writer connection did not confirm." }] : [])] }, (data): Report => ({ sections: [
     { title: "Additive channels returned", blocks: [{ kind: "fields", rows: [["Deployment", data.deploymentId], ["Space", data.space], ["Root", data.root], ["Broker", data.server], ["Created cards", String(data.createdChannels.length)], ["Agent launches", "none requested"], ["Current card state", "not checked"], ["Removal authority", "not established"]] }, { kind: "table", columns: [{ key: "channel", label: "Channel" }, { key: "revision", label: "Returned revision" }], rows: data.createdChannels.slice(0, 100).map((row) => ({ channel: `#${row.name}`, revision: String(row.revision) })) }, { kind: "lines", lines: [...(data.createdChannels.length > 100 ? ["Additional accepted revisions are in the saved receipt."] : []), "The receipt is historical. Existing cards were not patched and no agent was launched. Guarded team removal checks the original card revisions; it does not purge history, change grants or stop readers."] }] },
-    { title: "Next", blocks: [{ kind: "commands", items: [{ command: `cotal team show ${data.deploymentId}`, description: "Read the returned channel-only receipt" }, { command: `cotal status --space ${data.space}`, description: "Inspect the selected mesh without assuming these cards are unchanged" }] }] },
+    { title: "Next", blocks: [{ kind: "commands", items: [{ command: `cotal team show ${data.deploymentId} --space ${shellWord(data.space)}`, description: "Read the returned channel-only receipt" }, { command: `cotal status --space ${data.space}`, description: "Inspect the selected mesh without assuming these cards are unchanged" }] }] },
   ] }));
 }
 

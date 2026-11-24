@@ -422,7 +422,7 @@ try {
   check("…and does not echo the password back", !creddy.out.includes("swordfish"), creddy.out);
   // One sentence and next step for every broker-URL credential refusal, a value with no scheme included.
   check("…in the words and next step every broker-URL credential refusal uses",
-    creddy.out.includes("--server must not embed credentials") && creddy.out.includes("name the broker URL without user:password@, and pass the credential with --creds, a login or the space's own trust"), creddy.out);
+    creddy.out.includes("--server must not embed credentials") && creddy.out.includes("name the broker URL without user:password@ and retry") && !creddy.out.includes("--creds"), creddy.out);
   const schemeless = await run(["add", "leaky"], { server: "alice:swordfish@127.0.0.1:1", root });
   check("a --server with no scheme and a user name is refused the same way, with no part of it echoed",
     schemeless.code === 1 && schemeless.out.includes("--server must not embed credentials") && !schemeless.out.includes("alice") && !schemeless.out.includes("swordfish") && findMesh("leaky") === undefined, schemeless.out);

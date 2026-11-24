@@ -21,7 +21,14 @@
  *    after `/despawn`; a seat no manager listed while one did not answer is not called missing,
  *    and deleting it fails;
  *  - a new session with no manager on this machine starts on the first listed one;
- *  - the slash commands answer locally, and `/despawn` stops the seat.
+ *  - the slash commands answer locally, and `/despawn` stops the seat;
+ *  - `/name` before the first prompt names the seat the thread spawns, refuses a name the manager
+ *    would refuse, and on a running seat changes the name it shows or says why not;
+ *  - `/open` drives a running seat found by its name or shown name from a thread with no agent,
+ *    replays what the space retains, and stores the thread's link; it refuses in a thread that
+ *    already drives one, and names the choices when two seats match;
+ *  - a linked thread is listed under its own id with the seat's shown name, and loads and deletes
+ *    through its link.
  *
  * Run: pnpm --filter @cotal-ai/acp test
  */
@@ -30,7 +37,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { client, methods, PROTOCOL_VERSION, type SessionNotification } from "@agentclientprotocol/sdk";
 import { assertValidOwnerToken } from "@cotal-ai/core";
-import { cotalAgent, defaultName, promptText, type HiddenSessions } from "../src/agent.js";
+import { cotalAgent, defaultName, promptText, type HiddenSessions, type ThreadLink, type ThreadLinks } from "../src/agent.js";
 import { LaunchListsRefused, NoLaunchManager, SignInRequired, type AgentCatalog, type AguiEventLike, type ManagerChoice, type Mesh, type SeatFrame, type SeatRef, type SeatRow, type SpawnRequest } from "../src/mesh.js";
 
 let pass = 0, fail = 0;
@@ -127,6 +134,15 @@ class FakeMesh implements Mesh {
     return seat;
   }
   async seats() { return { rows: this.rows, silent: this.silent, removable: this.removable }; }
+  renamed: { seat: string; name: string }[] = [];
+  /** Why the agent refuses a rename, when it does. */
+  renameRefusal: string | undefined;
+  async rename(seat: SeatRef, name: string) {
+    if (this.renameRefusal) throw new Error(this.renameRefusal);
+    this.renamed.push({ seat: seat.name, name });
+    return name;
+  }
+  spawnNameError(name: string) { return /^[a-z0-9_]+$/.test(name) ? undefined : `unsafe name ${JSON.stringify(name)}`; }
   async despawn(seat: SeatRef) { this.despawned.push(seat.name); }
   async interrupt(seat: SeatRef) { this.onInterrupt(seat); this.interrupted.push(seat.name); }
   async input(seat: SeatRef, text: string) {
@@ -143,6 +159,12 @@ class FakeMesh implements Mesh {
   async close() { this.closed = true; }
 }
 
+class MemoryLinks implements ThreadLinks {
+  readonly rows: (ThreadLink & { space: string })[] = [];
+  read(space: string) { return this.rows.filter((row) => row.space === space).map(({ thread, lifecycleUid }) => ({ thread, lifecycleUid })); }
+  add(space: string, link: ThreadLink) { this.rows.push({ space, ...link }); }
+}
+
 class MemoryHidden implements HiddenSessions {
   readonly ids = new Set<string>();
   read() { return new Set(this.ids); }
@@ -152,13 +174,14 @@ class MemoryHidden implements HiddenSessions {
 function connect(open: () => Promise<Mesh>, terminal = true, canSignIn = async () => true) {
   const updates: SessionNotification[] = [];
   const hidden = new MemoryHidden();
+  const links = new MemoryLinks();
   let n = 0;
-  const app = cotalAgent({ mesh: open, hidden, log: () => {}, version: "0.0.0-smoke", newName: () => `acp-s${++n}`, waits: { startMs: 300, settleMs: 100 }, canSignIn });
+  const app = cotalAgent({ mesh: open, hidden, links, log: () => {}, version: "0.0.0-smoke", newName: () => `acp-s${++n}`, waits: { startMs: 300, settleMs: 100 }, canSignIn });
   const conn = client({ name: "smoke" })
     .onNotification(methods.client.session.update, ({ params }) => void updates.push(params))
     .connect(app);
   const init = conn.agent.request(methods.agent.initialize, { protocolVersion: PROTOCOL_VERSION, clientCapabilities: terminal ? { auth: { terminal: true } } : {} });
-  return { agent: conn.agent, conn, updates, hidden, init };
+  return { agent: conn.agent, conn, updates, hidden, links, init };
 }
 const errorOf = async (p: Promise<unknown>): Promise<{ code?: number; message?: string } | undefined> => {
   try { await p; return undefined; } catch (e) { return e as { code?: number; message?: string }; }
@@ -196,12 +219,13 @@ const mesh = new FakeMesh();
 const { agent, conn, updates, hidden, init } = connect(async () => mesh);
 await init;
 const created = await agent.request(methods.agent.session.new, { cwd: link, mcpServers: [] });
-const model = created.configOptions?.find((o) => o.id === "model") as { currentValue: string; options: { group: string; options: { value: string }[] }[] } | undefined;
+const model = created.configOptions?.find((o) => o.id === "model") as { currentValue: string; options: { group: string; options: { value: string; name: string }[] }[] } | undefined;
 check("session/new launches nothing", mesh.spawned.length === 0);
 check("session/new reads the lists of this machine's manager", mesh.catalogsAsked[0] === "m1", mesh.catalogsAsked);
 check("the model select starts at the default application's own default", model?.currentValue === "claude/default", model);
 check("applications without an event plane are not offered", !model?.options.some((g) => g.group === "hermes"), model?.options.map((g) => g.group));
 check("each application lists its default first", model?.options.every((g) => g.options[0]!.value === `${g.group}/default`) === true, model);
+check("each model name starts with its application, for a client that drops the group names", model?.options.every((g) => g.options.every((o) => o.name.startsWith(`${g.group}: `))) === true, model);
 await tick();
 check("the session's slash commands are announced", updates.some((u) => u.sessionId === created.sessionId && u.update.sessionUpdate === "available_commands_update"));
 const probe = await agent.request(methods.agent.session.new, { cwd: dir, mcpServers: [] });
@@ -211,6 +235,17 @@ check("deleting a session that never spawned hides nothing", hidden.ids.size ===
 // options
 const sid = created.sessionId;
 const set = (configId: string, value: string) => agent.request(methods.agent.session.setConfigOption, { sessionId: sid, configId, value });
+const harness = (o: readonly { id: string }[]) => o.find((x) => x.id === "agent") as unknown as { currentValue: string; options: { value: string }[] } | undefined;
+const modelOf = (o: readonly { id: string }[]) => (o.find((x) => x.id === "model") as unknown as { currentValue: string } | undefined)?.currentValue;
+check("the harness select lists the usable applications and starts at the model's", harness(created.configOptions ?? [])?.currentValue === "claude" && JSON.stringify(harness(created.configOptions ?? [])?.options.map((c) => c.value)) === JSON.stringify(["claude", "pi"]), created.configOptions);
+let hopts = (await set("agent", "pi")).configOptions;
+check("choosing another harness starts it on its own default model", modelOf(hopts) === "pi/default" && harness(hopts)?.currentValue === "pi", hopts);
+hopts = (await set("model", "claude/haiku")).configOptions;
+check("choosing a model moves the harness to its application", harness(hopts)?.currentValue === "claude", hopts);
+hopts = (await set("agent", "claude")).configOptions;
+check("choosing the harness the model already runs keeps the model", modelOf(hopts) === "claude/haiku", hopts);
+const noPlane = await errorOf(set("agent", "hermes"));
+check("a harness without an event plane is refused as invalid params", noPlane?.code === -32602 && noPlane.message?.includes("event plane") === true, noPlane);
 let opts = (await set("model", "claude/opus")).configOptions;
 check("a model with variants offers the variant option", opts.some((o) => o.id === "variant"), opts.map((o) => o.id));
 await set("variant", "high");
@@ -370,7 +405,7 @@ const narrowModel = narrow?.configOptions?.find((o) => o.id === "model") as { cu
 const narrowChoices = (narrowModel?.options ?? []).flatMap((g) => (g.options ?? []).map((c) => c.value));
 const runningModel = await errorOf(agent.request(methods.agent.session.setConfigOption, { sessionId: "outside", configId: "model", value: "claude/opus" }));
 check("choosing another model while its agent runs is refused without sending the person to /despawn", runningModel?.code === -32602 && String(runningModel.message).includes("options cannot change") && !String(runningModel.message).includes("/despawn"), runningModel);
-check("a seat whose launch lists are refused loads with only its own model and nothing to launch with", narrowModel?.currentValue === "claude/haiku" && JSON.stringify(narrowChoices) === JSON.stringify(["claude/haiku"]) && !narrow?.configOptions?.some((o) => o.id === "persona" || o.id === "channel"), narrowFailed ?? narrow?.configOptions);
+check("a seat whose launch lists are refused loads with only its own model and nothing to launch with", narrowModel?.currentValue === "claude/haiku" && JSON.stringify(narrowChoices) === JSON.stringify(["claude/haiku"]) && !narrow?.configOptions?.some((o) => o.id === "persona" || o.id === "channel" || o.id === "agent"), narrowFailed ?? narrow?.configOptions);
 mesh.present.set(outside.actor, "idle");
 mesh.onInput = (seat) => {
   mesh.present.set(seat.actor, "working");
@@ -575,6 +610,75 @@ check("a thread's agent name is a valid user-mode actor token", (() => { try { r
   check("its first prompt spawns pinned to that manager and answers", first?.stopReason === "end_turn" && away.spawned[0]?.managerInstanceId === "m2", { first, pins: away.spawned.map((r) => r.managerInstanceId) });
   c.conn.close();
 }
+// /name, /open and the thread links.
+{
+  const space = new FakeMesh();
+  const c = connect(async () => space);
+  await c.init;
+  const say = async (sessionId: string, text: string): Promise<string> => {
+    c.updates.length = 0;
+    await within(c.agent.request(methods.agent.session.prompt, { sessionId, prompt: [{ type: "text", text }] }));
+    return c.updates.filter((u) => u.sessionId === sessionId && u.update.sessionUpdate === "agent_message_chunk").map((u) => (u.update as { content: { text: string } }).content.text).join("\n");
+  };
+  const named = await c.agent.request(methods.agent.session.new, { cwd: dir, mcpServers: [] });
+  await tick();
+  const announced = c.updates.find((u) => u.sessionId === named.sessionId && u.update.sessionUpdate === "available_commands_update")?.update as { availableCommands?: { name: string; input?: { hint?: string } }[] } | undefined;
+  check("/name and /open are announced with an input hint", ["name", "open"].every((n) => announced?.availableCommands?.some((cmd) => cmd.name === n && cmd.input?.hint)), announced);
+  check("/name with a name the manager would refuse names why and keeps the session's name", (await say(named.sessionId, "/name Has Space")).includes("unsafe name") && space.spawned.length === 0);
+  check("/name before the first prompt says what the agent will start as", (await say(named.sessionId, "/name scout")).includes("will start as scout"));
+  space.script = { before: [[{ type: "RUN_STARTED", runId: "r1" }]], after: [[{ type: "RUN_FINISHED", runId: "r1" }]] };
+  await within(c.agent.request(methods.agent.session.prompt, { sessionId: named.sessionId, prompt: [{ type: "text", text: "go" }] }));
+  check("the first prompt after /name spawns the seat under that name", space.spawned[0]?.name === "scout", space.spawned);
+  check("and stores the thread's link to the seat's run", JSON.stringify(c.links.rows.at(-1)) === JSON.stringify({ space: "fake", thread: named.sessionId, lifecycleUid: "life-scout" }), c.links.rows);
+  check("/name on a running seat changes the name it shows", (await say(named.sessionId, "/name Scout Two")).includes("now shows as Scout Two") && space.renamed.at(-1)?.name === "Scout Two", space.renamed);
+  space.renameRefusal = "renaming a running agent needs a space where people sign in";
+  check("a refused rename says why in the thread", (await say(named.sessionId, "/name other")).includes("Could not rename scout: renaming a running agent needs a space where people sign in"));
+  space.renameRefusal = undefined;
+
+  const scout: SeatRow = { name: "scout", display: "Scout Two", owner: "local", actor: "actor-scout", lifecycleUid: "life-scout", managerInstanceId: "m1", agent: "claude", model: "haiku", cwd: dir, status: "running" };
+  const helper: SeatRow = { name: "helper", display: "Helper Bee", owner: "local", actor: "actor-helper", lifecycleUid: "life-helper", managerInstanceId: "m1", agent: "pi", cwd: dir, status: "running" };
+  space.rows = [scout, helper];
+  space.present.set("actor-helper", "idle");
+  space.history.set("helper", [{ owner: "local", actor: "actor-helper", threadId: "t", runId: "h1", epoch: "e", seq: 1, ts: Date.now(), events: [{ type: "TEXT_MESSAGE_START", messageId: "hm", role: "assistant" }, { type: "TEXT_MESSAGE_CONTENT", messageId: "hm", delta: "earlier work" }, { type: "TEXT_MESSAGE_END", messageId: "hm" }] }]);
+  const listed = await c.agent.request(methods.agent.session.list, {});
+  const scoutListed = listed.sessions.find((x) => x.title?.startsWith("Scout Two"));
+  check("a linked seat is listed under its thread's id, titled with the name it shows", scoutListed?.sessionId === named.sessionId, listed.sessions);
+  check("an unlinked seat is listed under its own name", listed.sessions.some((x) => x.sessionId === "helper" && x.title?.startsWith("Helper Bee")), listed.sessions);
+
+  check("/open in a thread that already drives an agent is refused", (await say(named.sessionId, "/open helper")).includes("already drives scout"));
+  const opener = await c.agent.request(methods.agent.session.new, { cwd: dir, mcpServers: [] });
+  check("/open of no running agent says so", (await say(opener.sessionId, "/open ghost")).includes("No agent named ghost is running"));
+  const opened = await say(opener.sessionId, "/open helper bee");
+  check("/open finds a seat by the name it shows and replays what the space retains", opened.includes("earlier work") && opened.includes("now drives Helper Bee"), opened);
+  check("/open sets its line apart from the replayed messages", /earlier work[^]*\n\nThis session now drives/.test(opened), opened);
+  check("/open stores the thread's link", JSON.stringify(c.links.rows.at(-1)) === JSON.stringify({ space: "fake", thread: opener.sessionId, lifecycleUid: "life-helper" }), c.links.rows);
+  space.onInput = (seat) => { space.present.set(seat.actor, "working"); setTimeout(() => space.present.set(seat.actor, "idle"), 20); };
+  await within(c.agent.request(methods.agent.session.prompt, { sessionId: opener.sessionId, prompt: [{ type: "text", text: "next step" }] }));
+  check("a prompt in the opened thread is typed into that seat", space.typed.at(-1)?.seat === "helper" && space.typed.at(-1)?.text === "next step", space.typed);
+  space.onInput = () => {};
+
+  const twin: SeatRow = { ...helper, name: "helper2", actor: "actor-helper2", lifecycleUid: "life-helper2" };
+  space.rows = [scout, helper, twin];
+  const third = await c.agent.request(methods.agent.session.new, { cwd: dir, mcpServers: [] });
+  check("/open names the choices when two seats show that name", (await say(third.sessionId, "/open Helper Bee")).includes("helper, helper2"));
+  space.rows = [scout, helper];
+
+  // Another bridge process, as a client runs one per thread, finds the threads through the links.
+  const again = connect(async () => space);
+  again.links.rows.push(...c.links.rows);
+  await again.init;
+  const reloaded = await again.agent.request(methods.agent.session.load, { sessionId: named.sessionId, cwd: dir, mcpServers: [] }).catch((e: unknown) => e);
+  check("a thread whose seat has another name loads through its link", (reloaded as { configOptions?: unknown }).configOptions !== undefined, reloaded);
+  again.updates.length = 0;
+  space.emit(scout, [{ type: "TEXT_MESSAGE_START", messageId: "s2", role: "assistant" }, { type: "TEXT_MESSAGE_CONTENT", messageId: "s2", delta: "still here" }], "r9");
+  await tick();
+  check("and follows that seat live", again.updates.some((u) => u.sessionId === named.sessionId && JSON.stringify(u.update).includes("still here")), again.updates);
+  await again.agent.request(methods.agent.session.delete, { sessionId: opener.sessionId });
+  check("deleting a linked thread hides its seat's run", again.hidden.ids.has("life-helper"), [...again.hidden.ids]);
+  again.conn.close();
+  c.conn.close();
+}
+
 rmSync(dir, { recursive: true, force: true });
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

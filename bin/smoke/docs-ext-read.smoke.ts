@@ -83,6 +83,21 @@ let specBody = "";
   check("the CLI hub read to a pipe keeps its Markdown heading and links", piped.status === 0 && piped.stdout.includes("\n# CLI reference\n") && piped.stdout.includes("[CLI usage](cli-usage.mdx#structured-output)"), shown(piped));
   const usage = run(["docs", "cli-usage"]);
   check("a reference page read to a pipe keeps its Markdown table", usage.status === 0 && usage.stdout.includes("\n# CLI usage\n") && /^\|---\|---\|$/m.test(usage.stdout) && /^\| `schemaVersion` \| `1` \|$/m.test(usage.stdout), shown(usage));
+  const structured = usage.stdout.split(/^## Structured output.*$/m)[1]?.split(/^## /m)[0]?.replace(/\s+/g, " ") ?? "";
+  const history = run(["history", "general", "--limit", "--json"]);
+  const follow = run(["history", "general", "--limit", "--follow", "--json"]);
+  const records = follow.stdout.trim().split("\n").filter(Boolean).map((line) => JSON.parse(line));
+  check("the bundled reference distinguishes finite JSON refusals from NDJSON streams",
+    usage.status === 0 && structured.includes("Finite JSON output is one document on stdout") &&
+    structured.includes("newline-delimited JSON (NDJSON)") && /usage error[^.]+finite `--json` output[^.]+`USAGE_INVALID`/.test(structured) &&
+    ["[`history --follow`](cli-messaging.mdx#history)", "[`channel members --follow`](cli-messaging.mdx#channel)", "[`watch`](cli-observation.mdx#observer-stream)"].every((link) => structured.includes(link)) &&
+    history.status === 1 && history.envelope?.outcome === "refused" && history.envelope.error?.code === "USAGE_INVALID" &&
+    follow.status === 1 && records.length === 2 && records[0]?.stream === "history" && records[0]?.type === "error" &&
+    records[0]?.data?.code === "USAGE_INVALID" && records[1]?.type === "end" && records[1]?.data?.reason === "setup-failed", { history: shown(history), follow: shown(follow) });
+  const observation = run(["docs", "cli-observation"]);
+  const watch = observation.stdout.split("\n## watch\n")[1]?.split("\n## ")[0] ?? "";
+  check("the bundled watch reference lists its target selectors and links to observer credential restrictions",
+    observation.status === 0 && /\| `--space <s>`[^\n]+\n\| `--server <url>`[^\n]+\n\| `--creds <path>`[^\n]+off-registry broker[^\n]+\(watch-a-mesh\.mdx#what-each-surface-can-see\)/.test(watch), watch.slice(0, 950));
   const help = run(["help"]);
   const mcpHelp = run(["mcp", "--help"]);
   check("the CLI command table links the MCP entry that help lists",
@@ -93,6 +108,21 @@ let specBody = "";
   const spec = run(["docs", "spec", "--json"]);
   specBody = (spec.envelope?.result as { body?: string } | undefined)?.body ?? "";
   check("spec, lang and schema are pages too", spec.status === 0 && specBody.length > 0 && run(["docs", "lang", "--json"]).status === 0 && run(["docs", "schema", "--json"]).status === 0, shown(spec));
+}
+
+{
+  const docs = run(["docs", "cli-messaging", "--json"]);
+  const body = docs.envelope?.result?.body;
+  const pending = typeof body === "string" ? body.split(/^## pending(?: \[#pending\])?$/m)[1]?.split(/^## /m)[0] ?? "" : "";
+  const synopsis = /^cotal pending .*$/m.exec(pending)?.[0] ?? "";
+  const help = run(["pending", "--help"]);
+  const usage = help.stdout.split(/^Usage$/m)[1]?.split(/\n\s*\n/)[0] ?? "";
+  const selectors = ["[--server <url>]", "[--creds <private-file>]"];
+  check("pending names both selectors in the bundled reference and help Usage",
+    docs.status === 0 && help.status === 0 && selectors.every((flag) => synopsis.includes(flag) && usage.includes(flag)),
+    { synopsis, usage, stderr: help.stderr });
+  check("the pending reference explains which credential to pair with an unregistered broker",
+    pending.includes("pass its URL with `--server <url>` and a static admin credential with `--creds <private-file>`"), pending);
 }
 
 {

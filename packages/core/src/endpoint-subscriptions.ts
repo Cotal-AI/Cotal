@@ -502,7 +502,7 @@ export class EndpointSubscriptions {
     if (!watch.consumerStream || !watch.consumerName) return;
     // A terminal close is not deletion success and not a public-stop failure. Keep the identity
     // endpoint-owned; rearmMembershipWatches retries it through the next live JetStream manager.
-    if (!this.conn.nc || this.conn.nc.isClosed()) return;
+    if (!this.conn.nc || this.conn.nc.isClosed() || (this.lifecycle.stopped && !this.conn.nativeBound)) return;
     if (this.watchConsumerDeleteDenied(watch.consumerStream, watch.consumerName, this.conn.nc)) {
       watch.consumerStream = undefined; watch.consumerName = undefined;
       return;
@@ -530,7 +530,8 @@ export class EndpointSubscriptions {
     watch.iter = undefined;
     watch.consumer = undefined;
     try { iter?.stop(); } catch { /* already closed */ }
-    if (consumer) {
+    // During shutdown without a live transport, let the broker reclaim the ordered consumer.
+    if (consumer && !(this.lifecycle.stopped && !this.conn.nativeBound)) {
       if (watch.consumerStream && watch.consumerName && this.watchConsumerDeleteDenied(watch.consumerStream, watch.consumerName, consumer)) {
         watch.consumerStream = undefined; watch.consumerName = undefined;
         return;

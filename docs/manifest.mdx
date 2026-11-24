@@ -17,6 +17,10 @@ Current lifecycle commands are `cotal team check`, `team boot`, `team deploy`, a
 Older `spawn -f` deployment ledgers retain a separate `down -f` cleanup route described in the guide.
 Authorization follows [SPEC §9](../SPEC.md#9-nats--jetstream-security-and-authorization).
 
+If the manifest is missing or its path passes through a non-directory, `team check`, `team boot` and `team deploy` refuse with `TARGET_NOT_FOUND`. If the account cannot read the manifest, they refuse with `PERMISSION_DENIED`. Neither case contacts the broker.
+
+An undeclared agent in a channel list points to the name's line and column. An omitted `allowSubscribe` does not add a second error for the same subscriber. A missing persona file points to the path in the agent declaration, including the `persona` field in the mapping form.
+
 The manifest must be UTF-8. A UTF-16 file is refused with `SCHEMA_INVALID` and the instruction to save it as UTF-8.
 
 ## Top level
@@ -75,7 +79,7 @@ agents:
 ```
 
 A relative `persona` path resolves against the manifest's directory. It names a file, not a catalog entry.
-For catalog persona `p20` at the project root, use `./.cotal/agents/p20.md`. A bare name without a matching file is refused with that rule.
+For catalog persona `p20` at the project root, use `./.cotal/agents/p20.md`. A bare name without a matching file is refused with that rule. The refusal suggests a catalog path only when it points to a readable regular file.
 A manifest's agent map key names the deployed agent.
 Behavior fields come from the persona unless the manifest overrides them.
 Permissions follow `personaPermissions`; a bare persona path does not bypass that policy.

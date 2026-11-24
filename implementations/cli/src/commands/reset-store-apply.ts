@@ -74,10 +74,10 @@ export function storeRunBlocks(runs: StackRuns | undefined, remedy: string | und
 
 /** The preview's Store contents section, which `reset store` and `reset space` share: what removing
  *  the store at `root` removes, and the runs its last down recorded. None when no store is present. */
-export function storeContentsSection(removed: readonly string[], runs: StackRuns | undefined, root: string): Section[] {
+export function storeContentsSection(removed: readonly string[], runs: StackRuns | undefined, root: string, remedy = `Only the broker reads the store, and it is stopped. To see the runs, run \`cotal up\` and \`cotal run\` from ${root}, then \`cotal down --yes\`.`): Section[] {
   return removed.length ? [{ title: "Store contents", blocks: [
     { kind: "lines", lines: [`Removing the store removes ${storeContentsText(removed)}. A run still waiting for an answer goes with it and cannot be answered or resumed afterwards.`] },
-    ...storeRunBlocks(runs, `Only the broker reads the store, and it is stopped. To see the runs, run \`cotal up\` and \`cotal run\` from ${root}, then \`cotal down --yes\`.`),
+    ...storeRunBlocks(runs, remedy),
   ] }] : [];
 }
 
@@ -226,7 +226,7 @@ export async function assertResetEligible(target: ResetTarget, command: ResetCom
       ? stoppedByDown
         ? `a member exited without a recorded stop: start the stack with \`cotal up\` and stop it with \`cotal down --yes\` from ${root}, then run \`${review}\``
         : `a member exited without a recorded stop: record it with \`cotal down --yes\` from ${root}, then run \`${review}\``
-      : `stop it with \`cotal down\` from ${root}, then ${afterStop}` });
+      : `from ${root}, review the stop with \`cotal down --dry-run\`, confirm it with \`cotal down --yes\`, then ${afterStop}` });
   try {
     assertNoRecordedServiceOwner(space);
     assertNoAdditiveLedger(root, space);

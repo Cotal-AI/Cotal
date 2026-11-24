@@ -21,7 +21,7 @@
  * stack stops with `cotal down --yes`. Needs `nats-server` on PATH. Run: pnpm smoke:channel-members:live
  */
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { assertSmokeSandboxDown, awaitBrokerReady, createSuite, freePort, killAndAwaitExit, recordSmokeSandbox, SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
@@ -104,6 +104,12 @@ try {
   check("up starts the static-auth stack", stack.status === 0, stack.out.slice(-600));
   if (stack.status !== 0) throw new Error("the stack did not start; no later cell can run");
   check("#general is durable with replay disabled", cotal("channel", "set", "general", "--desc", "General talk", "--delivery", "durable", "--no-replay").status === 0);
+  const guide = readFileSync(join(WT, "docs", "UPGRADING.md"), "utf8");
+  const verification = guide.split("# 4. verify the mesh is whole again")[1]?.split("# 5. the step")[0];
+  const inventoryCommand = /^cotal ([^#\n]+)\s*# current CLI$/m.exec(verification ?? "")?.[1]?.trim();
+  const inventory = inventoryCommand === "channel" ? cotal(inventoryCommand) : undefined;
+  check("the current inventory command in the split upgrade guide reads the live channel settings",
+    inventory?.status === 0 && inventory.stdout.includes("general") && inventory.stdout.includes("General talk"), inventory?.out ?? verification);
   check("#archive has a retained message and no saved entry", cotal("send", "-c", "archive", "kept").status === 0);
   const anna = started("join", "--name", "anna", "--channel", "general");
   const bert = started("join", "--name", "bert", "--channel", "lounge");
@@ -121,7 +127,7 @@ try {
   check("an unknown name is refused TARGET_NOT_FOUND, exit 2, naming the registered channels",
     unknown.status === 2 && refusal?.outcome === "refused" && refusal.error?.code === "TARGET_NOT_FOUND"
       && refusal.error.message === "#nosuch has no observed members, no saved entry and no retained messages; registered channels: #general"
-      && refusal.error.remedy === "name a channel the space has; `cotal ch` lists the registered ones", unknown.out.slice(-600));
+      && refusal.error.remedy === `name a channel the space has; \`cotal ch --space ${SPACE}\` lists the registered ones`, unknown.out.slice(-600));
   const cased = cotal("channel", "members", "General");
   check("General names the registered #general and the command for it, with no census",
     cased.status === 2 && cased.out.includes("channel names are case-sensitive, and the registered one is #general")
@@ -134,6 +140,10 @@ try {
   const general = cotal("channel", "members", "general");
   check("#general lists anna and offers to follow it in the resolved space",
     general.status === 0 && general.out.includes("anna") && general.out.includes(`cotal ch members general --space ${SPACE} --follow`), general.out.slice(-600));
+
+  const inferredInventory = cotal("channel", "--plain");
+  check("the channel inventory suggests the resolved space even when none is passed",
+    inferredInventory.status === 0 && ["cotal", "pnpm cotal"].some((cli) => inferredInventory.stdout.includes(`${cli} ch show <name> --space ${SPACE}`)), inferredInventory.out);
 
   check("a leading hyphen is valid in a channel name", cotal("channel", "set", "#-audit", "--desc", "Dash-prefixed channel").status === 0);
   const dashShow = cotal("channel", "show", "#-audit", "--plain");
@@ -172,6 +182,20 @@ try {
     writeFileSync(join(s, path), await mintCreds(targetAuth, newIdentity(), "admin"), { mode: 0o600 });
     const target = ["--space", SPACE, "--server", SERVER, "--creds", path];
     const scope = `--space ${SPACE} --server ${SERVER} --creds '${path}'`;
+    const removal = cotal("channel", "remove", "genral", ...target, "--json");
+    const missing = envelope(removal.stdout);
+    const list = missing?.error?.remedy === `name a channel the space has; \`cotal ch ${scope}\` lists the registered ones`
+      ? cotal("ch", ...target, "--plain") : undefined;
+    check("an unknown removal suggests listing the intended space with its broker and credential",
+      removal.status === 2 && missing?.error?.code === "TARGET_NOT_FOUND" && list?.status === 0
+        && list.stdout.includes(`Mesh: ${SPACE}`) && list.stdout.includes("#general"), { removal: removal.out, list: list?.out });
+    const inventory = cotal("ch", ...target, "--plain");
+    const suggests = (action: string) => ["cotal", "pnpm cotal"].some((cli) => inventory.stdout.includes(`${cli} ch ${action} ${scope}`));
+    const suggestedShow = suggests("show <name>") ? cotal("ch", "show", "general", ...target, "--plain") : undefined;
+    check("the inventory's show, set and defaults commands keep the inspected space, broker and credential",
+      inventory.status === 0 && suggests('set <name> --desc "…"') && suggests("defaults")
+        && suggestedShow?.status === 0 && suggestedShow.stdout.includes(`Mesh: ${SPACE}`)
+        && /Description:\s+General talk/.test(suggestedShow.stdout), { inventory: inventory.out, show: suggestedShow?.out });
     const card = cotal("channel", "show", "archive", ...target, "--plain");
     const history = card.stdout.includes(`cotal history '#archive' ${scope}`) ? cotal("history", "#archive", ...target, "--json") : undefined;
     check("the suggested history read uses the inspected space, broker and credential",
