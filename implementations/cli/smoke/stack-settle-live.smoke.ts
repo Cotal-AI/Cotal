@@ -201,6 +201,7 @@ import { CotalEndpoint, deliveryLeaseHolderFor, idFromCreds, LEASE_TTL_MS, lease
 import { connect, credsAuthenticator } from "@nats-io/transport-node";
 import { agentLifecycleSecretFilePaths, canonicalLocalProcessPath, codeSpan, shellPath, deliveryCredsKey, findMesh, getSpaceAuth, isCommandFailure, processStopped, resolveOnPath, workspaceSecretStore, MANAGER_DELIVERY_AWARE_MARKER, MANAGER_PIDFILE, MANAGER_SHUTDOWN_INTENT, readServiceStopRequest, spaceSegment, stopReservationPath, acquireMaintenanceLock, releaseMaintenanceLock } from "@cotal-ai/workspace";
 import { execWords } from "../src/lib/exec-words.js";
+import { findNatsServer } from "../src/lib/nats-bin.js";
 
 const WT = resolve(import.meta.dirname, "..", "..", "..");
 const CLI = join(WT, "bin", "cotal.ts");
@@ -340,6 +341,51 @@ process.on("exit", () => {
   rmSync(projects, { recursive: true, force: true });
 });
 
+async function checkDownDuringForegroundStart(): Promise<void> {
+  const space = "foreground-first", root = prepare(space), port = await freePort();
+  const bin = join(root, "bin"), probed = join(bin, "probed"), resume = join(bin, "resume");
+  const journalPath = join(root, ".cotal", "stack-controller.json");
+  const broker = await findNatsServer();
+  mkdirSync(bin);
+  // Hold the real broker's version probe before any instance is recorded, then let the real startup finish.
+  writeFileSync(join(bin, "nats-server"), `#!/bin/sh
+set -eu
+: > ${shellPath(probed)}
+while [ ! -e ${shellPath(resume)} ]; do sleep .02; done
+ln -sf ${shellPath(broker.path)} "$0"
+exec "$0" "$@"
+`, { mode: 0o700 });
+  const child = spawn(process.execPath, ["--import", TSX_IMPORT, CLI, "up", "--foreground", "--open", "--no-manager", "--server", `nats://127.0.0.1:${port}`], {
+    cwd: root, env: { ...env, PATH: `${bin}${delimiter}${process.env.PATH ?? ""}` }, stdio: ["ignore", "pipe", "pipe"],
+  });
+  let out = "", err = "";
+  child.stdout!.setEncoding("utf8").on("data", (chunk: string) => { out += chunk; });
+  child.stderr!.setEncoding("utf8").on("data", (chunk: string) => { err += chunk; });
+  try {
+    if (!await until(() => existsSync(probed), 20_000)) throw new Error("the foreground start did not reach its broker version probe");
+    const before = readFileSync(journalPath, "utf8");
+    const refused = cli(root, "down", "--yes", "--json");
+    check("down during first foreground startup says to wait, without changing the journal or stopping a member",
+      refused.status === 2 && refused.env?.error?.code === "TARGET_UNAVAILABLE" &&
+      refused.env.error.remedy === "wait for startup to finish, then retry `cotal down --yes`" &&
+      readFileSync(journalPath, "utf8") === before && serviceInstances(space, "stack-broker").length === 0, shown(refused));
+    writeFileSync(resume, "");
+    const started = await until(() => out.includes("Controller stack started") || child.exitCode !== null, 30_000);
+    if (!started || !out.includes("Controller stack started")) throw new Error(`the foreground start did not report completion: ${out}\n${err}`);
+    track(space);
+    const stopped = cli(root, "down", "--yes", "--json");
+    check("the same down stops the stack after foreground startup completes", stopped.status === 0 && gone(space, "stack-broker"), shown(stopped));
+  } finally {
+    writeFileSync(resume, "");
+    if (child.exitCode === null && child.signalCode === null) {
+      child.kill("SIGTERM");
+      if (!await until(() => child.exitCode !== null || child.signalCode !== null, 15_000)) child.kill("SIGKILL");
+      await exited(child);
+    }
+    track(space);
+  }
+}
+
 try {
   // 1 + 2. Crash mid-start, then a broker crash after a completed start (B2-01, LA-03, LA-04, B2-04, B2-09).
   {
@@ -374,8 +420,9 @@ try {
     check("a second down --yes is a no-op", again.status === 0 && again.env?.outcome === "no-op", shown(again));
     for (const [flag, name] of [["--open", "open"], ["--user-auth", "user auth"]] as const) {
       const pinned = cli(root, "up", flag, "--no-manager", "--json");
+      const firstStart = flag === "--user-auth" ? `${flag} --idp <auth base URL>` : flag;
       check(`up ${flag} on the stopped static-auth root refuses CONFLICT, exit 2, and names another folder for ${name}`,
-        pinned.status === 2 && pinned.env?.error?.code === "CONFLICT" && Boolean(pinned.env.error.remedy?.includes(`for ${name} run \`cotal space create <space>\`, then \`cotal up ${flag} --no-manager\`, in another folder`)), shown(pinned));
+        pinned.status === 2 && pinned.env?.error?.code === "CONFLICT" && Boolean(pinned.env.error.remedy?.includes(`for ${name} run \`cotal space create <space>\`, then \`cotal up ${firstStart} --no-manager\`, in another folder`)), shown(pinned));
     }
 
     // A bare up adds the manager, so the restart keeps --no-manager for the ps refusal.
@@ -545,6 +592,8 @@ try {
         && JSON.stringify(rows.map((row) => [row[0], row.slice(2).join(" ")])) === JSON.stringify([["manager", "stopped"], ["delivery", "already stopped"], ["broker", "stopped"]])
         && /\nNext\n  (?:pnpm )?cotal up  Start the stack again from its journal and saved definitions$/.test(finalDown.stdout.trimEnd()), finalDown.stdout);
   }
+
+  if (process.platform === "linux") await checkDownDuringForegroundStart();
 
   // 2b. A ps while an up is still starting the manager. Delivery is frozen once pinned, so the up
   // waits on its readiness with the manager planned.

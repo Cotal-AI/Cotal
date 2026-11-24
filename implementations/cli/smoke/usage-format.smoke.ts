@@ -85,7 +85,7 @@ const run = (args: string[], extra: Record<string, string> = {}, cwd = neutral) 
 const runShell = (args: string, extra: Record<string, string> = {}, cwd = neutral) =>
   spawnSync("sh", ["-c", `exec "$0" "$1" ${args}`, process.execPath, BIN], { cwd, env: { ...env, ...extra }, encoding: "utf8", timeout: 120_000 });
 const shown = (r: ReturnType<typeof run>) => ({ status: r.status, stdout: r.stdout.slice(0, 600), stderr: r.stderr.slice(0, 900) });
-const parsed = (r: ReturnType<typeof run>) => { try { return JSON.parse(r.stdout) as { target?: unknown; error?: { code?: string; message?: string; remedy?: string } }; } catch { return undefined; } };
+const parsed = (r: ReturnType<typeof run>) => { try { return JSON.parse(r.stdout) as { command?: string; outcome?: string; target?: unknown; error?: { code?: string; message?: string; remedy?: string } }; } catch { return undefined; } };
 const usageShape = (r: ReturnType<typeof run>, message: RegExp) =>
   r.status === 1 && r.stdout === "" && /^✗ /m.test(r.stderr) && message.test(r.stderr) && /Usage/.test(r.stderr) && !/Request refused|Code:/.test(r.stderr);
 
@@ -189,6 +189,19 @@ for (const [args, space] of [[[], null], [["--space", "watch-test"], "watch-test
     && records.every((record) => record.stream === "watch" && record.target?.requestedSpace === space)
     && records[0]?.data?.code === "USAGE_INVALID" && records[0]?.data?.message === "--view needs a value"
     && records[0]?.data?.remedy === "write --view <view>" && records[1]?.data?.reason === "setup-failed", shown(result));
+}
+for (const flags of [["--json", "--json=false"], ["--json=false", "--json"], ["-j", "--json=false"]]) {
+  const result = run(["watch", ...flags]);
+  const records = result.stdout.trim().split("\n").filter(Boolean).map((line) => JSON.parse(line));
+  check(`watch ${flags.join(" ")} emits the usage refusal as a watch stream`,
+    result.status === 1 && result.stderr === "" && records.map((record) => record.type).join() === "error,end"
+    && records.every((record) => record.schemaVersion === 1 && record.stream === "watch" && record.target?.requestedSpace === null)
+    && records[0]?.data?.code === "USAGE_INVALID" && records[0]?.data?.message === "Option '-j, --json' does not take an argument"
+    && records[0]?.data?.remedy === "run `cotal help watch`" && records[1]?.data?.reason === "setup-failed", shown(result));
+}
+for (const flags of [["--json=false"], ["--json=false", "--", "--json"]]) {
+  const result = run(["watch", ...flags]);
+  check(`watch ${flags.join(" ")} does not select JSON`, usageShape(result, /does not take an argument/), shown(result));
 }
 check("a global flag cannot hide a missing value at the end of a short option group",
   groupedSpace.status === 1 && groupedSpace.stderr === "" && JSON.parse(groupedSpace.stdout).error.message === "--space needs a value", shown(groupedSpace));
@@ -318,7 +331,8 @@ if (process.platform !== "win32") {
   const files = ["contract.json", "handler.mjs"].map((name) => join(cwd, dir, name));
   const expected = [...directories.map((path) => ({ path, kind: "directory", complete: true })), ...files.map((path) => ({ path, kind: "file", complete: true }))];
   check("endpoint init creates and reports all missing directories privately in one invocation",
-    scaffold.status === 0 && scaffold.stderr === "" && JSON.stringify(receipt.result?.changed) === JSON.stringify(expected)
+    scaffold.status === 0 && scaffold.stderr === "" && receipt.command === "endpoint init"
+    && JSON.stringify(receipt.result?.changed) === JSON.stringify(expected)
     && directories.every((path) => (statSync(path).mode & 0o777) === 0o700)
     && files.every((path, index) => (statSync(path).mode & 0o777) === (index === 0 ? 0o600 : 0o700)), shown(scaffold));
 
@@ -331,7 +345,8 @@ if (process.platform !== "win32") {
   const copy = run(["endpoint", "init", "different", "--dir", copyDir, "--json"], {}, cwd);
   const checked = run(["endpoint", "check", join(copyDir, "contract.json"), "--plain"], {}, cwd);
   check("endpoint init preserves scaffold files and names the alternate destination remedy in JSON and plain output",
-    conflict.status === 2 && rejected.error?.code === "CONFLICT" && rejected.target?.path === files[0]
+    conflict.status === 2 && conflict.stderr === "" && rejected.command === "endpoint init" && rejected.outcome === "refused"
+    && rejected.error?.code === "CONFLICT" && rejected.target?.path === files[0]
     && rejected.error?.remedy?.includes("cotal endpoint init different --dir <new-directory>")
     && plainConflict.status === 2 && plainConflict.stderr.includes(rejected.error.remedy)
     && files.every((path, index) => readFileSync(path).equals(original[index]!))
@@ -436,11 +451,21 @@ if (process.platform !== "win32") {
   const json = run(["endpoint", "check", wrong, "--json"]);
   const envelope = JSON.parse(json.stdout);
   const corrected = run(["endpoint", "check", "reviews/contract.json", "--json"]);
+  const checkedReceipt = parsed(corrected);
   check("endpoint check names the missing file and asks for an existing contract in every format",
     authoring.status === 0 && json.status === 2 && json.stderr === "" && envelope.target.path === path
+    && envelope.command === "endpoint check" && envelope.outcome === "refused"
     && envelope.error.code === "TARGET_NOT_FOUND" && /existing endpoint contract file/.test(envelope.error.remedy)
     && text.every((r) => r.status === 2 && r.stdout === "" && r.stderr.includes(path) && r.stderr.includes(envelope.error.remedy))
-    && corrected.status === 0 && JSON.parse(corrected.stdout).outcome === "ok", { text: text.map(shown), json: shown(json), corrected: shown(corrected) });
+    && corrected.status === 0 && corrected.stderr === "" && checkedReceipt?.command === "endpoint check" && checkedReceipt.outcome === "ok",
+    { text: text.map(shown), json: shown(json), corrected: shown(corrected) });
+
+  writeFileSync(join(cwd, "malformed.json"), "{invalid json\n");
+  const malformed = run(["endpoint", "check", "malformed.json", "--json"], {}, cwd);
+  const malformedReceipt = parsed(malformed);
+  check("endpoint check names the operation on a malformed contract refusal",
+    malformed.status === 1 && malformed.stderr === "" && malformedReceipt?.command === "endpoint check"
+    && malformedReceipt.outcome === "refused" && malformedReceipt.error?.code === "SCHEMA_INVALID", shown(malformed));
 
   const unknown = run(["ep", "check", "reviews/contract.json", "--json", "--no-such-option"], {}, cwd);
   check("endpoint check with a contract already supplied tells the caller to drop the unknown option",
@@ -1108,6 +1133,23 @@ if (process.platform !== "win32") {
   const removedJson = fromRemoved(["status", "--json"]);
   const envelope = removedJson.stdout.startsWith("{") ? JSON.parse(removedJson.stdout) : undefined;
   check("with --json it is a USAGE_INVALID refusal, not an unknown outcome", removedJson.status === 1 && envelope?.outcome === "refused" && envelope.error?.code === "USAGE_INVALID", shown(removedJson));
+  for (const [stream, args, target] of [
+    ["watch", ["watch"], { requestedSpace: null }],
+    ["history", ["history", "general", "--follow"], { space: null, channel: "general", dms: false }],
+    ["membership", ["channel", "members", "general", "--follow"], { space: null, channel: "general" }],
+  ] as const) {
+    const r = fromRemoved([...args, "--json"]);
+    const records = r.stdout.trimEnd().split("\n").map((line) => JSON.parse(line || "{}"));
+    check(`${stream} frames a removed-folder refusal without a snapshot`, r.status === 1 && r.stderr === ""
+      && records.length === 2 && records.every((record) => record.schemaVersion === 1 && record.stream === stream && Object.entries(target).every(([key, value]) => record.target?.[key] === value))
+      && records[0]?.type === "error" && records[0].data?.code === "USAGE_INVALID"
+      && records[0].data?.message === "this folder no longer exists" && records[0].data?.remedy === "cd to an existing folder and run the command again"
+      && records[1]?.type === "end" && records[1].data?.reason === "setup-failed"
+      && (stream !== "membership" || records[1].data.lastAsOf === null), shown(r));
+  }
+  const finite = fromRemoved(["history", "general", "--json"]);
+  check("finite history from a removed folder still emits one usage refusal", finite.status === 1 && finite.stderr === ""
+    && parsed(finite)?.error?.code === "USAGE_INVALID", shown(finite));
   const version = fromRemoved(["--version"]);
   check("version still answers from a removed folder", version.status === 0 && /^cotal-ai /.test(version.stdout), shown(version));
   // A command whose own checks read the folder before it runs, such as up's, refuses the same way

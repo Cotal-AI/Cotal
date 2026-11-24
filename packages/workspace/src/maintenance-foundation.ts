@@ -25,6 +25,7 @@ import { hostname } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { randomUUID } from "node:crypto";
 import { hardenPrivate } from "@cotal-ai/core";
+import { localWriteFailure } from "./local-write.js";
 import { identityRecord, type ProcessIdentityRecord } from "./pid.js";
 import { recordOperationWarning } from "./output.js";
 
@@ -856,7 +857,7 @@ export function assertStoreIdentity(expected: StoreIdentity): StoreIdentity {
   return actual!;
 }
 
-export function writePrivateExclusive(path: string, data: string): void {
+export function writePrivateExclusive(path: string, data: string, classifyFailure?: typeof localWriteFailure): void {
   let fd: number | undefined;
   let created = false;
   try {
@@ -871,9 +872,9 @@ export function writePrivateExclusive(path: string, data: string): void {
   } catch (error) {
     if (fd !== undefined) closeSync(fd);
     if (created) {
-      try { unlinkSync(path); } catch { /* remove only the path this exclusive create owned */ }
+      try { unlinkSync(path); } catch { throw error; } // Cleanup is uncertain; do not advise a retry.
     }
-    throw error;
+    throw classifyFailure?.(error, path) ?? error;
   }
 }
 
@@ -980,7 +981,7 @@ export function acquireMaintenanceLock(
   const body = `${JSON.stringify({ token, owner, ...(options.operation ? { operation: options.operation } : {}), ...(identity && "token" in identity ? { processToken: identity.token } : {}) }, null, 2)}\n`;
 
   try {
-    writePrivateExclusive(paths.lock, body);
+    writePrivateExclusive(paths.lock, body, localWriteFailure);
     return { root: paths.root, path: paths.lock, token, owner };
   } catch (error) {
     if (errno(error) !== "EEXIST") throw error;

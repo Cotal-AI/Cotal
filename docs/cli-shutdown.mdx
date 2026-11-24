@@ -93,6 +93,9 @@ names `cotal down --yes` to stop the stack without retiring agents. The preview 
 reserve or signal a process, and the receipt is not an authorized stop plan. A fresh `team show`
 summary points to this read-only command from the recorded root.
 
+If `down` finds a foreground controller startup still in progress before its first instance
+records are ready, it names the active startup. Wait for it to finish, then retry `cotal down --yes`.
+
 On a root with a controller journal, bare `down` reads only its recorded full instance IDs. On an
 interactive terminal it shows the member set and the live manager's native agent impact and asks to
 confirm, then stops manager, delivery and broker in that order. `--yes` acknowledges that scope in
@@ -353,6 +356,9 @@ accept the new named-service JSON/plain apply receipt flags, except that `--json
 preserve command without the output flag. A retained bare stop shows its
 recorded components and asks for confirmation on an interactive terminal, defaulting to No.
 If `cotal down --yes --json` refuses the output format, it stops nothing and names `cotal down --yes` as the retry.
+If this folder records a running legacy stack and `down --space <name>` names a different space
+whose project root is unknown, it refuses with `UNSUPPORTED`, exit 2, in every output format. The
+refusal names the mismatch and asks you to locate the requested space's project root before retrying.
 Without an interactive terminal, or when prompts are disabled, it requires `--yes`, exit 1,
 before any stop or cleanup. This applies to a folder started with plain `cotal up` too.
 `--dry-run` stays read-only and needs no confirmation. This acknowledgement does not establish
@@ -769,6 +775,8 @@ from the working directory. When local cleanup refuses these flags, it reports `
 (exit 1) and names the flags to remove. If you ran the command from the project you intend to clean,
 retry from the same working directory and remove only the named flags and their values. A relative
 `--store-dir` is resolved from the working directory, which can be a subdirectory of the project.
+If a parent of that path is not a directory, `store` and `all` refuse with `USAGE_INVALID` (exit 1),
+name the parent and remove nothing. Correct `--store-dir`, or omit it to use the recorded store.
 
 - `history` purges the retained message backlog on the **running** broker (channels, plus DMs
   with `--dms`). A stream that is not on the broker is already clear: the command purges the streams

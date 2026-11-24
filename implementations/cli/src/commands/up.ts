@@ -1791,7 +1791,7 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
     }
     refuseRegisteredAddress(server, space, `start this one at another address with \`cotal up --server nats://${host}:<port>\``);
   }
-  await assertBrokerAddressFree(server, legacyUpRetry(args.raw), host);
+  await assertBrokerAddressFree(server, legacyUpRetry(args.raw), host, values.foreground === true && !resumeAttempt);
   // A repair keeps its own store rules above, and a resume or restore names its store.
   if (!resumeAttempt && !repairing) {
     if (values["store-dir"] === undefined) values["store-dir"] = reopenLastStore(cotalPath("nats"));

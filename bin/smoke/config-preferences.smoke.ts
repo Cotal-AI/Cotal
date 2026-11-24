@@ -655,6 +655,34 @@ if (process.platform !== "win32") {
   check("removing the file restores the defaults", run(["config", "--json"]).status === 0);
 }
 
+{
+  const malformed = "{\n";
+  writeFileSync(file, malformed);
+  const finite = run(["history", "general", "--json"]);
+  const error = finite.envelope?.error;
+  check("finite JSON history reports malformed preferences in one refusal envelope",
+    finite.status === 1 && finite.stderr === "" && finite.envelope?.command === "history" && finite.envelope.outcome === "refused"
+      && error?.code === "SCHEMA_INVALID" && error.message.includes(`the preferences file ${file} is invalid: not JSON`)
+      && error.remedy === `fix or remove ${file}; nothing resets it`, shown(finite));
+  for (const [stream, args, target] of [
+    ["watch", ["watch"], { requestedSpace: null }],
+    ["history", ["history", "general", "--follow"], { space: null, channel: "general", dms: false }],
+    ["membership", ["channel", "members", "general", "--follow"], { space: null, channel: "general" }],
+  ] as const) {
+    const r = run([...args, "--json"]);
+    const records = r.stdout.trimEnd().split("\n").map((line) => JSON.parse(line || "{}"));
+    check(`${stream} frames malformed preferences as a setup failure without a snapshot`,
+      r.status === 1 && r.stderr === "" && records.map((record) => record.type).join() === "error,end"
+        && records.every((record) => record.schemaVersion === 1 && record.stream === stream
+          && Object.entries(target).every(([key, value]) => record.target?.[key] === value))
+        && error !== undefined && records[0]?.data?.code === error.code && records[0]?.data?.message === error.message
+        && records[0]?.data?.remedy === error.remedy && records[1]?.data?.reason === "setup-failed"
+        && (stream !== "membership" || records[1].data.lastAsOf === null), shown(r));
+  }
+  check("the JSON observers leave malformed preferences untouched", fileText() === malformed);
+  rmSync(file);
+}
+
 // ── a COTAL_HOME that is not a directory stops every command but help and completion ─────────────
 {
   const notHome = join(home, "not-a-home");
