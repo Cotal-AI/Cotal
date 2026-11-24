@@ -560,9 +560,9 @@ try {
     }
     const badIdp = await cli("setup", "--space", "demo", "--idp", "http://example.com/api/auth", "--json");
     check("L8 a non-loopback HTTP --idp refuses USAGE_INVALID, exit 1", badIdp.status === 1 && badIdp.doc.error?.code === "USAGE_INVALID", { status: badIdp.status, out: badIdp.out.slice(0, 250) });
-    for (const [value, what] of [["-1", "negative"], ["90000", "past a day"], ["5.5", "fractional"]] as const) {
-      const r = await cli("setup", "--space", "demo", "--wait", value, "--json");
-      check(`L8 a ${what} --wait refuses USAGE_INVALID, exit 1`, r.status === 1 && r.doc.error?.code === "USAGE_INVALID", { value, status: r.status, out: r.out.slice(0, 200) });
+    for (const [value, what] of [["-1", "negative"], ["90000", "past a day"], ["5.5", "fractional"], ["", "blank"], ["   ", "whitespace-only"]] as const) {
+      const r = await cli("setup", "--space", "demo", "--no-manager", "--wait", value, "--json");
+      check(`L8 ${what} --wait refuses USAGE_INVALID, exit 1`, r.status === 1 && r.doc.error?.code === "USAGE_INVALID" && r.doc.error.message.includes("whole seconds") && r.doc.error.remedy.includes("omit --wait"), { value, status: r.status, out: r.out.slice(0, 200) });
     }
     check("L8 none of those refusals wrote a unit receipt", !existsSync(receipt));
 
