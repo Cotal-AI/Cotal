@@ -18,7 +18,6 @@
  *
  * Run: pnpm --filter @cotal-ai/acp test
  */
-import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -221,7 +220,8 @@ if (process.platform !== "win32") {
   });
   const ran = await run(bin, ["--space", "demo"]);
   check("the launcher runs `cotal acp <args>` and passes its exit status on", ran.code === 7 && readFileSync(log, "utf8").trim() === "acp --space demo", { ran, args: existsSync(log) ? readFileSync(log, "utf8") : null });
-  assert.equal(readFileSync(pathLog, "utf8"), bin, "launcher PATH must contain only the fixture directory");
+  const launcherPath = existsSync(pathLog) ? readFileSync(pathLog, "utf8") : null;
+  check("the launcher PATH contains only the fixture directory", launcherPath === bin, { expected: bin, actual: launcherPath });
 
   fakeCotal(bin, false);
   rmSync(join(home, ".local", "bin", "cotal"));
