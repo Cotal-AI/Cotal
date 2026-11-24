@@ -1,5 +1,13 @@
 # @cotal-ai/workspace
 
+## 0.176.6
+
+### Patch Changes
+
+- 664698a: Keep the running folder space marked in `cotal space` and `cotal status` when an offline registration shares its folder.
+- d91500c: Report a full disk, quota or file-size limit when startup or shutdown cannot write the initial maintenance lock. The command names the file and how to retry instead of reporting an unknown outcome.
+- @cotal-ai/core@0.176.6
+
 ## 0.176.5
 
 ### Patch Changes
