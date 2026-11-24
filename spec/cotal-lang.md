@@ -1159,10 +1159,11 @@ divergence (L5001). Where a build dispatches to more than one engine, a record w
 engine of that build serves is refused before any of this, with L5023 (§8.4), and the run MUST be
 left untouched: nothing activated, nothing appended. (A recorded branch missing from the source is L5022 only on a migration or fork
 walk entering a SETTLED scope, §11.2; a `pending` scope records no arm names to check and is
-re-entered by a resume.) A resume performs live every
-effect the journal has not settled, so a run that stops before its next effect (L5012, the host's
-release, asked before every unrecorded effect and never inside one) is exactly where its journal
-says it is. A **capability refusal** is the same shape one step later: the handler attempted
+re-entered by a resume.) A resume performs live every effect the journal has not settled.
+A host release (L5012) leaves the run where its journal says it is. The host can ask to stop
+before any unrecorded effect. A handler can also release the run while waiting on bound work,
+leaving the entry pending so a successor can reattach to the same work. A **capability refusal**
+is different: the handler attempted
 nothing, the entry settles `refused` under the handler's code, and the run unwinds with L5025
 rather than recording a failure; a resume on a host that can perform the step finds the `refused`
 verdict (§10.7) and performs it live.
@@ -1332,7 +1333,7 @@ time, L5xxx durability, L6xxx simulation.
 | L5009 | Resume pin mismatch |
 | L5010 | Journal append rejected |
 | L5011 | Journal belongs to a different run |
-| L5012 | Run released before the next effect |
+| L5012 | Run released by the host |
 | L5013 | Orphaned undelivered `notice` on migrate |
 | L5014 | Orphaned open `conclave` on migrate |
 | L5015 | No orphan policy for this entry kind on migrate |

@@ -37,7 +37,7 @@
 
 import type { MessagePort } from "node:worker_threads";
 import type { EffectContext, EffectHandler } from "../effects.js";
-import { Cancelled, EffectError, EffectRefused } from "../effects.js";
+import { Cancelled, EffectError, EffectRefused, RunReleased } from "../effects.js";
 import type { EntryState, JournalEntry, JournalStore } from "../journal.js";
 import { EffectResultTooLarge, JournalAppendRejected } from "../journal.js";
 import type { StepKey } from "../keys.js";
@@ -77,6 +77,7 @@ type WireError = { readonly name: string; readonly message: string } & (
   // Flattened to a plain Error it would settle `failed` for a branch that lost a race, which is the
   // journal recording a failure the program never had.
   | { readonly class: "cancelled"; readonly reason: string }
+  | { readonly class: "released"; readonly reason: string }
   // The durability failures: graded on class by perform.ts, which lets them leave uncatchable with
   // nothing settled. Flattened to a plain Error, a host handler rethrowing its refused `ctx.bind`
   // would settle the step `failed`, recording an outcome for an append the store refused.
@@ -128,6 +129,7 @@ function flatten(e: unknown): WireError {
   // A cancellation is graded on class the same way (perform.ts settles it `cancelled`), and a
   // handler that observes its signal throws one from the host side of this port (#532).
   if (e instanceof Cancelled) return { class: "cancelled", name: e.name, message: e.message, reason: e.reason };
+  if (e instanceof RunReleased) return { class: "released", name: e.name, message: e.message, reason: e.reason };
   // Ahead of `JournalAppendRejected`, which it extends.
   if (e instanceof EffectResultTooLarge) {
     return { class: "too-large", name: e.name, message: e.message, stepKey: e.stepKey, bytes: e.bytes, bound: e.bound };
@@ -162,6 +164,8 @@ function rehydrate(w: WireError): Error {
       return new EffectRefused(w.code, w.message);
     case "cancelled":
       return new Cancelled(w.reason);
+    case "released":
+      return new RunReleased(w.reason);
     case "too-large":
       return new EffectResultTooLarge(w.stepKey, w.bytes, w.bound);
     case "rejected": {

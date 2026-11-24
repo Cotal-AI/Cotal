@@ -364,9 +364,8 @@ export async function settleDispatchThrown(host: EffectHost, key: StepKey, frame
  * refusal rule so an at-most-once step stays pending.
  */
 async function settleThrown(host: EffectHost, key: StepKey, frame: EffectFrame, e: unknown, endedAt: number): Promise<never> {
-  // A journal that just refused an append cannot be asked to record why. It leaves by its own
-  // door, unwrapped, before anything tries to settle on top of it.
-  if (e instanceof JournalAppendRejected) throw e;
+  // A refused append or a host release says nothing about the step's outcome. Leave it pending.
+  if (e instanceof JournalAppendRejected || e instanceof RunReleased) throw e;
   if (e instanceof Cancelled) {
     await host.journal.settle(key, { status: "cancelled" }, endedAt);
     throw e;

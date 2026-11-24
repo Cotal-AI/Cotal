@@ -8,7 +8,7 @@ import {
   type GoalResultFact, type ResolvedService,
 } from "@cotal-ai/core";
 import {
-  Cancelled, EffectError, askSchemaShape, conformsToAskSchema, parseDuration, stepKeyString,
+  Cancelled, EffectError, RunReleased, askSchemaShape, conformsToAskSchema, parseDuration, stepKeyString,
   type AgentHandleValue, type AskFieldKind, type AskRequest, type CancelSignal, type EffectContext, type TurnRequest,
   type TurnResultValue,
 } from "@cotal-ai/lang";
@@ -293,7 +293,11 @@ export class TurnAsk {
       if (ctx.signal.cancelled) throw new Cancelled(ctx.signal.reason ?? "cancelled");
       return await read();
     }, this.lag, `turn(${name}#${uid}) ${what}`, this.onStarved);
-    const result = () => poll("readGoalResult", () => readGoalResult(actx, ref));
+    const result = () => poll("readGoalResult", () => readGoalResult(actx, ref)).catch((e: unknown) => {
+      if (!(e instanceof EffectError) || e.code !== "L4026") throw e;
+      if (ctx.signal.cancelled) throw new Cancelled(ctx.signal.reason ?? "cancelled");
+      throw new RunReleased(`${e.code}: ${e.message}`);
+    });
     const expired = () => poll("expired", () => this.expired(primary));
     const decided = async (): Promise<boolean> =>
       ctx.signal.cancelled || (await result()) !== undefined || (await expired()) !== undefined;
@@ -316,6 +320,8 @@ export class TurnAsk {
         await delay(WAIT_POLL_MS);
       }
     } catch (e) {
+      // A resume reattaches to the bound goal and its deadline. Leave both live.
+      if (e instanceof RunReleased) throw e;
       // A turn that ends on the run's side without a yield the run accepted (its deadline, the
       // seat's death, a refused handoff, a cancellation) is not a reply, whatever the relay
       // records later: `wait(replied)` reads the verdict this branch raised, never a stale yield.
