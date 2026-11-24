@@ -9,7 +9,7 @@ import {
 } from "@cotal-ai/core";
 import {
   cachedPreferences, codeSpan, CommandFailure, ConfirmationRequired, cotalDirLink, explicitNoInputFlag, findCotalRoot, isCommandFailure, isGenuineSpace, isWorkspaceTargetError, legacyStackOtherHome, loadMeshes, meshesForRoot, movedProject,
-  localWriteFailure, personaDefinitionProblem, preparedSpaceAt, resolveMeshTarget, resolvePreference, retainedLegacyBroker, retainedOpenSpace, stackJournalPath, targetErrorCode, workspaceErrorParts,
+  localWriteFailure, personaDefinitionProblem, preparedNeverStarted, preparedSpaceAt, resolveMeshTarget, resolvePreference, retainedLegacyBroker, retainedOpenSpace, stackJournalPath, targetErrorCode, workspaceErrorParts,
 } from "@cotal-ai/workspace";
 import { DEFAULT_AGENT_NAME } from "./default-persona.js";
 import { shellWord } from "./endpoint-errors.js";
@@ -24,7 +24,7 @@ export function personaCatalog(values: { space?: string; server?: string }): Per
   return personaCatalogContext(values).catalog;
 }
 
-export function personaCatalogContext(values: { space?: string; server?: string }): { catalog: PersonaCatalog; userMode: boolean } {
+export function personaCatalogContext(values: { space?: string; server?: string }): { catalog: PersonaCatalog; userMode: boolean; prepared?: boolean } {
   try {
     const target = resolveMeshTarget(process.cwd(), { ...values, readOnly: true });
     // A `--server` that no registration names resolves to this folder's project, as launch does.
@@ -36,8 +36,10 @@ export function personaCatalogContext(values: { space?: string; server?: string 
     return { catalog: catalogAt(target.root, target.space), userMode: target.mode === "user" };
   } catch (error) {
     if (!isWorkspaceTargetError(error)) throw error;
-    if (error.code === "not-started" && !values.server && error.details.root && error.details.space && !error.details.rootMissing)
-      return { catalog: catalogAt(error.details.root, error.details.space), userMode: false };
+    if (error.code === "not-started" && error.details.root && error.details.space && !error.details.rootMissing &&
+        (!values.server || (values.space === error.details.space && preparedNeverStarted(error.details) &&
+          !existsSync(stackJournalPath(error.details.root)) && !retainedLegacyBroker(error.details.root))))
+      return { catalog: catalogAt(error.details.root, error.details.space), userMode: false, prepared: preparedNeverStarted(error.details) };
     if ((error.code === "unknown-space" || error.code === "not-started" && error.details.lastRun) && values.space !== undefined && values.server === undefined) {
       const root = findCotalRoot();
       // Legacy down can drop the registration, but the rendered open config still names the space.
@@ -114,7 +116,7 @@ function personaLinkRemedy(path: string): string | undefined {
 }
 
 /** Suggest a mode change only for an owned regular file missing its owner read bit. */
-export function unreadablePersona(path: string, code: string | undefined, space?: string): CommandFailure | undefined {
+export function unreadablePersona(path: string, code: string | undefined, target: object = { path }): CommandFailure | undefined {
   if (code !== "EACCES" && code !== "EPERM") return undefined;
   let remedy = "check that this account can read the file and enter its parent folders, then retry";
   try {
@@ -122,7 +124,7 @@ export function unreadablePersona(path: string, code: string | undefined, space?
     if (stat.isFile() && stat.uid === process.getuid?.() && !(stat.mode & 0o400))
       remedy = `run ${codeSpan(`chmod u+r ${shellWord(path)}`)}, then retry`;
   } catch { /* The file or a parent may not be accessible to stat. */ }
-  return new CommandFailure("refused", "PERMISSION_DENIED", `cannot read persona: ${path} (${code})`, { remedy, target: { space, path } });
+  return new CommandFailure("refused", "PERMISSION_DENIED", `cannot read persona: ${path} (${code})`, { remedy, target });
 }
 
 /** Only absence is absent. Unreadable and non-regular sources refuse rather than becoming empty. */
@@ -320,7 +322,7 @@ function runEditor(editor: string, draft: string, json = false): Promise<EditorE
 
 /** What an edit did. An editor that exits non-zero cancels it, as vim's `:cq` does; a draft it changed
  *  is kept. A draft left as it was saves nothing. */
-export type PersonaEdit = { action: "saved" } | { action: "unchanged" } | { action: "cancelled"; status: number; draft?: string };
+export type PersonaEdit = { action: "saved"; displayName: string } | { action: "unchanged" } | { action: "cancelled"; status: number; draft?: string };
 
 /** Never expose the catalog file to an editor. Validate successful draft bytes, then compare under lock.
  *  An interrupt that stops the edit saves nothing, removes an unchanged draft, names a changed one, and
@@ -368,7 +370,8 @@ export async function editPersona(path: string, name: string, catalog: PersonaCa
     if (edited.equals(source.bytes)) return { action: "unchanged" };
     const oversized = tooLarge(edited, `your edit is kept in ${draft}; shorten it to 1 MiB or less, run \`${retry}\` again and paste it in, then remove ${dirname(draft)}`);
     if (oversized) { keep = true; throw oversized; }
-    try { validatePersona(edited, draft); }
+    let displayName: string;
+    try { displayName = validatePersona(edited, draft).name; }
     catch (error) {
       if (!isCommandFailure(error)) throw error;
       keep = true;
@@ -397,7 +400,7 @@ export async function editPersona(path: string, name: string, catalog: PersonaCa
         remedy: failure.remedy ? `${failure.remedy}; ${kept}` : kept, target: failure.target, changed: failure.changed, native: failure.native, cause: error,
       });
     }
-    return { action: "saved" };
+    return { action: "saved", displayName };
   }, () => keep);
   if (edit.action === "interrupted") {
     exitInterrupted(edit.signal, edit.draft

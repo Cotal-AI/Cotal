@@ -643,3 +643,5 @@ claim.
 Managed imperative spawn accepts `--restarts <n> --restart-window <ms>` as a pair, using the
 existing native `supervise` object. Both values must be positive safe integers. Direct foreground
 launch and the legacy manifest form reject these flags instead of ignoring them.
+Omit both flags to stay in this terminal. To keep restart supervision, use a managed launch with `-d`
+instead of `--foreground` and omit any options that only apply to direct launches.

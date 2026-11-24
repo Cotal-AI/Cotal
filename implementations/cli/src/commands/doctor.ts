@@ -45,6 +45,7 @@ import {
   migrateLegacyCotalMaterial,
   preparedSpaceAt,
   preflightTarget,
+  readPreparedSpaces,
   remintDaemonCreds,
   REMINTABLE_DAEMON_CREDS,
   type Report,
@@ -176,8 +177,9 @@ function recordedOpenSpace(root: string, space: string | undefined, fix: boolean
 function legacyOpenRecord(root: string): { path: string; space?: string } | undefined {
   if (!isGenuineSpace(root) || cotalDirLink(root) !== undefined || existsSync(stackJournalPath(root)) ||
       meshesForRoot(root).length || preparedSpaceAt(root) || rootHoldsAccount(root) || legacyStackOtherHome(root) !== undefined) return undefined;
+  if (!retainedLegacyBroker(root)?.open) return undefined;
   const path = join(root, ".cotal", "server-open.conf");
-  const space = retainedLegacyBroker(root)?.open ? retainedOpenSpace(root) : undefined;
+  const space = retainedOpenSpace(root);
   if (space !== undefined && (findMesh(space) || findPreparedSpace(space))) return undefined;
   return { path, space };
 }
@@ -213,6 +215,10 @@ function trustRootStep(root: string, space: string | undefined, fix: boolean, mi
   }
   if (registered && !existsSync(registered)) return `the folder space ${named} is recorded at, ${registered}, no longer exists; if it was moved or renamed, move it back and run \`${command}\` there; otherwise forget the space with \`cotal space forget ${named}\``;
   if (!registered && missingModeStep) return missingModeStep;
+  if (named === undefined && isGenuineSpace(root)) {
+    const { unusable } = readPreparedSpaces();
+    if (unusable.length) return `Check the unreadable prepared records before retrying: ${unusable.map(({ summary, remedy }) => remedy ? `${summary}. To resolve it, ${remedy}.` : summary).join("\n")}`;
+  }
   return registered ? `run \`${command}\` in the folder space ${space} is registered at: ${registered}` : `run \`${command}\` in ${space === undefined ? "a" : "that"} space's root folder; \`cotal space\` lists each space's root`;
 }
 

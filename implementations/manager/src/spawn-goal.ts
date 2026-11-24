@@ -4,6 +4,7 @@ import type { Manager } from "./manager.js";
 import type { SpawnAcceptance, SpawnHooks } from "./seat-types.js";
 import { caughtEnvelope, goalKey } from "./turn-relay.js";
 import type { ManagerConfig } from "./manager-config.js";
+import type { ManagerStartState } from "./manager-start-state.js";
 import type { ManagerParts } from "./manager-parts.js";
 
 /** The failed terminal a post-accept fallback commits for `error` and `source`'s optional details.
@@ -28,9 +29,7 @@ function failedTerminal(error: string, source: { details?: unknown } | undefined
  *  assigns after construction is always current, and a Manager method a test replaces is the one that runs. */
 export interface SpawnGoalDeps {
   agentGoals: () => Manager["agentGoals"];
-  managerInstanceId: () => Manager["managerInstanceId"];
   onceWatched: () => Manager["onceWatched"];
-  userMode: () => Manager["userMode"];
   acceptOnceTurn: (...args: Parameters<Manager["acceptOnceTurn"]>) => ReturnType<Manager["acceptOnceTurn"]>;
   assertGoalWriterEpochCurrent: (...args: Parameters<Manager["assertGoalWriterEpochCurrent"]>) => ReturnType<Manager["assertGoalWriterEpochCurrent"]>;
   commitOnceCancel: (...args: Parameters<Manager["commitOnceCancel"]>) => ReturnType<Manager["commitOnceCancel"]>;
@@ -44,9 +43,7 @@ export interface SpawnGoalDeps {
 export function spawnGoalDeps(m: Manager): SpawnGoalDeps {
   return {
     agentGoals: () => m["agentGoals"],
-    managerInstanceId: () => m["managerInstanceId"],
     onceWatched: () => m["onceWatched"],
-    userMode: () => m["userMode"],
     acceptOnceTurn: (...args) => m["acceptOnceTurn"](...args),
     assertGoalWriterEpochCurrent: (...args) => m["assertGoalWriterEpochCurrent"](...args),
     commitOnceCancel: (...args) => m["commitOnceCancel"](...args),
@@ -58,15 +55,15 @@ export function spawnGoalDeps(m: Manager): SpawnGoalDeps {
 
 /** Serving `spawn` and `launch` as goals: acceptance, the cached acceptance a retry reads, and its expiry. */
 export class SpawnGoal {
-  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: SpawnGoalDeps, private readonly parts: Pick<ManagerParts, "goalWriter" | "servePlane">) {}
+  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: SpawnGoalDeps, private readonly parts: Pick<ManagerParts, "goalWriter" | "servePlane">, private readonly state: ManagerStartState) {}
 
   // The Manager members these bodies read, under their Manager names. Each reads through its dep at
   // use, so a field the Manager assigns later is current and a method a test replaces on the Manager
   // is the one that runs.
   private get agentGoals() { return this.deps.agentGoals(); }
-  private get managerInstanceId() { return this.deps.managerInstanceId(); }
+  private get managerInstanceId() { return this.state.managerInstanceId!; }
   private get onceWatched() { return this.deps.onceWatched(); }
-  private get userMode() { return this.deps.userMode(); }
+  private get userMode() { return this.state.userMode; }
   private acceptOnceTurn(...args: Parameters<Manager["acceptOnceTurn"]>): ReturnType<Manager["acceptOnceTurn"]> { return this.deps.acceptOnceTurn(...args); }
   private assertGoalWriterEpochCurrent(...args: Parameters<Manager["assertGoalWriterEpochCurrent"]>): ReturnType<Manager["assertGoalWriterEpochCurrent"]> { return this.deps.assertGoalWriterEpochCurrent(...args); }
   private commitOnceCancel(...args: Parameters<Manager["commitOnceCancel"]>): ReturnType<Manager["commitOnceCancel"]> { return this.deps.commitOnceCancel(...args); }
