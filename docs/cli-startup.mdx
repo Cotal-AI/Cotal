@@ -367,8 +367,14 @@ An explicit `--store-dir` on `up`, `up --restore` or `backup restore` must name 
 path to create in one. A regular file there refuses `USAGE_INVALID` (exit 1) and names it. The
 existing part of the path follows the [`space create`](cli-selection.mdx#selecting-a-space) rule for other local
 writers, so a group- or world-writable directory in it refuses `PERMISSION_DENIED` before anything
-is written. A path still to create needs its nearest existing directory to be writable by this
-account, or it refuses `PERMISSION_DENIED` (exit 2) before anything is written. On `up`, a
+is written. If the initial path lookup detects a symbolic-link loop or a path too long for the
+filesystem, the command refuses `USAGE_INVALID` (exit 1). If the destination preflight detects
+denied search access, the command refuses `PERMISSION_DENIED` (exit 2) and names the blocking
+directory when it can identify it, including through a symbolic
+link. Restore search access there or choose a new store path under a parent this account can
+search and write. No start or restore begins. A path still to create needs its nearest existing
+directory to be writable by this account, or it refuses `PERMISSION_DENIED` (exit 2) before
+anything is written. On `up`, a
 non-empty directory is accepted, since it may hold an existing store. When it holds anything besides a
 store's `jetstream` directory, its `.cotal-store-id` marker and the `ocsp` folder nats-server makes
 there when it reloads its configuration, `up` warns and names those entries,
