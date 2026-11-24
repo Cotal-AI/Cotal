@@ -14,7 +14,7 @@ import {
 import { completedFlagValue, completingFlagValue, positionalsForCompletion } from "../lib/completion.js";
 import { catalogReadRefusal, hasBlankPersonaSelector, listPersonaNames, readPersonas } from "../lib/personas.js";
 import {
-  assertLabels, commitPersona, editPersona, personaCatalog, personaCatalogContext, personaNameProblem, personaNameWords, personaPath, readPersonaSource,
+  assertLabels, commitPersona, editPersona, personaCatalog, personaCatalogContext, personaNameProblem, personaNameWords, personaPath, readPersonaOccupancy, readPersonaSource,
   requirePersonaSource, reservedPersonaName, serializePersona, validatePersona, type PersonaCatalog, type PersonaEdit,
 } from "../lib/persona-files.js";
 import { remotePersona, validateRemotePersonaArguments } from "./persona-remote.js";
@@ -104,7 +104,7 @@ export async function persona(args: ParsedArgs): Promise<void> {
       const word = personaNameWords(name!, target);
       throw new CommandFailure("refused", "CONFLICT", `persona '${name}' already exists`, { remedy: `change it with \`cotal persona edit${word}\`, or remove it with \`cotal persona remove${word}\` first` });
     }
-    const bytes = await createSource(name!, path, values);
+    const bytes = await createSource(name!, catalog.root, values);
     commitPersona(path, expected, bytes, target);
     return receipt(presentation, catalog, name!, path, "created", target);
   }
@@ -158,7 +158,27 @@ async function readInput(path: string, flag: "file" | "from"): Promise<Buffer> {
   }
 }
 
-async function createSource(name: string, path: string, values: Values): Promise<Buffer> {
+async function createFileSource(name: string, root: string, file: string, target: string): Promise<Buffer> {
+  const bytes = await readInput(file, "file");
+  const stdin = file === "-";
+  const source = stdin ? "standard input" : file;
+  const def = validatePersona(bytes, source);
+  if (def.name === name) return bytes;
+  const occupied = readPersonaOccupancy(root);
+  const replacement = occupied(name) ? "an unused catalog name" : `'${name}'`;
+  const rename = stdin
+    ? `set its frontmatter name to ${replacement} and pipe the corrected definition into a create command for that name`
+    : `copy the definition to a separate input file, set its frontmatter name to ${replacement}, and retry with that file and name`;
+  let remedy = rename;
+  if (!spawnNameError(def.name, { userMode: false }) && !reservedPersonaName(def.name) && !occupied(def.name)) {
+    const inputFlag = ` --file${!stdin && file.startsWith("-") ? "=" : " "}${shellWord(file)}`;
+    const retry = codeSpan(`cotal persona create${personaNameWords(def.name, inputFlag + target)}`);
+    remedy = stdin ? `pipe the original definition into ${retry} again, or ${rename}` : `create it under its own name with ${retry}, or ${rename}`;
+  }
+  throw new CommandFailure("refused", "SCHEMA_INVALID", `persona name must match the catalog name '${name}'; ${source} names '${def.name}'`, { remedy });
+}
+
+async function createSource(name: string, root: string, values: Values): Promise<Buffer> {
   const sources = [values.file, values.prompt, values.from].filter(value => value !== undefined);
   if (sources.length !== 1) throw usage("provide one of --file, --prompt or --from");
   const problem = spawnNameError(name, { userMode: false });
@@ -167,19 +187,7 @@ async function createSource(name: string, path: string, values: Values): Promise
   });
   if (values.file !== undefined) {
     if ([values.role, values.model, values.subscribe, values.harness, values["allow-subscribe"], values["allow-publish"]].some(value => value !== undefined)) throw usage("--file cannot be combined with definition flags");
-    const bytes = await readInput(values.file, "file");
-    const source = values.file === "-" ? "standard input" : values.file;
-    const def = validatePersona(bytes, source);
-    if (def.name !== name) {
-      const file = `--file${values.file !== "-" && values.file.startsWith("-") ? "=" : " "}${shellWord(values.file)}`;
-      const retry = `cotal persona create${personaNameWords(def.name, ` ${file}${targetWords(values)}`)}`;
-      const rename = `set its name to '${name}'`;
-      const remedy = spawnNameError(def.name, { userMode: false }) || reservedPersonaName(def.name) ? rename
-        : values.file === "-" ? `pipe the original definition into ${codeSpan(retry)} again, or ${rename} and pipe the corrected definition into the original command`
-        : `create it under its own name with ${codeSpan(retry)}, or ${rename}`;
-      throw new CommandFailure("refused", "SCHEMA_INVALID", `persona name must match the catalog name '${name}'; ${source} names '${def.name}'`, { remedy });
-    }
-    return bytes;
+    return createFileSource(name, root, values.file, targetWords(values));
   }
   if (values.subscribe === undefined) throw usage('provide --subscribe <a,b> or --subscribe "" for none');
   if (values.harness !== undefined) checkHarness(values.harness);

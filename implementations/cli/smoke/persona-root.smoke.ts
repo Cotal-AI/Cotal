@@ -756,6 +756,44 @@ try {
       copied.status === 0 && existsSync(imported) && readFileSync(imported).equals(importBytes), copied.stdout + copied.stderr);
   }
 
+  const originalImport = agentFilePath(ALPHA, "existing-import");
+  const originalBytes = Buffer.from("---\nname: existing-import\n---\nKeep this persona.\n");
+  writeFileSync(originalImport, originalBytes);
+  const occupied = native(["persona", "create", "import-copy", "--file", originalImport, "--space", "alpha", "--json"], CWD);
+  const occupiedError = JSON.parse(occupied.stdout).error;
+  check("a file already in the selected catalog only suggests renaming a separate input",
+    occupied.status === 1 && occupiedError?.code === "SCHEMA_INVALID" && occupiedError.message.includes("names 'existing-import'") &&
+    occupiedError.remedy === "copy the definition to a separate input file, set its frontmatter name to 'import-copy', and retry with that file and name" &&
+    !existsSync(agentFilePath(ALPHA, "import-copy")), occupied.stdout);
+  const copyInput = join(scratch, "import-copy.md");
+  const copyBytes = Buffer.from(originalBytes.toString("utf8").replace("name: existing-import", "name: import-copy"));
+  writeFileSync(copyInput, copyBytes);
+  const copied = native(["persona", "create", "import-copy", "--file", copyInput, "--space", "alpha", "--plain"], CWD);
+  check("importing a renamed copy preserves the original and saves the new bytes verbatim",
+    copied.status === 0 && readFileSync(agentFilePath(ALPHA, "import-copy")).equals(copyBytes) &&
+    readFileSync(originalImport).equals(originalBytes), copied.stdout + copied.stderr);
+
+  const caseInput = Buffer.from(originalBytes.toString("utf8").replace("name: existing-import", "name: EXISTING-IMPORT"));
+  const caseMismatch = native(["persona", "create", "stdin-copy", "--file", "-", "--server", "nats://127.0.0.1:4301", "--json"], CWD, childEnv, caseInput);
+  const caseError = JSON.parse(caseMismatch.stdout).error;
+  check("an occupied case variant only suggests correcting and repiping the definition",
+    caseMismatch.status === 1 && caseError?.code === "SCHEMA_INVALID" && caseError.message.includes("names 'EXISTING-IMPORT'") &&
+    caseError.remedy === "set its frontmatter name to 'stdin-copy' and pipe the corrected definition into a create command for that name" &&
+    !existsSync(agentFilePath(ALPHA, "stdin-copy")) && readFileSync(originalImport).equals(originalBytes), caseMismatch.stdout);
+  const stdinCopy = Buffer.from(originalBytes.toString("utf8").replace("name: existing-import", "name: stdin-copy"));
+  const pipedCopy = native(["persona", "create", "stdin-copy", "--file", "-", "--server", "nats://127.0.0.1:4301", "--plain"], CWD, childEnv, stdinCopy);
+  check("repiping a renamed copy saves those bytes without touching the occupied persona",
+    pipedCopy.status === 0 && readFileSync(agentFilePath(ALPHA, "stdin-copy")).equals(stdinCopy) &&
+    readFileSync(originalImport).equals(originalBytes), pipedCopy.stdout + pipedCopy.stderr);
+  if (!existsSync(agentFilePath(ALPHA, "EXISTING-IMPORT"))) {
+    const targetCollision = native(["persona", "create", "EXISTING-IMPORT", "--file", copyInput, "--space", "alpha", "--json"], CWD);
+    const failure = JSON.parse(targetCollision.stdout).error;
+    check("a requested name that also collides is not offered as a correction",
+      targetCollision.status === 1 && failure?.code === "SCHEMA_INVALID" &&
+      failure.remedy === "copy the definition to a separate input file, set its frontmatter name to an unused catalog name, and retry with that file and name" &&
+      !existsSync(agentFilePath(ALPHA, "EXISTING-IMPORT")), targetCollision.stdout);
+  }
+
   const decoyFile = agentFilePath(ALPHA, "encoded");
   const decoy = "---\nname: encoded\n---\nAlpha instructions.\n";
   writeFileSync(decoyFile, decoy);

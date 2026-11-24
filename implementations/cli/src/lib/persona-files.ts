@@ -14,7 +14,7 @@ import {
 import { DEFAULT_AGENT_NAME } from "./default-persona.js";
 import { shellWord } from "./endpoint-errors.js";
 import { exitInterrupted, INTERRUPT_SIGNALS, type InterruptSignal } from "./interrupt-notice.js";
-import { catalogFolderProblem, linkTarget } from "./personas.js";
+import { catalogFolderProblem, catalogReadRefusal, linkTarget } from "./personas.js";
 
 export interface PersonaCatalog { root: string; space: string }
 export interface PersonaSource { bytes: Buffer; ino: number; dev: number; mtimeMs: number }
@@ -191,11 +191,28 @@ function tooLarge(bytes: Buffer, remedy: string): CommandFailure | undefined {
   return bytes.length > PERSONA_LIMIT ? new CommandFailure("refused", "SCHEMA_INVALID", `the persona definition is ${bytes.length} bytes, over the 1 MiB limit, so it was not saved`, { remedy }) : undefined;
 }
 
-/** The persona whose file name differs from `path`'s only in case. A case-insensitive file system
+/** The persona whose file name differs from `file` only in case. A case-insensitive file system
  *  holds the two as one file. */
-function caseTwin(path: string): string | undefined {
-  const file = basename(path);
-  return readdirSync(dirname(path)).find(entry => entry !== file && entry.toLowerCase() === file.toLowerCase());
+function caseTwin(file: string, entries: readonly string[]): string | undefined {
+  return entries.find(entry => entry !== file && entry.toLowerCase() === file.toLowerCase());
+}
+
+/** Snapshot for retry advice. A create still validates the destination again under its lock. */
+export function readPersonaOccupancy(root: string): (name: string) => boolean {
+  const dir = personaDir(root);
+  let entries: string[];
+  try {
+    entries = readdirSync(dir);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw catalogReadRefusal(dir, error);
+    const folder = catalogFolderProblem(dir);
+    if (folder) throw folder;
+    entries = [];
+  }
+  return name => {
+    const file = basename(personaPath(root, name));
+    return entries.includes(file) || caseTwin(file, entries) !== undefined;
+  };
 }
 
 /** Shared by canonical and legacy CLI writes only. Manager and external writers do not take this lock.
@@ -215,7 +232,7 @@ export function commitPersona(path: string, expected: PersonaSource | undefined,
     const current = readPersonaSource(path);
     if (!sameSource(expected, current))
       throw new CommandFailure("refused", "CONFLICT", `persona ${current === undefined ? "was removed" : "changed"} while the operation was open: ${path}`, { remedy: current === undefined ? "list the catalog with `cotal persona` and retry" : "read the current definition and retry" });
-    const twin = current === undefined && bytes !== undefined ? caseTwin(path) : undefined;
+    const twin = current === undefined && bytes !== undefined ? caseTwin(basename(path), readdirSync(dir)) : undefined;
     if (twin !== undefined) {
       if (!twin.endsWith(".md")) throw new CommandFailure("refused", "CONFLICT", `catalog filename '${basename(path)}' differs from '${twin}' only in case; nothing was written`, { remedy: "choose another persona name" });
       const name = basename(twin, ".md");
