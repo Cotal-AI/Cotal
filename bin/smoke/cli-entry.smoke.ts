@@ -1316,7 +1316,7 @@ require('node:module').syncBuiltinESMExports();`);
   const manifest = "old team.yaml";
   const server = `nats://127.0.0.1:${await freePort()}`;
   let ledgerPath = "", ledgerBefore = "";
-  const prepare = (home: string, ledger: boolean): void => {
+  const prepare = (home: string, ledger: boolean, runId = "oldrun"): void => {
     const root = dirname(home), file = join(root, manifest);
     mkdirSync(join(root, ".cotal", "manifests"), { recursive: true });
     mkdirSync(join(home, "meshes"), { recursive: true });
@@ -1326,20 +1326,30 @@ require('node:module').syncBuiltinESMExports();`);
     const source = "apiVersion: cotal/v1\nkind: Mesh\nspace: retiredledger\nagent: claude\nagents:\n  worker: ./removed-persona.md\nchannels: {}\n";
     writeFileSync(file, source);
     if (ledger) {
-      ledgerPath = join(root, ".cotal", "manifests", "oldrun.json");
-      ledgerBefore = JSON.stringify({ apiVersion: "cotal-ledger/v1", kind: "MeshLedger", runId: "oldrun",
+      ledgerPath = join(root, ".cotal", "manifests", `${runId}.json`);
+      ledgerBefore = JSON.stringify({ apiVersion: "cotal-ledger/v1", kind: "MeshLedger", runId,
         space: "retiredledger", server, manifestPath: file,
         manifestHash: createHash("sha256").update(source).digest("hex").slice(0, 16), teardownMode: "ledger-scoped",
         created: { channels: ["oldchannel"], agents: [] } });
       writeFileSync(ledgerPath, ledgerBefore);
     }
   };
-  const partial = cotal(["down", "--run", "oldrun"], (home) => prepare(home, true), noSeed);
-  const retry = "`cotal down --run oldrun`";
-  check("partial ledger teardown offers a file-free retry even when the manifest path has spaces",
-    partial.status === 1 && partial.stdout.includes(`the ledger is RETAINED for a later ${retry}`)
-      && partial.stdout.includes(`finish later (broker up / members gone): ${retry}`)
-      && isDeepStrictEqual(JSON.parse(readFileSync(ledgerPath, "utf8")), JSON.parse(ledgerBefore)), partial);
+  for (const [runId, args] of [["oldrun", ["--run", "oldrun"]], ["-legacy", ["--run=-legacy"]]] as const) {
+    const partial = cotal(["down", ...args], (home) => prepare(home, true, runId), noSeed);
+    const retry = /finish later \(broker up \/ members gone\): `(\b(?:pnpm )?cotal (down --run=[A-Za-z0-9_-]+))`/.exec(partial.stdout);
+    check(`partial ledger teardown offers a file-free retry for ${runId} even when the manifest path has spaces`,
+      partial.status === 1 && retry?.[2] === `down --run=${runId}`
+        && partial.stdout.includes(`the ledger is RETAINED for a later \`${retry[1]}\``)
+        && isDeepStrictEqual(JSON.parse(readFileSync(ledgerPath, "utf8")), JSON.parse(ledgerBefore)), partial);
+    if (!retry) continue;
+    const preview = cotal([...retry[2].split(" "), "--dry-run"], (home) => {
+      prepare(home, true, runId);
+      rmSync(join(dirname(home), manifest));
+    }, noSeed);
+    check(`the printed retry for ${runId} previews the run without its manifest`,
+      preview.status === 0 && preview.stdout.includes("Would remove (dry run):") && preview.stdout.includes("#oldchannel")
+        && readFileSync(ledgerPath, "utf8") === ledgerBefore, shown(preview));
+  }
   for (const [lookup, args] of [
     ["by source hash", ["-f", manifest]],
     ["by explicit run with file", ["-f", manifest, "--run", "oldrun"]],
