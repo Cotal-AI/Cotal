@@ -1,4 +1,4 @@
-/** Broker URL syntax and transport intent through the shipped CLI on owned open brokers. */
+/** Broker URL syntax, transport and access mode through the shipped CLI on owned brokers. */
 import { execFile, spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -23,11 +23,13 @@ const wsPort = await freePort();
 const server = `nats://127.0.0.1:${port}`;
 const wsAddress = `ws://127.0.0.1:${wsPort}`;
 const wsServer = `${wsAddress}/mesh-ws`;
-async function withBroker(websocket: boolean, runChecks: () => Promise<void>): Promise<void> {
+async function withBroker(websocket: boolean, runChecks: () => Promise<void>, auth = false): Promise<void> {
   const tcpPort = websocket ? port : wsPort;
   const config = join(scratch, websocket ? "websocket.conf" : "native.conf");
   const listener = websocket ? `websocket { host: 127.0.0.1, port: ${wsPort}, no_tls: true }\n` : "";
-  writeFileSync(config, `host: 127.0.0.1\nport: ${tcpPort}\njetstream { store_dir: ${JSON.stringify(join(scratch, "js"))} }\n${listener}`);
+  const access = auth ? "authorization { user: fixture, password: fixture }\n" : "";
+  const store = join(scratch, auth ? "auth-js" : "js");
+  writeFileSync(config, `host: 127.0.0.1\nport: ${tcpPort}\njetstream { store_dir: ${JSON.stringify(store)} }\n${listener}${access}`);
   const broker = spawn("nats-server", ["-c", config], { stdio: ["ignore", "ignore", "pipe"] });
   const releaseBroker = teardownOnSignal(broker);
   let brokerOutput = "";
@@ -108,12 +110,14 @@ await withBroker(true, async () => {
   await setupSpaceStreams({ servers: server, space: "websocket" });
   const registered = await run(wsRegistration);
   check("register an open space through its WebSocket listener", registered.status === 0 && registered.envelope?.outcome === "ok", registered);
+  const checked = await run(addOpen("raw", server));
+  check("register a checked open space on the native listener", checked.status === 0 && checked.envelope?.outcome === "ok", checked);
 });
 
 const registrationFile = join(env.COTAL_HOME, "meshes", `${spaceSegment("websocket")}.json`);
-const snapshot = () => {
-  const { ino, mtimeNs } = statSync(registrationFile, { bigint: true });
-  return [ino, mtimeNs, readFileSync(registrationFile, "utf8")].join("\n");
+const snapshot = (file = registrationFile) => {
+  const { ino, mtimeNs } = statSync(file, { bigint: true });
+  return [ino, mtimeNs, readFileSync(file, "utf8")].join("\n");
 };
 const before = snapshot();
 const offline = await run(wsRegistration);
@@ -141,5 +145,23 @@ await withBroker(true, async () => {
   const restored = await run(wsRegistration);
   check("restoring the recorded transport lets the unchanged recheck succeed without rewriting the record",
     restored.status === 0 && restored.envelope?.outcome === "no-op" && snapshot() === before, restored);
+});
+const nativeFile = join(env.COTAL_HOME, "meshes", `${spaceSegment("raw")}.json`);
+const beforeModeDrift = snapshot(nativeFile);
+await withBroker(true, async () => {
+  const recheck = await run(addOpen("raw", server));
+  const error = recheck.envelope?.error;
+  check("an auth listener at the recorded open address asks to restore the recorded mode without rewriting the record",
+    recheck.status === 2 && error?.code === "CONFLICT" && error.message?.includes('requires auth, but "raw" is registered in open mode') === true &&
+    error.remedy === `restore the broker at ${server} to its recorded open mode, then rerun the check unchanged` &&
+    !/signing seed|--mode auth/.test(recheck.stdout) && snapshot(nativeFile) === beforeModeDrift, recheck);
+  const fresh = await run(addOpen("fresh", server));
+  check("an unregistered name still gets fresh-add auth guidance",
+    fresh.status === 2 && fresh.envelope?.error?.code === "CONFLICT" && fresh.envelope.error.message?.includes("account + creds") === true, fresh);
+}, true);
+await withBroker(true, async () => {
+  const restored = await run(addOpen("raw", server));
+  check("restoring the recorded mode lets the unchanged recheck succeed without rewriting the record",
+    restored.status === 0 && restored.envelope?.outcome === "no-op" && snapshot(nativeFile) === beforeModeDrift, restored);
 });
 finish();

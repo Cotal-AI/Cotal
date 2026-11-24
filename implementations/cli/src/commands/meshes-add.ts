@@ -209,13 +209,18 @@ export async function probeEnforcement(server: string): Promise<"auth" | "open" 
  *  arm reads the refusal as the evidence: a user-mode target has no probe credential by design,
  *  so a credless probe against a user-auth broker reporting auth-required IS the pass — the one
  *  fact a bare connect can prove about a broker whose admission runs through the callout. */
-export function checkEnforcement(mode: MeshEntry["mode"], enforces: "auth" | "open" | "unreachable", server: string, space: string, root: string): Check<void> {
+export function checkEnforcement(mode: MeshEntry["mode"], enforces: "auth" | "open" | "unreachable", server: string, space: string, root: string, { recheck }: RegistrationCheckOptions = { recheck: false }): Check<void> {
   if (mode === "auth" && enforces === "open")
     return bad(`✗ the broker at ${server} accepts unauthenticated connections, so it cannot be registered as an auth mesh - it enforces no credentials; register it \`--mode open\`, or point --server at the authenticated broker for "${space}"`, "CONFLICT");
   if (mode === "open" && enforces === "auth") {
-    // A root that holds another space's trust is the reason, and nothing there needs copying.
     const held = spacesAtRoot(root);
     const others = held.ok ? held.value.filter((s) => s !== space) : [];
+    if (recheck) return {
+      ok: false,
+      code: others.length ? "DEPENDENCY_UNAVAILABLE" : "CONFLICT",
+      message: `the broker at ${server} requires auth, but "${space}" is registered in open mode`,
+      remedy: `restore the broker at ${server} to its recorded open mode, then rerun the check unchanged`,
+    };
     if (others.length)
       return bad(`✗ the broker at ${server} requires auth, and ${authDir(root)} holds the trust for "${others.join('", "')}", not "${space}" - register the space it holds under its own name, or point --root at where "${space}"'s trust is`, "DEPENDENCY_UNAVAILABLE");
     return bad(`✗ the broker at ${server} requires auth, so it cannot be registered as an open mesh - copy that mesh's account + creds under ${authDir(root)} and re-run with --mode auth` + CA_COST + SEEDLESS, "CONFLICT");
