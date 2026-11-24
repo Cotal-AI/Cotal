@@ -6,15 +6,15 @@ import { isDaemonSpaceName, type DaemonSpaces } from "./protocol.js";
 
 export async function desktopSpaces(sessionDir: string, refresh: boolean): Promise<DaemonSpaces> {
   let outcome: DaemonSpaces["refresh"] = "not-requested";
-  let collisions = 0;
+  let collisionDetails: NonNullable<DaemonSpaces["collisionDetails"]> = [];
   let failedProviders: string[] = [];
   if (refresh) {
     const { results, diffs } = await prepareCatalogTargets({ sessionDir, force: true });
     failedProviders = results.filter((result) => result.state === "failed").map(result => result.account.idpUrl);
     const failures = failedProviders.length;
-    collisions = diffs.reduce((count, diff) => count + diff.collisions.length, 0);
+    collisionDetails = results.flatMap((result, i) => diffs[i]!.collisionDetails.map((collision) => ({ ...collision, idp: result.account.idpUrl })));
     if (results.length === 0) outcome = "not-signed-in";
-    else outcome = failures === 0 ? (collisions ? "partial" : "complete") : failures === results.length ? "failed" : "partial";
+    else outcome = failures === 0 ? (collisionDetails.length ? "partial" : "complete") : failures === results.length ? "failed" : "partial";
   }
   const { entries, unusable } = readMeshRegistry();
   const addressable = entries.filter((entry) => isDaemonSpaceName(entry.space));
@@ -22,7 +22,8 @@ export async function desktopSpaces(sessionDir: string, refresh: boolean): Promi
     kind: "spaces",
     refresh: outcome,
     unreadable: unusable.length + entries.length - addressable.length,
-    collisions,
+    collisions: collisionDetails.length,
+    collisionDetails,
     failedProviders,
     signedInProviders: listIdpAccounts(sessionDir).filter((account) => account.expiresAt > Math.floor(Date.now() / 1000)).map((account) => account.idp),
     spaces: addressable.map((entry) => ({

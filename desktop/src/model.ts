@@ -95,8 +95,32 @@ export function activeComputerAccount(account: ComputerAccount & { accounts?: Co
   return supported.length === 1 ? supported[0] : undefined;
 }
 
-/** Return a non-blocking notice only when the active provider refreshed successfully. */
-export function catalogRefreshNotice(result: Record<string, unknown>, provider?: string): string {
+interface SpaceCollision {
+  space: string;
+  origin: "manual" | "up" | "catalog";
+  idp: string;
+}
+
+function spaceCollisions(result: Record<string, unknown>): SpaceCollision[] {
+  const { collisions, collisionDetails } = result;
+  if (collisionDetails === undefined && !(Number(collisions) > 0)) return [];
+  if (!Array.isArray(collisionDetails) || collisionDetails.length !== collisions || !collisionDetails.every(item =>
+    item && typeof item.space === "string" && item.space.length > 0 && item.space.length <= 64 && !/[^A-Za-z0-9_-]/.test(item.space) &&
+    (item.origin === "manual" || item.origin === "up" || item.origin === "catalog") && typeof item.idp === "string")) {
+    throw new Error("The background service did not identify the space name conflicts. Run cotal sync to see the names, then cotal space show <name> to check each registration.");
+  }
+  return collisionDetails;
+}
+
+function collisionNotice({ space, origin }: SpaceCollision): string {
+  if (origin === "catalog") return `${space} (from another account’s catalog): To use the new catalog’s space, sign out of the account that supplied the existing registration, or ask its catalog owner to remove the conflict.`;
+  const forget = `cotal space forget ${space.startsWith("-") ? "-- " : ""}${space}`;
+  const replace = origin === "up" ? `stop the local space if it is running, then use ${forget} if it is still registered` : `run ${forget}`;
+  return `${space} (${origin === "manual" ? "registered by hand" : "started on this computer"}): To use the catalog’s space, ${replace}.`;
+}
+
+/** A skipped row is not a failed refresh. Keep it out of this provider's onboarding choices. */
+export function catalogRefreshView(result: Record<string, unknown>, provider?: string): { message: string; blockedSpaces: Set<string> } {
   const failed = Array.isArray(result.failedProviders) && result.failedProviders.every(item => typeof item === "string") ? result.failedProviders as string[] : undefined;
   const partial = result.refresh === "failed" || result.refresh === "partial";
   if (partial && !failed) throw new Error("Some space catalogs could not be refreshed. Saved entries may be out of date.");
@@ -104,9 +128,14 @@ export function catalogRefreshNotice(result: Record<string, unknown>, provider?:
     const host = provider ? new URL(provider).host : failed.map(url => new URL(url).host).join(", ");
     throw new Error(`Spaces from ${host} could not be refreshed. Saved entries from that host may be out of date.`);
   }
-  if (Number(result.collisions) > 0) throw new Error("Some space names conflict with existing registrations. No conflicting registration was replaced.");
   if (Number(result.unreadable) > 0) throw new Error("Some local space registrations could not be read. They were not changed.");
-  return failed?.length ? `Spaces from ${[...new Set(failed.map(url => new URL(url).host))].join(", ")} could not be refreshed. Saved entries from that host may be out of date.` : "";
+  const collisions = spaceCollisions(result);
+  const active = provider && canonicalProvider(provider);
+  const blockedSpaces = new Set(collisions.filter(item => !active || canonicalProvider(item.idp) === active).map(item => item.space));
+  const messages = [];
+  if (failed?.length) messages.push(`Spaces from ${[...new Set(failed.map(url => new URL(url).host))].join(", ")} could not be refreshed. Saved entries from that host may be out of date.`);
+  if (collisions.length) messages.push("These space names are already in use. You can keep your existing registrations.", ...new Set(collisions.map(collisionNotice)), "After resolving a conflict, choose Refresh spaces if available, or run cotal sync and reopen Cotal.");
+  return { message: messages.join(" "), blockedSpaces };
 }
 
 /** The notice for a sign-in that replaced an account but could not delete some of that account's
@@ -165,6 +194,7 @@ export function refusalView(code: string, applications: readonly string[] = []):
     case "NOT_ANSWERING": return { title: "The background service has not started", description: "Cotal asked the background service on this computer to start, and it has not answered. Details shows the reason it gave, if it gave one.", action: "refresh", label: "Check status" };
     case "UNREACHABLE": return { title: "We cannot reach your connection", description: "The host or background service is not answering. Check your network and the exact next step in Details, then try again.", action: "refresh", label: "Try again" };
     case "NO_SPACES": return { title: "No spaces in this account", description: "Create a space in your Cotal host’s dashboard, or ask a space owner for access. Then refresh your spaces to continue.", action: "spaces", label: "Refresh spaces" };
+    case "SPACE_NAME_CONFLICTS": return { title: "Space names need attention", description: "You are signed in. Resolve a name conflict before connecting this computer to one of these spaces.", action: "spaces", label: "Refresh spaces" };
     case "APPROVAL_PENDING": return { title: "Waiting for owner approval", description: "The space owner needs to approve this computer. Ask them to review the request, then check its status.", action: "refresh", label: "Check approval" };
     case "VERSION_MISMATCH": return { title: "Your connection needs an update", description: "This app and the background service have different versions. Update the connection when no agent sessions are running.", action: "connect", label: "Update connection" };
     default: return { title: "This operation could not finish", description: "The connection has not been confirmed. Read the exact reason and next step in Details before trying again.", action: "refresh", label: "Try again" };

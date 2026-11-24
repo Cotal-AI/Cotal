@@ -14,6 +14,8 @@ On Connect and in Settings after connecting, choose **Edit** in the computer-nam
 
 With several saved logins, the app follows the provider just signed in to, then the selected space's provider, then the only supported account. A failed refresh at another provider shows a notice naming its host without blocking sign-in or Refresh spaces. Failure at the active provider remains an error. Older daemons without provider failure details retain their existing error behavior.
 
+If a catalog space has the same name as an existing registration, sign-in continues and the app names the conflict. You can keep the existing registration or follow the notice to release the name and refresh spaces. The app never replaces a registration on sign-in.
+
 While waiting for the browser, copy the approval code with **Copy** and watch its countdown. An expired code offers **Get a new code**. A replacement waits for the old native sign-in to settle, so two sign-ins never overlap. Approval advances the app automatically. Missing applications, declined sign-in, an unreachable host, empty accounts, pending owner approval, active sessions and version mismatch each show a recovery action. Details keeps the original diagnosis.
 
 Step changes fade in with a small movement. Progress markers show waiting, running and completion, and the running row says what is being checked. Details and notices expand in height. Reduced motion removes movement and continuous animation. Enter invokes the current primary action, Escape closes Details, and one polite live region announces state changes. Background refresh preserves focus, typed fields and unchanged progress nodes.

@@ -715,6 +715,13 @@ provider URL, then subject. The `accounts` list reports each computer UUID once,
 supported provider when several sign-in addresses identify the same account. Catalog refresh
 replies include an optional `failedProviders` list of provider URLs. The desktop app reports
 other providers' failures as a notice when the active provider refreshed successfully.
+When a catalog name is already registered, the refresh keeps that registration and skips the
+conflicting catalog row. The daemon reports the space, its existing registration's `origin`,
+and the provider (`idp`) of the skipped row in `collisionDetails`. Desktop sign-in continues
+and shows what you can do about each conflict. Use `cotal space forget <name>` only if you want
+to release a manual or stopped local registration. For a catalog-owned name, sign out of the
+account that supplied the existing registration or ask its catalog owner to resolve the conflict.
+Refresh spaces after resolving it, or run `cotal sync` and reopen the app.
 Each issuer and subject pair has its own protected, persisted computer UUID. It sends a metadata
 heartbeat every 60 seconds and polls the account's desired spaces every five seconds. The
 heartbeat lists the answering Managers this computer hosts for the account's spaces, each as the

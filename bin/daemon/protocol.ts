@@ -17,6 +17,7 @@
 import { computerName } from "./name-validation.js";
 import type { AccountComputerStatus } from "./account-state.js";
 import { normalizeIdpUrl } from "@cotal-ai/auth";
+import type { CatalogCollision } from "@cotal-ai/cli";
 import { DAEMON_PROTOCOL_VERSION, MAX_LINE_BYTES } from "./endpoint.js";
 
 const DAEMON_OPS = ["update-settings", "update-check", "name", "daemon-stop", "space-intent", "status", "status-watch", "spaces", "manager-start", "manager-status", "managers-stop", "managers-prepare-restart", "managers-abort-restart", "login-start", "login-cancel", "logout", "connect-check", "register", "service-connect", "service-disconnect", "service-status"] as const;
@@ -214,6 +215,8 @@ export interface DaemonSpaces {
   readonly refresh: "not-requested" | "not-signed-in" | "complete" | "partial" | "failed";
   readonly unreadable: number;
   readonly collisions: number;
+  /** Each skipped catalog row, with the source of the registration that kept the name. */
+  readonly collisionDetails?: readonly (CatalogCollision & { readonly idp: string })[];
   readonly failedProviders?: readonly string[];
   readonly signedInProviders?: readonly string[];
   readonly spaces: readonly { readonly space: string; readonly label: string; readonly catalogId?: string; readonly kind?: string; readonly role?: string; readonly mode: "auth" | "open" | "user"; readonly idp?: string }[];

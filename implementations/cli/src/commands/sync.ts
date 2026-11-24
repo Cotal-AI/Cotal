@@ -51,12 +51,17 @@ export interface SpaceCatalogSnapshot {
   spaces: (CatalogSpace | UnavailableCatalogSpace)[];
 }
 
-export interface CatalogDiff {
+export interface CatalogCollision {
+  readonly space: string;
+  readonly origin: NonNullable<MeshEntry["origin"]>;
+}
+
+interface CatalogDiff {
   added: string[];
   changed: string[];
   removed: string[];
   unchanged: string[];
-  collisions: string[];
+  collisions: CatalogCollision[];
   /** Listed spaces the latest snapshot marks unavailable. A held registration is also `unchanged`. */
   unavailable: string[];
   selectionInvalidated?: string;
@@ -272,7 +277,8 @@ function mergeDiff(prior: CatalogDiff | undefined, next: CatalogDiff): CatalogDi
   if (!prior) return next;
   const lists = ["added", "changed", "removed", "unchanged"] as const;
   const seen = new Set(lists.flatMap((k) => prior[k]));
-  const merged: CatalogDiff = { ...prior, collisions: [...new Set([...prior.collisions, ...next.collisions])].sort(), unavailable: next.unavailable };
+  const collisions = new Map([...prior.collisions, ...next.collisions].map((collision) => [collision.space, collision]));
+  const merged: CatalogDiff = { ...prior, collisions: [...collisions.values()], unavailable: next.unavailable };
   for (const k of lists) merged[k] = [...prior[k], ...next[k].filter((s) => !seen.has(s))].sort();
   if (!merged.selectionInvalidated && next.selectionInvalidated) merged.selectionInvalidated = next.selectionInvalidated;
   return merged;
@@ -321,7 +327,7 @@ function applyResult(result: AuthSpaceCatalogResult): CatalogDiff {
     for (const row of snapshot.spaces) {
       const existing = readMesh(row.slug) ?? loadedByName.get(row.slug);
       if (existing && (existing.origin !== "catalog" || existing.catalogOwner !== result.account.ownerKey)) {
-        diff.collisions.push(row.slug);
+        diff.collisions.push({ space: row.slug, origin: existing.origin ?? "up" });
         continue;
       }
       const prior = priorByName.get(row.slug);
@@ -343,7 +349,7 @@ function applyResult(result: AuthSpaceCatalogResult): CatalogDiff {
     }
   }
   recordMeshes(entries());
-  for (const list of [diff.added, diff.changed, diff.removed, diff.unchanged, diff.collisions, diff.unavailable]) list.sort();
+  for (const list of [diff.added, diff.changed, diff.removed, diff.unchanged, diff.unavailable]) list.sort();
   return diff;
 }
 
@@ -360,7 +366,7 @@ function unavailableReason(results: readonly AuthSpaceCatalogResult[], slug: str
   return undefined;
 }
 
-export async function prepareCatalogTargets(opts: { idpUrl?: string; force?: boolean; sessionDir?: string } = {}): Promise<{ results: AuthSpaceCatalogResult[]; diffs: CatalogDiff[] }> {
+export async function prepareCatalogTargets(opts: { idpUrl?: string; force?: boolean; sessionDir?: string } = {}) {
   const provider = resolveAuthProvider();
   if (!provider.prepareSpaceCatalogs)
     throw new Error(`auth provider "${provider.name}" does not support space catalogs`);
@@ -378,7 +384,12 @@ export async function prepareCatalogTargets(opts: { idpUrl?: string; force?: boo
         applied.set(result.account.ownerKey, mergeDiff(applied.get(result.account.ownerKey), consume(result, Boolean(opts.force))));
     },
   });
-  return { results, diffs: results.map((result) => applied.get(result.account.ownerKey) ?? emptyDiff()) };
+  const diffs = results.map((result) => {
+    const { collisions: collisionDetails, ...diff } = applied.get(result.account.ownerKey) ?? emptyDiff();
+    collisionDetails.sort((a, b) => a.space < b.space ? -1 : a.space > b.space ? 1 : 0);
+    return { ...diff, collisions: collisionDetails.map((collision) => collision.space), collisionDetails };
+  });
+  return { results, diffs };
 }
 
 let catalogDiagnostics: AuthSpaceCatalogResult[] = [];

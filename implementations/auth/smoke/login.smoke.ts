@@ -618,6 +618,20 @@ console.log("C2) advertised space catalog cache");
   check("a selection the snapshot no longer carries is cleared before the first registry write",
     selectionAtRemoval === undefined && workspaceMod.getCurrent() === undefined && workspaceMod.findMesh("vanishing") === undefined,
     { selectionAtRemoval, current: workspaceMod.getCurrent(), staleSnapshot: staleAccount.snapshot.spaces.length });
+  const originalRegistrations = ["space_1", "space_2", "space_3"].map(space => workspaceMod.findMesh(space)!);
+  const [manual, local, foreign] = originalRegistrations;
+  workspaceMod.recordMesh({ space: manual.space, server: "nats://127.0.0.1:4222", root: catalogDir, mode: "open", origin: "manual", ts: manual.ts });
+  workspaceMod.recordMesh({ space: local.space, server: "nats://127.0.0.1:4223", root: catalogDir, mode: "open", ts: local.ts });
+  workspaceMod.recordMesh({ ...foreign, catalogOwner: "other-account" });
+  const skipped = await prepareCatalogTargets({ idpUrl: catalogIdp, force: true });
+  check("catalog refresh names the registrations it preserves, with the origin that owns each name",
+    skipped.diffs[0]?.collisions.join(",") === "space_1,space_2,space_3" &&
+      JSON.stringify(skipped.diffs[0]?.collisionDetails) === JSON.stringify([
+        { space: "space_1", origin: "manual" }, { space: "space_2", origin: "up" }, { space: "space_3", origin: "catalog" },
+      ]) && workspaceMod.findMesh("space_1")?.server === "nats://127.0.0.1:4222" &&
+      workspaceMod.findMesh("space_2")?.server === "nats://127.0.0.1:4223" && workspaceMod.findMesh("space_3")?.catalogOwner === "other-account",
+    skipped.diffs[0]?.collisionDetails);
+  workspaceMod.recordMeshes(originalRegistrations);
   if (priorHome === undefined) delete process.env.COTAL_HOME;
   else process.env.COTAL_HOME = priorHome;
   makeStale();
