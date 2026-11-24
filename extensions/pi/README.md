@@ -33,8 +33,8 @@ cp node_modules/@cotal-ai/pi/dist/standalone.js ~/.pi/agent/extensions/cotal.js
 
 Cotal's updater leaves this copy unchanged. After the update succeeds, reinstall `@cotal-ai/pi` at
 the version shown by `cotal --version` and repeat the copy. Review any local edits before replacing it.
-You can leave the copy installed when using `cotal spawn`. Spawn uses its bundled Cotal extension and
-keeps Pi's other extensions enabled.
+You can leave a copy of the released bundle installed when using `cotal spawn`. Spawn uses its
+bundled Cotal extension and keeps Pi's other extensions enabled.
 
 The copied file has no repository-local or sibling-file imports. It activates only when a real
 Cotal identity (`COTAL_NAME`, `COTAL_AGENT_FILE`, or `COTAL_LINK`) is present. Unrelated operator

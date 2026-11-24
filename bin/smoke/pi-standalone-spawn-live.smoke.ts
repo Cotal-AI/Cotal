@@ -16,8 +16,12 @@ const runtime = join(scratch, "runtime");
 const globalPi = join(home, ".pi", "agent");
 const userExtensions = join(globalPi, "extensions");
 const projectExtensions = join(cwd, ".pi", "extensions");
+const otherPackage = join(scratch, "other-package");
+const cotalPackage = join(scratch, "cotal-package");
 const anchor = recordSmokeSandbox({ root: cwd, cotalHome, xdgConfigHome: config });
-for (const dir of [runtime, userExtensions, projectExtensions]) mkdirSync(dir, { recursive: true, mode: 0o700 });
+for (const dir of [join(cwd, ".git"), runtime, userExtensions, projectExtensions, otherPackage, cotalPackage]) {
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+}
 
 const pi = join(repoRoot, "extensions", "pi");
 const cli = join(repoRoot, "bin", "dist", "cotal.js");
@@ -56,12 +60,22 @@ export default function (pi) {
 }`;
 }
 
-writeFileSync(join(globalPi, "settings.json"), '{"defaultProjectTrust":"always"}');
+function configurePackages(packages: string[]): void {
+  writeFileSync(join(globalPi, "settings.json"), JSON.stringify({ defaultProjectTrust: "always", packages }));
+}
+
+configurePackages([otherPackage]);
 writeFileSync(join(globalPi, "models.json"), JSON.stringify({ providers: { fixture: {
   baseUrl: "http://127.0.0.1:1", api: "openai-completions", apiKey: "${COTAL_NAME}", models: [{ id: "fixture-model" }],
 } } }));
 writeFileSync(join(userExtensions, "other.js"), fixture("user"));
 writeFileSync(join(projectExtensions, "cotal.js"), fixture("project"));
+writeFileSync(join(otherPackage, "package.json"), '{"main":"unused.js"}');
+writeFileSync(join(otherPackage, "index.js"), fixture("package"));
+// Jiti prefers this directory's index to the entry Node's require.resolve would pick.
+const bundle = readFileSync(join(pi, "dist", "standalone.js"));
+writeFileSync(join(otherPackage, "unused.js"), bundle);
+const labels = ["package", "project", "user"];
 const starts = () => existsSync(marker) ? readFileSync(marker, "utf8").trimEnd().split("\n") : [];
 const rosterState = (who: string, name: string, state: string) => who.split("\n").some((line) =>
   line.includes(`${name}/default`) && line.split(/\s+/).includes(state));
@@ -84,11 +98,11 @@ async function spawnPi(name: string, reload: boolean) {
     while (exit === undefined && Date.now() < deadline) {
       if (!idle) idle = rosterState(cotal("who", "--all"), name, "idle");
       const count = starts().length - before;
-      if (idle && count >= 2) {
+      if (idle && count >= labels.length) {
         if (reload && !reloading) {
           terminal.write("/reload\r");
           reloading = true;
-        } else if ((!reload || count >= 4) && Date.now() >= quitAt) {
+        } else if ((!reload || count >= 2 * labels.length) && Date.now() >= quitAt) {
           terminal.write("\x04");
           quitAt = Date.now() + 2_000;
         }
@@ -110,8 +124,8 @@ async function checkSpawn(name: string, reload = false): Promise<void> {
     result.idle && result.exit === 0 && !/Failed to load extension|conflicts with/.test(result.output), result);
   check(`${name} goes offline on Ctrl-D`, rosterState(cotal("who", "--all"), name, "offline"));
   const expected = (reload ? ["startup", "reload"] : ["startup"]).flatMap((reason) =>
-    ["project", "user"].map((label) => JSON.stringify({ label, reason, nameAtLoad: name,
-      nameAtTrust: reason === "startup" && label === "user" ? name : undefined, model: "fixture-model",
+    labels.map((label) => JSON.stringify({ label, reason, nameAtLoad: name,
+      nameAtTrust: reason === "startup" && label !== "project" ? name : undefined, model: "fixture-model",
       owners: ["spawn-entry.js"], preloadLeaked: false })));
   check(`${name} keeps launch identity and unrelated Pi hooks, with one bundled Cotal tool source`,
     JSON.stringify(result.hooks.sort()) === JSON.stringify(expected.sort()), result.hooks);
@@ -125,10 +139,15 @@ cotal("ext", "seed");
 try {
   cotal("up", "--open", "--no-manager", "--server", `nats://127.0.0.1:${await freePort()}`, "--store-dir", join(scratch, "store"));
   await checkSpawn("pi-control");
-  const bundle = readFileSync(join(pi, "dist", "standalone.js"));
+  configurePackages([otherPackage, cotalPackage]);
+  const legacy = readFileSync(new URL("./fixtures/pi-standalone-legacy.js", import.meta.url));
+  const releasedCopy = process.env.COTAL_SMOKE_PI_LEGACY_COPY;
   const copies = [
     { path: join(userExtensions, "cotal.js"), content: bundle },
     { path: join(projectExtensions, "copied.ts"), content: Buffer.concat([Buffer.from("\uFEFF"), bundle]) },
+    { path: join(userExtensions, "legacy.js"), content: legacy },
+    { path: join(cotalPackage, "index.js"), content: bundle },
+    ...(releasedCopy ? [{ path: join(userExtensions, "released.js"), content: readFileSync(releasedCopy) }] : []),
   ];
   for (const { path, content } of copies) writeFileSync(path, content);
   await checkSpawn("pi-copy", true);
