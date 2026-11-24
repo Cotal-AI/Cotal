@@ -415,8 +415,9 @@ broker and agents. Revoke a run before the stop if it must not resume when the s
 
 `--idle-exit <seconds>` applies to that start only. The manager stops itself once it has held no
 agents for that long: no agent running or starting, no spawn or control call in flight, no hosted
-workflow run, and no preservation or resume open. The clock starts when the manager serves, starts
-again whenever it holds an agent, and is checked every 5 seconds. The stop is the one
+workflow run, and no preservation or resume open. The clock starts when the manager serves and
+starts again whenever it holds an agent. The manager checks it every 5 seconds, so it stops within 5
+seconds after the period ends. The stop is the one
 `cotal manager stop` makes without `--with-agents`, so the manager also deregisters. The value is
 recorded on the instance and never in the saved definition, so a later start without it runs until
 stopped. While the manager runs, `status` shows it on the `Idle exit` row. Once the manager stopped
