@@ -956,12 +956,15 @@ for (const [flag, value] of [["--server", "nats://127.0.0.1:37126"], ["--creds",
       && error.remedy === `add --live to read native registrations, or omit ${flag} to list saved references`, shown(inventory));
 }
 const ascii = { LANG: "C" };
-const plainOwn = run(["config", "get", "bogus", "--plain"]);
-check("under --plain a command's own usage refusal is the plain report with its Next, then the help", reportShape(plainOwn, /unknown preference "bogus"/) && /^Next$/m.test(plainOwn.stderr), shown(plainOwn));
+const forcedColor = { FORCE_COLOR: "1", NO_COLOR: "" };
+const plainOwn = run(["config", "get", "bogus", "--plain"], forcedColor);
+check("under --plain a command's own usage refusal and help stay uncolored with forced color",
+  reportShape(plainOwn, /unknown preference "bogus"/) && /^Next$/m.test(plainOwn.stderr) && !plainOwn.stderr.includes("\x1b"), shown(plainOwn));
 const asciiOwn = run(["config", "get", "bogus"], ascii);
 check("under a locale without UTF-8 a command's own usage refusal is the report, then the help", reportShape(asciiOwn, /unknown preference "bogus"/), shown(asciiOwn));
-const plainParser = run(["status", "--bogus", "--plain"]);
-check("under --plain a parser usage error is the plain report, then the help", reportShape(plainParser, /Unknown option '--bogus'/), shown(plainParser));
+const plainParser = run(["status", "--bogus", "--plain"], forcedColor);
+check("under --plain a parser usage refusal and help stay uncolored with forced color",
+  reportShape(plainParser, /Unknown option '--bogus'/) && !plainParser.stderr.includes("\x1b"), shown(plainParser));
 const asciiParser = run(["status", "--bogus"], ascii);
 check("under a locale without UTF-8 a parser usage error is the report, then the help", reportShape(asciiParser, /Unknown option '--bogus'/), shown(asciiParser));
 const asciiUnknown = run(["frobnicate"], ascii);
