@@ -139,10 +139,10 @@ async function repeatedGlobalFlag(word: string, cmd: Command | undefined, words:
   const tokens = found && parseArgs({ args: options, options: parserOptions(found), strict: false, allowPositionals: true, tokens: true }).tokens;
   const missing = tokens?.find((token) => token.kind === "option" && token.inlineValue === false && token.value === word);
   const flag = missing?.kind === "option" ? found?.flags?.find(({ name }) => name === missing.name) : undefined;
-  const refusal = flag && missing
+  const refusal = found && flag && missing
     ? !flag.multiple && tokens?.some((token) => token.kind === "option" && token.name === flag.name && token.index < missing.index)
       ? { message: `--${flag.name} cannot be repeated`, remedy: `use --${flag.name} once` }
-      : missingValue(flag)
+      : missingValue(found, rest, flag)
     : { message: `Option '${word}' cannot be repeated` };
   const json = found !== undefined && asksForJson(found, rest);
   if (!json) for (const warning of warnings) console.error(c.red(`! ${warning.message}`));
@@ -531,7 +531,9 @@ function stripGlobalFlags(cmd: Command, words: string[]): string[] {
   return words.filter((_, index) => !globals.has(index));
 }
 
-function missingValue(flag: FlagSpec, beforeSeparator = false) {
+function missingValue(cmd: Command, words: readonly string[], flag: FlagSpec, beforeSeparator = false) {
+  if (cmd.name === "run" && (flag.name === "adopt" || flag.name === "release") && helpPath(cmd, words).path[0] === "check")
+    return { message: `\`run check\` does not take --${flag.name}`, remedy: `run the check without --${flag.name}` };
   return { message: `--${flag.name} needs a value`, remedy: `write --${flag.name} ${flag.value ?? "<value>"}${beforeSeparator ? " before --" : ""}` };
 }
 
@@ -561,7 +563,7 @@ function parseRefusal(error: Error & { code?: string }, cmd: Command, rest: read
   }
   const bare = /^Option '(?:-[^,']+, )?--([^ ']+) <value>' argument missing/.exec(error.message)?.[1];
   const last = bare === undefined ? undefined : cmd.flags?.find((item) => item.name === bare);
-  if (error.code === "ERR_PARSE_ARGS_INVALID_OPTION_VALUE" && last) return missingValue(last);
+  if (error.code === "ERR_PARSE_ARGS_INVALID_OPTION_VALUE" && last) return missingValue(cmd, rest, last);
   const long = /use '--([^=']+)=-XYZ'/.exec(error.message)?.[1];
   const flag = long === undefined ? undefined : cmd.flags?.find((item) => item.name === long);
   if (error.code === "ERR_PARSE_ARGS_INVALID_OPTION_VALUE" && flag) {
@@ -575,11 +577,11 @@ function parseRefusal(error: Error & { code?: string }, cmd: Command, rest: read
       const numeric = rest[token.index] === token.rawName && /^-\d/.test(value ?? "");
       if (token.inlineValue === false && !numeric && value?.startsWith("-") && value !== "-") {
         if (seen && !flag.multiple) return { message: `--${flag.name} cannot be repeated`, remedy: `use --${flag.name} once` };
-        if (value === "--") return missingValue(flag, true);
-        if (GLOBAL_FLAG_WORDS.has(value)) return missingValue(flag);
+        if (value === "--") return missingValue(cmd, rest, flag, true);
+        if (GLOBAL_FLAG_WORDS.has(value)) return missingValue(cmd, rest, flag);
         const next = parseArgs({ args: [value], options, strict: false, allowPositionals: true, tokens: true });
         if (next.tokens.every((item) => item.kind === "option" && Object.hasOwn(options, item.name)))
-          return missingValue(flag);
+          return missingValue(cmd, rest, flag);
         return { message: `the value of --${flag.name} starts with "-", so it reads as an option`, remedy: `write it as --${flag.name}=${shellWord(value)}` };
       }
       seen = true;
