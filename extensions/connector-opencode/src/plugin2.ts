@@ -45,6 +45,7 @@ import { buildCotalTools2 } from "./tools.js";
 import { ReplyCheck } from "./reply-check.js";
 import { RECONNECT_COMMAND } from "./reconnect-command.js";
 import { opencode2FailureCondition } from "./failure-condition.js";
+import { opencode2Naming } from "./naming2.js";
 
 function log(msg: string): void {
   process.stderr.write(`[cotal-connector] ${msg}\n`);
@@ -258,7 +259,7 @@ async function setupSession(ctx: OpenCode2Context): Promise<() => Promise<void>>
       return r.interrupted ? "interrupted" : "idle";
     },
   };
-  const agent = new MeshAgent(config, undefined, { commands });
+  const agent = new MeshAgent(config, undefined, { commands, naming: opencode2Naming({ api: opencodeApi, session: () => sessionReady, log, launchPrompt: process.env.COTAL_OPENCODE_PROMPT }) });
   const controller = new AbortController(); // aborted when teardown begins
 
   async function opencodeApi<T>(path: string, init?: RequestInit, timeoutMs = 10_000): Promise<T> {
