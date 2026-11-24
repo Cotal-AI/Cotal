@@ -714,7 +714,7 @@ function refuseRemovedFolder(cmd: Command, parsed: ParsedArgs, rest: readonly st
     return;
   }
   if (cmd.name.startsWith("__") || FOLDERLESS.has(cmd.name) || !workingFolderRemoved()) return;
-  failureExit(cmd, new CommandFailure("refused", "USAGE_INVALID", "this folder no longer exists", { remedy: "cd to an existing folder and run the command again", selfContained: true }), structured(cmd, parsed.positionals[0]) && parsed.values.json === true, parsed.values.plain === true, undefined, rest);
+  failureExit(cmd, new CommandFailure("refused", "USAGE_INVALID", "this folder no longer exists", { remedy: "cd to an existing folder and run the command again", selfContained: true }), structured(cmd, parsed.positionals[0]) && parsed.values.json === true, parsed.values.plain === true, undefined, rest, parsed);
 }
 
 /** Resolve subcommand aliases and refuse a word that names no subcommand before checking operands. */
