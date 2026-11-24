@@ -11,7 +11,10 @@ export function execWords(line: string): string[] {
   const refuse = (what: string, literal = "quote it to pass it as text") => new CommandFailure("refused", "USAGE_INVALID", `--exec runs one program without a shell, so ${what} would not work as it does in a terminal; nothing was saved`, {
     remedy: `${literal}, or run a shell yourself: --exec "sh -c '<your command line>'"`,
   });
-  if (/[\u0000\r\n]/u.test(line)) throw refuse("a line break");
+  if (line.includes("\0")) throw new CommandFailure("refused", "USAGE_INVALID", "--exec cannot contain a NUL character; nothing was saved");
+  if (/[\r\n]/u.test(line)) throw new CommandFailure("refused", "USAGE_INVALID", "--exec cannot contain a line break, even inside quotes; nothing was saved", {
+    remedy: "for a multiline argument, use --file <definition.json> and put the argument in launch.args with JSON escapes (\\n or \\r)",
+  });
   const words: string[] = [];
   let word = "", started = false;
   for (let index = 0; index < line.length; index++) {

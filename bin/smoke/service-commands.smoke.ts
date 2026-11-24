@@ -67,7 +67,7 @@ same("echo a#b 'x|y' \"*\"", ["echo", "a#b", "x|y", "*"]);
 for (const [line, what] of [
   ["a | tee x", "an unquoted |"], ["a > out", "an unquoted >"], ["a; b", "an unquoted ;"], ["a && b", "an unquoted &"],
   ["echo $HOME", "an unquoted $"], ["echo `id`", "an unquoted `"], ["ls *.js", "an unquoted *"], ["cat ~/x", "an unquoted ~"],
-  ["echo # note", "an unquoted #"], ["echo \"$HOME\"", "$ inside double quotes"], ["a\nb", "a line break"],
+  ["echo # note", "an unquoted #"], ["echo \"$HOME\"", "$ inside double quotes"],
 ] as const) {
   const result = words(line);
   check(`--exec ${JSON.stringify(line)} refuses naming ${what}`, typeof result === "string" && result.startsWith("USAGE_INVALID: ") && result.includes(`so ${what} would not work as it does in a terminal`), result);
@@ -76,6 +76,8 @@ for (const [line, what] of [["echo 'x", "single quote that is never closed"], ["
   const result = words(line);
   check(`--exec ${JSON.stringify(line)} refuses: ${what}`, typeof result === "string" && result.startsWith("USAGE_INVALID: ") && result.includes(what), result);
 }
+const nul = refusal(() => execWords('echo "one\0two"'));
+check("--exec refuses a NUL without offering an unusable file remedy", nul?.code === "USAGE_INVALID" && nul.message.includes("NUL character") && nul.remedy === undefined, nul);
 
 // A guided answer is checked without requiring the form's other answers yet.
 const guidedAuth = resolveServicePreset("auth-service");
@@ -272,6 +274,18 @@ try {
       { json: out(json), plain: out(plain) });
   }
   check("a refused double-quoted expansion saves nothing", serviceDefinitionStore(SPACE).read("quoted-expansion") === undefined);
+  const multiline = "line one\nline two\rline three";
+  const multilineRemedy = "for a multiline argument, use --file <definition.json> and put the argument in launch.args with JSON escapes (\\n or \\r)";
+  for (const line of [`echo "${multiline}"`, "echo 'line one\rline two'", "echo line\ntwo"] as const) {
+    const args = ["service", "add", "multiline", "--space", SPACE, "--exec", line];
+    const json = cotal([...args, "--json"]), plain = cotal([...args, "--plain"]);
+    const { outcome, error } = JSON.parse(json.stdout);
+    check(`service add refuses ${JSON.stringify(line)} and offers a definition file instead of quoting`,
+      json.status === 1 && outcome === "refused" && error?.code === "USAGE_INVALID"
+      && error.message.includes("cannot contain a line break, even inside quotes") && error.remedy === multilineRemedy
+      && plain.status === 1 && out(plain).includes(multilineRemedy), { json: out(json), plain: out(plain) });
+  }
+  check("a refused line break saves nothing", serviceDefinitionStore(SPACE).read("multiline") === undefined);
   const conflicting = cotal(["service", "add", "hello", "--exec", "echo hi", "--preset", "manager", "--space", SPACE]);
   check("service add --exec with --preset refuses and saves nothing", conflicting.status === 1 && JSON.stringify(definitions()) === "[]", out(conflicting));
   const added = cotal(["service", "add", "hello", "--exec", "echo 'big world'", "--space", SPACE]);
@@ -456,7 +470,7 @@ try {
       && serviceDefinitionStore(PREPARED).read("hello") === undefined && serviceDefinitionStore(SPACE).read("hello") !== undefined, confirmed && out(confirmed));
 
   const definitionFile = join(prepared, "service definition.json");
-  writeFileSync(definitionFile, JSON.stringify({ schemaVersion: 1, space: PREPARED, launch: { type: "process", executable: "echo", args: ["hello"], cwd: prepared }, readiness: { type: "process", timeoutMs: 1000 } }));
+  writeFileSync(definitionFile, JSON.stringify({ schemaVersion: 1, space: PREPARED, launch: { type: "process", executable: "echo", args: [multiline], cwd: prepared }, readiness: { type: "process", timeoutMs: 1000 } }));
   for (const [name, source, preset] of [
     ["preset-example", ["--preset", "manager", "--runtime", "pty"], "manager"],
     ["file-example", ["--file", definitionFile], null],
@@ -475,6 +489,8 @@ try {
       retry.status === 0 && result?.name === name && result.space === PREPARED && result.preset === preset && result.started === false
         && serviceDefinitionStore(PREPARED).read(name) !== undefined && serviceDefinitionStore(SPACE).read(name) === undefined, out(retry));
   }
+  const fileLaunch = serviceDefinitionStore(PREPARED).read("file-example")?.record.value.launch;
+  check("the JSON definition saves the multiline argument verbatim", fileLaunch?.type === "process" && JSON.stringify(fileLaunch.args) === JSON.stringify([multiline]));
 } catch (e) {
   check(`suite ran without throwing: ${e instanceof Error ? e.message : String(e)}`, false, e instanceof Error ? e.stack : e);
 } finally {

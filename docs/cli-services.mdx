@@ -113,6 +113,10 @@ shell. An unquoted pipe, redirection, `;`, `&`, variable, glob or `~` refuses `U
 as text, use single quotes inside the `--exec` value or put a backslash before the character inside
 double quotes. For example, `--exec 'echo "literal \$HOME"'` passes `literal $HOME` as one argument.
 To use shell expansion or operators, run a shell yourself with `--exec "sh -c '<command line>'"`.
+Any line break in the `--exec` value refuses `USAGE_INVALID` (exit 1), even inside quotes.
+For a multiline argument, use `--file <definition.json>` with `\n` or `\r` in the JSON string in
+`launch.args`.
+
 A bare program name is looked up on `PATH` as `add` saves it, and
 a relative path is saved as the absolute path it names in `--cwd`, which defaults to the folder you
 run `add` in. An explicit empty or whitespace-only `--cwd` refuses `USAGE_INVALID` (exit 1)
