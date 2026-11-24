@@ -1,4 +1,3 @@
-import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { realpathSync, rmSync } from "node:fs";
 import { join } from "node:path";
@@ -23,9 +22,12 @@ import {
   controlEndpoint,
   eventChannel,
   launchArmsEvents,
+  firstCommandEnv,
   launchEnv,
   materialEnv,
 } from "@cotal-ai/connector-core";
+import { piCommandCatalog } from "./command-catalog.js";
+import { askPi, type PiRpcResponse } from "./rpc-once.js";
 
 const DIST = new URL(import.meta.url.includes("/dist/") ? "./" : "../dist/", import.meta.url);
 const SPAWN_ENTRY = fileURLToPath(new URL("spawn-entry.js", DIST));
@@ -48,15 +50,6 @@ export const PI_PROVIDER_KEYS = [
   "COPILOT_GITHUB_TOKEN", "AI_GATEWAY_API_KEY", "CLOUDFLARE_API_KEY", "XIAOMI_API_KEY",
   "XIAOMI_TOKEN_PLAN_CN_API_KEY", "XIAOMI_TOKEN_PLAN_AMS_API_KEY", "XIAOMI_TOKEN_PLAN_SGP_API_KEY",
 ] as const;
-
-/** pi's answer to one RPC command (docs/rpc-commands.md in the pi install). */
-interface PiRpcResponse {
-  id?: unknown;
-  type?: unknown;
-  success?: unknown;
-  error?: unknown;
-  data?: { models?: unknown };
-}
 
 const unavailable = (reason: string): ModelCatalog => ({ models: [], unavailable: reason });
 
@@ -102,56 +95,9 @@ function piCatalog(reply: PiRpcResponse): ModelCatalog {
 export async function listPiModels(opts: ModelCatalogOpts = {}): Promise<ModelCatalog> {
   // `--offline` skips startup network work, such as an OAuth refresh that stopping pi mid-request would lose.
   // The spawn.env names a launch gets, such as PI_CODING_AGENT_DIR, so pi lists what a seat reaches.
-  const child = spawn(opts.resolvedBinaries?.pi ?? "pi", ["--mode", "rpc", "--no-session", "--offline"], {
-    env: launchEnv({ providerKeys: PI_PROVIDER_KEYS, envAllow: opts.envAllow }),
-    stdio: ["pipe", "pipe", "ignore"],
-  });
-  try {
-    return await new Promise<ModelCatalog>((resolve) => {
-      const done = (catalog: ModelCatalog): void => {
-        clearTimeout(timer);
-        resolve(catalog);
-      };
-      const timer = setTimeout(() => done(unavailable("pi did not answer get_available_models within 6s")), 6_000);
-      let buf = "";
-      child.stdout!.setEncoding("utf8");
-      child.stdout!.on("data", (d: string) => {
-        buf += d;
-        let nl: number;
-        // pi frames records on LF only; a JSON string may hold U+2028, so no generic line reader.
-        while ((nl = buf.indexOf("\n")) >= 0) {
-          const line = buf.slice(0, nl).replace(/\r$/, "");
-          buf = buf.slice(nl + 1);
-          if (!line.trim()) continue;
-          let record: PiRpcResponse;
-          try {
-            record = JSON.parse(line) as PiRpcResponse;
-          } catch {
-            return done(unavailable("pi wrote a line that is not JSON to its RPC output"));
-          }
-          if (record?.type === "response" && record.id === "cotal-models") return done(piCatalog(record));
-        }
-      });
-      child.on("error", (e: NodeJS.ErrnoException) => done(unavailable(`pi could not be started (${e.code ?? e.message})`)));
-      // `close` follows the end of stdout, so a reply written just before exit is read first.
-      child.on("close", (code, signal) => done(unavailable(`pi exited (${signal ?? code}) before get_available_models answered`)));
-      child.stdin!.on("error", (e) => done(unavailable(`pi closed its input before get_available_models answered (${e.message})`)));
-      child.stdin!.write(JSON.stringify({ id: "cotal-models", type: "get_available_models" }) + "\n");
-    });
-  } finally {
-    stopPi(child);
-  }
-}
-
-/** Closing stdin and SIGTERM together start pi's orderly shutdown, which also stops the MCP
- *  servers it started. */
-function stopPi(child: ChildProcess): void {
-  if (child.exitCode !== null || child.signalCode !== null) return;
-  child.stdin!.end();
-  child.kill("SIGTERM");
-  const force = setTimeout(() => child.kill("SIGKILL"), 5_000);
-  force.unref();
-  child.once("exit", () => clearTimeout(force));
+  const env = launchEnv({ providerKeys: PI_PROVIDER_KEYS, envAllow: opts.envAllow });
+  const answer = await askPi({ bin: opts.resolvedBinaries?.pi ?? "pi", args: ["--no-session", "--offline"], env, type: "get_available_models", boundMs: 6_000 });
+  return "failed" in answer ? unavailable(answer.failed) : piCatalog(answer.reply);
 }
 
 export const piConnector: Connector = {
@@ -171,6 +117,8 @@ export const piConnector: Connector = {
   supportsAskPermissions: true,
   supportsReasoningEvents: true,
   prompts: true,
+  // pi's extension commands and prompt templates are commands, and its skills are skills (commands.ts).
+  commands: { targets: ["command", "skill"], list: (o) => piCommandCatalog(o, launchEnv({ providerKeys: PI_PROVIDER_KEYS, envAllow: o.envAllow })) },
   eventChannel,
   supportsLaunchValidation: true,
   buildLaunch(opts: LaunchOpts): LaunchSpec {
@@ -256,6 +204,7 @@ export const piConnector: Connector = {
     const control = controlEndpoint(opts.space, opts.name, artifacts);
     env.COTAL_CONTROL_SOCKET = control.path;
     Object.assign(env, materialEnv({ creds: opts.creds, servers: opts.servers, control, eventsRequired: opts.eventsRequired, eventPayloads: opts.eventPayloads, askPermissions: opts.askPermissions, reasoningEvents: opts.reasoningEvents, userAuth: opts.userAuth }, artifacts));
+    Object.assign(env, firstCommandEnv(opts.firstCommand, artifacts));
     if (persona) {
       const file = writeLaunchArtifact(artifacts, "cotal-persona-", "persona.md", persona);
       env.COTAL_PI_PERSONA_FILE = file;

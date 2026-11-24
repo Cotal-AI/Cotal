@@ -8,7 +8,12 @@ log({
   providerKey: "ANTHROPIC_API_KEY" in process.env,
   // The names FAKE_PI_REPORT_ENV lists, with the value each arrived with, or null when absent.
   env: Object.fromEntries((process.env.FAKE_PI_REPORT_ENV ?? "").split(",").filter(Boolean).map((name) => [name, process.env[name] ?? null])),
+  cwd: process.cwd(),
 });
+if (process.argv.includes("--version")) {
+  process.stdout.write(`${process.env.FAKE_PI_VERSION ?? "1.5.2"}\n`);
+  process.exit(0);
+}
 const mode = process.env.FAKE_PI_MODE;
 if (mode === "exit") process.exit(3);
 if (process.env.FAKE_PI_STUBBORN === "1") {

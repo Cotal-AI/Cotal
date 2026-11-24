@@ -73,6 +73,12 @@ function revokedRunRefusal(runId: string, revoked: RunRevocation): string {
   return `run ${runId} was revoked by ${revoked.by} (${revoked.reason}); a revoked run starts no helper (SPEC 14.8)`;
 }
 
+function personaPermissionProblem(path: string, error: unknown): string | undefined {
+  const code = (error as NodeJS.ErrnoException | undefined)?.code;
+  if (code === "EACCES" || code === "EPERM")
+    return `cannot read persona: ${path} (${code}) on the manager's host. Check that the manager's account can read the file and traverse its parent directories.`;
+}
+
 const INLINE_PERSONA_KEYS = ["prompt", "role", "model", "variant", "description", "subscribe", "allowSubscribe", "allowPublish", "capabilities", "endpoints", "save"];
 
 /** Read an inline persona into the definition a catalog file would load as, refusing what a file
@@ -464,6 +470,8 @@ export class SeatLaunch {
     const configPath = opts.config ? agentFilePath(this.config.workspaceRoot, opts.config) : join(personaDir(this.config.workspaceRoot), `${ref}.md`);
     try { statSync(configPath); }
     catch (error) {
+      const permission = personaPermissionProblem(configPath, error);
+      if (permission !== undefined) return { error: permission };
       const code = (error as NodeJS.ErrnoException).code;
       const link = code === "ENOENT" || code === "ENOTDIR" ? personaLinkTarget(configPath) : undefined;
       if (link !== undefined)
@@ -487,7 +495,7 @@ export class SeatLaunch {
       try {
         def = loadLaunchPersonaFile(configPath);
       } catch (e) {
-        return { error: rejectionText(e), ...(e instanceof PersonaSourceError ? { code: "bad-request" as const } : {}) };
+        return { error: personaPermissionProblem(configPath, e) ?? rejectionText(e), ...(e instanceof PersonaSourceError ? { code: "bad-request" as const } : {}) };
       }
       // Shared operator files remain launchable. Owned content follows the catalog's visibility
       // decision before connector loading or any allocation. A hosted run acts for its admission;

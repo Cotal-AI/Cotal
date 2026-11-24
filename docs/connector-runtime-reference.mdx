@@ -297,6 +297,27 @@ Stopping the agent moves every queued command to `refused` with `unavailable`. A
 The agent remembers the last 32 commands to end, and an older id is `not-found`.
 The states, codes and outcomes are in [SPEC §13.22](../SPEC.md#1322-the-agent-endpoint).
 
+## Commands before launch [#commands-before-launch]
+
+A launcher reads what a new agent will run with the Manager's `harness-commands` command, `{ agent, cwd }`, and starts the agent with one entry as its first turn with `spawn`'s `firstCommand`.
+A connector takes part by declaring `commands` on its `Connector`:
+
+- `targets` names what its seats' dispatcher runs.
+- `list({ cwd, resolvedBinaries, envAllow })` reads the entries a seat started in `cwd` would list, from the harness the seat would run and in the environment the seat would get. It starts no seat and keeps nothing. It resolves `{ supported: false, reason }` for an install whose seats run no commands, and rejects when the harness did not answer. The Manager then answers `unavailable`.
+
+A connector without `commands` lists `supported: false`, and a spawn that names a first command for it is refused.
+A connector that declares it writes `LaunchOpts.firstCommand` into its launch with `firstCommandEnv`.
+`MeshAgent` takes that file once when it serves its endpoint, removes it, and queues the command before any other under the id the spawn named.
+While the dispatcher's `unsupported()` names a cause, the command reads `queued` and the connector is not shown it. After 60 s it ends `refused` with that cause.
+
+| Harness | Listed before launch from | Runs | Notes |
+| --- | --- | --- | --- |
+| Claude Code 2.1.330 or later | a headless `claude` run in `cwd`: its `initialize` answer, with no MCP server, hooks, mods or saved session | `command` | The command mod's policy drops what a remote request may not run. Claude does not mark skills, so they are listed as commands. MCP prompts are missing, because no MCP server starts. An older Claude Code lists `supported: false`. |
+| Codex | `skills/list` on a short-lived `codex app-server` in `cwd`, under an empty private `CODEX_HOME` as a seat's is | `skill` | Listing needs no login. Built-in slash commands and custom prompts are not listed, because the app-server cannot run them. |
+| pi 0.84.2 or later | `get_commands` on a pi in RPC mode in `cwd`, which trusts the project as a supervised seat does | `command`, `skill` | A project with no saved Pi trust decision lists none of its templates or skills, because its seat loads none. An older pi lists `supported: false`. |
+| OpenCode 2.x | a private `opencode serve` in `cwd`, on loopback with its own password and database, read once both lists loaded | `command`, `skill` | OpenCode lists a directory's commands only at a running server and loads them on first request, so the read starts one for 1 to 3 s and creates no session. OpenCode 1.x lists `supported: false`. |
+| Hermes, jcode | none | none | `supported: false`: their seats run no agent commands. |
+
 ## Agent name [#agent-name]
 
 The agent owner's interactive session renames an agent with `set-name` `{ name }` on the agent's endpoint, and gets `{ name }` back.
