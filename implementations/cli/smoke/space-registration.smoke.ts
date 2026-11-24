@@ -1726,10 +1726,10 @@ if (process.platform === "linux") {
   } finally { await new Promise<void>((done) => occupier.close(() => done())); }
   // Omit --server to use the recorded address and reach the recorded-input comparison.
   const bound = await json(["up", "--detach", "--no-manager", "--host", "127.0.0.2"], fresh);
-  check("up --host naming a different bind is CONFLICT, exit 2, naming both hosts and bare cotal up, and prepares nothing",
+  check("up --host naming a different bind is CONFLICT, exit 2, naming both hosts and the broker-only cotal up, and prepares nothing",
     refused(bound, 2, "CONFLICT") && (bound.env?.error?.message ?? "").includes("--host 127.0.0.2 (recorded: 127.0.0.1)") &&
       (bound.env?.error?.message ?? "").includes("nothing was prepared") &&
-      (bound.env?.error?.remedy ?? "").includes(`run bare \`cotal up\` from ${recordedRoot}`), shown(bound));
+      (bound.env?.error?.remedy ?? "").includes(`run \`cotal up --no-manager\` from ${recordedRoot}`), shown(bound));
   check("none of these refusals changed the stack journal", readFileSync(stackJournalPath(fresh), "utf8") === journalBefore);
   const brokerBefore = readStackJournal(fresh)?.journal.broker;
   const sameBind = await json(["up", "--no-manager", "--server", server, "--host", "127.0.0.1"], fresh);
