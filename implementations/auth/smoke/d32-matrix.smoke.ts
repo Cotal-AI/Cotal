@@ -288,6 +288,11 @@ const FIXTURE: Record<string, { publish: string[]; subscribe: string[] }> = {
     "$KV.cotal_auth_d32m.chatholder.*.*",
     "$KV.cotal_auth_d32m.chatowner.*",
     "$KV.cotal_auth_d32m.chatsweep.cursor",
+    "$JS.API.STREAM.CREATE.KV_cotal_usernames_d32m",
+    "$JS.API.STREAM.INFO.KV_cotal_usernames_d32m",
+    "$JS.API.STREAM.MSG.GET.KV_cotal_usernames_d32m",
+    "$KV.cotal_usernames_d32m.owner.*",
+    "$KV.cotal_usernames_d32m.username.*",
   ], subscribe: ["_INBOX_ibxconn0123456789.>"] },
   "environment-admission-index": { publish: [
     "$JS.API.INFO", "$JS.API.STREAM.CREATE.KV_cotal_environment_managers_d32m",
@@ -656,7 +661,7 @@ for (const [principal, v] of Object.entries(gen)) for (const row of [...v.publis
     // endpoint-side principal in this list that reads `KV_cotal_auth`, and it is listed here
     // so that fact is a reviewed entry rather than something a reader would have to derive.
     "goal-writer:EPF_d32m", "goal-writer:KV_cotal_records_d32m", "goal-writer:KV_cotal_auth_d32m",
-    "auth-writer:KV_cotal_auth_d32m", "auth-writer:KV_cotal_records_d32m",
+    "auth-writer:KV_cotal_auth_d32m", "auth-writer:KV_cotal_records_d32m", "auth-writer:KV_cotal_usernames_d32m",
     "environment-admission-writer:KV_cotal_auth_d32m", "environment-admission-writer:KV_cotal_records_d32m",
     "environment-admission-index:KV_cotal_environment_managers_d32m",
     "auth-barrier:KV_cotal_auth_d32m", "auth-barrier:KV_cotal_records_d32m",

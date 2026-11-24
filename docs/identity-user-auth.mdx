@@ -37,6 +37,22 @@ channels; scope `spawn,run,role:default`, so it may spawn, start workflow runs w
 three left off and no `--full` is refused.
 No ledger row, no access; there is no allow-by-default.
 
+In a space that uses verified claims, interactive `cotal login` suggests a username. You can
+accept it or change it before confirming. The service refuses a taken or reserved choice and
+asks you to choose again. A confirmed username is permanent. It can start with a digit and
+contain up to 40 lowercase letters, digits, and underscores. The reserved names are `admin`,
+`cotal`, `support`, `root`, and `system`.
+
+The service suggests a name from `preferred_username`, `name`, or a generated `user_<short>`
+value. It skips name claims containing `@`. Using an email local part before generation requires
+an operator opt-in. Existing owners without a username pick at their next interactive sign-in.
+Nonterminal login does not reserve a name. A directory space leaves owners unnamed until its
+trusted directory supplies a username.
+
+All members can read the registry in their space. A connection that holds an older credential
+needs a refresh to get the read grant. Reconnecting with the same credential does not add it.
+Removing a grant does not free its username. The username is separate from the chat name.
+
 `cotal login` also records a handle from what the IdP gives: its preferred user name, else the part
 of its email before the `@`, else its name, the first that is a valid chat name. A
 [chat session](cli-messaging.mdx#chat) appears under it unless you choose another name. The email

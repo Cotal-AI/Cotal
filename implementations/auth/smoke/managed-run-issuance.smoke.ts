@@ -97,7 +97,7 @@ rmSync(join(a.stateDir, "idp.json"));
 ensurePinnedIdp(a.stateDir, `${origin}/api/auth`);
 const owner = deriveOwnerForIdpSubject((await loadOwnerSecret(a.store, a.space))!, origin, "u1-human");
 const cli = grantActor(a.stateDir, { owner, actor: "cli", scope: ["admin", "spawn", "run", "supervise"], allowSubscribe: [">"], allowPublish: [">"] });
-const idpToken = await new SignJWT({}).setProtectedHeader({ alg: "EdDSA", kid: "u1-idp" }).setSubject("u1-human").setIssuer(origin).setAudience(origin).setIssuedAt().setExpirationTime("10m").sign(privateKey);
+const idpToken = await new SignJWT({ name: "Fixture Member" }).setProtectedHeader({ alg: "EdDSA", kid: "u1-idp" }).setSubject("u1-human").setIssuer(origin).setAudience(origin).setIssuedAt().setExpirationTime("10m").sign(privateKey);
 let service: AuthServiceHandle | undefined;
 let manager: Manager | undefined;
 let signedObserver: NatsConnection | undefined;
@@ -301,7 +301,7 @@ try {
     await withIssuerSession({ servers: fx.servers, space: a.space, auth: a.auth, tls: false }, async (session) => {
       const ref = { space: a.space, ...caller! };
       const evidence = (await session.store.resolve(ref, async (source) => ledgerActorSourceIsLive(a.stateDir)(source))).evidence;
-      const expected = permissionsFor("manager-caller", a.space, { owner, actor: "runner", connId: d!.nonce, lifecycleUid: uid },
+      const expected = permissionsFor("manager-caller", a.space, { owner, actor: "runner", connId: d!.nonce, readerId: d!.nonce, lifecycleUid: uid },
         { capabilities: ["spawn", "run"], lifecycleUid: uid, managerInstanceId: state.instanceId, issued: { generation: caller!.generation, acceptedToken: connectionAcceptedToken(d!.nonce), listing: true } });
       assert.deepEqual(evidence.permissions, importNativeSubjectPermissions(expected));
       assert.ok(signed.has(d!.nonce), "passive witness must observe this connection's signed reply");
@@ -622,7 +622,7 @@ try {
     const generation = mintGeneration(expiresAt);
     const ref = { space: a.space, owner, actor: "runner", uid, generation };
     const acceptedToken = connectionAcceptedToken(nonce);
-    const before = permissionsFor("manager-caller", a.space, { owner, actor: "runner", connId: nonce, lifecycleUid: uid },
+    const before = permissionsFor("manager-caller", a.space, { owner, actor: "runner", connId: nonce, readerId: nonce, lifecycleUid: uid },
       { capabilities: ["spawn", "run"], lifecycleUid: uid, managerInstanceId: state.instanceId, issued: { generation, acceptedToken } });
     await withIssuerSession({ servers: fx.servers, space: a.space, auth: a.auth, tls: false }, async (session) => {
       const prepared = await session.store.stage({ version: 1, ref, sources: [actorLedgerSource(a.space, owner, "runner", uid)],

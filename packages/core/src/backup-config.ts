@@ -26,6 +26,7 @@ import {
   presenceBucket,
   spacePrefix,
   taskStream,
+  usernameBucket,
   artifactBucket,
   isTransferStream,
   objectStoreStream,
@@ -34,7 +35,7 @@ import {
 export type SpaceBackupSelection = "full" | "registry";
 /** `workflow` is the state a workflow run resumes from: its step journal, its records and its
  *  admission. Every other endpoint store is control state and is recreated empty. */
-export type SpaceBackupStreamClass = "messages" | "registry" | "authorization" | "workflow";
+export type SpaceBackupStreamClass = "messages" | "registry" | "authorization" | "workflow" | "usernames";
 /** Why a stream is outside the backup artifact. `artifact` is its own class deliberately: object
  *  bytes are neither transient (they outlive a session), derived (nothing can recompute them),
  *  nor a lease. Excluding them is a RETENTION decision — pin extends lifetime, not durability —
@@ -68,7 +69,7 @@ export interface SpaceBackupInventory {
  * teardown grant names, and this throws when they differ. Without that, a stream added to the
  * deletion set alone, or classified here alone, would leave backup and teardown disagreeing about
  * what the space owns, and only the backup side is ever checked against a live space. */
-export function spaceBackupInventory(space: string): SpaceBackupInventory {
+export function spaceBackupInventory(space: string, options: { usernames?: boolean } = {}): SpaceBackupInventory {
   const registry = `KV_${channelBucket(space)}`;
   const backedUp: SpaceBackupStream[] = [
     { name: registry, class: "registry" },
@@ -94,7 +95,10 @@ export function spaceBackupInventory(space: string): SpaceBackupInventory {
     ...endpointPlaneStreamNames(space).filter((name) => !workflow.has(name)).map((name) => ({ name, class: "control" as const })),
     { name: objectStoreStream(artifactBucket(space)), class: "artifact" },
   ];
+  const usernames = `KV_${usernameBucket(space)}`;
+  if (options.usernames) backedUp.push({ name: usernames, class: "usernames" });
   const classified = [...backedUp, ...excluded].map((s) => s.name);
+  if (!options.usernames) classified.push(usernames);
   const owned = spaceDeletionStreams(space);
   const unclassified = owned.filter((name) => !classified.includes(name));
   const unowned = classified.filter((name) => !owned.includes(name));
@@ -124,7 +128,7 @@ export function validateSpaceBackupInventory(
   actualNames: readonly string[],
   options: { atRest?: boolean } = {},
 ): SpaceBackupInventory {
-  const fixed = spaceBackupInventory(space);
+  const fixed = spaceBackupInventory(space, { usernames: actualNames.includes(`KV_${usernameBucket(space)}`) });
   // A resume transfer bucket exists per receiving manager instance, so it is matched by name shape.
   // Its objects are deleted once staged and are not state to restore.
   const transfers = actualNames.filter((name) => isTransferStream(space, name));
@@ -362,6 +366,9 @@ export function canonicalBackupStreamConfig(
     return { ...kvStoreConfig(stream, recordsBucket(space)), allow_direct: true, ...endpointAuthorityStoreDefinitions(space).records.hardenAfterCreate };
   if (stream === `KV_${admissionBucket(space)}`)
     return { ...kvStoreConfig(stream, admissionBucket(space)), ...admissionStoreDefinition(space).hardenAfterCreate };
+  const usernames = usernameBucket(space);
+  if (stream === `KV_${usernames}`)
+    return { ...kvStoreConfig(stream, usernames), allow_direct: true, allow_rollup_hdrs: false, deny_delete: true, deny_purge: true };
   for (const bucket of [channelBucket(space), aclBucket(space), membersBucket(space)]) {
     if (stream === `KV_${bucket}`) {
       return {

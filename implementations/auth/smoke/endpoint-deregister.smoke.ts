@@ -48,7 +48,7 @@ try {
     return id;
   };
   service = await startAuthService({ context: { accountPublicKey: account.accountPublicKey, lifecycleUid: mintLifecycleUid() }, space: account.space, servers: fx.servers, store: account.store, storeIdentity: account.store.identity, stateDir: account.stateDir, publicFace: { port: 0, trustedProxy: false } });
-  const token = await new SignJWT({}).setProtectedHeader({ alg: "EdDSA", kid: jwk.kid }).setIssuer(origin).setAudience(origin).setSubject("member").setIssuedAt().setExpirationTime("5m").sign(pair.privateKey);
+  const token = await new SignJWT({ name: "Fixture Member" }).setProtectedHeader({ alg: "EdDSA", kid: jwk.kid }).setIssuer(origin).setAudience(origin).setSubject("member").setIssuedAt().setExpirationTime("5m").sign(pair.privateKey);
   const post = async (body: unknown, headers: Record<string, string> = {}) => {
     const response = await fetch(`${service!.publicUrl}/endpoint-deregister`, { method: "POST", headers: { "content-type": "application/json", ...headers }, body: JSON.stringify(body) });
     return { status: response.status, body: await response.json() as Record<string, unknown> };

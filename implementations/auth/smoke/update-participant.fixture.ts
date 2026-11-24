@@ -70,7 +70,7 @@ export async function prepareUpdateParticipant(context: UpdateParticipantContext
       try {
         tokenReads++;
         const now = Math.floor(Date.now() / 1000);
-        const token = await new SignJWT({}).setProtectedHeader({ alg: "EdDSA", kid: jwk.kid })
+        const token = await new SignJWT({ name: "Participant Fixture" }).setProtectedHeader({ alg: "EdDSA", kid: jwk.kid })
           .setIssuer(origin).setAudience(origin).setSubject("human").setIssuedAt(now).setExpirationTime(now + 3600).sign(key.privateKey);
         response.end(JSON.stringify({ token }));
       } catch { response.writeHead(500); response.end("{}"); }

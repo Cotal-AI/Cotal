@@ -42,6 +42,7 @@ import {
   assertManagedGrantCustody,
   assertValidChannel,
   assertValidOwnerToken,
+  assertValidUsername,
   capabilityWithin,
   eventChannel,
   mintLifecycleUid,
@@ -60,6 +61,8 @@ import { chatSessionAliasPresent } from "./chat-session-row.js";
 import type { ActorGrant } from "./idp.js";
 import type { ValidatedUserToken } from "./token.js";
 import type { AclResolver } from "./permissions.js";
+import { loadPinnedIdp } from "./store.js";
+import { validateUsernameChoice } from "./username-assignment.js";
 
 const ACTORS_DIR = "actors";
 const MANAGED_DIR = "managed-actors";
@@ -106,6 +109,8 @@ export interface ActorRow {
   /** Operator-chosen display label for `list` legibility (e.g. "david laptop"). NEVER the IdP
    *  subject/email — the ledger stays as non-PII as the wire. */
   label?: string;
+  /** A preassigned username from the trusted interactive-grant writer. */
+  username?: string;
   /** SHA-256 hex of the per-agent exchange secret. REQUIRED in a managed-agent row (its space's
    *  defining shape), REFUSED in an interactive row (readRow fails closed on either violation).
    *  The plaintext secret is returned ONCE at grant time and never persisted. */
@@ -179,6 +184,10 @@ function readRow(path: string, kind: ActorKind): ActorRow {
     throw new Error(`${path}: actor grant is missing explicit scope/allowSubscribe/allowPublish lists`);
   if (kind === "interactive" && parsed.tokenHash !== undefined)
     throw new Error(`${path}: an interactive grant must not carry an agent token hash - it was written by the wrong path; remove the row and re-grant (\`cotal actor grant\`)`);
+  if (parsed.username !== undefined) {
+    if (kind !== "interactive") throw new Error(`${path}: a managed grant cannot carry a username`);
+    assertValidUsername(parsed.username);
+  }
   if (kind === "managed-agent" && !(typeof parsed.tokenHash === "string" && /^[0-9a-f]{64}$/.test(parsed.tokenHash)))
     throw new Error(`${path}: managed-agent grant has a missing/corrupted secret hash - respawn the agent (\`cotal spawn\`) to rewrite it`);
   if (kind === "interactive" && parsed.custody !== undefined)
@@ -231,6 +240,18 @@ function findIn(dir: string, kind: ActorKind, owner: string, actor: string): Act
 
 export function findInteractiveActor(dir: string, owner: string, actor: string): ActorRow | undefined {
   return findIn(dir, "interactive", owner, actor);
+}
+
+export function hasInteractiveOwnerGrant(dir: string, owner: string): boolean {
+  const prefix = `${assertDerivedOwnerToken(owner)}.`;
+  const directory = assertRowSpaceDirectory(dir, "interactive");
+  if (!directory) return false;
+  return readdirSync(directory).some((file) => {
+    if (!file.startsWith(prefix) || !file.endsWith(".json")) return false;
+    const actor = file.slice(prefix.length, -5);
+    if (!/^[A-Za-z0-9_]+$/.test(actor) || chatSessionAliasPresent(dir, owner, actor)) return false;
+    return findInteractiveActor(dir, owner, actor)?.lifecycleUid !== undefined && !findManagedActor(dir, owner, actor);
+  });
 }
 
 export function findManagedActor(dir: string, owner: string, actor: string): ActorRow | undefined {
@@ -320,6 +341,11 @@ export function grantActor(dir: string, row: Omit<ActorRow, "grantedAt">): Actor
 
 function rawGrantInteractive(dir: string, row: Omit<ActorRow, "grantedAt">): ActorRow {
   assertRowInputs(row);
+  if (row.username !== undefined) {
+    if (loadPinnedIdp(dir)?.username?.source !== "directory")
+      throw new Error('grantActor: a supplied username requires the space username source "directory"');
+    validateUsernameChoice(row.username);
+  }
   assertNotChatAlias(dir, row.owner, row.actor, "grantActor");
   if (row.tokenHash !== undefined)
     throw new Error("grantActor: an interactive grant cannot carry an agent token hash - managed-agent rows are written by the spawn path only");
@@ -487,7 +513,7 @@ function widenGrantCommand(
 }
 
 /** The managed-row input: every grant field plus the REQUIRED secret hash and custody. */
-type ManagedGrantInput = Omit<ActorRow, "grantedAt" | "custody"> & { tokenHash: string; custody: ManagedGrantCustody };
+type ManagedGrantInput = Omit<ActorRow, "grantedAt" | "custody" | "username"> & { tokenHash: string; custody: ManagedGrantCustody };
 
 /** Author a MANAGED-AGENT row (spawn path only): the same upsert semantics, in the managed space,
  *  with the secret hash and custody REQUIRED — and never shadowing an interactive row. Takes the
@@ -499,6 +525,7 @@ export function grantManagedActor(dir: string, row: ManagedGrantInput): ActorRow
 
 function rawGrantManaged(dir: string, row: ManagedGrantInput): ActorRow {
   assertRowInputs(row);
+  if ("username" in row) throw new Error("grantManagedActor: a managed grant cannot carry a username");
   assertNotChatAlias(dir, row.owner, row.actor, "grantManagedActor");
   if (!/^[0-9a-f]{64}$/.test(row.tokenHash))
     throw new Error("grantManagedActor: tokenHash must be a sha256 hex digest");
@@ -687,6 +714,7 @@ export function ledgerAuthorizeGrant(dir: string): (owner: string, actor: string
       allowPublish: row.allowPublish,
       ...(row.role ? { role: row.role } : {}),
       ...(row.label ? { label: row.label } : {}),
+      ...(row.username !== undefined ? { username: row.username } : {}),
       ...(row.parent ? { parent: row.parent } : {}),
       lifecycleUid: row.lifecycleUid,
     };

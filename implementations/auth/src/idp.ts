@@ -32,6 +32,7 @@ import type { UserTokenIssuer } from "./issuer.js";
 import { CLOCK_TOLERANCE_SEC, USER_TOKEN_VIEWS, VIEW_REQUIRED_SCOPE, viewTtlCapSec, type UserTokenSession, type UserTokenTransferWriter, type UserTokenView } from "./token.js";
 import { grantCommandLine } from "./grant-command.js";
 import type { ConnectLimiter } from "./connect-limit.js";
+import type { AssignUsername, UsernameClaims } from "./username-assignment.js";
 
 /** The pinned identity of ONE external IdP. All fields are operator config — nothing in here is
  *  ever read from a presented token. */
@@ -60,6 +61,7 @@ export interface ActorGrant {
   /** Carried for the same reason: an upsert that does not name them drops them. */
   role?: string;
   label?: string;
+  username?: string;
   /** The spawning principal (`<owner>.<actor>` dot-form), when the ledger records one. */
   parent?: string;
   /** The row's lifecycle UID (SPEC 13.1) — stamped into the bearer so a predecessor incarnation's
@@ -92,6 +94,8 @@ export interface CreateIdpBridgeOpts {
    *  emits a conformant credential id. (`validateUserToken` stays tolerant of an absent claim so
    *  the CONNECT boundary owns the signed deny-new denial for pre-cut/forged tokens.) */
   mintConnectCredential: (args: { owner: string; actor: string; lifecycleUid: string }) => Promise<string>;
+  /** Directory spaces can bind a supplied username before issuing a human bearer. */
+  assignUsername?: AssignUsername;
   /** The dedicated `aud` of `dm-reader` proofs (#4189), from the same pinned IdP issuer and keys.
    *  Explicit operator config: it is never derived from, or defaulted to, `idp.audience`, and
    *  construction refuses it when it equals `idp.audience`, so every exact-audience verifier of
@@ -133,7 +137,7 @@ export interface IdpBridge {
 
 /** Verified IdP claims. Optional password provenance is retained only when well-shaped;
  * ordinary exchanges do not require it or gain consent authority from it. */
-export interface VerifiedIdpToken {
+export interface VerifiedIdpToken extends UsernameClaims {
   sub: string;
   exp: number;
   auth_time?: number;
@@ -145,7 +149,7 @@ export const DM_READER_PURPOSE = "dm-reader";
 
 /** A verified `dm-reader` proof: the human, the proof's expiry, and the three claims that bind it to
  *  one reader incarnation in one space. */
-export interface DmReaderProof {
+export interface DmReaderProof extends UsernameClaims {
   sub: string;
   exp: number;
   actor: string;
@@ -194,10 +198,19 @@ export async function verifyIdpToken(token: string, idp: IdpConfig): Promise<Ver
     throw new Error("idp token: a token carrying a purpose claim is not a general human proof - it is accepted only by the exchange its purpose names");
   return {
     sub: payload.sub, exp: payload.exp,
+    ...usernameClaims(payload),
     ...(typeof payload.auth_time === "number" && Number.isSafeInteger(payload.auth_time) && payload.auth_time >= 0
       ? { auth_time: payload.auth_time } : {}),
     ...(Array.isArray(payload.amr) && payload.amr.length > 0 && payload.amr.every(method => typeof method === "string" && method.length > 0)
       ? { amr: Object.freeze([...payload.amr] as string[]) } : {}),
+  };
+}
+
+function usernameClaims(payload: JWTPayload): UsernameClaims {
+  return {
+    ...(typeof payload.preferred_username === "string" ? { preferred_username: payload.preferred_username } : {}),
+    ...(typeof payload.email === "string" ? { email: payload.email } : {}),
+    ...(typeof payload.name === "string" ? { name: payload.name } : {}),
   };
 }
 
@@ -211,7 +224,7 @@ export async function verifyDmReaderProof(token: string, idp: IdpConfig, audienc
   for (const claim of ["actor", "lifecycle", "space"] as const)
     if (typeof payload[claim] !== "string" || !payload[claim])
       throw new Error(`dm-reader proof: the ${claim} claim must be a non-empty string`);
-  return { sub: payload.sub, exp: payload.exp, actor: payload.actor as string, lifecycle: payload.lifecycle as string, space: payload.space as string };
+  return { sub: payload.sub, exp: payload.exp, actor: payload.actor as string, lifecycle: payload.lifecycle as string, space: payload.space as string, ...usernameClaims(payload) };
 }
 
 /** A private-result consent proof, not consent or permission to read any result. */
@@ -309,7 +322,8 @@ export function createIdpBridge(opts: CreateIdpBridgeOpts): IdpBridge {
         if (dmProof.actor !== req.actor) throw new Error("dm-reader proof: its actor claim is not the requested actor");
         if (dmProof.space !== opts.space) throw new Error("dm-reader proof: its space claim is not this bridge's space");
       }
-      const { sub, exp: idpExp } = dmProof ?? await verifyIdpToken(idpToken, opts.idp);
+      const verified = dmProof ?? await verifyIdpToken(idpToken, opts.idp);
+      const { sub, exp: idpExp } = verified;
       // The (issuer, sub) → derivation-input encoding lives in ONE place (deriveOwnerForIdpSubject),
       // shared with the operator grant command — the ledger's grant-time owner and the exchange-time
       // owner must be the same bytes or every grant silently misses.
@@ -364,6 +378,7 @@ export function createIdpBridge(opts: CreateIdpBridgeOpts): IdpBridge {
         ttlSec = Math.min(ttlSec, Math.max(1, session.exp - Math.floor(Date.now() / 1000)));
         notAfter = Math.min(notAfter, session.exp);
       }
+      await opts.assignUsername?.(owner, verified, grant.username);
       // Credential-BIND the bearer (SPEC 13.1, R1): the incarnation's live root credential id
       // rides act.credentialId — ensured (minted release-last on first exchange) BEFORE the
       // bearer bytes are signed, so the row the connect arm requires is durable before any

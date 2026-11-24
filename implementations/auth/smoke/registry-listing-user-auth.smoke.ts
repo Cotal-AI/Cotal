@@ -3,73 +3,342 @@
  *  registry, and the agent asking it through its own endpoint. The callout issues the agent
  *  connection's listing generation. The IdP is a signed loopback fixture, and the registry is
  *  registered by a fixture; how a space hosts its registry is not under test. */
+import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { SignJWT, exportJWK, generateKeyPair } from "jose";
-import type { NatsConnection } from "@nats-io/transport-node";
-import { CotalEndpoint, dialerFor, mintCreds, mintLifecycleUid, newIdentity, setupSpaceStreams, standaloneConnectOpts, type IssuedCaller } from "@cotal-ai/core";
-import { createSuite } from "@cotal-ai/smoke-kit";
-import { deriveOwnerForIdpSubject, grantActor, loadOwnerSecret, startAuthService, type AuthServiceHandle } from "../src/index.js";
-import { startHostedAuthFixture } from "./_hosted-auth-fixture.js";
+import { jetstream, jetstreamManager } from "@nats-io/jetstream";
+import { PermissionViolationError, type NatsConnection } from "@nats-io/transport-node";
+import { CotalEndpoint, dialerFor, mintCreds, mintLifecycleUid, newIdentity, readUsername, readUsernameOwner, setupSpaceStreams, standaloneConnectOpts, usernameBucket, UsernameRegistryReadError, type IssuedCaller } from "@cotal-ai/core";
+import { createSuite, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { deriveOwnerForIdpSubject, grantActor, loadOwnerSecret, platformControlOwner, revokeActor, startAuthService, type AuthServiceHandle } from "../src/index.js";
+import { authorityWriterGrants, openAuthorityClient } from "../src/authority-client.js";
+import { pickUsername } from "../src/username-login.js";
+import { USERNAME_PICK_PATH, USERNAME_RESERVE_PATH, USERNAME_BACKFILL_PATH } from "../src/username-routes.js";
+import { startHostedAuthFixture, type HostedAuthAccount } from "./_hosted-auth-fixture.js";
 import { fixtureCluster, registerFixture, runRegistryFixture } from "../../registry/smoke/_fixture.js";
 import { natsRegistryReads } from "../../registry/src/index.js";
 
 const suite = createSuite();
-const fx = await startHostedAuthFixture("listua", 1);
-const a = fx.accounts[0]!;
+const fx = await startHostedAuthFixture("listua", 3);
+const [a, directory, email] = fx.accounts as [HostedAuthAccount, HostedAuthAccount, HostedAuthAccount];
 const mesh = { auth: a.auth, servers: fx.servers, space: a.space };
 const { publicKey, privateKey } = await generateKeyPair("EdDSA");
 const jwk = { ...await exportJWK(publicKey), kid: "listua-idp", alg: "EdDSA" };
 const idp: Server = createServer((_req, res) => { res.setHeader("content-type", "application/json"); res.end(JSON.stringify({ keys: [jwk] })); });
 await new Promise<void>((r) => idp.listen(0, "127.0.0.1", r));
 const ISS = `http://127.0.0.1:${(idp.address() as AddressInfo).port}`;
-writeFileSync(join(a.stateDir, "idp.json"), JSON.stringify({ ver: 1, url: `${ISS}/api/auth`, issuer: ISS, audience: ISS, jwksUri: `${ISS}/jwks` }), { mode: 0o600 });
-const owner = deriveOwnerForIdpSubject((await loadOwnerSecret(a.store, a.space))!, ISS, "lister-human");
+function pin(account: HostedAuthAccount, username?: { source: "directory" } | { source: "claims"; emailLocalPart: boolean }) {
+  writeFileSync(join(account.stateDir, "idp.json"), JSON.stringify({ ver: 1, url: `${ISS}/api/auth`, issuer: ISS, audience: ISS, jwksUri: `${ISS}/jwks`, username }), { mode: 0o600 });
+}
+pin(a);
+pin(directory, { source: "directory" });
+pin(email, { source: "claims", emailLocalPart: true });
+const secret = (await loadOwnerSecret(a.store, a.space))!;
+const owner = deriveOwnerForIdpSubject(secret, ISS, "lister-human");
+const otherOwner = deriveOwnerForIdpSubject(secret, ISS, "other-human");
+const unnamedOwner = deriveOwnerForIdpSubject(secret, ISS, "unnamed-human");
+const base = `7_${"n".repeat(38)}`;
+const supplied = `9_${"d".repeat(38)}`;
 const row = grantActor(a.stateDir, { owner, actor: "lister", scope: [], allowSubscribe: [], allowPublish: [] });
-const idpToken = () => {
+const narrow = { actor: "lister", scope: [], allowSubscribe: [], allowPublish: [] };
+const otherRow = grantActor(a.stateDir, { owner: otherOwner, ...narrow });
+grantActor(a.stateDir, { owner: unnamedOwner, ...narrow });
+const idpToken = (subject: string, claims: Record<string, unknown>) => {
   const now = Math.floor(Date.now() / 1000);
-  return new SignJWT({}).setProtectedHeader({ alg: "EdDSA", kid: jwk.kid }).setSubject("lister-human").setIssuer(ISS).setAudience(ISS)
+  return new SignJWT(claims).setProtectedHeader({ alg: "EdDSA", kid: jwk.kid }).setSubject(subject).setIssuer(ISS).setAudience(ISS)
     .setIssuedAt(now).setExpirationTime(now + 600).sign(privateKey);
 };
 
 let service: AuthServiceHandle | undefined;
+const services: AuthServiceHandle[] = [];
 let registry: { stop(): Promise<void> } | undefined;
 const endpoints: CotalEndpoint[] = [];
 let readerNc: NatsConnection | undefined;
-try {
-  await setupSpaceStreams({ servers: fx.servers, space: a.space, creds: await mintCreds(a.auth, newIdentity(), "provisioner") });
-  service = await startAuthService({
-    context: { accountPublicKey: a.accountPublicKey, lifecycleUid: mintLifecycleUid() }, space: a.space, servers: fx.servers,
-    stateDir: a.stateDir, store: a.store, storeIdentity: a.store.identity, publicFace: { port: 0, trustedProxy: false },
+async function boot(account: HostedAuthAccount) {
+  const handle = await startAuthService({
+    context: { accountPublicKey: account.accountPublicKey, lifecycleUid: mintLifecycleUid() }, space: account.space, servers: fx.servers,
+    stateDir: account.stateDir, store: account.store, storeIdentity: account.store.identity, publicFace: { port: 0, trustedProxy: false },
   });
+  services.push(handle);
+  return handle;
+}
+
+async function bootWithDiagnostics(account: HostedAuthAccount, lines: string[]) {
+  const error = console.error;
+  console.error = (...args: unknown[]) => { lines.push(args.map(String).join(" ")); error(...args); };
+  try { return await boot(account); }
+  finally { console.error = error; }
+}
+
+async function setup(account: HostedAuthAccount) {
+  const creds = await mintCreds(account.auth, newIdentity(), "provisioner");
+  await setupSpaceStreams({ servers: fx.servers, space: account.space, userAuth: true, creds });
+  const connection = await dialerFor(fx.servers)({ servers: fx.servers, ...standaloneConnectOpts({ creds, tls: false }) });
+  try {
+    const info = await (await jetstreamManager(connection)).streams.info(`KV_${usernameBucket(account.space)}`);
+    suite.check("user-auth space setup creates an empty username bucket before auth starts", info.state.messages === 0);
+    suite.check("the broker reports deletion, purge and rollup disabled in the username stream",
+      info.config.deny_delete === true && info.config.deny_purge === true && info.config.allow_rollup_hdrs === false, info.config);
+  } finally { await connection.close(); }
+}
+
+async function exchange(handle: AuthServiceHandle, subject: string, claims: Record<string, unknown>, username?: string) {
+  const res = await fetch(`${handle.url}/exchange`, {
+    method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${handle.cap}` },
+    body: JSON.stringify({ idpToken: await idpToken(subject, claims), actor: "lister", username }),
+  });
+  return { res, body: await res.json() as { token?: string; error?: string } };
+}
+
+async function usernamePost(handle: AuthServiceHandle, path: string, body: object, publicFace = false) {
+  const response = await fetch(`${publicFace ? handle.publicUrl : handle.url}${path}`, {
+    method: "POST", headers: { "content-type": "application/json", ...(publicFace ? {} : { authorization: `Bearer ${handle.cap}` }) },
+    body: JSON.stringify(body),
+  });
+  return { status: response.status, body: await response.json() as { suggestion?: string; username?: string; code?: string; error?: string } };
+}
+
+function picker(handle: AuthServiceHandle, subject: string, claims: Record<string, unknown>) {
+  return async (username?: string) => usernamePost(handle, USERNAME_PICK_PATH, { idpToken: await idpToken(subject, claims), username });
+}
+
+async function crossProcessCas(nc: NatsConnection) {
+  const username = "process_race";
+  const owners = ["race-a", "race-b"].map((subject) => deriveOwnerForIdpSubject(secret, ISS, subject));
+  const dataAccount = { pub: a.accountPublicKey, signingSeed: a.auth.account.signingSeed! };
+  const signal = AbortSignal.timeout(20_000);
+  const workers = owners.map((owner) => {
+    const child = spawn(process.execPath, ["--import", import.meta.resolve("tsx"), join(import.meta.dirname, "_username-cas-worker.ts")],
+      { stdio: ["ignore", "ignore", "inherit", "ipc"] });
+    const release = teardownOnSignal(child);
+    const exit = once(child, "exit", { signal }).then(([code]) => code as number | null, () => null);
+    const ready = once(child, "message", { signal }).then(([message]) => message);
+    child.send({ server: fx.servers, space: a.space, dataAccount, owner, username });
+    return { child, release, exit, ready };
+  });
+  try {
+    assert.deepEqual(await Promise.all(workers.map(({ ready }) => ready)), ["ready", "ready"]);
+    const results = await Promise.all(workers.map(async ({ child }) => {
+      const result = once(child, "message", { signal });
+      child.send("start");
+      return (await result)[0];
+    }));
+    assert.deepEqual(await Promise.all(workers.map(({ exit }) => exit)), [0, 0]);
+    const winner = await readUsernameOwner(nc, a.space, username);
+    const index = owners.findIndex((owner) => owner === winner);
+    assert.notEqual(index, -1);
+    assert.deepEqual(results[index], { username });
+    assert.deepEqual(results[1 - index], { conflict: true });
+    suite.check("two auth assignment processes elect one reciprocal binding and leave the loser unbound",
+      await readUsername(nc, a.space, winner!) === username && await readUsername(nc, a.space, owners[1 - index]!) === undefined);
+  } finally {
+    for (const { child, release } of workers) {
+      await killAndAwaitExit(child);
+      release();
+    }
+  }
+}
+
+async function claimsCases(handle: AuthServiceHandle, nc: NatsConnection, otherNc: NatsConnection) {
+  const preferred = { preferred_username: `7-${"N".repeat(41)}`, name: "Ignored Preferred" };
+  const display = { email: "ignored@example.test", name: `7-${"n".repeat(38)}` };
+  const requests = [picker(handle, "lister-human", preferred), picker(handle, "other-human", display)] as const;
+  const ordinary = await exchange(handle, "lister-human", preferred);
+  suite.check("claims exchange returns a bearer without username state or reservation", ordinary.res.ok && !Object.hasOwn(ordinary.body, "username") &&
+    await readUsername(nc, a.space, owner) === undefined && await readUsernameOwner(nc, a.space, base) === undefined);
+  let requestsWithoutTty = 0;
+  await pickUsername(false, async () => { requestsWithoutTty++; return requests[0](); }, async () => { throw new Error("unexpected prompt"); });
+  suite.check("nonterminal login sends no pick request or reservation", requestsWithoutTty === 0 && await readUsername(nc, a.space, owner) === undefined);
+  for (const username of ["admin", "cotal", "support", "root", "system", "bad-name", "a".repeat(41)]) {
+    const refused = await requests[0](username);
+    suite.check(`the auth service refuses ${username}`, refused.status === 400 && !!refused.body.error);
+  }
+  const suggestions: string[] = [];
+  const errors: string[] = [];
+  const refreshed: string[] = [];
+  let started = 0;
+  let release!: () => void;
+  const both = new Promise<void>((resolve) => { release = resolve; });
+  const chosen = await Promise.all(requests.map((request, index) => pickUsername(true, request, async (suggestion, refusal) => {
+    if (refusal) { errors.push(refusal); refreshed.push(suggestion); return `second_choice_${index}`; }
+    suggestions.push(suggestion);
+    if (++started === 2) release();
+    await both;
+    return suggestion;
+  })));
+  suite.check("two clients see the suggestion; one confirms it and the other retries with a changed name",
+    suggestions.length === 2 && suggestions.every((name) => name === base) && errors.length === 1 && /already reserved/.test(errors[0]!) &&
+    refreshed.length === 1 && refreshed[0] !== base && chosen.includes(base) && chosen.some((name) => name?.startsWith("second_choice_")), { chosen, suggestions, errors, refreshed });
+  for (const [i, expectedOwner] of [owner, otherOwner].entries()) {
+    const name = chosen[i]!;
+    suite.check("both members read the same reciprocal confirmed binding", await readUsername(nc, a.space, expectedOwner) === name &&
+      await readUsernameOwner(nc, a.space, name) === expectedOwner && await readUsernameOwner(otherNc, a.space, name) === expectedOwner &&
+      await readUsername(otherNc, a.space, expectedOwner) === name);
+    suite.check("later sign-in returns the permanent name without another prompt",
+      await pickUsername(true, requests[i]!, async () => { throw new Error("unexpected second prompt"); }) === name);
+    suite.check("a later confirmation cannot rebind the owner", (await requests[i]!("changed_name")).status === 409);
+  }
+  const noClaims = { preferred_username: "first_private@example.test", name: "second_private@example.test", email: "private_local@example.test" };
+  const warnings: string[] = [];
+  const skipped = await pickUsername(true, picker(handle, "ungranted-human", {}), async () => { throw new Error("unexpected prompt for ungranted owner"); }, (line) => warnings.push(line));
+  suite.check("interactive signup skips once and explains a missing grant", skipped === undefined && warnings.length === 1 && /interactive grant/.test(warnings[0]!));
+  const generated = await picker(handle, "unnamed-human", noClaims)();
+  suite.check("email-like claims are skipped and no name binds without confirmation",
+    /^user_[0-9a-f]{10}$/.test(generated.body.suggestion ?? "") && await readUsername(nc, a.space, unnamedOwner) === undefined);
+  const reserved = await picker(handle, "unnamed-human", { preferred_username: "Admin" })();
+  suite.check("a reserved claim produces an available suggestion without binding or reserving it",
+    reserved.status === 200 && /^admin_[0-9a-f]{6}$/.test(reserved.body.suggestion ?? "") &&
+    await readUsernameOwner(nc, a.space, reserved.body.suggestion!) === undefined &&
+    await readUsername(nc, a.space, unnamedOwner) === undefined);
+  const backfill = await usernamePost(handle, USERNAME_BACKFILL_PATH, { owner: unnamedOwner });
+  suite.check("host backfill reserves the generated suggestion for a granted owner",
+    backfill.status === 200 && backfill.body.username === generated.body.suggestion &&
+    await readUsernameOwner(nc, a.space, backfill.body.username!) === unnamedOwner);
+  return chosen;
+}
+
+async function member(account: HostedAuthAccount, grant: typeof row, token: string): Promise<{ ep: CotalEndpoint; nc: NatsConnection }> {
+  let nc: NatsConnection | undefined;
+  const ep = new CotalEndpoint({
+    space: account.space, servers: fx.servers, bearer: token, sentinelCreds: account.sentinelCreds, lifecycleUid: grant.lifecycleUid!,
+    channels: [], consume: false, watchPresence: false, registerPresence: false, watchChannels: false,
+    card: { owner: grant.owner, actor: grant.actor, name: "lister", kind: "agent" },
+    onConnection: (connected) => { nc = connected; },
+  });
+  endpoints.push(ep);
+  ep.on("error", () => {});
+  ep.on("warning", () => {});
+  await ep.start();
+  if (!nc) throw new Error("the user-auth endpoint did not report its broker connection");
+  return { ep, nc };
+}
+
+async function directoryCases(): Promise<void> {
+  const key = (await loadOwnerSecret(directory.store, directory.space))!;
+  const owner = deriveOwnerForIdpSubject(key, ISS, "directory-human");
+  const rival = deriveOwnerForIdpSubject(key, ISS, "directory-rival");
+  const pending = deriveOwnerForIdpSubject(key, ISS, "interrupted-human");
+  const platform = platformControlOwner(key, directory.space, directory.accountPublicKey);
+  await setup(directory);
+  let handle = await boot(directory);
+  const blank = grantActor(directory.stateDir, { owner, ...narrow });
+  const unbound = await exchange(handle, "directory-human", { preferred_username: "never_derived" }, "caller_chosen");
+  assert.ok(unbound.res.ok && unbound.body.token, unbound.body.error);
+  const { nc } = await member(directory, blank, unbound.body.token);
+  suite.check("directory exchange with no row username succeeds and does not derive a binding",
+    await readUsername(nc, directory.space, owner) === undefined && await readUsernameOwner(nc, directory.space, "never_derived") === undefined);
+  for (const username of ["no-hyphen", "Upper", `${supplied}x`, "newline\n", ""]) {
+    assert.throws(() => grantActor(directory.stateDir, { owner, ...narrow, username }), /a username must have 1 to 40/);
+    suite.check("the directory grant refuses invalid input unchanged", true);
+  }
+  const named = grantActor(directory.stateDir, { ...blank, username: supplied });
+  suite.check("only the host can reserve a directory username before exchanging its grant",
+    (await usernamePost(handle, USERNAME_RESERVE_PATH, { owner, username: supplied }, true)).status === 404 &&
+    (await usernamePost(handle, USERNAME_RESERVE_PATH, { owner, username: supplied })).body.username === supplied);
+  const issued = await exchange(handle, "directory-human", { preferred_username: "never_derived" });
+  suite.check("directory source reserves its exact, digit-leading 40-character username at exchange",
+    issued.res.ok && await readUsername(nc, directory.space, owner) === supplied && await readUsernameOwner(nc, directory.space, supplied) === owner, issued.body.error);
+  assert.equal(revokeActor(directory.stateDir, owner, named.actor), true);
+  suite.check("revoking the grant leaves both keys intact", await readUsername(nc, directory.space, owner) === supplied && await readUsernameOwner(nc, directory.space, supplied) === owner);
+  grantActor(directory.stateDir, { owner: rival, ...narrow, username: supplied });
+  const collision = await exchange(handle, "directory-rival", { name: "Never Derived" });
+  suite.check("another owner cannot get the reserved name after revocation", !collision.res.ok && /already reserved/.test(collision.body.error ?? "") && await readUsername(nc, directory.space, rival) === undefined);
+  grantActor(directory.stateDir, named);
+  const regranted = await exchange(handle, "directory-human", { preferred_username: "changed_profile" });
+  suite.check("regrant returns the same name", regranted.res.ok && await readUsername(nc, directory.space, owner) === supplied, regranted.body.error);
+  const replaced = grantActor(directory.stateDir, { owner, ...narrow, lifecycleUid: named.lifecycleUid });
+  const withoutUsername = await exchange(handle, "directory-human", { preferred_username: "never_derived" });
+  suite.check("whole-row replacement without a username preserves both existing bindings after exchange",
+    replaced.username === undefined && withoutUsername.res.ok && typeof withoutUsername.body.token === "string" &&
+    await readUsername(nc, directory.space, owner) === supplied && await readUsernameOwner(nc, directory.space, supplied) === owner,
+    withoutUsername.body.error);
+  for (const lookup of [() => readUsername(nc, a.space, otherOwner), () => readUsernameOwner(nc, a.space, base)])
+    await assert.rejects(lookup, (error: unknown) => error instanceof UsernameRegistryReadError && error.code === "denied");
+  suite.check("a member of a different space cannot read either direction in this space", true);
+
+  const writer = await openAuthorityClient({ server: fx.servers, space: directory.space,
+    dataAccount: { pub: directory.accountPublicKey, signingSeed: directory.auth.account.signingSeed! },
+    label: "username-smoke-writer", grants: (id) => authorityWriterGrants(directory.space, id), log: () => {} });
+  try {
+    for (const [name, reservedFor] of [["interrupted", pending], ["unused_alias", owner]]) {
+      await jetstream(writer.nc).publish(`$KV.${usernameBucket(directory.space)}.username.${name}`, new TextEncoder().encode(reservedFor), { expect: { lastSubjectSequence: 0 } });
+    }
+    suite.check("a half-written reservation is not a complete binding before restart",
+      await readUsername(nc, directory.space, pending) === undefined && await readUsernameOwner(nc, directory.space, "interrupted") === undefined);
+    await handle.close();
+    const restartLog: string[] = [];
+    handle = await bootWithDiagnostics(directory, restartLog);
+    suite.check("service restart completes both directions without a sign-in for the affected owner",
+      await readUsername(nc, directory.space, pending) === "interrupted" && await readUsernameOwner(nc, directory.space, "interrupted") === pending);
+    suite.check("an unused reservation returns not-found, like a missing key, without changing the owner's binding",
+      await readUsernameOwner(nc, directory.space, "unused_alias") === undefined &&
+      await readUsernameOwner(nc, directory.space, "missing_alias") === undefined && await readUsername(nc, directory.space, owner) === supplied);
+    suite.check("startup reports both repaired and unused orphan keys with their named owners",
+      [["interrupted", pending], ["unused_alias", owner]].every(([name, reservedFor]) =>
+        restartLog.some((line) => line.includes(`orphan key username.${name}: owner.${reservedFor}`))), restartLog);
+    grantActor(directory.stateDir, { owner: rival, ...narrow, username: "unused_alias" });
+    const reserved = await exchange(handle, "directory-rival", {});
+    suite.check("an unused reservation still cannot be assigned to another owner", !reserved.res.ok && /already reserved/.test(reserved.body.error ?? ""));
+    suite.check("platform owner lookup has no binding on either username source",
+      await readUsername(nc, directory.space, platform) === undefined && await readUsername(nc, a.space, platform) === undefined);
+    await jetstream(writer.nc).publish(`$KV.${usernameBucket(directory.space)}.owner.${rival}`, new TextEncoder().encode(supplied),
+      { expect: { lastSubjectSequence: 0 } });
+    await assert.rejects(() => readUsername(nc, directory.space, rival),
+      (error: unknown) => error instanceof UsernameRegistryReadError && error.code === "unavailable");
+    suite.check("a forward binding whose reservation names a different owner remains unavailable", true);
+  } finally { await writer.close(); }
+}
+
+async function emailCase(): Promise<void> {
+  const key = (await loadOwnerSecret(email.store, email.space))!;
+  const owner = deriveOwnerForIdpSubject(key, ISS, "email-human");
+  const grant = grantActor(email.stateDir, { owner, ...narrow });
+  await setup(email);
+  const handle = await boot(email);
+  const issued = await exchange(handle, "email-human", { email: "Opt-In@example.test" });
+  assert.ok(issued.res.ok && issued.body.token, issued.body.error);
+  const { nc } = await member(email, grant, issued.body.token);
+  suite.check("the opt-in email local part is suggested but not bound without confirmation",
+    !Object.hasOwn(issued.body, "username") && (await picker(handle, "email-human", { email: "Opt-In@example.test" })()).body.suggestion === "opt_in" &&
+    await readUsername(nc, email.space, owner) === undefined);
+}
+
+try {
+  await setup(a);
+  service = await boot(a);
   await registerFixture(mesh, "alpha.example", fixtureCluster("ai.example.alpha", ["read"]));
   registry = await runRegistryFixture(mesh);
 
-  const bearer = async (): Promise<string> => {
-    const res = await fetch(`${service!.url}/exchange`, {
-      method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${service!.cap}` },
-      body: JSON.stringify({ idpToken: await idpToken(), actor: "lister" }),
-    });
-    const body = await res.json() as { token?: string };
+  const bearer = async (subject: string, claims: Record<string, unknown>, username?: string): Promise<string> => {
+    const { res, body } = await exchange(service!, subject, claims, username);
     if (res.status !== 200 || typeof body.token !== "string") throw new Error(`exchange refused: ${res.status} ${JSON.stringify(body)}`);
     return body.token;
   };
-  const connect = async (): Promise<CotalEndpoint> => {
-    const ep = new CotalEndpoint({
-      space: a.space, servers: fx.servers, bearer: await bearer(), sentinelCreds: a.sentinelCreds, lifecycleUid: row.lifecycleUid!,
-      channels: [], consume: false, watchPresence: false, registerPresence: false, watchChannels: false,
-      card: { owner, actor: "lister", name: "lister", kind: "agent" },
-    });
-    endpoints.push(ep);
-    ep.on("error", () => {});
-    ep.on("warning", () => {});
-    await ep.start();
-    return ep;
-  };
-
-  const first = await connect();
+  const [firstToken, otherToken] = await Promise.all([
+    bearer("lister-human", { preferred_username: `7-${"N".repeat(41)}`, name: "Ignored Preferred" }, "caller_chosen"),
+    bearer("other-human", { email: "ignored@example.test", name: `7-${"n".repeat(38)}` }),
+  ]);
+  const { ep: first, nc } = await member(a, row, firstToken);
+  const { nc: otherNc } = await member(a, otherRow, otherToken);
+  const names = await claimsCases(service, nc, otherNc);
+  await crossProcessCas(nc);
+  suite.check("an exchange request cannot choose a username", await readUsernameOwner(nc, a.space, "caller_chosen") === undefined);
+  for (const key of [`owner.${owner}`, "username.member_write"]) {
+    const subject = `$KV.${usernameBucket(a.space)}.${key}`;
+    const denied = await nc.request(subject, "member_write", { timeout: 2_000 }).then(() => undefined, (error: Error) =>
+      error instanceof PermissionViolationError ? error : error.cause);
+    suite.check("the broker refuses a member's KV publish", denied instanceof PermissionViolationError && denied.operation === "publish" && denied.subject === subject, denied);
+  }
+  assert.throws(() => grantActor(a.stateDir, { owner: unnamedOwner, ...narrow, username: supplied }), /requires the space username source "directory"/);
+  suite.check("claims source rejects supplied names at the grant write", true);
+  const changed = await bearer("lister-human", { preferred_username: "Changed Name" });
+  suite.check("a later identity profile does not rename an owner", await readUsername(nc, a.space, owner) === names[0] &&
+    await readUsernameOwner(nc, a.space, "changed_name") === undefined);
   const result = await first.listEndpoints({}).catch((e: unknown) => e as Error);
   const page = result instanceof Error || result.unbound ? undefined : result.page;
   suite.check("a user-auth agent's connection lists only the endpoints its grants cover",
@@ -84,16 +353,28 @@ try {
   suite.check("the callout bound the listing generation to the agent's actor-ledger row",
     evidence?.sources.length === 1 && evidence.sources[0]!.key === `actor.${owner}.lister.${row.lifecycleUid}`, evidence?.sources);
 
-  const second = await connect();
+  const { ep: second } = await member(a, row, changed);
   const other = await second.listingCaller().catch((e: unknown) => e as Error);
   const generationOf = (c: IssuedCaller | Error | undefined) => (c instanceof Error || c === undefined ? undefined : c.generation);
   suite.check("each connection gets its own listing generation",
     generationOf(other) !== undefined && generationOf(caller) !== undefined && generationOf(other) !== generationOf(caller), [generationOf(caller), generationOf(other)]);
+  for (const lookup of [() => readUsername(readerNc!, a.space, owner), () => readUsernameOwner(readerNc!, a.space, base)])
+    await assert.rejects(lookup, (error: unknown) => error instanceof UsernameRegistryReadError && error.code === "denied");
+  suite.check("both lookups distinguish a denied key read from absence", true);
+  await directoryCases();
+  await emailCase();
+  while (services.length) await services.pop()!.close();
+  await fx.stopBroker();
+  try {
+    for (const lookup of [() => readUsername(nc, a.space, owner), () => readUsernameOwner(nc, a.space, base)])
+      await assert.rejects(lookup, (error: unknown) => error instanceof UsernameRegistryReadError && error.code === "unavailable");
+  } finally { await fx.restartBroker(); }
+  suite.check("both lookups distinguish a stopped broker from absence", true);
 } finally {
   for (const ep of endpoints) await ep.stop().catch(() => {});
   await registry?.stop().catch(() => {});
   await readerNc?.close().catch(() => {});
-  await service?.close().catch(() => {});
+  for (const handle of services.reverse()) await handle.close().catch(() => {});
   await new Promise<void>((r) => idp.close(() => r()));
   await fx.close();
 }

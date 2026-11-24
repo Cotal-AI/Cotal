@@ -363,7 +363,7 @@ export async function serveReadyListener(l: {
       await recreateMemoryBuckets(server, space, setup, ordinaryResume ? { convertMembership: l.recreateMembershipStore === true } : undefined,
         ordinaryResume ? l.seedFile : undefined);
     } else {
-      await postStart(server, space, setup, l.seedFile, l.recreateIssuedStores, l.recreateMembershipStore, true);
+      await postStart(server, space, setup && { creds: setup.creds, userAuth: setup.prepared !== undefined }, l.seedFile, l.recreateIssuedStores, l.recreateMembershipStore, true);
     }
   } catch (e) {
     await stopFailedListener(child);

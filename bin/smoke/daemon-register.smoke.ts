@@ -157,7 +157,7 @@ const idp = createHttpServer(async (req: IncomingMessage, res: ServerResponse) =
     sessionRequests.push(req.headers.authorization === `Bearer ${MANAGED_SESSION}` ? "managed" : "default");
     const now = Math.floor(Date.now() / 1000);
     // A valid proof inside the cache's refresh margin makes each activation's session observable.
-    const token = await new SignJWT({}).setProtectedHeader({ alg: "EdDSA", kid: jwk.kid }).setIssuer(idpOrigin).setAudience(idpOrigin).setSubject("machine-owner").setIssuedAt(now).setExpirationTime(now + 30).sign(key.privateKey);
+    const token = await new SignJWT({ name: "Machine Owner" }).setProtectedHeader({ alg: "EdDSA", kid: jwk.kid }).setIssuer(idpOrigin).setAudience(idpOrigin).setSubject("machine-owner").setIssuedAt(now).setExpirationTime(now + 30).sign(key.privateKey);
     jwtsIssued.push(token);
     return void res.end(JSON.stringify({ token }));
   }

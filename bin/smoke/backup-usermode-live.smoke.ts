@@ -55,9 +55,9 @@ const { deviceAuthorization } = await fromAuth("better-auth/plugins/device-autho
 const { bearer } = await fromAuth("better-auth/plugins/bearer");
 const { toNodeHandler } = await fromAuth("better-auth/node");
 
-const { CotalEndpoint, isReachable, mintCreds, mintLifecycleUid, newIdentity, principalKey } = await import("@cotal-ai/core");
+const { CotalEndpoint, isReachable, mintCreds, mintLifecycleUid, newIdentity, principalKey, readUsername, readUsernameOwner, usernameBucket } = await import("@cotal-ai/core");
 const { authDir, loadSoleSpaceAuth, spaceSegment, userAuthStateDir, workspaceSecretStore } = await import("@cotal-ai/workspace");
-const { cotalAuthProvider, establishIdpSession, findActorUnified } = await import("@cotal-ai/auth");
+const { cotalAuthProvider, establishIdpSession, findActorUnified, loadAuthServiceInfo } = await import("@cotal-ai/auth");
 type DeviceLoginPrompt = import("@cotal-ai/auth").DeviceLoginPrompt;
 type CotalMessage = import("@cotal-ai/core").CotalMessage;
 
@@ -95,6 +95,42 @@ const must = async (label: string, args: string[], timeoutMs?: number) => {
   check(label, result.status === 0, result.out);
   return result;
 };
+
+async function terminalLogin(expectPrompt: boolean): Promise<{ status: number | null; out: string; prompted: boolean }> {
+  const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
+  const command = [TSX, BIN, "login", "--idp", base, "--space", SPACE, "--plain", "--no-browser"].map(quote).join(" ");
+  const child = spawn("script", ["-qec", `stty cols 120 rows 40; exec ${command}`, "/dev/null"], {
+    cwd: root, env: { ...childEnv, DISPLAY: "", WAYLAND_DISPLAY: "", TERM: "xterm" }, stdio: ["pipe", "pipe", "pipe"],
+  });
+  let output = "", approved = false, prompted = false;
+  let approval: Promise<unknown> | undefined;
+  child.stdin.on("error", () => {});
+  const receive = (chunk: Buffer) => {
+    output += chunk.toString();
+    const plain = output.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "");
+    const code = /Approval code:\s*([A-Z0-9-]+)/.exec(plain)?.[1];
+    if (code && !approved) {
+      approved = true;
+      approval = approve(code).catch((error) => { output += String(error); child.kill("SIGTERM"); });
+    }
+    if (!prompted && plain.includes("Choose your permanent username") && plain.includes("human_42")) {
+      prompted = true;
+      if (expectPrompt) child.stdin.write("\r");
+      else child.kill("SIGTERM");
+    }
+  };
+  child.stdout.on("data", receive);
+  child.stderr.on("data", receive);
+  const timer = setTimeout(() => child.kill("SIGTERM"), 25_000);
+  try {
+    const status = await new Promise<number | null>((resolve, reject) => {
+      child.once("error", reject);
+      child.once("close", resolve);
+    });
+    await approval;
+    return { status, out: output.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, ""), prompted };
+  } finally { clearTimeout(timer); }
+}
 
 // ---------- the dev IdP (the bootstrap the user-mode live smokes use) ----------
 let handler: ReturnType<typeof toNodeHandler> | undefined;
@@ -154,6 +190,29 @@ async function chatHistory(): Promise<CotalMessage[]> {
 const textsOf = (msgs: CotalMessage[]): string[] =>
   msgs.flatMap((m) => (m.parts ?? []).map((p) => (p as { text?: string }).text).filter((t): t is string => typeof t === "string"));
 
+async function observeUsername(owner: string, lifecycleUid: string, material: { actorToken: string; sentinelCreds: string }) {
+  const service = loadAuthServiceInfo(stateDir)!;
+  const res = await fetch(`${service.url}/exchange`, {
+    method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${service.cap}` },
+    body: JSON.stringify({ owner, actor: "worker", actorToken: material.actorToken }),
+  });
+  if (!res.ok) throw new Error(`the managed read witness could not exchange: ${res.status}`);
+  const { token } = await res.json() as { token: string };
+  let nc: Parameters<NonNullable<import("@cotal-ai/core").EndpointOptions["onConnection"]>>[0] | undefined;
+  const witness = new CotalEndpoint({
+    space: SPACE, servers: SERVER, bearer: token, sentinelCreds: material.sentinelCreds, lifecycleUid,
+    card: { owner, actor: "worker", name: "worker", kind: "agent" }, channels: [],
+    registerPresence: false, watchPresence: false, watchChannels: false, consume: false,
+    onConnection: (conn) => { nc = conn; },
+  });
+  await witness.start();
+  try {
+    if (!nc) throw new Error("the managed read witness did not report its connection");
+    const username = await readUsername(nc, SPACE, owner);
+    return { username, reverse: username && await readUsernameOwner(nc, SPACE, username) };
+  } finally { await witness.stop(); }
+}
+
 try {
   // ---------- A. a real user-auth mesh ----------
   console.log("A) cotal up --user-auth --idp <real IdP> --detach");
@@ -176,6 +235,10 @@ try {
   await must("actor grant cli (scope incl. admin)",
     ["actor", "grant", "cli", "--sub", sub, "--full", "--scope", "spawn,role:default,admin", "--label", "smoke human"]);
   const OWNER = await cotalAuthProvider.ownerForLogin({ store: workspaceSecretStore(root), dir: stateDir, space: SPACE });
+  const picked = await terminalLogin(true);
+  check("terminal login displays and confirms the suggested username", picked.status === 0 && picked.prompted && /Username:\s*human_42/.test(picked.out), picked.out);
+  const repeated = await terminalLogin(false);
+  check("the next terminal login reports the permanent name without asking again", repeated.status === 0 && !repeated.prompted && /Username:\s*human_42/.test(repeated.out), repeated.out);
   // A retained MANAGED agent principal: real user-mode agent authority (ledger row + sentinel +
   // actor token), the material a same-principal resume must reuse rather than replace.
   // The uid is minted into a NAMED value rather than inline, because the assertion below compares
@@ -212,6 +275,8 @@ try {
   await must("user-mode send seeds a CHAT message", ["send", "--channel", CHANNEL, SEEDED_TEXT, "--space", SPACE]);
   const seededTexts = textsOf(await chatHistory());
   check("the seeded message is on the wire before the cut", seededTexts.includes(SEEDED_TEXT), seededTexts);
+  const beforeUsername = await observeUsername(OWNER, RETAINED_UID, retained);
+  check("the registry holds both directions before the cut", beforeUsername.username === "human_42" && beforeUsername.reverse === OWNER, beforeUsername);
 
   // ---------- C. the preserve cut ----------
   console.log("C) down --preserve-state");
@@ -224,7 +289,7 @@ try {
   console.log("D) backup create (full)");
   await must("full backup on a user mesh", ["backup", "create", artifact]);
   const manifest = JSON.parse(readFileSync(join(artifact, "manifest.json"), "utf8")) as {
-    mode: string; selection: string; authority?: { mode: string; scheme: string; authoritySha256: string };
+    mode: string; selection: string; streams: { stream: string }[]; authority?: { mode: string; scheme: string; authoritySha256: string };
   };
   check("artifact records auth mode user + full selection", manifest.mode === "user" && manifest.selection === "full", manifest);
   // The artifact binds to USER authority: the provider scheme over the root chain AND the user
@@ -233,6 +298,7 @@ try {
     manifest.authority?.mode === "user" && /^cotal-user-authority\/v2:/.test(manifest.authority.scheme ?? ""),
     manifest.authority);
   check("the authority fingerprint is a sha256 value", /^[0-9a-f]{64}$/.test(manifest.authority?.authoritySha256 ?? ""));
+  check("the full artifact contains a native username registry snapshot", manifest.streams.some(({ stream }) => stream === `KV_${usernameBucket(SPACE)}`));
 
   // ---------- E. restore ----------
   console.log("E) up --restore → active journal, live identity plane, surviving state");
@@ -240,6 +306,8 @@ try {
     ["up", "--restore", artifact, "--detach", "--server", SERVER, "--space", SPACE]);
   const active = readJournal();
   check("restore completes to an active journal", active.state === "active", active);
+  const afterUsername = await observeUsername(OWNER, RETAINED_UID, retained);
+  check("both bindings survived the restore before a human exchange can assign them", afterUsername.username === beforeUsername.username && afterUsername.reverse === OWNER, afterUsername);
 
   // THE IDENTITY PLANE, not just the broker: a user-mode connect has to go login → exchange →
   // bearer → callout on the RESTORED mesh, and land on the wire as the derived principal.

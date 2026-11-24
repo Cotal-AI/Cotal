@@ -19,7 +19,7 @@ import { join } from "node:path";
 import { connect } from "@nats-io/transport-node";
 import { JetStreamApiCodes, JetStreamApiError, jetstreamManager } from "@nats-io/jetstream";
 import {
-  createSpaceAuth, deleteSpace, isReachable, mintCreds, mintLifecycleUid, newIdentity, serverConfig, setupSpaceStreams,
+  createSpaceAuth, deleteSpace, isReachable, mintCreds, mintLifecycleUid, newIdentity, serverConfig, setupSpaceStreams, usernameBucket,
   spaceDeletionStreams, standaloneConnectOpts,
 } from "../src/index.js";
 import { SMOKE_BROKER_TOKEN, awaitBrokerReady, emitSentinel, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
@@ -67,6 +67,9 @@ try {
   await awaitBrokerReady(() => isReachable(servers), { servers, attempts: 50, delayMs: 100 });
   await setupSpaceStreams({ servers, space, creds: await mintCreds(auth, newIdentity(), "provisioner") });
   const before = await present();
+  await check("default no-login setup creates no username stream", async () => {
+    expect(!before.includes(`KV_${usernameBucket(space)}`), { before });
+  });
   console.log(`space ${space}: ${before.length} of ${spaceDeletionStreams(space).length} deletion targets exist`);
 
   await check("an admin credential's delete throws and keeps every stream", async () => {
@@ -100,4 +103,4 @@ try {
 
 console.log(`\ndelete-space-auth.smoke: ${passed} passed, ${failed} failed`);
 emitSentinel({ passed, failed });
-if (failed > 0 || passed !== 3) process.exitCode = 1;
+if (failed > 0 || passed !== 4) process.exitCode = 1;

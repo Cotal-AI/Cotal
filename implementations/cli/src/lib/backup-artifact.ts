@@ -26,6 +26,7 @@ import {
   type SpaceBackupSelection,
   realDirNoSymlink,
   spaceBackupInventory,
+  usernameBucket,
 } from "@cotal-ai/core";
 import { codeSpan, CommandFailure, oneLine, protectedLocalEntries, readLocalRecordSource, readMaintenanceJournal, type MaintenanceAuthMode, type StoreIdentity } from "@cotal-ai/workspace";
 import { shellWord } from "./endpoint-errors.js";
@@ -252,8 +253,10 @@ function parseManifest(path: string, pinnedBytes?: Buffer): BackupManifest {
 /** The streams an artifact holds for its selection. A user-mode artifact holds no workflow store:
  *  the records store's lifecycle heads name credential ledger rows in the auth store, which a backup
  *  does not carry, so a restored head would name a row that is gone. */
-export function artifactStreams(manifest: Pick<BackupManifest, "format" | "space" | "selection" | "mode">): readonly string[] {
-  const inventory = spaceBackupInventory(manifest.space);
+export function artifactStreams(manifest: Pick<BackupManifest, "format" | "space" | "selection" | "mode"> & { streams?: readonly { stream: string }[] }): readonly string[] {
+  const usernames = manifest.mode === "user" && manifest.format === BACKUP_MANIFEST_FORMAT &&
+    manifest.streams?.some((row) => row.stream === `KV_${usernameBucket(manifest.space)}`);
+  const inventory = spaceBackupInventory(manifest.space, { usernames });
   if (manifest.selection !== "full") return inventory.registry;
   return inventory.backedUp.filter((stream) =>
     (manifest.format === BACKUP_MANIFEST_FORMAT || stream.name !== eventPayloadStream(manifest.space)) &&

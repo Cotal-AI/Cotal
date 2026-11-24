@@ -78,7 +78,7 @@ export async function fileMembershipStore(server: string, space: string, creds?:
 export async function postStart(
   server: string,
   space: string,
-  setup?: { creds: string },
+  setup?: { creds: string; userAuth?: boolean },
   seedFile?: ChannelRegistryFile,
   recreateIssuedStores?: string,
   recreateMembershipStore?: boolean,
@@ -102,6 +102,7 @@ export async function postStart(
       servers: server,
       space,
       creds: setup?.creds,
+      userAuth: setup?.userAuth,
       ...(convertMembership ? { recreateFileMembership: { creds: recreateCreds } } : {}),
     });
   } catch (error) {

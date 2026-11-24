@@ -522,6 +522,58 @@ in `packages/core/src/subjects.ts`; `LivenessAnswer`, `parseLivenessAnswer` and
 `responderFromProbe` in `packages/core/src/liveness.ts`; `CotalEndpoint.serveLiveness`,
 `serveDeliveryLiveness` and `probeLiveness` in `packages/core/src/endpoint.ts`.
 
+### 6.2 Username registry
+
+A per-user-auth space records immutable owner usernames in the JetStream KV bucket
+`cotal_usernames_<space>`, backed by `KV_cotal_usernames_<space>`. It keeps one value per key and
+has no expiry. The value of `owner.<owner>` is the UTF-8 username. The value of
+`username.<username>` is the UTF-8 owner token. A username has 1 to 40 characters drawn from
+`[a-z0-9_]`, may start with a digit, and is unique in the space. Open and no-login spaces have no
+bindings. The reserved owner `local` and platform owners (`p_`) never have bindings. Per-user-auth
+space setup creates the bucket before members connect.
+
+Only the auth service writes these keys during ordinary operation. It uses create-only revision
+checks to reserve the username key before writing the owner key. A reader MUST observe both keys
+agreeing before it reports an assignment. Not found, permission denied, and unavailable are
+distinct results. At startup the auth service reports every orphan key by name and deletes none.
+It completes a reservation only for the owner named by that key and only while that owner has no
+binding. Further reservations for that owner stay reserved and unused. Grant revocation and
+owner deletion MUST leave both keys in place. The service MUST NOT rewrite a binding, delete a
+reservation, or reassign a reserved username to a different owner.
+The stream MUST deny message deletion, purge, and rollup. Deleting the space destroys its
+entire registry, including all reservations.
+
+A space selects exactly one username source. The default suggests a name from verified
+`preferred_username`, then verified `name`, then a generated `user_<short>` name. Email addresses
+in name claims are not candidates. The operator MAY opt in to using the email local part before
+the generated name. A suggestion MAY gain a suffix if taken. Suggesting a name MUST NOT reserve
+it. The owner confirms a choice once at interactive sign-in. The auth service MUST refuse a
+confirmed choice already reserved by another owner or equal to `admin`, `cotal`, `support`,
+`root`, or `system`. It MUST NOT rewrite a confirmed choice or replace a confirmed binding.
+An exchange without confirmation can succeed without binding a name. An operator MAY backfill
+one already granted, unbound owner with a generated suggestion.
+A claims-source grant MUST refuse a supplied username. A directory-source grant can carry a
+trusted username. At the next exchange the service validates and binds that exact value or
+refuses an invalid, conflicting, or different binding. A directory row without a supplied value
+can exchange without creating a binding. Replacing an existing grant with a row that omits the
+username MUST leave any existing binding intact. The directory MAY reserve its exact name
+through the trusted auth host before writing the grant. Participants cannot rename a username.
+
+Space membership is the visibility boundary for username reads. Any member may read both
+directions in its space. Credentials outside the space cannot read either direction. The broker
+grants each member credential in a per-user-auth space publish access to the two
+Direct Get request subjects below, with responses on its existing connection inbox:
+
+- `$JS.API.DIRECT.GET.KV_cotal_usernames_<space>.$KV.cotal_usernames_<space>.owner.*`
+- `$JS.API.DIRECT.GET.KV_cotal_usernames_<space>.$KV.cotal_usernames_<space>.username.*`
+
+Member credentials MUST NOT hold registry KV publish, stream administration or consumer grants.
+Credentials minted before the registry grant was available get it at their next credential
+refresh. Reconnecting with the same credential does not add a grant.
+Direct Get may carry an explicit reply subject. Returned data is broker-marked and consists of
+the registry's fixed token values. It is not an application message or proof of sender identity.
+The registry does not participate in addressing, mentions or presence display.
+
 ---
 
 ## 7. Channels
