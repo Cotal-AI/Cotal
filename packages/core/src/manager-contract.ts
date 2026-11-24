@@ -3,6 +3,8 @@
  * Keeping one definition makes those suites validate the commands the manager actually serves.
  */
 
+import { AGENT_COMMAND_INPUT_SCHEMA } from "./agent-endpoint.js";
+
 /** Optional spawn strings must be nonblank when present. Omission can inherit a value;
  *  a blank string must not silently select that value. A fresh object per field is needed because
  *  the canonical serializer refuses a shared reference as circular. */
@@ -150,6 +152,9 @@ export const SPAWN_INPUT_SCHEMA = deepFreeze({
     reasoningEvents: { type: "boolean" },
     cwd: nonBlank(),
     prompt: nonBlank(),
+    // A harness command or skill the new agent runs as its first turn: the `command` input of SPEC
+    // 13.22, which the agent queues under the id the acceptance names. Never sent as a prompt.
+    firstCommand: AGENT_COMMAND_INPUT_SCHEMA,
     // An inline persona: the helper's definition, carried here instead of read from the catalog.
     // Its `prompt` is the persona body; the `prompt` above stays the first-turn kickoff.
     persona: {
@@ -231,6 +236,12 @@ export const SPAWN_OUTPUT_SCHEMA = deepFreeze({
     goalId: { type: "string" },
     fingerprint: { type: "string" },
     readinessDeadlineMs: { type: "integer", minimum: 1 },
+    // Present when the spawn named a `firstCommand`: the id the agent queues it under, which
+    // `command-state` reads (SPEC 13.22).
+    firstCommand: {
+      type: "object", additionalProperties: false, required: ["id"],
+      properties: { id: { type: "string", pattern: "^[a-z2-7]{26}$" } },
+    },
     executor: {
       type: "object",
       additionalProperties: false,

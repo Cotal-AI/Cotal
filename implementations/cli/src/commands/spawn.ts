@@ -102,7 +102,7 @@ import {
   registerEnrollmentMesh,
   noExchangeEndpoint,
 } from "./spawn-enrollment.js";
-import { refuseDirectSpawnName, spawnFlags, spawnRerun } from "./spawn-flags.js";
+import { refuseDirectSpawnName, spawnFlags, spawnRerun, unsupportedVariantRemedy } from "./spawn-flags.js";
 import { connectorListed, launchManagedPersona, reportAlreadyRunning } from "./spawn-managed-launch.js";
 import { uniqueMeshName, provisionFreshForeground, provisionRemoteUserForeground, provisionUserForeground } from "./spawn-foreground.js";
 export { runBearerPreflight } from "./spawn-foreground.js";
@@ -687,7 +687,9 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     });
   }
   if (variant && !connector.supportsModelVariant) {
-    throw new CommandFailure("refused", "USAGE_INVALID", `${agentType} connector does not support model variants (variant)`, { target: { space, path } });
+    throw new CommandFailure("refused", "USAGE_INVALID", `${agentType} connector does not support model variants (variant)`, {
+      target: { space, path }, remedy: unsupportedVariantRemedy(values.variant, def.variant, path),
+    });
   }
   if (values.prompt !== undefined && !connector.supportsPrompt) {
     throw new CommandFailure("refused", "USAGE_INVALID", `${agentType} connector does not support an initial prompt (prompt)`, { target: { space, path } });

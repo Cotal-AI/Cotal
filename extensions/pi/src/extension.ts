@@ -23,6 +23,7 @@ import { wrapped } from "./wrap.js";
 import { PiEvents } from "./events.js";
 import { askBeforeTools } from "./approvals.js";
 import { piCommandDispatcher, piRunsCommands, type PiCommandHost, type PiSessionView } from "./commands.js";
+import { savedProjectTrust } from "./trust.js";
 
 const CUSTOM_TYPE = "cotal-inbox";
 const RUNTIMES = Symbol.for("cotal.pi.runtimes");
@@ -103,14 +104,11 @@ export function persistProjectTrustPrompt(cwd: string): void {
 }
 
 /** Preserve Pi's own saved decision. With none, a supervised seat chooses untrusted for this run
- * only, because nobody is present to approve project code at its terminal. Pi's trust store is loaded
- * here, from the Pi host running this handler: the cotal CLI imports this package to register the
- * connector without Pi installed, so a top-level value import would fail that load. */
+ * only, because nobody is present to approve project code at its terminal. */
 export async function supervisedProjectTrust(cwd: string): Promise<ProjectTrustEventResult> {
-  const { getAgentDir, ProjectTrustStore } = await import("@earendil-works/pi-coding-agent");
-  const saved = new ProjectTrustStore(getAgentDir()).getEntry(cwd);
-  if (saved?.decision === true) return { trusted: "undecided" };
-  if (saved?.decision === false) {
+  const decision = await savedProjectTrust(cwd);
+  if (decision === true) return { trusted: "undecided" };
+  if (decision === false) {
     console.error(
       `[cotal-pi/trust] Project resources in ${cwd} were skipped because Pi's saved trust decision denies this directory. ` +
       `Run pi once there in a foreground terminal to review or change trust.`,

@@ -1,7 +1,7 @@
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { discardLaunchArtifacts, loadAgentFile, registry, writeLaunchArtifact, type Connector, type LaunchOpts, type LaunchSpec } from "@cotal-ai/core";
-import { aclEnv, nameEnv, connectorLaunchOptions, controlEndpoint, eventChannel, launchArmsEvents, launchEnv, materialEnv, mcpServerEnvKeys } from "@cotal-ai/connector-core";
+import { discardLaunchArtifacts, loadAgentFile, registry, writeLaunchArtifact, type Connector, type CommandListOpts, type LaunchOpts, type LaunchSpec } from "@cotal-ai/core";
+import { aclEnv, nameEnv, connectorLaunchOptions, controlEndpoint, eventChannel, firstCommandEnv, launchArmsEvents, launchEnv, materialEnv, mcpServerEnvKeys } from "@cotal-ai/connector-core";
 import { carriedForkRecord, claudeResumeTranscript, placeCarried, refuseCarriedLaunch } from "./carried.js";
 import { CLAUDE_READY_TEXTS, CLAUDE_STARTUP_BLOCKERS, CLAUDE_WORKSPACE_TRUST_REPLIES } from "./trust.js";
 import { assertChannelServerDeclared, claudeUserMcpEnvKeys } from "./user-mcp.js";
@@ -11,6 +11,7 @@ import { launchFieldArgs } from "./launch-fields.js";
 import { CLAUDE_EFFORT_LEVELS, listClaudeModels } from "./models.js";
 import { imageFolder } from "./turn-images.js";
 import { CLAUDE_PROVIDER_KEYS } from "./provider-keys.js";
+import { claudeCommandCatalog } from "./command-catalog.js";
 
 export { CLAUDE_PROVIDER_KEYS };
 
@@ -89,6 +90,11 @@ export const claudeConnector: Connector = {
   // askPermissions launches in the mode that asks, so it is declared only where the prompts are served.
   ...(process.platform === "win32" ? {} : { prompts: true as const, supportsAskPermissions: true }),
   supportsReasoningEvents: true, // thinking summaries on, and the mapper's reasoning option
+  // The seat's command mod runs every listed entry as a `command` (commands.ts). Windows seats run
+  // none yet (command-feed.ts).
+  ...(process.platform === "win32" ? {} : {
+    commands: { targets: ["command"] as const, list: (o: CommandListOpts) => claudeCommandCatalog(o, launchEnv({ providerKeys: CLAUDE_PROVIDER_KEYS, envAllow: o.envAllow })) },
+  }),
   pluginRoot: PLUGIN_ROOT,
   requires: ["claude"],
   listModels: listClaudeModels,
@@ -258,6 +264,7 @@ export const claudeConnector: Connector = {
       Object.assign(env, images.env);
       args.push(...images.args);
       Object.assign(env, materialEnv({ creds: opts.creds, servers: opts.servers, control, eventsRequired: opts.eventsRequired, eventPayloads: opts.eventPayloads, askPermissions: opts.askPermissions, reasoningEvents: opts.reasoningEvents, userAuth: opts.userAuth }, artifacts));
+      Object.assign(env, firstCommandEnv(opts.firstCommand, artifacts));
       // Default (no shared servers): pass the config inline, unchanged. With shared servers, write it
       // to a file instead and pass the path. Either way the secret stays a `${VAR}` reference (Claude
       // expands it from the child env at launch — see the mcpKeys forwarding above), never the resolved

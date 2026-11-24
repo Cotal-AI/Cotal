@@ -137,13 +137,25 @@ export function extensionMutationLockState(): ExtensionMutationLockState {
   return found.state === "active" ? { state: "active", owner: found.owner.pid } : { state: found.state };
 }
 
+export class CorruptExtensionsManifestError extends Error {
+  readonly diagnosis: string;
+  readonly remedy: string;
+
+  constructor(path: string, reason: string) {
+    const diagnosis = `corrupt extensions manifest ${path}: ${reason}`;
+    const remedy = "run `cotal ext seed --repair` to preserve the damaged file and rebuild the built-in inventory";
+    super(`${diagnosis}. ${remedy}`);
+    this.diagnosis = diagnosis;
+    this.remedy = remedy;
+  }
+}
+
 /** Load the manifest. Missing file → no extensions, and so is a config folder that is a file, which
  *  can hold none (every command that would use that folder is refused, naming it). A CORRUPT or
  *  unreachable file is a loud error (never treat installed extensions as absent — commands would
  *  silently vanish from help). */
 export function loadExtensionsManifest(): ExtensionsManifest {
   const p = extensionsManifestPath();
-  const repair = "run `cotal ext seed --repair` to preserve the damaged file and rebuild the built-in inventory";
   let parsed: unknown;
   try {
     if (!statSync(p).isFile()) throw new Error("not a regular file");
@@ -157,10 +169,10 @@ export function loadExtensionsManifest(): ExtensionsManifest {
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code === "ENOENT" && !lstatSync(p, { throwIfNoEntry: false })) return { extensions: [] };
     if ((e as NodeJS.ErrnoException).code === "ENOTDIR" && globalConfigDirProblem()) return { extensions: [] };
-    throw new Error(`corrupt extensions manifest ${p}: ${(e as Error).message}. ${repair}`);
+    throw new CorruptExtensionsManifestError(p, (e as Error).message);
   }
   const m = parsed as ExtensionsManifest | null;
-  if (!Array.isArray(m?.extensions)) throw new Error(`corrupt extensions manifest ${p}: no "extensions" array. ${repair}`);
+  if (!Array.isArray(m?.extensions)) throw new CorruptExtensionsManifestError(p, 'no "extensions" array');
   return m;
 }
 

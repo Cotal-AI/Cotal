@@ -1,5 +1,28 @@
 # @cotal-ai/cli
 
+## 0.176.6
+
+### Patch Changes
+
+- 664698a: Keep the running folder space marked in `cotal space` and `cotal status` when an offline registration shares its folder.
+- 6765f7f: Legacy `cotal up --foreground` waits up to 65 seconds for TIME-WAIT to clear and retries the same broker address instead of asking you to restart again.
+- 699a957: Tell users to remove `--adopt` or `--release` from `cotal run check` instead of asking for a handle.
+- 63458fc: Show the broker store repair before first start, include the identity provider in user-auth startup advice, explain when shutdown must wait for startup, and keep the deployment's space in channel receipt commands.
+- 447b4a4: JSON refusals identify the operation as `endpoint init` or `endpoint check` without changing the diagnostics or exit status.
+- 4275980: `cotal persona create` identifies a directory passed to `--file` or `--from` and shows which file to supply instead of reporting a permission denial.
+- f363540: Keep the selected space and server in the browse command printed after removing a local persona.
+- 16df2b0: Foreground `up` reports a broker crash and exits 5 even after the project folder is moved, and tells you to move it back before running the repair command.
+- 2df52e0: JSON observers report a removed working directory with an error record followed by an end record, keeping the original advice and exit status.
+- b448684: When a legacy stack shutdown names a different space, direct the caller to that space's project root in every output format.
+- 2ee0a1b: Explain why `space add --from` cannot prompt and show how to retry without changing plain output.
+- 5aacef7: When `spawn` receives both `--live-only` and `--runtime` in the foreground, it recommends dropping `--runtime` instead of switching to a manager that would reject `--live-only`.
+- 43931d7: Keep `result.folder.noManager` true in `cotal status --json` after `cotal down` stops a controller stack that was started with `--no-manager`.
+- 8304bd2: Fix native conversation connections to signed-in meshes on Windows. Cotal now opens the saved identity record with write access when flushing it to disk, so the request can reach the approval step instead of failing with an `fsync` permission error.
+- Updated dependencies [664698a]
+- Updated dependencies [d91500c]
+  - @cotal-ai/workspace@0.176.6
+  - @cotal-ai/core@0.176.6
+
 ## 0.176.5
 
 ### Patch Changes

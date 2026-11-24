@@ -18,7 +18,7 @@ export function endpointFailure(error: unknown, target: Record<string, unknown>,
   const code = nativeEndpointRefusal(native?.code);
   if ((!mayHaveInvoked || native?.outcome === "not-executed") && code) {
     const absoluteDirectoryRequired = mayHaveInvoked && native?.code === "failed-precondition"
-      && target.endpoint === BASELINE_LIFECYCLE_ENDPOINT && (target.command === "resolve-cwd" || target.command === "list-dir")
+      && target.endpoint === BASELINE_LIFECYCLE_ENDPOINT && (target.command === "resolve-cwd" || target.command === "list-dir" || target.command === "harness-commands")
       && error instanceof NativeReplyError && error.phase === "invocation"
       && error.response.reply.error?.details?.some((detail) => detail.kind === "ai.cotal.manager.absolute-directory-required");
     return new CommandFailure("refused", code, mayHaveInvoked ? "the native endpoint refused the call before execution" : "the native endpoint view could not be resolved under this caller", {
