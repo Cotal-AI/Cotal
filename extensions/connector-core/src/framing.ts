@@ -106,6 +106,7 @@ export const FROM_MIN_CODE_POINTS = " (unverified name)".length + 2;
 export function fmtFrom(i: InboxItem, maxCodePoints = FROM_MAX_CODE_POINTS): string {
   if (!Number.isInteger(maxCodePoints) || maxCodePoints < FROM_MIN_CODE_POINTS)
     throw new RangeError(`a sender label bound must be a whole number of at least ${FROM_MIN_CODE_POINTS} code points, got ${maxCodePoints}`);
+  if (i.verifiedFromLabel !== undefined) return capped(attributionSafe(i.verifiedFromLabel), maxCodePoints);
   const named = i.fromName.trim() !== "";
   const label = peerLabel({ name: named ? i.fromName : i.fromId, ...(i.fromRole ? { role: i.fromRole } : {}) });
   const marker = named ? " (unverified name)" : i.fromRole ? " (unverified role)" : "";

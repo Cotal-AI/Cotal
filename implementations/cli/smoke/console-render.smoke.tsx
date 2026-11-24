@@ -281,7 +281,7 @@ console.log("6. every topology lens labels a peer as the roster does");
   }));
   const labels = cards.map(peerLabel);
   check("the shared label keeps an equal role and turns brackets into a space",
-    labels.join(",") === "ada/ada,eve/ops x y,bob,cy/reviewer", labels);
+    labels.join(",") === "ada (role: ada),eve (role: ops x y),bob,cy (role: reviewer)", labels);
   for (const [variant, lens] of (["sequence", "matrix", "map"] as const).entries()) {
     const out = await paint(
       <Topo feed={feed} agents={agents} channels={[{ channel: "general", messages: feed.length, deliveryClass: "live" }]}
@@ -296,6 +296,34 @@ console.log("6. every topology lens labels a peer as the roster does");
     nodeLabel({ key: "a:local.blank", kind: "agent", name: "\n", id: "local.blank", lastTs: 0 }) === "local.blank");
   check("a managed row uses the id when the seat name is blank",
     formatManagedRow({ name: " ", id: "local.blank", agent: "claude", mode: "pty", status: "running", uptimeMs: 60_000, mesh: "idle", lifecycleUid: "u" }).startsWith("local.blank · claude"));
+}
+
+console.log("6b. matrix labels leave room for the heat column");
+{
+  const now = Date.now();
+  const cards: AgentCard[] = [
+    { id: "local.ada", name: "ada", kind: "agent", role: "ada" },
+    { id: "local.wide", name: "界界界界界界界界界界", kind: "agent", role: "reviewer" },
+  ];
+  const agents: Presence[] = cards.map((card) => ({ card, status: "idle", ts: now }));
+  const feed: FeedEntry[] = cards.map((card, i) => ({ id: `width-${i}`, ts: now - i, from: card, delivery: "multicast", channel: "general", text: "hi" }));
+  for (const width of [25, 72]) {
+    const out = await paint(
+      <Topo feed={feed} agents={agents} channels={[{ channel: "general", messages: 2, deliveryClass: "live" }]}
+        variant={1} width={width} height={16} blocked={false}
+        onFocus={() => {}} onOpenAgent={() => {}} onOpenMessage={() => {}} />,
+      width,
+    );
+    const lines = out.split("\n");
+    const header = lines.find((line) => line.includes("from \\ to")) ?? "";
+    const rows = lines.filter((line) => line.includes("○ ada") || line.includes("○ 界"));
+    const heatColumn = displayWidth(header.split("#")[0]!);
+    check(`matrix at ${width} columns aligns both role labels with an intact heat count`,
+      header.includes("#") && rows.length === 2 && rows.every((line) => {
+        const heat = /[░▒▓█] 1\s+│$/.exec(line);
+        return heat !== null && displayWidth(line.slice(0, heat.index)) === heatColumn && displayWidth(line) === width;
+      }), { header, rows });
+  }
 }
 
 console.log("7. short detail overlays clip the tail without squeezing any rows");

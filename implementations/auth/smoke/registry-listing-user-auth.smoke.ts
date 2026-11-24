@@ -13,8 +13,11 @@ import { join } from "node:path";
 import { SignJWT, exportJWK, generateKeyPair } from "jose";
 import { jetstream, jetstreamManager } from "@nats-io/jetstream";
 import { PermissionViolationError, type NatsConnection } from "@nats-io/transport-node";
-import { CotalEndpoint, dialerFor, mintCreds, mintLifecycleUid, newIdentity, readUsername, readUsernameOwner, setupSpaceStreams, standaloneConnectOpts, usernameBucket, UsernameRegistryReadError, type IssuedCaller } from "@cotal-ai/core";
+import { CotalEndpoint, chatSubject, dialerFor, mintCreds, mintLifecycleUid, newIdentity, provisionAgentDurables, readUsername, readUsernameOwner, seedChannelRegistry, setupSpaceStreams, standaloneConnectOpts, usernameBucket, UsernameRegistryReadError, type CotalMessage, type IssuedCaller } from "@cotal-ai/core";
 import { createSuite, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { MeshAgent } from "../../../extensions/connector-core/src/agent.js";
+import type { AgentConfig } from "../../../extensions/connector-core/src/config.js";
+import { fmtFrom } from "../../../extensions/connector-core/src/framing.js";
 import { deriveOwnerForIdpSubject, grantActor, loadOwnerSecret, platformControlOwner, revokeActor, startAuthService, type AuthServiceHandle } from "../src/index.js";
 import { authorityWriterGrants, openAuthorityClient } from "../src/authority-client.js";
 import { pickUsername } from "../src/username-login.js";
@@ -53,6 +56,103 @@ const idpToken = (subject: string, claims: Record<string, unknown>) => {
   return new SignJWT(claims).setProtectedHeader({ alg: "EdDSA", kid: jwk.kid }).setSubject(subject).setIssuer(ISS).setAudience(ISS)
     .setIssuedAt(now).setExpirationTime(now + 600).sign(privateKey);
 };
+
+async function awaitValue<T>(read: () => T | undefined): Promise<T | undefined> {
+  const until = Date.now() + 5_000;
+  do {
+    const value = read();
+    if (value !== undefined) return value;
+    await new Promise((r) => setTimeout(r, 25));
+  } while (Date.now() < until);
+}
+
+async function checkReaders(authService: AuthServiceHandle, username: string): Promise<void> {
+  const channel = "reader_test";
+  const allow = [channel];
+  const base = { space: a.space, servers: fx.servers };
+  const creds = await mintCreds(a.auth, newIdentity(), "provisioner");
+  await seedChannelRegistry({ ...base, creds, file: { channels: { [channel]: { replay: true, deliveryClass: "durable" } } } });
+  const provisioner = new CotalEndpoint({ ...base, creds, channels: [], consume: false, registerPresence: false, watchPresence: false, card: { kind: "endpoint", name: "test_provisioner" } });
+  const daemon = new CotalEndpoint({ ...base, creds: await mintCreds(a.auth, newIdentity(), "delivery"), channels: [], consume: false, registerPresence: false, watchPresence: true, card: { kind: "endpoint", name: "delivery" } });
+  const agents: MeshAgent[] = [];
+  let peer: CotalEndpoint | undefined;
+  try {
+    for (const ep of [provisioner, daemon]) { ep.on("error", console.error); await ep.start(); }
+    const lease = await daemon.acquireDeliveryLease(0);
+    await daemon.startPlane3((id, uid) => daemon.aclForOwner(id, uid));
+    await daemon.markDeliveryLeaseReady(0, lease);
+    const prepare = async (subject: string, owner: string, actor: string) => {
+      const lifecycleUid = mintLifecycleUid();
+      grantActor(a.stateDir, { owner, actor, lifecycleUid, scope: [], allowSubscribe: allow, allowPublish: allow });
+      await provisionAgentDurables(provisioner, { owner, actor, lifecycleUid }, { subscribe: allow, allowSubscribe: allow });
+      const bearer = async () => {
+        const result = await fetch(`${authService.url}/exchange`, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${authService.cap}` },
+          body: JSON.stringify({ actor, idpToken: await idpToken(subject, { preferred_username: subject }) }) });
+        const body = await result.json() as { token?: string; error?: string };
+        assert.ok(result.ok && body.token, body.error);
+        return body.token;
+      };
+      return { lifecycleUid, userAuth: { owner, actor, bearer, sentinelCreds: a.sentinelCreds } };
+    };
+    const start = async (grant: Awaited<ReturnType<typeof prepare>>) => {
+      const config: AgentConfig = { ...base, ...grant, name: grant.userAuth.actor, subscribe: allow, allowSubscribe: allow, allowPublish: allow, kind: "agent", tls: false };
+      const agent = new MeshAgent(config, {}, { eventsArmed: false });
+      agents.push(agent);
+      agent.on("error", console.error);
+      void agent.start();
+      assert.ok(await awaitValue(() => agent.connected ? true : undefined));
+      return agent;
+    };
+    const leftGrant = await prepare("lister-human", owner, "reviewer");
+    const left = await start(leftGrant);
+    const right = await start(await prepare("other-human", otherOwner, "reviewer"));
+    for (const agent of [left, right]) await agent.setChannelMode(channel, "quiet");
+    const sender = await prepare("lister-human", owner, "sender");
+    let nc: NatsConnection | undefined;
+    peer = new CotalEndpoint({ ...base, lifecycleUid: sender.lifecycleUid, bearer: sender.userAuth.bearer, sentinelCreds: a.sentinelCreds,
+      channels: [], registerPresence: false, watchPresence: false, card: { owner, actor: "sender", kind: "agent", name: "claimed_name" },
+      onConnection: (connection) => { nc = connection; } });
+    peer.on("error", console.error);
+    await peer.start();
+    const replies = new Set<string>();
+    peer.on("message", (m: CotalMessage) => replies.add(m.id));
+    const channelPost = async (id: string, targets?: string[], age = 0) => {
+      const wire = { id, ts: Date.now() - age, space: a.space, from: peer!.ref(), channel, mentions: ["reviewer"],
+        ...(targets === undefined ? {} : { mentionIds: targets }), parts: [{ kind: "text", text: id }] };
+      await nc!.request(chatSubject(a.space, owner, "sender", channel), JSON.stringify(wire), { timeout: 2_000 });
+    };
+    const saw = (agent: MeshAgent, id: string) => awaitValue(() => agent.peekInbox().find((i) => i.id === id));
+    await channelPost("only_right", [right.ep.card.id]);
+    const foreign = await saw(right, "only_right");
+    suite.check("only the addressed same-name seat observes mention priority", foreign?.mentionsMe === true && (await saw(left, "only_right"))?.mentionsMe === false);
+    suite.check("foreign prompt attribution ignores the claimed sender name and uses its registered address",
+      foreign !== undefined && !!await awaitValue(() => fmtFrom(foreign) === `${username}/sender` ? true : undefined));
+    await channelPost("empty_ids", []);
+    suite.check("an explicit empty hint does not fall back to names", (await saw(left, "empty_ids"))?.mentionsMe === false && (await saw(right, "empty_ids"))?.mentionsMe === false);
+    await channelPost("legacy_names");
+    suite.check("without IDs both legacy name matches retain priority", (await saw(left, "legacy_names"))?.mentionsMe === true && (await saw(right, "legacy_names"))?.mentionsMe === true);
+    const held = await peer.unicast(right.ep.card.id, "reply to the verified sender");
+    assert.ok(await saw(right, held.id));
+    suite.check("an unrostered foreign sender cannot be reached by its claimed name", await right.dm("claimed_name", "not sent").then(() => false, () => true));
+    const secondHeld = await peer.unicast(right.ep.card.id, "reply to this by principal");
+    assert.ok(await saw(right, secondHeld.id));
+    const reply = await right.dm(peer.card.id, "principal reply", { replyTo: secondHeld.id });
+    suite.check("an explicit reply reaches its unrostered sender by principal", reply.recipient.id === peer.card.id && !!await awaitValue(() => replies.has(reply.msg.id) ? true : undefined));
+    await left.stop();
+    await channelPost("recent_durable", [left.ep.card.id]);
+    await channelPost("historical_ids", [left.ep.card.id], 6 * 60_000);
+    const resumed = await start(leftGrant);
+    suite.check("a current copy after reconnect retains its principal hint", (await saw(resumed, "recent_durable"))?.mentionsMe === true);
+    const history = await saw(resumed, "historical_ids");
+    suite.check("a historical copy retains its hint without becoming an automatic wake", history?.historical === true && history.mentionsMe &&
+      !resumed.peekInbox("automatic").some((item) => item.id === "historical_ids"));
+  } finally {
+    await peer?.stop().catch(() => {});
+    for (const agent of agents.reverse()) await agent.stop().catch(() => {});
+    await daemon.stop().catch(() => {});
+    await provisioner.stop().catch(() => {});
+  }
+}
 
 let service: AuthServiceHandle | undefined;
 const services: AuthServiceHandle[] = [];
@@ -358,6 +458,7 @@ try {
   const generationOf = (c: IssuedCaller | Error | undefined) => (c instanceof Error || c === undefined ? undefined : c.generation);
   suite.check("each connection gets its own listing generation",
     generationOf(other) !== undefined && generationOf(caller) !== undefined && generationOf(other) !== generationOf(caller), [generationOf(caller), generationOf(other)]);
+  await checkReaders(service, names[0]!);
   for (const lookup of [() => readUsername(readerNc!, a.space, owner), () => readUsernameOwner(readerNc!, a.space, base)])
     await assert.rejects(lookup, (error: unknown) => error instanceof UsernameRegistryReadError && error.code === "denied");
   suite.check("both lookups distinguish a denied key read from absence", true);
