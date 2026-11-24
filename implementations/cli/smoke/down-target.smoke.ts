@@ -316,6 +316,9 @@ try {
     const refusal = await rejection(run([], { ...selectors, "dry-run": true, [format]: true }));
     check(`a ${format} ledger preview by ${Object.keys(selectors).join(" and ")} keeps the original preview`,
       refusal?.code === "UNSUPPORTED" && refusal.remedy === `omit --${format} from the original command; keep --dry-run and the same deployment selection`, refusal);
+    const apply = await rejection(run([], { ...selectors, [format]: true }));
+    check(`a ${format} ledger teardown by ${Object.keys(selectors).join(" and ")} keeps the deployment selection`,
+      apply?.code === "UNSUPPORTED" && apply.remedy === `omit --${format} from the original command; keep the same deployment selection`, apply);
   }
 
   // No meshes recorded anywhere → `down web` has no space to look in. The target resolves before
