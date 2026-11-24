@@ -54,6 +54,7 @@ import { readStackJournal, recordResetStore, STACK_DEFINITION, stackJournalPath 
 import { rollbackRestoreWithBroker } from "../lib/controller-restore.js";
 import { maintenanceNextStep, restoreNextStep } from "../lib/restore.js";
 import { displayCmd, displayRemedy } from "../lib/self-exec.js";
+import { FlagValueRefusal } from "../lib/flag-value-refusal.js";
 import { MissingFlags } from "../lib/missing-flags.js";
 import { attemptProcessesGone } from "../lib/isolated-broker.js";
 import { observeServiceProcess, serviceInstances } from "../lib/service-instances.js";
@@ -321,6 +322,20 @@ function checkCleanStorePath(root: string, requested: string): void {
   try { stat = lstatSync(requested, { throwIfNoEntry: false }); }
   catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOTDIR") {
+      let blocked: string | undefined;
+      for (let dir = dirname(requested); dir !== dirname(dir); dir = dirname(dir)) {
+        try {
+          if (!statSync(dir).isDirectory()) blocked = dir;
+          break;
+        } catch (cause) {
+          if ((cause as NodeJS.ErrnoException).code !== "ENOTDIR") break;
+        }
+      }
+      const problem = blocked ? `${blocked} is not a directory` : "a parent is not a directory";
+      throw new FlagValueRefusal(`the store path ${requested} cannot be used: ${problem}; nothing was removed`,
+        "correct --store-dir, or omit it if you intend to use the recorded store");
+    }
     if (code !== "EACCES" && code !== "EPERM") throw error;
     let blocked: string | undefined, chmod: string | undefined;
     for (let dir = dirname(requested); dir !== dirname(dir); dir = dirname(dir)) {
