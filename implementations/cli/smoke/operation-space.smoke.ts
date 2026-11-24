@@ -612,6 +612,18 @@ const combinedRuntime = cotal("spawn", "--foreground", "--runtime", "pty", "--js
 check("foreground spawn with -d already supplied tells the operator to omit --foreground for a managed launch",
   combinedRuntime.status === 1 && combinedRuntime.envelope?.error?.code === "USAGE_INVALID"
     && combinedRuntime.envelope.error.remedy?.endsWith("or omit --foreground to launch through a manager") === true, shown(combinedRuntime));
+for (const mode of [["--foreground"], []]) {
+  const args = ["--dry-run", "--json", ...mode, "--live-only"];
+  const denied = cotal("spawn", ...args, "--runtime", "pty");
+  check(`spawn ${mode[0] ?? "with default placement"} and --live-only only recommends omitting --runtime`,
+    denied.status === 1 && denied.envelope?.error?.code === "USAGE_INVALID"
+      && denied.envelope.error.remedy === "omit --runtime to launch in this terminal", shown(denied));
+  const retry = cotal("spawn", ...args);
+  const result = retry.envelope?.result;
+  check(`the ${mode[0] ? "explicit" : "default"} foreground retry preserves --live-only without allocating or launching`,
+    retry.status === 0 && retry.envelope?.outcome === "ok" && result?.kind === "direct-launch-preview"
+      && result.allocated === false && result.launched === false, shown(retry));
+}
 const noRuntime = previewRuntime();
 check("without --runtime the preview names none and checks none",
   noRuntime.r.status === 0 && noRuntime.p?.result?.requested?.runtime === null && noRuntime.p.result.runtimeCheck === null, shown(noRuntime.r));

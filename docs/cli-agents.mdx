@@ -270,11 +270,13 @@ With `-d --json`, an invalid agent name or a local resume that needs `--on` prod
 `spawn` refuses `--allow-stale` with "manifest deployment options belong to `cotal team deploy <file>`, not spawn".
 `--runtime` is a per-seat choice on a managed launch. Omitted, the seat uses the runtime that manager
 was started with. To run in this terminal, omit `--runtime`. Omit `--json` or `--plain` too, unless
-you are previewing. To keep `--runtime`, replace `--foreground` with `-d`, or use `--on <instance>`
-without `--foreground` to attach. For a structured launch receipt with a manager pin, use both `-d`
-and `--on <instance>`. `auto` names a manager's own runtime, so it is refused for one seat. Any other
-runtime has to be installed and reachable on the host the manager runs on, and the CLI can check
-that only when that host is this machine. When the launch can reach only this root's own manager,
+you are previewing. To keep `--live-only`, omit `--runtime` and stay in this terminal. To keep
+`--runtime`, remove `--live-only` so the launch does not skip the durable backstop. Replace
+`--foreground` with `-d`, or use `--on <instance>` without `--foreground` to attach. For a
+structured launch receipt with a manager pin, use both `-d` and `--on <instance>`. `auto` names a
+manager's own runtime, so it is refused for one seat. Any other runtime has to be installed and
+reachable on the host the manager runs on, and the CLI can check that only when that host is this
+machine. When the launch can reach only this root's own manager,
 because `--on` names it or it is the only manager running, the CLI resolves the runtime through the
 installed-extension lookup `up --runtime` uses. An unknown, uninstalled or unreachable runtime is
 then refused `DEPENDENCY_UNAVAILABLE`, exit 2, before the launch is sent, and for a known runtime
