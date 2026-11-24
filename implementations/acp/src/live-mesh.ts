@@ -74,6 +74,18 @@ export function managerChoice(instanceId: string, roster: readonly Presence[], h
   return { instanceId, ...(seen ? { host: seen } : {}), local: seen === here, live: row !== undefined };
 }
 
+/** Managers as choices, each from its current roster row when that names its host, else from the
+ *  host it reports in its own status. On a space where people sign in, the space's own manager has
+ *  no row under the person's principal, so its report describes it. */
+export function managerChoices(ids: readonly string[], roster: readonly Presence[], here: string, owner: string | undefined, reported: (instanceId: string) => Promise<string | undefined>): Promise<ManagerChoice[]> {
+  return Promise.all(ids.map(async (instanceId) => {
+    const seen = managerChoice(instanceId, roster, here, owner);
+    if (seen.host) return seen;
+    const host = await reported(instanceId);
+    return { instanceId, ...(host ? { host } : {}), local: host === here, live: host !== undefined };
+  }));
+}
+
 /** After a connection error, how often and how many times the bridge asks whether its sign-in changed. */
 const SIGN_IN_CHECK_MS = 5_000;
 const SIGN_IN_CHECKS = 12;
@@ -306,8 +318,6 @@ function controls(options: LiveMeshOptions, c: Connected) {
     return askManager(client, t.space, t.server, op, args, t.auth, t.auth.bearer ? "owner" : "any", undefined, { instanceId, expectedSeat: { name: seat.name, ...run }, expectedTarget: run });
   };
 
-  const choice = (instanceId: string): ManagerChoice => managerChoice(instanceId, observer.getRoster(), hostname(), started?.owner);
-
   /** On a user-auth space, the person's managers as the space's auth service lists them. The list
    *  spends no selection, a manager whose presence has not arrived is still listed, and each later
    *  call is pinned to a manager it names, which the exchange authorizes again. */
@@ -316,15 +326,20 @@ function controls(options: LiveMeshOptions, c: Connected) {
     own = new Set(plan.own);
     return plan;
   };
-  return { ctx, client, resolve, ask, seatCommand, choice, yourManagers, own: (): ReadonlySet<string> => own };
+  return { ctx, client, resolve, ask, seatCommand, yourManagers, own: (): ReadonlySet<string> => own };
 }
 
 type Controls = ReturnType<typeof controls>;
 
 /** The reads a new thread's options come from, and the launch. */
 function launchCalls(c: Connected, p: Controls, defaultPersona: string | null | undefined): Pick<Mesh, "catalogs" | "managers" | "manager" | "personas" | "spawn"> {
-  const { target, started } = c;
-  const { client, resolve, ask, choice, yourManagers } = p;
+  const { target, started, observer } = c;
+  const { client, resolve, ask, yourManagers } = p;
+  /** The host one manager reports in its own status, pinned to it. */
+  const reportedHost = async (instanceId: string): Promise<string | undefined> => {
+    const t = await resolve("control-caller-privileged", instanceId);
+    return reportedManagerHost(client, t.space, t.server, t.auth, instanceId);
+  };
   return {
     async catalogs(instanceId) {
       const [status, models] = await Promise.all([ask("managerStatus", undefined, instanceId), ask("models", undefined, instanceId)]);
@@ -353,7 +368,7 @@ function launchCalls(c: Connected, p: Controls, defaultPersona: string | null | 
       if (started) {
         const plan = await yourManagers();
         if (plan.why) throw new NoLaunchManager(plan.why);
-        return plan.launch.map((instanceId) => choice(instanceId));
+        return managerChoices(plan.launch, observer.getRoster(), hostname(), started.owner, reportedHost);
       }
       const t = await resolve("control-caller-privileged");
       const ids = await liveManagerIds(t.space, t.server, t.auth).catch((e: unknown) => {
@@ -377,12 +392,8 @@ function launchCalls(c: Connected, p: Controls, defaultPersona: string | null | 
     },
 
     async manager(instanceId) {
-      const seen = choice(instanceId);
-      if (seen.host) return seen;
-      // A manager whose presence row is not found here, such as the space's own, is asked its host.
-      const t = await resolve("control-caller-privileged", instanceId);
-      const host = await reportedManagerHost(client, t.space, t.server, t.auth, instanceId);
-      return { instanceId, ...(host ? { host } : {}), local: host === hostname(), live: host !== undefined };
+      const [held] = await managerChoices([instanceId], observer.getRoster(), hostname(), started?.owner, reportedHost);
+      return held!;
     },
 
     async personas(instanceId) {
