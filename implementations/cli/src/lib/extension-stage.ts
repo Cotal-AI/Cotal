@@ -34,16 +34,17 @@ function checkedRecord(): Promotion | undefined {
   return record;
 }
 /** Complete a journaled directory promotion while holding the ordinary closure and prefix barriers. */
-export function recoverExtensionPromotion(prepareForUpdate = false): boolean {
-  if (!canRecoverConnectorConfig() || !checkedRecord()) return false;
+export function recoverExtensionPromotion(prepareForUpdate = false, onChange?: () => void): boolean {
+  if (!canRecoverConnectorConfig(onChange) || !checkedRecord()) return false;
   const releaseClosure = claimUpdateClosureAccess(true);
   try {
-    if (!canRecoverConnectorConfig()) return false;
+    if (!canRecoverConnectorConfig(onChange)) return false;
     const release = claimExtensionMutation();
     try {
       const record = checkedRecord();
       if (!record) return false;
       finish(record, prepareForUpdate);
+      onChange?.();
       return true;
     }
     finally { release(); }

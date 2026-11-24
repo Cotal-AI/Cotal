@@ -5,12 +5,15 @@
  *  - T3 Code: an instance per space runs this Cotal's Node and entry with `acp --space`; a hand-added
  *    instance for the space is adopted, keeping its id, name, enablement and other keys; every other
  *    setting stays byte for byte; the old file is backed up beside it; a rerun writes nothing; a file
- *    that does not parse and an id held by another provider are refused; the Cotal locations the shell
+ *    that does not parse is refused; setup leaves unrelated providers in place; the Cotal locations the shell
  *    set travel in the instance's environment; a long space name still makes a valid id; refresh
  *    points every Cotal instance at the running Cotal; status names a command that is gone.
  *  - Zed: a custom agent per space, written into a settings file with comments and trailing commas
  *    that keeps them; a hand-added agent without a `type` is adopted and keeps the keys Zed wrote; a
  *    settings file reached through a symbolic link stays linked.
+ *  - The command survives an upgrade: under the get.cotal.ai launcher it names the launcher's Node
+ *    link rather than the version folder Node runs from, and it names the install's own entry rather
+ *    than the generation this process loaded; status counts a link to this Node as this Node.
  *  - Thread links read back per space in the order they were stored, and a broken line is refused.
  *  - The launcher finds `cotal` on PATH or in `~/.local/bin`, runs `cotal acp <args>` and passes its
  *    exit status on; with no Cotal, or a Cotal without its ACP extension, it serves a stub agent that
@@ -39,6 +42,7 @@ const { t3Provider, t3SettingsPath, t3InstanceId } = await import("../src/setup/
 const { zedProvider, zedSettingsPath } = await import("../src/setup/zed.js");
 const { threadStore } = await import("../src/cli.js");
 const { findCotal, serveStub } = await import("../src/launcher.js");
+const { acpCommand, staleCommand } = await import("../src/setup/command.js");
 
 // A Node and an entry that exist, as the CLI's own argv names them.
 const node = process.execPath;
@@ -107,8 +111,24 @@ check("refresh points every Cotal instance at the running Cotal, keeping each sp
 rmSync(moved[1]!);
 const stale = t3Provider.status!({ version: "0", skillsRemedy: "" });
 check("T3 status warns when an instance's entry is gone, and says to run cotal update", stale[0]?.state === "warn" && stale[0].text.includes(`${moved[1]} is gone`) && stale[0].text.includes("cotal update"), stale);
-writeFileSync(t3, `{"providerInstances": {"cotal-other": {"driver": "codex"}}}`);
-check("an id another provider holds is refused, naming it", throws(() => t3Run("other"))?.includes("already has a provider cotal-other") === true);
+const unrelated = Object.fromEntries(([
+  ["existing-provider", "another-agent", ["acp", "--space", "acp-audit"]],
+  ["cotal-acp-audit", node, [join(home, "another-agent.js"), "acp", "--space=acp-audit"]],
+  ["cotal-acp-audit-2", "another-agent", [entry, "acp", "--space", "acp-audit"]],
+] satisfies [string, string, string[]][]).map(([id, commandPath, commandArgs]) => [id, {
+  driver: "acpRegistry", displayName: "Existing provider", enabled: true, config: { source: "local", commandPath, commandArgs },
+}]));
+writeFileSync(t3, JSON.stringify({ providerInstances: unrelated }));
+check("T3 status ignores other launchers with ACP space arguments", t3Provider.status!({ version: "0", skillsRemedy: "" })[0]?.state === "off");
+const auditSetup = t3Run("acp-audit");
+const audit = readFileSync(t3, "utf8");
+const auditInstances = (JSON.parse(audit) as typeof after).providerInstances;
+check("setup preserves unrelated ACP providers and adds Cotal under a free id",
+  auditSetup.includes("provider cotal-acp-audit-3 for acp-audit added") &&
+  Object.entries(unrelated).every(([id, provider]) => JSON.stringify(auditInstances[id]) === JSON.stringify(provider)) &&
+  auditInstances["cotal-acp-audit-3"]?.displayName === "Cotal (acp-audit)", auditInstances);
+check("rerunning setup uses the newly added provider", t3Run("acp-audit").includes("provider cotal-acp-audit-3 for acp-audit is current") && readFileSync(t3, "utf8") === audit);
+check("refresh does not rewrite unrelated ACP providers", t3Provider.refresh!.run({ cotal }) === "providers for acp-audit are current" && readFileSync(t3, "utf8") === audit);
 writeFileSync(t3, "{ not json");
 check("a file that does not parse is refused and left as it was", throws(() => t3Run("demo"))?.includes("is not valid T3 Code settings") === true && readFileSync(t3, "utf8") === "{ not json");
 const long = "s".repeat(64);
@@ -173,8 +193,9 @@ if (process.platform !== "win32") {
   const bin = join(home, "bin");
   mkdirSync(bin);
   const log = join(home, "cotal-args");
+  const pathLog = join(home, "cotal-path");
   const fakeCotal = (dir: string, withAcp: boolean) => {
-    writeFileSync(join(dir, "cotal"), `#!/bin/sh\nif [ "$1 $2" = "acp --help" ]; then exit ${withAcp ? 0 : 1}; fi\necho "$@" > "${log}"\nexit 7\n`);
+    writeFileSync(join(dir, "cotal"), `#!/bin/sh\nif [ "$1 $2" = "acp --help" ]; then exit ${withAcp ? 0 : 1}; fi\necho "$@" > "${log}"\nprintf '%s' "$PATH" > "${pathLog}"\nexit 7\n`);
     chmodSync(join(dir, "cotal"), 0o755);
   };
   check("with no cotal anywhere the launcher finds none", findCotal({ PATH: bin }, "linux", home) === undefined);
@@ -185,13 +206,12 @@ if (process.platform !== "win32") {
   check("a cotal on PATH comes first", findCotal({ PATH: bin }, "linux", home) === join(bin, "cotal"));
 
   const launcher = join(import.meta.dirname, "..", "src", "cotal-acp.ts");
-  const tsx = join(import.meta.dirname, "..", "..", "..", "node_modules", ".bin", "tsx");
+  const tsx = import.meta.resolve("tsx");
   /** Run the launcher, writing each of `requests` once the reply before it arrived, then closing stdin. */
   const run = (path: string, args: string[], requests: object[] = []): Promise<{ code: number | null; stdout: string }> => new Promise((resolve) => {
-    // The child gets no COTAL_ variable, since the session running the smoke may hold a live credential,
-    // and no npm global prefix, so a Cotal installed on this machine stays out of reach.
+    // Keep live Cotal credentials out and use Node by absolute path so command discovery sees only fixtures.
     const ambient = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_")));
-    const child = spawn(tsx, [launcher, ...args], { env: { ...ambient, HOME: home, PATH: `${path}:${join(process.execPath, "..")}`, npm_config_global_prefix: "" }, stdio: ["pipe", "pipe", "ignore"] });
+    const child = spawn(node, ["--import", tsx, launcher, ...args], { env: { ...ambient, HOME: home, PATH: path, npm_config_global_prefix: "" }, stdio: ["pipe", "pipe", "ignore"] });
     let stdout = "";
     let sent = 0;
     const next = () => (sent < requests.length ? child.stdin.write(`${JSON.stringify(requests[sent++])}\n`) : child.stdin.end());
@@ -204,6 +224,8 @@ if (process.platform !== "win32") {
   });
   const ran = await run(bin, ["--space", "demo"]);
   check("the launcher runs `cotal acp <args>` and passes its exit status on", ran.code === 7 && readFileSync(log, "utf8").trim() === "acp --space demo", { ran, args: existsSync(log) ? readFileSync(log, "utf8") : null });
+  const launcherPath = existsSync(pathLog) ? readFileSync(pathLog, "utf8") : null;
+  check("the launcher PATH contains only the fixture directory", launcherPath === bin, { expected: bin, actual: launcherPath });
 
   fakeCotal(bin, false);
   rmSync(join(home, ".local", "bin", "cotal"));
@@ -248,6 +270,40 @@ if (process.platform !== "win32") {
   const e = await conn.agent.request(methods.agent.session.new, { cwd: home, mcpServers: [] }).then(() => undefined, (err: { code?: number }) => err);
   check("its session/new fails with -32000", e?.code === -32000, e);
   conn.close();
+}
+
+// ── Paths that survive an upgrade ────────────────────────────────────────────────────────────────
+{
+  const root = join(home, "launcher-root");
+  mkdirSync(join(root, "nodebin"), { recursive: true });
+  const link = join(root, "nodebin", "node");
+  symlinkSync(node, link);
+  process.env.COTAL_LAUNCHER = "1";
+  process.env.npm_config_prefix = root;
+  check("under the get.cotal.ai launcher the command is its Node link, not the folder Node runs from", acpCommand(cotal, "demo").command === link, acpCommand(cotal, "demo"));
+  check("status counts the launcher's Node link as this Cotal's Node", staleCommand(link, [entry, "acp", "--space", "demo"], node) === undefined, staleCommand(link, [entry, "acp", "--space", "demo"], node));
+  rmSync(link);
+  symlinkSync("/bin/sh", link);
+  check("a launcher link to another Node is not used", acpCommand(cotal, "demo").command === node, acpCommand(cotal, "demo"));
+  delete process.env.COTAL_LAUNCHER;
+  delete process.env.npm_config_prefix;
+  check("without the launcher the command is this Cotal's Node", acpCommand(cotal, "demo").command === node);
+
+  // An install whose entry is loaded from a generation, as `cotal update` leaves it.
+  const lib = join(home, "lib");
+  const pkg = JSON.stringify({ name: "cotal-ai", bin: { cotal: "./dist/cotal.js" } });
+  const logical = join(lib, "node_modules", "cotal-ai", "dist", "cotal.js");
+  const loaded = join(lib, ".cotal-generations", "0123456789abcdef0123456789abcdef", "cotal-ai", "dist", "cotal.js");
+  for (const file of [logical, loaded]) {
+    mkdirSync(join(file, ".."), { recursive: true });
+    writeFileSync(file, "");
+    writeFileSync(join(file, "..", "..", "package.json"), pkg);
+  }
+  const identity = Symbol.for("cotal.execution.identity");
+  Reflect.set(globalThis, identity, Object.freeze({ logicalEntry: logical, loadedEntry: loaded }));
+  check("the command runs the install's own entry, not the generation this process loaded", acpCommand([node, loaded], "demo").args[0] === logical, acpCommand([node, loaded], "demo"));
+  check("an entry that is not the loaded generation is kept", acpCommand(cotal, "demo").args[0] === entry, acpCommand(cotal, "demo"));
+  Reflect.deleteProperty(globalThis, identity);
 }
 
 rmSync(home, { recursive: true, force: true });

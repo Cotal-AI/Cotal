@@ -118,6 +118,11 @@ async function checkOpenRestartAdvice(space: string, server: string, health: str
   const port = Number(new URL(server).port);
   renameSync(openRoot, moved);
   try {
+    const implicit = cliIn(moved, ["status", "--components"]);
+    const implicitRows = implicit.stdout.split("Component Health")[1] ?? "";
+    check("implicit component status preserves the reachable listener and move-back guidance for an open project",
+      implicit.status === 3 && /target\s+refused/.test(implicitRows) && implicitRows.includes(`registered ${server} · reachable · stack health cannot be checked at the recorded project folder`)
+      && implicitRows.includes(`move this folder back to ${openRoot}`), `${implicit.stdout}${implicit.stderr}`);
     const status = cliIn(moved, ["status", "--components", "--space", space]);
     const rows = status.stdout.split("Component Health")[1] ?? "";
     check("moving an open project preserves listener reachability without grading the broker absent",

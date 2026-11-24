@@ -1,5 +1,16 @@
 # @cotal-ai/core
 
+## 0.176.5
+
+No changes in this release.
+
+## 0.176.4
+
+### Patch Changes
+
+- e0a0bb7: Plain chat accepts multiline drafts at the stated limit, chat retry guidance keeps your original options, and the terminal console quits cleanly after the broker stops.
+- 73f4306: All-channel history returns retained posts in order even when a deeply dotted channel shares a large history with other channels.
+
 ## 0.176.3
 
 No changes in this release.

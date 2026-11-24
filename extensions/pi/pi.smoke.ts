@@ -1447,7 +1447,7 @@ for (const assistant of [
       typeof launch.sessionStatePath === "string" && env.COTAL_PI_SESSION_STATE === launch.sessionStatePath,
       "managed Pi launch env carries the exact session-state path",
     );
-    ok(launch.args.some((arg) => arg.endsWith("standalone.js")), "managed Pi launches use the standalone bundle");
+    ok(launch.args.some((arg) => arg.endsWith("spawn-entry.js")), "managed Pi launches use the dedicated bundled entry");
     if (env.COTAL_PI_PERSONA_FILE) rmSync(dirname(env.COTAL_PI_PERSONA_FILE), { recursive: true, force: true });
 
     assert.throws(

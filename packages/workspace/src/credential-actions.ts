@@ -63,8 +63,9 @@ function tokenRefusal(what: "credential label" | "--role", value: string, other:
   const found = new RegExp(other.source, "u").exec(value)?.[0];
   if (found === undefined) return new CommandFailure("refused", "USAGE_INVALID", `the ${what} is empty; ${noun} takes ${allowed}`, { remedy: pass, selfContained: true });
   const fixed = value.replace(new RegExp(other.source, "gu"), "_");
+  const example = what === "--role" && fixed.startsWith("-") ? `\`--role=${fixed}\`` : fixed;
   return new CommandFailure("refused", "USAGE_INVALID", `the ${what} "${oneLine(boundedValue(value, SHOWN_VALUE_MAX))}" has "${oneLine(found)}", which ${noun} cannot hold; ${noun} takes only ${allowed}`, {
-    remedy: [...fixed].length > SHOWN_VALUE_MAX ? pass : `${pass}, such as ${fixed}`,
+    remedy: [...fixed].length > SHOWN_VALUE_MAX ? pass : `${pass}, such as ${example}`,
     selfContained: true,
   });
 }

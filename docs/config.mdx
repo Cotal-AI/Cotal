@@ -207,6 +207,8 @@ A changed mode produces `PREFERENCES_MODE_CHANGED`; a read-only file does not pr
 Invalid JSON, an unsupported schema version, an unknown key, or an invalid value stops commands that use defaults.
 Help, completion, `version`, `docs`, and `daemon` remain available. Machine-daemon operations do not use preference defaults. `status` reports the unreadable part and exits 4.
 The error names the file and fix. Cotal never resets it automatically.
+With `--json`, `watch`, `history --follow` and `channel members --follow` write an `error` record
+with the fix and an `end` record with reason `setup-failed`, without a snapshot.
 An initial UTF-8 byte order mark is accepted and omitted on the next write. UTF-16 is refused with the instruction to save as UTF-8.
 Symlinks, FIFOs, devices, and folders at `preferences.json` are refused with `PERMISSION_DENIED` before opening them.
 
@@ -538,6 +540,8 @@ Machine state lets `cotal spawn` find a mesh from another directory. It lives in
 POSIX or `%LOCALAPPDATA%\Cotal` on Windows. `COTAL_HOME` overrides this location.
 
 `COTAL_HOME` must be absolute and name a directory. A relative path refuses `USAGE_INVALID`.
+With `--json`, `watch`, `history --follow` and `channel members --follow` write an `error` record
+with the remedy and an `end` record with reason `setup-failed` before exiting 1 without connecting.
 A file at that path or an ancestor refuses `SCHEMA_INVALID`, except for help and shell completion.
 
 On POSIX, home writes refuse `PERMISSION_DENIED` when another account can write or replace that home or an ancestor.

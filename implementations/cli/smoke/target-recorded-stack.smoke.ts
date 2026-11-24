@@ -134,19 +134,22 @@ const other = realpathSync(mkdtempSync(join(home, "other-")));
 check("space create prepares the first project", run(["space", "create", "example", "--root", "."], prepared).status === 0);
 sandbox(prepared);
 const mismatch = '--space "other" does not match the space "example" prepared in this folder; nothing was stopped';
-for (const mode of ["--json", "--plain"]) {
-  const wrong = runDown(["down", "--space", "other", mode], prepared);
+const presentations = [["--json"], ["--plain"], []];
+for (const output of presentations) {
+  const mode = output[0] ?? "(default output)";
+  const wrong = runDown(["down", "--space", "other", ...output], prepared);
   check(`down ${mode} names the mismatched space and does not suggest stopping this project`,
     refusedWith(wrong, "UNSUPPORTED", mismatch, 'locate the project root for space "other" before retrying') &&
       (mode !== "--json" || wrong.envelope?.target === null), shown(wrong));
-  const match = runDown(["down", "--space", "example", mode], prepared);
+  const match = runDown(["down", "--space", "example", ...output], prepared);
   check(`down ${mode} still treats the matching prepared space as stopped`, match.status === 0 && (mode === "--json"
     ? match.envelope?.outcome === "no-op" && match.envelope.target?.space === "example" && match.envelope.result?.kind === "stack-not-running"
     : match.stdout.includes("is not running")), shown(match));
 }
 check("space create prepares the other project", run(["space", "create", "other", "--root", "."], other).status === 0);
-for (const mode of ["--json", "--plain"]) {
-  const known = runDown(["down", "--space", "other", mode], prepared);
+for (const output of presentations) {
+  const mode = output[0] ?? "(default output)";
+  const known = runDown(["down", "--space", "other", ...output], prepared);
   check(`down ${mode} names the other space's recorded project root`,
     refusedWith(known, "UNSUPPORTED", mismatch, `retry from the project root for space "other" at ${other}`), shown(known));
 }

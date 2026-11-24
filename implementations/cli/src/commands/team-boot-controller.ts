@@ -10,11 +10,11 @@ import { readFileSync } from "node:fs";
 import { resolveAuthProvider, type BrokerTransport } from "@cotal-ai/core";
 import {
   CommandFailure, acquireMaintenanceLock, codeSpan, getCurrent, isCommandFailure, readMaintenanceJournal, releaseMaintenanceLock,
-  workspaceSecretStore, writeResult, type MaintenanceLock, type OutputWarning, type Report,
+  shellPath, workspaceSecretStore, writeResult, type MaintenanceLock, type OutputWarning, type Report,
 } from "@cotal-ai/workspace";
 import { buildLaunchSpec, genRunId, manifestToChannels, writeLaunchSpec } from "../lib/manifest/apply.js";
 import { observeServiceProcess, serviceInstances } from "../lib/service-instances.js";
-import { readStackJournal, STACK_DEFINITION, type StackJournal } from "../lib/stack-journal.js";
+import { readStackJournal, stackStartedWithoutManager, STACK_DEFINITION, type StackJournal } from "../lib/stack-journal.js";
 import { writeFreshTeamAttempt, writeFreshTeamSummary } from "../lib/team-fresh.js";
 import { startControllerStack, stackMembersView, stackUpForegroundNotice } from "./stack-up.js";
 import { assertManagerLogin, assertUserStackTransport, preflightUserStack, userLoginState } from "./stack-user-auth.js";
@@ -95,8 +95,12 @@ export async function controllerTeamBoot(request: ControllerTeamBootRequest): Pr
   else {
     // A stack whose last operation started it is up. Say so before the resume checks name the stop
     // it lacks. This manifest may already own cards on the running stack.
-    if (recorded.space === request.space && recorded.operation.kind === "up" && recorded.operation.phase === "completed")
-      throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `"${request.space}" is already up at this root and no \`cotal down\` has stopped it; a team boot starts only a stopped stack, so nothing was booted`, { target: { root: recorded.root, space: request.space, operation: recorded.operation.id }, remedy: `inspect the recorded stack with ${codeSpan(`cotal service --space ${shellWord(request.space)}`)}, or preview a stop with \`cotal down --dry-run\`; after stopping it, restart the recorded stack with \`cotal up\`` });
+    if (recorded.space === request.space && recorded.operation.kind === "up" && recorded.operation.phase === "completed") {
+      const space = shellWord(request.space);
+      const atRoot = `cd ${shellPath(recorded.root)} && cotal`;
+      const restart = `${atRoot} up --space ${space}${stackStartedWithoutManager(recorded) ? " --no-manager" : ""}`;
+      throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `"${request.space}" is already up at this root and no \`cotal down\` has stopped it; a team boot starts only a stopped stack, so nothing was booted`, { target: { root: recorded.root, space: request.space, operation: recorded.operation.id }, remedy: `inspect the recorded stack with ${codeSpan(`cotal service --space ${space}`)}, or preview a stop with ${codeSpan(`${atRoot} down --space ${space} --dry-run`)}. After stopping it, restart the recorded stack with ${codeSpan(restart)}` });
+    }
     binding = stackResumeEligibility(recorded.root, request.space, { server: recorded.server, mode: recorded.mode });
     plan = await prepareResumeTeamBoot(request.file, { space: request.space, transport: request.transport, recorded: { server: binding.server, mode: binding.mode, ...(binding.broker.host ? { host: binding.broker.host } : {}) } });
   }
@@ -117,14 +121,14 @@ export async function controllerTeamBoot(request: ControllerTeamBootRequest): Pr
     await assertManagerLogin(plan.root, plan.space, codeSpan(`cotal team boot ${shellWord(request.file)}`), "nothing was started or written");
   }
   if (readMaintenanceJournal(plan.root)) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "this root retains a maintenance or recovery attempt; team boot cannot substitute an ordinary startup", { target: { root: plan.root, space: plan.space } });
-  const lock = acquireMaintenanceLock(plan.root);
+  const lock = acquireMaintenanceLock(plan.root, { operation: "team boot" });
   let starting = false;
   const start = () => {
     starting = true;
     return startTeamBoot(request, plan, binding, lock);
   };
   try {
-    if (request.foreground) await holdForegroundStack(plan.root, start);
+    if (request.foreground) await holdForegroundStack(plan.root, plan.space, start);
     else await start();
   } finally {
     // A failed foreground claim never entered startTeamBoot to release the lock.

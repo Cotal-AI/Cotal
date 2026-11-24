@@ -3,18 +3,27 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { isIP, SocketAddress } from "node:net";
 import { join } from "node:path";
-import { processStartToken, recordUpdateDeferral } from "@cotal-ai/workspace";
-import { type CommandResult, RegistryUnavailable, parseNpmVersion, failure, message } from "./update-process.js";
+import { oneLine, processStartToken, recordUpdateDeferral } from "@cotal-ai/workspace";
+import { displayRemedy } from "../lib/self-exec.js";
+import { c } from "../ui.js";
+import { type CommandResult, RegistryUnavailable, StagingTimeout, parseNpmVersion, failure, message } from "./update-process.js";
 import type { UpdateRuntime } from "./update.js";
+
+export const MISSING_NPM_REMEDY = "Install npm or add it to this command's PATH, then retry.";
+
+type LatestVersionFailure = { ok: false; error: string; missingNpm?: true; offline?: true; npmResult?: CommandResult };
 
 /** The registry's latest tag, read through a throwaway npm cache with npm's log files and update
  *  notifier off, so the read leaves nothing in npm's own cache, log directory or notifier stamp. */
-export function latestVersion(rt: UpdateRuntime): { ok: true; version: string } | { ok: false; error: string; missingNpm?: true; npmResult?: CommandResult } {
+export function latestVersion(rt: UpdateRuntime): { ok: true; version: string } | LatestVersionFailure {
   const cache = mkdtempSync(join(tmpdir(), "cotal-npm-view-"));
   try {
     const result = rt.npm(["view", "cotal-ai@latest", "version", "--json", "--cache", cache, "--logs-max=0", "--update-notifier=false", "--fetch-retries=0", "--fetch-timeout=15000"]);
     if (result.errorCode === "ENOENT") return { ok: false, error: "npm is not on PATH", missingNpm: true };
-    if (result.status !== 0) return { ok: false, error: failure(result), npmResult: result };
+    if (result.status !== 0) {
+      if (npmOfflineCacheMiss(result)) return { ok: false, error: "npm is in offline mode", offline: true };
+      return { ok: false, error: failure(result), npmResult: result };
+    }
     try {
       return { ok: true, version: parseNpmVersion(result.stdout) };
     } catch (e) {
@@ -25,8 +34,41 @@ export function latestVersion(rt: UpdateRuntime): { ok: true; version: string } 
   }
 }
 
+function npmOfflineCacheMiss(result: CommandResult): boolean {
+  if (result.status === null || result.error) return false;
+  try { return JSON.parse(result.stdout)?.error?.code === "ENOTCACHED"; }
+  catch { return false; }
+}
+
+export async function handleLatestVersionFailure(latest: LatestVersionFailure, current: string, rt: UpdateRuntime, unavailable: string, promotionRecovered: boolean, permissionsRestored = false): Promise<number> {
+  if (latest.missingNpm) {
+    if (rt.env.COTAL_AUTO_UPDATE === "1") recordUpdateDeferral(current, "waiting for npm availability", true);
+    rt.err(c.red(`✗ cotal-ai version check failed: ${latest.error}. ${MISSING_NPM_REMEDY}`));
+    return 1;
+  }
+  if (latest.offline) {
+    if (rt.env.COTAL_AUTO_UPDATE === "1") recordUpdateDeferral(current, "waiting for npm offline mode to be disabled", true);
+    rt.onOfflineVersionCheckSkipped?.();
+    if (promotionRecovered) rt.out("Completed an interrupted extension promotion.");
+    if (permissionsRestored) rt.out("Restored owner write permission on the Cotal connector configuration; no installed packages were replaced.");
+    rt.out(`${latest.error}. The latest-version check was skipped.`);
+    return 0;
+  }
+  if (!latest.npmResult || !(releaseReadError(latest.npmResult, "cotal-ai version check failed") instanceof RegistryUnavailable)) {
+    rt.err(c.red(`✗ cotal-ai version check failed: ${oneLine(latest.error.split(/\r?\n/, 1)[0]!)}`));
+    return 1;
+  }
+  if (rt.env.COTAL_AUTO_UPDATE === "1") recordUpdateDeferral(current, "waiting for registry availability", true);
+  else if (await npmProxyRefused(latest.npmResult, rt.env)) {
+    rt.err("The npm proxy refused the connection (ECONNREFUSED). The update did not start. Check HTTP_PROXY and HTTPS_PROXY, then retry.");
+    return 1;
+  }
+  rt.out(unavailable);
+  return 0;
+}
+
 /** npm gives a generic proxy hint even for direct failures. Match the refused socket instead. */
-export async function npmProxyRefused(result: CommandResult, env: NodeJS.ProcessEnv): Promise<boolean> {
+async function npmProxyRefused(result: CommandResult, env: NodeJS.ProcessEnv): Promise<boolean> {
   const httpsProxy = env.https_proxy || env.HTTPS_PROXY;
   const httpProxy = env.http_proxy || env.HTTP_PROXY;
   if ((!httpsProxy && !httpProxy) || result.status === null || result.error) return false;
@@ -155,8 +197,24 @@ const NETWORK_ERROR_CODE = /^(?:ENETUNREACH|EHOSTUNREACH|ENETDOWN|EHOSTDOWN|ECON
 
 export function registryNetworkFailure(error: unknown): boolean {
   if (error instanceof RegistryUnavailable) return true;
-  const code = /(?:^|\n|^target staging failed: )npm (?:error|ERR!) code ([A-Z_]+)(?:\s|$)/.exec(message(error))?.[1];
+  const detail = error instanceof StagingTimeout ? error.npmOutput : message(error);
+  const code = /(?:^|\n|^target staging failed: )npm (?:error|ERR!) code ([A-Z_]+)(?:\s|$)/.exec(detail)?.[1];
   return code !== undefined && NETWORK_ERROR_CODE.test(code);
+}
+
+export function offlineUpdateMessage(repaired: boolean): string {
+  return repaired ? "The registry cannot be reached; no installed packages were replaced." : "The registry cannot be reached; nothing was changed.";
+}
+
+export function deferStagingFailure(error: unknown, version: string, rt: UpdateRuntime, repaired: boolean): boolean {
+  if ((error instanceof RegistryUnavailable || error instanceof StagingTimeout || message(error).startsWith("target staging failed: ")) && registryNetworkFailure(error)) {
+    recordUpdateDeferral(version, "waiting for registry access", true);
+    rt.out(offlineUpdateMessage(repaired));
+  } else if (error instanceof StagingTimeout) {
+    recordUpdateDeferral(version, error.message, true);
+    rt.out(displayRemedy(`${error.message}. The previous version remains installed. Run \`cotal update --self\` again.`));
+  } else return false;
+  return true;
 }
 
 export function releaseReadError(result: CommandResult, detail: string, { installedSpecs, metadataSpec }: { installedSpecs?: readonly string[]; metadataSpec?: string } = {}): Error {

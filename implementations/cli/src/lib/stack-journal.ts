@@ -7,7 +7,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, rmdirSync } from "node:fs";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { acquireLock, writeSecretFileAtomic } from "@cotal-ai/core";
-import { CommandFailure, MANAGER_PIDFILE, acquireMaintenanceLock, codeSpan, admittedControllerRestore, canonicalRoot, commandIsCotalSupervisor, decodeLocalJson, isCommandFailure, isMaintenanceError, loadMeshes, localProcessPath, localProcessPathCandidates, localRecordObject, localStackRoot, maintenancePaths, parsePid, probeLiveness, readContainedRecord, readLocalRecordSource, readMaintenanceJournal, readPidfile, readProcessCommand, readProcessRecord, recordedLocalProcessPaths, releaseMaintenanceLock, removePidPair, serviceOperationId, shellPath, stackJournalPath, maintenanceLockHolder, cotalDirLink, preparedSpaceAt, recordsMovedTo, stackAdoptionBlock, stackElsewhereRemedy, verifyIdentityPin, type ControllerStackView, type MaintenanceLock, type OutputWarning, type ProcessRecord, type ServiceAdapterStopAbandonment } from "@cotal-ai/workspace";
+import { CommandFailure, MANAGER_PIDFILE, NATS_PIDFILE, acquireMaintenanceLock, codeSpan, admittedControllerRestore, canonicalRoot, commandIsCotalSupervisor, decodeLocalJson, hasNonNatsExecutable, isCommandFailure, isMaintenanceError, loadMeshes, localProcessPath, localProcessPathCandidates, localRecordObject, localStackRoot, maintenancePaths, parsePid, probeLiveness, readContainedRecord, readLocalRecordSource, readMaintenanceJournal, readPidfile, readProcessCommand, readProcessRecord, recordedLocalProcessPaths, releaseMaintenanceLock, removePidPair, serviceOperationId, shellPath, stackJournalPath, maintenanceLockHolder, cotalDirLink, preparedSpaceAt, recordsMovedTo, stackAdoptionBlock, stackElsewhereRemedy, verifyIdentityPin, type ControllerStackView, type MaintenanceLock, type OutputWarning, type ProcessRecord, type ServiceAdapterStopAbandonment } from "@cotal-ai/workspace";
 import { localProcessSurface } from "../ext-loader.js";
 import { serviceDefinitionStore, type ServiceDefinitionSnapshot } from "./service-definitions.js";
 import { observeServiceProcess, processServiceHost, serviceInstances, type ServiceInstance, type ServiceInstanceSnapshot } from "./service-instances.js";
@@ -15,7 +15,7 @@ import { abandonableSignalStop, abandonRetainedNativeStop, abandonRetainedSignal
 import { stackRunsRecord, type StackRuns } from "./stack-runs.js";
 import { shellWord } from "./endpoint-errors.js";
 import { readStoreIdentity, type StoreIdentity } from "./store-identity.js";
-import { readMaintenanceLockHolder } from "@cotal-ai/workspace";
+import { assertRecordIdentity, localProcessOwnerStatus, readMaintenanceLockHolder } from "@cotal-ai/workspace";
 import { displayCmd, displayRemedy } from "./self-exec.js";
 
 export const STACK_ROLES = ["broker", "auth", "delivery", "manager"] as const;
@@ -629,14 +629,14 @@ function retainingRow(rows: readonly ServiceInstanceSnapshot[], requestId: strin
 
 /** The `TARGET_NOT_FOUND` refusal of an `--abandon-stop` ID no member retains, naming each stop
  *  request a member's refusal offers to abandon. When no member retains any stop request, as after
- *  the stop was abandoned, it says so and names the step the stack's state takes: `cotal down` while
- *  a member runs, otherwise `cotal up`. */
+ *  the stop was abandoned, it names the stop if a member runs, or the optional restart for each
+ *  manager choice if the stack is stopped. */
 function stopNotRetained(journal: StackJournal, requestId: string, members: readonly { definition: string; rows: readonly ServiceInstanceSnapshot[] }[]): CommandFailure {
   const target = { root: journal.root, space: journal.space, requestId };
   const values = members.flatMap(({ rows }) => rows.map((entry) => entry.record.value));
   if (!values.some((value) => value.state === "stopping" || retainedStopRequest(value) !== undefined)) {
     const running = values.some((value) => observeServiceProcess(value) === "running");
-    return new CommandFailure("refused", "TARGET_NOT_FOUND", "no member of this stack retains a stop request; nothing was abandoned", { target, given: "requestId", remedy: running ? "the stack is running; stop it with `cotal down`" : "the stack is not running; start it with `cotal up`" });
+    return new CommandFailure("refused", "TARGET_NOT_FOUND", "no member of this stack retains a stop request; nothing was abandoned", { target, given: "requestId", remedy: running ? "the stack is running; stop it with `cotal down`" : "the stack is not running; no further stop is needed. To restart without a manager, run `cotal up --no-manager`; to restart with a manager, run `cotal up`" });
   }
   const pending = members.flatMap(({ definition, rows }) => rows.flatMap((entry) => {
     const route = memberStopRoute(entry.record.value);
@@ -708,6 +708,16 @@ function attemptedRoles(journal: StackJournal): StackRole[] {
   return STACK_ROLES.filter((role) => stackRoleApplies(journal.mode, role) && journal.members.some((row) => row.role === role && row.state !== "not-attempted"));
 }
 
+/** A planned or applying start belongs to this lock owner only when the operation ID and the
+ *  local process birth both match. A later operation or a reused PID is not this startup. */
+export function stackUpInProgress(journal: StackJournal): boolean {
+  const { kind, phase, id } = journal.operation;
+  if (kind !== "up" || phase !== "planned" && phase !== "applying") return false;
+  const holder = readMaintenanceLockHolder(journal.root);
+  return holder?.owner.id === id && holder.process !== undefined && localProcessOwnerStatus(holder.owner) === "alive"
+    && assertRecordIdentity(holder.process).kind === "match";
+}
+
 /** An earlier `up` that ended with no recorded outcome before every member it planned started, or
  *  a `down` that ended so before every member stopped, with the members on each side as their
  *  processes show. A member with no instance record counts as stopped, and `noManager` says the up
@@ -750,6 +760,14 @@ export function newStackOperation(kind: "up" | "down", withAgents = false): Stac
  *  records it, so the stack runs no manager by choice. */
 export function stackStartedWithoutManager(journal: StackJournal): boolean {
   return journal.operation.kind === "up" && journal.operation.phase === "completed" && journal.members.some((row) => row.role === "manager" && row.state === "not-attempted");
+}
+
+/** Whether the stack was last started without a manager, as `up --no-manager` records it, whether it
+ *  still runs or a completed `down` stopped it since. That down plans no stop for a manager it has no
+ *  instance of, so the manager stays `not-attempted`. */
+export function stackRecordedWithoutManager(journal: StackJournal): boolean {
+  if (stackStartedWithoutManager(journal)) return true;
+  return journal.operation.kind === "down" && journal.operation.phase === "completed" && journal.members.some((row) => row.role === "manager" && row.state === "not-attempted");
 }
 
 /** Whether the stack's last `up` ended with no recorded outcome and planned no manager, as
@@ -934,6 +952,20 @@ export const localRecordLine = (row: LocalRecord): string => `${row.name} at ${r
  *  `reused` record fronts nothing, and `up` removes it instead. */
 export function foreignLocalProcesses(root: string, space: string): string[] {
   return localRecords(root, space).filter((row) => row.state === "live").map((row) => `${row.name}${row.pid === undefined ? " (unattributable record)" : ` (pid ${row.pid})`}`);
+}
+
+/** The controller treats a legacy broker PID file as a blocker even when its PID is not a broker. */
+export function legacyBrokerPidfileBlock(root: string): { message: string; remedy: string } | undefined {
+  const path = join(root, ".cotal", NATS_PIDFILE);
+  if (!existsSync(path)) return undefined;
+  const record = readContainedRecord(root, path);
+  const pid = record.state === "content" ? parsePid(record.raw) : undefined;
+  const detail = pid === undefined ? "" : `; it records PID ${pid}${hasNonNatsExecutable(pid) ? ", whose current executable is not nats-server" : ""}`;
+  const inspect = pid === undefined ? "check whether it names a running broker" : `check the executable and command line of PID ${pid}`;
+  return {
+    message: `the legacy broker PID file ${path} blocks controller startup${detail}`,
+    remedy: `Inspect ${path} and ${inspect}. Only if you verify that the file does not belong to a running broker, set it aside outside .cotal and repeat your startup command`,
+  };
 }
 
 /** The live records under the root whose process is a running service instance of the space outside

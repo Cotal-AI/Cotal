@@ -53,7 +53,8 @@ run-token shape. Keep the pin on later status, answer and resume calls.
 A run ID that is not 1 to 64 letters, digits, `_` or `-` is refused as `USAGE_INVALID`, exit 1,
 on every verb that takes one, before anything is contacted. When `run show` needs a valid ID,
 its list and journal commands keep the space, broker, manager or local endpoint you requested.
-A journal row limit applies only to the journal read.
+A journal row limit applies only to the text journal. If you give both `--limit` and `--json`,
+choose a limited text view or the full JSON journal before looking up a missing run ID.
 A hosted verb the manager refuses reports the outcome and code as other commands do, and with
 `--json` as one refusal envelope on stdout. A refusal the manager makes before acting is refused: a
 denied credential or a step in the wrong state exits 2, and a program that does not validate is
@@ -228,8 +229,12 @@ migration is admissible, every orphaned step with its verdict and code, and exit
 and non-zero on not. An edited program that does not validate is refused before the replay, with
 each problem's code, position, cause and fix. It writes nothing: the commit that would file the
 migration is not reachable yet, and the report says so. A run ID with no record on the endpoint is refused
-`TARGET_NOT_FOUND`, exit 2, as `run show` refuses it. `check` refuses `--adopt`, `--release` and `--discard-approvals` as `USAGE_INVALID` (exit 1)
-before mesh preparation or connection, since they decide what a commit does and the check files nothing. `--timeout` sets the default
+`TARGET_NOT_FOUND`, exit 2, as `run show` refuses it. Its next step is `run list --local` on the same
+space, broker, credential and endpoint. The list reads the records without a manager.
+`check` refuses `--adopt`, `--release` and `--discard-approvals` as `USAGE_INVALID` (exit 1)
+before mesh preparation or connection, since they decide what a commit does and the check files nothing.
+If you pass `--adopt` or `--release` without a handle, the refusal tells you to remove the flag.
+`--timeout` sets the default
 limit of a checkpoint, `ask` or turn that sets none of its own (default 1h). A checkpoint that
 expires under `onExpiry: "fail"` says in its L4007 whether the deadline came from its own `timeout`
 or from this default. It takes a duration
@@ -240,7 +245,9 @@ them, and nothing is sent. On a user-auth mesh where you run more than one
 live manager, an unpinned hosted verb is refused and `--on` picks one. `--local` takes no `--on`. `--local` drives in this process instead, over one
 connection per invocation under the run's own credential minted from the project folder's trust
 material, and is the path on a bare broker with no manager or for a run with no recorded program
-(`cotal run resume <runId> --local --file <program>`); `answer --local` and `amend --local` take
+(`cotal run resume <runId> --local --file <program>`). If a local resume is missing the run ID, use
+`cotal run list --local` with the same target options, then add the ID to the original command.
+`answer --local` and `amend --local` take
 `--by <who>` and print the same receipt as the hosted path, and `start --local` requires
 `--admit-read` and `--admit-publish` (comma-separated
 patterns or `none`), the run's channel ceiling. An omitted option or a list containing only commas
@@ -273,7 +280,8 @@ the full returned status and journal. The JSON and answer commands under `Next` 
 any explicit target selectors. The JSON command omits `--limit`, and a local answer requires
 `--by <who>`. Answer and amendment receipts keep the same route in their `show` command.
 If `run show --local` finds no record for the ID, it points to `cotal run list --local` on the same
-target. The local list does not need a manager.
+target. The local list does not need a manager. The list's `show` command keeps `--local` and any
+explicit target selectors so it reads from the same place.
 Revoked admission and unreadable revocation markers remain distinct from the record's state.
 Neither a record nor a receipt is a live agent-progress report.
 
@@ -345,8 +353,8 @@ time, so you cannot script it. A scripted turn result needs a `status` of `done`
 handle such as `{ "agent": "sim.reviewer", "persona": "reviewer" }` instead of an agent name.
 Invalid turn results are refused before simulation with `SCHEMA_INVALID`. This includes an invalid
 status, a non-string note, an unknown field, a scripted `at`, and a missing, malformed or
-unexpected destination. A destination refusal names the `to` field, including the array index
-for a list entry.
+unexpected destination. The refusal names the results file and the field or result to correct
+before rerunning. For a list entry the path includes the array index.
 
 A missing script entry or an exhausted list raises L6001. If it goes uncaught, the error names the
 table and step, suggests what to add, and prints a retry command with shell-quoted paths where needed.
@@ -369,12 +377,13 @@ The `--handler` file is one JSON object in UTF-8, with an optional leading byte-
 It must be a regular file or a symlink to one, as the program file must be.
 A missing file or dangling link is refused with `TARGET_NOT_FOUND`, and an unreadable file with
 `PERMISSION_DENIED`, exit 2. A directory, device, FIFO or socket is refused with `USAGE_INVALID`,
-exit 1. An empty file or invalid JSON is refused with `SCHEMA_INVALID`, exit 1.
+exit 1. An empty file, invalid JSON, or a top-level value other than an object is refused with `SCHEMA_INVALID`, exit 1.
 These refusals name the path, the cause and a next step. A file that is not valid UTF-8 is refused
 with `SCHEMA_INVALID`, exit 1, before simulation, naming the path and how to save it as UTF-8.
 No invalid bytes are replaced. A repeated key is refused with `SCHEMA_INVALID`, exit 1. Use an array
-under one key to give that step multiple sequential results. Each table maps a step's name to its result: one value
-for every occurrence, or a list used in order. A step with no name is keyed by its effect, such as
+under one key to give that step multiple sequential results. Each results table is an object keyed
+by step name, with one value for every occurrence or an array used in order. If a table is not an
+object, the refusal names the results file and the expected shape. A step with no name is keyed by its effect, such as
 `ask`. `spawn`, `sleep`, `notify`, `monitor`, `observe` and conclaves need no entry, and a sleep
 moves the virtual clock forward.
 
@@ -399,8 +408,9 @@ prompts an `unblock` turn, and the unnamed wait reads the `wait` entry.
 | `clock` | `{start, turn, ask, checkpoint, wait}`: `start` is a safe integer in milliseconds, between -9007199254740991 and 9007199254740991, so the virtual clock can advance by whole milliseconds. Effect durations take values such as `"5m"`. A turn takes 5 minutes and the others 1 minute unless set |
 | `faults` | `[{at, kind, code, message}]`: the step at `at`, a step key such as `turn:build#1`, fails with that error |
 
-To fail a race before any branch runs in `run simulate`, target the race's own step key, such as
-`/race:first#0`. To fail an effect inside the race, use that effect's step key instead.
+To fail a race or a parallel step before any branch runs in `run simulate`, target its own step key,
+such as `/race:first#0` or `/parallel:batch#0`. To fail an effect inside a branch, use that effect's
+step key instead.
 
 An invalid clock duration is refused before simulation with `SCHEMA_INVALID`, exit 1, even if the
 program does not reach that effect. The refusal names the results file and the field to correct.
@@ -430,7 +440,7 @@ When the simulation returns a report, `cotal run simulate <file> --json` puts th
 | `result.agents` | Simulated `spawn` requests with `persona` and channel names in `joins`, plus `worktree`, `role` and `permits` if supplied. No agents were launched. |
 | `result.waits` | One entry per reached `waitUntil` that starts polling, with `step`, `name`, polling interval `every` and duration `deadline`. Channel `wait` calls appear in `result.effects`. |
 | `result.checkpoints` | One row per checkpoint request sent to the simulator, with `step`, `name`, `prompt` and any `timeout`, `onExpiry` and `to` from the request. An escalation adds a second row with the same step key and `onExpiry: "proceed"`. |
-| `result.unusedScript` | Keys from `turns`, `asks`, `checkpoints` and `events` that were never selected during result lookup, in `table.name` form (for example, `checkpoints.approve-plan`). A matching list counts as used even when empty or exhausted. A fault injected before lookup does not use the key. |
+| `result.unusedScript` | Keys from `turns`, `asks`, `checkpoints` and `events` that were never selected during result lookup, in `table.name` form (for example, `checkpoints.approve-plan`). A matching list counts as used even when empty or exhausted. A fault injected before lookup does not use the key. A fault that was never injected is listed as `faults.<at>` (for example, `faults./sleep:typo#0`); the simulation still completes, since the fault may target a branch this run did not take. |
 | `result.log` | `log(...)` calls in order, each with `scope` and `values`. In plain output these appear under `Log`. |
 
 In `result.failure`, `step` and `stepOutcome` describe the last failed entry in journal order with

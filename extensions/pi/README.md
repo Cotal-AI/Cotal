@@ -8,9 +8,10 @@ without Pi installed.
 ## Requirements
 
 - Cotal (`cotal-ai`): Node 22 or newer.
-- The Pi host: exactly `@earendil-works/pi-coding-agent@0.79.10` for this release, which needs
-  Node 22.19 or newer.
-- `pi` on `PATH` for managed spawning.
+- The recommended host is `@earendil-works/pi-coding-agent@0.79.10` on Node 22.19 or newer.
+  Foreground spawn is also tested with npm Pi `0.84.3` and `1.6.0`.
+- npm-installed `pi` on `PATH` for Cotal spawning. The standalone Pi release executable does not
+  support the Node loader hooks used during discovery.
 
 ## Use
 
@@ -32,6 +33,8 @@ cp node_modules/@cotal-ai/pi/dist/standalone.js ~/.pi/agent/extensions/cotal.js
 
 Cotal's updater leaves this copy unchanged. After the update succeeds, reinstall `@cotal-ai/pi` at
 the version shown by `cotal --version` and repeat the copy. Review any local edits before replacing it.
+You can leave a copy of the released bundle installed when using `cotal spawn`. Spawn uses its
+bundled Cotal extension and keeps Pi's other extensions enabled.
 
 The copied file has no repository-local or sibling-file imports. It activates only when a real
 Cotal identity (`COTAL_NAME`, `COTAL_AGENT_FILE`, or `COTAL_LINK`) is present. Unrelated operator

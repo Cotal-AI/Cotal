@@ -138,6 +138,7 @@ export class SimHandler implements EffectHandler {
   private virtualNow: number;
   private readonly occurrences = new Map<string, number>();
   private readonly consumed: Consumption[] = [];
+  private readonly injected = new Set<SimFault>();
   private readonly agents = new Map<string, AgentHandleValue>();
   private readonly parked: ParkedEvent[] = [];
   private parkSeq = 0;
@@ -247,6 +248,7 @@ export class SimHandler implements EffectHandler {
     const short = full.slice(full.lastIndexOf("/") + 1);
     const fault = this.script.faults?.find((f) => f.at === full || f.at === short);
     if (fault === undefined) return;
+    this.injected.add(fault);
     throw new EffectError(
       fault.code ?? "L4002",
       fault.kind,
@@ -479,6 +481,11 @@ export class SimHandler implements EffectHandler {
       for (const name of Object.keys(t)) {
         if (!used.has(`${table}:${name}`)) out.push(`${table}.${name}`);
       }
+    }
+    // A fault whose step was never reached would otherwise turn a fault-injection case into a
+    // clean run with nothing to say about it.
+    for (const fault of this.script.faults ?? []) {
+      if (!this.injected.has(fault)) out.push(`faults.${fault.at}`);
     }
     return out;
   }

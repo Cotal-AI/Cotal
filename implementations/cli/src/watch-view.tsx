@@ -40,7 +40,7 @@ export function WatchView({ view, initialFilter, onLeave }: { view: MeshView; in
     if (input === "g") setOffset(0);
   });
   const content = useMemo(() => isFeedView(filter)
-    ? snapshot.feed.filter((entry) => matchesWatchFilter(entry, filter)).flatMap((entry) => lines(feedLine(entry), size.width))
+    ? snapshot.feed.filter((entry) => matchesWatchFilter(entry, filter)).flatMap((entry) => lines(feedLine(entry, snapshot.status.space), size.width))
     : renderReport(watchReport(snapshot, filter), "plain", size.width).split("\n"), [snapshot, filter, size.width]);
   const title = lines(`cotal watch · ${snapshot.status.space}`, size.width);
   const connected = snapshot.status.connected && !snapshot.status.error;

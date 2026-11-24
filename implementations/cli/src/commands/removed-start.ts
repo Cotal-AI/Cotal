@@ -1,14 +1,13 @@
 import { parseArgs, type ParseArgsOptionsConfig } from "node:util";
-import type { ParsedArgs } from "@cotal-ai/core";
-import { CommandFailure } from "@cotal-ai/workspace";
+import { registry, type Command, type ParsedArgs } from "@cotal-ai/core";
+import { CommandFailure, GLOBAL_FLAGS, isCommandFailure } from "@cotal-ai/workspace";
+import { validateSpawnRetry } from "../command.js";
 import { displayCmd } from "../lib/self-exec.js";
 import { retryWord, spawnFlags } from "./spawn-flags.js";
 
-const retryOptions: ParseArgsOptionsConfig = {
-  ...Object.fromEntries(spawnFlags.map(({ name, ...flag }) => [name, flag])),
-  "no-color": { type: "boolean" },
-  "no-input": { type: "boolean" },
-};
+const globalFlags = GLOBAL_FLAGS.map(name => ({ name, type: "boolean" as const }));
+const retryFlags = [...spawnFlags, ...globalFlags];
+const retryOptions: ParseArgsOptionsConfig = Object.fromEntries(retryFlags.map(({ name, ...flag }) => [name, flag]));
 
 function parseLegacyOptions(argv: readonly string[]) {
   try {
@@ -16,9 +15,9 @@ function parseLegacyOptions(argv: readonly string[]) {
   } catch { return undefined; }
 }
 
-function startRetry(argv: readonly string[]): string | undefined {
-  const parsed = parseLegacyOptions(argv);
-  if (!parsed) return undefined;
+type LegacyOptions = NonNullable<ReturnType<typeof parseLegacyOptions>>;
+
+function retryArgs(argv: readonly string[], parsed: LegacyOptions) {
   const { values, tokens } = parsed;
   const config = typeof values.config === "string" ? values.config : undefined;
   const name = typeof values.name === "string" ? values.name : undefined;
@@ -28,12 +27,14 @@ function startRetry(argv: readonly string[]): string | undefined {
     if (seen.has(token.name)) return undefined;
     seen.add(token.name);
   }
-  if (values.foreground || (config && values.file) || (config && !config.trim())) return undefined;
+  if (config !== undefined && (values.file !== undefined || !config.trim())) return undefined;
   const persona = values.file ? undefined : config || name?.trim();
   const file = persona && /[\\/]|\.md$/.test(persona) ? persona : undefined;
   const args: string[] = [];
   if (persona && !file && !persona.startsWith("-")) args.push(persona);
-  if (!values.detach) args.push("--detach");
+  const foreground = values.foreground || values["live-only"];
+  if (foreground && !values.foreground) args.push("--foreground");
+  if (!foreground && !values.detach) args.push("--detach");
   if (file) args.push(...(file.startsWith("-") ? [`--file=${file}`] : ["--file", file]));
   const omit = new Set<number>();
   for (const token of tokens) {
@@ -44,14 +45,46 @@ function startRetry(argv: readonly string[]): string | undefined {
   }
   args.push(...argv.filter((_, index) => !omit.has(index)));
   if (persona?.startsWith("-") && !file) args.push("--", persona);
+  return args;
+}
+
+function startRetry(argv: readonly string[], parsed: LegacyOptions): string | CommandFailure | undefined {
+  const args = retryArgs(argv, parsed);
+  if (!args) return undefined;
+  const spawn = registry.resolve<Command>("command", "spawn");
+  try {
+    validateSpawnRetry(spawn, args);
+  } catch (error) {
+    if (isCommandFailure(error)) return error;
+    if (error instanceof TypeError && "code" in error &&
+      typeof error.code === "string" && error.code.startsWith("ERR_PARSE_ARGS_")) return undefined;
+    throw error;
+  }
   return `${displayCmd({ fromAnyFolder: true })} spawn ${args.map(retryWord).join(" ")}`;
 }
 
 /** Refuse the removed verb during validation without launching or installing anything. */
 export function refuseRemovedStart(args: ParsedArgs): never {
-  const retry = startRetry(args.raw);
-  throw new CommandFailure("refused", "USAGE_INVALID", "`cotal start` was removed. Use `cotal spawn --detach` to launch through a manager.", {
-    remedy: retry ?? "Pass the catalog name as a positional argument or use --file for a persona file. Keep the other launch options.",
+  const parsed = parseLegacyOptions(args.raw);
+  const candidate = parsed && startRetry(args.raw, parsed);
+  const retry = typeof candidate === "string" ? candidate : undefined;
+  const failure = isCommandFailure(candidate) ? candidate : undefined;
+  const values = parsed?.values;
+  const liveOnly = values?.["live-only"] === true;
+  const managerOptions = values?.detach || values?.on !== undefined || values?.creds !== undefined ||
+    values?.runtime !== undefined || values?.restarts !== undefined || values?.["restart-window"] !== undefined;
+  const receipt = liveOnly && !values?.["dry-run"] && (values?.json || values?.plain);
+  const guidance = !liveOnly
+    ? "Use `cotal spawn` to launch an agent. Add `--detach` to launch through a manager."
+    : retry || managerOptions
+      ? "`--live-only` requires `cotal spawn --foreground`. It cannot be used with a manager launch (`--detach` or `--on`)."
+      : "Keep `--live-only` with `cotal spawn --foreground`.";
+  const previewHint = receipt ? "Use `--dry-run` with `--json` or `--plain` to preview a foreground launch. " : "";
+  const manual = "Pass the catalog name as a positional argument or use --file for a persona file. See `cotal spawn --help` for compatible launch options.";
+  const detail = liveOnly && failure ? ` ${failure.message}` : "";
+  const correction = liveOnly && !managerOptions && !receipt && !failure?.remedyIsCommand ? failure?.remedy : undefined;
+  throw new CommandFailure("refused", "USAGE_INVALID", `\`cotal start\` was removed. ${guidance}${detail}`, {
+    remedy: retry ?? correction ?? previewHint + manual,
     ...(retry ? { remedyIsCommand: true } : {}),
     selfContained: true,
   });

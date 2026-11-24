@@ -469,19 +469,24 @@ class CotalAdapter(BasePlatformAdapter):
             )
             raise InjectionRefused(asker["session_key"])
         if asker:
-            source = self.build_source(**asker)
+            source_fields = asker
         else:
             if msg.get("id"):
                 self._answering[msg["id"]] = msg.get("contextId")
                 if len(self._answering) > MAX_ANSWERING:
                     del self._answering[next(iter(self._answering))]
-            source = self.build_source(
+            source_fields = dict(
                 chat_id=chat_id,
                 chat_name=chat_name,
                 chat_type=chat_type,
                 user_id=msg.get("fromId"),
                 user_name=sender,
             )
+        # Hermes keys groups on the alternate participant ID first. Use the channel for that
+        # part of the key, including answers routed back here, and keep the real sender for auth.
+        if source_fields["chat_type"] == "group":
+            source_fields["user_id_alt"] = source_fields["chat_id"]
+        source = self.build_source(**source_fields)
         event = MessageEvent(
             # A PEER NAMES ITSELF AND WRITES ITS OWN BODY, so neither is framing. This text is
             # auto-injected into a turn rather than returned when the model asks, so the model never

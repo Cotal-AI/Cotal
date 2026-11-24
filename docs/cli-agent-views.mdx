@@ -42,9 +42,12 @@ harness precedence and physical working directory. If the directory is unavailab
 names the path and suggests passing an existing directory to `--cwd` or omitting `--cwd` to use
 the current directory. The preview does not create a directory. Like the foreground launch, it refuses a
 symbolic-link loop in the persona path with `SCHEMA_INVALID` (exit 1), names the path, and explains
-how to correct or replace the link. It checks the effective name from `--name` or
+how to correct or replace the link. If the link's target crosses a regular file where a folder
+is needed, the preview names the link and the missing target and explains how to restore it or
+replace the link. It checks the effective name from `--name` or
 persona frontmatter with the launch's local name rule, including the actor-token rule for a selected
 user-auth space. An invalid effective name is refused with `USAGE_INVALID` (exit 1).
+If the name came from frontmatter, the preview gives a retry with `--name` and keeps the preview options.
 On a resolved open or user-auth space, a direct preview refuses `--expires-in` and `--expires-at`
 with `USAGE_INVALID` (exit 1), as the launch does.
 An unknown effective harness is refused with
@@ -397,8 +400,9 @@ If they do not settle in time, the refusal reports that the stack is still runni
 Terminal loss
 or an external kill is not a confirmed stop. When a `cotal down` from another terminal completes,
 it prints `Foreground stack released` and exits 0, as a foreground `up` does, although its start
-receipt was partial. Foreground apply takes neither JSON nor plain output;
-a dry-run remains a finite preview. It does not establish native apply readiness or platform support.
+receipt was partial. Foreground apply takes neither `--json` nor `--plain`.
+`cotal team boot <file> --foreground --dry-run` is a finite preview and accepts either output flag.
+It does not establish native apply readiness or platform support.
 `up -f --foreground` still refuses on its retained launcher path.
 
 
@@ -406,8 +410,9 @@ a dry-run remains a finite preview. It does not establish native apply readiness
 
 A `team boot` in a root whose stack is up, with no `cotal down` since, refuses with
 `LIFECYCLE_BLOCKED`, says the space is already up and starts nothing. Its Next offers
-`cotal service --space <space>` to inspect the recorded stack, or `cotal down --dry-run` to preview
-a stop. After stopping it, run `cotal up` in its root to restart the recorded stack. To add new
+`cotal service --space <space>` to inspect the recorded stack, or `cotal down --space <space> --dry-run`
+from its recorded project root to preview a stop. The preview and restart commands both change to
+that root. The restart includes `--no-manager` when the stack started without a manager. To add new
 channels or agents, use `cotal team deploy <file>` with a separate manifest that declares only new
 resources.
 A recorded stack resumes only after its last whole-stack stop completed and its manager was never
@@ -465,6 +470,11 @@ durable channel declaration is warned as unsupported by its missing delivery
 daemon; the read-only preview remains available. The preview warns about invalid
 channel card fields, such as an invalid replay window, and does not list those cards
 as creation candidates. Apply reports the invalid field before writing any cards.
+If the manifest's explicit `broker.auth` differs from the registered mode, the preview
+warns that apply would refuse and lists no channel creation candidates. Omit `broker.auth`
+or set it to match the registered mode.
+If the manifest declares `broker.host`, the preview warns that apply would refuse
+and lists no channel creation candidates. Omit `broker.host` to deploy additively.
 Additive deploy does not
 seed manifest-wide defaults. For an existing
 unmanaged card, it names only explicitly declared fields that differ from the live value, never the live
@@ -484,7 +494,8 @@ runtime, connector, channel writer or launch grant will be ready. An unregistere
 only prepared space refuses. `--runtime` changes the requested runtime; `--allow-stale`
 is apply-only and refuses in preview. Apply accepts all-new live channel-only
 manifests, or bounded all-new agent and mixed manifests on static/open meshes
-through one native manager. An identical settled channel-only deployment returns
+through one native manager. A channel-only deployment receipt includes `team show <id> --space <space>`
+for the space that received the channels. An identical settled channel-only deployment returns
 a no-op only after its recorded target and every original create revision match
 leader-served native reads. It reuses that full deployment ID without issuing a
 channel writer, creating an intent or changing cards. Missing or changed cards,

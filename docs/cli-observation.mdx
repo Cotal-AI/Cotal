@@ -141,9 +141,10 @@ comes back, after a broker restart too, the feed resumes and reports the transit
 `--plain` or a noninteractive invocation uses the attributed line stream. Interactive filters
 are not supported by that stream. A line carries at most 16,384 code units of a message's text, the
 observer stream's row bound. A longer message is cut there, and its line ends with the count not
-shown and the read that carries the whole text: `cotal history '#<channel>' --json`, or
-`cotal history --dms --json` for a direct message. A text or plain `history` row cuts a long message
-again. Authenticated observer views keep direct messages out of
+shown and the read that carries the whole text: `cotal history '#<channel>' --json --space <s>`, or
+`cotal history --dms --json --space <s>` for a direct message. Keep `--space` set to the space
+watch is observing, even if another space is selected. A text or plain `history` row cuts a long
+message again. Authenticated observer views keep direct messages out of
 the channel tap. Opening this view never launches, stops or attaches an agent. If the reader
 of the stream closes it, as `| head` does, the observer stops at its next line, so on a quiet mesh it
 runs until a message arrives or Ctrl-C ends it with exit 130.
@@ -165,6 +166,8 @@ folder if the stop records no manager or the broker's payload limit is too low t
 `watch --json` emits versioned watch NDJSON records from the same MeshView as the terminal.
 A missing flag value, an invalid `--server` URL or an empty `--space` value emits a `USAGE_INVALID`
 `error` record followed by an `end` record with `reason: "setup-failed"`. The command exits 1 without connecting.
+With a valid `--json` or `-j`, an extra `--json=false` is refused in the same stream format,
+regardless of the order of the two flags.
 Activity, events and messages filters use the shared classifier. Metadata snapshots identify
 scope, reported roster state, native channel counts and membership-read failures. Feed rows keep
 native message IDs and timestamps; coalesced updates are identified as observed rows, not new

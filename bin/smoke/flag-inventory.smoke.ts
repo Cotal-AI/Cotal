@@ -53,11 +53,24 @@ for (const [input, expected] of [
   ["review,review", ["review", "review"]], ["review.>,ops.*", ["review.>", "ops.*"]],
 ] as const) assert.deepEqual(parseCommaList(input), expected, `comma-list flag ${JSON.stringify(input)}`);
 
-for (const [file, calls] of [["spawn", 3], ["spawn-managed-launch", 3], ["mint", 2], ["persona", 1], ["persona-remote", 6], ["personas", 1]] as const) {
+const SHARED_LIST_IMPORT = /import\s*\{[^}]*\bparseCommaList\b[^}]*\}\s*from\s*["']@cotal-ai\/workspace["']/s;
+const COMMA_SPLITTER = /\.split\(\s*["'],["']\s*\)/;
+for (const [file, calls] of [["spawn-managed-launch", 3], ["mint", 2], ["persona-remote", 6], ["personas", 1]] as const) {
   const source = readFileSync(new URL(`../../implementations/cli/src/commands/${file}.ts`, import.meta.url), "utf8");
-  assert.match(source, /import\s*\{[^}]*\bparseCommaList\b[^}]*\}\s*from\s*["']@cotal-ai\/workspace["']/s, `${file} imports the shared list rule`);
+  assert.match(source, SHARED_LIST_IMPORT, `${file} imports the shared list rule`);
   assert.equal([...source.matchAll(/\bparseCommaList\(/g)].length, calls, `${file} routes its list flags through the shared rule`);
-  assert.doesNotMatch(source, /\.split\(\s*["'],["']\s*\)/, `${file} does not carry another comma splitter`);
+  assert.doesNotMatch(source, COMMA_SPLITTER, `${file} does not carry another comma splitter`);
+}
+// spawn and persona read their channel flags through one helper, and that helper holds the shared rule.
+const channelFlags = readFileSync(new URL("../../implementations/cli/src/lib/channel-flags.ts", import.meta.url), "utf8");
+assert.match(channelFlags, SHARED_LIST_IMPORT, "the channel flag helper imports the shared list rule");
+assert.equal([...channelFlags.matchAll(/\bparseCommaList\(/g)].length, 1, "the channel flag helper routes its entries through the shared rule");
+assert.doesNotMatch(channelFlags, COMMA_SPLITTER, "the channel flag helper does not carry another comma splitter");
+for (const file of ["spawn", "persona"] as const) {
+  const source = readFileSync(new URL(`../../implementations/cli/src/commands/${file}.ts`, import.meta.url), "utf8");
+  assert.match(source, /import\s*\{[^}]*\bparseChannelFlag\b[^}]*\}\s*from\s*["']\.\.\/lib\/channel-flags\.js["']/s, `${file} imports the channel flag helper`);
+  assert.equal([...source.matchAll(/\bparseChannelFlag\(/g)].length, 3, `${file} routes its three channel flags through the helper`);
+  assert.doesNotMatch(source, COMMA_SPLITTER, `${file} does not carry another comma splitter`);
 }
 
 const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: boolean }> = {
