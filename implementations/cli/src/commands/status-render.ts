@@ -251,7 +251,8 @@ function extensionsCell(e: StatusResult["extensions"]): Cell | undefined {
  * A row in its good state says nothing a reader acts on, and a piece of an application this machine
  * does not have is what `cotal setup` adds, which the applications line already counts. So an
  * application's own rows (the Claude plugin, Desktop and skills) appear only for an application that
- * IS set up, and only when they are not current; an ACP client's entry appears when it is stale or
+ * IS set up, and only when they are not current. Cross-vendor skills that need repair or cannot be
+ * read appear regardless of application setup. An ACP client's entry appears when it is stale or
  * cannot be read; the broker executable appears when it is missing or
  * refused and local broker records make it relevant; the dashboard, which is optional, appears
  * when its record cannot be read. `--all` and
@@ -286,7 +287,9 @@ function machineOverview(r: StatusResult, wide: boolean, interactive: boolean, s
     (!r.selected.resolved && (r.selected.code === "not-started" || r.selected.code === "unregistered-root" || r.selected.code === "unreadable-auth"));
   if (wide || (localBroker && (m.nats === "missing" || m.natsProblem)))
     rows.push(["Broker executable", stateCell(m.nats === "missing" ? "not installed" : brokerExecutable(m), m.nats === "missing" ? "waiting" : m.natsProblem ? "failed" : "ok")]);
-  if (wide || (m.skills.state !== "current" && setUp.length)) rows.push(["Agent skills", skillsCell(m.skills)]);
+  const skillsState = m.skills.state;
+  if (wide || skillsState === "behind" || skillsState === "unreadable" || (skillsState === "not-installed" && setUp.length > 0))
+    rows.push(["Agent skills", skillsCell(m.skills)]);
   if (wide || m.web.installed === null)
     rows.push(["Dashboard", stateCell(m.web.installed === null ? "installation could not be read" : m.web.installed ? "installed" : "not installed · optional", m.web.installed === null ? "failed" : m.web.installed ? "ok" : "hint")]);
   const extensions = wide

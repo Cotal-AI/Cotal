@@ -1301,8 +1301,9 @@ coordinating agent teams (today `team-topology`), from one canonical source, on 
   (and `cotal setup --skills` does only that):
   it installs/updates each Cotal skill, backs up a copy you have edited to `SKILL.md.bak` before
   replacing it, and removes a Cotal skill that is no longer shipped. Only skills Cotal owns are touched;
-  your own or third-party skills there are left alone. `cotal status` reports whether the drop is current,
-  stale, missing, or has a retired skill to reconcile, and names `cotal setup --skills` as the remedy. This is the working cross-vendor path.
+  your own or third-party skills there are left alone. Compact `cotal status` shows stale or retired
+  cross-vendor skills even when no agent application is set up and recommends `cotal setup --skills`.
+  `cotal status --wide` also shows whether the skills are current or not installed.
 
 Cotal also generates an [Agent Skills discovery index](https://cotal.ai/.well-known/agent-skills/index.json)
 on cotal.ai, but that RFC is still a draft with no harness consuming it yet, so it is a forward bet,
