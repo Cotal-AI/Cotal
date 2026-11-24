@@ -1067,6 +1067,8 @@ async function controllerHoldCell(kind: "takeover" | "other-home" | "broker-cras
         if (taker!.state.exited) throw new Error(`the repair exited: ${taker!.io.err}`);
         return /Operation: +up completed/.test(taker!.io.out);
       }, 120_000, () => taker!.io.err.slice(-3000));
+      assert.match(taker.io.out, /This terminal holds the stack's lifetime/);
+      assert.doesNotMatch(taker.io.out, /This stack is already running/); passed++;
       assert.equal(await portOpen(port), true, "the next foreground up repairs the recorded listener"); passed++;
       if (brokerOnly) {
         const who = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["who", "--json"]);

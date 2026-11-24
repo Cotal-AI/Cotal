@@ -251,9 +251,11 @@ retry commands set it explicitly. Run them from the stack's folder. The holding 
 that record as it exits, a hangup included. A holder that was killed leaves it, and the next
 `cotal down` removes it once that process is gone. A
 foreground `up` on a stack that is already running without such a holder, because a background `up`
-started it or the holding terminal closed, takes over its lifetime. Before it blocks it says that
-the stack is already running and that Ctrl-C or `SIGTERM` there stops the whole stack. A closed
-terminal leaves the stack running, and the same notice names `cotal down`. A systemd unit that runs
+started it or the holding terminal closed, takes over its lifetime. After startup checks, it says
+that the stack is already running only if it reused every required member. If it started a member,
+it reports that the stack started instead. In both cases the lifetime notice says that Ctrl-C or
+`SIGTERM` runs the guarded whole-stack stop. A closed terminal leaves the stack running, and the
+same notice names `cotal down`. A systemd unit that runs
 `up --foreground` should set `KillMode=mixed`, so the stop signal reaches only `cotal up`, which
 runs the guarded stack stop, and a `TimeoutStopSec` long enough for that stop. The default
 `control-group` mode signals every member at the same time, and a manager signalled directly stops
