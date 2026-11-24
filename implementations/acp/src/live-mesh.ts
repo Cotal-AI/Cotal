@@ -86,6 +86,28 @@ export function managerChoices(ids: readonly string[], roster: readonly Presence
   }));
 }
 
+/** One connector row of a manager's `status`. */
+type ConnectorRow = { agent: string; state: string; eventPlane: boolean; prompts?: boolean; askPermissions?: boolean; reasoningEvents?: boolean; reason?: string };
+/** One application's row of a manager's `models` reply. */
+type ModelsRow = { agent: string; models?: { id: string; name?: string; variants?: { name: string }[] }[] };
+
+/** The applications a manager's `status` reports, each with the models its `models` reply lists. */
+export function agentCatalogs(rows: readonly ConnectorRow[], catalogs: readonly ModelsRow[]): AgentCatalog[] {
+  return rows.map((row): AgentCatalog => ({
+    agent: row.agent,
+    available: row.state === "available",
+    eventPlane: row.eventPlane,
+    ...(row.askPermissions && row.prompts ? { askPermissions: true } : {}),
+    ...(row.reasoningEvents && row.eventPlane ? { reasoningEvents: true } : {}),
+    ...(row.reason ? { reason: row.reason } : {}),
+    models: (catalogs.find((c) => c.agent === row.agent)?.models ?? []).map((m) => ({
+      id: m.id,
+      ...(m.name ? { name: m.name } : {}),
+      variants: (m.variants ?? []).map((v) => v.name),
+    })),
+  }));
+}
+
 /** After a connection error, how often and how many times the bridge asks whether its sign-in changed. */
 const SIGN_IN_CHECK_MS = 5_000;
 const SIGN_IN_CHECKS = 12;
@@ -338,23 +360,9 @@ function launchCalls(c: Connected, p: Controls, defaultPersona: string | null | 
       const [status, models] = await Promise.all([ask("managerStatus", undefined, instanceId), ask("models", undefined, instanceId)]);
       if (!status.ok) throw listFailure(status, "the manager did not report its applications");
       if (!models.ok) throw listFailure(models, "the manager did not list its models");
-      type Row = { agent: string; state: string; eventPlane: boolean; prompts?: boolean; askPermissions?: boolean; reasoningEvents?: boolean; reason?: string };
-      const rows = (status.data as { connectors?: Row[] } | undefined)?.connectors ?? [];
+      const rows = (status.data as { connectors?: ConnectorRow[] } | undefined)?.connectors ?? [];
       if (!Array.isArray(models.data)) throw new Error("the manager did not list its models");
-      const catalogs = models.data as { agent: string; models?: { id: string; name?: string; variants?: { name: string }[] }[] }[];
-      return rows.map((row): AgentCatalog => ({
-        agent: row.agent,
-        available: row.state === "available",
-        eventPlane: row.eventPlane,
-        ...(row.askPermissions && row.prompts ? { askPermissions: true } : {}),
-        ...(row.reasoningEvents && row.eventPlane ? { reasoningEvents: true } : {}),
-        ...(row.reason ? { reason: row.reason } : {}),
-        models: (catalogs.find((c) => c.agent === row.agent)?.models ?? []).map((m) => ({
-          id: m.id,
-          ...(m.name ? { name: m.name } : {}),
-          variants: (m.variants ?? []).map((v) => v.name),
-        })),
-      }));
+      return agentCatalogs(rows, models.data as ModelsRow[]);
     },
 
     async managers() {
