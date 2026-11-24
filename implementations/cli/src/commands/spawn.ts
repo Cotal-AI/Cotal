@@ -3,7 +3,6 @@ import { realpathSync, rmSync, statSync } from "node:fs";
 import { constants as osConstants } from "node:os";
 import { resolve as resolvePath } from "node:path";
 import {
-  assertValidChannel,
   assertValidRole,
   connectorServers,
   spawnEnvAllow,
@@ -42,7 +41,6 @@ import {
   type CleanupFailure,
 } from "@cotal-ai/core";
 import {
-  parseCommaList,
   CommandFailure,
   loadLaunchPersonaFile,
   personaFileReference,
@@ -73,6 +71,7 @@ import {
   seatExpiryAt,
 } from "@cotal-ai/workspace";
 import { c, stderrLine } from "../ui.js";
+import { parseChannelFlag } from "../lib/channel-flags.js";
 import { withProvisioner } from "../lib/provisioner.js";
 import { displayCmd } from "../lib/self-exec.js";
 import { completedFlagValue, completingFlagValue, hasCompletedFlagValue, positionalsForCompletion } from "../lib/completion.js";
@@ -226,7 +225,12 @@ export function validateSpawnArguments(args: ParsedArgs) {
   }
   if ((values.restarts === undefined) !== (values["restart-window"] === undefined)) throw new CommandFailure("refused", "USAGE_INVALID", "--restarts and --restart-window must be supplied together");
   if (values.restarts !== undefined) {
-    if (direct) throw new CommandFailure("refused", "USAGE_INVALID", "restart supervision belongs to a managed launch, not a spawn in this terminal", { remedy: "add -d, or --on <instance>, to launch it through a manager" });
+    if (direct) {
+      const foreground = "omit --restarts and --restart-window to launch in this terminal";
+      const managed = values.foreground ? "replace --foreground with -d" : "add -d";
+      const directOnly = internal || values["enrollment-file"] !== undefined || values["live-only"] || values["expires-in"] !== undefined || values["expires-at"] !== undefined;
+      throw new CommandFailure("refused", "USAGE_INVALID", "restart supervision belongs to a managed launch, not a spawn in this terminal", { remedy: directOnly ? foreground : `${managed} to keep restart supervision, or ${foreground}` });
+    }
     for (const field of ["restarts", "restart-window"] as const) if (!/^[1-9][0-9]*$/.test(values[field]!) || !Number.isSafeInteger(Number(values[field])))
       throw new CommandFailure("refused", "USAGE_INVALID", `--${field} must be a positive safe integer`);
   }
@@ -244,21 +248,10 @@ export function validateSpawnArguments(args: ParsedArgs) {
     parseShareSelection(values["share-tools"]);
   } catch { throw new CommandFailure("refused", "USAGE_INVALID", "invalid launch options, native role or tool-sharing selection; use declared keys and unique key=value option pairs"); }
   const channels = {
-    subscribe: parseCommaList(values.subscribe),
-    "allow-subscribe": parseCommaList(values["allow-subscribe"]),
-    "allow-publish": parseCommaList(values["allow-publish"]),
+    subscribe: parseChannelFlag("--subscribe", values.subscribe, true),
+    "allow-subscribe": parseChannelFlag("--allow-subscribe", values["allow-subscribe"], true),
+    "allow-publish": parseChannelFlag("--allow-publish", values["allow-publish"], true),
   };
-  for (const [flag, list] of Object.entries(channels)) {
-    for (const channel of list ?? []) {
-      try { assertValidChannel(channel); }
-      catch (error) {
-        throw new CommandFailure("refused", "USAGE_INVALID", `--${flag}: ${oneLine((error as Error).message)}`, {
-          selfContained: true,
-          ...(channel.startsWith("#") ? { remedy: `pass the channel without its #, as ${JSON.stringify(channel.slice(1))}` } : {}),
-        });
-      }
-    }
-  }
   if (channels.subscribe !== undefined && channels["allow-subscribe"] !== undefined) {
     try { resolveReadAcl(channels.subscribe, channels["allow-subscribe"]); }
     catch (error) {

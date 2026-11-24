@@ -28,7 +28,7 @@ import { createConnection, createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { recordsBucket } from "@cotal-ai/core";
-import { canonicalLocalProcessPath, DELIVERY_PIDFILE, isCommandFailure, MANAGER_PIDFILE, MANAGER_SPARE_CAPABILITY, readManagerName, shellPath, spaceKey, verifyIdentityPin, type ProcessIdentityRecord } from "@cotal-ai/workspace";
+import { canonicalLocalProcessPath, DELIVERY_PIDFILE, isCommandFailure, MANAGER_PIDFILE, MANAGER_SPARE_CAPABILITY, readManagerName, shellPath, spaceKey, userAuthStateDir, verifyIdentityPin, type ProcessIdentityRecord } from "@cotal-ai/workspace";
 import { finishOwnedChild, observeOwnedChild, ownedBirthLive as live, waitForOwnedChild } from "./_foreground-owned-child.js";
 import { foregroundCliProbe } from "./_foreground-cli-probe.js";
 import { observeServiceProcess, serviceInstances } from "../src/lib/service-instances.js";
@@ -1067,6 +1067,8 @@ async function controllerHoldCell(kind: "takeover" | "other-home" | "broker-cras
         if (taker!.state.exited) throw new Error(`the repair exited: ${taker!.io.err}`);
         return /Operation: +up completed/.test(taker!.io.out);
       }, 120_000, () => taker!.io.err.slice(-3000));
+      assert.match(taker.io.out, /This terminal holds the stack's lifetime/);
+      assert.doesNotMatch(taker.io.out, /This stack is already running/); passed++;
       assert.equal(await portOpen(port), true, "the next foreground up repairs the recorded listener"); passed++;
       if (brokerOnly) {
         const who = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["who", "--json"]);
@@ -1259,9 +1261,10 @@ async function userAuthRestartCell(): Promise<void> {
   await listening;
   try {
     const space = "restart-user-auth", port = await freePort(), server = `nats://127.0.0.1:${port}`;
-    const restart = ["--user-auth", "--space", space, "--server", server];
     const idpUrl = `http://127.0.0.1:${(idp.address() as AddressInfo).port}/auth`;
-    const invalid = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["up", "--foreground", "--no-manager", ...restart,
+    const restart = ["--user-auth", "--space", space, "--server", server];
+    const foreground = ["--foreground", "--no-manager", ...restart];
+    const invalid = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["up", ...foreground,
       "--idp", idpUrl, "--exchange-public-port", String(await freePort()), "--exchange-public-url", "http://127.0.0.1"]);
     assert.equal(invalid.code, 1, invalid.out + invalid.err);
     assert.match(invalid.err, /--exchange-public-url must be an https:\/\/ URL/);
@@ -1277,7 +1280,9 @@ async function userAuthRestartCell(): Promise<void> {
         await until(async () => {
           if (state.error) throw state.error;
           if (state.exited) throw new Error(output);
-          return output.includes("Press Ctrl-C to stop.") && await portOpen(port);
+          return output.includes("Press Ctrl-C to stop.") && /✓ user-auth service up - sign in with: `(?:pnpm )?cotal login --idp /.test(output) &&
+            output.includes(`--idp ${idpUrl}\``) &&
+            !existsSync(join(mesh, ".cotal", "maintenance", "lock.json")) && await portOpen(port);
         }, 90_000, () => output);
       } finally {
         if (!state.exited) child.kill("SIGTERM");
@@ -1286,12 +1291,27 @@ async function userAuthRestartCell(): Promise<void> {
       assert.equal(state.code, 143, output);
       assert.equal(await portOpen(port), false, output);
     };
-    await bootAndStop(["--foreground", "--no-manager", ...restart, "--idp", idpUrl]);
+    await bootAndStop([...foreground, "--idp", idpUrl]);
+    const pinPath = join(userAuthStateDir(mesh, space, { readOnly: true }), "idp.json");
+    const pin = readFileSync(pinPath);
+    const otherIdp = `http://127.0.0.1:${(idp.address() as AddressInfo).port}/different`;
+    const conflict = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["up", ...foreground, "--idp", otherIdp]);
+    const conflictText = (conflict.out + conflict.err).replace(/\s+/g, " ");
+    assert.equal(conflict.code, 2, conflictText);
+    assert.match(conflictText, /AUTH_PREFLIGHT_CONFLICT/);
+    assert.match(conflictText, /retry the same start without `--idp`/);
+    assert.match(conflictText, /keep `--user-auth` and the other startup options/);
+    assert.ok(!conflictText.includes(otherIdp), conflictText);
+    assert.doesNotMatch(conflictText, /run bare `(?:pnpm )?cotal up`/);
+    assert.equal(await portOpen(port), false, conflictText);
+    assert.deepEqual(readFileSync(pinPath), pin);
+    await bootAndStop(foreground);
+    assert.deepEqual(readFileSync(pinPath), pin);
     for (const args of [["whoami"], ["send", "--server", server, "-c", "general", "test message"]]) {
       const r = await foregroundCliProbe(cliEntry, tsx, mesh, env, [...args, "--space", space, "--plain"]);
       const text = (r.out + r.err).replace(/\s+/g, " ");
       assert.equal(r.code, 2, text);
-      assert.ok(text.includes(`cotal up --user-auth --space ${shellPath(space)} --server ${shellPath(server)}`), text);
+      assert.ok(["cotal", "pnpm cotal"].some((cli) => text.includes(`\`${cli} up --user-auth --space ${shellPath(space)} --server ${shellPath(server)}\``)), text);
     }
     const downArgs = ["down", "--yes", "--plain"];
     assertSmokeSandboxDown(sandbox, downArgs, { cwd: mesh, env });

@@ -35,8 +35,8 @@ refuses `TARGET_NOT_FOUND` there and names the `stack-` member to use, and a nam
 names `cotal service --space <space>` to list the saved definitions in the space the stop targeted.
 This refusal stops no service, even when several names are given. A set never stops the broker, so
 `nats`, `broker` and `stack-broker` each refuse the whole set `TARGET_NOT_FOUND` before any member
-resolves, with the same message for each name. The next step is a bare `cotal down`, which stops
-the broker with the whole stack. A saved service of your own named `nats` or `broker` is that
+resolves. To inspect a stop of the whole stack, run the suggested preview in the project folder it
+names. The preview keeps the selected space and stops nothing. A saved service of your own named `nats` or `broker` is that
 service. A set that names another saved service running a broker refuses `UNSUPPORTED` and names
 that service's own stop. A stop of `stack-broker` refuses
 `LIFECYCLE_BLOCKED` while a legacy daemon record under the root may front a process, or another
@@ -305,8 +305,9 @@ user-auth stack they show a foreground restart without a manager, with `--user-a
 recorded space and broker address. Other stacks show `cotal up`.
 Before the first `up`,
 `down --space <name>` gives the same no-op when the name matches the space prepared in this folder.
-A different name is refused. For a stop with `--json` or `--plain`, the refusal names the mismatch
-and directs you to the requested space's project root. A controller stack
+A stop with a different name refuses with `UNSUPPORTED`, exit 2, with or without `--json` or
+`--plain`. The refusal names the mismatch and directs you to the requested space's project root.
+A controller stack
 counts as stopped when its last whole-stack operation was a completed `down` and no member and no
 other service instance of its space runs. That check reads no process record under the root; those
 are read only as described below. A stack that stopped any other way takes the full stop, which

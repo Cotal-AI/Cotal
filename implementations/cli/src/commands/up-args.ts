@@ -126,7 +126,7 @@ export function validateUpArguments(args: ParsedArgs): void {
   if (!args.values.file && args.values["tls-cert"] !== undefined && typeof args.values.server === "string" && /^nats:\/\//i.test(args.values.server))
     throw new CommandFailure("refused", "USAGE_INVALID", "--tls-cert serves the broker over TLS, so --server must be a tls:// address; nothing was started or written", { remedy: `pass --server ${tlsAddress(args.values.server)}`, selfContained: true });
   if (typeof args.values.file === "string" && args.values.foreground === true) {
-    const boot = `cotal team boot ${shellWord(args.values.file)} --foreground`;
+    const boot = `${presentation === "json" ? "cotal" : displayCmd()} team boot ${shellWord((args.values.file.startsWith("-") ? "./" : "") + args.values.file)} --foreground`;
     const remedy = args.values["dry-run"] === true ? `preview with ${codeSpan(`${boot} --dry-run`)}`
       : `prepare the project if needed with \`cotal space create <space> --root .\`, then run ${codeSpan(boot)}`;
     throw new CommandFailure("refused", "UNSUPPORTED", "manifest boot has no native foreground custody path; a detached broker was not substituted for the requested terminal-bound lifetime", { remedy });
@@ -224,7 +224,8 @@ function assertUpRootWritable(root: string): void {
   try { accessSync(path, constants.W_OK | constants.X_OK); }
   catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
-    if (code !== "EACCES" && code !== "EPERM" && code !== "EROFS") throw error;
+    if (code === "EROFS") throw new CommandFailure("refused", "PERMISSION_DENIED", `${path} is on a read-only file system (${code}); nothing was started or written`, { target: { root, path }, remedy: "retry with the project on a writable file system" });
+    if (code !== "EACCES" && code !== "EPERM") throw error;
     throw new CommandFailure("refused", "PERMISSION_DENIED", `${path} does not grant this account both write and search access (${code}); nothing was started or written`, { target: { root, path }, remedy: `make it writable and searchable by you, for example with chmod u+wx ${shellWord(path)}` });
   }
 }
@@ -295,16 +296,17 @@ function upHostProblem(host: string | undefined, server: string | undefined): { 
       ? { problem: `--server ${server} names ${named}, and with no --host the broker binds 127.0.0.1, so it would not listen where its clients connect`, remedy: `pass --host ${named} to bind the broker there` }
       : undefined;
   }
-  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(host)) return { problem: `--host ${host} looks like a URL, and it takes a bind host only (an IP or hostname, no scheme)`, remedy: "pass the broker URL with --server instead" };
+  const remedy = "put the broker URL, including the intended port, in --server and the matching local IP address alone in --host";
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(host)) return { problem: `--host ${host} looks like a URL, and it takes a bind host only (an IP or hostname, no scheme)`, remedy };
   if (WILDCARD_HOSTS.has(host)) return undefined;
   const bare = host.startsWith("[") && host.endsWith("]") ? host.slice(1, -1) : host;
   if (isIP(bare) === 6) return { problem: IPV6_UNSERVED("--host"), remedy: "pass an IPv4 bind address, for example --host 127.0.0.1" };
   let url: URL | undefined;
   try { url = new URL(`nats://${host}:1`); } catch { url = undefined; }
   if (!url || url.port !== "1" || url.pathname || url.search || url.hash || url.username || url.password)
-    return { problem: `--host ${host} is not a valid bind host: an IP or hostname only, with no port; the port comes from --server (or its default)`, remedy: "pass the port in --server, for example --server nats://127.0.0.1:4222" };
+    return { problem: `--host ${host} is not a valid bind host: an IP or hostname only, with no port; the port comes from --server (or its default)`, remedy };
   if (server !== undefined && !bindReaches(host, server))
-    return { problem: `--host ${host} and --server ${server} name different addresses: the broker would bind ${host} but be probed at ${new URL(server).hostname}`, remedy: "pass one of them, or make both name the same address" };
+    return { problem: `--host ${host} and --server ${server} name different addresses: the broker would bind ${host} but be probed at ${new URL(server).hostname}`, remedy };
   return undefined;
 }
 

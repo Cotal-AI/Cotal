@@ -748,6 +748,13 @@ try {
     const otherCard = alphaCard.replace("Alpha", "Other");
     const invalid = "---\nname: Reviewer\nsubscribe: [\n---\nInvalid draft.\n";
     const editor = join(scratch, "invalid-editor");
+    const uppercase = join(ALPHA, ".cotal", "agents", "Other.MD");
+    writeFileSync(uppercase, alphaCard);
+    if (!existsSync(agentFilePath(ALPHA, "other"))) {
+      const blocked = native(["persona", "create", "other", "--prompt", "Never saved.", "--subscribe=", "--space", "alpha", "--json"], scratch);
+      const failure = JSON.parse(blocked.stdout).error;
+      check("an uppercase extension still collides but is not an editable catalog stem", blocked.status === 2 && failure?.code === "CONFLICT" && failure.message.includes("Other.MD") && failure.remedy === "choose another persona name" && readFileSync(uppercase, "utf8") === alphaCard, blocked.stdout);
+    }
     writeFileSync(alphaFile, alphaCard);
     writeFileSync(otherFile, otherCard);
     writeFileSync(editor, `#!/bin/sh\ncat > "$1" <<'EOF'\n${invalid}EOF\n`, { mode: 0o700 });
@@ -904,6 +911,8 @@ try {
     const json = native(next[2]!.split(" ").slice(1));
     check("the printed JSON command returns the correct persona", json.status === 0 &&
       JSON.parse(json.stdout).result?.definition?.name === "reviewer", json.stdout + json.stderr);
+    const plain = native(["persona", "remove", "--plain", "--no-input", "--", "-reviewer"]);
+    check("persona remove keeps plain output before the end of options in its confirmation", plain.status === 1 && plain.stderr.includes("`cotal persona remove --yes --plain -- -reviewer`") && existsSync(path), plain.stderr);
     const refused = native(["persona", "remove", "--json", "--", "-reviewer"]);
     const remove: string | undefined = JSON.parse(refused.stdout).error?.remedy?.match(/`([^`]+)`/)?.[1];
     check("persona remove prints a JSON confirmation for a hyphen-leading catalog name",

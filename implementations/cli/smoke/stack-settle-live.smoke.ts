@@ -218,7 +218,7 @@ const configDir = join(home, "xdg");
 for (const key of Object.keys(process.env)) if (key.startsWith("COTAL_")) delete process.env[key];
 // Set before the stores are imported; they read COTAL_HOME on each call.
 process.env.COTAL_HOME = home;
-const env = { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: configDir, COTAL_SKIP_CONNECTOR_SEED: "1" };
+const env = { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: configDir, COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1" };
 const { observeServiceProcess, serviceInstances, serviceInstanceStore } = await import("../src/lib/service-instances.js");
 const { readStackJournal } = await import("../src/lib/stack-journal.js");
 const { serviceDefinitionStore } = await import("../src/lib/service-definitions.js");
@@ -418,7 +418,7 @@ try {
       const pinned = cli(root, "up", flag, "--no-manager", "--json");
       const firstStart = flag === "--user-auth" ? `${flag} --idp <auth base URL>` : flag;
       check(`up ${flag} on the stopped static-auth root refuses CONFLICT, exit 2, and names another folder for ${name}`,
-        pinned.status === 2 && pinned.env?.error?.code === "CONFLICT" && Boolean(pinned.env.error.remedy?.includes(`for ${name} run \`cotal space create <space>\`, then \`cotal up ${firstStart}\`, in another folder`)), shown(pinned));
+        pinned.status === 2 && pinned.env?.error?.code === "CONFLICT" && Boolean(pinned.env.error.remedy?.includes(`for ${name} run \`cotal space create <space>\`, then \`cotal up ${firstStart} --no-manager\`, in another folder`)), shown(pinned));
     }
 
     // A bare up adds the manager, so the restart keeps --no-manager for the ps refusal.
@@ -1035,12 +1035,13 @@ try {
     const records = join(home, "services", Buffer.from(space).toString("hex"));
     for (const row of serviceInstances(space, "stack-broker")) rmSync(join(records, "instances", `${Buffer.from(row.record.value.instanceId).toString("hex")}.json`));
     rmSync(join(records, "definitions", `${Buffer.from("stack-broker").toString("hex")}.json`));
-    const refused = cli(root, "up", "--no-manager", "--json");
-    check("with no saved broker definition either, bare up refuses USAGE_INVALID, exit 1, and asks for --server",
-      refused.status === 1 && refused.env?.error?.code === "USAGE_INVALID" && refused.env.error.remedy === "run `cotal up --server <url>` with the address it ran at" && !existsSync(journalPath), shown(refused));
-    const named = cli(root, "up", "--server", server, "--no-manager", "--json");
+    const startup = ["up", "--no-manager", "--json"];
+    const refused = cli(root, ...startup);
+    check("without a saved broker definition, up asks to add the original address to the same command",
+      refused.status === 1 && refused.env?.error?.code === "USAGE_INVALID" && refused.env.error.remedy === "repeat the same startup command, adding `--server <url>` with the address it ran at" && !existsSync(journalPath), shown(refused));
+    const named = cli(root, ...startup, "--server", server);
     track(space);
-    check("up --server with that address starts it", named.status === 0, shown(named));
+    check("the retry starts the broker at its original address without a manager", named.status === 0 && findMesh(space)?.server === server && runningPidOf(space, "stack-broker") !== null && gone(space, "stack-manager"), shown(named));
     check("down --yes stops it", cli(root, "down", "--yes", "--json").status === 0);
   }
 
@@ -1262,29 +1263,32 @@ try {
       setPreview.status === 0 && setPreview.env?.result?.kind === "service-set-stop-preview"
         && JSON.stringify(previewMembers.map((member) => [member.name, member.requested])) === JSON.stringify([["stack-delivery", "delivery"], ["stack-manager", "manager"]]), shown(setPreview));
     const setManager = runningPidOf(space, "stack-manager"), setDelivery = runningPidOf(space, "stack-delivery");
-    const brokerNext = "a set of names never stops the broker; a bare `cotal down` stops it with the whole stack";
-    const unknown = cli(root, "down", "stack-manager", "nats", "--space", space, "--yes", "--json");
-    check("a broker name in the set refuses the whole set and names the bare down, not stack-broker",
+    const otherRoot = join(projects, "settle");
+    const brokerNext = (output: string) => `a set of names never stops the broker; to preview stopping the whole stack, run \`cotal down --dry-run --space=${space}${output}\` in ${realpathSync(root)}`;
+    const unknown = cli(otherRoot, "down", "stack-manager", "nats", "--space", space, "--yes", "--json");
+    check("a broker name refuses the whole set and offers a preview in the selected space's project",
       unknown.status === 2 && unknown.env?.error?.code === "TARGET_NOT_FOUND" && unknown.env.target?.name === "nats"
         && unknown.env.error.message === `nats matches no service a set of names can stop in space ${space}; no service was stopped`
-        && unknown.env.error.remedy === brokerNext
+        && unknown.env.error.remedy === brokerNext(" --json")
         && setManager !== null && alive(setManager) && setDelivery !== null && alive(setDelivery), shown(unknown));
     // broker and stack-broker reach the saved stack-broker, and refuse as nats does wherever they stand.
     for (const set of [["delivery", "broker", "--dry-run"], ["manager", "broker", "--yes"], ["delivery", "stack-broker", "--yes"], ["manager", "stack-broker", "--dry-run"], ["broker", "delivery", "--yes"]]) {
       const name = set.find((word) => word.endsWith("broker"))!;
       const named = cli(root, "down", ...set, "--space", space, "--json");
-      check(`down ${set.join(" ")} --json refuses as nats does, with its code, message and bare down`,
+      check(`down ${set.join(" ")} --json refuses as nats does, with its code and whole-stack preview`,
         named.status === 2 && named.env?.error?.code === "TARGET_NOT_FOUND" && named.env.target?.name === name
           && named.env.error.message === `${name} matches no service a set of names can stop in space ${space}; no service was stopped`
-          && named.env.error.remedy === brokerNext
+          && named.env.error.remedy === brokerNext(" --json")
           && setManager !== null && alive(setManager) && setDelivery !== null && alive(setDelivery), shown(named));
     }
     const plainBroker = cli(root, "down", "delivery", "stack-broker", "--space", space, "--yes");
     const plainText = `${plainBroker.stdout}${plainBroker.stderr}`;
-    check("and its plain refusal names the same code and bare down, with no stop policy wording",
+    check("the text refusal names the same code and preview, with no stop policy wording",
       plainBroker.status === 2 && plainText.includes(`stack-broker matches no service a set of names can stop in space ${space}; no service was stopped`)
-        && plainText.includes("TARGET_NOT_FOUND") && plainText.includes(brokerNext) && !plainText.includes("kernel-exit") && !plainText.includes("UNSUPPORTED"), plainText);
-    const otherRoot = join(projects, "settle");
+        && plainText.includes("TARGET_NOT_FOUND") && plainText.includes(brokerNext("")) && !plainText.includes("kernel-exit") && !plainText.includes("UNSUPPORTED"), plainText);
+    const previewArgs = /`cotal (down --dry-run [^`]+)`/.exec(unknown.env?.error?.remedy ?? "")?.[1];
+    const whole = previewArgs ? cli(root, ...execWords(previewArgs)) : undefined;
+    check("the printed preview reaches the requested stack and leaves its members running", whole?.status === 0 && whole.env?.target?.space === space && setManager !== null && alive(setManager) && setDelivery !== null && alive(setDelivery), whole && shown(whole));
     const unknownOne = cli(otherRoot, "down", "nosuch", "--space", space, "--dry-run", "--json");
     const unknownSet = cli(otherRoot, "down", "delivery", "nosuch", "--space", space, "--yes", "--json");
     const remedy = unknownSet.env?.error?.remedy;
