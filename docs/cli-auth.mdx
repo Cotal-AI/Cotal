@@ -440,7 +440,8 @@ cotal doctor auth [--space <space>] [--fix] [--json|--plain]
 This inspects the current root's local credential claims and recorded renewal state. It does not
 prove current broker authorization, daemon adoption, connected agents or task progress. The shared
 report keeps full credential paths and public issue/expiry metadata; JSON retains all diagnostic
-rows without JWTs, seeds, fingerprints or raw parser/renewal error bodies. On a root that holds several
+rows without JWTs, seeds, fingerprints or raw parser/renewal error bodies. JSON reports, including
+refusals, set `command` to `doctor auth`. On a root that holds several
 spaces, `--space` names one; it defaults to the sole space. An invalid `--space` value such as `.`
 refuses with `USAGE_INVALID` (exit 1) before reading local signing trust. Run `cotal space` to
 find the registered name. If a damaged registration prevents the diagnostic from determining the

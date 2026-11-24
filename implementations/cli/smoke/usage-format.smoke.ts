@@ -230,6 +230,16 @@ check("a typo in --search names a replacement option that searches for the same 
   && !!searchRetry && searchRetry.status === 0 && searchRetry.stderr === ""
   && JSON.parse(searchRetry.stdout).result.kind === "docs-search" && JSON.parse(searchRetry.stdout).result.query === noHitQuery,
   { refused: shown(searchTypo), retry: searchRetry && shown(searchRetry) });
+for (const args of [["--search", noHitQuery], [`--search=${noHitQuery}`]]) {
+  const refused = run(["docs", "--json", ...args, "--serch", "other"]);
+  const error = JSON.parse(refused.stdout).error;
+  const retry = run(["docs", "--json", ...args]);
+  check(`a typo after ${args.join(" ")} asks to drop the extra option and its value`,
+    refused.status === 1 && refused.stderr === "" && error.code === "USAGE_INVALID"
+    && error.message === "Unknown option '--serch'" && error.remedy === "drop the unknown option and its value, if any; --search is already set"
+    && retry.status === 0 && retry.stderr === "" && JSON.parse(retry.stdout).result.query === noHitQuery,
+    { refused: shown(refused), retry: shown(retry) });
+}
 const shortEquals = run(["send", "-c=general", "hello"]);
 check("-c=value is refused naming the value it would give", usageShape(shortEquals, /-c=general gives -c the value "=general"/) && /write -c general or --channel=general/.test(shortEquals.stderr), shown(shortEquals));
 for (const typed of ["\u2014json", "\u2212\u2212json", "\u2013json"]) {
@@ -735,7 +745,17 @@ for (const [args, usage, foreign] of [
   for (const path of [["endpoint", "watch"], ["endpoint", "session"], ["endpoint", "work"], ["endpoint", "work", "lease"], ["endpoint", "work", "commit"]]) {
     const help = run([...path, "--help"]);
     check(`cotal ${path.join(" ")} help states the limit without offering working examples`,
-      help.status === 0 && /unavailable in this CLI/.test(help.stdout) && /^Usage$/m.test(help.stdout) && !/^Examples$/m.test(help.stdout), shown(help));
+      help.status === 0 && /unavailable in this CLI/.test(help.stdout) && /^Usage$/m.test(help.stdout) && !/^Examples$/m.test(help.stdout) &&
+      help.stdout.trimEnd().endsWith("Structured output: json, plain"), shown(help));
+  }
+
+  for (const operation of ["lease", "commit"]) {
+    const extra = operation === "commit" ? ["--lease", "missing.creds", "--result", "{}"] : [];
+    const refused = run(["endpoint", "work", operation, "ep:example", "review", ...extra, "--json"]);
+    const receipt = JSON.parse(refused.stdout);
+    check(`endpoint work ${operation} still returns the finite unsupported refusal`,
+      refused.status === 2 && receipt.schemaVersion === 1 && receipt.command === "endpoint" && receipt.outcome === "refused" &&
+      receipt.target?.capability === "work" && receipt.target.operation === operation && receipt.error?.code === "UNSUPPORTED", shown(refused));
   }
 
   // The persona create example, its placeholders filled in, run as written against a fresh Cotal home
@@ -769,6 +789,11 @@ for (const [args, usage, foreign] of [
 // No mark at all: the report names the outcome in words, and `!` stays the warning mark.
 const reportShape = (r: ReturnType<typeof run>, message: RegExp) =>
   r.status === 1 && r.stdout === "" && /^Request refused$/m.test(r.stderr) && /Code: +USAGE_INVALID/.test(r.stderr) && message.test(r.stderr) && /Usage/.test(r.stderr) && !/[✗↳]|^! /m.test(r.stderr);
+const describeLive = run(["endpoint", "describe", "manager", "--live", "--plain"]);
+check("endpoint describe explains the --live refusal and both available reads",
+  reportShape(describeLive, /endpoint describe already reads the contract live and does not take --live/) &&
+  describeLive.stderr.includes("remove --live") && describeLive.stderr.includes("cotal endpoint list --live") &&
+  !describeLive.stderr.includes("--file and --yes"), shown(describeLive));
 const ascii = { LANG: "C" };
 const plainOwn = run(["config", "get", "bogus", "--plain"]);
 check("under --plain a command's own usage refusal is the plain report with its Next, then the help", reportShape(plainOwn, /unknown preference "bogus"/) && /^Next$/m.test(plainOwn.stderr), shown(plainOwn));
@@ -968,6 +993,27 @@ if (process.platform !== "win32") {
   check("docs runs from a removed folder", docs.status === 0 && docs.stdout.includes('"outcome":"ok"'), shown(docs));
   const telemetry = fromRemoved(["telemetry", "--json"]);
   check("telemetry runs from a removed folder", telemetry.status === 0 && telemetry.stdout.includes('"outcome":"ok"'), shown(telemetry));
+}
+
+{
+  const relativeHome = { COTAL_HOME: "relative" };
+  for (const [stream, args, target] of [
+    ["watch", ["watch"], { requestedSpace: null }],
+    ["history", ["history", "review", "--follow"], { space: null, channel: "review", dms: false }],
+    ["membership", ["channel", "members", "review", "--follow"], { space: null, channel: "review" }],
+  ] as const) {
+    const r = run([...args, "--json"], relativeHome);
+    const records = r.stdout.trimEnd().split("\n").map((line) => JSON.parse(line || "{}"));
+    check(`${stream} frames a relative COTAL_HOME refusal without a snapshot`, r.status === 1 && r.stderr === ""
+      && records.length === 2 && records.every((record) => record.schemaVersion === 1 && record.stream === stream && Object.entries(target).every(([key, value]) => record.target?.[key] === value))
+      && records[0]?.type === "error" && records[0].data?.code === "USAGE_INVALID"
+      && records[0].data?.message?.startsWith('COTAL_HOME "relative" is a relative path')
+      && records[0].data?.remedy?.startsWith("set COTAL_HOME to an absolute path, or unset it to use ")
+      && records[1]?.type === "end" && records[1].data?.reason === "setup-failed", shown(r));
+  }
+  const finite = run(["history", "review", "--json"], relativeHome);
+  check("finite history with a relative COTAL_HOME still emits one usage refusal", finite.status === 1 && finite.stderr === ""
+    && parsed(finite)?.error?.code === "USAGE_INVALID", shown(finite));
 }
 
 // A folder whose `.cotal` is a file, such as a notes file: every command names it and runs nothing.

@@ -176,12 +176,13 @@ export async function channels(args: ParsedArgs): Promise<void> {
   // entry that already holds every value a set gives.
   const unchanged = action === "remove" ? !removed && !purged : !wrote;
   const result = { action, name, space: connection.space, patch: action === "remove" ? null : patch(values), purged: purged ?? null, removed: action === "remove" ? removed : null };
+  const scope = targetWords({ ...values, space: result.space });
   writeResult(presentation, { command: "channel", target, result, noOp: unchanged }, (r) => ({ sections: [
     { title: action !== "remove" ? action === "defaults" ? unchanged ? "Channel defaults unchanged" : "Channel defaults saved" : unchanged ? `Channel unchanged · #${name}` : `Channel saved · #${name}` : removed ? `Channel removed · #${name}` : unchanged ? `Nothing removed · #${name}` : `Channel history purged · #${name}`, blocks: [
       { kind: "fields", rows: [["Space", r.space], ...(action === "remove" ? [["Metadata", removed ? "removed" : "no saved entry"], ["History", r.purged === null ? "kept" : `${r.purged} retained messages purged`]] as [string, string][] : Object.entries(r.patch!).map(savedRow))] },
       { kind: "lines", lines: [{ text: action !== "remove" ? unchanged ? `${action === "defaults" ? "The space defaults already hold" : `#${name} already holds`} every value given, so nothing was written.` : "Metadata does not grant read or post access. Replay controls backfill, not confidentiality." : unchanged ? `${connection.space} has no saved entry for #${name}, so nothing changed.` : "This does not stop members or revoke access. Future posts can create new retained history.", tone: "hint" }] },
     ] },
-    { title: "Next", blocks: [{ kind: "commands", items: [{ command: "cotal ch", description: "See saved channel metadata" }, { command: "cotal history <channel>", description: "Read retained messages within your grant" }] }] },
+    { title: "Next", blocks: [{ kind: "commands", items: [{ command: `cotal ch${scope}`, description: "See saved channel metadata" }, { command: `${name ? channelHistoryCommand(name) : "cotal history <channel>"}${scope}`, description: "Read retained messages within your grant" }] }] },
   ] }));
 }
 
@@ -276,8 +277,8 @@ function defaultsRegistry({ defaults, undecodable }: ChannelRegistryRead): Chann
 function registryView(result: { action: string; name?: string; space: string; registry: ChannelRegistryRead }, open: boolean, values: Values): Report {
   const { registry, name } = result;
   const bad = (key: string) => registry.undecodable?.find((entry) => entry.key === key);
+  const scope = targetWords({ ...values, space: result.space });
   if (result.action === "show") {
-    const scope = targetWords({ ...values, space: result.space });
     const config = Object.hasOwn(registry.channels ?? {}, name!) ? registry.channels![name!] : undefined;
     const undecodable = bad(name!);
     return { sections: [
@@ -296,7 +297,7 @@ function registryView(result: { action: string; name?: string; space: string; re
     const undecodable = bad("=defaults");
     return { sections: [
       { title: "Channel defaults", blocks: [{ kind: "fields", rows: [["Space", result.space], ...(undecodable ? [["Saved entry", "not decoded"] as [string, string]] : []), ...policyFields(registry.defaults, undefined)] }, { kind: "lines", lines: [{ text: undecodable ? `The saved defaults do not decode (${undecodable.error}). The key was left as it is, and channels inherit the built-in policy.` : "Per-channel settings override these defaults. Replay is not an access control.", tone: undecodable ? "waiting" : "hint" }] }] },
-      { title: "Next", blocks: [{ kind: "commands", items: [{ command: `cotal ch defaults --replay --window 24h${targetWords({ ...values, space: result.space })}`, description: "Set defaults for this space" }] }] },
+      { title: "Next", blocks: [{ kind: "commands", items: [{ command: `cotal ch defaults --replay --window 24h${scope}`, description: "Set defaults for this space" }] }] },
     ] };
   }
   const entries = Object.entries(registry.channels ?? {}).sort(([a], [b]) => a.localeCompare(b));
@@ -308,9 +309,9 @@ function registryView(result: { action: string; name?: string; space: string; re
     } : { kind: "lines", lines: ["No saved channel metadata."] }, { kind: "lines", lines: [{ text: "Configured entries only. Channels with traffic but no saved metadata are not included.", tone: "hint" }] }] },
     ...(undecodable.length ? [{ title: "Not decoded", blocks: [{ kind: "table" as const, columns: [{ key: "key", label: "Key" }, { key: "error", label: "Error" }], rows: undecodable.map((entry) => ({ key: entry.key === "=defaults" ? "defaults" : `#${entry.key}`, error: entry.error })), }, { kind: "lines" as const, lines: [{ text: "These keys stay in the registry. Their channels resolve to the default policy until the value decodes.", tone: "hint" as const }] }] }] : []),
     { title: "Next", blocks: [{ kind: "commands", items: [
-      { command: "cotal ch show <name>", description: "Read policy and advisory instructions" },
-      { command: 'cotal ch set <name> --desc "…"', description: "Save channel metadata without changing access" },
-      { command: "cotal ch defaults", description: "See inherited replay and delivery settings" },
+      { command: `cotal ch show <name>${scope}`, description: "Read policy and advisory instructions" },
+      { command: `cotal ch set <name> --desc "…"${scope}`, description: "Save channel metadata without changing access" },
+      { command: `cotal ch defaults${scope}`, description: "See inherited replay and delivery settings" },
     ] }] },
   ] };
 }

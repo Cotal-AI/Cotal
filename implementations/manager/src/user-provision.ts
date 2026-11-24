@@ -16,8 +16,9 @@ import { pendingEnrollment } from "./pending-enrollment.js";
 import type { RunHosting } from "./run-hosting.js";
 import type { TeardownTarget } from "./retirement.js";
 import type { Manager } from "./manager.js";
-import { bearerEntryArgv } from "./preserved-resume.js";
+import { bearerEntryArgv, localUserAgentScope } from "./preserved-resume.js";
 import type { ManagerConfig } from "./manager-config.js";
+import type { ManagerStartState } from "./manager-start-state.js";
 
 type EnrollManagedAgent = (args: {
   requestId?: string;
@@ -77,7 +78,6 @@ export interface UserAgentRefusal {
 
 /** Reads are live at each original use, including authority assigned or replaced after construction. */
 export interface UserProvisionDeps {
-  managerInstanceId(): string;
   runHosting(): Pick<RunHosting, "runAdmission"> | undefined;
   deprovision(target: TeardownTarget): Promise<void>;
   withProvisioner<T>(fn: (prov: CotalEndpoint) => Promise<T>): Promise<T>;
@@ -89,7 +89,6 @@ export interface UserProvisionDeps {
  *  field the Manager assigns later is current and a member a test replaces on the instance is the one that runs. */
 export function userProvisionDeps(m: Manager): UserProvisionDeps {
   return {
-    managerInstanceId: () => m["managerInstanceId"],
     runHosting: () => m["runHosting"],
     deprovision: (target) => m["deprovision"](target),
     withProvisioner: (fn) => m["withProvisioner"](fn),
@@ -100,9 +99,9 @@ export function userProvisionDeps(m: Manager): UserProvisionDeps {
 
 /** User-mode local grants, hosted enrollment and delegated lifecycle handoff composition. */
 export class UserProvision {
-  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: UserProvisionDeps) {}
+  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: UserProvisionDeps, private readonly state: ManagerStartState) {}
 
-  private get managerInstanceId() { return this.deps.managerInstanceId(); }
+  private get managerInstanceId() { return this.state.managerInstanceId!; }
   private get runHosting() { return this.deps.runHosting(); }
   private get remoteAuthority() { return this.config.remoteAuthority; }
 
@@ -153,7 +152,7 @@ export class UserProvision {
     // vocabulary as static capabilities; the broker maps them to the ctl tiers. `role:<r>` tokens
     // pass through too (a persona may hold delegable roles) — the ledger's envelope walk still
     // attenuates every one of these against the spawner chain.
-    const scope = (opts.capabilities ?? []).filter((c) => c === "spawn" || c === "run" || c === "admin" || /^role:[A-Za-z0-9_-]+$/.test(c));
+    const scope = localUserAgentScope(opts.capabilities);
     // The manager's ONE store (injected for a hosted composition, workstation FS locally). A hosted
     // user-mode spawn reads the callout material from it — the same store the auth-store kinds
     // (callout/issuer/…) were migrated onto — so this is no longer a local-only path.

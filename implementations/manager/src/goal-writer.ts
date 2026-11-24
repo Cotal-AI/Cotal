@@ -9,15 +9,14 @@ import { Kvm } from "@nats-io/kv";
 import type { KV } from "@nats-io/kv";
 import type { NatsConnection } from "@nats-io/transport-node";
 import type { ManagerConfig } from "./manager-config.js";
+import type { ManagerStartState } from "./manager-start-state.js";
 import type { ManagerParts } from "./manager-parts.js";
 import type { SpawnAcceptance } from "./seat-types.js";
 
 /** What {@link GoalWriter} reads from the Manager. Every entry is read at use, so a field the Manager
  *  assigns after construction is always current, and a Manager method a test replaces is the one that runs. */
 export interface GoalWriterDeps {
-  auth: () => Manager["auth"];
   leaseStopping: () => Manager["leaseStopping"];
-  managerInstanceId: () => Manager["managerInstanceId"];
   turnRelay: () => Manager["turnRelay"];
   adoptTurnGoal: (...args: Parameters<Manager["adoptTurnGoal"]>) => ReturnType<Manager["adoptTurnGoal"]>;
   boundedReconnect: (...args: Parameters<Manager["boundedReconnect"]>) => ReturnType<Manager["boundedReconnect"]>;
@@ -25,7 +24,6 @@ export interface GoalWriterDeps {
   noticeSeatTurns: (...args: Parameters<Manager["noticeSeatTurns"]>) => ReturnType<Manager["noticeSeatTurns"]>;
   renewRemoteBeforeRedial: (...args: Parameters<Manager["renewRemoteBeforeRedial"]>) => ReturnType<Manager["renewRemoteBeforeRedial"]>;
   retireConnection: (...args: Parameters<Manager["retireConnection"]>) => ReturnType<Manager["retireConnection"]>;
-  trackTransport: (...args: Parameters<Manager["trackTransport"]>) => ReturnType<Manager["trackTransport"]>;
   withEndpointServeExecutor: <T>(fn: (kvs: { recordsKv: KV; authKv: KV; nc: NatsConnection }) => Promise<T>) => Promise<T>;
 }
 
@@ -33,9 +31,7 @@ export interface GoalWriterDeps {
  *  field the Manager assigns later is current and a member a test replaces on the instance is the one that runs. */
 export function goalWriterDeps(m: Manager): GoalWriterDeps {
   return {
-    auth: () => m["auth"],
     leaseStopping: () => m["leaseStopping"],
-    managerInstanceId: () => m["managerInstanceId"],
     turnRelay: () => m["turnRelay"],
     adoptTurnGoal: (...args) => m["adoptTurnGoal"](...args),
     boundedReconnect: (...args) => m["boundedReconnect"](...args),
@@ -43,14 +39,13 @@ export function goalWriterDeps(m: Manager): GoalWriterDeps {
     noticeSeatTurns: (...args) => m["noticeSeatTurns"](...args),
     renewRemoteBeforeRedial: (...args) => m["renewRemoteBeforeRedial"](...args),
     retireConnection: (...args) => m["retireConnection"](...args),
-    trackTransport: (...args) => m["trackTransport"](...args),
     withEndpointServeExecutor: (fn) => m["withEndpointServeExecutor"](fn),
   };
 }
 
 /** The goal-writer's standing connection, its credential, and the goal index it reconciles at boot. */
 export class GoalWriter {
-  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: GoalWriterDeps, private readonly parts: Pick<ManagerParts, "servePlane">) {}
+  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: GoalWriterDeps, private readonly parts: Pick<ManagerParts, "brokerTransport" | "servePlane">, private readonly state: ManagerStartState) {}
 
   /** The spawn-as-action SELF-MEDIATED goal-writer connection + ActionContext — a
    *  standing connection DISJOINT from the serve credential, scoped to exactly this endpoint's
@@ -83,9 +78,9 @@ export class GoalWriter {
   // The Manager members these bodies read, under their Manager names. Each reads through its dep at
   // use, so a field the Manager assigns later is current and a method a test replaces on the Manager
   // is the one that runs.
-  private get auth() { return this.deps.auth(); }
+  private get auth() { return this.state.auth; }
   private get leaseStopping() { return this.deps.leaseStopping(); }
-  private get managerInstanceId() { return this.deps.managerInstanceId(); }
+  private get managerInstanceId() { return this.state.managerInstanceId!; }
   private get remoteAuthority() { return this.config.remoteAuthority; }
   private get turnRelay() { return this.deps.turnRelay(); }
   private adoptTurnGoal(...args: Parameters<Manager["adoptTurnGoal"]>): ReturnType<Manager["adoptTurnGoal"]> { return this.deps.adoptTurnGoal(...args); }
@@ -94,7 +89,6 @@ export class GoalWriter {
   private noticeSeatTurns(...args: Parameters<Manager["noticeSeatTurns"]>): ReturnType<Manager["noticeSeatTurns"]> { return this.deps.noticeSeatTurns(...args); }
   private renewRemoteBeforeRedial(...args: Parameters<Manager["renewRemoteBeforeRedial"]>): ReturnType<Manager["renewRemoteBeforeRedial"]> { return this.deps.renewRemoteBeforeRedial(...args); }
   private retireConnection(...args: Parameters<Manager["retireConnection"]>): ReturnType<Manager["retireConnection"]> { return this.deps.retireConnection(...args); }
-  private trackTransport(...args: Parameters<Manager["trackTransport"]>): ReturnType<Manager["trackTransport"]> { return this.deps.trackTransport(...args); }
   private withEndpointServeExecutor<T>(fn: (kvs: { recordsKv: KV; authKv: KV; nc: NatsConnection }) => Promise<T>): Promise<T> { return this.deps.withEndpointServeExecutor(fn); }
 
   /** Mint the standing `goal-writer` credential and STAGE it into this
@@ -149,7 +143,7 @@ export class GoalWriter {
       maxReconnectAttempts: -1,
     });
     nc.closed().then((err) => { void this.onGoalWriterConnectionClosed(err ?? undefined); });
-    this.trackTransport(nc);
+    this.parts.brokerTransport.trackTransport(nc);
     gw.nc = nc;
     // The (i) fence resolver (SPEC 13.6): resolve an executing instance's CURRENT gate
     // epoch. This manager reconciles only ITS OWN goals, so it resolves its own

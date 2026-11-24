@@ -26,9 +26,11 @@ import { spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CotalEndpoint, isReachable, setupSpaceStreams } from "@cotal-ai/core";
+import { CotalEndpoint, isReachable, membershipBucket, setupSpaceStreams } from "@cotal-ai/core";
+import { jetstreamManager } from "@nats-io/jetstream";
+import { connect } from "@nats-io/transport-node";
 import { recordMesh } from "@cotal-ai/workspace";
-import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, freePort, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { ConsoleSession, clean, screen, wait } from "./_console-pty.js";
 
 let pass = 0, fail = 0;
@@ -46,6 +48,33 @@ const SERVERS = `nats://127.0.0.1:${PORT}`;
 const srv = spawn("nats-server", ["-js", "-p", String(PORT), "-sd", join(dir, "js")], { stdio: "ignore" });
 const releaseBroker = teardownOnSignal(srv, dir);
 recordMesh({ space, server: SERVERS, root: workspaceRoot, mode: "open", ts: new Date().toISOString() });
+
+async function checkDisconnectedQuit(): Promise<void> {
+  const nc = await connect({ servers: SERVERS });
+  let s: ConsoleSession | undefined;
+  try {
+    const js = await jetstreamManager(nc);
+    const consumerCount = async () => (await js.streams.info(`KV_${membershipBucket(space)}`)).state.consumer_count;
+    const before = await consumerCount();
+    s = new ConsoleSession(["--space", space, "--server", SERVERS], home, { CI: "false", CONTINUOUS_INTEGRATION: "false" });
+    check("console opens on a live broker", await s.waitFor(`● ${space}`, 40_000), clean(s.out).slice(-500));
+    const deadline = Date.now() + 10_000;
+    while ((await consumerCount()) <= before && Date.now() < deadline) await wait(100);
+    check("console has a live membership watch before the outage", (await consumerCount()) > before);
+    await nc.close();
+    const from = s.mark();
+    await killAndAwaitExit(srv, "SIGTERM");
+    check("the console paints disconnected before quit", await s.waitFor(`⨯ ${space}`, 10_000, from), clean(s.out.slice(from)).slice(-500));
+    const quitFrom = s.mark();
+    const exited = await s.quit(20_000);
+    const output = s.out.slice(quitFrom);
+    check("q exits zero, restores the terminal, and prints no timeout after the broker stops",
+      exited && output.includes("\x1b[?1049l") && !output.includes("TimeoutError"), { exit: s.exited, output: clean(output).slice(-500) });
+  } finally {
+    await nc.close();
+    await s?.close();
+  }
+}
 
 let session: ConsoleSession | undefined;
 let poster: CotalEndpoint | undefined;
@@ -181,6 +210,9 @@ try {
   check("--no-color paints the console with no ANSI color, even under FORCE_COLOR", flagged.painted && !flagged.colored, flagged.tail);
   const noColor = await paint([], { NO_COLOR: "1" });
   check("a non-empty NO_COLOR paints the console with no ANSI color", noColor.painted && !noColor.colored, noColor.tail);
+
+  await Promise.all([reader.stop(), stub.stop(), poster.stop()]);
+  await checkDisconnectedQuit();
 } catch (e) {
   fail++;
   console.error("  ✗ threw:", e);
@@ -189,8 +221,7 @@ try {
   try { await reader?.stop(); } catch { /* down */ }
   try { await stub?.stop(); } catch { /* down */ }
   try { await poster?.stop(); } catch { /* down */ }
-  srv.kill("SIGKILL");
-  await new Promise<void>((res) => { if (srv.exitCode !== null) return res(); srv.once("exit", () => res()); setTimeout(res, 3000); });
+  await killAndAwaitExit(srv, "SIGKILL");
   releaseBroker();
   rmSync(dir, { recursive: true, force: true });
 }

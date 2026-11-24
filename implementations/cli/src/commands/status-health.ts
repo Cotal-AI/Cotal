@@ -685,7 +685,7 @@ async function movedStackTargetHealth(report: SelectedResult, meshes: StatusResu
   if (report.resolved || !report.space || !report.recordedRoot || !server) return undefined;
   const address = brokerAddressForDisplay(server);
   const registered = meshes.items.find((mesh) => mesh.space === report.space && mesh.root === report.recordedRoot
-    && mesh.origin === "up" && mesh.mode === "auth" && mesh.server === address);
+    && mesh.origin === "up" && (mesh.mode === "auth" || mesh.mode === "open") && mesh.server === address);
   if (!address || !registered || !stackRootGone(registered.space, registered.root)) return undefined;
   const reachable = registered.check === "reachable" || await isReachable(server, registered.tlsRequired ? { tls: true } : {});
   return movedStackComponent("target", [`registered ${address}`, ...(reachable ? ["reachable"] : [])]);
