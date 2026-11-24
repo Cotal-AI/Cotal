@@ -66,7 +66,7 @@ if (!existsSync(BIN)) {
   process.exit(1);
 }
 
-interface Envelope { outcome?: string; target?: { root?: string; space?: string; heldBy?: string }; error?: { code?: string; message?: string; remedy?: string }; result?: { lifetimeRequest?: string } }
+interface Envelope { outcome?: string; target?: { root?: string; space?: string; heldBy?: string }; error?: { code?: string; message?: string; remedy?: string }; result?: { kind?: string; lifetimeRequest?: string; effectAttempted?: boolean; persisted?: boolean } }
 const { readStackJournal, writeStackJournal } = await import("../src/lib/stack-journal.js");
 
 const { check, finish } = createSuite();
@@ -149,13 +149,22 @@ for (const { args, message } of cases) {
         && !existsSync(join(manifests, ".cotal")), shown(foregroundPreview));
   }
   writeFileSync(join(manifests, "-mesh.yaml"), readFileSync(openManifest));
-  const dashPreviewRefusal = run(["up", "--file=-mesh.yaml", "--dry-run", "--foreground"], manifests);
-  const dashPreviewCommand = /preview with `(?:pnpm )?cotal ([^`]+)`/.exec(dashPreviewRefusal.stderr)?.[1];
-  const dashPreview = dashPreviewCommand && run(dashPreviewCommand.split(" "), manifests);
-  check("the printed foreground retry previews a dash-leading manifest without writes",
-    dashPreviewRefusal.status === 2 && !!dashPreview && dashPreview.status === 0
-      && /Lifetime request:\s+terminal-bound/.test(dashPreview.stdout) && !existsSync(join(manifests, ".cotal")),
-    { refusal: shown(dashPreviewRefusal), retry: dashPreview && shown(dashPreview) });
+  for (const flags of [[], ["--json"], ["--plain"]]) {
+    const refusal = run(["up", "--file=-mesh.yaml", "--dry-run", "--foreground", ...flags], manifests);
+    const advice = refusal.envelope?.error?.remedy ?? refusal.stderr;
+    const command = /preview with `((?:pnpm )?cotal) ([^`]+)`/.exec(advice);
+    const expected = ["team", "boot", "./-mesh.yaml", "--foreground", "--dry-run", ...flags].join(" ");
+    const retry = command?.[2] === expected ? run(command[2].split(" "), manifests) : undefined;
+    const result = retry?.envelope?.result;
+    const json = flags[0] === "--json";
+    check(`the printed foreground retry with ${flags[0] ?? "default output"} previews a dash-leading manifest without writes`,
+      refusal.status === 2 && retry?.status === 0 && retry.stderr === "" && !existsSync(join(manifests, ".cotal"))
+        && (json ? command?.[1] === "cotal" && refusal.stderr === "" && refusal.envelope?.error?.code === "UNSUPPORTED"
+          && retry.envelope?.outcome === "ok" && result?.kind === "fresh-team-boot-preview"
+          && result.lifetimeRequest === "terminal-bound" && result.effectAttempted === false && result.persisted === false
+          : /Lifetime request:\s+terminal-bound/.test(retry.stdout)),
+      { refusal: shown(refusal), retry: retry && shown(retry) });
+  }
   for (const { label, args, json, help, message, remedy } of [
     { label: "-f --dry-run --max-file-store", args: ["-f", authManifest, "--dry-run", "--max-file-store", "1073741824"], json: true, help: false,
       message: "--max-file-store cannot be combined with --file/-f: a manifest launch does not render a store cap, so nothing was started", remedy: "drop --max-file-store, or start the mesh without -f" },
