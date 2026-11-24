@@ -191,11 +191,18 @@ function tooLarge(bytes: Buffer, remedy: string): CommandFailure | undefined {
   return bytes.length > PERSONA_LIMIT ? new CommandFailure("refused", "SCHEMA_INVALID", `the persona definition is ${bytes.length} bytes, over the 1 MiB limit, so it was not saved`, { remedy }) : undefined;
 }
 
-/** The persona whose file name differs from `path`'s only in case. A case-insensitive file system
- *  holds the two as one file. */
-function caseTwin(path: string): string | undefined {
+function findCatalogFilename(path: string, match: "any-case" | "different-case"): string | undefined {
   const file = basename(path);
-  return readdirSync(dirname(path)).find(entry => entry !== file && entry.toLowerCase() === file.toLowerCase());
+  return readdirSync(dirname(path)).find(entry => (match === "any-case" || entry !== file) && entry.toLowerCase() === file.toLowerCase());
+}
+
+/** An import remedy can offer another name only when the selected catalog shows it is free. */
+export function isPersonaNameFree(root: string, name: string): boolean {
+  const path = personaPath(root, name);
+  try { return findCatalogFilename(path, "any-case") === undefined; }
+  catch (error) {
+    return (error as NodeJS.ErrnoException).code === "ENOENT" && catalogFolderProblem(dirname(path)) === undefined;
+  }
 }
 
 /** Shared by canonical and legacy CLI writes only. Manager and external writers do not take this lock.
@@ -215,7 +222,7 @@ export function commitPersona(path: string, expected: PersonaSource | undefined,
     const current = readPersonaSource(path);
     if (!sameSource(expected, current))
       throw new CommandFailure("refused", "CONFLICT", `persona ${current === undefined ? "was removed" : "changed"} while the operation was open: ${path}`, { remedy: current === undefined ? "list the catalog with `cotal persona` and retry" : "read the current definition and retry" });
-    const twin = current === undefined && bytes !== undefined ? caseTwin(path) : undefined;
+    const twin = current === undefined && bytes !== undefined ? findCatalogFilename(path, "different-case") : undefined;
     if (twin !== undefined) {
       if (!twin.endsWith(".md")) throw new CommandFailure("refused", "CONFLICT", `catalog filename '${basename(path)}' differs from '${twin}' only in case; nothing was written`, { remedy: "choose another persona name" });
       const name = basename(twin, ".md");

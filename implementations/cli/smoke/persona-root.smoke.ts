@@ -135,6 +135,37 @@ function checkCreateInputGuidance(run: (args: string[], input?: Buffer) => Spawn
   }
 }
 
+function checkOccupiedImportName(run: (args: string[], input?: Buffer) => SpawnSyncReturns<string>, root: string): void {
+  const originalBytes = Buffer.from("---\nname: occupied-card\nsubscribe: []\n---\nKeep this persona.\n");
+  const original = agentFilePath(root, "occupied-card");
+  const saved = agentFilePath(root, "fresh-card");
+  const create = ["persona", "create", "fresh-card", "--space", "alpha", "--file"];
+  writeFileSync(original, originalBytes);
+  const refused = run([...create, original, "--plain"]);
+  check("an import from the catalog suggests a separate copy instead of a conflicting create",
+    refused.status === 1 && refused.stderr.includes("SCHEMA_INVALID") && refused.stderr.includes("names 'occupied-card'") &&
+    refused.stderr.includes("copy the definition to a separate file, set its frontmatter name to 'fresh-card', and retry with --file pointing to the copy") &&
+    !refused.stderr.includes("cotal persona create occupied-card") && !existsSync(saved), refused.stderr);
+
+  for (const sourceName of ["occupied-card", "Occupied-Card", ...(process.platform !== "win32" ? ["linked-card"] : [])]) {
+    if (sourceName === "linked-card") symlinkSync("missing-card.md", agentFilePath(root, sourceName));
+    const bytes = Buffer.from(originalBytes.toString().replace("name: occupied-card", `name: ${sourceName}`));
+    const piped = run([...create, "-", "--json"], bytes);
+    const { error } = JSON.parse(piped.stdout);
+    check(`stdin does not suggest an occupied catalog filename for ${sourceName}`,
+      piped.status === 1 && error?.code === "SCHEMA_INVALID" && error.message.includes(`standard input names '${sourceName}'`) &&
+      error.remedy === "set the frontmatter name to 'fresh-card' and pipe the corrected definition into the original command" &&
+      !existsSync(saved), piped.stdout);
+  }
+
+  const copy = join(scratch, "fresh-card.md");
+  const corrected = Buffer.from(originalBytes.toString().replace("name: occupied-card", "name: fresh-card"));
+  writeFileSync(copy, corrected);
+  const created = run([...create, copy, "--plain"]);
+  check("retrying with the separate copy preserves the bytes of both personas",
+    created.status === 0 && readFileSync(saved).equals(corrected) && readFileSync(original).equals(originalBytes), created.stdout + created.stderr);
+}
+
 const sorted = (r: { items: { value: string }[] }) => r.items.map((i) => i.value).sort();
 const names = (root: string) => listPersonas(root).map((p) => p.name).sort();
 
@@ -726,6 +757,7 @@ try {
   const spacedSource = "sample card.md";
   const importBytes = Buffer.from("---\nname: sample\nsubscribe: []\n---\nReview a sample.\n");
   writeFileSync(join(scratch, spacedSource), importBytes);
+  writeFileSync(agentFilePath(MESH, "sample"), importBytes);
   const mismatch = native(["persona", "create", "other", "--file", spacedSource, "--space", "alpha", "--plain"], scratch);
   const retry = mismatch.stderr.match(/create it under its own name with `([^`]+)`/)?.[1];
   check("a mismatched import quotes the original filename and preserves the catalog selector",
@@ -739,6 +771,7 @@ try {
     check("the retry works as printed and imports the original bytes into alpha",
       copied.status === 0 && existsSync(imported) && readFileSync(imported).equals(importBytes), copied.stdout + copied.stderr);
   }
+  checkOccupiedImportName((args, input) => native(args, MESH, childEnv, input), ALPHA);
 
   const decoyFile = agentFilePath(ALPHA, "encoded");
   const decoy = "---\nname: encoded\n---\nAlpha instructions.\n";
