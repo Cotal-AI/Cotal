@@ -43,7 +43,7 @@ import "@cotal-ai/manager";
 import "@cotal-ai/delivery";
 import "@cotal-ai/runtime";
 import "@cotal-ai/auth";
-import { assertSmokeSandboxDown, createSuite, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
+import { assertSmokeSandboxDown, createSuite, freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
 import { DEFAULT_AGENT } from "../../implementations/cli/src/lib/default-persona.js";
 import { readDocument } from "@cotal-ai/docs-content";
 
@@ -1315,44 +1315,66 @@ require('node:module').syncBuiltinESMExports();`);
 
 // A retained teardown ledger uses the manifest source hash, without reading launch-time personas.
 {
+  const manifest = "old team.yaml";
+  const server = `nats://127.0.0.1:${await freePort()}`;
   let ledgerPath = "", ledgerBefore = "";
-  const prepare = (home: string, ledger: boolean): void => {
-    const root = dirname(home), file = join(root, "old.yaml");
+  const prepare = (home: string, ledger: boolean, runId = "oldrun"): void => {
+    const root = dirname(home), file = join(root, manifest);
     mkdirSync(join(root, ".cotal", "manifests"), { recursive: true });
     mkdirSync(join(home, "meshes"), { recursive: true });
     writeFileSync(join(home, "meshes", `${spaceSegment("retiredledger")}.json`), JSON.stringify({
-      space: "retiredledger", server: "nats://127.0.0.1:1", root, mode: "open", origin: "up", ts: "2026-11-09T00:00:00.000Z",
+      space: "retiredledger", server, root, mode: "open", origin: "up", ts: "2026-11-09T00:00:00.000Z",
     }));
     const source = "apiVersion: cotal/v1\nkind: Mesh\nspace: retiredledger\nagent: claude\nagents:\n  worker: ./removed-persona.md\nchannels: {}\n";
     writeFileSync(file, source);
     if (ledger) {
-      ledgerPath = join(root, ".cotal", "manifests", "oldrun.json");
-      ledgerBefore = JSON.stringify({ apiVersion: "cotal-ledger/v1", kind: "MeshLedger", runId: "oldrun",
-        space: "retiredledger", server: "nats://127.0.0.1:1", manifestPath: file,
+      ledgerPath = join(root, ".cotal", "manifests", `${runId}.json`);
+      ledgerBefore = JSON.stringify({ apiVersion: "cotal-ledger/v1", kind: "MeshLedger", runId,
+        space: "retiredledger", server, manifestPath: file,
         manifestHash: createHash("sha256").update(source).digest("hex").slice(0, 16), teardownMode: "ledger-scoped",
         created: { channels: ["oldchannel"], agents: [] } });
       writeFileSync(ledgerPath, ledgerBefore);
     }
   };
-  for (const run of [[], ["--run", "oldrun"]]) {
-    const r = cotal(["down", "-f", "old.yaml", "--dry-run", ...run], (home) => prepare(home, true), noSeed);
-    check(`ledger dry-run ${run.length ? "by explicit run" : "by source hash"} needs no launch persona`,
+  for (const [runId, args] of [["oldrun", ["--run", "oldrun"]], ["-legacy", ["--run=-legacy"]]] as const) {
+    const partial = cotal(["down", ...args], (home) => prepare(home, true, runId), noSeed);
+    const retry = /finish later \(broker up \/ members gone\): `(\b(?:pnpm )?cotal (down --run=[A-Za-z0-9_-]+))`/.exec(partial.stdout);
+    check(`partial ledger teardown offers a file-free retry for ${runId} even when the manifest path has spaces`,
+      partial.status === 1 && retry?.[2] === `down --run=${runId}`
+        && partial.stdout.includes(`the ledger is RETAINED for a later \`${retry[1]}\``)
+        && isDeepStrictEqual(JSON.parse(readFileSync(ledgerPath, "utf8")), JSON.parse(ledgerBefore)), partial);
+    if (!retry) continue;
+    const preview = cotal([...retry[2].split(" "), "--dry-run"], (home) => {
+      prepare(home, true, runId);
+      rmSync(join(dirname(home), manifest));
+    }, noSeed);
+    check(`the printed retry for ${runId} previews the run without its manifest`,
+      preview.status === 0 && preview.stdout.includes("Would remove (dry run):") && preview.stdout.includes("#oldchannel")
+        && readFileSync(ledgerPath, "utf8") === ledgerBefore, shown(preview));
+  }
+  for (const [lookup, args] of [
+    ["by source hash", ["-f", manifest]],
+    ["by explicit run with file", ["-f", manifest, "--run", "oldrun"]],
+    ["by run ID alone", ["--run", "oldrun"]],
+  ] as const) {
+    const r = cotal(["down", "--dry-run", ...args], (home) => prepare(home, true), noSeed);
+    check(`ledger dry-run ${lookup} needs no launch persona`,
       r.status === 0 && r.stdout.includes("Would remove (dry run)") && r.stdout.includes("#oldchannel")
         && readFileSync(ledgerPath, "utf8") === ledgerBefore, shown(r));
   }
   for (const format of ["--json", "--plain"]) {
-    const r = cotal(["down", "-f", "old.yaml", "--dry-run", format], (home) => prepare(home, true), noSeed);
+    const r = cotal(["down", "-f", manifest, "--dry-run", format], (home) => prepare(home, true), noSeed);
     check(`ledger preview retains its ${format} refusal without loading personas`,
       r.status === 2 && (r.stdout + r.stderr).includes("UNSUPPORTED") && !(r.stdout + r.stderr).includes("SCHEMA_INVALID")
         && readFileSync(ledgerPath, "utf8") === ledgerBefore, shown(r));
   }
   for (const format of [[], ["--json"], ["--plain"]]) {
-    const r = cotal(["down", "-f", "old.yaml", ...format], (home) => prepare(home, false), noSeed);
+    const r = cotal(["down", "-f", manifest, ...format], (home) => prepare(home, false), noSeed);
     check(`file-form apply ${format[0] ?? "text"} names the recorded stack's stop without inventing a run ID`,
       r.status === 2 && (r.stdout + r.stderr).includes("UNSUPPORTED") && (r.stdout + r.stderr).includes("no run ID is needed")
         && !(r.stdout + r.stderr).includes("--run <id>"), shown(r));
   }
-  const noLedger = cotal(["down", "-f", "old.yaml", "--dry-run", "--json"], (home) => prepare(home, false), noSeed);
+  const noLedger = cotal(["down", "-f", manifest, "--dry-run", "--json"], (home) => prepare(home, false), noSeed);
   check("no-ledger recorded-stack preview still validates the manifest's persona",
     noLedger.status === 1 && noLedger.stdout.includes("SCHEMA_INVALID") && noLedger.stdout.includes("removed-persona.md"), shown(noLedger));
   // A new project records no stack and no ledger, so there is no run ID to offer.

@@ -466,6 +466,9 @@ It does not reload launch-time persona files, so a missing persona does not prev
 root records a stack without an additive ledger, file-form apply refuses `UNSUPPORTED` and
 names bare `cotal down` from that root. It does not require a run ID or stop the stack implicitly.
 
+If teardown of an additive ledger is incomplete, the retry command is `cotal down --run=<id>`.
+Run it from the checkout that holds the ledger. It does not need the manifest file.
+
 For an additive ledger from the retired `spawn -f`, `down -f` keeps an authenticated channel when
 membership cannot be read. Its output includes the read failure, rather than calling every failure
 an absent feed. A user-auth teardown uses the signed-in user's control authority and an admin read
