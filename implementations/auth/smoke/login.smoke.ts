@@ -623,14 +623,17 @@ console.log("C2) advertised space catalog cache");
   workspaceMod.recordMesh({ space: manual.space, server: "nats://127.0.0.1:4222", root: catalogDir, mode: "open", origin: "manual", ts: manual.ts });
   workspaceMod.recordMesh({ space: local.space, server: "nats://127.0.0.1:4223", root: catalogDir, mode: "open", ts: local.ts });
   workspaceMod.recordMesh({ ...foreign, catalogOwner: "other-account" });
-  const skipped = await prepareCatalogTargets({ idpUrl: catalogIdp, force: true });
+  const skipped = await Promise.all([
+    prepareCatalogTargets({ idpUrl: catalogIdp, force: true }),
+    prepareCatalogTargets({ idpUrl: catalogIdp, force: true }),
+  ]);
   check("catalog refresh names the registrations it preserves, with the origin that owns each name",
-    skipped.diffs[0]?.collisions.join(",") === "space_1,space_2,space_3" &&
-      JSON.stringify(skipped.diffs[0]?.collisionDetails) === JSON.stringify([
+    skipped.every(({ diffs }) => diffs[0]?.collisions.join(",") === "space_1,space_2,space_3" &&
+      JSON.stringify(diffs[0]?.collisionDetails) === JSON.stringify([
         { space: "space_1", origin: "manual" }, { space: "space_2", origin: "up" }, { space: "space_3", origin: "catalog" },
-      ]) && workspaceMod.findMesh("space_1")?.server === "nats://127.0.0.1:4222" &&
+      ])) && workspaceMod.findMesh("space_1")?.server === "nats://127.0.0.1:4222" &&
       workspaceMod.findMesh("space_2")?.server === "nats://127.0.0.1:4223" && workspaceMod.findMesh("space_3")?.catalogOwner === "other-account",
-    skipped.diffs[0]?.collisionDetails);
+    skipped.map(({ diffs }) => diffs[0]?.collisionDetails));
   workspaceMod.recordMeshes(originalRegistrations);
   if (priorHome === undefined) delete process.env.COTAL_HOME;
   else process.env.COTAL_HOME = priorHome;
@@ -841,7 +844,7 @@ console.log("C3) a catalog entry marked unavailable");
   process.env.COTAL_HOME = heldHome;
   saveIdpSession(heldHome, heldIdp, { token: "catalog-session", expiresAt: Date.now() / 1000 + 600, sub: "cat-user" });
   const { prepareCatalogCommand, prepareCatalogTargets } = await import("../../cli/src/commands/sync.js");
-  const { findMesh, getCurrent, setCurrent } = await import("@cotal-ai/workspace");
+  const { findMesh, getCurrent, setCurrent, recordMesh } = await import("@cotal-ai/workspace");
   const cacheFile = join(heldHome, "space-catalogs.json");
   // The lazy path refetches only once the five-second window has passed, as a command run a little
   // later does; ageing the cached fetch is that later command without the wait.
@@ -879,6 +882,15 @@ console.log("C3) a catalog entry marked unavailable");
     synced.diffs[0]?.unavailable.join(",") === "held,never_seen" && synced.diffs[0]?.unchanged.join(",") === "held,sibling" &&
       synced.diffs[0]?.removed.length === 0 && synced.diffs[0]?.added.length === 0,
     synced.diffs[0]);
+
+  const manual = { space: "never_seen", server: "nats://127.0.0.1:4222", root: heldHome, mode: "open", origin: "manual", ts: new Date().toISOString() } as const;
+  recordMesh(manual);
+  const unavailableCollision = await prepareCatalogTargets({ idpUrl: heldIdp, force: true });
+  check("an unavailable row reports its conflict without misclassifying it as a ready import",
+    unavailableCollision.diffs[0]?.unavailable.includes(manual.space) === true &&
+      JSON.stringify(unavailableCollision.diffs[0]?.collisionDetails) === JSON.stringify([{ space: manual.space, origin: "manual", unavailable: true }]) &&
+      findMesh(manual.space)?.server === manual.server,
+    unavailableCollision.diffs[0]);
 
   for (const malformed of ["both", "empty"] as const) {
     held = malformed;

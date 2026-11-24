@@ -972,18 +972,16 @@ async function refresh(): Promise<void> {
   }
   buttons();
 }
-async function spaces(refreshCatalog: boolean): Promise<ReturnType<typeof catalogRefreshView>> {
+async function spaces(refreshCatalog: boolean, onboarding = false): Promise<ReturnType<typeof catalogRefreshView>> {
   const activeProvider = signedInProvider ?? providers.get(selectedSpace()) ?? computerAccount?.idpUrl;
   const result = await request({ op: "spaces", refresh: refreshCatalog });
-  const view = catalogRefreshView(result, activeProvider);
-  const { blockedSpaces } = view;
+  if (!Array.isArray(result.spaces)) throw new Error("The background service returned no space list.");
   signedInProvidersKnown = Array.isArray(result.signedInProviders);
   signedInProviders = Array.isArray(result.signedInProviders) ? result.signedInProviders.filter((item): item is string => typeof item === "string") : [];
   const select = el<HTMLSelectElement>("space"); const previous = select.value;
   const connectedProviders = [...providers].filter(([space]) => connections.has(space));
   const retainedSpaces = [...accountSpaces].filter(([space]) => connections.has(space) || computerAccount?.spaces.some(row => row.space === space));
   select.replaceChildren(new Option("Choose a space", "")); providers.clear(); catalogIds.clear(); accountSpaces.clear();
-  if (!Array.isArray(result.spaces)) throw new Error("The background service returned no space list.");
   for (const item of result.spaces) {
     if (!item || typeof item.space !== "string" || item.mode !== "user") continue;
     accountSpaces.set(item.space, { space: item.space, label: String(item.label ?? item.space), ...(typeof item.catalogId === "string" ? { catalogId: item.catalogId } : {}), ...(typeof item.kind === "string" ? { kind: item.kind } : {}), ...(typeof item.role === "string" ? { role: item.role } : {}) });
@@ -996,14 +994,24 @@ async function spaces(refreshCatalog: boolean): Promise<ReturnType<typeof catalo
     if (!providers.has(space)) providers.set(space, provider);
     if (![...select.options].some(option => option.value === space)) select.add(new Option(shownSpaceLabel(accountSpaces.get(space)?.label, space), space));
   }
-  for (const option of [...select.options]) if (blockedSpaces.has(option.value)) option.remove();
+  try {
+    const view = catalogRefreshView(result, activeProvider ?? providers.get(previous));
+    // A newly signed-in account must not resolve its skipped catalog row to another registration.
+    if (onboarding) for (const option of [...select.options]) {
+      if (view.blockedSpaces.has(option.value) && connections.get(option.value) !== "launch-ready") option.remove();
+    }
+    return view;
+  } finally {
+    selectSpaceFromList(select, previous);
+  }
+}
+function selectSpaceFromList(select: HTMLSelectElement, previous: string): void {
   const choices = new Set([...select.options].map(option => option.value).filter(Boolean));
   const selectable = [...accountSpaces.values()].filter(item => choices.has(item.space));
   const preferred = choices.has(previous) && connections.has(previous) ? previous : initialSpace(selectable, requestedSpace) ?? (choices.has(previous) ? previous : undefined) ?? observedReadySpaces.find(space => choices.has(space));
   if (preferred) select.value = preferred;
   choosingSpace = !preferred;
   buttons();
-  return view;
 }
 async function action(fn: () => Promise<void>): Promise<void> {
   if (busy) return; busy = true; refreshGeneration++; buttons();
@@ -1039,7 +1047,7 @@ el("login-form").addEventListener("submit", (event) => {
       if (result.outcome !== "signed-in") throw new DaemonRefusal(String(result.reason ?? "refused").toUpperCase().replaceAll("-", "_"), String(result.message ?? "Sign-in was not completed."));
       signedInProvider = provider;
       for (const item of signedOutProviders) if (sameProvider(item, provider)) signedOutProviders.delete(item);
-      const { message, blockedSpaces } = await spaces(true);
+      const { message, blockedSpaces } = await spaces(true, true);
       await refresh();
       let selectionNotice = "";
       if (computerAccount?.hostSupport === "supported" && computerAccount.mode === "account") {
@@ -1060,7 +1068,7 @@ el("recover").addEventListener("click", () => {
   if (recovery === "login") { beginSignIn(); el<HTMLFormElement>("login-form").requestSubmit(); }
   else if (recovery === "connect") el<HTMLButtonElement>("connect").click();
   else if (recovery === "spaces") void action(async () => {
-    const { message, blockedSpaces } = await spaces(true);
+    const { message, blockedSpaces } = await spaces(true, true);
     notice([message, nextAfterSignIn(blockedSpaces)].filter(Boolean).join(" "));
   });
   else if (recovery === "install") void action(async () => {
@@ -1128,7 +1136,7 @@ el("disconnect").addEventListener("click", () => void action(async () => {
   applicationRefusals.delete(space); progress = progressNames.map(() => "waiting"); clearDetails();
   state(String(result.state), space); notice("");
 }));
-el("sync").addEventListener("click", () => void action(async () => { notice(""); notice((await spaces(true)).message); }));
+el("sync").addEventListener("click", () => void action(async () => { notice(""); notice((await spaces(true, stage === "connect" && !addingSpace)).message); }));
 el("refresh").addEventListener("click", () => void action(refresh));
 el("space").addEventListener("change", () => {
   signedInProvider = undefined; connection = undefined; selectionPending = true;

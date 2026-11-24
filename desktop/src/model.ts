@@ -99,6 +99,7 @@ interface SpaceCollision {
   space: string;
   origin: "manual" | "up" | "catalog";
   idp: string;
+  unavailable?: true;
 }
 
 function spaceCollisions(result: Record<string, unknown>): SpaceCollision[] {
@@ -106,17 +107,21 @@ function spaceCollisions(result: Record<string, unknown>): SpaceCollision[] {
   if (collisionDetails === undefined && !(Number(collisions) > 0)) return [];
   if (!Array.isArray(collisionDetails) || collisionDetails.length !== collisions || !collisionDetails.every(item =>
     item && typeof item.space === "string" && item.space.length > 0 && item.space.length <= 64 && !/[^A-Za-z0-9_-]/.test(item.space) &&
-    (item.origin === "manual" || item.origin === "up" || item.origin === "catalog") && typeof item.idp === "string")) {
+    (item.origin === "manual" || item.origin === "up" || item.origin === "catalog") && typeof item.idp === "string" &&
+    (item.unavailable === undefined || item.unavailable === true))) {
     throw new Error("The background service did not identify the space name conflicts. Run cotal sync to see the names, then cotal space show <name> to check each registration.");
   }
   return collisionDetails;
 }
 
-function collisionNotice({ space, origin }: SpaceCollision): string {
-  if (origin === "catalog") return `${space} (from another account’s catalog): To use the new catalog’s space, sign out of the account that supplied the existing registration, or ask its catalog owner to remove the conflict.`;
+function collisionNotice({ space, origin, unavailable }: SpaceCollision): string {
+  const source = origin === "catalog" ? "from another account’s catalog" : origin === "manual" ? "registered by hand" : "started on this computer";
+  const label = `${space} (${source})`;
+  if (unavailable) return `${label}: The catalog space is unavailable. Keep this registration and ask the catalog’s provider about access.`;
+  if (origin === "catalog") return `${label}: To use the new catalog’s space, sign out of the account that supplied the existing registration, or ask its catalog owner to remove the conflict.`;
   const forget = `cotal space forget ${space.startsWith("-") ? "-- " : ""}${space}`;
   const replace = origin === "up" ? `stop the local space if it is running, then use ${forget} if it is still registered` : `run ${forget}`;
-  return `${space} (${origin === "manual" ? "registered by hand" : "started on this computer"}): To use the catalog’s space, ${replace}.`;
+  return `${label}: To use the catalog’s space, ${replace}.`;
 }
 
 /** A skipped row is not a failed refresh. Keep it out of this provider's onboarding choices. */

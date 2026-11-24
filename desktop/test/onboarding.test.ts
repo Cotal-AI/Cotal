@@ -15,7 +15,7 @@ const bundle = build({ root: fileURLToPath(new URL("..", import.meta.url)), logL
   const entry = output.output.find(file => file.type === "chunk" && file.isEntry);
   assert.ok(entry && "code" in entry); return entry.code;
 });
-async function app(options: { appReceipt?: AppUpdateReceipt; platform?: string; appVersion?: string; update?: UpdateStatus; nativeCheckError?: boolean; nativeCheckPending?: boolean; policyError?: boolean; appUpdate?: AppUpdate; autoUpdates?: boolean; registryLatest?: string; personal?: boolean; label?: string; kind?: string; account?: Record<string, unknown>; provider?: string; link?: string; installed?: boolean; installNotAnswering?: string | boolean; connected?: boolean; count?: number; serviceState?: string; loginReason?: string; setupCode?: string; statusError?: boolean; interrupted?: boolean; interruptedAbout?: boolean; mismatch?: boolean; loading?: boolean; otherProviderFailed?: boolean; ownProviderFailed?: boolean; oldDaemon?: boolean; collision?: boolean; switched?: boolean; credentialsKept?: { space: string; path: string; reason: string }[] } = {}) {
+async function app(options: { appReceipt?: AppUpdateReceipt; platform?: string; appVersion?: string; update?: UpdateStatus; nativeCheckError?: boolean; nativeCheckPending?: boolean; policyError?: boolean; appUpdate?: AppUpdate; autoUpdates?: boolean; registryLatest?: string; personal?: boolean; label?: string; kind?: string; account?: Record<string, unknown>; provider?: string; link?: string; installed?: boolean; installNotAnswering?: string | boolean; connected?: boolean; count?: number; serviceState?: string; loginReason?: string; setupCode?: string; statusError?: boolean; interrupted?: boolean; interruptedAbout?: boolean; mismatch?: boolean; loading?: boolean; otherProviderFailed?: boolean; ownProviderFailed?: boolean; oldDaemon?: boolean; collision?: boolean; unreadable?: number; switched?: boolean; credentialsKept?: { space: string; path: string; reason: string }[] } = {}) {
   const html = readFileSync(new URL("../index.html", import.meta.url), "utf8").replace(/<script\b[^>]*><\/script>/g, "");
   const dom = new JSDOM(html, { url: "http://localhost/", pretendToBeVisual: true, runScripts: "outside-only" });
   const win = dom.window, doc = win.document as Document;
@@ -113,6 +113,7 @@ async function app(options: { appReceipt?: AppUpdateReceipt; platform?: string; 
       if (r.op === "spaces") {
         const collision = r.refresh && options.collision;
         return ok({
+          unreadable: options.unreadable ?? 0,
           ...((options.otherProviderFailed || options.ownProviderFailed || options.oldDaemon) && r.refresh ? { refresh: "partial", ...(options.oldDaemon ? {} : { failedProviders: [options.ownProviderFailed ? COTAL_CLOUD_IDP : "https://hack.cotal.ai/api/auth"] }) } : {}),
           ...(collision ? { refresh: "partial", failedProviders: [], collisions: 1, collisionDetails: [{ space: "team", origin: "manual", idp: COTAL_CLOUD_IDP }] } : {}),
           spaces: Array.from({ length: options.count ?? 1 }, (_, i) => ({ space: i ? "other" : "team", catalogId: i ? "sp_other" : "sp_team", label: i ? "Other team" : options.label ?? "My team", kind: !i && options.kind !== undefined ? options.kind : options.personal && !i ? "personal" : "team", role: "owner", mode: "user", idp: options.provider ?? COTAL_CLOUD_IDP })),
@@ -498,6 +499,35 @@ test("when all choices collide, refresh can recover without another sign-in", as
     assert.equal(a.node("notice").getAttribute("aria-hidden"), "true");
     assert.equal(a.node<HTMLSelectElement>("space").value, "team");
     assert.equal(a.calls.filter(r => r.op === "login").length, 1);
+  } finally { a.dom.window.close(); }
+});
+
+test("an unreadable registration does not erase the usable connection on startup", async () => {
+  const a = await app({ installed: true, connected: true, unreadable: 1 });
+  try {
+    assert.match(a.node("refusal-detail").textContent ?? "", /could not be read/);
+    assert.equal(a.node<HTMLSelectElement>("space").value, "team");
+    await a.click("recover");
+    assert.equal(a.node("recovery-panel").hidden, true);
+    await a.click("dashboard");
+    assert.match(a.urls.at(-1) ?? "", /\/machines\?space=sp_team&machine=instance$/);
+  } finally { a.dom.window.close(); }
+});
+
+test("a refresh collision does not erase the selected running space or its dashboard target", async () => {
+  const a = await app({ installed: true, connected: true, collision: true });
+  try {
+    await a.click("dashboard");
+    const dashboard = a.urls.at(-1);
+    assert.match(dashboard ?? "", /\/machines\?space=sp_team&machine=instance$/);
+    await a.click("sync");
+    assert.ok(a.calls.some(r => r.op === "spaces" && r.refresh));
+    assert.match(a.node("notice").textContent ?? "", /team \(registered by hand\)/);
+    assert.equal(a.node<HTMLSelectElement>("space").value, "team");
+    const opened = a.urls.length;
+    await a.click("dashboard");
+    assert.equal(a.urls.length, opened + 1);
+    assert.equal(a.urls.at(-1), dashboard);
   } finally { a.dom.window.close(); }
 });
 

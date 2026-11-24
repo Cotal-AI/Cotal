@@ -717,8 +717,11 @@ replies include an optional `failedProviders` list of provider URLs. The desktop
 other providers' failures as a notice when the active provider refreshed successfully.
 When a catalog name is already registered, the refresh keeps that registration and skips the
 conflicting catalog row. The daemon reports the space, its existing registration's `origin`,
-and the provider (`idp`) of the skipped row in `collisionDetails`. Desktop sign-in continues
-and shows what you can do about each conflict. Use `cotal space forget <name>` only if you want
+and the provider (`idp`) of the skipped row in `collisionDetails`. A row with `unavailable: true`
+cannot be imported even if the name is freed. Desktop sign-in continues, keeps usable saved spaces
+when a refresh reports a refusal, and shows what you can do about each conflict. Leave an
+unavailable space's existing registration in place and ask the catalog provider about access.
+For an available catalog space, use `cotal space forget <name>` only if you want
 to release a manual or stopped local registration. For a catalog-owned name, sign out of the
 account that supplied the existing registration or ask its catalog owner to resolve the conflict.
 Refresh spaces after resolving it, or run `cotal sync` and reopen the app.

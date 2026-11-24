@@ -26,6 +26,16 @@ test("catalog collisions report every origin and preserve another provider's fai
   assert.match(view.message, /elsewhere \(registered by hand\)/);
   assert.throws(() => catalogRefreshView({ collisions: 1, collisionDetails: [{ space: "unsafe\n", idp: own, origin: "manual" }] }), /did not identify/);
 });
+test("an unavailable catalog collision never suggests releasing the existing name", () => {
+  const collisionDetails = [
+    { space: "held", origin: "manual", idp: own, unavailable: true },
+    { space: "foreign", origin: "catalog", idp: own, unavailable: true },
+  ];
+  const { message } = catalogRefreshView({ refresh: "partial", failedProviders: [], collisions: 2, collisionDetails }, own);
+  assert.match(message, /held \(registered by hand\): The catalog space is unavailable/);
+  assert.match(message, /foreign \(from another account’s catalog\): The catalog space is unavailable/);
+  assert.doesNotMatch(message, /forget|sign out/);
+});
 test("account follows active provider or the only supported account, not the last saved account", () => {
   const good = { idpUrl: own, mode: "account", hostSupport: "supported", spaces: [] };
   const dead = { idpUrl: other, mode: "account", hostSupport: "unknown", spaces: [] };

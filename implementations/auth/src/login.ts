@@ -37,7 +37,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { createLocalJWKSet, decodeJwt } from "jose";
 import { isCredentialTransportUrl, mkSecretDir, writeSecretFileAtomic, type AuthSpaceCatalogAccount, type AuthSpaceCatalogResult } from "@cotal-ai/core";
-import { loginRecoveryCommand, serviceLoginRecovery, CommandFailure, acquireLock, chatNameProblem, credentialFailure, checkIdpUrl } from "@cotal-ai/workspace";
+import { loginRecoveryCommand, serviceLoginRecovery, CommandFailure, acquireLock, acquireLockAsync, chatNameProblem, credentialFailure, checkIdpUrl } from "@cotal-ai/workspace";
 
 /** A cached IdP login. `token` is the IdP session bearer (Better Auth: `session.token`) — an
  *  opaque revocable handle, never a JWT. `expiresAt` (unix seconds) is advisory for messages;
@@ -790,14 +790,19 @@ function migrationDependency(state: ReturnType<typeof readCatalogPreparationStat
   return JSON.stringify({ session, catalog });
 }
 
-const catalogPreparations = new Map<string, Promise<AuthSpaceCatalogResult[]>>();
+const catalogPreparations = new Set<{ opts: PrepareCatalogOpts; work: Promise<AuthSpaceCatalogResult[]> }>();
 
 export function prepareIdpSpaceCatalogs(opts: PrepareCatalogOpts): Promise<AuthSpaceCatalogResult[]> {
-  const key = `${opts.dir}\0${opts.idpUrl ? normalizeIdpUrl(opts.idpUrl) : "*"}`;
-  const active = catalogPreparations.get(key);
-  if (active) return active;
-  const work = prepareIdpSpaceCatalogsLocked(opts).finally(() => catalogPreparations.delete(key));
-  catalogPreparations.set(key, work);
+  const dir = resolve(opts.dir);
+  const idpUrl = opts.idpUrl ? normalizeIdpUrl(opts.idpUrl) : undefined;
+  const force = Boolean(opts.force);
+  // Each distinct consumer must see its own locked application, even if it awaits the same catalog.
+  for (const { opts: active, work } of catalogPreparations)
+    if (active.dir === dir && active.idpUrl === idpUrl && active.force === force && active.validate === opts.validate && active.apply === opts.apply) return work;
+  const normalized = { ...opts, dir, idpUrl, force };
+  const work = prepareIdpSpaceCatalogsLocked(normalized).finally(() => { catalogPreparations.delete(preparation); });
+  const preparation = { opts: normalized, work };
+  catalogPreparations.add(preparation);
   return work;
 }
 
@@ -813,7 +818,7 @@ async function prepareIdpSpaceCatalogsLocked(opts: PrepareCatalogOpts): Promise<
     if (requested) throw signedOut();
     return [];
   }
-  const lock = acquireLock(join(opts.dir, CATALOG_LOCK), { label: "space catalog sync", waitMs: 30_000 });
+  const lock = await acquireLockAsync(join(opts.dir, CATALOG_LOCK), { label: "space catalog sync", waitMs: 30_000 });
   try {
     const current = readCatalogPreparationState(opts.dir);
     const sessions = current.sessions;

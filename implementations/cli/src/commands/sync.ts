@@ -54,6 +54,7 @@ export interface SpaceCatalogSnapshot {
 export interface CatalogCollision {
   readonly space: string;
   readonly origin: NonNullable<MeshEntry["origin"]>;
+  readonly unavailable?: true;
 }
 
 interface CatalogDiff {
@@ -272,13 +273,12 @@ const emptyDiff = (): CatalogDiff => ({ added: [], changed: [], removed: [], unc
 
 /** One account can be applied twice in one preparation: a repair of an interrupted application,
  * then the refreshed snapshot. Report each slug against the registry the command started from, so
- * the first classification of a slug stands. Availability is the refreshed snapshot's. */
+ * the first classification of a slug stands. Conflicts and availability describe the latest application. */
 function mergeDiff(prior: CatalogDiff | undefined, next: CatalogDiff): CatalogDiff {
   if (!prior) return next;
   const lists = ["added", "changed", "removed", "unchanged"] as const;
   const seen = new Set(lists.flatMap((k) => prior[k]));
-  const collisions = new Map([...prior.collisions, ...next.collisions].map((collision) => [collision.space, collision]));
-  const merged: CatalogDiff = { ...prior, collisions: [...collisions.values()], unavailable: next.unavailable };
+  const merged: CatalogDiff = { ...prior, collisions: next.collisions, unavailable: next.unavailable };
   for (const k of lists) merged[k] = [...prior[k], ...next[k].filter((s) => !seen.has(s))].sort();
   if (!merged.selectionInvalidated && next.selectionInvalidated) merged.selectionInvalidated = next.selectionInvalidated;
   return merged;
@@ -325,16 +325,17 @@ function applyResult(result: AuthSpaceCatalogResult): CatalogDiff {
   // so the opening load answers for it.
   function* entries(): Generator<MeshEntry> {
     for (const row of snapshot.spaces) {
+      const unavailable = "unavailable" in row;
+      if (unavailable) diff.unavailable.push(row.slug);
       const existing = readMesh(row.slug) ?? loadedByName.get(row.slug);
       if (existing && (existing.origin !== "catalog" || existing.catalogOwner !== result.account.ownerKey)) {
-        diff.collisions.push({ space: row.slug, origin: existing.origin ?? "up" });
+        diff.collisions.push({ space: row.slug, origin: existing.origin ?? "up", ...(unavailable ? { unavailable: true } : {}) });
         continue;
       }
       const prior = priorByName.get(row.slug);
       // Still listed, so never removed or deselected, but not served now: the registration this
       // machine holds stays exactly as it is, and none is recorded for a space it does not hold.
-      if ("unavailable" in row) {
-        diff.unavailable.push(row.slug);
+      if (unavailable) {
         if (!prior) continue;
         diff.unchanged.push(row.slug);
         yield { ...prior, ...(result.fetchedAt ? { catalogFetchedAt: result.fetchedAt } : {}), catalogError: row.unavailable };
