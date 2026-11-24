@@ -679,6 +679,8 @@ Removing the seeded `default` persona says so in the question and the receipt, s
 `cotal spawn` launches it, and names what writes a fresh copy: a local `cotal up` in its root,
 `cotal space create` or `cotal setup`.
 Plain confirmation uses numbered choices. Scripts and JSON removal require `--yes/-y`.
+The browse command in a successful removal receipt keeps any explicit `--space` and `--server`
+selectors so it lists the catalog that changed.
 
 The legacy `personas` parser remains available during migration: `list [-v] [--running]`,
 `show`, `edit`, `new` and `rm --force`. Each named operation takes one persona name; `list` takes none.
