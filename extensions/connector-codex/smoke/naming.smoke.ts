@@ -2,9 +2,10 @@
  * The Codex connector's naming request (SPEC 13.22): what the `codex exec` it runs receives and how
  * its answer is read, against a stand-in `codex` that records its argv, stdin, directory and env.
  *
- * Covered: one ephemeral `codex exec` on the seat's CODEX_HOME, with the seat's own `-c` overrides
- * first and low reasoning and a read-only sandbox after them, so they win; the seat's model when the
- * launch pinned none; the request on stdin and never in argv; no `COTAL_*` in its env; an empty private
+ * Covered: one ephemeral `codex exec` on the seat's CODEX_HOME that ignores any config file there, with
+ * the seat's own `-c` overrides first and low reasoning, a read-only sandbox and web search off after
+ * them, so they win; every codex feature that gives the model a tool or runs a command turned off;
+ * the seat's model when the launch pinned none; the request on stdin and never in argv; no `COTAL_*` in its env; an empty private
  * directory removed after; the last message read back; a failed turn rejects with codex's reason; an
  * abort stops the process.
  *
@@ -53,6 +54,15 @@ async function settled<T>(p: Promise<T>): Promise<{ ok: true; value: T } | { ok:
   try { return { ok: true, value: await p }; } catch (error) { return { ok: false, error: error as Error }; }
 }
 const configs = (argv: string[]) => argv.flatMap((a, i) => (argv[i - 1] === "-c" ? [a] : []));
+const disabled = (argv: string[]) => argv.flatMap((a, i) => (argv[i - 1] === "--disable" ? [a] : []));
+/** The features `codex features list` shows on in codex-cli 0.170.0 that give the model a tool (the shell,
+ *  images, sleep, apps, plugins, browser and computer use, image generation, goals, skills, tool
+ *  suggestions, sub-agents) or run a command (hooks, the shell snapshot). */
+const TOOL_FEATURES = [
+  "apps", "browser_annotation_api", "browser_use", "browser_use_external", "browser_use_full_cdp_access", "computer_use",
+  "goals", "hooks", "image_generation", "in_app_browser", "multi_agent", "plugins", "remote_plugin", "shell_snapshot",
+  "shell_tool", "skill_mcp_dependency_install", "skill_search", "sleep_tool", "tool_suggest", "unified_exec", "view_image",
+];
 
 process.env.COTAL_SPACE = "smoke";
 process.env.COTAL_CREDS_FILE = "/should/not/reach/codex";
@@ -65,11 +75,13 @@ try {
     const seen = codex.record();
     const { system, prompt } = nameRequest(TEXT);
     check("it resolves to codex's last message", answer === "Checkout canary flake\n", answer);
-    check("codex runs one ephemeral exec that reads its request from stdin",
-      same(seen.argv.slice(0, 5), ["exec", "--ephemeral", "--skip-git-repo-check", "--ignore-rules", "--json"]) && seen.argv.at(-1) === "-", seen.argv);
-    check("the seat's overrides come first, then the seat's model, low reasoning and a read-only sandbox, so the later ones win",
-      same(configs(seen.argv), ['model_reasoning_effort="high"', 'approval_policy="never"', 'sandbox_mode="workspace-write"', 'model="gpt-6.2"', 'model_reasoning_effort="low"', 'sandbox_mode="read-only"']),
+    check("codex runs one ephemeral exec that ignores the config file in CODEX_HOME and reads its request from stdin",
+      same(seen.argv.slice(0, 6), ["exec", "--ephemeral", "--skip-git-repo-check", "--ignore-rules", "--ignore-user-config", "--json"]) && seen.argv.at(-1) === "-", seen.argv);
+    check("the seat's overrides come first, then the seat's model, low reasoning, a read-only sandbox and web search off, so the later ones win",
+      same(configs(seen.argv), ['model_reasoning_effort="high"', 'approval_policy="never"', 'sandbox_mode="workspace-write"', 'model="gpt-6.2"', 'model_reasoning_effort="low"', 'sandbox_mode="read-only"', 'web_search="disabled"']),
       configs(seen.argv));
+    check(`it turns off all ${TOOL_FEATURES.length} codex features that give the model a tool or run a command, and only those`,
+      same([...disabled(seen.argv)].sort(), [...TOOL_FEATURES].sort()), disabled(seen.argv));
     check("the instruction and the message go in on stdin, and never in argv", seen.stdin === `${system}\n\n${prompt}` && !seen.argv.some((a) => a.includes("checkout-service canary")), seen.stdin.slice(-120));
     check("it runs on the seat's CODEX_HOME with no COTAL_ names", seen.env.CODEX_HOME === join(root, "agent-home") && !Object.keys(seen.env).some((k) => k.startsWith("COTAL_")), Object.keys(seen.env).filter((k) => k.startsWith("CO")));
     check("in an empty private directory, removed afterwards", seen.cwd.startsWith(tmpdir()) && same(seen.entries, []) && !existsSync(seen.cwd), seen.cwd);

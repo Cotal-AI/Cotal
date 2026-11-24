@@ -2,13 +2,24 @@
  * The Codex connector's naming request (SPEC 13.22, names from the first message): one ephemeral
  * `codex exec` on the seat's own CODEX_HOME and launch config, so on the seat's login, provider and
  * model, at low reasoning. It runs in an empty private directory under a read-only sandbox, without
- * the seat's MCP servers, and saves no session. The request goes in on stdin, never in argv.
+ * the seat's MCP servers or any config file in its CODEX_HOME, with web search and every tool feature
+ * in {@link TOOL_FEATURES} off, and saves no session. The request goes in on stdin, never in argv.
  */
 import { spawn } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentNaming, NameFromMessage } from "@cotal-ai/connector-core";
+
+/** The codex features that give the model a tool or run a command, on by default in codex-cli 0.170.0
+ *  (`codex features list`). The request turns each off with `--disable`, which wins over the seat's own
+ *  `-c features…` in either order. `codex exec` refuses a feature name it does not know, so a codex
+ *  without one of them fails the request and the seat keeps its launch name. */
+export const TOOL_FEATURES = [
+  "apps", "browser_annotation_api", "browser_use", "browser_use_external", "browser_use_full_cdp_access", "computer_use",
+  "goals", "hooks", "image_generation", "in_app_browser", "multi_agent", "plugins", "remote_plugin", "shell_snapshot",
+  "shell_tool", "skill_mcp_dependency_install", "skill_search", "sleep_tool", "tool_suggest", "unified_exec", "view_image",
+] as const;
 
 export interface CodexNamingSeat {
   bin: string;
@@ -41,15 +52,17 @@ function codexNameFromMessage(seat: CodexNamingSeat): NameFromMessage {
 
 function execArgs(seat: CodexNamingSeat, answer: string): string[] {
   const model = seat.model();
-  // A later `-c` wins, so these take the seat's reasoning and sandbox down for this one request.
+  // A later `-c` wins, so these take the seat's reasoning, sandbox and web search down for this one request.
   const overrides: (readonly [string, string])[] = [
     ...seat.overrides,
     ...(model && !seat.overrides.some(([k]) => k === "model") ? [["model", JSON.stringify(model)] as const] : []),
     ["model_reasoning_effort", '"low"'],
     ["sandbox_mode", '"read-only"'],
+    ["web_search", '"disabled"'],
   ];
   return [
-    "exec", "--ephemeral", "--skip-git-repo-check", "--ignore-rules", "--json", "--output-last-message", answer,
+    "exec", "--ephemeral", "--skip-git-repo-check", "--ignore-rules", "--ignore-user-config", "--json", "--output-last-message", answer,
+    ...TOOL_FEATURES.flatMap((f) => ["--disable", f]),
     ...overrides.flatMap(([k, v]) => ["-c", `${k}=${v}`]),
     "-",
   ];

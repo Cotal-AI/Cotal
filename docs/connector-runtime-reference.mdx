@@ -308,7 +308,9 @@ A failed naming keeps the launch name.
 A connector with no hook never shows the key and logs that the seat keeps its launch name.
 
 The Claude Code connector runs one `claude -p` with no tools, no MCP server, hooks off and no saved session.
-The Codex connector runs one ephemeral `codex exec` on the seat's own Codex home, at low reasoning, under a read-only sandbox.
+The Codex connector runs one ephemeral `codex exec` on the seat's own Codex home, without the config file there, at low reasoning, under a read-only sandbox.
+It turns off web search and, with `--disable`, every feature that gives the model a tool or runs a command, the shell among them.
+Codex 0.170.0 has no switch for the few tools its model catalog adds, such as `apply_patch` and sub-agents.
 The OpenCode 2.x connector runs `generate` on a child session of the seat's session, then deletes the child session.
 The Hermes, Jcode, pi and OpenCode 1.x connectors have no hook yet.
 
