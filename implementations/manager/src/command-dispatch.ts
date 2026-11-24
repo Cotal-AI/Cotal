@@ -1,4 +1,4 @@
-import { DEV_OWNER, EpEnvelopeError, goalRefOf, principalKey, readGoalResult, rejectionText, resolveAuthProvider } from "@cotal-ai/core";
+import { DEV_OWNER, EpEnvelopeError, firstCommandId, goalRefOf, principalKey, readGoalResult, rejectionText, resolveAuthProvider } from "@cotal-ai/core";
 import type { ControlReply, EpCaller, EpCommandDef, EpErrorCode, EpServeContext } from "@cotal-ai/core";
 import { userAuthStateDir } from "@cotal-ai/workspace";
 import { managerCommandDefs } from "./manager-service-contract.js";
@@ -9,6 +9,7 @@ import type { TerminalInput } from "./terminal-input.js";
 import { listStaticSlotObservations, observeStaticSlot, renderStaticSlotObservation, STATIC_SLOT_READ_FAILED_DETAIL, StaticSlotReadError } from "./static-lifecycle.js";
 import type { TranscriptReceiveInput } from "./transcript-receive.js";
 import { measureManagerVitals } from "./vitals.js";
+import { listHarnessCommands } from "./harness-commands.js";
 import type { ManagerConfig } from "./manager-config.js";
 import type { ManagerStartState } from "./manager-start-state.js";
 import type { ManagerParts } from "./manager-parts.js";
@@ -127,9 +128,15 @@ export function commandDispatchDeps(m: Manager): CommandDispatchDeps {
   };
 }
 
+/** A spawn's arguments, its first command named by the id its acceptance gives (spawn-goal.ts). */
+function spawnArgs(ctx: EpServeContext): Record<string, unknown> {
+  const a = (ctx.request.args ?? {}) as Record<string, unknown>;
+  return a.firstCommand === undefined ? a : { ...a, firstCommand: { ...(a.firstCommand as object), id: firstCommandId(ctx.request.id) } };
+}
+
 /** The typed manager command table, the control admission both doors share, and the admin reach it reads. */
 export class CommandDispatch {
-  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: CommandDispatchDeps, private readonly parts: Pick<ManagerParts, "goalWriter" | "personaCatalog" | "seatLaunch" | "seatStop">, private readonly state: ManagerStartState) {}
+  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: CommandDispatchDeps, private readonly parts: Pick<ManagerParts, "connectorInventory" | "goalWriter" | "harnessResolution" | "personaCatalog" | "seatLaunch" | "seatStop">, private readonly state: ManagerStartState) {}
 
   // The Manager members these bodies read, under their Manager names. Each reads through its dep at
   // use, so a field the Manager assigns later is current and a method a test replaces on the Manager
@@ -405,6 +412,7 @@ export class CommandDispatch {
       }),
       listDir: (ctx) => this.serveGated(ctx, () => this.parts.seatLaunch.listSpawnDirectory(args(ctx))),
       resolveCwd: (ctx) => this.serveGated(ctx, () => this.parts.seatLaunch.resolveSpawnCwd(args(ctx).cwd)),
+      harnessCommands: (ctx) => this.serveGated(ctx, () => listHarnessCommands(args(ctx), this.parts, this.config.workspaceRoot)),
       resolveAgent: (ctx) => this.serveGated(ctx, async () => {
         if (this.config.execution === "none") throw new EpEnvelopeError("unimplemented", this.executionRefusal());
         const persona = await this.spawnPersona(args(ctx) as Pick<StartAgentOpts, "name" | "config" | "agent" | "defaultAgent">, callerOf(ctx), ctx.subject.caller);
@@ -417,7 +425,7 @@ export class CommandDispatch {
       // follows owner-domain reach on a user mesh. Resolve the caller's admin tier once for
       // the residual cross-owner case; opStart decides before connector resolution or grant
       // mutation. Static meshes resolve true and nothing changes.
-      spawn: (ctx) => this.loggedSpawnRefusal(ctx, () => this.serveGated(ctx, async () => this.serveSpawnGoal(ctx, async (h) => this.opStart(args(ctx), callerOf(ctx), await this.epAdminReach(ctx.subject.caller), h, ctx.subject.route, ctx.subject.caller, servedRequestSubject(this.config.space, ctx))))),
+      spawn: (ctx) => this.loggedSpawnRefusal(ctx, () => this.serveGated(ctx, async () => this.serveSpawnGoal(ctx, async (h) => this.opStart(spawnArgs(ctx), callerOf(ctx), await this.epAdminReach(ctx.subject.caller), h, ctx.subject.route, ctx.subject.caller, servedRequestSubject(this.config.space, ctx))))),
       despawn: (ctx) => this.serveGated(ctx, async () => {
         const a = targetAgent(ctx);
         const denied = await this.authorizeNamed(a, callerOf(ctx), await this.epAnyModeAdmin(ctx), ctx.subject.caller);

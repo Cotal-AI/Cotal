@@ -20,6 +20,9 @@ fragments and TCP paths refuse with `USAGE_INVALID` before connecting. WebSocket
 for proxy routes. Commands using the shared target connection, including `send`, `history` and
 `who`, require TLS for `tls://` and `wss://`, including with an unregistered space or explicit
 `--creds`. Registry-resolved connections also keep the registered space's TLS requirement.
+If file permissions prevent the CLI from inspecting the project's authentication marker, it refuses
+`--creds` with `PERMISSION_DENIED` (exit 2) before connecting. Check that the account running
+Cotal can read the project's authentication settings and traverse their parent folders.
 For `up -f`, a comma-separated list is checked entry by entry, then refused with the instruction
 to pass one URL for the new broker to listen on. The refusal does not repeat the addresses.
 
@@ -230,7 +233,8 @@ prompt behaves as it does without a terminal, `web` prints its link without open
 the command word on every command, and after it on every command except one that takes its words
 raw. A global flag just after an option that needs a value leaves that value missing. After `--`
 global flags are ordinary words. Each is given once, as any flag is, before or after the command
-word. No command may declare a flag with either name. The output
+word. Neither flag takes a value. If you attach one, the refusal tells you to omit the flag or pass
+it without a value. No command may declare a flag with either name. The output
 flags `--json` (`-j`) and `--plain` may also come before the command word, as in
 `cotal --json status`; they are read as the command's own flags, so a command without that output
 refuses them as it does after the command word. A command that takes its words raw, such as the
@@ -464,6 +468,11 @@ remedy without the command's help, because the command itself was not mistyped. 
 `completion` still work in both. `docs` and `telemetry` also work from a folder that no longer
 exists. There, bare `cotal` and `cotal help` exit 0 and say the folder is gone, even if `PATH`
 contains relative entries.
+
+If `COTAL_HOME` points to a file, the command refuses with `SCHEMA_INVALID` and exits 1. With
+`--json`, `watch`, `history --follow` and `channel members --follow` report this as an `error`
+record followed by an `end` record with reason `setup-failed`, without a snapshot.
+Without `--follow`, `history --json` still writes one refusal envelope.
 
 A long-running command that SIGINT stops ends cleanly first. It stops observing, closes the
 session it holds and writes its last record, then exits 130. SIGTERM ends it the same way and exits

@@ -26,7 +26,7 @@ The output schemas below describe successful command results, not the protocol e
 
 ## manager
 
-Cluster `ai.cotal.manager`, revision 55. 45 commands.
+Cluster `ai.cotal.manager`, revision 56. 46 commands.
 
 | Command                                                   | Capability          | Class     | Target modes |
 | --------------------------------------------------------- | ------------------- | --------- | ------------ |
@@ -39,6 +39,7 @@ Cluster `ai.cotal.manager`, revision 55. 45 commands.
 | [`list-dir`](#manager-list-dir)                           | `manager.spawn`     | ephemeral | untargeted   |
 | [`resolve-cwd`](#manager-resolve-cwd)                     | `manager.spawn`     | ephemeral | untargeted   |
 | [`resolve-agent`](#manager-resolve-agent)                 | `manager.spawn`     | ephemeral | untargeted   |
+| [`harness-commands`](#manager-harness-commands)           | `manager.spawn`     | ephemeral | untargeted   |
 | [`spawn`](#manager-spawn)                                 | `manager.spawn`     | ephemeral | untargeted   |
 | [`despawn`](#manager-despawn)                             | `manager.lifecycle` | ephemeral | owner, any   |
 | [`attach`](#manager-attach)                               | `manager.lifecycle` | ephemeral | owner, any   |
@@ -1435,6 +1436,133 @@ Output schema:
 }
 ```
 
+### manager harness-commands
+
+Registered declaration:
+
+```json
+{
+  "name": "harness-commands",
+  "class": "ephemeral",
+  "targeted": false,
+  "capability": "manager.spawn",
+  "inputDigest": "sha256:fff3f606a4bd40ae560030fece5721aaebe93b5716cf26430f9047dd4ef67a52",
+  "outputDigest": "sha256:2fe44dc081c04877ad72771495ebf36d5bf0940f95f531fe2b602bb621456370"
+}
+```
+
+Input schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "agent",
+    "cwd"
+  ],
+  "properties": {
+    "agent": {
+      "type": "string",
+      "minLength": 1
+    },
+    "cwd": {
+      "type": "string",
+      "minLength": 1
+    }
+  }
+}
+```
+
+Output schema:
+
+```json
+{
+  "oneOf": [
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "agent",
+        "cwd",
+        "supported",
+        "commands"
+      ],
+      "properties": {
+        "agent": {
+          "type": "string"
+        },
+        "cwd": {
+          "type": "string"
+        },
+        "supported": {
+          "const": true
+        },
+        "commands": {
+          "type": "array",
+          "maxItems": 512,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "name",
+              "target"
+            ],
+            "properties": {
+              "name": {
+                "type": "string",
+                "pattern": "^[^\\s\\p{C}]{1,128}$"
+              },
+              "target": {
+                "enum": [
+                  "command",
+                  "skill"
+                ]
+              },
+              "description": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 1024
+              },
+              "inputHint": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "agent",
+        "cwd",
+        "supported",
+        "reason"
+      ],
+      "properties": {
+        "agent": {
+          "type": "string"
+        },
+        "cwd": {
+          "type": "string"
+        },
+        "supported": {
+          "const": false
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    }
+  ]
+}
+```
+
 ### manager spawn
 
 Registered declaration:
@@ -1445,8 +1573,8 @@ Registered declaration:
   "class": "ephemeral",
   "targeted": false,
   "capability": "manager.spawn",
-  "inputDigest": "sha256:a6bf909e59cc7f83e0c964daaf8ade2abdd24aa5bb0e984ce03258e812b9df6c",
-  "outputDigest": "sha256:d883a9f97f7c034772c7cbc28b22d63cf69870ba072d470c2f7b104f455e2e83"
+  "inputDigest": "sha256:47d31327eb1a3aaef3dd5b85dd8481ee992aece30df5ed8ba0959e89df2e5adb",
+  "outputDigest": "sha256:8db6027204c85b301a3fb109d3fd53dac815204b55d433824cff566d8b766154"
 }
 ```
 
@@ -1526,6 +1654,29 @@ Input schema:
     "prompt": {
       "type": "string",
       "pattern": "^\\s*\\S"
+    },
+    "firstCommand": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "target",
+        "name"
+      ],
+      "properties": {
+        "target": {
+          "enum": [
+            "command",
+            "skill"
+          ]
+        },
+        "name": {
+          "type": "string",
+          "pattern": "^[^\\s\\p{C}]{1,128}$"
+        },
+        "args": {
+          "type": "string"
+        }
+      }
     },
     "persona": {
       "type": "object",
@@ -1745,6 +1896,19 @@ Output schema:
     "readinessDeadlineMs": {
       "type": "integer",
       "minimum": 1
+    },
+    "firstCommand": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z2-7]{26}$"
+        }
+      }
     },
     "executor": {
       "type": "object",
@@ -4318,7 +4482,7 @@ Registered declaration:
   "targeted": false,
   "capability": "manager.admin",
   "inputDigest": "sha256:dc33bfbeba9027bba4e06e0d96ea5ea0bdb2f412899707288ba0e534d88dc565",
-  "outputDigest": "sha256:d883a9f97f7c034772c7cbc28b22d63cf69870ba072d470c2f7b104f455e2e83"
+  "outputDigest": "sha256:8db6027204c85b301a3fb109d3fd53dac815204b55d433824cff566d8b766154"
 }
 ```
 
@@ -4385,6 +4549,19 @@ Output schema:
     "readinessDeadlineMs": {
       "type": "integer",
       "minimum": 1
+    },
+    "firstCommand": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z2-7]{26}$"
+        }
+      }
     },
     "executor": {
       "type": "object",

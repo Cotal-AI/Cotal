@@ -104,12 +104,47 @@ export class SeatStart {
   private checkSpawnCwd(...args: Parameters<SeatLaunch["checkSpawnCwd"]>): ReturnType<SeatLaunch["checkSpawnCwd"]> { return this.launch.checkSpawnCwd(...args); }
   private harnessUnavailableError(...args: Parameters<SeatLaunch["harnessUnavailableError"]>): ReturnType<SeatLaunch["harnessUnavailableError"]> { return this.launch.harnessUnavailableError(...args); }
   private onceRefusal(...args: Parameters<SeatLaunch["onceRefusal"]>): ReturnType<SeatLaunch["onceRefusal"]> { return this.launch.onceRefusal(...args); }
+
+  /** Why this manager cannot hand a seat a first command, or undefined when it can. The agent runs it
+   *  on its `agent` endpoint, which it serves on every mesh mode, as its first turn. */
+  private firstCommandRefusal(runtime: Runtime, launch: { prompt?: string; once: boolean }): string | undefined {
+    if (runtime.spawnDelegated) return `runtime "${runtime.kind}" starts seats outside this host and carries no first command (firstCommand)`;
+    if (launch.prompt !== undefined) return "a spawn's first turn is its prompt or its first command, not both (prompt, firstCommand)";
+    if (launch.once) return "a once seat's first turn is its task, so it takes no first command (once, firstCommand)";
+    return undefined;
+  }
   private spawnerName(...args: Parameters<SeatLaunch["spawnerName"]>): ReturnType<SeatLaunch["spawnerName"]> { return this.launch.spawnerName(...args); }
   private spawnPersona(...args: Parameters<SeatLaunch["spawnPersona"]>): ReturnType<SeatLaunch["spawnPersona"]> { return this.launch.spawnPersona(...args); }
   private spawnRun(...args: Parameters<SeatLaunch["spawnRun"]>): ReturnType<SeatLaunch["spawnRun"]> { return this.launch.spawnRun(...args); }
   private staticSpawnBound(...args: Parameters<SeatLaunch["staticSpawnBound"]>): ReturnType<SeatLaunch["staticSpawnBound"]> { return this.launch.staticSpawnBound(...args); }
   private spawnBoundRefusal(...args: Parameters<SeatLaunch["spawnBoundRefusal"]>): ReturnType<SeatLaunch["spawnBoundRefusal"]> { return this.launch.spawnBoundRefusal(...args); }
   private managedStaticInstanceReads(...args: Parameters<SeatLaunch["managedStaticInstanceReads"]>): ReturnType<SeatLaunch["managedStaticInstanceReads"]> { return this.launch.managedStaticInstanceReads(...args); }
+
+  /** Why a delegated runtime cannot start this spawn, or undefined when it can. A delegated seat
+   *  starts outside this host from values alone, so a choice only this host can honour is refused
+   *  before enrollment, and named rather than dropped. */
+  private delegatedRefusal(runtime: Runtime, opts: StartAgentOpts, hostFields: ReturnType<Manager["hostLaunchFields"]>): string | undefined {
+    const delegatedBy = `runtime "${runtime.kind}" starts seats outside this host`;
+    if (!this.remoteAuthority?.enrollManagedAgent)
+      return `${delegatedBy}, which needs a host that enrolls managed agents (remoteAuthority.enrollManagedAgent); a delegated seat has no local grant path`;
+    try {
+      this.userProvision.delegatedMeshRecord();
+    } catch (e) {
+      return rejectionText(e);
+    }
+    if (opts.resume)
+      return `${delegatedBy}, so it cannot resume a session held on this host (resume)`;
+    if (opts.askPermissions || opts.reasoningEvents)
+      return `${delegatedBy}, and its child launch takes neither askPermissions nor reasoningEvents`;
+    if (opts.resolved?.continuity === "exact")
+      return `${delegatedBy}, so it cannot reopen a session held on this host (continuity: exact)`;
+    if (typeof opts.cwd === "string" && opts.cwd !== "")
+      return `${delegatedBy}, so it cannot run in a directory on this host's filesystem (cwd); the seat runs in its runtime resource's own directory`;
+    const shared = Object.keys(hostFields.mcpServers!);
+    if (shared.length)
+      return `${delegatedBy}, so it cannot share MCP servers that run on this host (${shared.join(", ")}); pass --share-tools none`;
+    return undefined;
+  }
 
   async startActive(opts: StartAgentOpts, spawner?: string, hooks?: SpawnHooks, authenticatedCaller?: EpCaller): Promise<ControlReply> {
     // Before the first await, so the grant, the launch, the retained form and the restart slot all read
@@ -238,29 +273,8 @@ export class SeatStart {
       if (hooks?.onAccepted) throw new EpEnvelopeError("failed-precondition", error, undefined, "not-executed");
       return { ok: false, error };
     }
-    // A delegated seat starts outside this host from values alone, so a choice only this host can
-    // honour is refused here, before enrollment, and named rather than dropped.
-    if (runtime.spawnDelegated) {
-      const delegatedBy = `runtime "${runtime.kind}" starts seats outside this host`;
-      if (!this.remoteAuthority?.enrollManagedAgent)
-        return { ok: false, error: `${delegatedBy}, which needs a host that enrolls managed agents (remoteAuthority.enrollManagedAgent); a delegated seat has no local grant path` };
-      try {
-        this.userProvision.delegatedMeshRecord();
-      } catch (e) {
-        return { ok: false, error: rejectionText(e) };
-      }
-      if (opts.resume)
-        return { ok: false, error: `${delegatedBy}, so it cannot resume a session held on this host (resume)` };
-      if (opts.askPermissions || opts.reasoningEvents)
-        return { ok: false, error: `${delegatedBy}, and its child launch takes neither askPermissions nor reasoningEvents` };
-      if (opts.resolved?.continuity === "exact")
-        return { ok: false, error: `${delegatedBy}, so it cannot reopen a session held on this host (continuity: exact)` };
-      if (typeof opts.cwd === "string" && opts.cwd !== "")
-        return { ok: false, error: `${delegatedBy}, so it cannot run in a directory on this host's filesystem (cwd); the seat runs in its runtime resource's own directory` };
-      const shared = Object.keys(hostFields.mcpServers!);
-      if (shared.length)
-        return { ok: false, error: `${delegatedBy}, so it cannot share MCP servers that run on this host (${shared.join(", ")}); pass --share-tools none` };
-    }
+    const delegatedRefused = runtime.spawnDelegated ? this.delegatedRefusal(runtime, opts, hostFields) : undefined;
+    if (delegatedRefused) return { ok: false, error: delegatedRefused };
 
     // A placed spawn's cwd is checked on this host BEFORE anything is minted or reserved: an absolute
     // path this manager cannot realpath, or one that is not a directory, is refused here with the
@@ -489,7 +503,8 @@ export class SeatStart {
     // declared name. Refused before any reserve or mint when the connector cannot reopen an exact
     // session or the recorded assignment does not match this declaration.
     const exact = opts.resolved?.continuity === "exact";
-    const unsupported = this.capabilityRefusal(connector, { variant, prompt, exact, askPermissions: opts.askPermissions, reasoningEvents: opts.reasoningEvents, events });
+    const unsupported = this.capabilityRefusal(connector, { variant, prompt, firstCommand: opts.firstCommand, exact, askPermissions: opts.askPermissions, reasoningEvents: opts.reasoningEvents, events })
+      ?? (opts.firstCommand && this.firstCommandRefusal(runtime, { prompt, once: opts.once !== undefined }));
     if (unsupported) return { ok: false, error: unsupported };
     const onceRefused = opts.once && this.onceRefusal(connector, runtime, { ...opts, launchOptions, prompt }, spawner, hooks);
     if (onceRefused) return { ok: false, error: onceRefused };
@@ -874,6 +889,8 @@ export class SeatStart {
         // A reopened session already had its kickoff turn, so it is not submitted again. A once
         // seat gets its prompt as its one relayed task instead.
         prompt: reopenSession === undefined && opts.once === undefined ? prompt : undefined,
+        // Never recorded on the launch, so no restart or resume runs it again.
+        firstCommand: opts.firstCommand,
         ...(opts.once !== undefined ? { once: true } : {}),
         // The SAME access set the creds were minted from (above) — forwarded so the session's
         // runtime read/post set matches its credentials. Without this a manifest-spawned agent
