@@ -815,8 +815,8 @@ export class Manager {
     config.eventPayloadsWithheld = opts.eventPayloadsWithheld === true;
     config.maxSessions = opts.maxSessions;
     config.seatCap = opts.seatCap ?? DEFAULT_SEAT_CAP;
-    this.idleExit = opts.idleExit && new IdleExit(opts.idleExit, () => this.agents.size === 0 && this.lifecycleInFlight === 0 && this.maintenanceState === "active" &&
-      !this.resumeRequired && !this.leaseStopping && (this.runHosting?.liveCount ?? 0) === 0, () => this.stop());
+    this.idleExit = opts.idleExit && new IdleExit(opts.idleExit, () => this.agents.size === 0 && Object.values(this.pendingWork()).every((n) => n === 0) &&
+      this.maintenanceState === "active" && !this.resumeRequired && !this.leaseStopping && (this.runHosting?.liveCount ?? 0) === 0, () => this.stop());
     config.remoteAuthority = opts.remoteAuthority;
     this.credentialRenewal.remoteExecutorCreds = opts.remoteAuthority?.executorCreds;
     this.credentialRenewal.remoteSupervisorCreds = opts.remoteAuthority?.supervisorCreds;
@@ -1135,6 +1135,12 @@ export class Manager {
     for (const wake of waiters) wake();
   }
   protected trackDeprovision(a: TeardownTarget, context = ""): void { this.retirement.trackDeprovision(a, context); }
+
+  /** The work a stop would cut short, as `status` reports it in `stopImpact`. `cotal manager stop`
+   *  refuses while any is pending, and the idle clock does not run. */
+  protected pendingWork() {
+    return { lifecycleInFlight: this.lifecycleInFlight, reservedLaunches: this.namesCapacity.reservedCount, retirementsPending: this.retirement.pendingCount, deprovisioningInFlight: this.retirement.inFlightCount, staticReconciliationInFlight: this.staticLifecycle.sweepsInFlight };
+  }
 
   protected async awaitLifecycleDrain(): Promise<void> {
     if (this.lifecycleInFlight === 0) return;

@@ -40,16 +40,13 @@ export interface StatusAndModelsDeps {
   agents: () => Manager["agents"];
   ep: () => Manager["ep"];
   leaseStopping: () => Manager["leaseStopping"];
-  lifecycleInFlight: () => Manager["lifecycleInFlight"];
   maintenanceState: () => Manager["maintenanceState"];
-  namesCapacity: () => Manager["namesCapacity"];
+  pendingWork: (...args: Parameters<Manager["pendingWork"]>) => ReturnType<Manager["pendingWork"]>;
   preservationAttemptId: () => Manager["preservationAttemptId"];
   preservationInventory: () => Manager["preservationInventory"];
   requiredRuntime: () => Manager["requiredRuntime"];
   resumeRequired: () => Manager["resumeRequired"];
-  retirement: () => Manager["retirement"];
   runtimeKind: () => Manager["runtimeKind"];
-  staticLifecycle: () => Manager["staticLifecycle"];
   classSpawnEnabled: (...args: Parameters<Manager["classSpawnEnabled"]>) => ReturnType<Manager["classSpawnEnabled"]>;
   epAdminReach: (...args: Parameters<Manager["epAdminReach"]>) => ReturnType<Manager["epAdminReach"]>;
   executionRefusal: (...args: Parameters<Manager["executionRefusal"]>) => ReturnType<Manager["executionRefusal"]>;
@@ -66,16 +63,13 @@ export function statusAndModelsDeps(m: Manager): StatusAndModelsDeps {
     agents: () => m["agents"],
     ep: () => m["ep"],
     leaseStopping: () => m["leaseStopping"],
-    lifecycleInFlight: () => m["lifecycleInFlight"],
     maintenanceState: () => m["maintenanceState"],
-    namesCapacity: () => m["namesCapacity"],
+    pendingWork: (...args) => m["pendingWork"](...args),
     preservationAttemptId: () => m["preservationAttemptId"],
     preservationInventory: () => m["preservationInventory"],
     requiredRuntime: () => m["requiredRuntime"],
     resumeRequired: () => m["resumeRequired"],
-    retirement: () => m["retirement"],
     runtimeKind: () => m["runtimeKind"],
-    staticLifecycle: () => m["staticLifecycle"],
     classSpawnEnabled: (...args) => m["classSpawnEnabled"](...args),
     epAdminReach: (...args) => m["epAdminReach"](...args),
     executionRefusal: (...args) => m["executionRefusal"](...args),
@@ -97,18 +91,14 @@ export class StatusAndModels {
   private get auth() { return this.state.auth; }
   private get ep() { return this.deps.ep(); }
   private get leaseStopping() { return this.deps.leaseStopping(); }
-  private get lifecycleInFlight() { return this.deps.lifecycleInFlight(); }
   private get maintenanceState() { return this.deps.maintenanceState(); }
   private get managerInstanceId() { return this.state.managerInstanceId!; }
-  private get namesCapacity() { return this.deps.namesCapacity(); }
   private get preservationAttemptId() { return this.deps.preservationAttemptId(); }
   private get preservationInventory() { return this.deps.preservationInventory(); }
   private get remoteAuthority() { return this.config.remoteAuthority; }
   private get requiredRuntime() { return this.deps.requiredRuntime(); }
   private get resumeRequired() { return this.deps.resumeRequired(); }
-  private get retirement() { return this.deps.retirement(); }
   private get runtimeKind() { return this.deps.runtimeKind(); }
-  private get staticLifecycle() { return this.deps.staticLifecycle(); }
   private get userMode() { return this.state.userMode; }
   private classSpawnEnabled(...args: Parameters<Manager["classSpawnEnabled"]>): ReturnType<Manager["classSpawnEnabled"]> { return this.deps.classSpawnEnabled(...args); }
   private epAdminReach(...args: Parameters<Manager["epAdminReach"]>): ReturnType<Manager["epAdminReach"]> { return this.deps.epAdminReach(...args); }
@@ -237,11 +227,7 @@ export class StatusAndModels {
         maintenance: this.maintenanceState,
         resumeRequired: this.resumeRequired,
         stopping: this.leaseStopping,
-        lifecycleInFlight: this.lifecycleInFlight,
-        reservedLaunches: this.namesCapacity.reservedCount,
-        retirementsPending: this.retirement.pendingCount,
-        deprovisioningInFlight: this.retirement.inFlightCount,
-        staticReconciliationInFlight: this.staticLifecycle.sweepsInFlight,
+        ...this.deps.pendingWork(),
         agents: [...this.agents.values()]
           .filter((a) => ownerFilter === undefined || a.userOwner === ownerFilter)
           .map((a): ManagerStopImpact["agents"][number] => ({
