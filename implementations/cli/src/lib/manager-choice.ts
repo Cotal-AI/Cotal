@@ -1,6 +1,6 @@
 import type { Readable, Writable } from "node:stream";
 import { BASELINE_LIFECYCLE_ENDPOINT, findCommand, invokeCommand, registry, resolveService, type Command, type Presence } from "@cotal-ai/core";
-import { CommandFailure, DEFAULT_MANAGER_NAME, brokerAddressForDisplay, codeSpan, instanceIdShaped, isCommandFailure, isConnectRefusal, renderReport, resolveMeshTarget, type Connection, resolveControlTarget, type ControlAuth } from "@cotal-ai/workspace";
+import { CommandFailure, DEFAULT_MANAGER_NAME, brokerAddressForDisplay, codeSpan, instanceIdShaped, isCommandFailure, isConnectRefusal, isWorkspaceTargetError, renderReport, resolveMeshTarget, type Connection, resolveControlTarget, type ControlAuth } from "@cotal-ai/workspace";
 import { cliControl, onInstance, onInstanceId, onRetry, type ManagerRetry } from "./control.js";
 import { targetWords } from "./confirmation-required.js";
 import { openEndpointConnection } from "./endpoint-client.js";
@@ -164,7 +164,14 @@ export interface RunningOn {
  *  registry lists. */
 export async function whereAgentRuns(values: { space?: unknown; server?: unknown }, name: string, custodian?: string): Promise<{ runsOn: RunningOn | null; custodian: RunningOn | null }> {
   const flags = targetFlags(values);
-  const user = resolveMeshTarget(process.cwd(), flags).mode === "user";
+  let user = false;
+  let unregistered = false;
+  try { user = resolveMeshTarget(process.cwd(), flags).mode === "user"; }
+  catch (error) {
+    // An explicit address and space let the control resolver ask an unregistered open mesh.
+    if (flags.server === undefined || flags.space === undefined || !isWorkspaceTargetError(error) || (error.code !== "unknown-space" && error.code !== "no-meshes")) throw error;
+    unregistered = true;
+  }
   let managers: ManagerCandidate[];
   if (user) managers = await yourLiveManagers(flags);
   else {
@@ -176,8 +183,10 @@ export async function whereAgentRuns(values: { space?: unknown; server?: unknown
   for (const manager of kept ? [kept, ...managers.filter((m) => m !== kept)] : managers) {
     try {
       const pinned = await resolveControlTarget(flags, "control-caller-privileged", manager.instanceId, { onRefusal: "throw" });
-      const row = await askManager(cliControl, pinned.space, pinned.server, "status", { name }, pinned.auth, "owner", 5_000, { instanceId: manager.instanceId });
-      if (row.ok) return { runsOn: found(manager), custodian: kept ? found(kept) : null };
+      // The pinned census does not require the seat's presence card to name its manager.
+      const row = await askManager(cliControl, pinned.space, pinned.server, unregistered ? "ps" : "status", unregistered ? undefined : { name }, pinned.auth, "owner", 5_000, { instanceId: manager.instanceId });
+      if (row.ok && (!unregistered || (Array.isArray(row.data) && row.data.some((seat: { name?: string } | null) => seat?.name === name))))
+        return { runsOn: found(manager), custodian: kept ? found(kept) : null };
     } catch { /* a manager that cannot be asked is not named */ }
   }
   return { runsOn: null, custodian: kept ? found(kept) : null };

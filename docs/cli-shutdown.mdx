@@ -302,8 +302,9 @@ user-auth stack they show a foreground restart without a manager, with `--user-a
 recorded space and broker address. Other stacks show `cotal up`.
 Before the first `up`,
 `down --space <name>` gives the same no-op when the name matches the space prepared in this folder.
-A different name is refused. For a stop with `--json` or `--plain`, the refusal names the mismatch
-and directs you to the requested space's project root. A controller stack
+A stop with a different name refuses with `UNSUPPORTED`, exit 2, with or without `--json` or
+`--plain`. The refusal names the mismatch and directs you to the requested space's project root.
+A controller stack
 counts as stopped when its last whole-stack operation was a completed `down` and no member and no
 other service instance of its space runs. That check reads no process record under the root; those
 are read only as described below. A stack that stopped any other way takes the full stop, which
