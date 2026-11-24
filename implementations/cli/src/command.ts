@@ -608,11 +608,8 @@ function parseOrExit(cmd: Command, rest: string[]): ParsedArgs {
   }
   const first = parsed.positionals[0];
   const canonical = canonicalSubcommand(cmd, parsed, json, plain);
-  // Target resolution reads an empty space as no space and falls back to the selected one, so a script
-  // whose variable is unset would act on whichever space is selected.
-  const spaceFlag = cmd.flags?.find((flag) => flag.name === "space");
-  if (spaceFlag && typeof parsed.values.space === "string" && !parsed.values.space.trim())
-    failureExit(cmd, new CommandFailure("refused", "USAGE_INVALID", `--space${spaceFlag.short ? `/-${spaceFlag.short}` : ""} is empty; name one space`, { remedy: "name the space; `cotal space` lists the spaces this machine knows" }), json, parsed.values.plain === true, undefined, rest, parsed);
+  const spaceFailure = emptySpaceFailure(cmd, parsed);
+  if (spaceFailure) failureExit(cmd, spaceFailure, json, parsed.values.plain === true, undefined, rest, parsed);
   // An empty --store-dir reads as no value and opens the default store, and a ~ no shell expanded
   // names a folder called ~ in the working folder.
   const storeDir = parsed.values["store-dir"];
@@ -628,21 +625,48 @@ function parseOrExit(cmd: Command, rest: string[]): ParsedArgs {
     if (isArgError(error)) usageExit((error as Error).message.split(".")[0]!, cmd, json, plain, undefined, rest);
     throw error;
   }
+  const serverFailure = serverFlagFailure(cmd, canonical);
+  if (serverFailure) failureExit(cmd, serverFailure, json, canonical.values.plain === true, undefined, rest, canonical);
+  return canonical;
+}
+
+/** Check a suggested spawn without changing input mode, resolving its target or running it. */
+export function validateSpawnRetry(cmd: Command, words: string[]): void {
+  const rest = stripGlobalFlags(cmd, words);
+  const spelling = misspelledOption(cmd, rest, cmd.flagNames);
+  if (spelling) throw new CommandFailure("refused", "USAGE_INVALID", spelling.message, { remedy: spelling.remedy });
+  const parsed = parseCommandArgs(cmd, rest);
+  const spaceFailure = emptySpaceFailure(cmd, parsed);
+  if (spaceFailure) throw spaceFailure;
+  cmd.validate?.(parsed);
+  const serverFailure = serverFlagFailure(cmd, parsed);
+  if (serverFailure) throw serverFailure;
+}
+
+function emptySpaceFailure(cmd: Command, parsed: ParsedArgs): CommandFailure | undefined {
+  // An explicitly empty space must not resolve to the selected one.
+  const flag = cmd.flags?.find((flag) => flag.name === "space");
+  if (flag && typeof parsed.values.space === "string" && !parsed.values.space.trim())
+    return new CommandFailure("refused", "USAGE_INVALID", `--space${flag.short ? `/-${flag.short}` : ""} is empty; name one space`, { remedy: "name the space; `cotal space` lists the spaces this machine knows" });
+  return undefined;
+}
+
+function serverFlagFailure(cmd: Command, parsed: ParsedArgs): CommandFailure | undefined {
   // The TCP client drops URL components beyond host and port. Apply registration's syntax rule
   // before any command connects. A command's narrower rule, such as `up`'s, has run above.
-  if (cmd.flags?.some((flag) => flag.name === "server") && typeof canonical.values.server === "string") {
+  if (cmd.flags?.some((flag) => flag.name === "server") && typeof parsed.values.server === "string") {
     // Manifest up owns the single-listener refusal. Check each entry first so a credential or
     // malformed entry is still refused before that command reads the manifest or starts anything.
-    const servers = cmd.name === "up" && typeof canonical.values.file === "string"
-      ? canonical.values.server.split(",").map(server => server.trim())
-      : [canonical.values.server];
+    const servers = cmd.name === "up" && typeof parsed.values.file === "string"
+      ? parsed.values.server.split(",").map(server => server.trim())
+      : [parsed.values.server];
     for (const server of servers) {
       const checked = checkServer(server, "--server");
       if (!checked.ok)
-        failureExit(cmd, new CommandFailure("refused", "USAGE_INVALID", `${checked.message.replace(/^✗ /, "")}; the command did not run`, { remedy: checked.remedy, selfContained: true }), json, canonical.values.plain === true, undefined, rest, canonical);
+        return new CommandFailure("refused", "USAGE_INVALID", `${checked.message.replace(/^✗ /, "")}; the command did not run`, { remedy: checked.remedy, selfContained: true });
     }
   }
-  return canonical;
+  return undefined;
 }
 
 /** The refusal of a `--store-dir` that is empty, or that starts with a `~` no shell expanded. */
