@@ -109,8 +109,10 @@ Use the command that matches the target's state:
 | Preview deployment against a running mesh | `cotal team deploy <file> --dry-run` |
 | Add a supported team to that mesh | `cotal team deploy <file>` |
 | Inspect a returned deployment or retained attempt | `cotal team show <id> --space <space>` |
-| Preview removal of a recorded deployment | `cotal team remove <id> --dry-run` |
-| Confirm a supported removal | `cotal team remove <id> --yes` |
+| Preview removal of a recorded deployment | `cotal team remove <id> --space <space> --dry-run` |
+| Confirm a supported removal | `cotal team remove <id> --space <space> --yes` |
+
+For inspection and removal, use the space from the deployment receipt.
 
 Boot previews show the manager PID record even if the process is dead and make a bounded credential-free broker probe where an address is known.
 Neither result authorizes replacing a manager.

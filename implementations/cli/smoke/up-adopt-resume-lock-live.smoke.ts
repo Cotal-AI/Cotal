@@ -36,7 +36,7 @@
  * Run: pnpm smoke:up-adopt-resume-lock:live
  */
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve as resolvePath } from "node:path";
 import { assertSmokeSandboxDown, freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
 import { makeScratch, assertScratchHeld } from "../../../bin/smoke/_scratch.js";
@@ -49,8 +49,7 @@ const sandbox = recordSmokeSandbox({ root, cotalHome: home, xdgConfigHome: confi
 process.env.COTAL_HOME = home;
 
 const WT = resolvePath(import.meta.dirname, "..", "..", "..");
-const CLI = join(WT, "bin", "cotal.ts");
-const TSX = join(WT, "node_modules", ".bin", "tsx");
+const CLI = join(WT, "bin", "dist", "cotal.js");
 const journalPath = join(root, ".cotal", "maintenance", "v1", "journal.json");
 const resumeDocPath = join(root, ".cotal", "maintenance", "v1", "resume.json");
 const openConfPath = join(root, ".cotal", "server-open.conf");
@@ -104,7 +103,7 @@ function runSync(args: string[], extraEnv: Record<string, string> = {}) {
     timeout: 240_000,
   };
   assertSmokeSandboxDown(sandbox, args, options);
-  return spawnSync(TSX, [CLI, ...args], options);
+  return spawnSync(process.execPath, [CLI, ...args], options);
 }
 
 type Journal = {
@@ -177,8 +176,10 @@ try {
   // Stop the resume right after the manager commit. The listener it spawned is detached, so it
   // outlives this interrupted driver - which is precisely what makes the next `up` ADOPT rather
   // than spawn a competitor over the same store.
+  const detachedSeed = join(root, "detached-channels.json");
+  writeFileSync(detachedSeed, JSON.stringify({ channels: { railprobe: { instructions: "Seeded on detached resume" } } }));
   const interrupted = runSync(
-    ["up", "--detach", "--server", server, "--space", space],
+    ["up", "--detach", "--server", server, "--space", space, "--channels", detachedSeed],
     { COTAL_SMOKE_EXIT_AFTER_RESUME_COMMIT: "1" },
   );
   ok("the resume stopped at the commit boundary (exit 89)", interrupted.status === 89,
@@ -228,7 +229,9 @@ try {
   }
 
   console.log("\n2) SUBJECT: the recovering `cotal up` ADOPTS that live listener under the inherited lock");
-  const recovered = runSync(["up", "--detach", "--server", server, "--space", space]);
+  const adoptSeed = join(root, "adopt-channels.json");
+  writeFileSync(adoptSeed, JSON.stringify({ channels: { railprobe: { description: "Seeded on adoption" } } }));
+  const recovered = runSync(["up", "--detach", "--server", server, "--space", space, "--channels", adoptSeed]);
   const log = `${recovered.stdout ?? ""}${recovered.stderr ?? ""}`;
   // Assert the refusal by NAME. A bare non-zero check would also go red for an unrelated reason and
   // would report this finding for something that is not it.
@@ -240,6 +243,9 @@ try {
   ok("…and the finalized resume consumed its maintenance journal", !existsSync(journalPath), journal());
   ok("the adopted mesh record keeps the store cap", recordedCap(space) === CAP, recordedCap(space));
   ok("…and the attach host and the session ceiling", recorded(space)?.attachHost === "127.0.0.1" && recorded(space)?.maxSessions === 7, recorded(space));
+  const seeded = runSync(["channel", "show", "railprobe", "--plain", "--space", space]);
+  ok("both detached resume and adopted recovery apply their explicit channel seed fields",
+    seeded.status === 0 && seeded.stdout.includes("Seeded on detached resume") && seeded.stdout.includes("Seeded on adoption"), `${seeded.stdout}${seeded.stderr}`);
 
   const restoreCut = runSync(["down", "--preserve-state"]);
   ok("the resumed mesh can be preserved again", restoreCut.status === 0, `${restoreCut.stdout}${restoreCut.stderr}`);

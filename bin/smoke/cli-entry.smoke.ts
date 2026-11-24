@@ -1041,9 +1041,11 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
     };
     for (const argv of [["persona", "--json"], ["personas", "list"], ["persona", "show", "x"], ["persona", "create", "y", "--prompt", "Y.", "--subscribe", ""]]) {
       const r = cotal(argv, broken, noSeed);
-      const said = r.stdout + r.stderr;
-      check(`${argv.slice(0, 2).join(" ")} refuses a .cotal/agents that is ${shape} with CONFLICT, naming it`,
-        r.status === 2 && said.includes("CONFLICT") && said.includes(`.cotal/agents ${what}, so it holds no personas`) && said.includes("out of the way") && !said.includes("no personas in"), shown(r));
+      const said = (r.stdout + r.stderr).replace(/\s+/g, " ");
+      check(`${argv.slice(0, 2).join(" ")} refuses a .cotal/agents that is ${shape} and explains how to recover the catalog`,
+        r.status === 2 && said.includes("CONFLICT") && said.includes(`.cotal/agents ${what}, so it holds no personas`)
+        && said.includes("restore their catalog folder there") && said.includes("retry the original create command with its source and target options")
+        && !said.includes("cotal persona create <name>") && !said.includes("no personas in"), shown(r));
     }
   }
   // A definition over 1 MiB is refused by create and edit with one refusal, and nothing is saved.

@@ -52,12 +52,22 @@ export function validateEndpointReferenceArguments(args: ParsedArgs): void {
   if (mode === "add" && (!name || args.values.file === undefined) && (!canPrompt() || args.values.json)) throw new CommandFailure("refused", "USAGE_INVALID", "scripted endpoint add needs a name and --file; guided input requires an interactive terminal");
 }
 
-function selectedSpace(args: ParsedArgs): string {
+function selectedSpace(args: ParsedArgs): string | EndpointReference {
   const values = args.values as { space?: string; server?: string };
   try { return resolveMeshTarget(process.cwd(), { ...values, readOnly: true }).space; }
   catch (error) {
     if (!isWorkspaceTargetError(error)) throw error;
     if (error.code === "not-started" && error.details.space) return error.details.space;
+    const candidates = error.details.spaces;
+    if (error.code === "ambiguous-target" && candidates?.length && args.positionals[0] === "add" &&
+      values.space === undefined && typeof args.values.file === "string") {
+      return importEndpointReference(resolve(args.values.file), (pinnedSpace) => {
+        if (typeof pinnedSpace === "string" && candidates.includes(pinnedSpace)) {
+          return resolveMeshTarget(process.cwd(), { space: pinnedSpace, readOnly: true }).space;
+        }
+        throw error;
+      });
+    }
     if (error.code === "ambiguous-target" && ["list", "show", "remove"].includes(args.positionals[0] ?? "list")) throw error;
     if (error.code === "unknown-space") {
       const { message, remedy } = workspaceErrorParts({ kind: "target", error });
@@ -83,7 +93,8 @@ export async function endpoint(args: ParsedArgs): Promise<void> {
   if (modeRequested === "describe") return describeCmd({ ...args, positionals: args.positionals.slice(1) }, "endpoint");
   if (modeRequested === "invoke") return invokeCmd({ ...args, positionals: args.positionals.slice(1) }, "endpoint");
   const presentation = presentationOf(args.values);
-  const space = selectedSpace(args);
+  const selected = selectedSpace(args);
+  const space = typeof selected === "string" ? selected : selected.space;
   recordOperationSpace(space);
   const [mode = "list", suppliedName] = args.positionals;
   if (mode === "list") {
@@ -148,7 +159,8 @@ export async function endpoint(args: ParsedArgs): Promise<void> {
   }
   if (readEndpointReference(space, name)) throw new CommandFailure("refused", "CONFLICT", "this local reference already exists; it was not overwritten", { target: { space, name }, remedy: "show the current reference before explicitly removing or changing it" });
   let reference: EndpointReference;
-  if (typeof args.values.file === "string") reference = importEndpointReference(resolve(args.values.file), space);
+  if (typeof selected !== "string") reference = selected;
+  else if (typeof args.values.file === "string") reference = importEndpointReference(resolve(args.values.file), space);
   else {
     const nativeClass = await prompts.text({
       message: "Native endpoint class", placeholder: "reviews",

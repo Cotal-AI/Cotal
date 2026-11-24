@@ -1403,7 +1403,7 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
       // The recovered attempt's exact bound listener is alive: prove it over the wire and adopt it
       // instead of spawning a competitor over the same store.
       await proveOrdinaryResumeListener(ordinaryAttempt);
-      await adoptProvenListener(ordinaryAttempt, ordinaryAttempt.storeDir, "adopted resume listener", startupLock);
+      await adoptProvenListener(ordinaryAttempt, ordinaryAttempt.storeDir, "adopted resume listener", startupLock, values.channels);
       return;
     }
     if (ordinaryAttempt?.journalState === "resume-committed")
@@ -2116,7 +2116,7 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
       })();
     };
     const { authService, controlPlane } = await serveReadyListener({
-      child, server, space, storeDir, setup, seedFile, transport, maxPayload: brokerMaxPayload,
+      child, server, space, storeDir, setup, seedFile: !resumeAttempt || values.channels ? seedFile : undefined, transport, maxPayload: brokerMaxPayload,
       ...(values["recreate-issued-stores"] !== undefined ? { recreateIssuedStores: resolve(values["recreate-issued-stores"]) } : {}),
       ...(values["recreate-membership-store"] ? { recreateMembershipStore: true } : {}),
       host: values.host,

@@ -4510,7 +4510,7 @@
     {
       "path": "implementations/cli/src/chat/plain.ts",
       "kind": "status-token",
-      "anchor": "tate = addNotice(state, \"waiting\", `draft is at its ${MAX",
+      "anchor": "tate = addNotice(state, \"waiting\", `line not added: it wo",
       "class": "non-render/control",
       "rationale": "Plain chat draft-limit notice: \"waiting\" is the color tone; the text is about the local draft, not a peer's presence."
     },
