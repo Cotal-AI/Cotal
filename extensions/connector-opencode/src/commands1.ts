@@ -75,6 +75,13 @@ function entryOf(e: unknown): CommandEntry {
   return { name: entry.name, target, ...(typeof entry.description === "string" ? { description: entry.description } : {}) };
 }
 
+/** The entries of a `GET /command` answer, as a seat lists them and runs them by name. */
+export function opencode1CommandEntries(data: unknown): CommandEntry[] {
+  if (!Array.isArray(data)) throw new Error("OpenCode answered /command with no list");
+  // The launch's own `/reconnect` runs only at the agent's terminal (reconnect-command.ts).
+  return data.map(entryOf).filter((e) => !isReconnect(e));
+}
+
 export function opencode1Commands(deps: Commands1Deps): Commands1 {
   const controller = new AbortController();
   // The dispatch waiting for its command's hook and then for its turn. The agent dispatches one
@@ -84,10 +91,7 @@ export function opencode1Commands(deps: Commands1Deps): Commands1 {
   const windows = new Map<string, number | undefined>();
 
   async function list(): Promise<CommandEntry[]> {
-    const data = await deps.api<unknown>("/command");
-    if (!Array.isArray(data)) throw new Error("OpenCode answered /command with no list");
-    // The launch's own `/reconnect` runs only at the agent's terminal (reconnect-command.ts).
-    return data.map(entryOf).filter((e) => !isReconnect(e));
+    return opencode1CommandEntries(await deps.api<unknown>("/command"));
   }
 
   async function dispatch(command: { target: CommandTarget; name: string; args: string }): Promise<void> {
