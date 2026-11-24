@@ -1108,6 +1108,23 @@ if (process.platform !== "win32") {
   const removedJson = fromRemoved(["status", "--json"]);
   const envelope = removedJson.stdout.startsWith("{") ? JSON.parse(removedJson.stdout) : undefined;
   check("with --json it is a USAGE_INVALID refusal, not an unknown outcome", removedJson.status === 1 && envelope?.outcome === "refused" && envelope.error?.code === "USAGE_INVALID", shown(removedJson));
+  for (const [stream, args, target] of [
+    ["watch", ["watch"], { requestedSpace: null }],
+    ["history", ["history", "general", "--follow"], { space: null, channel: "general", dms: false }],
+    ["membership", ["channel", "members", "general", "--follow"], { space: null, channel: "general" }],
+  ] as const) {
+    const r = fromRemoved([...args, "--json"]);
+    const records = r.stdout.trimEnd().split("\n").map((line) => JSON.parse(line || "{}"));
+    check(`${stream} frames a removed-folder refusal without a snapshot`, r.status === 1 && r.stderr === ""
+      && records.length === 2 && records.every((record) => record.schemaVersion === 1 && record.stream === stream && Object.entries(target).every(([key, value]) => record.target?.[key] === value))
+      && records[0]?.type === "error" && records[0].data?.code === "USAGE_INVALID"
+      && records[0].data?.message === "this folder no longer exists" && records[0].data?.remedy === "cd to an existing folder and run the command again"
+      && records[1]?.type === "end" && records[1].data?.reason === "setup-failed"
+      && (stream !== "membership" || records[1].data.lastAsOf === null), shown(r));
+  }
+  const finite = fromRemoved(["history", "general", "--json"]);
+  check("finite history from a removed folder still emits one usage refusal", finite.status === 1 && finite.stderr === ""
+    && parsed(finite)?.error?.code === "USAGE_INVALID", shown(finite));
   const version = fromRemoved(["--version"]);
   check("version still answers from a removed folder", version.status === 0 && /^cotal-ai /.test(version.stdout), shown(version));
   // A command whose own checks read the folder before it runs, such as up's, refuses the same way
