@@ -169,7 +169,7 @@ subcommand is also a usage error. So is input a command checks before it acts, s
 argument, an invalid flag value or two flags that conflict, and `cotal help` with a subcommand that
 does not exist. So is a word that starts with an en dash, an em
 dash or a minus sign followed by one of the command's flag names, as an autocorrecting editor writes
-`--`: the refusal names the dash and the flag to type. After `--` such a word is an argument as
+`--`: the refusal names the dash and can suggest the flag to type. After `--` such a word is an argument as
 typed. The command prints the error, then any remedy,
 then its help on stderr, writes nothing on stdout, exits 1, and does not run. The help is the one
 `--help` prints for the same words, so a refused `cotal persona create` shows the `persona create`
@@ -205,6 +205,7 @@ any attached value the option accepts, as in `--limit=10`. Before the command wo
 for the leading flags, so `cotal ––json status` names `--json`.
 For extension commands, the correction depends on the subcommand. `ext list` accepts `--json`;
 `ext root` prints a path, so the refusal asks you to omit that option.
+For `endpoint check`, the refusal asks you to omit a pasted `--file` option. Pass the contract file as an argument.
 `cotal ext seed` takes no operands. An invalid seed option or extra word shows seed help instead
 of suggesting `--` to pass an operand.
 
