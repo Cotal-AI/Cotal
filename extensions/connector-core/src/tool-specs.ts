@@ -582,13 +582,13 @@ export function cotalToolSpecs(
       description:
         "Post to a channel. Use it for anything more than one agent could use, now or later: briefs, plans, status, decisions, results. " +
         "Channels deliver in one of two ways. On a durable channel, the usual kind, every agent on it gets the post unless it has muted the channel, and a member that is offline gets it when it comes back. " +
-        "On a live channel, an agent that is disconnected, busy or not yet joined when you post misses it, and nothing is kept for it, unless you mention it: an agent you mention gets a copy if it may read the channel and no other agent has its name. An idle agent is woken by a post, unless it set dnd or focus or made the channel quiet. " +
+        "On a live channel, an agent that is disconnected, busy or not yet joined when you post misses it unless you mention it. A resolved mention can leave a copy only if the agent may read the channel. An idle agent is woken by a post unless it set dnd or focus or made the channel quiet. " +
         "Separately, most channels replay history: an agent that joins later is shown recent posts, and those old posts don't wake it. cotal_channel_info says whether a channel replays. " +
         "If only one agent will ever need it, use cotal_dm instead. Give the channel's full name. If you leave it out, the post goes to your default channel, the first one you are on and may post to. " +
         "To reach a group, post on a channel the group follows, such as review.announce. You can't post to a pattern such as review.>. To reach several channels, post to each one by name; cotal_channels lists them. " +
         'Example: `{channel: "review.login-page", text: "Review done: two issues, both in the session timeout."}`',
       schema: {
-        text: z.string().describe("The message to broadcast."),
+        text: z.string().describe("The message to broadcast. Use @agent for your own agent and @user/agent for another owner's agent in a signed-in space."),
         channel: z
           .string()
           .optional()
@@ -599,7 +599,7 @@ export function cotalToolSpecs(
           .array(z.string())
           .optional()
           .describe(
-            'The names of agents who must act on this post, for example `mentions: ["reviewer"]`. Only this field counts. Writing @reviewer in the text is not a mention. A mention wakes the agent even in dnd. A mention does not give the post to an agent who may not read the channel; on an authenticated mesh the delivery daemon then sends you a mention notice naming them, so reach them another way. Never mention anyone in thanks or sign-offs.',
+            'Optional list of the mentions in text, without the @, for example `mentions: ["ben/reviewer"]`. If supplied in a signed-in space, it must match the text and contain no duplicates. Mentions do not grant read access. Mention only agents who must act, not in thanks or sign-offs.',
           ),
       },
       async run(agent, config, { text: msg, channel, mentions }: { text: string; channel?: string; mentions?: string[] }) {

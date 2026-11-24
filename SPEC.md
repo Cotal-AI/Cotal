@@ -230,7 +230,8 @@ In `user/agent`, `user` is a username from §6, with ASCII uppercase letters fol
 `agent` is the exact case-sensitive principal actor, not a display name. Launches enforce the
 launch-name grammar at admission. For bare names, an exact own actor wins over a case-insensitive
 launch-name match. A unique own launch-name match can resolve without exact case. Two such matches
-are ambiguous. Non-launch actors match only exact bytes.
+are ambiguous. Non-launch actors match only exact bytes. A retained offline row remains a candidate
+within the sender's owner, regardless of whether another owner's agent is online.
 Open and no-login spaces resolve bare names as display names and do not accept `user/agent`.
 Reply shortcuts address the authenticated sender principal, not a remembered display name.
 
@@ -268,10 +269,11 @@ request with the delivery daemon before it shows the request, so the sender lear
 can cancel it while it waits (§8.1). An `@mention` (§5) on a `live` channel additionally writes a
 durable copy to each mentioned target **authorized to read that channel** (its `allowSubscribe`
 covers the channel), so an authorized but offline target still receives it; an `@mention` MUST NOT
-deliver channel content to a target outside its read ACL. Durable mention routing resolves each
-lowercased name to a unique current instance id from presence at publish time; an ambiguous
-(multiple live matches) or unresolvable name yields no durable copy, and authorization is checked
-against the resolved id's current `allowSubscribe`. A
+deliver channel content to a target outside its read ACL. For an upgraded post, the delivery daemon
+uses the carried `mentionIds` (§5), not presence, to find the targets. A claimed principal must
+name a unique current lifecycle with the required read grant. The sender never gets a copy of its
+own post. For a post without `mentionIds`, the daemon matches each legacy name to a unique presence
+row or writes no mention copy for that name. A
 target authorized for a channel is **mention-reachable** there whether or not it is currently joined; this is intentional (an `@mention` can pull an authorized peer in) and is distinct
 from membership; a client SHOULD distinguish "joined" (actively subscribed) from "readable /
 mention-reachable" (in `allowSubscribe`) so an unjoined channel is not treated as "cannot reach me
@@ -319,16 +321,28 @@ Delivery messages are UTF-8 JSON objects with this shape (`CotalMessage`):
 | `channel` | string | one-of | multicast target |
 | `to` | string | one-of | unicast target instance id |
 | `toService` | string | one-of | anycast target role |
-| `mentions` | string[] | MAY | lowercased peer names; wakes the mentioned peer. On a `live` channel it also routes a durable copy to each mentioned target authorized to read that channel (§4); it never delivers content outside the target's read ACL and is not a routing substitute for `channel`/`to` |
-| `mentionIds` | string[] | MAY | resolved channel mention principals in exact `<owner>.<actor>` form. For readers that support it, presence of this field replaces `mentions` name matching for priority, even when empty. |
+| `mentions` | string[] | MAY | channel mention spellings without `@`, in text order for an upgraded post. Legacy writers send lowercased display names. |
+| `mentionIds` | string[] | MAY | claimed mention principals in exact `<owner>.<actor>` form, in the same order as `mentions`. When present, even empty, this field replaces name matching for priority and mention copies. |
 | `parts` | `Part[]` | MUST | content |
 | `replyTo` | string | MAY | id of the message replied to |
 | `contextId` | string | MAY | thread/conversation correlation id |
 
-`mentionIds` is a reader hint. It does not grant channel access or change routing. Readers compare
-each entry with their own principal and do not resolve it as a name. If the field is absent, readers
-use `mentions` as before. History and replay stay historical regardless of the hint. Publishers in
-this phase continue to write only `mentions`.
+An upgraded publisher in a signed-in space resolves `@agent` within the acting owner's namespace
+and `@user/agent` with the reciprocal username registry (§6). Usernames ignore case and actor
+spelling is preserved. A qualified address does not require presence. A bare name MUST NOT fall back
+to another owner. A malformed slash token MUST be refused whole. Resolve every target before
+publishing and refuse a malformed, duplicate or text-mismatched explicit list as a whole. Static and
+open spaces keep legacy bare display-name mentions and reject `@user/agent`.
+
+The publisher MUST observe a bound delivery responder advertising `principalMentionsVersion: 1`
+before it writes `mentionIds`. A signed-in space can run without that responder. In that case,
+the publisher MUST refuse the entire post with mentions before storage, even on a `live` channel.
+This check does not apply to posts without mentions. Upgrade delivery daemons and readers before
+enabling upgraded publishers. `mentionIds` is the sender's claim, not proof of identity or read permission. Readers
+compare entries with their own principal without resolving names. The daemon checks current read
+ACLs and lifecycle, and the durable-channel path also checks membership intervals. Muting still
+applies. If the field is absent, readers and the daemon use legacy name matching. History and
+replay stay historical regardless of the hint.
 
 `Part` is one of the three core shapes, or an extension object whose `kind` is namespaced
 as described in §11:
@@ -503,6 +517,7 @@ channel that can end the process, and it keeps serving.
 | `responder` | `ResponderState` | MUST | `bound` \| `unbound` \| `stale` \| `unknown` |
 | `instance` | string | MAY | an opaque token naming the responder that answered. Non-empty when present |
 | `qualifiedDmVersion` | integer `1` | MAY | A bound delivery responder advertises support for qualified DM clients. |
+| `principalMentionsVersion` | integer `1` | MAY | A bound delivery responder advertises support for exact principal mention copies. |
 
 A responder MUST put nothing else in the reply. In particular it carries no lease holder, pid,
 workspace path, instance id, runtime or roster.
@@ -604,7 +619,7 @@ Credentials minted before the registry grant was available get it at their next 
 refresh. Reconnecting with the same credential does not add a grant.
 Direct Get may carry an explicit reply subject. Returned data is broker-marked and consists of
 the registry's fixed token values. It is not an application message or proof of sender identity.
-The registry is used for direct-message addressing (§4). It does not change mentions or presence display.
+The registry supports qualified direct-message (§4) and mention (§5) addressing. It does not change presence display.
 
 ---
 
@@ -7058,8 +7073,9 @@ stops, and its outcome leaves with the process.
 principal, the lifecycle, and every subject, durable and grant keyed by them stay as they are. The
 agent checks the name against the shared name rule (1 to 128 UTF-16 code units, no leading or
 trailing whitespace, no line break, no `/` or `\`, no unpaired surrogate), then reads presence (§6)
-and refuses a name that another live instance carries, compared lowercased as an `@mention` resolves
-it. The input takes any string, so every name the rule refuses gets the same typed refusal. A name in
+and refuses a name that another live instance carries, compared lowercased as a legacy `@mention`
+resolves it. Signed-in mentions based on the actor do not change. The input takes any string, so
+every name the rule refuses gets the same typed refusal. A name in
 another case than the agent's own current name is a change. The agent runs its `set-name` requests
 one at a time, so the check and the change are one step for that agent, and republishes presence once
 the card changed, without waiting for its next heartbeat. Two agents can still take one name at once,

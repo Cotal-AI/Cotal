@@ -332,10 +332,8 @@ export class EndpointDurableBackstop {
     return effectiveDeliveryClass(cfg, defaults);
   }
 
-  /** Collision-safe `@mention` → owner-id resolution: a name that resolves to exactly one present
-   *  peer wins; 0 or >1 matches drop (never fan a directed durable copy to an unrelated same-named
-   *  bystander — red-team LOW; SPEC §4 unique instance id). */
-  resolveOwnerByName(name: string): string | undefined {
+  /** Resolve legacy posts without principal hints. An absent or ambiguous name has no target. */
+  resolveLegacyMention(name: string): string | undefined {
     const matches = [...this.presence.values()].filter((p) => p.card.name.toLowerCase() === name.toLowerCase());
     return matches.length === 1 ? matches[0].card.id : undefined;
   }

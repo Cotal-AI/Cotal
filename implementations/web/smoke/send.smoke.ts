@@ -209,6 +209,10 @@ try {
     { posted: posted.text, arrived });
   ok("2.2 the post carries the @mentions in its text, as the wake hint",
     arrived !== undefined && JSON.stringify(arrived.mentions) === JSON.stringify(["bot", "ops.team"]), arrived?.mentions);
+  const malformedWeb = "malformed web mention @bot/reviewer/extra";
+  const malformedPost = await send(openWeb, { kind: "msg", channel: "review", text: malformedWeb });
+  ok("the web post refuses a malformed slash mention before storage", malformedPost.status === 400 &&
+    /invalid.*(?:mention|address)/i.test(malformedPost.text) && !openGot.some((m) => textOf(m) === malformedWeb), malformedPost.text);
   const operatorId = posted.json?.operatorId;
   const operatorRow = await until(async () => (((await getJson(openWeb, "/api/roster")) ?? []) as Row[])
     .find((r) => r.card.id === operatorId && r.card.name === "operator" && r.status !== "offline"));

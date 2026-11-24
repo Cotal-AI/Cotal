@@ -7,7 +7,8 @@ import {
   mintCreds,
   mintLifecycleUid,
   newIdentity,
-  mentionsIn,
+  AmbiguousPeerError,
+  PeerAddressError,
   type SpaceAuth,
 } from "@cotal-ai/core";
 import { c } from "@cotal-ai/workspace";
@@ -141,7 +142,10 @@ export async function sendAsOperator(
     throw new BrokerRefused(escapeForOperator(e instanceof Error ? e.message : String(e)));
   };
   if ("channel" in target) {
-    const msg = await sender.multicast(text, { channel: target.channel, mentions: mentionsIn(text) }).catch(refused);
+    const msg = await sender.postChannel(text, { channel: target.channel }).catch((error: unknown) => {
+      if (error instanceof PeerAddressError || error instanceof AmbiguousPeerError) throw new BadRequest(escapeForOperator(error.message));
+      return refused(error);
+    });
     return { status: 200, body: { ok: true, id: msg.id, operatorId: sender.card.id } };
   }
   const { msg, ack } = await sender.unicastAttributed(target.to, text).catch(refused);

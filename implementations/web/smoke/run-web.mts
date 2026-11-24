@@ -37,10 +37,10 @@ if (process.env.COTAL_WEB_SMOKE_HANG_DMS === "1")
 const refuseText = process.env.COTAL_WEB_SMOKE_REFUSE_TEXT;
 if (refuseText) {
   const refusal = () => Promise.reject(new Error(`Permissions Violation for Publish (${refuseText})`));
-  const multicast = CotalEndpoint.prototype.multicast;
+  const postChannel = CotalEndpoint.prototype.postChannel;
   const unicastAttributed = CotalEndpoint.prototype.unicastAttributed;
-  CotalEndpoint.prototype.multicast = function (text, opts) {
-    return text === refuseText ? refusal() : multicast.call(this, text, opts);
+  CotalEndpoint.prototype.postChannel = function (text, opts) {
+    return text === refuseText ? refusal() : postChannel.call(this, text, opts);
   };
   CotalEndpoint.prototype.unicastAttributed = function (to, text, opts) {
     return text === refuseText ? refusal() : unicastAttributed.call(this, to, text, opts);

@@ -87,7 +87,7 @@ interface FeedEntry {
 	count?: number;        // unicast burst target count, including repeats
 	events?: boolean;      // multicast row on an agent's structured-event channel
 	replyTo?: string;      // ID of the message this one answers
-	mentions?: string[];   // lowercased peer names called out by the sender
+	mentions?: string[];   // mention spellings without @, or legacy display names
 	mentionIds?: string[]; // exact mention principals, including an empty list
 	contextId?: string;    // sender-chosen thread or conversation correlation ID
 	text: string;          // partsToText(msg.parts)

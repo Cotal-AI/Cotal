@@ -61,6 +61,11 @@ try {
   check("send stores a channel post", sent.outcome === "stored", sent);
   check("send with mentions and replyTo reaches the agent with both",
     post?.channel === "general" && JSON.stringify(post.mentions) === JSON.stringify(["planner"]) && post.replyTo === "m-0", post);
+  const malformedChat = "malformed native chat mention @planner/reviewer/extra";
+  const malformed = await publish(session, { kind: "channel", channel: "general" }, malformedChat);
+  check("native chat refuses a malformed slash mention before storage", malformed.outcome === "refused" &&
+    malformed.code === "USAGE_INVALID" && /invalid.*(?:mention|address)/i.test(malformed.message) &&
+    !heard.some((m) => m.parts[0]?.kind === "text" && m.parts[0].text === malformedChat), malformed);
 
   const question = await planner.multicast("which branch?", { channel: "general" });
   const asked = await until(() => received.find((m) => m.id === question.id));

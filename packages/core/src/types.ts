@@ -420,14 +420,12 @@ interface CotalMessageBase {
   ts: number;
   space: string;
   from: EndpointRef;
-  /** Lowercased peer names called out within a `channel` message — a wake hint that also, on a
-   *  `live` channel, routes a durable copy to each mentioned target **authorized to read that
-   *  channel** (SPEC §4/§5). It never carries content outside the target's read ACL and is not a
-   *  routing substitute for `channel`/`to`; the message still multicasts to the whole channel.
-   *  Omitted when empty. */
+  /** Channel mention spellings without `@`, in the same order as `mentionIds` when present.
+   *  Legacy publishers send lowercased peer names. Omitted when empty. */
   mentions?: string[];
-  /** Resolved channel mention principals, in exact `<owner>.<actor>` form. When present, even
-   *  empty, this list replaces name matching for recipient priority. It grants no read access. */
+  /** The sender's claimed mention principals, in exact `<owner>.<actor>` form. When present,
+   *  even empty, this list replaces name matching for priority and authorized mention copies.
+   *  It grants no read access. */
   mentionIds?: string[];
   parts: Part[];
   /** Id of the message being replied to. */

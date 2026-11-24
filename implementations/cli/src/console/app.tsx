@@ -1,7 +1,7 @@
 import { writeSync } from "node:fs";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Box, Text, useApp, useFocusManager, useInput, useStdout } from "ink";
-import { mentionsIn, type CotalEndpoint, type Presence } from "@cotal-ai/core";
+import type { CotalEndpoint, Presence } from "@cotal-ai/core";
 import { useMesh } from "./mesh.js";
 import { attachSeat } from "../commands/agents.js";
 import { detachKey } from "@cotal-ai/workspace/attach";
@@ -428,13 +428,13 @@ export function App({
     void ensureParticipant().then((ready) => {
       if (!ready) return;
       if (c.kind === "channel")
-        void ep.multicast(text, { channel: c.channel, mentions: mentionsIn(text) }).then(ok("→ #" + c.channel)).catch(fail);
+        void ep.postChannel(text, { channel: c.channel }).then(ok("→ #" + c.channel)).catch(fail);
       else if (c.kind === "dm") void ep.unicast(c.toId, text).then(ok(dmLabel("→ ", c.toId, c.toName))).catch(fail);
       else {
         const e = c.entry;
         const channel = e.delivery === "multicast" && e.channel;
         const send = channel
-          ? ep.multicast(text, { channel, replyTo: e.id, mentions: mentionsIn(text) })
+          ? ep.postChannel(text, { channel, replyTo: e.id })
           : ep.unicast(e.from.id, text, { replyTo: e.id });
         void send.then(ok(channel ? "↩ " + composeName(e.from.name, e.from.id) : dmLabel("↩ ", e.from.id, e.from.name))).catch(fail);
       }

@@ -72,6 +72,174 @@ async function awaitValue<T>(read: () => T | undefined): Promise<T | undefined> 
   } while (Date.now() < until);
 }
 
+async function checkMentionWriters(
+  sender: MeshAgent, right: MeshAgent, openLeft: () => Promise<MeshAgent>, reopenRight: () => Promise<MeshAgent>,
+  username: string, daemon: CotalEndpoint, writerBearer: () => Promise<string>,
+): Promise<void> {
+  const live = "writer_live";
+  const durable = "writer_durable";
+  const saw = (agent: MeshAgent, text: string) => awaitValue(() => agent.peekInbox().find((i) => i.text === text));
+  const received = (agent: MeshAgent, text: string) => agent.peekInbox().some((i) => i.text === text && i.mentionsMe);
+  const send = async (address: string, note: string, channel: string, list = [address]) => {
+    const text = `${note} @${address}`;
+    const result = await sender.send(text, channel, list).catch((e: Error) => e);
+    return { text, result };
+  };
+  const refused = (result: Error | CotalMessage, why: RegExp) => result instanceof Error && why.test(result.message);
+  const addressed = (result: Error | CotalMessage, id: string) => !(result instanceof Error) && result.mentionIds?.join() === id;
+  const foreign = `${username}/reviewer`;
+  daemon.serveLiveness("delivery", () => "bound");
+  const oldDaemon = await send(foreign, "old delivery responder", live);
+  suite.check("writer: an old delivery responder is not evidence of principal mention support", refused(oldDaemon.result, /upgraded delivery/i), oldDaemon.result);
+  daemon.serveDeliveryLiveness();
+  await right.setChannelMode(live, "quiet");
+  const wakesFor = (agent: MeshAgent, text: string) => agent.inboxWake((item) => item.text !== text);
+  const missing = await send("reviewer", "no own live", live);
+  suite.check("writer: foreign-only bare live mention is refused", refused(missing.result, /own|could not resolve/i), missing.result);
+  suite.check("writer: a bare mention with no own roster row names the other owner's qualified address",
+    missing.result instanceof core.PeerAddressError && missing.result.code === "TARGET_NOT_FOUND" &&
+    missing.result.addresses.includes(foreign) && missing.result.message.includes(foreign), missing.result);
+  if (!(missing.result instanceof Error)) await saw(right, missing.text);
+  const direct = await send(foreign, "qualified live", live);
+  const directSeen = !(direct.result instanceof Error) && (await saw(right, direct.text))?.mentionsMe === true;
+  suite.check("writer: a qualified live post names and prioritizes the other owner's exact principal", addressed(direct.result, right.id) && directSeen, direct.result);
+  suite.check("writer: a foreign-only bare post never produces live mention priority", !received(right, missing.text));
+  suite.check("writer: quiet channel wakes only for the addressed qualified post", wakesFor(right, direct.text) === 1 && wakesFor(right, missing.text) === 0);
+  await right.setChannelMode(live, "muted");
+  const muted = await send(foreign, "muted qualified mention", live);
+  await delay(300);
+  suite.check("writer: a muted channel drops a stored principal mention without waking the recipient",
+    addressed(muted.result, right.id) && !right.peekInbox().some((i) => i.text === muted.text) && wakesFor(right, muted.text) === 0);
+  await right.setChannelMode(live, "quiet");
+  const denied = await send(foreign, "unreadable qualified mention", "writer_restricted");
+  const notice = !(denied.result instanceof Error) && await awaitValue(() => sender.peekInbox().find((i) =>
+    i.notice === "mention" && i.text.includes("#writer_restricted") && i.text.includes(`@${foreign}`)));
+  suite.check("writer: claiming a principal does not grant read access, and the daemon reports the denied copy",
+    addressed(denied.result, right.id) && !!notice && !received(right, denied.text), denied.result);
+  await right.stop();
+  const missingOffline = await send("reviewer", "no own offline", live);
+  suite.check("writer: foreign-only bare mention is refused with recipient offline", refused(missingOffline.result, /own|could not resolve/i), missingOffline.result);
+  const offline = await send(foreign, "qualified offline", live);
+  const legacy = await sendLegacyMention(sender.ep, writerBearer);
+  const bad = await send(`${username}/reviewer/extra`, "malformed slash", live, []);
+  suite.check("writer: a malformed slash fails before publish, even with an empty declaration", refused(bad.result, /invalid.*(?:mention|address)/i), bad.result);
+  const mismatch = await send(foreign, "declared mismatch", live, ["reviewer"]);
+  suite.check("writer: a declaration that disagrees with the text fails before publish", refused(mismatch.result, /match|agree/i), mismatch.result);
+  const duplicate = await send(foreign, "duplicate declaration", live, [foreign, foreign]);
+  suite.check("writer: duplicate declarations fail before publish", refused(duplicate.result, /duplicate/i), duplicate.result);
+  const resumed = await reopenRight();
+  const offlineSeen = !(offline.result instanceof Error) && (await saw(resumed, offline.text))?.mentionsMe === true;
+  suite.check("writer: a qualified mention has a durable copy on a replay-off live channel", addressed(offline.result, resumed.id) && offlineSeen, offline.result);
+  suite.check("writer: the offline copy is wake-eligible on return and a refused bare post is not",
+    wakesFor(resumed, offline.text) === 1 && wakesFor(resumed, missingOffline.text) === 0);
+  suite.check("writer: an old post without mentionIds still gets a name-based mention copy", (await saw(resumed, legacy))?.mentionsMe === true);
+  suite.check("writer: the foreign-only bare post leaves no offline mention copy", !received(resumed, missingOffline.text));
+  const left = await openLeft();
+  await resumed.setChannelMode(live, "quiet");
+  const own = await send("reviewer", "own live", live);
+  const ownSeen = !(own.result instanceof Error) && (await saw(left, own.text))?.mentionsMe === true;
+  suite.check("writer: a bare mention selects the sender's own seat among two live namesakes", addressed(own.result, left.id) && ownSeen && !received(resumed, own.text), own.result);
+  await left.stop();
+  const roster = await sender.ep.readPresence();
+  assert.ok(roster.some((p) => p.card.id === left.id && p.status === "offline"), "own reviewer has a retained offline row");
+  assert.ok(roster.some((p) => p.card.id === resumed.id && p.status !== "offline"), "foreign namesake is live");
+  const ownOffline = await send("reviewer", "own backstop while foreign namesake is live", live);
+  const ownDurable = await send("reviewer", "own durable", durable);
+  if (!(ownOffline.result instanceof Error)) assert.ok(await saw(resumed, ownOffline.text), "the live namesake still receives ordinary channel traffic");
+  const resumedLeft = await openLeft();
+  const ownOfflineSeen = !(ownOffline.result instanceof Error) && (await saw(resumedLeft, ownOffline.text))?.mentionsMe === true;
+  suite.check("writer: the replay-off live post backs up only the own offline namesake as a mention",
+    addressed(ownOffline.result, resumedLeft.id) && ownOfflineSeen && wakesFor(resumedLeft, ownOffline.text) === 1 &&
+    wakesFor(resumed, ownOffline.text) === 0 && !received(resumed, ownOffline.text), ownOffline.result);
+  const ownDurableSeen = !(ownDurable.result instanceof Error) && (await saw(resumedLeft, ownDurable.text))?.mentionsMe === true;
+  suite.check("writer: a bare mention retains its own target on a durable channel", addressed(ownDurable.result, resumedLeft.id) && ownDurableSeen && !received(resumed, ownDurable.text), ownDurable.result);
+  await checkSharedWriter(sender, resumed, resumedLeft, username, live);
+}
+
+async function checkSharedWriter(sender: MeshAgent, right: MeshAgent, left: MeshAgent, username: string, channel: string): Promise<void> {
+  const text = `API reply @${username.toUpperCase()}/reviewer, then @reviewer.`;
+  const heard: CotalMessage[] = [];
+  const record = (m: CotalMessage) => { if (core.partsToText(m.parts) === text) heard.push(m); };
+  right.ep.on("message", record);
+  try {
+    const publish = sender.ep.postChannel?.bind(sender.ep) ?? sender.ep.multicast.bind(sender.ep);
+    const sent = await publish(text, { channel, replyTo: "test-parent", contextId: "test-thread" }).catch(() => undefined);
+    const wire = await awaitValue(() => heard[0]);
+    suite.check("writer API: exact principals appear in text order on the received envelope beside legacy fields and reply metadata",
+      !!sent && wire?.id === sent.id && wire.mentions?.join() === `${username}/reviewer,reviewer` &&
+      wire.mentionIds?.join() === `${right.id},${left.id}` && wire.replyTo === "test-parent" && wire.contextId === "test-thread", wire);
+  } finally { right.ep.off("message", record); }
+}
+
+async function dialSignedFixture(bearer: () => Promise<string>): Promise<NatsConnection> {
+  return dialerFor(fx.servers)({ servers: fx.servers,
+    ...standaloneConnectOpts({ bearer: await bearer(), sentinelCreds: a.sentinelCreds, tls: false }) });
+}
+
+async function checkUnboundMentionWriter(writer: MeshAgent, username: string): Promise<void> {
+  const channel = "writer_live";
+  const responder = await writer.ep.probeLiveness("delivery");
+  assert.equal(responder.responder, "unbound");
+  const denied = await writer.ep.postChannel(`@${username}/reviewer`, { channel }).catch((error: unknown) => error);
+  suite.check("writer: an unbound delivery responder refuses mentions even on a live channel",
+    denied instanceof core.PeerAddressError && denied.code === "TARGET_UNAVAILABLE", denied);
+  const plain = await writer.ep.postChannel("plain post with no delivery responder", { channel });
+  suite.check("writer: a plain live post stores without a delivery responder", !!plain.id && plain.mentionIds === undefined, plain);
+}
+
+async function checkClaimedMentionCopies(sender: MeshAgent, right: MeshAgent, daemon: CotalEndpoint, observer: NatsConnection,
+    bearer: () => Promise<string>): Promise<void> {
+  const ep = sender.ep;
+  const channel = "writer_live";
+  const missingActor = "no_acl_actor";
+  const missing = `${right.ep.principal.owner}.${missingActor}`;
+  assert.equal(await daemon.aclForAlias(missing), undefined, "missing principal has no live ACL row");
+  assert.ok((await daemon.aclForAlias(sender.id))?.allowSubscribe.includes(channel), "sender has a live read ACL");
+  assert.ok((await daemon.aclForAlias(right.id))?.allowSubscribe.includes(channel), "positive control has a live read ACL");
+  const jsm = await jetstreamManager(observer);
+  const inbox = core.inboxStream(ep.space);
+  const frontier = async () => (await jsm.streams.info(inbox)).state.last_seq;
+  const nc = await dialSignedFixture(bearer);
+  try {
+    const publish = async (id: string, name: string, principal: string) => {
+      const ack = await jetstream(nc).publish(chatSubject(ep.space, ep.principal.owner, ep.principal.actor, channel), JSON.stringify({
+        id, ts: Date.now(), space: ep.space, from: ep.ref(), channel, mentions: [name], mentionIds: [principal],
+        parts: [{ kind: "text", text: `@${name}` }],
+      }));
+      const until = Date.now() + 5_000;
+      do {
+        const consumer = await jsm.consumers.info(core.chatStream(ep.space), core.FANOUT_DURABLE);
+        if (consumer.ack_floor.stream_seq >= ack.seq) return;
+        await delay(25);
+      } while (Date.now() < until);
+      assert.fail(`fan-out did not acknowledge stream sequence ${ack.seq}`);
+    };
+    const before = await frontier();
+    await publish("mention_missing_acl", missingActor, missing);
+    const afterMissing = await frontier();
+    suite.check("delivery: an acknowledged claimed ID without a live ACL writes no durable copy", afterMissing === before, { before, afterMissing });
+    await publish("mention_self_claim", ep.principal.actor, sender.id);
+    const afterSelf = await frontier();
+    suite.check("delivery: an acknowledged sender claim writes no durable copy despite its live read ACL", afterSelf === afterMissing, { afterMissing, afterSelf });
+    await publish("mention_copy_control", right.ep.principal.actor, right.id);
+    const afterControl = await frontier();
+    suite.check("delivery: the same fan-out writes one durable copy for an authorized non-sender", afterControl === afterSelf + 1, { afterSelf, afterControl });
+  } finally { await nc.close(); }
+}
+
+async function sendLegacyMention(ep: CotalEndpoint, bearer: () => Promise<string>): Promise<string> {
+  const channel = "writer_live";
+  const text = "legacy writer @reviewer";
+  const nc = await dialSignedFixture(bearer);
+  try {
+    await nc.request(chatSubject(ep.space, ep.principal.owner, ep.principal.actor, channel), JSON.stringify({
+      id: "writer_legacy_live", ts: Date.now(), space: ep.space, from: ep.ref(), channel,
+      mentions: ["reviewer"], parts: [{ kind: "text", text }],
+    }), { timeout: 2_000 });
+  } finally { await nc.close(); }
+  return text;
+}
+
 async function checkDeniedDm(caller: MeshAgent, target: string, deniedReader: NatsConnection): Promise<void> {
   // Use the restricted broker connection for this lookup only; the connector stays in user mode.
   const { conn } = caller.ep as unknown as { conn: { nc: NatsConnection } };
@@ -131,12 +299,16 @@ async function checkDmResolution(left: MeshAgent, right: MeshAgent, caller: Mesh
 
 async function checkReaders(authService: AuthServiceHandle, username: string): Promise<void> {
   const channel = "reader_test";
-  const allow = [channel];
+  const allow = [channel, "writer_live", "writer_durable"];
   const base = { space: a.space, servers: fx.servers };
   const creds = await mintCreds(a.auth, newIdentity(), "provisioner");
-  await seedChannelRegistry({ ...base, creds, file: { channels: { [channel]: { replay: true, deliveryClass: "durable" } } } });
+  await seedChannelRegistry({ ...base, creds, file: { channels: { [channel]: { replay: true, deliveryClass: "durable" },
+    writer_live: { replay: false, deliveryClass: "live" }, writer_durable: { replay: false, deliveryClass: "durable" },
+    writer_restricted: { replay: false, deliveryClass: "live" } } } });
   const provisioner = new CotalEndpoint({ ...base, creds, channels: [], consume: false, registerPresence: false, watchPresence: false, card: { kind: "endpoint", name: "test_provisioner" } });
-  const daemon = new CotalEndpoint({ ...base, creds: await mintCreds(a.auth, newIdentity(), "delivery"), channels: [], consume: false, registerPresence: false, watchPresence: true, card: { kind: "endpoint", name: "delivery" } });
+  let deliveryConnection: NatsConnection | undefined;
+  const daemon = new CotalEndpoint({ ...base, creds: await mintCreds(a.auth, newIdentity(), "delivery"), channels: [], consume: false, registerPresence: false, watchPresence: true,
+    onConnection: (connection) => { deliveryConnection = connection; }, card: { kind: "endpoint", name: "delivery" } });
   const agents: MeshAgent[] = [];
   let peer: CotalEndpoint | undefined;
   let lease: number | undefined;
@@ -145,9 +317,9 @@ async function checkReaders(authService: AuthServiceHandle, username: string): P
     lease = await daemon.acquireDeliveryLease(0);
     await daemon.startPlane3((id, uid) => daemon.aclForOwner(id, uid));
     lease = await daemon.markDeliveryLeaseReady(0, lease);
-    const prepare = async (subject: string, owner: string, actor: string, role?: string) => {
+    const prepare = async (subject: string, owner: string, actor: string, { role, allowPublish = allow }: { role?: string; allowPublish?: string[] } = {}) => {
       const lifecycleUid = mintLifecycleUid();
-      grantActor(a.stateDir, { owner, actor, lifecycleUid, role, scope: [], allowSubscribe: allow, allowPublish: allow });
+      grantActor(a.stateDir, { owner, actor, lifecycleUid, role, scope: [], allowSubscribe: allow, allowPublish });
       await provisionAgentDurables(provisioner, { owner, actor, lifecycleUid }, { role, subscribe: allow, allowSubscribe: allow });
       const bearer = async () => {
         const result = await fetch(`${authService.url}/exchange`, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${authService.cap}` },
@@ -156,10 +328,10 @@ async function checkReaders(authService: AuthServiceHandle, username: string): P
         assert.ok(result.ok && body.token, body.error);
         return body.token;
       };
-      return { lifecycleUid, role, userAuth: { owner, actor, bearer, sentinelCreds: a.sentinelCreds } };
+      return { lifecycleUid, role, allowPublish, userAuth: { owner, actor, bearer, sentinelCreds: a.sentinelCreds } };
     };
     const start = async (grant: Awaited<ReturnType<typeof prepare>>, name = grant.userAuth.actor) => {
-      const config: AgentConfig = { ...base, ...grant, name, subscribe: allow, allowSubscribe: allow, allowPublish: allow, kind: "agent", tls: false };
+      const config: AgentConfig = { ...base, ...grant, name, subscribe: allow, allowSubscribe: allow, kind: "agent", tls: false };
       const agent = new MeshAgent(config, {}, { eventsArmed: false });
       agents.push(agent);
       agent.on("error", console.error);
@@ -167,10 +339,24 @@ async function checkReaders(authService: AuthServiceHandle, username: string): P
       assert.ok(await awaitValue(() => agent.connected ? true : undefined));
       return agent;
     };
-    const leftGrant = await prepare("lister-human", owner, "reviewer");
+    const senderGrant = await prepare("lister-human", owner, "writer_sender", { allowPublish: [...allow, "writer_restricted"] });
+    const writer = await start(senderGrant);
+    const writerRightGrant = await prepare("other-human", otherOwner, "reviewer");
+    const writerRight = await start(writerRightGrant);
+    const rightUsername = await writer.ep.readUsername(otherOwner);
+    assert.ok(rightUsername);
+    await checkUnboundMentionWriter(writer, rightUsername);
+    daemon.serveDeliveryLiveness();
+    assert.ok(deliveryConnection);
+    await checkClaimedMentionCopies(writer, writerRight, daemon, deliveryConnection, senderGrant.userAuth.bearer);
+    let writerLeftGrant: Awaited<ReturnType<typeof prepare>> | undefined;
+    const openLeft = async () => start(writerLeftGrant ??= await prepare("lister-human", owner, "reviewer"));
+    await checkMentionWriters(writer, writerRight, openLeft, () => start(writerRightGrant), rightUsername, daemon, senderGrant.userAuth.bearer);
+    for (const agent of agents.splice(0).reverse()) await agent.stop();
+    const leftGrant = writerLeftGrant!;
     const left = await start(leftGrant);
-    const right = await start(await prepare("other-human", otherOwner, "reviewer"));
-    const caller = await start(await prepare("lister-human", owner, "dm_caller", "reviewer"), username);
+    const right = await start(writerRightGrant);
+    const caller = await start(await prepare("lister-human", owner, "dm_caller", { role: "reviewer" }), username);
     const otherUsername = await right.ep.readUsername(otherOwner);
     assert.ok(otherUsername);
     daemon.serveDeliveryLiveness();
@@ -210,8 +396,7 @@ async function checkReaders(authService: AuthServiceHandle, username: string): P
     const reply = await right.dm(peer.card.id, "principal reply", { replyTo: secondHeld.id });
     suite.check("an explicit reply reaches its unrostered sender by principal", reply.recipient.id === peer.card.id && !!await awaitValue(() => replies.has(reply.msg.id) ? true : undefined));
     const sharedId = "same-directed-id";
-    const otherSender = await core.dialerFor(fx.servers)({ servers: fx.servers,
-      ...core.standaloneConnectOpts({ bearer: await leftGrant.userAuth.bearer(), sentinelCreds: a.sentinelCreds, tls: false }) });
+    const otherSender = await dialSignedFixture(leftGrant.userAuth.bearer);
     const sendShared = (from: CotalEndpoint, connection: NatsConnection) => connection.request(
       core.unicastSubject(a.space, otherOwner, "reviewer", from.principal.owner, from.principal.actor),
       JSON.stringify({ id: sharedId, ts: Date.now(), space: a.space, from: from.ref(), to: right.ep.card.id, parts: [{ kind: "text", text: "question" }] }),
@@ -280,19 +465,21 @@ async function checkAddresses(sender: CotalEndpoint, nc: NatsConnection, own: Co
     if (!roster.some((p) => p.card.id === own.card.id && p.status !== "offline")) break;
     await delay(100);
   }
-  assert(!roster.some((p) => p.card.id === own.card.id && p.status !== "offline"), "own peer is offline");
+  assert(roster.some((p) => p.card.id === own.card.id && p.status === "offline"), "own peer has a retained offline row");
   const send = async (address: string, text: string) => {
     const selected = await target(roster, address);
     if (!selected) throw new Error(`no matching participant for ${address}`);
     await sender.unicast(selected.card.id, text);
     return selected.card.id;
   };
-  const refused = await send("lister", "bare-must-not-cross-owners").catch((error: Error) => error.message);
   const qualified = `${foreignName}/lister`;
-  suite.check("with the own agent offline a bare send refuses and names the other owner's qualified address", refused.includes(qualified), refused);
+  const ownOffline = await send("lister", "bare-must-not-cross-owners").catch((error: Error) => error.message);
+  suite.check("the shared resolver keeps the offline own DM target despite the live foreign namesake", ownOffline === own.card.id, ownOffline);
+  const noOwn = await select(roster.filter((p) => p.card.id !== own.card.id), "lister");
+  suite.check("with no own roster row the shared resolver refuses and names the foreign qualified address", noOwn.includes(qualified), noOwn);
   const delivered = await send(qualified, "qualified-recipient").catch((error: Error) => error.message);
   for (let i = 0; i < 30 && !received.includes("qualified-recipient") && !received.includes("bare-must-not-cross-owners"); i++) await delay(100);
-  suite.check("the other owner never receives the refused bare DM", !received.includes("bare-must-not-cross-owners"), received);
+  suite.check("the other owner never receives the own bare DM", !received.includes("bare-must-not-cross-owners"), received);
   suite.check("the other owner receives the explicitly qualified DM", delivered === foreign.card.id && received.includes("qualified-recipient"), { delivered, received });
   const missing = await select(roster, `${foreignName}/absent`);
   suite.check("a known username resolves an unobserved actor without inferring existence", missing === `${foreign.principal.owner}.absent`, missing);
@@ -312,7 +499,7 @@ async function checkAddresses(sender: CotalEndpoint, nc: NatsConnection, own: Co
   suite.check("a bare name absent from all owners still returns no match", await select(roster, "missing_actor") === "no match");
 }
 
-async function checkChat(sender: CotalEndpoint, foreign: CotalEndpoint, foreignName: string, received: string[], daemon: CotalEndpoint, reopen: () => Promise<CotalEndpoint>): Promise<void> {
+async function checkChat(sender: CotalEndpoint, own: CotalEndpoint, foreign: CotalEndpoint, foreignName: string, received: string[], daemon: CotalEndpoint, reopen: () => Promise<CotalEndpoint>): Promise<void> {
   const session = new NativeChatSession({ endpoint: sender,
     identity: { mode: "user", space: sender.space, principal: sender.card.id, lifecycleUid: senderRow.lifecycleUid!, label: "sender", allowSubscribe: [], allowPublish: [] },
     retire: async () => { await sender.stop(); return { retirement: "not-applicable", connectionClosed: "confirmed", message: "stopped" }; },
@@ -321,7 +508,8 @@ async function checkChat(sender: CotalEndpoint, foreign: CotalEndpoint, foreignN
   try {
     await sender.waitForPresenceSnapshot();
     const bare = await session.dm("lister", "chat-bare-must-not-cross");
-    suite.check("native chat refuses a foreign bare target without sending", bare.outcome === "refused" && bare.message.includes(`${foreignName}/lister`), bare);
+    suite.check("native chat stores a bare DM for the offline own agent instead of a live foreign namesake",
+      bare.outcome === "stored" && bare.recipient?.id === own.card.id && bare.recipientStatusAtSend === "offline", bare);
     daemon.serveLiveness("delivery", () => "bound");
     const old = await session.dm(`${foreignName}/lister`, "old-delivery-must-not-store");
     daemon.serveDeliveryLiveness();
@@ -337,7 +525,7 @@ async function checkChat(sender: CotalEndpoint, foreign: CotalEndpoint, foreignN
     suite.check("native chat stores a qualified DM without claiming the target exists", offline.outcome === "stored" && offline.seq !== undefined && offline.recipientStatusAtSend === undefined, offline);
     await reopen();
     for (let i = 0; i < 30 && !received.includes("chat-qualified-offline"); i++) await delay(100);
-    suite.check("the same lifecycle gets both qualified DMs and neither refused DM", received.includes("chat-qualified") && received.includes("chat-qualified-offline") && !received.includes("chat-bare-must-not-cross") && !received.includes("old-delivery-must-not-store"), received);
+    suite.check("the foreign lifecycle gets both qualified DMs but no own bare DM or refused qualified DM", received.includes("chat-qualified") && received.includes("chat-qualified-offline") && !received.includes("chat-bare-must-not-cross") && !received.includes("old-delivery-must-not-store"), received);
   } finally { await session.close(); }
 }
 
@@ -698,7 +886,11 @@ try {
   const lease = await daemon.acquireDeliveryLease(0);
   await daemon.startPlane3((id, uid) => daemon.aclForOwner(id, uid));
   await daemon.markDeliveryLeaseReady(0, lease);
-  await checkChat(sender, foreign, names[1]!, received, daemon, async () => (await connect(otherToken, otherRow, true, received)).ep);
+  await checkChat(sender, first, foreign, names[1]!, received, daemon, async () => (await connect(otherToken, otherRow, true, received)).ep);
+  const ownReceived: string[] = [];
+  await connect(firstToken, row, true, ownReceived);
+  suite.check("the original own lifecycle receives both bare DMs on reconnect", !!await awaitValue(() =>
+    ownReceived.includes("bare-must-not-cross-owners") && ownReceived.includes("chat-bare-must-not-cross") ? true : undefined), ownReceived);
   for (const lookup of [() => readUsername(readerNc!, a.space, owner), () => readUsernameOwner(readerNc!, a.space, base)])
     await assert.rejects(lookup, (error: unknown) => error instanceof core.UsernameRegistryReadError && error.code === "denied");
   suite.check("both lookups distinguish a denied key read from absence", true);

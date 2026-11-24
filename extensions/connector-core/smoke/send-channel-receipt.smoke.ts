@@ -13,7 +13,7 @@
  *
  * Run: `pnpm smoke:send-channel-receipt`
  */
-import { MAX_CHANNEL_LENGTH, resolvePeerAddress } from "@cotal-ai/core";
+import { CotalEndpoint, MAX_CHANNEL_LENGTH, resolvePeerAddress, type CotalMessage } from "@cotal-ai/core";
 import { MeshAgent, type MeshAgent as MeshAgentType } from "../src/agent.js";
 import { AgentMessaging, closeChannelNames, type AgentMessagingDeps } from "../src/agent-messaging.js";
 import { cotalToolSpecs } from "../src/tool-specs.js";
@@ -230,8 +230,17 @@ const proto = MeshAgent.prototype as unknown as {
     const a = new MeshAgent({ ...cfg1229 });
     a.on("error", () => {});
     (a as unknown as { _connected: boolean })._connected = true;
+    const endpoint = new CotalEndpoint({ space: cfg1229.space, servers: cfg1229.servers, card: { name: "alice", kind: "agent" }, channels: ["ch"], watchPresence: false });
+    Object.assign(endpoint, {
+      readPresence: ep.readPresence,
+      getRoster: ep.getRoster,
+      publishMsg: async (_subject: string, msg: CotalMessage) => {
+        if (typeof ep.multicast === "function") await ep.multicast(msg.parts[0]?.kind === "text" ? msg.parts[0].text : "", { channel: msg.channel, mentions: msg.mentions });
+      },
+    });
     (a as unknown as { ep: Record<string, unknown> }).ep = {
       principal: { owner: "local", actor: "alice" },
+      postChannel: endpoint.postChannel.bind(endpoint),
       resolvePeerAddress: (target: string, opts: { roster: Parameters<typeof resolvePeerAddress>[0]; selfId: string }) =>
         resolvePeerAddress(opts.roster, target, { authority: { mode: "open" }, selfId: opts.selfId }),
       ...ep,
@@ -657,11 +666,11 @@ const proto = MeshAgent.prototype as unknown as {
     dm.description.includes("To tell an agent about shared work, such as a status or a result, or anything others could use now or later, post it on the task's channel with cotal_send and mention the agent there."),
     dm.description,
   );
-  // SPEC §4: a live post is at-most-once, so only a durable channel reaches every member, except that a
-  // mention keeps a copy for a mentioned agent allowed to read the channel whose name is its own.
+  // A live post keeps a mention copy only for a resolved target allowed to read the channel.
   check(
     "the cotal_send description says a live post misses an agent that is disconnected or busy, unless it mentions it",
-    send.description.includes("On a live channel, an agent that is disconnected, busy or not yet joined when you post misses it, and nothing is kept for it, unless you mention it: an agent you mention gets a copy if it may read the channel and no other agent has its name.") &&
+    send.description.includes("On a live channel, an agent that is disconnected, busy or not yet joined when you post misses it unless you mention it.") &&
+      send.description.includes("A resolved mention can leave a copy only if the agent may read the channel.") &&
       !send.description.includes("Every agent on the channel receives the post"),
     send.description,
   );

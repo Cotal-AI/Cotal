@@ -3,7 +3,7 @@
  * send or a slash command's result says, and how people and a session's end are named. Nothing here
  * holds state. A front end keeps its own state and folds these decisions into it.
  */
-import { assertValidRole, mentionsIn, oneLine } from "@cotal-ai/core";
+import { assertValidRole, oneLine } from "@cotal-ai/core";
 import type { AttentionMode, ChannelMode } from "@cotal-ai/core";
 import { concreteChannelProblem, offlineRecipientNotice, shownTime } from "../messaging.js";
 import type { AdmittedChatSession, CloseReport, ConnectionReport, ConnectionState, PublishResult, Result, SessionIdentity } from "./session.js";
@@ -129,7 +129,7 @@ export function submitDraft(
 export async function publish(session: AdmittedChatSession, to: Recipient, text: string): Promise<PublishResult> {
   switch (to.kind) {
     case "channel":
-      return session.send(text, to.channel, mentionsIn(text), to.replyTo);
+      return session.send(text, to.channel, undefined, to.replyTo);
     case "dm":
       return session.dm(to.to, text);
     case "peer":

@@ -23,7 +23,8 @@ The daemon separates the work of retaining messages, checking access, and record
 - The fan-out writer copies each `durable` channel post into the private store of each eligible
   member. On a `live` channel, it also retains a copy for each mentioned peer whose read ACL covers
   the channel. That peer need not be joined when the mention arrives. Routing a copy does not
-  authorize its release.
+  authorize its release. The writer uses the claimed principals in `mentionIds` when present and
+  uses legacy name matching only for a post without that field.
 - The trusted reader checks each stored entry before handing the authorized copy to the member's
   `dlv_<owner>-<actor>-<uid>` DELIVER consumer. The copy does not use the reply inbox. The member acknowledges the copy after surfacing or handling it. A crash before
   that acknowledgement causes redelivery.

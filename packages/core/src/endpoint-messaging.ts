@@ -9,6 +9,9 @@ import { eventPayloadSubject, eventPayloadStream } from "./event-payloads.js";
 import { assertIdToken } from "./endpoint-subjects.js";
 import { isCasLoss } from "./endpoint-records.js";
 import { isJetStreamMissing } from "./jetstream-missing.js";
+import { prepareChannelMentions, type ChannelMentionFields, type ChannelPostOptions } from "./channel-mentions.js";
+import { PeerAddressError, type PeerAddressAuthority } from "./peer-address.js";
+import type { LivenessAnswer } from "./liveness.js";
 import {
   anycastSubject,
   assertValidOwnerToken,
@@ -20,7 +23,7 @@ import {
   parsePrincipalKey,
   unicastSubject,
 } from "./subjects.js";
-import type { CotalMessage, EndpointRef, HistoryMessage, Part } from "./types.js";
+import type { CotalMessage, EndpointRef, HistoryMessage, Part, Presence } from "./types.js";
 
 /** What the messaging component reads from its endpoint. State is read when it is used, never
  *  copied, and every method is looked up on the endpoint at call time. */
@@ -30,6 +33,9 @@ export interface EndpointMessagingDeps {
   publishMsg: (subject: string, msg: CotalMessage) => Promise<void>;
   streamHistory: (stream: string, subjects: string[], limit: number, before?: number, signal?: AbortSignal) => Promise<{ seq: number; subject: string; msg: HistoryMessage }[]>;
   emitRecoverable: (err: Error) => void;
+  authed: () => boolean;
+  readRoster: () => Promise<{ roster: Presence[]; failure?: unknown }>;
+  probeDelivery: () => Promise<LivenessAnswer>;
 }
 
 /** The messaging verbs of one endpoint: multicast (plain and serialized), unicast, anycast, and the
@@ -43,10 +49,41 @@ export class EndpointMessaging {
   private streamHistory(stream: string, subjects: string[], limit: number, before?: number, signal?: AbortSignal) { return this.deps.streamHistory(stream, subjects, limit, before, signal); }
   private emitRecoverable(err: Error) { this.deps.emitRecoverable(err); }
 
+  async postChannel(text: string, opts: ChannelPostOptions): Promise<CotalMessage> {
+    const authority = this.mentionAuthority();
+    const mentions = await prepareChannelMentions(text, opts, {
+      authority, space: this.identity.space, selfId: this.ref().id, readRoster: this.deps.readRoster,
+      requireDelivery: async () => {
+        const probe = await this.deps.probeDelivery().catch(() => undefined);
+        if (probe?.responder !== "bound" || probe.principalMentionsVersion !== 1)
+          throw new PeerAddressError("", "TARGET_UNAVAILABLE", "Principal mentions require an upgraded delivery responder. Nothing was sent.");
+      },
+    });
+    return this.publishChannel(text, opts, mentions);
+  }
+
+  private mentionAuthority(): PeerAddressAuthority {
+    if (!this.identity.userMode) return { mode: this.deps.authed() ? "static" : "open" };
+    const nc = this.conn.nc;
+    if (!nc || !this.conn.nativeBound) throw new PeerAddressError("", "TARGET_UNAVAILABLE", this.notLiveMsg());
+    const { owner, actor, space } = this.identity;
+    return { mode: "user", owner, actor, space, nc };
+  }
+
   /** Multicast: broadcast to everyone on a channel. */
   async multicast(
     text: string,
     opts?: { channel?: string; parts?: Part[]; replyTo?: string; contextId?: string; mentions?: string[] },
+  ): Promise<CotalMessage> {
+    if (this.identity.userMode && opts?.mentions !== undefined) {
+      if (opts.parts !== undefined) throw new PeerAddressError("", "USAGE_INVALID", "Use postChannel for mentions in channel text.");
+      return this.postChannel(text, opts);
+    }
+    return this.publishChannel(text, opts, { mentions: normalizeMentions(opts?.mentions, true) });
+  }
+
+  private async publishChannel(
+    text: string, opts: { channel?: string; parts?: Part[]; replyTo?: string; contextId?: string } | undefined, mentions: ChannelMentionFields,
   ): Promise<CotalMessage> {
     // Publish must target a concrete sub-channel — you can't broadcast to a
     // wildcard. Default to the first concrete channel we're on (channels[0] may
@@ -66,9 +103,7 @@ export class EndpointMessaging {
       space: this.identity.space,
       from: this.ref(),
       channel,
-      // Priority/wake hint, not routing — validation (against the roster) is the connector's
-      // job; core just canonicalizes and omits the field when empty.
-      mentions: normalizeMentions(opts?.mentions),
+      ...mentions,
       parts: opts?.parts ?? [{ kind: "text", text }],
       replyTo: opts?.replyTo,
       contextId: opts?.contextId,
@@ -160,7 +195,7 @@ export class EndpointMessaging {
       space: this.identity.space,
       from: this.ref(),
       channel: opts.channel,
-      mentions: normalizeMentions(opts.mentions),
+      mentions: normalizeMentions(opts.mentions, true),
       parts: opts.parts,
       replyTo: opts.replyTo,
       contextId: opts.contextId,
@@ -197,6 +232,7 @@ export class EndpointMessaging {
     replyTo?: string;
     contextId?: string;
   }): number {
+    this.assertSerializedMentions(opts.mentions);
     // The same argument validation the publish path applies, so a caller cannot size a frame that
     // would have been refused before it ever reached the wire.
     if (!isConcreteChannel(opts.channel))
@@ -260,6 +296,7 @@ export class EndpointMessaging {
     replyTo?: string;
     contextId?: string;
   }): Promise<{ message: CotalMessage; ack: { seq: number; duplicate: boolean } }> {
+    this.assertSerializedMentions(opts.mentions);
     if (!this.conn.js) throw new Error(this.notLiveMsg());
     if (!isConcreteChannel(opts.channel))
       throw new Error(`cannot publish to wildcard channel "${opts.channel}" - pick a concrete sub-channel`);
@@ -285,6 +322,11 @@ export class EndpointMessaging {
       { msgID: opts.id, expect: { lastSubjectSequence: expected, ...(opts.expectedLastMsgId !== undefined ? { lastMsgID: opts.expectedLastMsgId } : {}) } },
     );
     return { message, ack: { seq: ack.seq, duplicate: ack.duplicate === true } };
+  }
+
+  private assertSerializedMentions(mentions?: string[]): void {
+    if (this.identity.userMode && mentions?.length)
+      throw new PeerAddressError("", "USAGE_INVALID", "Use postChannel for mentions in channel text. Serialized appends do not resolve mentions in signed-in spaces.");
   }
 
   /** Publish a payload frame on this principal's forge-locked sibling event rail. */

@@ -96,13 +96,18 @@ A take means the request was about to be shown and says nothing about the work i
 Anycast does not follow work to its end; a [workflow run](workflows.mdx) does.
 An open mesh runs no delivery daemon, so anycast there has no notices, status or cancel ([SPEC §8.1](../SPEC.md#81-anycast-request-status)).
 
-A channel mention raises a named peer's priority while keeping the message addressed to the whole channel.
-When a received post carries `mentionIds`, readers compare that list with their own principal
-instead of matching a name. An empty list matches no one. An absent list keeps name matching.
+A channel mention raises a peer's priority without changing the post's channel destination.
+In a signed-in space, `@reviewer` names your own agent and `@ben/reviewer` names Ben's.
+The sender resolves each address before publishing and carries the principals in `mentionIds`.
+A signed-in space can run its broker and auth service without a delivery daemon. In that space,
+or if its daemon does not advertise support for principal mentions, the sender refuses the whole
+post before storing it. This requirement applies even on a `live` channel. A post without
+mentions does not require the delivery responder to be available.
+Readers compare that list with their own principal. An empty list matches no one, and an absent
+list keeps legacy name matching. Open and static spaces keep bare display-name mentions.
 The hint does not grant read access or cause historical traffic to wake the reader.
-The wire carries names so that a mention can still match after a reconnect.
 Whether a mention wakes the session depends on its connector and attention settings.
-On a `live` channel, a mention also gets a durable copy for a uniquely resolved target whose read ACL permits the channel.
+On a `live` channel, the delivery daemon uses the same principals to write durable copies for targets whose read ACL permits the channel.
 That target need not be subscribed. Mentioning a peer cannot give it access to unreadable content.
 
 Receivers derive the delivery mode from the broker-authorized subject.

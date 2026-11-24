@@ -42,6 +42,7 @@ import { isJetStreamMissing } from "./jetstream-missing.js";
 import { assertValidKind } from "./agent-file.js";
 import { assertValidName } from "./resolve.js";
 import { PeerAddressError, requireQualifiedDmVersion, resolvePeerAddress, type ResolvedPeerAddress } from "./peer-address.js";
+import type { ChannelPostOptions } from "./channel-mentions.js";
 import { readUsername } from "./username-registry.js";
 import {
   JetStreamApiCodes,
@@ -238,7 +239,7 @@ export class CotalEndpoint extends EventEmitter {
     notLiveMsg: (...args) => this.notLiveMsg(...args),
     plane3MsgId: (...args) => this.durableBackstop.plane3MsgId(...args),
     publishDinbox: (...args) => this.durableBackstop.publishDinbox(...args),
-    resolveOwnerByName: (...args) => this.durableBackstop.resolveOwnerByName(...args),
+    resolveLegacyMention: (...args) => this.durableBackstop.resolveLegacyMention(...args),
     scheduleResidentSwap: (...args) => this.credentials.scheduleResidentSwap(...args),
     sendMentionNotice: (...args) => this.anycastRail.sendMentionNotice(...args),
     emit: (event, ...args) => this.emit(event, ...args),
@@ -799,9 +800,25 @@ export class CotalEndpoint extends EventEmitter {
     publishMsg: (subject, msg) => this.publishMsg(subject, msg),
     streamHistory: (...args) => this.streamHistory(...args),
     emitRecoverable: (err) => this.emitRecoverable(err),
+    authed: () => this.authed,
+    readRoster: async () => {
+      if (this.identity.doWatch) {
+        await this.waitForPresenceSnapshot();
+        return this.presenceView().state === "current" ? { roster: this.getRoster() }
+          : { roster: this.getRoster(), failure: new Error("the authorized presence view is not current") };
+      }
+      try { return { roster: await this.readPresence() }; }
+      catch (failure) { return { roster: this.getRoster(), failure }; }
+    },
+    probeDelivery: () => this.probeLiveness("delivery"),
   });
 
-  /** Multicast: broadcast to everyone on a channel. */
+  /** Post human or agent channel text using this endpoint's bound identity to resolve mentions. */
+  postChannel(text: string, opts: ChannelPostOptions = {}): Promise<CotalMessage> {
+    return this.messaging.postChannel(text, opts);
+  }
+
+  /** Low-level multicast. For typed channel text and owner-aware mentions, use {@link postChannel}. */
   async multicast(
     text: string,
     opts?: { channel?: string; parts?: Part[]; replyTo?: string; contextId?: string; mentions?: string[] },
@@ -809,17 +826,7 @@ export class CotalEndpoint extends EventEmitter {
     return this.messaging.multicast(text, opts);
   }
 
-  /** The broker's live `max_payload` — the CEILING a frame is measured against, not a budget for a
-   *  caller's own payload.
-   *
-   *  Exposed because the connection is private and callers outside core (a connector assembling a
-   *  batched payload) otherwise have no way to learn the ceiling except by failing a publish.
-   *  Throws rather than guessing a default: a wrong ceiling is worse than none, because it splits
-   *  either too eagerly or too late and both look like working code.
-   *
-   *  THIS ALONE CANNOT SIZE A MESSAGE. The envelope this endpoint adds after the publish call, and
-   *  the client's own headers, are charged against the same ceiling and the caller never sees them.
-   *  Use {@link encodedSize}, which measures what will actually be sent. */
+  /** The broker's live payload ceiling. Use {@link encodedSize} to measure a full frame. */
   get maxPayload(): number {
     return this.messaging.maxPayload;
   }
@@ -829,20 +836,7 @@ export class CotalEndpoint extends EventEmitter {
    * the subject expectation BEFORE the `Nats-Msg-Id` dedup cache. **Throws if it cannot be
    * guaranteed.** Call before the first serialized append on a given endpoint.
    *
-   * **The ordering follows the stream's REPLICATION FACTOR, not the deployment.** A standalone R1
-   * stream and an R1 stream inside a real 3-node cluster both refuse a stale expectation with a CAS
-   * error; only an R3 stream evaluates dedup first and answers a retry with `duplicate: true`. A
-   * check written against cluster size would pass on exactly the deployment that breaks.
-   *
-   * Every stream Cotal creates is `num_replicas: 1`, from the same canonical config the restore path
-   * uses, so the property holds by construction today. This exists because "by construction" is an
-   * observation until something checks it: nothing in the wire contract reserves the replica factor.
-   * A caller appending under a stale assumption does not fail loudly; it accepts a retry as success
-   * and drops a message.
-   *
-   * Evidence is `smoke:cas-preflight-cluster`, which records the server version it measured against
-   * rather than naming one here — the suites resolve `nats-server` from `PATH`, so a hardcoded
-   * provenance ages into a claim about a machine that no longer exists.
+   * The ordering follows the stream replication factor, not the cluster size.
    *
    * @throws if the stream is unreadable (no `STREAM.INFO` grant, or absent) or reports more than
    *   one replica. Never degrades to a warning: the failure it prevents is silent.
@@ -2426,7 +2420,7 @@ export class CotalEndpoint extends EventEmitter {
    *  family of bug this issue is about. */
   serveDeliveryLiveness(shardIndex = 0): void {
     this.liveness.serveLiveness("delivery", async () =>
-      responderFromLease(await this.readDeliveryLease(shardIndex), this.card.id), 1);
+      responderFromLease(await this.readDeliveryLease(shardIndex), this.card.id), { qualifiedDmVersion: 1, principalMentionsVersion: 1 });
   }
 
   /** Ask whether a responder is bound for `plane`, as a credentialed peer that need not own it.

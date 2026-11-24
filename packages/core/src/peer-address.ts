@@ -99,12 +99,11 @@ export async function resolvePeerAddress(roster: readonly Presence[], target: st
     if (principal.owner === authority.owner) own.push(peer);
     else foreign.push({ peer, ...principal });
   }
-  const eligible = own.filter((peer) => peer.status !== "offline" || !foreign.some(({ peer: other }) => other.status !== "offline"));
-  const explicit = eligible.find((p) => parsePrincipalKey(p.card.id)?.actor === want);
-  const pool = explicit ? [explicit] : eligible;
-  if (pool.length) {
-    if (pool.length === 1) return pool[0];
-    throw new AmbiguousPeerError(target, pool.map(({ card: { id, name, role }, status, ts }) => ({ id, name, role, status, ts })));
+  const explicit = own.find((p) => parsePrincipalKey(p.card.id)?.actor === want);
+  if (explicit) return explicit;
+  if (own.length) {
+    if (own.length === 1) return own[0];
+    throw new AmbiguousPeerError(target, own.map(({ card: { id, name, role }, status, ts }) => ({ id, name, role, status, ts })));
   }
   if (!foreign.length) return undefined;
   const addresses = [...new Set(await readRegistry(target, () => Promise.all(foreign.map(async ({ peer, owner, actor }) => {
