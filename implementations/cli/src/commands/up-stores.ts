@@ -165,8 +165,9 @@ async function recreateIssuedStoresBeforeSetup(server: string, space: string, au
  *  stream. A memory-backed bucket is the exception: the broker stop that preserved the store emptied
  *  it, stream and all (#1356 made presence memory-backed). Recreate those, and only those, from the
  *  same `ttlBuckets` list `setupSpaceStreams` creates them from, before any daemon opens them.
- *  Only an ordinary resume that just started this listener may opt into replacing a File feed. */
-export async function recreateMemoryBuckets(server: string, space: string, setup?: { creds: string }, ownedResume?: { convertMembership: boolean }): Promise<void> {
+ *  Only an ordinary resume that just started this listener may opt into replacing a File feed.
+ *  An explicit seed on an ordinary resume patches the preserved channel registry. */
+export async function recreateMemoryBuckets(server: string, space: string, setup?: { creds: string }, ownedResume?: { convertMembership: boolean }, seed?: ChannelRegistryFile): Promise<void> {
   const legacy = await fileMembershipStore(server, space, setup?.creds);
   if (legacy) {
     if (!ownedResume?.convertMembership) throw membershipConversionRefusal(space, ownedResume && "retry this preserved resume with `cotal up --recreate-membership-store`");
@@ -199,15 +200,17 @@ export async function recreateMemoryBuckets(server: string, space: string, setup
   } finally {
     await drainAndClose(nc);
   }
+  if (seed) await seedChannelRegistry({ servers: server, space, creds: setup?.creds, file: seed });
 }
 
 /** An adopted listener may have been bound by an `up` that stopped before {@link recreateMemoryBuckets},
  *  so the memory buckets the daemons open can be missing on it. An existing bucket is left as it is. */
-export async function recreateAdoptedMemoryBuckets(root: string, space: string, server: string, mode: "open" | "auth" | "user"): Promise<void> {
-  if (mode === "open") return recreateMemoryBuckets(server, space);
+export async function recreateAdoptedMemoryBuckets(root: string, space: string, server: string, mode: "open" | "auth" | "user", channels?: string): Promise<void> {
+  const seed = channels ? loadChannelsFile(channels) : undefined;
+  if (mode === "open") return recreateMemoryBuckets(server, space, undefined, undefined, seed);
   const auth = await getSpaceAuth(workspaceSecretStore(root), space);
   if (!auth) throw new Error(`space "${space}" has no trust material under ${authDir(root)}; cannot recreate its memory buckets on the adopted listener`);
-  await recreateMemoryBuckets(server, space, { creds: await mintCreds(auth, newIdentity(), "provisioner") });
+  await recreateMemoryBuckets(server, space, { creds: await mintCreds(auth, newIdentity(), "provisioner") }, undefined, seed);
 }
 
 /** `cotal space delete` removes a space's streams from a broker that keeps running. When a stack

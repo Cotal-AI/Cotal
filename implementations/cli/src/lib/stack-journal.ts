@@ -1066,7 +1066,12 @@ export function stackScopeRefusals(journal: StackJournal, next: string, { broker
   // to run again once the address is this stack's alone. The forget is never automatic: an active
   // shared space is not safe to stop.
   if (sharing.length) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "another registration names this stack's exact broker address; a shared broker is not stopped in this cut", { target: { server: journal.server, spaces: sharing.map((mesh) => mesh.space) }, remedy: [
-    ...sharing.map((mesh) => `read "${mesh.space}" with \`cotal space show ${mesh.space}\`, stop it in its own folder, then take it off this address with \`cotal space forget ${mesh.space} --plain\``),
+    ...sharing.map(({ space }) => {
+      const name = shellWord(space);
+      const show = space.startsWith("-") ? `cotal space show -- ${name}` : `cotal space show ${name}`;
+      const forget = space.startsWith("-") ? `cotal space forget --plain -- ${name}` : `cotal space forget ${name} --plain`;
+      return `read ${JSON.stringify(space)} with ${codeSpan(show)}, stop it in its own folder, then take it off this address with ${codeSpan(forget)}`;
+    }),
     `then run ${next}`,
   ].join("; ") });
 }

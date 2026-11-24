@@ -1,5 +1,26 @@
 # @cotal-ai/lang
 
+## 0.176.3
+
+### Patch Changes
+
+- a38ed1d: Apply scripted workflow simulation faults to the named fan-out step before any of its branches run.
+
+## 0.176.2
+
+No changes in this release.
+
+## 0.176.1
+
+No changes in this release.
+
+## 0.176.0
+
+### Patch Changes
+
+- 7266240: Make workflow simulations reject late turn yields and enforce one shared deadline across ask retries.
+- 28b97c7: Show how to look up a missing local workflow ID, label computed calls accurately in plans, and apply scripted race faults before the branches start.
+
 ## 0.175.3
 
 No changes in this release.

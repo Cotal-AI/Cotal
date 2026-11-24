@@ -8,6 +8,7 @@ import { c, stderrLine } from "../ui.js";
 import { cotalPath, cotalRoot } from "../lib/paths.js";
 import { displayCmd } from "../lib/self-exec.js";
 import { shellWord } from "../lib/endpoint-errors.js";
+import { canonicalServer } from "../lib/broker-service.js";
 import { clearManagerArtifacts, managerLogDisplayPath, stopManager } from "../lib/manager-proc.js";
 import { ManifestError, formatIssue, loadManifest, type PreparedManifest } from "../lib/manifest/index.js";
 import { UnusableFile } from "../lib/unusable-file.js";
@@ -114,21 +115,22 @@ export async function prepareResumeTeamBoot(file: string, opts: { space: string;
     throw new CommandFailure("refused", "CONFLICT", "the team manifest no longer names the selected space; nothing was resumed", { target: { selectedSpace: opts.space, declaredSpace: prepared.manifest.space } });
   const { prepared: eff, hostSource, serverSource } = applyUpOverrides(prepared, { transport: opts.transport, dryRun: false, freshTeamBoot: true });
   const m = eff.manifest;
-  const server = m.broker?.host ? reconcileHostAndServer(m.broker.host, m.broker?.servers, hostSource, serverSource) : (m.broker?.servers ?? DEFAULT_SERVER);
+  const declaredServer = m.broker?.host ? reconcileHostAndServer(m.broker.host, m.broker?.servers, hostSource, serverSource) : (m.broker?.servers ?? DEFAULT_SERVER);
+  const server = opts.recorded.server;
   const open = m.broker?.auth === false;
   const mode = open ? "open" as const : m.broker?.auth === "user" ? "user" as const : "auth" as const;
   const runtime = m.runtime ?? "pty";
   // Each setting the manifest moves, with both values and the manifest change that keeps the recorded one.
   const shown = (address: string) => brokerAddressForDisplay(address) ?? "not displayable";
   const moved = [
-    ...(server !== opts.recorded.server ? [{ name: "broker address", recorded: shown(opts.recorded.server), declared: shown(server), keep: `set \`broker.servers\` to ${shown(opts.recorded.server)}` }] : []),
+    ...(canonicalServer(declaredServer) !== canonicalServer(server) ? [{ name: "broker address", recorded: shown(server), declared: shown(declaredServer), keep: `set \`broker.servers\` to ${shown(server)}` }] : []),
     ...(m.broker?.host !== undefined && m.broker.host !== opts.recorded.host ? [{ name: "bind host", recorded: opts.recorded.host ?? "none", declared: m.broker.host, keep: opts.recorded.host ? `set \`broker.host\` to ${opts.recorded.host}` : "remove `broker.host`" }] : []),
     ...(mode !== opts.recorded.mode ? [{ name: "auth mode", recorded: RESUME_MODE[opts.recorded.mode].words, declared: RESUME_MODE[mode].words, keep: `set \`broker.auth\` to \`${RESUME_MODE[opts.recorded.mode].field}\`` }] : []),
   ];
   if (moved.length) {
     const named = moved.map((row) => `${row.name} (recorded ${row.recorded}, declared ${row.declared})`);
     throw new CommandFailure("refused", "CONFLICT", `the manifest differs from the recorded stopped stack in its ${named.length > 1 ? `${named.slice(0, -1).join(", ")} and ${named.at(-1)}` : named[0]}; nothing was resumed`, {
-      target: { space: m.space, recorded: { ...opts.recorded, server: shown(opts.recorded.server) }, declared: { server: shown(server), host: m.broker?.host ?? null, mode } },
+      target: { space: m.space, recorded: { ...opts.recorded, server: shown(server) }, declared: { server: shown(declaredServer), host: m.broker?.host ?? null, mode } },
       remedy: `${moved.map((row) => row.keep).join(" and ")} in the manifest to resume this stack, or boot the manifest as a new space in another folder prepared with \`cotal space create <space>\``,
     });
   }

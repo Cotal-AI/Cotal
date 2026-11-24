@@ -36,25 +36,26 @@
  *     durable channels. Setting the card to live lets the deployment succeed.
  *  M. the deploy receipt's space locates its record even with another space selected.
  *     The confirmation commands retain the target and output mode, and replay previews and removes the card.
+ *  N. the printed fresh boot summary command works with a different space selected.
  *
  * Channels only, so no agent launches. COTAL_HOME is sandboxed, the child environment carries no
  * `COTAL_` variable of the runner, and each stack stops with `cotal down --yes`.
  * Needs `nats-server` on PATH. Run: pnpm smoke:team-views:live
  */
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { assertSmokeSandboxDown, createSuite, freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
+import { shellPath } from "@cotal-ai/workspace";
 
 const WT = resolve(import.meta.dirname, "..", "..", "..");
-const CLI = join(WT, "bin", "cotal.ts");
-const TSX = join(WT, "node_modules", ".bin", "tsx");
+const CLI = join(WT, "bin", "dist", "cotal.js");
 const SERVER = `nats://127.0.0.1:${await freePort()}`, SERVER_B = `nats://127.0.0.1:${await freePort()}`;
 const SPACE = `team-views-${process.pid}`, SPACE_B = `team-boot-${process.pid}`;
 
 const base = mkdtempSync(join(tmpdir(), "cotal-team-views-"));
-const home = join(base, "home"), configDir = join(base, "xdg"), s = join(base, "s"), b = join(base, "boot project"), c = join(base, "c");
+const home = join(base, "home"), configDir = join(base, "xdg"), s = join(base, "s"), b = join(base, "boot project"), c = join(base, "open project");
 const runtimeDir = join(base, "runtime");
 // The product refuses a local-record store that is not private, so every folder here is 0700.
 for (const dir of [home, configDir, runtimeDir, s, b, c]) mkdirSync(dir, { mode: 0o700 });
@@ -67,7 +68,7 @@ const { check, finish } = createSuite();
 const cotal = (cwd: string, ...args: string[]) => {
   const options = { cwd, env, encoding: "utf8" as const, timeout: 180_000 };
   assertSmokeSandboxDown(sandboxes.get(cwd), args, options);
-  const run = spawnSync(TSX, [CLI, ...args], options);
+  const run = spawnSync(process.execPath, [CLI, ...args], options);
   return { status: run.status, stdout: run.stdout, stderr: run.stderr, out: `${run.stdout}${run.stderr}` };
 };
 type Envelope = { outcome?: string; completeness?: string; target?: Record<string, unknown>; error?: { code?: string; message?: string; remedy?: string }; warnings?: { code: string; target: Record<string, unknown>; message: string }[]; result?: Record<string, unknown> };
@@ -124,6 +125,40 @@ manifest("boot.yaml", SPACE_B, { bootch: "    deliveryClass: live\n" }, { dir: b
 manifest("open.yaml", SPACE, { lobby: "    deliveryClass: live\n" }, { open: true });
 manifest("defaults.yaml", SPACE, { dops: "", own: "    replay: true\n" }, { head: "defaults:\n  replay: false\n  replayWindow: 2h\n  deliveryClass: live\n" });
 
+function checkForegroundPreview(): void {
+  const help = cotal(b, "team", "boot", "--help");
+  const helpText = help.stdout.replace(/\s+/g, " ");
+  check("team boot help shows independent foreground and dry-run flags and their output rules",
+    help.status === 0 && helpText.includes("cotal team boot <file> [--dry-run] [--foreground]") &&
+    helpText.includes("A foreground preview accepts --json or --plain. A foreground apply accepts neither."), help.out);
+  const args = ["team", "boot", "boot.yaml", "--foreground"];
+  const json = cotal(b, ...args, "--dry-run", "--json");
+  const result = envelope(json.stdout)?.result;
+  check("the foreground JSON preview finishes without effects or records", answered(json) && result?.kind === "fresh-team-boot-preview" &&
+    result.lifetimeRequest === "terminal-bound" && result.effectAttempted === false && result.persisted === false, json.out);
+  const plain = cotal(b, ...args, "--dry-run", "--plain");
+  check("the foreground plain preview also finishes", plain.status === 0 && /Lifetime request:\s+terminal-bound/.test(plain.stdout), plain.out);
+  const apply = cotal(b, ...args, "--json");
+  check("a foreground apply still refuses structured output", apply.status === 1 && envelope(apply.stdout)?.error?.code === "USAGE_INVALID", apply.out);
+}
+
+function checkDeployAuthConflict(): void {
+  const args = ["team", "deploy", "open.yaml"];
+  const preview = cotal(s, ...args, "--dry-run", "--json");
+  const parsed = envelope(preview.stdout);
+  const native = parsed?.result?.native as { channels?: { create?: string[] } } | undefined;
+  const warning = parsed?.warnings?.find((w) => w.code === "MANIFEST_WARNING" && w.message.startsWith("Apply refuses: broker.auth"));
+  check("the deploy preview completes, warns about the explicit mode conflict and has no creation candidates",
+    answered(preview) && warning?.target.space === SPACE && warning.message.includes("requests open") &&
+    warning.message.includes("static auth") && warning.message.includes("Omit broker.auth or set it to match") &&
+    native?.channels?.create?.length === 0, preview.out);
+  const plain = cotal(s, ...args, "--dry-run", "--plain");
+  check("the plain deploy preview shows the warning and no candidates", plain.status === 0 &&
+    plain.stderr.includes("Apply refuses: broker.auth requests open") && /New channel candidates:\s+0/.test(plain.stdout), plain.out);
+  const apply = cotal(s, ...args, "--json");
+  check("deploy apply still refuses the auth mismatch", apply.status === 2 && envelope(apply.stdout)?.error?.code === "CONFLICT", apply.out);
+}
+
 let up = false, bUp = false, openUp = false;
 try {
   const noApplications = join(base, "no-applications");
@@ -149,11 +184,15 @@ try {
   const started = cotal(s, "up", "--server", SERVER);
   check("up starts the static-auth stack", started.status === 0, started.out.slice(-600));
   if (started.status !== 0) throw new Error("the stack did not start; no later cell can run");
+  checkForegroundPreview();
+  checkDeployAuthConflict();
 
   console.log("\nA. reads and previews that complete exit 0");
   const deployPreview = cotal(s, "team", "deploy", "live.yaml", "--dry-run");
   check("team deploy --dry-run exits 0 and says its read is not a deployment plan",
     reported(deployPreview, "not an authorized deployment plan"), deployPreview.out.slice(-800));
+  check("without broker.auth the deploy preview retains the new channel candidates",
+    /New channel candidates:\s+2/.test(deployPreview.stdout) && !deployPreview.stderr.includes("broker.auth requests"), deployPreview.out);
   check("team deploy --dry-run --json is ok and partial in completeness", answered(cotal(s, "team", "deploy", "live.yaml", "--dry-run", "--json")));
   const applied = cotal(s, "team", "deploy", "live.yaml", "--json");
   const id = envelope(applied.stdout)?.result?.deploymentId;
@@ -258,7 +297,7 @@ try {
     second.status === 2 && blocked?.code === "LIFECYCLE_BLOCKED" && blocked.message === `"${SPACE}" is already up at this root and no \`cotal down\` has stopped it; a team boot starts only a stopped stack, so nothing was booted`, second.out.slice(-800));
   const remedy = blocked?.remedy ?? "";
   check("its Next offers inspection, stop preview and ordinary restart",
-    remedy.includes(`cotal service --space ${SPACE}`) && remedy.includes("cotal down --dry-run") && remedy.includes("`cotal up`") && !remedy.includes("team deploy"), blocked);
+    remedy.includes(`cotal service --space ${SPACE}`) && remedy.includes(`cd ${shellPath(realpathSync(s))} && cotal down --space ${SPACE} --dry-run`) && remedy.includes(`cd ${shellPath(realpathSync(s))} && cotal up --space ${SPACE}`) && !remedy.includes("team deploy"), blocked);
   const spacedFile = "team add.yaml";
   manifest(spacedFile, SPACE, { alerts: "    deliveryClass: live\n" });
   const conflict = cotal(s, "up", "-f", spacedFile, "--dry-run");
@@ -269,7 +308,7 @@ try {
   check("up -f quotes the whole manifest path in its preview and does not suggest redeployment",
     command === expectedPreview && !conflict.stderr.includes("team deploy"), conflict.out);
   if (command === expectedPreview && process.platform !== "win32") {
-    const preview = spawnSync("sh", ["-c", `cli=$1\ncotal() { "$0" "$cli" "$@"; }\n${command}`, TSX, CLI],
+    const preview = spawnSync("sh", ["-c", `cli=$1\ncotal() { "$0" "$cli" "$@"; }\n${command}`, process.execPath, CLI],
       { cwd: s, env, encoding: "utf8", timeout: 180_000 });
     check("the printed command previews the intended manifest in a POSIX shell",
       preview.status === 0 && preview.stdout.includes("#alerts"), preview);
@@ -281,12 +320,23 @@ try {
   const booted = cotal(b, "team", "boot", "boot.yaml");
   check("team boot starts the fresh stack in b, and its receipt names the auth mode in words",
     booted.status === 0 && /Auth mode:\s+static auth\n/.test(booted.stdout) && !booted.stdout.includes("static-auth"), booted.out.slice(-1200));
-  const repeat = cotal(b, "team", "boot", "boot.yaml", "--foreground");
+  const bootCommand = booted.stdout.split("\n").map((line) => line.trim()).find((line) => /^(?:pnpm )?cotal team show /.test(line))?.split(/ {2,}/)[0] ?? "";
+  const bootArgs = bootCommand.replace(/^(?:pnpm )?cotal /, "").split(" ");
+  const bootId = bootArgs[2] ?? "";
+  const repeat = cotal(c, "team", "boot", "../boot project/boot.yaml", "--foreground");
+  const repeatPreview = repeat.stderr.split("`").find((part) => part.startsWith("cd ") && part.includes("--dry-run"));
+  const scopedPreview = `cd ${shellPath(realpathSync(b))} && cotal down --space ${SPACE_B} --dry-run`;
   check("repeating the actual boot refuses without recommending deployment of the cards it seeded",
-    repeat.status === 2 && repeat.stderr.includes("LIFECYCLE_BLOCKED") && repeat.stderr.includes(`cotal service --space ${SPACE_B}`) && repeat.stderr.includes("cotal down --dry-run") && !repeat.stderr.includes("team deploy"), repeat.out);
+    repeat.status === 2 && repeat.stderr.includes("LIFECYCLE_BLOCKED") && repeat.stderr.includes(`cotal service --space ${SPACE_B}`) && repeatPreview === scopedPreview &&
+      repeat.stderr.includes(`cd ${shellPath(realpathSync(b))} && cotal up --space ${SPACE_B}`) && !repeat.stderr.includes("team deploy"), repeat.out);
+  if (repeatPreview === scopedPreview && process.platform !== "win32") {
+    assertSmokeSandboxDown(sandboxes.get(b), ["down", "--space", SPACE_B, "--dry-run"], { cwd: b, env });
+    const replayed = spawnSync("sh", ["-c", `cli=$1\ncotal() { "$0" "$cli" "$@"; }\n${repeatPreview}`, process.execPath, CLI],
+      { cwd: c, env, encoding: "utf8", timeout: 180_000 });
+    check("the printed stop preview works from the sibling and targets the running stack", replayed.status === 0 && replayed.stdout.includes(SPACE_B), replayed);
+  }
   check("the printed inspection and stop preview both work while the booted stack runs",
     cotal(b, "service", "--space", SPACE_B).status === 0 && cotal(b, "down", "--dry-run").status === 0);
-  const bootId = /cotal team show ([0-9a-f]{16})/.exec(booted.stdout)?.[1] ?? "";
   const freshShow = cotal(b, "team", "show", bootId);
   check("team show <boot id> names its kind, state, next action and auth mode in words",
     /Kind:\s+fresh boot\n/.test(freshShow.stdout) && /Auth mode:\s+static auth\n/.test(freshShow.stdout) && /Recorded state:\s+boot returned\n/.test(freshShow.stdout) &&
@@ -454,13 +504,32 @@ try {
         run.status === 2 && envelope(run.stdout)?.error?.code === "CONFLICT", run.out);
     }
   }
-  manifest("audit.yaml", OTHER, { "audit-team": "    deliveryClass: live\n" }, { ...openOptions, server: SERVER_OTHER.replace("nats:", "NATS:") + "/" });
+  manifest("audit.yaml", OTHER, { "audit-team": "    deliveryClass: live\n" }, { ...openOptions, head: "defaults: {replay: false}\n" });
+  const defaultsRefused = cotal(c, "team", "deploy", "audit.yaml", "--json");
+  const defaultsError = envelope(defaultsRefused.stdout)?.error;
+  check("channel-only apply still refuses a declared default of false",
+    defaultsRefused.status === 2 && defaultsError?.code === "UNSUPPORTED" && defaultsError.message?.includes("space defaults") === true, defaultsRefused.out);
+
+  manifest("audit.yaml", OTHER, { "audit-team": "    deliveryClass: live\n" }, { ...openOptions, head: "defaults: {}\n", server: SERVER_OTHER.replace("nats:", "NATS:") + "/" });
+  const foreignFile = "../open project/audit.yaml", registeredRoot = realpathSync(c);
+  const checkoutHint = `Apply from the registered project root ${registeredRoot}.`;
+  const siblingPreview = cotal(s, "team", "deploy", foreignFile, "--dry-run", "--plain");
+  check("a sibling checkout can preview the channel and sees where apply must run",
+    reported(siblingPreview, checkoutHint) && /New channel candidates:\s+1/.test(siblingPreview.stdout), siblingPreview.out);
+  const siblingApply = cotal(s, "team", "deploy", foreignFile, "--space", OTHER, "--json");
+  const checkoutError = envelope(siblingApply.stdout)?.error;
+  check("a sibling checkout still refuses apply and gives an exact, quoted retry",
+    siblingApply.status === 2 && checkoutError?.code === "CONFLICT" && checkoutError.message?.includes(registeredRoot) === true &&
+    checkoutError.remedy === `cd '${registeredRoot}' && cotal team deploy '${join(c, "audit.yaml")}' --space ${OTHER} --json`, siblingApply.out);
+  const localPreview = cotal(c, "team", "deploy", "audit.yaml", "--dry-run", "--plain");
+  check("the registered checkout still previews without a checkout hint",
+    localPreview.status === 0 && !localPreview.out.includes(checkoutHint) && /New channel candidates:\s+1/.test(localPreview.stdout), localPreview.out);
   check("team deploy preview accepts an equivalent broker URL", answered(cotal(c, "team", "deploy", "audit.yaml", "--dry-run", "--json")));
   const openApplied = cotal(c, "team", "deploy", "audit.yaml", "--json");
   const openResult = envelope(openApplied.stdout);
-  check("team deploy accepts an equivalent broker URL and creates the live card on the open mesh",
+  check("team deploy accepts empty defaults and an equivalent broker URL and creates the live card on the open mesh",
     openApplied.status === 0 && openResult?.outcome === "ok" && Array.isArray(openResult.result?.createdChannels) &&
-      openResult.result.createdChannels.some((card) => card.name === "audit-team"), openApplied.out);
+      openResult.result.createdChannels.some((card) => card.name === "audit-team" && Number.isInteger(card.revision)), openApplied.out);
   const openId = openResult?.result?.deploymentId;
   if (typeof openId !== "string" || !/^[a-f0-9]{16}$/.test(openId)) throw new Error("the open deployment did not return a full ID");
   manifest("audit.yaml", OTHER, { "audit-team": "    deliveryClass: live\n" }, { ...openOptions, open: true });
@@ -483,6 +552,9 @@ try {
     JSON.stringify(recordedReceipt?.createdChannels) === JSON.stringify(openResult?.result?.createdChannels) &&
     envelope(cotal(c, "use", "--json").stdout)?.result?.current === SPACE_B, deploymentShow.out);
   checkRemovalConfirmation(openId);
+  const afterRemovalSelection = envelope(cotal(c, "use", "--json").stdout)?.result;
+  check("removal scoped to the deployment space leaves the saved selection unchanged",
+    afterRemovalSelection?.current === SPACE_B, afterRemovalSelection);
 
   const openDown = cotal(c, "down", "--yes");
   if (openDown.status === 0) openUp = false;
@@ -501,6 +573,28 @@ try {
       answered(bootUnreadable) && envelope(bootUnreadable.stdout)?.warnings?.some((warning) => warning.code === "ADDITIVE_ATTEMPT_REMAINS" &&
         JSON.stringify(warning.target.deploymentIds) === "[]" && JSON.stringify(warning.target.unreadable) === JSON.stringify([unreadable])) === true, bootUnreadable.out);
   } finally { rmSync(unreadable); }
+
+  console.log("\nN. the printed launch-summary command pins the boot space");
+  const selected = cotal(s, "use", SPACE);
+  check("the saved selection differs from the boot space", selected.status === 0 &&
+    envelope(cotal(b, "use", "--json").stdout)?.result?.current === SPACE, selected.out);
+  try {
+    const replay = cotal(b, ...bootArgs);
+    check("the printed launch-summary command finds the boot without changing the saved selection",
+      /^[0-9a-f]{16}$/.test(bootId) && ["cotal", "pnpm cotal"].some((launcher) => bootCommand === `${launcher} team show ${bootId} --space ${SPACE_B}`) &&
+      replay.status === 0 && /^\s+Deployment:\s+([0-9a-f]{16})$/m.exec(replay.stdout)?.[1] === bootId &&
+      envelope(cotal(b, "use", "--json").stdout)?.result?.current === SPACE, { command: bootCommand, replay: replay.out });
+  } finally { cotal(b, "use", SPACE_B); }
+
+  const summaries = join(c, ".cotal", "team-summaries");
+  mkdirSync(summaries, { recursive: true, mode: 0o700 });
+  copyFileSync(join(b, ".cotal", "team-summaries", `${bootId}.json`), join(summaries, `${bootId}.json`));
+  for (const args of [["show", bootId], ["remove", bootId, "--dry-run"]]) {
+    const copied = cotal(b, "team", ...args, "--space", OTHER, "--json");
+    const error = envelope(copied.stdout)?.error;
+    check(`team ${args[0]} of a copied summary points status at the folder and space holding the copy`,
+      copied.status === 2 && error?.code === "CONFLICT" && error.remedy?.includes(`\`cd '${realpathSync(c)}' && cotal status --space=${OTHER}\``) === true, copied.out);
+  }
 } finally {
   if (openUp) {
     const down = cotal(c, "down", "--yes");

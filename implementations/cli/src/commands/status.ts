@@ -161,7 +161,12 @@ async function folderSpacesOffline(cwd: string, values: FlagValues<typeof status
 
 /** Named-agent and infrastructure inputs choose different reads. */
 export function validateStatusArguments(args: ParsedArgs): void {
-  presentationOf(args.values as FlagValues<typeof statusFlags>);
+  const values = args.values as FlagValues<typeof statusFlags>;
+  if (!args.positionals.length && values.components && (values.json || values.plain || values.all))
+    throw new CommandFailure("refused", "USAGE_INVALID", "--components checks the selected mesh and writes its own records - it takes no --json, --plain or --all", {
+      remedy: `run ${values.server !== undefined && brokerAddressForDisplay(values.server) !== values.server ? "the same command" : codeSpan(onRerun(`${displayCmd()} status --components`, values, [...(values.wide ? ["--wide"] : []), ...(values.verbose ? ["--verbose"] : [])]))} without --json, --plain or --all`,
+    });
+  presentationOf(values);
   if (args.positionals.length > 1 || args.positionals.length && !args.positionals[0]?.trim())
     throw new CommandFailure("refused", "USAGE_INVALID", "status takes at most one agent name");
   if (args.positionals.length && (args.values.all || args.values.components || args.values.wide || args.values.verbose))
@@ -185,10 +190,6 @@ export async function status(args: ParsedArgs): Promise<void> {
   if (args.positionals.length) return agentStatus(args);
   const values = args.values as FlagValues<typeof statusFlags>;
   const presentation = presentationOf(values);
-  if (values.components && (presentation !== "rich" || values.all))
-    throw new CommandFailure("refused", "USAGE_INVALID", "--components checks the selected mesh and writes its own records - it takes no --json, --plain or --all", {
-      remedy: `run ${values.server !== undefined && brokerAddressForDisplay(values.server) !== values.server ? "the same command" : codeSpan(onRerun(`${displayCmd()} status --components`, values, [...(values.wide ? ["--wide"] : []), ...(values.verbose ? ["--verbose"] : [])]))} without --json, --plain or --all`,
-    });
   const cwd = process.cwd();
   const root = findCotalRoot(cwd);
   const checks = await registryFallbackChecks(root, values);
@@ -326,7 +327,7 @@ export async function status(args: ParsedArgs): Promise<void> {
       recovery, stoppedForeignListener,
     }),
   );
-  if (values.components) await printComponentHealth(selected, store, target, meshes);
+  if (values.components) await printComponentHealth(selected, store, target, meshes, recovery && !recoveringOtherSpace ? recovery : selectedHints[0]);
 }
 
 /** Why this account cannot list or search `root`, or undefined when it can. */

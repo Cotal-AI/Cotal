@@ -42,7 +42,7 @@ interface Envelope {
   schemaVersion: number;
   outcome: string;
   target: { space?: string; name?: string; post?: string[] | null; file?: string } | null;
-  result?: { stored?: boolean; sender?: { principal: string } };
+  result?: { stored?: boolean; messageId?: string; sender?: { principal: string } };
   error?: { code: string; message?: string; remedy?: string };
 }
 
@@ -78,7 +78,7 @@ const run = (args: string[], cwd = root, shell = false) => {
   return { status: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? "", envelope };
 };
 const shown = (r: ReturnType<typeof run>) => ({ status: r.status, stdout: r.stdout.slice(0, 600), stderr: r.stderr.slice(0, 600) });
-const retryFileSend = (refusal: ReturnType<typeof run>, cwd: string, body: string) => {
+const retryBodySend = (refusal: ReturnType<typeof run>, cwd: string, body: string) => {
   const command = /`cotal (send [^`]+) "<message>"`/.exec(refusal.envelope?.error?.remedy ?? "")?.[1];
   if (!command) throw new Error(`missing send retry: ${JSON.stringify(shown(refusal))}`);
   return run(["-c", `exec "$0" "$1" ${command} "$2"`, process.execPath, BIN, body], cwd, true);
@@ -234,7 +234,7 @@ try {
   const withCreds = ["send", "-c", "general", "--space", space, "--server", servers, "--creds", quotedCreds, "--json"];
   const expectedSender = run([...withCreds, "credential control"]).envelope?.result?.sender?.principal;
   const missingWithCreds = run([...withCreds, "--file", "missing.txt"]);
-  const retriedWithCreds = retryFileSend(missingWithCreds, root, "credential retry");
+  const retriedWithCreds = retryBodySend(missingWithCreds, root, "credential retry");
   check("file retry quotes the credential path and publishes as that credential", missingWithCreds.envelope?.error?.code === "TARGET_NOT_FOUND"
     && retriedWithCreds.status === 0 && retriedWithCreds.envelope?.result?.stored === true
     && expectedSender !== undefined && retriedWithCreds.envelope.result.sender?.principal === expectedSender, { refusal: shown(missingWithCreds), retry: shown(retriedWithCreds), expectedSender });
@@ -259,7 +259,7 @@ try {
   recordMesh({ space: openSpace, server: openServers, root: openRoot, mode: "open", ts: new Date().toISOString() });
   const otherSpace = `${openSpace}-other`;
   const missing = run(["send", "--server", openServers, "--space", otherSpace, "-c", "general", "--file", "missing.txt", "-j"], openRoot);
-  const retried = retryFileSend(missing, openRoot, "file retry");
+  const retried = retryBodySend(missing, openRoot, "file retry");
   const emptyFile = "./message.txt";
   writeFileSync(join(openRoot, emptyFile), "");
   const emptyBody = run(["send", "--server", openServers, "--space", otherSpace, "-c", "general", "--file", emptyFile, "--json"], openRoot);
@@ -268,7 +268,7 @@ try {
       && emptyBody.envelope.target?.space === otherSpace && emptyBody.envelope.target.file === emptyFile
       && emptyBody.envelope.error?.code === "USAGE_INVALID" && emptyBody.envelope.error.message?.includes(`"${emptyFile}" is empty`) === true
       && emptyBody.envelope.error.remedy?.includes("write a nonempty message in the file") === true, shown(emptyBody));
-  const emptyRetry = retryFileSend(emptyBody, openRoot, "empty file retry");
+  const emptyRetry = retryBodySend(emptyBody, openRoot, "empty file retry");
   const targetHistory = run(["history", "general", "--server", openServers, "--space", otherSpace, "--json"], openRoot);
   const folderHistory = run(["history", "general", "--json"], openRoot);
   check("each printed file retry returns a JSON storage receipt and publishes only to the explicit space", missing.status === 2 && missing.envelope?.error?.code === "TARGET_NOT_FOUND"
@@ -278,6 +278,12 @@ try {
     && folderHistory.status === 0 && folderHistory.stdout.includes('"text":"first-open"') && !folderHistory.stdout.includes('file retry'),
     { refusal: shown(missing), retry: shown(retried), emptyRetry: shown(emptyRetry), target: shown(targetHistory), folder: shown(folderHistory) });
   const noBody = run(["send", "--server", openServers, "--space", otherSpace, "-c", "general", "--json"], openRoot);
+  const bodyRetry = retryBodySend(noBody, openRoot, "missing body retry");
+  check("following the printed missing-body retry returns a JSON storage receipt for the explicit space",
+    noBody.status === 1 && noBody.envelope?.outcome === "refused" && noBody.envelope.error?.code === "USAGE_INVALID"
+    && bodyRetry.status === 0 && bodyRetry.envelope?.schemaVersion === 1 && bodyRetry.envelope.target?.space === otherSpace
+    && bodyRetry.envelope.result?.stored === true && !!bodyRetry.envelope.result.messageId,
+    { refusal: shown(noBody), retry: shown(bodyRetry) });
   const invalidServer = run(["send", "--server", "nats://fixture-user:fixture-secret@127.0.0.1:4222", "-c", "general", "--json"], openRoot);
   check("body grammar remedies keep explicit targets but do not print credentials embedded in an invalid URL",
     noBody.status === 1 && noBody.envelope?.error?.remedy?.includes(`--space ${otherSpace} --server ${openServers}`) === true

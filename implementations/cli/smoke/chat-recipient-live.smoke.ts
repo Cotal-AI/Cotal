@@ -23,19 +23,20 @@ const env: Record<string, string> = {};
 for (const [key, value] of Object.entries(process.env)) if (value !== undefined && !key.startsWith("COTAL_")) env[key] = value;
 Object.assign(env, { HOME: home, COTAL_HOME: home, XDG_CONFIG_HOME: configDir, COTAL_SKIP_CONNECTOR_SEED: "1", TERM: "xterm-256color", FORCE_COLOR: "0" });
 const { check, finish } = createSuite();
-const cli = (...args: string[]) => {
-  const options = { cwd: root, env, encoding: "utf8" as const, timeout: 120_000 };
+const cliAt = (cwd: string, ...args: string[]) => {
+  const options = { cwd, env, encoding: "utf8" as const, timeout: 120_000 };
   assertSmokeSandboxDown(anchor, args, options);
   return spawnSync(process.execPath, ["--import", import.meta.resolve("tsx"), COTAL, ...args], options);
 };
+const cli = (...args: string[]) => cliAt(root, ...args);
 async function until(done: () => boolean, ms = 30_000): Promise<boolean> {
   for (const start = Date.now(); Date.now() - start < ms; await wait(100)) if (done()) return true;
   return done();
 }
 const sessions: { name: string; pty: Pty; raw: string; exit: number | undefined }[] = [];
-function open(name: string, server?: string, channel = "general", cols = 120, rows = 40) {
-  const pty = cotalPty(["chat", channel, "--name", name, ...(server ? ["--server", server] : [])], {
-    cwd: root, env: { ...env, CI: "false", CONTINUOUS_INTEGRATION: "false" }, cols, rows,
+function open(name: string, server?: string, channel = "general", cols = 120, rows = 40, cwd = root, space?: string) {
+  const pty = cotalPty(["chat", channel, "--name", name, ...(server ? ["--server", server] : []), ...(space ? ["--space", space] : [])], {
+    cwd, env: { ...env, CI: "false", CONTINUOUS_INTEGRATION: "false" }, cols, rows,
   });
   const session = { name, pty, raw: "", exit: undefined as number | undefined };
   pty.onData((data) => { session.raw += data; });
@@ -67,7 +68,7 @@ function history(label: string, ...args: string[]): string {
 }
 
 async function historyViewport(): Promise<void> {
-  const channel = "viewport";
+  const channel = "auditviewport";
   const setup = cli("channel", "set", channel, "--no-replay");
   if (setup.status !== 0) throw new Error(setup.stderr);
   const writer = spawnSync(process.execPath, ["--import", import.meta.resolve("tsx"), COTAL, "chat", channel, "--stdio", "--name", "writer"], {
@@ -77,7 +78,16 @@ async function historyViewport(): Promise<void> {
     })).join("\n") + "\n",
   });
   if (writer.status !== 0 || (writer.stdout.match(/"outcome":"stored"/g) ?? []).length !== 25) throw new Error(writer.stdout + writer.stderr);
-  const reader = open("reader", undefined, channel, 80, 24);
+  const other = join(home, "other-project");
+  mkdirSync(other);
+  const prepared = cliAt(other, "space", "create", "other", "--root", ".");
+  if (prepared.status !== 0) throw new Error(prepared.stderr + prepared.stdout);
+  const selected = cliAt(other, "use", "other");
+  if (selected.status !== 0) throw new Error(selected.stderr + selected.stdout);
+  const unscoped = cliAt(other, "history", `#${channel}`, "--plain");
+  check("history without a space targets the unstarted project",
+    unscoped.status === 2 && /TARGET_UNAVAILABLE/.test(unscoped.stdout + unscoped.stderr), unscoped.stdout + unscoped.stderr);
+  const reader = open("reader", undefined, channel, 80, 24, other, "target-history");
   if (!await until(() => clean(reader.raw).includes("Enter send"))) throw new Error("history reader did not open the terminal composer");
   const initial = await screen(reader.raw, 80, 24);
   check("the terminal shows no overflow notice when the transcript fits", !/earlier rows? hidden/.test(initial), initial);
@@ -85,21 +95,25 @@ async function historyViewport(): Promise<void> {
   await until(() => reader.raw.includes("viewport-marker-25"));
   const latest = await screen(reader.raw, 80, 24);
   const visible = latest.match(/viewport-marker-\d\d/g) ?? [];
-  check("overflowing history counts the hidden rows and names the channel history command",
-    visible.length === 16 && visible[0] === "viewport-marker-10" && visible.at(-1) === "viewport-marker-25"
-    && latest.includes("10 earlier rows hidden. See `cotal history '#viewport'`"), latest);
-  const retained = history("viewport-retained", `#${channel}`);
-  check("the suggested command reads all 25 retained messages", (retained.match(/viewport-marker-\d\d/g) ?? []).length === 25, retained);
+  const hint = /^(\d+) earlier rows hidden\. See\s+`(?:pnpm )?cotal history '(#auditviewport)' --space (target-history)`$/m.exec(latest);
+  check("overflowing history shows the hidden count and a complete command scoped to the chat mesh",
+    hint !== null && Number(hint[1]) + visible.length === 26 && visible.at(-1) === "viewport-marker-25", latest);
+  if (hint) {
+    const retained = cliAt(other, "history", hint[2]!, "--space", hint[3]!, "--plain");
+    check("the suggested history arguments read all 25 retained messages from the other project",
+      retained.status === 0 && (retained.stdout.match(/viewport-marker-\d\d/g) ?? []).length === 25, retained.stdout + retained.stderr);
+  }
   reader.pty.write("\t");
   if (!await until(() => reader.raw.includes("Enter choose"))) throw new Error("history reader did not open the recipient picker");
   await line(reader, "@ana");
   const directed = await screen(reader.raw, 80, 24);
-  check("the overflowing transcript names DM history when the recipient is a DM", directed.includes("See `cotal history --dms`"), directed);
+  check("the overflowing transcript names scoped DM history when the recipient is a DM",
+    /See\s+`(?:pnpm )?cotal history --dms --space target-history`/.test(directed), directed);
 }
 
 try {
   const port = await freePort();
-  const up = cli("up", "--detach", "--server", `nats://127.0.0.1:${port}`);
+  const up = cli("up", "--detach", "--space", "target-history", "--server", `nats://127.0.0.1:${port}`);
   writeFileSync(join(evidence, "up.txt"), `status=${up.status}\n${up.stdout}\n${up.stderr}`);
   if (up.status !== 0) throw new Error(`isolated stack failed: ${up.stderr}`);
   if (!await until(() => cli("ps").status === 0)) throw new Error("isolated manager did not answer");

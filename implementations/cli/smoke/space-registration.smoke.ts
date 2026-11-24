@@ -67,7 +67,7 @@ if (!existsSync(BIN)) {
 const home = mkdtempSync(join(tmpdir(), "cotal-space-registration-"));
 // Set before the workspace is imported: it reads COTAL_HOME on each call.
 process.env.COTAL_HOME = join(home, ".cotal");
-const { MANAGER_PIDFILE, cacheLocalProcess, canonicalLocalProcessPath, clearCurrent, extensionsManifestPath, findMesh, findPreparedSpace, getCurrent, meshesDir, preparedSpacesDir, recordMesh, recordPreparedSpace, removeMesh, removePreparedSpace, resolveOnPath, saveExtensionsManifest, setCurrent, setAdoptedCurrent, readCurrentSelection, shellPath, spaceSegment } = await import("@cotal-ai/workspace");
+const { MANAGER_PIDFILE, cacheLocalProcess, canonicalLocalProcessPath, clearCurrent, extensionsManifestPath, findMesh, findPreparedSpace, getCurrent, meshFile, meshesDir, preparedSpacesDir, recordMesh, recordPreparedSpace, removeMesh, removePreparedSpace, resolveOnPath, saveExtensionsManifest, setCurrent, setAdoptedCurrent, readCurrentSelection, shellPath, spaceSegment } = await import("@cotal-ai/workspace");
 const { userExchangeIssuer } = await import("../src/commands/meshes-add.js");
 const { processServiceHost, requireProcessIdentity, serviceInstanceStore } = await import("../src/lib/service-instances.js");
 await import("../src/lib/broker-service.js");
@@ -1763,13 +1763,13 @@ if (process.platform === "linux") {
     stoppedList.env?.result.prepared.some((p: { space: string; state: string; lastOperation: unknown }) => p.space === "demo" && p.state === "stopped" && p.lastOperation === "`cotal down`, completed")
       && /^Prepared spaces$/m.test(stoppedListHuman.stdout) && /demo \(selected\) +stopped - `cotal down`, completed/.test(stoppedListHuman.stdout), { json: stoppedList.env?.result.prepared, human: stoppedListHuman.stdout });
   const stoppedShow = await json(["space", "show"], fresh), stoppedShowHuman = await run(["space", "show", "--plain"], {}, fresh);
-  check("...space show gives the same state and names cotal up again in its root",
+  check("...space show gives the same state and names cotal up --no-manager in its root",
     stoppedShow.env?.result.state === "stopped" && stoppedShow.env.result.lastOperation === "`cotal down`, completed"
-      && /^broker: +stopped - `cotal down`, completed$/m.test(stoppedShowHuman.stdout) && stoppedShowHuman.stdout.includes(`start it again with \`${launcher} up\` in ${fresh}`), { json: stoppedShow.env?.result, human: stoppedShowHuman.stdout });
+      && /^broker: +stopped - `cotal down`, completed$/m.test(stoppedShowHuman.stdout) && stoppedShowHuman.stdout.includes(`start it again with \`${launcher} up --no-manager\` in ${fresh}`), { json: stoppedShow.env?.result, human: stoppedShowHuman.stdout });
   const stoppedUse = await json(["use"]), stoppedUseHuman = await run(["use", "--plain"]);
   check("...and use reports it as stopped, not as prepared and not started",
     stoppedUse.env?.result.preparedState === "stopped" && stoppedUse.env.result.lastOperation === "`cotal down`, completed"
-      && stoppedUseHuman.stdout.includes(`stopped; its last operation, \`cotal down\`, completed - start it again with \`cotal up\` in ${fresh}`) && !/not started/.test(stoppedUseHuman.stdout), { json: stoppedUse.env?.result, human: stoppedUseHuman.stdout });
+      && stoppedUseHuman.stdout.includes(`stopped; its last operation, \`cotal down\`, completed - start it again with \`cotal up --no-manager\` in ${fresh}`) && !/not started/.test(stoppedUseHuman.stdout), { json: stoppedUse.env?.result, human: stoppedUseHuman.stdout });
   const selectStopped = await json(["use", "demo"], fresh);
   const besideStopped = await run(["meshes", "add", "beside-stopped", "--server", DEAD, "--root", root, "--mode", "open", "--force"], {}, fresh);
   const stillStopped = await json(["use"], fresh);
@@ -1886,6 +1886,10 @@ if (process.platform === "linux") {
   mkdirSync(goneRoot);
   await json(["space", "create", "gone"], goneRoot);
   rmSync(goneRoot, { recursive: true });
+  const goneAdd = await json(["space", "add", "gone", "--server", DEAD, "--root", projectRoot("remote-registration"), "--force", "--yes"]);
+  const goneRemedy = goneAdd.env?.error?.remedy ?? "";
+  check("adding a prepared name from another root names the missing project to restore or the registration to forget",
+    refused(goneAdd, 2, "CONFLICT") && goneRemedy.includes("restore its project folder first") && goneRemedy.includes(goneRoot) && goneRemedy.includes("--space gone") && goneRemedy.includes("space forget gone") && findPreparedSpace("gone")?.root === goneRoot && findMesh("gone") === undefined, shown(goneAdd));
   const goneTarget = await json(["who", "--space", "gone"]);
   check("a prepared space whose folder was deleted is TARGET_UNAVAILABLE, saying the folder is gone and naming space forget",
     refused(goneTarget, 2, "TARGET_UNAVAILABLE") && (goneTarget.env?.error?.message ?? "").includes(`${goneRoot}, which no longer exists`) && (goneTarget.env?.error?.remedy ?? "").includes("cotal space forget gone"), shown(goneTarget));
@@ -2043,6 +2047,31 @@ if (process.platform === "linux") {
   mkdirSync(typo);
   const created = await run(["up", "-f", "cotal.yaml", "--dry-run", "--store-dir", typo], {}, lastRoot);
   check("the same start with the directory created first is not refused", created.status === 0, shown(created));
+}
+
+if (process.platform !== "win32" && process.getuid?.() !== 0) {
+  const name = "retained", folder = projectRoot("with space"), file = meshFile(name);
+  const add = await json(["space", "add", name, "--root", folder, "--mode", "open", "--server", DEAD, "--force"], folder);
+  const previous = readCurrentSelection();
+  const selected = await json(["use", name], folder);
+  check("the permission fixture is a valid selected registration", add.status === 0 && selected.status === 0 && getCurrent() === name, shown(selected));
+  const contents = readFileSync(file, "utf8");
+  chmodSync(file, 0o000);
+  try {
+    for (const verb of ["show", "forget"]) {
+      const r = await json(["space", verb, name], folder);
+      check(`space ${verb} refuses a registration it cannot read and tells the user to restore access`,
+        refused(r, 2, "PERMISSION_DENIED") && r.env?.target?.file === file && /^restore read access to /.test(r.env.error?.remedy ?? ""), shown(r));
+    }
+    check("the refused forget keeps the registration and the selection", existsSync(file) && getCurrent() === name);
+  } finally {
+    if (existsSync(file)) chmodSync(file, 0o600);
+  }
+  check("restoring read access recovers the original registration", existsSync(file) && readFileSync(file, "utf8") === contents && (await json(["space", "show", name], folder)).status === 0);
+  const forgotten = await json(["space", "forget", name], folder);
+  check("normal forget can remove the readable registration and clear its selection", forgotten.status === 0 && !existsSync(file) && getCurrent() === undefined, shown(forgotten));
+  if (previous?.source === "explicit") setCurrent(previous.space);
+  else if (previous) setAdoptedCurrent(previous.space);
 }
 
 // ── A regular file where the prepared spaces folder belongs ─────────────────────────────────────────

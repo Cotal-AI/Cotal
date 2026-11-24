@@ -10,6 +10,7 @@ import { MANAGER_ENDPOINT } from "./manager-service-contract.js";
 import { withTimeout } from "./manager-timeout.js";
 import type { Manager } from "./manager.js";
 import type { ManagerConfig } from "./manager-config.js";
+import type { ManagerStartState } from "./manager-start-state.js";
 import type { ManagerParts } from "./manager-parts.js";
 
 /** The delivery-admin `reloadCreds` request bound — STRICTLY GREATER than the daemon's internal
@@ -71,18 +72,13 @@ const STORE_CHALLENGE_TIMEOUT_MS = 5_000;
  *  replaces is the one that runs. */
 export interface CredentialRenewalDeps {
   agents: () => Manager["agents"];
-  auth: () => Manager["auth"];
   ep: () => Manager["ep"];
   leaseStopping: () => Manager["leaseStopping"];
-  managerInstanceId: () => Manager["managerInstanceId"];
-  remoteAuthority: () => Manager["remoteAuthority"];
   runHosting: () => Manager["runHosting"];
-  userMode: () => Manager["userMode"];
   deliveryShard: () => (typeof Manager)["DELIVERY_SHARD"];
   beginLifecycle: (...args: Parameters<Manager["beginLifecycle"]>) => ReturnType<Manager["beginLifecycle"]>;
   dialRemoteStanding: (...args: Parameters<Manager["dialRemoteStanding"]>) => ReturnType<Manager["dialRemoteStanding"]>;
   dialServeConnection: (...args: Parameters<Manager["dialServeConnection"]>) => ReturnType<Manager["dialServeConnection"]>;
-  discardServeCandidate: (...args: Parameters<Manager["discardServeCandidate"]>) => ReturnType<Manager["discardServeCandidate"]>;
   mintAndStageGoalWriter: (...args: Parameters<Manager["mintAndStageGoalWriter"]>) => ReturnType<Manager["mintAndStageGoalWriter"]>;
   mintAndStageSessionLedger: (...args: Parameters<Manager["mintAndStageSessionLedger"]>) => ReturnType<Manager["mintAndStageSessionLedger"]>;
   probeStaticCredential: (...args: Parameters<Manager["probeStaticCredential"]>) => ReturnType<Manager["probeStaticCredential"]>;
@@ -96,18 +92,13 @@ export interface CredentialRenewalDeps {
 export function credentialRenewalDeps(m: Manager): CredentialRenewalDeps {
   return {
     agents: () => m["agents"],
-    auth: () => m["auth"],
     ep: () => m["ep"],
     leaseStopping: () => m["leaseStopping"],
-    managerInstanceId: () => m["managerInstanceId"],
-    remoteAuthority: () => m["remoteAuthority"],
     runHosting: () => m["runHosting"],
-    userMode: () => m["userMode"],
     deliveryShard: () => (m.constructor as typeof Manager).DELIVERY_SHARD,
     beginLifecycle: (...args) => m["beginLifecycle"](...args),
     dialRemoteStanding: (...args) => m["dialRemoteStanding"](...args),
     dialServeConnection: (...args) => m["dialServeConnection"](...args),
-    discardServeCandidate: (...args) => m["discardServeCandidate"](...args),
     mintAndStageGoalWriter: (...args) => m["mintAndStageGoalWriter"](...args),
     mintAndStageSessionLedger: (...args) => m["mintAndStageSessionLedger"](...args),
     probeStaticCredential: (...args) => m["probeStaticCredential"](...args),
@@ -120,7 +111,7 @@ export function credentialRenewalDeps(m: Manager): CredentialRenewalDeps {
 /** Renewal of the manager's own standing credentials: the delivery daemon's reload, the remote
  *  standing bundle, and the pushes of renewed credentials to the live connections. */
 export class CredentialRenewal {
-  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: CredentialRenewalDeps, private readonly parts: Pick<ManagerParts, "goalWriter" | "servePlane">) {}
+  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: CredentialRenewalDeps, private readonly parts: Pick<ManagerParts, "brokerTransport" | "goalWriter" | "servePlane">, private readonly state: ManagerStartState) {}
 
   /** Named identity of {@link ManagerConfig.secrets}: the same coordinate the delivery daemon must reload from.
    *  Set at construction for an injected store; the workspace store is named on first challenge. */
@@ -156,17 +147,16 @@ export class CredentialRenewal {
   // The Manager members these bodies use, under their Manager names. Each reads or writes through
   // its dep at use.
   private get agents() { return this.deps.agents(); }
-  private get auth() { return this.deps.auth(); }
+  private get auth() { return this.state.auth; }
   private get ep() { return this.deps.ep(); }
   private get leaseStopping() { return this.deps.leaseStopping(); }
-  private get managerInstanceId() { return this.deps.managerInstanceId(); }
-  private get remoteAuthority() { return this.deps.remoteAuthority(); }
+  private get managerInstanceId() { return this.state.managerInstanceId!; }
+  private get remoteAuthority() { return this.config.remoteAuthority; }
   private get runHosting() { return this.deps.runHosting(); }
-  private get userMode() { return this.deps.userMode(); }
+  private get userMode() { return this.state.userMode; }
   private beginLifecycle(...args: Parameters<Manager["beginLifecycle"]>): ReturnType<Manager["beginLifecycle"]> { return this.deps.beginLifecycle(...args); }
   private dialRemoteStanding(...args: Parameters<Manager["dialRemoteStanding"]>): ReturnType<Manager["dialRemoteStanding"]> { return this.deps.dialRemoteStanding(...args); }
   private dialServeConnection(...args: Parameters<Manager["dialServeConnection"]>): ReturnType<Manager["dialServeConnection"]> { return this.deps.dialServeConnection(...args); }
-  private discardServeCandidate(...args: Parameters<Manager["discardServeCandidate"]>): ReturnType<Manager["discardServeCandidate"]> { return this.deps.discardServeCandidate(...args); }
   private mintAndStageGoalWriter(...args: Parameters<Manager["mintAndStageGoalWriter"]>): ReturnType<Manager["mintAndStageGoalWriter"]> { return this.deps.mintAndStageGoalWriter(...args); }
   private mintAndStageSessionLedger(...args: Parameters<Manager["mintAndStageSessionLedger"]>): ReturnType<Manager["mintAndStageSessionLedger"]> { return this.deps.mintAndStageSessionLedger(...args); }
   private probeStaticCredential(...args: Parameters<Manager["probeStaticCredential"]>): ReturnType<Manager["probeStaticCredential"]> { return this.deps.probeStaticCredential(...args); }
@@ -755,7 +745,7 @@ export class CredentialRenewal {
       ]), remoteStandingTimeLeft(deadline), "remote manager standing reconnect exceeded its 10000ms aggregate budget; adopted transports keep their native reconnect ownership");
     } catch (e) {
       if (replacement) {
-        await this.discardServeCandidate(replacement.nc, replacement.handle);
+        await this.parts.brokerTransport.discardServeCandidate(replacement.nc, replacement.handle);
       }
       if (adopted) {
         console.error(`! remote manager adopted standing family: ${rejectionText(e)}`);
