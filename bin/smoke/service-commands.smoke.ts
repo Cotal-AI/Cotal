@@ -60,6 +60,8 @@ const same = (line: string, expected: string[]) => check(`--exec ${JSON.stringif
 same("node server.js --port 8080", ["node", "server.js", "--port", "8080"]);
 same("  ./run.sh\t'big world'  ", ["./run.sh", "big world"]);
 same(`echo "a \\"b\\" \\$HOME" it\\'s`, ["echo", `a "b" $HOME`, "it's"]);
+same("echo 'literal $HOME and `text`'", ["echo", "literal $HOME and `text`"]);
+same('echo "literal \\$HOME and \\`text\\`"', ["echo", "literal $HOME and `text`"]);
 same("echo '' x", ["echo", "", "x"]);
 same("echo a#b 'x|y' \"*\"", ["echo", "a#b", "x|y", "*"]);
 for (const [line, what] of [
@@ -259,6 +261,17 @@ try {
 
   const piped = cotal(["service", "add", "hello", "--exec", "echo hi | tee out", "--space", SPACE]);
   check("service add --exec with a pipe refuses and saves nothing", piped.status === 1 && out(piped).includes("an unquoted | would not work") && JSON.stringify(definitions()) === "[]", out(piped));
+  const guidance = "inside --exec, use single quotes for literal text or put a backslash before the character inside double quotes";
+  for (const [line, character] of [['echo "literal $HOME"', "$"], ['echo "literal `text`"', "`"]] as const) {
+    const args = ["service", "add", "quoted-expansion", "--space", SPACE, "--exec", line];
+    const json = cotal([...args, "--json"]), plain = cotal([...args, "--plain"]);
+    const { outcome, error } = JSON.parse(json.stdout);
+    check(`service add refuses ${character} inside double quotes and explains literal quoting in JSON and plain output`,
+      json.status === 1 && outcome === "refused" && error?.code === "USAGE_INVALID" && error.message.includes(`${character} inside double quotes`)
+      && error.remedy?.startsWith(guidance) && error.remedy.includes("sh -c") && plain.status === 1 && out(plain).includes(guidance),
+      { json: out(json), plain: out(plain) });
+  }
+  check("a refused double-quoted expansion saves nothing", serviceDefinitionStore(SPACE).read("quoted-expansion") === undefined);
   const conflicting = cotal(["service", "add", "hello", "--exec", "echo hi", "--preset", "manager", "--space", SPACE]);
   check("service add --exec with --preset refuses and saves nothing", conflicting.status === 1 && JSON.stringify(definitions()) === "[]", out(conflicting));
   const added = cotal(["service", "add", "hello", "--exec", "echo 'big world'", "--space", SPACE]);
