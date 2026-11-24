@@ -74,14 +74,27 @@ const noop = async (): Promise<void> => {};
         assert.ok(!existsSync(join(home, "current-mesh")), "invalid input never selects a space");
       }
     }
-    const invalidWatch = run(["watch", "--view", "bad", "--json"]);
-    assert.equal(invalidWatch.status, 1, invalidWatch.stdout + invalidWatch.stderr);
-    assert.equal(invalidWatch.stderr, "");
-    const watchRecords = invalidWatch.stdout.trimEnd().split("\n").map((line) => JSON.parse(line));
-    assert.deepEqual(watchRecords.map(({ schemaVersion, stream, type }) => [schemaVersion, stream, type]), [[1, "watch", "error"], [1, "watch", "end"]]);
-    assert.equal(watchRecords[0].data.code, "USAGE_INVALID");
-    assert.match(watchRecords[0].data.message, /watch --view takes feed/);
-    assert.equal(watchRecords[1].data.reason, "setup-failed");
+    for (const [flags, requestedSpace, message, remedy] of [
+      [["--view", "bad", "--json"], null, /^watch --view takes feed/],
+      [["--space", "watch-test", "--view", "bad", "--json"], "watch-test", /^watch --view takes feed/],
+      [["-j", "--space"], null, /^--space needs a value$/, "write --space <s>"],
+      [["--space", "--json"], null, /^--space needs a value$/, "write --space <s>"],
+      [["-js"], null, /^--space needs a value$/, "write --space <s>"],
+      [["--json", "--space="], null, /^--space\/-s is empty; name one space$/],
+      [["--json", "-s", "  "], null, /^--space\/-s is empty; name one space$/],
+    ] as const) {
+      const result = run(["watch", ...flags]);
+      const label = JSON.stringify(flags);
+      assert.equal(result.status, 1, `${label}: ${result.stdout}${result.stderr}`);
+      assert.equal(result.stderr, "", label);
+      const records = result.stdout.trimEnd().split("\n").map((line) => JSON.parse(line));
+      assert.deepEqual(records.map(({ schemaVersion, stream, type }) => [schemaVersion, stream, type]), [[1, "watch", "error"], [1, "watch", "end"]], label);
+      assert.deepEqual(records.map(({ target }) => target), [{ requestedSpace }, { requestedSpace }], label);
+      assert.equal(records[0].data.code, "USAGE_INVALID", label);
+      assert.match(records[0].data.message, message, label);
+      if (remedy !== undefined) assert.equal(records[0].data.remedy, remedy, label);
+      assert.equal(records[1].data.reason, "setup-failed", label);
+    }
 
     const upHelp = run(["up", "--help"]);
     assert.equal(upHelp.status, 0, upHelp.stderr);

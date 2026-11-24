@@ -29,7 +29,11 @@ export function validateWatchArguments(args: ParsedArgs): void {
 }
 
 export function watchSetupFailureRecords(args: ParsedArgs, failure?: CommandFailure, space?: string) {
-  const target = { requestedSpace: args.values.space ?? null, ...(space === undefined ? {} : { space }) };
+  const requestedSpace = args.values.space;
+  const target = {
+    requestedSpace: typeof requestedSpace === "string" && requestedSpace.trim() ? requestedSpace : null,
+    ...(space === undefined ? {} : { space }),
+  };
   const reason = failure ? { message: failure.message, ...(failure.remedy === undefined ? {} : { remedy: failure.remedy }) } : { message: "The observer could not establish its authorized view; this is not an empty successful snapshot." };
   return [
     streamRecord("watch", "error", target, { code: failure ? failure.code : "OPERATION_FAILED", ...reason }),
