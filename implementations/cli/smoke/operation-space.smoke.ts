@@ -214,8 +214,8 @@ for (const [argv, rerun] of [
   [["status", "default_agent", "--on", "bad"], "cotal status default_agent --on <instance>"],
   [["stop", "default_agent", "--force", "--space", "elsewhere", "--on", "bad"], "cotal stop default_agent --force --json --space elsewhere --on <instance>"],
   // #7644: ps and models keep the --space and filter they were given.
-  [["ps", "--space", "elsewhere", "--on", "bad"], "cotal ps --space elsewhere --on <instance>"],
-  [["ps", "--slots", "--server", "nats://127.0.0.1:39200", "--on", "bogus"], "cotal ps --slots --server nats://127.0.0.1:39200 --on <instance>"],
+  [["ps", "--space", "elsewhere", "--on", "bad"], "cotal ps --json --space elsewhere --on <instance>"],
+  [["ps", "--slots", "--server", "nats://127.0.0.1:39200", "--on", "bogus"], "cotal ps --slots --json --server nats://127.0.0.1:39200 --on <instance>"],
   [["models", "--harness", "claude", "--on", "bad"], "cotal models --harness claude --on <instance>"],
   [["spawn", "default", "-d", "--on", "bad"], "cotal spawn default -d --json --on <instance>"],
 ] as const) {
@@ -224,6 +224,13 @@ for (const [argv, rerun] of [
   check(`${argv.slice(0, -2).join(" ")} --on bad names ${rerun} and never --on twice`,
     pinned.status === 1 && pinned.envelope?.error?.code === "USAGE_INVALID" && (pinned.envelope.error.remedy ?? "").endsWith(`rerun it as \`${rerun}\``) && !said.includes("--on --on"), shown(pinned));
 }
+const emptyPsPin = cotal("ps", "--slots", "--space", "elsewhere", "--json", "--on=");
+const lookupHint = emptyPsPin.envelope?.error?.message ?? "";
+check("an empty slot pin names the JSON manager lookup and a separate JSON slot retry", emptyPsPin.status === 1
+  && lookupHint.includes("`cotal ps --json --space elsewhere`") && lookupHint.includes("`cotal ps --slots --json --space elsewhere --on <instance>`"), shown(emptyPsPin));
+const widePsPin = cotal("ps", "--wide", "--plain", "--on", "local.U123");
+check("a roster principal leaves the wide plain view on the pin retry", widePsPin.status === 1
+  && widePsPin.stderr.includes("cotal ps --wide --plain --on <instance>"), shown(widePsPin));
 const createPin = cotal("persona", "create", "h1", "--prompt", "keep this definition private", "--on", "bad", "--space", "opsp", "--json");
 check("persona create with a malformed pin tells JSON callers to replace only the original --on value",
   createPin.status === 1 && createPin.envelope?.error?.code === "USAGE_INVALID" &&
