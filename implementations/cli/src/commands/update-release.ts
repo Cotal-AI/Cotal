@@ -4,8 +4,9 @@ import { tmpdir } from "node:os";
 import { isIP, SocketAddress } from "node:net";
 import { join } from "node:path";
 import { oneLine, processStartToken, recordUpdateDeferral } from "@cotal-ai/workspace";
+import { displayRemedy } from "../lib/self-exec.js";
 import { c } from "../ui.js";
-import { type CommandResult, RegistryUnavailable, parseNpmVersion, failure, message } from "./update-process.js";
+import { type CommandResult, RegistryUnavailable, StagingTimeout, parseNpmVersion, failure, message } from "./update-process.js";
 import type { UpdateRuntime } from "./update.js";
 
 export const MISSING_NPM_REMEDY = "Install npm or add it to this command's PATH, then retry.";
@@ -39,7 +40,7 @@ function npmOfflineCacheMiss(result: CommandResult): boolean {
   catch { return false; }
 }
 
-export async function handleLatestVersionFailure(latest: LatestVersionFailure, current: string, rt: UpdateRuntime, unavailable: string, promotionRecovered: boolean): Promise<number> {
+export async function handleLatestVersionFailure(latest: LatestVersionFailure, current: string, rt: UpdateRuntime, unavailable: string, promotionRecovered: boolean, permissionsRestored = false): Promise<number> {
   if (latest.missingNpm) {
     if (rt.env.COTAL_AUTO_UPDATE === "1") recordUpdateDeferral(current, "waiting for npm availability", true);
     rt.err(c.red(`✗ cotal-ai version check failed: ${latest.error}. ${MISSING_NPM_REMEDY}`));
@@ -49,6 +50,7 @@ export async function handleLatestVersionFailure(latest: LatestVersionFailure, c
     if (rt.env.COTAL_AUTO_UPDATE === "1") recordUpdateDeferral(current, "waiting for npm offline mode to be disabled", true);
     rt.onOfflineVersionCheckSkipped?.();
     if (promotionRecovered) rt.out("Completed an interrupted extension promotion.");
+    if (permissionsRestored) rt.out("Restored owner write permission on the Cotal connector configuration; no installed packages were replaced.");
     rt.out(`${latest.error}. The latest-version check was skipped.`);
     return 0;
   }
@@ -57,44 +59,63 @@ export async function handleLatestVersionFailure(latest: LatestVersionFailure, c
     return 1;
   }
   if (rt.env.COTAL_AUTO_UPDATE === "1") recordUpdateDeferral(current, "waiting for registry availability", true);
-  else if (await npmProxyRefused(latest.npmResult, rt.env)) {
-    rt.err("The npm proxy refused the connection (ECONNREFUSED). The update did not start. Check HTTP_PROXY and HTTPS_PROXY, then retry.");
-    return 1;
+  else {
+    const setting = await npmProxyRefusal(latest.npmResult, rt);
+    if (setting === "environment") {
+      rt.err("The npm proxy refused the connection (ECONNREFUSED). The update did not start. Check HTTP_PROXY and HTTPS_PROXY, then retry.");
+      return 1;
+    }
+    if (setting) {
+      rt.out(`The npm proxy refused the connection (ECONNREFUSED). No installed packages were replaced. Check \`${setting}\` in your npm configuration, then retry.`);
+      return 0;
+    }
   }
   rt.out(unavailable);
   return 0;
 }
 
 /** npm gives a generic proxy hint even for direct failures. Match the refused socket instead. */
-async function npmProxyRefused(result: CommandResult, env: NodeJS.ProcessEnv): Promise<boolean> {
-  const httpsProxy = env.https_proxy || env.HTTPS_PROXY;
-  const httpProxy = env.http_proxy || env.HTTP_PROXY;
-  if ((!httpsProxy && !httpProxy) || result.status === null || result.error) return false;
+async function npmProxyRefusal(result: CommandResult, rt: UpdateRuntime): Promise<"environment" | "https-proxy" | "proxy" | undefined> {
+  if (result.status === null || result.error) return;
   let error: { code?: unknown; summary?: unknown } | undefined;
   try { error = JSON.parse(result.stdout)?.error; }
-  catch { return false; }
-  if (error?.code !== "ECONNREFUSED" || typeof error.summary !== "string") return false;
+  catch { return; }
+  if (error?.code !== "ECONNREFUSED" || typeof error.summary !== "string") return;
   const refused = /^(?:FetchError: )?request to (\S+) failed, reason: connect ECONNREFUSED (\S+):(\d+)$/.exec(error.summary);
-  if (!refused) return false;
+  if (!refused) return;
   const [, request, address, port] = refused;
   const registry = URL.parse(request);
-  if (!registry || (registry.protocol !== "https:" && registry.protocol !== "http:") || !isIP(address)) return false;
-  const setting = httpsProxy || (registry.protocol === "http:" ? httpProxy : undefined);
-  const proxy = setting ? URL.parse(setting) : null;
-  if (!proxy || (proxy.protocol !== "http:" && proxy.protocol !== "https:")) return false;
+  if (!registry || (registry.protocol !== "https:" && registry.protocol !== "http:") || !isIP(address)) return;
 
   const portOf = (url: URL) => url.port || (url.protocol === "https:" ? "443" : "80");
-  if (portOf(proxy) !== port) return false;
   const normalize = (ip: string) => isIP(ip) === 6 ? new SocketAddress({ address: ip, family: "ipv6" }).address : ip;
   const matches = async (url: URL) => {
     const host = url.hostname.replace(/^\[|\]$/g, "");
     const addresses = isIP(host) ? [host] : (await lookup(host, { all: true })).map(item => item.address);
     return addresses.some(ip => normalize(ip) === normalize(address));
   };
-  try {
-    // If the registry could have refused the same socket directly, do not blame the proxy.
-    return await matches(proxy) && (portOf(registry) !== port || !await matches(registry));
-  } catch { return false; }
+  const confirmsProxy = async (setting: string | undefined) => {
+    const proxy = setting ? URL.parse(setting) : null;
+    if (!proxy || (proxy.protocol !== "http:" && proxy.protocol !== "https:") || portOf(proxy) !== port) return false;
+    try {
+      // If the registry could have refused the same socket directly, do not blame the proxy.
+      return await matches(proxy) && (portOf(registry) !== port || !await matches(registry));
+    } catch { return false; }
+  };
+  const { https_proxy, HTTPS_PROXY, http_proxy, HTTP_PROXY } = rt.env;
+  if (await confirmsProxy(https_proxy || HTTPS_PROXY || (registry.protocol === "http:" ? http_proxy || HTTP_PROXY : undefined))) return "environment";
+
+  // npm resolves config precedence and redacts the password in its text listing. Its JSON listing
+  // omits authenticated proxy URLs, and commented-out settings are not effective.
+  const config = rt.npm(["config", "list", "--json=false", "--long", "--logs-max=0", "--update-notifier=false"]);
+  if (config.status !== 0 || config.error) return;
+  for (const key of ["https-proxy", "proxy"] as const) {
+    const value = new RegExp(`^${key} = ("[^\\r\\n]*")$`, "m").exec(config.stdout)?.[1];
+    if (!value) continue;
+    try { if (await confirmsProxy(JSON.parse(value))) return key; }
+    catch { return; }
+    return;
+  }
 }
 
 /** Resolve installed first-party surfaces in a disposable prefix, including their npm dependencies. */
@@ -195,8 +216,24 @@ const NETWORK_ERROR_CODE = /^(?:ENETUNREACH|EHOSTUNREACH|ENETDOWN|EHOSTDOWN|ECON
 
 export function registryNetworkFailure(error: unknown): boolean {
   if (error instanceof RegistryUnavailable) return true;
-  const code = /(?:^|\n|^target staging failed: )npm (?:error|ERR!) code ([A-Z_]+)(?:\s|$)/.exec(message(error))?.[1];
+  const detail = error instanceof StagingTimeout ? error.npmOutput : message(error);
+  const code = /(?:^|\n|^target staging failed: )npm (?:error|ERR!) code ([A-Z_]+)(?:\s|$)/.exec(detail)?.[1];
   return code !== undefined && NETWORK_ERROR_CODE.test(code);
+}
+
+export function offlineUpdateMessage(repaired: boolean): string {
+  return repaired ? "The registry cannot be reached; no installed packages were replaced." : "The registry cannot be reached; nothing was changed.";
+}
+
+export function deferStagingFailure(error: unknown, version: string, rt: UpdateRuntime, repaired: boolean): boolean {
+  if ((error instanceof RegistryUnavailable || error instanceof StagingTimeout || message(error).startsWith("target staging failed: ")) && registryNetworkFailure(error)) {
+    recordUpdateDeferral(version, "waiting for registry access", true);
+    rt.out(offlineUpdateMessage(repaired));
+  } else if (error instanceof StagingTimeout) {
+    recordUpdateDeferral(version, error.message, true);
+    rt.out(displayRemedy(`${error.message}. The previous version remains installed. Run \`cotal update --self\` again.`));
+  } else return false;
+  return true;
 }
 
 export function releaseReadError(result: CommandResult, detail: string, { installedSpecs, metadataSpec }: { installedSpecs?: readonly string[]; metadataSpec?: string } = {}): Error {

@@ -980,6 +980,19 @@ const takeoverRun = startedId()!;
   c("ps filters dotted endpoints by their name rather than their wire token",
     filtered?.items?.length === 1 && filtered.items[0]?.runId === rid, filtered);
 
+  const missing = await wf(["resume"], { endpoint, file: PURE, timeout: "5m" }).then(() => undefined, (e: Error) => e);
+  const remedy = isCommandFailure(missing) ? missing.remedy : undefined;
+  const inventory = /`([^`]+)`/.exec(remedy ?? "")?.[1];
+  const listCommand = `run list --local --space ${SPACE} --server ${shellPath(servers)} --endpoint ${endpoint}`;
+  const [, ...listArgs] = ["cotal", "pnpm cotal"].some((cli) => inventory === `${cli} ${listCommand}`)
+    ? execFileSync("bash", ["-c", `printf '%s\\0' ${inventory!.replace(/^.*? run /, "run ")}`], { encoding: "utf8" }).split("\0").slice(0, -1) : [];
+  reset();
+  const listed = run && listArgs.length > 0 && await runWorkflow(parseCommandArgs(run, listArgs)).then(() => true, () => false);
+  c("a missing local resume ID refuses with exit 1 and its remedy finds the same endpoint's run without a manager",
+    isCommandFailure(missing) && missing.code === "USAGE_INVALID" && exitCode(missing.outcome, missing.code) === 1
+      && remedy?.endsWith("Then add a run ID after `run resume` in the original command") === true
+      && listed === true && (process.exitCode ?? 0) === 0 && stateOf(psRow(rid)) === "completed", { missing, remedy, out: captured() });
+
   const origin = join(home, "origin");
   mkdirSync(origin);
   recordPreparedSpace({ space: "origin", root: origin, ts: new Date().toISOString() });
@@ -1144,7 +1157,7 @@ const takeoverRun = startedId()!;
 
 // The sentinel: a skipped block above would exit green while running fewer cells than the suite
 // declares, and a count is the only reader that can see that.
-const DECLARED = 137;
+const DECLARED = 138;
 if (ok + fail !== DECLARED) {
   fail += 1;
   console.error(`  ✗ FAIL: the suite declares ${DECLARED} cells but ran ${ok + fail - 1}`);

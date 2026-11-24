@@ -28,7 +28,7 @@ cotal up -f <cotal.yaml> [--dry-run] [--runtime <name>]
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--server <url>` | auto (free local port) | Listen URL: one `nats://` or `tls://` URL with an IP address and a port, without credentials, path, query or fragment. `up` records and compares it with the scheme in lower case and without a bare trailing `/`, so `NATS://127.0.0.1:<port>/` names the same address as `nats://127.0.0.1:<port>`. A URL with no port is not given the default 4222. Any other value, a host name such as `localhost`, and an IPv6 address, which the stack's own clients cannot reach, refuse `USAGE_INVALID` before anything is written. That refusal gives an example on `127.0.0.1` with the port you passed, and prints no help. With no `--host` the broker binds `127.0.0.1`, so a `--server` naming another IPv4 address refuses `USAGE_INVALID` the same way and names the `--host` to add. A `tls://` address records TLS as required, so without `--tls-cert` and `--tls-key`, or a recorded TLS policy, `up` refuses it `USAGE_INVALID` before anything starts. On a prepared root it refuses `UNSUPPORTED`, exit 2, instead, as the `--tls-cert` row says. A controller stack's first `up` records it, and a later `--server` naming another address refuses `CONFLICT`, naming the recorded address and the bare `cotal up` that starts the stack there. A running space started again from its own project, that folder's subfolders included, at another address refuses `CONFLICT` too: it names the address the space runs at, the bare `cotal up` that reaches it, and the `cotal down` in its root. It does not offer a separate space in the folder, which is that space's own project. No command moves a stack that ran to another address. When another program holds the recorded address, bare `up` refuses too, so this refusal names that address and any process of this account that listens there, and says to stop it before bare `cotal up`. A different `--store-dir` or `--max-file-store` refuses the same way when it cannot be changed, naming the recorded value. A `--host` that differs from the stack's effective bind also refuses, naming that bind. A controller stack's broker also needs an address that is not a wildcard, which `up` checks before it writes the stack journal. With `-f`, it overrides the manifest's `broker.servers` and follows that field's rules instead: a valid URL with no embedded credentials. `up -f` binds a single broker address, so a `--server` or `broker.servers` that lists more than one URL refuses `USAGE_INVALID` before anything is written, naming which of the two lists them |
+| `--server <url>` | auto (free local port) | Listen URL: one `nats://` or `tls://` URL with an IP address and a port, without credentials, path, query or fragment. `up` records and compares it with the scheme in lower case and without a bare trailing `/`, so `NATS://127.0.0.1:<port>/` names the same address as `nats://127.0.0.1:<port>`. A URL with no port is not given the default 4222. Any other value, a host name such as `localhost`, and an IPv6 address, which the stack's own clients cannot reach, refuse `USAGE_INVALID` before anything is written. That refusal gives an example on `127.0.0.1` with the port you passed, and prints no help. With no `--host` the broker binds `127.0.0.1`, so a `--server` naming another IPv4 address refuses `USAGE_INVALID` the same way and names the `--host` to add. A `tls://` address records TLS as required, so without `--tls-cert` and `--tls-key`, or a recorded TLS policy, `up` refuses it `USAGE_INVALID` before anything starts. On a prepared root it refuses `UNSUPPORTED`, exit 2, instead, as the `--tls-cert` row says. A controller stack's first `up` records it, and a later `--server` naming another address refuses `CONFLICT`, naming the recorded address and the bare `cotal up` that starts the stack there. A running space started again from its own project, that folder's subfolders included, at another address refuses `CONFLICT` too: it names the address the space runs at, the bare `cotal up` that reaches it, and the `cotal down` in its root. It does not offer a separate space in the folder, which is that space's own project. No command moves a stack that ran to another address. When another program holds the recorded address, `up` refuses and tells you to free that address. If the listener is not a broker, the retry command keeps `--foreground` and `--no-manager` when you passed them. A different `--store-dir` or `--max-file-store` refuses the same way when it cannot be changed, naming the recorded value. A `--host` that differs from the stack's effective bind also refuses, naming that bind. A controller stack's broker also needs an address that is not a wildcard, which `up` checks before it writes the stack journal. With `-f`, it overrides the manifest's `broker.servers` and follows that field's rules instead: a valid URL with no embedded credentials. `up -f` binds a single broker address, so a `--server` or `broker.servers` that lists more than one URL refuses `USAGE_INVALID` before anything is written, naming which of the two lists them |
 | `--host <host>` | none | Bind host override for a **fresh** broker boot: an IP or hostname only, never a URL (that is `--server`) and never `host:port` (the port comes from `--server` or its default); if you entered a URL or `host:port` here, put the full broker URL in `--server` and the matching local IP alone in `--host`. For example, `--server nats://127.0.0.2:4300 --host 127.0.0.2` binds that address and port. With no `--server`, the broker URL is derived from it, so `--host <addr>` alone is enough to make a mesh reachable at that address; a `--host`/`--server` pair naming different addresses is refused. A wildcard bind (`0.0.0.0`, `::`) keeps a dialable loopback URL. The broker's plaintext websocket and the manager's plain HTTP console bind the same host, so a wildcard bind opens all three listeners on every interface. Each of these refusals, and a concrete IPv6 address, refuses `USAGE_INVALID` (exit 1) before anything is written. Recorded on the mesh and reused by every later manager launch, so a repair or resume keeps remote [`attach`](cli-agent-control.mdx#managed-seats) working. A live refresh (`✓ mesh already running`) does not rewrite `.cotal/auth/server.conf` or rebind nats; stop the broker, then re-run `up --host` |
 | `--space <s>` | the folder's space | Space name, at most 64 characters; a longer one refuses `USAGE_INVALID` before anything is written |
 | `--root <prepared-dir>` | current folder's workspace | Start the project in `<dir>` instead of the folder you run `up` from. `<dir>` must already have its own `.cotal`, which `space create <space> --root <dir>` or an earlier `up` there made. An absent, inherited or symlinked `.cotal`, or the machine's home store, refuses before startup. If the root already hosts a different space, the refusal includes the root in the suggested command for that space. Relative file, restore, channels, TLS and store paths remain relative to the invoking folder. The native `up` selection rule still applies after startup. |
@@ -72,11 +72,12 @@ cotal up -f <cotal.yaml> [--dry-run] [--runtime <name>]
 `cotal up` boots a local nats-server with JetStream and, in auth mode (the default), JWT auth and
 per-agent ACLs. It runs in the background by default and records the mesh so `cotal spawn` from
 any directory can find it; `--detach` explicitly names the same mode. `--foreground` keeps the
-native stack in this terminal. Omit `--json` and `--plain` in foreground mode. For a finite
+native stack in this terminal. Omit `--json` and `--plain` when starting in foreground mode. For a finite
 startup receipt from a controller-owned stack, use `--json` or `--plain` without `--foreground`.
 For a manifest, use `cotal team boot <file> --foreground` in its prepared project. Add `--dry-run`
-to preview terminal custody without starting the stack. If the filename starts with `-`, the retry
-from `up` puts `./` before it, as in `cotal team boot ./-mesh.yaml --foreground --dry-run`.
+to preview terminal custody without starting the stack. The preview retry from `up` keeps `--json`
+or `--plain` when requested. If the filename starts with `-`, the retry puts `./` before it,
+as in `cotal team boot ./-mesh.yaml --foreground --dry-run --json`.
 
 `--open` with `--service-endpoints` or any public exchange flag refuses `USAGE_INVALID` (exit 1)
 before startup. Remove those flags for an open space, or use them with `--user-auth` instead of `--open`.
@@ -141,7 +142,9 @@ with `CONFLICT` and asks for `--space`. With no
 reserved by another registered space, including one whose broker is stopped. It saves the chosen
 address. A later `cotal up` of
 the same space from the same folder starts from the URL that mesh recorded; an explicit `--server`
-stays fail-loud on collision. An address registered for another folder's space refuses `CONFLICT`,
+stays fail-loud on collision. When another program holds the port on an unprepared first start,
+the refusal keeps the launch options in both retries. Use the suggested alternate port, or free
+the original port and retry at the original address. An address registered for another folder's space refuses `CONFLICT`,
 exit 2, unless this `up` takes that space's name over. The refusal names the space and folder;
 registration alone does not say whether the broker is running. `up -f` checks the manifest's
 `broker.servers` or the explicit `--server` against the same registrations. To preview at another
@@ -239,6 +242,8 @@ or deleted. On a retained stack, a clean broker exit after `down` makes `up` exi
 If a controller stack's broker crashes, foreground `up` reports the exit and exits 5. It keeps
 the stack records and releases the foreground hold. Run the repair command printed by `up` to
 restart the same stack. For a broker-only stack, that command includes `--no-manager`.
+Moving the project folder leaves the stack running. If the broker then crashes, foreground `up`
+still exits 5 and tells you to move the project back to its recorded path before running the repair command.
 On a controller stack, Ctrl-C or `SIGTERM` in that terminal runs the same guarded stop as bare
 `cotal down` and exits 130 or 143. If the project folder is moved or deleted, the foreground stop
 uses the same recorded process checks as `cotal down --space <space> --yes` from another folder.
@@ -253,8 +258,9 @@ command there. A hangup while the stack is still
 starting lets the start settle, prints the stop command and exits 129, and leaves what the start left.
 While a foreground `up` holds the stack, it records its process in `.cotal/stack-foreground.hold`,
 and a second foreground `up` on that stack refuses `CONFLICT`, exit 2, names that process, and
-starts nothing. If the journal records a different launching `COTAL_HOME`, the suggested stop and
-retry commands set it explicitly. Run them from the stack's folder. The holding process removes
+starts nothing. The suggested restart keeps `--no-manager` when you requested it. If the journal
+records a different launching `COTAL_HOME`, the suggested stop and retry commands set it explicitly.
+Run them from the stack's folder. The holding process removes
 that record as it exits, a hangup included. A holder that was killed leaves it, and the next
 `cotal down` removes it once that process is gone. A
 foreground `up` on a stack that is already running without such a holder, because a background `up`
@@ -442,7 +448,8 @@ controller. It records its mode, definitions and full instance IDs in the privat
 `--user-auth` that names another mode refuses `CONFLICT`, exit 2, whether the stack runs or not.
 `reset store`, `reset space`, `clean all` and `space forget` all keep the journal, so none of them
 changes the mode. To run another mode, run `cotal space create <space>` in another folder, then
-`cotal up --open` or `cotal up --user-auth` there. If you requested `--no-manager`, both suggested
+`cotal up --open` or `cotal up --user-auth --idp <auth base URL>` there.
+If you requested `--no-manager`, both suggested
 starts keep it so the retry does not add a Manager.
 Static-auth startup prepares trust and configuration, starts
 the broker, initializes native streams, then starts delivery and the optional manager. Open startup
@@ -765,9 +772,10 @@ port. A stack that ran keeps its recorded
 address. On Linux, when nothing listens there and a connection's local end holds the port, the
 refusal says so in place of another process. Only a connection on the bind host's own address or a
 wildcard counts, so one elsewhere on the machine that shares the port number changes nothing. If
-only closed connections in TIME-WAIT hold a controller stack's recorded address, `up` retries the
-bind for up to 65 seconds and starts the broker as soon as it can bind. If that wait expires, or the
-address is not recorded by the controller, `up` refuses and names the step to take.
+only closed connections in TIME-WAIT hold a controller stack's recorded address or the address
+for a legacy foreground start, `up` retries the same bind for up to 65 seconds and starts the broker
+as soon as it can bind. If the wait expires, `up` refuses and names the step to take. Other starts
+refuse without waiting.
 When no member started, the refusal says the stack
 started no member. A text `up` prints one `Starting <definition>` line
 on stderr before each member it starts, with the readiness timeout it waits for. A started stack's

@@ -1,5 +1,5 @@
 import { connectorServers, registry, spawnEnvAllow } from "@cotal-ai/core";
-import type { Connector, CotalConfig, LaunchOpts } from "@cotal-ai/core";
+import type { CommandInput, Connector, CotalConfig, LaunchOpts } from "@cotal-ai/core";
 import { connectorInstallHint, manifestExtensionNames, materializeFromManifest, resolveOnPath } from "@cotal-ai/workspace";
 import type { Manager } from "./manager.js";
 import type { ManagerParts } from "./manager-parts.js";
@@ -100,11 +100,13 @@ export class HarnessResolution {
 
   /** The refusal for a launch choice the connector cannot honour. Spawn and resume both ask before
    *  a seat's launch is built, so a rule changed here holds on both paths. */
-  capabilityRefusal(connector: Connector, launch: { variant?: string; prompt?: string; exact: boolean }): string | undefined {
+  capabilityRefusal(connector: Connector, launch: { variant?: string; prompt?: string; firstCommand?: CommandInput; exact: boolean }): string | undefined {
     if (launch.variant && !connector.supportsModelVariant)
       return `${connector.name} connector does not support model variants (variant)`;
     if (launch.prompt !== undefined && !connector.supportsPrompt)
       return `${connector.name} connector does not support an initial prompt (prompt)`;
+    if (launch.firstCommand && !connector.commands?.targets.includes(launch.firstCommand.target))
+      return `${connector.name} seats run no ${launch.firstCommand.target}s, so a spawn cannot name one as their first command (firstCommand)`;
     if (launch.exact && (!connector.supportsSessionReopen || !connector.supportsSessionContinuation))
       return `${connector.name} connector does not support exact session continuity (continuity: exact)`;
     return undefined;

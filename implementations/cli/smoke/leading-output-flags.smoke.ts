@@ -127,6 +127,33 @@ check("…the same before the raw `start` signpost", rawPlain.status === 1 && /-
 const completed = run(["__complete", "status"]);
 check("control: __complete still completes its own words", completed.status === 0, shown(completed));
 
+const search = ["docs", "--search", "structured output", "--json"];
+for (const flag of ["--no-input", "--no-color"]) {
+  const bad = `${flag}=false`;
+  for (const args of [[bad, ...search], [...search.slice(0, -1), bad, "--json"]]) {
+    const r = run(args);
+    check(`${args.join(" ")} says how to pass the switch`, r.status === 1 && r.stderr === "" &&
+      r.envelope?.command === "docs" && r.envelope.outcome === "refused" && r.envelope.error?.code === "USAGE_INVALID" &&
+      r.envelope.error.message === `${flag} takes no value` && r.envelope.error.remedy === `omit ${flag} or pass it without a value`, shown(r));
+  }
+  const bareSwitch = run([flag, ...search]);
+  const omitted = run(search);
+  check(`passing ${flag} without a value or omitting it runs the same search`, bareSwitch.status === 0 && omitted.status === 0 &&
+    bareSwitch.stderr === "" && omitted.stderr === "" && bareSwitch.envelope?.outcome === "ok" && bareSwitch.stdout === omitted.stdout, shown(bareSwitch));
+}
+
+const malformedText = run(["--no-input=", ...search.slice(0, -1)]);
+check("an empty attached value still gets the switch remedy in text", malformedText.status === 1 && malformedText.stdout === "" &&
+  malformedText.stderr.includes("--no-input takes no value") && malformedText.stderr.includes("omit --no-input or pass it without a value"), shown(malformedText));
+
+const literalGlobal = run([...search, "--", "--no-input=false"]);
+check("after -- an attached global value is still a page word", literalGlobal.status === 1 && literalGlobal.stderr === "" &&
+  literalGlobal.envelope?.error?.message === "give a page or --search, not both", shown(literalGlobal));
+const literalSearch = run(["docs", "--search=--no-input=false", "--json"]);
+check("an attached search value can look like a malformed global flag", literalSearch.status === 0 && literalSearch.envelope?.outcome === "ok", shown(literalSearch));
+const rawGlobal = run(["__complete", "status", "--no-input=false"]);
+check("a command that takes its words raw still accepts the word", rawGlobal.status === 0, shown(rawGlobal));
+
 const undeclared = run(["--json", "ext", "root"]), trailing = run(["ext", "root", "--json"]);
 check("a mode without that output refuses the leading flag as it does after the word", undeclared.status === 1 && /has no --json or --plain/.test(undeclared.stderr) && trailing.status === 1 && /has no --json or --plain/.test(trailing.stderr), { before: shown(undeclared), after: shown(trailing) });
 

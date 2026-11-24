@@ -1030,8 +1030,11 @@ export function folderSpace(cwd: string, { refuseAmbiguous = false } = {}): stri
  *  is the target. */
 export function folderSpaceOverSelection(cwd: string, current: string | null, offline: readonly string[] = []): string | undefined {
   if (current === null || readCurrentSelection()?.source === "explicit") return undefined;
-  const folder = folderSpace(cwd);
-  return folder !== undefined && folder !== current && !offline.includes(folder) ? folder : undefined;
+  const folder = folderSpaces(cwd, loadMeshes());
+  if (!folder || folder.registered.includes(current)) return undefined;
+  const running = folder.registered.filter((space) => !offline.includes(space));
+  const space = running.length === 1 ? running[0] : folder.registered.length === 0 ? unfinishedStackSpace(folder.root) : undefined;
+  return space !== undefined && space !== current && !offline.includes(space) ? space : undefined;
 }
 
 /** The one registration recorded for `root`, if any. A broker that runs several spaces records one

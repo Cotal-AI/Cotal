@@ -525,31 +525,47 @@ try {
   check("the registered checkout still previews without a checkout hint",
     localPreview.status === 0 && !localPreview.out.includes(checkoutHint) && /New channel candidates:\s+1/.test(localPreview.stdout), localPreview.out);
   check("team deploy preview accepts an equivalent broker URL", answered(cotal(c, "team", "deploy", "audit.yaml", "--dry-run", "--json")));
-  const openApplied = cotal(c, "team", "deploy", "audit.yaml", "--json");
-  const openResult = envelope(openApplied.stdout);
+  manifest("host.yaml", OTHER, { "host-team": "    deliveryClass: live\n" }, { ...openOptions, open: true, head: "  host: 127.0.0.1\n" });
+  const hostPreview = envelope(cotal(c, "team", "deploy", "host.yaml", "--dry-run", "--json").stdout);
+  const hostNative = hostPreview?.result?.native as { channels?: { create?: unknown[] } } | undefined;
+  const hostWarning = hostPreview?.warnings?.find((warning) => warning.code === "MANIFEST_WARNING" && warning.message.includes("broker.host"));
+  check("team deploy --dry-run warns that broker.host makes apply refuse and lists no creation candidates",
+    hostPreview?.result?.kind === "additive-team-deploy-preview" && hostNative?.channels?.create?.length === 0 &&
+    hostWarning?.message.includes("Omit broker.host") === true, hostPreview?.warnings);
+  const hostText = cotal(c, "team", "deploy", "host.yaml", "--dry-run");
+  check("the text preview prints the broker.host warning on stderr",
+    hostText.status === 0 && hostText.stderr.includes("! Apply refuses: broker.host declares a broker bind"), hostText.stderr);
+  const hostApply = cotal(c, "team", "deploy", "host.yaml", "--json");
+  const hostRefusal = envelope(hostApply.stdout);
+  check("team deploy still refuses broker.host with UNSUPPORTED and creates no card",
+    hostApply.status === 2 && hostRefusal?.error?.code === "UNSUPPORTED" && hostRefusal.error.message?.includes("broker bind") === true &&
+    !Object.hasOwn((envelope(cotal(c, "channel", "show", "host-team", "--space", OTHER, "--json").stdout)?.result?.registry as { channels?: Record<string, unknown> } | undefined)?.channels ?? {}, "host-team"), hostApply.out);
+  const chosen = cotal(b, "use", SPACE_B);
+  const selection = envelope(cotal(c, "use", "--json").stdout)?.result;
+  check("the saved selection differs from the deployment's space", chosen.status === 0 && selection?.current === SPACE_B && selection.folder === OTHER, selection);
+  const openApplied = cotal(c, "team", "deploy", "audit.yaml", "--space", OTHER, "--plain");
+  const openId = /^\s*Deployment:\s+([a-f0-9]{16})$/m.exec(openApplied.stdout)?.[1];
+  const revision = /^\s*#audit-team\s+(\d+)$/m.exec(openApplied.stdout)?.[1];
   check("team deploy accepts empty defaults and an equivalent broker URL and creates the live card on the open mesh",
-    openApplied.status === 0 && openResult?.outcome === "ok" && Array.isArray(openResult.result?.createdChannels) &&
-      openResult.result.createdChannels.some((card) => card.name === "audit-team" && Number.isInteger(card.revision)), openApplied.out);
-  const openId = openResult?.result?.deploymentId;
-  if (typeof openId !== "string" || !/^[a-f0-9]{16}$/.test(openId)) throw new Error("the open deployment did not return a full ID");
+    openApplied.status === 0 && openId !== undefined && revision !== undefined, openApplied.out);
+  if (!openId) throw new Error("the open deployment did not return a full ID");
   manifest("audit.yaml", OTHER, { "audit-team": "    deliveryClass: live\n" }, { ...openOptions, open: true });
-  const bootWhileRetained = cotal(c, "team", "boot", "audit.yaml", "--dry-run", "--json");
+  const bootWhileRetained = cotal(c, "team", "boot", "audit.yaml", "--space", OTHER, "--dry-run", "--json");
   check("fresh boot preview warns about the unremoved deployment",
     answered(bootWhileRetained) && envelope(bootWhileRetained.stdout)?.warnings?.some((warning) =>
       warning.code === "ADDITIVE_ATTEMPT_REMAINS" && JSON.stringify(warning.target.deploymentIds) === JSON.stringify([openId])) === true, bootWhileRetained.out);
 
   console.log("\nM. deployment lookup and confirmation commands pin the target space");
-  const chosen = cotal(b, "use", SPACE_B);
-  const selection = envelope(cotal(c, "use", "--json").stdout)?.result;
-  check("the saved selection differs from the deployment's space", chosen.status === 0 && selection?.current === SPACE_B && selection.folder === OTHER, selection);
-  const deploymentSpace = openResult?.target?.space;
-  if (deploymentSpace !== OTHER) throw new Error("the open deployment did not return its space");
-  const deploymentShow = cotal(c, "team", "show", openId, "--space", deploymentSpace, "--json");
+  const showCommand = openApplied.stdout.split("\n").map((line) => line.trim()).find((line) => /^(?:pnpm )?cotal team show /.test(line))?.split(/ {2,}/)[0];
+  check("the printed team show command pins the deployment's space",
+    ["cotal", "pnpm cotal"].some((launcher) => showCommand === `${launcher} team show ${openId} --space ${OTHER}`), openApplied.out);
+  const showArgs = showCommand?.split(" ").slice(showCommand.startsWith("pnpm ") ? 2 : 1) ?? [];
+  const deploymentShow = cotal(c, ...showArgs, "--json");
   const shownDeployment = envelope(deploymentShow.stdout);
   const recordedReceipt = shownDeployment?.result?.receipt as { createdChannels?: unknown } | undefined;
   check("team show with the receipt's space returns the original card revisions without changing the selection",
-    answered(deploymentShow) && shownDeployment?.target?.space === deploymentSpace && shownDeployment.target.deploymentId === openId &&
-    JSON.stringify(recordedReceipt?.createdChannels) === JSON.stringify(openResult?.result?.createdChannels) &&
+    answered(deploymentShow) && shownDeployment?.target?.space === OTHER && shownDeployment.target.deploymentId === openId &&
+    JSON.stringify(recordedReceipt?.createdChannels) === JSON.stringify([{ name: "audit-team", revision: Number(revision) }]) &&
     envelope(cotal(c, "use", "--json").stdout)?.result?.current === SPACE_B, deploymentShow.out);
   checkRemovalConfirmation(openId);
   const afterRemovalSelection = envelope(cotal(c, "use", "--json").stdout)?.result;

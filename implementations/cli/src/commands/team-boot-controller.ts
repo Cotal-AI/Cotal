@@ -121,7 +121,7 @@ export async function controllerTeamBoot(request: ControllerTeamBootRequest): Pr
     await assertManagerLogin(plan.root, plan.space, codeSpan(`cotal team boot ${shellWord(request.file)}`), "nothing was started or written");
   }
   if (readMaintenanceJournal(plan.root)) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "this root retains a maintenance or recovery attempt; team boot cannot substitute an ordinary startup", { target: { root: plan.root, space: plan.space } });
-  const lock = acquireMaintenanceLock(plan.root);
+  const lock = acquireMaintenanceLock(plan.root, { operation: "team boot" });
   let starting = false;
   const start = () => {
     starting = true;

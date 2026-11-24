@@ -1,5 +1,60 @@
 # @cotal-ai/cli
 
+## 0.176.6
+
+### Patch Changes
+
+- 664698a: Keep the running folder space marked in `cotal space` and `cotal status` when an offline registration shares its folder.
+- 6765f7f: Legacy `cotal up --foreground` waits up to 65 seconds for TIME-WAIT to clear and retries the same broker address instead of asking you to restart again.
+- 699a957: Tell users to remove `--adopt` or `--release` from `cotal run check` instead of asking for a handle.
+- 63458fc: Show the broker store repair before first start, include the identity provider in user-auth startup advice, explain when shutdown must wait for startup, and keep the deployment's space in channel receipt commands.
+- 447b4a4: JSON refusals identify the operation as `endpoint init` or `endpoint check` without changing the diagnostics or exit status.
+- 4275980: `cotal persona create` identifies a directory passed to `--file` or `--from` and shows which file to supply instead of reporting a permission denial.
+- f363540: Keep the selected space and server in the browse command printed after removing a local persona.
+- 16df2b0: Foreground `up` reports a broker crash and exits 5 even after the project folder is moved, and tells you to move it back before running the repair command.
+- 2df52e0: JSON observers report a removed working directory with an error record followed by an end record, keeping the original advice and exit status.
+- b448684: When a legacy stack shutdown names a different space, direct the caller to that space's project root in every output format.
+- 2ee0a1b: Explain why `space add --from` cannot prompt and show how to retry without changing plain output.
+- 5aacef7: When `spawn` receives both `--live-only` and `--runtime` in the foreground, it recommends dropping `--runtime` instead of switching to a manager that would reject `--live-only`.
+- 43931d7: Keep `result.folder.noManager` true in `cotal status --json` after `cotal down` stops a controller stack that was started with `--no-manager`.
+- 8304bd2: Fix native conversation connections to signed-in meshes on Windows. Cotal now opens the saved identity record with write access when flushing it to disk, so the request can reach the approval step instead of failing with an `fsync` permission error.
+- Updated dependencies [664698a]
+- Updated dependencies [d91500c]
+  - @cotal-ai/workspace@0.176.6
+  - @cotal-ai/core@0.176.6
+
+## 0.176.5
+
+### Patch Changes
+
+- e7e6da6: Name the file that backup verification or restore cannot read and explain how to retry when access is denied.
+- 8c884a8: Keep your requested startup options in foreground and busy-port retries, and report a verified startup in progress instead of telling you to stop it.
+- 2ec6796: `cotal clean store` and `cotal clean all` now name the non-directory parent in an invalid store path and explain how to correct `--store-dir`.
+- 0a40e6e: `cotal update` repairs a moved Codex marketplace even when another Cotal home owns the Claude marketplace, and reports the repair separately from the Claude ownership refusal.
+- a53b944: `cotal endpoint check` names a directory passed by mistake and shows how to pass its `contract.json` explicitly when it is a regular file.
+- 57dd126: When an extension option starts with a typographic dash, suggest its spelling only if the selected subcommand accepts it.
+- cfb3c96: Keep the requested space and output mode in Manager start and restart retries after sign-in. When launch settings or an instance pin are present, ask the caller to repeat the original command rather than printing one that drops those options.
+- 4361c47: Report undeclared channel members and missing persona files at the YAML values that reference them. A defaulted read list no longer produces an extra diagnostic for an undeclared subscriber.
+- 1afc00e: When a local persona is missing, keep the selected space and broker in the suggested catalog lookup and preserve JSON or plain output when requested.
+- 55bcc18: Keep missing-service stop previews read-only. A corrected stack-member preview retains its instance, space and output format. If the service is not saved, the suggested lookup lists the selected space instead of installing or starting a service.
+- e9f798e: When `cotal update --self` skips its version check because npm is in offline mode, report that it restored owner write permission on the Cotal connector configuration and that no installed packages were replaced. A retry that changes no permissions prints no notice.
+- e9ec688: Keep JSON or plain output in the suggested command for retrying a retained persona edit draft.
+- b13f6e9: Keep the requested output format when `ps` suggests how to look up a Manager and retry an invalid selector. The retry also keeps the wide or slot view when requested.
+- 6228e12: Backup restore reports a usage error for a store path inside the backup folder and tells you to choose an absent path outside it.
+- f4c3814: Reinstall first-party extensions with missing entry files when you run `cotal update --self`, even if the CLI is already current.
+- 426469e: Self-update reports when package staging runs out of time and keeps the previous version installed, instead of blaming the registry without a network error from npm.
+- 4aca5c3: When a restore refuses a symbolic link as its store directory, it tells you to choose an unused path under an existing writable directory.
+- 6dd2e41: Retry a partial manifest teardown by run ID without passing the manifest path.
+- ee3c94b: When `cotal space add` already has a space name, it tells you to drop an unknown option instead of passing it after `--`.
+- 1380bb4: Report invalid preferences as an error and an end record in JSON watch, history follow, and channel membership follow streams.
+- 8719090: Warn in the team deploy preview when a manifest declares broker.host, which apply refuses, and list no channel creation candidates for that manifest.
+- 0fda34d: When a team check, boot or deployment already has its manifest, tell the caller to drop an unknown option instead of treating it as a second file.
+- 08c34f8: Keep watch usage refusals in NDJSON when a valid `--json` or `-j` appears alongside an invalid `--json=false` in either order.
+- Updated dependencies [8c884a8]
+- Updated dependencies [e9f798e]
+  - @cotal-ai/workspace@0.176.5
+  - @cotal-ai/core@0.176.5
+
 ## 0.176.4
 
 ### Patch Changes

@@ -1,6 +1,6 @@
 import { isIP } from "node:net";
 import { homedir } from "node:os";
-import { accessSync, constants, existsSync, statSync, readdirSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { SERVICE_AUTHORITY_MAX_BYTES, SERVICE_CALLER_PAYLOAD_FLOOR, type ParsedArgs } from "@cotal-ai/core";
 import {
@@ -31,7 +31,7 @@ import {
 } from "@cotal-ai/workspace";
 import { FlagValueRefusal } from "../lib/flag-value-refusal.js";
 import { resolveSpace } from "../lib/status.js";
-import { cotalRoot, homeHoldsStack, linkedCotalRefusal } from "../lib/paths.js";
+import { cotalRoot, homeHoldsStack, linkedCotalRefusal, upRootWriteProblem } from "../lib/paths.js";
 import { shellWord } from "../lib/endpoint-errors.js";
 import { displayCmd } from "../lib/self-exec.js";
 import { managerRecordState } from "../lib/manager-proc.js";
@@ -127,7 +127,7 @@ export function validateUpArguments(args: ParsedArgs, beforeRestore = false): vo
     throw new CommandFailure("refused", "USAGE_INVALID", "--tls-cert serves the broker over TLS, so --server must be a tls:// address; nothing was started or written", { remedy: `pass --server ${tlsAddress(args.values.server)}`, selfContained: true });
   if (typeof args.values.file === "string" && args.values.foreground === true) {
     const boot = `${presentation === "json" ? "cotal" : displayCmd()} team boot ${shellWord((args.values.file.startsWith("-") ? "./" : "") + args.values.file)} --foreground`;
-    const remedy = args.values["dry-run"] === true ? `preview with ${codeSpan(`${boot} --dry-run`)}`
+    const remedy = args.values["dry-run"] === true ? `preview with ${codeSpan(`${boot} --dry-run${presentation === "rich" ? "" : ` --${presentation}`}`)}`
       : `prepare the project if needed with \`cotal space create <space> --root .\`, then run ${codeSpan(boot)}`;
     throw new CommandFailure("refused", "UNSUPPORTED", "manifest boot has no native foreground custody path; a detached broker was not substituted for the requested terminal-bound lifetime", { remedy });
   }
@@ -215,19 +215,9 @@ export function validateUpArguments(args: ParsedArgs, beforeRestore = false): vo
   }
 }
 
-/** Every launch route writes under the root's .cotal first, or makes it when it is missing. A folder
- *  this account cannot write is refused here, by name, instead of as the raw error of whichever
- *  write came first. */
 function assertUpRootWritable(root: string): void {
-  // A `.cotal` that is a file is refused by name before any command runs, so only a directory is tested here.
-  const path = statSync(join(root, ".cotal"), { throwIfNoEntry: false })?.isDirectory() ? join(root, ".cotal") : root;
-  try { accessSync(path, constants.W_OK | constants.X_OK); }
-  catch (error) {
-    const code = (error as NodeJS.ErrnoException).code;
-    if (code === "EROFS") throw new CommandFailure("refused", "PERMISSION_DENIED", `${path} is on a read-only file system (${code}); nothing was started or written`, { target: { root, path }, remedy: "retry with the project on a writable file system" });
-    if (code !== "EACCES" && code !== "EPERM") throw error;
-    throw new CommandFailure("refused", "PERMISSION_DENIED", `${path} does not grant this account both write and search access (${code}); nothing was started or written`, { target: { root, path }, remedy: `make it writable and searchable by you, for example with chmod u+wx ${shellWord(path)}` });
-  }
+  const problem = upRootWriteProblem(root);
+  if (problem) throw new CommandFailure("refused", "PERMISSION_DENIED", `${problem.message}; nothing was started or written`, { target: { root, path: problem.path }, remedy: problem.remedy });
 }
 
 /** The broker exits when it cannot write its store, naming the cause only in its own log. The store

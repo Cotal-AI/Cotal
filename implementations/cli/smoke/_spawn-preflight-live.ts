@@ -76,6 +76,12 @@ setInterval(() => {}, 60_000);
           && !/wrote creds|retired creds|spawning .* on the mesh|OPERATION_UNKNOWN/.test(result.out) && creds() === initialCreds, result.out);
       }
     }
+    const variantPersona = join(root, "variant-persona.md");
+    writeFileSync(variantPersona, "---\nname: variant_probe\nagent: claude\nvariant: high\n---\n");
+    const variantRefusal = cli("spawn", "--file", variantPersona);
+    check("foreground spawn names the persona variant field before provisioning",
+      variantRefusal.status === 1 && variantRefusal.stderr.includes(`remove the \`variant:\` field from ${JSON.stringify(variantPersona)}`)
+      && creds() === initialCreds && !existsSync(piCalls), variantRefusal.out);
     const hermesPreview = cli("spawn", "-H", "hermes", "--model", "test-model", "--dry-run");
     check("direct Hermes preview accepts an explicit model without provisioning", hermesPreview.status === 0
       && /Model:\s+test-model/.test(hermesPreview.out) && /Connector arguments:\s+checked/.test(hermesPreview.out)

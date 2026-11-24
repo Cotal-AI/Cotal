@@ -218,7 +218,7 @@ The app does not change a separately installed command line.
 Interactive commands print a one-line update notice on stderr from a daily cached registry check.
 The check runs daily with `npm view cotal-ai@latest` against your configured registry, and nothing else is sent.
 A command started during the few seconds an update replaces the installation can fail to load and should be run again.
-The check runs in the background. Help requests neither check the registry nor print an update notice.
+The check runs in the background. The entry screen and help requests neither check the registry nor print an update notice.
 JSON, plain, CI and redirected output receive no notice.
 Version output reports the cached update state without waiting for the registry. If the recorded
 updater is still running, version output says to wait rather than asking you to restore the update.
@@ -330,6 +330,8 @@ Update runs from the surviving project root, or the filesystem root when no proj
 It runs npm for the installation and its extensions outside the project, so the project's package
 manager does not affect the update. Relative `PATH` entries are resolved from the folder where you
 ran `update`. On Linux and macOS, an empty entry also refers to that folder, just like `.`.
+If the running Node is in a directory that contains a colon and no Node is available on npm's `PATH`,
+self-update can run the selected npm script directly with that Node.
 Removing an unrelated working folder before or during update does not block it or its npm and
 reconciliation children. A relative `--creds` path keeps its meaning from the original folder.
 
@@ -361,14 +363,19 @@ connector installed in its harness to this release (the `cotal` plugin copy Clau
 load, and its Claude Desktop entry), then checks other `@cotal-ai/*` operator extensions against
 npm's own record in the extensions prefix. One recorded at the binary's exact version with the spec
 `update` installs (`<package>@<version>`) is kept when the prefix lock records it at that version
-and every package the lock records is on disk at its recorded version. Any other is reinstalled at
-the binary's exact version, after a line that says why. A built-in or extension that passes is
-reported as verified. The extension check reads versions, not file contents. `cotal ext seed --force`
+and every package the lock records is on disk at its recorded version. The extension's entry file
+must also be present. The extension check does not compare file contents. If any check fails, Cotal
+reports why and reinstalls the extension at the binary's exact version. A built-in or extension
+that passes is reported as verified. `cotal ext seed --force`
 remains the unconditional reinstall of the built-ins, and `cotal ext add <package>` of one extension.
 Each reinstall runs in an isolated child, so one failure cannot poison later replays. It then
 checks npm; after successful reconciliation, a newer binary is an informational notice with
 `cotal update --self` as the next command, not an automatic install. A refused update keeps its
 recovery guidance instead of suggesting another update that would meet the same refusal.
+
+If a connector cannot refresh its integration, update still attempts the other connector refreshes.
+It reports completed refreshes and names each failure, then exits nonzero. A Claude marketplace
+owned by another Cotal home stays unchanged, while an independent Codex marketplace can still be repaired.
 
 
 ### Manager continuity
@@ -376,6 +383,8 @@ recovery guidance instead of suggesting another update that would meet the same 
 When `update --self` finds no newer release and verifies the installed package closure is current,
 it reports that no connector reconciliation ran and skips the running Manager continuity check.
 An unreadable Manager from another installation does not block this result.
+If a first-party operator extension is missing its entry file, `cotal update --self` runs
+reconciliation to restore it even when the CLI is already current.
 
 If update cannot read a prepared space record, it names the file and reports that continuity was
 not checked for that record. It keeps the record and tells you how to restore read access. This
@@ -505,9 +514,11 @@ of its first-party runtime dependency closure through npm, using a temporary cac
 scripts. Each registry request has a 15-second timeout. Package installs and archive checks retry
 transient network failures twice, waiting one second and then two seconds. The latest-version read
 keeps a single attempt. If npm reports a refused connection to the proxy set by `HTTP_PROXY` or
-`HTTPS_PROXY`, manual `cotal update --self` fails and leaves the installation unchanged. Check those
-proxy settings and retry. Cotal neither prints the proxy URL nor bypasses it. An unavailable registry
-without a confirmed proxy refusal remains a no-op.
+`HTTPS_PROXY`, manual `cotal update --self` fails and leaves installed packages unchanged. Check those
+proxy settings and retry. For a refused proxy set in npm configuration, the command names the
+`https-proxy` or `proxy` setting to check and exits 0 without replacing installed packages. Cotal
+neither prints the proxy URL nor bypasses it. An unavailable registry without a confirmed proxy
+refusal remains a no-op.
 If npm is in offline mode and the latest-version lookup misses Cotal's temporary cache,
 `cotal update --self` reports that the check was skipped and exits 0. The skipped check does not
 retry with network access or start a new install. Before the lookup, the updater can still recover an
@@ -554,8 +565,8 @@ checkouts still install a separate global copy; Windows keeps npm's configured g
 From 0.167.1, self-update restores owner write permission on user-owned package, `dist`,
 `node_modules` and `lib` directories before checking release archives. It leaves file modes and
 other accounts' directories unchanged. If write access still fails, it names the user-owned
-directory to repair without recommending sudo. An unwritable `node_modules` directory is checked
-before downloading archives or reserving the update lock.
+directory to repair without recommending sudo. Self-update repairs an owned read-only `node_modules`
+directory before taking the lock to remove abandoned installation staging.
 If an installation owned by another account is not writable, the update refuses before replacing it.
 For a root-owned npm installation, have an administrator follow the printed npm install command.
 The command uses `sudo` if it is on PATH, otherwise `doas` if it is on PATH. If neither is
@@ -610,11 +621,13 @@ Losing registry connectivity during release checks, extension-dependency checks 
 also exits 0 before replacement.
 On Linux and macOS, the updater stops a staging install that stops making progress or reaches
 its five-minute limit. It removes the disposable staging copy and leaves the running installation
-and local spaces unchanged. Automatic updates defer the attempt without counting it as a failure.
+and local spaces unchanged. Unless npm reports a network error, the command reports the staging
+time limit rather than a registry connection failure. It exits 0, and you can run
+`cotal update --self` again. Automatic updates defer the attempt without counting it as a failure.
 A failed first-party scoped metadata read still names the `@cotal-ai:registry` setting and exits 1.
 Authentication, permission, integrity and target pre-install refusals still exit nonzero. A staging
 refusal leaves installed packages in place. Preflight may already have changed connector state.
-Retry `cotal update --self` when connectivity returns. The version read has no retries and a
+After a registry connection failure, retry `cotal update --self` when connectivity returns. The version read has no retries and a
 15-second network timeout. Unknown availability is not a claim that the installed version is current. A failed connector/extension install, npm metadata check after reconciliation, or requested global
 install is reported and makes the command exit nonzero. Independent extension attempts continue so
 the output includes every failure; an unavailable npm registry does not undo a completed local
