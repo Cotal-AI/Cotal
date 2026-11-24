@@ -21,7 +21,11 @@ assert.ok(parts.every(line => Buffer.byteLength(line) <= MAX_LINE_BYTES));
 assert.equal(spacesReplyLines({ ...empty, spaces: [{ space: "large", mode: "open", label: "a".repeat(8 * 1024 * 1024) }] }, data => data), undefined);
 
 async function read(reply: readonly string[]) {
-  const server = createServer(sock => sock.once("data", () => sock.end(reply.join(""))));
+  const server = createServer(sock => {
+    // The reader can reject a frame before the peer finishes writing the reply.
+    sock.on("error", (error: NodeJS.ErrnoException) => assert.equal(error.code, "ECONNRESET"));
+    sock.once("data", () => sock.end(reply.join("")));
+  });
   await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
   const sock = createConnection((server.address() as { port: number }).port, "127.0.0.1");
   try { return await readSpacesReply(sock, id, true); }
