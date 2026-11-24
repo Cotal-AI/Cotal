@@ -28,6 +28,7 @@ A client may start it anywhere, so pin the space with `--space`.
 When none of the managers a new thread may use runs on this machine, as when none may start its agent or only another computer's is live, `cotal acp` starts this machine's manager for the space with `cotal manager start --idle-exit 600` before the thread offers anything, and the thread says so in one line.
 Threads that open at the same time share one start, and the later ones say the manager is running.
 That manager stops itself once it has held no agents for 10 minutes, so nothing runs while you use no agents.
+It runs on its own, so closing the thread, or the app that runs `cotal acp`, does not stop it ([background services](cli-processes.mdx#direct-process-lifecycle)).
 Its seats get a provider key or harness folder from the environment `cotal acp` runs in only when [`spawn.env`](config.mdx#launcher-variables) lists it.
 Until then, a bare `cotal down` for the space refuses and names the command that stops that manager first.
 A thread's first prompt checks again when its Machine is this machine's, so a thread left open past that time starts the manager again.
