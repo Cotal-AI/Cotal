@@ -1336,7 +1336,7 @@ if (process.platform === "linux") {
   recordMesh({ space: "a*b", server: DEAD, root: home, mode: "open", origin: "manual", ts: new Date().toISOString() });
   const odd = await run(["space", "show", "a*b"]);
   check("space show of a registration an earlier release made under such a name still heads it Mesh: <name>", odd.status === 0 && odd.stdout.startsWith("Mesh: a*b"), shown(odd));
-  check("space show quotes a legacy name that a shell could expand", odd.stdout.includes("`cotal use 'a*b'`"), shown(odd));
+  check("space show quotes a legacy name that a shell could expand", odd.stdout.includes(`\`${launcher} use 'a*b'\``), shown(odd));
   removeMesh("a*b");
   // A space name holds at most 64 characters, so its hex fits every local file name that carries it.
   const longName = "y".repeat(65), longest = "y".repeat(64);
